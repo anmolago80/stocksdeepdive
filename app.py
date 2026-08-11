@@ -23,6 +23,7 @@ import social_engine
 import mood_engine
 import plotly.graph_objects as go
 import deep_dive_engine
+import build_compounder_data
 
 # -----------------------------------
 # PAGE SETUP
@@ -899,8 +900,88 @@ def _cp_render_text_groups(groups):
                 st.caption(item["text"])
 
 
+_ADMIN_REFRESH_KEY_ENV = "ADMIN_REFRESH_KEY"
+
+
+def _render_compounder_admin_panel():
+    """
+    Admin-only control to rebuild compounder_data.json from an updated SMSF
+    research workbook, without needing a terminal. This app has no
+    accounts/login system at all, so a full "admin user" concept doesn't
+    exist yet -- gating this behind a single shared secret
+    (ADMIN_REFRESH_KEY, set as an environment variable on this Railway
+    service, never committed to the repo) is the lightest control that
+    still keeps this away from ordinary visitors, who have no reason to
+    ever see or use it. If ADMIN_REFRESH_KEY isn't set, this section stays
+    collapsed and inert -- nothing is exposed by default.
+
+    Important: rebuilding writes compounder_data.json to THIS process's
+    local disk, so the refreshed data shows up on this page immediately
+    (great for previewing the result before committing to anything) -- but
+    Railway's filesystem is ephemeral, so that write does NOT survive the
+    next redeploy/restart on its own. The download button below lets you
+    grab the freshly-built file and commit it to the repo, exactly the
+    workflow build_compounder_data.py's own docstring already documents --
+    that commit is what makes an update permanent.
+    """
+    admin_key = os.environ.get(_ADMIN_REFRESH_KEY_ENV, "").strip()
+    if not admin_key:
+        return
+
+    with st.expander("Admin: refresh Rational Compounder data", expanded=False):
+        entered = st.text_input("Admin key", type="password", key="cp_admin_key")
+        if not entered:
+            return
+        if entered != admin_key:
+            st.error("Incorrect key.")
+            return
+
+        st.success("Admin key accepted.")
+        uploaded = st.file_uploader(
+            "Upload the updated SMSF research workbook (.xlsx)",
+            type=["xlsx"], key="cp_admin_upload",
+        )
+        if uploaded and st.button(
+            "Rebuild Rational Compounder data", type="primary", key="cp_admin_rebuild",
+        ):
+            with st.spinner("Rebuilding from the uploaded workbook..."):
+                tmp_path = os.path.join(os.path.dirname(__file__), "_admin_upload_tmp.xlsx")
+                out_path = os.path.join(os.path.dirname(__file__), "compounder_data.json")
+                try:
+                    with open(tmp_path, "wb") as f:
+                        f.write(uploaded.getbuffer())
+                    new_data = build_compounder_data.build(tmp_path)
+                    with open(out_path, "w") as f:
+                        json.dump(new_data, f, indent=1)
+                except Exception as exc:
+                    st.error(f"Rebuild failed: {exc}")
+                    return
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+
+            # Bust the cache so the SAME script run (below, when
+            # page_research() calls _load_compounder_data() again) serves
+            # the freshly-built data immediately -- no restart needed.
+            _load_compounder_data.clear()
+            st.success(
+                f"Rebuilt {len(new_data.get('tickers', {}))} tickers. Now showing below. "
+                "This is live on THIS running instance only -- download the file and commit "
+                "it to the repo to make the update permanent (survives the next redeploy)."
+            )
+            st.download_button(
+                "Download compounder_data.json to commit",
+                data=json.dumps(new_data, indent=1),
+                file_name="compounder_data.json",
+                mime="application/json",
+                key="cp_admin_download",
+            )
+
+
 def page_research():
     _render_header(compact=True)
+
+    _render_compounder_admin_panel()
 
     data = _load_compounder_data()
     if not data or not data.get("tickers"):

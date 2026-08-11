@@ -6,3 +6,6 @@ newsapi-python>=0.2.7
 requests>=2.31
 lxml>=5.0
 plotly>=5.20
+
+# --- Added for the admin-only Rational Compounder data refresh panel ---
+openpyxl>=3.1
