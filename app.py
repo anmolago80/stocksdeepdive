@@ -724,10 +724,14 @@ def _cp_pe_ratio_chart(ticker, series, pe_ratio_refs):
     """PE Ratio by Year, plus two reference lines Andrew asked for so they
     read at a glance against the year-by-year bars: 'PE ratio (Current
     price to 3y average EPS)' (his AV column) and the plain 'PE Ratio
-    Average' (AU). Drawn as full-width lines with a legend (rather than
-    inline text labels) since this chart runs narrow (1 of 3 side-by-side
-    columns) and overlapping annotation text was unreadable at that width -
-    distinct colours plus the legend keep the two from being confused."""
+    Average' (AU). Drawn as a full-width shape (edge to edge, not just from
+    the first bar's centre to the last bar's centre) with its value written
+    directly next to it via a plain xref="paper" annotation -- NOT
+    fig.add_hline()'s own annotation_* kwargs, which silently clip the text
+    when pushed out past the plot area with an xshift; a manually-added
+    add_annotation() call doesn't have that problem. Whichever of the two
+    lines sits lower gets its label pushed further down (and the higher one
+    further up) so the two labels don't collide when the values are close."""
     entry = series.get(ticker, {}).get("pe_ratio")
     if not entry or not entry.get("years"):
         return None
@@ -739,23 +743,39 @@ def _cp_pe_ratio_chart(ticker, series, pe_ratio_refs):
         name="PE Ratio", showlegend=False,
     ))
     refs = pe_ratio_refs.get(ticker, {})
-    if refs.get("avg_3y") is not None:
-        fig.add_trace(go.Scatter(
-            x=years, y=[refs["avg_3y"]] * len(years), mode="lines",
-            line=dict(color="#c2410c", dash="dash", width=2),
-            name=f"PE ratio (Current price to 3y average EPS): {refs['avg_3y']:.2f}x",
-        ))
-    if refs.get("overall_avg") is not None:
-        fig.add_trace(go.Scatter(
-            x=years, y=[refs["overall_avg"]] * len(years), mode="lines",
-            line=dict(color="#1d4ed8", dash="dot", width=2),
-            name=f"PE Ratio Average: {refs['overall_avg']:.2f}x",
-        ))
+    avg_3y = refs.get("avg_3y")
+    overall_avg = refs.get("overall_avg")
+    # Label placed just past the right edge of the plot (not above the last
+    # bar) so it never collides with that bar's own outside value label.
+    # Whichever line sits lower gets its label anchored to hang further
+    # below the line, and the higher one anchored to sit further above it,
+    # so the two labels open away from each other instead of colliding when
+    # the two values are close together.
+    if avg_3y is not None and overall_avg is not None and avg_3y <= overall_avg:
+        avg_3y_yanchor, overall_avg_yanchor = "top", "bottom"
+    else:
+        avg_3y_yanchor, overall_avg_yanchor = "bottom", "top"
+
+    def _cp_pe_ref_line(value, color, dash, label, yanchor):
+        if value is None:
+            return
+        fig.add_shape(
+            type="line", xref="x", x0=-0.5, x1=len(years) - 0.5, yref="y",
+            y0=value, y1=value, line=dict(color=color, dash=dash, width=2),
+        )
+        fig.add_annotation(
+            xref="paper", x=1.0, xanchor="left", xshift=10,
+            yref="y", y=value, yanchor=yanchor,
+            text=f"{label}: {value:.2f}x", showarrow=False,
+            font=dict(color=color, size=11), align="left",
+        )
+
+    _cp_pe_ref_line(avg_3y, "#c2410c", "dash", "3y EPS avg", avg_3y_yanchor)
+    _cp_pe_ref_line(overall_avg, "#1d4ed8", "dot", "Overall avg", overall_avg_yanchor)
     fig.update_layout(
-        title="PE Ratio by Year", height=340, showlegend=True,
-        margin=dict(l=10, r=10, t=40, b=10), yaxis_title="PE Ratio",
+        title="PE Ratio by Year", height=340, showlegend=False,
+        margin=dict(l=10, r=100, t=40, b=10), yaxis_title="PE Ratio",
         xaxis_type="category",
-        legend=dict(orientation="h", y=-0.35, font=dict(size=9)),
     )
     return fig
 
