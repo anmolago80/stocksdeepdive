@@ -4,6 +4,7 @@ import pandas as pd
 import time
 import json
 import os
+from datetime import datetime, timezone
 
 from trends_engine import get_trend_score
 from news_engine import get_news_score, get_yahoo_news_score
@@ -1023,10 +1024,32 @@ def _render_compounder_admin_panel():
                 with st.spinner("Rebuilding from the uploaded workbook..."):
                     tmp_path = os.path.join(os.path.dirname(__file__), "_admin_upload_tmp.xlsx")
                     out_path = os.path.join(os.path.dirname(__file__), "compounder_data.json")
+                    corrections_path = build_compounder_data.CP_CORRECTIONS_PATH
                     try:
                         with open(tmp_path, "wb") as f:
                             f.write(uploaded.getbuffer())
-                        new_data = build_compounder_data.build(tmp_path)
+                        fresh_data = build_compounder_data.build(tmp_path)
+
+                        # Merge over whatever was already on disk (the
+                        # currently-live data) rather than replacing it
+                        # outright -- so re-uploading a newer/leaner
+                        # workbook (Andrew rebuilds this from scratch every
+                        # 10-12 months) can't silently wipe out a ticker,
+                        # or a Company Potential answer, that just wasn't
+                        # re-typed into the new file this round. See
+                        # merge_compounder_data()'s own docstring for the
+                        # full rationale.
+                        previous_data = None
+                        if os.path.exists(out_path):
+                            try:
+                                with open(out_path) as f:
+                                    previous_data = json.load(f)
+                            except (json.JSONDecodeError, OSError):
+                                previous_data = None
+                        new_data = build_compounder_data.merge_compounder_data(
+                            fresh_data, previous_data
+                        )
+
                         with open(out_path, "w") as f:
                             json.dump(new_data, f, indent=1)
                     except Exception as exc:
@@ -1041,12 +1064,19 @@ def _render_compounder_admin_panel():
                 # serves the freshly-built data immediately -- no restart
                 # needed.
                 _load_compounder_data.clear()
-                st.success(
-                    f"Rebuilt {len(new_data.get('tickers', {}))} tickers. Now showing below. "
-                    "This is live on THIS running instance only -- download the file and "
-                    "commit it to the repo to make the update permanent (survives the next "
-                    "redeploy)."
+                carried_over = len(new_data.get("tickers", {})) - len(fresh_data.get("tickers", {}))
+                carried_over_note = (
+                    f" ({carried_over} of those carried over from the previous data, not in "
+                    f"this upload)" if carried_over > 0 else ""
                 )
+                st.success(
+                    f"Rebuilt: {len(new_data.get('tickers', {}))} tickers now in the data"
+                    f"{carried_over_note}. Now showing below. This is live on THIS running "
+                    "instance only -- download BOTH files below and commit them to the repo "
+                    "to make the update permanent (survives the next redeploy)."
+                )
+                for w in fresh_data.get("build_warnings", []):
+                    st.warning(w)
                 st.download_button(
                     "Download compounder_data.json to commit",
                     data=json.dumps(new_data, indent=1),
@@ -1054,6 +1084,47 @@ def _render_compounder_admin_panel():
                     mime="application/json",
                     key="cp_admin_download",
                 )
+                if os.path.exists(corrections_path):
+                    with open(corrections_path) as f:
+                        corrections_text = f.read()
+                    st.download_button(
+                        "Download company_potential_corrections.json to commit",
+                        data=corrections_text,
+                        file_name="company_potential_corrections.json",
+                        mime="application/json",
+                        key="cp_admin_download_corrections",
+                        help=(
+                            "Only needed if the grammar check ran (ANTHROPIC_API_KEY set) - "
+                            "this is its cache of already-checked text. Skipping this commit "
+                            "doesn't lose any data, it just means already-correct text gets "
+                            "re-checked (a small extra API cost) on the next rebuild instead "
+                            "of being remembered for free."
+                        ),
+                    )
+
+
+def _render_last_updated(generated_at):
+    """'Last updated on ...' badge, top-right, above the Stock/Section
+    pickers so it's visible no matter which section a visitor has open --
+    this data is a workbook snapshot from whenever it was last rebuilt, not
+    live, so it matters that this is easy to spot rather than buried in an
+    admin-only view."""
+    if not generated_at:
+        return
+    try:
+        dt = datetime.fromisoformat(generated_at)
+    except (TypeError, ValueError):
+        return
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    label = dt.astimezone(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+    _, corner = st.columns([3, 1])
+    with corner:
+        st.markdown(
+            f'<div style="text-align:right; color:#64748b; font-size:13px; '
+            f'margin-bottom:6px;">Last updated on {label}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def page_research():
@@ -1075,6 +1146,12 @@ def page_research():
         "Cost of Capital", "Fair Value", "Company Potential",
     ]
     section_order = [s for s in section_order if s in data["sections"]]
+
+    # This data is a snapshot from whenever the workbook was last uploaded
+    # and rebuilt, not live -- shown once here (above the Stock/Section
+    # pickers, not inside the per-section branches below) so it's visible
+    # no matter which section you pick, not just one of them.
+    _render_last_updated(data.get("generated_at"))
 
     st.caption(
         "Every chart, threshold and colour band here comes straight from your "

@@ -9,3 +9,7 @@ plotly>=5.20
 
 # --- Added for the admin-only Rational Compounder data refresh panel ---
 openpyxl>=3.1
+
+# --- Added for the optional live grammar/wording check on Company
+# Potential free text (only runs if ANTHROPIC_API_KEY is set) ---
+anthropic>=0.40

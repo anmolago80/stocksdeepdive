@@ -1,10 +1,13 @@
 """
 Builds compounder_data.json from the source research workbook.
 
-This is a one-off/occasional build step, NOT run by the live app - the app
-just reads the JSON this produces. Re-run this file whenever the source
-spreadsheet (Andrew's SMSF research workbook) gets new tickers or updated
-numbers, then commit/redeploy the refreshed compounder_data.json.
+This can be run either way: as a standalone offline script (see the
+command below), or live from the app's admin-only refresh panel, which
+calls build() directly against an uploaded workbook. Either way, whoever
+triggers it needs to download the resulting compounder_data.json and
+commit/redeploy it for the update to survive the app's next restart
+(Railway's filesystem is ephemeral) - see the admin panel's own docstring
+in app.py for that flow.
 
     python3 build_compounder_data.py [path-to-xlsx]
 
@@ -21,6 +24,7 @@ included so the app can show them as plain (uncoloured) numbers - nothing
 gets invented that Andrew didn't already write down himself.
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -308,22 +312,141 @@ VALUATION_INPUT_COLS = {
 
 # Company Potential follow-up: Andrew's free-text answers, grammar/spelling
 # corrected while keeping his own writing voice (no rewrites, no content
-# changes - see company_potential_corrections_log.txt for exactly what was
-# touched). Keyed the same way as the workbook: {ticker: {column: text}}.
+# changes - see company_potential_corrections_log.txt for the original
+# one-off pass). Keyed the same way as the workbook: {ticker: {column:
+# {label, source_hash, text}}}. source_hash is a hash of the RAW text this
+# correction was made from -- lets a later build tell "still the same
+# answer, reuse the cached correction for free" apart from "Andrew edited
+# this cell, needs a fresh AI pass" without re-billing for unchanged text
+# every single rebuild. Entries from before this hash existed (the
+# original AUB.AX/CSL.AX pass) are grandfathered in as trusted rather than
+# re-corrected once, then get a hash stamped on first use so staleness
+# detection works from then on.
 CP_CORRECTIONS_PATH = os.path.join(
     os.path.dirname(__file__), "company_potential_corrections.json"
 )
 
+_CP_CORRECTION_MODEL = "claude-haiku-4-5"
+_CP_CORRECTION_SYSTEM_PROMPT = (
+    "You are a careful copy editor reviewing an individual investor's own "
+    "private research notes on a stock. For each item in the JSON array "
+    "below, fix ONLY clear spelling and grammar mistakes. Do NOT rewrite, "
+    "rephrase, restructure, summarize, or change the meaning, opinions, "
+    "conclusions, tone, or personal writing voice -- preserve the "
+    "author's own style exactly, including any informal phrasing, as "
+    "long as it's grammatically valid. If an item already has no errors, "
+    "return it completely unchanged, word for word. Never add "
+    "commentary, disclaimers, or anything not in the original text.\n\n"
+    "Return ONLY a JSON array, the same length and order as the input, "
+    "where each element is {\"key\": <key>, \"text\": <corrected text>}. "
+    "No markdown code fences, no text before or after the JSON."
+)
 
-def _load_cp_corrections():
+
+def _cp_text_hash(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _cp_load_corrections_cache():
     if not os.path.exists(CP_CORRECTIONS_PATH):
         return {}
     with open(CP_CORRECTIONS_PATH) as f:
-        raw = json.load(f)
-    return {
-        tkr: {col: entry["text"] for col, entry in cols.items()}
-        for tkr, cols in raw.items()
-    }
+        return json.load(f)
+
+
+def _cp_save_corrections_cache(cache):
+    with open(CP_CORRECTIONS_PATH, "w") as f:
+        json.dump(cache, f, indent=1)
+
+
+def _cp_correct_batch_via_ai(items, api_key, ticker, warnings):
+    """items: [{"key", "label", "text"}, ...] for ONE ticker's free-text
+    answers that need a fresh check (new or edited since the last cached
+    correction). One API call per ticker, not per paragraph, to keep this
+    cheap. Returns {key: corrected_text} -- falls back to each item's own
+    raw text (never crashes the whole rebuild) if the package is missing,
+    the call fails, or the model's response doesn't parse cleanly."""
+    fallback = {it["key"]: it["text"] for it in items}
+    try:
+        import anthropic
+    except ImportError:
+        warnings.append(
+            "Grammar check skipped: the 'anthropic' package isn't installed "
+            "(add it to requirements.txt) - showing raw text instead."
+        )
+        return fallback
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        payload = [{"key": it["key"], "text": it["text"]} for it in items]
+        resp = client.messages.create(
+            model=_CP_CORRECTION_MODEL,
+            max_tokens=8192,
+            system=_CP_CORRECTION_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": json.dumps(payload)}],
+        )
+        raw = "".join(
+            block.text for block in resp.content if getattr(block, "type", None) == "text"
+        ).strip()
+        if raw.startswith("```"):
+            raw = raw.strip("`")
+            if raw.lower().startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        parsed = json.loads(raw)
+        result = dict(fallback)
+        for entry in parsed:
+            key = entry.get("key") if isinstance(entry, dict) else None
+            text = entry.get("text") if isinstance(entry, dict) else None
+            if key in result and isinstance(text, str) and text.strip():
+                result[key] = text
+        return result
+    except Exception as exc:
+        warnings.append(
+            f"Grammar check failed for {ticker} ({exc}) - showing raw text instead."
+        )
+        return fallback
+
+
+def _cp_apply_corrections(tkr, raw_items, cache, api_key, warnings):
+    """raw_items: this ticker's free-text answers for the CURRENT build.
+    Returns {key: text_to_use}, reusing a cached correction whenever the
+    raw text's hash still matches what that correction was made from, and
+    only calling the AI (one batched call) for genuinely new/changed text.
+    With no api_key configured, new/changed text is left exactly as typed
+    -- this feature is fully opt-in, same as the rest of the app's
+    optional integrations."""
+    ticker_cache = cache.get(tkr, {})
+    result = {}
+    to_correct = []
+    for it in raw_items:
+        h = _cp_text_hash(it["text"])
+        cached_entry = ticker_cache.get(it["key"])
+        if cached_entry and cached_entry.get("source_hash") == h:
+            result[it["key"]] = cached_entry["text"]
+        elif cached_entry and "source_hash" not in cached_entry:
+            result[it["key"]] = cached_entry["text"]
+            ticker_cache[it["key"]] = {
+                "label": it["label"], "source_hash": h, "text": cached_entry["text"],
+            }
+        else:
+            to_correct.append(it)
+
+    if to_correct:
+        if not api_key:
+            for it in to_correct:
+                result[it["key"]] = it["text"]
+        else:
+            corrected = _cp_correct_batch_via_ai(to_correct, api_key, tkr, warnings)
+            for it in to_correct:
+                text = corrected.get(it["key"], it["text"])
+                result[it["key"]] = text
+                ticker_cache[it["key"]] = {
+                    "label": it["label"], "source_hash": _cp_text_hash(it["text"]), "text": text,
+                }
+
+    if ticker_cache:
+        cache[tkr] = ticker_cache
+    return result
 
 
 # Value vs Book: Andrew asked for Intrinsic Value vs Book Value shown as an
@@ -396,76 +519,177 @@ VALUE_CREATED_HORIZONS = [
 # is a judgment call (documented in the README, not something Andrew
 # specified per-column): good_high = High is green/good, good_low = Low is
 # green/good, neutral = shown as a plain badge, no red/green judgment.
+#
+# Every entry is (fallback_letter, raw_header_text, display_label, ...).
+# raw_header_text is the actual current header text from Andrew's sheet
+# (typos and all) -- at build time this is used to FIND the column by its
+# header, wherever it currently sits, so inserting/reordering columns
+# doesn't silently misattribute data the way a bare fixed-letter lookup
+# would. fallback_letter (today's known position) is only used if that
+# header text can't be found, or matches more than one column -- see
+# _cp_resolve_column(). display_label is what the app actually shows.
 COMPANY_POTENTIAL_HML = [
-    ("O", "Management Reputation", "good_high"),
-    ("P", "Debt Exposure", "good_low"),
-    ("Q", "Legal Exposure", "good_low"),
-    ("R", "Inflation Exposure", "good_low"),
-    ("S", "Business Understanding", "good_high"),
-    ("T", "Value Prospect", "good_high"),
-    ("U", "Progress Prospect", "good_high"),
-    ("V", "Wealth Prospect", "good_high"),
-    ("AE", "Market Sentiment", "neutral"),
-    ("AK", "Risk", "good_low"),
-    ("AL", "Insights", "neutral"),
-    ("BC", "Stability within Industry", "good_high"),
-    ("BL", "Ability to Change Pricing", "good_high"),
-    ("BP", "Market Activity", "neutral"),
+    ("O", "Management Reputation", "Management Reputation", "good_high"),
+    ("P", "Debt  Exposure", "Debt Exposure", "good_low"),
+    ("Q", "Legal Exposure", "Legal Exposure", "good_low"),
+    ("R", "Inflation Exposure", "Inflation Exposure", "good_low"),
+    ("S", "Business Understanding", "Business Understanding", "good_high"),
+    ("T", "Value Prospect", "Value Prospect", "good_high"),
+    ("U", "Progress Prospect", "Progress Prospect", "good_high"),
+    ("V", "Weath Prospect", "Wealth Prospect", "good_high"),
+    ("AE", "Market Sentiment", "Market Sentiment", "neutral"),
+    ("AK", "Risk", "Risk", "good_low"),
+    ("AL", "Insights", "Insights", "neutral"),
+    ("BC", "Stability of the Compnay within Industry. Quantity Vs Qualitative",
+     "Stability within Industry", "good_high"),
+    ("BL", "Do they have the ability to change product price without losing clients?",
+     "Ability to Change Pricing", "good_high"),
+    ("BP", "Market Activity", "Market Activity", "neutral"),
 ]
 
 # Short Yes/No (or similarly terse) checks - kept separate from the H/M/L
 # ratings above (different vocabulary) and from the long free-text answers
 # below (these are one to few words, not paragraphs).
 COMPANY_POTENTIAL_YESNO = [
-    ("Y", "Public interest?"),
-    ("AC", "OK when inverted?"),
-    ("BB", "Great company at a fair price?"),
-    ("BF", "Any share buybacks?"),
-    ("BH", "True earnings?"),
-    ("BK", "High fixed charges?"),
-    ("BM", "Would hold through a bear market?"),
-    ("BN", "Forecasted earnings possible/plausible/probable?"),
+    ("Y", "Is there public interest?", "Public interest?"),
+    ("AC", "Ok when Inverted?", "OK when inverted?"),
+    ("BB", "Great Company on a fair price", "Great company at a fair price?"),
+    ("BF", "Any Shares Buyback?", "Any share buybacks?"),
+    ("BH", "True Earnings?", "True earnings?"),
+    ("BK", "Are fixed charges (i.e cost of production, bonds, preferred shares etc) "
+     "high so it will magnify the earnings when increasing?", "High fixed charges?"),
+    ("BM", "Will I Hold the Stock Through Bear Market", "Would hold through a bear market?"),
+    ("BN", "Are the forecasted earnings possible, plausible and probable?",
+     "Forecasted earnings possible/plausible/probable?"),
 ]
 
 # "the wants with text to be merge in a few text boxes with the title and
 # content that you see fit for the grouping" - Andrew's own column headers
 # grouped into a handful of themed sections (my grouping call, not his).
+# NOTE: AZ and BA are both literally headed "Tendencies Company 2" in the
+# source sheet (Andrew's own duplicate, not a typo on my end) - header text
+# alone can't tell them apart, so both fall back to their fixed letters and
+# _cp_resolve_column() logs a warning about it rather than guessing.
 COMPANY_POTENTIAL_TEXT_GROUPS = [
     ("The Business & Its Moat", [
-        ("AG", "Market Reality"), ("AH", "Challenges"),
-        ("AP", "Trademark Product / Differentiator"),
-        ("AR", "Advantage of Scale"), ("AS", "Specialised Within Its Ecosystem"),
-        ("AT", "Circle of Competence"), ("AW", "Big Wave to Ride"),
-        ("BO", "Source of Income"), ("BR", "Small & Promising, or Large & Ordinary"),
+        ("AG", "Market Reality", "Market Reality"),
+        ("AH", "Challenges", "Challenges"),
+        ("AP", "Tradeamrk Product", "Trademark Product / Differentiator"),
+        ("AR", "Advanatge of Scale with no Burocracy and momentum?", "Advantage of Scale"),
+        ("AS", "Is it specialised within its ecosystem? Does it have a good "
+         "reputation in this secialization? Is it a predator?",
+         "Specialised Within Its Ecosystem"),
+        ("AT", "Circle of Competence", "Circle of Competence"),
+        ("AW", "Big Wave to Ride", "Big Wave to Ride"),
+        ("BO", "Source of Income?", "Source of Income"),
+        ("BR", "Small and Promising or large and ordinary?",
+         "Small & Promising, or Large & Ordinary"),
     ]),
     ("Risk & Inversion", [
-        ("AB", "Inversion Angle"), ("AF", "Breakeven Price"),
-        ("AI", "No Brainer Question"), ("AJ", "1 Foot Fence, Big Reward the Other Side"),
-        ("AU", "Probability & Decision Trees"),
+        ("AB", "Invertion Angle", "Inversion Angle"),
+        ("AF", "Breakeven Price", "Breakeven Price"),
+        ("AI", "No Brainer Question for this Company?", "No Brainer Question"),
+        ("AJ", "1 Foot Fence With Big Rewards on the other side?",
+         "1 Foot Fence, Big Reward the Other Side"),
+        ("AU", "Probability and decision investment trees", "Probability & Decision Trees"),
     ]),
     ("Psychology & Munger Tendencies", [
-        ("AM", "Sauerkraut Effect"), ("AN", "Lollapalooza Effect"),
-        ("AO", "Ideology Affected"), ("AQ", "Multidisciplinary Approach"),
-        ("AV", "First Principles"),
-        ("AX", "Tendencies - Market/Product 1"), ("AY", "Tendencies - Market/Product 2"),
-        ("AZ", "Tendencies - Company 1"), ("BA", "Tendencies - Company 2"),
+        ("AM", "Sauerkaraut effect?", "Sauerkraut Effect"),
+        ("AN", "Lollapalooza effect?", "Lollapalooza Effect"),
+        ("AO", "Ideology affected?", "Ideology Affected"),
+        ("AQ", "What is Multidisciplinary Approach for this Company?ID the "
+         "Disciplines that particpate in this business and its impact.",
+         "Multidisciplinary Approach"),
+        ("AV", "First Principles", "First Principles"),
+        ("AX", "Tendencies Market/Product 1", "Tendencies - Market/Product 1"),
+        ("AY", "Tendencies Market/Product 2", "Tendencies - Market/Product 2"),
+        ("AZ", "Tendencies Company 2", "Tendencies - Company 1"),
+        ("BA", "Tendencies Company 2", "Tendencies - Company 2"),
     ]),
     ("The Investment Case", [
-        ("BD", "Why Is This a Good Investment?"), ("BX", "Buffett Tenets"),
-        ("BY", "Stock vs Bond Comparison"), ("CA", "Which Famous Investors Hold This?"),
-        ("BZ", "Chart Analysis"), ("BV", "Investment Recommendation"),
-        ("BS", "Speculation / Investment Type"), ("BQ", "Popular?"),
+        ("BD", "Why is a Good Investment? What is advantage over the others?",
+         "Why Is This a Good Investment?"),
+        ("BX", "Buffet Tenets", "Buffett Tenets"),
+        ("BY", "Stock Vs Bond Comparison", "Stock vs Bond Comparison"),
+        ("CA", "Which famous investor have invested in this stock?",
+         "Which Famous Investors Hold This?"),
+        ("BZ", "Have you done a chart analysis to determine entry and exit?", "Chart Analysis"),
+        ("BV", "Investment Recommendation", "Investment Recommendation"),
+        ("BS", "Speculation/Investment", "Speculation / Investment Type"),
+        ("BQ", "Popular?", "Popular?"),
     ]),
     ("Financial Diligence", [
-        ("BE", "Have You Checked the Taxes?"), ("BJ", "Earning Forecast"),
-        ("BG", "If a Private Business, How Would I Measure It?"),
+        ("BE", "Have you Checked the Taxes? Do they make sense?", "Have You Checked the Taxes?"),
+        ("BJ", "Earning Forecast", "Earning Forecast"),
+        ("BG", "If it were a Private Business How Will I Measure it?",
+         "If a Private Business, How Would I Measure It?"),
     ]),
     ("Management & Context", [
-        ("W", "CEO Time With Company"), ("X", "How Old Is the Business?"),
-        ("Z", "Competitors Analysis 1"), ("AA", "Competitors Analysis 2"),
-        ("BW", "Employees"),
+        ("W", "CEO Time with Company", "CEO Time With Company"),
+        ("X", "How old is the Business?", "How Old Is the Business?"),
+        ("Z", "Competitors Analysis 1", "Competitors Analysis 1"),
+        ("AA", "Competitors Analysis 2", "Competitors Analysis 2"),
+        ("BW", "Empoyees", "Employees"),
     ]),
 ]
+
+
+import re as _cp_re
+
+
+def _cp_normalize_header(text):
+    """Loose match: ignores case, whitespace and punctuation, so re-typing
+    a header with different spacing or a trailing '?' still matches. NOT
+    typo-tolerant on purpose -- a genuine rewording still falls through to
+    the fallback-letter + warning path below rather than guessing."""
+    return _cp_re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+def _cp_header_letter_map(ws_c):
+    """Scan the Company Potential header rows once per build and return
+    {normalized_header_text: [column_letters]} so columns below can be
+    resolved by their actual current header text rather than assuming a
+    fixed letter forever. A header can map to more than one letter (the
+    sheet has at least one genuine duplicate) - callers decide what to do
+    with that via _cp_resolve_column()."""
+    header_map = {}
+    for c in range(1, ws_c.max_column + 1):
+        letter = get_column_letter(c)
+        header_text = None
+        for hr in HEADER_ROWS["Company Potential"]:
+            v = ws_c.cell(row=hr, column=c).value
+            if v not in (None, ""):
+                header_text = str(v).strip()
+        if header_text:
+            header_map.setdefault(_cp_normalize_header(header_text), []).append(letter)
+    return header_map
+
+
+def _cp_resolve_column(header_map, fallback_letter, raw_header_text, field_label, warnings):
+    """Find `raw_header_text` in the CURRENT sheet and return whichever
+    column it's in now (works even if columns were inserted/reordered
+    since raw_header_text was last recorded). Falls back to the
+    last-known fixed letter -- and appends a human-readable warning, so a
+    genuine rename/deletion/duplicate surfaces instead of silently reading
+    the wrong (or now-missing) column."""
+    matches = header_map.get(_cp_normalize_header(raw_header_text), [])
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        warnings.append(
+            f"Company Potential '{field_label}': header text matches {len(matches)} "
+            f"columns ({', '.join(matches)}) - used the last-known column "
+            f"{fallback_letter}. Give one of the duplicate headers a unique name "
+            f"to fix this."
+        )
+        return fallback_letter
+    warnings.append(
+        f"Company Potential '{field_label}': couldn't find its header "
+        f"({raw_header_text!r}) anywhere in the sheet - used the last-known column "
+        f"{fallback_letter} instead. If that header was renamed or the column was "
+        f"deleted, this may now be reading the wrong data - worth checking."
+    )
+    return fallback_letter
 
 
 def _clean_num(v):
@@ -474,7 +698,15 @@ def _clean_num(v):
     return None
 
 
-def build(path):
+def build(path, anthropic_api_key=None):
+    """anthropic_api_key: enables the live Company Potential grammar/wording
+    check (see _cp_correct_batch_via_ai) when set, either passed explicitly
+    or via the ANTHROPIC_API_KEY environment variable. Entirely optional --
+    with no key available (the default for a plain `python3
+    build_compounder_data.py` run, or before it's configured on Railway),
+    Company Potential text is shown exactly as typed, same as every other
+    optional integration in this app (NewsAPI, Wisesheets, etc.)."""
+    anthropic_api_key = (anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "")).strip() or None
     wb_c = openpyxl.load_workbook(path, data_only=False)  # comments
     wb_v = openpyxl.load_workbook(path, data_only=True)   # cached values
 
@@ -725,6 +957,7 @@ def build(path):
     # handful of themed groups ----
     cp_rows = row_for_ticker_by_sheet.get("Company Potential", {})
     ws_cp = wb_v["Company Potential"]
+    ws_cp_c = wb_c["Company Potential"]
 
     def _cp_text(r, col):
         v = ws_cp.cell(row=r, column=column_index_from_string(col)).value
@@ -732,10 +965,36 @@ def build(path):
             return v.strip()
         return None
 
+    # Resolve every configured field to its CURRENT column once per build
+    # (header text -> letter, falling back to the last-known letter with a
+    # warning - see _cp_resolve_column) rather than trusting the fixed
+    # letters blindly. This is what makes the sheet tolerant of Andrew
+    # inserting/reordering columns in Company Potential: as long as a
+    # field's header text is still somewhere in the sheet, its answers keep
+    # showing up under the right label even if it moved.
+    build_warnings = out.setdefault("build_warnings", [])
+    header_map = _cp_header_letter_map(ws_cp_c)
+
+    hml_resolved = [
+        (_cp_resolve_column(header_map, letter, header_text, label, build_warnings), label, polarity)
+        for letter, header_text, label, polarity in COMPANY_POTENTIAL_HML
+    ]
+    yesno_resolved = [
+        (_cp_resolve_column(header_map, letter, header_text, label, build_warnings), label)
+        for letter, header_text, label in COMPANY_POTENTIAL_YESNO
+    ]
+    text_groups_resolved = [
+        (group_title, [
+            (_cp_resolve_column(header_map, letter, header_text, label, build_warnings), label)
+            for letter, header_text, label in cols
+        ])
+        for group_title, cols in COMPANY_POTENTIAL_TEXT_GROUPS
+    ]
+
     hml_ratings = {}
     for tkr, r in cp_rows.items():
         ratings = []
-        for col, label, polarity in COMPANY_POTENTIAL_HML:
+        for col, label, polarity in hml_resolved:
             val = _cp_text(r, col)
             if val:
                 ratings.append({"key": col, "label": label, "value": val, "polarity": polarity})
@@ -746,7 +1005,7 @@ def build(path):
     yesno_checks = {}
     for tkr, r in cp_rows.items():
         checks = []
-        for col, label in COMPANY_POTENTIAL_YESNO:
+        for col, label in yesno_resolved:
             val = _cp_text(r, col)
             if val:
                 checks.append({"key": col, "label": label, "value": val})
@@ -754,26 +1013,39 @@ def build(path):
             yesno_checks[tkr] = checks
     out["sections"]["Company Potential"]["yesno_checks"] = yesno_checks
 
-    cp_corrections = _load_cp_corrections()
+    # Grammar/wording correction (spelling + grammar only, voice/content
+    # untouched - see _cp_correct_batch_via_ai's system prompt) runs here,
+    # ONE batched AI call per ticker covering every free-text answer that's
+    # new or has changed since the last build; anything unchanged reuses
+    # its cached correction for free. See company_potential_corrections_log.txt
+    # for the original one-off pass this cache started from.
+    cp_corrections_cache = _cp_load_corrections_cache()
     text_groups = {}
     for tkr, r in cp_rows.items():
-        groups = []
-        ticker_corrections = cp_corrections.get(tkr, {})
-        for group_title, cols in COMPANY_POTENTIAL_TEXT_GROUPS:
-            items = []
+        raw_by_col = {}
+        for group_title, cols in text_groups_resolved:
             for col, label in cols:
                 val = _cp_text(r, col)
                 if val:
-                    # Andrew's raw text, with spelling/grammar corrected
-                    # (voice/content untouched) where a correction exists -
-                    # see company_potential_corrections_log.txt for a full
-                    # before/after list.
-                    val = ticker_corrections.get(col, val)
-                    items.append({"key": col, "label": label, "text": val})
+                    raw_by_col[col] = {"key": col, "label": label, "text": val}
+        if not raw_by_col:
+            continue
+        corrected_by_col = _cp_apply_corrections(
+            tkr, list(raw_by_col.values()), cp_corrections_cache,
+            anthropic_api_key, build_warnings,
+        )
+        groups = []
+        for group_title, cols in text_groups_resolved:
+            items = []
+            for col, label in cols:
+                if col in raw_by_col:
+                    text = corrected_by_col.get(col, raw_by_col[col]["text"])
+                    items.append({"key": col, "label": label, "text": text})
             if items:
                 groups.append({"title": group_title, "items": items})
         if groups:
             text_groups[tkr] = groups
+    _cp_save_corrections_cache(cp_corrections_cache)
     out["sections"]["Company Potential"]["text_groups"] = text_groups
 
     # ---- Dividends: Andrew's own "Value Created" retained-earnings test,
@@ -794,6 +1066,99 @@ def build(path):
     out["sections"]["Dividends"]["value_created"] = value_created
 
     return out
+
+
+# ---- Merge-not-overwrite on re-upload ----
+#
+# Andrew re-creates his research workbook from scratch every 10-12 months
+# rather than editing one file forever. A fresh/leaner spreadsheet upload
+# through the admin panel would otherwise silently DELETE anything not
+# re-typed into the new file (a ticker he hasn't gotten to re-analysing
+# yet, a Company Potential paragraph he left blank this round, a whole
+# metric for one stock). merge_compounder_data() fixes that: it prefers
+# everything from the freshly-built data, but anywhere that's missing or
+# blank, it falls back to whatever the PREVIOUS compounder_data.json
+# already had, at whatever depth that gap is - a missing ticker, a blank
+# field on an existing ticker, a blank cell inside an existing metric.
+# Only the admin panel's rebuild flow uses this (see app.py) - the plain
+# `python3 build_compounder_data.py` CLI path always writes exactly what
+# it read, unmerged, since that's normally run against the one true
+# ongoing workbook rather than a fresh replacement.
+
+
+def _cp_is_empty(v):
+    if v is None:
+        return True
+    if isinstance(v, str):
+        return not v.strip()
+    if isinstance(v, (list, dict)):
+        return len(v) == 0
+    return False
+
+
+def _cp_list_item_id(item):
+    """A list of dicts can be merged item-by-item only if each item has a
+    stable identity across builds. This app's list-of-dict shapes always
+    use one of these three fields for that (a metric/rating's column
+    'key', a text group's 'title', or a valuation-input's 'label') -
+    whichever is present wins, in that priority order."""
+    if not isinstance(item, dict):
+        return None
+    for id_field in ("key", "title", "label"):
+        if id_field in item:
+            return (id_field, item[id_field])
+    return None
+
+
+def _cp_merge_value(new_v, old_v):
+    """Recursively merge old_v into new_v: prefer new_v at every level,
+    but fall back to old_v wherever new_v is missing/blank, at any depth -
+    dicts merge key by key (recursing into keys present in both), lists of
+    identifiable dicts (see _cp_list_item_id) merge item by item and
+    recurse into matched pairs, anything else just prefers new_v unless
+    it's empty. This one function is what makes merge_compounder_data()
+    work correctly across every differently-shaped section in this file
+    (flat per-ticker dicts, per-column metric lists, the nested Company
+    Potential text groups) without hand-writing a merge per shape."""
+    if isinstance(new_v, dict) and isinstance(old_v, dict):
+        merged = dict(new_v)
+        for k, ov in old_v.items():
+            merged[k] = _cp_merge_value(merged[k], ov) if k in merged else ov
+        return merged
+
+    if isinstance(new_v, list) and isinstance(old_v, list):
+        new_ids = [_cp_list_item_id(it) for it in new_v]
+        if new_ids and all(i is not None for i in new_ids):
+            old_by_id = {
+                _cp_list_item_id(it): it for it in old_v if _cp_list_item_id(it) is not None
+            }
+            merged, seen = [], set()
+            for it, iid in zip(new_v, new_ids):
+                merged.append(_cp_merge_value(it, old_by_id[iid]) if iid in old_by_id else it)
+                seen.add(iid)
+            merged.extend(it for iid, it in old_by_id.items() if iid not in seen)
+            return merged
+        # Items without a stable identity (or an empty new list) can't be
+        # matched up - treat the list as one atomic value instead.
+        return new_v if not _cp_is_empty(new_v) else old_v
+
+    return old_v if (_cp_is_empty(new_v) and not _cp_is_empty(old_v)) else new_v
+
+
+def merge_compounder_data(new_data, old_data):
+    """Merge a freshly-built compounder_data.json over the previous one -
+    see the block comment above for why this exists. `generated_at` and
+    `build_warnings` intentionally come straight from new_data, unmerged:
+    they describe THIS rebuild specifically, not accumulated history, so
+    an empty build_warnings this time should stay empty rather than
+    resurrecting old warnings, and generated_at should always reflect the
+    most recent rebuild."""
+    if not old_data:
+        return new_data
+    merged = dict(new_data)
+    merged["tickers"] = _cp_merge_value(new_data.get("tickers", {}), old_data.get("tickers", {}))
+    merged["sections"] = _cp_merge_value(new_data.get("sections", {}), old_data.get("sections", {}))
+    return merged
 
 
 if __name__ == "__main__":
