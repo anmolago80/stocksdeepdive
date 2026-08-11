@@ -928,54 +928,63 @@ def _render_compounder_admin_panel():
     if not admin_key:
         return
 
-    with st.expander("Admin: refresh Rational Compounder data", expanded=False):
-        entered = st.text_input("Admin key", type="password", key="cp_admin_key")
-        if not entered:
-            return
-        if entered != admin_key:
-            st.error("Incorrect key.")
-            return
+    # A small "≡" icon tucked in the top-right corner, not a full-width
+    # labelled bar -- st.popover() with an icon-only label is Streamlit's
+    # native equivalent of a menu button: closed by default, no text
+    # revealing this exists to an ordinary visitor, opens a small panel on
+    # click. Narrow left column is just spacing to push the icon right.
+    _, corner = st.columns([12, 1])
+    with corner:
+        with st.popover("☰", use_container_width=True):
+            entered = st.text_input("Admin key", type="password", key="cp_admin_key")
+            if not entered:
+                return
+            if entered != admin_key:
+                st.error("Incorrect key.")
+                return
 
-        st.success("Admin key accepted.")
-        uploaded = st.file_uploader(
-            "Upload the updated SMSF research workbook (.xlsx)",
-            type=["xlsx"], key="cp_admin_upload",
-        )
-        if uploaded and st.button(
-            "Rebuild Rational Compounder data", type="primary", key="cp_admin_rebuild",
-        ):
-            with st.spinner("Rebuilding from the uploaded workbook..."):
-                tmp_path = os.path.join(os.path.dirname(__file__), "_admin_upload_tmp.xlsx")
-                out_path = os.path.join(os.path.dirname(__file__), "compounder_data.json")
-                try:
-                    with open(tmp_path, "wb") as f:
-                        f.write(uploaded.getbuffer())
-                    new_data = build_compounder_data.build(tmp_path)
-                    with open(out_path, "w") as f:
-                        json.dump(new_data, f, indent=1)
-                except Exception as exc:
-                    st.error(f"Rebuild failed: {exc}")
-                    return
-                finally:
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
+            st.success("Admin key accepted.")
+            uploaded = st.file_uploader(
+                "Upload the updated SMSF research workbook (.xlsx)",
+                type=["xlsx"], key="cp_admin_upload",
+            )
+            if uploaded and st.button(
+                "Rebuild Rational Compounder data", type="primary", key="cp_admin_rebuild",
+            ):
+                with st.spinner("Rebuilding from the uploaded workbook..."):
+                    tmp_path = os.path.join(os.path.dirname(__file__), "_admin_upload_tmp.xlsx")
+                    out_path = os.path.join(os.path.dirname(__file__), "compounder_data.json")
+                    try:
+                        with open(tmp_path, "wb") as f:
+                            f.write(uploaded.getbuffer())
+                        new_data = build_compounder_data.build(tmp_path)
+                        with open(out_path, "w") as f:
+                            json.dump(new_data, f, indent=1)
+                    except Exception as exc:
+                        st.error(f"Rebuild failed: {exc}")
+                        return
+                    finally:
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
 
-            # Bust the cache so the SAME script run (below, when
-            # page_research() calls _load_compounder_data() again) serves
-            # the freshly-built data immediately -- no restart needed.
-            _load_compounder_data.clear()
-            st.success(
-                f"Rebuilt {len(new_data.get('tickers', {}))} tickers. Now showing below. "
-                "This is live on THIS running instance only -- download the file and commit "
-                "it to the repo to make the update permanent (survives the next redeploy)."
-            )
-            st.download_button(
-                "Download compounder_data.json to commit",
-                data=json.dumps(new_data, indent=1),
-                file_name="compounder_data.json",
-                mime="application/json",
-                key="cp_admin_download",
-            )
+                # Bust the cache so the SAME script run (below, when
+                # page_research() calls _load_compounder_data() again)
+                # serves the freshly-built data immediately -- no restart
+                # needed.
+                _load_compounder_data.clear()
+                st.success(
+                    f"Rebuilt {len(new_data.get('tickers', {}))} tickers. Now showing below. "
+                    "This is live on THIS running instance only -- download the file and "
+                    "commit it to the repo to make the update permanent (survives the next "
+                    "redeploy)."
+                )
+                st.download_button(
+                    "Download compounder_data.json to commit",
+                    data=json.dumps(new_data, indent=1),
+                    file_name="compounder_data.json",
+                    mime="application/json",
+                    key="cp_admin_download",
+                )
 
 
 def page_research():
