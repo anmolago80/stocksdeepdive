@@ -928,14 +928,47 @@ def _render_compounder_admin_panel():
     if not admin_key:
         return
 
-    # A small "≡" icon tucked in the top-right corner, not a full-width
+    # A small "☰" icon tucked in the top-left corner, not a full-width
     # labelled bar -- st.popover() with an icon-only label is Streamlit's
     # native equivalent of a menu button: closed by default, no text
     # revealing this exists to an ordinary visitor, opens a small panel on
-    # click. Narrow left column is just spacing to push the icon right.
-    _, corner = st.columns([12, 1])
+    # click. Narrow right column is just spacing so the icon hugs the left
+    # edge. The scoped CSS below strips the default button border/background
+    # off just this one trigger (targeted via the container's key, so it
+    # can't leak onto any other button on the page) so only the glyph shows.
+    corner, _ = st.columns([1, 20])
     with corner:
-        with st.popover("☰", use_container_width=True):
+        # The style tag renders as an invisible zero-height element here --
+        # it just needs to reach the page's <head>/DOM once, doesn't need to
+        # be nested inside the same container as the button it targets.
+        st.markdown(
+            """
+            <style>
+            div.st-key-cp_admin_trigger_wrap button {
+                border: none !important;
+                background: transparent !important;
+                box-shadow: none !important;
+                padding: 0.1rem 0.3rem !important;
+                min-height: 0 !important;
+            }
+            div.st-key-cp_admin_trigger_wrap button:hover,
+            div.st-key-cp_admin_trigger_wrap button:focus,
+            div.st-key-cp_admin_trigger_wrap button:active {
+                border: none !important;
+                background: transparent !important;
+                box-shadow: none !important;
+                color: inherit !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        # key= on the container adds a "st-key-<key>" CSS class to its own
+        # wrapping div, so the button inside (the popover trigger) is a
+        # genuine DOM descendant the selector above can reach -- combining
+        # both `with`s on one line keeps everything below at its existing
+        # indentation.
+        with st.container(key="cp_admin_trigger_wrap"), st.popover("☰"):
             entered = st.text_input("Admin key", type="password", key="cp_admin_key")
             if not entered:
                 return
