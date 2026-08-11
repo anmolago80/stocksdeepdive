@@ -1051,13 +1051,27 @@ def page_research():
         industry = data["tickers"][t].get("industry")
         return f"{t} - {industry}" if industry else t
 
-    pick_col1, pick_col2 = st.columns(2)
-    with pick_col1:
-        ticker = st.selectbox(
-            "Stock", tickers, format_func=_ticker_label, key="cp_ticker"
-        )
-    with pick_col2:
-        section_label = st.selectbox("Section", section_order, key="cp_section")
+    # Narrow columns sized just enough for these two dropdowns, followed by
+    # a wide empty spacer column -- keeps both boxes compact and bunched on
+    # the left instead of stretching one to each half of the page.
+    st.markdown(
+        """
+        <style>
+        div.st-key-cp_pick_row div[data-testid="stSelectbox"] {
+            max-width: 260px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.container(key="cp_pick_row"):
+        pick_col1, pick_col2, _ = st.columns([1, 1, 3])
+        with pick_col1:
+            ticker = st.selectbox(
+                "Stock", tickers, format_func=_ticker_label, key="cp_ticker"
+            )
+        with pick_col2:
+            section_label = st.selectbox("Section", section_order, key="cp_section")
 
     st.markdown(f"### {ticker} - {section_label}")
 
