@@ -315,7 +315,10 @@ def _render_header(compact):
             unsafe_allow_html=True,
         )
 
-    _col_ratio = [1, 2, 1] if not compact else [1, 3, 1]
+    # Narrowed from [1, 2, 1] (50% of the page) to roughly match how
+    # proportionally narrow Google's own homepage search bar is, rather than
+    # spanning half the browser width.
+    _col_ratio = [3, 4, 3] if not compact else [1, 3, 1]
     _sp1, _mid, _sp2 = st.columns(_col_ratio)
     with _mid:
         with st.form("site_search_form", clear_on_submit=False, border=not compact):
