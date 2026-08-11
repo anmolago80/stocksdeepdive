@@ -554,7 +554,7 @@ COMPANY_POTENTIAL_YESNO = [
     ("Y", "Is there public interest?", "Public interest?"),
     ("AC", "Ok when Inverted?", "OK when inverted?"),
     ("BB", "Great Company on a fair price", "Great company at a fair price?"),
-    ("BF", "Any Shares Buyback?", "Any share buybacks?"),
+    ("BF", "Any Shares Buyback/Shares Dilution?", "Any share buybacks?"),
     ("BH", "True Earnings?", "True earnings?"),
     ("BK", "Are fixed charges (i.e cost of production, bonds, preferred shares etc) "
      "high so it will magnify the earnings when increasing?", "High fixed charges?"),
@@ -665,17 +665,41 @@ def _cp_header_letter_map(ws_c):
     return header_map
 
 
-def _cp_resolve_column(header_map, fallback_letter, raw_header_text, field_label, warnings):
+def _cp_resolve_column(header_map, fallback_letter, raw_header_text, field_label,
+                        warnings, occurrence_index=0):
     """Find `raw_header_text` in the CURRENT sheet and return whichever
     column it's in now (works even if columns were inserted/reordered
-    since raw_header_text was last recorded). Falls back to the
-    last-known fixed letter -- and appends a human-readable warning, so a
-    genuine rename/deletion/duplicate surfaces instead of silently reading
-    the wrong (or now-missing) column."""
+    since raw_header_text was last recorded).
+
+    When the header text is genuinely duplicated (two+ columns share the
+    exact same text -- e.g. "Tendencies Company 2" appearing twice),
+    `occurrence_index` picks the Nth match left-to-right instead of
+    blindly trusting a fixed fallback letter, which goes stale (and can
+    point at a totally unrelated column) the moment columns shift.
+    `occurrence_index` is each field's position among the OTHER
+    same-titled fields in config declaration order, which matches how
+    those duplicate headers are laid out left-to-right in the sheet.
+    Still logs a warning either way, since a rename to make the headers
+    unique is the only way to remove the guesswork entirely.
+
+    Falls back to the last-known fixed letter -- and appends a
+    human-readable warning -- when the header can't be found at all, so a
+    genuine rename/deletion surfaces instead of silently reading the
+    wrong (or now-missing) column."""
     matches = header_map.get(_cp_normalize_header(raw_header_text), [])
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
+        if occurrence_index < len(matches):
+            resolved = matches[occurrence_index]
+            warnings.append(
+                f"Company Potential '{field_label}': header text matches {len(matches)} "
+                f"columns ({', '.join(matches)}) - used column {resolved} (position "
+                f"{occurrence_index + 1} of {len(matches)} duplicates, left to right). "
+                f"Give one of the duplicate headers a unique name to remove the "
+                f"guesswork."
+            )
+            return resolved
         warnings.append(
             f"Company Potential '{field_label}': header text matches {len(matches)} "
             f"columns ({', '.join(matches)}) - used the last-known column "
@@ -975,17 +999,31 @@ def build(path, anthropic_api_key=None):
     build_warnings = out.setdefault("build_warnings", [])
     header_map = _cp_header_letter_map(ws_cp_c)
 
+    # Shared across all three tables (in declaration order) so that if the
+    # same header text is duplicated, each field gets a distinct position
+    # among the duplicates -- see _cp_resolve_column's occurrence_index.
+    _cp_occurrence_counts = {}
+
+    def _cp_next_occurrence(raw_header_text):
+        key = _cp_normalize_header(raw_header_text)
+        idx = _cp_occurrence_counts.get(key, 0)
+        _cp_occurrence_counts[key] = idx + 1
+        return idx
+
     hml_resolved = [
-        (_cp_resolve_column(header_map, letter, header_text, label, build_warnings), label, polarity)
+        (_cp_resolve_column(header_map, letter, header_text, label, build_warnings,
+                             _cp_next_occurrence(header_text)), label, polarity)
         for letter, header_text, label, polarity in COMPANY_POTENTIAL_HML
     ]
     yesno_resolved = [
-        (_cp_resolve_column(header_map, letter, header_text, label, build_warnings), label)
+        (_cp_resolve_column(header_map, letter, header_text, label, build_warnings,
+                             _cp_next_occurrence(header_text)), label)
         for letter, header_text, label in COMPANY_POTENTIAL_YESNO
     ]
     text_groups_resolved = [
         (group_title, [
-            (_cp_resolve_column(header_map, letter, header_text, label, build_warnings), label)
+            (_cp_resolve_column(header_map, letter, header_text, label, build_warnings,
+                                 _cp_next_occurrence(header_text)), label)
             for letter, header_text, label in cols
         ])
         for group_title, cols in COMPANY_POTENTIAL_TEXT_GROUPS
