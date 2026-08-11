@@ -256,6 +256,17 @@ st.markdown(
         background-color: #0f766e !important;
         border-color: #0f766e !important;
     }
+    /* The site search box (st.form("site_search_form")) shouldn't show its
+       own outline/background -- the search input's own light-gray fill is
+       enough visual grouping on its own, forced here since st.form's
+       border=False param alone doesn't fully suppress it in every
+       Streamlit version. */
+    div[data-testid="stForm"] {
+        border: none !important;
+        padding: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -315,10 +326,12 @@ def _render_header(compact):
             unsafe_allow_html=True,
         )
 
-    # Narrowed from [1, 2, 1] (50% of the page) to roughly match how
-    # proportionally narrow Google's own homepage search bar is, rather than
-    # spanning half the browser width.
-    _col_ratio = [3, 4, 3] if not compact else [1, 3, 1]
+    # Narrowed from [1, 2, 1] / [1, 3, 1] (50% / 60% of the page) to roughly
+    # match how proportionally narrow Google's own homepage search bar is,
+    # rather than spanning half-plus the browser width. Same ratio on every
+    # page (compact or not) now, so the box doesn't change width depending
+    # on which page you're on.
+    _col_ratio = [3, 4, 3]
     _sp1, _mid, _sp2 = st.columns(_col_ratio)
     with _mid:
         with st.form("site_search_form", clear_on_submit=False, border=not compact):
@@ -378,8 +391,8 @@ def _render_header(compact):
             st.session_state["cmp_fresh"] = True
             st.switch_page(PG_COMPARISON)
 
-    _hr_margin = "4px 0 10px 0" if compact else "8px 0 20px 0"
-    st.markdown(f"<hr style='margin:{_hr_margin};'>", unsafe_allow_html=True)
+    _sp_margin = "10px" if compact else "20px"
+    st.markdown(f"<div style='margin-bottom:{_sp_margin};'></div>", unsafe_allow_html=True)
 
 def _dd_gauge(value, title, zones, bar_color="#1f2937", height=260):
     """
