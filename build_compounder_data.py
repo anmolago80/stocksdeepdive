@@ -3,11 +3,14 @@ Builds compounder_data.json from the source research workbook.
 
 This can be run either way: as a standalone offline script (see the
 command below), or live from the app's admin-only refresh panel, which
-calls build() directly against an uploaded workbook. Either way, whoever
-triggers it needs to download the resulting compounder_data.json and
-commit/redeploy it for the update to survive the app's next restart
-(Railway's filesystem is ephemeral) - see the admin panel's own docstring
-in app.py for that flow.
+calls build() directly against an uploaded workbook. If a Railway Volume
+is attached to the service (see _cp_data_dir() below), the rebuilt files
+are written straight to it and survive redeploys/restarts on their own --
+no further action needed. Without a volume, Railway's filesystem is
+ephemeral, so whoever triggers a rebuild needs to download the resulting
+compounder_data.json and commit/redeploy it for the update to survive the
+app's next restart - see the admin panel's own docstring in app.py for
+that flow.
 
     python3 build_compounder_data.py [path-to-xlsx]
 
@@ -38,6 +41,39 @@ DEFAULT_PATH = (
     "Shares - Invested and Investigation - Rev 3 - SMSF.xlsx"
 )
 OUT_PATH = "compounder_data.json"
+
+
+def _cp_data_dir():
+    """Directory where the two persisted Rational Compounder files
+    (compounder_data.json, company_potential_corrections.json) actually
+    live at runtime. Prefers a Railway Volume if one is attached to this
+    service -- Railway auto-sets RAILWAY_VOLUME_MOUNT_PATH the moment a
+    volume is mounted, no code-side coordination needed -- so admin-panel
+    rebuilds persist across redeploys/restarts on their own. Falls back to
+    this file's own directory (the git-tracked copies) for local runs, the
+    CLI usage below, or before a volume is attached."""
+    return os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+
+
+def _cp_seed_from_repo_if_missing(filename):
+    """The very first time a volume is attached, it's empty -- copy the
+    git-tracked copy of `filename` (living next to this script) over as a
+    starting point so the site doesn't show blank data (or lose the
+    corrections cache) until the next rebuild. No-op once the volume has
+    its own copy, and a no-op entirely when there's no volume (data dir ==
+    script dir already)."""
+    data_dir = _cp_data_dir()
+    repo_path = os.path.join(os.path.dirname(__file__), filename)
+    volume_path = os.path.join(data_dir, filename)
+    if volume_path == repo_path:
+        return
+    if os.path.exists(volume_path) or not os.path.exists(repo_path):
+        return
+    try:
+        with open(repo_path, "rb") as src, open(volume_path, "wb") as dst:
+            dst.write(src.read())
+    except OSError:
+        pass
 
 # Ticker column per sheet, and which rows currently hold real (non-error)
 # stock data. Rows are 4, 5, 6, ... - extend this list as Andrew finishes
@@ -322,9 +358,7 @@ VALUATION_INPUT_COLS = {
 # original AUB.AX/CSL.AX pass) are grandfathered in as trusted rather than
 # re-corrected once, then get a hash stamped on first use so staleness
 # detection works from then on.
-CP_CORRECTIONS_PATH = os.path.join(
-    os.path.dirname(__file__), "company_potential_corrections.json"
-)
+CP_CORRECTIONS_PATH = os.path.join(_cp_data_dir(), "company_potential_corrections.json")
 
 _CP_CORRECTION_MODEL = "claude-haiku-4-5"
 _CP_CORRECTION_SYSTEM_PROMPT = (
@@ -348,6 +382,7 @@ def _cp_text_hash(text):
 
 
 def _cp_load_corrections_cache():
+    _cp_seed_from_repo_if_missing("company_potential_corrections.json")
     if not os.path.exists(CP_CORRECTIONS_PATH):
         return {}
     with open(CP_CORRECTIONS_PATH) as f:

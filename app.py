@@ -492,7 +492,13 @@ _CP_COLOR_TEXT = {"red": "#b3261e", "amber": "#8a5a00", "green": "#1e7d34", "blu
 
 @st.cache_data
 def _load_compounder_data():
-    _path = os.path.join(os.path.dirname(__file__), "compounder_data.json")
+    # _cp_data_dir() resolves to the attached Railway Volume when one
+    # exists (so a prior admin rebuild's output is still here after a
+    # redeploy), otherwise this file's own directory. _cp_seed_from_repo_
+    # if_missing() copies the git-tracked copy over on a volume's first
+    # ever use, so a freshly-attached empty volume doesn't show as blank.
+    build_compounder_data._cp_seed_from_repo_if_missing("compounder_data.json")
+    _path = os.path.join(build_compounder_data._cp_data_dir(), "compounder_data.json")
     if not os.path.exists(_path):
         return None
     with open(_path) as _f:
@@ -952,14 +958,16 @@ def _render_compounder_admin_panel():
     ever see or use it. If ADMIN_REFRESH_KEY isn't set, this section stays
     collapsed and inert -- nothing is exposed by default.
 
-    Important: rebuilding writes compounder_data.json to THIS process's
-    local disk, so the refreshed data shows up on this page immediately
-    (great for previewing the result before committing to anything) -- but
-    Railway's filesystem is ephemeral, so that write does NOT survive the
-    next redeploy/restart on its own. The download button below lets you
-    grab the freshly-built file and commit it to the repo, exactly the
-    workflow build_compounder_data.py's own docstring already documents --
-    that commit is what makes an update permanent.
+    Important: rebuilding writes compounder_data.json to
+    build_compounder_data._cp_data_dir() -- the attached Railway Volume if
+    one exists, in which case that write already IS permanent and survives
+    the next redeploy/restart with no further action needed. Without a
+    volume attached, it falls back to this process's local disk, which
+    shows the refreshed data on this page immediately (great for
+    previewing) but does NOT survive a redeploy on its own -- the download
+    buttons below let you grab the freshly-built files and commit them to
+    the repo, exactly the workflow build_compounder_data.py's own
+    docstring documents.
     """
     admin_key = os.environ.get(_ADMIN_REFRESH_KEY_ENV, "").strip()
     if not admin_key:
@@ -1022,8 +1030,12 @@ def _render_compounder_admin_panel():
                 "Rebuild Rational Compounder data", type="primary", key="cp_admin_rebuild",
             ):
                 with st.spinner("Rebuilding from the uploaded workbook..."):
+                    data_dir = build_compounder_data._cp_data_dir()
+                    using_volume = os.path.abspath(data_dir) != os.path.abspath(
+                        os.path.dirname(__file__)
+                    )
                     tmp_path = os.path.join(os.path.dirname(__file__), "_admin_upload_tmp.xlsx")
-                    out_path = os.path.join(os.path.dirname(__file__), "compounder_data.json")
+                    out_path = os.path.join(data_dir, "compounder_data.json")
                     corrections_path = build_compounder_data.CP_CORRECTIONS_PATH
                     try:
                         with open(tmp_path, "wb") as f:
@@ -1069,16 +1081,26 @@ def _render_compounder_admin_panel():
                     f" ({carried_over} of those carried over from the previous data, not in "
                     f"this upload)" if carried_over > 0 else ""
                 )
-                st.success(
-                    f"Rebuilt: {len(new_data.get('tickers', {}))} tickers now in the data"
-                    f"{carried_over_note}. Now showing below. This is live on THIS running "
-                    "instance only -- download BOTH files below and commit them to the repo "
-                    "to make the update permanent (survives the next redeploy)."
-                )
+                if using_volume:
+                    st.success(
+                        f"Rebuilt: {len(new_data.get('tickers', {}))} tickers now in the data"
+                        f"{carried_over_note}. Now showing below, and saved to the attached "
+                        "Volume -- this is permanent and will still be here after the next "
+                        "redeploy. Nothing further to do."
+                    )
+                else:
+                    st.success(
+                        f"Rebuilt: {len(new_data.get('tickers', {}))} tickers now in the data"
+                        f"{carried_over_note}. Now showing below. This is live on THIS running "
+                        "instance only -- download BOTH files below and commit them to the repo "
+                        "to make the update permanent (survives the next redeploy), or attach a "
+                        "Railway Volume to this service so future rebuilds persist on their own."
+                    )
                 for w in fresh_data.get("build_warnings", []):
                     st.warning(w)
+                download_label_suffix = "for your own records" if using_volume else "to commit"
                 st.download_button(
-                    "Download compounder_data.json to commit",
+                    f"Download compounder_data.json {download_label_suffix}",
                     data=json.dumps(new_data, indent=1),
                     file_name="compounder_data.json",
                     mime="application/json",
@@ -1088,17 +1110,20 @@ def _render_compounder_admin_panel():
                     with open(corrections_path) as f:
                         corrections_text = f.read()
                     st.download_button(
-                        "Download company_potential_corrections.json to commit",
+                        f"Download company_potential_corrections.json {download_label_suffix}",
                         data=corrections_text,
                         file_name="company_potential_corrections.json",
                         mime="application/json",
                         key="cp_admin_download_corrections",
                         help=(
                             "Only needed if the grammar check ran (ANTHROPIC_API_KEY set) - "
-                            "this is its cache of already-checked text. Skipping this commit "
-                            "doesn't lose any data, it just means already-correct text gets "
-                            "re-checked (a small extra API cost) on the next rebuild instead "
-                            "of being remembered for free."
+                            "this is its cache of already-checked text. Skipping this "
+                            + ("download" if using_volume else "commit")
+                            + " doesn't lose any data on its own"
+                            + (" (it's already saved to the Volume)" if using_volume else "")
+                            + "; it just means already-correct text gets re-checked (a small "
+                            "extra API cost) on the next rebuild instead of being remembered "
+                            "for free."
                         ),
                     )
 
