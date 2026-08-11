@@ -1,0 +1,112 @@
+=== AUB.AX ===
+[AG] Market Reality
+  "cash-generative businesses" -> "cash-generative business"
+  "open to investigate other markets" -> "open to investigating other markets"
+
+[AT] Circle of Competence
+  "Technology part my be a bit outside." -> "Technology part may be a bit outside."
+
+[AW] Big Wave to Ride
+  "Japanerse" -> "Japanese"
+
+[AB] Inversion Angle
+  "trackrecord" -> "track record"
+  "Revised AML mediun" -> "Revised AML medium"
+
+[AI] No Brainer Question
+  "How AUB can maintain it’s business growth" -> "How AUB can maintain its business growth"
+  "increased share price due purchase" -> "increased share price due to purchase"
+
+[AM] Sauerkraut Effect
+  "Sauerkaraut effect" -> "Sauerkraut effect"
+
+[AO] Ideology Affected
+  "probably limites as it benefits" -> "probably limited as it benefits"
+
+[BA] Tendencies - Company 2
+  "24)Lallapalooza tendency" -> "24)Lollapalooza tendency"
+
+[CA] Which Famous Investors Hold This?
+  "11+ Including Warren Buffet" -> "11+ Including Warren Buffett"
+
+[BG] If a Private Business, How Would I Measure It?
+  "high revenuw per employee" -> "high revenue per employee"
+
+[W] CEO Time With Company
+  "7Years" -> "7 Years"
+
+[X] How Old Is the Business?
+  "12Years" -> "12 Years"
+
+[AA] Competitors Analysis 2
+  "Stedfast appear to have and edge" -> "Steadfast appear to have an edge"
+  "maintennace and upgrade of netwrok is as expensive of  employees" -> "maintenance and upgrade of network is as expensive as employees"
+  "sells more policies per year due to networ however AUB focus on client and value" -> "sells more policies per year due to network however AUB focuses on client and value"
+  "and steadfast focus more on organic growth" -> "and Steadfast focuses more on organic growth"
+  "AUB offers a more diversified range of policies opposued to steadfast which could translate in higher potential of growth in short term" -> "AUB offers a more diversified range of policies opposed to Steadfast which could translate into higher potential of growth in short term"
+  "AUB and steadfast sell same insurer priced products.Steadfast is larger" -> "AUB and Steadfast sell same insurer priced products. Steadfast is larger"
+  "Succes depends on client satisfactiion rather than price" -> "Success depends on client satisfaction rather than price"
+  "Steadfast doesn't owns brokers but enforces stabdardisation of methods" -> "Steadfast doesn't own brokers but enforces standardisation of methods"
+  "it does not enforce standadisation of operation" -> "it does not enforce standardisation of operation"
+  "due to freedom of brokers, hiowever, this leads to a less effcient model" -> "due to freedom of brokers, however, this leads to a less efficient model"
+  "Steadfast offers revenuw growth is more than 50% than AUB" -> "Steadfast offers revenue growth is more than 50% than AUB"
+  "Howden will be a string better competitor to AUB" -> "Howden will be a strong better competitor to AUB"
+  "not consitancy and speed.It also could have" -> "not consistency and speed. It also could have"
+  "AUB opportunity in UK lies on high flexibility" -> "AUB opportunity in UK lies in high flexibility"
+  "it will be shortlived as competitiors move into the gap" -> "it will be short-lived as competitors move into the gap"
+  "gives it an edge over the othert which are more rigid" -> "gives it an edge over the others which are more rigid"
+  "instead of being ansorbed by big brands" -> "instead of being absorbed by big brands"
+  "AUB has already been succesful in Australia with this model" -> "AUB has already been successful in Australia with this model"
+
+
+=== CSL.AX ===
+[AT] Circle of Competence
+  "It’s outside my circle of competence however I do undertand the business model and the overral operations" -> "It’s outside my circle of competence however I do understand the business model and the overall operations"
+
+[AB] Inversion Angle
+  "impairements" -> "impairments"
+  "without real correlation to the actual impact on the CSL overral financials" -> "without real correlation to the actual impact on the CSL overall financials"
+  "Preliminary calculation show that not even total write off of Vifor will affect ACSL to a point of no return" -> "Preliminary calculations show that not even total write off of Vifor will affect CSL to a point of no return"
+  "Regulatory rightening is likely to affect CSL" -> "Regulatory tightening is likely to affect CSL"
+  "happeningover" -> "happening over"
+  "There is a 80% chance that it will suceed the upcoming regulatory tightening that the company will be facing on the cominh 10y" -> "There is an 80% chance that it will succeed the upcoming regulatory tightening that the company will be facing on the coming 10y"
+  "CSL exposure to supply chan third party failure" -> "CSL exposure to supply chain third party failure"
+
+[AI] No Brainer Question
+  "this is criticalproduct for society" -> "this is critical product for society"
+  "is that more likely than I think?It could happen" -> "is that more likely than I think? It could happen"
+  "I'm atracted because of the discounted values" -> "I'm attracted because of the discounted values"
+  "yes but still will diverisfy my portfolio" -> "yes but still will diversify my portfolio"
+
+[AJ] 1 Foot Fence, Big Reward the Other Side
+  "The company operates in a oligopoly." -> "The company operates in an oligopoly."
+  "Market is likely to hace overreacted" -> "Market is likely to have overreacted"
+  "Financial woes won;t change the importance of this product" -> "Financial woes won't change the importance of this product"
+  "Management is taking the right steps towards restoring the erros made in the past" -> "Management is taking the right steps towards restoring the errors made in the past"
+  "PRICR TO FORWARD EARNING IS AROUND 11" -> "PRICE TO FORWARD EARNING IS AROUND 11"
+
+[AN] Lollapalooza Effect
+  "Deprival (lost premium status, Social proof (price momentum)" -> "Deprival (lost premium status), Social proof (price momentum)"
+
+[AO] Ideology Affected
+  "this leaves it on a good position to face these any exposure to ideology" -> "this leaves it on a good position to face any exposure to ideology"
+
+[BE] Have You Checked the Taxes?
+  "CSL pay taxes on multiple countries" -> "CSL pays taxes in multiple countries"
+
+[BJ] Earning Forecast
+  "This includes baseline of industru growth, restructuring effect and future expansion prioducts" -> "This includes baseline of industry growth, restructuring effect and future expansion products"
+
+[AA] Competitors Analysis 2
+  "CSL operates less centres than Grifols however it porduces almost the same amount of plasma" -> "CSL operates less centres than Grifols however it produces almost the same amount of plasma"
+  "Yield per litre of plasma of both of them is smilar for the three of them." -> "Yield per litre of plasma of both of them is similar for the three of them."
+  "CSL net profit, ROIC and debt is better than the other three." -> "CSL net profit, ROIC and debt are better than the other three."
+  "CSL is not the strongest in innovation and research, GSK and Sanofi is the strongest." -> "CSL is not the strongest in innovation and research, GSK and Sanofi are the strongest."
+  "that can keep them competetive in the market" -> "that can keep them competitive in the market"
+  "It's unlikely that CSL will lose its market share if innovation its kept at the current pace." -> "It's unlikely that CSL will lose its market share if innovation is kept at the current pace."
+  "CSL has a huge opportunity to gropw into 60b market that it's unexplored for them so far." -> "CSL has a huge opportunity to grow into 60b market that is unexplored for them so far."
+  "they are in JV for dialisys." -> "they are in JV for dialysis."
+
+[BW] Employees
+  "MORE PHARMA PARTICPATION." -> "MORE PHARMA PARTICIPATION."
+
