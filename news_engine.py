@@ -1,5 +1,6 @@
 import os
 
+import streamlit as st
 import yfinance as yf
 from newsapi import NewsApiClient
 
@@ -26,6 +27,7 @@ def _get_api_key():
 API_KEY = _get_api_key()
 
 
+@st.cache_data(ttl=10800, show_spinner=False)
 def get_news_score(keyword, api_key=None):
     """
     Article count from NewsAPI for a free-text keyword search - `keyword`
@@ -43,6 +45,15 @@ def get_news_score(keyword, api_key=None):
     if the request fails for any reason (rate limit, network issue, bad
     response) - this is a "nice to have" signal, so a failure here should
     never break the scan.
+
+    Cached at a longer 3-hour TTL (vs the 30-minute TTL used for the
+    Yahoo Finance feeds elsewhere): NewsAPI's free tier caps out at a small
+    number of requests per day, shared across EVERY visitor to this site,
+    so on a high-traffic day this is the tightest real quota in the whole
+    app. Caching by (keyword, api_key) means repeat views of the same
+    ticker cost nothing until the cache expires, stretching that daily
+    quota across far more visitors instead of burning it in the first few
+    minutes after a traffic spike.
     """
 
     key = api_key or API_KEY
@@ -68,6 +79,7 @@ def get_news_score(keyword, api_key=None):
         return 0
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_yahoo_news_score(ticker):
     """
     Article count from Yahoo Finance via yfinance (already a dependency of
@@ -83,6 +95,11 @@ def get_yahoo_news_score(ticker):
     key that most users of this app won't have set up). Returns 0 on any
     error (network issue, no news available, or Yahoo occasionally changing
     its response schema out from under yfinance).
+
+    Cached the same way as the other per-ticker Yahoo Finance lookups
+    (30-minute TTL, keyed by ticker) - previously this refired on every
+    single Deep Dive/Comparison view regardless of how recently the same
+    ticker had just been looked up.
     """
 
     try:

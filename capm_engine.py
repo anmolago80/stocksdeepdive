@@ -32,6 +32,7 @@ Both outputs are clamped to a defensible band so a missing/bad beta or a
 bond-yield fetch glitch can't produce a nonsense valuation.
 """
 
+import streamlit as st
 import yfinance as yf
 
 EQUITY_RISK_PREMIUM = 0.05          # long-run market ERP assumption
@@ -65,10 +66,23 @@ RISK_FREE_FALLBACK = {"USD": 0.042, "AUD": 0.043}
 DEFAULT_RISK_FREE_FALLBACK = 0.04
 
 
+@st.cache_data(ttl=10800, show_spinner=False)
 def get_risk_free_rate(currency):
     """Live 10-year government bond yield for a currency, for use as the
     CAPM risk-free rate. Returns (rate, source) where source is "live" or
-    "default" (the fallback constant above)."""
+    "default" (the fallback constant above).
+
+    Cached (keyed only on `currency` - there are only ever a couple of
+    these in practice, USD/AUD) at a longer 3-hour TTL than the per-ticker
+    feeds elsewhere in this app: a 10-year bond yield doesn't meaningfully
+    move within a few hours, and EVERY stock's discount rate calls this, so
+    without caching, a burst of concurrent visitors (e.g. after a big
+    traffic spike) would otherwise refetch the SAME bond yield from Yahoo
+    Finance once per ticker per visitor. Caching collapses that down to
+    effectively one live fetch per currency per 3 hours, no matter how many
+    people are browsing Deep Dive/Comparison at once - and Streamlit's
+    cache_data locks per cache key, so concurrent first-time requests for
+    the same currency wait on one fetch rather than all firing at once."""
     ccy = (currency or "").upper()
     ticker = _RISK_FREE_TICKERS.get(ccy)
     if ticker:
@@ -118,6 +132,7 @@ def resolve_perpetual_rate(currency, discount_rate=None):
     return round(rate, 4)
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_growth_estimates_5y(ticker):
     """
     Analyst consensus 'Next 5 Years (per annum)' EPS growth estimate for the
@@ -125,6 +140,11 @@ def get_growth_estimates_5y(ticker):
     growth_estimates table. Returns a decimal rate, or None if Yahoo has no
     analyst coverage for this name or the table isn't shaped as expected -
     degrades silently, same as every other optional feed in this app.
+
+    Cached the same way as the other per-ticker yfinance lookups in app.py
+    (30-minute TTL, keyed by ticker) - previously uncached, so every single
+    Deep Dive/Comparison view re-fetched this from Yahoo Finance even for a
+    ticker someone else had just looked at seconds earlier.
     """
     try:
         df = yf.Ticker(ticker).growth_estimates

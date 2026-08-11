@@ -33,6 +33,8 @@ signals anymore either, unlike the old Reddit-vs-NewsAPI split.
 
 from datetime import datetime, timedelta, timezone
 
+import streamlit as st
+
 _client = None
 
 
@@ -44,9 +46,17 @@ def _get_client():
     return _client
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_google_trend_score(keyword):
     """Google Trends interest-over-time value (0-100 scale) for `keyword`,
-    most recent point in the last 3 months. Returns 0 on any failure."""
+    most recent point in the last 3 months. Returns 0 on any failure.
+
+    Cached (30-minute TTL, keyed by keyword) - trendspy sits on an
+    unofficial Google endpoint that's already known to be fragile under
+    aggressive request patterns (see module docstring), so on top of
+    avoiding redundant refetches for a popular ticker, this also directly
+    reduces how often this app hits that endpoint under concurrent traffic.
+    """
     try:
         tr = _get_client()
         data = tr.interest_over_time([keyword])
@@ -57,6 +67,7 @@ def get_google_trend_score(keyword):
         return 0
 
 
+@st.cache_data(ttl=10800, show_spinner=False)
 def get_news_trend_score(keyword, api_key=None):
     """Count of NewsAPI articles mentioning `keyword`, strictly in the last 7
     days - the crowd-attention signal that used to come from Reddit mentions
@@ -64,7 +75,11 @@ def get_news_trend_score(keyword, api_key=None):
     app.py's "NewsAPI Key" box (same key News Score uses); returns 0 if
     none is available. Returns 0 on any failure (rate limit, network issue,
     no results) - this is a nice-to-have signal, never something that
-    should break a scan."""
+    should break a scan.
+
+    Cached at the same longer 3-hour TTL as news_engine.get_news_score(),
+    for the same reason: this also spends NewsAPI's free-tier daily quota,
+    which is shared across every visitor to this site."""
     if not api_key:
         return 0
     try:

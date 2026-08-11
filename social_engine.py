@@ -28,6 +28,7 @@ and cached.
 """
 
 import requests
+import streamlit as st
 
 STOCKTWITS_URL = "https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json"
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StockScannerBot/1.0)"}
@@ -98,6 +99,7 @@ def fetch_x(ticker):
     )
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_social_score(ticker, provider="stocktwits"):
     """
     Returns (social_score, detail_dict).
@@ -108,6 +110,12 @@ def get_social_score(ticker, provider="stocktwits"):
     extra). This feeds the Discovery (attention) score in the app.
 
     provider: "stocktwits" (default, free) or "x" (needs a paid key).
+
+    Cached (30-minute TTL, keyed by ticker+provider) - this module's
+    docstring has referenced caching here for a while, but the decorator
+    was actually never applied until now, so every Deep Dive/Comparison
+    view was hitting StockTwits' ~200/hour unauthenticated limit fresh
+    every time. This closes that gap.
     """
     if provider == "x":
         try:
