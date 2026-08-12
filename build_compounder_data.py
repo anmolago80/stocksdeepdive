@@ -1019,10 +1019,19 @@ def build(path, anthropic_api_key=None):
     ws_cp = wb_v["Company Potential"]
     ws_cp_c = wb_c["Company Potential"]
 
+    # Excel error strings as openpyxl (data_only) returns them - the ONLY
+    # things this guard should skip. The old check ('"VALUE" not in v')
+    # silently discarded any answer CONTAINING the word VALUE anywhere -
+    # e.g. AUB's Challenges cell, which has an all-caps note ending in
+    # "...LIMIT VALUE IS 8.5" and therefore never imported.
+    _XL_ERRORS = ("#VALUE!", "#REF!", "#DIV/0!", "#N/A", "#NAME?", "#NULL!", "#NUM!")
+
     def _cp_text(r, col):
         v = ws_cp.cell(row=r, column=column_index_from_string(col)).value
-        if isinstance(v, str) and v.strip() and "VALUE" not in v:
-            return v.strip()
+        if isinstance(v, str):
+            t = v.strip()
+            if t and t not in _XL_ERRORS:
+                return t
         return None
 
     # Resolve every configured field to its CURRENT column once per build
