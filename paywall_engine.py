@@ -346,7 +346,7 @@ def render_account_bar():
     # empty spacer column in between pushes the two groups apart to the
     # full width of the page rather than bunching everything together.
     if not is_logged_in():
-        _c1, _c2, _sp = st.columns([1.3, 1.3, 9.4])
+        _c1, _c2, _sp = st.columns([1.0, 1.0, 10.0], gap="small")
         with _c1:
             st.button("Sign In", key="account_bar_signin", on_click=st.login)
         with _c2:
@@ -361,7 +361,7 @@ def render_account_bar():
     subscribed = is_subscribed(email)
 
     if subscribed:
-        _c1, _sp, _c2 = st.columns([1.8, 8.2, 1.0])
+        _c1, _sp, _c2 = st.columns([1.4, 9.6, 1.0], gap="small")
         with _c1:
             st.markdown(
                 f'<div class="pw-account-name">{html.escape(name or "")}</div>',
@@ -371,7 +371,7 @@ def render_account_bar():
             st.button("Sign out", key="account_bar_signout", on_click=st.logout)
         return
 
-    _c1, _c2, _sp, _c3 = st.columns([1.8, 1.3, 6.9, 1.0])
+    _c1, _c2, _sp, _c3 = st.columns([1.2, 1.0, 8.8, 1.0], gap="small")
     with _c1:
         st.markdown(
             f'<div class="pw-account-name">{html.escape(name or "")}</div>',
