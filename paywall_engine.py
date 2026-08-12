@@ -234,13 +234,15 @@ def create_checkout_url(email):
 
 
 # -----------------------------------
-# SHARED STYLING - a professional dark "Subscribe" pill instead of
-# Streamlit's default red primary-button color, used by both the account
-# bar below and the inline gate further down. Targets elements by a
-# substring of their Streamlit-generated key class (st-key-<key>) rather
-# than an exact class name, since render_gate()'s keys vary per surface
-# (key_prefix differs on Deep Dive/Comparison/Research) while still all
-# starting with "pw_subscribe_"/"pw_login_"/"pw_logout_".
+# SHARED STYLING - reuses the site's own teal (#0d9488 / hover #0f766e)
+# button theme from app.py's site-wide button CSS, instead of inventing a
+# separate dark/navy color for the paywall - so Subscribe/Sign In/Sign out
+# and the locked-content box all look like they belong to this site rather
+# than a bolted-on module. Targets elements by a substring of their
+# Streamlit-generated key class (st-key-<key>) rather than an exact class
+# name, since render_gate()'s keys vary per surface (key_prefix differs on
+# Deep Dive/Comparison/Research) while still all starting with
+# "pw_subscribe_"/"pw_login_"/"pw_logout_"/"pw_gate_box_".
 # -----------------------------------
 
 _PILL_BUTTON_CSS = """
@@ -249,9 +251,9 @@ _PILL_BUTTON_CSS = """
 [class*="st-key-account_bar_subscribe"] a,
 [class*="st-key-pw_subscribe_"] button,
 [class*="st-key-pw_subscribe_"] a {
-    background-color: #0f172a !important;
+    background-color: #0d9488 !important;
     color: #ffffff !important;
-    border: 1px solid #0f172a !important;
+    border: 1.5px solid #0d9488 !important;
     border-radius: 999px !important;
     padding: 6px 20px !important;
     font-weight: 600 !important;
@@ -262,34 +264,52 @@ _PILL_BUTTON_CSS = """
 [class*="st-key-account_bar_subscribe"] a:hover,
 [class*="st-key-pw_subscribe_"] button:hover,
 [class*="st-key-pw_subscribe_"] a:hover {
-    background-color: #1e293b !important;
-    border-color: #1e293b !important;
+    background-color: #0f766e !important;
+    border-color: #0f766e !important;
     color: #ffffff !important;
 }
 [class*="st-key-account_bar_signin"] button,
 [class*="st-key-pw_login_"] button {
-    background-color: transparent !important;
-    color: #0f172a !important;
-    border: 1px solid #cbd5e1 !important;
+    background-color: #ffffff !important;
+    color: #0d9488 !important;
+    border: 1.5px solid #0d9488 !important;
     border-radius: 999px !important;
     padding: 6px 18px !important;
-    font-weight: 500 !important;
+    font-weight: 600 !important;
     font-size: 14px !important;
     box-shadow: none !important;
+}
+[class*="st-key-account_bar_signin"] button:hover,
+[class*="st-key-pw_login_"] button:hover {
+    background-color: #0d9488 !important;
+    color: #ffffff !important;
+    border-color: #0d9488 !important;
 }
 [class*="st-key-account_bar_signout"] button,
 [class*="st-key-pw_logout_"] button {
     background-color: transparent !important;
-    color: #64748b !important;
-    border: none !important;
+    color: #0d9488 !important;
+    border: 1px solid transparent !important;
+    border-radius: 999px !important;
     font-size: 13px !important;
-    padding: 4px 6px !important;
+    padding: 4px 12px !important;
     box-shadow: none !important;
+}
+[class*="st-key-account_bar_signout"] button:hover,
+[class*="st-key-pw_logout_"] button:hover {
+    background-color: #0d9488 !important;
+    color: #ffffff !important;
+    border-color: #0d9488 !important;
+}
+[class*="st-key-pw_gate_box_"] {
+    border-color: #99f6e4 !important;
+    background-color: #f0fdfa !important;
+    border-radius: 12px !important;
 }
 .pw-account-name {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: flex-start;
     height: 38px;
     font-size: 14px;
     font-weight: 600;
@@ -320,8 +340,13 @@ def render_account_bar():
     _ensure_auth_secrets_written()
     st.markdown(_PILL_BUTTON_CSS, unsafe_allow_html=True)
 
+    # Layout: identity + Subscribe hug the left edge (first thing a visitor
+    # sees), Sign out hugs the right edge on its own (a low-priority action
+    # that doesn't need to compete for attention next to Subscribe) - an
+    # empty spacer column in between pushes the two groups apart to the
+    # full width of the page rather than bunching everything together.
     if not is_logged_in():
-        _sp, _c1, _c2 = st.columns([6, 1.3, 1.3])
+        _c1, _c2, _sp = st.columns([1.3, 1.3, 9.4])
         with _c1:
             st.button("Sign In", key="account_bar_signin", on_click=st.login)
         with _c2:
@@ -336,7 +361,7 @@ def render_account_bar():
     subscribed = is_subscribed(email)
 
     if subscribed:
-        _sp, _c1, _c2 = st.columns([6, 2.6, 1])
+        _c1, _sp, _c2 = st.columns([1.8, 8.2, 1.0])
         with _c1:
             st.markdown(
                 f'<div class="pw-account-name">{html.escape(name or "")}</div>',
@@ -346,7 +371,7 @@ def render_account_bar():
             st.button("Sign out", key="account_bar_signout", on_click=st.logout)
         return
 
-    _sp, _c1, _c2, _c3 = st.columns([5, 2.4, 1.3, 1])
+    _c1, _c2, _sp, _c3 = st.columns([1.8, 1.3, 6.9, 1.0])
     with _c1:
         st.markdown(
             f'<div class="pw-account-name">{html.escape(name or "")}</div>',
@@ -390,7 +415,7 @@ def render_gate(feature_label, teaser=None, key_prefix=""):
     _ensure_auth_secrets_written()
     st.markdown(_PILL_BUTTON_CSS, unsafe_allow_html=True)
 
-    box = st.container(border=True)
+    box = st.container(border=True, key=f"pw_gate_box_{key_prefix}")
 
     if not _auth_configured() or not _stripe_configured():
         with box:
