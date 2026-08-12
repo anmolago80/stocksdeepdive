@@ -310,6 +310,10 @@ _start_background_scheduler()
 st.markdown(
     """
     <style>
+    .stButton > button, .stFormSubmitButton > button,
+    div[data-testid="stPopover"] > button {
+        white-space: nowrap !important;
+    }
     .stButton > button, .stFormSubmitButton > button {
         border-radius: 10px !important;
         border: 1.5px solid #2dd4bf !important;

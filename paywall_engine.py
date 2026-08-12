@@ -355,9 +355,9 @@ def _render_name_and_signout(name, extra_widget=None):
         original two-group spacing.
     """
     if extra_widget:
-        _c1, _sp, _c2, _c3 = st.columns([1.4, 8.6, 1.6, 1.0], gap="small")
+        _c1, _sp, _c2, _c3 = st.columns([1.4, 6.9, 2.6, 1.1], gap="small")
     else:
-        _c1, _sp, _c3 = st.columns([1.4, 9.6, 1.0], gap="small")
+        _c1, _sp, _c3 = st.columns([1.4, 9.5, 1.1], gap="small")
         _c2 = None
     with _c1:
         st.markdown(
@@ -390,7 +390,7 @@ def render_account_bar(extra_widget=None):
         # (if any) still needs to render somewhere - same standalone
         # right-aligned row it used to have on its own.
         if extra_widget:
-            _sp, _c1 = st.columns([10.3, 1.7], gap="small")
+            _sp, _c1 = st.columns([9.4, 2.6], gap="small")
             with _c1:
                 extra_widget()
         return
@@ -406,7 +406,7 @@ def render_account_bar(extra_widget=None):
     if not is_logged_in():
         if not PAYWALL_ENABLED:
             if extra_widget:
-                _c1, _sp, _c2 = st.columns([1.0, 9.5, 1.5], gap="small")
+                _c1, _sp, _c2 = st.columns([1.0, 8.4, 2.6], gap="small")
                 with _c2:
                     extra_widget()
             else:
@@ -416,7 +416,7 @@ def render_account_bar(extra_widget=None):
             return
 
         if extra_widget:
-            _c1, _c2, _sp, _c3 = st.columns([1.0, 1.0, 8.5, 1.5], gap="small")
+            _c1, _c2, _sp, _c3 = st.columns([1.0, 1.0, 7.4, 2.6], gap="small")
             with _c3:
                 extra_widget()
         else:
@@ -442,7 +442,7 @@ def render_account_bar(extra_widget=None):
         return
 
     if extra_widget:
-        _c1, _c2, _sp, _c4, _c3 = st.columns([1.2, 1.0, 6.8, 1.6, 1.0], gap="small")
+        _c1, _c2, _sp, _c4, _c3 = st.columns([1.2, 1.0, 5.1, 2.6, 1.1], gap="small")
     else:
         _c1, _c2, _sp, _c3 = st.columns([1.2, 1.0, 8.8, 1.0], gap="small")
         _c4 = None
