@@ -296,6 +296,7 @@ st.markdown(
 
 
 def _render_header(compact):
+    paywall_engine.render_account_bar()
     st.markdown(
         f"""
         <style>

@@ -45,6 +45,7 @@ subscriber a "please try again" state instead - the safer direction for a
 paywall specifically.
 """
 
+import html
 import os
 
 import streamlit as st
@@ -155,6 +156,23 @@ def current_user_email():
         return None
 
 
+def current_user_name():
+    """
+    Display name for the account bar - falls back to email if Google didn't
+    return a name (or auth isn't configured), so callers never have to
+    special-case a blank value themselves.
+    """
+    if not is_logged_in():
+        return None
+    try:
+        name = getattr(st.user, "name", None)
+        if name and name.strip():
+            return name.strip()
+    except Exception:
+        pass
+    return current_user_email()
+
+
 # -----------------------------------
 # STRIPE SUBSCRIPTION CHECK
 # -----------------------------------
@@ -216,6 +234,138 @@ def create_checkout_url(email):
 
 
 # -----------------------------------
+# SHARED STYLING - a professional dark "Subscribe" pill instead of
+# Streamlit's default red primary-button color, used by both the account
+# bar below and the inline gate further down. Targets elements by a
+# substring of their Streamlit-generated key class (st-key-<key>) rather
+# than an exact class name, since render_gate()'s keys vary per surface
+# (key_prefix differs on Deep Dive/Comparison/Research) while still all
+# starting with "pw_subscribe_"/"pw_login_"/"pw_logout_".
+# -----------------------------------
+
+_PILL_BUTTON_CSS = """
+<style>
+[class*="st-key-account_bar_subscribe"] button,
+[class*="st-key-account_bar_subscribe"] a,
+[class*="st-key-pw_subscribe_"] button,
+[class*="st-key-pw_subscribe_"] a {
+    background-color: #0f172a !important;
+    color: #ffffff !important;
+    border: 1px solid #0f172a !important;
+    border-radius: 999px !important;
+    padding: 6px 20px !important;
+    font-weight: 600 !important;
+    font-size: 14px !important;
+    box-shadow: none !important;
+}
+[class*="st-key-account_bar_subscribe"] button:hover,
+[class*="st-key-account_bar_subscribe"] a:hover,
+[class*="st-key-pw_subscribe_"] button:hover,
+[class*="st-key-pw_subscribe_"] a:hover {
+    background-color: #1e293b !important;
+    border-color: #1e293b !important;
+    color: #ffffff !important;
+}
+[class*="st-key-account_bar_signin"] button,
+[class*="st-key-pw_login_"] button {
+    background-color: transparent !important;
+    color: #0f172a !important;
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 999px !important;
+    padding: 6px 18px !important;
+    font-weight: 500 !important;
+    font-size: 14px !important;
+    box-shadow: none !important;
+}
+[class*="st-key-account_bar_signout"] button,
+[class*="st-key-pw_logout_"] button {
+    background-color: transparent !important;
+    color: #64748b !important;
+    border: none !important;
+    font-size: 13px !important;
+    padding: 4px 6px !important;
+    box-shadow: none !important;
+}
+.pw-account-name {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    height: 38px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #0f172a;
+    font-family: 'Segoe UI', sans-serif;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+</style>
+"""
+
+
+# -----------------------------------
+# ACCOUNT BAR - slim strip shown above the site header on every page
+# (called from app.py's _render_header()). Separate from render_gate:
+# this is always-visible identity/sign-in chrome, while render_gate blocks
+# one specific section's content. Renders nothing at all when the paywall
+# is off or Google sign-in isn't configured yet, so pages look exactly as
+# they did before this existed until Andrew flips PAYWALL_ENABLED and
+# finishes setup - same dormant-by-default rule as the rest of this module.
+# -----------------------------------
+
+def render_account_bar():
+    if not PAYWALL_ENABLED or not _auth_configured():
+        return
+
+    _ensure_auth_secrets_written()
+    st.markdown(_PILL_BUTTON_CSS, unsafe_allow_html=True)
+
+    if not is_logged_in():
+        _sp, _c1, _c2 = st.columns([6, 1.3, 1.3])
+        with _c1:
+            st.button("Sign In", key="account_bar_signin", on_click=st.login)
+        with _c2:
+            # Not logged in yet, so we don't have an email for Stripe -
+            # route through the same sign-in first; once they're back,
+            # this becomes the real Subscribe button below.
+            st.button("Subscribe", key="account_bar_subscribe", on_click=st.login)
+        return
+
+    email = current_user_email()
+    name = current_user_name()
+    subscribed = is_subscribed(email)
+
+    if subscribed:
+        _sp, _c1, _c2 = st.columns([6, 2.6, 1])
+        with _c1:
+            st.markdown(
+                f'<div class="pw-account-name">{html.escape(name or "")}</div>',
+                unsafe_allow_html=True,
+            )
+        with _c2:
+            st.button("Sign out", key="account_bar_signout", on_click=st.logout)
+        return
+
+    _sp, _c1, _c2, _c3 = st.columns([5, 2.4, 1.3, 1])
+    with _c1:
+        st.markdown(
+            f'<div class="pw-account-name">{html.escape(name or "")}</div>',
+            unsafe_allow_html=True,
+        )
+    with _c2:
+        if _stripe_configured():
+            checkout_url = create_checkout_url(email)
+            if checkout_url:
+                st.link_button("Subscribe", checkout_url, key="account_bar_subscribe")
+            else:
+                st.button("Subscribe", key="account_bar_subscribe_err", disabled=True)
+        else:
+            st.button("Subscribe", key="account_bar_subscribe_soon", disabled=True)
+    with _c3:
+        st.button("Sign out", key="account_bar_signout", on_click=st.logout)
+
+
+# -----------------------------------
 # THE GATE - the one function gated pages/sections call.
 # -----------------------------------
 
@@ -238,6 +388,7 @@ def render_gate(feature_label, teaser=None, key_prefix=""):
         return True
 
     _ensure_auth_secrets_written()
+    st.markdown(_PILL_BUTTON_CSS, unsafe_allow_html=True)
 
     box = st.container(border=True)
 
@@ -272,7 +423,12 @@ def render_gate(feature_label, teaser=None, key_prefix=""):
             st.caption(teaser)
         checkout_url = create_checkout_url(email)
         if checkout_url:
-            st.link_button("Subscribe to continue browsing", checkout_url, type="primary")
+            st.link_button(
+                "Subscribe to continue browsing",
+                checkout_url,
+                type="primary",
+                key=f"pw_subscribe_{key_prefix}",
+            )
         else:
             st.warning(
                 "Couldn't reach the subscription system just now - please try "
