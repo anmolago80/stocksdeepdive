@@ -342,7 +342,8 @@ WACC_ROIC_COLS = {
 VALUATION_INPUT_COLS = {
     "pe_forward": [("Forecast EPS (5y)", "AA", "cur"), ("Actual P/E", "AP", "x")],
     "pe_trailing": [("EPS (Trailing/Diluted)", "AQ", "cur"), ("Average P/E", "AO", "x")],
-    "dcf": [("Perpetual Rate", "BO", "pct"), ("Base Case Growth", "BP", "pct")],
+    "dcf": [("Discount Rate", "BK", "pct"), ("Perpetual Rate", "BO", "pct"),
+            ("Base Case Growth", "BP", "pct")],
     "equity_10y": [("Equity Growth", "CR", "pct"), ("Discount Rate (this calc)", "CT", "pct")],
 }
 
