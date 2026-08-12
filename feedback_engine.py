@@ -4,77 +4,75 @@ feedback_engine.py
 Optional "Tell us what you think" button shown top-right on the three main
 service pages (Deep Dive, Comparison, Rational Compounder Analysis).
 Visitors type a short message - plus, if they aren't signed in, an optional
-email for a reply - and it's emailed straight to the site's own inbox via
-SMTP. Completely separate from paywall_engine.py: this works regardless of
-whether Google sign-in or the subscription paywall are configured at all.
+email for a reply - and it's emailed via Resend (a transactional email API,
+https://resend.com). Completely separate from paywall_engine.py: this works
+regardless of whether Google sign-in or the subscription paywall are
+configured at all.
+
+WHY RESEND INSTEAD OF A REAL MAILBOX: Resend only needs domain ownership
+proved once via a couple of DNS records (SPF/DKIM) - it doesn't need an
+actual inbox to send FROM. The intended pairing is Cloudflare Email Routing
+(free) handling the RECEIVING side - forwarding anything sent to
+rationalcompounder@stocksdeepdive.com to an inbox Andrew already checks -
+while Resend handles the SENDING side from the app. Together that gives a
+fully working rationalcompounder@stocksdeepdive.com address without paying
+for or managing a full hosted mailbox.
 
 DORMANT BY DEFAULT, same rule as paywall_engine.py: until the Railway
 variables below are set, render_feedback_button() renders nothing at all -
 no half-built button, no broken form for visitors to hit.
 
 REQUIRED RAILWAY VARIABLES (all optional until Andrew is ready):
-  FEEDBACK_SMTP_EMAIL          the mailbox's own address, e.g.
-                                rationalcompounder@stocksdeepdive.com - used
-                                both to log in to send mail AND, unless
-                                FEEDBACK_TO_EMAIL is set separately, as
-                                where feedback lands. This has to be a real
-                                hosted mailbox (Google Workspace, Zoho Mail,
-                                Microsoft 365, etc.) with SMTP access, not
-                                just free forwarding - forwarding-only
-                                addresses can receive mail but can't send.
-  FEEDBACK_SMTP_APP_PASSWORD   an app password for that mailbox (not the
-                                normal login password - Google Workspace,
-                                Zoho, and Microsoft 365 all have an
-                                equivalent "app password" setting once
-                                2FA/MFA is turned on for the mailbox).
-  FEEDBACK_SMTP_HOST            defaults to smtp.gmail.com (works for both
-                                personal Gmail and Google Workspace mail).
-                                Override if the mailbox is hosted elsewhere
-                                (e.g. smtp.zoho.com, smtp.office365.com).
-  FEEDBACK_SMTP_PORT            defaults to 465 (SSL).
-  FEEDBACK_TO_EMAIL             optional - only needed if feedback should
-                                land somewhere OTHER than
-                                FEEDBACK_SMTP_EMAIL itself.
+  RESEND_API_KEY        API key from the Resend dashboard (Resend ->
+                         API Keys -> Create API Key).
+  FEEDBACK_FROM_EMAIL    the "From" address Resend sends as, e.g.
+                         "StocksDeepDive <rationalcompounder@stocksdeepdive.com>"
+                         or a plain address. Must be on a domain that's
+                         been verified in Resend (Resend -> Domains ->
+                         add stocksdeepdive.com -> add the SPF/DKIM
+                         records it shows you to your DNS).
+  FEEDBACK_TO_EMAIL      where feedback should land, e.g.
+                         rationalcompounder@stocksdeepdive.com (if Cloudflare
+                         Email Routing is forwarding that to a real inbox)
+                         or any inbox directly.
 
-FAILS SAFE: if sending fails for any reason (bad credentials, SMTP outage,
-not configured yet), the visitor sees a plain "couldn't send, try again"
-message - never a stack trace - and their typed message stays in the box so
-nothing is lost.
+FAILS SAFE: if sending fails for any reason (bad API key, domain not
+verified yet, Resend outage, not configured yet), the visitor sees a plain
+"couldn't send, try again" message - never a stack trace - and their typed
+message stays in the box so nothing is lost.
 """
 
 import os
-import smtplib
 from datetime import datetime, timezone
-from email.mime.text import MIMEText
 
+import requests
 import streamlit as st
 
+_RESEND_API_URL = "https://api.resend.com/emails"
 
-def _smtp_env():
+
+def _resend_env():
     return {
-        "email": os.environ.get("FEEDBACK_SMTP_EMAIL", "").strip(),
-        "app_password": os.environ.get("FEEDBACK_SMTP_APP_PASSWORD", "").strip(),
-        "host": os.environ.get("FEEDBACK_SMTP_HOST", "").strip() or "smtp.gmail.com",
-        "port": int((os.environ.get("FEEDBACK_SMTP_PORT", "").strip() or "465")),
+        "api_key": os.environ.get("RESEND_API_KEY", "").strip(),
+        "from_email": os.environ.get("FEEDBACK_FROM_EMAIL", "").strip(),
         "to_email": os.environ.get("FEEDBACK_TO_EMAIL", "").strip(),
     }
 
 
-def _smtp_configured():
-    env = _smtp_env()
-    return bool(env["email"] and env["app_password"])
+def _resend_configured():
+    env = _resend_env()
+    return bool(env["api_key"] and env["from_email"] and env["to_email"])
 
 
 def send_feedback(page_label, message, reply_to=None):
     """
-    Emails one feedback message via SMTP. Returns True on success, False on
-    any failure - never raises, so callers show a generic retry message
-    rather than a technical error.
+    Emails one feedback message via the Resend API. Returns True on
+    success, False on any failure - never raises, so callers show a
+    generic retry message rather than a technical error.
     """
-    if not message or not message.strip() or not _smtp_configured():
+    if not message or not message.strip() or not _resend_configured():
         return False
-    env = _smtp_env()
-    to_email = env["to_email"] or env["email"]
+    env = _resend_env()
     try:
         body_lines = [
             f"Page: {page_label}",
@@ -83,17 +81,25 @@ def send_feedback(page_label, message, reply_to=None):
             "",
             message.strip(),
         ]
-        msg = MIMEText("\n".join(body_lines))
-        msg["Subject"] = f"StocksDeepDive feedback - {page_label}"
-        msg["From"] = env["email"]
-        msg["To"] = to_email
+        payload = {
+            "from": env["from_email"],
+            "to": [env["to_email"]],
+            "subject": f"StocksDeepDive feedback - {page_label}",
+            "text": "\n".join(body_lines),
+        }
         if reply_to:
-            msg["Reply-To"] = reply_to
+            payload["reply_to"] = reply_to
 
-        with smtplib.SMTP_SSL(env["host"], env["port"], timeout=10) as server:
-            server.login(env["email"], env["app_password"])
-            server.sendmail(env["email"], [to_email], msg.as_string())
-        return True
+        resp = requests.post(
+            _RESEND_API_URL,
+            headers={
+                "Authorization": f"Bearer {env['api_key']}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=10,
+        )
+        return resp.status_code in (200, 201)
     except Exception:
         return False
 
@@ -101,9 +107,9 @@ def send_feedback(page_label, message, reply_to=None):
 def render_feedback_button(page_label, key_prefix, user_email=None):
     """
     Renders a right-aligned "Tell us what you think" button that expands
-    into a small feedback form. Renders nothing at all if SMTP isn't
+    into a small feedback form. Renders nothing at all if Resend isn't
     configured yet (see module docstring) - stays fully invisible until
-    Andrew adds the mailbox credentials to Railway.
+    Andrew adds the credentials to Railway.
 
     page_label: shown in the email subject/body so it's clear which service
         the feedback is about (e.g. "Deep Dive").
@@ -113,7 +119,7 @@ def render_feedback_button(page_label, key_prefix, user_email=None):
         doesn't require asking who sent it. Works independently of
         whether the subscription paywall itself is turned on.
     """
-    if not _smtp_configured():
+    if not _resend_configured():
         return
 
     st.markdown(
