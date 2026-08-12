@@ -1032,9 +1032,7 @@ def _cp_clean_comment(text):
             chunk = chunk[idx + len("Comment:"):] if idx != -1 else ""
         if chunk.strip():
             parts.append(chunk.strip())
-    # \$ stops a pair of dollar amounts in a comment from triggering
-    # markdown's LaTeX math mode in st.caption.
-    return "\n\n".join(parts).replace("$", "\\$")
+    return "\n\n".join(parts)
 
 
 def _cp_format(value, fmt):
@@ -1438,13 +1436,26 @@ def _cp_render_hml_ratings(ratings):
         st.markdown("".join(html_parts[half:]), unsafe_allow_html=True)
 
 
+def _cp_note(text, size="14px"):
+    """Render workbook free text as escaped plain HTML - markdown is never
+    parsed, so a stray $, ~, lone-dash line (setext heading!), #, or list
+    marker in the author's notes can't restyle the page. Newlines are
+    preserved as line breaks, matching how the text reads in Excel."""
+    body = _md_safe(text).replace("\n", "<br>")
+    st.markdown(
+        f"<div style='color:#8aa0b8;font-size:{size};line-height:1.65;"
+        f"margin:2px 0 10px;'>{body}</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def _md_safe(text):
     """Workbook-sourced free text made safe for st.markdown HTML blocks:
     HTML-escaped (a stray < or & can't break the pill markup) and with $
     converted to its HTML entity - two $ signs in markdown otherwise
     trigger LaTeX math rendering, which mangles everything between them
     (seen with 'A$750 million' in a CSL buyback answer)."""
-    return html.escape(str(text)).replace("$", "&#36;")
+    return html.escape(str(text)).replace("$", "&#36;").replace("~", "&#126;")
 
 
 def _cp_render_yesno_checks(checks):
@@ -1464,9 +1475,7 @@ def _cp_render_text_groups(groups):
         with st.expander(g["title"], expanded=False):
             for item in g["items"]:
                 st.markdown(f"**{_md_safe(item['label'])}**")
-                # st.caption is a plain-markdown context (no HTML pills),
-                # so only the $-math trigger needs neutralising here.
-                st.caption(str(item["text"]).replace("$", "\\$"))
+                _cp_note(item["text"])
 
 
 _ADMIN_REFRESH_KEY_ENV = "ADMIN_REFRESH_KEY"
@@ -1893,7 +1902,7 @@ def page_research():
                         unsafe_allow_html=True,
                     )
                 with st.expander("What this measures", expanded=False):
-                    st.caption(_cp_clean_comment(m["comment"]))
+                    _cp_note(_cp_clean_comment(m["comment"]), size="12.5px")
 
     if plain:
         st.markdown("##### Other metrics")
@@ -1903,7 +1912,7 @@ def page_research():
             with cols[i % 4]:
                 st.metric(m["label"], _cp_format(value, m["format"]))
                 with st.expander("What this measures", expanded=False):
-                    st.caption(_cp_clean_comment(m["comment"]))
+                    _cp_note(_cp_clean_comment(m["comment"]), size="12.5px")
 
     if not colored and not plain:
         st.warning(f"No data yet for {ticker} in {section_label}.")
