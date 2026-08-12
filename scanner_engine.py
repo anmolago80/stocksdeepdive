@@ -25,10 +25,13 @@ ambiguous whether a scan is running on live or fallback data.
 """
 
 import io
+import time
+from collections import defaultdict
 
 import pandas as pd
 import requests
 import streamlit as st
+import yfinance as yf
 
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StocksDeepDiveBot/1.0; +https://stocksdeepdive.com)"}
 
@@ -379,3 +382,208 @@ def resolve_tickers(country, universe, sector):
 
     tickers = sorted(pool_df["Ticker"].dropna().unique().tolist())
     return tickers, source
+
+
+# ---------------------------------------------------------------------
+# SECTOR HEAT - decorates the Sector dropdown's own option labels (e.g.
+# "\U0001F7E2 Technology - Hot (+14.3% 12m)") with each sector's trailing
+# 12-month performance, exactly like the original desktop app's Sector
+# picker. Ported as-is from that app's sector_heat_engine.py - this is
+# ONLY used to label the dropdown options; there is no separate detail
+# table/expander on this site (that was deliberately dropped).
+# ---------------------------------------------------------------------
+
+_HEAT_EMOJI = {"HOT": "\U0001F7E2", "MEDIUM": "\U0001F7E1", "COLD": "\U0001F534"}
+
+# Per-stock 12-month return is clipped to this band before weighting, so a
+# split/data artifact (e.g. a consolidation printing +900%) can't distort a
+# sector's figure even for a large name that size-weighting alone wouldn't
+# suppress.
+_HEAT_CLIP_LO, _HEAT_CLIP_HI = -95.0, 300.0
+
+# Downloads are chunked to this many tickers per yf.download call, run one
+# chunk at a time rather than one big batch - large concurrent yfinance
+# bursts have been known to get silently killed by security software on
+# some machines, which looks like an unexplained crash. This whole
+# computation is cached for a day, so a little extra time paid once is a
+# fine trade for not risking that.
+_HEAT_CHUNK_SIZE = 15
+
+
+def _heat_download_batch(tickers):
+    """One yf.download call for a small batch of tickers - defensive, so a
+    bad/delisted ticker yields ret=None rather than raising."""
+    out = {t: {"ret": None, "weight": 0.0} for t in tickers}
+
+    try:
+        data = yf.download(
+            list(tickers), period="1y", progress=False,
+            group_by="ticker", threads=False, auto_adjust=True,
+        )
+    except Exception:
+        return out
+
+    if data is None or len(data) == 0:
+        return out
+
+    single = len(tickers) == 1
+
+    for t in tickers:
+        try:
+            if single:
+                close = data["Close"]
+                vol = data["Volume"] if "Volume" in getattr(data, "columns", []) else None
+            else:
+                sub = data[t]
+                close = sub["Close"]
+                vol = sub["Volume"] if "Volume" in sub.columns else None
+
+            c = pd.to_numeric(close, errors="coerce")
+            cc = c.dropna()
+            if len(cc) < 2:
+                continue
+
+            first = float(cc.iloc[0])
+            last = float(cc.iloc[-1])
+            if first <= 0:
+                continue
+
+            ret = (last - first) / first * 100.0
+            ret = max(_HEAT_CLIP_LO, min(ret, _HEAT_CLIP_HI))
+
+            # Size/liquidity weight = average daily dollar volume over the
+            # year - a market-cap stand-in that costs nothing extra, since
+            # the same price history already carries Volume.
+            weight = 0.0
+            if vol is not None:
+                v = pd.to_numeric(vol, errors="coerce")
+                dv = (c * v).dropna()
+                if len(dv):
+                    m = float(dv.mean())
+                    if m > 0:
+                        weight = m
+
+            out[t] = {"ret": ret, "weight": weight}
+        except Exception:
+            out[t] = {"ret": None, "weight": 0.0}
+
+    return out
+
+
+def _heat_download_ticker_data(tickers):
+    out = {t: {"ret": None, "weight": 0.0} for t in tickers}
+    if not tickers:
+        return out
+
+    tickers = list(tickers)
+    for i in range(0, len(tickers), _HEAT_CHUNK_SIZE):
+        chunk = tickers[i:i + _HEAT_CHUNK_SIZE]
+        try:
+            out.update(_heat_download_batch(chunk))
+        except Exception:
+            pass
+        if i + _HEAT_CHUNK_SIZE < len(tickers):
+            time.sleep(0.3)
+
+    return out
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def compute_sector_heat(ticker_sector_pairs, max_per_sector=25):
+    """
+    ticker_sector_pairs: a hashable tuple of (ticker, sector) pairs (so the
+    Streamlit cache can key on it - the exact universe/sector set). Returns
+    {sector: {"return": float, "bucket": "HOT|MEDIUM|COLD", "emoji": str,
+    "n": int}} - "return" is the dollar-volume-weighted average of a sample
+    of each sector's constituents' (clipped) 12-month returns, so a single
+    small speculative multi-bagger can't drag a whole sector's number up.
+
+    With 3+ sectors, sectors are ranked and split into thirds (top third
+    HOT, bottom third COLD, middle MEDIUM) - a relative "hot vs the rest of
+    this universe" read. With only 1-2 sectors there's nothing to rank
+    against, so it falls back to an absolute cut (>=+8% HOT, <=0% COLD).
+    """
+    pairs = list(ticker_sector_pairs)
+    if not pairs:
+        return {}
+
+    by_sector = defaultdict(list)
+    for ticker, sector in pairs:
+        sector = str(sector).strip()
+        if sector and sector.lower() not in ("none", "nan", ""):
+            by_sector[sector].append(str(ticker))
+
+    if not by_sector:
+        return {}
+
+    sample = {}
+    all_tickers = set()
+    for sector, tickers in by_sector.items():
+        chosen = sorted(set(tickers))[:max_per_sector]
+        sample[sector] = chosen
+        all_tickers.update(chosen)
+
+    tdata = _heat_download_ticker_data(sorted(all_tickers))
+
+    sector_avg = {}
+    sector_n = {}
+    for sector, tickers in sample.items():
+        rets, wts = [], []
+        for t in tickers:
+            d = tdata.get(t)
+            if d and d["ret"] is not None:
+                rets.append(d["ret"])
+                wts.append(d["weight"])
+        if not rets:
+            continue
+
+        total_w = sum(wts)
+        if total_w > 0:
+            weighted = sum(r * w for r, w in zip(rets, wts)) / total_w
+        else:
+            weighted = sum(rets) / len(rets)
+
+        sector_avg[sector] = weighted
+        sector_n[sector] = len(rets)
+
+    if not sector_avg:
+        return {}
+
+    ranked = sorted(sector_avg.items(), key=lambda kv: kv[1])
+    n = len(ranked)
+
+    heat = {}
+    for i, (sector, avg) in enumerate(ranked):
+        if n >= 3:
+            third = n / 3.0
+            if i < third:
+                bucket = "COLD"
+            elif i < 2 * third:
+                bucket = "MEDIUM"
+            else:
+                bucket = "HOT"
+        else:
+            if avg >= 8:
+                bucket = "HOT"
+            elif avg <= 0:
+                bucket = "COLD"
+            else:
+                bucket = "MEDIUM"
+
+        heat[sector] = {
+            "return": round(avg, 1),
+            "bucket": bucket,
+            "emoji": _HEAT_EMOJI[bucket],
+            "n": sector_n[sector],
+        }
+
+    return heat
+
+
+def label_for(sector, heat):
+    """Sector dropdown option label - plain name if no heat data for it
+    (e.g. 'All', or a sector too small to have been sampled)."""
+    if not sector or sector == "All" or sector not in heat:
+        return sector
+    h = heat[sector]
+    return f"{h['emoji']} {sector} - {h['bucket'].title()} ({h['return']:+.1f}% 12m)"

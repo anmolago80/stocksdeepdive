@@ -5,6 +5,7 @@ import time
 import json
 import os
 import concurrent.futures
+import contextlib
 from datetime import datetime, timezone
 
 from trends_engine import get_trend_score
@@ -1774,7 +1775,22 @@ def page_scanner():
     if st.session_state.get("scanner_sector") not in _sectors:
         st.session_state["scanner_sector"] = "All"
 
-    sector = st.selectbox("Sector (optional)", _sectors, key="scanner_sector")
+    # Sector heat decorates each dropdown OPTION's label (e.g. "\U0001F7E2
+    # Technology - Hot (+14.3% 12m)") - it never changes the underlying
+    # selected value (still the plain sector name), and there's no separate
+    # detail table/expander for it on this site, unlike the original app.
+    # Cached a day per exact universe/sector set, so this is only slow the
+    # first time a given universe's sector list is shown.
+    _heat_pairs = ()
+    if _pool_df is not None and not _pool_df.empty and "Sector" in _pool_df.columns:
+        _heat_pairs = tuple(zip(_pool_df["Ticker"], _pool_df["Sector"]))
+    with (st.spinner("Reading sector heat...") if _heat_pairs else contextlib.nullcontext()):
+        _sector_heat = scanner_engine.compute_sector_heat(_heat_pairs) if _heat_pairs else {}
+
+    sector = st.selectbox(
+        "Sector (optional)", _sectors, key="scanner_sector",
+        format_func=lambda s: scanner_engine.label_for(s, _sector_heat),
+    )
 
     st.caption(f"Universe source: {_pool_source}")
 
