@@ -874,7 +874,7 @@ def _render_header(compact, page_label=None):
         # equal width, together spanning the same width as the search box
         # above them - rather than Rational Compounder Analysis alone
         # spanning the full width with Stock Scanner elsewhere on the page.
-        _nav_col1, _nav_col2 = st.columns(2, gap="small")
+        _nav_col1, _nav_col2, _nav_col3 = st.columns(3, gap="small")
         with _nav_col1:
             if st.button(
                 "Rational Compounder Analysis",
@@ -882,6 +882,12 @@ def _render_header(compact, page_label=None):
             ):
                 st.switch_page(PG_RESEARCH)
         with _nav_col2:
+            if st.button(
+                "Side-by-side Comparison",
+                use_container_width=True, key="nav_comparison",
+            ):
+                st.switch_page(PG_COMPARISON)
+        with _nav_col3:
             if st.button(
                 "Stock Scanner",
                 use_container_width=True, key="nav_scanner",
