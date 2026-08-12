@@ -270,6 +270,13 @@ st.markdown(
         background: transparent !important;
         box-shadow: none !important;
     }
+    /* Streamlit's default block-container top padding (several rem) leaves
+       a large empty gap above the account bar/header on every page. Same
+       override site-wide (compact or not) so every page sits consistently
+       close to the top of the window instead of just one view. */
+    div[data-testid="stAppViewContainer"] .block-container {
+        padding-top: 1.5rem !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -300,13 +307,16 @@ def _render_header(compact, page_label=None):
     # page_label is only passed on the three main service pages (Deep Dive,
     # Comparison, Rational Compounder Analysis) - Home doesn't get a
     # feedback button since there's no service content there to comment on.
-    if page_label:
-        feedback_engine.render_feedback_button(
+    # Passed into render_account_bar as extra_widget so it renders in the
+    # same row as Sign out instead of on its own row above the account bar.
+    feedback_widget = None
+    if page_label and feedback_engine.is_configured():
+        feedback_widget = lambda: feedback_engine.render_feedback_widget(
             page_label,
             key_prefix=page_label,
             user_email=paywall_engine.current_user_email(),
         )
-    paywall_engine.render_account_bar()
+    paywall_engine.render_account_bar(extra_widget=feedback_widget)
     st.markdown(
         f"""
         <style>

@@ -119,12 +119,47 @@ def send_feedback(page_label, message, reply_to=None):
         return False
 
 
-def render_feedback_button(page_label, key_prefix, user_email=None):
+def is_configured():
+    """Public check so callers (e.g. app.py deciding whether to reserve a
+    spot for this widget in another row) can tell whether the button will
+    render anything at all, without reaching into a private function."""
+    return _mailgun_configured()
+
+
+_FEEDBACK_BUTTON_CSS = """
+<style>
+[class*="st-key-fb_popover_"] button {
+    background-color: #ffffff !important;
+    color: #0d9488 !important;
+    border: 1.5px solid #0d9488 !important;
+    border-radius: 999px !important;
+    padding: 4px 16px !important;
+    font-weight: 600 !important;
+    font-size: 13px !important;
+    box-shadow: none !important;
+    width: fit-content !important;
+    min-width: 0 !important;
+    white-space: nowrap !important;
+}
+[class*="st-key-fb_popover_"] button p {
+    white-space: nowrap !important;
+}
+[class*="st-key-fb_popover_"] button:hover {
+    background-color: #0d9488 !important;
+    color: #ffffff !important;
+}
+</style>
+"""
+
+
+def render_feedback_widget(page_label, key_prefix, user_email=None):
     """
-    Renders a right-aligned "Tell us what you think" button that expands
-    into a small feedback form. Renders nothing at all if Mailgun isn't
-    configured yet (see module docstring) - stays fully invisible until
-    Andrew adds the Mailgun variables to Railway.
+    Renders just the "Tell us what you think" popover button + form -
+    no row/columns of its own, so a caller (e.g. paywall_engine's account
+    bar) can place it inside an existing row next to other controls.
+    Renders nothing at all if Mailgun isn't configured yet (see module
+    docstring) - stays fully invisible until Andrew adds the Mailgun
+    variables to Railway.
 
     page_label: shown in the email subject/body so it's clear which service
         the feedback is about (e.g. "Deep Dive").
@@ -137,33 +172,7 @@ def render_feedback_button(page_label, key_prefix, user_email=None):
     if not _mailgun_configured():
         return
 
-    st.markdown(
-        """
-        <style>
-        [class*="st-key-fb_popover_"] button {
-            background-color: #ffffff !important;
-            color: #0d9488 !important;
-            border: 1.5px solid #0d9488 !important;
-            border-radius: 999px !important;
-            padding: 4px 16px !important;
-            font-weight: 600 !important;
-            font-size: 13px !important;
-            box-shadow: none !important;
-            width: fit-content !important;
-            min-width: 0 !important;
-            white-space: nowrap !important;
-        }
-        [class*="st-key-fb_popover_"] button p {
-            white-space: nowrap !important;
-        }
-        [class*="st-key-fb_popover_"] button:hover {
-            background-color: #0d9488 !important;
-            color: #ffffff !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown(_FEEDBACK_BUTTON_CSS, unsafe_allow_html=True)
 
     msg_key = f"fb_msg_{key_prefix}"
     email_key = f"fb_email_{key_prefix}"
@@ -180,33 +189,46 @@ def render_feedback_button(page_label, key_prefix, user_email=None):
         st.session_state[msg_key] = ""
         st.toast("Thanks - feedback sent!", icon="✅")
 
+    with st.popover(
+        "\U0001F4AC Tell us what you think",
+        key=f"fb_popover_{key_prefix}",
+    ):
+        st.caption(f"Feedback on {page_label} - goes straight to our inbox.")
+        st.text_area(
+            "Your feedback",
+            key=msg_key,
+            label_visibility="collapsed",
+            placeholder="What's working, what's confusing, what would you change?",
+            height=100,
+        )
+        if not user_email:
+            st.text_input(
+                "Your email (optional, if you'd like a reply)",
+                key=email_key,
+                placeholder="you@example.com",
+            )
+        if st.button("Send", key=f"fb_send_{key_prefix}", type="primary"):
+            _text = st.session_state.get(msg_key, "")
+            _reply_to = user_email or (st.session_state.get(email_key, "") or "").strip() or None
+            if not _text.strip():
+                st.warning("Type a message first.")
+            elif send_feedback(page_label, _text, reply_to=_reply_to):
+                st.session_state[sent_flag_key] = True
+                st.rerun()
+            else:
+                st.error("Couldn't send just now - please try again in a moment.")
+
+
+def render_feedback_button(page_label, key_prefix, user_email=None):
+    """
+    Standalone version of render_feedback_widget() that creates its own
+    right-aligned row - kept for any caller that isn't embedding this
+    inside another row (the account bar in paywall_engine.py embeds
+    render_feedback_widget() directly instead, via render_account_bar's
+    extra_widget param).
+    """
+    if not _mailgun_configured():
+        return
     _sp, _c1 = st.columns([10.3, 1.7], gap="small")
     with _c1:
-        with st.popover(
-            "\U0001F4AC Tell us what you think",
-            key=f"fb_popover_{key_prefix}",
-        ):
-            st.caption(f"Feedback on {page_label} - goes straight to our inbox.")
-            st.text_area(
-                "Your feedback",
-                key=msg_key,
-                label_visibility="collapsed",
-                placeholder="What's working, what's confusing, what would you change?",
-                height=100,
-            )
-            if not user_email:
-                st.text_input(
-                    "Your email (optional, if you'd like a reply)",
-                    key=email_key,
-                    placeholder="you@example.com",
-                )
-            if st.button("Send", key=f"fb_send_{key_prefix}", type="primary"):
-                _text = st.session_state.get(msg_key, "")
-                _reply_to = user_email or (st.session_state.get(email_key, "") or "").strip() or None
-                if not _text.strip():
-                    st.warning("Type a message first.")
-                elif send_feedback(page_label, _text, reply_to=_reply_to):
-                    st.session_state[sent_flag_key] = True
-                    st.rerun()
-                else:
-                    st.error("Couldn't send just now - please try again in a moment.")
+        render_feedback_widget(page_label, key_prefix, user_email=user_email)

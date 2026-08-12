@@ -340,24 +340,38 @@ _PILL_BUTTON_CSS = """
 # finishes setup - same dormant-by-default rule as the rest of this module.
 # -----------------------------------
 
-def _render_name_and_signout(name):
+def _render_name_and_signout(name, extra_widget=None):
     """
     Shared layout for "signed in, nothing else to show but Sign out" -
     used both when the paywall is off entirely and when a subscriber
     already has an active subscription, so those two cases render
     identically instead of drifting apart over time.
+
+    extra_widget: optional zero-arg callable (e.g. the page's feedback
+        button) rendered in its own column immediately to the left of
+        Sign out, so it sits "beside" it in the same row instead of on a
+        separate row above. Only reserves that column when actually
+        provided, so pages that don't pass one (e.g. Home) keep the
+        original two-group spacing.
     """
-    _c1, _sp, _c2 = st.columns([1.4, 9.6, 1.0], gap="small")
+    if extra_widget:
+        _c1, _sp, _c2, _c3 = st.columns([1.4, 8.6, 1.6, 1.0], gap="small")
+    else:
+        _c1, _sp, _c3 = st.columns([1.4, 9.6, 1.0], gap="small")
+        _c2 = None
     with _c1:
         st.markdown(
             f'<div class="pw-account-name">{html.escape(name or "")}</div>',
             unsafe_allow_html=True,
         )
-    with _c2:
+    if extra_widget and _c2 is not None:
+        with _c2:
+            extra_widget()
+    with _c3:
         st.button("Sign out", key="account_bar_signout", on_click=st.logout)
 
 
-def render_account_bar():
+def render_account_bar(extra_widget=None):
     """
     Sign In (or the signed-in name + Sign out) shows whenever Google
     sign-in is configured, regardless of PAYWALL_ENABLED - Andrew can start
@@ -365,26 +379,48 @@ def render_account_bar():
     signed-in email well before subscriptions themselves ever turn on.
     Subscribe only ever appears - and only ever calls Stripe - when
     PAYWALL_ENABLED is ALSO true; with it off, this is sign-in chrome only.
+
+    extra_widget: optional zero-arg callable rendered in the same row as
+        Sign out (or, when signed out and Sign out isn't shown at all,
+        right-aligned on its own) - used to embed the page's feedback
+        button in this bar instead of it sitting on a separate row above.
     """
     if not _auth_configured():
+        # No account bar at all in this case, but the feedback button
+        # (if any) still needs to render somewhere - same standalone
+        # right-aligned row it used to have on its own.
+        if extra_widget:
+            _sp, _c1 = st.columns([10.3, 1.7], gap="small")
+            with _c1:
+                extra_widget()
         return
 
     _ensure_auth_secrets_written()
     st.markdown(_PILL_BUTTON_CSS, unsafe_allow_html=True)
 
     # Layout: identity + Subscribe (when shown) hug the left edge (first
-    # thing a visitor sees), Sign out hugs the right edge on its own (a
-    # low-priority action that doesn't need to compete for attention) - an
-    # empty spacer column in between pushes the two groups apart to the
-    # full width of the page rather than bunching everything together.
+    # thing a visitor sees), Sign out (and the feedback button beside it,
+    # when present) hugs the right edge - an empty spacer column in
+    # between pushes the two groups apart to the full width of the page
+    # rather than bunching everything together.
     if not is_logged_in():
         if not PAYWALL_ENABLED:
-            _c1, _sp = st.columns([1.0, 11.0], gap="small")
+            if extra_widget:
+                _c1, _sp, _c2 = st.columns([1.0, 9.5, 1.5], gap="small")
+                with _c2:
+                    extra_widget()
+            else:
+                _c1, _sp = st.columns([1.0, 11.0], gap="small")
             with _c1:
                 st.button("Sign In", key="account_bar_signin", on_click=st.login)
             return
 
-        _c1, _c2, _sp = st.columns([1.0, 1.0, 10.0], gap="small")
+        if extra_widget:
+            _c1, _c2, _sp, _c3 = st.columns([1.0, 1.0, 8.5, 1.5], gap="small")
+            with _c3:
+                extra_widget()
+        else:
+            _c1, _c2, _sp = st.columns([1.0, 1.0, 10.0], gap="small")
         with _c1:
             st.button("Sign In", key="account_bar_signin", on_click=st.login)
         with _c2:
@@ -397,15 +433,19 @@ def render_account_bar():
     name = current_user_name()
 
     if not PAYWALL_ENABLED:
-        _render_name_and_signout(name)
+        _render_name_and_signout(name, extra_widget=extra_widget)
         return
 
     email = current_user_email()
     if is_subscribed(email):
-        _render_name_and_signout(name)
+        _render_name_and_signout(name, extra_widget=extra_widget)
         return
 
-    _c1, _c2, _sp, _c3 = st.columns([1.2, 1.0, 8.8, 1.0], gap="small")
+    if extra_widget:
+        _c1, _c2, _sp, _c4, _c3 = st.columns([1.2, 1.0, 6.8, 1.6, 1.0], gap="small")
+    else:
+        _c1, _c2, _sp, _c3 = st.columns([1.2, 1.0, 8.8, 1.0], gap="small")
+        _c4 = None
     with _c1:
         st.markdown(
             f'<div class="pw-account-name">{html.escape(name or "")}</div>',
@@ -420,6 +460,9 @@ def render_account_bar():
                 st.button("Subscribe", key="account_bar_subscribe_err", disabled=True)
         else:
             st.button("Subscribe", key="account_bar_subscribe_soon", disabled=True)
+    if extra_widget and _c4 is not None:
+        with _c4:
+            extra_widget()
     with _c3:
         st.button("Sign out", key="account_bar_signout", on_click=st.logout)
 
