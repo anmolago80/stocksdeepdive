@@ -4,79 +4,87 @@ feedback_engine.py
 Optional "Tell us what you think" button shown top-right on the three main
 service pages (Deep Dive, Comparison, Rational Compounder Analysis).
 Visitors type a short message - plus, if they aren't signed in, an optional
-email for a reply - and it's emailed via SMTP using Andrew's own personal
-Gmail account. Completely separate from paywall_engine.py: this works
-regardless of whether Google sign-in or the subscription paywall are
-configured at all.
+email for a reply - and it's emailed via Mailgun's HTTP API. Completely
+separate from paywall_engine.py: this works regardless of whether Google
+sign-in or the subscription paywall are configured at all.
 
-WHY GMAIL SMTP: no new paid service, no per-domain verification limit to
-run into (transactional email APIs like Resend cap free accounts at one
-verified sending domain - Andrew already uses his other domain there).
-Sending is done as his existing personal Gmail address via a free "app
-password" - the same mechanism used elsewhere in this app's setup
-(Google Workspace/Zoho also call it an app password). The mail lands
-wherever FEEDBACK_TO_EMAIL points - e.g.
-rationalcompounder@stocksdeepdive.com, if Cloudflare Email Routing is set
-up to forward that to a real inbox - or directly at a personal inbox if
-not.
+WHY MAILGUN (HTTP API) INSTEAD OF SMTP: direct SMTP (smtp.gmail.com etc.)
+does not work here - Railway blocks outbound SMTP traffic (ports 25/465/587)
+on the Free, Trial, and Hobby plans to prevent spam abuse, which is why the
+original Gmail SMTP version failed in production with
+"OSError: [Errno 101] Network is unreachable". Mailgun's HTTPS API sends
+mail over normal port 443, which Railway does not block, and its free tier
+(100 emails/day, no credit card) does not run into the "one verified
+sending domain" cap that ruled out Resend (already used for another
+project/domain).
+
+The mail lands wherever FEEDBACK_TO_EMAIL points - e.g.
+rationalcompounder@stocksdeepdive.com, forwarded via Cloudflare Email
+Routing to a real inbox - or directly at a personal inbox if not.
 
 DORMANT BY DEFAULT, same rule as paywall_engine.py: until the Railway
 variables below are set, render_feedback_button() renders nothing at all -
 no half-built button, no broken form for visitors to hit.
 
 REQUIRED RAILWAY VARIABLES (all optional until Andrew is ready):
-  FEEDBACK_SMTP_EMAIL           the Gmail address that SENDS the mail, e.g.
-                                 Andrew's own personal Gmail - needs 2-Step
-                                 Verification turned on so an app password
-                                 can be generated.
-  FEEDBACK_SMTP_APP_PASSWORD    the 16-character app password generated at
-                                 myaccount.google.com/apppasswords (NOT the
-                                 normal Google account password).
-  FEEDBACK_TO_EMAIL             where feedback should land, e.g.
-                                 rationalcompounder@stocksdeepdive.com
-                                 (forwarded via Cloudflare Email Routing) or
-                                 any inbox directly.
-  FEEDBACK_SMTP_HOST             optional, defaults to smtp.gmail.com.
-  FEEDBACK_SMTP_PORT             optional, defaults to 465 (SSL).
+  MAILGUN_API_KEY        the private API key from the Mailgun dashboard
+                          (Settings -> API Keys).
+  MAILGUN_DOMAIN          the sending domain verified in Mailgun, e.g.
+                          mg.stocksdeepdive.com (a subdomain is the usual
+                          setup so it doesn't touch the main domain's
+                          existing DNS records).
+  FEEDBACK_TO_EMAIL       where feedback should land, e.g.
+                          rationalcompounder@stocksdeepdive.com (forwarded
+                          via Cloudflare Email Routing) or any inbox
+                          directly.
+  MAILGUN_FROM_EMAIL      optional, defaults to
+                          "StocksDeepDive Feedback <feedback@{MAILGUN_DOMAIN}>".
+  MAILGUN_API_BASE_URL    optional, defaults to https://api.mailgun.net/v3
+                          (use https://api.eu.mailgun.net/v3 for an
+                          EU-region Mailgun domain).
 
-FAILS SAFE: if sending fails for any reason (bad app password, SMTP
-outage, not configured yet), the visitor sees a plain "couldn't send, try
-again" message - never a stack trace - and their typed message stays in
-the box so nothing is lost.
+FAILS SAFE: if sending fails for any reason (bad API key, domain not yet
+verified, Mailgun outage, not configured yet), the visitor sees a plain
+"couldn't send, try again" message - never a stack trace - and their typed
+message stays in the box so nothing is lost. The real reason is printed to
+Railway's logs (search for "[feedback_engine]") so a failure can actually
+be diagnosed.
 """
 
 import os
-import smtplib
 from datetime import datetime, timezone
-from email.mime.text import MIMEText
 
+import requests
 import streamlit as st
 
 
-def _smtp_env():
+def _mailgun_env():
+    domain = os.environ.get("MAILGUN_DOMAIN", "").strip()
     return {
-        "email": os.environ.get("FEEDBACK_SMTP_EMAIL", "").strip(),
-        "app_password": os.environ.get("FEEDBACK_SMTP_APP_PASSWORD", "").strip(),
-        "host": os.environ.get("FEEDBACK_SMTP_HOST", "").strip() or "smtp.gmail.com",
-        "port": int((os.environ.get("FEEDBACK_SMTP_PORT", "").strip() or "465")),
+        "api_key": os.environ.get("MAILGUN_API_KEY", "").strip(),
+        "domain": domain,
+        "base_url": os.environ.get("MAILGUN_API_BASE_URL", "").strip()
+        or "https://api.mailgun.net/v3",
+        "from_email": os.environ.get("MAILGUN_FROM_EMAIL", "").strip()
+        or (f"StocksDeepDive Feedback <feedback@{domain}>" if domain else ""),
         "to_email": os.environ.get("FEEDBACK_TO_EMAIL", "").strip(),
     }
 
 
-def _smtp_configured():
-    env = _smtp_env()
-    return bool(env["email"] and env["app_password"] and env["to_email"])
+def _mailgun_configured():
+    env = _mailgun_env()
+    return bool(env["api_key"] and env["domain"] and env["to_email"])
 
 
 def send_feedback(page_label, message, reply_to=None):
     """
-    Emails one feedback message via SMTP. Returns True on success, False on
-    any failure - never raises, so callers show a generic retry message
-    rather than a technical error.
+    Emails one feedback message via Mailgun's HTTP API. Returns True on
+    success, False on any failure - never raises, so callers show a
+    generic retry message rather than a technical error.
     """
-    if not message or not message.strip() or not _smtp_configured():
+    if not message or not message.strip() or not _mailgun_configured():
         return False
-    env = _smtp_env()
+    env = _mailgun_env()
     try:
         body_lines = [
             f"Page: {page_label}",
@@ -85,21 +93,27 @@ def send_feedback(page_label, message, reply_to=None):
             "",
             message.strip(),
         ]
-        msg = MIMEText("\n".join(body_lines))
-        msg["Subject"] = f"StocksDeepDive feedback - {page_label}"
-        msg["From"] = env["email"]
-        msg["To"] = env["to_email"]
+        data = {
+            "from": env["from_email"],
+            "to": env["to_email"],
+            "subject": f"StocksDeepDive feedback - {page_label}",
+            "text": "\n".join(body_lines),
+        }
         if reply_to:
-            msg["Reply-To"] = reply_to
+            data["h:Reply-To"] = reply_to
 
-        with smtplib.SMTP_SSL(env["host"], env["port"], timeout=10) as server:
-            server.login(env["email"], env["app_password"])
-            server.sendmail(env["email"], [env["to_email"]], msg.as_string())
+        resp = requests.post(
+            f"{env['base_url']}/{env['domain']}/messages",
+            auth=("api", env["api_key"]),
+            data=data,
+            timeout=10,
+        )
+        resp.raise_for_status()
         return True
     except Exception as e:
         # The visitor only ever sees a generic "couldn't send" message (see
         # module docstring) - this print is the only place the real reason
-        # is visible, in Railway's deploy logs, so a failure can actually be
+        # is visible, in Railway's logs, so a failure can actually be
         # diagnosed instead of just silently swallowed.
         print(f"[feedback_engine] send_feedback failed: {type(e).__name__}: {e}")
         return False
@@ -108,9 +122,9 @@ def send_feedback(page_label, message, reply_to=None):
 def render_feedback_button(page_label, key_prefix, user_email=None):
     """
     Renders a right-aligned "Tell us what you think" button that expands
-    into a small feedback form. Renders nothing at all if SMTP isn't
+    into a small feedback form. Renders nothing at all if Mailgun isn't
     configured yet (see module docstring) - stays fully invisible until
-    Andrew adds the app password to Railway.
+    Andrew adds the Mailgun variables to Railway.
 
     page_label: shown in the email subject/body so it's clear which service
         the feedback is about (e.g. "Deep Dive").
@@ -120,7 +134,7 @@ def render_feedback_button(page_label, key_prefix, user_email=None):
         doesn't require asking who sent it. Works independently of
         whether the subscription paywall itself is turned on.
     """
-    if not _smtp_configured():
+    if not _mailgun_configured():
         return
 
     st.markdown(
