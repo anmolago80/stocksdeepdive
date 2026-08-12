@@ -273,9 +273,13 @@ st.markdown(
     /* Streamlit's default block-container top padding (several rem) leaves
        a large empty gap above the account bar/header on every page. Same
        override site-wide (compact or not) so every page sits consistently
-       close to the top of the window instead of just one view. */
+       close to the top of the window instead of just one view.
+       2.5rem (not less) so the account bar row clears Streamlit's own
+       fixed header bar (60px tall) - anything much smaller and the top
+       few pixels of the Subscribe/Sign out row render underneath the
+       header and look clipped off. */
     div[data-testid="stAppViewContainer"] .block-container {
-        padding-top: 1.5rem !important;
+        padding-top: 2.5rem !important;
     }
     </style>
     """,

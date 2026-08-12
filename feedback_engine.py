@@ -128,6 +128,15 @@ def is_configured():
 
 _FEEDBACK_BUTTON_CSS = """
 <style>
+/* Streamlit renders a st.popover's trigger ~1rem lower inside its column
+   than a plain st.button (an internal spacing quirk of the popover
+   widget) - when this sits beside "Sign out" (a plain button) in the
+   account bar row, that extra 1rem makes the two visibly misaligned.
+   Pull the whole popover wrapper back up so both buttons share the same
+   baseline. */
+[class*="st-key-fb_popover_"] {
+    margin-top: -1rem !important;
+}
 [class*="st-key-fb_popover_"] button {
     background-color: #ffffff !important;
     color: #0d9488 !important;
