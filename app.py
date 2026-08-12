@@ -25,6 +25,7 @@ import mood_engine
 import plotly.graph_objects as go
 import deep_dive_engine
 import build_compounder_data
+import paywall_engine
 
 # -----------------------------------
 # PAGE SETUP
@@ -1217,6 +1218,15 @@ def page_research():
     metrics = section["metrics"]
 
     if section_label == "Company Potential":
+        if not paywall_engine.render_gate(
+            "Company Potential - your own research notes",
+            teaser=(
+                "Your Low/Medium/High ratings, Yes/No checks, and written "
+                "analysis for every stock on the watchlist."
+            ),
+            key_prefix=f"cp_potential_{ticker}",
+        ):
+            return
         ratings = section.get("hml_ratings", {}).get(ticker, [])
         checks = section.get("yesno_checks", {}).get(ticker, [])
         groups = section.get("text_groups", {}).get(ticker, [])
@@ -1281,6 +1291,12 @@ def page_research():
         if fig:
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     elif section_label == "Fair Value":
+        if not paywall_engine.render_gate(
+            "Fair Value - full valuation methods breakdown",
+            teaser="Every valuation method you track, side by side, with the inputs behind each one.",
+            key_prefix=f"cp_fairvalue_{ticker}",
+        ):
+            return
         fig, used = _cp_valuation_methods_chart(ticker, section.get("valuation_methods", {}))
         if fig:
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -1441,6 +1457,17 @@ def page_deep_dive():
         )
 
         st.divider()
+
+        if not paywall_engine.render_gate(
+            "the full Deep Dive breakdown",
+            teaser=(
+                "Quality, Psychology, Discovery, and Trade Setup scores - the "
+                "full factor breakdown behind the Long Score above."
+            ),
+            key_prefix=f"dd_{_dd['ticker']}",
+        ):
+            return
+
         st.subheader(f"Quality Score: {_dd['quality_score']} - {_dd['quality_label']}")
         _q_col1, _q_col2 = st.columns(2)
         with _q_col1:
@@ -2248,6 +2275,35 @@ def page_comparison():
             results["_mos_num"] = pd.to_numeric(results["MOS"], errors="coerce")
 
             st.metric("Stocks Scanned", len(results))
+
+            # Free preview: identity + headline signal only, for every ticker
+            # scanned - Ticker/Price plus Trader Score (swing) or Long Score +
+            # Investment Signal (the normal long-term mode, the only one this
+            # public deployment actually uses now that Auto-Trading/swing
+            # scanning were removed - the is_swing branch is kept only in case
+            # that ever comes back). Everything past this point (Sector
+            # Rankings, Top Candidate detail, the Trade Setup table, and the
+            # full multi-column results table further down) is the paid
+            # detail - gated as a single block below rather than picked apart
+            # column-by-column, since that would mean re-auditing every table
+            # on this 1000+ line page for a stray un-gated column.
+            _preview_cols = ["Ticker", "Price"] + (
+                ["Trader Score"] if is_swing and "Trader Score" in results.columns
+                else ["Long Score", "Investment Signal"]
+            )
+            _preview_cols = [c for c in _preview_cols if c in results.columns]
+            st.subheader("Comparison preview")
+            st.dataframe(results[_preview_cols], width="stretch", hide_index=True)
+
+            if not paywall_engine.render_gate(
+                "the full Comparison results",
+                teaser=(
+                    "Valuation (Intrinsic Value, MOS), Quality, Psychology, "
+                    "Discovery, and Trade Setup detail for every stock above."
+                ),
+                key_prefix="cmp",
+            ):
+                return
 
             if is_swing and market_regime != "UNKNOWN":
                 if market_regime == "RISK-ON":
