@@ -126,7 +126,18 @@ def _loop(log):
                             f"[attempt {n_today + 1}/3 today]")
                         _run_nightly({**cfg, "universes": due}, log)
 
-                if (now.weekday() == cfg["digest_weekday"]
+                # DIGEST_FORCE: set this variable to any NEW value (e.g.
+                # "test1") to send the digest immediately, once per value -
+                # the easy way to test a layout change without touching the
+                # weekday/hour variables. Delete it (or leave it; it only
+                # fires again when the value CHANGES) afterwards.
+                force = os.environ.get("DIGEST_FORCE", "").strip()
+                if force and state.get("digest_force_done") != force:
+                    state["digest_force_done"] = force
+                    _save_state(state)
+                    log(f"[scheduler] starting weekly digest (forced: {force})")
+                    _run_digest(log)
+                elif (now.weekday() == cfg["digest_weekday"]
                         and now.hour >= cfg["digest_hour"]
                         and state.get("last_digest_date") != today):
                     state = _load_state()
