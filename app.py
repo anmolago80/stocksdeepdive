@@ -1032,7 +1032,9 @@ def _cp_clean_comment(text):
             chunk = chunk[idx + len("Comment:"):] if idx != -1 else ""
         if chunk.strip():
             parts.append(chunk.strip())
-    return "\n\n".join(parts)
+    # \$ stops a pair of dollar amounts in a comment from triggering
+    # markdown's LaTeX math mode in st.caption.
+    return "\n\n".join(parts).replace("$", "\\$")
 
 
 def _cp_format(value, fmt):
@@ -1425,7 +1427,7 @@ def _cp_render_hml_ratings(ratings):
         color_key = _CP_HML_COLOR.get(r["polarity"], {}).get(r["value"].strip().lower())
         html_parts.append(
             f"<div style='margin-bottom:6px;'><span style='font-size:13px;color:#aebfd4;'>"
-            f"{r['label']}: </span>{_cp_pill(r['value'].strip(), color_key)}</div>"
+            f"{_md_safe(r['label'])}: </span>{_cp_pill(_md_safe(r['value'].strip()), color_key)}</div>"
         )
     # two columns of pills so a long ratings list doesn't run the whole page
     half = (len(html_parts) + 1) // 2
@@ -1436,15 +1438,24 @@ def _cp_render_hml_ratings(ratings):
         st.markdown("".join(html_parts[half:]), unsafe_allow_html=True)
 
 
+def _md_safe(text):
+    """Workbook-sourced free text made safe for st.markdown HTML blocks:
+    HTML-escaped (a stray < or & can't break the pill markup) and with $
+    converted to its HTML entity - two $ signs in markdown otherwise
+    trigger LaTeX math rendering, which mangles everything between them
+    (seen with 'A$750 million' in a CSL buyback answer)."""
+    return html.escape(str(text)).replace("$", "&#36;")
+
+
 def _cp_render_yesno_checks(checks):
     st.markdown("##### Quick checks")
-    html = "".join(
+    _pills_html = "".join(
         f"<span style='display:inline-block;margin:2px 8px 8px 0;padding:4px 10px;"
         f"border-radius:8px;font-size:12.5px;background:#1f3352;color:#aebfd4;'>"
-        f"{c['label']}: <b>{c['value'].strip()}</b></span>"
+        f"{_md_safe(c['label'])}: <b>{_md_safe(c['value'].strip())}</b></span>"
         for c in checks
     )
-    st.markdown(html, unsafe_allow_html=True)
+    st.markdown(_pills_html, unsafe_allow_html=True)
 
 
 def _cp_render_text_groups(groups):
@@ -1452,8 +1463,10 @@ def _cp_render_text_groups(groups):
     for g in groups:
         with st.expander(g["title"], expanded=False):
             for item in g["items"]:
-                st.markdown(f"**{item['label']}**")
-                st.caption(item["text"])
+                st.markdown(f"**{_md_safe(item['label'])}**")
+                # st.caption is a plain-markdown context (no HTML pills),
+                # so only the $-math trigger needs neutralising here.
+                st.caption(str(item["text"]).replace("$", "\\$"))
 
 
 _ADMIN_REFRESH_KEY_ENV = "ADMIN_REFRESH_KEY"
