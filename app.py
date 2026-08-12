@@ -26,6 +26,7 @@ import plotly.graph_objects as go
 import deep_dive_engine
 import build_compounder_data
 import paywall_engine
+import feedback_engine
 
 # -----------------------------------
 # PAGE SETUP
@@ -295,7 +296,16 @@ st.markdown(
 # -----------------------------------
 
 
-def _render_header(compact):
+def _render_header(compact, page_label=None):
+    # page_label is only passed on the three main service pages (Deep Dive,
+    # Comparison, Rational Compounder Analysis) - Home doesn't get a
+    # feedback button since there's no service content there to comment on.
+    if page_label:
+        feedback_engine.render_feedback_button(
+            page_label,
+            key_prefix=page_label,
+            user_email=paywall_engine.current_user_email(),
+        )
     paywall_engine.render_account_bar()
     st.markdown(
         f"""
@@ -1155,7 +1165,7 @@ def _render_last_updated(generated_at):
 
 
 def page_research():
-    _render_header(compact=True)
+    _render_header(compact=True, page_label="Rational Compounder Analysis")
 
     _render_compounder_admin_panel()
 
@@ -1359,7 +1369,7 @@ def page_home():
 
 
 def page_deep_dive():
-    _render_header(compact=True)
+    _render_header(compact=True, page_label="Deep Dive")
     _dd = st.session_state.get("dd_result")
 
     # The long explanatory paragraph only earns its space when there's
@@ -1613,7 +1623,7 @@ def page_deep_dive():
         )
 
 def page_comparison():
-    _render_header(compact=True)
+    _render_header(compact=True, page_label="Comparison")
 
     # The search box on every page is the only thing that ever populates a
     # Comparison request - it stores the parsed ticker list + a one-shot

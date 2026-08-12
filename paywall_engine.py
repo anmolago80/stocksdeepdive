@@ -9,14 +9,21 @@ Comparison's identity+signal columns, and Research's other sections) stays
 free regardless of this module.
 
 MASTER SWITCH: PAYWALL_ENABLED (Railway environment variable). Unset or
-anything other than "true"/"1"/"yes"/"on" (case-insensitive) means this
-entire module is a no-op everywhere it's called - render_gate() always
-returns True, nothing locks, nothing changes from how the app behaved
-before this file existed. This is deliberate: the feature ships live in
-the code now, but stays completely dormant until Andrew is ready to charge
-and flips this one variable himself. No redeploy needed to activate it -
-Railway restarts the service when env vars change, which re-reads this at
-next startup.
+anything other than "true"/"1"/"yes"/"on" (case-insensitive) means
+render_gate() always returns True (nothing ever locks) and the account bar
+never shows a Subscribe button or calls Stripe - PAYWALL_ENABLED is
+specifically the SUBSCRIPTION switch, not a switch for the whole module.
+This is deliberate: the feature ships live in the code now, but stays
+completely dormant until Andrew is ready to charge and flips this one
+variable himself. No redeploy needed to activate it - Railway restarts the
+service when env vars change, which re-reads this at next startup.
+
+SIGN-IN IS SEPARATE FROM PAYWALL_ENABLED: render_account_bar() shows a
+"Sign In" button (or the signed-in name + "Sign out") as soon as Google
+sign-in is configured (see _auth_configured() below), regardless of
+whether PAYWALL_ENABLED is set - so Andrew can start building a signed-in
+audience, and get feedback attributed to a real email via
+feedback_engine.py, well before subscriptions themselves ever turn on.
 
 HOW IT WORKS ONCE ENABLED:
   1. Google sign-in via Streamlit's own built-in st.login()/st.user (OIDC),
@@ -333,19 +340,50 @@ _PILL_BUTTON_CSS = """
 # finishes setup - same dormant-by-default rule as the rest of this module.
 # -----------------------------------
 
+def _render_name_and_signout(name):
+    """
+    Shared layout for "signed in, nothing else to show but Sign out" -
+    used both when the paywall is off entirely and when a subscriber
+    already has an active subscription, so those two cases render
+    identically instead of drifting apart over time.
+    """
+    _c1, _sp, _c2 = st.columns([1.4, 9.6, 1.0], gap="small")
+    with _c1:
+        st.markdown(
+            f'<div class="pw-account-name">{html.escape(name or "")}</div>',
+            unsafe_allow_html=True,
+        )
+    with _c2:
+        st.button("Sign out", key="account_bar_signout", on_click=st.logout)
+
+
 def render_account_bar():
-    if not PAYWALL_ENABLED or not _auth_configured():
+    """
+    Sign In (or the signed-in name + Sign out) shows whenever Google
+    sign-in is configured, regardless of PAYWALL_ENABLED - Andrew can start
+    building an account base and receiving feedback attributed to a real
+    signed-in email well before subscriptions themselves ever turn on.
+    Subscribe only ever appears - and only ever calls Stripe - when
+    PAYWALL_ENABLED is ALSO true; with it off, this is sign-in chrome only.
+    """
+    if not _auth_configured():
         return
 
     _ensure_auth_secrets_written()
     st.markdown(_PILL_BUTTON_CSS, unsafe_allow_html=True)
 
-    # Layout: identity + Subscribe hug the left edge (first thing a visitor
-    # sees), Sign out hugs the right edge on its own (a low-priority action
-    # that doesn't need to compete for attention next to Subscribe) - an
+    # Layout: identity + Subscribe (when shown) hug the left edge (first
+    # thing a visitor sees), Sign out hugs the right edge on its own (a
+    # low-priority action that doesn't need to compete for attention) - an
     # empty spacer column in between pushes the two groups apart to the
     # full width of the page rather than bunching everything together.
     if not is_logged_in():
+        if not PAYWALL_ENABLED:
+            _c1, _sp = st.columns([1.0, 11.0], gap="small")
+            with _c1:
+                st.button("Sign In", key="account_bar_signin", on_click=st.login)
+            return
+
         _c1, _c2, _sp = st.columns([1.0, 1.0, 10.0], gap="small")
         with _c1:
             st.button("Sign In", key="account_bar_signin", on_click=st.login)
@@ -356,19 +394,15 @@ def render_account_bar():
             st.button("Subscribe", key="account_bar_subscribe", on_click=st.login)
         return
 
-    email = current_user_email()
     name = current_user_name()
-    subscribed = is_subscribed(email)
 
-    if subscribed:
-        _c1, _sp, _c2 = st.columns([1.4, 9.6, 1.0], gap="small")
-        with _c1:
-            st.markdown(
-                f'<div class="pw-account-name">{html.escape(name or "")}</div>',
-                unsafe_allow_html=True,
-            )
-        with _c2:
-            st.button("Sign out", key="account_bar_signout", on_click=st.logout)
+    if not PAYWALL_ENABLED:
+        _render_name_and_signout(name)
+        return
+
+    email = current_user_email()
+    if is_subscribed(email):
+        _render_name_and_signout(name)
         return
 
     _c1, _c2, _sp, _c3 = st.columns([1.2, 1.0, 8.8, 1.0], gap="small")
