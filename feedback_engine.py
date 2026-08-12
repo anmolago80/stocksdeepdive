@@ -138,9 +138,9 @@ _FEEDBACK_BUTTON_CSS = """
     margin-top: -1rem !important;
 }
 [class*="st-key-fb_popover_"] button {
-    background-color: #ffffff !important;
-    color: #0d9488 !important;
-    border: 1.5px solid #0d9488 !important;
+    background-color: rgba(45, 212, 191, 0.07) !important;
+    color: #2dd4bf !important;
+    border: 1.5px solid #2dd4bf !important;
     border-radius: 999px !important;
     padding: 4px 16px !important;
     font-weight: 600 !important;
@@ -154,7 +154,7 @@ _FEEDBACK_BUTTON_CSS = """
     white-space: nowrap !important;
 }
 [class*="st-key-fb_popover_"] button:hover {
-    background-color: #0d9488 !important;
+    background-color: #2dd4bf !important;
     color: #ffffff !important;
 }
 </style>

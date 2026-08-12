@@ -25,6 +25,7 @@ ambiguous whether a scan is running on live or fallback data.
 """
 
 import io
+import os
 import time
 from collections import defaultdict
 
@@ -70,7 +71,7 @@ ASX_SECTOR_MAP = {
     "S32.AX": "Mining & Resources", "NIC.AX": "Mining & Resources",
     "ILU.AX": "Mining & Resources", "IGO.AX": "Mining & Resources",
 
-    "NST.AX": "Gold", "EVN.AX": "Gold", "NCM.AX": "Gold", "GOR.AX": "Gold",
+    "NST.AX": "Gold", "EVN.AX": "Gold", "GOR.AX": "Gold",
 
     "WDS.AX": "Energy", "STO.AX": "Energy", "ORG.AX": "Energy", "VEA.AX": "Energy",
 
@@ -211,6 +212,15 @@ def fetch_nasdaq100():
     return _parse_table(html, ["ticker", "symbol"], ["gics sector", "sector"], _normalize_us_ticker, min_rows=90)
 
 
+def _r2k_cache_path():
+    """Last-good Russell 2000 constituent list, persisted to the Railway
+    Volume (or this directory locally) - iShares occasionally changes its
+    holdings-export URL, and the fallback for that shouldn't be an empty
+    universe when yesterday's list is sitting right there."""
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, "russell2000_cache.csv")
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_russell2000():
     """
@@ -224,22 +234,31 @@ def fetch_russell2000():
         resp.raise_for_status()
         raw = pd.read_csv(io.StringIO(resp.text), skiprows=9, on_bad_lines="skip")
     except Exception:
-        return None
+        return _r2k_from_disk_cache()
 
     ticker_col = _find_column(raw.columns, ["ticker"])
     if ticker_col is None:
-        return None
+        return _r2k_from_disk_cache()
 
     df = raw[[ticker_col]].copy()
     df.columns = ["Ticker"]
     df = df.dropna(subset=["Ticker"])
-    df = df[~df["Ticker"].astype(str).str.contains("CASH|USD|-", na=False)]
+    # Drop cash/FX placeholder rows only. (An earlier version also dropped
+    # any ticker containing "-", which silently removed legitimate class
+    # shares - small-cap indices do contain them.)
+    _t = df["Ticker"].astype(str).str.strip().str.upper()
+    df = df[~_t.str.contains("CASH|USD", na=False) & (_t.str.len() <= 6)]
     if df.empty:
         return None
 
     df["Ticker"] = df["Ticker"].apply(_normalize_us_ticker)
     df["Sector"] = None
-    return df[["Ticker", "Sector"]]
+    out = df[["Ticker", "Sector"]]
+    try:
+        out.to_csv(_r2k_cache_path(), index=False)
+    except OSError:
+        pass
+    return out
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -587,3 +606,17 @@ def label_for(sector, heat):
         return sector
     h = heat[sector]
     return f"{h['emoji']} {sector} - {h['bucket'].title()} ({h['return']:+.1f}% 12m)"
+
+
+def _r2k_from_disk_cache():
+    """Yesterday's (or older) Russell 2000 list from disk, if one was ever
+    saved - degrading to a stale-but-real universe instead of nothing."""
+    try:
+        df = pd.read_csv(_r2k_cache_path())
+        if "Ticker" in df.columns and len(df) > 100:
+            if "Sector" not in df.columns:
+                df["Sector"] = None
+            return df[["Ticker", "Sector"]]
+    except Exception:
+        pass
+    return None

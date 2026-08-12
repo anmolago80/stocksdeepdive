@@ -241,7 +241,7 @@ def create_checkout_url(email):
 
 
 # -----------------------------------
-# SHARED STYLING - reuses the site's own teal (#0d9488 / hover #0f766e)
+# SHARED STYLING - reuses the site's own teal (#2dd4bf / hover #14b8a6)
 # button theme from app.py's site-wide button CSS, instead of inventing a
 # separate dark/navy color for the paywall - so Subscribe/Sign In/Sign out
 # and the locked-content box all look like they belong to this site rather
@@ -258,9 +258,9 @@ _PILL_BUTTON_CSS = """
 [class*="st-key-account_bar_subscribe"] a,
 [class*="st-key-pw_subscribe_"] button,
 [class*="st-key-pw_subscribe_"] a {
-    background-color: #0d9488 !important;
+    background-color: #2dd4bf !important;
     color: #ffffff !important;
-    border: 1.5px solid #0d9488 !important;
+    border: 1.5px solid #2dd4bf !important;
     border-radius: 999px !important;
     padding: 6px 20px !important;
     font-weight: 600 !important;
@@ -271,15 +271,15 @@ _PILL_BUTTON_CSS = """
 [class*="st-key-account_bar_subscribe"] a:hover,
 [class*="st-key-pw_subscribe_"] button:hover,
 [class*="st-key-pw_subscribe_"] a:hover {
-    background-color: #0f766e !important;
-    border-color: #0f766e !important;
+    background-color: #14b8a6 !important;
+    border-color: #14b8a6 !important;
     color: #ffffff !important;
 }
 [class*="st-key-account_bar_signin"] button,
 [class*="st-key-pw_login_"] button {
-    background-color: #ffffff !important;
-    color: #0d9488 !important;
-    border: 1.5px solid #0d9488 !important;
+    background-color: rgba(45, 212, 191, 0.07) !important;
+    color: #2dd4bf !important;
+    border: 1.5px solid #2dd4bf !important;
     border-radius: 999px !important;
     padding: 6px 18px !important;
     font-weight: 600 !important;
@@ -288,14 +288,14 @@ _PILL_BUTTON_CSS = """
 }
 [class*="st-key-account_bar_signin"] button:hover,
 [class*="st-key-pw_login_"] button:hover {
-    background-color: #0d9488 !important;
+    background-color: #2dd4bf !important;
     color: #ffffff !important;
-    border-color: #0d9488 !important;
+    border-color: #2dd4bf !important;
 }
 [class*="st-key-account_bar_signout"] button,
 [class*="st-key-pw_logout_"] button {
     background-color: transparent !important;
-    color: #0d9488 !important;
+    color: #2dd4bf !important;
     border: 1px solid transparent !important;
     border-radius: 999px !important;
     font-size: 13px !important;
@@ -304,13 +304,13 @@ _PILL_BUTTON_CSS = """
 }
 [class*="st-key-account_bar_signout"] button:hover,
 [class*="st-key-pw_logout_"] button:hover {
-    background-color: #0d9488 !important;
+    background-color: #2dd4bf !important;
     color: #ffffff !important;
-    border-color: #0d9488 !important;
+    border-color: #2dd4bf !important;
 }
 [class*="st-key-pw_gate_box_"] {
-    border-color: #99f6e4 !important;
-    background-color: #f0fdfa !important;
+    border-color: #14b8a6 !important;
+    background-color: #10312d !important;
     border-radius: 12px !important;
 }
 .pw-account-name {
@@ -320,7 +320,7 @@ _PILL_BUTTON_CSS = """
     height: 38px;
     font-size: 14px;
     font-weight: 600;
-    color: #0f172a;
+    color: #e6edf5;
     font-family: 'Segoe UI', sans-serif;
     white-space: nowrap;
     overflow: hidden;

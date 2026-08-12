@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import time
 import json
+import html
 import os
 import concurrent.futures
 import contextlib
@@ -29,6 +30,8 @@ import deep_dive_engine
 import build_compounder_data
 import paywall_engine
 import feedback_engine
+import watchlist_store
+import scan_store
 import scanner_engine
 
 # -----------------------------------
@@ -277,6 +280,25 @@ dcf_growth_override = (
 fcf_overrides = st.session_state["fcf_overrides"]
 
 # -----------------------------------
+# BACKGROUND SCHEDULER - nightly universe scans + weekly Mailgun digest.
+# In-process (daemon thread) rather than a separate Railway cron service,
+# because the Railway Volume can only attach to one service and the web
+# app needs it. st.cache_resource = exactly one thread per server process.
+# Set SCHEDULER_ENABLED=false to turn it off entirely.
+# -----------------------------------
+@st.cache_resource(show_spinner=False)
+def _start_background_scheduler():
+    try:
+        import scheduler_engine
+        return scheduler_engine.start()
+    except Exception:
+        return None
+
+
+_start_background_scheduler()
+
+
+# -----------------------------------
 # SITE-WIDE BUTTON STYLE + NAV BAR
 # -----------------------------------
 st.markdown(
@@ -284,28 +306,28 @@ st.markdown(
     <style>
     .stButton > button, .stFormSubmitButton > button {
         border-radius: 10px !important;
-        border: 1.5px solid #0d9488 !important;
-        color: #0d9488 !important;
-        background-color: #ffffff !important;
+        border: 1.5px solid #2dd4bf !important;
+        color: #2dd4bf !important;
+        background-color: rgba(45, 212, 191, 0.07) !important;
         font-weight: 600 !important;
         padding: 0.55rem 1.1rem !important;
         transition: all 0.15s ease !important;
     }
     .stButton > button:hover, .stFormSubmitButton > button:hover {
-        background-color: #0d9488 !important;
+        background-color: #2dd4bf !important;
         color: #ffffff !important;
-        border-color: #0d9488 !important;
+        border-color: #2dd4bf !important;
     }
     .stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"],
     .stButton > button[kind="primaryFormSubmit"], .stFormSubmitButton > button[kind="primaryFormSubmit"] {
-        background-color: #0d9488 !important;
+        background-color: #2dd4bf !important;
         color: #ffffff !important;
-        border-color: #0d9488 !important;
+        border-color: #2dd4bf !important;
     }
     .stButton > button[kind="primary"]:hover, .stFormSubmitButton > button[kind="primary"]:hover,
     .stButton > button[kind="primaryFormSubmit"]:hover, .stFormSubmitButton > button[kind="primaryFormSubmit"]:hover {
-        background-color: #0f766e !important;
-        border-color: #0f766e !important;
+        background-color: #14b8a6 !important;
+        border-color: #14b8a6 !important;
     }
     /* The site search box (st.form("site_search_form")) shouldn't show its
        own outline/background -- the search input's own light-gray fill is
@@ -328,6 +350,90 @@ st.markdown(
        header and look clipped off. */
     div[data-testid="stAppViewContainer"] .block-container {
         padding-top: 2.5rem !important;
+    }
+    /* ---------------- StocksDeepDive dark-terminal components ---------------- */
+    .sdd-tape { background:#060b14; border-bottom:1px solid #1f3352; overflow:hidden;
+      white-space:nowrap; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px;
+      padding:7px 0; margin:-1.5rem -5rem 14px -5rem; }
+    .sdd-tape-inner { display:inline-block; animation:sddscroll 45s linear infinite; }
+    @keyframes sddscroll { from { transform:translateX(0); } to { transform:translateX(-50%); } }
+    .sdd-tk { margin:0 18px; color:#8aa0b8; }
+    .sdd-tk b { color:#e6edf5; font-weight:600; }
+    .sdd-tk .up { color:#34d399; } .sdd-tk .dn { color:#fb7185; }
+    .sdd-navrow { display:flex; align-items:center; justify-content:space-between; padding:4px 0 18px; }
+    .sdd-logo { font-size:22px; font-weight:800; letter-spacing:-.3px; color:#e6edf5; }
+    .sdd-logo .accent { color:#2dd4bf; }
+    .sdd-badge-free { font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#2dd4bf;
+      border:1px solid #14b8a6; border-radius:999px; padding:4px 11px; letter-spacing:.4px; }
+    .sdd-h1 { font-size:38px; line-height:1.14; letter-spacing:-.6px; font-weight:800; color:#e6edf5; }
+    .sdd-h1 em { font-style:normal; color:#2dd4bf; }
+    .sdd-sub { color:#8aa0b8; font-size:16px; line-height:1.55; margin:14px 0 18px; max-width:540px; }
+    .sdd-sub b { color:#e6edf5; }
+    .sdd-card { background:#121f36; border:1px solid #1f3352; border-radius:14px; padding:18px 20px; }
+    .sdd-card-tag { display:flex; justify-content:space-between; font-family:ui-monospace,Menlo,monospace;
+      font-size:10.5px; letter-spacing:1.2px; color:#5b7290; margin-bottom:12px; }
+    .sdd-fa-head { display:flex; align-items:baseline; gap:10px; }
+    .sdd-fa-tkr { font-family:ui-monospace,Menlo,monospace; font-size:19px; font-weight:700; color:#e6edf5; }
+    .sdd-fa-nm { color:#8aa0b8; font-size:13px; }
+    .sdd-fa-px { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:16px; color:#e6edf5; }
+    .sdd-fa-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:12px; }
+    .sdd-stat { background:#0f1a2e; border:1px solid #1f3352; border-radius:10px; padding:8px 12px; margin-bottom:8px; }
+    .sdd-stat .k { font-size:10.5px; color:#5b7290; letter-spacing:.6px; }
+    .sdd-stat .v { font-family:ui-monospace,Menlo,monospace; font-size:16px; font-weight:600; color:#e6edf5; margin-top:2px; }
+    .sdd-pill { font-size:11px; font-weight:700; font-family:ui-monospace,Menlo,monospace;
+      padding:3px 10px; border-radius:999px; letter-spacing:.4px; display:inline-block; }
+    .sdd-spark-cap { font-size:11px; color:#5b7290; margin-bottom:4px; display:flex; justify-content:space-between; }
+    .sdd-strip { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin:26px 0 8px; }
+    .sdd-tile { background:#121f36; border:1px solid #1f3352; border-radius:12px; padding:13px 16px; }
+    .sdd-tile .k { font-size:11px; color:#5b7290; letter-spacing:.7px; }
+    .sdd-tile .v { font-family:ui-monospace,Menlo,monospace; font-size:19px; font-weight:700; color:#e6edf5; margin-top:5px; }
+    .sdd-tile .d { font-size:12px; margin-top:3px; color:#5b7290; font-family:ui-monospace,Menlo,monospace; }
+    .sdd-kicker { font-family:ui-monospace,Menlo,monospace; font-size:11.5px; letter-spacing:1.6px;
+      color:#2dd4bf; margin-top:34px; }
+    .sdd-h2 { font-size:25px; letter-spacing:-.3px; margin:8px 0 6px; font-weight:700; color:#e6edf5; }
+    .sdd-secsub { color:#8aa0b8; font-size:14.5px; max-width:640px; line-height:1.5; }
+    .sdd-cards4 { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-top:22px; }
+    .sdd-feat { background:#121f36; border:1px solid #1f3352; border-radius:14px; padding:18px 20px;
+      text-decoration:none !important; display:block; transition:border-color .15s; }
+    .sdd-feat:hover { border-color:#14b8a6; }
+    .sdd-feat .ic { width:38px; height:38px; border-radius:9px; background:rgba(45,212,191,.1);
+      border:1px solid rgba(45,212,191,.25); display:flex; align-items:center; justify-content:center; font-size:18px; }
+    .sdd-feat h3 { font-size:16px; margin:12px 0 8px; color:#e6edf5; }
+    .sdd-feat p { color:#8aa0b8; font-size:13.3px; line-height:1.55; margin:0; }
+    .sdd-steps { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:22px; }
+    .sdd-step { border-left:2px solid #14b8a6; padding:2px 0 2px 16px; }
+    .sdd-step .n { font-family:ui-monospace,Menlo,monospace; color:#2dd4bf; font-size:12px; }
+    .sdd-step h4 { font-size:15px; margin:6px 0 6px; color:#e6edf5; }
+    .sdd-step p { color:#8aa0b8; font-size:13.3px; line-height:1.55; margin:0; }
+    .sdd-honesty { margin-top:20px; background:rgba(251,113,133,.06); border:1px solid rgba(251,113,133,.25);
+      border-radius:12px; padding:13px 18px; font-size:13.5px; color:#8aa0b8; line-height:1.55; }
+    .sdd-honesty b { color:#fb7185; }
+    .sdd-covgrid { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-top:22px; }
+    .sdd-cov { background:#121f36; border:1px solid #1f3352; border-radius:14px; padding:15px 18px; }
+    .sdd-cov .tkr { font-family:ui-monospace,Menlo,monospace; font-weight:700; font-size:15px; color:#e6edf5; }
+    .sdd-cov .ind { color:#5b7290; font-size:12px; margin-top:2px; }
+    .sdd-cov .row { display:flex; justify-content:space-between; font-size:12.5px; color:#8aa0b8; margin-top:9px; }
+    .sdd-cov .row b { font-family:ui-monospace,Menlo,monospace; color:#e6edf5; }
+    .sdd-cov-req { border-style:dashed; text-align:center; color:#8aa0b8; font-size:13px;
+      text-decoration:none !important; display:flex; flex-direction:column; gap:8px;
+      align-items:center; justify-content:center; }
+    .sdd-cta { margin:44px 0 0; background:linear-gradient(135deg,#0e2b33,#123047);
+      border:1px solid #14b8a6; border-radius:16px; padding:28px 34px; }
+    .sdd-footer { margin-top:52px; border-top:1px solid #1f3352; padding:26px 0 10px;
+      color:#5b7290; font-size:12.8px; line-height:1.6; }
+    .sdd-f-cols { display:flex; gap:60px; margin-bottom:18px; }
+    .sdd-f-cols h5 { color:#e6edf5; font-size:13px; margin:0 0 4px; }
+    .sdd-f-cols a { display:block; color:#8aa0b8 !important; margin-top:6px; font-size:13px;
+      text-decoration:none !important; }
+    .sdd-f-cols a:hover { color:#e6edf5 !important; }
+    .sdd-disclaimer { border-top:1px solid #1f3352; padding-top:14px; max-width:900px; }
+    .sdd-disclaimer b { color:#8aa0b8; }
+    @media (max-width:900px) {
+      .sdd-cards4, .sdd-covgrid { grid-template-columns:1fr 1fr; }
+      .sdd-steps { grid-template-columns:1fr; }
+      .sdd-strip { grid-template-columns:1fr 1fr; }
+      .sdd-h1 { font-size:30px; }
+      .sdd-tape { margin:-1.5rem -1rem 14px -1rem; }
     }
     </style>
     """,
@@ -355,7 +461,327 @@ st.markdown(
 # -----------------------------------
 
 
+# -----------------------------------
+# MARKET TAPE + SEARCH DISPATCH + LANDING-PAGE HELPERS
+#
+# The scrolling index/ticker tape shown at the very top of every page, the
+# single shared handler behind every search box / example chip on the site,
+# and the HTML builders for the landing page's hero card, mood strip,
+# feature cards and footer. All data fetches degrade silently: if a quote,
+# mood read, or featured analysis can't be fetched, that element simply
+# doesn't render - the page never breaks because one upstream source is
+# down.
+# -----------------------------------
+
+def _fetch_with_budget(jobs, budget_seconds):
+    """Run `jobs` ({name: zero-arg callable}) concurrently and return
+    {name: result-or-None} after AT MOST `budget_seconds`. Anything that
+    hasn't finished is left as None and keeps running in the background
+    (its @st.cache_data cache still fills for the next visitor) - the page
+    itself never blocks on a slow upstream source. This is what keeps the
+    landing page fast even on a day Yahoo or GDELT is crawling."""
+    import concurrent.futures as _cf
+    out = {k: None for k in jobs}
+    ex = _cf.ThreadPoolExecutor(max_workers=max(len(jobs), 1))
+    futs = {ex.submit(fn): name for name, fn in jobs.items()}
+    done, _not_done = _cf.wait(futs, timeout=budget_seconds)
+    for f in done:
+        try:
+            out[futs[f]] = f.result()
+        except Exception:
+            pass
+    ex.shutdown(wait=False)
+    return out
+
+
+_TAPE_TICKERS = [
+    ("ASX 200", "^AXJO"), ("S&P 500", "^GSPC"), ("NASDAQ", "^IXIC"),
+    ("AUD/USD", "AUDUSD=X"), ("CSL.AX", "CSL.AX"), ("BHP.AX", "BHP.AX"),
+    ("AAPL", "AAPL"), ("RMD.AX", "RMD.AX"),
+]
+
+_EXAMPLE_CHIPS = [
+    ("CSL.AX", "CSL.AX"), ("AAPL", "AAPL"), ("BHP.AX", "BHP.AX"),
+    ("RMD.AX", "RMD.AX"), ("CSL.AX vs BHP.AX", "CSL.AX BHP.AX"),
+]
+
+_FEATURED_ROTATION = ["CSL.AX", "AAPL", "BHP.AX", "RMD.AX", "MSFT", "WES.AX", "GOOGL"]
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _tape_quotes(day_key):
+    """(label, last, pct_change) for the tape - cached 30 min; `day_key`
+    keeps the cache honest across day boundaries. Any symbol that fails is
+    simply left off the tape."""
+    out = []
+    for label, sym in _TAPE_TICKERS:
+        try:
+            h = yf.Ticker(sym).history(period="5d")["Close"].dropna()
+            if len(h) >= 2:
+                last, prev = float(h.iloc[-1]), float(h.iloc[-2])
+                if prev:
+                    out.append((label, last, (last - prev) / prev * 100.0))
+        except Exception:
+            continue
+    return out
+
+
+def _render_tape(quotes=None):
+    if quotes is None:
+        _day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        quotes = _fetch_with_budget(
+            {"q": lambda: _tape_quotes(_day)}, budget_seconds=6
+        )["q"]
+    if not quotes:
+        return
+    items = []
+    for label, last, chg in quotes:
+        cls = "up" if chg >= 0 else "dn"
+        arrow = "▲" if chg >= 0 else "▼"
+        px = f"{last:,.4f}" if last < 10 else f"{last:,.1f}" if last > 1000 else f"{last:,.2f}"
+        items.append(
+            f"<span class='sdd-tk'><b>{html.escape(label)}</b> {px} "
+            f"<span class='{cls}'>{arrow} {chg:+.1f}%</span></span>"
+        )
+    row = "".join(items)
+    st.markdown(
+        f"<div class='sdd-tape'><div class='sdd-tape-inner'>{row}{row}</div></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _dispatch_search(text):
+    """One shared handler behind every search box and example chip on the
+    site: one ticker -> Deep Dive, two or more -> Comparison."""
+    raw = (text or "").replace(",", " ").replace("\n", " ").split()
+    parsed = []
+    for tok in raw:
+        tok = tok.strip().upper()
+        if tok and tok not in parsed:
+            parsed.append(tok)
+    if not parsed:
+        st.warning("Type at least one ticker above, then hit Search.")
+        return
+    if len(parsed) == 1:
+        tk = parsed[0]
+        with st.spinner(f"Analyzing {tk}..."):
+            st.session_state["dd_result"] = deep_dive_engine.analyze(
+                tk, get_price_history, get_ticker_info, get_cashflow_df,
+                news_api_key=news_api_key, live_data=live_data,
+                enable_social=enable_social,
+            )
+        st.switch_page(PG_DEEP_DIVE)
+    else:
+        n_au = sum(1 for tk in parsed if tk.endswith(".AX"))
+        stk_country = "USA" if (len(parsed) - n_au) > n_au else "Australia"
+        st.session_state["cmp_stocks"] = parsed
+        st.session_state["cmp_universe_source"] = f"Manual ticker list ({len(parsed)} entered)"
+        st.session_state["cmp_scan_country"] = stk_country
+        st.session_state["cmp_fresh"] = True
+        st.switch_page(PG_COMPARISON)
+
+
+def _render_example_chips(key_prefix):
+    """One-click example searches - the cheapest possible first result for a
+    visitor who doesn't know ticker formats yet. st.pills gives compact
+    horizontal chips; the "done" flag stops a still-selected pill from
+    re-dispatching on every rerun of the same page."""
+    _sel = st.pills(
+        "Try one:", [label for label, _ in _EXAMPLE_CHIPS],
+        selection_mode="single", key=f"{key_prefix}_chips",
+    )
+    _done_key = f"{key_prefix}_chips_done"
+    if not _sel:
+        st.session_state.pop(_done_key, None)
+    elif st.session_state.get(_done_key) != _sel:
+        st.session_state[_done_key] = _sel
+        _dispatch_search(dict(_EXAMPLE_CHIPS)[_sel])
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def _featured_analysis(ticker, day_key):
+    """Attention-lite Deep Dive for the landing page's featured card -
+    cached 6h. live_data/social off keeps it fast and quota-free; the card
+    only shows value/quality/psychology fields anyway."""
+    try:
+        dd = deep_dive_engine.analyze(
+            ticker, get_price_history, get_ticker_info, get_cashflow_df,
+            news_api_key=None, live_data=False, enable_social=False,
+        )
+        if dd.get("error"):
+            return None
+        return dd
+    except Exception:
+        return None
+
+
+def _spark_path(closes, width=440, height=52, pad=4):
+    """SVG polyline points for a price sparkline."""
+    if closes is None or len(closes) < 2:
+        return None, None
+    vals = list(closes)
+    lo, hi = min(vals), max(vals)
+    span = (hi - lo) or 1.0
+    n = len(vals)
+    pts = []
+    for i, v in enumerate(vals):
+        x = pad + (width - 2 * pad) * i / (n - 1)
+        y = pad + (height - 2 * pad) * (1 - (v - lo) / span)
+        pts.append(f"{x:.1f},{y:.1f}")
+    return " ".join(pts), (pts[-1] if pts else None)
+
+
+def _featured_card_html(dd, spark_pts, ma_pts, last_pt):
+    score = max(0.0, min(100.0, float(dd["long_score"])))
+    if score > SIGNAL_THRESHOLDS["STRONG_LONG"]:
+        verdict, vcolor = "STRONG LONG", "#34d399"
+    elif score > SIGNAL_THRESHOLDS["LONG"]:
+        verdict, vcolor = "LONG", "#34d399"
+    elif score > SIGNAL_THRESHOLDS["WATCHLIST"]:
+        verdict, vcolor = "WATCHLIST", "#fbbf24"
+    else:
+        verdict, vcolor = "AVOID", "#fb7185"
+    import math as _math
+    theta = _math.pi * score / 100.0
+    ex = 100 - 85 * _math.cos(theta)
+    ey = 105 - 85 * _math.sin(theta)
+    arc = (
+        f"<path d='M15 105 A85 85 0 0 1 {ex:.1f} {ey:.1f}' fill='none' "
+        f"stroke='{vcolor}' stroke-width='13' stroke-linecap='round'/>"
+    ) if score > 1 else ""
+    iv = dd.get("intrinsic_value")
+    mos = dd.get("mos")
+    iv_txt = f"{iv:,.2f} {dd['currency']}" if iv else "N/A"
+    mos_txt = f"{mos:+.1f}%" if mos is not None else "N/A"
+    mos_color = "#34d399" if (mos or 0) > 0 else "#fb7185"
+    pills = []
+    _pillmap = {
+        "UNDERVALUED": "#34d399", "FAIR": "#fbbf24", "EXPENSIVE": "#fb7185",
+        "FEARFUL": "#34d399", "GREEDY": "#fbbf24", "OVERHEATED": "#fb7185",
+        "CALM": "#8aa0b8", "NEUTRAL": "#8aa0b8",
+        "BUY": "#34d399", "WATCHLIST": "#fbbf24", "AVOID": "#fb7185",
+    }
+    val = dd.get("valuation")
+    if val and val != "N/A":
+        pills.append((val, _pillmap.get(val, "#8aa0b8")))
+    sent = dd.get("psychology_sentiment")
+    if sent:
+        pills.append((f"SENTIMENT: {sent}", _pillmap.get(sent, "#8aa0b8")))
+    setup = dd.get("trade_setup_signal")
+    if setup:
+        pills.append((f"ENTRY: {setup}", _pillmap.get(setup, "#8aa0b8")))
+    pills_html = "".join(
+        f"<span class='sdd-pill' style='background:{c}22;color:{c};border:1px solid {c}55;'>{html.escape(t)}</span>"
+        for t, c in pills
+    )
+    spark_html = ""
+    if spark_pts:
+        ma_line = (
+            f"<polyline points='{ma_pts}' fill='none' stroke='#5b7290' "
+            f"stroke-width='1.5' stroke-dasharray='4 4'/>"
+        ) if ma_pts else ""
+        dot = ""
+        if last_pt:
+            lx, ly = last_pt.split(",")
+            dot = f"<circle cx='{lx}' cy='{ly}' r='3.5' fill='#2dd4bf' stroke='#0b1220' stroke-width='2'/>"
+        spark_html = (
+            "<div class='sdd-spark-cap'><span>6-month price vs 50-day average</span>"
+            "<span>via Yahoo Finance</span></div>"
+            f"<svg viewBox='0 0 440 52' width='100%' height='48'>"
+            f"{ma_line}<polyline points='{spark_pts}' fill='none' stroke='#2dd4bf' stroke-width='2'/>{dot}</svg>"
+        )
+    name = html.escape(str(dd.get("name") or ""))
+    return f"""
+<div class='sdd-card'>
+  <div class='sdd-card-tag'><span>FEATURED ANALYSIS &middot; REFRESHED DAILY</span><span style='color:#34d399;'>&#9679; LIVE</span></div>
+  <div class='sdd-fa-head'>
+    <span class='sdd-fa-tkr'>{html.escape(dd['ticker'])}</span>
+    <span class='sdd-fa-nm'>{name}</span>
+    <span class='sdd-fa-px'>{dd['price']:,.2f} {html.escape(dd['currency'])}</span>
+  </div>
+  <div class='sdd-fa-grid'>
+    <div style='text-align:center;'>
+      <svg viewBox='0 0 200 120' width='100%'>
+        <path d='M15 105 A85 85 0 0 1 185 105' fill='none' stroke='#1f3352' stroke-width='13' stroke-linecap='round'/>
+        {arc}
+        <text x='100' y='86' text-anchor='middle' fill='#e6edf5' font-size='26' font-weight='700' font-family='monospace'>{score:.0f}</text>
+        <text x='100' y='106' text-anchor='middle' fill='#8aa0b8' font-size='10' font-family='monospace'>LONG SCORE / 100</text>
+      </svg>
+      <div style='font-size:12px;color:#8aa0b8;'>Verdict: <b style='color:{vcolor};'>{verdict}</b></div>
+    </div>
+    <div>
+      <div class='sdd-stat'><div class='k'>INTRINSIC VALUE (DCF, BASE CASE)</div><div class='v'>{iv_txt}</div></div>
+      <div class='sdd-stat'><div class='k'>MARGIN OF SAFETY</div><div class='v' style='color:{mos_color};'>{mos_txt}</div></div>
+      <div class='sdd-stat'><div class='k'>QUALITY SCORE</div><div class='v'>{dd['quality_score']} / 100</div></div>
+    </div>
+  </div>
+  <div style='display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;'>{pills_html}</div>
+  <div style='margin-top:12px;'>{spark_html}</div>
+</div>
+"""
+
+
+def _render_footer():
+    """Site footer: navigation, contact, and the general-advice disclaimer -
+    rendered on every page (called once, after st.navigation runs the page,
+    so no page can accidentally skip it)."""
+    st.markdown(
+        """
+<div class='sdd-footer'>
+  <div class='sdd-f-cols'>
+    <div><h5>StocksDeepDive</h5>
+      <a href='/' target='_self'>Home</a>
+      <a href='/research' target='_self'>Rational Compounder Research</a>
+    </div>
+    <div><h5>Tools</h5>
+      <a href='/deep-dive' target='_self'>Stock Deep Dive</a>
+      <a href='/comparison' target='_self'>Comparison</a>
+      <a href='/scanner' target='_self'>Stock Scanner</a>
+    </div>
+    <div><h5>Contact</h5>
+      <span style='display:block;color:#8aa0b8;margin-top:6px;font-size:13px;'>Use the Feedback button on any results page</span>
+    </div>
+  </div>
+  <div class='sdd-disclaimer'>
+    <b>General information only.</b> StocksDeepDive provides factual information and general
+    commentary generated from publicly available data. It does not take your personal objectives,
+    financial situation or needs into account and is not financial advice. Scores, signals, entry
+    zones and price targets are model outputs, not recommendations. Consider seeking advice from a
+    licensed adviser before acting. Data via Yahoo Finance, Google Trends, StockTwits and NewsAPI;
+    figures may be delayed or estimated &mdash; estimated values are shown in red throughout the site.
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+
+def _render_watchlist_row():
+    """Signed-in users' saved tickers as one-click chips on the home page -
+    the sign-in carrot, and the audience the weekly digest goes to."""
+    email = paywall_engine.current_user_email()
+    if not email:
+        return
+    try:
+        tickers = watchlist_store.get_watchlist(email)
+    except Exception:
+        return
+    if not tickers:
+        return
+    st.markdown(
+        "<div style='color:#5b7290;font-size:12px;letter-spacing:1.2px;"
+        "font-family:ui-monospace,Menlo,monospace;margin:18px 0 2px;'>YOUR WATCHLIST</div>",
+        unsafe_allow_html=True,
+    )
+    cols = st.columns(min(len(tickers), 8) + 2)
+    for i, t in enumerate(tickers[:8]):
+        if cols[i].button(t, key=f"wl_chip_{t}"):
+            _dispatch_search(t)
+
+
 def _render_header(compact, page_label=None):
+    _render_tape()
     # page_label is only passed on the three main service pages (Deep Dive,
     # Comparison, Rational Compounder Analysis) - Home doesn't get a
     # feedback button since there's no service content there to comment on.
@@ -374,18 +800,18 @@ def _render_header(compact, page_label=None):
         <style>
         .site-title {{
             text-align: center; font-weight: 800;
-            font-family: 'Segoe UI', sans-serif; color: #0f172a;
+            font-family: 'Segoe UI', sans-serif; color: #e6edf5;
             font-size: {"20px" if compact else "58px"};
             margin-top: {"2px" if compact else "44px"};
             margin-bottom: {"2px" if compact else "8px"};
         }}
-        .site-title .accent {{ color: #0d9488; }}
+        .site-title .accent {{ color: #2dd4bf; }}
         .site-title-link, .site-title-link:hover, .site-title-link:visited {{
             display: block; text-decoration: none !important; cursor: pointer;
         }}
         .site-title-link:hover .site-title {{ opacity: 0.85; }}
         .site-sub {{
-            text-align: center; color: #64748b; font-size: 16px;
+            text-align: center; color: #8aa0b8; font-size: 16px;
             margin-bottom: 28px; font-family: 'Segoe UI', sans-serif;
         }}
         </style>
@@ -444,40 +870,12 @@ def _render_header(compact, page_label=None):
             )
 
     if _searched:
-        _raw = _search_text.replace(",", " ").replace("\n", " ").split()
-        _parsed = []
-        for _tok in _raw:
-            _tok = _tok.strip().upper()
-            if _tok and _tok not in _parsed:
-                _parsed.append(_tok)
-        if not _parsed:
-            st.warning("Type at least one ticker above, then hit Search.")
-        elif len(_parsed) == 1:
-            _tk = _parsed[0]
-            with st.spinner(f"Analyzing {_tk}..."):
-                st.session_state["dd_result"] = deep_dive_engine.analyze(
-                    _tk, get_price_history, get_ticker_info, get_cashflow_df,
-                    news_api_key=news_api_key, live_data=live_data,
-                    enable_social=enable_social,
-                )
-            st.switch_page(PG_DEEP_DIVE)
-        else:
-            # Swing regime benchmark only - never affects how a ticker itself
-            # is resolved. Whichever suffix convention is more common in this
-            # list decides it; a tie or an all-".AX" list defaults to the ASX
-            # benchmark.
-            _n_au = sum(1 for _tk in _parsed if _tk.endswith(".AX"))
-            _stk_country = "USA" if (len(_parsed) - _n_au) > _n_au else "Australia"
-            st.session_state["cmp_stocks"] = _parsed
-            st.session_state["cmp_universe_source"] = f"Manual ticker list ({len(_parsed)} entered)"
-            st.session_state["cmp_scan_country"] = _stk_country
-            st.session_state["cmp_fresh"] = True
-            st.switch_page(PG_COMPARISON)
+        _dispatch_search(_search_text)
 
     _sp_margin = "10px" if compact else "20px"
     st.markdown(f"<div style='margin-bottom:{_sp_margin};'></div>", unsafe_allow_html=True)
 
-def _dd_gauge(value, title, zones, bar_color="#1f2937", height=260):
+def _dd_gauge(value, title, zones, bar_color="#e6edf5", height=260):
     """
     One consistent 0-100 gauge for the Deep Dive tab's per-factor scores
     (Quality / Psychology / Discovery / Trade Setup) - same shape as the
@@ -519,7 +917,7 @@ def _dd_contrib_chart(contributions, title, xaxis_title="Points", height=260):
         x=plot_values,
         y=list(contributions.keys()),
         orientation="h",
-        marker_color=["#2ca02c" if v >= 0 else "#d62728" for v in raw_values],
+        marker_color=["#34d399" if v >= 0 else "#fb7185" for v in raw_values],
         text=[f"{v:+.1f}" for v in raw_values],
         textposition="outside",
     ))
@@ -548,7 +946,7 @@ def _dd_gate_chart(contributions, title, xaxis_title="Points", height=260):
         x=plot_values,
         y=list(contributions.keys()),
         orientation="h",
-        marker_color=["#2ca02c" if v > 0 else "#d62728" for v in raw_values],
+        marker_color=["#34d399" if v > 0 else "#fb7185" for v in raw_values],
         text=[("PASS" if v > 0 else "FAIL") for v in raw_values],
         textposition="outside",
     ))
@@ -568,8 +966,8 @@ def _dd_gate_chart(contributions, title, xaxis_title="Points", height=260):
 # blue) ranges spelled out in his own comment text, not invented cutoffs.
 # -----------------------------------
 
-_CP_COLOR_FILL = {"red": "#f7d7d7", "amber": "#fbe8c6", "green": "#b7dfba", "blue": "#bfe3ef"}
-_CP_COLOR_TEXT = {"red": "#b3261e", "amber": "#8a5a00", "green": "#1e7d34", "blue": "#0f6c8a"}
+_CP_COLOR_FILL = {"red": "#43222e", "amber": "#43371c", "green": "#27584a", "blue": "#1d4356"}
+_CP_COLOR_TEXT = {"red": "#fb7185", "amber": "#fbbf24", "green": "#34d399", "blue": "#5ed3f0"}
 
 
 @st.cache_data
@@ -642,7 +1040,7 @@ def _cp_gauge(value, label, fmt, thresholds, height=130):
     steps = [
         {
             "range": [lo if lo is not None else axis_min, hi if hi is not None else axis_max],
-            "color": _CP_COLOR_FILL.get(color, "#e5e7eb"),
+            "color": _CP_COLOR_FILL.get(color, "#26334a"),
         }
         for lo, hi, color, _ in thresholds
     ]
@@ -658,14 +1056,14 @@ def _cp_gauge(value, label, fmt, thresholds, height=130):
         gauge={
             "shape": "bullet",
             "axis": {"range": [axis_min, axis_max], "tickfont": {"size": 9}},
-            "bar": {"color": "#0f172a", "thickness": 0.45},
+            "bar": {"color": "#e6edf5", "thickness": 0.45},
             "steps": steps,
-            "threshold": {"line": {"color": "#0f172a", "width": 2}, "thickness": 0.9, "value": value},
+            "threshold": {"line": {"color": "#e6edf5", "width": 2}, "thickness": 0.9, "value": value},
         },
     ))
     fig.update_layout(
         height=height, margin=dict(l=10, r=10, t=22, b=8),
-        title={"text": label, "font": {"size": 13, "color": "#0f172a"}, "x": 0, "xanchor": "left"},
+        title={"text": label, "font": {"size": 13, "color": "#e6edf5"}, "x": 0, "xanchor": "left"},
     )
     return fig
 
@@ -680,11 +1078,11 @@ def _cp_price_chart(ticker, price_history):
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=entry["dates"], y=entry["prices"], mode="lines", name="Price",
-        line=dict(color="#0d9488", width=2),
+        line=dict(color="#2dd4bf", width=2),
     ))
     if entry.get("avg_10y") is not None:
         fig.add_hline(
-            y=entry["avg_10y"], line_dash="dash", line_color="#0f172a",
+            y=entry["avg_10y"], line_dash="dash", line_color="#e6edf5",
             annotation_text=f"10y Average ${entry['avg_10y']:,.2f}",
             annotation_position="top left", annotation_font_size=11,
         )
@@ -704,7 +1102,7 @@ def _cp_share_price_growth_chart(ticker, share_price_growth):
         return None
     years = list(reversed(entry["years"]))
     values = list(reversed(entry["values"]))
-    colors = ["#2ca02c" if v >= 0 else "#d62728" for v in values]
+    colors = ["#34d399" if v >= 0 else "#fb7185" for v in values]
     fig = go.Figure(go.Bar(
         x=years, y=values, marker_color=colors,
         text=[f"{v * 100:+.1f}%" for v in values], textposition="outside",
@@ -731,7 +1129,7 @@ def _cp_value_created_chart(ticker, value_created):
     created = [entry[h]["value_created"] for h in order]
     fig = go.Figure()
     fig.add_trace(go.Bar(x=order, y=retained, name="Retained Earnings Per Share", marker_color="#94a3b8"))
-    fig.add_trace(go.Bar(x=order, y=created, name="Market Value Created for every dollar retained", marker_color="#0d9488"))
+    fig.add_trace(go.Bar(x=order, y=created, name="Market Value Created for every dollar retained", marker_color="#2dd4bf"))
     fig.update_layout(
         barmode="group", title="Value Created per $ Retained, by horizon",
         height=320, margin=dict(l=10, r=10, t=40, b=10),
@@ -751,14 +1149,14 @@ def _cp_iv_bv_series_chart(ticker, iv_bv_series, thresholds):
     colors = []
     for r in ratios:
         band = _cp_band(r, thresholds) if thresholds else None
-        colors.append(_CP_COLOR_FILL.get(band[0], "#0d9488") if band else "#0d9488")
+        colors.append(_CP_COLOR_FILL.get(band[0], "#2dd4bf") if band else "#2dd4bf")
     fig = go.Figure(go.Bar(
         x=years, y=ratios, marker_color=colors,
         text=[f"{v:.2f}x" for v in ratios], textposition="outside",
     ))
     avg_ratio = sum(ratios) / len(ratios)
     fig.add_hline(
-        y=avg_ratio, line_dash="dash", line_color="#0f172a",
+        y=avg_ratio, line_dash="dash", line_color="#e6edf5",
         annotation_text=f"Average {avg_ratio:.2f}x",
         annotation_position="top left", annotation_font_size=11,
     )
@@ -770,7 +1168,7 @@ def _cp_iv_bv_series_chart(ticker, iv_bv_series, thresholds):
     return fig
 
 
-def _cp_year_bar_chart(ticker, series, key, title, yaxis_title, fmt="num", color="#0d9488"):
+def _cp_year_bar_chart(ticker, series, key, title, yaxis_title, fmt="num", color="#2dd4bf"):
     """Generic X=year bar chart for a year-series pulled straight from the
     workbook (EPS, PE Ratio, ...) - one consistent shape reused per metric."""
     entry = series.get(ticker, {}).get(key)
@@ -796,7 +1194,7 @@ def _cp_eps_growth_chart(ticker, series):
         return None
     years = list(reversed(entry["years"]))
     values = list(reversed(entry["values"]))
-    colors = ["#2ca02c" if v >= 0 else "#d62728" for v in values]
+    colors = ["#34d399" if v >= 0 else "#fb7185" for v in values]
     fig = go.Figure(go.Bar(
         x=years, y=values, marker_color=colors,
         text=[f"{v * 100:+.1f}%" for v in values], textposition="outside",
@@ -827,7 +1225,7 @@ def _cp_pe_ratio_chart(ticker, series, pe_ratio_refs):
     years = list(reversed(entry["years"]))
     values = list(reversed(entry["values"]))
     fig = go.Figure(go.Bar(
-        x=years, y=values, marker_color="#64748b",
+        x=years, y=values, marker_color="#8aa0b8",
         text=[_cp_format(v, "x") for v in values], textposition="outside",
         name="PE Ratio", showlegend=False,
     ))
@@ -859,8 +1257,8 @@ def _cp_pe_ratio_chart(ticker, series, pe_ratio_refs):
             font=dict(color=color, size=11), align="left",
         )
 
-    _cp_pe_ref_line(avg_3y, "#c2410c", "dash", "3y EPS avg", avg_3y_yanchor)
-    _cp_pe_ref_line(overall_avg, "#1d4ed8", "dot", "Overall avg", overall_avg_yanchor)
+    _cp_pe_ref_line(avg_3y, "#fb923c", "dash", "3y EPS avg", avg_3y_yanchor)
+    _cp_pe_ref_line(overall_avg, "#60a5fa", "dot", "Overall avg", overall_avg_yanchor)
     fig.update_layout(
         title="PE Ratio by Year", height=340, showlegend=False,
         margin=dict(l=10, r=100, t=40, b=10), yaxis_title="PE Ratio",
@@ -897,7 +1295,7 @@ def _cp_wacc_roic_chart(ticker, wacc_roic_series):
         text=[f"{v * 100:.1f}%" if v is not None else "" for v in wacc_vals], textposition="outside",
     ))
     fig.add_trace(go.Bar(
-        x=periods, y=roic_vals, name="ROIC", marker_color="#0d9488",
+        x=periods, y=roic_vals, name="ROIC", marker_color="#2dd4bf",
         text=[f"{v * 100:.1f}%" if v is not None else "" for v in roic_vals], textposition="outside",
     ))
     fig.update_layout(
@@ -912,11 +1310,11 @@ def _cp_wacc_roic_chart(ticker, wacc_roic_series):
 # "inputs under each bar" row so the two line up. "Rational Compounder
 # Method 10y" was "Equity Method 10y" until Andrew asked for the rename.
 _CP_VALUATION_METHOD_ORDER = [
-    ("price", "Current Price", "#0d9488"),
+    ("price", "Current Price", "#2dd4bf"),
     ("pe_forward", "PE Forward", "#94a3b8"),
-    ("pe_trailing", "PE Trailing", "#64748b"),
-    ("dcf", "DCF (10y FCF)", "#1e7d34"),
-    ("equity_10y", "Rational Compounder Method 10y", "#4c9f70"),
+    ("pe_trailing", "PE Trailing", "#8aa0b8"),
+    ("dcf", "DCF (10y FCF)", "#34d399"),
+    ("equity_10y", "Rational Compounder Method 10y", "#4cc38a"),
 ]
 
 
@@ -957,7 +1355,7 @@ def _cp_render_valuation_inputs(ticker, used, valuation_inputs, valuation_method
     cols = st.columns(len(used))
     for col, (key, label) in zip(cols, used):
         with col:
-            st.markdown(f"<div style='text-align:center;font-size:12px;font-weight:600;color:#334155;'>{label}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:center;font-size:12px;font-weight:600;color:#aebfd4;'>{label}</div>", unsafe_allow_html=True)
             # "Current Price" is the actual market price, not a valuation
             # estimate - skip the "Intrinsic Value" line for that one bar.
             lines = [] if key == "price" else [f"Intrinsic Value: {_cp_format(method_values.get(key), 'cur')}"]
@@ -965,7 +1363,7 @@ def _cp_render_valuation_inputs(ticker, used, valuation_inputs, valuation_method
                 lines.append(f"{item['label']}: {_cp_format(item['value'], item['format'])}")
             if lines:
                 st.markdown(
-                    "<div style='text-align:center;font-size:11.5px;color:#64748b;line-height:1.6;'>"
+                    "<div style='text-align:center;font-size:11.5px;color:#8aa0b8;line-height:1.6;'>"
                     + "<br>".join(lines) + "</div>",
                     unsafe_allow_html=True,
                 )
@@ -979,7 +1377,7 @@ _CP_HML_COLOR = {
 
 
 def _cp_pill(text, color_key=None):
-    c = _CP_COLOR_TEXT.get(color_key, "#475569")
+    c = _CP_COLOR_TEXT.get(color_key, "#9db1c7")
     return (
         f"<span style='display:inline-block;margin:2px 6px 2px 0;padding:3px 10px;"
         f"border-radius:12px;font-size:12.5px;font-weight:600;"
@@ -993,7 +1391,7 @@ def _cp_render_hml_ratings(ratings):
     for r in ratings:
         color_key = _CP_HML_COLOR.get(r["polarity"], {}).get(r["value"].strip().lower())
         html_parts.append(
-            f"<div style='margin-bottom:6px;'><span style='font-size:13px;color:#334155;'>"
+            f"<div style='margin-bottom:6px;'><span style='font-size:13px;color:#aebfd4;'>"
             f"{r['label']}: </span>{_cp_pill(r['value'].strip(), color_key)}</div>"
         )
     # two columns of pills so a long ratings list doesn't run the whole page
@@ -1009,7 +1407,7 @@ def _cp_render_yesno_checks(checks):
     st.markdown("##### Quick checks")
     html = "".join(
         f"<span style='display:inline-block;margin:2px 8px 8px 0;padding:4px 10px;"
-        f"border-radius:8px;font-size:12.5px;background:#f1f5f9;color:#334155;'>"
+        f"border-radius:8px;font-size:12.5px;background:#1f3352;color:#aebfd4;'>"
         f"{c['label']}: <b>{c['value'].strip()}</b></span>"
         for c in checks
     )
@@ -1228,7 +1626,7 @@ def _render_last_updated(generated_at):
     _, corner = st.columns([3, 1])
     with corner:
         st.markdown(
-            f'<div style="text-align:right; color:#64748b; font-size:13px; '
+            f'<div style="text-align:right; color:#8aa0b8; font-size:13px; '
             f'margin-bottom:6px;">Last updated on {label}</div>',
             unsafe_allow_html=True,
         )
@@ -1242,9 +1640,8 @@ def page_research():
     data = _load_compounder_data()
     if not data or not data.get("tickers"):
         st.info(
-            "Rational Compounder Analysis - the research data file hasn't been "
-            "built yet. Run build_compounder_data.py against the watchlist "
-            "workbook to generate compounder_data.json, then reload this page."
+            "Rational Compounder Analysis - the research data is being "
+            "prepared. Check back shortly."
         )
         return
 
@@ -1261,8 +1658,15 @@ def page_research():
     _render_last_updated(data.get("generated_at"))
 
     st.caption(
-        "Every chart, threshold and colour band here comes straight from your "
-        "own notes on the watchlist workbook - pick a stock, then a section."
+        "Hand-built research, not a screen: every chart, threshold and "
+        "colour band on this page comes straight from the author's own "
+        "research workbook. Pick a stock, then a section."
+    )
+
+    st.caption(
+        f"{len(data['tickers'])} companies covered in depth today - new "
+        "names are added as each one's research completes. Want a stock "
+        "prioritised? Say so via the Feedback button above."
     )
 
     tickers = sorted(data["tickers"].keys())
@@ -1302,8 +1706,8 @@ def page_research():
         if not paywall_engine.render_gate(
             "Company Potential - your own research notes",
             teaser=(
-                "Your Low/Medium/High ratings, Yes/No checks, and written "
-                "analysis for every stock on the watchlist."
+                "The author's Low/Medium/High ratings, quick checks, and "
+                "full written analysis for every covered company."
             ),
             key_prefix=f"cp_potential_{ticker}",
         ):
@@ -1315,9 +1719,9 @@ def page_research():
             st.warning(f"No Company Potential notes yet for {ticker}.")
             return
         st.caption(
-            "Your own Low/Medium/High cells, shown directly, plus your "
-            "free-text answers merged into a few themed groups (the "
-            "grouping is my call, not something you specified)."
+            "The author's Low/Medium/High calls on management, moat, risk "
+            "and more - shown exactly as researched - plus the full written "
+            "analysis, grouped by theme."
         )
         if ratings:
             _cp_render_hml_ratings(ratings)
@@ -1374,7 +1778,10 @@ def page_research():
     elif section_label == "Fair Value":
         if not paywall_engine.render_gate(
             "Fair Value - full valuation methods breakdown",
-            teaser="Every valuation method you track, side by side, with the inputs behind each one.",
+            teaser=(
+                "Four independent valuation methods side by side, with the "
+                "exact inputs behind each one."
+            ),
             key_prefix=f"cp_fairvalue_{ticker}",
         ):
             return
@@ -1410,7 +1817,7 @@ def page_research():
                     color, band_label = band
                     st.markdown(
                         f"<div style='margin-top:-14px; margin-bottom:8px; "
-                        f"font-size:12px; color:{_CP_COLOR_TEXT.get(color, '#334155')};'>"
+                        f"font-size:12px; color:{_CP_COLOR_TEXT.get(color, '#aebfd4')};'>"
                         f"{band_label}</div>",
                         unsafe_allow_html=True,
                     )
@@ -1435,33 +1842,287 @@ def page_research():
 
 
 def page_home():
-    _render_header(compact=False)
+    # LAYOUT FIRST, DATA SECOND. Every static element (hero, search, chips,
+    # feature cards, steps, coverage, CTA) renders immediately; the three
+    # remote-data elements (tape, featured analysis, mood strip) get empty
+    # containers up front and are filled at the END of the run from one
+    # concurrent, hard-budgeted fetch. A cold cache or a slow upstream
+    # source delays those three boxes only - never the page.
+    _day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    _feat_ticker = _FEATURED_ROTATION[
+        datetime.now(timezone.utc).timetuple().tm_yday % len(_FEATURED_ROTATION)
+    ]
+
+    _tape_box = st.container()
+    paywall_engine.render_account_bar()
+
+    # top row: logo + free-during-launch badge
+    st.markdown(
+        """
+<div class='sdd-navrow'>
+  <span class='sdd-logo'>Stocks<span class='accent'>DeepDive</span></span>
+  <span class='sdd-badge-free'>FREE DURING LAUNCH</span>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    hero_l, hero_r = st.columns([11, 10], gap="large")
+    with hero_l:
+        st.markdown(
+            """
+<div class='sdd-h1'>Know what a stock is <em>worth</em> &mdash; and whether now is a sane entry.</div>
+<div class='sdd-sub'>One score that combines <b>value, quality, crowd psychology and market
+attention</b> &mdash; computed live for any ASX or US stock. No noise, no hidden assumptions:
+every estimated number is flagged.</div>
+""",
+            unsafe_allow_html=True,
+        )
+        with st.form("home_search_form", clear_on_submit=False, border=False):
+            _sc1, _sc2 = st.columns([4, 1])
+            with _sc1:
+                _home_text = st.text_input(
+                    "Ticker search",
+                    placeholder="CSL.AX  ·  or two tickers to compare: CSL.AX BHP.AX",
+                    label_visibility="collapsed", key="home_search",
+                )
+            with _sc2:
+                _home_go = st.form_submit_button("Analyze", use_container_width=True, type="primary")
+        _render_example_chips("home")
+        st.markdown(
+            "<div style='color:#5b7290;font-size:12.5px;margin-top:6px;'>One ticker = full Deep "
+            "Dive &middot; Two or more = side-by-side Comparison &middot; ASX + US mixed freely</div>",
+            unsafe_allow_html=True,
+        )
+        if _home_go:
+            _dispatch_search(_home_text)
+
+    _feat_box = hero_r.container()
+
+    # ---- watchlist row (signed-in users) ----
+    _render_watchlist_row()
+
+    _mood_box = st.container()
+
+    # ---- feature cards ----
+    st.markdown(
+        """
+<div class='sdd-kicker'>THE TOOLKIT</div>
+<div class='sdd-h2'>Four ways in. One consistent model.</div>
+<div class='sdd-secsub'>Every tool runs the same engine &mdash; the same DCF, the same quality
+tests, the same psychology read &mdash; so the numbers always agree with each other.</div>
+<div class='sdd-cards4'>
+  <a class='sdd-feat' href='/deep-dive' target='_self'>
+    <div class='ic'>&#128269;</div><h3>Stock Deep Dive</h3>
+    <p>The full picture for one ticker: intrinsic value vs price, what drives the Long Score,
+    crowd psychology, and a technical entry zone with stop &amp; targets.</p>
+  </a>
+  <a class='sdd-feat' href='/comparison' target='_self'>
+    <div class='ic'>&#9878;&#65039;</div><h3>Side-by-side Comparison</h3>
+    <p>Two or more tickers lined up on identical criteria &mdash; valuation, quality, sentiment,
+    trend, trade setup &mdash; as colour-coded bars and verdict pills.</p>
+  </a>
+  <a class='sdd-feat' href='/scanner' target='_self'>
+    <div class='ic'>&#128225;</div><h3>Stock Scanner</h3>
+    <p>Rank a whole index &mdash; ASX 200, S&amp;P 500 and more &mdash; by Long Score, with an
+    optional sector filter. Find what to look at, not just check what you already own.</p>
+  </a>
+  <a class='sdd-feat' href='/research' target='_self'>
+    <div class='ic'>&#128218;</div><h3>Rational Compounder Research</h3>
+    <p>Hand-built, Buffett/Munger-style research on selected compounders &mdash; a decade of
+    earnings, four fair-value methods, and written judgment on every business.</p>
+  </a>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # ---- how it works ----
+    st.markdown(
+        """
+<div class='sdd-kicker' style='margin-top:40px;'>HOW IT WORKS</div>
+<div class='sdd-h2'>Search. Score. Decide.</div>
+<div class='sdd-steps'>
+  <div class='sdd-step'><div class='n'>01</div><h4>Type any ticker</h4>
+    <p>ASX (CSL.AX) or US (AAPL). Live data is pulled on the spot &mdash; prices, cash flows,
+    news, search trends, social chatter.</p></div>
+  <div class='sdd-step'><div class='n'>02</div><h4>Get one honest score</h4>
+    <p>The Long Score blends business quality, margin of safety, crowd psychology and market
+    attention &mdash; the same value-investing maths every time, with every input shown.</p></div>
+  <div class='sdd-step'><div class='n'>03</div><h4>See value AND timing</h4>
+    <p>Two separate verdicts, never blurred: is this a good business to <em>own</em>, and is
+    right now a sane <em>entry</em>? A great company can still be a bad buy today.</p></div>
+</div>
+<div class='sdd-honesty'><b>The red-flag rule:</b> whenever a number rests on a default or
+average because real data wasn't available, it's shown in red. An estimate is never dressed up
+as a fact &mdash; you always know which numbers are computed and which are assumed.</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # ---- compounder coverage ----
+    _cov_data = _load_compounder_data()
+    if _cov_data and _cov_data.get("tickers"):
+        _cov_cards = []
+        for _t in sorted(_cov_data["tickers"].keys()):
+            _ind = html.escape(str(_cov_data["tickers"][_t].get("industry") or ""))
+            _nsec = sum(1 for _s in _cov_data.get("sections", {}).values()
+                        if any(_m["values"].get(_t) is not None for _m in _s.get("metrics", [])))
+            _cov_cards.append(
+                f"<div class='sdd-cov'><div class='tkr'>{html.escape(_t)}</div>"
+                f"<div class='ind'>{_ind}</div>"
+                f"<div class='row'><span>Research sections</span><b>{max(_nsec, 1)}</b></div>"
+                f"<div class='row'><span>Written verdict</span><b style='color:#34d399;'>&#10003;</b></div></div>"
+            )
+        _cov_cards.append(
+            "<a class='sdd-cov sdd-cov-req' href='/research' target='_self'>"
+            "<div style='font-size:22px;color:#2dd4bf;'>&#65291;</div>"
+            "Which stock should be researched next?<br>"
+            "<span style='color:#2dd4bf;font-weight:600;'>Tell us via Feedback &rarr;</span></a>"
+        )
+        st.markdown(
+            "<div class='sdd-kicker' style='margin-top:40px;'>RATIONAL COMPOUNDER RESEARCH</div>"
+            "<div class='sdd-h2'>Covered in depth today</div>"
+            "<div class='sdd-secsub'>New companies are added as the research completes &mdash; "
+            "each one takes weeks, not minutes.</div>"
+            f"<div class='sdd-covgrid'>{''.join(_cov_cards)}</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ---- CTA band ----
+    st.markdown(
+        """
+<div class='sdd-cta'>
+  <div>
+    <div class='sdd-h2' style='margin:0 0 6px;'>Everything is free while we launch.</div>
+    <div style='color:#8aa0b8;font-size:14.5px;max-width:560px;line-height:1.5;'>Sign in (top
+    right) to save a watchlist and get the weekly signal digest. When subscriptions open,
+    founding members keep launch pricing &mdash; locked in.</div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # ---- DEFERRED DATA FILL: one concurrent, hard-budgeted fetch ----
+    _home = _fetch_with_budget(
+        {
+            "tape": lambda: _tape_quotes(_day_key),
+            "mood_au": lambda: get_country_mood("Australia"),
+            "mood_us": lambda: get_country_mood("USA"),
+            "featured": lambda: _featured_analysis(_feat_ticker, _day_key),
+        },
+        budget_seconds=10,
+    )
+
+    with _tape_box:
+        _render_tape(_home["tape"])
+
+    with _feat_box:
+        _feat = _home["featured"]
+        if _feat:
+            _hist = get_price_history(_feat["ticker"])
+            _spark_pts, _last_pt, _ma_pts = None, None, None
+            try:
+                _closes = _hist["Close"].dropna().tail(120)
+                _spark_pts, _last_pt = _spark_path(_closes)
+                _ma = _hist["Close"].rolling(50).mean().dropna().tail(120)
+                if len(_ma) >= 2:
+                    _ma_pts, _ = _spark_path(list(_ma))
+            except Exception:
+                pass
+            st.markdown(
+                _featured_card_html(_feat, _spark_pts, _ma_pts, _last_pt),
+                unsafe_allow_html=True,
+            )
+            if st.button(f"Open the full {_feat['ticker']} Deep Dive →", key="feat_open",
+                         use_container_width=True):
+                _dispatch_search(_feat["ticker"])
+        else:
+            st.markdown(
+                """
+<div class='sdd-card'>
+  <div class='sdd-card-tag'><span>WHAT YOU GET</span></div>
+  <div style='font-size:15px;line-height:1.7;color:#8aa0b8;'>
+    Every search answers three questions:<br><br>
+    <b style='color:#e6edf5;'>What is it worth?</b> A live DCF with a per-stock discount rate,
+    plus margin of safety vs today's price.<br><br>
+    <b style='color:#e6edf5;'>Is it a good business?</b> A 0&ndash;100 Quality Score from
+    profitability and balance-sheet tests.<br><br>
+    <b style='color:#e6edf5;'>Is now a sane entry?</b> Crowd psychology and a technical entry
+    zone &mdash; kept separate from the ownership question.
+  </div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+
+    with _mood_box:
+        _tiles = []
+        for _mood, _k in ((_home["mood_au"], "AU"), (_home["mood_us"], "US")):
+            try:
+                if _mood and _mood.get("label") and _mood["label"] != "Unknown":
+                    _mc = {"Hopeful": "#34d399", "Neutral": "#8aa0b8",
+                           "Anxious": "#fbbf24"}.get(_mood["label"], "#8aa0b8")
+                    _tiles.append(
+                        f"<div class='sdd-tile'><div class='k'>{_k} MARKET MOOD</div>"
+                        f"<div class='v' style='color:{_mc};'>{_mood['label'].upper()}</div>"
+                        f"<div class='d'>live news-tone reading</div></div>"
+                    )
+            except Exception:
+                pass
+        for _lbl, _last, _chg in (_home["tape"] or [])[:2]:
+            _cc = "#34d399" if _chg >= 0 else "#fb7185"
+            _tiles.append(
+                f"<div class='sdd-tile'><div class='k'>{html.escape(_lbl)}</div>"
+                f"<div class='v'>{_last:,.1f}</div>"
+                f"<div class='d' style='color:{_cc};'>{_chg:+.2f}% today</div></div>"
+            )
+        if _tiles:
+            st.markdown(
+                f"<div class='sdd-strip'>{''.join(_tiles[:4])}</div>", unsafe_allow_html=True
+            )
 
 
 def page_deep_dive():
     _render_header(compact=True, page_label="Deep Dive")
     _dd = st.session_state.get("dd_result")
 
-    # The long explanatory paragraph only earns its space when there's
-    # nothing else on the page yet - once real results are showing, it's
-    # just extra scrolling between the search box and the numbers you
-    # searched for.
+    # Shareable URLs: /deep-dive?ticker=CSL.AX runs the analysis directly,
+    # so a blog post or shared link opens a live result instead of an empty
+    # page. Once a result is showing, the URL is updated to match it, so
+    # copying the address bar always captures what's on screen. The
+    # one-shot "dd_qp_tried" flag stops a ticker that errors from being
+    # re-analyzed on every rerun.
+    _qp_ticker = (st.query_params.get("ticker") or "").strip().upper()
+    if _qp_ticker and (_dd is None or _dd.get("ticker") != _qp_ticker):
+        if st.session_state.get("dd_qp_tried") != _qp_ticker:
+            st.session_state["dd_qp_tried"] = _qp_ticker
+            with st.spinner(f"Analyzing {_qp_ticker}..."):
+                st.session_state["dd_result"] = deep_dive_engine.analyze(
+                    _qp_ticker, get_price_history, get_ticker_info,
+                    get_cashflow_df, news_api_key=news_api_key,
+                    live_data=live_data, enable_social=enable_social,
+                )
+            _dd = st.session_state["dd_result"]
+    if _dd is not None and not _dd.get("error") and _dd.get("ticker"):
+        st.query_params["ticker"] = _dd["ticker"]
+
+    # The explanatory line only earns its space when there's nothing else
+    # on the page yet - and it leads with outcomes, not model internals
+    # (the methodology detail lives on the results themselves).
     if _dd is None or _dd.get("error"):
         st.caption(
-            "Full graphical breakdown for one ticker: the base-case DCF "
-            "(auto-calculated CAPM discount rate, analyst-consensus-or-history "
-            "growth, currency-based terminal growth - the same model as every "
-            "other table in this app) alongside every factor that feeds its Long "
-            "Score, plus a dedicated Trade Setup (the same entry/stop/target "
-            "model the Trade Filter table uses), so you can see at a glance "
-            "what's driving the call. Always fetches fresh numbers for "
-            "whichever ticker you searched, and always shows the fully "
-            "auto-calculated base case (no bear/bull scenarios yet - this tab "
-            "will keep growing in later updates)."
+            "One ticker, the complete picture: what the stock is worth (a "
+            "live DCF built from its own cash flows), whether the business "
+            "is high quality, whether the crowd is fearful or greedy about "
+            "it, and whether right now is a sane entry - with the exact "
+            "factors behind every score charted, nothing hidden."
         )
 
     if _dd is None:
-        st.info("Search a ticker above to see its Deep Dive.")
+        st.info("Search a ticker above to see its Deep Dive - or try one of these:")
+        _render_example_chips("dd_empty")
     elif _dd.get("error"):
         st.error(_dd["error"])
     else:
@@ -1486,16 +2147,102 @@ def page_deep_dive():
         _m4.metric("Long Score", f"{_dd['long_score']:.1f}")
         _m5.metric("Signal", _dd_signal)
 
+        # --- Watchlist (signed-in users): the sign-in carrot, and the
+        # audience the weekly digest goes to. ---
+        _wl_email = paywall_engine.current_user_email()
+        if _wl_email:
+            _in_wl = watchlist_store.contains(_wl_email, _dd["ticker"])
+            _wl_label = ("\u2605 Remove from my watchlist" if _in_wl
+                         else "\u2606 Add to my watchlist")
+            if st.button(_wl_label, key=f"wl_{_dd['ticker']}"):
+                try:
+                    if _in_wl:
+                        watchlist_store.remove(_wl_email, _dd["ticker"])
+                    else:
+                        watchlist_store.add(_wl_email, _dd["ticker"])
+                except Exception:
+                    st.warning("Couldn't save right now - please try again.")
+                st.rerun()
+        else:
+            st.caption(
+                "Sign in (top right) to save this stock to a watchlist and "
+                "get the weekly signal digest."
+            )
+
+        # --- Price chart: the 6-month history behind every calculation on
+        # this page, finally shown - with the 50-day average and the Trade
+        # Filter's entry zone drawn on it. ---
+        _px_hist = get_price_history(_dd["ticker"])
+        if _px_hist is not None and not _px_hist.empty:
+            _px_closes = _px_hist["Close"].dropna()
+            if len(_px_closes) >= 2:
+                fig_px = go.Figure()
+                fig_px.add_trace(go.Scatter(
+                    x=_px_closes.index, y=_px_closes.values, mode="lines",
+                    name="Price", line=dict(color="#2dd4bf", width=2),
+                ))
+                _px_ma50 = _px_closes.rolling(50).mean()
+                fig_px.add_trace(go.Scatter(
+                    x=_px_closes.index, y=_px_ma50.values, mode="lines",
+                    name="MA50", line=dict(color="#8aa0b8", width=1.5, dash="dash"),
+                ))
+                if _dd.get("trade_setup_entry"):
+                    fig_px.add_hline(
+                        y=_dd["trade_setup_entry"], line_dash="dot",
+                        line_color="#fbbf24",
+                        annotation_text=f"Entry zone {_dd['trade_setup_entry']:,.2f}",
+                        annotation_position="bottom left", annotation_font_size=11,
+                    )
+                fig_px.update_layout(
+                    title="Last 6 months", height=300,
+                    margin=dict(l=10, r=10, t=40, b=10),
+                    legend=dict(orientation="h", y=1.14),
+                    yaxis_title=_dd["currency"],
+                )
+                st.plotly_chart(fig_px, use_container_width=True)
+
+        # --- Plain-English verdict: the same thesis engine Comparison
+        # uses, so every Deep Dive opens with sentences, not just gauges. ---
+        try:
+            _dd_thesis = generate_thesis(
+                ticker=_dd["ticker"],
+                stock_type=_dd.get("stock_type") or "GENERAL",
+                quality_score=_dd["quality_score"],
+                margin_of_safety=_dd["mos"] if _dd["mos"] is not None else 0,
+                psychology_score=_dd["psychology"],
+                discovery_score=_dd["discovery"],
+                long_score=_dd["long_score"],
+                holding_period=get_holding_period(_dd.get("stock_type") or "GENERAL"),
+            )
+        except Exception:
+            _dd_thesis = None
+        if _dd_thesis:
+            with st.expander(
+                "The plain-English case - why buy, why wait, the risks",
+                expanded=True,
+            ):
+                _th1, _th2, _th3 = st.columns(3)
+                for _col, _label, _points in (
+                    (_th1, "Why buy", _dd_thesis["why_buy"]),
+                    (_th2, "Why wait", _dd_thesis["why_wait"]),
+                    (_th3, "Risks", _dd_thesis["risks"]),
+                ):
+                    with _col:
+                        st.markdown(f"**{_label}**")
+                        for _pt in (_points or ["Nothing flagged."]):
+                            st.markdown(f"- {_pt}")
+                st.caption(f"Suggested holding period: {_dd_thesis['holding_period']}")
+
         _dd_col1, _dd_col2 = st.columns(2)
 
         with _dd_col1:
             if _dd["intrinsic_value"]:
-                _iv_color = "#2ca02c" if _dd["intrinsic_value"] > _dd["price"] else "#d62728"
+                _iv_color = "#34d399" if _dd["intrinsic_value"] > _dd["price"] else "#fb7185"
                 fig_val = go.Figure(go.Bar(
                     x=[_dd["price"], _dd["intrinsic_value"]],
                     y=["Current Price", "Intrinsic Value (Base Case)"],
                     orientation="h",
-                    marker_color=["#6c757d", _iv_color],
+                    marker_color=["#8aa0b8", _iv_color],
                     text=[f"{_dd['price']:,.2f}", f"{_dd['intrinsic_value']:,.2f}"],
                     textposition="outside",
                 ))
@@ -1518,13 +2265,18 @@ def page_deep_dive():
                 _dd_gauge(
                     _dd["long_score"], f"Long Score - {_dd_signal}",
                     [
-                        (0, SIGNAL_THRESHOLDS["WATCHLIST"], "#f7d7d7"),
-                        (SIGNAL_THRESHOLDS["WATCHLIST"], SIGNAL_THRESHOLDS["LONG"], "#fbe8c6"),
-                        (SIGNAL_THRESHOLDS["LONG"], SIGNAL_THRESHOLDS["STRONG_LONG"], "#d7ecd9"),
-                        (SIGNAL_THRESHOLDS["STRONG_LONG"], 100, "#b7dfba"),
+                        (0, SIGNAL_THRESHOLDS["WATCHLIST"], "#43222e"),
+                        (SIGNAL_THRESHOLDS["WATCHLIST"], SIGNAL_THRESHOLDS["LONG"], "#43371c"),
+                        (SIGNAL_THRESHOLDS["LONG"], SIGNAL_THRESHOLDS["STRONG_LONG"], "#1e3d34"),
+                        (SIGNAL_THRESHOLDS["STRONG_LONG"], 100, "#27584a"),
                     ],
                 ),
                 use_container_width=True,
+            )
+            st.caption(
+                "Long Score, 0-100: business quality + margin of safety weighted, "
+                f"nudged by psychology and attention. Above {SIGNAL_THRESHOLDS['LONG']} "
+                f"= LONG territory, above {SIGNAL_THRESHOLDS['STRONG_LONG']} = STRONG LONG."
             )
 
         st.plotly_chart(
@@ -1555,8 +2307,8 @@ def page_deep_dive():
             st.plotly_chart(
                 _dd_gauge(
                     _dd["quality_score"], f"Quality - {_dd['quality_label']}",
-                    [(0, 40, "#f7d7d7"), (40, 60, "#fbe8c6"),
-                     (60, 80, "#d7ecd9"), (80, 100, "#b7dfba")],
+                    [(0, 40, "#43222e"), (40, 60, "#43371c"),
+                     (60, 80, "#1e3d34"), (80, 100, "#27584a")],
                 ),
                 use_container_width=True,
             )
@@ -1594,8 +2346,8 @@ def page_deep_dive():
             st.plotly_chart(
                 _dd_gauge(
                     _dd["psychology_gauge"], f"Psychology - {_dd['psychology_sentiment']}",
-                    [(0, 30, "#f7d7d7"), (30, 45, "#fbe8c6"), (45, 55, "#e9ecef"),
-                     (55, 70, "#d7ecd9"), (70, 100, "#b7dfba")],
+                    [(0, 30, "#43222e"), (30, 45, "#43371c"), (45, 55, "#1f3352"),
+                     (55, 70, "#1e3d34"), (70, 100, "#27584a")],
                 ),
                 use_container_width=True,
             )
@@ -1616,8 +2368,8 @@ def page_deep_dive():
             st.plotly_chart(
                 _dd_gauge(
                     _dd["discovery_gauge"], f"Discovery - {_dd['discovery_label']}",
-                    [(0, 25, "#f7d7d7"), (25, 50, "#fbe8c6"),
-                     (50, 75, "#d7ecd9"), (75, 100, "#b7dfba")],
+                    [(0, 25, "#43222e"), (25, 50, "#43371c"),
+                     (50, 75, "#1e3d34"), (75, 100, "#27584a")],
                 ),
                 use_container_width=True,
             )
@@ -1638,7 +2390,7 @@ def page_deep_dive():
             st.plotly_chart(
                 _dd_gauge(
                     _dd["trade_setup_score"], f"Trade Setup - {_dd['trade_setup_signal']}",
-                    [(0, 45, "#f7d7d7"), (45, 65, "#fbe8c6"), (65, 100, "#b7dfba")],
+                    [(0, 45, "#43222e"), (45, 65, "#43371c"), (65, 100, "#27584a")],
                 ),
                 use_container_width=True,
             )
@@ -1654,15 +2406,15 @@ def page_deep_dive():
 
         _tt_x = [_dd["trade_setup_stop"], _dd["trade_setup_entry"], _dd["trade_setup_target1"]]
         _tt_y = ["Stop Loss", "Entry Zone", "Target 1"]
-        _tt_colors = ["#d62728", "#6c757d", "#d7ecd9"]
+        _tt_colors = ["#fb7185", "#8aa0b8", "#1e3d34"]
         if _dd["trade_setup_target2"] is not None:
             _tt_x.append(_dd["trade_setup_target2"])
             _tt_y.append("Target 2")
-            _tt_colors.append("#8fce8f")
+            _tt_colors.append("#3f8a6e")
         if _dd["trade_setup_target3"] is not None:
             _tt_x.append(_dd["trade_setup_target3"])
             _tt_y.append("Target 3 (breakout)")
-            _tt_colors.append("#2ca02c")
+            _tt_colors.append("#34d399")
 
         fig_trade = go.Figure(go.Bar(
             x=_tt_x, y=_tt_y, orientation="h",
@@ -1781,11 +2533,30 @@ def page_scanner():
     # detail table/expander for it on this site, unlike the original app.
     # Cached a day per exact universe/sector set, so this is only slow the
     # first time a given universe's sector list is shown.
+    # Sector heat is expensive the first time it's computed for a universe
+    # (a year of prices for a sample of every sector), so it's opt-in
+    # rather than silently blocking the page's first render for minutes.
     _heat_pairs = ()
     if _pool_df is not None and not _pool_df.empty and "Sector" in _pool_df.columns:
         _heat_pairs = tuple(zip(_pool_df["Ticker"], _pool_df["Sector"]))
-    with (st.spinner("Reading sector heat...") if _heat_pairs else contextlib.nullcontext()):
-        _sector_heat = scanner_engine.compute_sector_heat(_heat_pairs) if _heat_pairs else {}
+    _sector_heat = {}
+    if _heat_pairs:
+        st.session_state.setdefault("scanner_heat_on", False)
+        if not st.session_state["scanner_heat_on"]:
+            if st.button(
+                "Show 12-month sector heat (first load takes a few minutes, "
+                "then it's cached for the day)", key="scanner_heat_btn",
+            ):
+                st.session_state["scanner_heat_on"] = True
+                st.rerun()
+        else:
+            with st.spinner("Reading sector heat - cached for a day once computed..."):
+                _sector_heat = scanner_engine.compute_sector_heat(_heat_pairs)
+            st.caption(
+                "Heat is RELATIVE to this universe - the top third of "
+                "sectors reads Hot even in a down market; the signed % is "
+                "the actual 12-month move."
+            )
 
     sector = st.selectbox(
         "Sector (optional)", _sectors, key="scanner_sector",
@@ -1793,6 +2564,28 @@ def page_scanner():
     )
 
     st.caption(f"Universe source: {_pool_source}")
+
+    # ---- Overnight scan: served instantly when the nightly job has run
+    # for this universe - the answer to "what should I look at?" without
+    # a 30-minute live wait. Live scan below stays available for current
+    # prices and the full attention model.
+    _overnight = scan_store.load_scan(universe)
+    if _overnight:
+        with st.expander(
+            f"Overnight {universe} scan - {len(_overnight['rows'])} stocks "
+            f"ranked by Long Score, computed {_overnight['generated_at_label']}",
+            expanded=st.session_state.get("scan_stocks") is None,
+        ):
+            st.caption(
+                "Pre-computed while nobody was waiting. Attention-lite "
+                "(price/volume only - no news/trends/social inputs), same "
+                "rule as live scans this size. Estimated/default values "
+                "carry their own flag columns. Run a live scan below for "
+                "current prices."
+            )
+            _on_df = pd.DataFrame(_overnight["rows"])
+            st.dataframe(_on_df, width="stretch", hide_index=True, height=420)
+            st.caption(f"Universe source at scan time: {_overnight['source']}")
 
     if st.button("Run Scan", type="primary", key="run_scanner"):
         with st.spinner("Resolving universe..."):
@@ -1814,6 +2607,33 @@ def page_scanner():
 
 def page_comparison():
     _render_header(compact=True, page_label="Comparison")
+
+    # Shareable URLs: /comparison?tickers=CSL.AX,BHP.AX runs the comparison
+    # directly (blog posts can deep-link a specific matchup), and once
+    # results exist the URL is kept in sync so the address bar is always
+    # shareable. One-shot "cmp_qp_tried" stops an erroring list from
+    # re-scanning on every rerun.
+    _qp_tickers = (st.query_params.get("tickers") or "").strip().upper()
+    if _qp_tickers and not st.session_state.get("cmp_stocks") \
+            and st.session_state.get("cmp_qp_tried") != _qp_tickers:
+        st.session_state["cmp_qp_tried"] = _qp_tickers
+        _qp_parsed = []
+        for _tok in _qp_tickers.replace(",", " ").split():
+            if _tok and _tok not in _qp_parsed:
+                _qp_parsed.append(_tok)
+        if len(_qp_parsed) >= 2:
+            _qp_au = sum(1 for _t in _qp_parsed if _t.endswith(".AX"))
+            st.session_state["cmp_stocks"] = _qp_parsed
+            st.session_state["cmp_universe_source"] = (
+                f"Shared link ({len(_qp_parsed)} tickers)"
+            )
+            st.session_state["cmp_scan_country"] = (
+                "USA" if (len(_qp_parsed) - _qp_au) > _qp_au else "Australia"
+            )
+            st.session_state["cmp_fresh"] = True
+    if st.session_state.get("cmp_stocks"):
+        st.query_params["tickers"] = ",".join(st.session_state["cmp_stocks"])
+
     _render_scan_results(
         page_label="Comparison",
         state_prefix="cmp",
@@ -1821,7 +2641,8 @@ def page_comparison():
     )
 
 
-def _render_scan_results(page_label, state_prefix, empty_message, default_country="Australia"):
+def _render_scan_results(page_label, state_prefix, empty_message,
+                         default_country="Australia", lite_threshold=100):
     """
     Shared scan-and-results engine behind both Comparison (manual ticker
     list, typed into the search box) and Scanner (a whole universe,
@@ -1843,7 +2664,15 @@ def _render_scan_results(page_label, state_prefix, empty_message, default_countr
 
     if not stocks:
         st.info(empty_message)
+        _render_example_chips(f"{state_prefix}_empty")
         return
+
+    # Attention-lite mode for big universe scans: per-ticker Trends/News/
+    # StockTwits lookups are what blow both the clock and the shared API
+    # quotas at index scale (one S&P 500 scan would exhaust a free NewsAPI
+    # day on its own), so above `lite_threshold` tickers those calls are
+    # skipped and Discovery reflects price/volume attention only.
+    attention_lite = len(stocks) > lite_threshold
 
     # Comparison and Scanner each get their own fixed cache key (via
     # state_prefix) so switching between them never overwrites the other's
@@ -1865,17 +2694,23 @@ def _render_scan_results(page_label, state_prefix, empty_message, default_countr
         # PRE-SCAN SUMMARY
         # -----------------------------------
 
-        st.write("Stocks to scan:", len(stocks))
-        st.caption(f"Source: {universe_source}")
-
         if len(stocks) == 0:
             st.warning("No stocks to scan.")
             st.stop()
 
-        if len(stocks) > 150 and _need_fresh_scan:
+        # Honest time expectation up front - live per-ticker analysis takes
+        # real seconds per name, and pretending otherwise reads as "broken"
+        # when a big scan slows down.
+        if _need_fresh_scan and len(stocks) > 25:
+            _est_lo = max(1, round(len(stocks) * 1.5 / 60))
+            _est_hi = max(_est_lo + 1, round(len(stocks) * 4 / 60))
             st.warning(
-                f"{len(stocks)} stocks matched - this scan may take a while. "
-                "Picking a narrower universe or sector will speed it up."
+                f"Scanning {len(stocks)} stocks live - realistically "
+                f"{_est_lo}-{_est_hi} minutes. Keep this tab open; a "
+                "narrower sector or universe is much faster."
+                + (" Trends/news/social lookups are skipped on scans this "
+                   "large, so Discovery reflects price and volume "
+                   "attention only." if attention_lite else "")
             )
 
 
@@ -1957,7 +2792,7 @@ def _render_scan_results(page_label, state_prefix, empty_message, default_countr
 
                 keyword = ticker.split(".")[0]
 
-                if live_data:
+                if live_data and not attention_lite:
                     trend_score = get_trend_score(keyword, api_key=news_api_key or None)
                     # Combined from two independent sources: NewsAPI (keyword text
                     # search, needs NEWS_API_KEY - returns 0 if that's not
@@ -1971,7 +2806,7 @@ def _render_scan_results(page_label, state_prefix, empty_message, default_countr
                     trend_score = 0
                     news_score = 0
 
-                if enable_social:
+                if enable_social and not attention_lite:
                     social_score, social_detail = social_engine.get_social_score(ticker)
                 else:
                     social_score, social_detail = 0, {"message_count": 0, "bullish": 0,
@@ -2357,10 +3192,10 @@ def _render_scan_results(page_label, state_prefix, empty_message, default_countr
             market_regime = _cached_scan["market_regime"]
             regime_detail = _cached_scan["regime_detail"]
             st.caption(
-                f"Showing {page_label}'s last completed scan - something "
-                "elsewhere on the page (e.g. saving a DCF override) triggered "
-                "this refresh, not a new scan. Click Run Scan again for fresh "
-                "live prices."
+                f"Showing {page_label}'s last completed results - something "
+                "on the page (e.g. saving a DCF override) triggered a "
+                "refresh, not a new scan. Search again (or click Run Scan) "
+                "for fresh live prices."
             )
 
 
@@ -2403,17 +3238,17 @@ def _render_scan_results(page_label, state_prefix, empty_message, default_countr
         # call, and matters more.
         # -----------------------------------
 
-        _DEFAULT_RED = "color: #d62728; font-weight: 600"
-        _INTRINSIC_ABOVE_PRICE = "color: #2ca02c; font-weight: 600"   # green - looks undervalued
-        _INTRINSIC_BELOW_PRICE = "color: #d62728; font-weight: 600"   # red - looks overvalued
+        _DEFAULT_RED = "color: #fb7185; font-weight: 600"
+        _INTRINSIC_ABOVE_PRICE = "color: #34d399; font-weight: 600"   # green - looks undervalued
+        _INTRINSIC_BELOW_PRICE = "color: #fb7185; font-weight: 600"   # red - looks overvalued
 
         # Long Score traffic-light colors, keyed off the SAME SIGNAL_THRESHOLDS gates
         # used to set the Investment Signal (STRONG LONG / LONG / WATCHLIST / AVOID)
         # everywhere else in the app - see the DCF Parameters table caption for the
         # exact cutoffs shown to the user.
-        _LONG_SCORE_STRONG = "color: #2ca02c; font-weight: 600"   # green - above LONG gate
-        _LONG_SCORE_WATCH = "color: #b8860b; font-weight: 600"    # amber - above WATCHLIST, at/below LONG
-        _LONG_SCORE_AVOID = "color: #d62728; font-weight: 600"    # red - at/below WATCHLIST gate
+        _LONG_SCORE_STRONG = "color: #34d399; font-weight: 600"   # green - above LONG gate
+        _LONG_SCORE_WATCH = "color: #fbbf24; font-weight: 600"    # amber - above WATCHLIST, at/below LONG
+        _LONG_SCORE_AVOID = "color: #fb7185; font-weight: 600"    # red - at/below WATCHLIST gate
 
         _FLAG_FOR_COL = {
             "Type": "_flag_type",
@@ -2478,8 +3313,6 @@ def _render_scan_results(page_label, state_prefix, empty_message, default_countr
             return display_df.style.apply(_apply, axis=None)
 
 
-        st.write("Rows found:", len(data))
-
         if len(data) > 0:
 
             results = pd.DataFrame(data)
@@ -2497,8 +3330,6 @@ def _render_scan_results(page_label, state_prefix, empty_message, default_countr
             # use a numeric view wherever we compare/aggregate on it.
             results["_mos_num"] = pd.to_numeric(results["MOS"], errors="coerce")
 
-            st.metric("Stocks Scanned", len(results))
-
             # Free preview: identity + headline signal only, for every ticker
             # scanned - Ticker/Price plus Trader Score (swing) or Long Score +
             # Investment Signal (the normal long-term mode, the only one this
@@ -2515,18 +3346,125 @@ def _render_scan_results(page_label, state_prefix, empty_message, default_countr
                 else ["Long Score", "Investment Signal"]
             )
             _preview_cols = [c for c in _preview_cols if c in results.columns]
-            st.subheader("Comparison preview")
+            st.subheader(f"{page_label} preview")
             st.dataframe(results[_preview_cols], width="stretch", hide_index=True)
 
             if not paywall_engine.render_gate(
-                "the full Comparison results",
+                f"the full {page_label} results",
                 teaser=(
                     "Valuation (Intrinsic Value, MOS), Quality, Psychology, "
                     "Discovery, and Trade Setup detail for every stock above."
                 ),
-                key_prefix="cmp",
+                key_prefix=state_prefix,
             ):
                 return
+
+            # ---------------- Side-by-side comparison ----------------
+            # One row per ticker, the columns you actually asked for. Score
+            # columns render as a colored bar (red/amber/green) instead of a
+            # plain number - thresholds reuse the SAME cutoffs the rest of the
+            # app already verdicts on (SIGNAL_THRESHOLDS for Long Score, the
+            # Valuation label's MOS>=25 cutoff, the Trade Setup engine's
+            # WATCHLIST/BUY gates), not new arbitrary numbers.
+            st.subheader("Side-by-side comparison")
+            st.caption(
+                "The scanned names lined up for a direct read, in the order you "
+                "entered them."
+            )
+
+            _BAR_RED, _BAR_AMBER, _BAR_GREEN = "#fb7185", "#fbbf24", "#34d399"
+
+            def _bar_cell(value, low, high, suffix=""):
+                """One table cell: value as text, ABOVE a small colored bar whose
+                fill width reflects the value and whose color reflects which band
+                (red/amber/green) it falls in. `low`/`high` are the same
+                thresholds the app already uses elsewhere for this metric."""
+                if value is None or value == "N/A" or (isinstance(value, float) and pd.isna(value)):
+                    return "<div style='color:#8aa0b8;'>N/A</div>"
+                try:
+                    v = float(value)
+                except (TypeError, ValueError):
+                    return f"<div>{value}</div>"
+                color = _BAR_RED if v <= low else (_BAR_GREEN if v > high else _BAR_AMBER)
+                width_pct = max(0.0, min(100.0, v))
+                return (
+                    f"<div style='font-size:13px;margin-bottom:2px;'>{v:,.1f}{suffix}</div>"
+                    f"<div style='background:#1f3352;border-radius:3px;height:8px;width:100%;'>"
+                    f"<div style='background:{color};height:8px;border-radius:3px;"
+                    f"width:{width_pct:.0f}%;'></div></div>"
+                )
+
+            # Classification columns (Type, Valuation, Sentiment, Trend, Trade
+            # Setup) render as small colored pills instead of plain text - same
+            # red/amber/green convention as the score bars above, not new
+            # arbitrary colors. Type isn't a verdict (GROWTH/COMPOUNDER/etc. are
+            # just categories), so it gets a neutral teal pill EXCEPT when the
+            # sector lookup failed and it fell back to the GENERAL default - that
+            # case is flagged red, same as every other defaulted cell in this app.
+            _TYPE_NEUTRAL = "#2dd4bf"
+            _BADGE_COLORS = {
+                "UNDERVALUED": _BAR_GREEN, "FAIR": _BAR_AMBER, "EXPENSIVE": _BAR_RED,
+                "FEARFUL": _BAR_GREEN, "GREEDY": _BAR_AMBER, "OVERHEATED": _BAR_RED,
+                "CALM": "#8aa0b8", "NEUTRAL": "#8aa0b8",
+                "Uptrend": _BAR_GREEN, "Ranging": _BAR_AMBER, "Downtrend": _BAR_RED,
+                "BUY": _BAR_GREEN, "WATCHLIST": _BAR_AMBER, "AVOID": _BAR_RED,
+            }
+
+            def _badge_cell(text, color=None):
+                """One classification label as a small colored pill."""
+                _c = color or _BADGE_COLORS.get(text, "#9db1c7")
+                return (
+                    f"<span style='display:inline-block;padding:3px 10px;"
+                    f"border-radius:12px;font-size:12.5px;font-weight:600;"
+                    f"background:{_c}22;color:{_c};'>{text}</span>"
+                )
+
+            _cmp = results.copy()
+            _cmp["Trade Setup Score"] = _cmp["Ticker"].map(trade_score_lookup)
+
+            _cmp_rows_html = []
+            for _, r in _cmp.iterrows():
+                _iv_text = (
+                    "N/A" if r["Intrinsic Value"] == "N/A" else f"{r['Intrinsic Value']:,.2f}"
+                )
+                _type_color = _BAR_RED if r.get("_flag_type") else _TYPE_NEUTRAL
+                _cmp_rows_html.append(
+                    "<tr>"
+                    f"<td style='padding:6px 10px;font-weight:600;'>{r['Ticker']}</td>"
+                    f"<td style='padding:6px 10px;'>{_badge_cell(r['Type'], _type_color)}</td>"
+                    f"<td style='padding:6px 10px;'>{r['Price']:,.2f}</td>"
+                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['Quality'], 40, 80)}</td>"
+                    f"<td style='padding:6px 10px;'>{_iv_text}</td>"
+                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['MOS'], 0, 25, '%')}</td>"
+                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['Long Score'], 30, 50)}</td>"
+                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['Psychology'], -5, 20)}</td>"
+                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['Discovery'], 25, 50)}</td>"
+                    f"<td style='padding:6px 10px;'>{_badge_cell(r['Valuation'])}</td>"
+                    f"<td style='padding:6px 10px;'>{_badge_cell(r['Sentiment'])}</td>"
+                    f"<td style='padding:6px 10px;'>{_badge_cell(r['Trend'])}</td>"
+                    f"<td style='padding:6px 10px;'>{_badge_cell(r['Trade Setup'])}</td>"
+                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['Trade Setup Score'], 45, 65)}</td>"
+                    "</tr>"
+                )
+
+            _cmp_headers = [
+                "Ticker", "Type", "Price", "Quality Score", "Intrinsic Value", "MOS",
+                "Long Score", "Psychology Score", "Discovery Score", "Valuation",
+                "Sentiment", "Trend", "Trade Setup", "Trade Setup Score",
+            ]
+            _cmp_html = (
+                "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
+                "<thead><tr>"
+                + "".join(
+                    f"<th style='text-align:left;padding:6px 10px;border-bottom:2px solid #1f3352;'>{h}</th>"
+                    for h in _cmp_headers
+                )
+                + "</tr></thead><tbody>"
+                + "".join(_cmp_rows_html)
+                + "</tbody></table>"
+            )
+            st.markdown(_cmp_html, unsafe_allow_html=True)
+
 
             if is_swing and market_regime != "UNKNOWN":
                 if market_regime == "RISK-ON":
@@ -2576,8 +3514,11 @@ def _render_scan_results(page_label, state_prefix, empty_message, default_countr
                     col2.metric("Highest MOS", "-")
                 col3.metric("Best Long Score", best_long["Ticker"])
 
-            st.subheader("Sector Rankings")
-            st.dataframe(sector_summary, width="stretch", hide_index=True)
+            # Only meaningful once there are enough names for a group
+            # average to say anything (it groups by TYPE, not GICS sector).
+            if len(results) >= 5:
+                st.subheader("Average score by stock type")
+                st.dataframe(sector_summary, width="stretch", hide_index=True)
 
             if is_swing:
                 st.subheader("Top Swing Candidate")
@@ -2611,88 +3552,88 @@ def _render_scan_results(page_label, state_prefix, empty_message, default_countr
             # list (see the Side-by-side comparison table below instead).
 
             # ---------------- Trade Setup table (full scanned list) ----------------
-            st.subheader("Trade Setup")
-            st.caption(
-                "Tactical entry layer for a long-term position - SEPARATE from the "
-                "Investment Signal. This is about entry timing, not business quality. "
-                "Every scanned stock is listed here, not just the top 10. "
-                "BUY requires: NOT in a downtrend, Psychology > 0, Discovery > 0, "
-                "Price <= MA50 x 1.05, price near the Entry Zone, and RR1 >= 1.5. "
-                "(The old Long Score >= 60 gate has been removed - business quality is "
-                "judged separately by the Investment Signal, and a confirmed downtrend "
-                "now replaces it as the safety filter so you don't buy a falling knife.) "
-                "This Entry Zone/Stop Loss/Targets come from the Trade Filter engine "
-                "(support/resistance based) - a different, independent number from "
-                "the DCF valuation Entry/Target ('Full Stock Database' below) and "
-                "the ATR-based Swing Entry/Stop ('Swing Setup' further down). "
-                "'Trade Setup Score' (0-100) is a visual weighting of the same "
-                "gate checks behind the BUY/WATCHLIST/AVOID verdict - Trend Safety "
-                "20pts, Near Entry Zone 20pts, Risk/Reward 20pts, Price vs MA50 "
-                "15pts, Psychology Momentum 12.5pts, Discovery Momentum 12.5pts - "
-                "not a re-implemented trade formula, just the same verdict shown "
-                "as a number. Hover any column header for details."
-            )
-            trade_rows = []
-            for _, row in results.iterrows():
-                t = trade_lookup.get(row["Ticker"])
-                if not t:
-                    continue
-                trade_rows.append({
-                    "Ticker": row["Ticker"],
-                    "Trade Setup": t["signal"],
-                    "Trade Setup Score": trade_score_lookup.get(row["Ticker"], "-"),
-                    "Trend": t.get("trend", "-"),
-                    "Entry Zone": t["entry_zone"],
-                    "Stop Loss": t["stop_loss"],
-                    "Target 1": t["target1"],
-                    "Target 2": t["target2"],
-                    "Target 3": t["target3"] if t["target3"] is not None else "-",
-                    "Risk": t["risk"],
-                    "RR1": t["rr1"] if t["rr1"] is not None else "-",
-                    "RR2": t["rr2"] if t["rr2"] is not None else "-",
-                    "RR3": t["rr3"] if t["rr3"] is not None else "-",
-                    "Early Exit Watch": "Yes" if t["early_exit_watch"] else "No",
-                })
-            st.dataframe(
-                pd.DataFrame(trade_rows),
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "Trade Setup Score": st.column_config.NumberColumn(
-                        "Trade Setup Score",
-                        help=(
-                            "0-100 weighting of the same gates behind the Trade "
-                            "Setup verdict (Trend Safety, Near Entry Zone, Risk/"
-                            "Reward, Price vs MA50, Psychology Momentum, Discovery "
-                            "Momentum). Same score/weights as the Stock Deep Dive "
-                            "tab's Trade Setup gauge - not a separate formula."
+            with st.expander("Trade Setup - technical entry / stop-loss / targets per stock"):
+                st.caption(
+                    "Tactical entry layer for a long-term position - SEPARATE from the "
+                    "Investment Signal. This is about entry timing, not business quality. "
+                    "Every scanned stock is listed here, not just the top 10. "
+                    "BUY requires: NOT in a downtrend, Psychology > 0, Discovery > 0, "
+                    "Price <= MA50 x 1.05, price near the Entry Zone, and RR1 >= 1.5. "
+                    "(The old Long Score >= 60 gate has been removed - business quality is "
+                    "judged separately by the Investment Signal, and a confirmed downtrend "
+                    "now replaces it as the safety filter so you don't buy a falling knife.) "
+                    "This Entry Zone/Stop Loss/Targets come from the Trade Filter engine "
+                    "(support/resistance based) - a different, independent number from "
+                    "the DCF valuation Entry/Target ('Full Stock Database' below) and "
+                    "the ATR-based Swing Entry/Stop ('Swing Setup' further down). "
+                    "'Trade Setup Score' (0-100) is a visual weighting of the same "
+                    "gate checks behind the BUY/WATCHLIST/AVOID verdict - Trend Safety "
+                    "20pts, Near Entry Zone 20pts, Risk/Reward 20pts, Price vs MA50 "
+                    "15pts, Psychology Momentum 12.5pts, Discovery Momentum 12.5pts - "
+                    "not a re-implemented trade formula, just the same verdict shown "
+                    "as a number. Hover any column header for details."
+                )
+                trade_rows = []
+                for _, row in results.iterrows():
+                    t = trade_lookup.get(row["Ticker"])
+                    if not t:
+                        continue
+                    trade_rows.append({
+                        "Ticker": row["Ticker"],
+                        "Trade Setup": t["signal"],
+                        "Trade Setup Score": trade_score_lookup.get(row["Ticker"], "-"),
+                        "Trend": t.get("trend", "-"),
+                        "Entry Zone": t["entry_zone"],
+                        "Stop Loss": t["stop_loss"],
+                        "Target 1": t["target1"],
+                        "Target 2": t["target2"],
+                        "Target 3": t["target3"] if t["target3"] is not None else "-",
+                        "Risk": t["risk"],
+                        "RR1": t["rr1"] if t["rr1"] is not None else "-",
+                        "RR2": t["rr2"] if t["rr2"] is not None else "-",
+                        "RR3": t["rr3"] if t["rr3"] is not None else "-",
+                        "Early Exit Watch": "Yes" if t["early_exit_watch"] else "No",
+                    })
+                st.dataframe(
+                    pd.DataFrame(trade_rows),
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "Trade Setup Score": st.column_config.NumberColumn(
+                            "Trade Setup Score",
+                            help=(
+                                "0-100 weighting of the same gates behind the Trade "
+                                "Setup verdict (Trend Safety, Near Entry Zone, Risk/"
+                                "Reward, Price vs MA50, Psychology Momentum, Discovery "
+                                "Momentum). Same score/weights as the Stock Deep Dive "
+                                "tab's Trade Setup gauge - not a separate formula."
+                            ),
                         ),
-                    ),
-                    "Entry Zone": st.column_config.NumberColumn(
-                        "Entry Zone",
-                        help=(
-                            "Trade Filter's technical entry level (support/resistance "
-                            "based) - answers 'is now a sane place to buy'. "
-                            "Independent of the DCF valuation Entry ('Full Stock "
-                            "Database') and the ATR-based Swing Entry ('Swing "
-                            "Setup') - all three are separate, unrelated numbers."
+                        "Entry Zone": st.column_config.NumberColumn(
+                            "Entry Zone",
+                            help=(
+                                "Trade Filter's technical entry level (support/resistance "
+                                "based) - answers 'is now a sane place to buy'. "
+                                "Independent of the DCF valuation Entry ('Full Stock "
+                                "Database') and the ATR-based Swing Entry ('Swing "
+                                "Setup') - all three are separate, unrelated numbers."
+                            ),
                         ),
-                    ),
-                    "Stop Loss": st.column_config.NumberColumn(
-                        "Stop Loss",
-                        help="Trade Filter's technical stop-loss - different from the ATR-based Swing Stop.",
-                    ),
-                    "Target 1": st.column_config.NumberColumn(
-                        "Target 1", help="Trade Filter's first technical target."
-                    ),
-                    "Target 2": st.column_config.NumberColumn(
-                        "Target 2", help="Trade Filter's second technical target."
-                    ),
-                    "Target 3": st.column_config.NumberColumn(
-                        "Target 3", help="Trade Filter's third technical target."
-                    ),
-                },
-            )
+                        "Stop Loss": st.column_config.NumberColumn(
+                            "Stop Loss",
+                            help="Trade Filter's technical stop-loss - different from the ATR-based Swing Stop.",
+                        ),
+                        "Target 1": st.column_config.NumberColumn(
+                            "Target 1", help="Trade Filter's first technical target."
+                        ),
+                        "Target 2": st.column_config.NumberColumn(
+                            "Target 2", help="Trade Filter's second technical target."
+                        ),
+                        "Target 3": st.column_config.NumberColumn(
+                            "Target 3", help="Trade Filter's third technical target."
+                        ),
+                    },
+                )
 
             with st.expander("Position management & early-exit rules (apply after entry)"):
                 st.markdown("**As each target is hit:**")
@@ -2751,175 +3692,69 @@ def _render_scan_results(page_label, state_prefix, empty_message, default_countr
                     )
                     render_thesis(thesis_lookup[row["Ticker"]], heading_level="#####")
 
-            # ---------------- Side-by-side comparison ----------------
-            # One row per ticker, the columns you actually asked for. Score
-            # columns render as a colored bar (red/amber/green) instead of a
-            # plain number - thresholds reuse the SAME cutoffs the rest of the
-            # app already verdicts on (SIGNAL_THRESHOLDS for Long Score, the
-            # Valuation label's MOS>=25 cutoff, the Trade Setup engine's
-            # WATCHLIST/BUY gates), not new arbitrary numbers.
-            st.subheader("Side-by-side comparison")
-            st.caption(
-                "The scanned names lined up for a direct read, in the order you "
-                "entered them."
-            )
-
-            _BAR_RED, _BAR_AMBER, _BAR_GREEN = "#d62728", "#b8860b", "#2ca02c"
-
-            def _bar_cell(value, low, high, suffix=""):
-                """One table cell: value as text, ABOVE a small colored bar whose
-                fill width reflects the value and whose color reflects which band
-                (red/amber/green) it falls in. `low`/`high` are the same
-                thresholds the app already uses elsewhere for this metric."""
-                if value is None or value == "N/A" or (isinstance(value, float) and pd.isna(value)):
-                    return "<div style='color:#888;'>N/A</div>"
-                try:
-                    v = float(value)
-                except (TypeError, ValueError):
-                    return f"<div>{value}</div>"
-                color = _BAR_RED if v <= low else (_BAR_GREEN if v > high else _BAR_AMBER)
-                width_pct = max(0.0, min(100.0, v))
-                return (
-                    f"<div style='font-size:13px;margin-bottom:2px;'>{v:,.1f}{suffix}</div>"
-                    f"<div style='background:#e9ecef;border-radius:3px;height:8px;width:100%;'>"
-                    f"<div style='background:{color};height:8px;border-radius:3px;"
-                    f"width:{width_pct:.0f}%;'></div></div>"
+            with st.expander("Full Stock Database - every computed column for every stock"):
+                st.caption(
+                    "Every cell is computed from the stock's own sourced data. Values in "
+                    "red are default/average assumptions used where data was unavailable. "
+                    "Note: 'Entry'/'Target' here are the DCF valuation basis (Entry = "
+                    "80% of intrinsic value, Target = intrinsic value) - a long-term "
+                    "fair-value number, NOT a trade level. The Trade Filter's own Entry "
+                    "Zone/Stop/Targets (a technical number) live in the 'Trade Setup' "
+                    "table above, and the ATR-based Swing Entry/Stop/Targets (a third, "
+                    "independent number) live in the 'Swing Setup' table above - not "
+                    "here. All three are independent by design."
                 )
-
-            # Classification columns (Type, Valuation, Sentiment, Trend, Trade
-            # Setup) render as small colored pills instead of plain text - same
-            # red/amber/green convention as the score bars above, not new
-            # arbitrary colors. Type isn't a verdict (GROWTH/COMPOUNDER/etc. are
-            # just categories), so it gets a neutral teal pill EXCEPT when the
-            # sector lookup failed and it fell back to the GENERAL default - that
-            # case is flagged red, same as every other defaulted cell in this app.
-            _TYPE_NEUTRAL = "#0d9488"
-            _BADGE_COLORS = {
-                "UNDERVALUED": _BAR_GREEN, "FAIR": _BAR_AMBER, "EXPENSIVE": _BAR_RED,
-                "FEARFUL": _BAR_GREEN, "GREEDY": _BAR_AMBER, "OVERHEATED": _BAR_RED,
-                "CALM": "#6c757d", "NEUTRAL": "#6c757d",
-                "Uptrend": _BAR_GREEN, "Ranging": _BAR_AMBER, "Downtrend": _BAR_RED,
-                "BUY": _BAR_GREEN, "WATCHLIST": _BAR_AMBER, "AVOID": _BAR_RED,
-            }
-
-            def _badge_cell(text, color=None):
-                """One classification label as a small colored pill."""
-                _c = color or _BADGE_COLORS.get(text, "#475569")
-                return (
-                    f"<span style='display:inline-block;padding:3px 10px;"
-                    f"border-radius:12px;font-size:12.5px;font-weight:600;"
-                    f"background:{_c}22;color:{_c};'>{text}</span>"
-                )
-
-            _cmp = results.copy()
-            _cmp["Trade Setup Score"] = _cmp["Ticker"].map(trade_score_lookup)
-
-            _cmp_rows_html = []
-            for _, r in _cmp.iterrows():
-                _iv_text = (
-                    "N/A" if r["Intrinsic Value"] == "N/A" else f"{r['Intrinsic Value']:,.2f}"
-                )
-                _type_color = _BAR_RED if r.get("_flag_type") else _TYPE_NEUTRAL
-                _cmp_rows_html.append(
-                    "<tr>"
-                    f"<td style='padding:6px 10px;font-weight:600;'>{r['Ticker']}</td>"
-                    f"<td style='padding:6px 10px;'>{_badge_cell(r['Type'], _type_color)}</td>"
-                    f"<td style='padding:6px 10px;'>{r['Price']:,.2f}</td>"
-                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['Quality'], 40, 80)}</td>"
-                    f"<td style='padding:6px 10px;'>{_iv_text}</td>"
-                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['MOS'], 0, 25, '%')}</td>"
-                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['Long Score'], 30, 50)}</td>"
-                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['Psychology'], -5, 20)}</td>"
-                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['Discovery'], 25, 50)}</td>"
-                    f"<td style='padding:6px 10px;'>{_badge_cell(r['Valuation'])}</td>"
-                    f"<td style='padding:6px 10px;'>{_badge_cell(r['Sentiment'])}</td>"
-                    f"<td style='padding:6px 10px;'>{_badge_cell(r['Trend'])}</td>"
-                    f"<td style='padding:6px 10px;'>{_badge_cell(r['Trade Setup'])}</td>"
-                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['Trade Setup Score'], 45, 65)}</td>"
-                    "</tr>"
-                )
-
-            _cmp_headers = [
-                "Ticker", "Type", "Price", "Quality Score", "Intrinsic Value", "MOS",
-                "Long Score", "Psychology Score", "Discovery Score", "Valuation",
-                "Sentiment", "Trend", "Trade Setup", "Trade Setup Score",
-            ]
-            _cmp_html = (
-                "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
-                "<thead><tr>"
-                + "".join(
-                    f"<th style='text-align:left;padding:6px 10px;border-bottom:2px solid #ddd;'>{h}</th>"
-                    for h in _cmp_headers
-                )
-                + "</tr></thead><tbody>"
-                + "".join(_cmp_rows_html)
-                + "</tbody></table>"
-            )
-            st.markdown(_cmp_html, unsafe_allow_html=True)
-
-            st.subheader("Full Stock Database")
-            st.caption(
-                "Every cell is computed from the stock's own sourced data. Values in "
-                "red are default/average assumptions used where data was unavailable. "
-                "Note: 'Entry'/'Target' here are the DCF valuation basis (Entry = "
-                "80% of intrinsic value, Target = intrinsic value) - a long-term "
-                "fair-value number, NOT a trade level. The Trade Filter's own Entry "
-                "Zone/Stop/Targets (a technical number) live in the 'Trade Setup' "
-                "table above, and the ATR-based Swing Entry/Stop/Targets (a third, "
-                "independent number) live in the 'Swing Setup' table above - not "
-                "here. All three are independent by design."
-            )
-            _hidden = [
-                "Type Source", "Quality Source", "Intrinsic Source",
-                "_flag_type", "_flag_quality", "_flag_intrinsic", "_flag_growth",
-                "_mos_num",
-                # Swing-mode fields now live in their own 'Swing Setup' table above
-                # instead of being mixed in here alongside the DCF/Long-Score data.
-                "Trader Score", "Trend", "RSI", "MACD Cross",
-                "Swing Setup", "Setup Score", "Swing Entry", "Swing Stop",
-                "Swing T1", "Swing T2", "Swing RR", "ATR Stop", "Shares",
-                "Capital At Risk", "Position Value", "Regime",
-                "Earnings (days)", "Earnings Warn",
-            ]
-            _full = results.drop(columns=[c for c in _hidden if c in results.columns])
-            st.dataframe(
-                style_defaults(_full, results),
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "Entry": st.column_config.NumberColumn(
-                        "Entry",
-                        help=(
-                            "DCF valuation entry (80% of intrinsic value) - a "
-                            "long-term fair-value buy-in point, NOT a technical "
-                            "trade level. See 'Trade Setup' above for the Trade "
-                            "Filter's technical Entry Zone, and 'Swing Setup' for "
-                            "the ATR-based swing entry."
-                        ),
-                    ),
-                    "Target": st.column_config.NumberColumn(
-                        "Target",
-                        help=(
-                            "DCF valuation target = the computed intrinsic value "
-                            "itself. Long-term fair-value basis - different from "
-                            "the Trade Filter's technical targets and the Swing "
-                            "T1/T2 in 'Swing Setup'."
-                        ),
-                    ),
-                },
-            )
-
-            with st.expander("Show data source / default flags per field"):
-                _src = results[[
-                    "Ticker", "Type Source", "Quality Source", "Intrinsic Source",
+                _hidden = [
+                    "Type Source", "Quality Source", "Intrinsic Source",
                     "_flag_type", "_flag_quality", "_flag_intrinsic", "_flag_growth",
-                ]].rename(columns={
-                    "_flag_type": "Type Default",
-                    "_flag_quality": "Quality Default",
-                    "_flag_intrinsic": "Intrinsic Default",
-                    "_flag_growth": "Growth Default",
-                })
-                st.dataframe(_src, width="stretch", hide_index=True)
+                    "_mos_num",
+                    # Swing-mode fields now live in their own 'Swing Setup' table above
+                    # instead of being mixed in here alongside the DCF/Long-Score data.
+                    "Trader Score", "Trend", "RSI", "MACD Cross",
+                    "Swing Setup", "Setup Score", "Swing Entry", "Swing Stop",
+                    "Swing T1", "Swing T2", "Swing RR", "ATR Stop", "Shares",
+                    "Capital At Risk", "Position Value", "Regime",
+                    "Earnings (days)", "Earnings Warn",
+                ]
+                _full = results.drop(columns=[c for c in _hidden if c in results.columns])
+                st.dataframe(
+                    style_defaults(_full, results),
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "Entry": st.column_config.NumberColumn(
+                            "Entry",
+                            help=(
+                                "DCF valuation entry (80% of intrinsic value) - a "
+                                "long-term fair-value buy-in point, NOT a technical "
+                                "trade level. See 'Trade Setup' above for the Trade "
+                                "Filter's technical Entry Zone, and 'Swing Setup' for "
+                                "the ATR-based swing entry."
+                            ),
+                        ),
+                        "Target": st.column_config.NumberColumn(
+                            "Target",
+                            help=(
+                                "DCF valuation target = the computed intrinsic value "
+                                "itself. Long-term fair-value basis - different from "
+                                "the Trade Filter's technical targets and the Swing "
+                                "T1/T2 in 'Swing Setup'."
+                            ),
+                        ),
+                    },
+                )
+
+                if st.checkbox("Show data source / default flags per field", key=f"{state_prefix}_srcflags"):
+                    _src = results[[
+                        "Ticker", "Type Source", "Quality Source", "Intrinsic Source",
+                        "_flag_type", "_flag_quality", "_flag_intrinsic", "_flag_growth",
+                    ]].rename(columns={
+                        "_flag_type": "Type Default",
+                        "_flag_quality": "Quality Default",
+                        "_flag_intrinsic": "Intrinsic Default",
+                        "_flag_growth": "Growth Default",
+                    })
+                    st.dataframe(_src, width="stretch", hide_index=True)
 
             # -----------------------------------
             # DCF PARAMETERS  (per-stock manual override, THIS SESSION ONLY)
@@ -2939,126 +3774,130 @@ def _render_scan_results(page_label, state_prefix, empty_message, default_countr
             # did, so every table above (Intrinsic Value, MOS, Long Score, Valuation,
             # Entry/Target...) still picks it up the next time you click Run Scan -
             # only WHERE you set the override has changed, not how it propagates.
-            st.subheader("DCF Parameters (Growth / Discount / Perpetual)")
-            st.caption(
-                "The growth, discount and terminal-growth rate this scan actually "
-                "used for each stock - auto-calculated (CAPM / analyst-consensus / "
-                "currency-based, or the global defaults above), or your saved "
-                "override - alongside the resulting Intrinsic Value and the latest "
-                "Price, for a quick read of which stocks the DCF calls under/over "
-                "the market. Click \"Enable manual override\" to type your own "
-                "value for any stock - leave a cell blank to keep it auto. Saved "
-                "overrides apply only to your own session - they reset to "
-                "defaults the moment you leave or reload this page, and never "
-                "affect what any other visitor sees."
-            )
-            st.caption(
-                "\"IV/Price Multiple\" is Intrinsic Value divided by Price (e.g. 1.50 "
-                "means the DCF values the stock at 1.5x today's price; below 1.00 "
-                "means the DCF calls it overvalued). \"Long Score\" is color-coded "
-                "using the SAME gates that set the Investment Signal everywhere else "
-                f"in this app: green = Long Score above {SIGNAL_THRESHOLDS['LONG']} "
-                f"(LONG / STRONG LONG territory), yellow = above "
-                f"{SIGNAL_THRESHOLDS['WATCHLIST']} but at or below {SIGNAL_THRESHOLDS['LONG']} "
-                f"(WATCHLIST), red = {SIGNAL_THRESHOLDS['WATCHLIST']} or below (AVOID)."
-            )
-
-            _dcf_params_df = results[
-                ["Ticker", "Price", "Intrinsic Value", "IV/Price Multiple", "DCF Growth %",
-                 "Growth Governor", "DCF Discount %", "DCF Perpetual %", "Long Score"]
-            ].copy()
-
-            st.session_state.setdefault("scanner_override_mode", False)
-            _mode_label = ("Hide manual override" if st.session_state["scanner_override_mode"]
-                           else "Enable manual override")
-            if st.button(_mode_label, key="toggle_scanner_override"):
-                st.session_state["scanner_override_mode"] = not st.session_state["scanner_override_mode"]
-                st.rerun()
-
-            if not st.session_state["scanner_override_mode"]:
-                st.dataframe(
-                    style_defaults(_dcf_params_df, results, color_long_score=True),
-                    width="stretch", hide_index=True,
+            with st.expander("DCF Parameters (Growth / Discount / Perpetual) - view or override"):
+                st.caption(
+                    "The growth, discount and terminal-growth rate this scan actually "
+                    "used for each stock - auto-calculated (CAPM / analyst-consensus / "
+                    "currency-based, or the global defaults above), or your saved "
+                    "override - alongside the resulting Intrinsic Value and the latest "
+                    "Price, for a quick read of which stocks the DCF calls under/over "
+                    "the market. Click \"Enable manual override\" to type your own "
+                    "value for any stock - leave a cell blank to keep it auto. Saved "
+                    "overrides apply only to your own session - they reset to "
+                    "defaults the moment you leave or reload this page, and never "
+                    "affect what any other visitor sees."
                 )
-            else:
-                _editor_rows = []
-                for _, _row in _dcf_params_df.iterrows():
-                    _tk = _row["Ticker"]
-                    _ov = st.session_state["fcf_overrides"].get(_tk, {})
-                    _editor_rows.append({
-                        "Ticker": _tk,
-                        "Price": _row["Price"],
-                        "Intrinsic Value (calc)": _row["Intrinsic Value"],
-                        "Growth % (calc)": _row["DCF Growth %"],
-                        "Growth governed by": _row["Growth Governor"],
-                        "Discount % (calc)": _row["DCF Discount %"],
-                        "Perpetual % (calc)": _row["DCF Perpetual %"],
-                        "Growth % override": (
-                            round(_ov["growth"] * 100, 2) if _ov.get("growth") is not None else None
-                        ),
-                        "Discount % override": (
-                            round(_ov["discount"] * 100, 2) if _ov.get("discount") is not None else None
-                        ),
-                        "Perpetual % override": (
-                            round(_ov["perpetual"] * 100, 2) if _ov.get("perpetual") is not None else None
-                        ),
-                    })
-                _editor_df = pd.DataFrame(_editor_rows)
-                _edited = st.data_editor(
-                    _editor_df,
-                    width="stretch",
-                    hide_index=True,
-                    disabled=["Ticker", "Price", "Intrinsic Value (calc)",
-                              "Growth % (calc)", "Discount % (calc)", "Perpetual % (calc)"],
-                    column_config={
-                        "Growth % override": st.column_config.NumberColumn(
-                            help="Blank = stay auto/calculated.", step=0.5, format="%.2f"),
-                        "Discount % override": st.column_config.NumberColumn(
-                            help="Blank = stay auto/calculated.", step=0.1, format="%.2f"),
-                        "Perpetual % override": st.column_config.NumberColumn(
-                            help="Blank = stay auto/calculated.", step=0.1, format="%.2f"),
-                    },
-                    key="dcf_override_editor",
+                st.caption(
+                    "\"IV/Price Multiple\" is Intrinsic Value divided by Price (e.g. 1.50 "
+                    "means the DCF values the stock at 1.5x today's price; below 1.00 "
+                    "means the DCF calls it overvalued). \"Long Score\" is color-coded "
+                    "using the SAME gates that set the Investment Signal everywhere else "
+                    f"in this app: green = Long Score above {SIGNAL_THRESHOLDS['LONG']} "
+                    f"(LONG / STRONG LONG territory), yellow = above "
+                    f"{SIGNAL_THRESHOLDS['WATCHLIST']} but at or below {SIGNAL_THRESHOLDS['LONG']} "
+                    f"(WATCHLIST), red = {SIGNAL_THRESHOLDS['WATCHLIST']} or below (AVOID)."
                 )
 
-                bcol1, bcol2 = st.columns(2)
-                with bcol1:
-                    if st.button("Save overrides", type="primary", key="save_scanner_overrides"):
-                        _saved = 0
-                        for _, _r in _edited.iterrows():
-                            _tk = _r["Ticker"]
-                            _g_ov = _r["Growth % override"]
-                            _d_ov = _r["Discount % override"]
-                            _p_ov = _r["Perpetual % override"]
-                            _has_any = any(v is not None and v == v for v in (_g_ov, _d_ov, _p_ov))
-                            _existing_fcf = st.session_state["fcf_overrides"].get(_tk, {}).get("fcf")
-                            if _has_any:
-                                _growth = (_g_ov / 100.0) if (_g_ov is not None and _g_ov == _g_ov) else None
-                                _discount = (_d_ov / 100.0) if (_d_ov is not None and _d_ov == _d_ov) else None
-                                _perpetual = (_p_ov / 100.0) if (_p_ov is not None and _p_ov == _p_ov) else None
-                                st.session_state["fcf_overrides"][_tk] = {
-                                    "discount": _discount, "perpetual": _perpetual,
-                                    "growth": _growth, "fcf": _existing_fcf,
-                                }
-                                _saved += 1
-                            elif _tk in st.session_state["fcf_overrides"]:
-                                # Every override cell for this ticker was cleared/left
-                                # blank - drop it back to fully automatic.
-                                st.session_state["fcf_overrides"].pop(_tk, None)
-                        st.success(
-                            f"Saved {_saved} override(s) for this session - click "
-                            "Run Comparison again to recalculate every table with "
-                            "them. These reset to defaults once you leave the page."
-                        )
-                        st.rerun()
-                with bcol2:
-                    if st.button("Reset ALL overrides (back to auto)", key="reset_scanner_overrides"):
-                        st.session_state["fcf_overrides"] = {}
-                        st.info("All overrides cleared. Click Run Comparison again to recalculate.")
-                        st.rerun()
+                _dcf_params_df = results[
+                    ["Ticker", "Price", "Intrinsic Value", "IV/Price Multiple", "DCF Growth %",
+                     "Growth Governor", "DCF Discount %", "DCF Perpetual %", "Long Score"]
+                ].copy()
+
+                st.session_state.setdefault("scanner_override_mode", False)
+                _mode_label = ("Hide manual override" if st.session_state["scanner_override_mode"]
+                               else "Enable manual override")
+                if st.button(_mode_label, key="toggle_scanner_override"):
+                    st.session_state["scanner_override_mode"] = not st.session_state["scanner_override_mode"]
+                    st.rerun()
+
+                if not st.session_state["scanner_override_mode"]:
+                    st.dataframe(
+                        style_defaults(_dcf_params_df, results, color_long_score=True),
+                        width="stretch", hide_index=True,
+                    )
+                else:
+                    _editor_rows = []
+                    for _, _row in _dcf_params_df.iterrows():
+                        _tk = _row["Ticker"]
+                        _ov = st.session_state["fcf_overrides"].get(_tk, {})
+                        _editor_rows.append({
+                            "Ticker": _tk,
+                            "Price": _row["Price"],
+                            "Intrinsic Value (calc)": _row["Intrinsic Value"],
+                            "Growth % (calc)": _row["DCF Growth %"],
+                            "Growth governed by": _row["Growth Governor"],
+                            "Discount % (calc)": _row["DCF Discount %"],
+                            "Perpetual % (calc)": _row["DCF Perpetual %"],
+                            "Growth % override": (
+                                round(_ov["growth"] * 100, 2) if _ov.get("growth") is not None else None
+                            ),
+                            "Discount % override": (
+                                round(_ov["discount"] * 100, 2) if _ov.get("discount") is not None else None
+                            ),
+                            "Perpetual % override": (
+                                round(_ov["perpetual"] * 100, 2) if _ov.get("perpetual") is not None else None
+                            ),
+                        })
+                    _editor_df = pd.DataFrame(_editor_rows)
+                    _edited = st.data_editor(
+                        _editor_df,
+                        width="stretch",
+                        hide_index=True,
+                        disabled=["Ticker", "Price", "Intrinsic Value (calc)",
+                                  "Growth % (calc)", "Discount % (calc)", "Perpetual % (calc)"],
+                        column_config={
+                            "Growth % override": st.column_config.NumberColumn(
+                                help="Blank = stay auto/calculated.", step=0.5, format="%.2f"),
+                            "Discount % override": st.column_config.NumberColumn(
+                                help="Blank = stay auto/calculated.", step=0.1, format="%.2f"),
+                            "Perpetual % override": st.column_config.NumberColumn(
+                                help="Blank = stay auto/calculated.", step=0.1, format="%.2f"),
+                        },
+                        key="dcf_override_editor",
+                    )
+
+                    bcol1, bcol2 = st.columns(2)
+                    with bcol1:
+                        if st.button("Save overrides", type="primary", key="save_scanner_overrides"):
+                            _saved = 0
+                            for _, _r in _edited.iterrows():
+                                _tk = _r["Ticker"]
+                                _g_ov = _r["Growth % override"]
+                                _d_ov = _r["Discount % override"]
+                                _p_ov = _r["Perpetual % override"]
+                                _has_any = any(v is not None and v == v for v in (_g_ov, _d_ov, _p_ov))
+                                _existing_fcf = st.session_state["fcf_overrides"].get(_tk, {}).get("fcf")
+                                if _has_any:
+                                    _growth = (_g_ov / 100.0) if (_g_ov is not None and _g_ov == _g_ov) else None
+                                    _discount = (_d_ov / 100.0) if (_d_ov is not None and _d_ov == _d_ov) else None
+                                    _perpetual = (_p_ov / 100.0) if (_p_ov is not None and _p_ov == _p_ov) else None
+                                    st.session_state["fcf_overrides"][_tk] = {
+                                        "discount": _discount, "perpetual": _perpetual,
+                                        "growth": _growth, "fcf": _existing_fcf,
+                                    }
+                                    _saved += 1
+                                elif _tk in st.session_state["fcf_overrides"]:
+                                    # Every override cell for this ticker was cleared/left
+                                    # blank - drop it back to fully automatic.
+                                    st.session_state["fcf_overrides"].pop(_tk, None)
+                            st.success(
+                                f"Saved {_saved} override(s) for this session - click "
+                                "Run Comparison again to recalculate every table with "
+                                "them. These reset to defaults once you leave the page."
+                            )
+                            st.rerun()
+                    with bcol2:
+                        if st.button("Reset ALL overrides (back to auto)", key="reset_scanner_overrides"):
+                            st.session_state["fcf_overrides"] = {}
+                            st.info("All overrides cleared. Click Run Comparison again to recalculate.")
+                            st.rerun()
 
             scan_time = round(time.time() - start_time, 2)
-            st.info(f"Scan completed in {scan_time} seconds")
+            if _need_fresh_scan:
+                st.caption(
+                    f"{len(results)} stocks analyzed - live data - "
+                    f"completed in {scan_time}s - {universe_source}"
+                )
 
         else:
             st.warning("No stock data returned.")
@@ -3084,3 +3923,7 @@ _nav = st.navigation(
     [PG_HOME, PG_DEEP_DIVE, PG_COMPARISON, PG_RESEARCH, PG_SCANNER], position="hidden"
 )
 _nav.run()
+
+# Footer is rendered AFTER st.navigation has run the active page, so it
+# appears on every page regardless of early returns/gates inside the page.
+_render_footer()
