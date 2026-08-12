@@ -90,6 +90,20 @@ def _run_digest(log):
         log(f"[scheduler] weekly digest failed: {e}")
 
 
+def _universes_needing_scan(cfg):
+    """Universes whose SAVED scan is missing or stale (>20h) - the source of
+    truth is the result file, not a 'ran today' marker, so a deploy/restart
+    that kills a scan mid-run self-heals on the next check instead of
+    silently skipping a whole day."""
+    import scan_store
+    due = []
+    for u in cfg["universes"]:
+        payload = scan_store.load_scan(u)
+        if payload is None or payload.get("age_hours", 999) > 20:
+            due.append(u)
+    return due
+
+
 def _loop(log):
     while True:
         try:
@@ -99,11 +113,18 @@ def _loop(log):
                 today = now.strftime("%Y-%m-%d")
                 state = _load_state()
 
-                if now.hour >= cfg["scan_hour"] and state.get("last_scan_date") != today:
-                    state["last_scan_date"] = today
-                    _save_state(state)  # mark first: never double-start a 30-min job
-                    log(f"[scheduler] starting nightly scans ({', '.join(cfg['universes'])})")
-                    _run_nightly(cfg, log)
+                if now.hour >= cfg["scan_hour"]:
+                    due = _universes_needing_scan(cfg)
+                    attempts = state.get("scan_attempts", {})
+                    n_today = attempts.get(today, 0)
+                    if due and n_today < 3:  # retry cap: a persistently
+                        # failing universe never turns into a hammering loop
+                        state["scan_attempts"] = {today: n_today + 1}
+                        state["last_scan_date"] = today
+                        _save_state(state)  # mark first: never double-start
+                        log(f"[scheduler] starting nightly scans ({', '.join(due)}) "
+                            f"[attempt {n_today + 1}/3 today]")
+                        _run_nightly({**cfg, "universes": due}, log)
 
                 if (now.weekday() == cfg["digest_weekday"]
                         and now.hour >= cfg["digest_hour"]
