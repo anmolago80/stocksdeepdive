@@ -4,6 +4,7 @@ import pandas as pd
 import time
 import json
 import os
+import concurrent.futures
 from datetime import datetime, timezone
 
 from trends_engine import get_trend_score
@@ -27,6 +28,7 @@ import deep_dive_engine
 import build_compounder_data
 import paywall_engine
 import feedback_engine
+import scanner_engine
 
 # -----------------------------------
 # PAGE SETUP
@@ -118,6 +120,51 @@ def get_cashflow_df(ticker):
         return yf.Ticker(ticker).cashflow
     except Exception:
         return pd.DataFrame()
+
+
+def _prefetch_scan_data(tickers, live_data, enable_social, news_api_key):
+    """
+    Warms every st.cache_data-backed lookup the scan loop below needs, for
+    ALL tickers at once, concurrently - instead of the scan loop hitting
+    yfinance/Google Trends/News/StockTwits one ticker at a time in sequence.
+    None of get_price_history/get_ticker_info/get_cashflow_df/get_trend_score/
+    get_news_score/get_yahoo_news_score/social_engine.get_social_score ever
+    call a Streamlit UI function directly (only the st.cache_data decorator,
+    whose cache is process-wide and safe to populate from worker threads) -
+    so this is safe to run off the main thread. The scan loop further below
+    is completely untouched: it just hits an already-warm cache for every
+    field, so the same scoring runs without waiting on each network
+    round-trip one ticker at a time. This is the single biggest lever for
+    scan speed on a large universe (100s of tickers).
+
+    Deliberately swallows every per-ticker exception here: a prefetch
+    failure just means that one lookup falls through to its own normal,
+    uncached call inside the loop below (which already has its own
+    try/except per ticker) - never something that should abort the scan.
+    """
+    def _warm_one(ticker):
+        try:
+            get_price_history(ticker)
+            get_ticker_info(ticker)
+            get_cashflow_df(ticker)
+            if live_data:
+                keyword = ticker.split(".")[0]
+                get_trend_score(keyword, api_key=news_api_key or None)
+                get_news_score(keyword, api_key=news_api_key or None)
+                get_yahoo_news_score(ticker)
+            if enable_social:
+                social_engine.get_social_score(ticker)
+        except Exception:
+            pass
+
+    # Capped concurrency: high enough to meaningfully overlap network
+    # latency across tickers, low enough to stay polite to yfinance/Google
+    # Trends/NewsAPI/StockTwits rather than tripping their own rate limits
+    # (which would just turn into more per-ticker fallback-to-zero reads,
+    # not an actual error - but overshooting on workers buys no extra
+    # speed once a source starts throttling).
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as _executor:
+        list(_executor.map(_warm_one, tickers))
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -371,21 +418,29 @@ def _render_header(compact, page_label=None):
             _searched = st.form_submit_button(
                 "Search", use_container_width=True, type="primary"
             )
-        if not compact:
+        # Rational Compounder Analysis and Stock Scanner sit side by side,
+        # equal width, together spanning the same width as the search box
+        # above them - rather than Rational Compounder Analysis alone
+        # spanning the full width with Stock Scanner elsewhere on the page.
+        _nav_col1, _nav_col2 = st.columns(2, gap="small")
+        with _nav_col1:
             if st.button(
-                "Rational Compounder Analysis", use_container_width=True, key="nav_research"
+                "Rational Compounder Analysis",
+                use_container_width=True, key="nav_research",
             ):
                 st.switch_page(PG_RESEARCH)
+        with _nav_col2:
+            if st.button(
+                "Stock Scanner",
+                use_container_width=True, key="nav_scanner",
+            ):
+                st.switch_page(PG_SCANNER)
+        if not compact:
             st.caption(
                 "One ticker = Deep Dive. Two or more (comma or space separated) = "
                 "side-by-side Comparison. ASX (e.g. CSL.AX) and US (e.g. AAPL) "
                 "tickers can be mixed freely."
             )
-        else:
-            if st.button(
-                "Rational Compounder Analysis", key="nav_research"
-            ):
-                st.switch_page(PG_RESEARCH)
 
     if _searched:
         _raw = _search_text.replace(",", " ").replace("\n", " ").split()
@@ -1636,35 +1691,156 @@ def page_deep_dive():
               "entry zone above - the same convention the Trade Filter table uses)."
         )
 
-def page_comparison():
-    _render_header(compact=True, page_label="Comparison")
 
-    # The search box on every page is the only thing that ever populates a
-    # Comparison request - it stores the parsed ticker list + a one-shot
-    # "fresh" flag in session_state right before switching to this page
-    # (see _render_header above), rather than this page owning its own
-    # ticker-entry widget.
-    _fresh_scan = st.session_state.pop("cmp_fresh", False)
-    stocks = st.session_state.get("cmp_stocks")
-    universe_source = st.session_state.get("cmp_universe_source", "")
-    scan_country = st.session_state.get("cmp_scan_country", "Australia")
+def _render_country_mood_line(country):
+    """
+    One-line GDELT mood reading for `country` - just the headline result
+    (Hopeful/Neutral/Anxious + the underlying news-tone number), no
+    "what's driving this reading" expander. Purely informational, same as
+    everywhere else this reading is used - never feeds Long Score or any
+    per-stock scoring.
+    """
+    if country not in mood_engine.COUNTRY_SOURCES:
+        return
+    _mood = get_country_mood(country)
+    _mood_fn = {
+        "Hopeful": st.success, "Neutral": st.info,
+        "Anxious": st.warning, "Unknown": st.info,
+    }.get(_mood["label"], st.info)
+    if _mood["label"] == "Unknown":
+        _detail = _mood.get("error_detail")
+        _mood_fn(
+            f"{country} mood: Unknown - couldn't fetch trending data this session."
+            + (f" ({_detail})" if _detail else "")
+        )
+    else:
+        _mood_fn(
+            f"{country} is feeling **{_mood['label']}** - based on GDELT's live "
+            f"news-tone reading averaged over the last 10 days "
+            f"({_mood['gdelt_tone']:+.2f})."
+        )
 
-    if not stocks:
-        st.info("Search two or more tickers above to run a Comparison.")
+
+def page_scanner():
+    _render_header(compact=True, page_label="Scanner")
+
+    st.session_state.setdefault("scanner_country_au", True)
+    st.session_state.setdefault("scanner_country_us", False)
+
+    st.write(
+        "Tick one or more countries, then pick a single universe to scan - "
+        "each universe below is scanned entirely on its own (ASX 200 and "
+        "ASX 300 are never blended together, and neither are any of the "
+        "USA universes)."
+    )
+
+    _col_au, _col_us = st.columns(2)
+    with _col_au:
+        _want_au = st.checkbox("Australia", key="scanner_country_au")
+    with _col_us:
+        _want_us = st.checkbox("USA", key="scanner_country_us")
+
+    if _want_au:
+        _render_country_mood_line("Australia")
+    if _want_us:
+        _render_country_mood_line("USA")
+
+    _universe_options = []
+    if _want_au:
+        _universe_options += scanner_engine.get_universes("Australia")
+    if _want_us:
+        _universe_options += scanner_engine.get_universes("USA")
+
+    if not _universe_options:
+        st.info("Tick at least one country above to pick a universe to scan.")
         return
 
-    # The universe Stock Scanner and Auto-Trading were both removed from
-    # this public deployment, so Comparison is the only scan type left -
-    # its results cache always lives under this one fixed key.
-    _active_cache_name = "stock"
-    _cache_key = "last_scan_data_stock"
+    # Guard against a previously-picked universe/sector no longer being a
+    # valid option (e.g. unticking USA while "S&P 500" was selected) -
+    # Streamlit raises if a selectbox's session_state value isn't in its
+    # current options, so this has to be fixed up BEFORE the widget below
+    # is instantiated, not after.
+    if st.session_state.get("scanner_universe") not in _universe_options:
+        st.session_state["scanner_universe"] = _universe_options[0]
 
-    # True only right on the page load that immediately follows a Search
-    # submission (see the one-shot "cmp_fresh" flag popped above) - tells
-    # "a real new scan was just requested" apart from "some OTHER widget on
-    # this results page (e.g. saving a DCF override) triggered this rerun",
-    # so those reuse the already-computed results instead of re-fetching
-    # everything from scratch.
+    universe = st.selectbox("Universe", _universe_options, key="scanner_universe")
+    universe_country = (
+        "Australia" if universe in scanner_engine.get_universes("Australia") else "USA"
+    )
+
+    _pool_df, _pool_source = scanner_engine.get_universe_pool(universe_country, universe)
+    _sectors = scanner_engine.get_sectors(_pool_df)
+
+    if st.session_state.get("scanner_sector") not in _sectors:
+        st.session_state["scanner_sector"] = "All"
+
+    sector = st.selectbox("Sector (optional)", _sectors, key="scanner_sector")
+
+    st.caption(f"Universe source: {_pool_source}")
+
+    if st.button("Run Scan", type="primary", key="run_scanner"):
+        with st.spinner("Resolving universe..."):
+            _tickers, _source = scanner_engine.resolve_tickers(universe_country, universe, sector)
+        if not _tickers:
+            st.warning("No stocks matched this universe/sector - try a different selection.")
+        else:
+            st.session_state["scan_stocks"] = _tickers
+            st.session_state["scan_universe_source"] = f"{universe} - {_source}"
+            st.session_state["scan_scan_country"] = universe_country
+            st.session_state["scan_fresh"] = True
+
+    _render_scan_results(
+        page_label="Scanner",
+        state_prefix="scan",
+        empty_message="Pick a country, universe, and (optionally) a sector above, then click Run Scan.",
+    )
+
+
+def page_comparison():
+    _render_header(compact=True, page_label="Comparison")
+    _render_scan_results(
+        page_label="Comparison",
+        state_prefix="cmp",
+        empty_message="Search two or more tickers above to run a Comparison.",
+    )
+
+
+def _render_scan_results(page_label, state_prefix, empty_message, default_country="Australia"):
+    """
+    Shared scan-and-results engine behind both Comparison (manual ticker
+    list, typed into the search box) and Scanner (a whole universe,
+    resolved from scanner_engine.py) - same scoring, same tables, so the
+    two pages always look and behave identically apart from how `stocks`
+    got populated. Each caller gets its own session_state namespace
+    (state_prefix) and its own results cache key, so running a scan on one
+    page never overwrites what's showing on the other. Callers render their
+    own header (and, for Scanner, its own selection UI) before calling this.
+    """
+    # The search box (Comparison) or the Run Scan button (Scanner) is the
+    # only thing that ever populates a request here - each stores its
+    # parsed ticker list + a one-shot "fresh" flag in session_state under
+    # this page's own state_prefix before this function runs.
+    _fresh_scan = st.session_state.pop(f"{state_prefix}_fresh", False)
+    stocks = st.session_state.get(f"{state_prefix}_stocks")
+    universe_source = st.session_state.get(f"{state_prefix}_universe_source", "")
+    scan_country = st.session_state.get(f"{state_prefix}_scan_country", default_country)
+
+    if not stocks:
+        st.info(empty_message)
+        return
+
+    # Comparison and Scanner each get their own fixed cache key (via
+    # state_prefix) so switching between them never overwrites the other's
+    # last completed scan.
+    _active_cache_name = state_prefix
+    _cache_key = f"last_scan_data_{state_prefix}"
+
+    # True only right on the page load that immediately follows a Search/Run
+    # Scan submission (see the one-shot "{state_prefix}_fresh" flag popped
+    # above) - tells "a real new scan was just requested" apart from "some
+    # OTHER widget on this results page (e.g. saving a DCF override)
+    # triggered this rerun", so those reuse the already-computed results
+    # instead of re-fetching everything from scratch.
     _need_fresh_scan = _fresh_scan
 
     _scan_area = st.container(key="scan_results_area")
@@ -1706,6 +1882,16 @@ def page_comparison():
             market_regime, regime_detail = swing_engine.get_market_regime(benchmark_df)
 
         start_time = time.time()
+
+        # Warm every ticker's cached lookups CONCURRENTLY before the scan loop
+        # below touches any of them one at a time - see _prefetch_scan_data's
+        # docstring. Only worth doing for a real fresh scan (same guard as the
+        # loop itself) and only once there's more than a couple of tickers,
+        # since thread-pool setup isn't free and a 1-2 ticker Comparison is
+        # already fast without it.
+        if _need_fresh_scan and len(stocks) > 2:
+            with st.spinner(f"Fetching data for {len(stocks)} stocks..."):
+                _prefetch_scan_data(stocks, live_data, enable_social, news_api_key)
 
         # Only actually build the progress bar / iterate tickers when a fresh scan
         # is needed (see _need_fresh_scan above) - otherwise this rerun reuses the
@@ -2155,14 +2341,10 @@ def page_comparison():
             market_regime = _cached_scan["market_regime"]
             regime_detail = _cached_scan["regime_detail"]
             st.caption(
-                "Showing "
-                + ("Stock Scanner's" if _active_cache_name == "industry"
-                   else "Stock Comparison's" if _active_cache_name == "stock"
-                   else "the")
-                + " last completed scan - something elsewhere on the page (e.g. "
-                "the Auto-Trading tab, or just switching tabs) triggered this "
-                "refresh, not a new scan. Click Run Scan / Run Comparison again "
-                "for fresh live prices."
+                f"Showing {page_label}'s last completed scan - something "
+                "elsewhere on the page (e.g. saving a DCF override) triggered "
+                "this refresh, not a new scan. Click Run Scan again for fresh "
+                "live prices."
             )
 
 
@@ -2880,8 +3062,9 @@ PG_HOME = st.Page(page_home, title="StocksDeepDive", url_path="", default=True)
 PG_DEEP_DIVE = st.Page(page_deep_dive, title="Deep Dive", url_path="deep-dive")
 PG_COMPARISON = st.Page(page_comparison, title="Comparison", url_path="comparison")
 PG_RESEARCH = st.Page(page_research, title="Rational Compounder Analysis", url_path="research")
+PG_SCANNER = st.Page(page_scanner, title="Stock Scanner", url_path="scanner")
 
 _nav = st.navigation(
-    [PG_HOME, PG_DEEP_DIVE, PG_COMPARISON, PG_RESEARCH], position="hidden"
+    [PG_HOME, PG_DEEP_DIVE, PG_COMPARISON, PG_RESEARCH, PG_SCANNER], position="hidden"
 )
 _nav.run()
