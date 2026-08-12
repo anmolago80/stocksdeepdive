@@ -1539,6 +1539,12 @@ def _render_compounder_admin_panel():
                 "Upload the updated SMSF research workbook (.xlsx)",
                 type=["xlsx"], key="cp_admin_upload",
             )
+            st.checkbox(
+                "Archive the current dataset before replacing it "
+                "(keeps it viewable under 'Data snapshot' with its "
+                "timestamp - untick to discard it instead)",
+                value=True, key="cp_admin_archive",
+            )
             if uploaded and st.button(
                 "Rebuild Rational Compounder data", type="primary", key="cp_admin_rebuild",
             ):
@@ -1555,25 +1561,20 @@ def _render_compounder_admin_panel():
                             f.write(uploaded.getbuffer())
                         fresh_data = build_compounder_data.build(tmp_path)
 
-                        # Merge over whatever was already on disk (the
-                        # currently-live data) rather than replacing it
-                        # outright -- so re-uploading a newer/leaner
-                        # workbook (Andrew rebuilds this from scratch every
-                        # 10-12 months) can't silently wipe out a ticker,
-                        # or a Company Potential answer, that just wasn't
-                        # re-typed into the new file this round. See
-                        # merge_compounder_data()'s own docstring for the
-                        # full rationale.
-                        previous_data = None
-                        if os.path.exists(out_path):
-                            try:
-                                with open(out_path) as f:
-                                    previous_data = json.load(f)
-                            except (json.JSONDecodeError, OSError):
-                                previous_data = None
-                        new_data = build_compounder_data.merge_compounder_data(
-                            fresh_data, previous_data
-                        )
+                        # ARCHIVE the previous dataset (timestamped, kept
+                        # on the volume, viewable via the Research page's
+                        # snapshot picker), then REPLACE the live data
+                        # with this build outright. The old behaviour
+                        # merged old cells into any blanks in the new
+                        # build - which meant a deliberately DELETED cell
+                        # (e.g. wrong-company text removed from a row)
+                        # kept resurrecting. Now: the workbook you upload
+                        # is exactly what the site shows, and history
+                        # lives in the archive instead of leaking into
+                        # the present.
+                        if st.session_state.get("cp_admin_archive", True):
+                            build_compounder_data.archive_current_snapshot()
+                        new_data = fresh_data
 
                         with open(out_path, "w") as f:
                             json.dump(new_data, f, indent=1)
@@ -1671,6 +1672,30 @@ def page_research():
     _render_compounder_admin_panel()
 
     data = _load_compounder_data()
+
+    # Data snapshot picker: the author starts a fresh research workbook
+    # every 6-10 months; every rebuild archives the previous dataset with
+    # its timestamp, and any of them can be viewed here. Only shown when
+    # archives exist.
+    _snapshots = build_compounder_data.list_archived_snapshots()
+    if _snapshots:
+        _snap_labels = ["Current (latest rebuild)"] + [
+            f"Archived - {s['label']}" for s in _snapshots
+        ]
+        _snap_pick = st.selectbox(
+            "Data snapshot", _snap_labels, key="cp_snapshot_pick",
+        )
+        if _snap_pick != "Current (latest rebuild)":
+            _snap = _snapshots[_snap_labels.index(_snap_pick) - 1]
+            _snap_data = build_compounder_data.load_snapshot(_snap["path"])
+            if _snap_data:
+                data = _snap_data
+                st.warning(
+                    f"You're viewing an ARCHIVED snapshot ({_snap['label']}). "
+                    "Numbers reflect the research workbook as of that date - "
+                    "switch back to 'Current' for the latest data."
+                )
+
     if not data or not data.get("tickers"):
         st.info(
             "Rational Compounder Analysis - the research data is being "

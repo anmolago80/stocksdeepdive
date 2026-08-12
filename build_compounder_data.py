@@ -1219,6 +1219,86 @@ def _cp_merge_value(new_v, old_v):
     return old_v if (_cp_is_empty(new_v) and not _cp_is_empty(old_v)) else new_v
 
 
+ARCHIVE_DIR_NAME = "compounder_archive"
+
+
+def _cp_archive_dir():
+    path = os.path.join(_cp_data_dir(), ARCHIVE_DIR_NAME)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def archive_current_snapshot():
+    """Copy the live compounder_data.json into the archive folder, named
+    by its own generated_at timestamp - called right before a rebuild
+    REPLACES the live data, so every previous dataset stays viewable on
+    the Research page's snapshot picker. Idempotent: re-archiving the
+    same generated_at overwrites the same file rather than duplicating.
+    Returns the archive path, or None if there was nothing to archive."""
+    current_path = os.path.join(_cp_data_dir(), "compounder_data.json")
+    if not os.path.exists(current_path):
+        return None
+    try:
+        with open(current_path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    gen = str(data.get("generated_at") or "unknown")
+    safe = "".join(c if (c.isalnum() or c in "T-") else "-" for c in gen)[:19] or "unknown"
+    dest = os.path.join(_cp_archive_dir(), f"compounder_data_{safe}.json")
+    try:
+        with open(dest, "w") as f:
+            json.dump(data, f, indent=1)
+    except OSError:
+        return None
+    return dest
+
+
+def list_archived_snapshots():
+    """Archived datasets, newest first: [{'path', 'generated_at',
+    'label', 'n_tickers'}]. Labels are human-readable ('11 Aug 2026,
+    03:58 UTC - 3 companies') for the Research page's snapshot picker."""
+    from datetime import datetime as _dt, timezone as _tz
+    out = []
+    try:
+        files = sorted(os.listdir(_cp_archive_dir()), reverse=True)
+    except OSError:
+        return out
+    for fn in files:
+        if not (fn.startswith("compounder_data_") and fn.endswith(".json")):
+            continue
+        path = os.path.join(_cp_archive_dir(), fn)
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        gen = data.get("generated_at")
+        try:
+            dt = _dt.fromisoformat(gen)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=_tz.utc)
+            when = dt.astimezone(_tz.utc).strftime("%d %b %Y, %H:%M UTC")
+        except (TypeError, ValueError):
+            when = "unknown date"
+        n = len(data.get("tickers", {}))
+        out.append({
+            "path": path, "generated_at": gen,
+            "label": f"{when} - {n} companies", "n_tickers": n,
+        })
+    out.sort(key=lambda s: s.get("generated_at") or "", reverse=True)
+    return out
+
+
+def load_snapshot(path):
+    """One archived dataset, or None if unreadable."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
 def merge_compounder_data(new_data, old_data):
     """Merge a freshly-built compounder_data.json over the previous one -
     see the block comment above for why this exists. `generated_at` and
