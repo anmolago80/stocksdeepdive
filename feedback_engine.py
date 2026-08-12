@@ -165,6 +165,21 @@ def render_feedback_button(page_label, key_prefix, user_email=None):
         unsafe_allow_html=True,
     )
 
+    msg_key = f"fb_msg_{key_prefix}"
+    email_key = f"fb_email_{key_prefix}"
+    sent_flag_key = f"fb_sent_{key_prefix}"
+
+    # Streamlit forbids writing to a widget's session_state key after that
+    # widget has already been instantiated in the current run - so clearing
+    # the text box after a successful send has to happen here, BEFORE
+    # st.text_area(key=msg_key, ...) below runs, not inside the button's
+    # on-click handling (which fires after the text_area already exists for
+    # this run). The button handler just sets sent_flag_key and reruns;
+    # this block does the actual clearing + success toast on the next run.
+    if st.session_state.pop(sent_flag_key, False):
+        st.session_state[msg_key] = ""
+        st.toast("Thanks - feedback sent!", icon="✅")
+
     _sp, _c1 = st.columns([10.3, 1.7], gap="small")
     with _c1:
         with st.popover(
@@ -172,8 +187,6 @@ def render_feedback_button(page_label, key_prefix, user_email=None):
             key=f"fb_popover_{key_prefix}",
         ):
             st.caption(f"Feedback on {page_label} - goes straight to our inbox.")
-            msg_key = f"fb_msg_{key_prefix}"
-            email_key = f"fb_email_{key_prefix}"
             st.text_area(
                 "Your feedback",
                 key=msg_key,
@@ -193,8 +206,7 @@ def render_feedback_button(page_label, key_prefix, user_email=None):
                 if not _text.strip():
                     st.warning("Type a message first.")
                 elif send_feedback(page_label, _text, reply_to=_reply_to):
-                    st.session_state[msg_key] = ""
-                    st.toast("Thanks - feedback sent!", icon="✅")
+                    st.session_state[sent_flag_key] = True
                     st.rerun()
                 else:
                     st.error("Couldn't send just now - please try again in a moment.")
