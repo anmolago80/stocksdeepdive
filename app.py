@@ -186,7 +186,13 @@ def get_country_mood(country, api_key=None):
     above so switching tabs or re-running an unrelated widget doesn't
     refetch it every rerun.
     """
-    return mood_engine.compute_country_mood(country, api_key=api_key)
+    mood = mood_engine.compute_country_mood(country, api_key=api_key)
+    if not mood or mood.get("label") in (None, "", "Unknown"):
+        # Raise so FAILURES never enter the 30-minute cache - otherwise one
+        # GDELT rate-limit pins "Unknown" on screen for half an hour even
+        # after GDELT recovers (st.cache_data doesn't cache exceptions).
+        raise RuntimeError((mood or {}).get("error_detail") or "mood unavailable")
+    return mood
 
 
 # -----------------------------------
@@ -2470,23 +2476,22 @@ def _render_country_mood_line(country):
     """
     if country not in mood_engine.COUNTRY_SOURCES:
         return
-    _mood = get_country_mood(country)
+    # If the reading can't be fetched (usually a GDELT rate limit), render
+    # nothing at all - a public page shouldn't surface raw upstream errors,
+    # and an "Unknown" banner is noise. The failed lookup isn't cached, so
+    # the line reappears on its own as soon as GDELT recovers.
+    try:
+        _mood = get_country_mood(country)
+    except Exception:
+        return
     _mood_fn = {
-        "Hopeful": st.success, "Neutral": st.info,
-        "Anxious": st.warning, "Unknown": st.info,
+        "Hopeful": st.success, "Neutral": st.info, "Anxious": st.warning,
     }.get(_mood["label"], st.info)
-    if _mood["label"] == "Unknown":
-        _detail = _mood.get("error_detail")
-        _mood_fn(
-            f"{country} mood: Unknown - couldn't fetch trending data this session."
-            + (f" ({_detail})" if _detail else "")
-        )
-    else:
-        _mood_fn(
-            f"{country} is feeling **{_mood['label']}** - based on GDELT's live "
-            f"news-tone reading averaged over the last 10 days "
-            f"({_mood['gdelt_tone']:+.2f})."
-        )
+    _mood_fn(
+        f"{country} is feeling **{_mood['label']}** - based on GDELT's live "
+        f"news-tone reading averaged over the last 10 days "
+        f"({_mood['gdelt_tone']:+.2f})."
+    )
 
 
 # -----------------------------------
@@ -2597,7 +2602,12 @@ def style_defaults(display_df, source_df, color_long_score=False):
                 styles.loc[mask, disp_col] = _DEFAULT_RED
         return styles
 
-    return display_df.style.apply(_apply, axis=None)
+    # precision=2 stops the Styler's default 6-decimal float rendering
+    # (11.960000) - two decimals everywhere, dashes for missing values.
+    return (
+        display_df.style.apply(_apply, axis=None)
+        .format(precision=2, thousands=",", na_rep="-")
+    )
 
 
 def page_scanner():
