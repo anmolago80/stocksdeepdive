@@ -96,7 +96,12 @@ def send_feedback(page_label, message, reply_to=None):
             server.login(env["email"], env["app_password"])
             server.sendmail(env["email"], [env["to_email"]], msg.as_string())
         return True
-    except Exception:
+    except Exception as e:
+        # The visitor only ever sees a generic "couldn't send" message (see
+        # module docstring) - this print is the only place the real reason
+        # is visible, in Railway's deploy logs, so a failure can actually be
+        # diagnosed instead of just silently swallowed.
+        print(f"[feedback_engine] send_feedback failed: {type(e).__name__}: {e}")
         return False
 
 
@@ -130,6 +135,12 @@ def render_feedback_button(page_label, key_prefix, user_email=None):
             font-weight: 600 !important;
             font-size: 13px !important;
             box-shadow: none !important;
+            width: fit-content !important;
+            min-width: 0 !important;
+            white-space: nowrap !important;
+        }
+        [class*="st-key-fb_popover_"] button p {
+            white-space: nowrap !important;
         }
         [class*="st-key-fb_popover_"] button:hover {
             background-color: #0d9488 !important;
@@ -140,12 +151,11 @@ def render_feedback_button(page_label, key_prefix, user_email=None):
         unsafe_allow_html=True,
     )
 
-    _sp, _c1 = st.columns([9.5, 2.5], gap="small")
+    _sp, _c1 = st.columns([10.3, 1.7], gap="small")
     with _c1:
         with st.popover(
             "\U0001F4AC Tell us what you think",
             key=f"fb_popover_{key_prefix}",
-            use_container_width=True,
         ):
             st.caption(f"Feedback on {page_label} - goes straight to our inbox.")
             msg_key = f"fb_msg_{key_prefix}"
