@@ -2610,6 +2610,140 @@ def style_defaults(display_df, source_df, color_long_score=False):
     )
 
 
+# -----------------------------------
+# HTML TABLE KIT - the side-by-side comparison's visual language (infill
+# bars, verdict pills, price-relative colouring) as reusable cells, so
+# EVERY table on the Comparison and Scanner pages reads the same way.
+# -----------------------------------
+_BAR_RED, _BAR_AMBER, _BAR_GREEN = "#fb7185", "#fbbf24", "#34d399"
+_TYPE_NEUTRAL = "#2dd4bf"
+_BADGE_COLORS = {
+    "UNDERVALUED": _BAR_GREEN, "FAIR": _BAR_AMBER, "EXPENSIVE": _BAR_RED,
+    "FEARFUL": _BAR_GREEN, "GREEDY": _BAR_AMBER, "OVERHEATED": _BAR_RED,
+    "CALM": "#8aa0b8", "NEUTRAL": "#8aa0b8",
+    "Uptrend": _BAR_GREEN, "Ranging": _BAR_AMBER, "Downtrend": _BAR_RED,
+    "UPTREND": _BAR_GREEN, "RANGING": _BAR_AMBER, "DOWNTREND": _BAR_RED,
+    "BUY": _BAR_GREEN, "WATCHLIST": _BAR_AMBER, "AVOID": _BAR_RED,
+    "STRONG LONG": _BAR_GREEN, "LONG": _BAR_GREEN,
+    "N/A": "#8aa0b8", "Yes": _BAR_AMBER, "No": "#8aa0b8",
+}
+
+
+def _bar_cell(value, low, high, suffix="", flag=False):
+    """Value above a colored infill bar (red/amber/green by the same
+    thresholds the app verdicts on elsewhere). flag=True renders the value
+    text red - the site-wide 'this number is a default/estimate' mark."""
+    if value is None or value == "N/A" or (isinstance(value, float) and pd.isna(value)):
+        return "<div style='color:#8aa0b8;'>N/A</div>"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return f"<div>{value}</div>"
+    color = _BAR_RED if v <= low else (_BAR_GREEN if v > high else _BAR_AMBER)
+    width_pct = max(0.0, min(100.0, v))
+    _txt_style = "color:#fb7185;font-weight:700;" if flag else ""
+    return (
+        f"<div style='font-size:13px;margin-bottom:2px;{_txt_style}'>{v:,.1f}{suffix}</div>"
+        f"<div style='background:#1f3352;border-radius:3px;height:8px;width:100%;'>"
+        f"<div style='background:{color};height:8px;border-radius:3px;"
+        f"width:{width_pct:.0f}%;'></div></div>"
+    )
+
+
+def _badge_cell(text, color=None):
+    """One classification label as a small colored pill."""
+    _c = color or _BADGE_COLORS.get(str(text), "#9db1c7")
+    return (
+        f"<span style='display:inline-block;padding:3px 10px;"
+        f"border-radius:12px;font-size:12.5px;font-weight:600;"
+        f"background:{_c}22;color:{_c};'>{text}</span>"
+    )
+
+
+def _money_cell(value, ref=None, flag=False, fmt="{:,.2f}"):
+    """A price-like number. With `ref` (usually the current price) it's
+    coloured green above / red below - the intrinsic-value convention used
+    site-wide. flag=True (defaulted input) always wins, in red bold."""
+    if value is None or value == "N/A" or (isinstance(value, float) and pd.isna(value)):
+        return "<span style='color:#8aa0b8;'>N/A</span>"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return f"<span>{value}</span>"
+    style = ""
+    if flag:
+        style = f"color:{_BAR_RED};font-weight:700;"
+    elif ref is not None:
+        try:
+            style = (f"color:{_BAR_GREEN};font-weight:600;" if v > float(ref)
+                     else f"color:{_BAR_RED};font-weight:600;")
+        except (TypeError, ValueError):
+            style = ""
+    return f"<span style='{style}'>{fmt.format(v)}</span>"
+
+
+def _signed_cell(value, suffix="%"):
+    """Signed number coloured by its sign (upside/downside style)."""
+    if value is None or value == "N/A" or (isinstance(value, float) and pd.isna(value)):
+        return "<span style='color:#8aa0b8;'>N/A</span>"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return f"<span>{value}</span>"
+    c = _BAR_GREEN if v > 0 else (_BAR_RED if v < 0 else "#8aa0b8")
+    return f"<span style='color:{c};font-weight:600;'>{v:+,.1f}{suffix}</span>"
+
+
+def _rank_cell(value, column_values, fmt="{:,.2f}"):
+    """Rank-coloured number: best value in the column green, worst red,
+    everything between amber (used for the RR columns, where 'good' is
+    relative to the other setups on screen)."""
+    if value in (None, "-", "N/A") or (isinstance(value, float) and pd.isna(value)):
+        return "<span style='color:#8aa0b8;'>-</span>"
+    try:
+        v = float(value)
+        vals = [float(x) for x in column_values
+                if x not in (None, "-", "N/A") and not (isinstance(x, float) and pd.isna(x))]
+    except (TypeError, ValueError):
+        return f"<span>{value}</span>"
+    if not vals:
+        return f"<span>{fmt.format(v)}</span>"
+    hi, lo = max(vals), min(vals)
+    if len(vals) == 1 or hi == lo:
+        c = _BAR_GREEN if v >= 1.5 else (_BAR_AMBER if v >= 1.0 else _BAR_RED)
+    elif v == hi:
+        c = _BAR_GREEN
+    elif v == lo:
+        c = _BAR_RED
+    else:
+        c = _BAR_AMBER
+    return f"<span style='color:{c};font-weight:600;'>{fmt.format(v)}</span>"
+
+
+def _sdd_table(headers, rows_html, max_height=None):
+    """Assemble the shared table shell (same styling as the side-by-side
+    comparison). rows_html = list of '<tr>...</tr>' strings."""
+    table = (
+        "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
+        "<thead><tr>"
+        + "".join(
+            f"<th style='text-align:left;padding:6px 10px;border-bottom:2px solid #1f3352;'>{h}</th>"
+            for h in headers
+        )
+        + "</tr></thead><tbody>"
+        + "".join(rows_html)
+        + "</tbody></table>"
+    )
+    if max_height:
+        return f"<div style='max-height:{max_height}px;overflow-y:auto;'>{table}</div>"
+    return table
+
+
+def _td(inner, minw=None):
+    _w = f"min-width:{minw}px;" if minw else ""
+    return f"<td style='padding:6px 10px;{_w}'>{inner}</td>"
+
+
 def page_scanner():
     _render_header(compact=True, page_label="Scanner")
 
@@ -2705,18 +2839,43 @@ def page_scanner():
                 "carry their own flag columns. Run a live scan below for "
                 "current prices."
             )
-            _on_df = pd.DataFrame(_overnight["rows"]).rename(columns={"MOS %": "MOS"})
-            _on_src = _on_df.copy()
-            if "Quality Default" in _on_src.columns:
-                _on_src["_flag_quality"] = _on_src["Quality Default"].fillna(False)
-            if "Intrinsic Default" in _on_src.columns:
-                _on_src["_flag_intrinsic"] = _on_src["Intrinsic Default"].fillna(False)
-            _on_disp = _on_df.drop(columns=[
-                c for c in ("Quality Default", "Intrinsic Default") if c in _on_df.columns
-            ])
-            st.dataframe(
-                style_defaults(_on_disp, _on_src, color_long_score=True),
-                width="stretch", hide_index=True, height=420,
+            _on_rows_html = []
+            for _orow in _overnight["rows"]:
+                _on_rows_html.append(
+                    "<tr>"
+                    + _td(f"<b>{_orow.get('Ticker', '-')}</b>")
+                    + _td(_badge_cell(_orow.get("Type", "-"), _TYPE_NEUTRAL))
+                    + _td(f"{(_orow.get('Price') or 0):,.2f}")
+                    + _td(_money_cell(_orow.get("Intrinsic Value"),
+                                      ref=_orow.get("Price"),
+                                      flag=bool(_orow.get("Intrinsic Default"))))
+                    + _td(_bar_cell(_orow.get("MOS %"), 0, 25, "%",
+                                    flag=bool(_orow.get("Intrinsic Default"))), minw=90)
+                    + _td(_bar_cell(_orow.get("Long Score"),
+                                    SIGNAL_THRESHOLDS["WATCHLIST"],
+                                    SIGNAL_THRESHOLDS["LONG"]), minw=90)
+                    + _td(_bar_cell(_orow.get("Quality"), 40, 80,
+                                    flag=bool(_orow.get("Quality Default"))), minw=90)
+                    + _td(_bar_cell(_orow.get("Psychology"), -5, 20), minw=90)
+                    + _td(_bar_cell(_orow.get("Discovery (lite)"), 25, 50), minw=90)
+                    + _td(_badge_cell(_orow.get("Valuation", "-")))
+                    + _td(_badge_cell(_orow.get("Signal", "-")))
+                    + _td(_badge_cell(_orow.get("Trend", "-")))
+                    + _td(_badge_cell(_orow.get("Trade Setup", "-")))
+                    + "</tr>"
+                )
+            st.markdown(
+                _sdd_table(
+                    ["Ticker", "Type", "Price", "Intrinsic Value", "MOS",
+                     "Long Score", "Quality", "Psychology", "Discovery",
+                     "Valuation", "Signal", "Trend", "Trade Setup"],
+                    _on_rows_html, max_height=480,
+                ),
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                "Red values = computed from a default/average because real "
+                "data wasn't available (the site-wide red-flag rule)."
             )
             st.caption(f"Universe source at scan time: {_overnight['source']}")
 
@@ -3399,9 +3558,21 @@ def _render_scan_results(page_label, state_prefix, empty_message,
             )
             _preview_cols = [c for c in _preview_cols if c in results.columns]
             st.subheader(f"{page_label} preview")
-            st.dataframe(
-                style_defaults(results[_preview_cols], results, color_long_score=True),
-                width="stretch", hide_index=True,
+            _prev_rows = []
+            for _, _pr in results.iterrows():
+                _prev_rows.append(
+                    "<tr>"
+                    + _td(f"<b>{_pr['Ticker']}</b>")
+                    + _td(f"{_pr['Price']:,.2f}")
+                    + _td(_bar_cell(_pr.get("Long Score"), SIGNAL_THRESHOLDS["WATCHLIST"],
+                                    SIGNAL_THRESHOLDS["LONG"]), minw=110)
+                    + _td(_badge_cell(_pr.get("Investment Signal", "-")))
+                    + "</tr>"
+                )
+            st.markdown(
+                _sdd_table(["Ticker", "Price", "Long Score", "Investment Signal"],
+                           _prev_rows, max_height=420),
+                unsafe_allow_html=True,
             )
 
             if not paywall_engine.render_gate(
@@ -3427,98 +3598,42 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 "entered them."
             )
 
-            _BAR_RED, _BAR_AMBER, _BAR_GREEN = "#fb7185", "#fbbf24", "#34d399"
-
-            def _bar_cell(value, low, high, suffix=""):
-                """One table cell: value as text, ABOVE a small colored bar whose
-                fill width reflects the value and whose color reflects which band
-                (red/amber/green) it falls in. `low`/`high` are the same
-                thresholds the app already uses elsewhere for this metric."""
-                if value is None or value == "N/A" or (isinstance(value, float) and pd.isna(value)):
-                    return "<div style='color:#8aa0b8;'>N/A</div>"
-                try:
-                    v = float(value)
-                except (TypeError, ValueError):
-                    return f"<div>{value}</div>"
-                color = _BAR_RED if v <= low else (_BAR_GREEN if v > high else _BAR_AMBER)
-                width_pct = max(0.0, min(100.0, v))
-                return (
-                    f"<div style='font-size:13px;margin-bottom:2px;'>{v:,.1f}{suffix}</div>"
-                    f"<div style='background:#1f3352;border-radius:3px;height:8px;width:100%;'>"
-                    f"<div style='background:{color};height:8px;border-radius:3px;"
-                    f"width:{width_pct:.0f}%;'></div></div>"
-                )
-
-            # Classification columns (Type, Valuation, Sentiment, Trend, Trade
-            # Setup) render as small colored pills instead of plain text - same
-            # red/amber/green convention as the score bars above, not new
-            # arbitrary colors. Type isn't a verdict (GROWTH/COMPOUNDER/etc. are
-            # just categories), so it gets a neutral teal pill EXCEPT when the
-            # sector lookup failed and it fell back to the GENERAL default - that
-            # case is flagged red, same as every other defaulted cell in this app.
-            _TYPE_NEUTRAL = "#2dd4bf"
-            _BADGE_COLORS = {
-                "UNDERVALUED": _BAR_GREEN, "FAIR": _BAR_AMBER, "EXPENSIVE": _BAR_RED,
-                "FEARFUL": _BAR_GREEN, "GREEDY": _BAR_AMBER, "OVERHEATED": _BAR_RED,
-                "CALM": "#8aa0b8", "NEUTRAL": "#8aa0b8",
-                "Uptrend": _BAR_GREEN, "Ranging": _BAR_AMBER, "Downtrend": _BAR_RED,
-                "BUY": _BAR_GREEN, "WATCHLIST": _BAR_AMBER, "AVOID": _BAR_RED,
-            }
-
-            def _badge_cell(text, color=None):
-                """One classification label as a small colored pill."""
-                _c = color or _BADGE_COLORS.get(text, "#9db1c7")
-                return (
-                    f"<span style='display:inline-block;padding:3px 10px;"
-                    f"border-radius:12px;font-size:12.5px;font-weight:600;"
-                    f"background:{_c}22;color:{_c};'>{text}</span>"
-                )
-
             _cmp = results.copy()
             _cmp["Trade Setup Score"] = _cmp["Ticker"].map(trade_score_lookup)
 
             _cmp_rows_html = []
             for _, r in _cmp.iterrows():
-                _iv_text = (
-                    "N/A" if r["Intrinsic Value"] == "N/A" else f"{r['Intrinsic Value']:,.2f}"
-                )
                 _type_color = _BAR_RED if r.get("_flag_type") else _TYPE_NEUTRAL
                 _cmp_rows_html.append(
                     "<tr>"
-                    f"<td style='padding:6px 10px;font-weight:600;'>{r['Ticker']}</td>"
-                    f"<td style='padding:6px 10px;'>{_badge_cell(r['Type'], _type_color)}</td>"
-                    f"<td style='padding:6px 10px;'>{r['Price']:,.2f}</td>"
-                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['Quality'], 40, 80)}</td>"
-                    f"<td style='padding:6px 10px;'>{_iv_text}</td>"
-                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['MOS'], 0, 25, '%')}</td>"
-                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['Long Score'], 30, 50)}</td>"
-                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['Psychology'], -5, 20)}</td>"
-                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['Discovery'], 25, 50)}</td>"
-                    f"<td style='padding:6px 10px;'>{_badge_cell(r['Valuation'])}</td>"
-                    f"<td style='padding:6px 10px;'>{_badge_cell(r['Sentiment'])}</td>"
-                    f"<td style='padding:6px 10px;'>{_badge_cell(r['Trend'])}</td>"
-                    f"<td style='padding:6px 10px;'>{_badge_cell(r['Trade Setup'])}</td>"
-                    f"<td style='padding:6px 10px;min-width:90px;'>{_bar_cell(r['Trade Setup Score'], 45, 65)}</td>"
-                    "</tr>"
+                    + _td(f"<b>{r['Ticker']}</b>")
+                    + _td(_badge_cell(r["Type"], _type_color))
+                    + _td(f"{r['Price']:,.2f}")
+                    + _td(_money_cell(r["Intrinsic Value"], ref=r["Price"],
+                                      flag=bool(r.get("_flag_intrinsic"))))
+                    + _td(_bar_cell(r["MOS"], 0, 25, "%",
+                                    flag=bool(r.get("_flag_intrinsic"))), minw=90)
+                    + _td(_bar_cell(r["Long Score"], SIGNAL_THRESHOLDS["WATCHLIST"],
+                                    SIGNAL_THRESHOLDS["LONG"]), minw=90)
+                    + _td(_bar_cell(r["Quality"], 40, 80,
+                                    flag=bool(r.get("_flag_quality"))), minw=90)
+                    + _td(_bar_cell(r["Psychology"], -5, 20), minw=90)
+                    + _td(_bar_cell(r["Discovery"], 25, 50), minw=90)
+                    + _td(_badge_cell(r["Valuation"]))
+                    + _td(_badge_cell(r["Sentiment"]))
+                    + _td(_badge_cell(r["Trend"]))
+                    + _td(_badge_cell(r["Trade Setup"]))
+                    + _td(_bar_cell(r["Trade Setup Score"], 45, 65), minw=90)
+                    + "</tr>"
                 )
 
             _cmp_headers = [
-                "Ticker", "Type", "Price", "Quality Score", "Intrinsic Value", "MOS",
-                "Long Score", "Psychology Score", "Discovery Score", "Valuation",
-                "Sentiment", "Trend", "Trade Setup", "Trade Setup Score",
+                "Ticker", "Type", "Price", "Intrinsic Value", "MOS",
+                "Long Score", "Quality Score", "Psychology", "Discovery",
+                "Valuation", "Sentiment", "Trend", "Trade Setup",
+                "Trade Setup Score",
             ]
-            _cmp_html = (
-                "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
-                "<thead><tr>"
-                + "".join(
-                    f"<th style='text-align:left;padding:6px 10px;border-bottom:2px solid #1f3352;'>{h}</th>"
-                    for h in _cmp_headers
-                )
-                + "</tr></thead><tbody>"
-                + "".join(_cmp_rows_html)
-                + "</tbody></table>"
-            )
-            st.markdown(_cmp_html, unsafe_allow_html=True)
+            st.markdown(_sdd_table(_cmp_headers, _cmp_rows_html), unsafe_allow_html=True)
 
 
             if is_swing and market_regime != "UNKNOWN":
@@ -3628,67 +3743,63 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     "not a re-implemented trade formula, just the same verdict shown "
                     "as a number. Hover any column header for details."
                 )
-                trade_rows = []
+                _price_by_ticker = dict(zip(results["Ticker"], results["Price"]))
+                _t_rows_data = []
                 for _, row in results.iterrows():
                     t = trade_lookup.get(row["Ticker"])
-                    if not t:
-                        continue
-                    trade_rows.append({
-                        "Ticker": row["Ticker"],
-                        "Trade Setup": t["signal"],
-                        "Trade Setup Score": trade_score_lookup.get(row["Ticker"], "-"),
-                        "Trend": t.get("trend", "-"),
-                        "Entry Zone": t["entry_zone"],
-                        "Stop Loss": t["stop_loss"],
-                        "Target 1": t["target1"],
-                        "Target 2": t["target2"],
-                        "Target 3": t["target3"] if t["target3"] is not None else "-",
-                        "Risk": t["risk"],
-                        "RR1": t["rr1"] if t["rr1"] is not None else "-",
-                        "RR2": t["rr2"] if t["rr2"] is not None else "-",
-                        "RR3": t["rr3"] if t["rr3"] is not None else "-",
-                        "Early Exit Watch": "Yes" if t["early_exit_watch"] else "No",
-                    })
-                _trade_df = pd.DataFrame(trade_rows)
-                st.dataframe(
-                    style_defaults(_trade_df, _trade_df),
-                    width="stretch",
-                    hide_index=True,
-                    column_config={
-                        "Trade Setup Score": st.column_config.NumberColumn(
-                            "Trade Setup Score",
-                            help=(
-                                "0-100 weighting of the same gates behind the Trade "
-                                "Setup verdict (Trend Safety, Near Entry Zone, Risk/"
-                                "Reward, Price vs MA50, Psychology Momentum, Discovery "
-                                "Momentum). Same score/weights as the Stock Deep Dive "
-                                "tab's Trade Setup gauge - not a separate formula."
-                            ),
-                        ),
-                        "Entry Zone": st.column_config.NumberColumn(
-                            "Entry Zone",
-                            help=(
-                                "Trade Filter's technical entry level (support/resistance "
-                                "based) - answers 'is now a sane place to buy'. "
-                                "Independent of the DCF valuation Entry ('Full Stock "
-                                "Database') and the ATR-based Swing Entry ('Swing "
-                                "Setup') - all three are separate, unrelated numbers."
-                            ),
-                        ),
-                        "Stop Loss": st.column_config.NumberColumn(
-                            "Stop Loss",
-                            help="Trade Filter's technical stop-loss - different from the ATR-based Swing Stop.",
-                        ),
-                        "Target 1": st.column_config.NumberColumn(
-                            "Target 1", help="Trade Filter's first technical target."
-                        ),
-                        "Target 2": st.column_config.NumberColumn(
-                            "Target 2", help="Trade Filter's second technical target."
-                        ),
-                        "Target 3": st.column_config.NumberColumn(
-                            "Target 3", help="Trade Filter's third technical target."
-                        ),
-                    },
+                    if t:
+                        _t_rows_data.append((row["Ticker"], t))
+
+                # RR columns are coloured by RANK across the rows on screen
+                # (best green / worst red / rest amber) - "good risk/reward"
+                # is relative to the other setups in front of you.
+                _rr1_vals = [t["rr1"] for _, t in _t_rows_data]
+                _rr2_vals = [t["rr2"] for _, t in _t_rows_data]
+                _rr3_vals = [t["rr3"] for _, t in _t_rows_data]
+
+                _trade_rows_html = []
+                for _tk, t in _t_rows_data:
+                    _cur = _price_by_ticker.get(_tk)
+                    # Entry zone: green when the price is at/inside the zone
+                    # (a reachable entry NOW), red when the price is still
+                    # above it (you'd be paying up - wait for the pullback).
+                    _near = bool(t.get("near_entry_zone"))
+                    _ez_color = _BAR_GREEN if _near else _BAR_RED
+                    _ez_cell = (
+                        f"<span style='color:{_ez_color};font-weight:600;'>"
+                        f"{t['entry_zone']:,.2f}</span>"
+                    )
+                    _trade_rows_html.append(
+                        "<tr>"
+                        + _td(f"<b>{_tk}</b>")
+                        + _td(_badge_cell(t["signal"]))
+                        + _td(_bar_cell(trade_score_lookup.get(_tk), 45, 65), minw=90)
+                        + _td(_badge_cell(str(t.get("trend", "-")).title()))
+                        + _td(_ez_cell)
+                        + _td(f"{t['stop_loss']:,.2f}")
+                        + _td(f"{t['target1']:,.2f}")
+                        + _td(f"{t['target2']:,.2f}")
+                        + _td(f"{t['target3']:,.2f}" if t["target3"] is not None else "-")
+                        + _td(f"{t['risk']:,.2f}")
+                        + _td(_rank_cell(t["rr1"], _rr1_vals))
+                        + _td(_rank_cell(t["rr2"], _rr2_vals))
+                        + _td(_rank_cell(t["rr3"], _rr3_vals))
+                        + _td(_badge_cell(t["early_exit_watch"] and "Yes" or "No"))
+                        + "</tr>"
+                    )
+                st.markdown(
+                    _sdd_table(
+                        ["Ticker", "Trade Setup", "Setup Score", "Trend",
+                         "Entry Zone", "Stop Loss", "Target 1", "Target 2",
+                         "Target 3", "Risk", "RR1", "RR2", "RR3", "Early Exit"],
+                        _trade_rows_html, max_height=480,
+                    ),
+                    unsafe_allow_html=True,
+                )
+                st.caption(
+                    "Entry Zone: green = price is at/inside the zone now, red = "
+                    "price is still above it. RR columns: green = best "
+                    "risk/reward on screen, red = worst, amber between."
                 )
 
             with st.expander("Position management & early-exit rules (apply after entry)"):
@@ -3748,88 +3859,9 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     )
                     render_thesis(thesis_lookup[row["Ticker"]], heading_level="#####")
 
-            with st.expander("Full Stock Database - every computed column for every stock"):
-                st.caption(
-                    "Every cell is computed from the stock's own sourced data. Values in "
-                    "red are default/average assumptions used where data was unavailable. "
-                    "Note: 'Entry'/'Target' here are the DCF valuation basis (Entry = "
-                    "80% of intrinsic value, Target = intrinsic value) - a long-term "
-                    "fair-value number, NOT a trade level. The Trade Filter's own Entry "
-                    "Zone/Stop/Targets (a technical number) live in the 'Trade Setup' "
-                    "table above, and the ATR-based Swing Entry/Stop/Targets (a third, "
-                    "independent number) live in the 'Swing Setup' table above - not "
-                    "here. All three are independent by design."
-                )
-                _hidden = [
-                    "Type Source", "Quality Source", "Intrinsic Source",
-                    "_flag_type", "_flag_quality", "_flag_intrinsic", "_flag_growth",
-                    "_mos_num",
-                    # Swing-mode fields now live in their own 'Swing Setup' table above
-                    # instead of being mixed in here alongside the DCF/Long-Score data.
-                    "Trader Score", "Trend", "RSI", "MACD Cross",
-                    "Swing Setup", "Setup Score", "Swing Entry", "Swing Stop",
-                    "Swing T1", "Swing T2", "Swing RR", "ATR Stop", "Shares",
-                    "Capital At Risk", "Position Value", "Regime",
-                    "Earnings (days)", "Earnings Warn",
-                ]
-                _full = results.drop(columns=[c for c in _hidden if c in results.columns])
-                st.dataframe(
-                    style_defaults(_full, results),
-                    width="stretch",
-                    hide_index=True,
-                    column_config={
-                        "Entry": st.column_config.NumberColumn(
-                            "Entry",
-                            help=(
-                                "DCF valuation entry (80% of intrinsic value) - a "
-                                "long-term fair-value buy-in point, NOT a technical "
-                                "trade level. See 'Trade Setup' above for the Trade "
-                                "Filter's technical Entry Zone, and 'Swing Setup' for "
-                                "the ATR-based swing entry."
-                            ),
-                        ),
-                        "Target": st.column_config.NumberColumn(
-                            "Target",
-                            help=(
-                                "DCF valuation target = the computed intrinsic value "
-                                "itself. Long-term fair-value basis - different from "
-                                "the Trade Filter's technical targets and the Swing "
-                                "T1/T2 in 'Swing Setup'."
-                            ),
-                        ),
-                    },
-                )
+            # Full Stock Database removed - the per-column detail lives in each
+            # stock's Deep Dive instead of one giant table here.
 
-                if st.checkbox("Show data source / default flags per field", key=f"{state_prefix}_srcflags"):
-                    _src = results[[
-                        "Ticker", "Type Source", "Quality Source", "Intrinsic Source",
-                        "_flag_type", "_flag_quality", "_flag_intrinsic", "_flag_growth",
-                    ]].rename(columns={
-                        "_flag_type": "Type Default",
-                        "_flag_quality": "Quality Default",
-                        "_flag_intrinsic": "Intrinsic Default",
-                        "_flag_growth": "Growth Default",
-                    })
-                    st.dataframe(_src, width="stretch", hide_index=True)
-
-            # -----------------------------------
-            # DCF PARAMETERS  (per-stock manual override, THIS SESSION ONLY)
-            # -----------------------------------
-            # The old "Valuation & FCF inputs" global-defaults panel (Auto toggle +
-            # flat discount/perpetual/growth sliders) was removed - Auto mode
-            # (per-stock CAPM discount rate + analyst-consensus/historical growth +
-            # currency-based terminal growth) stays permanently on via the
-            # dcf_auto session-state default set above, and this table below still
-            # covers per-stock overrides for anyone who wants to hand-set a number
-            # for a specific ticker.
-            # Moved here from the top "Valuation & FCF inputs" panel so the override
-            # cells sit right next to the numbers they're overriding, for every
-            # scanned stock at once, instead of picking one ticker from a dropdown
-            # before you'd even seen the results. Saving here updates
-            # st.session_state["fcf_overrides"] exactly like the old per-ticker panel
-            # did, so every table above (Intrinsic Value, MOS, Long Score, Valuation,
-            # Entry/Target...) still picks it up the next time you click Run Scan -
-            # only WHERE you set the override has changed, not how it propagates.
             with st.expander("DCF Parameters (Growth / Discount / Perpetual) - view or override"):
                 st.caption(
                     "The growth, discount and terminal-growth rate this scan actually "
@@ -3855,8 +3887,9 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 )
 
                 _dcf_params_df = results[
-                    ["Ticker", "Price", "Intrinsic Value", "IV/Price Multiple", "DCF Growth %",
-                     "Growth Governor", "DCF Discount %", "DCF Perpetual %", "Long Score"]
+                    ["Ticker", "Price", "Intrinsic Value", "IV/Price Multiple", "Upside %",
+                     "DCF Growth %", "Growth Governor", "DCF Discount %", "DCF Perpetual %",
+                     "Long Score"]
                 ].copy()
 
                 st.session_state.setdefault("scanner_override_mode", False)
@@ -3867,9 +3900,46 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     st.rerun()
 
                 if not st.session_state["scanner_override_mode"]:
-                    st.dataframe(
-                        style_defaults(_dcf_params_df, results, color_long_score=True),
-                        width="stretch", hide_index=True,
+                    _dcf_rows_html = []
+                    for _, _dr in results.iterrows():
+                        _ivm = _dr["IV/Price Multiple"]
+                        try:
+                            _ivm_v = float(_ivm)
+                            _ivm_c = (_BAR_GREEN if _ivm_v > 1.0
+                                      else _BAR_RED if _ivm_v < 1.0 else _BAR_AMBER)
+                            _ivm_cell = (f"<span style='color:{_ivm_c};font-weight:600;'>"
+                                         f"{_ivm_v:,.2f}x</span>")
+                        except (TypeError, ValueError):
+                            _ivm_cell = "<span style='color:#8aa0b8;'>N/A</span>"
+                        _dcf_rows_html.append(
+                            "<tr>"
+                            + _td(f"<b>{_dr['Ticker']}</b>")
+                            + _td(f"{_dr['Price']:,.2f}")
+                            + _td(_money_cell(_dr["Intrinsic Value"], ref=_dr["Price"],
+                                              flag=bool(_dr.get("_flag_intrinsic"))))
+                            + _td(_ivm_cell)
+                            + _td(_signed_cell(_dr.get("Upside %")))
+                            + _td(
+                                _money_cell(_dr["DCF Growth %"],
+                                            flag=bool(_dr.get("_flag_growth")),
+                                            fmt="{:,.1f}%")
+                                if _dr["DCF Growth %"] != "-" else "-"
+                            )
+                            + _td(str(_dr.get("Growth Governor", "-")))
+                            + _td(f"{_dr['DCF Discount %']}" + ("%" if _dr["DCF Discount %"] != "-" else ""))
+                            + _td(f"{_dr['DCF Perpetual %']}" + ("%" if _dr["DCF Perpetual %"] != "-" else ""))
+                            + _td(_bar_cell(_dr["Long Score"], SIGNAL_THRESHOLDS["WATCHLIST"],
+                                            SIGNAL_THRESHOLDS["LONG"]), minw=90)
+                            + "</tr>"
+                        )
+                    st.markdown(
+                        _sdd_table(
+                            ["Ticker", "Price", "Intrinsic Value", "IV/Price",
+                             "Upside %", "DCF Growth", "Governor", "Discount",
+                             "Perpetual", "Long Score"],
+                            _dcf_rows_html, max_height=480,
+                        ),
+                        unsafe_allow_html=True,
                     )
                 else:
                     _editor_rows = []

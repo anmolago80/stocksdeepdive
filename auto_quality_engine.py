@@ -41,6 +41,7 @@ def get_quality_score(ticker, info=None):
         keys = (
             "returnOnEquity", "profitMargins", "revenueGrowth",
             "earningsGrowth", "debtToEquity", "freeCashflow", "netIncomeToCommon",
+            "marketCap", "priceToBook", "totalDebt",
         )
         # Defaulted when yfinance gave us nothing to work with.
         any_data = any(info.get(k) is not None for k in keys)
@@ -57,12 +58,34 @@ def get_quality_score(ticker, info=None):
         revenue_growth = max(-GROWTH_CLAMP, min(revenue_growth, GROWTH_CLAMP))
         earnings_growth = max(-GROWTH_CLAMP, min(earnings_growth, GROWTH_CLAMP))
 
+        # ROIC (return on invested capital) - the compounder metric: how
+        # much profit each dollar of TOTAL capital (equity + debt) earns,
+        # so a business can't look great on ROE alone by simply levering
+        # up. yfinance's info dict doesn't carry ROIC directly, so it's
+        # derived: book equity = marketCap / priceToBook, invested capital
+        # = book equity + total debt, ROIC ~= net income / invested
+        # capital. Skipped (0 contribution) when the inputs are missing,
+        # clamped to +-100% against data glitches.
+        roic = 0.0
+        market_cap = info.get("marketCap", 0) or 0
+        price_to_book = info.get("priceToBook", 0) or 0
+        total_debt = info.get("totalDebt", 0) or 0
+        if market_cap > 0 and price_to_book > 0:
+            book_equity = market_cap / price_to_book
+            invested_capital = book_equity + total_debt
+            if invested_capital > 0:
+                roic = max(-1.0, min(net_income / invested_capital, 1.0))
+
         score = 50
 
-        score += roe * 100 * 0.30
-        score += profit_margin * 100 * 0.20
-        score += revenue_growth * 100 * 0.20
-        score += earnings_growth * 100 * 0.20
+        # Weights re-balanced to make room for ROIC (same 0.90 total as
+        # before, so the score scale is unchanged): quality is now led by
+        # ROIC + ROE together rather than ROE alone.
+        score += roic * 100 * 0.25
+        score += roe * 100 * 0.20
+        score += profit_margin * 100 * 0.15
+        score += revenue_growth * 100 * 0.15
+        score += earnings_growth * 100 * 0.15
 
         if free_cash_flow > 0:
             score += 10

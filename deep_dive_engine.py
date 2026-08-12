@@ -67,12 +67,26 @@ def _quality_breakdown(info):
     revenue_growth = max(-GROWTH_CLAMP, min(revenue_growth, GROWTH_CLAMP))
     earnings_growth = max(-GROWTH_CLAMP, min(earnings_growth, GROWTH_CLAMP))
 
+    # ROIC derived the same way auto_quality_engine does it: book equity =
+    # marketCap / priceToBook, ROIC ~= net income / (equity + debt).
+    net_income = info.get("netIncomeToCommon", 0) or 0
+    market_cap = info.get("marketCap", 0) or 0
+    price_to_book = info.get("priceToBook", 0) or 0
+    total_debt = info.get("totalDebt", 0) or 0
+    roic = 0.0
+    if market_cap > 0 and price_to_book > 0:
+        book_equity = market_cap / price_to_book
+        invested_capital = book_equity + total_debt
+        if invested_capital > 0:
+            roic = max(-1.0, min(net_income / invested_capital, 1.0))
+
     return {
         "Base": 50.0,
-        "ROE": round(roe * 100 * 0.30, 2),
-        "Profit Margin": round(profit_margin * 100 * 0.20, 2),
-        "Revenue Growth": round(revenue_growth * 100 * 0.20, 2),
-        "Earnings Growth": round(earnings_growth * 100 * 0.20, 2),
+        "ROIC": round(roic * 100 * 0.25, 2),
+        "ROE": round(roe * 100 * 0.20, 2),
+        "Profit Margin": round(profit_margin * 100 * 0.15, 2),
+        "Revenue Growth": round(revenue_growth * 100 * 0.15, 2),
+        "Earnings Growth": round(earnings_growth * 100 * 0.15, 2),
         "Free Cash Flow": 10.0 if free_cash_flow > 0 else (-5.0 if free_cash_flow < 0 else 0.0),
         "Debt Penalty": -round(min(debt_to_equity * 0.05, 15), 2),
     }
