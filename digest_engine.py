@@ -68,31 +68,43 @@ def _send(to_email, subject, html_body):
     return True
 
 
-_SIGNAL_COLOR = {
-    "STRONG LONG": "#15803d", "LONG": "#15803d",
-    "WATCHLIST": "#ca8a04", "AVOID": "#dc2626",
+_SIGNAL_STYLE = {
+    # Solid, email-safe colours (no 8-digit hex / alpha - Outlook's Word
+    # renderer drops those): light background + dark text per verdict.
+    "STRONG LONG": ("#e9f6ee", "#15803d"),
+    "LONG": ("#e9f6ee", "#15803d"),
+    "WATCHLIST": ("#fdf5e0", "#8a5a00"),
+    "AVOID": ("#fdecec", "#b91c1c"),
 }
+
+# Every cell inline-styled and inside a fixed-width table - Outlook and
+# Hotmail ignore <style> blocks and most modern CSS, so email HTML has to
+# be written like it's 2003: nested tables, explicit widths and aligns,
+# cellpadding, nothing clever.
+_TD = "padding:9px 10px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1e293b;border-bottom:1px solid #e2e8f0;"
+_TH = "padding:9px 10px;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#64748b;border-bottom:2px solid #cbd5e1;text-transform:uppercase;letter-spacing:0.5px;"
 
 
 def _row_html(row, site):
     iv = row.get("Intrinsic Value")
     mos = row.get("MOS %")
     sig = row.get("Signal", "-")
-    color = _SIGNAL_COLOR.get(sig, "#475569")
+    bg, fg = _SIGNAL_STYLE.get(sig, ("#eef2f6", "#475569"))
     link = f"{site}/deep-dive?ticker={row['Ticker']}"
     iv_cell = f"{iv:,.2f}" if iv else "-"
     mos_cell = f"{mos:+.1f}%" if mos is not None else "-"
     return (
         "<tr>"
-        f"<td style='padding:8px 10px;font-weight:600;'>"
+        f"<td align='left' style='{_TD}font-weight:bold;'>"
         f"<a href='{link}' style='color:#0f766e;text-decoration:none;'>{row['Ticker']}</a></td>"
-        f"<td style='padding:8px 10px;'>{row['Price']:,.2f}</td>"
-        f"<td style='padding:8px 10px;'>{iv_cell}</td>"
-        f"<td style='padding:8px 10px;'>{mos_cell}</td>"
-        f"<td style='padding:8px 10px;'>{row.get('Long Score', '-')}</td>"
-        f"<td style='padding:8px 10px;'>"
-        f"<span style='background:{color}22;color:{color};padding:3px 10px;"
-        f"border-radius:10px;font-size:12px;font-weight:700;'>{sig}</span></td>"
+        f"<td align='right' style='{_TD}'>{row['Price']:,.2f}</td>"
+        f"<td align='right' style='{_TD}'>{iv_cell}</td>"
+        f"<td align='right' style='{_TD}'>{mos_cell}</td>"
+        f"<td align='right' style='{_TD}'>{row.get('Long Score', '-')}</td>"
+        f"<td align='center' style='{_TD}'>"
+        f"<span style='background-color:{bg};color:{fg};padding:3px 10px;"
+        f"font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;'>"
+        f"{sig}</span></td>"
         "</tr>"
     )
 
@@ -100,27 +112,38 @@ def _row_html(row, site):
 def _email_html(email, rows, site):
     body_rows = "".join(_row_html(r, site) for r in rows)
     date_label = datetime.now(timezone.utc).strftime("%d %b %Y")
-    return f"""
-<div style="font-family:'Segoe UI',Arial,sans-serif;max-width:640px;margin:0 auto;color:#1e293b;">
-  <h2 style="letter-spacing:-.3px;">Stocks<span style="color:#0d9488;">DeepDive</span>
-    &mdash; your watchlist this week</h2>
-  <p style="color:#475569;font-size:14px;">Weekly re-score of the stocks you saved,
-  as of {date_label}. Click any ticker for its full live Deep Dive.</p>
-  <table style="width:100%;border-collapse:collapse;font-size:14px;">
-    <thead><tr style="text-align:left;color:#64748b;border-bottom:2px solid #e2e8f0;">
-      <th style="padding:8px 10px;">Ticker</th><th style="padding:8px 10px;">Price</th>
-      <th style="padding:8px 10px;">Intrinsic value</th><th style="padding:8px 10px;">MOS</th>
-      <th style="padding:8px 10px;">Long Score</th><th style="padding:8px 10px;">Signal</th>
-    </tr></thead>
-    <tbody>{body_rows}</tbody>
+    return f"""\
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f7fa;">
+<tr><td align="center" style="padding:24px 12px;">
+  <table role="presentation" width="620" cellpadding="0" cellspacing="0" border="0" style="background-color:#ffffff;border:1px solid #e2e8f0;">
+    <tr><td style="padding:24px 28px 6px 28px;font-family:Arial,Helvetica,sans-serif;">
+      <span style="font-size:22px;font-weight:bold;color:#0f172a;">Stocks</span><span style="font-size:22px;font-weight:bold;color:#0d9488;">DeepDive</span>
+      <div style="font-size:15px;color:#334155;padding-top:6px;font-weight:bold;">Your watchlist this week</div>
+      <div style="font-size:13px;color:#64748b;padding-top:4px;">Weekly re-score of the stocks you saved, as of {date_label}. Click any ticker for its full live Deep Dive.</div>
+    </td></tr>
+    <tr><td style="padding:14px 28px 4px 28px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <th align="left" style="{_TH}">Ticker</th>
+          <th align="right" style="{_TH}">Price</th>
+          <th align="right" style="{_TH}">Intrinsic value</th>
+          <th align="right" style="{_TH}">MOS</th>
+          <th align="right" style="{_TH}">Long Score</th>
+          <th align="center" style="{_TH}">Signal</th>
+        </tr>
+        {body_rows}
+      </table>
+    </td></tr>
+    <tr><td style="padding:16px 28px 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#94a3b8;line-height:1.6;">
+      General information only - not financial advice; scores and signals are model outputs and do
+      not consider your personal circumstances. Scored without news/social attention inputs
+      (the weekly digest uses the attention-lite model). You're receiving this because
+      {email} saved a watchlist on StocksDeepDive while signed in. To stop these,
+      remove all stocks from your watchlist on the site.
+    </td></tr>
   </table>
-  <p style="color:#94a3b8;font-size:12px;margin-top:22px;line-height:1.6;">
-  General information only - not financial advice; scores and signals are model outputs and do
-  not consider your personal circumstances. Scored without news/social attention inputs
-  (weekly digest uses the attention-lite model). You're receiving this because
-  {email} saved a watchlist on StocksDeepDive while signed in. To stop these,
-  remove all stocks from your watchlist on the site.</p>
-</div>
+</td></tr>
+</table>
 """
 
 
