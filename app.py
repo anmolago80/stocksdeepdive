@@ -870,10 +870,18 @@ def _render_header(compact, page_label=None):
             _searched = st.form_submit_button(
                 "Search", use_container_width=True, type="primary"
             )
-        # Rational Compounder Analysis and Stock Scanner sit side by side,
-        # equal width, together spanning the same width as the search box
-        # above them - rather than Rational Compounder Analysis alone
-        # spanning the full width with Stock Scanner elsewhere on the page.
+        if not compact:
+            st.caption(
+                "One ticker = Deep Dive. Two or more (comma or space separated) = "
+                "side-by-side Comparison. ASX (e.g. CSL.AX) and US (e.g. AAPL) "
+                "tickers can be mixed freely."
+            )
+
+    # The three page buttons get their OWN, wider row (60% of the page vs
+    # the search box's 40%) - three labels, one of them long, don't fit
+    # inside the narrow search column now that button text never wraps.
+    _bsp1, _bmid, _bsp2 = st.columns([2, 6, 2])
+    with _bmid:
         _nav_col1, _nav_col2, _nav_col3 = st.columns(3, gap="small")
         with _nav_col1:
             if st.button(
@@ -893,12 +901,6 @@ def _render_header(compact, page_label=None):
                 use_container_width=True, key="nav_scanner",
             ):
                 st.switch_page(PG_SCANNER)
-        if not compact:
-            st.caption(
-                "One ticker = Deep Dive. Two or more (comma or space separated) = "
-                "side-by-side Comparison. ASX (e.g. CSL.AX) and US (e.g. AAPL) "
-                "tickers can be mixed freely."
-            )
 
     if _searched:
         _dispatch_search(_search_text)
