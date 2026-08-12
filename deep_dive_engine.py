@@ -107,8 +107,11 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     # logic). This same ma50 also feeds the Trade Filter below, exactly as
     # it does in the main scan.
     window_3mo = df.tail(63)
-    current_price = window_3mo["Close"].iloc[-1]
-    high_price = window_3mo["Close"].max()
+    _close_series = window_3mo["Close"].dropna()
+    if _close_series.empty:
+        return {"error": f"No usable price data for {ticker}."}
+    current_price = float(_close_series.iloc[-1])
+    high_price = float(_close_series.max())
     fear_score = ((high_price - current_price) / high_price) * 100 if high_price else 0
 
     ma50_raw = window_3mo["Close"].rolling(50).mean().iloc[-1]
@@ -156,8 +159,8 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     else:
         margin_of_safety = 0
 
-    if len(window_3mo) >= 6 and window_3mo["Close"].iloc[-6] != 0:
-        weekly_change = ((current_price - window_3mo["Close"].iloc[-6]) / window_3mo["Close"].iloc[-6]) * 100
+    if len(_close_series) >= 6 and _close_series.iloc[-6] != 0:
+        weekly_change = ((current_price - _close_series.iloc[-6]) / _close_series.iloc[-6]) * 100
     else:
         weekly_change = 0
 
@@ -166,7 +169,8 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     activity_score = abs(weekly_change)
 
     avg_volume = window_3mo["Volume"].mean()
-    latest_volume = window_3mo["Volume"].iloc[-1]
+    _vol_series = window_3mo["Volume"].dropna()
+    latest_volume = float(_vol_series.iloc[-1]) if len(_vol_series) else 0.0
     volume_ratio = (latest_volume / avg_volume) if avg_volume > 0 else 0
 
     discovery_score = (

@@ -605,7 +605,8 @@ def label_for(sector, heat):
     if not sector or sector == "All" or sector not in heat:
         return sector
     h = heat[sector]
-    return f"{h['emoji']} {sector} - {h['bucket'].title()} ({h['return']:+.1f}% 12m)"
+    # Dot only - the colored dot next to the name is the whole signal.
+    return f"{h['emoji']} {sector}"
 
 
 def _r2k_from_disk_cache():

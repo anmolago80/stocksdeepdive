@@ -350,11 +350,23 @@ st.markdown(
        header and look clipped off. */
     div[data-testid="stAppViewContainer"] .block-container {
         padding-top: 2.5rem !important;
+        max-width: 1240px !important;
+        margin: 0 auto !important;
+    }
+    /* Streamlit's own chrome (toolbar/header/menu) has no place on a
+       public product page. */
+    header[data-testid="stHeader"] { display: none !important; }
+    #MainMenu { visibility: hidden !important; }
+    /* Hard fallback so the site NEVER renders light even if the theme
+       config is missing on a deploy - same palette as config.toml. */
+    .stApp, [data-testid="stAppViewContainer"] {
+        background-color: #0b1220 !important;
     }
     /* ---------------- StocksDeepDive dark-terminal components ---------------- */
-    .sdd-tape { background:#060b14; border-bottom:1px solid #1f3352; overflow:hidden;
-      white-space:nowrap; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px;
-      padding:7px 0; margin:-1.5rem -5rem 14px -5rem; }
+    .sdd-tape { background:#060b14; border:1px solid #1f3352; border-radius:8px;
+      overflow:hidden; white-space:nowrap;
+      font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px;
+      padding:7px 0; margin:0 0 14px 0; }
     .sdd-tape-inner { display:inline-block; animation:sddscroll 45s linear infinite; }
     @keyframes sddscroll { from { transform:translateX(0); } to { transform:translateX(-50%); } }
     .sdd-tk { margin:0 18px; color:#8aa0b8; }
@@ -433,7 +445,6 @@ st.markdown(
       .sdd-steps { grid-template-columns:1fr; }
       .sdd-strip { grid-template-columns:1fr 1fr; }
       .sdd-h1 { font-size:30px; }
-      .sdd-tape { margin:-1.5rem -1rem 14px -1rem; }
     }
     </style>
     """,
@@ -2474,6 +2485,117 @@ def _render_country_mood_line(country):
         )
 
 
+# -----------------------------------
+# RED-FONT DEFAULT STYLING + INTRINSIC VS PRICE COLORING
+#
+# Any cell whose value had to fall back to a default/average assumption
+# (rather than being computed from sourced data) is rendered in red, so the
+# user can instantly see which numbers are estimates. The per-cell booleans
+# come from the hidden "_flag_*" columns populated in the scan loop.
+#
+# Separately, wherever "Intrinsic Value" appears alongside "Price", it's
+# colored green when the DCF intrinsic value is ABOVE the current price
+# (looks undervalued) or red when it's BELOW (looks overvalued) - a quick
+# visual echo of the Valuation/MOS columns, right on the number itself. The
+# default-assumption red/bold above always wins over this on a shared cell,
+# since "this number is a guess" is a data-quality flag, not a valuation
+# call, and matters more.
+# -----------------------------------
+
+_DEFAULT_RED = "color: #fb7185; font-weight: 600"
+_INTRINSIC_ABOVE_PRICE = "color: #34d399; font-weight: 600"   # green - looks undervalued
+_INTRINSIC_BELOW_PRICE = "color: #fb7185; font-weight: 600"   # red - looks overvalued
+
+# Long Score traffic-light colors, keyed off the SAME SIGNAL_THRESHOLDS gates
+# used to set the Investment Signal (STRONG LONG / LONG / WATCHLIST / AVOID)
+# everywhere else in the app - see the DCF Parameters table caption for the
+# exact cutoffs shown to the user.
+_LONG_SCORE_STRONG = "color: #34d399; font-weight: 600"   # green - above LONG gate
+_LONG_SCORE_WATCH = "color: #fbbf24; font-weight: 600"    # amber - above WATCHLIST, at/below LONG
+_LONG_SCORE_AVOID = "color: #fb7185; font-weight: 600"    # red - at/below WATCHLIST gate
+
+_FLAG_FOR_COL = {
+    "Type": "_flag_type",
+    "Quality": "_flag_quality",
+    "Intrinsic Value": "_flag_intrinsic",
+    "MOS": "_flag_intrinsic",
+    "Val Method": "_flag_growth",
+    "DCF Growth %": "_flag_growth",
+}
+
+
+def style_defaults(display_df, source_df, color_long_score=False):
+    """Return a Styler that paints defaulted cells red, and colors
+    "Intrinsic Value" green/red against "Price" where both are present.
+    display_df must share its index with source_df (the full results frame
+    holding the _flag_* and Price columns).
+
+    color_long_score=True additionally traffic-lights a "Long Score" column
+    (green/yellow/red) using SIGNAL_THRESHOLDS - opt-in per call site rather
+    than always-on, since not every table that shows Long Score asked for
+    this coloring."""
+    cols = list(display_df.columns)
+
+    def _apply(_):
+        styles = pd.DataFrame("", index=display_df.index, columns=cols)
+
+        if "Intrinsic Value" in cols and "Price" in source_df.columns:
+            _iv = pd.to_numeric(
+                source_df["Intrinsic Value"].reindex(display_df.index), errors="coerce"
+            )
+            _px = pd.to_numeric(
+                source_df["Price"].reindex(display_df.index), errors="coerce"
+            )
+            _valid = _iv.notna() & _px.notna()
+            styles.loc[_valid & (_iv > _px), "Intrinsic Value"] = _INTRINSIC_ABOVE_PRICE
+            styles.loc[_valid & (_iv < _px), "Intrinsic Value"] = _INTRINSIC_BELOW_PRICE
+
+        if color_long_score and "Long Score" in cols and "Long Score" in source_df.columns:
+            _ls = pd.to_numeric(
+                source_df["Long Score"].reindex(display_df.index), errors="coerce"
+            )
+            styles.loc[_ls > SIGNAL_THRESHOLDS["LONG"], "Long Score"] = _LONG_SCORE_STRONG
+            styles.loc[
+                (_ls > SIGNAL_THRESHOLDS["WATCHLIST"]) & (_ls <= SIGNAL_THRESHOLDS["LONG"]),
+                "Long Score",
+            ] = _LONG_SCORE_WATCH
+            styles.loc[
+                _ls.notna() & (_ls <= SIGNAL_THRESHOLDS["WATCHLIST"]), "Long Score"
+            ] = _LONG_SCORE_AVOID
+
+        # Verdict columns (Signal / Valuation / Sentiment / Trend / Trade
+        # Setup) traffic-lighted with the same green/amber/red convention
+        # as every score bar on the site.
+        _VERDICT_STYLE = {
+            "STRONG LONG": _LONG_SCORE_STRONG, "LONG": _LONG_SCORE_STRONG,
+            "BUY": _LONG_SCORE_STRONG, "UNDERVALUED": _LONG_SCORE_STRONG,
+            "FEARFUL": _LONG_SCORE_STRONG, "Uptrend": _LONG_SCORE_STRONG,
+            "WATCHLIST": _LONG_SCORE_WATCH, "FAIR": _LONG_SCORE_WATCH,
+            "GREEDY": _LONG_SCORE_WATCH, "Ranging": _LONG_SCORE_WATCH,
+            "AVOID": _LONG_SCORE_AVOID, "EXPENSIVE": _LONG_SCORE_AVOID,
+            "OVERHEATED": _LONG_SCORE_AVOID, "Downtrend": _LONG_SCORE_AVOID,
+        }
+        for _vcol in ("Investment Signal", "Signal", "Valuation",
+                      "Sentiment", "Trend", "Trade Setup", "Swing Setup"):
+            if _vcol in cols:
+                _vals = display_df[_vcol].astype(str)
+                for _txt, _sty in _VERDICT_STYLE.items():
+                    styles.loc[_vals == _txt, _vcol] = _sty
+
+        for disp_col, flag_col in _FLAG_FOR_COL.items():
+            if disp_col in cols and flag_col in source_df.columns:
+                mask = (
+                    source_df[flag_col]
+                    .reindex(display_df.index)
+                    .fillna(False)
+                    .astype(bool)
+                )
+                styles.loc[mask, disp_col] = _DEFAULT_RED
+        return styles
+
+    return display_df.style.apply(_apply, axis=None)
+
+
 def page_scanner():
     _render_header(compact=True, page_label="Scanner")
 
@@ -2533,30 +2655,16 @@ def page_scanner():
     # detail table/expander for it on this site, unlike the original app.
     # Cached a day per exact universe/sector set, so this is only slow the
     # first time a given universe's sector list is shown.
-    # Sector heat is expensive the first time it's computed for a universe
-    # (a year of prices for a sample of every sector), so it's opt-in
-    # rather than silently blocking the page's first render for minutes.
+    # Sector heat decorates each sector option with a colored dot
+    # (green/amber/red = hot/medium/cold vs the rest of this universe).
+    # First computation for a universe takes a while; cached for a day.
     _heat_pairs = ()
     if _pool_df is not None and not _pool_df.empty and "Sector" in _pool_df.columns:
         _heat_pairs = tuple(zip(_pool_df["Ticker"], _pool_df["Sector"]))
     _sector_heat = {}
     if _heat_pairs:
-        st.session_state.setdefault("scanner_heat_on", False)
-        if not st.session_state["scanner_heat_on"]:
-            if st.button(
-                "Show 12-month sector heat (first load takes a few minutes, "
-                "then it's cached for the day)", key="scanner_heat_btn",
-            ):
-                st.session_state["scanner_heat_on"] = True
-                st.rerun()
-        else:
-            with st.spinner("Reading sector heat - cached for a day once computed..."):
-                _sector_heat = scanner_engine.compute_sector_heat(_heat_pairs)
-            st.caption(
-                "Heat is RELATIVE to this universe - the top third of "
-                "sectors reads Hot even in a down market; the signed % is "
-                "the actual 12-month move."
-            )
+        with st.spinner("Reading sector heat (cached for the day once computed)..."):
+            _sector_heat = scanner_engine.compute_sector_heat(_heat_pairs)
 
     sector = st.selectbox(
         "Sector (optional)", _sectors, key="scanner_sector",
@@ -2583,8 +2691,19 @@ def page_scanner():
                 "carry their own flag columns. Run a live scan below for "
                 "current prices."
             )
-            _on_df = pd.DataFrame(_overnight["rows"])
-            st.dataframe(_on_df, width="stretch", hide_index=True, height=420)
+            _on_df = pd.DataFrame(_overnight["rows"]).rename(columns={"MOS %": "MOS"})
+            _on_src = _on_df.copy()
+            if "Quality Default" in _on_src.columns:
+                _on_src["_flag_quality"] = _on_src["Quality Default"].fillna(False)
+            if "Intrinsic Default" in _on_src.columns:
+                _on_src["_flag_intrinsic"] = _on_src["Intrinsic Default"].fillna(False)
+            _on_disp = _on_df.drop(columns=[
+                c for c in ("Quality Default", "Intrinsic Default") if c in _on_df.columns
+            ])
+            st.dataframe(
+                style_defaults(_on_disp, _on_src, color_long_score=True),
+                width="stretch", hide_index=True, height=420,
+            )
             st.caption(f"Universe source at scan time: {_overnight['source']}")
 
     if st.button("Run Scan", type="primary", key="run_scanner"):
@@ -2664,7 +2783,8 @@ def _render_scan_results(page_label, state_prefix, empty_message,
 
     if not stocks:
         st.info(empty_message)
-        _render_example_chips(f"{state_prefix}_empty")
+        if state_prefix == "cmp":
+            _render_example_chips(f"{state_prefix}_empty")
         return
 
     # Attention-lite mode for big universe scans: per-ticker Trends/News/
@@ -2775,9 +2895,16 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 # only used further below, for calc_support_resistance().
                 window_3mo = df.tail(63)
 
-                current_price = window_3mo["Close"].iloc[-1]
+                # NaN-proof: some feeds return trailing NaN rows (seen on
+                # NYSE:NU) - a NaN current price cascades into every score
+                # and finally crashes an int() cast. Use the last REAL
+                # close/volume instead, and skip the ticker if none exist.
+                _close_series = window_3mo["Close"].dropna()
+                if _close_series.empty:
+                    continue
+                current_price = float(_close_series.iloc[-1])
 
-                high_price = window_3mo["Close"].max()
+                high_price = float(_close_series.max())
 
                 fear_score = (
                     (high_price - current_price) / high_price
@@ -2875,8 +3002,8 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 else:
                     upside_percent = 0
 
-                if len(window_3mo) >= 6 and window_3mo["Close"].iloc[-6] != 0:
-                    weekly_change = ((current_price - window_3mo["Close"].iloc[-6]) / window_3mo["Close"].iloc[-6]) * 100
+                if len(_close_series) >= 6 and _close_series.iloc[-6] != 0:
+                    weekly_change = ((current_price - _close_series.iloc[-6]) / _close_series.iloc[-6]) * 100
                 else:
                     weekly_change = 0
 
@@ -2885,8 +3012,9 @@ def _render_scan_results(page_label, state_prefix, empty_message,
 
                 activity_score = abs(weekly_change)
 
-                avg_volume = window_3mo["Volume"].mean()
-                latest_volume = window_3mo["Volume"].iloc[-1]
+                _vol_series = window_3mo["Volume"].dropna()
+                avg_volume = float(_vol_series.mean()) if len(_vol_series) else 0.0
+                latest_volume = float(_vol_series.iloc[-1]) if len(_vol_series) else 0.0
                 volume_ratio = (latest_volume / avg_volume) if avg_volume > 0 else 0
 
                 # Discovery is now PURE ATTENTION - "is the market noticing this
@@ -3221,96 +3349,6 @@ def _render_scan_results(page_label, state_prefix, empty_message,
             st.markdown(f"**Suggested Holding Period:** {thesis['holding_period']}")
 
 
-        # -----------------------------------
-        # RED-FONT DEFAULT STYLING + INTRINSIC VS PRICE COLORING
-        #
-        # Any cell whose value had to fall back to a default/average assumption
-        # (rather than being computed from sourced data) is rendered in red, so the
-        # user can instantly see which numbers are estimates. The per-cell booleans
-        # come from the hidden "_flag_*" columns populated in the scan loop.
-        #
-        # Separately, wherever "Intrinsic Value" appears alongside "Price", it's
-        # colored green when the DCF intrinsic value is ABOVE the current price
-        # (looks undervalued) or red when it's BELOW (looks overvalued) - a quick
-        # visual echo of the Valuation/MOS columns, right on the number itself. The
-        # default-assumption red/bold above always wins over this on a shared cell,
-        # since "this number is a guess" is a data-quality flag, not a valuation
-        # call, and matters more.
-        # -----------------------------------
-
-        _DEFAULT_RED = "color: #fb7185; font-weight: 600"
-        _INTRINSIC_ABOVE_PRICE = "color: #34d399; font-weight: 600"   # green - looks undervalued
-        _INTRINSIC_BELOW_PRICE = "color: #fb7185; font-weight: 600"   # red - looks overvalued
-
-        # Long Score traffic-light colors, keyed off the SAME SIGNAL_THRESHOLDS gates
-        # used to set the Investment Signal (STRONG LONG / LONG / WATCHLIST / AVOID)
-        # everywhere else in the app - see the DCF Parameters table caption for the
-        # exact cutoffs shown to the user.
-        _LONG_SCORE_STRONG = "color: #34d399; font-weight: 600"   # green - above LONG gate
-        _LONG_SCORE_WATCH = "color: #fbbf24; font-weight: 600"    # amber - above WATCHLIST, at/below LONG
-        _LONG_SCORE_AVOID = "color: #fb7185; font-weight: 600"    # red - at/below WATCHLIST gate
-
-        _FLAG_FOR_COL = {
-            "Type": "_flag_type",
-            "Quality": "_flag_quality",
-            "Intrinsic Value": "_flag_intrinsic",
-            "MOS": "_flag_intrinsic",
-            "Val Method": "_flag_growth",
-            "DCF Growth %": "_flag_growth",
-        }
-
-
-        def style_defaults(display_df, source_df, color_long_score=False):
-            """Return a Styler that paints defaulted cells red, and colors
-            "Intrinsic Value" green/red against "Price" where both are present.
-            display_df must share its index with source_df (the full results frame
-            holding the _flag_* and Price columns).
-
-            color_long_score=True additionally traffic-lights a "Long Score" column
-            (green/yellow/red) using SIGNAL_THRESHOLDS - opt-in per call site rather
-            than always-on, since not every table that shows Long Score asked for
-            this coloring."""
-            cols = list(display_df.columns)
-
-            def _apply(_):
-                styles = pd.DataFrame("", index=display_df.index, columns=cols)
-
-                if "Intrinsic Value" in cols and "Price" in source_df.columns:
-                    _iv = pd.to_numeric(
-                        source_df["Intrinsic Value"].reindex(display_df.index), errors="coerce"
-                    )
-                    _px = pd.to_numeric(
-                        source_df["Price"].reindex(display_df.index), errors="coerce"
-                    )
-                    _valid = _iv.notna() & _px.notna()
-                    styles.loc[_valid & (_iv > _px), "Intrinsic Value"] = _INTRINSIC_ABOVE_PRICE
-                    styles.loc[_valid & (_iv < _px), "Intrinsic Value"] = _INTRINSIC_BELOW_PRICE
-
-                if color_long_score and "Long Score" in cols and "Long Score" in source_df.columns:
-                    _ls = pd.to_numeric(
-                        source_df["Long Score"].reindex(display_df.index), errors="coerce"
-                    )
-                    styles.loc[_ls > SIGNAL_THRESHOLDS["LONG"], "Long Score"] = _LONG_SCORE_STRONG
-                    styles.loc[
-                        (_ls > SIGNAL_THRESHOLDS["WATCHLIST"]) & (_ls <= SIGNAL_THRESHOLDS["LONG"]),
-                        "Long Score",
-                    ] = _LONG_SCORE_WATCH
-                    styles.loc[
-                        _ls.notna() & (_ls <= SIGNAL_THRESHOLDS["WATCHLIST"]), "Long Score"
-                    ] = _LONG_SCORE_AVOID
-
-                for disp_col, flag_col in _FLAG_FOR_COL.items():
-                    if disp_col in cols and flag_col in source_df.columns:
-                        mask = (
-                            source_df[flag_col]
-                            .reindex(display_df.index)
-                            .fillna(False)
-                            .astype(bool)
-                        )
-                        styles.loc[mask, disp_col] = _DEFAULT_RED
-                return styles
-
-            return display_df.style.apply(_apply, axis=None)
 
 
         if len(data) > 0:
@@ -3347,7 +3385,10 @@ def _render_scan_results(page_label, state_prefix, empty_message,
             )
             _preview_cols = [c for c in _preview_cols if c in results.columns]
             st.subheader(f"{page_label} preview")
-            st.dataframe(results[_preview_cols], width="stretch", hide_index=True)
+            st.dataframe(
+                style_defaults(results[_preview_cols], results, color_long_score=True),
+                width="stretch", hide_index=True,
+            )
 
             if not paywall_engine.render_gate(
                 f"the full {page_label} results",
@@ -3594,8 +3635,9 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                         "RR3": t["rr3"] if t["rr3"] is not None else "-",
                         "Early Exit Watch": "Yes" if t["early_exit_watch"] else "No",
                     })
+                _trade_df = pd.DataFrame(trade_rows)
                 st.dataframe(
-                    pd.DataFrame(trade_rows),
+                    style_defaults(_trade_df, _trade_df),
                     width="stretch",
                     hide_index=True,
                     column_config={

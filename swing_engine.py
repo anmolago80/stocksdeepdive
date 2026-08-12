@@ -242,7 +242,10 @@ def position_size(account_size, risk_pct, entry_price, stop_price):
     Guards: entry must be above stop and positive; otherwise 0 shares.
     """
     risk_per_share = entry_price - stop_price
-    if risk_per_share <= 0 or entry_price <= 0 or account_size <= 0:
+    # NaN != NaN - a NaN entry or stop (bad feed data) must yield 0 shares,
+    # not crash the int() below with "cannot convert float NaN to integer".
+    if (risk_per_share != risk_per_share or entry_price != entry_price
+            or risk_per_share <= 0 or entry_price <= 0 or account_size <= 0):
         return {"shares": 0, "dollar_risk": 0.0, "position_value": 0.0}
 
     dollar_risk_budget = account_size * (risk_pct / 100.0)
