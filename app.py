@@ -742,6 +742,8 @@ def _render_footer():
   <div class='sdd-f-cols'>
     <div><h5>StocksDeepDive</h5>
       <a href='/' target='_self'>Home</a>
+      <a href='/about' target='_self'>About the author</a>
+      <a href='/methodology' target='_self'>How the scores work</a>
       <a href='/research' target='_self'>Rational Compounder Research</a>
     </div>
     <div><h5>Tools</h5>
@@ -750,7 +752,9 @@ def _render_footer():
       <a href='/scanner' target='_self'>Stock Scanner</a>
     </div>
     <div><h5>Contact</h5>
-      <span style='display:block;color:#8aa0b8;margin-top:6px;font-size:13px;'>Use the Feedback button on any results page</span>
+      <a href='mailto:rationalcompounder@stocksdeepdive.com'>rationalcompounder@stocksdeepdive.com</a>
+      <span style='display:block;color:#8aa0b8;margin-top:6px;font-size:13px;'>or the Feedback button on any results page</span>
+      <a href='/privacy' target='_self'>Privacy policy</a>
     </div>
   </div>
   <div class='sdd-disclaimer'>
@@ -3946,6 +3950,195 @@ def _render_scan_results(page_label, state_prefix, empty_message,
 
 
 # -----------------------------------
+# CONTENT PAGES - Methodology / About / Privacy
+#
+# Plain-prose pages that make the site sellable: people subscribe to a
+# system they believe they understand, run by a person they trust, with a
+# clear statement of what happens to their data. All three are linked from
+# the footer on every page.
+# -----------------------------------
+
+def _content_page_shell(title):
+    _render_header(compact=True)
+    st.markdown(f"## {title}")
+
+
+def page_methodology():
+    _content_page_shell("How the scores work")
+    st.markdown(
+        """
+Every tool on this site runs the same engine. A ticker goes in; live data comes back
+(prices and volumes, financial statements and analyst estimates via Yahoo Finance, search
+interest via Google Trends, headlines via Yahoo/NewsAPI, chatter via StockTwits); and the
+same value-investing maths runs every time. Nothing on this page is a black box - every
+score's inputs are charted right next to it on the site.
+
+#### The Long Score (0–100)
+
+One number answering "is this a good business to own at this price?" It blends four
+factors, each clamped to a fixed band first so no single factor can run away with the
+result:
+
+| Factor | Weight | What it measures |
+|---|---|---|
+| Quality | 35% | Is this a good business? Return on equity, profit margin, revenue and earnings growth, free cash flow, debt - computed from the company's own fundamentals. Loss-making, cash-burning businesses are capped: a company that doesn't make money can't score as "high quality" no matter how fast it grows. |
+| Margin of Safety | 25% | Is the price below the value? The gap between our intrinsic-value estimate and today's price, clamped to ±50 so a wild discount (or premium) can move the score but never dominate it. |
+| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |
+| Discovery | 20% | Is the market noticing? Price activity, unusual volume, search trends, news flow and social chatter - attention only, deliberately separate from sentiment. |
+
+Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise
+**AVOID**. If no intrinsic value could be computed at all, the signal is capped at
+WATCHLIST - a thesis whose value leg can't be verified doesn't get a full
+recommendation.
+
+#### Intrinsic value
+
+The primary model is a discounted cash flow built from the company's own reported free
+cash flows. The discount rate is calculated per stock (CAPM - the stock's own beta
+against its market), growth comes from analyst consensus where available, then the
+company's own historical FCF growth, and the terminal growth rate is set by the stock's
+currency. Where a DCF isn't possible, a P/E-blend fallback is used and labelled as such.
+Margin of Safety = (intrinsic value − price) ÷ intrinsic value.
+
+A stock trading 25%+ below intrinsic value is labelled **UNDERVALUED**; above intrinsic
+value, **EXPENSIVE**; between, **FAIR**.
+
+#### Value vs timing - two separate verdicts
+
+The **Investment Signal** answers "good business to own?" The **Trade Setup** answers
+"is right now a sane entry?" - support/resistance-based entry zone, stop loss and
+targets, gated on trend safety and risk/reward. A great company can be a poor entry
+today; the site shows both rather than blurring them into one contradictory verdict.
+
+#### The red-flag rule
+
+Whenever a number rests on a default or average because real data wasn't available, it's
+shown in **red**. An estimate is never dressed up as a fact - you always know which
+numbers are computed and which are assumed.
+
+#### Rational Compounder Research
+
+The Research section is different: it isn't computed at all. It's the author's own
+hand-built workbook analysis of selected quality compounders - a decade of earnings
+history, four independent fair-value methods (trailing P/E, forward P/E, DCF, and a
+10-year equity method), and written Buffett/Munger-style judgment on management, moat
+and risk. Every threshold and colour band on those pages comes from the original
+research, not a generic screen.
+
+#### Limitations, honestly
+
+Data is sourced from free public feeds and can be delayed, revised or occasionally
+wrong. Intrinsic value is an estimate resting on assumptions - reasonable assumptions,
+shown openly, but assumptions. Scores are model outputs, not personal advice, and none
+of this considers your circumstances. Use it the way it was built to be used: as the
+starting point for your own judgment, not a substitute for it.
+"""
+    )
+
+
+def page_about():
+    _content_page_shell("About")
+    st.markdown(
+        """
+StocksDeepDive is built and run by **Andres Moreno**, a private investor in Australia.
+
+It didn't start as a website. It started as a personal stock scanner and a very long
+Excel workbook - the tools I built to manage my own self-managed super fund with a
+Buffett/Munger-style value approach: work out what a business is actually worth, check
+its quality like an owner would, and only then look at what the crowd is doing. Over
+the years the scanner grew a DCF engine, quality tests, a crowd-psychology read, trade
+setups, and a research workbook that interrogates one company for weeks at a time.
+
+At some point the obvious question arrived: if I trust these numbers with my own
+retirement savings, why not open them up? So this site is that - the same engine,
+the same research, made public.
+
+Two principles carried over from the private version, unchanged:
+
+**The numbers must be honest.** Whenever a figure rests on a default or an average
+because real data wasn't available, it's shown in red. An estimate is never dressed up
+as a fact. I built that rule for myself, because fooling yourself is expensive - it
+applies just as much now that you're reading the numbers too.
+
+**Value and timing are different questions.** Whether a business is worth owning and
+whether today is a sane day to buy it get separate verdicts on every page. Most tools
+blur them; keeping them apart is half the discipline.
+
+The site is free while it launches. When subscriptions open, founding members keep
+launch pricing. If you want a stock added to the Rational Compounder research list, or
+anything here doesn't make sense, use the Feedback button on any results page or email
+[rationalcompounder@stocksdeepdive.com](mailto:rationalcompounder@stocksdeepdive.com) -
+I read everything.
+
+*Nothing on this site is financial advice - see the disclaimer in the footer. I may
+own stocks analysed here.*
+"""
+    )
+
+
+def page_privacy():
+    _content_page_shell("Privacy policy")
+    st.markdown(
+        """
+*Last updated: 13 August 2026*
+
+StocksDeepDive ("the site", "we") is operated by Andres Moreno in Australia. This page
+explains what information the site handles and what happens to it. Contact for anything
+privacy-related: [rationalcompounder@stocksdeepdive.com](mailto:rationalcompounder@stocksdeepdive.com).
+
+#### What we collect
+
+**Nothing, for anonymous browsing.** You can use every analysis tool without an
+account. Standard technical logs (IP address, browser type, pages requested) are kept
+by our hosting provider (Railway) for security and debugging, as with any website.
+
+**If you sign in with Google:** we receive your name and email address from Google -
+nothing else. Sign-in exists so the site can remember your watchlist, attribute your
+feedback, and (if you save a watchlist) send you the weekly signal digest email. We
+never see your Google password.
+
+**If you save a watchlist:** the tickers you save are stored against your email
+address on our server.
+
+**If you send feedback:** your message and, if you're signed in, your email address
+are stored so we can follow up.
+
+**If subscriptions are active and you subscribe:** payment is handled entirely by
+Stripe. We never see or store your card details - we only check with Stripe whether
+your email has an active subscription.
+
+#### What we don't do
+
+No advertising, no ad trackers, no analytics beyond the hosting provider's standard
+logs, and no selling or sharing of your information with anyone, ever. The only
+cookies used are the ones required to keep you signed in.
+
+#### Emails
+
+The weekly digest is sent (via Mailgun) only to signed-in users who have saved a
+watchlist. To stop it, remove all stocks from your watchlist, or email us and we'll
+remove you.
+
+#### Data retention and deletion
+
+Watchlists and feedback are kept while your account is active. Email us from your
+sign-in address and we will delete everything we hold about you.
+
+#### Third-party data on the site
+
+Market data shown on the site comes from third-party sources (Yahoo Finance, Google
+Trends, StockTwits, NewsAPI, GDELT). Those services receive standard requests from our
+server, not information about you.
+
+#### Changes
+
+If this policy changes, the date above will change with it. Material changes will be
+noted on the site.
+"""
+    )
+
+
+# -----------------------------------
 # PAGE ROUTING
 #
 # Real Streamlit pages (st.navigation/st.Page) so Search and Rational
@@ -3960,9 +4153,13 @@ PG_DEEP_DIVE = st.Page(page_deep_dive, title="Deep Dive", url_path="deep-dive")
 PG_COMPARISON = st.Page(page_comparison, title="Comparison", url_path="comparison")
 PG_RESEARCH = st.Page(page_research, title="Rational Compounder Analysis", url_path="research")
 PG_SCANNER = st.Page(page_scanner, title="Stock Scanner", url_path="scanner")
+PG_METHODOLOGY = st.Page(page_methodology, title="How the scores work", url_path="methodology")
+PG_ABOUT = st.Page(page_about, title="About", url_path="about")
+PG_PRIVACY = st.Page(page_privacy, title="Privacy policy", url_path="privacy")
 
 _nav = st.navigation(
-    [PG_HOME, PG_DEEP_DIVE, PG_COMPARISON, PG_RESEARCH, PG_SCANNER], position="hidden"
+    [PG_HOME, PG_DEEP_DIVE, PG_COMPARISON, PG_RESEARCH, PG_SCANNER,
+     PG_METHODOLOGY, PG_ABOUT, PG_PRIVACY], position="hidden"
 )
 _nav.run()
 

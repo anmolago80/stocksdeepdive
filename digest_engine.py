@@ -37,8 +37,14 @@ def _cfg():
         "domain": domain,
         "from": os.environ.get("MAILGUN_FROM", "").strip()
                 or (f"StocksDeepDive <digest@{domain}>" if domain else ""),
-        "base_url": os.environ.get("MAILGUN_BASE_URL", "").strip()
-                    or "https://api.mailgun.net",
+        # Same variables the feedback engine already uses on this
+        # deployment - MAILGUN_API_BASE_URL may carry a trailing /v3,
+        # which is stripped since the send path below adds it.
+        "base_url": (
+            os.environ.get("MAILGUN_BASE_URL", "").strip()
+            or os.environ.get("MAILGUN_API_BASE_URL", "").strip().removesuffix("/v3")
+            or "https://api.mailgun.net"
+        ).rstrip("/"),
         "site": os.environ.get("SITE_BASE_URL", "").strip()
                 or "https://stocksdeepdive.com",
     }
