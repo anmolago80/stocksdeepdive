@@ -1373,6 +1373,19 @@ def _cp_valuation_methods_chart(ticker, valuation_methods):
         x=labels, y=values, marker_color=colors,
         text=[f"${v:,.2f}" for v in values], textposition="outside",
     ))
+    # Average of the intrinsic-value METHODS only (Current Price is the
+    # market's number, not a valuation estimate - it stays out of the
+    # average), drawn as a dashed line across the chart with its value in
+    # the label.
+    _method_vals = [v for (k, _), v in zip(used, values) if k != "price"]
+    if len(_method_vals) >= 2:
+        _avg = sum(_method_vals) / len(_method_vals)
+        fig.add_hline(
+            y=_avg, line_dash="dash", line_color="#e6edf5", line_width=1.5,
+            annotation_text=f"Average ${_avg:,.2f}",
+            annotation_position="top left",
+            annotation_font=dict(size=12, color="#e6edf5"),
+        )
     fig.update_layout(
         title="Intrinsic Value by Method vs Current Price", height=340,
         showlegend=False, margin=dict(l=10, r=10, t=40, b=10),
