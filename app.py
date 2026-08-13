@@ -354,6 +354,13 @@ if _admin_key_env:
         except Exception:
             pass
 
+# The in-page unlock (the "RC view" popover next to Sign out) can't write
+# the cookie itself - it calls st.rerun() immediately, which would cancel
+# delivery of the cookie-writing <script> - so it leaves this flag and the
+# cookie is written here, at the top of the very next run.
+if st.session_state.pop("_pending_admin_cookie", False):
+    _set_admin_cookie()
+
 
 def _factual() -> bool:
     """True when this session should see the factual-information
@@ -381,6 +388,28 @@ def _render_view_badge():
                 st.query_params.pop("admin", None)
                 _set_admin_cookie(clear=True)
                 st.rerun()
+
+
+def _render_admin_unlock():
+    """Small "RC view" popover rendered next to Sign out: typing the admin
+    key switches THIS BROWSER to the full presentation (same effect as the
+    ?admin= URL, cookie included). Public visitors who click it just see a
+    key prompt; a wrong key gets a flat "incorrect" and nothing else."""
+    if not (_FACTUAL_DEFAULT and _admin_key_env):
+        return
+    if st.session_state.get("full_view_unlocked"):
+        return  # the FULL VIEW badge row already shows state + Exit
+    with st.popover("RC view"):
+        _key_try = st.text_input(
+            "Access key", type="password", key="rc_view_key_input",
+        )
+        if st.button("Unlock", key="rc_view_unlock_btn", type="primary"):
+            if _key_try.strip() == _admin_key_env:
+                st.session_state["full_view_unlocked"] = True
+                st.session_state["_pending_admin_cookie"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect key.")
 
 
 # -----------------------------------
@@ -922,7 +951,29 @@ def _render_header(compact, page_label=None):
             key_prefix=page_label,
             user_email=paywall_engine.current_user_email(),
         )
-    paywall_engine.render_account_bar(extra_widget=feedback_widget)
+    # The "RC view" unlock popover shares the right-edge column with the
+    # feedback button (when there is one), so both sit in the same row as
+    # Sign out rather than stacking extra rows onto the header.
+    _show_unlock = bool(
+        _FACTUAL_DEFAULT and _admin_key_env
+        and not st.session_state.get("full_view_unlocked")
+    )
+    if _show_unlock and feedback_widget:
+        _fb = feedback_widget
+
+        def _extra_row():
+            _cf, _cu = st.columns([1.5, 1.1], gap="small")
+            with _cf:
+                _fb()
+            with _cu:
+                _render_admin_unlock()
+
+        _extra = _extra_row
+    elif _show_unlock:
+        _extra = _render_admin_unlock
+    else:
+        _extra = feedback_widget
+    paywall_engine.render_account_bar(extra_widget=_extra)
     st.markdown(
         f"""
         <style>
@@ -2051,7 +2102,12 @@ def page_home():
 
     _tape_box = st.container()
     _render_view_badge()
-    paywall_engine.render_account_bar()
+    paywall_engine.render_account_bar(
+        extra_widget=(_render_admin_unlock
+                      if (_FACTUAL_DEFAULT and _admin_key_env
+                          and not st.session_state.get("full_view_unlocked"))
+                      else None)
+    )
 
     # top row: logo + free-during-launch badge
     st.markdown(
