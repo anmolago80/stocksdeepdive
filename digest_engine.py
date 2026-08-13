@@ -29,6 +29,12 @@ import requests
 
 import watchlist_store
 
+# Mirrors the site's FACTUAL_MODE: when on (the default), the digest shows
+# numbers only - no Signal column, no verdicts - matching what the public
+# site presents.
+FACTUAL_MODE = (os.environ.get("FACTUAL_MODE", "true").strip().lower()
+                not in ("false", "0", "no", "off"))
+
 
 def _cfg():
     domain = os.environ.get("MAILGUN_DOMAIN", "").strip()
@@ -93,7 +99,7 @@ def _row_html(row, site):
     link = f"{site}/deep-dive?ticker={row['Ticker']}"
     iv_cell = f"{iv:,.2f}" if iv else "-"
     mos_cell = f"{mos:+.1f}%" if mos is not None else "-"
-    return (
+    _cells = (
         "<tr>"
         f"<td align='left' style='{_TD}font-weight:bold;'>"
         f"<a href='{link}' style='color:#0f766e;text-decoration:none;'>{row['Ticker']}</a></td>"
@@ -101,12 +107,15 @@ def _row_html(row, site):
         f"<td align='right' style='{_TD}'>{iv_cell}</td>"
         f"<td align='right' style='{_TD}'>{mos_cell}</td>"
         f"<td align='right' style='{_TD}'>{row.get('Long Score', '-')}</td>"
-        f"<td align='center' style='{_TD}'>"
-        f"<span style='background-color:{bg};color:{fg};padding:3px 10px;"
-        f"font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;'>"
-        f"{sig}</span></td>"
-        "</tr>"
     )
+    if not FACTUAL_MODE:
+        _cells += (
+            f"<td align='center' style='{_TD}'>"
+            f"<span style='background-color:{bg};color:{fg};padding:3px 10px;"
+            f"font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:bold;'>"
+            f"{sig}</span></td>"
+        )
+    return _cells + "</tr>"
 
 
 def _email_html(email, rows, site):
@@ -126,17 +135,19 @@ def _email_html(email, rows, site):
         <tr>
           <th align="left" style="{_TH}">Ticker</th>
           <th align="right" style="{_TH}">Price</th>
-          <th align="right" style="{_TH}">Intrinsic value</th>
-          <th align="right" style="{_TH}">MOS</th>
-          <th align="right" style="{_TH}">Long Score</th>
-          <th align="center" style="{_TH}">Signal</th>
+          <th align="right" style="{_TH}">{'Model output' if FACTUAL_MODE else 'Intrinsic value'}</th>
+          <th align="right" style="{_TH}">{'Model vs price' if FACTUAL_MODE else 'MOS'}</th>
+          <th align="right" style="{_TH}">{'Composite Score' if FACTUAL_MODE else 'Long Score'}</th>
+          {'' if FACTUAL_MODE else f'<th align="center" style="{_TH}">Signal</th>'}
         </tr>
         {body_rows}
       </table>
     </td></tr>
     <tr><td style="padding:16px 28px 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#94a3b8;line-height:1.6;">
-      General information only - not financial advice; scores and signals are model outputs and do
-      not consider your personal circumstances. Scored without news/social attention inputs
+      {'Factual information and calculator outputs only - this email describes data and model outputs computed from stated inputs; it contains no recommendations to buy, hold or sell any security.'
+       if FACTUAL_MODE else
+       'General information only - not financial advice; scores and signals are model outputs and do not consider your personal circumstances.'}
+      Scored without news/social attention inputs
       (the weekly digest uses the attention-lite model). You're receiving this because
       {email} saved a watchlist on StocksDeepDive while signed in. To stop these,
       remove all stocks from your watchlist on the site.

@@ -305,6 +305,85 @@ _start_background_scheduler()
 
 
 # -----------------------------------
+# PRESENTATION MODE - factual (public) vs full (admin-only view)
+#
+# FACTUAL_MODE=true (the default) renders the public site as factual
+# information and calculator outputs only: no BUY/AVOID pills, no
+# entry/stop/target levels, no verdict words - the engines all still run,
+# only what is DISPLAYED changes. Opening the site as
+#   https://<site>/?admin=<ADMIN_REFRESH_KEY>
+# switches THIS BROWSER SESSION to the full presentation (signals, trade
+# setups, verdicts) with a visible "FULL VIEW" badge - nothing on the
+# public site reveals that this exists. Set FACTUAL_MODE=false to restore
+# the full presentation for everyone (e.g. once operating under an AFSL
+# authorised-representative arrangement).
+# -----------------------------------
+_FACTUAL_DEFAULT = (os.environ.get("FACTUAL_MODE", "true").strip().lower()
+                    not in ("false", "0", "no", "off"))
+
+_admin_qp = (st.query_params.get("admin") or "").strip()
+_admin_key_env = os.environ.get("ADMIN_REFRESH_KEY", "").strip()
+
+
+def _admin_cookie_value() -> str:
+    """A signed-ish token derived from the admin key - never the key
+    itself - stored in a cookie so the unlock survives full page loads
+    (typing a URL / opening a new tab), not just in-app navigation."""
+    import hashlib
+    return hashlib.sha256(f"sdd-fullview:{_admin_key_env}".encode()).hexdigest()[:40]
+
+
+def _set_admin_cookie(clear: bool = False):
+    import streamlit.components.v1 as _components
+    if clear:
+        _js = "document.cookie='sdd_fullview=; path=/; max-age=0; SameSite=Lax';"
+    else:
+        _js = (f"document.cookie='sdd_fullview={_admin_cookie_value()}; "
+               "path=/; max-age=2592000; SameSite=Lax';")
+    _components.html(f"<script>{_js}</script>", height=0)
+
+
+if _admin_key_env:
+    if _admin_qp and _admin_qp == _admin_key_env:
+        st.session_state["full_view_unlocked"] = True
+        _set_admin_cookie()
+    elif not st.session_state.get("full_view_unlocked"):
+        try:
+            if st.context.cookies.get("sdd_fullview") == _admin_cookie_value():
+                st.session_state["full_view_unlocked"] = True
+        except Exception:
+            pass
+
+
+def _factual() -> bool:
+    """True when this session should see the factual-information
+    presentation (the public default)."""
+    if not _FACTUAL_DEFAULT:
+        return False
+    return not st.session_state.get("full_view_unlocked", False)
+
+
+def _render_view_badge():
+    """Admin-only indicator + exit, shown ONLY in the unlocked session."""
+    if _FACTUAL_DEFAULT and st.session_state.get("full_view_unlocked"):
+        _b1, _b2 = st.columns([10, 2])
+        with _b1:
+            st.markdown(
+                "<div style='display:inline-block;background:#4a2733;color:#fb7185;"
+                "border:1px solid #fb7185;border-radius:8px;padding:3px 12px;"
+                "font-size:12px;font-weight:700;letter-spacing:.5px;'>FULL VIEW "
+                "(admin) - the public sees the factual presentation</div>",
+                unsafe_allow_html=True,
+            )
+        with _b2:
+            if st.button("Exit full view", key="exit_full_view"):
+                st.session_state["full_view_unlocked"] = False
+                st.query_params.pop("admin", None)
+                _set_admin_cookie(clear=True)
+                st.rerun()
+
+
+# -----------------------------------
 # SITE-WIDE BUTTON STYLE + NAV BAR
 # -----------------------------------
 st.markdown(
@@ -653,6 +732,7 @@ def _spark_path(closes, width=440, height=52, pad=4):
 
 
 def _featured_card_html(dd, spark_pts, ma_pts, last_pt):
+    factual = _factual()
     score = max(0.0, min(100.0, float(dd["long_score"])))
     if score > SIGNAL_THRESHOLDS["STRONG_LONG"]:
         verdict, vcolor = "STRONG LONG", "#34d399"
@@ -670,6 +750,12 @@ def _featured_card_html(dd, spark_pts, ma_pts, last_pt):
         f"<path d='M15 105 A85 85 0 0 1 {ex:.1f} {ey:.1f}' fill='none' "
         f"stroke='{vcolor}' stroke-width='13' stroke-linecap='round'/>"
     ) if score > 1 else ""
+    if factual:
+        vcolor = "#2dd4bf"
+        arc = (
+            f"<path d='M15 105 A85 85 0 0 1 {ex:.1f} {ey:.1f}' fill='none' "
+            f"stroke='#2dd4bf' stroke-width='13' stroke-linecap='round'/>"
+        ) if score > 1 else ""
     iv = dd.get("intrinsic_value")
     mos = dd.get("mos")
     iv_txt = f"{iv:,.2f} {dd['currency']}" if iv else "N/A"
@@ -691,6 +777,8 @@ def _featured_card_html(dd, spark_pts, ma_pts, last_pt):
     setup = dd.get("trade_setup_signal")
     if setup:
         pills.append((f"ENTRY: {setup}", _pillmap.get(setup, "#8aa0b8")))
+    if factual:
+        pills = []
     pills_html = "".join(
         f"<span class='sdd-pill' style='background:{c}22;color:{c};border:1px solid {c}55;'>{html.escape(t)}</span>"
         for t, c in pills
@@ -726,14 +814,14 @@ def _featured_card_html(dd, spark_pts, ma_pts, last_pt):
         <path d='M15 105 A85 85 0 0 1 185 105' fill='none' stroke='#1f3352' stroke-width='13' stroke-linecap='round'/>
         {arc}
         <text x='100' y='86' text-anchor='middle' fill='#e6edf5' font-size='26' font-weight='700' font-family='monospace'>{score:.0f}</text>
-        <text x='100' y='106' text-anchor='middle' fill='#8aa0b8' font-size='10' font-family='monospace'>LONG SCORE / 100</text>
+        <text x='100' y='106' text-anchor='middle' fill='#8aa0b8' font-size='10' font-family='monospace'>{'COMPOSITE SCORE / 100' if factual else 'LONG SCORE / 100'}</text>
       </svg>
-      <div style='font-size:12px;color:#8aa0b8;'>Verdict: <b style='color:{vcolor};'>{verdict}</b></div>
+      <div style='font-size:12px;color:#8aa0b8;'>{'a weighted calculation - see Methodology' if factual else f"Verdict: <b style='color:{vcolor};'>{verdict}</b>"}</div>
     </div>
     <div>
-      <div class='sdd-stat'><div class='k'>INTRINSIC VALUE (DCF, BASE CASE)</div><div class='v'>{iv_txt}</div></div>
-      <div class='sdd-stat'><div class='k'>MARGIN OF SAFETY</div><div class='v' style='color:{mos_color};'>{mos_txt}</div></div>
-      <div class='sdd-stat'><div class='k'>QUALITY SCORE</div><div class='v'>{dd['quality_score']} / 100</div></div>
+      <div class='sdd-stat'><div class='k'>{'DCF MODEL OUTPUT' if factual else 'INTRINSIC VALUE (DCF, BASE CASE)'}</div><div class='v'>{iv_txt}</div></div>
+      <div class='sdd-stat'><div class='k'>{'MODEL OUTPUT VS PRICE' if factual else 'MARGIN OF SAFETY'}</div><div class='v' style='color:{mos_color};'>{mos_txt}</div></div>
+      <div class='sdd-stat'><div class='k'>{'QUALITY (CALCULATED)' if factual else 'QUALITY SCORE'}</div><div class='v'>{dd['quality_score']} / 100</div></div>
     </div>
   </div>
   <div style='display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;'>{pills_html}</div>
@@ -767,16 +855,30 @@ def _render_footer():
       <a href='/privacy' target='_self'>Privacy policy</a>
     </div>
   </div>
-  <div class='sdd-disclaimer'>
-    <b>General information only.</b> StocksDeepDive provides factual information and general
-    commentary generated from publicly available data. It does not take your personal objectives,
-    financial situation or needs into account and is not financial advice. Scores, signals, entry
-    zones and price targets are model outputs, not recommendations. Consider seeking advice from a
-    licensed adviser before acting. Data via Yahoo Finance, Google Trends, StockTwits and NewsAPI;
-    figures may be delayed or estimated &mdash; estimated values are shown in red throughout the site.
-  </div>
+  <div class='sdd-disclaimer'>{disclaimer}</div>
 </div>
-""",
+""".format(disclaimer=(
+            "<b>Factual information and calculator outputs only.</b> StocksDeepDive "
+            "computes and displays data, model outputs and described calculations "
+            "from stated inputs. It does not provide financial product advice, "
+            "recommendations, or opinions about buying, holding or selling any "
+            "security, and nothing on this site should be read as such. Model "
+            "outputs depend entirely on their stated inputs and assumptions, which "
+            "you can inspect &mdash; and in places override &mdash; yourself. "
+            "Values shown in red rest on default or estimated inputs. Data via "
+            "Yahoo Finance, Google Trends, StockTwits and NewsAPI; figures may be "
+            "delayed or revised."
+        ) if _factual() else (
+            "<b>General information only.</b> StocksDeepDive provides factual "
+            "information and general commentary generated from publicly available "
+            "data. It does not take your personal objectives, financial situation "
+            "or needs into account and is not financial advice. Scores, signals, "
+            "entry zones and price targets are model outputs, not recommendations. "
+            "Consider seeking advice from a licensed adviser before acting. Data "
+            "via Yahoo Finance, Google Trends, StockTwits and NewsAPI; figures may "
+            "be delayed or estimated &mdash; estimated values are shown in red "
+            "throughout the site."
+        )),
         unsafe_allow_html=True,
     )
 
@@ -807,6 +909,7 @@ def _render_watchlist_row():
 
 def _render_header(compact, page_label=None):
     _render_tape()
+    _render_view_badge()
     # page_label is only passed on the three main service pages (Deep Dive,
     # Comparison, Rational Compounder Analysis) - Home doesn't get a
     # feedback button since there's no service content there to comment on.
@@ -1947,6 +2050,7 @@ def page_home():
     ]
 
     _tape_box = st.container()
+    _render_view_badge()
     paywall_engine.render_account_bar()
 
     # top row: logo + free-during-launch badge
@@ -1962,15 +2066,26 @@ def page_home():
 
     hero_l, hero_r = st.columns([11, 10], gap="large")
     with hero_l:
-        st.markdown(
-            """
+        if _factual():
+            st.markdown(
+                """
+<div class='sdd-h1'>The <em>data and models</em> behind a valuation judgment.</div>
+<div class='sdd-sub'>Live DCF model outputs, quality calculations, price behaviour and market
+attention &mdash; computed for any ASX or US stock, with <b>every input stated and every
+estimate flagged</b>. The judgment stays yours.</div>
+""",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                """
 <div class='sdd-h1'>Know what a stock is <em>worth</em> &mdash; and whether now is a sane entry.</div>
 <div class='sdd-sub'>One score that combines <b>value, quality, crowd psychology and market
 attention</b> &mdash; computed live for any ASX or US stock. No noise, no hidden assumptions:
 every estimated number is flagged.</div>
 """,
-            unsafe_allow_html=True,
-        )
+                unsafe_allow_html=True,
+            )
         with st.form("home_search_form", clear_on_submit=False, border=False):
             _sc1, _sc2 = st.columns([4, 1])
             with _sc1:
@@ -1998,8 +2113,42 @@ every estimated number is flagged.</div>
     _mood_box = st.container()
 
     # ---- feature cards ----
-    st.markdown(
-        """
+    if _factual():
+        st.markdown(
+            """
+<div class='sdd-kicker'>THE TOOLKIT</div>
+<div class='sdd-h2'>Four ways in. One consistent model.</div>
+<div class='sdd-secsub'>Every tool runs the same engine &mdash; the same DCF model, the same
+quality calculation, the same price-behaviour read &mdash; so the numbers always agree with
+each other.</div>
+<div class='sdd-cards4'>
+  <a class='sdd-feat' href='/deep-dive' target='_self'>
+    <div class='ic'>&#128269;</div><h3>Stock Deep Dive</h3>
+    <p>The full picture for one ticker: the DCF model output vs today's price, what drives the
+    Composite Score, and how the price has been behaving &mdash; every input stated.</p>
+  </a>
+  <a class='sdd-feat' href='/comparison' target='_self'>
+    <div class='ic'>&#9878;&#65039;</div><h3>Side-by-side Comparison</h3>
+    <p>Two or more tickers lined up on identical calculations &mdash; DCF model output, quality
+    calculation, price behaviour &mdash; as colour-coded data bars.</p>
+  </a>
+  <a class='sdd-feat' href='/scanner' target='_self'>
+    <div class='ic'>&#128225;</div><h3>Stock Scanner</h3>
+    <p>A whole index &mdash; ASX 200, S&amp;P 500 and more &mdash; as one sortable data table,
+    computed nightly, with an optional sector filter. Sorting is arithmetic.</p>
+  </a>
+  <a class='sdd-feat' href='/research' target='_self'>
+    <div class='ic'>&#128218;</div><h3>Rational Compounder Research</h3>
+    <p>Hand-built research on selected compounders &mdash; a decade of reported earnings, four
+    valuation model outputs, and documented company histories.</p>
+  </a>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            """
 <div class='sdd-kicker'>THE TOOLKIT</div>
 <div class='sdd-h2'>Four ways in. One consistent model.</div>
 <div class='sdd-secsub'>Every tool runs the same engine &mdash; the same DCF, the same quality
@@ -2027,12 +2176,37 @@ tests, the same psychology read &mdash; so the numbers always agree with each ot
   </a>
 </div>
 """,
-        unsafe_allow_html=True,
-    )
+            unsafe_allow_html=True,
+        )
 
     # ---- how it works ----
-    st.markdown(
-        """
+    if _factual():
+        st.markdown(
+            """
+<div class='sdd-kicker' style='margin-top:40px;'>HOW IT WORKS</div>
+<div class='sdd-h2'>Search. Compute. Inspect.</div>
+<div class='sdd-steps'>
+  <div class='sdd-step'><div class='n'>01</div><h4>Type any ticker</h4>
+    <p>ASX (CSL.AX) or US (AAPL). Live data is pulled on the spot &mdash; prices, cash flows,
+    news, search trends, social chatter.</p></div>
+  <div class='sdd-step'><div class='n'>02</div><h4>Get one transparent calculation</h4>
+    <p>The Composite Score blends the quality calculation, the gap between price and the DCF
+    model output, price behaviour and market attention &mdash; the same arithmetic every time,
+    with every input shown.</p></div>
+  <div class='sdd-step'><div class='n'>03</div><h4>See value AND price behaviour</h4>
+    <p>Two separate calculations, never blurred: what the model computes from the business's
+    own cash flows, and how the price has actually been behaving &mdash; both stated as
+    numbers, side by side.</p></div>
+</div>
+<div class='sdd-honesty'><b>The red-flag rule:</b> whenever a number rests on a default or
+average because real data wasn't available, it's shown in red. An estimate is never dressed up
+as a fact &mdash; you always know which numbers are computed and which are assumed.</div>
+""",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            """
 <div class='sdd-kicker' style='margin-top:40px;'>HOW IT WORKS</div>
 <div class='sdd-h2'>Search. Score. Decide.</div>
 <div class='sdd-steps'>
@@ -2050,8 +2224,8 @@ tests, the same psychology read &mdash; so the numbers always agree with each ot
 average because real data wasn't available, it's shown in red. An estimate is never dressed up
 as a fact &mdash; you always know which numbers are computed and which are assumed.</div>
 """,
-        unsafe_allow_html=True,
-    )
+            unsafe_allow_html=True,
+        )
 
     # ---- compounder coverage ----
     _cov_data = _load_compounder_data()
@@ -2089,11 +2263,11 @@ as a fact &mdash; you always know which numbers are computed and which are assum
   <div>
     <div class='sdd-h2' style='margin:0 0 6px;'>Everything is free while we launch.</div>
     <div style='color:#8aa0b8;font-size:14.5px;max-width:560px;line-height:1.5;'>Sign in (top
-    right) to save a watchlist and get the weekly signal digest. When subscriptions open,
+    right) to save a watchlist and get the weekly {digest_word} digest. When subscriptions open,
     founding members keep launch pricing &mdash; locked in.</div>
   </div>
 </div>
-""",
+""".format(digest_word="watchlist" if _factual() else "signal"),
         unsafe_allow_html=True,
     )
 
@@ -2138,15 +2312,26 @@ as a fact &mdash; you always know which numbers are computed and which are assum
   <div class='sdd-card-tag'><span>WHAT YOU GET</span></div>
   <div style='font-size:15px;line-height:1.7;color:#8aa0b8;'>
     Every search answers three questions:<br><br>
-    <b style='color:#e6edf5;'>What is it worth?</b> A live DCF with a per-stock discount rate,
-    plus margin of safety vs today's price.<br><br>
+    <b style='color:#e6edf5;'>{q1}</b> A live DCF with a per-stock discount rate,
+    {a1}.<br><br>
     <b style='color:#e6edf5;'>Is it a good business?</b> A 0&ndash;100 Quality Score from
     profitability and balance-sheet tests.<br><br>
-    <b style='color:#e6edf5;'>Is now a sane entry?</b> Crowd psychology and a technical entry
-    zone &mdash; kept separate from the ownership question.
+    <b style='color:#e6edf5;'>{q3}</b> {a3}
   </div>
 </div>
-""",
+""".format(
+                    q1=("What does the model compute?" if _factual()
+                        else "What is it worth?"),
+                    a1=("shown next to today's price with the gap stated "
+                        "as a percentage" if _factual()
+                        else "plus margin of safety vs today's price"),
+                    q3=("How is the price behaving?" if _factual()
+                        else "Is now a sane entry?"),
+                    a3=("Distance from recent highs and the 50-day average, "
+                        "stated as numbers." if _factual()
+                        else "Crowd psychology and a technical entry zone "
+                             "&mdash; kept separate from the ownership question."),
+                ),
                 unsafe_allow_html=True,
             )
 
@@ -2205,13 +2390,22 @@ def page_deep_dive():
     # on the page yet - and it leads with outcomes, not model internals
     # (the methodology detail lives on the results themselves).
     if _dd is None or _dd.get("error"):
-        st.caption(
-            "One ticker, the complete picture: what the stock is worth (a "
-            "live DCF built from its own cash flows), whether the business "
-            "is high quality, whether the crowd is fearful or greedy about "
-            "it, and whether right now is a sane entry - with the exact "
-            "factors behind every score charted, nothing hidden."
-        )
+        if _factual():
+            st.caption(
+                "One ticker, the complete picture: a DCF model output "
+                "computed live from its own cash flows, a quality "
+                "calculation from reported fundamentals, and how the price "
+                "has been behaving - every input stated, every estimate "
+                "flagged, every factor behind each calculation charted."
+            )
+        else:
+            st.caption(
+                "One ticker, the complete picture: what the stock is worth (a "
+                "live DCF built from its own cash flows), whether the business "
+                "is high quality, whether the crowd is fearful or greedy about "
+                "it, and whether right now is a sane entry - with the exact "
+                "factors behind every score charted, nothing hidden."
+            )
 
     if _dd is None:
         st.info("Search a ticker above to see its Deep Dive - or try one of these:")
@@ -2230,15 +2424,28 @@ def page_deep_dive():
 
         st.subheader(f"{_dd['ticker']} - {_dd['name']}")
 
-        _m1, _m2, _m3, _m4, _m5 = st.columns(5)
-        _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}")
-        _m2.metric(
-            "Intrinsic Value",
-            f"{_dd['intrinsic_value']:,.2f}" if _dd["intrinsic_value"] else "N/A",
-        )
-        _m3.metric("MOS", f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A")
-        _m4.metric("Long Score", f"{_dd['long_score']:.1f}")
-        _m5.metric("Signal", _dd_signal)
+        if _factual():
+            _m1, _m2, _m3, _m4 = st.columns(4)
+            _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}")
+            _m2.metric(
+                "DCF model output",
+                f"{_dd['intrinsic_value']:,.2f}" if _dd["intrinsic_value"] else "N/A",
+            )
+            _m3.metric(
+                "Model output vs price",
+                f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
+            )
+            _m4.metric("Composite Score", f"{_dd['long_score']:.1f}")
+        else:
+            _m1, _m2, _m3, _m4, _m5 = st.columns(5)
+            _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}")
+            _m2.metric(
+                "Intrinsic Value",
+                f"{_dd['intrinsic_value']:,.2f}" if _dd["intrinsic_value"] else "N/A",
+            )
+            _m3.metric("MOS", f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A")
+            _m4.metric("Long Score", f"{_dd['long_score']:.1f}")
+            _m5.metric("Signal", _dd_signal)
 
         # --- Watchlist (signed-in users): the sign-in carrot, and the
         # audience the weekly digest goes to. ---
@@ -2279,7 +2486,7 @@ def page_deep_dive():
                     x=_px_closes.index, y=_px_ma50.values, mode="lines",
                     name="MA50", line=dict(color="#8aa0b8", width=1.5, dash="dash"),
                 ))
-                if _dd.get("trade_setup_entry"):
+                if _dd.get("trade_setup_entry") and not _factual():
                     fig_px.add_hline(
                         y=_dd["trade_setup_entry"], line_dash="dot",
                         line_color="#fbbf24",
@@ -2309,7 +2516,44 @@ def page_deep_dive():
             )
         except Exception:
             _dd_thesis = None
-        if _dd_thesis:
+        if _factual():
+            # "What the model shows": neutral statements about inputs and
+            # outputs - no buy/wait framing, no holding-period suggestion.
+            with st.expander("What the model shows", expanded=True):
+                _obs = []
+                if _dd.get("intrinsic_value") and _dd.get("mos") is not None:
+                    _obs.append(
+                        f"The DCF model output ({_dd['intrinsic_value']:,.2f} "
+                        f"{_dd['currency']}) is {_dd['mos']:+.1f}% relative to the "
+                        "current price, using the stated inputs shown on this page."
+                    )
+                elif not _dd.get("intrinsic_value"):
+                    _obs.append(
+                        "No model output could be computed for this ticker "
+                        "(no positive EPS/FCF for the DCF or P/E-based models)."
+                    )
+                _obs.append(
+                    f"The quality calculation totals {_dd['quality_score']}/100 "
+                    "from reported fundamentals - the term-by-term breakdown "
+                    "is charted below."
+                )
+                _obs.append(
+                    f"Price behaviour: {_dd['fear']:.1f}% below its 3-month "
+                    f"high; greed/FOMO terms total {(_dd['greed'] + _dd['fomo']):.1f} "
+                    "(see the price-behaviour chart)."
+                )
+                _obs.append(
+                    f"Market attention score: {_dd['discovery']:.1f} from price "
+                    "activity, volume, search interest, news and social volume."
+                )
+                for _o in _obs:
+                    st.markdown(f"- {_o}")
+                st.caption(
+                    "Statements describe model inputs and outputs only. Nothing "
+                    "on this page is a recommendation to buy, hold or sell any "
+                    "security."
+                )
+        elif _dd_thesis:
             with st.expander(
                 "The plain-English case - why buy, why wait, the risks",
                 expanded=True,
@@ -2354,23 +2598,40 @@ def page_deep_dive():
                 )
 
         with _dd_col2:
-            st.plotly_chart(
-                _dd_gauge(
-                    _dd["long_score"], f"Long Score - {_dd_signal}",
-                    [
-                        (0, SIGNAL_THRESHOLDS["WATCHLIST"], "#43222e"),
-                        (SIGNAL_THRESHOLDS["WATCHLIST"], SIGNAL_THRESHOLDS["LONG"], "#43371c"),
-                        (SIGNAL_THRESHOLDS["LONG"], SIGNAL_THRESHOLDS["STRONG_LONG"], "#1e3d34"),
-                        (SIGNAL_THRESHOLDS["STRONG_LONG"], 100, "#27584a"),
-                    ],
-                ),
-                use_container_width=True,
-            )
-            st.caption(
-                "Long Score, 0-100: business quality + margin of safety weighted, "
-                f"nudged by psychology and attention. Above {SIGNAL_THRESHOLDS['LONG']} "
-                f"= LONG territory, above {SIGNAL_THRESHOLDS['STRONG_LONG']} = STRONG LONG."
-            )
+            if _factual():
+                st.plotly_chart(
+                    _dd_gauge(
+                        _dd["long_score"], "Composite Score",
+                        [(0, 100, "#16233a")],  # one neutral zone - no verdict bands
+                    ),
+                    use_container_width=True,
+                )
+            else:
+                st.plotly_chart(
+                    _dd_gauge(
+                        _dd["long_score"], f"Long Score - {_dd_signal}",
+                        [
+                            (0, SIGNAL_THRESHOLDS["WATCHLIST"], "#43222e"),
+                            (SIGNAL_THRESHOLDS["WATCHLIST"], SIGNAL_THRESHOLDS["LONG"], "#43371c"),
+                            (SIGNAL_THRESHOLDS["LONG"], SIGNAL_THRESHOLDS["STRONG_LONG"], "#1e3d34"),
+                            (SIGNAL_THRESHOLDS["STRONG_LONG"], 100, "#27584a"),
+                        ],
+                    ),
+                    use_container_width=True,
+                )
+            if _factual():
+                st.caption(
+                    "Composite Score is a weighted calculation: reported "
+                    "fundamentals 35%, price vs model output 25%, price "
+                    "behaviour 20%, market attention 20%. It is a description "
+                    "of data, not a recommendation."
+                )
+            else:
+                st.caption(
+                    "Long Score, 0-100: business quality + margin of safety weighted, "
+                    f"nudged by psychology and attention. Above {SIGNAL_THRESHOLDS['LONG']} "
+                    f"= LONG territory, above {SIGNAL_THRESHOLDS['STRONG_LONG']} = STRONG LONG."
+                )
 
         st.plotly_chart(
             _dd_contrib_chart(
@@ -2476,66 +2737,67 @@ def page_deep_dive():
                 use_container_width=True,
             )
 
-        st.divider()
-        st.subheader(f"Trade Setup: {_dd['trade_setup_score']} - {_dd['trade_setup_signal']}")
-        _t_col1, _t_col2 = st.columns(2)
-        with _t_col1:
-            st.plotly_chart(
-                _dd_gauge(
-                    _dd["trade_setup_score"], f"Trade Setup - {_dd['trade_setup_signal']}",
-                    [(0, 45, "#43222e"), (45, 65, "#43371c"), (65, 100, "#27584a")],
-                ),
-                use_container_width=True,
+        if not _factual():
+            st.divider()
+            st.subheader(f"Trade Setup: {_dd['trade_setup_score']} - {_dd['trade_setup_signal']}")
+            _t_col1, _t_col2 = st.columns(2)
+            with _t_col1:
+                st.plotly_chart(
+                    _dd_gauge(
+                        _dd["trade_setup_score"], f"Trade Setup - {_dd['trade_setup_signal']}",
+                        [(0, 45, "#43222e"), (45, 65, "#43371c"), (65, 100, "#27584a")],
+                    ),
+                    use_container_width=True,
+                )
+            with _t_col2:
+                st.plotly_chart(
+                    _dd_gate_chart(
+                        _dd["trade_setup_contributions"],
+                        "What's driving the Trade Setup Score",
+                        xaxis_title="Points toward Setup Score",
+                    ),
+                    use_container_width=True,
+                )
+
+            _tt_x = [_dd["trade_setup_stop"], _dd["trade_setup_entry"], _dd["trade_setup_target1"]]
+            _tt_y = ["Stop Loss", "Entry Zone", "Target 1"]
+            _tt_colors = ["#fb7185", "#8aa0b8", "#1e3d34"]
+            if _dd["trade_setup_target2"] is not None:
+                _tt_x.append(_dd["trade_setup_target2"])
+                _tt_y.append("Target 2")
+                _tt_colors.append("#3f8a6e")
+            if _dd["trade_setup_target3"] is not None:
+                _tt_x.append(_dd["trade_setup_target3"])
+                _tt_y.append("Target 3 (breakout)")
+                _tt_colors.append("#34d399")
+
+            fig_trade = go.Figure(go.Bar(
+                x=_tt_x, y=_tt_y, orientation="h",
+                marker_color=_tt_colors,
+                text=[f"{v:,.2f}" for v in _tt_x],
+                textposition="outside",
+            ))
+            fig_trade.update_layout(
+                title="Trade Setup - Entry / Stop Loss / Targets",
+                xaxis_title=_dd["currency"], showlegend=False, height=300,
+                margin=dict(l=10, r=10, t=40, b=10),
             )
-        with _t_col2:
-            st.plotly_chart(
-                _dd_gate_chart(
-                    _dd["trade_setup_contributions"],
-                    "What's driving the Trade Setup Score",
-                    xaxis_title="Points toward Setup Score",
-                ),
-                use_container_width=True,
+            st.plotly_chart(fig_trade, use_container_width=True)
+
+            _tt_rr = f"RR1 {_dd['trade_setup_rr1']}"
+            if _dd["trade_setup_rr2"] is not None:
+                _tt_rr += f", RR2 {_dd['trade_setup_rr2']}"
+            if _dd["trade_setup_rr3"] is not None:
+                _tt_rr += f", RR3 {_dd['trade_setup_rr3']}"
+            st.caption(
+                f"Current price {_dd['trade_setup_current_price']:,.2f} {_dd['currency']} vs "
+                f"Entry Zone {_dd['trade_setup_entry']:,.2f} {_dd['currency']} - "
+                + ("currently inside the entry zone." if _dd["trade_setup_near_entry"]
+                   else "not yet inside the entry zone, price hasn't pulled back enough.")
+                + f" Risk {_dd['trade_setup_risk']:,.2f} {_dd['currency']} per share - {_tt_rr} "
+                  "(risk/reward is measured from today's price, not the discounted "
+                  "entry zone above - the same convention the Trade Filter table uses)."
             )
-
-        _tt_x = [_dd["trade_setup_stop"], _dd["trade_setup_entry"], _dd["trade_setup_target1"]]
-        _tt_y = ["Stop Loss", "Entry Zone", "Target 1"]
-        _tt_colors = ["#fb7185", "#8aa0b8", "#1e3d34"]
-        if _dd["trade_setup_target2"] is not None:
-            _tt_x.append(_dd["trade_setup_target2"])
-            _tt_y.append("Target 2")
-            _tt_colors.append("#3f8a6e")
-        if _dd["trade_setup_target3"] is not None:
-            _tt_x.append(_dd["trade_setup_target3"])
-            _tt_y.append("Target 3 (breakout)")
-            _tt_colors.append("#34d399")
-
-        fig_trade = go.Figure(go.Bar(
-            x=_tt_x, y=_tt_y, orientation="h",
-            marker_color=_tt_colors,
-            text=[f"{v:,.2f}" for v in _tt_x],
-            textposition="outside",
-        ))
-        fig_trade.update_layout(
-            title="Trade Setup - Entry / Stop Loss / Targets",
-            xaxis_title=_dd["currency"], showlegend=False, height=300,
-            margin=dict(l=10, r=10, t=40, b=10),
-        )
-        st.plotly_chart(fig_trade, use_container_width=True)
-
-        _tt_rr = f"RR1 {_dd['trade_setup_rr1']}"
-        if _dd["trade_setup_rr2"] is not None:
-            _tt_rr += f", RR2 {_dd['trade_setup_rr2']}"
-        if _dd["trade_setup_rr3"] is not None:
-            _tt_rr += f", RR3 {_dd['trade_setup_rr3']}"
-        st.caption(
-            f"Current price {_dd['trade_setup_current_price']:,.2f} {_dd['currency']} vs "
-            f"Entry Zone {_dd['trade_setup_entry']:,.2f} {_dd['currency']} - "
-            + ("currently inside the entry zone." if _dd["trade_setup_near_entry"]
-               else "not yet inside the entry zone, price hasn't pulled back enough.")
-            + f" Risk {_dd['trade_setup_risk']:,.2f} {_dd['currency']} per share - {_tt_rr} "
-              "(risk/reward is measured from today's price, not the discounted "
-              "entry zone above - the same convention the Trade Filter table uses)."
-        )
 
 
 def _render_country_mood_line(country):
@@ -2711,7 +2973,12 @@ def _bar_cell(value, low, high, suffix="", flag=False):
         v = float(value)
     except (TypeError, ValueError):
         return f"<div>{value}</div>"
-    color = _BAR_RED if v <= low else (_BAR_GREEN if v > high else _BAR_AMBER)
+    if _factual():
+        # Neutral single hue: intensity says "how big", never "good/bad" -
+        # a traffic-light bar is an implied verdict.
+        color = _TYPE_NEUTRAL
+    else:
+        color = _BAR_RED if v <= low else (_BAR_GREEN if v > high else _BAR_AMBER)
     width_pct = max(0.0, min(100.0, v))
     _txt_style = "color:#fb7185;font-weight:700;" if flag else ""
     return (
@@ -2913,7 +3180,7 @@ def page_scanner():
             )
             _on_rows_html = []
             for _orow in _overnight["rows"]:
-                _on_rows_html.append(
+                _row_html = (
                     "<tr>"
                     + _td(f"<b>{_orow.get('Ticker', '-')}</b>")
                     + _td(_badge_cell(_orow.get("Type", "-"), _TYPE_NEUTRAL))
@@ -2930,21 +3197,34 @@ def page_scanner():
                                     flag=bool(_orow.get("Quality Default"))), minw=90)
                     + _td(_bar_cell(_orow.get("Psychology"), -5, 20), minw=90)
                     + _td(_bar_cell(_orow.get("Discovery (lite)"), 25, 50), minw=90)
-                    + _td(_badge_cell(_orow.get("Valuation", "-")))
-                    + _td(_badge_cell(_orow.get("Signal", "-")))
-                    + _td(_badge_cell(_orow.get("Trend", "-")))
-                    + _td(_badge_cell(_orow.get("Trade Setup", "-")))
-                    + "</tr>"
                 )
+                if not _factual():
+                    _row_html += (
+                        _td(_badge_cell(_orow.get("Valuation", "-")))
+                        + _td(_badge_cell(_orow.get("Signal", "-")))
+                        + _td(_badge_cell(_orow.get("Trend", "-")))
+                        + _td(_badge_cell(_orow.get("Trade Setup", "-")))
+                    )
+                _on_rows_html.append(_row_html + "</tr>")
+            if _factual():
+                _on_headers = ["Ticker", "Type", "Price", "DCF model output",
+                               "Model vs price", "Composite Score",
+                               "Quality (calc.)", "Price behaviour",
+                               "Market attention"]
+            else:
+                _on_headers = ["Ticker", "Type", "Price", "Intrinsic Value",
+                               "MOS", "Long Score", "Quality", "Psychology",
+                               "Discovery", "Valuation", "Signal", "Trend",
+                               "Trade Setup"]
             st.markdown(
-                _sdd_table(
-                    ["Ticker", "Type", "Price", "Intrinsic Value", "MOS",
-                     "Long Score", "Quality", "Psychology", "Discovery",
-                     "Valuation", "Signal", "Trend", "Trade Setup"],
-                    _on_rows_html, max_height=480,
-                ),
+                _sdd_table(_on_headers, _on_rows_html, max_height=480),
                 unsafe_allow_html=True,
             )
+            if _factual():
+                st.caption(
+                    "Sorted by Composite Score - a described calculation (see "
+                    "Methodology). Sorting is arithmetic, not a recommendation."
+                )
             st.caption(
                 "Red values = computed from a default/average because real "
                 "data wasn't available (the site-wide red-flag rule)."
@@ -3632,20 +3912,30 @@ def _render_scan_results(page_label, state_prefix, empty_message,
             st.subheader(f"{page_label} preview")
             _prev_rows = []
             for _, _pr in results.iterrows():
-                _prev_rows.append(
+                _row_html = (
                     "<tr>"
                     + _td(f"<b>{_pr['Ticker']}</b>")
                     + _td(f"{_pr['Price']:,.2f}")
                     + _td(_bar_cell(_pr.get("Long Score"), SIGNAL_THRESHOLDS["WATCHLIST"],
                                     SIGNAL_THRESHOLDS["LONG"]), minw=110)
-                    + _td(_badge_cell(_pr.get("Investment Signal", "-")))
-                    + "</tr>"
                 )
+                if not _factual():
+                    _row_html += _td(_badge_cell(_pr.get("Investment Signal", "-")))
+                _prev_rows.append(_row_html + "</tr>")
+            _prev_headers = (
+                ["Ticker", "Price", "Composite Score"] if _factual()
+                else ["Ticker", "Price", "Long Score", "Investment Signal"]
+            )
             st.markdown(
-                _sdd_table(["Ticker", "Price", "Long Score", "Investment Signal"],
-                           _prev_rows, max_height=420),
+                _sdd_table(_prev_headers, _prev_rows, max_height=420),
                 unsafe_allow_html=True,
             )
+            if _factual():
+                st.caption(
+                    "Composite Score is a weighted calculation (see Methodology) - "
+                    "a description of data, not a recommendation. Sorting is "
+                    "arithmetic."
+                )
 
             if not paywall_engine.render_gate(
                 f"the full {page_label} results",
@@ -3676,7 +3966,7 @@ def _render_scan_results(page_label, state_prefix, empty_message,
             _cmp_rows_html = []
             for _, r in _cmp.iterrows():
                 _type_color = _BAR_RED if r.get("_flag_type") else _TYPE_NEUTRAL
-                _cmp_rows_html.append(
+                _row_html = (
                     "<tr>"
                     + _td(f"<b>{r['Ticker']}</b>")
                     + _td(_badge_cell(r["Type"], _type_color))
@@ -3691,21 +3981,41 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                                     flag=bool(r.get("_flag_quality"))), minw=90)
                     + _td(_bar_cell(r["Psychology"], -5, 20), minw=90)
                     + _td(_bar_cell(r["Discovery"], 25, 50), minw=90)
-                    + _td(_badge_cell(r["Valuation"]))
-                    + _td(_badge_cell(r["Sentiment"]))
-                    + _td(_badge_cell(r["Trend"]))
-                    + _td(_badge_cell(r["Trade Setup"]))
-                    + _td(_bar_cell(r["Trade Setup Score"], 45, 65), minw=90)
-                    + "</tr>"
                 )
+                if _factual():
+                    # Facts instead of verdicts: the number the old Sentiment
+                    # label was computed from.
+                    _row_html += _td(f"\u2212{r['Fear']:.1f}%" if r.get("Fear") is not None else "-")
+                else:
+                    _row_html += (
+                        _td(_badge_cell(r["Valuation"]))
+                        + _td(_badge_cell(r["Sentiment"]))
+                        + _td(_badge_cell(r["Trend"]))
+                        + _td(_badge_cell(r["Trade Setup"]))
+                        + _td(_bar_cell(r["Trade Setup Score"], 45, 65), minw=90)
+                    )
+                _cmp_rows_html.append(_row_html + "</tr>")
 
-            _cmp_headers = [
-                "Ticker", "Type", "Price", "Intrinsic Value", "MOS",
-                "Long Score", "Quality Score", "Psychology", "Discovery",
-                "Valuation", "Sentiment", "Trend", "Trade Setup",
-                "Trade Setup Score",
-            ]
+            if _factual():
+                _cmp_headers = [
+                    "Ticker", "Type", "Price", "DCF model output",
+                    "Model vs price", "Composite Score", "Quality (calc.)",
+                    "Price behaviour", "Market attention", "vs 3-mo high",
+                ]
+            else:
+                _cmp_headers = [
+                    "Ticker", "Type", "Price", "Intrinsic Value", "MOS",
+                    "Long Score", "Quality Score", "Psychology", "Discovery",
+                    "Valuation", "Sentiment", "Trend", "Trade Setup",
+                    "Trade Setup Score",
+                ]
             st.markdown(_sdd_table(_cmp_headers, _cmp_rows_html), unsafe_allow_html=True)
+            if _factual():
+                st.caption(
+                    "Every column is a described calculation from stated inputs "
+                    "(hover the Methodology page for definitions). Red values "
+                    "rest on default or estimated inputs."
+                )
 
 
             if is_swing and market_regime != "UNKNOWN":
@@ -3769,6 +4079,12 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     f"({top_stock['Trend']}, RSI {top_stock['RSI']}, "
                     f"Setup {top_stock['Setup Score']} -> {top_stock['Swing Setup']})"
                 )
+            elif _factual():
+                st.caption(
+                    f"Highest Composite Score in this scan: {top_stock['Ticker']} "
+                    f"({top_stock['Long Score']}) - a sort result, not a "
+                    "recommendation."
+                )
             else:
                 st.subheader("Top Investment Candidate")
                 st.success(
@@ -3776,9 +4092,10 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     f"(Investment: {top_stock['Investment Signal']}, "
                     f"Trade Setup: {top_stock['Trade Setup']})"
                 )
-            render_thesis(thesis_lookup[top_stock["Ticker"]])
+            if not _factual():
+                render_thesis(thesis_lookup[top_stock["Ticker"]])
 
-            if not is_swing:
+            if not is_swing and not _factual():
                 st.info(
                     "**Two independent axes.** *Investment Signal* "
                     "(LONG / WATCHLIST / AVOID) answers \"is this a good business to "
@@ -3793,94 +4110,95 @@ def _render_scan_results(page_label, state_prefix, empty_message,
             # Comparison tab - not meaningful for a small hand-picked ticker
             # list (see the Side-by-side comparison table below instead).
 
-            # ---------------- Trade Setup table (full scanned list) ----------------
-            with st.expander("Trade Setup - technical entry / stop-loss / targets per stock"):
-                st.caption(
-                    "Tactical entry layer for a long-term position - SEPARATE from the "
-                    "Investment Signal. This is about entry timing, not business quality. "
-                    "Every scanned stock is listed here, not just the top 10. "
-                    "BUY requires: NOT in a downtrend, Psychology > 0, Discovery > 0, "
-                    "Price <= MA50 x 1.05, price near the Entry Zone, and RR1 >= 1.5. "
-                    "(The old Long Score >= 60 gate has been removed - business quality is "
-                    "judged separately by the Investment Signal, and a confirmed downtrend "
-                    "now replaces it as the safety filter so you don't buy a falling knife.) "
-                    "This Entry Zone/Stop Loss/Targets come from the Trade Filter engine "
-                    "(support/resistance based) - a different, independent number from "
-                    "the DCF valuation Entry/Target ('Full Stock Database' below) and "
-                    "the ATR-based Swing Entry/Stop ('Swing Setup' further down). "
-                    "'Trade Setup Score' (0-100) is a visual weighting of the same "
-                    "gate checks behind the BUY/WATCHLIST/AVOID verdict - Trend Safety "
-                    "20pts, Near Entry Zone 20pts, Risk/Reward 20pts, Price vs MA50 "
-                    "15pts, Psychology Momentum 12.5pts, Discovery Momentum 12.5pts - "
-                    "not a re-implemented trade formula, just the same verdict shown "
-                    "as a number. Hover any column header for details."
-                )
-                _price_by_ticker = dict(zip(results["Ticker"], results["Price"]))
-                _t_rows_data = []
-                for _, row in results.iterrows():
-                    t = trade_lookup.get(row["Ticker"])
-                    if t:
-                        _t_rows_data.append((row["Ticker"], t))
-
-                # RR columns are coloured by RANK across the rows on screen
-                # (best green / worst red / rest amber) - "good risk/reward"
-                # is relative to the other setups in front of you.
-                _rr1_vals = [t["rr1"] for _, t in _t_rows_data]
-                _rr2_vals = [t["rr2"] for _, t in _t_rows_data]
-                _rr3_vals = [t["rr3"] for _, t in _t_rows_data]
-
-                _trade_rows_html = []
-                for _tk, t in _t_rows_data:
-                    _cur = _price_by_ticker.get(_tk)
-                    # Entry zone: green when the price is at/inside the zone
-                    # (a reachable entry NOW), red when the price is still
-                    # above it (you'd be paying up - wait for the pullback).
-                    _near = bool(t.get("near_entry_zone"))
-                    _ez_color = _BAR_GREEN if _near else _BAR_RED
-                    _ez_cell = (
-                        f"<span style='color:{_ez_color};font-weight:600;'>"
-                        f"{t['entry_zone']:,.2f}</span>"
+            if not _factual():
+                # ---------------- Trade Setup table (full scanned list) ----------------
+                with st.expander("Trade Setup - technical entry / stop-loss / targets per stock"):
+                    st.caption(
+                        "Tactical entry layer for a long-term position - SEPARATE from the "
+                        "Investment Signal. This is about entry timing, not business quality. "
+                        "Every scanned stock is listed here, not just the top 10. "
+                        "BUY requires: NOT in a downtrend, Psychology > 0, Discovery > 0, "
+                        "Price <= MA50 x 1.05, price near the Entry Zone, and RR1 >= 1.5. "
+                        "(The old Long Score >= 60 gate has been removed - business quality is "
+                        "judged separately by the Investment Signal, and a confirmed downtrend "
+                        "now replaces it as the safety filter so you don't buy a falling knife.) "
+                        "This Entry Zone/Stop Loss/Targets come from the Trade Filter engine "
+                        "(support/resistance based) - a different, independent number from "
+                        "the DCF valuation Entry/Target ('Full Stock Database' below) and "
+                        "the ATR-based Swing Entry/Stop ('Swing Setup' further down). "
+                        "'Trade Setup Score' (0-100) is a visual weighting of the same "
+                        "gate checks behind the BUY/WATCHLIST/AVOID verdict - Trend Safety "
+                        "20pts, Near Entry Zone 20pts, Risk/Reward 20pts, Price vs MA50 "
+                        "15pts, Psychology Momentum 12.5pts, Discovery Momentum 12.5pts - "
+                        "not a re-implemented trade formula, just the same verdict shown "
+                        "as a number. Hover any column header for details."
                     )
-                    _trade_rows_html.append(
-                        "<tr>"
-                        + _td(f"<b>{_tk}</b>")
-                        + _td(_badge_cell(t["signal"]))
-                        + _td(_bar_cell(trade_score_lookup.get(_tk), 45, 65), minw=90)
-                        + _td(_badge_cell(str(t.get("trend", "-")).title()))
-                        + _td(_ez_cell)
-                        + _td(f"{t['stop_loss']:,.2f}")
-                        + _td(f"{t['target1']:,.2f}")
-                        + _td(f"{t['target2']:,.2f}")
-                        + _td(f"{t['target3']:,.2f}" if t["target3"] is not None else "-")
-                        + _td(f"{t['risk']:,.2f}")
-                        + _td(_rank_cell(t["rr1"], _rr1_vals))
-                        + _td(_rank_cell(t["rr2"], _rr2_vals))
-                        + _td(_rank_cell(t["rr3"], _rr3_vals))
-                        + _td(_badge_cell(t["early_exit_watch"] and "Yes" or "No"))
-                        + "</tr>"
-                    )
-                st.markdown(
-                    _sdd_table(
-                        ["Ticker", "Trade Setup", "Setup Score", "Trend",
-                         "Entry Zone", "Stop Loss", "Target 1", "Target 2",
-                         "Target 3", "Risk", "RR1", "RR2", "RR3", "Early Exit"],
-                        _trade_rows_html, max_height=480,
-                    ),
-                    unsafe_allow_html=True,
-                )
-                st.caption(
-                    "Entry Zone: green = price is at/inside the zone now, red = "
-                    "price is still above it. RR columns: green = best "
-                    "risk/reward on screen, red = worst, amber between."
-                )
+                    _price_by_ticker = dict(zip(results["Ticker"], results["Price"]))
+                    _t_rows_data = []
+                    for _, row in results.iterrows():
+                        t = trade_lookup.get(row["Ticker"])
+                        if t:
+                            _t_rows_data.append((row["Ticker"], t))
 
-            with st.expander("Position management & early-exit rules (apply after entry)"):
-                st.markdown("**As each target is hit:**")
-                for note in trade_filter_engine.position_management_notes():
-                    st.markdown(f"- {note}")
-                st.markdown("**Exit the entire position early if:**")
-                for note in trade_filter_engine.early_exit_notes():
-                    st.markdown(f"- {note}")
+                    # RR columns are coloured by RANK across the rows on screen
+                    # (best green / worst red / rest amber) - "good risk/reward"
+                    # is relative to the other setups in front of you.
+                    _rr1_vals = [t["rr1"] for _, t in _t_rows_data]
+                    _rr2_vals = [t["rr2"] for _, t in _t_rows_data]
+                    _rr3_vals = [t["rr3"] for _, t in _t_rows_data]
+
+                    _trade_rows_html = []
+                    for _tk, t in _t_rows_data:
+                        _cur = _price_by_ticker.get(_tk)
+                        # Entry zone: green when the price is at/inside the zone
+                        # (a reachable entry NOW), red when the price is still
+                        # above it (you'd be paying up - wait for the pullback).
+                        _near = bool(t.get("near_entry_zone"))
+                        _ez_color = _BAR_GREEN if _near else _BAR_RED
+                        _ez_cell = (
+                            f"<span style='color:{_ez_color};font-weight:600;'>"
+                            f"{t['entry_zone']:,.2f}</span>"
+                        )
+                        _trade_rows_html.append(
+                            "<tr>"
+                            + _td(f"<b>{_tk}</b>")
+                            + _td(_badge_cell(t["signal"]))
+                            + _td(_bar_cell(trade_score_lookup.get(_tk), 45, 65), minw=90)
+                            + _td(_badge_cell(str(t.get("trend", "-")).title()))
+                            + _td(_ez_cell)
+                            + _td(f"{t['stop_loss']:,.2f}")
+                            + _td(f"{t['target1']:,.2f}")
+                            + _td(f"{t['target2']:,.2f}")
+                            + _td(f"{t['target3']:,.2f}" if t["target3"] is not None else "-")
+                            + _td(f"{t['risk']:,.2f}")
+                            + _td(_rank_cell(t["rr1"], _rr1_vals))
+                            + _td(_rank_cell(t["rr2"], _rr2_vals))
+                            + _td(_rank_cell(t["rr3"], _rr3_vals))
+                            + _td(_badge_cell(t["early_exit_watch"] and "Yes" or "No"))
+                            + "</tr>"
+                        )
+                    st.markdown(
+                        _sdd_table(
+                            ["Ticker", "Trade Setup", "Setup Score", "Trend",
+                             "Entry Zone", "Stop Loss", "Target 1", "Target 2",
+                             "Target 3", "Risk", "RR1", "RR2", "RR3", "Early Exit"],
+                            _trade_rows_html, max_height=480,
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                    st.caption(
+                        "Entry Zone: green = price is at/inside the zone now, red = "
+                        "price is still above it. RR columns: green = best "
+                        "risk/reward on screen, red = worst, amber between."
+                    )
+
+                with st.expander("Position management & early-exit rules (apply after entry)"):
+                    st.markdown("**As each target is hit:**")
+                    for note in trade_filter_engine.position_management_notes():
+                        st.markdown(f"- {note}")
+                    st.markdown("**Exit the entire position early if:**")
+                    for note in trade_filter_engine.early_exit_notes():
+                        st.markdown(f"- {note}")
 
             # ---------------- Swing Setup table (full scanned list) ----------------
             # These fields are computed for every scan regardless of Strategy Mode
@@ -3891,8 +4209,12 @@ def _render_scan_results(page_label, state_prefix, empty_message,
             # Swing Setup table removed for the public Comparison tab (see
             # Side-by-side comparison below instead).
 
-            st.subheader("Opportunity Details")
-            for _, row in ranked.head(5).iterrows():
+            if _factual():
+                _opp_iter = []
+            else:
+                st.subheader("Opportunity Details")
+                _opp_iter = list(ranked.head(5).iterrows())
+            for _, row in _opp_iter or []:
                 with st.expander(
                     f"{row['Ticker']} - Long Score {row['Long Score']} "
                     f"(Investment: {row['Investment Signal']} | Trade Setup: {row['Trade Setup']})"
@@ -4115,10 +4437,44 @@ def _content_page_shell(title):
     st.markdown(f"## {title}")
 
 
+_METHODOLOGY_FACTUAL_SWAPS = [
+    # Verdict bands paragraph -> composite-score description
+    ("Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise\n**AVOID**. If no intrinsic value could be computed at all, the signal is capped at\nWATCHLIST - a thesis whose value leg can't be verified doesn't get a full\nrecommendation.",
+     "On this site the number is displayed as the **Composite Score** - a weighted\ndescription of the four calculations above, shown without bands, labels or\nrecommendations. Where no intrinsic value could be computed, that is stated\nplainly and the affected values are marked."),
+    ("The Long Score (0\u2013100) and Investment Signal", "The Composite Score (0\u2013100)"),
+    # Score heading + intro question -> neutral description
+    ("#### The Long Score (0\u2013100)\n\nOne number answering \"is this a good business to own at this price?\" It blends four\nfactors, each clamped to a fixed band first so no single factor can run away with the\nresult:",
+     "#### The Composite Score (0\u2013100)\n\nOne number summarising four calculations, each clamped to a fixed band first so no\nsingle factor can run away with the result:"),
+    # Factor table rows -> label-free descriptions
+    ("| Margin of Safety | 25% | Is the price below the value? The gap between our intrinsic-value estimate and today's price, clamped to \u00b150 so a wild discount (or premium) can move the score but never dominate it. |",
+     "| Price vs model output | 25% | The percentage gap between the DCF model output and today's price, clamped to \u00b150 so a wild gap in either direction can move the score but never dominate it. |"),
+    ("| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
+     "| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
+    # Intrinsic-value section -> model-output wording, no valuation labels
+    ("#### Intrinsic value", "#### The DCF model output"),
+    ("Margin of Safety = (intrinsic value \u2212 price) \u00f7 intrinsic value.",
+     "Model output vs price = (model output \u2212 price) \u00f7 model output."),
+    ("A stock trading 25%+ below intrinsic value is labelled **UNDERVALUED**; above intrinsic\nvalue, **EXPENSIVE**; between, **FAIR**.",
+     "The site reports that percentage directly, without attaching a valuation label to it."),
+    ("Intrinsic value is an estimate resting on assumptions",
+     "The DCF model output is an estimate resting on assumptions"),
+    # Trade Setup / two-verdicts section -> price-behaviour description
+    ("#### Value vs timing - two separate verdicts\n\nThe **Investment Signal** answers \"good business to own?\" The **Trade Setup** answers\n\"is right now a sane entry?\" - support/resistance-based entry zone, stop loss and\ntargets, gated on trend safety and risk/reward. A great company can be a poor entry\ntoday; the site shows both rather than blurring them into one contradictory verdict.",
+     "#### Price behaviour readings\n\nAlongside the model outputs, the site reports where the price sits relative to its\nown recent history: distance below the 3-month high, distance from the 50-day\naverage, and whether that average is rising or falling. These are measurements of\nprice data, stated as numbers - the site does not display entry levels, targets or\ntrade verdicts."),
+]
+
+
 def page_methodology():
     _content_page_shell("How the scores work")
-    st.markdown(
-        """
+    if _factual():
+        st.info(
+            "**Presentation note.** This site displays data, model outputs and "
+            "described calculations from stated inputs. It does not provide "
+            "financial product advice or recommendations - descriptions below "
+            "of how each calculation works are exactly that: descriptions of "
+            "arithmetic, not guidance on what to do."
+        )
+    _md_text = """
 Every tool on this site runs the same engine. A ticker goes in; live data comes back
 (prices and volumes, financial statements and analyst estimates via Yahoo Finance, search
 interest via Google Trends, headlines via Yahoo/NewsAPI, chatter via StockTwits); and the
@@ -4185,13 +4541,55 @@ shown openly, but assumptions. Scores are model outputs, not personal advice, an
 of this considers your circumstances. Use it the way it was built to be used: as the
 starting point for your own judgment, not a substitute for it.
 """
-    )
+    if _factual():
+        for _old, _new in _METHODOLOGY_FACTUAL_SWAPS:
+            _md_text = _md_text.replace(_old, _new)
+    st.markdown(_md_text)
 
 
 def page_about():
     _content_page_shell("About")
-    st.markdown(
-        """
+    if _factual():
+        st.markdown(
+            """
+StocksDeepDive is built and run by **Andres Moreno**, a private investor in Australia.
+
+It didn't start as a website. It started as a personal stock scanner and a very long
+Excel workbook - tools built to study businesses with a Buffett/Munger-style value
+lens: compute what the model says a business's cash flows are worth, test its quality
+from reported fundamentals, and read what the price has been doing. Over the years the
+scanner grew a DCF engine, quality calculations, price-behaviour readings, and a
+research workbook that documents one company for weeks at a time.
+
+At some point the obvious question arrived: why not open the numbers up? So this site
+is that - the same engine, the same data work, made public.
+
+Two principles carried over from the private version, unchanged:
+
+**The numbers must be honest.** Whenever a figure rests on a default or an average
+because real data wasn't available, it's shown in red. An estimate is never dressed up
+as a fact. I built that rule for myself, because fooling yourself is expensive - it
+applies just as much now that you're reading the numbers too.
+
+**Value and price behaviour are different measurements.** What the model computes from
+a business's cash flows and what its price has actually been doing are reported as
+separate numbers on every page. Most tools blur them; this site states each one
+plainly and lets you draw your own conclusions.
+
+The site is free while it launches. When subscriptions open, founding members keep
+launch pricing. If you want a stock added to the Rational Compounder research list, or
+anything here doesn't make sense, use the Feedback button on any results page or email
+[rationalcompounder@stocksdeepdive.com](mailto:rationalcompounder@stocksdeepdive.com) -
+I read everything.
+
+*This site presents factual information and calculator outputs only - it does not
+provide financial product advice or recommendations; see the disclaimer in the footer.
+I may own stocks analysed here.*
+"""
+        )
+    else:
+        st.markdown(
+            """
 StocksDeepDive is built and run by **Andres Moreno**, a private investor in Australia.
 
 It didn't start as a website. It started as a personal stock scanner and a very long
@@ -4225,7 +4623,7 @@ I read everything.
 *Nothing on this site is financial advice - see the disclaimer in the footer. I may
 own stocks analysed here.*
 """
-    )
+        )
 
 
 def page_privacy():
