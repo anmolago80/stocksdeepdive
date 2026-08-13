@@ -76,9 +76,18 @@ def _conn():
             method TEXT NOT NULL,
             first_seen TEXT NOT NULL,
             last_seen TEXT NOT NULL,
-            signin_count INTEGER NOT NULL DEFAULT 1
+            signin_count INTEGER NOT NULL DEFAULT 1,
+            src TEXT
         )"""
     )
+    # ALTER TABLE guarded by try/except so a DB created before the `src`
+    # column existed still works (CREATE TABLE above only applies to a
+    # brand-new file) - belt and braces per the CREATE TABLE already
+    # having the column too.
+    try:
+        conn.execute("ALTER TABLE signups ADD COLUMN src TEXT")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 
@@ -185,9 +194,13 @@ def send_code(email):
     return True, f"Code sent to {email} - check your inbox (and spam folder)."
 
 
-def verify_code(email, code):
+def verify_code(email, code, src=None):
     """Check a code. Returns (session_token, user_message) - token is None
-    on failure. On success the code is consumed and a session created."""
+    on failure. On success the code is consumed and a session created.
+    `src` (the caller's first_src, e.g. an article slug) is recorded on the
+    sign-up row when this is a first sign-in - callers pass
+    st.session_state.get("first_src"); this module itself never imports
+    streamlit."""
     email = (email or "").strip().lower()
     code = (code or "").strip()
     if not valid_email(email) or not code:
@@ -219,7 +232,7 @@ def verify_code(email, code):
             "VALUES (?, ?, ?, ?)",
             (_hash(token), email, now, now),
         )
-    record_signup(email, "email")
+    record_signup(email, "email", src=src)
     return token, "Signed in."
 
 
@@ -255,20 +268,41 @@ def revoke(token):
                      (_hash(token),))
 
 
-def record_signup(email, method):
-    """Upsert the sign-up registry (kept for aggregate counts only)."""
+def cleanup():
+    """Housekeeping: delete `auth_codes` rows whose `expires_at` is more
+    than a day old (a code that's been dead a full day is never going to be
+    verified, used or not) and `auth_sessions` rows older than
+    SESSION_TTL_DAYS (mirrors the expiry session_email() already enforces
+    on read - this just removes the dead rows from disk instead of leaving
+    them for every future query to filter past). Called once per process
+    by paywall_engine.restore_email_session via its @st.cache_resource
+    once-per-boot guard - callers wrap this in try/except, housekeeping
+    must never break sign-in."""
+    codes_cutoff = _iso(_now() - timedelta(days=1))
+    sessions_cutoff = _iso(_now() - timedelta(days=SESSION_TTL_DAYS))
+    with _conn() as conn:
+        conn.execute("DELETE FROM auth_codes WHERE expires_at < ?", (codes_cutoff,))
+        conn.execute("DELETE FROM auth_sessions WHERE created_at < ?", (sessions_cutoff,))
+
+
+def record_signup(email, method, src=None):
+    """Upsert the sign-up registry (kept for aggregate counts only). `src`
+    is the visitor's first_src (e.g. an article slug) if one was captured
+    this session - stored once at first sign-up and never overwritten by a
+    later sign-in, so it reflects what actually brought them here."""
     email = (email or "").strip().lower()
     if not email:
         return
     now = _iso(_now())
+    src = (src or "").strip() or None
     with _conn() as conn:
         conn.execute(
-            """INSERT INTO signups (email, method, first_seen, last_seen, signin_count)
-               VALUES (?, ?, ?, ?, 1)
+            """INSERT INTO signups (email, method, first_seen, last_seen, signin_count, src)
+               VALUES (?, ?, ?, ?, 1, ?)
                ON CONFLICT(email) DO UPDATE SET
                  last_seen = excluded.last_seen,
                  signin_count = signin_count + 1""",
-            (email, method, now, now),
+            (email, method, now, now, src),
         )
 
 
@@ -293,3 +327,16 @@ def signup_stats():
     return {"total": total, "email": by_email, "google": by_google,
             "last_7_days": last7, "last_30_days": last30,
             "active_7_days": active7}
+
+
+def signup_counts_by_src():
+    """AGGREGATE sign-up counts grouped by first_src, e.g. {'article-1': 4}
+    - used by the admin Stats popover to line up against
+    metrics_store.stats()['by_src']. Rows with no recorded src are
+    excluded. No identities leave this module."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """SELECT src, COUNT(*) FROM signups
+               WHERE src IS NOT NULL AND src != '' GROUP BY src"""
+        ).fetchall()
+    return {src: count for src, count in rows}

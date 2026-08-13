@@ -217,11 +217,28 @@ def write_auth_cookie(token):
     _components.html(f"<script>{_js}</script>", height=0)
 
 
+@st.cache_resource(show_spinner=False)
+def _run_auth_cleanup_once():
+    """email_auth.cleanup() (expired auth_codes/auth_sessions rows) run
+    exactly ONCE per server process, not once per visitor session -
+    @st.cache_resource (unlike @st.cache_data) shares its cached return
+    value across every session on this process, so the first call anywhere
+    does the sweep and every later call this boot just returns the cached
+    True with no extra DB work. Wrapped in try/except - housekeeping must
+    never break sign-in."""
+    try:
+        email_auth.cleanup()
+    except Exception:
+        pass
+    return True
+
+
 def restore_email_session():
     """Called once per run from app.py before any page renders: picks the
     email session back up from the sdd_auth cookie after a full page load,
     and records one sign-in per browser session in the aggregate stats
     (works for Google sign-ins too)."""
+    _run_auth_cleanup_once()
     if (not st.session_state.get("email_user")
             and not st.session_state.get("email_signed_out")):
         try:
@@ -243,6 +260,7 @@ def restore_email_session():
                 email_auth.record_signup(
                     _em,
                     "email" if st.session_state.get("email_user") else "google",
+                    src=st.session_state.get("first_src"),
                 )
             except Exception:
                 pass
@@ -310,7 +328,9 @@ def _render_signin_control(key="account_bar_signin"):
             with _cv:
                 if st.button("Verify", key=f"{key}_verify", type="primary",
                              use_container_width=True):
-                    _tok, _msg = email_auth.verify_code(_sent_to, _code)
+                    _tok, _msg = email_auth.verify_code(
+                        _sent_to, _code, src=st.session_state.get("first_src")
+                    )
                     if _tok:
                         st.session_state["email_user"] = _sent_to
                         st.session_state["email_auth_token"] = _tok

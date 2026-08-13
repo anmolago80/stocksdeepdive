@@ -183,8 +183,11 @@ def run_weekly_digest(log=print):
                 summary["skipped"] += 1
                 continue
             rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
-            _send(email, "Your StocksDeepDive watchlist - weekly signals",
-                  _email_html(email, rows, site))
+            _subject = (
+                "Your StocksDeepDive watchlist - weekly update" if FACTUAL_MODE
+                else "Your StocksDeepDive watchlist - weekly signals"
+            )
+            _send(email, _subject, _email_html(email, rows, site))
             summary["sent"] += 1
             log(f"[digest] sent to {email} ({len(rows)} stocks)")
         except Exception as e:

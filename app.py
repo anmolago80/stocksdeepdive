@@ -32,6 +32,9 @@ import paywall_engine
 import email_auth
 import feedback_engine
 import watchlist_store
+import follow_store
+import metrics_store
+import announce_engine
 import scan_store
 import scanner_engine
 
@@ -390,10 +393,41 @@ def _factual() -> bool:
     return not st.session_state.get("full_view_unlocked", False)
 
 
+def _capture_first_src():
+    """Records the src= query param (an article's attribution tag) once
+    per browser session, the first time it's seen on ANY page - never
+    overwritten afterwards, so browsing around the site later doesn't lose
+    where the visitor actually came from. The Follow flow, page analytics
+    and the Research page's welcome banner all key off
+    st.session_state['first_src']. Called at the top of _render_header
+    (every page except Home) and at the top of page_home (which renders
+    its own header instead of calling _render_header)."""
+    _src = st.query_params.get("src")
+    if _src and not st.session_state.get("first_src"):
+        st.session_state["first_src"] = _src
+
+
+def _bump_page_view(page, ticker=None):
+    """One first-party, aggregate page-view count per page render
+    (metrics_store.py) - wrapped in try/except because analytics must
+    never break a page. src is attributed to only the FIRST bump of a
+    session (the "_src_counted" flag), so a visitor who arrives via one
+    article link and then browses five more pages shows up as one src
+    attribution, not six."""
+    try:
+        _src = None
+        if not st.session_state.get("_src_counted"):
+            st.session_state["_src_counted"] = True
+            _src = st.session_state.get("first_src")
+        metrics_store.bump(page, ticker=ticker, src=_src)
+    except Exception:
+        pass
+
+
 def _render_view_badge():
     """Admin-only indicator + exit, shown ONLY in the unlocked session.
-    Also carries the sign-up counter popover (aggregate numbers only -
-    no identities are ever displayed)."""
+    Also carries the Stats popover (sign-up counts + first-party page-view
+    counts, aggregate numbers only - no identities are ever displayed)."""
     if _FACTUAL_DEFAULT and st.session_state.get("full_view_unlocked"):
         _b1, _bs, _b2 = st.columns([8.4, 1.6, 2])
         with _b1:
@@ -405,7 +439,7 @@ def _render_view_badge():
                 unsafe_allow_html=True,
             )
         with _bs:
-            with st.popover("Sign-ups", key="admin_signup_stats"):
+            with st.popover("Stats", key="admin_signup_stats"):
                 try:
                     _s = email_auth.signup_stats()
                     st.markdown(f"### {_s['total']} accounts")
@@ -419,6 +453,36 @@ def _render_view_badge():
                                "Railway volume, survives redeploys.")
                 except Exception:
                     st.caption("No sign-up data yet.")
+                st.markdown("---")
+                st.markdown("### Page views")
+                try:
+                    _m = metrics_store.stats(days=30)
+                    st.markdown(
+                        f"- **{_m['total_7d']}** views in the last 7 days\n"
+                        f"- **{_m['total_30d']}** views in the last 30 days"
+                    )
+                    if _m["by_page"]:
+                        st.markdown("**Top pages (30d)**")
+                        for _p, _v in _m["by_page"][:5]:
+                            st.markdown(f"- {_p}: **{_v}**")
+                    if _m["by_src"]:
+                        _signup_by_src = {}
+                        try:
+                            _signup_by_src = email_auth.signup_counts_by_src()
+                        except Exception:
+                            pass
+                        st.markdown("**Top src (30d) - views / sign-ups**")
+                        for _src, _v in _m["by_src"][:5]:
+                            st.markdown(
+                                f"- {_src}: **{_v}** views / "
+                                f"**{_signup_by_src.get(_src, 0)}** sign-ups"
+                            )
+                    st.caption(
+                        "First-party, aggregate counts only - no third-party "
+                        "trackers, no per-visitor identity stored."
+                    )
+                except Exception:
+                    st.caption("No page-view data yet.")
         with _b2:
             if st.button("Exit full view", key="exit_full_view"):
                 st.session_state["full_view_unlocked"] = False
@@ -1003,6 +1067,7 @@ def _render_watchlist_row():
 
 
 def _render_header(compact, page_label=None):
+    _capture_first_src()
     _render_tape()
     _render_view_badge()
     # page_label is only passed on the three main service pages (Deep Dive,
@@ -1800,9 +1865,30 @@ def _render_compounder_admin_panel():
                 "timestamp - untick to discard it instead)",
                 value=True, key="cp_admin_archive",
             )
+            st.checkbox(
+                "Email followers about this update",
+                value=True, key="cp_admin_announce",
+                help=(
+                    "Sends the new-research announcement (announce_engine.py) to "
+                    "everyone following the companies that are added/updated by "
+                    "this rebuild, plus anyone following all research. Untick for "
+                    "a data-fix rebuild that shouldn't email anyone."
+                ),
+            )
             if uploaded and st.button(
                 "Rebuild Rational Compounder data", type="primary", key="cp_admin_rebuild",
             ):
+                # Captured BEFORE the rebuild replaces the live data, so the
+                # added/updated diff below (Task 6) reflects what actually
+                # changed this time, not what's already on disk after the
+                # write.
+                _old_tickers = set()
+                try:
+                    _prev_data = _load_compounder_data()
+                    if _prev_data:
+                        _old_tickers = set(_prev_data.get("tickers", {}).keys())
+                except Exception:
+                    _old_tickers = set()
                 with st.spinner("Rebuilding from the uploaded workbook..."):
                     data_dir = build_compounder_data._cp_data_dir()
                     using_volume = os.path.abspath(data_dir) != os.path.abspath(
@@ -1845,6 +1931,26 @@ def _render_compounder_admin_panel():
                 # serves the freshly-built data immediately -- no restart
                 # needed.
                 _load_compounder_data.clear()
+
+                # New-research announcement email (Task 6) - only when the
+                # admin left the checkbox ticked (default ON), so a plain
+                # data-fix rebuild can still be done without emailing
+                # followers. added/updated computed against the ticker set
+                # captured before this rebuild started.
+                if st.session_state.get("cp_admin_announce", True):
+                    try:
+                        _new_tickers = set(new_data.get("tickers", {}).keys())
+                        _added = _new_tickers - _old_tickers
+                        _updated = _new_tickers & _old_tickers
+                        _announce_summary = announce_engine.announce_rebuild(_added, _updated)
+                        st.success(
+                            f"Announcement email sent to "
+                            f"{_announce_summary.get('sent', 0)} follower(s) "
+                            f"({_announce_summary.get('errors', 0)} error(s))."
+                        )
+                    except Exception as _announce_exc:
+                        st.warning(f"Couldn't send the announcement email: {_announce_exc}")
+
                 carried_over = len(new_data.get("tickers", {})) - len(fresh_data.get("tickers", {}))
                 carried_over_note = (
                     f" ({carried_over} of those carried over from the previous data, not in "
@@ -1921,8 +2027,189 @@ def _render_last_updated(generated_at):
         )
 
 
+def _render_follow_control(ticker, key_prefix):
+    """"Follow this company" email capture (follow_store.py) - shared by
+    page_research (per selected ticker) and page_deep_dive (when the
+    ticker has research coverage). Not FACTUAL_MODE gated: following is
+    fine in both presentations, it's data/updates, not a signal.
+
+    Signed-in visitors get a one-click toggle. Anonymous visitors get the
+    EXISTING email sign-in code flow (email_auth.py) - same session-state
+    keys (email_user / email_auth_token / _pending_auth_cookie /
+    _signup_recorded) that paywall_engine._render_signin_control sets on a
+    successful verify_code, so the visitor ends up signed in exactly the
+    same way, and the follow is recorded the instant that succeeds. This
+    gives double opt-in for free (the code email) and creates an account
+    in one step. key_prefix keeps widget keys unique per call site
+    (e.g. "follow_research" vs "follow_dd")."""
+    _email = paywall_engine.current_user_email()
+    with st.container(border=True, key=f"{key_prefix}_box_{ticker}"):
+        if _email:
+            _following = follow_store.is_following(_email, ticker)
+            _label = ("\U0001F514 Following — click to stop" if _following
+                       else "\U0001F514 Email me when research updates")
+            if st.button(_label, key=f"{key_prefix}_toggle_{ticker}"):
+                try:
+                    if _following:
+                        follow_store.unfollow(_email, ticker)
+                    else:
+                        follow_store.follow(_email, ticker)
+                except Exception:
+                    st.warning("Couldn't save right now - please try again.")
+                st.rerun()
+            return
+
+        st.caption(f"Get an email when {ticker}'s research updates.")
+        _sent_flag = f"{key_prefix}_code_sent"
+        if not st.session_state.get(_sent_flag):
+            _c1, _c2 = st.columns([3, 2])
+            with _c1:
+                _em_in = st.text_input(
+                    "Email address", key=f"{key_prefix}_email_{ticker}",
+                    placeholder="you@example.com", label_visibility="collapsed",
+                )
+            with _c2:
+                if st.button(
+                    "Get research updates by email",
+                    key=f"{key_prefix}_submit_{ticker}", use_container_width=True,
+                ):
+                    if email_auth.valid_email(_em_in):
+                        _ok, _msg = email_auth.send_code(_em_in)
+                        if _ok:
+                            st.session_state[_sent_flag] = True
+                            st.session_state[f"{key_prefix}_sent_to"] = _em_in.strip().lower()
+                            st.session_state[f"{key_prefix}_pending_ticker"] = ticker
+                            st.success(_msg)
+                        else:
+                            st.error(_msg)
+                    else:
+                        st.error("That doesn't look like a valid email address.")
+        else:
+            _sent_to = st.session_state.get(f"{key_prefix}_sent_to", "")
+            st.caption(f"Enter the 6-digit code sent to {_sent_to}.")
+            _code = st.text_input(
+                "6-digit code", key=f"{key_prefix}_code_{ticker}",
+                max_chars=6, placeholder="123456",
+            )
+            _cv, _cr = st.columns(2)
+            with _cv:
+                if st.button(
+                    "Verify", key=f"{key_prefix}_verify_{ticker}",
+                    type="primary", use_container_width=True,
+                ):
+                    _tok, _msg = email_auth.verify_code(
+                        _sent_to, _code, src=st.session_state.get("first_src")
+                    )
+                    if _tok:
+                        # Same state paywall_engine._render_signin_control
+                        # sets on success - the visitor is signed in exactly
+                        # as they would be via the regular Sign In popover.
+                        st.session_state["email_user"] = _sent_to
+                        st.session_state["email_auth_token"] = _tok
+                        st.session_state.pop("email_signed_out", None)
+                        st.session_state["_pending_auth_cookie"] = _tok
+                        # verify_code already recorded the sign-up.
+                        st.session_state["_signup_recorded"] = True
+                        try:
+                            follow_store.follow(
+                                _sent_to,
+                                st.session_state.get(f"{key_prefix}_pending_ticker", ticker),
+                            )
+                        except Exception:
+                            pass
+                        st.session_state.pop(_sent_flag, None)
+                        st.session_state.pop(f"{key_prefix}_pending_ticker", None)
+                        st.rerun()
+                    else:
+                        st.error(_msg)
+            with _cr:
+                if st.button(
+                    "Resend code", key=f"{key_prefix}_resend_{ticker}",
+                    use_container_width=True,
+                ):
+                    _ok, _msg = email_auth.send_code(_sent_to)
+                    (st.success if _ok else st.error)(_msg)
+
+
+def _render_research_header_card(ticker, data, section_order):
+    """Per-company header card (Task 5): styled like the site's `.sdd-card`
+    divs (dark #121f36 background, #1f3352 border, rounded) - ticker large,
+    industry, how many of the page's sections actually have data for this
+    company, and when the underlying workbook snapshot was last rebuilt.
+    The link-button reuses `_dispatch_search` (search app.py) rather than
+    reimplementing the ticker -> Deep Dive navigation it already does."""
+    industry = (data["tickers"].get(ticker, {}) or {}).get("industry") or "—"
+    section_count = sum(
+        1 for _s in section_order
+        if any(
+            (m.get("values") or {}).get(ticker) is not None
+            for m in data["sections"].get(_s, {}).get("metrics", [])
+        )
+    )
+    last_updated_label = "—"
+    _generated_at = data.get("generated_at")
+    if _generated_at:
+        try:
+            _dt = datetime.fromisoformat(_generated_at)
+            if _dt.tzinfo is None:
+                _dt = _dt.replace(tzinfo=timezone.utc)
+            last_updated_label = _dt.astimezone(timezone.utc).strftime("%d %b %Y")
+        except (TypeError, ValueError):
+            pass
+    with st.container(key=f"cp_header_card_{ticker}"):
+        st.markdown(
+            f"""
+            <div class='sdd-card' style='margin-bottom:12px;'>
+              <div style='display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:14px;'>
+                <div>
+                  <div style='font-family:ui-monospace,Menlo,monospace; font-size:26px; font-weight:800; color:#e6edf5;'>{html.escape(ticker)}</div>
+                  <div style='color:#8aa0b8; font-size:13px; margin-top:2px;'>{html.escape(industry)}</div>
+                </div>
+                <div style='display:flex; gap:24px;'>
+                  <div>
+                    <div style='font-size:10.5px; color:#5b7290; letter-spacing:.6px;'>SECTIONS COVERED</div>
+                    <div style='font-family:ui-monospace,Menlo,monospace; font-size:16px; color:#e6edf5; margin-top:2px;'>{section_count} / {len(section_order)}</div>
+                  </div>
+                  <div>
+                    <div style='font-size:10.5px; color:#5b7290; letter-spacing:.6px;'>DATA LAST UPDATED</div>
+                    <div style='font-family:ui-monospace,Menlo,monospace; font-size:16px; color:#e6edf5; margin-top:2px;'>{last_updated_label}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button(
+            f"Open the live Deep Dive for {ticker} →",
+            key=f"cp_open_dd_{ticker}",
+        ):
+            _dispatch_search(ticker)
+
+
 def page_research():
     _render_header(compact=True, page_label="Rational Compounder Analysis")
+
+    # Article-arrival welcome banner: shown only to visitors who arrived
+    # via a src= link (an article) and haven't dismissed it yet this
+    # session. Rendered at the very top, before the admin panel/data, so
+    # it's the first thing an article reader sees.
+    if (st.session_state.get("first_src")
+            and not st.session_state.get("research_banner_dismissed")):
+        with st.container(border=True, key="research_welcome_banner"):
+            _wb1, _wb2 = st.columns([24, 1])
+            with _wb1:
+                st.markdown(
+                    "**You've read the analysis — this is the live research "
+                    "behind it.** Every chart on this page comes from the "
+                    "same workbook the article was written from, refreshed "
+                    "with each rebuild. Follow the company below to get the "
+                    "next update by email."
+                )
+            with _wb2:
+                if st.button("✕", key="research_banner_dismiss"):
+                    st.session_state["research_banner_dismissed"] = True
+                    st.rerun()
 
     _render_compounder_admin_panel()
 
@@ -1956,6 +2243,7 @@ def page_research():
             "Rational Compounder Analysis - the research data is being "
             "prepared. Check back shortly."
         )
+        _bump_page_view("research")
         return
 
     section_order = [
@@ -1988,6 +2276,45 @@ def page_research():
         industry = data["tickers"][t].get("industry")
         return f"{t} - {industry}" if industry else t
 
+    # Deep Dive -> Research cross-link (Task 5): page_deep_dive stores the
+    # ticker here instead of setting st.query_params["ticker"] before
+    # st.switch_page, because st.switch_page CLEARS all non-embed query
+    # params on navigation by default (confirmed against the installed
+    # streamlit version's own switch_page() docstring/source) - a query
+    # param set right before switch_page never actually reaches this page.
+    # Popped (one-shot, then cleared) and takes PRIORITY over both the
+    # query param below and any ticker already picked earlier this session,
+    # since clicking that cross-link is an explicit request to jump to this
+    # exact company - written to the "cp_ticker" widget key BEFORE the
+    # selectbox below is created, which is the one time it's safe to poke a
+    # widget's session-state key directly.
+    _cp_jump_ticker = (st.session_state.pop("research_jump_ticker", None) or "").strip().upper()
+    if _cp_jump_ticker and _cp_jump_ticker in tickers:
+        st.session_state["cp_ticker"] = _cp_jump_ticker
+
+    # Shareable deep links: /research?ticker=CSL.AX&section=Fair+Value opens
+    # straight on that company/section - the same idea as page_deep_dive's
+    # ?ticker= (see its "dd_qp_tried" one-shot guard). The index is computed
+    # BEFORE the selectbox exists (never poke a widget's session-state key
+    # after creation) and only from the query param when the widget's own
+    # session-state key isn't set yet - once "cp_ticker"/"cp_section" exist
+    # (after the first render, or the user's own pick), Streamlit uses that
+    # stored value regardless of `index`, which is the one-shot guard here:
+    # a bad/stale query param can't fight the user's later picks.
+    _cp_ticker_index = 0
+    if "cp_ticker" not in st.session_state:
+        _qp_ticker = (st.query_params.get("ticker") or "").strip().upper()
+        if _qp_ticker in tickers:
+            _cp_ticker_index = tickers.index(_qp_ticker)
+    _cp_section_index = 0
+    if "cp_section" not in st.session_state:
+        _qp_section = (st.query_params.get("section") or "").strip().lower()
+        if _qp_section:
+            for _i, _s in enumerate(section_order):
+                if _s.lower() == _qp_section:
+                    _cp_section_index = _i
+                    break
+
     # Narrow columns sized just enough for these two dropdowns, followed by
     # a wide empty spacer column -- keeps both boxes compact and bunched on
     # the left instead of stretching one to each half of the page.
@@ -2005,10 +2332,29 @@ def page_research():
         pick_col1, pick_col2, _ = st.columns([1, 1, 3])
         with pick_col1:
             ticker = st.selectbox(
-                "Stock", tickers, format_func=_ticker_label, key="cp_ticker"
+                "Stock", tickers, format_func=_ticker_label, key="cp_ticker",
+                index=_cp_ticker_index,
             )
         with pick_col2:
-            section_label = st.selectbox("Section", section_order, key="cp_section")
+            section_label = st.selectbox(
+                "Section", section_order, key="cp_section",
+                index=_cp_section_index,
+            )
+
+    # Keep the address bar shareable: it always reflects the current pick,
+    # the same pattern page_deep_dive uses for its ?ticker=.
+    st.query_params["ticker"] = ticker
+    st.query_params["section"] = section_label
+
+    _bump_page_view("research", ticker=ticker)
+
+    # Per-company header card (Task 5): ticker/industry/section-count/
+    # last-updated + a link-button to the live Deep Dive.
+    _render_research_header_card(ticker, data, section_order)
+
+    # "Follow this company" email capture (Task 2) - per selected ticker,
+    # open to signed-in and anonymous visitors alike.
+    _render_follow_control(ticker, key_prefix="follow_research")
 
     st.markdown(f"### {ticker} - {section_label}")
 
@@ -2164,6 +2510,12 @@ def page_research():
 
 
 def page_home():
+    # page_home renders its own header (view badge + account bar) instead
+    # of calling _render_header, so the src capture + view-count bump that
+    # every other page gets for free from _render_header have to happen
+    # here explicitly.
+    _capture_first_src()
+    _bump_page_view("home")
     # LAYOUT FIRST, DATA SECOND. Every static element (hero, search, chips,
     # feature cards, steps, coverage, CTA) renders immediately; the three
     # remote-data elements (tape, featured analysis, mood strip) get empty
@@ -2518,6 +2870,11 @@ def page_deep_dive():
     if _dd is not None and not _dd.get("error") and _dd.get("ticker"):
         st.query_params["ticker"] = _dd["ticker"]
 
+    _bump_page_view(
+        "deep_dive",
+        ticker=(_dd.get("ticker") if _dd and not _dd.get("error") else None),
+    )
+
     # The explanatory line only earns its space when there's nothing else
     # on the page yet - and it leads with outcomes, not model internals
     # (the methodology detail lives on the results themselves).
@@ -2580,27 +2937,58 @@ def page_deep_dive():
             _m4.metric("Long Score", f"{_dd['long_score']:.1f}")
             _m5.metric("Signal", _dd_signal)
 
+        # --- Research cross-link (Task 5): when this ticker has hand-built
+        # Rational Compounder coverage, point straight at it. st.switch_page
+        # clears all non-embed query params on navigation by default (see
+        # the installed streamlit version's own switch_page() docstring),
+        # so a ?ticker= set on st.query_params right before switch_page here
+        # never survives the jump - the ticker is handed off via
+        # st.session_state["research_jump_ticker"] instead, which
+        # page_research() honours with priority over its own query param,
+        # then clears. ---
+        _cov_data_dd = _load_compounder_data()
+        _dd_has_research = bool(
+            _cov_data_dd and _dd["ticker"] in _cov_data_dd.get("tickers", {})
+        )
+        if _dd_has_research:
+            if st.button(
+                f"\U0001F4DA Hand-built research available for {_dd['ticker']} "
+                "— open Rational Compounder Analysis",
+                key=f"dd_research_xlink_{_dd['ticker']}",
+            ):
+                st.session_state["research_jump_ticker"] = _dd["ticker"]
+                st.switch_page(PG_RESEARCH)
+
         # --- Watchlist (signed-in users): the sign-in carrot, and the
-        # audience the weekly digest goes to. ---
-        _wl_email = paywall_engine.current_user_email()
-        if _wl_email:
-            _in_wl = watchlist_store.contains(_wl_email, _dd["ticker"])
-            _wl_label = ("\u2605 Remove from my watchlist" if _in_wl
-                         else "\u2606 Add to my watchlist")
-            if st.button(_wl_label, key=f"wl_{_dd['ticker']}"):
-                try:
-                    if _in_wl:
-                        watchlist_store.remove(_wl_email, _dd["ticker"])
-                    else:
-                        watchlist_store.add(_wl_email, _dd["ticker"])
-                except Exception:
-                    st.warning("Couldn't save right now - please try again.")
-                st.rerun()
-        else:
-            st.caption(
-                "Sign in (top right) to save this stock to a watchlist and "
-                "get the weekly signal digest."
-            )
+        # audience the weekly digest goes to. Follow (Task 2) sits in the
+        # column next to it when this ticker has hand-built research
+        # coverage - a lighter commitment than the watchlist, open to
+        # anonymous visitors too. ---
+        _wl_col, _follow_col = st.columns(2)
+        with _wl_col:
+            _wl_email = paywall_engine.current_user_email()
+            if _wl_email:
+                _in_wl = watchlist_store.contains(_wl_email, _dd["ticker"])
+                _wl_label = ("\u2605 Remove from my watchlist" if _in_wl
+                             else "\u2606 Add to my watchlist")
+                if st.button(_wl_label, key=f"wl_{_dd['ticker']}"):
+                    try:
+                        if _in_wl:
+                            watchlist_store.remove(_wl_email, _dd["ticker"])
+                        else:
+                            watchlist_store.add(_wl_email, _dd["ticker"])
+                    except Exception:
+                        st.warning("Couldn't save right now - please try again.")
+                    st.rerun()
+            else:
+                st.caption(
+                    "Sign in (top right) to save this stock to a watchlist and "
+                    + ("get the weekly watchlist digest."
+                       if _factual() else "get the weekly signal digest.")
+                )
+        if _dd_has_research:
+            with _follow_col:
+                _render_follow_control(_dd["ticker"], key_prefix="follow_dd")
 
         # --- Price chart: the 6-month history behind every calculation on
         # this page, finally shown - with the 50-day average and the Trade
@@ -3219,6 +3607,7 @@ def _td(inner, minw=None):
 
 def page_scanner():
     _render_header(compact=True, page_label="Scanner")
+    _bump_page_view("scanner")
 
     st.session_state.setdefault("scanner_country_au", True)
     st.session_state.setdefault("scanner_country_us", False)
@@ -3391,6 +3780,7 @@ def page_scanner():
 
 def page_comparison():
     _render_header(compact=True, page_label="Comparison")
+    _bump_page_view("comparison")
 
     # Shareable URLs: /comparison?tickers=CSL.AX,BHP.AX runs the comparison
     # directly (blog posts can deep-link a specific matchup), and once
@@ -4615,6 +5005,7 @@ _METHODOLOGY_FACTUAL_SWAPS = [
 
 def page_methodology():
     _content_page_shell("How the scores work")
+    _bump_page_view("methodology")
     if _factual():
         st.info(
             "**Presentation note.** This site displays data, model outputs and "
@@ -4698,6 +5089,7 @@ starting point for your own judgment, not a substitute for it.
 
 def page_about():
     _content_page_shell("About")
+    _bump_page_view("about")
     if _factual():
         st.markdown(
             """
@@ -4777,6 +5169,7 @@ own stocks analysed here.*
 
 def page_privacy():
     _content_page_shell("Privacy policy")
+    _bump_page_view("privacy")
     st.markdown(
         """
 *Last updated: 13 August 2026*
@@ -4793,7 +5186,7 @@ by our hosting provider (Railway) for security and debugging, as with any websit
 
 **If you sign in with Google:** we receive your name and email address from Google -
 nothing else. Sign-in exists so the site can remember your watchlist, attribute your
-feedback, and (if you save a watchlist) send you the weekly signal digest email. We
+feedback, and (if you save a watchlist) send you the weekly watchlist digest email. We
 never see your Google password.
 
 **If you save a watchlist:** the tickers you save are stored against your email
@@ -4808,9 +5201,16 @@ your email has an active subscription.
 
 #### What we don't do
 
-No advertising, no ad trackers, no analytics beyond the hosting provider's standard
-logs, and no selling or sharing of your information with anyone, ever. The only
-cookies used are the ones required to keep you signed in.
+No advertising, no ad trackers, no third-party analytics or ad tech, and no selling
+or sharing of your information with anyone, ever. The only cookies used are the ones
+required to keep you signed in.
+
+#### Page analytics
+
+We keep first-party, aggregate page-view counts (which pages get visited, how many
+times, per day) so we can see what's useful - no cookies are set for this, no
+third-party trackers or ad tech are involved, and no per-visitor identity is stored
+alongside a view.
 
 #### Emails
 
