@@ -346,20 +346,29 @@ def _set_admin_cookie(clear: bool = False):
 if _admin_key_env:
     if _admin_qp and _admin_qp == _admin_key_env:
         st.session_state["full_view_unlocked"] = True
+        st.session_state.pop("full_view_exited", None)
         _set_admin_cookie()
-    elif not st.session_state.get("full_view_unlocked"):
+    elif (not st.session_state.get("full_view_unlocked")
+          and not st.session_state.get("full_view_exited")):
+        # "full_view_exited" matters here: after Exit, the browser's old
+        # cookie is still attached to the CURRENT request (the clearing
+        # script hasn't reached the browser yet), and without this flag
+        # the cookie check would re-unlock the session instantly - the
+        # "I can't get out" bug.
         try:
             if st.context.cookies.get("sdd_fullview") == _admin_cookie_value():
                 st.session_state["full_view_unlocked"] = True
         except Exception:
             pass
 
-# The in-page unlock (the "RC view" popover next to Sign out) can't write
-# the cookie itself - it calls st.rerun() immediately, which would cancel
-# delivery of the cookie-writing <script> - so it leaves this flag and the
-# cookie is written here, at the top of the very next run.
+# The in-page unlock/exit buttons can't write or clear the cookie
+# themselves - they call st.rerun() immediately, which cancels delivery of
+# the cookie <script> - so they leave a flag and the cookie is actually
+# written/cleared here, at the top of the very next run.
 if st.session_state.pop("_pending_admin_cookie", False):
     _set_admin_cookie()
+if st.session_state.pop("_pending_admin_cookie_clear", False):
+    _set_admin_cookie(clear=True)
 
 
 def _factual() -> bool:
@@ -385,8 +394,9 @@ def _render_view_badge():
         with _b2:
             if st.button("Exit full view", key="exit_full_view"):
                 st.session_state["full_view_unlocked"] = False
+                st.session_state["full_view_exited"] = True
                 st.query_params.pop("admin", None)
-                _set_admin_cookie(clear=True)
+                st.session_state["_pending_admin_cookie_clear"] = True
                 st.rerun()
 
 
@@ -406,6 +416,7 @@ def _render_admin_unlock():
         if st.button("Unlock", key="rc_view_unlock_btn", type="primary"):
             if _key_try.strip() == _admin_key_env:
                 st.session_state["full_view_unlocked"] = True
+                st.session_state.pop("full_view_exited", None)
                 st.session_state["_pending_admin_cookie"] = True
                 st.rerun()
             else:
@@ -432,6 +443,21 @@ st.markdown(
         transition: all 0.15s ease !important;
     }
     .stButton > button:hover, .stFormSubmitButton > button:hover {
+        background-color: #2dd4bf !important;
+        color: #ffffff !important;
+        border-color: #2dd4bf !important;
+    }
+    /* Popover triggers (feedback, RC view) match the site's teal-outline
+       pill buttons instead of Streamlit's grey default. */
+    div[data-testid="stPopover"] > button {
+        border-radius: 10px !important;
+        border: 1.5px solid #2dd4bf !important;
+        color: #2dd4bf !important;
+        background-color: rgba(45, 212, 191, 0.07) !important;
+        font-weight: 600 !important;
+        transition: all 0.15s ease !important;
+    }
+    div[data-testid="stPopover"] > button:hover {
         background-color: #2dd4bf !important;
         color: #ffffff !important;
         border-color: #2dd4bf !important;
@@ -779,12 +805,6 @@ def _featured_card_html(dd, spark_pts, ma_pts, last_pt):
         f"<path d='M15 105 A85 85 0 0 1 {ex:.1f} {ey:.1f}' fill='none' "
         f"stroke='{vcolor}' stroke-width='13' stroke-linecap='round'/>"
     ) if score > 1 else ""
-    if factual:
-        vcolor = "#2dd4bf"
-        arc = (
-            f"<path d='M15 105 A85 85 0 0 1 {ex:.1f} {ey:.1f}' fill='none' "
-            f"stroke='#2dd4bf' stroke-width='13' stroke-linecap='round'/>"
-        ) if score > 1 else ""
     iv = dd.get("intrinsic_value")
     mos = dd.get("mos")
     iv_txt = f"{iv:,.2f} {dd['currency']}" if iv else "N/A"
@@ -843,13 +863,13 @@ def _featured_card_html(dd, spark_pts, ma_pts, last_pt):
         <path d='M15 105 A85 85 0 0 1 185 105' fill='none' stroke='#1f3352' stroke-width='13' stroke-linecap='round'/>
         {arc}
         <text x='100' y='86' text-anchor='middle' fill='#e6edf5' font-size='26' font-weight='700' font-family='monospace'>{score:.0f}</text>
-        <text x='100' y='106' text-anchor='middle' fill='#8aa0b8' font-size='10' font-family='monospace'>{'COMPOSITE SCORE / 100' if factual else 'LONG SCORE / 100'}</text>
+        <text x='100' y='106' text-anchor='middle' fill='#8aa0b8' font-size='10' font-family='monospace'>{'VALUE SCORE / 100' if factual else 'LONG SCORE / 100'}</text>
       </svg>
       <div style='font-size:12px;color:#8aa0b8;'>{'a weighted calculation - see Methodology' if factual else f"Verdict: <b style='color:{vcolor};'>{verdict}</b>"}</div>
     </div>
     <div>
-      <div class='sdd-stat'><div class='k'>{'DCF MODEL OUTPUT' if factual else 'INTRINSIC VALUE (DCF, BASE CASE)'}</div><div class='v'>{iv_txt}</div></div>
-      <div class='sdd-stat'><div class='k'>{'MODEL OUTPUT VS PRICE' if factual else 'MARGIN OF SAFETY'}</div><div class='v' style='color:{mos_color};'>{mos_txt}</div></div>
+      <div class='sdd-stat'><div class='k'>{'INTRINSIC VALUE (DCF)' if factual else 'INTRINSIC VALUE (DCF, BASE CASE)'}</div><div class='v'>{iv_txt}</div></div>
+      <div class='sdd-stat'><div class='k'>{'MOS' if factual else 'MARGIN OF SAFETY'}</div><div class='v' style='color:{mos_color};'>{mos_txt}</div></div>
       <div class='sdd-stat'><div class='k'>{'QUALITY (CALCULATED)' if factual else 'QUALITY SCORE'}</div><div class='v'>{dd['quality_score']} / 100</div></div>
     </div>
   </div>
@@ -910,7 +930,14 @@ def _render_footer():
         )),
         unsafe_allow_html=True,
     )
-
+    # The "RC view" unlock lives here, bottom-right under the footer - out
+    # of the way of the account bar, present on every page, invisible once
+    # the session is already unlocked (the badge takes over then).
+    if (_FACTUAL_DEFAULT and _admin_key_env
+            and not st.session_state.get("full_view_unlocked")):
+        _sp, _rc = st.columns([10.3, 1.7])
+        with _rc:
+            _render_admin_unlock()
 
 
 def _render_watchlist_row():
@@ -951,29 +978,7 @@ def _render_header(compact, page_label=None):
             key_prefix=page_label,
             user_email=paywall_engine.current_user_email(),
         )
-    # The "RC view" unlock popover shares the right-edge column with the
-    # feedback button (when there is one), so both sit in the same row as
-    # Sign out rather than stacking extra rows onto the header.
-    _show_unlock = bool(
-        _FACTUAL_DEFAULT and _admin_key_env
-        and not st.session_state.get("full_view_unlocked")
-    )
-    if _show_unlock and feedback_widget:
-        _fb = feedback_widget
-
-        def _extra_row():
-            _cf, _cu = st.columns([1.5, 1.1], gap="small")
-            with _cf:
-                _fb()
-            with _cu:
-                _render_admin_unlock()
-
-        _extra = _extra_row
-    elif _show_unlock:
-        _extra = _render_admin_unlock
-    else:
-        _extra = feedback_widget
-    paywall_engine.render_account_bar(extra_widget=_extra)
+    paywall_engine.render_account_bar(extra_widget=feedback_widget)
     st.markdown(
         f"""
         <style>
@@ -2102,12 +2107,7 @@ def page_home():
 
     _tape_box = st.container()
     _render_view_badge()
-    paywall_engine.render_account_bar(
-        extra_widget=(_render_admin_unlock
-                      if (_FACTUAL_DEFAULT and _admin_key_env
-                          and not st.session_state.get("full_view_unlocked"))
-                      else None)
-    )
+    paywall_engine.render_account_bar()
 
     # top row: logo + free-during-launch badge
     st.markdown(
@@ -2126,8 +2126,8 @@ def page_home():
             st.markdown(
                 """
 <div class='sdd-h1'>The <em>data and models</em> behind a valuation judgment.</div>
-<div class='sdd-sub'>Live DCF model outputs, quality calculations, price behaviour and market
-attention &mdash; computed for any ASX or US stock, with <b>every input stated and every
+<div class='sdd-sub'>Live intrinsic values, quality calculations, psychology and discovery
+readings &mdash; computed for any ASX or US stock, with <b>every input stated and every
 estimate flagged</b>. The judgment stays yours.</div>
 """,
                 unsafe_allow_html=True,
@@ -2175,18 +2175,18 @@ every estimated number is flagged.</div>
 <div class='sdd-kicker'>THE TOOLKIT</div>
 <div class='sdd-h2'>Four ways in. One consistent model.</div>
 <div class='sdd-secsub'>Every tool runs the same engine &mdash; the same DCF model, the same
-quality calculation, the same price-behaviour read &mdash; so the numbers always agree with
+quality calculation, the same psychology read &mdash; so the numbers always agree with
 each other.</div>
 <div class='sdd-cards4'>
   <a class='sdd-feat' href='/deep-dive' target='_self'>
     <div class='ic'>&#128269;</div><h3>Stock Deep Dive</h3>
-    <p>The full picture for one ticker: the DCF model output vs today's price, what drives the
-    Composite Score, and how the price has been behaving &mdash; every input stated.</p>
+    <p>The full picture for one ticker: intrinsic value vs today's price, what drives the
+    Value Score, and psychology and discovery readings &mdash; every input stated.</p>
   </a>
   <a class='sdd-feat' href='/comparison' target='_self'>
     <div class='ic'>&#9878;&#65039;</div><h3>Side-by-side Comparison</h3>
-    <p>Two or more tickers lined up on identical calculations &mdash; DCF model output, quality
-    calculation, price behaviour &mdash; as colour-coded data bars.</p>
+    <p>Two or more tickers lined up on identical calculations &mdash; intrinsic value, quality
+    calculation, psychology &mdash; as colour-coded data bars.</p>
   </a>
   <a class='sdd-feat' href='/scanner' target='_self'>
     <div class='ic'>&#128225;</div><h3>Stock Scanner</h3>
@@ -2196,7 +2196,7 @@ each other.</div>
   <a class='sdd-feat' href='/research' target='_self'>
     <div class='ic'>&#128218;</div><h3>Rational Compounder Research</h3>
     <p>Hand-built research on selected compounders &mdash; a decade of reported earnings, four
-    valuation model outputs, and documented company histories.</p>
+    fair-value models, and documented company histories.</p>
   </a>
 </div>
 """,
@@ -2246,12 +2246,12 @@ tests, the same psychology read &mdash; so the numbers always agree with each ot
     <p>ASX (CSL.AX) or US (AAPL). Live data is pulled on the spot &mdash; prices, cash flows,
     news, search trends, social chatter.</p></div>
   <div class='sdd-step'><div class='n'>02</div><h4>Get one transparent calculation</h4>
-    <p>The Composite Score blends the quality calculation, the gap between price and the DCF
-    model output, price behaviour and market attention &mdash; the same arithmetic every time,
+    <p>The Value Score blends the quality calculation, MOS (the gap between price and
+    intrinsic value), psychology and discovery &mdash; the same arithmetic every time,
     with every input shown.</p></div>
-  <div class='sdd-step'><div class='n'>03</div><h4>See value AND price behaviour</h4>
+  <div class='sdd-step'><div class='n'>03</div><h4>See value AND psychology</h4>
     <p>Two separate calculations, never blurred: what the model computes from the business's
-    own cash flows, and how the price has actually been behaving &mdash; both stated as
+    own cash flows, and what the crowd has been doing to the price &mdash; both stated as
     numbers, side by side.</p></div>
 </div>
 <div class='sdd-honesty'><b>The red-flag rule:</b> whenever a number rests on a default or
@@ -2376,14 +2376,15 @@ as a fact &mdash; you always know which numbers are computed and which are assum
   </div>
 </div>
 """.format(
-                    q1=("What does the model compute?" if _factual()
+                    q1=("What is the intrinsic value?" if _factual()
                         else "What is it worth?"),
-                    a1=("shown next to today's price with the gap stated "
+                    a1=("shown next to today's price with the MOS stated "
                         "as a percentage" if _factual()
                         else "plus margin of safety vs today's price"),
-                    q3=("How is the price behaving?" if _factual()
+                    q3=("What is the crowd doing?" if _factual()
                         else "Is now a sane entry?"),
-                    a3=("Distance from recent highs and the 50-day average, "
+                    a3=("Psychology and discovery readings - distance from "
+                        "recent highs, volume, search and news attention - "
                         "stated as numbers." if _factual()
                         else "Crowd psychology and a technical entry zone "
                              "&mdash; kept separate from the ownership question."),
@@ -2448,11 +2449,12 @@ def page_deep_dive():
     if _dd is None or _dd.get("error"):
         if _factual():
             st.caption(
-                "One ticker, the complete picture: a DCF model output "
-                "computed live from its own cash flows, a quality "
-                "calculation from reported fundamentals, and how the price "
-                "has been behaving - every input stated, every estimate "
-                "flagged, every factor behind each calculation charted."
+                "One ticker, the complete picture: an intrinsic value "
+                "computed live from its own cash flows (DCF), a quality "
+                "calculation from reported fundamentals, and psychology "
+                "and discovery readings - every input stated, every "
+                "estimate flagged, every factor behind each calculation "
+                "charted."
             )
         else:
             st.caption(
@@ -2484,14 +2486,14 @@ def page_deep_dive():
             _m1, _m2, _m3, _m4 = st.columns(4)
             _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}")
             _m2.metric(
-                "DCF model output",
+                "Intrinsic Value",
                 f"{_dd['intrinsic_value']:,.2f}" if _dd["intrinsic_value"] else "N/A",
             )
             _m3.metric(
-                "Model output vs price",
+                "MOS",
                 f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
             )
-            _m4.metric("Composite Score", f"{_dd['long_score']:.1f}")
+            _m4.metric("Value Score", f"{_dd['long_score']:.1f}")
         else:
             _m1, _m2, _m3, _m4, _m5 = st.columns(5)
             _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}")
@@ -2579,13 +2581,14 @@ def page_deep_dive():
                 _obs = []
                 if _dd.get("intrinsic_value") and _dd.get("mos") is not None:
                     _obs.append(
-                        f"The DCF model output ({_dd['intrinsic_value']:,.2f} "
+                        f"The intrinsic value ({_dd['intrinsic_value']:,.2f} "
                         f"{_dd['currency']}) is {_dd['mos']:+.1f}% relative to the "
-                        "current price, using the stated inputs shown on this page."
+                        "current price (MOS), using the stated inputs shown on "
+                        "this page."
                     )
                 elif not _dd.get("intrinsic_value"):
                     _obs.append(
-                        "No model output could be computed for this ticker "
+                        "No intrinsic value could be computed for this ticker "
                         "(no positive EPS/FCF for the DCF or P/E-based models)."
                     )
                 _obs.append(
@@ -2594,12 +2597,12 @@ def page_deep_dive():
                     "is charted below."
                 )
                 _obs.append(
-                    f"Price behaviour: {_dd['fear']:.1f}% below its 3-month "
+                    f"Psychology: {_dd['fear']:.1f}% below its 3-month "
                     f"high; greed/FOMO terms total {(_dd['greed'] + _dd['fomo']):.1f} "
-                    "(see the price-behaviour chart)."
+                    "(see the psychology chart)."
                 )
                 _obs.append(
-                    f"Market attention score: {_dd['discovery']:.1f} from price "
+                    f"Discovery score: {_dd['discovery']:.1f} from price "
                     "activity, volume, search interest, news and social volume."
                 )
                 for _o in _obs:
@@ -2657,8 +2660,13 @@ def page_deep_dive():
             if _factual():
                 st.plotly_chart(
                     _dd_gauge(
-                        _dd["long_score"], "Composite Score",
-                        [(0, 100, "#16233a")],  # one neutral zone - no verdict bands
+                        _dd["long_score"], "Value Score",
+                        [
+                            (0, SIGNAL_THRESHOLDS["WATCHLIST"], "#43222e"),
+                            (SIGNAL_THRESHOLDS["WATCHLIST"], SIGNAL_THRESHOLDS["LONG"], "#43371c"),
+                            (SIGNAL_THRESHOLDS["LONG"], SIGNAL_THRESHOLDS["STRONG_LONG"], "#1e3d34"),
+                            (SIGNAL_THRESHOLDS["STRONG_LONG"], 100, "#27584a"),
+                        ],
                     ),
                     use_container_width=True,
                 )
@@ -2677,10 +2685,9 @@ def page_deep_dive():
                 )
             if _factual():
                 st.caption(
-                    "Composite Score is a weighted calculation: reported "
-                    "fundamentals 35%, price vs model output 25%, price "
-                    "behaviour 20%, market attention 20%. It is a description "
-                    "of data, not a recommendation."
+                    "Value Score is a weighted calculation: quality 35%, "
+                    "MOS 25%, psychology 20%, discovery 20%. It is a "
+                    "description of data, not a recommendation."
                 )
             else:
                 st.caption(
@@ -2689,11 +2696,12 @@ def page_deep_dive():
                     f"= LONG territory, above {SIGNAL_THRESHOLDS['STRONG_LONG']} = STRONG LONG."
                 )
 
+        _score_word = "Value Score" if _factual() else "Long Score"
         st.plotly_chart(
             _dd_contrib_chart(
                 _dd["contributions"],
-                "What's driving the Long Score (points contributed by each factor)",
-                xaxis_title="Points toward Long Score",
+                f"What's driving the {_score_word} (points contributed by each factor)",
+                xaxis_title=f"Points toward {_score_word}",
                 height=280,
             ),
             use_container_width=True,
@@ -3029,12 +3037,7 @@ def _bar_cell(value, low, high, suffix="", flag=False):
         v = float(value)
     except (TypeError, ValueError):
         return f"<div>{value}</div>"
-    if _factual():
-        # Neutral single hue: intensity says "how big", never "good/bad" -
-        # a traffic-light bar is an implied verdict.
-        color = _TYPE_NEUTRAL
-    else:
-        color = _BAR_RED if v <= low else (_BAR_GREEN if v > high else _BAR_AMBER)
+    color = _BAR_RED if v <= low else (_BAR_GREEN if v > high else _BAR_AMBER)
     width_pct = max(0.0, min(100.0, v))
     _txt_style = "color:#fb7185;font-weight:700;" if flag else ""
     return (
@@ -3263,10 +3266,9 @@ def page_scanner():
                     )
                 _on_rows_html.append(_row_html + "</tr>")
             if _factual():
-                _on_headers = ["Ticker", "Type", "Price", "DCF model output",
-                               "Model vs price", "Composite Score",
-                               "Quality (calc.)", "Price behaviour",
-                               "Market attention"]
+                _on_headers = ["Ticker", "Type", "Price", "Intrinsic Value",
+                               "MOS", "Value Score", "Quality", "Psychology",
+                               "Discovery"]
             else:
                 _on_headers = ["Ticker", "Type", "Price", "Intrinsic Value",
                                "MOS", "Long Score", "Quality", "Psychology",
@@ -3278,7 +3280,7 @@ def page_scanner():
             )
             if _factual():
                 st.caption(
-                    "Sorted by Composite Score - a described calculation (see "
+                    "Sorted by Value Score - a described calculation (see "
                     "Methodology). Sorting is arithmetic, not a recommendation."
                 )
             st.caption(
@@ -3979,7 +3981,7 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     _row_html += _td(_badge_cell(_pr.get("Investment Signal", "-")))
                 _prev_rows.append(_row_html + "</tr>")
             _prev_headers = (
-                ["Ticker", "Price", "Composite Score"] if _factual()
+                ["Ticker", "Price", "Value Score"] if _factual()
                 else ["Ticker", "Price", "Long Score", "Investment Signal"]
             )
             st.markdown(
@@ -3988,7 +3990,7 @@ def _render_scan_results(page_label, state_prefix, empty_message,
             )
             if _factual():
                 st.caption(
-                    "Composite Score is a weighted calculation (see Methodology) - "
+                    "Value Score is a weighted calculation (see Methodology) - "
                     "a description of data, not a recommendation. Sorting is "
                     "arithmetic."
                 )
@@ -4038,11 +4040,7 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     + _td(_bar_cell(r["Psychology"], -5, 20), minw=90)
                     + _td(_bar_cell(r["Discovery"], 25, 50), minw=90)
                 )
-                if _factual():
-                    # Facts instead of verdicts: the number the old Sentiment
-                    # label was computed from.
-                    _row_html += _td(f"\u2212{r['Fear']:.1f}%" if r.get("Fear") is not None else "-")
-                else:
+                if not _factual():
                     _row_html += (
                         _td(_badge_cell(r["Valuation"]))
                         + _td(_badge_cell(r["Sentiment"]))
@@ -4054,9 +4052,8 @@ def _render_scan_results(page_label, state_prefix, empty_message,
 
             if _factual():
                 _cmp_headers = [
-                    "Ticker", "Type", "Price", "DCF model output",
-                    "Model vs price", "Composite Score", "Quality (calc.)",
-                    "Price behaviour", "Market attention", "vs 3-mo high",
+                    "Ticker", "Type", "Price", "Intrinsic Value",
+                    "MOS", "Value Score", "Quality", "Psychology", "Discovery",
                 ]
             else:
                 _cmp_headers = [
@@ -4137,7 +4134,7 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 )
             elif _factual():
                 st.caption(
-                    f"Highest Composite Score in this scan: {top_stock['Ticker']} "
+                    f"Highest Value Score in this scan: {top_stock['Ticker']} "
                     f"({top_stock['Long Score']}) - a sort result, not a "
                     "recommendation."
                 )
@@ -4494,29 +4491,22 @@ def _content_page_shell(title):
 
 
 _METHODOLOGY_FACTUAL_SWAPS = [
-    # Verdict bands paragraph -> composite-score description
+    # Verdict bands paragraph -> value-score description
     ("Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise\n**AVOID**. If no intrinsic value could be computed at all, the signal is capped at\nWATCHLIST - a thesis whose value leg can't be verified doesn't get a full\nrecommendation.",
-     "On this site the number is displayed as the **Composite Score** - a weighted\ndescription of the four calculations above, shown without bands, labels or\nrecommendations. Where no intrinsic value could be computed, that is stated\nplainly and the affected values are marked."),
-    ("The Long Score (0\u2013100) and Investment Signal", "The Composite Score (0\u2013100)"),
+     "On this site the number is displayed as the **Value Score** - a weighted\ndescription of the four calculations above, shown without signal labels or\nrecommendations. Where no intrinsic value could be computed, that is stated\nplainly and the affected values are marked."),
+    ("The Long Score (0\u2013100) and Investment Signal", "The Value Score (0\u2013100)"),
     # Score heading + intro question -> neutral description
     ("#### The Long Score (0\u2013100)\n\nOne number answering \"is this a good business to own at this price?\" It blends four\nfactors, each clamped to a fixed band first so no single factor can run away with the\nresult:",
-     "#### The Composite Score (0\u2013100)\n\nOne number summarising four calculations, each clamped to a fixed band first so no\nsingle factor can run away with the result:"),
-    # Factor table rows -> label-free descriptions
-    ("| Margin of Safety | 25% | Is the price below the value? The gap between our intrinsic-value estimate and today's price, clamped to \u00b150 so a wild discount (or premium) can move the score but never dominate it. |",
-     "| Price vs model output | 25% | The percentage gap between the DCF model output and today's price, clamped to \u00b150 so a wild gap in either direction can move the score but never dominate it. |"),
+     "#### The Value Score (0\u2013100)\n\nOne number summarising four calculations, each clamped to a fixed band first so no\nsingle factor can run away with the result:"),
+    # Psychology row: drop the advice-flavoured sentence, keep the maths
     ("| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
      "| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
-    # Intrinsic-value section -> model-output wording, no valuation labels
-    ("#### Intrinsic value", "#### The DCF model output"),
-    ("Margin of Safety = (intrinsic value \u2212 price) \u00f7 intrinsic value.",
-     "Model output vs price = (model output \u2212 price) \u00f7 model output."),
+    # Valuation labels stay off in the public presentation
     ("A stock trading 25%+ below intrinsic value is labelled **UNDERVALUED**; above intrinsic\nvalue, **EXPENSIVE**; between, **FAIR**.",
-     "The site reports that percentage directly, without attaching a valuation label to it."),
-    ("Intrinsic value is an estimate resting on assumptions",
-     "The DCF model output is an estimate resting on assumptions"),
-    # Trade Setup / two-verdicts section -> price-behaviour description
+     "The site reports the MOS percentage directly, without attaching a valuation label to it."),
+    # Trade Setup / two-verdicts section -> psychology-readings description
     ("#### Value vs timing - two separate verdicts\n\nThe **Investment Signal** answers \"good business to own?\" The **Trade Setup** answers\n\"is right now a sane entry?\" - support/resistance-based entry zone, stop loss and\ntargets, gated on trend safety and risk/reward. A great company can be a poor entry\ntoday; the site shows both rather than blurring them into one contradictory verdict.",
-     "#### Price behaviour readings\n\nAlongside the model outputs, the site reports where the price sits relative to its\nown recent history: distance below the 3-month high, distance from the 50-day\naverage, and whether that average is rising or falling. These are measurements of\nprice data, stated as numbers - the site does not display entry levels, targets or\ntrade verdicts."),
+     "#### Psychology and discovery readings\n\nAlongside the valuation models, the site reports what the crowd has been doing:\ndistance below the 3-month high (fear), distance from the 50-day average and greed/\nFOMO terms, and a discovery reading built from volume, search interest, news and\nsocial chatter. These are measurements, stated as numbers - the site does not\ndisplay entry levels, targets or trade verdicts."),
 ]
 
 
@@ -4614,7 +4604,7 @@ It didn't start as a website. It started as a personal stock scanner and a very 
 Excel workbook - tools built to study businesses with a Buffett/Munger-style value
 lens: compute what the model says a business's cash flows are worth, test its quality
 from reported fundamentals, and read what the price has been doing. Over the years the
-scanner grew a DCF engine, quality calculations, price-behaviour readings, and a
+scanner grew a DCF engine, quality calculations, psychology and discovery readings, and a
 research workbook that documents one company for weeks at a time.
 
 At some point the obvious question arrived: why not open the numbers up? So this site
@@ -4627,8 +4617,8 @@ because real data wasn't available, it's shown in red. An estimate is never dres
 as a fact. I built that rule for myself, because fooling yourself is expensive - it
 applies just as much now that you're reading the numbers too.
 
-**Value and price behaviour are different measurements.** What the model computes from
-a business's cash flows and what its price has actually been doing are reported as
+**Value and psychology are different measurements.** What the model computes from
+a business's cash flows and what the crowd has been doing to its price are reported as
 separate numbers on every page. Most tools blur them; this site states each one
 plainly and lets you draw your own conclusions.
 

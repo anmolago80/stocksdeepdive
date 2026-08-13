@@ -135,9 +135,9 @@ def _email_html(email, rows, site):
         <tr>
           <th align="left" style="{_TH}">Ticker</th>
           <th align="right" style="{_TH}">Price</th>
-          <th align="right" style="{_TH}">{'Model output' if FACTUAL_MODE else 'Intrinsic value'}</th>
-          <th align="right" style="{_TH}">{'Model vs price' if FACTUAL_MODE else 'MOS'}</th>
-          <th align="right" style="{_TH}">{'Composite Score' if FACTUAL_MODE else 'Long Score'}</th>
+          <th align="right" style="{_TH}">Intrinsic value</th>
+          <th align="right" style="{_TH}">MOS</th>
+          <th align="right" style="{_TH}">{'Value Score' if FACTUAL_MODE else 'Long Score'}</th>
           {'' if FACTUAL_MODE else f'<th align="center" style="{_TH}">Signal</th>'}
         </tr>
         {body_rows}
