@@ -465,6 +465,22 @@ st.markdown(
         color: #ffffff !important;
         border-color: #2dd4bf !important;
     }
+    /* Nav buttons: keep the (nowrap) label horizontally centred even when
+       it's as wide as the button - otherwise long labels like "Rational
+       Compounder Analysis" hug the right edge. */
+    [class*="st-key-nav_research"] button,
+    [class*="st-key-nav_comparison"] button,
+    [class*="st-key-nav_scanner"] button {
+        display: flex !important;
+        justify-content: center !important;
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+    }
+    [class*="st-key-nav_research"] button p,
+    [class*="st-key-nav_comparison"] button p,
+    [class*="st-key-nav_scanner"] button p {
+        text-align: center !important;
+    }
     .stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"],
     .stButton > button[kind="primaryFormSubmit"], .stFormSubmitButton > button[kind="primaryFormSubmit"] {
         background-color: #2dd4bf !important;
@@ -827,10 +843,10 @@ def _featured_card_html(dd, spark_pts, ma_pts, last_pt):
     if sent:
         pills.append((f"SENTIMENT: {sent}", _pillmap.get(sent, "#8aa0b8")))
     setup = dd.get("trade_setup_signal")
-    if setup:
+    if setup and not factual:
+        # The ENTRY (trade setup) pill is a trade recommendation - admin
+        # view only. Valuation and sentiment pills stay public.
         pills.append((f"ENTRY: {setup}", _pillmap.get(setup, "#8aa0b8")))
-    if factual:
-        pills = []
     pills_html = "".join(
         f"<span class='sdd-pill' style='background:{c}22;color:{c};border:1px solid {c}55;'>{html.escape(t)}</span>"
         for t, c in pills
@@ -1592,11 +1608,26 @@ def _cp_pill(text, color_key=None):
     )
 
 
+# Render-time polarity corrections: these two were originally built as
+# "neutral" (grey pills) but a High reading is good for both, so colour
+# them like the other good_high ratings. Fixed here rather than only in
+# build_compounder_data so already-built data (current AND archived
+# snapshots) displays correctly without a rebuild.
+_CP_HML_POLARITY_FIX = {"Insights": "good_high", "Market Activity": "good_high"}
+
+
 def _cp_render_hml_ratings(ratings):
     st.markdown("##### Ratings (called directly from your Low/Medium/High cells)")
     html_parts = []
     for r in ratings:
-        color_key = _CP_HML_COLOR.get(r["polarity"], {}).get(r["value"].strip().lower())
+        _pol = _CP_HML_POLARITY_FIX.get(r["label"], r["polarity"])
+        _val = r["value"].strip().lower()
+        color_key = _CP_HML_COLOR.get(_pol, {}).get(_val)
+        if color_key is None and _pol in ("good_high", "good_low"):
+            # Yes/No answers sometimes live in these columns too (e.g.
+            # "Ability to Change Pricing: Yes") - colour them rather than
+            # falling through to a grey pill.
+            color_key = {"yes": "green", "no": "red"}.get(_val)
         html_parts.append(
             f"<div style='margin-bottom:6px;'><span style='font-size:13px;color:#aebfd4;'>"
             f"{_md_safe(r['label'])}: </span>{_cp_pill(_md_safe(r['value'].strip()), color_key)}</div>"
@@ -2069,12 +2100,21 @@ def page_research():
                 band = _cp_band(value, m["thresholds"])
                 if band:
                     color, band_label = band
-                    st.markdown(
+                    _band_html = (
                         f"<div style='margin-top:-14px; margin-bottom:8px; "
-                        f"font-size:12px; color:{_CP_COLOR_TEXT.get(color, '#aebfd4')};'>"
-                        f"{band_label}</div>",
-                        unsafe_allow_html=True,
+                        f"font-size:12px; min-height:18px; "
+                        f"color:{_CP_COLOR_TEXT.get(color, '#aebfd4')};'>"
+                        f"{band_label}</div>"
                     )
+                else:
+                    # Same-height placeholder so the "What this measures"
+                    # expanders line up across all three columns even when
+                    # a metric has no band label under its chart.
+                    _band_html = (
+                        "<div style='margin-top:-14px; margin-bottom:8px; "
+                        "font-size:12px; min-height:18px;'>&nbsp;</div>"
+                    )
+                st.markdown(_band_html, unsafe_allow_html=True)
                 with st.expander("What this measures", expanded=False):
                     _cp_note(_cp_clean_comment(m["comment"]), size="12.5px")
 
@@ -3264,7 +3304,14 @@ def page_scanner():
                     + _td(_bar_cell(_orow.get("Psychology"), -5, 20), minw=90)
                     + _td(_bar_cell(_orow.get("Discovery (lite)"), 25, 50), minw=90)
                 )
-                if not _factual():
+                if _factual():
+                    # Valuation and Trend labels stay public; Signal and
+                    # Trade Setup (recommendations) are admin-only.
+                    _row_html += (
+                        _td(_badge_cell(_orow.get("Valuation", "-")))
+                        + _td(_badge_cell(_orow.get("Trend", "-")))
+                    )
+                else:
                     _row_html += (
                         _td(_badge_cell(_orow.get("Valuation", "-")))
                         + _td(_badge_cell(_orow.get("Signal", "-")))
@@ -3275,7 +3322,7 @@ def page_scanner():
             if _factual():
                 _on_headers = ["Ticker", "Type", "Price", "Intrinsic Value",
                                "MOS", "Value Score", "Quality", "Psychology",
-                               "Discovery"]
+                               "Discovery", "Valuation", "Trend"]
             else:
                 _on_headers = ["Ticker", "Type", "Price", "Intrinsic Value",
                                "MOS", "Long Score", "Quality", "Psychology",
@@ -4047,7 +4094,16 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     + _td(_bar_cell(r["Psychology"], -5, 20), minw=90)
                     + _td(_bar_cell(r["Discovery"], 25, 50), minw=90)
                 )
-                if not _factual():
+                if _factual():
+                    # Valuation / Sentiment / Trend labels stay in the
+                    # public view; only Trade Setup (entry verdicts) is
+                    # admin-only.
+                    _row_html += (
+                        _td(_badge_cell(r["Valuation"]))
+                        + _td(_badge_cell(r["Sentiment"]))
+                        + _td(_badge_cell(r["Trend"]))
+                    )
+                else:
                     _row_html += (
                         _td(_badge_cell(r["Valuation"]))
                         + _td(_badge_cell(r["Sentiment"]))
@@ -4061,6 +4117,7 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 _cmp_headers = [
                     "Ticker", "Type", "Price", "Intrinsic Value",
                     "MOS", "Value Score", "Quality", "Psychology", "Discovery",
+                    "Valuation", "Sentiment", "Trend",
                 ]
             else:
                 _cmp_headers = [
@@ -4329,16 +4386,29 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     "defaults the moment you leave or reload this page, and never "
                     "affect what any other visitor sees."
                 )
-                st.caption(
-                    "\"IV/Price Multiple\" is Intrinsic Value divided by Price (e.g. 1.50 "
-                    "means the DCF values the stock at 1.5x today's price; below 1.00 "
-                    "means the DCF calls it overvalued). \"Long Score\" is color-coded "
-                    "using the SAME gates that set the Investment Signal everywhere else "
-                    f"in this app: green = Long Score above {SIGNAL_THRESHOLDS['LONG']} "
-                    f"(LONG / STRONG LONG territory), yellow = above "
-                    f"{SIGNAL_THRESHOLDS['WATCHLIST']} but at or below {SIGNAL_THRESHOLDS['LONG']} "
-                    f"(WATCHLIST), red = {SIGNAL_THRESHOLDS['WATCHLIST']} or below (AVOID)."
-                )
+                if _factual():
+                    st.caption(
+                        "\"IV/Price Multiple\" is Intrinsic Value divided by Price "
+                        "(e.g. 1.50 means the DCF values the stock at 1.5x today's "
+                        "price; below 1.00 means the model output sits below the "
+                        "market price). \"Value Score\" is color-coded on the same "
+                        f"thresholds used everywhere else in this app: green = above "
+                        f"{SIGNAL_THRESHOLDS['LONG']}, yellow = above "
+                        f"{SIGNAL_THRESHOLDS['WATCHLIST']} but at or below "
+                        f"{SIGNAL_THRESHOLDS['LONG']}, red = "
+                        f"{SIGNAL_THRESHOLDS['WATCHLIST']} or below."
+                    )
+                else:
+                    st.caption(
+                        "\"IV/Price Multiple\" is Intrinsic Value divided by Price (e.g. 1.50 "
+                        "means the DCF values the stock at 1.5x today's price; below 1.00 "
+                        "means the DCF calls it overvalued). \"Long Score\" is color-coded "
+                        "using the SAME gates that set the Investment Signal everywhere else "
+                        f"in this app: green = Long Score above {SIGNAL_THRESHOLDS['LONG']} "
+                        f"(LONG / STRONG LONG territory), yellow = above "
+                        f"{SIGNAL_THRESHOLDS['WATCHLIST']} but at or below {SIGNAL_THRESHOLDS['LONG']} "
+                        f"(WATCHLIST), red = {SIGNAL_THRESHOLDS['WATCHLIST']} or below (AVOID)."
+                    )
 
                 _dcf_params_df = results[
                     ["Ticker", "Price", "Intrinsic Value", "IV/Price Multiple", "Upside %",
@@ -4390,7 +4460,8 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                         _sdd_table(
                             ["Ticker", "Price", "Intrinsic Value", "IV/Price",
                              "Upside %", "DCF Growth", "Governor", "Discount",
-                             "Perpetual", "Long Score"],
+                             "Perpetual",
+                             "Value Score" if _factual() else "Long Score"],
                             _dcf_rows_html, max_height=480,
                         ),
                         unsafe_allow_html=True,
@@ -4508,9 +4579,6 @@ _METHODOLOGY_FACTUAL_SWAPS = [
     # Psychology row: drop the advice-flavoured sentence, keep the maths
     ("| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
      "| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
-    # Valuation labels stay off in the public presentation
-    ("A stock trading 25%+ below intrinsic value is labelled **UNDERVALUED**; above intrinsic\nvalue, **EXPENSIVE**; between, **FAIR**.",
-     "The site reports the MOS percentage directly, without attaching a valuation label to it."),
     # Trade Setup / two-verdicts section -> psychology-readings description
     ("#### Value vs timing - two separate verdicts\n\nThe **Investment Signal** answers \"good business to own?\" The **Trade Setup** answers\n\"is right now a sane entry?\" - support/resistance-based entry zone, stop loss and\ntargets, gated on trend safety and risk/reward. A great company can be a poor entry\ntoday; the site shows both rather than blurring them into one contradictory verdict.",
      "#### Psychology and discovery readings\n\nAlongside the valuation models, the site reports what the crowd has been doing:\ndistance below the 3-month high (fear), distance from the 50-day average and greed/\nFOMO terms, and a discovery reading built from volume, search interest, news and\nsocial chatter. These are measurements, stated as numbers - the site does not\ndisplay entry levels, targets or trade verdicts."),

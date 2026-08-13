@@ -575,12 +575,12 @@ COMPANY_POTENTIAL_HML = [
     ("V", "Weath Prospect", "Wealth Prospect", "good_high"),
     ("AE", "Market Sentiment", "Market Sentiment", "neutral"),
     ("AK", "Risk", "Risk", "good_low"),
-    ("AL", "Insights", "Insights", "neutral"),
+    ("AL", "Insights", "Insights", "good_high"),
     ("BC", "Stability of the Compnay within Industry. Quantity Vs Qualitative",
      "Stability within Industry", "good_high"),
     ("BL", "Do they have the ability to change product price without losing clients?",
      "Ability to Change Pricing", "good_high"),
-    ("BP", "Market Activity", "Market Activity", "neutral"),
+    ("BP", "Market Activity", "Market Activity", "good_high"),
 ]
 
 # Short Yes/No (or similarly terse) checks - kept separate from the H/M/L
