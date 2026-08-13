@@ -409,7 +409,7 @@ def _render_admin_unlock():
         return
     if st.session_state.get("full_view_unlocked"):
         return  # the FULL VIEW badge row already shows state + Exit
-    with st.popover("RC view"):
+    with st.popover("RC view", key="rc_view_pop"):
         _key_try = st.text_input(
             "Access key", type="password", key="rc_view_key_input",
         )
@@ -447,17 +447,20 @@ st.markdown(
         color: #ffffff !important;
         border-color: #2dd4bf !important;
     }
-    /* Popover triggers (feedback, RC view) match the site's teal-outline
-       pill buttons instead of Streamlit's grey default. */
-    div[data-testid="stPopover"] > button {
-        border-radius: 10px !important;
-        border: 1.5px solid #2dd4bf !important;
-        color: #2dd4bf !important;
+    /* The RC view popover trigger matches the Sign In pill exactly -
+       keyed selector so only this popover is styled. */
+    [class*="st-key-rc_view_pop"] button {
         background-color: rgba(45, 212, 191, 0.07) !important;
+        color: #2dd4bf !important;
+        border: 1.5px solid #2dd4bf !important;
+        border-radius: 999px !important;
+        padding: 6px 18px !important;
         font-weight: 600 !important;
-        transition: all 0.15s ease !important;
+        font-size: 14px !important;
+        box-shadow: none !important;
+        white-space: nowrap !important;
     }
-    div[data-testid="stPopover"] > button:hover {
+    [class*="st-key-rc_view_pop"] button:hover {
         background-color: #2dd4bf !important;
         color: #ffffff !important;
         border-color: #2dd4bf !important;
@@ -930,14 +933,6 @@ def _render_footer():
         )),
         unsafe_allow_html=True,
     )
-    # The "RC view" unlock lives here, bottom-right under the footer - out
-    # of the way of the account bar, present on every page, invisible once
-    # the session is already unlocked (the badge takes over then).
-    if (_FACTUAL_DEFAULT and _admin_key_env
-            and not st.session_state.get("full_view_unlocked")):
-        _sp, _rc = st.columns([10.3, 1.7])
-        with _rc:
-            _render_admin_unlock()
 
 
 def _render_watchlist_row():
@@ -978,7 +973,14 @@ def _render_header(compact, page_label=None):
             key_prefix=page_label,
             user_email=paywall_engine.current_user_email(),
         )
-    paywall_engine.render_account_bar(extra_widget=feedback_widget)
+    _show_unlock = bool(
+        _FACTUAL_DEFAULT and _admin_key_env
+        and not st.session_state.get("full_view_unlocked")
+    )
+    paywall_engine.render_account_bar(
+        extra_widget=feedback_widget,
+        extra_widget2=_render_admin_unlock if _show_unlock else None,
+    )
     st.markdown(
         f"""
         <style>
@@ -2107,7 +2109,12 @@ def page_home():
 
     _tape_box = st.container()
     _render_view_badge()
-    paywall_engine.render_account_bar()
+    paywall_engine.render_account_bar(
+        extra_widget2=(_render_admin_unlock
+                       if (_FACTUAL_DEFAULT and _admin_key_env
+                           and not st.session_state.get("full_view_unlocked"))
+                       else None)
+    )
 
     # top row: logo + free-during-launch badge
     st.markdown(
