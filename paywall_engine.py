@@ -57,6 +57,8 @@ import os
 
 import streamlit as st
 
+import email_auth
+
 
 # -----------------------------------
 # MASTER SWITCH
@@ -146,6 +148,9 @@ def _ensure_auth_secrets_written():
 # -----------------------------------
 
 def is_logged_in():
+    # Email-code sessions (email_auth) count exactly like Google ones.
+    if st.session_state.get("email_user"):
+        return True
     if not _auth_configured():
         return False
     try:
@@ -155,6 +160,9 @@ def is_logged_in():
 
 
 def current_user_email():
+    _em = st.session_state.get("email_user")
+    if _em:
+        return _em
     if not is_logged_in():
         return None
     try:
@@ -169,6 +177,9 @@ def current_user_name():
     return a name (or auth isn't configured), so callers never have to
     special-case a blank value themselves.
     """
+    _em = st.session_state.get("email_user")
+    if _em:
+        return _em.split("@")[0]
     if not is_logged_in():
         return None
     try:
@@ -178,6 +189,144 @@ def current_user_name():
     except Exception:
         pass
     return current_user_email()
+
+
+# -----------------------------------
+# EMAIL-CODE SIGN-IN (email_auth.py) - session restore, cookie plumbing,
+# and the Sign In popover that offers both Google and email.
+# -----------------------------------
+
+def _email_auth_available():
+    try:
+        return email_auth.is_configured()
+    except Exception:
+        return False
+
+
+def write_auth_cookie(token):
+    """Write (token) or clear (token=None) the sdd_auth cookie via a tiny
+    <script>. ONLY call this at the very top of a run (app.py's pending-
+    flag flush) - a call immediately followed by st.rerun() never reaches
+    the browser (same lesson as the RC view cookie)."""
+    import streamlit.components.v1 as _components
+    if token:
+        _js = (f"document.cookie='sdd_auth={token}; path=/; "
+               f"max-age={90 * 24 * 3600}; SameSite=Lax';")
+    else:
+        _js = "document.cookie='sdd_auth=; path=/; max-age=0; SameSite=Lax';"
+    _components.html(f"<script>{_js}</script>", height=0)
+
+
+def restore_email_session():
+    """Called once per run from app.py before any page renders: picks the
+    email session back up from the sdd_auth cookie after a full page load,
+    and records one sign-in per browser session in the aggregate stats
+    (works for Google sign-ins too)."""
+    if (not st.session_state.get("email_user")
+            and not st.session_state.get("email_signed_out")):
+        try:
+            _tok = st.context.cookies.get("sdd_auth")
+        except Exception:
+            _tok = None
+        if _tok:
+            try:
+                _em = email_auth.session_email(_tok)
+            except Exception:
+                _em = None
+            if _em:
+                st.session_state["email_user"] = _em
+                st.session_state["email_auth_token"] = _tok
+    if not st.session_state.get("_signup_recorded"):
+        _em = current_user_email()
+        if _em:
+            try:
+                email_auth.record_signup(
+                    _em,
+                    "email" if st.session_state.get("email_user") else "google",
+                )
+            except Exception:
+                pass
+            st.session_state["_signup_recorded"] = True
+
+
+def _sign_out():
+    """One Sign out for both auth methods."""
+    if st.session_state.get("email_user"):
+        try:
+            email_auth.revoke(st.session_state.get("email_auth_token"))
+        except Exception:
+            pass
+        st.session_state.pop("email_user", None)
+        st.session_state.pop("email_auth_token", None)
+        st.session_state.pop("_signup_recorded", None)
+        # Same pattern as the RC view exit: block the cookie from
+        # re-restoring the session this run, clear it on the next one.
+        st.session_state["email_signed_out"] = True
+        st.session_state["_pending_auth_cookie_clear"] = True
+        st.rerun()
+    else:
+        st.logout()
+
+
+def _render_signin_control(key="account_bar_signin"):
+    """The Sign In control. With email sign-in configured it's a popover
+    offering "Continue with Google" and an email-code flow; without it,
+    the original plain Google button. The popover key CONTAINS the plain
+    button's key, so the existing pill CSS styles both identically."""
+    if not _email_auth_available():
+        st.button("Sign In", key=key, on_click=st.login)
+        return
+    with st.popover("Sign In", key=f"{key}_pop"):
+        if _auth_configured():
+            if st.button("Continue with Google", key=f"{key}_google",
+                         type="primary", use_container_width=True):
+                st.login()
+            st.markdown(
+                "<div style='text-align:center;color:#5b7290;font-size:12px;"
+                "margin:2px 0 6px;'>&mdash; or &mdash;</div>",
+                unsafe_allow_html=True,
+            )
+        _em_input = st.text_input(
+            "Email address", key=f"{key}_email",
+            placeholder="you@example.com",
+        )
+        if not st.session_state.get(f"{key}_code_sent"):
+            if st.button("Email me a sign-in code", key=f"{key}_send",
+                         use_container_width=True):
+                _ok, _msg = email_auth.send_code(_em_input)
+                if _ok:
+                    st.session_state[f"{key}_code_sent"] = True
+                    st.session_state[f"{key}_sent_to"] = _em_input.strip().lower()
+                    st.success(_msg)
+                else:
+                    st.error(_msg)
+        if st.session_state.get(f"{key}_code_sent"):
+            _sent_to = st.session_state.get(f"{key}_sent_to", "")
+            _code = st.text_input(
+                "6-digit code", key=f"{key}_code", max_chars=6,
+                placeholder="123456",
+            )
+            _cv, _cr = st.columns(2)
+            with _cv:
+                if st.button("Verify", key=f"{key}_verify", type="primary",
+                             use_container_width=True):
+                    _tok, _msg = email_auth.verify_code(_sent_to, _code)
+                    if _tok:
+                        st.session_state["email_user"] = _sent_to
+                        st.session_state["email_auth_token"] = _tok
+                        st.session_state.pop("email_signed_out", None)
+                        st.session_state["_pending_auth_cookie"] = _tok
+                        # verify_code already recorded the sign-up.
+                        st.session_state["_signup_recorded"] = True
+                        st.session_state.pop(f"{key}_code_sent", None)
+                        st.rerun()
+                    else:
+                        st.error(_msg)
+            with _cr:
+                if st.button("Resend code", key=f"{key}_resend",
+                             use_container_width=True):
+                    _ok, _msg = email_auth.send_code(_sent_to)
+                    (st.success if _ok else st.error)(_msg)
 
 
 # -----------------------------------
@@ -386,7 +535,8 @@ def _render_name_and_signout(name, extra_widget=None, extra_widget2=None):
         with _col:
             _w()
     with _c3:
-        st.button("Sign out", key="account_bar_signout", on_click=st.logout)
+        if st.button("Sign out", key="account_bar_signout"):
+            _sign_out()
 
 
 def render_account_bar(extra_widget=None, extra_widget2=None):
@@ -403,10 +553,10 @@ def render_account_bar(extra_widget=None, extra_widget2=None):
         out isn't shown), each in its OWN column - used for the page's
         feedback button and the RC view unlock.
     """
-    if not _auth_configured():
-        # No account bar at all in this case, but the widgets (if any)
-        # still need to render somewhere - same standalone right-aligned
-        # row they used to have on their own.
+    if not _auth_configured() and not _email_auth_available():
+        # No sign-in method configured at all - no account bar, but the
+        # widgets (if any) still need to render somewhere - same
+        # standalone right-aligned row they used to have on their own.
         if extra_widget or extra_widget2:
             _left, _widgets, _ = _right_widget_columns(
                 [0.5], extra_widget, extra_widget2)
@@ -425,18 +575,18 @@ def render_account_bar(extra_widget=None, extra_widget2=None):
     if not is_logged_in():
         if not PAYWALL_ENABLED:
             _left, _widgets, _ = _right_widget_columns(
-                [1.0], extra_widget, extra_widget2)
+                [1.2], extra_widget, extra_widget2)
             with _left[0]:
-                st.button("Sign In", key="account_bar_signin", on_click=st.login)
+                _render_signin_control("account_bar_signin")
             for _col, _w in _widgets:
                 with _col:
                     _w()
             return
 
         _left, _widgets, _ = _right_widget_columns(
-            [1.0, 1.0], extra_widget, extra_widget2)
+            [1.2, 1.0], extra_widget, extra_widget2)
         with _left[0]:
-            st.button("Sign In", key="account_bar_signin", on_click=st.login)
+            _render_signin_control("account_bar_signin")
         with _left[1]:
             # Not logged in yet, so we don't have an email for Stripe -
             # route through the same sign-in first; once they're back,
@@ -510,7 +660,8 @@ def render_gate(feature_label, teaser=None, key_prefix=""):
 
     box = st.container(border=True, key=f"pw_gate_box_{key_prefix}")
 
-    if not _auth_configured() or not _stripe_configured():
+    if (not _auth_configured() and not _email_auth_available()) \
+            or not _stripe_configured():
         with box:
             st.info(
                 f"🔒 Subscriptions aren't fully set up yet - {feature_label} will "
@@ -523,12 +674,15 @@ def render_gate(feature_label, teaser=None, key_prefix=""):
             st.markdown(f"**🔒 Subscribe to unlock {feature_label}**")
             if teaser:
                 st.caption(teaser)
-            st.button(
-                "Sign in with Google to continue",
-                key=f"pw_login_{key_prefix}",
-                on_click=st.login,
-                type="primary",
-            )
+            if _email_auth_available():
+                _render_signin_control(f"pw_login_{key_prefix}")
+            else:
+                st.button(
+                    "Sign in with Google to continue",
+                    key=f"pw_login_{key_prefix}",
+                    on_click=st.login,
+                    type="primary",
+                )
         return False
 
     email = current_user_email()
@@ -553,5 +707,6 @@ def render_gate(feature_label, teaser=None, key_prefix=""):
                 "again in a moment."
             )
         st.caption(f"Signed in as {email}.")
-        st.button("Sign out", key=f"pw_logout_{key_prefix}", on_click=st.logout)
+        if st.button("Sign out", key=f"pw_logout_{key_prefix}"):
+            _sign_out()
     return False

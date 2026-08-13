@@ -29,6 +29,7 @@ import plotly.graph_objects as go
 import deep_dive_engine
 import build_compounder_data
 import paywall_engine
+import email_auth
 import feedback_engine
 import watchlist_store
 import scan_store
@@ -370,6 +371,16 @@ if st.session_state.pop("_pending_admin_cookie", False):
 if st.session_state.pop("_pending_admin_cookie_clear", False):
     _set_admin_cookie(clear=True)
 
+# Email sign-in plumbing (same pending-flag pattern): flush any cookie
+# write/clear queued by last run's sign-in/sign-out, then restore the
+# session from the sdd_auth cookie before any page renders.
+_pending_auth_tok = st.session_state.pop("_pending_auth_cookie", None)
+if _pending_auth_tok:
+    paywall_engine.write_auth_cookie(_pending_auth_tok)
+if st.session_state.pop("_pending_auth_cookie_clear", False):
+    paywall_engine.write_auth_cookie(None)
+paywall_engine.restore_email_session()
+
 
 def _factual() -> bool:
     """True when this session should see the factual-information
@@ -380,9 +391,11 @@ def _factual() -> bool:
 
 
 def _render_view_badge():
-    """Admin-only indicator + exit, shown ONLY in the unlocked session."""
+    """Admin-only indicator + exit, shown ONLY in the unlocked session.
+    Also carries the sign-up counter popover (aggregate numbers only -
+    no identities are ever displayed)."""
     if _FACTUAL_DEFAULT and st.session_state.get("full_view_unlocked"):
-        _b1, _b2 = st.columns([10, 2])
+        _b1, _bs, _b2 = st.columns([8.4, 1.6, 2])
         with _b1:
             st.markdown(
                 "<div style='display:inline-block;background:#4a2733;color:#fb7185;"
@@ -391,6 +404,21 @@ def _render_view_badge():
                 "(admin) - the public sees the factual presentation</div>",
                 unsafe_allow_html=True,
             )
+        with _bs:
+            with st.popover("Sign-ups", key="admin_signup_stats"):
+                try:
+                    _s = email_auth.signup_stats()
+                    st.markdown(f"### {_s['total']} accounts")
+                    st.markdown(
+                        f"- **{_s['last_7_days']}** new in the last 7 days\n"
+                        f"- **{_s['last_30_days']}** new in the last 30 days\n"
+                        f"- **{_s['active_7_days']}** signed in within 7 days\n"
+                        f"- Google **{_s['google']}** · Email **{_s['email']}**"
+                    )
+                    st.caption("Aggregate counts only - stored on the "
+                               "Railway volume, survives redeploys.")
+                except Exception:
+                    st.caption("No sign-up data yet.")
         with _b2:
             if st.button("Exit full view", key="exit_full_view"):
                 st.session_state["full_view_unlocked"] = False
