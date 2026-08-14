@@ -2221,13 +2221,15 @@ def _position_disclosure_text(ticker, status, pos):
     """Plain-text disclosure body for the expander, built from the stored
     row (skip any clause whose field is empty) - exact wording per the
     task spec, no advice language, no forward-looking statements, no
-    position size / dollar amount, only dates, approach and average
-    price."""
+    position size / dollar amount invested, only dates, approach, and
+    per-share prices (average purchase price, and - for closed positions -
+    the price sold at)."""
     pos = pos or {}
     first_purchase = (pos.get("first_purchase") or "").strip()
     exit_month = (pos.get("exit_month") or "").strip()
     entry_approach = (pos.get("entry_approach") or "").strip()
     avg_price = pos.get("avg_price") or None
+    exit_price = pos.get("exit_price") or None
     currency = (pos.get("currency") or "").strip()
 
     if status == "holds":
@@ -2259,6 +2261,10 @@ def _position_disclosure_text(ticker, status, pos):
         if avg_price:
             clauses.append(
                 f"average purchase price {_pos_fmt_price(avg_price)} {currency}"
+            )
+        if exit_price:
+            clauses.append(
+                f"sold at {_pos_fmt_price(exit_price)} {currency}"
             )
         lead = f"I previously held shares of {ticker}"
         lead += f" ({'; '.join(clauses)})." if clauses else "."
@@ -2344,6 +2350,12 @@ def _render_position_disclosure(ticker):
                 min_value=0.0, step=0.01, format="%.2f",
                 key=f"pos_avg_price_{ticker}",
             )
+            _exit_price_in = st.number_input(
+                "Sold at (0.0 = not stated; only meaningful for Closed)",
+                value=float((pos or {}).get("exit_price") or 0.0),
+                min_value=0.0, step=0.01, format="%.2f",
+                key=f"pos_exit_price_{ticker}",
+            )
             _currency_in = st.text_input(
                 "Currency",
                 value=(pos or {}).get("currency") or _pos_default_currency(ticker),
@@ -2357,6 +2369,7 @@ def _render_position_disclosure(ticker):
                     exit_month=_exit_month_in or None,
                     entry_approach=_entry_approach_in or None,
                     avg_price=_avg_price_in or None,
+                    exit_price=_exit_price_in or None,
                     currency=_currency_in or None,
                 )
                 st.rerun()

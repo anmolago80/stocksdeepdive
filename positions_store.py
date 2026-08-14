@@ -37,10 +37,19 @@ def _conn():
             exit_month TEXT,
             entry_approach TEXT,
             avg_price REAL,
+            exit_price REAL,
             currency TEXT,
             updated_at TEXT NOT NULL
         )"""
     )
+    # ALTER TABLE guarded by try/except so a DB created before exit_price
+    # existed still works (CREATE TABLE above only applies to a brand-new
+    # file) - same belt-and-braces pattern email_auth.py uses for its src
+    # column.
+    try:
+        conn.execute("ALTER TABLE author_positions ADD COLUMN exit_price REAL")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 
@@ -59,27 +68,33 @@ def get_position(ticker):
 
 
 def set_position(ticker, status, first_purchase=None, exit_month=None,
-                  entry_approach=None, avg_price=None, currency=None):
-    """UPSERT the disclosure row for one ticker, stamping updated_at (UTC)."""
+                  entry_approach=None, avg_price=None, exit_price=None,
+                  currency=None):
+    """UPSERT the disclosure row for one ticker, stamping updated_at (UTC).
+    exit_price is the price the author sold at - only meaningful when
+    status is 'closed', but stored regardless of status (same as
+    exit_month) so switching a ticker back to 'closed' later doesn't lose
+    a previously entered value."""
     if not ticker or not status:
         return
     with _conn() as conn:
         conn.execute(
             """INSERT INTO author_positions
                  (ticker, status, first_purchase, exit_month, entry_approach,
-                  avg_price, currency, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                  avg_price, exit_price, currency, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(ticker) DO UPDATE SET
                  status = excluded.status,
                  first_purchase = excluded.first_purchase,
                  exit_month = excluded.exit_month,
                  entry_approach = excluded.entry_approach,
                  avg_price = excluded.avg_price,
+                 exit_price = excluded.exit_price,
                  currency = excluded.currency,
                  updated_at = excluded.updated_at""",
             (
                 ticker.strip().upper(), status, first_purchase, exit_month,
-                entry_approach, avg_price, currency,
+                entry_approach, avg_price, exit_price, currency,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
