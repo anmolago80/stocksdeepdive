@@ -34,6 +34,7 @@ import feedback_engine
 import watchlist_store
 import follow_store
 import metrics_store
+import positions_store
 import announce_engine
 import scan_store
 import scanner_engine
@@ -2187,6 +2188,180 @@ def _render_research_header_card(ticker, data, section_order):
             _dispatch_search(ticker)
 
 
+# Badge copy per author-position status (positions_store.py) - a missing row
+# is treated as 'never'. Colour is teal for 'holds' (the one status that
+# reads as noteworthy) and the site's neutral grey for 'never'/'closed' -
+# red/green/amber are reserved for data verdicts elsewhere on the site and
+# must never appear in this disclosure feature.
+_POS_BADGE = {
+    "holds": ("#2dd4bf", "✓ Skin in the game — the author holds this "
+                          "stock in his personal portfolio"),
+    "never": ("#8aa0b8", "○ No position — the author has never held "
+                          "this stock"),
+    "closed": ("#8aa0b8", "◐ Position closed — the author previously "
+                           "held this stock"),
+}
+
+_POS_STATUS_LABELS = {"holds": "Holds", "never": "Never held", "closed": "Closed"}
+_POS_LABEL_STATUS = {v: k for k, v in _POS_STATUS_LABELS.items()}
+
+
+def _pos_default_currency(ticker):
+    return "AUD" if ticker.upper().endswith(".AX") else "USD"
+
+
+def _pos_fmt_price(avg_price):
+    """avg_price is stored as REAL with 0.0 meaning 'not stated' (Step 3) -
+    callers only call this once they've already checked avg_price is
+    truthy."""
+    return f"{avg_price:.2f}"
+
+
+def _position_disclosure_text(ticker, status, pos):
+    """Plain-text disclosure body for the expander, built from the stored
+    row (skip any clause whose field is empty) - exact wording per the
+    task spec, no advice language, no forward-looking statements, no
+    position size / dollar amount, only dates, approach and average
+    price."""
+    pos = pos or {}
+    first_purchase = (pos.get("first_purchase") or "").strip()
+    exit_month = (pos.get("exit_month") or "").strip()
+    entry_approach = (pos.get("entry_approach") or "").strip()
+    avg_price = pos.get("avg_price") or None
+    currency = (pos.get("currency") or "").strip()
+
+    if status == "holds":
+        parts = [f"I hold shares of {ticker} in my personal portfolio."]
+        if first_purchase:
+            parts.append(f"First purchase: {first_purchase}.")
+        if entry_approach:
+            parts.append(f"Entry approach: {entry_approach}.")
+        if avg_price:
+            parts.append(
+                f"Average purchase price: {_pos_fmt_price(avg_price)} {currency}."
+            )
+        parts.append(
+            "I state this for transparency, not as a recommendation — my "
+            "financial circumstances, risk tolerance, entry prices and time "
+            "horizon are mine, and none of them are yours. I may buy more or "
+            "sell at any time without updating this page first."
+        )
+        return " ".join(parts)
+
+    if status == "closed":
+        clauses = []
+        if first_purchase:
+            clauses.append(f"first purchase {first_purchase}")
+        if exit_month:
+            clauses.append(f"fully exited {exit_month}")
+        if entry_approach:
+            clauses.append(f"entry approach: {entry_approach}")
+        if avg_price:
+            clauses.append(
+                f"average purchase price {_pos_fmt_price(avg_price)} {currency}"
+            )
+        lead = f"I previously held shares of {ticker}"
+        lead += f" ({'; '.join(clauses)})." if clauses else "."
+        return (
+            f"{lead} I no longer hold a position and may re-enter at any "
+            "time. This is stated for transparency, not as a recommendation."
+        )
+
+    # 'never' (also the fallback for a missing row / unrecognised status)
+    return (
+        f"I do not hold and have never held shares of {ticker}. Coverage on "
+        "this site is independent of whether I personally own a company. "
+        "This is stated for transparency, not as a recommendation."
+    )
+
+
+def _render_position_disclosure(ticker):
+    """Author position disclosure strip (positions_store.py) - a badge plus
+    an expander with the full wording, shown IDENTICALLY in the public
+    factual view and the admin full view (this is disclosure, not a data
+    verdict, so it is never gated by _factual()). The admin-only editor
+    below it is gated on full_view_unlocked directly, per the task spec."""
+    pos = positions_store.get_position(ticker)
+    status = (pos or {}).get("status")
+    if status not in ("holds", "never", "closed"):
+        status = "never"
+
+    color, badge_text = _POS_BADGE[status]
+    st.markdown(
+        f"""
+        <div style='display:inline-block; border:1px solid {color};
+                     color:{color}; border-radius:999px; padding:4px 14px;
+                     font-size:12.5px; margin:6px 0 6px;'>
+          {html.escape(badge_text)}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.expander("Position disclosure", expanded=False):
+        _body = _md_safe(_position_disclosure_text(ticker, status, pos)).replace("\n", "<br>")
+        st.markdown(
+            f"<div style='color:#8aa0b8;font-size:13px;line-height:1.65;'>{_body}</div>",
+            unsafe_allow_html=True,
+        )
+
+    if not st.session_state.get("full_view_unlocked"):
+        return
+
+    with st.expander("Edit position (admin)", expanded=False):
+        if not pos:
+            # The one deliberate exception to this feature's no-red/green/
+            # amber rule (task spec, Step 3): an amber admin-only hint that
+            # nothing has been saved for this ticker yet.
+            st.caption(
+                ":orange[Position not set for this company — public "
+                "currently sees 'No position'.]"
+            )
+        with st.form(key=f"pos_edit_form_{ticker}"):
+            _status_label = st.radio(
+                "Status",
+                list(_POS_STATUS_LABELS.values()),
+                index=list(_POS_STATUS_LABELS.keys()).index(status),
+                key=f"pos_status_{ticker}",
+            )
+            _first_purchase_in = st.text_input(
+                "First purchase (e.g. \"March 2024\")",
+                value=(pos or {}).get("first_purchase") or "",
+                key=f"pos_first_purchase_{ticker}",
+            )
+            _exit_month_in = st.text_input(
+                "Exit month (only meaningful for Closed)",
+                value=(pos or {}).get("exit_month") or "",
+                key=f"pos_exit_month_{ticker}",
+            )
+            _entry_approach_in = st.text_input(
+                "Entry approach (e.g. \"staged entry, 25% tranches\")",
+                value=(pos or {}).get("entry_approach") or "",
+                key=f"pos_entry_approach_{ticker}",
+            )
+            _avg_price_in = st.number_input(
+                "Average price (0.0 = not stated)",
+                value=float((pos or {}).get("avg_price") or 0.0),
+                min_value=0.0, step=0.01, format="%.2f",
+                key=f"pos_avg_price_{ticker}",
+            )
+            _currency_in = st.text_input(
+                "Currency",
+                value=(pos or {}).get("currency") or _pos_default_currency(ticker),
+                key=f"pos_currency_{ticker}",
+            )
+            if st.form_submit_button("Save"):
+                positions_store.set_position(
+                    ticker,
+                    _POS_LABEL_STATUS[_status_label],
+                    first_purchase=_first_purchase_in or None,
+                    exit_month=_exit_month_in or None,
+                    entry_approach=_entry_approach_in or None,
+                    avg_price=_avg_price_in or None,
+                    currency=_currency_in or None,
+                )
+                st.rerun()
+
+
 def page_research():
     _render_header(compact=True, page_label="Rational Compounder Analysis")
 
@@ -2347,6 +2522,14 @@ def page_research():
     st.query_params["section"] = section_label
 
     _bump_page_view("research", ticker=ticker)
+
+    # Author position disclosure strip (positions_store.py) - directly
+    # after the stock/section picker and before any section content, so
+    # it's visible no matter which section is selected. Shown identically
+    # in the public factual view and the admin full view; the "Edit
+    # position (admin)" expander inside it only renders when
+    # full_view_unlocked is True.
+    _render_position_disclosure(ticker)
 
     # Per-company header card (Task 5): ticker/industry/section-count/
     # last-updated + a link-button to the live Deep Dive.
