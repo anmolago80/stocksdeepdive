@@ -2937,7 +2937,7 @@ as a fact &mdash; you always know which numbers are computed and which are assum
         """
 <div class='sdd-cta'>
   <div>
-    <div class='sdd-h2' style='margin:0 0 6px;'>Everything is free while we launch.</div>
+    <div class='sdd-h2' style='margin:0 0 6px;'>Everything is free.</div>
     <div style='color:#8aa0b8;font-size:14.5px;max-width:560px;line-height:1.5;'>Sign in (top
     right) to save a watchlist and get the weekly {digest_word} digest. When subscriptions open,
     founding members keep launch pricing &mdash; locked in.</div>
