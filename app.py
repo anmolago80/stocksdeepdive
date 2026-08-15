@@ -631,8 +631,6 @@ st.markdown(
     .sdd-navrow { display:flex; align-items:center; justify-content:space-between; padding:4px 0 18px; }
     .sdd-logo { font-size:22px; font-weight:800; letter-spacing:-.3px; color:#e6edf5; }
     .sdd-logo .accent { color:#2dd4bf; }
-    .sdd-badge-free { font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:#2dd4bf;
-      border:1px solid #14b8a6; border-radius:999px; padding:4px 11px; letter-spacing:.4px; }
     .sdd-h1 { font-size:38px; line-height:1.14; letter-spacing:-.6px; font-weight:800; color:#e6edf5; }
     .sdd-h1 em { font-style:normal; color:#2dd4bf; }
     .sdd-sub { color:#8aa0b8; font-size:16px; line-height:1.55; margin:14px 0 18px; max-width:540px; }
@@ -2732,12 +2730,11 @@ def page_home():
                        else None)
     )
 
-    # top row: logo + free-during-launch badge
+    # top row: logo
     st.markdown(
         """
 <div class='sdd-navrow'>
   <span class='sdd-logo'>Stocks<span class='accent'>DeepDive</span></span>
-  <span class='sdd-badge-free'>FREE DURING LAUNCH</span>
 </div>
 """,
         unsafe_allow_html=True,
