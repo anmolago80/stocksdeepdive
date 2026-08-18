@@ -429,10 +429,18 @@ def _bump_page_view(page, ticker=None):
 
 def _render_view_badge():
     """Admin-only indicator + exit, shown ONLY in the unlocked session.
-    Also carries the Stats popover (sign-up counts + first-party page-view
-    counts, aggregate numbers only - no identities are ever displayed)."""
+    Also carries the Write blog button and the Stats popover (sign-up
+    counts + first-party page-view counts, aggregate numbers only - no
+    identities are ever displayed)."""
     if _FACTUAL_DEFAULT and st.session_state.get("full_view_unlocked"):
-        _b1, _bs, _b2 = st.columns([8.4, 1.6, 2])
+        # Write blog sits here rather than in the site nav on purpose: the
+        # editor is admin-only, so its entry point belongs in the strip
+        # that only an unlocked session ever sees.
+        _b1, _bw, _bs, _b2 = st.columns([6.8, 1.6, 1.6, 2])
+        with _bw:
+            if st.button("Write blog", key="admin_write_blog",
+                         use_container_width=True):
+                st.switch_page(PG_BLOG_ADMIN)
         with _b1:
             st.markdown(
                 "<div style='display:inline-block;background:#4a2733;color:#fb7185;"
