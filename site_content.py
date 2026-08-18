@@ -1,0 +1,259 @@
+"""
+site_content.py
+
+The prose of the three content pages - How the scores work, About, and the
+Privacy policy - held in one place because two different renderers now
+need exactly the same words.
+
+Streamlit renders them through app.py for anyone using the app, and
+server.py renders them as real, crawlable HTML at /methodology, /about and
+/privacy (Streamlit pages are invisible to search engines - see
+server.py's module docstring). Keeping the text here means the indexed
+page and the in-app page can never drift apart, which for a privacy policy
+is a legal requirement rather than a nicety.
+
+Everything below is Markdown.
+"""
+
+METHODOLOGY_FACTUAL_SWAPS = [
+    # Verdict bands paragraph -> value-score description
+    ("Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise\n**AVOID**. If no intrinsic value could be computed at all, the signal is capped at\nWATCHLIST - a thesis whose value leg can't be verified doesn't get a full\nrecommendation.",
+     "On this site the number is displayed as the **Value Score** - a weighted\ndescription of the four calculations above, shown without signal labels or\nrecommendations. Where no intrinsic value could be computed, that is stated\nplainly and the affected values are marked."),
+    ("The Long Score (0\u2013100) and Investment Signal", "The Value Score (0\u2013100)"),
+    # Score heading + intro question -> neutral description
+    ("#### The Long Score (0\u2013100)\n\nOne number answering \"is this a good business to own at this price?\" It blends four\nfactors, each clamped to a fixed band first so no single factor can run away with the\nresult:",
+     "#### The Value Score (0\u2013100)\n\nOne number summarising four calculations, each clamped to a fixed band first so no\nsingle factor can run away with the result:"),
+    # Psychology row: drop the advice-flavoured sentence, keep the maths
+    ("| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
+     "| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
+    # Trade Setup / two-verdicts section -> psychology-readings description
+    ("#### Value vs timing - two separate verdicts\n\nThe **Investment Signal** answers \"good business to own?\" The **Trade Setup** answers\n\"is right now a sane entry?\" - support/resistance-based entry zone, stop loss and\ntargets, gated on trend safety and risk/reward. A great company can be a poor entry\ntoday; the site shows both rather than blurring them into one contradictory verdict.",
+     "#### Psychology and discovery readings\n\nAlongside the valuation models, the site reports what the crowd has been doing:\ndistance below the 3-month high (fear), distance from the 50-day average and greed/\nFOMO terms, and a discovery reading built from volume, search interest, news and\nsocial chatter. These are measurements, stated as numbers - the site does not\ndisplay entry levels, targets or trade verdicts."),
+]
+
+# Shown above the methodology text in the public (factual) presentation.
+METHODOLOGY_FACTUAL_NOTE = (
+    "**Presentation note.** This site displays data, model outputs and "
+    "described calculations from stated inputs. It does not provide "
+    "financial product advice or recommendations - descriptions below "
+    "of how each calculation works are exactly that: descriptions of "
+    "arithmetic, not guidance on what to do."
+)
+
+METHODOLOGY_MD = """
+Every tool on this site runs the same engine. A ticker goes in; live data comes back
+(prices and volumes, financial statements and analyst estimates via Yahoo Finance, search
+interest via Google Trends, headlines via Yahoo/NewsAPI, chatter via StockTwits); and the
+same value-investing maths runs every time. Nothing on this page is a black box - every
+score's inputs are charted right next to it on the site.
+
+#### The Long Score (0–100)
+
+One number answering "is this a good business to own at this price?" It blends four
+factors, each clamped to a fixed band first so no single factor can run away with the
+result:
+
+| Factor | Weight | What it measures |
+|---|---|---|
+| Quality | 35% | Is this a good business? Return on equity, profit margin, revenue and earnings growth, free cash flow, debt - computed from the company's own fundamentals. Loss-making, cash-burning businesses are capped: a company that doesn't make money can't score as "high quality" no matter how fast it grows. |
+| Margin of Safety | 25% | Is the price below the value? The gap between our intrinsic-value estimate and today's price, clamped to ±50 so a wild discount (or premium) can move the score but never dominate it. |
+| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |
+| Discovery | 20% | Is the market noticing? Price activity, unusual volume, search trends, news flow and social chatter - attention only, deliberately separate from sentiment. |
+
+Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise
+**AVOID**. If no intrinsic value could be computed at all, the signal is capped at
+WATCHLIST - a thesis whose value leg can't be verified doesn't get a full
+recommendation.
+
+#### Intrinsic value
+
+The primary model is a discounted cash flow built from the company's own reported free
+cash flows. The discount rate is calculated per stock (CAPM - the stock's own beta
+against its market), growth comes from analyst consensus where available, then the
+company's own historical FCF growth, and the terminal growth rate is set by the stock's
+currency. Where a DCF isn't possible, a P/E-blend fallback is used and labelled as such.
+Margin of Safety = (intrinsic value − price) ÷ intrinsic value.
+
+A stock trading 25%+ below intrinsic value is labelled **UNDERVALUED**; above intrinsic
+value, **EXPENSIVE**; between, **FAIR**.
+
+#### Value vs timing - two separate verdicts
+
+The **Investment Signal** answers "good business to own?" The **Trade Setup** answers
+"is right now a sane entry?" - support/resistance-based entry zone, stop loss and
+targets, gated on trend safety and risk/reward. A great company can be a poor entry
+today; the site shows both rather than blurring them into one contradictory verdict.
+
+#### The red-flag rule
+
+Whenever a number rests on a default or average because real data wasn't available, it's
+shown in **red**. An estimate is never dressed up as a fact - you always know which
+numbers are computed and which are assumed.
+
+#### Rational Compounder Research
+
+The Research section is different: it isn't computed at all. It's the author's own
+hand-built workbook analysis of selected quality compounders - a decade of earnings
+history, four independent fair-value methods (trailing P/E, forward P/E, DCF, and a
+10-year equity method), and written Buffett/Munger-style judgment on management, moat
+and risk. Every threshold and colour band on those pages comes from the original
+research, not a generic screen.
+
+#### Limitations, honestly
+
+Data is sourced from free public feeds and can be delayed, revised or occasionally
+wrong. Intrinsic value is an estimate resting on assumptions - reasonable assumptions,
+shown openly, but assumptions. Scores are model outputs, not personal advice, and none
+of this considers your circumstances. Use it the way it was built to be used: as the
+starting point for your own judgment, not a substitute for it.
+"""
+
+ABOUT_FACTUAL_MD = """
+StocksDeepDive is built and run by **Andres Moreno**, a private investor in Australia.
+
+It didn't start as a website. It started as a personal stock scanner and a very long
+Excel workbook - tools built to study businesses with a Buffett/Munger-style value
+lens: compute what the model says a business's cash flows are worth, test its quality
+from reported fundamentals, and read what the price has been doing. Over the years the
+scanner grew a DCF engine, quality calculations, psychology and discovery readings, and a
+research workbook that documents one company for weeks at a time.
+
+At some point the obvious question arrived: why not open the numbers up? So this site
+is that - the same engine, the same data work, made public.
+
+Two principles carried over from the private version, unchanged:
+
+**The numbers must be honest.** Whenever a figure rests on a default or an average
+because real data wasn't available, it's shown in red. An estimate is never dressed up
+as a fact. I built that rule for myself, because fooling yourself is expensive - it
+applies just as much now that you're reading the numbers too.
+
+**Value and psychology are different measurements.** What the model computes from
+a business's cash flows and what the crowd has been doing to its price are reported as
+separate numbers on every page. Most tools blur them; this site states each one
+plainly and lets you draw your own conclusions.
+
+The site is free while it launches. When subscriptions open, founding members keep
+launch pricing. If you want a stock added to the Rational Compounder research list, or
+anything here doesn't make sense, use the Feedback button on any results page or email
+[rationalcompounder@stocksdeepdive.com](mailto:rationalcompounder@stocksdeepdive.com) -
+I read everything.
+
+*This site presents factual information and calculator outputs only - it does not
+provide financial product advice or recommendations; see the disclaimer in the footer.
+I may own stocks analysed here.*
+"""
+
+ABOUT_FULL_MD = """
+StocksDeepDive is built and run by **Andres Moreno**, a private investor in Australia.
+
+It didn't start as a website. It started as a personal stock scanner and a very long
+Excel workbook - the tools I built to manage my own self-managed super fund with a
+Buffett/Munger-style value approach: work out what a business is actually worth, check
+its quality like an owner would, and only then look at what the crowd is doing. Over
+the years the scanner grew a DCF engine, quality tests, a crowd-psychology read, trade
+setups, and a research workbook that interrogates one company for weeks at a time.
+
+At some point the obvious question arrived: if I trust these numbers with my own
+retirement savings, why not open them up? So this site is that - the same engine,
+the same research, made public.
+
+Two principles carried over from the private version, unchanged:
+
+**The numbers must be honest.** Whenever a figure rests on a default or an average
+because real data wasn't available, it's shown in red. An estimate is never dressed up
+as a fact. I built that rule for myself, because fooling yourself is expensive - it
+applies just as much now that you're reading the numbers too.
+
+**Value and timing are different questions.** Whether a business is worth owning and
+whether today is a sane day to buy it get separate verdicts on every page. Most tools
+blur them; keeping them apart is half the discipline.
+
+The site is free while it launches. When subscriptions open, founding members keep
+launch pricing. If you want a stock added to the Rational Compounder research list, or
+anything here doesn't make sense, use the Feedback button on any results page or email
+[rationalcompounder@stocksdeepdive.com](mailto:rationalcompounder@stocksdeepdive.com) -
+I read everything.
+
+*Nothing on this site is financial advice - see the disclaimer in the footer. I may
+own stocks analysed here.*
+"""
+
+PRIVACY_MD = """
+*Last updated: 13 August 2026*
+
+StocksDeepDive ("the site", "we") is operated by Andres Moreno in Australia. This page
+explains what information the site handles and what happens to it. Contact for anything
+privacy-related: [rationalcompounder@stocksdeepdive.com](mailto:rationalcompounder@stocksdeepdive.com).
+
+#### What we collect
+
+**Nothing, for anonymous browsing.** You can use every analysis tool without an
+account. Standard technical logs (IP address, browser type, pages requested) are kept
+by our hosting provider (Railway) for security and debugging, as with any website.
+
+**If you sign in with Google:** we receive your name and email address from Google -
+nothing else. Sign-in exists so the site can remember your watchlist, attribute your
+feedback, and (if you save a watchlist) send you the weekly watchlist digest email. We
+never see your Google password.
+
+**If you save a watchlist:** the tickers you save are stored against your email
+address on our server.
+
+**If you send feedback:** your message and, if you're signed in, your email address
+are stored so we can follow up.
+
+**If subscriptions are active and you subscribe:** payment is handled entirely by
+Stripe. We never see or store your card details - we only check with Stripe whether
+your email has an active subscription.
+
+#### What we don't do
+
+No advertising, no ad trackers, no third-party analytics or ad tech, and no selling
+or sharing of your information with anyone, ever. The only cookies used are the ones
+required to keep you signed in.
+
+#### Page analytics
+
+We keep first-party, aggregate page-view counts (which pages get visited, how many
+times, per day) so we can see what's useful - no cookies are set for this, no
+third-party trackers or ad tech are involved, and no per-visitor identity is stored
+alongside a view.
+
+#### Emails
+
+The weekly digest is sent (via Mailgun) only to signed-in users who have saved a
+watchlist. To stop it, remove all stocks from your watchlist, or email us and we'll
+remove you.
+
+#### Data retention and deletion
+
+Watchlists and feedback are kept while your account is active. Email us from your
+sign-in address and we will delete everything we hold about you.
+
+#### Third-party data on the site
+
+Market data shown on the site comes from third-party sources (Yahoo Finance, Google
+Trends, StockTwits, NewsAPI, GDELT). Those services receive standard requests from our
+server, not information about you.
+
+#### Changes
+
+If this policy changes, the date above will change with it. Material changes will be
+noted on the site.
+"""
+
+
+def methodology_md(factual=True):
+    """The methodology text as the given presentation sees it. In factual
+    mode the signal/verdict language is swapped for descriptions of the
+    same arithmetic - the public site must not read as a recommendation."""
+    text = METHODOLOGY_MD
+    if factual:
+        for old, new in METHODOLOGY_FACTUAL_SWAPS:
+            text = text.replace(old, new)
+    return text
+
+
+def about_md(factual=True):
+    return ABOUT_FACTUAL_MD if factual else ABOUT_FULL_MD
