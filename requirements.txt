@@ -19,3 +19,14 @@ anthropic>=0.40
 # PAYWALL_ENABLED=true is set on Railway. ---
 Authlib>=1.3.2
 stripe>=10.0
+
+# --- Added for the indexable blog (server.py / blog_render.py).
+# server.py is now the app's entrypoint: it serves /blog, /sitemap.xml and
+# /robots.txt as real HTML that search engines can read, and proxies every
+# other URL - including Streamlit's websocket - through to the Streamlit
+# app exactly as before. ---
+fastapi>=0.110
+uvicorn[standard]>=0.29
+httpx>=0.27
+websockets>=12.0
+markdown>=3.5
