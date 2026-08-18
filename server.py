@@ -192,6 +192,30 @@ def _html(content, status=200, cache="public, max-age=300"):
                         headers={"Cache-Control": cache})
 
 
+# -----------------------------------
+# WHICH PAGES THIS SERVER RENDERS ITSELF
+#
+# /blog is always served here - it has no Streamlit equivalent. The app's
+# own pages are a different matter: rendering them as HTML makes them
+# indexable, but it also replaces the live Streamlit page a visitor sees,
+# and that is a product decision rather than a technical one. So it is
+# OFF by default and turned on per page with an environment variable:
+#
+#   INDEXABLE_PAGES=all
+#   INDEXABLE_PAGES=/methodology,/about,/privacy
+#
+# Unset (the default), every app URL behaves exactly as it did before this
+# server existed: proxied straight to Streamlit.
+# -----------------------------------
+_INDEXABLE_RAW = os.environ.get("INDEXABLE_PAGES", "").strip()
+_INDEXABLE_ALL = _INDEXABLE_RAW.lower() in ("all", "*", "true", "yes")
+_INDEXABLE = {p.strip() for p in _INDEXABLE_RAW.split(",") if p.strip()}
+
+
+def _renders_html(path) -> bool:
+    return _INDEXABLE_ALL or path in _INDEXABLE
+
+
 def _count_view(page, ticker=None):
     """Keep the admin Stats popover honest. These pages used to be counted
     by app.py's _bump_page_view; now that they are served here, the count
@@ -254,7 +278,7 @@ async def home(request: Request):
     anything with a query is proxied untouched. ?app=1 is the explicit
     "give me the live app" link on the static page, and works by the same
     rule."""
-    if request.url.query:
+    if request.url.query or not _renders_html("/"):
         return await _proxy(request)
     _count_view("home")
     return _html(blog_render.render_home(
@@ -402,7 +426,7 @@ def _content_markdown(path):
 async def content_page(request: Request):
     path = request.url.path.rstrip("/") or "/"
     spec = _CONTENT_PAGES.get(path)
-    if not spec:
+    if not spec or not _renders_html(path):
         return await _proxy(request)
     _count_view(spec["page"])
     note = (site_content.METHODOLOGY_FACTUAL_NOTE
@@ -431,7 +455,8 @@ async def tool_landing(request: Request):
     browser without a round trip, so these routes only ever see a fresh
     page load."""
     path = request.url.path.rstrip("/") or "/"
-    if request.url.query or path not in blog_render.TOOL_PAGES:
+    if (request.url.query or path not in blog_render.TOOL_PAGES
+            or not _renders_html(path)):
         return await _proxy(request)
     _count_view(path.lstrip("/"))
     return _html(blog_render.render_tool_landing(
