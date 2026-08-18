@@ -538,6 +538,555 @@ def render_post(post, base_url, prev_post=None, next_post=None):
     return _page(head, body)
 
 
+_HOME_CSS = """
+.home main{padding:26px 0 0}
+.home .wrap{max-width:1080px}
+.hero{display:flex;gap:56px;flex-wrap:wrap;align-items:flex-start;margin:6px 0 44px}
+.hero-l{flex:1 1 460px}
+.hero-r{flex:1 1 340px}
+.h1{font-size:43px;line-height:1.13;font-weight:800;letter-spacing:-.7px;margin:0 0 16px}
+.h1 em{font-style:normal;color:#2dd4bf}
+.sub{font-size:17.5px;color:#b9c9dc;margin:0 0 24px;max-width:34em}
+.sub b{color:#e6edf5}
+form.search{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 12px}
+form.search input{flex:1 1 260px;background:#121f36;border:1px solid #1f3352;border-radius:9px;
+  padding:12px 14px;color:#e6edf5;font-size:15px;font-family:inherit}
+form.search input::placeholder{color:#5b7290}
+form.search input:focus{outline:none;border-color:#2dd4bf}
+form.search button{background:#2dd4bf;color:#06231f;border:0;border-radius:9px;
+  padding:12px 26px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit}
+form.search button:hover{filter:brightness(1.08)}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 8px}
+.chip{background:#121f36;border:1px solid #1f3352;border-radius:999px;padding:5px 14px;
+  font-size:13px;color:#b9c9dc}
+.chip:hover{border-color:#2dd4bf;text-decoration:none;color:#e6edf5}
+.fineprint{color:#5b7290;font-size:12.5px;margin:0}
+.h2{font-size:29px;font-weight:800;letter-spacing:-.3px;margin:0 0 8px}
+.secsub{color:#8aa0b8;font-size:15.5px;margin:0 0 22px;max-width:46em}
+.grid4{display:grid;grid-template-columns:repeat(auto-fit,minmax(232px,1fr));gap:16px}
+.feat{display:block;background:#121f36;border:1px solid #1f3352;border-radius:12px;
+  padding:20px;color:inherit;text-decoration:none;transition:border-color .15s,transform .15s}
+.feat:hover{border-color:#2dd4bf;text-decoration:none;transform:translateY(-2px)}
+.feat .ic{font-size:22px;margin-bottom:8px}
+.feat h3{font-size:16.5px;margin:0 0 7px;color:#e6edf5}
+.feat p{font-size:14px;color:#8aa0b8;margin:0;line-height:1.6}
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:22px;margin:0 0 22px}
+.step .n{font-family:ui-monospace,Menlo,monospace;color:#2dd4bf;font-size:12px}
+.step h4{margin:6px 0 6px;font-size:16.5px;color:#e6edf5}
+.step p{font-size:14.5px;color:#8aa0b8;margin:0;line-height:1.62}
+.honesty{background:#121f36;border:1px solid #1f3352;border-left:3px solid #fb7185;
+  border-radius:10px;padding:16px 20px;color:#b9c9dc;font-size:14.5px;line-height:1.6}
+.honesty b{color:#e6edf5}
+.covgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}
+.cov{background:#121f36;border:1px solid #1f3352;border-radius:12px;padding:16px 18px;
+  color:inherit;text-decoration:none;display:block}
+.cov:hover{border-color:#2dd4bf;text-decoration:none}
+.cov .tkr{font-family:ui-monospace,Menlo,monospace;font-weight:700;font-size:15px;color:#e6edf5}
+.cov .ind{color:#5b7290;font-size:12.5px;margin:2px 0 10px}
+.cov .row{display:flex;justify-content:space-between;font-size:13px;color:#8aa0b8;margin-top:4px}
+.cov .row b{color:#e6edf5;font-family:ui-monospace,Menlo,monospace}
+section{margin:0 0 46px}
+.kicker2{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;letter-spacing:1.6px;
+  text-transform:uppercase;color:#2dd4bf;margin:0 0 10px}
+.postrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
+@media(max-width:640px){.h1{font-size:32px}.h2{font-size:24px}.hero{gap:28px}}
+"""
+
+
+def render_home(base_url, posts=None, coverage=None):
+    """The homepage as real HTML.
+
+    This is the page a search engine weighs most heavily and the one
+    Streamlit hides most completely - the hero, the toolkit and the method
+    are all streamed over a websocket, so a crawler sees an empty shell.
+    Rendered here it is the same copy, in the first response, in about
+    20KB.
+
+    The live parts of the Streamlit home (ticker tape, featured analysis,
+    market-mood strip, signed-in watchlist) are deliberately not
+    reproduced: they can't exist without a session, and a crawler would
+    never see them anyway. Anyone who wants them - or the account bar -
+    gets there through "Open the live app", which loads the Streamlit home
+    exactly as before. server.py only serves this page for a bare "/"; any
+    query string at all (?src=, ?admin=, the OAuth ?code= callback) is
+    passed straight through to the app.
+    """
+    e = html.escape
+    posts = posts or []
+
+    cov_html = ""
+    if coverage:
+        cards = []
+        for tkr in sorted(coverage):
+            industry = coverage[tkr].get("industry") or ""
+            sections = coverage[tkr].get("sections") or 1
+            cards.append(
+                f'<a class="cov" href="/research?ticker={e(tkr)}">'
+                f'<div class="tkr">{e(tkr)}</div>'
+                f'<div class="ind">{e(str(industry))}</div>'
+                f'<div class="row"><span>Research sections</span><b>{sections}</b></div>'
+                f'<div class="row"><span>Written verdict</span>'
+                f'<b style="color:#34d399">&#10003;</b></div></a>'
+            )
+        cards.append(
+            '<a class="cov" href="/research">'
+            '<div style="font-size:22px;color:#2dd4bf">&#65291;</div>'
+            'Which stock should be researched next?<br>'
+            '<span style="color:#2dd4bf;font-weight:600">Tell us via Feedback &rarr;</span></a>'
+        )
+        cov_html = f"""
+  <section>
+    <div class="kicker2">Rational Compounder Research</div>
+    <div class="h2">Covered in depth today</div>
+    <div class="secsub">New companies are added as the research completes &mdash; each one
+    takes weeks, not minutes.</div>
+    <div class="covgrid">{''.join(cards)}</div>
+  </section>"""
+
+    posts_html = ""
+    if posts:
+        cards = "".join(
+            f'<a class="card" href="/blog/{e(p["slug"])}"><h2>{e(p["title"])}</h2>'
+            f'<p>{e(post_description(p))}</p>'
+            f'<div class="meta">{e(_human_date(p.get("published_at")))} · '
+            f'{reading_time(p.get("body_md"))} min read</div></a>'
+            for p in posts[:3]
+        )
+        posts_html = f"""
+  <section>
+    <div class="kicker2">From the blog</div>
+    <div class="h2">Written this month</div>
+    <div class="secsub">The reasoning behind the numbers, written out in full &mdash;
+    <a href="/blog">all posts</a>.</div>
+    <div class="postrow">{cards}</div>
+  </section>"""
+
+    body = f"""
+<main><div class="wrap">
+  <div class="hero">
+    <div class="hero-l">
+      <h1 class="h1">The <em>data and models</em> behind a valuation judgment.</h1>
+      <p class="sub">Live intrinsic values, quality calculations, psychology and discovery
+      readings &mdash; computed for any ASX or US stock, with <b>every input stated and every
+      estimate flagged</b>. The judgment stays yours.</p>
+      <form class="search" action="/deep-dive" method="get" id="tickerform">
+        <input type="text" name="ticker" id="tickerinput" autocomplete="off"
+               placeholder="CSL.AX  ·  or two tickers to compare: CSL.AX BHP.AX"
+               aria-label="Stock ticker">
+        <button type="submit">Analyze</button>
+      </form>
+      <div class="chips">
+        <a class="chip" href="/deep-dive?ticker=CSL.AX">CSL.AX</a>
+        <a class="chip" href="/deep-dive?ticker=AAPL">AAPL</a>
+        <a class="chip" href="/deep-dive?ticker=BHP.AX">BHP.AX</a>
+        <a class="chip" href="/deep-dive?ticker=RMD.AX">RMD.AX</a>
+        <a class="chip" href="/comparison?tickers=CSL.AX,BHP.AX">CSL.AX vs BHP.AX</a>
+      </div>
+      <p class="fineprint">One ticker = full Deep Dive &middot; Two or more = side-by-side
+      Comparison &middot; ASX + US mixed freely</p>
+    </div>
+    <div class="hero-r">
+      <div class="card" style="cursor:default">
+        <div class="kicker">What you get</div>
+        <p><b style="color:#e6edf5">What is the intrinsic value?</b> A live DCF with a
+        per-stock discount rate, shown next to today's price with the margin of safety
+        stated as a percentage.</p>
+        <p><b style="color:#e6edf5">Is it a good business?</b> A 0&ndash;100 Quality Score
+        from profitability and balance-sheet tests.</p>
+        <p style="margin:0"><b style="color:#e6edf5">What is the crowd doing?</b> Psychology
+        and discovery readings &mdash; distance from recent highs, volume, search and news
+        attention &mdash; stated as numbers.</p>
+      </div>
+      <p class="fineprint" style="margin-top:12px">
+        <a href="/?app=1">Open the live app &rarr;</a> for the ticker tape, today's featured
+        analysis, market mood and your saved watchlist.</p>
+    </div>
+  </div>
+
+  <section>
+    <div class="kicker2">The toolkit</div>
+    <div class="h2">Four ways in. One consistent model.</div>
+    <div class="secsub">Every tool runs the same engine &mdash; the same DCF model, the same
+    quality calculation, the same psychology read &mdash; so the numbers always agree with
+    each other.</div>
+    <div class="grid4">
+      <a class="feat" href="/deep-dive">
+        <div class="ic">&#128269;</div><h3>Stock Deep Dive</h3>
+        <p>The full picture for one ticker: intrinsic value vs today's price, what drives the
+        Value Score, and psychology and discovery readings &mdash; every input stated.</p></a>
+      <a class="feat" href="/comparison">
+        <div class="ic">&#9878;&#65039;</div><h3>Side-by-side Comparison</h3>
+        <p>Two or more tickers lined up on identical calculations &mdash; intrinsic value,
+        quality calculation, psychology &mdash; as colour-coded data bars.</p></a>
+      <a class="feat" href="/scanner">
+        <div class="ic">&#128225;</div><h3>Stock Scanner</h3>
+        <p>A whole index &mdash; ASX 200, S&amp;P 500 and more &mdash; as one sortable data
+        table, computed nightly, with an optional sector filter.</p></a>
+      <a class="feat" href="/research">
+        <div class="ic">&#128218;</div><h3>Rational Compounder Research</h3>
+        <p>Hand-built research on selected compounders &mdash; a decade of reported earnings,
+        four fair-value models, and documented company histories.</p></a>
+    </div>
+  </section>
+
+  <section>
+    <div class="kicker2">How it works</div>
+    <div class="h2">Search. Compute. Inspect.</div>
+    <div class="steps">
+      <div class="step"><div class="n">01</div><h4>Type any ticker</h4>
+        <p>ASX (CSL.AX) or US (AAPL). Live data is pulled on the spot &mdash; prices, cash
+        flows, news, search trends, social chatter.</p></div>
+      <div class="step"><div class="n">02</div><h4>Get one transparent calculation</h4>
+        <p>The Value Score blends the quality calculation, the gap between price and intrinsic
+        value, psychology and discovery &mdash; the same arithmetic every time, with every
+        input shown.</p></div>
+      <div class="step"><div class="n">03</div><h4>See value AND psychology</h4>
+        <p>Two separate calculations, never blurred: what the model computes from the
+        business's own cash flows, and what the crowd has been doing to the price.</p></div>
+    </div>
+    <div class="honesty"><b>The red-flag rule:</b> whenever a number rests on a default or
+    average because real data wasn't available, it's shown in red. An estimate is never
+    dressed up as a fact &mdash; you always know which numbers are computed and which are
+    assumed. <a href="/methodology">How the scores work &rarr;</a></div>
+  </section>
+{cov_html}{posts_html}
+  <section>
+    <div class="cta">
+      <h3>Everything is free.</h3>
+      <p><a href="/?app=1">Open the app</a> and sign in to save a watchlist and get the
+      weekly watchlist digest.</p>
+    </div>
+  </section>
+</div></main>
+<script>
+// Two or more tickers belong in Comparison, one in Deep Dive. Without
+// JavaScript the form still works - it just always lands on Deep Dive.
+document.getElementById('tickerform').addEventListener('submit', function (ev) {{
+  var raw = document.getElementById('tickerinput').value.trim();
+  var parts = raw.split(/[\\s,]+/).filter(Boolean);
+  if (parts.length > 1) {{
+    ev.preventDefault();
+    window.location = '/comparison?tickers=' + encodeURIComponent(parts.join(','));
+  }}
+}});
+</script>
+"""
+    description = ("Live intrinsic value, quality, crowd psychology and discovery "
+                   "readings for any ASX or US stock - every input stated and every "
+                   "estimate flagged. Free.")
+    json_ld = _json_ld([
+        {"@context": "https://schema.org", "@type": "WebSite",
+         "name": SITE_NAME, "url": base_url,
+         "description": description,
+         "potentialAction": {
+             "@type": "SearchAction",
+             "target": {"@type": "EntryPoint",
+                        "urlTemplate": f"{base_url}/deep-dive?ticker={{search_term_string}}"},
+             "query-input": "required name=search_term_string"}},
+        {"@context": "https://schema.org", "@type": "Organization",
+         "name": SITE_NAME, "url": base_url,
+         "email": "rationalcompounder@stocksdeepdive.com",
+         "founder": {"@type": "Person", "name": "Andres Moreno"}},
+    ])
+    head = _head(
+        f"{SITE_NAME} - what a stock is worth, with every input shown",
+        description, base_url + "/", base_url, json_ld=json_ld,
+        extra_meta=f"<style>{_HOME_CSS}</style>",
+    )
+    return _page(head, body).replace("<body>", '<body class="home">', 1)
+
+
+# -----------------------------------
+# TOOL LANDING PAGES
+#
+# /deep-dive, /comparison, /scanner and /research are live Streamlit
+# tools, so a crawler fetching them gets an empty shell. But the bare URL
+# - the one with no ticker on it - isn't a result page at all; it is the
+# tool's front door, and it is exactly the page that should rank for
+# "ASX stock valuation tool" or "compare two stocks".
+#
+# So the bare URL is served from here as a real page explaining what the
+# tool does, with a form that hands straight off into the live app. The
+# moment a ticker is on the URL (?ticker=, ?tickers=, ?app=1) the request
+# is proxied to Streamlit exactly as before - see server.py. Nothing is
+# hidden from users that isn't shown to crawlers: everyone gets this page
+# for a bare URL, and the same app for a real query.
+# -----------------------------------
+
+TOOL_PAGES = {
+    "/deep-dive": {
+        "title": "Stock Deep Dive - intrinsic value for any ASX or US stock",
+        "h1": "Stock Deep Dive",
+        "description": ("Put in one ticker and get a live discounted cash flow, a "
+                        "quality score from reported fundamentals, and crowd "
+                        "psychology readings - with every input shown."),
+        "lede": ("One ticker in, the whole picture out: what a discounted cash "
+                 "flow says the business is worth, how good a business it "
+                 "actually is, and what the crowd has been doing to the price."),
+        "form": {"action": "/deep-dive", "field": "ticker",
+                 "placeholder": "CSL.AX  ·  AAPL  ·  BHP.AX",
+                 "button": "Analyze"},
+        "sections": [
+            ("What it computes", [
+                "**Intrinsic value.** A discounted cash flow built from the "
+                "company's own reported free cash flows, with the discount rate "
+                "calculated per stock from its own beta against its market "
+                "(CAPM), growth taken from analyst consensus where available and "
+                "the company's own FCF history otherwise, and a terminal growth "
+                "rate set by the stock's currency. Where a DCF isn't possible a "
+                "P/E-blend fallback is used, and labelled as such.",
+                "**Quality.** Return on equity, profit margin, revenue and "
+                "earnings growth, free cash flow and debt, computed from reported "
+                "fundamentals. Loss-making, cash-burning businesses are capped - "
+                "a company that doesn't make money can't score as high quality no "
+                "matter how fast it grows.",
+                "**Psychology and discovery.** Distance below the three-month "
+                "high, distance from the 50-day average, volume, search interest, "
+                "news flow and social chatter - reported as measurements, "
+                "deliberately kept separate from the valuation.",
+            ]),
+            ("Why every estimate is flagged", [
+                "Whenever a number rests on a default or an average because real "
+                "data wasn't available, it is shown in red. You always know which "
+                "figures are computed from the company's own filings and which "
+                "are assumptions - so you can disagree with the assumption "
+                "instead of inheriting it. Several of them you can override "
+                "yourself and watch the valuation move.",
+            ]),
+            ("Coverage", [
+                "Any ASX ticker (`CSL.AX`, `BHP.AX`) and any US ticker (`AAPL`, "
+                "`MSFT`). Data is pulled live at the moment you search, from "
+                "Yahoo Finance, Google Trends, NewsAPI and StockTwits.",
+            ]),
+        ],
+    },
+    "/comparison": {
+        "title": "Compare stocks side by side - identical valuation maths",
+        "h1": "Side-by-side Comparison",
+        "description": ("Line two or more ASX or US stocks up on identical "
+                        "calculations - intrinsic value, quality, psychology - as "
+                        "colour-coded bars, so the comparison is like for like."),
+        "lede": ("Two or more tickers, the same arithmetic applied to each, laid "
+                 "out in one table. The point is that nothing is computed "
+                 "differently for one stock than for another."),
+        "form": {"action": "/comparison", "field": "tickers",
+                 "placeholder": "CSL.AX, BHP.AX  ·  AAPL, MSFT, GOOGL",
+                 "button": "Compare"},
+        "sections": [
+            ("Why like-for-like matters", [
+                "Most comparisons are assembled from whatever number each source "
+                "happened to publish - one company's P/E from a broker note, "
+                "another's from a screener with a different definition of "
+                "earnings. Here every stock in the table goes through the same "
+                "DCF, the same quality tests and the same psychology read, so a "
+                "difference in the output is a difference in the business rather "
+                "than a difference in the method.",
+            ]),
+            ("What you can line up", [
+                "Intrinsic value against today's price, margin of safety as a "
+                "percentage, the quality calculation and its components, and the "
+                "psychology and discovery readings. Mix ASX and US tickers "
+                "freely - currency and terminal growth are handled per stock.",
+            ]),
+            ("Reading the bars", [
+                "Each metric is drawn as a colour-coded bar so the ranking is "
+                "visible before you read a single number, and any value resting "
+                "on an estimate is flagged in red rather than quietly averaged "
+                "in.",
+            ]),
+        ],
+    },
+    "/scanner": {
+        "title": "Stock Scanner - rank a whole index by the same model",
+        "h1": "Stock Scanner",
+        "description": ("Rank the ASX 200, S&P 500 and other indices on one "
+                        "consistent valuation model, computed nightly, with an "
+                        "optional sector filter."),
+        "lede": ("A whole index as one sortable table - the same valuation, "
+                 "quality and psychology maths run across every constituent, "
+                 "recomputed overnight."),
+        "form": None,
+        "sections": [
+            ("What it's for", [
+                "A deep dive answers a question about a company you already have "
+                "in mind. The scanner is the other direction: it is for finding "
+                "the companies worth having in mind in the first place. Sort a "
+                "whole index by the same score, filter to a sector, and start "
+                "from the top.",
+            ]),
+            ("How the numbers get there", [
+                "The scan runs overnight across each configured universe, so "
+                "opening the page shows a finished table rather than starting "
+                "hundreds of live data pulls. Every column is the same "
+                "calculation described in [how the scores work]"
+                "(/methodology) - sorting the table is arithmetic, not opinion.",
+            ]),
+            ("Universes", [
+                "ASX 200, S&P 500 and other indices, with an optional sector "
+                "filter on top. Any row can be opened straight into a full "
+                "[Deep Dive](/deep-dive) on that ticker.",
+            ]),
+        ],
+    },
+    "/research": {
+        "title": "Rational Compounder Research - hand-built company analysis",
+        "h1": "Rational Compounder Research",
+        "description": ("Hand-built, Buffett/Munger-style research on selected "
+                        "quality compounders: a decade of reported earnings, four "
+                        "fair-value methods and written judgment on each business."),
+        "lede": ("The one part of this site that isn't computed. Each company "
+                 "here is a workbook the author built by hand over weeks - a "
+                 "decade of reported earnings, four independent fair-value "
+                 "methods, and written judgment on management, moat and risk."),
+        "form": None,
+        "sections": [
+            ("How it differs from the tools", [
+                "Everywhere else on this site, a ticker goes in and the same "
+                "engine runs. The research section is the opposite: every "
+                "threshold, every colour band and every verdict comes from the "
+                "original workbook for that specific company, not from a generic "
+                "screen. It is slow on purpose - each company takes weeks.",
+            ]),
+            ("What each company gets", [
+                "Ten years of reported earnings and margins; four independent "
+                "fair-value estimates (trailing P/E, forward P/E, a discounted "
+                "cash flow, and a ten-year equity method) shown side by side "
+                "rather than averaged into one false number; and written "
+                "Buffett/Munger-style judgment on the business, its management "
+                "and what would break the thesis.",
+            ]),
+            ("Author position disclosure", [
+                "Each covered company states whether the author personally "
+                "holds it, has never held it, or previously held and exited - "
+                "next to the research, not buried. Skin in the game is context "
+                "you're entitled to when reading someone's opinion.",
+            ]),
+        ],
+    },
+}
+
+
+def render_tool_landing(path, base_url, coverage=None):
+    e = html.escape
+    spec = TOOL_PAGES[path]
+
+    form_html = ""
+    if spec["form"]:
+        f = spec["form"]
+        form_html = f"""
+  <form class="search" action="{f['action']}" method="get">
+    <input type="text" name="{f['field']}" autocomplete="off"
+           placeholder="{e(f['placeholder'])}" aria-label="Stock ticker">
+    <button type="submit">{e(f['button'])}</button>
+  </form>"""
+    else:
+        form_html = (f'<p><a class="chip" href="{path}?app=1">'
+                     f'Open {e(spec["h1"])} &rarr;</a></p>')
+
+    sections = "".join(
+        f'<h2>{e(h)}</h2>' + md_to_html("\n\n".join(paras))
+        for h, paras in spec["sections"]
+    )
+
+    cov_html = ""
+    if coverage and path == "/research":
+        items = "".join(
+            f'<a class="cov" href="/research?ticker={e(t)}">'
+            f'<div class="tkr">{e(t)}</div>'
+            f'<div class="ind">{e(str(coverage[t].get("industry") or ""))}</div>'
+            f'<div class="row"><span>Research sections</span>'
+            f'<b>{coverage[t].get("sections", 1)}</b></div></a>'
+            for t in sorted(coverage)
+        )
+        cov_html = (f'<h2>Covered in depth today</h2>'
+                    f'<div class="covgrid">{items}</div>')
+
+    body = f"""
+<main><div class="wrap">
+  <article>
+    <h1>{e(spec['h1'])}</h1>
+    <p class="lede">{e(spec['lede'])}</p>
+    {form_html}
+    {sections}
+    {cov_html}
+  </article>
+  <div class="cta">
+    <h3>The same engine runs everywhere</h3>
+    <p>Read <a href="/methodology">how the scores work</a>, or try
+    <a href="/deep-dive">Deep Dive</a>,
+    <a href="/comparison">Comparison</a>,
+    <a href="/scanner">Scanner</a> and
+    <a href="/research">Rational Compounder Research</a>. Longer write-ups
+    live on the <a href="/blog">blog</a>.</p>
+  </div>
+</div></main>
+"""
+    canonical = f"{base_url}{path}"
+    json_ld = _json_ld({
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": spec["h1"],
+        "url": canonical,
+        "description": spec["description"],
+        "applicationCategory": "FinanceApplication",
+        "operatingSystem": "Any (web)",
+        "offers": {"@type": "Offer", "price": "0", "priceCurrency": "AUD"},
+        "publisher": {"@type": "Organization", "name": SITE_NAME, "url": base_url},
+    })
+    head = _head(f"{spec['title']} | {SITE_NAME}", spec["description"],
+                 canonical, base_url, json_ld=json_ld,
+                 extra_meta=f"<style>{_HOME_CSS}</style>")
+    return _page(head, body).replace("<body>", '<body class="home">', 1)
+
+
+def render_content_page(title, markdown_text, description, path, base_url,
+                        heading=None, intro_note=None):
+    """A standing content page (How the scores work / About / Privacy) as
+    real HTML.
+
+    These pages exist in the Streamlit app too, but a crawler fetching
+    them there gets an empty shell. Served from here they are the site's
+    only substantive indexable pages besides the blog - and 'how the
+    scores work' is the page that explains the whole product, so it is the
+    one most worth ranking. The prose comes from site_content.py, the same
+    source the app renders, so the two can never drift."""
+    note = ""
+    if intro_note:
+        note = (f'<div class="cta" style="margin:0 0 26px">'
+                f'{md_to_html(intro_note)}</div>')
+    body = f"""
+<main><div class="wrap">
+  <article>
+    <h1>{html.escape(heading or title)}</h1>
+    {note}
+    {md_to_html(markdown_text)}
+  </article>
+  <div class="cta">
+    <h3>See it run on a real company</h3>
+    <p>Put a ticker into <a href="/deep-dive">Stock Deep Dive</a>, line two up
+    <a href="/comparison">side by side</a>, or read the hand-built
+    <a href="/research">Rational Compounder research</a>. New writing lands on
+    the <a href="/blog">blog</a>.</p>
+  </div>
+</div></main>
+"""
+    canonical = f"{base_url}{path}"
+    json_ld = _json_ld({
+        "@context": "https://schema.org",
+        "@type": "WebPage",
+        "name": title,
+        "description": description,
+        "url": canonical,
+        "isPartOf": {"@type": "WebSite", "name": SITE_NAME, "url": base_url},
+        "publisher": {"@type": "Organization", "name": SITE_NAME,
+                      "url": base_url},
+        "inLanguage": "en",
+    })
+    head = _head(f"{title} | {SITE_NAME}", description, canonical, base_url,
+                 json_ld=json_ld)
+    return _page(head, body)
+
+
 def render_not_found(base_url, message="That page doesn't exist."):
     body = f"""
 <main><div class="wrap">

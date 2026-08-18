@@ -65,6 +65,12 @@ from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse,
 
 import blog_render
 import blog_store
+import site_content
+
+try:
+    import metrics_store
+except Exception:  # analytics must never be able to stop the site serving
+    metrics_store = None
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -186,6 +192,18 @@ def _html(content, status=200, cache="public, max-age=300"):
                         headers={"Cache-Control": cache})
 
 
+def _count_view(page, ticker=None):
+    """Keep the admin Stats popover honest. These pages used to be counted
+    by app.py's _bump_page_view; now that they are served here, the count
+    has to happen here or the numbers silently stop."""
+    if not metrics_store:
+        return
+    try:
+        metrics_store.bump(page, ticker=ticker)
+    except Exception:
+        pass
+
+
 def _admin_preview_ok(request: Request) -> bool:
     """Draft posts are viewable at their real URL only by the admin - the
     same ADMIN_REFRESH_KEY the app uses, passed as ?preview=<key>. Drafts
@@ -199,6 +217,52 @@ def _admin_preview_ok(request: Request) -> bool:
 # -----------------------------------
 # BLOG ROUTES  (registered before the catch-all proxy)
 # -----------------------------------
+
+def _coverage():
+    """Ticker -> {industry, sections} for the Rational Compounder cards on
+    the homepage, read from the same compounder_data.json the app uses.
+    Read per request rather than cached at import so an admin rebuild of
+    the file shows up without a restart; the file is small and the
+    homepage is not hot enough for that to matter."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "compounder_data.json")
+    try:
+        import json
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        out = {}
+        sections = data.get("sections", {}) or {}
+        for tkr, meta in (data.get("tickers") or {}).items():
+            n = sum(1 for s in sections.values()
+                    if any((m.get("values") or {}).get(tkr) is not None
+                           for m in s.get("metrics", [])))
+            out[tkr] = {"industry": (meta or {}).get("industry") or "",
+                        "sections": max(n, 1)}
+        return out
+    except Exception:
+        return {}
+
+
+@app.get("/", include_in_schema=False)
+async def home(request: Request):
+    """The indexable homepage - but ONLY for a bare "/".
+
+    Any query string means this is not a plain visit: ?src= is an article
+    attribution the app records, ?admin= is the full-view unlock, and
+    ?code=/?state= is Google's OAuth callback landing back on the site.
+    All of those have to reach Streamlit exactly as they did before, so
+    anything with a query is proxied untouched. ?app=1 is the explicit
+    "give me the live app" link on the static page, and works by the same
+    rule."""
+    if request.url.query:
+        return await _proxy(request)
+    _count_view("home")
+    return _html(blog_render.render_home(
+        _base_url(request),
+        posts=blog_store.list_posts(limit=3),
+        coverage=_coverage(),
+    ))
+
 
 @app.get("/robots.txt", include_in_schema=False)
 async def robots(request: Request):
@@ -230,6 +294,7 @@ async def feed(request: Request):
 @app.get("/blog", include_in_schema=False)
 async def blog_index(request: Request):
     tag = (request.query_params.get("tag") or "").strip().lower() or None
+    _count_view("blog")
     posts = blog_store.list_posts(tag=tag)
     html_out = blog_render.render_index(
         posts, _base_url(request), tag=tag,
@@ -275,6 +340,7 @@ async def blog_post(slug: str, request: Request):
         return _html(blog_render.render_not_found(base), status=404,
                      cache="no-store")
 
+    _count_view(f"blog:{slug}")
     published = blog_store.list_posts()
     idx = next((i for i, p in enumerate(published) if p["slug"] == slug), None)
     newer = published[idx - 1] if idx not in (None, 0) else None
@@ -282,6 +348,96 @@ async def blog_post(slug: str, request: Request):
              and idx + 1 < len(published) else None)
     return _html(blog_render.render_post(post, base, prev_post=older,
                                          next_post=newer))
+
+
+# -----------------------------------
+# CONTENT PAGES - served as HTML instead of proxied to Streamlit
+#
+# These three are pure prose with no interactivity, so serving them here
+# costs the visitor nothing (they load instantly instead of booting a
+# Streamlit session) and gains the site three genuinely indexable pages.
+# The words come from site_content.py - the same source app.py renders -
+# so the crawled page and the in-app page can never disagree.
+# -----------------------------------
+
+_FACTUAL = (os.environ.get("FACTUAL_MODE", "true").strip().lower()
+            not in ("false", "0", "no", "off"))
+
+_CONTENT_PAGES = {
+    "/methodology": {
+        "title": "How the scores work",
+        "description": ("How StocksDeepDive computes intrinsic value, quality, "
+                        "crowd psychology and discovery for any ASX or US "
+                        "stock - every input, weight and assumption stated."),
+        "page": "methodology",
+    },
+    "/about": {
+        "title": "About",
+        "description": ("StocksDeepDive is built and run by Andres Moreno, a "
+                        "private investor in Australia - what the site is, and "
+                        "the two principles it was built on."),
+        "page": "about",
+    },
+    "/privacy": {
+        "title": "Privacy policy",
+        "description": ("What StocksDeepDive collects, what it never does, and "
+                        "how to have your data deleted. No ad trackers, no "
+                        "third-party analytics, nothing sold."),
+        "page": "privacy",
+    },
+}
+
+
+def _content_markdown(path):
+    if path == "/methodology":
+        return site_content.methodology_md(_FACTUAL)
+    if path == "/about":
+        return site_content.about_md(_FACTUAL)
+    return site_content.PRIVACY_MD
+
+
+@app.get("/methodology", include_in_schema=False)
+@app.get("/about", include_in_schema=False)
+@app.get("/privacy", include_in_schema=False)
+async def content_page(request: Request):
+    path = request.url.path.rstrip("/") or "/"
+    spec = _CONTENT_PAGES.get(path)
+    if not spec:
+        return await _proxy(request)
+    _count_view(spec["page"])
+    note = (site_content.METHODOLOGY_FACTUAL_NOTE
+            if path == "/methodology" and _FACTUAL else None)
+    return _html(blog_render.render_content_page(
+        title=spec["title"],
+        markdown_text=_content_markdown(path),
+        description=spec["description"],
+        path=path,
+        base_url=_base_url(request),
+        intro_note=note,
+    ))
+
+
+@app.get("/deep-dive", include_in_schema=False)
+@app.get("/comparison", include_in_schema=False)
+@app.get("/scanner", include_in_schema=False)
+@app.get("/research", include_in_schema=False)
+async def tool_landing(request: Request):
+    """Same rule as the homepage: a BARE tool URL is the tool's front door
+    and is served as an indexable page describing it; the instant there is
+    a query on the URL (?ticker=, ?tickers=, ?app=1, ?src=, ?admin=) the
+    request is a real use of the tool and goes straight to Streamlit.
+
+    In-app navigation is unaffected - Streamlit switches pages inside the
+    browser without a round trip, so these routes only ever see a fresh
+    page load."""
+    path = request.url.path.rstrip("/") or "/"
+    if request.url.query or path not in blog_render.TOOL_PAGES:
+        return await _proxy(request)
+    _count_view(path.lstrip("/"))
+    return _html(blog_render.render_tool_landing(
+        path, _base_url(request),
+        coverage=_coverage() if path == "/research" else None,
+    ))
 
 
 @app.get("/{token}.html", include_in_schema=False)
