@@ -298,7 +298,8 @@ async def robots(request: Request):
 
 @app.get("/sitemap.xml", include_in_schema=False)
 async def sitemap(request: Request):
-    xml = blog_render.render_sitemap(blog_store.list_posts(), _base_url(request))
+    xml = blog_render.render_sitemap(blog_store.list_posts(), _base_url(request),
+                                     renders_html=_renders_html)
     return Response(xml, media_type="application/xml",
                     headers={"Cache-Control": "public, max-age=900"})
 

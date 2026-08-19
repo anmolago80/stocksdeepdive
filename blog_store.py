@@ -385,10 +385,13 @@ def save_media(filename, data):
 def media_path(name):
     """Absolute path for a stored media file, or None if the name is
     unsafe or missing."""
-    if not name or not _SAFE_MEDIA.match(name):
+    # ".." passes the character whitelist (dots are allowed) but names the
+    # parent directory - reject anything that isn't a plain filename, and
+    # only ever answer with a real file, never a directory.
+    if not name or not _SAFE_MEDIA.match(name) or name.strip(".") == "":
         return None
     path = os.path.join(MEDIA_DIR, name)
-    return path if os.path.exists(path) else None
+    return path if os.path.isfile(path) else None
 
 
 def list_media():

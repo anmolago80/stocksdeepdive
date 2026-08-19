@@ -1106,13 +1106,22 @@ def render_not_found(base_url, message="That page doesn't exist."):
 # MACHINE-READABLE ENDPOINTS
 # -----------------------------------
 
-def render_sitemap(posts, base_url):
+def render_sitemap(posts, base_url, renders_html=None):
     """XML sitemap covering the app's pages and every published post. This
     is what gets submitted in Google Search Console; without it a Streamlit
-    site has essentially no discoverable URL surface at all."""
+    site has essentially no discoverable URL surface at all.
+
+    renders_html: optional callable(path) -> bool - the server's own test
+    for whether a path is served as real HTML. When provided, app pages
+    that would only serve the empty Streamlit shell are LEFT OUT of the
+    sitemap: a sitemap must never advertise a URL a crawler will find
+    blank. ("/" is always listed - the domain root gets crawled whether or
+    not it's in the sitemap, so hiding it would change nothing.)"""
     rows = []
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     for path, priority, freq in APP_PATHS:
+        if renders_html is not None and path != "/" and not renders_html(path):
+            continue
         rows.append(
             f"  <url><loc>{xml_escape(base_url + path)}</loc>"
             f"<changefreq>{freq}</changefreq>"
