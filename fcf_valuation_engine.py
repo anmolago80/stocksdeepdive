@@ -382,6 +382,68 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None):
     return DEFAULT_GROWTH, "default", "Default"
 
 
+# DCF fix: static FX fallback, used only when a live rate can't be fetched -
+# approximate, occasionally-updated, same spirit as every other fallback
+# constant in this module/app (RISK_FREE_FALLBACK, _SP500_STATIC_FALLBACK,
+# etc.). Flagged via meta["fx_fallback"] when actually used, same as any
+# other assumption on this site.
+_FX_STATIC_FALLBACK = {
+    ("USD", "AUD"): 1.52,
+    ("AUD", "USD"): 0.66,
+}
+
+# Per-process cache so one page render (which can call fx_rate for several
+# tickers sharing the same currency pair) fetches each live rate at most
+# once. A plain dict is enough - this module doesn't import streamlit, and
+# the cache only needs to live for the duration of one run anyway.
+_fx_cache = {}
+
+
+def fx_rate(from_ccy, to_ccy):
+    """
+    Exchange rate to convert an amount FROM from_ccy INTO to_ccy (multiply
+    by this). Returns (rate, source) where source is "live" or "fallback".
+
+    Same currency in both slots is always (1.0, "live") - not really a live
+    fetch, but not an assumption either, so it's never flagged red.
+    """
+    from_ccy = (from_ccy or "").upper()
+    to_ccy = (to_ccy or "").upper()
+    if not from_ccy or not to_ccy:
+        return 1.0, "fallback"
+    if from_ccy == to_ccy:
+        return 1.0, "live"
+
+    cache_key = (from_ccy, to_ccy)
+    if cache_key in _fx_cache:
+        return _fx_cache[cache_key]
+
+    result = None
+    try:
+        hist = yf.Ticker(f"{from_ccy}{to_ccy}=X").history(period="5d")
+        if hist is not None and not hist.empty:
+            rate = float(hist["Close"].iloc[-1])
+            if rate == rate and rate > 0:   # not NaN
+                result = (rate, "live")
+    except Exception:
+        result = None
+
+    if result is None:
+        if cache_key in _FX_STATIC_FALLBACK:
+            result = (_FX_STATIC_FALLBACK[cache_key], "fallback")
+        elif (to_ccy, from_ccy) in _FX_STATIC_FALLBACK:
+            result = (1.0 / _FX_STATIC_FALLBACK[(to_ccy, from_ccy)], "fallback")
+        else:
+            # Unknown pair and no live rate - a 1.0 no-op is the least-bad
+            # option (leaves the original unit-mismatch bug for THIS pair
+            # only, rather than inventing a number with no basis at all);
+            # still flagged as a fallback so it's visibly not a real rate.
+            result = (1.0, "fallback")
+
+    _fx_cache[cache_key] = result
+    return result
+
+
 def dcf_intrinsic_value(
     ticker,
     info=None,
@@ -418,6 +480,10 @@ def dcf_intrinsic_value(
                                        # 3-year median (see FCF_OUTLIER_THRESHOLD)
         "fcf_base_raw":   float | None,  # the un-swapped latest-year value, when normalized
         "fcf_base_used":  float | None,  # the median actually used, when normalized
+        "discount_floored": bool,  # DCF fix: True if capm_engine floored beta and/or the rate itself
+        "fx_converted":   str | None,  # DCF fix: "USD->AUD" etc. when financials/listing currency differ
+        "fx_rate_used":   float | None,  # the rate actually applied
+        "fx_fallback":    bool,   # True if fx_rate() had to use the static fallback table
     }
     """
     meta = {
@@ -440,6 +506,10 @@ def dcf_intrinsic_value(
         "fcf_base_normalized": False,
         "fcf_base_raw": None,
         "fcf_base_used": None,
+        "discount_floored": False,
+        "fx_converted": None,
+        "fx_rate_used": None,
+        "fx_fallback": False,
     }
 
     try:
@@ -476,6 +546,30 @@ def dcf_intrinsic_value(
         if fcf <= 0:
             return 0, None, meta
 
+        # --- Currency conversion: reported financials vs listing currency --
+        # Some companies (e.g. ASX-listed CSL.AX) report financial
+        # statements in a different currency than the one they trade in
+        # (info["financialCurrency"] == "USD" while the stock trades in
+        # AUD). Without this, fcf below silently stays in the STATEMENT
+        # currency while fcf_per_share is presented to the app/user as a
+        # PRICE-currency (listing currency) per-share figure - a straight
+        # unit mismatch. Applied to whichever fcf was just chosen above,
+        # manual override included: manual_fcf isn't documented anywhere as
+        # being in a different unit than the auto-derived figure, and both
+        # flow into the exact same fcf_per_share line below, so keeping one
+        # consistent meaning (statement currency in, listing currency out)
+        # is the least surprising reading rather than inventing an
+        # undocumented special case for the manual path.
+        fin_ccy = (info.get("financialCurrency") or currency or "").upper()
+        listing_ccy = (currency or info.get("currency") or "").upper()
+        if fin_ccy and listing_ccy and fin_ccy != listing_ccy:
+            _fx, _fx_src = fx_rate(fin_ccy, listing_ccy)
+            fcf = fcf * _fx
+            meta["fx_converted"] = f"{fin_ccy}->{listing_ccy}"
+            meta["fx_rate_used"] = round(_fx, 4)
+            if _fx_src == "fallback":
+                meta["fx_fallback"] = True
+
         # --- Discount rate (CAPM, per stock) --------------------------------
         if discount_rate is not None:
             meta["discount_source"] = "manual"
@@ -483,6 +577,7 @@ def dcf_intrinsic_value(
             try:
                 discount_rate, capm_meta = capm_engine.resolve_discount_rate(info, currency)
                 meta["discount_source"] = "capm-default" if capm_meta["defaulted"] else "capm"
+                meta["discount_floored"] = bool(capm_meta.get("floored"))
             except Exception:
                 discount_rate = DEFAULT_DISCOUNT_RATE
                 meta["discount_source"] = "fallback"

@@ -41,6 +41,25 @@ DEFAULT_BETA = 1.0                  # market-average, used when info["beta"] is 
 DISCOUNT_FLOOR = 0.05
 DISCOUNT_CEIL = 0.15
 
+# DCF-fix constants: a listed equity's cost of capital below ~7.5% is not
+# defensible for valuation purposes - the Gordon-growth terminal value is
+# extremely sensitive to (discount_rate - perpetual_rate), and a discount
+# rate sitting only a couple of points above terminal growth can blow the
+# whole DCF up by an order of magnitude even with otherwise-sane inputs
+# (this is exactly what happened for CSL.AX: a live beta near 0.2 pushed
+# the CAPM rate down to the old 5% DISCOUNT_FLOOR, only 2.5pp above AUD
+# terminal growth). MIN_DISCOUNT_RATE supersedes DISCOUNT_FLOOR as the
+# effective floor inside resolve_discount_rate() below (DISCOUNT_FLOOR
+# itself is left as-is since resolver_engine.py's bear/bull DCF scenario
+# banding also clamps to it independently).
+MIN_DISCOUNT_RATE = 0.075
+
+# A measured beta below 0.6 is usually a data artefact (thin trading, a
+# short or unusually defensive lookback window) rather than genuinely low
+# systematic risk - flooring it keeps the CAPM discount rate defensible
+# even when Yahoo's own beta figure looks implausibly low.
+MIN_BETA = 0.60
+
 # Terminal growth by the stock's OWN currency - roughly that economy's
 # long-run inflation target / nominal trend growth, not the stock's own
 # growth. Unknown currencies fall back to DEFAULT_PERPETUAL_GROWTH.
@@ -103,9 +122,19 @@ def resolve_discount_rate(info, currency):
     CAPM cost of equity for one stock. Returns (discount_rate, meta) where
     meta records where beta and the risk-free rate came from, and whether
     either had to fall back to a default (so the app can flag it).
+
+    DCF fix: beta is floored at MIN_BETA before it enters the CAPM formula,
+    and the resulting rate is floored at MIN_DISCOUNT_RATE (both above
+    DISCOUNT_FLOOR's old, looser band) - either clamp firing is recorded in
+    meta so the caller (fcf_valuation_engine.dcf_intrinsic_value) can pass
+    it up to the app, which flags it on screen the same way every other
+    assumption on this site is flagged.
     """
     info = info or {}
-    meta = {"beta_source": "info", "rf_source": None, "defaulted": False}
+    meta = {
+        "beta_source": "info", "rf_source": None, "defaulted": False,
+        "beta_floored": False, "discount_floored": False, "floored": False,
+    }
 
     beta = info.get("beta")
     if beta is None or beta <= 0:
@@ -113,13 +142,20 @@ def resolve_discount_rate(info, currency):
         meta["beta_source"] = "default"
         meta["defaulted"] = True
 
+    if beta < MIN_BETA:
+        beta = MIN_BETA
+        meta["beta_floored"] = True
+
     rf, rf_src = get_risk_free_rate(currency)
     meta["rf_source"] = rf_src
     if rf_src == "default":
         meta["defaulted"] = True
 
     rate = rf + beta * EQUITY_RISK_PREMIUM
-    rate = max(DISCOUNT_FLOOR, min(rate, DISCOUNT_CEIL))
+    if rate < MIN_DISCOUNT_RATE:
+        meta["discount_floored"] = True
+    rate = max(MIN_DISCOUNT_RATE, min(rate, DISCOUNT_CEIL))
+    meta["floored"] = meta["beta_floored"] or meta["discount_floored"]
     return round(rate, 4), meta
 
 

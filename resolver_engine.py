@@ -100,6 +100,11 @@ def resolve_intrinsic_value(
             "fcf_base_normalized": dcf_meta.get("fcf_base_normalized", False),
             "fcf_base_raw": dcf_meta.get("fcf_base_raw"),
             "fcf_base_used": dcf_meta.get("fcf_base_used"),
+            # DCF fix passthrough - same pure-provenance pattern as above.
+            "discount_floored": dcf_meta.get("discount_floored", False),
+            "fx_converted": dcf_meta.get("fx_converted"),
+            "fx_rate_used": dcf_meta.get("fx_rate_used"),
+            "fx_fallback": dcf_meta.get("fx_fallback", False),
         }
         return dcf_value, "dcf", growth_used, meta
 

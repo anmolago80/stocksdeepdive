@@ -3419,6 +3419,31 @@ def page_deep_dive():
                 "outlier reporting year can't dominate the valuation."
             )
 
+        # DCF fixes: floored discount rate + FX currency conversion - same
+        # provenance-flag pattern as the outlier-base caption above. Neither
+        # is a signal; both are purely descriptive of what the calculation
+        # actually did.
+        if _dd.get("dcf_discount_floored"):
+            st.caption(
+                "Discount rate floored at 7.5% (low measured beta - see "
+                "Methodology)."
+            )
+        if _dd.get("dcf_fx_converted"):
+            _fx_rate_val = _dd.get("dcf_fx_rate_used")
+            _fx_rate_txt = f"{_fx_rate_val:.2f}" if _fx_rate_val is not None else "N/A"
+            if _dd.get("dcf_fx_fallback"):
+                st.markdown(
+                    "<div style='font-size:13px;color:#8aa0b8;margin:2px 0 8px;'>"
+                    f"Cash flows converted {_dd['dcf_fx_converted']} at "
+                    f"<span style='color:#fb7185;font-weight:600;'>{_fx_rate_txt}"
+                    "</span> (fallback rate - live FX unavailable).</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption(
+                    f"Cash flows converted {_dd['dcf_fx_converted']} at {_fx_rate_txt}."
+                )
+
         # --- Research cross-link (Task 5): when this ticker has hand-built
         # Rational Compounder coverage, point straight at it. st.switch_page
         # clears all non-embed query params on navigation by default (see
@@ -5536,6 +5561,15 @@ estimate on its own. If that adjusted figure still deviates by more than 40% fro
 median of the last three years, the median is used as the base instead - a smoothing
 step so one outlier reporting year can't dominate the whole valuation. When this
 happens, it's flagged directly on the Deep Dive page next to Intrinsic Value.
+
+The discount rate is CAPM-based but floored at 7.5% (and the beta feeding it is
+floored at 0.6) - a cost of capital below that, or a measured beta that low, usually
+reflects a data artefact rather than a genuinely low-risk business, and the terminal
+value is extremely sensitive to how close the discount rate sits to terminal growth.
+When a company's reported financials are in a different currency than the one it
+trades in, the cash flows are converted to the listing currency at the current
+exchange rate before the per-share calculation - both of these are flagged on the
+Deep Dive page whenever they apply.
 
 A stock trading 25%+ below intrinsic value is labelled **UNDERVALUED**; above intrinsic
 value, **EXPENSIVE**; between, **FAIR**.
