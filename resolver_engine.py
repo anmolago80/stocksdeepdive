@@ -94,6 +94,12 @@ def resolve_intrinsic_value(
             "perpetual_rate_used": dcf_meta.get("perpetual_rate_used"),
             "growth_default": dcf_meta.get("growth_default", False),
             "value_default": dcf_meta.get("defaulted", False),
+            # Task 10: pure passthrough of fcf_valuation_engine's own
+            # provenance flag - no new resolution logic here, same as every
+            # other *_default/*_source key above.
+            "fcf_base_normalized": dcf_meta.get("fcf_base_normalized", False),
+            "fcf_base_raw": dcf_meta.get("fcf_base_raw"),
+            "fcf_base_used": dcf_meta.get("fcf_base_used"),
         }
         return dcf_value, "dcf", growth_used, meta
 

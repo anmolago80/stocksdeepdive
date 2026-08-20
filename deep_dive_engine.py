@@ -319,6 +319,13 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         ),
         "growth_governor": iv_meta.get("growth_governor") or "-",
         "value_default": bool(iv_meta.get("value_default")),
+        # Task 10: pure passthrough of resolver_engine's own provenance
+        # flag (itself a passthrough of fcf_valuation_engine's) - no scoring
+        # logic added or changed here, purely so the Deep Dive page can flag
+        # it on screen next to Intrinsic Value.
+        "dcf_base_normalized": bool(iv_meta.get("fcf_base_normalized")),
+        "dcf_base_raw": iv_meta.get("fcf_base_raw"),
+        "dcf_base_used": iv_meta.get("fcf_base_used"),
 
         "quality_score": quality_score,
         "quality_default": bool(quality_default),

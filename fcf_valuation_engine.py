@@ -72,6 +72,12 @@ DEFAULT_GROWTH = 0.05
 GROWTH_FLOOR = 0.00
 GROWTH_CEIL = 0.20
 
+# Task 10: how far the latest year's capex-normalised OCF may deviate from
+# the median of the last up-to-3 years before it's treated as an outlier
+# reporting year and swapped for that median instead (see
+# normalized_base_and_series). 0.40 = 40%.
+FCF_OUTLIER_THRESHOLD = 0.40
+
 # Market-cap-tiered version of the ceiling above. A flat 20% ceiling let a
 # mega-cap grow FCF at nearly the same clip as a micro-cap for a full
 # 10-year stage-1 horizon - structurally implausible (compounding off a huge
@@ -211,8 +217,23 @@ def normalized_base_and_series(cashflow_df, info=None):
     (over the available years) from the latest operating cash flow - so a
     single heavy investment year doesn't define the whole valuation.
 
-    Returns (base_fcf, fcf_series_recent_first, source) where source is one of
-    "ocf-normcapex" | "fcf-median" | "info" | "none".
+    Task 10: even after that capex normalisation, the latest year's OCF
+    itself can still be a one-off outlier - a working-capital swing, an
+    unusual receivable/payable timing shift, a divestment or litigation
+    item flowing through operating cash flow, none of which capex
+    normalisation touches. When the latest normalised value deviates from
+    the median of the last up-to-3 years by more than
+    FCF_OUTLIER_THRESHOLD, the median is used as the base instead. Stable
+    tickers (deviation within the threshold, or fewer than 2 years of
+    history to compare against) are completely unaffected - identical base
+    to before this normalisation existed. The reported-FCF fallback path
+    below already bases itself on a 3-year median unconditionally, so it
+    needed no separate outlier check.
+
+    Returns (base_fcf, fcf_series_recent_first, source, base_normalized)
+    where source is one of "ocf-normcapex" | "fcf-median" | "info" | "none",
+    and base_normalized is True only when the outlier swap above actually
+    fired (always False for every other source).
     """
     info = info or {}
 
@@ -224,8 +245,17 @@ def normalized_base_and_series(cashflow_df, info=None):
     if len(ocf) >= 2 and len(capex) >= 1:
         avg_capex = _mean(capex)                 # capex is negative in statements
         series = [o + avg_capex for o in ocf]    # OCF - normalised capex
-        base = ocf[0] + avg_capex                # latest OCF, normalised capex
-        return base, series, "ocf-normcapex"
+        base = series[0]                         # latest OCF, normalised capex
+
+        base_normalized = False
+        recent = series[:3]
+        if len(recent) >= 2:
+            median = sorted(recent)[len(recent) // 2]
+            if median != 0 and abs(base - median) / abs(median) > FCF_OUTLIER_THRESHOLD:
+                base = median
+                base_normalized = True
+
+        return base, series, "ocf-normcapex", base_normalized
 
     # Fall back to the reported FCF line. Use the MEDIAN of the last few years
     # as the base so one outlier year doesn't dominate; keep the raw series for
@@ -234,13 +264,13 @@ def normalized_base_and_series(cashflow_df, info=None):
     if fcf:
         recent = sorted(fcf[:3])
         base = recent[len(recent) // 2]          # median of up to 3 latest
-        return base, fcf, "fcf-median"
+        return base, fcf, "fcf-median", False
 
     info_fcf = info.get("freeCashflow", 0) or 0
     if info_fcf > 0:
-        return info_fcf, [], "info"
+        return info_fcf, [], "info", False
 
-    return None, [], "none"
+    return None, [], "none", False
 
 
 def growth_from_history(fcf_history):
@@ -383,6 +413,11 @@ def dcf_intrinsic_value(
         "perpetual_source": "currency" | "manual" | "fallback",
         "growth_default": bool,   # True when the average growth had to be used
         "defaulted":      bool,   # True if any core input was an assumption
+        "fcf_base_normalized": bool,  # Task 10: True if an outlier reporting
+                                       # year's base was swapped for the
+                                       # 3-year median (see FCF_OUTLIER_THRESHOLD)
+        "fcf_base_raw":   float | None,  # the un-swapped latest-year value, when normalized
+        "fcf_base_used":  float | None,  # the median actually used, when normalized
     }
     """
     meta = {
@@ -396,6 +431,15 @@ def dcf_intrinsic_value(
         "defaulted": False,
         "discount_rate_used": None,
         "perpetual_rate_used": None,
+        # Task 10: set only when normalized_base_and_series() swapped the
+        # latest reporting year's base for the 3-year median because it was
+        # an outlier (see FCF_OUTLIER_THRESHOLD) - never set for a manual
+        # FCF override, and never set by the "fcf-median"/"info"/"none"
+        # sources (those either already are a median, or aren't a
+        # single-year figure at all).
+        "fcf_base_normalized": False,
+        "fcf_base_raw": None,
+        "fcf_base_used": None,
     }
 
     try:
@@ -411,7 +455,7 @@ def dcf_intrinsic_value(
         # 1) user-supplied manual override, else 2) a capex-NORMALISED base
         # (latest operating cash flow minus AVERAGE capex) so a one-off capex
         # spike doesn't collapse the valuation.
-        norm_base, fcf_series, base_src = normalized_base_and_series(
+        norm_base, fcf_series, base_src, base_normalized = normalized_base_and_series(
             cashflow_df, info=info
         )
 
@@ -421,6 +465,10 @@ def dcf_intrinsic_value(
         elif norm_base is not None and norm_base > 0:
             fcf = norm_base
             meta["fcf_source"] = base_src
+            if base_normalized:
+                meta["fcf_base_normalized"] = True
+                meta["fcf_base_raw"] = round(fcf_series[0], 2) if fcf_series else None
+                meta["fcf_base_used"] = round(norm_base, 2)
         else:
             fcf = info.get("freeCashflow", 0) or 0
             meta["fcf_source"] = "info" if fcf > 0 else "none"
