@@ -38,9 +38,8 @@ import positions_store
 import announce_engine
 import scan_store
 import scanner_engine
-import blog_store
-import blog_render
-import site_content
+import name_directory
+import score_history
 
 # -----------------------------------
 # PAGE SETUP
@@ -68,6 +67,46 @@ SIGNAL_THRESHOLDS = {
     "STRONG_LONG": 70,
     "LONG": 50,
     "WATCHLIST": 30,
+}
+
+
+# -----------------------------------
+# METRIC HELP (Task 2)
+#
+# Short, factual explanations shown via st.metric's built-in help= tooltip
+# (the little "?" icon) on the Deep Dive page's headline metrics. Purely
+# descriptive of how each number is computed - no signal words, no "should"/
+# "buy"/"sell"/"recommend" - same wording regardless of FACTUAL_MODE, since
+# describing a calculation is not itself the kind of framing FACTUAL_MODE
+# gates.
+# -----------------------------------
+
+METRIC_HELP = {
+    "Price": "The latest closing price used as the input to every calculation below.",
+    "Intrinsic Value": (
+        "A DCF (discounted cash flow) estimate built from the company's own "
+        "historical free cash flow, plus a discount rate and growth "
+        "assumption - shown as N/A where no usable estimate could be "
+        "computed."
+    ),
+    "MOS": (
+        "Margin of Safety: the percentage gap between Intrinsic Value and "
+        "Price. Positive means Price is below the Intrinsic Value estimate; "
+        "negative means it's above."
+    ),
+    "Value Score": (
+        "A 0-100 weighted calculation: quality 35%, MOS 25%, psychology "
+        "20%, discovery 20%."
+    ),
+    "Long Score": (
+        "A 0-100 weighted calculation: quality 35%, MOS 25%, psychology "
+        "20%, discovery 20%."
+    ),
+    "Signal": (
+        "STRONG LONG / LONG / WATCHLIST / AVOID are fixed labels applied to "
+        "bands of the Long Score above - a description of where the score "
+        "falls, not advice."
+    ),
 }
 
 
@@ -430,18 +469,10 @@ def _bump_page_view(page, ticker=None):
 
 def _render_view_badge():
     """Admin-only indicator + exit, shown ONLY in the unlocked session.
-    Also carries the Write blog button and the Stats popover (sign-up
-    counts + first-party page-view counts, aggregate numbers only - no
-    identities are ever displayed)."""
+    Also carries the Stats popover (sign-up counts + first-party page-view
+    counts, aggregate numbers only - no identities are ever displayed)."""
     if _FACTUAL_DEFAULT and st.session_state.get("full_view_unlocked"):
-        # Write blog sits here rather than in the site nav on purpose: the
-        # editor is admin-only, so its entry point belongs in the strip
-        # that only an unlocked session ever sees.
-        _b1, _bw, _bs, _b2 = st.columns([6.8, 1.6, 1.6, 2])
-        with _bw:
-            if st.button("Write blog", key="admin_write_blog",
-                         use_container_width=True):
-                st.switch_page(PG_BLOG_ADMIN)
+        _b1, _bs, _b2 = st.columns([8.4, 1.6, 2])
         with _b1:
             st.markdown(
                 "<div style='display:inline-block;background:#4a2733;color:#fb7185;"
@@ -826,6 +857,48 @@ def _render_tape(quotes=None):
     )
 
 
+def _overnight_snapshot_for_ticker(ticker):
+    """Task 5: instant overnight-scan snapshot for a ticker, read straight
+    off disk (scan_store - no live fetch) - so a visitor searching a ticker
+    that was covered by last night's scan sees SOMETHING in under a second
+    while the live analyze() call (which hits Yahoo Finance/News/Trends and
+    can take several seconds) is still running. Returns
+    (universe, generated_at_label, row) or None if this ticker wasn't in
+    any of last night's scans (or none exist yet - a brand new deploy, or
+    the scheduler hasn't run)."""
+    try:
+        for _country in ("Australia", "USA"):
+            for _uni in scanner_engine.get_universes(_country):
+                _scan = scan_store.load_scan(_uni)
+                if not _scan:
+                    continue
+                for _row in _scan.get("rows", []):
+                    if str(_row.get("Ticker", "")).strip().upper() == ticker:
+                        return _uni, _scan["generated_at_label"], _row
+    except Exception:
+        pass
+    return None
+
+
+def _render_overnight_snapshot_line(ticker):
+    """Task 5: one-line caption shown BEFORE the live status/spinner starts,
+    from _overnight_snapshot_for_ticker - purely a "here's what last night's
+    scan already found" nudge; the live analyze() call right after this
+    always runs and always wins (this is never a substitute for it)."""
+    _hit = _overnight_snapshot_for_ticker(ticker)
+    if not _hit:
+        return
+    _uni, _gen_label, _row = _hit
+    _score_word = "Value Score" if _factual() else "Long Score"
+    _mos = _row.get("MOS %")
+    _mos_txt = f"{_mos:+.1f}%" if isinstance(_mos, (int, float)) else "N/A"
+    st.caption(
+        f"Instant - {ticker} was in last night's {_uni} scan ({_gen_label}): "
+        f"{_score_word} {_row.get('Long Score', 'N/A')}, MOS {_mos_txt}, "
+        f"Quality {_row.get('Quality', 'N/A')}. Refreshing with live data now..."
+    )
+
+
 def _dispatch_search(text):
     """One shared handler behind every search box and example chip on the
     site: one ticker -> Deep Dive, two or more -> Comparison."""
@@ -840,12 +913,38 @@ def _dispatch_search(text):
         return
     if len(parsed) == 1:
         tk = parsed[0]
-        with st.spinner(f"Analyzing {tk}..."):
+        # Task 5: instant overnight-scan snapshot line, shown immediately -
+        # before the live status/spinner below even starts.
+        _render_overnight_snapshot_line(tk)
+        # Task 3: st.status gives a collapsible running/complete/error state
+        # instead of a bare spinner that just vanishes - analyze() itself is
+        # one atomic call (fetch + every score, all in one pass), so this
+        # doesn't fabricate step-by-step progress that isn't really
+        # happening; it's an honest single stage that reports what it's
+        # doing and then how it ended.
+        with st.status(f"Analyzing {tk}...", expanded=False) as _status:
+            st.write(f"Fetching price history and fundamentals for {tk}, then computing valuation, quality, psychology and discovery scores...")
             st.session_state["dd_result"] = deep_dive_engine.analyze(
                 tk, get_price_history, get_ticker_info, get_cashflow_df,
                 news_api_key=news_api_key, live_data=live_data,
                 enable_social=enable_social,
             )
+            _dd_res = st.session_state["dd_result"]
+            if _dd_res.get("error"):
+                _status.update(label=f"Couldn't analyze {tk}", state="error")
+            else:
+                _status.update(
+                    label=f"Analysis complete - {tk} ({_dd_res.get('name') or tk})",
+                    state="complete",
+                )
+        # Task 1: on a failed resolution, look up "Did you mean" suggestions
+        # from the small name_directory starter dictionary so the Deep Dive
+        # page can offer them as clickable chips - cleared again on any
+        # successful search so a stale suggestion never lingers.
+        if st.session_state["dd_result"].get("error"):
+            st.session_state["search_suggestions"] = name_directory.suggest(tk)
+        else:
+            st.session_state.pop("search_suggestions", None)
         st.switch_page(PG_DEEP_DIVE)
     else:
         n_au = sum(1 for tk in parsed if tk.endswith(".AX"))
@@ -872,6 +971,95 @@ def _render_example_chips(key_prefix):
     elif st.session_state.get(_done_key) != _sel:
         st.session_state[_done_key] = _sel
         _dispatch_search(dict(_EXAMPLE_CHIPS)[_sel])
+
+
+def _render_suggestion_chips(key_prefix, suggestions):
+    """Task 1: "Did you mean" chips for a search that failed to resolve as
+    a ticker - same st.pills + "done" flag pattern as _render_example_chips
+    (so a still-selected pill doesn't re-dispatch on every rerun), sourced
+    from name_directory.suggest() instead of the fixed example list."""
+    if not suggestions:
+        return
+    labels = [label for label, _ in suggestions]
+    st.caption("Did you mean:")
+    _sel = st.pills(
+        "Did you mean:", labels, selection_mode="single",
+        key=f"{key_prefix}_chips", label_visibility="collapsed",
+    )
+    _done_key = f"{key_prefix}_chips_done"
+    if not _sel:
+        st.session_state.pop(_done_key, None)
+    elif st.session_state.get(_done_key) != _sel:
+        st.session_state[_done_key] = _sel
+        _dispatch_search(dict(suggestions)[_sel])
+
+
+def _render_data_as_of(ticker):
+    """Task 3: a 'data as of' stamp on the Deep Dive results - the most
+    recent trading day actually present in the (already-cached, so this is
+    a free cache hit almost always) price history behind this analysis,
+    rather than just the wall-clock time the button was clicked - daily
+    bars lag the current session until it closes."""
+    try:
+        _hist = get_price_history(ticker)
+        if _hist is not None and not _hist.empty:
+            _last_dt = _hist.index[-1]
+            st.caption(f"Data as of {_last_dt.strftime('%d %b %Y')} (latest available daily close).")
+    except Exception:
+        pass
+
+
+def _render_recent_results_banner(ticker):
+    """Task 4: a freshness note - not a signal - for when the fundamentals
+    behind this analysis were reported very recently (last 21 days), using
+    yfinance's own mostRecentQuarter / lastFiscalYearEnd .info fields.
+    Wrapped in try/except end-to-end since neither field is guaranteed to
+    be present (or even a sane epoch value) for every ticker, and this is
+    purely informational - it should never be able to break the page."""
+    try:
+        info = get_ticker_info(ticker)
+        now = datetime.now(timezone.utc)
+        for key, label in (
+            ("mostRecentQuarter", "quarterly results"),
+            ("lastFiscalYearEnd", "full-year results"),
+        ):
+            ts = info.get(key)
+            if not ts:
+                continue
+            reported = datetime.fromtimestamp(ts, tz=timezone.utc)
+            days_ago = (now - reported).days
+            if 0 <= days_ago <= 21:
+                _plural = "s" if days_ago != 1 else ""
+                st.info(
+                    f"This company reported {label} on "
+                    f"{reported.strftime('%d %b %Y')} ({days_ago} day{_plural} "
+                    f"ago) - the fundamentals below reflect that report."
+                )
+                return
+    except Exception:
+        pass
+
+
+def _render_score_history_caption(ticker, current_score):
+    """Task 6: a "vs 30 days ago" caption on the Deep Dive page, from the
+    score_history table the overnight scan writes to nightly. Silently does
+    nothing if this ticker has no stored history that far back yet (a brand
+    new ticker, or fewer than ~30 days since the overnight scan started
+    covering it) - a missing history row should never be shown as if it
+    were a zero change."""
+    try:
+        past = score_history.get(ticker, 30)
+        if not past or past.get("long_score") is None or current_score is None:
+            return
+        delta = current_score - past["long_score"]
+        _word = "Value Score" if _factual() else "Long Score"
+        st.caption(
+            f"{_word} {delta:+.1f} vs {past['day']} "
+            f"({past['long_score']:.1f} then -> {current_score:.1f} now, "
+            f"from the nightly overnight scan history)."
+        )
+    except Exception:
+        pass
 
 
 @st.cache_data(ttl=21600, show_spinner=False)
@@ -1010,10 +1198,10 @@ def _render_footer():
   <div class='sdd-f-cols'>
     <div><h5>StocksDeepDive</h5>
       <a href='/' target='_self'>Home</a>
-      <a href='/blog'>Blog</a>
       <a href='/about' target='_self'>About the author</a>
       <a href='/methodology' target='_self'>How the scores work</a>
       <a href='/research' target='_self'>Rational Compounder Research</a>
+      <a href='/model-history' target='_self'>Model history</a>
     </div>
     <div><h5>Tools</h5>
       <a href='/deep-dive' target='_self'>Stock Deep Dive</a>
@@ -1075,6 +1263,53 @@ def _render_watchlist_row():
     for i, t in enumerate(tickers[:8]):
         if cols[i].button(t, key=f"wl_chip_{t}"):
             _dispatch_search(t)
+
+
+def _render_watchlist_bulk_import():
+    """Task 7: paste-a-list bulk watchlist import, signed-in users only - a
+    faster path than adding one ticker at a time from each Deep Dive page.
+    No live validation of each ticker (same lightweight parsing _dispatch_
+    search itself uses - just split, uppercase, dedupe); this only ever
+    writes to watchlist_store, the same store/table the single-ticker
+    Add/Remove button on the Deep Dive page already uses. Capped at 50
+    tickers per paste - anything beyond that is silently dropped from THIS
+    import only (never touches tickers already saved), and the user is
+    told exactly how many were skipped."""
+    email = paywall_engine.current_user_email()
+    if not email:
+        return
+    with st.expander("Paste a list of tickers to add to your watchlist", expanded=False):
+        _wl2_text = st.text_area(
+            "Tickers (comma, space or newline separated)",
+            key="wl2_bulk_text",
+            placeholder="CBA.AX, BHP.AX, CSL.AX\nAAPL\nMSFT",
+        )
+        if st.button("Add to watchlist", key="wl2_bulk_add"):
+            raw = (_wl2_text or "").replace(",", " ").replace("\n", " ").split()
+            parsed = []
+            for tok in raw:
+                tok = tok.strip().upper()
+                if tok and tok not in parsed:
+                    parsed.append(tok)
+            if not parsed:
+                st.warning("Paste at least one ticker above.")
+            else:
+                capped = parsed[:50]
+                skipped = len(parsed) - len(capped)
+                added = 0
+                try:
+                    for t in capped:
+                        if not watchlist_store.contains(email, t):
+                            watchlist_store.add(email, t)
+                            added += 1
+                except Exception:
+                    st.warning("Couldn't save right now - please try again.")
+                else:
+                    _msg = f"Added {added} new ticker{'s' if added != 1 else ''} to your watchlist."
+                    if skipped:
+                        _msg += f" {skipped} beyond the 50-ticker paste limit were skipped."
+                    st.success(_msg)
+                    st.rerun()
 
 
 def _render_header(compact, page_label=None):
@@ -2422,6 +2657,17 @@ def page_research():
         _snap_labels = ["Current (latest rebuild)"] + [
             f"Archived - {s['label']}" for s in _snapshots
         ]
+        # Task 9: the Model History page's "View" buttons land here with a
+        # specific archive path pre-selected - written to the selectbox's
+        # own session-state key BEFORE the widget is created (the one safe
+        # time to do so), same pattern research_jump_ticker uses below for
+        # "cp_ticker".
+        _cp_snapshot_jump_path = st.session_state.pop("cp_snapshot_jump", None)
+        if _cp_snapshot_jump_path:
+            for _i, _s in enumerate(_snapshots):
+                if _s["path"] == _cp_snapshot_jump_path:
+                    st.session_state["cp_snapshot_pick"] = _snap_labels[_i + 1]
+                    break
         _snap_pick = st.selectbox(
             "Data snapshot", _snap_labels, key="cp_snapshot_pick",
         )
@@ -2461,6 +2707,13 @@ def page_research():
         "colour band on this page comes straight from the author's own "
         "research workbook. Pick a stock, then a section."
     )
+
+    # Task 9: link out to the Model History page - a changelog of when this
+    # workbook has been rebuilt, not shown inline here since it applies to
+    # every archive at once, not just the ones surfaced by the snapshot
+    # picker above.
+    if st.button("See the model's rebuild history →", key="research_to_model_history"):
+        st.switch_page(PG_MODEL_HISTORY)
 
     st.caption(
         f"{len(data['tickers'])} companies covered in depth today - new "
@@ -2797,6 +3050,7 @@ every estimated number is flagged.</div>
 
     # ---- watchlist row (signed-in users) ----
     _render_watchlist_row()
+    _render_watchlist_bulk_import()
 
     _mood_box = st.container()
 
@@ -3106,6 +3360,7 @@ def page_deep_dive():
         _render_example_chips("dd_empty")
     elif _dd.get("error"):
         st.error(_dd["error"])
+        _render_suggestion_chips("dd_err", st.session_state.get("search_suggestions") or [])
     else:
         if _dd["long_score"] > SIGNAL_THRESHOLDS["STRONG_LONG"]:
             _dd_signal = "STRONG LONG"
@@ -3117,29 +3372,52 @@ def page_deep_dive():
             _dd_signal = "AVOID"
 
         st.subheader(f"{_dd['ticker']} - {_dd['name']}")
+        _render_data_as_of(_dd["ticker"])
+        _render_recent_results_banner(_dd["ticker"])
+        _render_score_history_caption(_dd["ticker"], _dd.get("long_score"))
 
         if _factual():
             _m1, _m2, _m3, _m4 = st.columns(4)
-            _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}")
+            _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
             _m2.metric(
                 "Intrinsic Value",
                 f"{_dd['intrinsic_value']:,.2f}" if _dd["intrinsic_value"] else "N/A",
+                help=METRIC_HELP["Intrinsic Value"],
             )
             _m3.metric(
                 "MOS",
                 f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
+                help=METRIC_HELP["MOS"],
             )
-            _m4.metric("Value Score", f"{_dd['long_score']:.1f}")
+            _m4.metric("Value Score", f"{_dd['long_score']:.1f}", help=METRIC_HELP["Value Score"])
         else:
             _m1, _m2, _m3, _m4, _m5 = st.columns(5)
-            _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}")
+            _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
             _m2.metric(
                 "Intrinsic Value",
                 f"{_dd['intrinsic_value']:,.2f}" if _dd["intrinsic_value"] else "N/A",
+                help=METRIC_HELP["Intrinsic Value"],
             )
-            _m3.metric("MOS", f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A")
-            _m4.metric("Long Score", f"{_dd['long_score']:.1f}")
-            _m5.metric("Signal", _dd_signal)
+            _m3.metric(
+                "MOS", f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
+                help=METRIC_HELP["MOS"],
+            )
+            _m4.metric("Long Score", f"{_dd['long_score']:.1f}", help=METRIC_HELP["Long Score"])
+            _m5.metric("Signal", _dd_signal, help=METRIC_HELP["Signal"])
+
+        # Task 10: flag it on screen whenever the DCF's base cash flow used
+        # the 3-year median instead of the latest reporting year, because
+        # that latest year was an outlier (see fcf_valuation_engine.
+        # FCF_OUTLIER_THRESHOLD) - purely descriptive of the calculation,
+        # not a signal.
+        if _dd.get("dcf_base_normalized"):
+            st.caption(
+                "Note: the DCF's base cash flow used the median of the "
+                f"last 3 years ({_dd.get('dcf_base_used')}) instead of the "
+                f"latest reported year ({_dd.get('dcf_base_raw')}), which "
+                "deviated by more than 40% - a smoothing step so one "
+                "outlier reporting year can't dominate the valuation."
+            )
 
         # --- Research cross-link (Task 5): when this ticker has hand-built
         # Rational Compounder coverage, point straight at it. st.switch_page
@@ -5190,366 +5468,348 @@ def _content_page_shell(title):
     st.markdown(f"## {title}")
 
 
+_METHODOLOGY_FACTUAL_SWAPS = [
+    # Verdict bands paragraph -> value-score description
+    ("Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise\n**AVOID**. If no intrinsic value could be computed at all, the signal is capped at\nWATCHLIST - a thesis whose value leg can't be verified doesn't get a full\nrecommendation.",
+     "On this site the number is displayed as the **Value Score** - a weighted\ndescription of the four calculations above, shown without signal labels or\nrecommendations. Where no intrinsic value could be computed, that is stated\nplainly and the affected values are marked."),
+    ("The Long Score (0\u2013100) and Investment Signal", "The Value Score (0\u2013100)"),
+    # Score heading + intro question -> neutral description
+    ("#### The Long Score (0\u2013100)\n\nOne number answering \"is this a good business to own at this price?\" It blends four\nfactors, each clamped to a fixed band first so no single factor can run away with the\nresult:",
+     "#### The Value Score (0\u2013100)\n\nOne number summarising four calculations, each clamped to a fixed band first so no\nsingle factor can run away with the result:"),
+    # Psychology row: drop the advice-flavoured sentence, keep the maths
+    ("| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
+     "| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
+    # Trade Setup / two-verdicts section -> psychology-readings description
+    ("#### Value vs timing - two separate verdicts\n\nThe **Investment Signal** answers \"good business to own?\" The **Trade Setup** answers\n\"is right now a sane entry?\" - support/resistance-based entry zone, stop loss and\ntargets, gated on trend safety and risk/reward. A great company can be a poor entry\ntoday; the site shows both rather than blurring them into one contradictory verdict.",
+     "#### Psychology and discovery readings\n\nAlongside the valuation models, the site reports what the crowd has been doing:\ndistance below the 3-month high (fear), distance from the 50-day average and greed/\nFOMO terms, and a discovery reading built from volume, search interest, news and\nsocial chatter. These are measurements, stated as numbers - the site does not\ndisplay entry levels, targets or trade verdicts."),
+]
+
+
 def page_methodology():
     _content_page_shell("How the scores work")
     _bump_page_view("methodology")
     if _factual():
-        st.info(site_content.METHODOLOGY_FACTUAL_NOTE)
-    st.markdown(site_content.methodology_md(_factual()))
+        st.info(
+            "**Presentation note.** This site displays data, model outputs and "
+            "described calculations from stated inputs. It does not provide "
+            "financial product advice or recommendations - descriptions below "
+            "of how each calculation works are exactly that: descriptions of "
+            "arithmetic, not guidance on what to do."
+        )
+    _md_text = """
+Every tool on this site runs the same engine. A ticker goes in; live data comes back
+(prices and volumes, financial statements and analyst estimates via Yahoo Finance, search
+interest via Google Trends, headlines via Yahoo/NewsAPI, chatter via StockTwits); and the
+same value-investing maths runs every time. Nothing on this page is a black box - every
+score's inputs are charted right next to it on the site.
+
+#### The Long Score (0–100)
+
+One number answering "is this a good business to own at this price?" It blends four
+factors, each clamped to a fixed band first so no single factor can run away with the
+result:
+
+| Factor | Weight | What it measures |
+|---|---|---|
+| Quality | 35% | Is this a good business? Return on equity, profit margin, revenue and earnings growth, free cash flow, debt - computed from the company's own fundamentals. Loss-making, cash-burning businesses are capped: a company that doesn't make money can't score as "high quality" no matter how fast it grows. |
+| Margin of Safety | 25% | Is the price below the value? The gap between our intrinsic-value estimate and today's price, clamped to ±50 so a wild discount (or premium) can move the score but never dominate it. |
+| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |
+| Discovery | 20% | Is the market noticing? Price activity, unusual volume, search trends, news flow and social chatter - attention only, deliberately separate from sentiment. |
+
+Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise
+**AVOID**. If no intrinsic value could be computed at all, the signal is capped at
+WATCHLIST - a thesis whose value leg can't be verified doesn't get a full
+recommendation.
+
+#### Intrinsic value
+
+The primary model is a discounted cash flow built from the company's own reported free
+cash flows. The discount rate is calculated per stock (CAPM - the stock's own beta
+against its market), growth comes from analyst consensus where available, then the
+company's own historical FCF growth, and the terminal growth rate is set by the stock's
+currency. Where a DCF isn't possible, a P/E-blend fallback is used and labelled as such.
+Margin of Safety = (intrinsic value − price) ÷ intrinsic value.
+
+The base cash flow the DCF starts from is the latest reported year, adjusted for average
+capital expenditure so a single unusually heavy investment year doesn't collapse the
+estimate on its own. If that adjusted figure still deviates by more than 40% from the
+median of the last three years, the median is used as the base instead - a smoothing
+step so one outlier reporting year can't dominate the whole valuation. When this
+happens, it's flagged directly on the Deep Dive page next to Intrinsic Value.
+
+A stock trading 25%+ below intrinsic value is labelled **UNDERVALUED**; above intrinsic
+value, **EXPENSIVE**; between, **FAIR**.
+
+#### Value vs timing - two separate verdicts
+
+The **Investment Signal** answers "good business to own?" The **Trade Setup** answers
+"is right now a sane entry?" - support/resistance-based entry zone, stop loss and
+targets, gated on trend safety and risk/reward. A great company can be a poor entry
+today; the site shows both rather than blurring them into one contradictory verdict.
+
+#### The red-flag rule
+
+Whenever a number rests on a default or average because real data wasn't available, it's
+shown in **red**. An estimate is never dressed up as a fact - you always know which
+numbers are computed and which are assumed.
+
+#### Rational Compounder Research
+
+The Research section is different: it isn't computed at all. It's the author's own
+hand-built workbook analysis of selected quality compounders - a decade of earnings
+history, four independent fair-value methods (trailing P/E, forward P/E, DCF, and a
+10-year equity method), and written Buffett/Munger-style judgment on management, moat
+and risk. Every threshold and colour band on those pages comes from the original
+research, not a generic screen.
+
+#### Limitations, honestly
+
+Data is sourced from free public feeds and can be delayed, revised or occasionally
+wrong. Intrinsic value is an estimate resting on assumptions - reasonable assumptions,
+shown openly, but assumptions. Scores are model outputs, not personal advice, and none
+of this considers your circumstances. Use it the way it was built to be used: as the
+starting point for your own judgment, not a substitute for it.
+"""
+    if _factual():
+        for _old, _new in _METHODOLOGY_FACTUAL_SWAPS:
+            _md_text = _md_text.replace(_old, _new)
+    st.markdown(_md_text)
 
 
 def page_about():
     _content_page_shell("About")
     _bump_page_view("about")
-    st.markdown(site_content.about_md(_factual()))
+    if _factual():
+        st.markdown(
+            """
+StocksDeepDive is built and run by **Andres Moreno**, a private investor in Australia.
+
+It didn't start as a website. It started as a personal stock scanner and a very long
+Excel workbook - tools built to study businesses with a Buffett/Munger-style value
+lens: compute what the model says a business's cash flows are worth, test its quality
+from reported fundamentals, and read what the price has been doing. Over the years the
+scanner grew a DCF engine, quality calculations, psychology and discovery readings, and a
+research workbook that documents one company for weeks at a time.
+
+At some point the obvious question arrived: why not open the numbers up? So this site
+is that - the same engine, the same data work, made public.
+
+Two principles carried over from the private version, unchanged:
+
+**The numbers must be honest.** Whenever a figure rests on a default or an average
+because real data wasn't available, it's shown in red. An estimate is never dressed up
+as a fact. I built that rule for myself, because fooling yourself is expensive - it
+applies just as much now that you're reading the numbers too.
+
+**Value and psychology are different measurements.** What the model computes from
+a business's cash flows and what the crowd has been doing to its price are reported as
+separate numbers on every page. Most tools blur them; this site states each one
+plainly and lets you draw your own conclusions.
+
+The site is free while it launches. When subscriptions open, founding members keep
+launch pricing. If you want a stock added to the Rational Compounder research list, or
+anything here doesn't make sense, use the Feedback button on any results page or email
+[rationalcompounder@stocksdeepdive.com](mailto:rationalcompounder@stocksdeepdive.com) -
+I read everything.
+
+*This site presents factual information and calculator outputs only - it does not
+provide financial product advice or recommendations; see the disclaimer in the footer.
+I may own stocks analysed here.*
+"""
+        )
+    else:
+        st.markdown(
+            """
+StocksDeepDive is built and run by **Andres Moreno**, a private investor in Australia.
+
+It didn't start as a website. It started as a personal stock scanner and a very long
+Excel workbook - the tools I built to manage my own self-managed super fund with a
+Buffett/Munger-style value approach: work out what a business is actually worth, check
+its quality like an owner would, and only then look at what the crowd is doing. Over
+the years the scanner grew a DCF engine, quality tests, a crowd-psychology read, trade
+setups, and a research workbook that interrogates one company for weeks at a time.
+
+At some point the obvious question arrived: if I trust these numbers with my own
+retirement savings, why not open them up? So this site is that - the same engine,
+the same research, made public.
+
+Two principles carried over from the private version, unchanged:
+
+**The numbers must be honest.** Whenever a figure rests on a default or an average
+because real data wasn't available, it's shown in red. An estimate is never dressed up
+as a fact. I built that rule for myself, because fooling yourself is expensive - it
+applies just as much now that you're reading the numbers too.
+
+**Value and timing are different questions.** Whether a business is worth owning and
+whether today is a sane day to buy it get separate verdicts on every page. Most tools
+blur them; keeping them apart is half the discipline.
+
+The site is free while it launches. When subscriptions open, founding members keep
+launch pricing. If you want a stock added to the Rational Compounder research list, or
+anything here doesn't make sense, use the Feedback button on any results page or email
+[rationalcompounder@stocksdeepdive.com](mailto:rationalcompounder@stocksdeepdive.com) -
+I read everything.
+
+*Nothing on this site is financial advice - see the disclaimer in the footer. I may
+own stocks analysed here.*
+"""
+        )
+
+    # --- Task 8: social proof - a sign-up counter (only shown once there's
+    # a real number worth stating; a "12 people signed up" counter reads as
+    # thin rather than credible) and a commented-out reader-quote
+    # placeholder for later, hand-vetted testimonials. No pricing wording
+    # anywhere here - the site is free; a sign-up count is not a subscriber
+    # count and isn't described as one. ---
+    try:
+        _about_stats = email_auth.signup_stats()
+        if _about_stats.get("total", 0) >= 100:
+            st.caption(f"Joined by {_about_stats['total']:,} readers so far.")
+    except Exception:
+        pass
+
+    # Reader quotes - uncomment and fill in once real, hand-collected quotes
+    # exist (with the reader's permission to publish). Keep each quote
+    # short and specific to what the site helped with; never edited for
+    # tone, never attributed without the reader's explicit sign-off.
+    # st.markdown("---")
+    # st.markdown("#### What readers say")
+    # for _quote, _attribution in [
+    #     ("...", "— Name, city"),
+    # ]:
+    #     st.markdown(f"> {_quote}\n>\n> {_attribution}")
+
+
+def page_model_history():
+    """Task 9: a changelog of when the Rational Compounder research
+    workbook has been rebuilt - reuses the exact same archive listing
+    build_compounder_data.list_archived_snapshots()/load_snapshot() already
+    power the Research page's own "Data snapshot" picker, just surfaced
+    here as a standalone, browsable history instead of a dropdown buried on
+    one page. Deliberately NOT a performance/returns track record - see the
+    disclaimer text below - so nothing here reads as a claim about how
+    accurate any past or future output is."""
+    _content_page_shell("Model history")
+    _bump_page_view("model_history")
+
+    st.markdown(
+        "This page is a changelog of the Rational Compounder research "
+        "workbook: when it was rebuilt, and how many companies it covered "
+        "at each point. Open any past rebuild below to see exactly what it "
+        "said at the time, alongside the current, live version."
+    )
+    st.caption(
+        "This is not a track record of returns, and it isn't a claim about "
+        "the accuracy of past or future output - it's a record of when the "
+        "underlying research data was rebuilt, kept so nothing here is "
+        "ever quietly rewritten."
+    )
+
+    _snapshots = build_compounder_data.list_archived_snapshots()
+    _data = _load_compounder_data()
+    _current_n = len(_data.get("tickers", {})) if _data else 0
+
+    with st.container(border=True):
+        _c1, _c2 = st.columns([4, 1])
+        with _c1:
+            st.markdown(f"**Current (latest rebuild)** — {_current_n} companies covered")
+            _render_last_updated(_data.get("generated_at") if _data else None)
+        with _c2:
+            if st.button("View", key="mh_view_current"):
+                st.switch_page(PG_RESEARCH)
+
+    if not _snapshots:
+        st.info(
+            "No archived rebuilds yet - this page fills in over time as the "
+            "research workbook is rebuilt."
+        )
+        return
+
+    st.markdown(
+        f"**{len(_snapshots)} archived rebuild{'s' if len(_snapshots) != 1 else ''}** "
+        "(most recent first):"
+    )
+    for _snap in _snapshots:
+        with st.container(border=True):
+            _c1, _c2 = st.columns([4, 1])
+            with _c1:
+                st.markdown(
+                    f"**{_snap['label']}** — {_snap.get('n_tickers', '?')} companies covered"
+                )
+            with _c2:
+                if st.button("View", key=f"mh_view_{_snap['path']}"):
+                    st.session_state["cp_snapshot_jump"] = _snap["path"]
+                    st.switch_page(PG_RESEARCH)
 
 
 def page_privacy():
     _content_page_shell("Privacy policy")
     _bump_page_view("privacy")
-    st.markdown(site_content.PRIVACY_MD)
+    st.markdown(
+        """
+*Last updated: 13 August 2026*
 
+StocksDeepDive ("the site", "we") is operated by Andres Moreno in Australia. This page
+explains what information the site handles and what happens to it. Contact for anything
+privacy-related: [rationalcompounder@stocksdeepdive.com](mailto:rationalcompounder@stocksdeepdive.com).
 
-# -----------------------------------
-# BLOG ADMIN - the writing desk for the public blog
-#
-# The blog itself is deliberately NOT rendered by Streamlit. Streamlit
-# streams its content over a websocket, so a search crawler fetching any
-# app page receives an empty shell - nothing on this site can be indexed
-# from inside the app. server.py therefore serves /blog and /blog/<slug>
-# as real server-rendered HTML (with per-post <title>, meta description,
-# canonical URL, Open Graph card, JSON-LD article schema, sitemap.xml and
-# robots.txt) straight from blog_store, and proxies every other URL
-# through to this app untouched. See server.py's module docstring.
-#
-# This page is only the editor: it reads and writes the same blog_store
-# rows the public HTML is rendered from. Gated by ADMIN_REFRESH_KEY, the
-# same key as the Rational Compounder rebuild panel - with no key set on
-# the deployment the page renders nothing.
-# -----------------------------------
+#### What we collect
 
-# widget key -> blog_store field
-_BLOG_FIELDS = {
-    "blog_f_title": "title",
-    "blog_f_slug": "slug",
-    "blog_f_summary": "summary",
-    "blog_f_body": "body_md",
-    "blog_f_tags": "tags",
-    "blog_f_author": "author",
-    "blog_f_hero_alt": "hero_alt",
-}
+**Nothing, for anonymous browsing.** You can use every analysis tool without an
+account. Standard technical logs (IP address, browser type, pages requested) are kept
+by our hosting provider (Railway) for security and debugging, as with any website.
 
+**If you sign in with Google:** we receive your name and email address from Google -
+nothing else. Sign-in exists so the site can remember your watchlist, attribute your
+feedback, and (if you save a watchlist) send you the weekly watchlist digest email. We
+never see your Google password.
 
-def _blog_admin_unlocked() -> bool:
-    """Admin gate. The full-view unlock (?admin= / the RC view popover)
-    counts, so an already-unlocked admin session doesn't have to type the
-    key twice; otherwise the key is asked for on this page."""
-    if not _admin_key_env:
-        return False
-    return bool(st.session_state.get("full_view_unlocked")
-                or st.session_state.get("blog_admin_unlocked"))
+**If you save a watchlist:** the tickers you save are stored against your email
+address on our server.
 
+**If you send feedback:** your message and, if you're signed in, your email address
+are stored so we can follow up.
 
-def _blog_load_form(post):
-    """Copy a post's stored values into the editor widgets. Called only
-    when the selected post CHANGES - doing it on every run would fight the
-    user for control of the text boxes as they type."""
-    for widget_key, field in _BLOG_FIELDS.items():
-        st.session_state[widget_key] = (post or {}).get(field) or ""
-    st.session_state["blog_f_status"] = (
-        "Published" if (post or {}).get("status") == blog_store.STATUS_PUBLISHED
-        else "Draft"
+**If subscriptions are active and you subscribe:** payment is handled entirely by
+Stripe. We never see or store your card details - we only check with Stripe whether
+your email has an active subscription.
+
+#### What we don't do
+
+No advertising, no ad trackers, no third-party analytics or ad tech, and no selling
+or sharing of your information with anyone, ever. The only cookies used are the ones
+required to keep you signed in.
+
+#### Page analytics
+
+We keep first-party, aggregate page-view counts (which pages get visited, how many
+times, per day) so we can see what's useful - no cookies are set for this, no
+third-party trackers or ad tech are involved, and no per-visitor identity is stored
+alongside a view.
+
+#### Emails
+
+The weekly digest is sent (via Mailgun) only to signed-in users who have saved a
+watchlist. To stop it, remove all stocks from your watchlist, or email us and we'll
+remove you.
+
+#### Data retention and deletion
+
+Watchlists and feedback are kept while your account is active. Email us from your
+sign-in address and we will delete everything we hold about you.
+
+#### Third-party data on the site
+
+Market data shown on the site comes from third-party sources (Yahoo Finance, Google
+Trends, StockTwits, NewsAPI, GDELT). Those services receive standard requests from our
+server, not information about you.
+
+#### Changes
+
+If this policy changes, the date above will change with it. Material changes will be
+noted on the site.
+"""
     )
-    st.session_state["blog_loaded_id"] = (post or {}).get("id")
-
-
-def _blog_len_hint(text, low, high, what):
-    """Google truncates a title around 60 characters and a description
-    around 155, so length is worth showing while writing rather than
-    discovering in the search results weeks later."""
-    n = len(text or "")
-    if n == 0:
-        return f":grey[{what}: empty]"
-    if n < low:
-        return f":orange[{what}: {n} chars - shorter than ideal ({low}-{high})]"
-    if n > high:
-        return f":orange[{what}: {n} chars - will be truncated (aim {low}-{high})]"
-    return f":green[{what}: {n} chars]"
-
-
-def page_blog_admin():
-    _content_page_shell("Blog")
-
-    if not _admin_key_env:
-        st.info("The blog editor is unavailable on this deployment "
-                "(ADMIN_REFRESH_KEY is not set).")
-        return
-
-    if not _blog_admin_unlocked():
-        st.caption("Admin only.")
-        _k = st.text_input("Admin key", type="password", key="blog_admin_key_in")
-        if st.button("Unlock", type="primary", key="blog_admin_unlock_btn"):
-            if _k.strip() == _admin_key_env:
-                st.session_state["blog_admin_unlocked"] = True
-                st.rerun()
-            else:
-                st.error("Incorrect key.")
-        return
-
-    # Streamlit refuses to let a widget's session_state key be written
-    # after that widget has been created in the same run, so any control
-    # that wants to change another control's value (Delete moving the
-    # selection, "From title" filling the slug) parks the new value here
-    # and reruns; it is applied at the top of the next run, before a single
-    # widget exists.
-    _pending = st.session_state.pop("_blog_pending", None)
-    if _pending:
-        st.session_state.update(_pending)
-
-    posts = blog_store.list_posts(include_drafts=True)
-    by_id = {p["id"]: p for p in posts}
-    # The selectbox carries post IDs rather than labels: two posts can
-    # share a title, and an ID stays valid when one gets renamed.
-    _options = [None] + [p["id"] for p in posts]
-
-    def _post_label(pid):
-        if pid is None:
-            return "+ New post"
-        p = by_id.get(pid, {})
-        mark = "●" if p.get("status") == blog_store.STATUS_PUBLISHED else "○"
-        return f"{mark}  {p.get('title', '')}"
-
-    _sel_col, _new_col = st.columns([4, 1])
-    with _sel_col:
-        choice = st.selectbox(
-            "Post", _options, format_func=_post_label, key="blog_select",
-            help="● published · ○ draft",
-        )
-    with _new_col:
-        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        if st.button("Reload", use_container_width=True, key="blog_reload"):
-            st.session_state.pop("blog_loaded_id", None)
-            st.rerun()
-
-    selected_id = choice
-    selected = by_id.get(selected_id)
-    if st.session_state.get("blog_loaded_id", "__unset__") != selected_id:
-        _blog_load_form(selected)
-        st.rerun()
-
-    _saved_msg = st.session_state.pop("_blog_saved_msg", None)
-    if _saved_msg:
-        st.success(_saved_msg)
-
-    _just_saved = st.session_state.pop("blog_open_after_save", None)
-    if _just_saved:
-        _u = f"/blog/{_just_saved}"
-        if (st.session_state.get("blog_f_status") != "Published"
-                and _admin_key_env):
-            _u += f"?preview={_admin_key_env}"
-        st.link_button("Open the saved post ↗", _u)
-
-    st.markdown("---")
-    _edit, _side = st.columns([3, 2], gap="large")
-
-    with _edit:
-        st.text_input("Title", key="blog_f_title",
-                      placeholder="Why margin of safety is the whole game")
-        _title = st.session_state.get("blog_f_title", "")
-
-        # The slug is the URL and therefore the most permanent thing about
-        # a post: suggested from the title, but never silently rewritten
-        # once a post exists, because changing it changes a public address.
-        _slug_col, _btn_col = st.columns([3, 1])
-        with _slug_col:
-            st.text_input("URL slug", key="blog_f_slug",
-                          placeholder="why-margin-of-safety-is-the-whole-game")
-        with _btn_col:
-            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-            if st.button("From title", use_container_width=True,
-                         key="blog_slug_from_title"):
-                st.session_state["_blog_pending"] = {
-                    "blog_f_slug": blog_store.slugify(_title)}
-                st.rerun()
-
-        st.text_area(
-            "Meta description", key="blog_f_summary", height=90,
-            help="The sentence Google shows under the title in search "
-                 "results, and the text of the link preview when the post "
-                 "is shared. Left blank, the opening of the post is used.",
-        )
-        st.markdown(_blog_len_hint(st.session_state.get("blog_f_summary"),
-                                   120, 158, "Description"))
-
-        st.text_area(
-            "Post body (Markdown)", key="blog_f_body", height=460,
-            help="Markdown: ## for headings, **bold**, - for bullets, "
-                 "> for quotes, tables and [links](https://…) all work. "
-                 "Use ## and ### for structure - headings are a real "
-                 "ranking signal and make the post skimmable.",
-        )
-
-        _c1, _c2 = st.columns(2)
-        with _c1:
-            st.text_input("Tags (comma separated)", key="blog_f_tags",
-                          placeholder="valuation, method, asx")
-        with _c2:
-            st.text_input("Author", key="blog_f_author", placeholder="Andrew")
-
-        st.radio("Status", ["Draft", "Published"], key="blog_f_status",
-                 horizontal=True,
-                 help="Drafts are hidden from the blog index, the sitemap "
-                      "and the feed, and carry a noindex tag. They are "
-                      "still viewable at their own URL with ?preview=<admin key>.")
-
-        _hero = st.file_uploader(
-            "Hero image (optional)", type=["png", "jpg", "jpeg", "webp"],
-            key="blog_f_hero_file",
-            help="Used as the social-share card image. 1200×630 is the "
-                 "size Facebook, LinkedIn and X all crop to.",
-        )
-        st.text_input("Hero image alt text", key="blog_f_hero_alt",
-                      placeholder="Chart of free cash flow vs price")
-        _remove_hero = False
-        if selected and selected.get("hero_file"):
-            st.caption(f"Current image: {selected['hero_file']}")
-            _remove_hero = st.checkbox("Remove the current image",
-                                       key="blog_f_hero_remove")
-
-        st.markdown("")
-        _b1, _b2, _b3 = st.columns([1.2, 1, 1])
-        with _b1:
-            _save = st.button("Save", type="primary", use_container_width=True,
-                              key="blog_save")
-        with _b2:
-            _save_view = st.button("Save & view", use_container_width=True,
-                                   key="blog_save_view")
-        with _b3:
-            if selected:
-                _delete = st.button("Delete", use_container_width=True,
-                                    key="blog_delete")
-            else:
-                _delete = False
-
-        if _delete:
-            if st.session_state.get("blog_confirm_delete") == selected_id:
-                blog_store.delete_post(selected_id)
-                st.session_state.pop("blog_confirm_delete", None)
-                st.session_state.pop("blog_loaded_id", None)
-                st.session_state["_blog_pending"] = {"blog_select": None}
-                st.rerun()
-            else:
-                st.session_state["blog_confirm_delete"] = selected_id
-                st.warning("Press Delete again to confirm - this cannot be "
-                           "undone.")
-
-        if _save or _save_view:
-            _title_v = (st.session_state.get("blog_f_title") or "").strip()
-            if not _title_v:
-                st.error("A post needs a title.")
-            else:
-                _status = (blog_store.STATUS_PUBLISHED
-                           if st.session_state.get("blog_f_status") == "Published"
-                           else blog_store.STATUS_DRAFT)
-                _hero_name = Ellipsis
-                if _hero is not None:
-                    _hero_name = blog_store.save_media(_hero.name,
-                                                       _hero.getvalue())
-                elif _remove_hero:
-                    _hero_name = None
-
-                if selected_id:
-                    _slug = blog_store.update_post(
-                        selected_id,
-                        title=_title_v,
-                        slug=(st.session_state.get("blog_f_slug") or "").strip()
-                             or _title_v,
-                        summary=st.session_state.get("blog_f_summary") or "",
-                        body_md=st.session_state.get("blog_f_body") or "",
-                        tags=st.session_state.get("blog_f_tags") or "",
-                        author=st.session_state.get("blog_f_author") or "",
-                        hero_file=_hero_name,
-                        hero_alt=st.session_state.get("blog_f_hero_alt") or "",
-                        status=_status,
-                    )
-                    _new_id = selected_id
-                else:
-                    _new_id = blog_store.create_post(
-                        title=_title_v,
-                        slug=(st.session_state.get("blog_f_slug") or "").strip()
-                             or _title_v,
-                        summary=st.session_state.get("blog_f_summary") or "",
-                        body_md=st.session_state.get("blog_f_body") or "",
-                        tags=st.session_state.get("blog_f_tags") or "",
-                        author=st.session_state.get("blog_f_author") or "",
-                        hero_file=(None if _hero_name is Ellipsis else _hero_name),
-                        hero_alt=st.session_state.get("blog_f_hero_alt") or "",
-                        status=_status,
-                    )
-                    _slug = blog_store.get_post_by_id(_new_id)["slug"]
-
-                # Keep the just-saved post selected rather than dropping
-                # back to a blank "new post" form - saving is usually the
-                # middle of writing, not the end of it.
-                st.session_state.pop("blog_loaded_id", None)
-                st.session_state["_blog_pending"] = {"blog_select": _new_id}
-                st.session_state["_blog_saved_msg"] = (
-                    f"Saved. Public URL: /blog/{_slug}")
-                if _save_view:
-                    st.session_state["blog_open_after_save"] = _slug
-                st.rerun()
-
-    with _side:
-        st.markdown("##### Preview")
-        _body = st.session_state.get("blog_f_body") or ""
-        _slug_now = ((st.session_state.get("blog_f_slug") or "").strip()
-                     or blog_store.slugify(st.session_state.get("blog_f_title")))
-        if _slug_now:
-            _url = f"/blog/{_slug_now}"
-            _preview_url = _url
-            if (st.session_state.get("blog_f_status") != "Published"
-                    and _admin_key_env):
-                _preview_url = f"{_url}?preview={_admin_key_env}"
-            st.markdown(
-                f"<div style='font-family:ui-monospace,Menlo,monospace;"
-                f"font-size:12.5px;color:#8aa0b8;word-break:break-all'>"
-                f"stocksdeepdive.com{html.escape(_url)}</div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f"<a href='{html.escape(_preview_url)}' target='_blank'>"
-                f"Open the real page &rarr;</a>", unsafe_allow_html=True)
-        st.caption(
-            f"{len(_body.split())} words · "
-            f"{blog_render.reading_time(_body)} min read"
-        )
-        st.markdown(_blog_len_hint(st.session_state.get("blog_f_title"),
-                                   30, 60, "Title"))
-        st.markdown("---")
-        with st.container(height=520, border=True):
-            try:
-                st.markdown(blog_render.md_to_html(_body),
-                            unsafe_allow_html=True)
-            except Exception:
-                st.markdown(_body)
-
-    st.markdown("---")
-    _f1, _f2 = st.columns(2)
-    with _f1:
-        st.markdown(
-            "<a href='/blog' target='_blank'>Open the public blog &rarr;</a>"
-            "<br><a href='/sitemap.xml' target='_blank'>sitemap.xml</a> · "
-            "<a href='/robots.txt' target='_blank'>robots.txt</a> · "
-            "<a href='/blog/feed.xml' target='_blank'>RSS feed</a>",
-            unsafe_allow_html=True,
-        )
-    with _f2:
-        st.caption(
-            f"{blog_store.count_posts()} published · "
-            f"{blog_store.count_posts(include_drafts=True)} total. "
-            "Posts and images are stored on the Railway volume alongside the "
-            "site's other data, so they survive redeploys."
-        )
 
 
 # -----------------------------------
@@ -5569,16 +5829,12 @@ PG_RESEARCH = st.Page(page_research, title="Rational Compounder Analysis", url_p
 PG_SCANNER = st.Page(page_scanner, title="Stock Scanner", url_path="scanner")
 PG_METHODOLOGY = st.Page(page_methodology, title="How the scores work", url_path="methodology")
 PG_ABOUT = st.Page(page_about, title="About", url_path="about")
+PG_MODEL_HISTORY = st.Page(page_model_history, title="Model history", url_path="model-history")
 PG_PRIVACY = st.Page(page_privacy, title="Privacy policy", url_path="privacy")
-# The public blog lives at /blog and is served as HTML by server.py, NOT by
-# Streamlit - this page is the admin-only editor behind it, and is
-# Disallowed in robots.txt.
-PG_BLOG_ADMIN = st.Page(page_blog_admin, title="Blog admin",
-                        url_path="blog-admin")
 
 _nav = st.navigation(
     [PG_HOME, PG_DEEP_DIVE, PG_COMPARISON, PG_RESEARCH, PG_SCANNER,
-     PG_METHODOLOGY, PG_ABOUT, PG_PRIVACY, PG_BLOG_ADMIN], position="hidden"
+     PG_METHODOLOGY, PG_ABOUT, PG_MODEL_HISTORY, PG_PRIVACY], position="hidden"
 )
 _nav.run()
 
