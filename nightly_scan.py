@@ -28,6 +28,7 @@ import pandas as pd
 import yfinance as yf
 
 import scan_store
+import score_history
 import scanner_engine
 import indicators_engine
 import trade_filter_engine
@@ -183,6 +184,11 @@ def run_universe_scan(universe, max_tickers=None, log=print):
     rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
     payload = scan_store.save_scan(universe, rows, source)
     log(f"[nightly_scan] {universe}: saved {len(rows)} rows")
+    try:
+        score_history.record(rows)
+        log(f"[nightly_scan] {universe}: recorded {len(rows)} rows to score_history")
+    except Exception as e:  # history logging must never fail the scan itself
+        log(f"[nightly_scan] {universe}: score_history.record failed: {e}")
     return payload
 
 

@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 import requests
 
 import watchlist_store
+import score_history
 
 # Mirrors the site's FACTUAL_MODE: when on (the default), the digest shows
 # numbers only - no Signal column, no verdicts - matching what the public
@@ -91,6 +92,26 @@ _TD = "padding:9px 10px;font-family:Arial,Helvetica,sans-serif;font-size:14px;co
 _TH = "padding:9px 10px;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#64748b;border-bottom:2px solid #cbd5e1;text-transform:uppercase;letter-spacing:0.5px;"
 
 
+def _score_delta_cell(row):
+    """Task 6: Long Score movement vs ~7 days ago, read from score_history
+    (only the overnight scan job writes to that table - the digest never
+    writes history, only reads it). Returns (display_text, color) - '-' /
+    neutral grey when this ticker has no stored history that far back yet
+    (a brand new ticker, or the overnight scan hasn't covered it long
+    enough), so a missing history row can never look like a real zero
+    movement."""
+    try:
+        past = score_history.get(row.get("Ticker"), 7)
+        current = row.get("Long Score")
+        if not past or past.get("long_score") is None or current is None:
+            return "-", "#64748b"
+        delta = current - past["long_score"]
+        color = "#15803d" if delta > 0 else "#b91c1c" if delta < 0 else "#64748b"
+        return f"{delta:+.1f}", color
+    except Exception:
+        return "-", "#64748b"
+
+
 def _row_html(row, site):
     iv = row.get("Intrinsic Value")
     mos = row.get("MOS %")
@@ -99,6 +120,7 @@ def _row_html(row, site):
     link = f"{site}/deep-dive?ticker={row['Ticker']}"
     iv_cell = f"{iv:,.2f}" if iv else "-"
     mos_cell = f"{mos:+.1f}%" if mos is not None else "-"
+    _delta_text, _delta_color = _score_delta_cell(row)
     _cells = (
         "<tr>"
         f"<td align='left' style='{_TD}font-weight:bold;'>"
@@ -107,6 +129,7 @@ def _row_html(row, site):
         f"<td align='right' style='{_TD}'>{iv_cell}</td>"
         f"<td align='right' style='{_TD}'>{mos_cell}</td>"
         f"<td align='right' style='{_TD}'>{row.get('Long Score', '-')}</td>"
+        f"<td align='right' style='{_TD}color:{_delta_color};font-weight:bold;'>{_delta_text}</td>"
     )
     if not FACTUAL_MODE:
         _cells += (
@@ -138,6 +161,7 @@ def _email_html(email, rows, site):
           <th align="right" style="{_TH}">Intrinsic value</th>
           <th align="right" style="{_TH}">MOS</th>
           <th align="right" style="{_TH}">{'Value Score' if FACTUAL_MODE else 'Long Score'}</th>
+          <th align="right" style="{_TH}">Vs last week</th>
           {'' if FACTUAL_MODE else f'<th align="center" style="{_TH}">Signal</th>'}
         </tr>
         {body_rows}
