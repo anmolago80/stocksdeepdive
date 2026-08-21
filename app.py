@@ -40,6 +40,8 @@ import scan_store
 import scanner_engine
 import name_directory
 import score_history
+import blog_store
+import blog_render
 
 # -----------------------------------
 # PAGE SETUP
@@ -472,7 +474,14 @@ def _render_view_badge():
     Also carries the Stats popover (sign-up counts + first-party page-view
     counts, aggregate numbers only - no identities are ever displayed)."""
     if _FACTUAL_DEFAULT and st.session_state.get("full_view_unlocked"):
-        _b1, _bs, _b2 = st.columns([8.4, 1.6, 2])
+        # Write blog sits here rather than in the site nav on purpose: the
+        # editor is admin-only, so its entry point belongs in the strip
+        # that only an unlocked session ever sees.
+        _b1, _bw, _bs, _b2 = st.columns([6.8, 1.6, 1.6, 2])
+        with _bw:
+            if st.button("Write blog", key="admin_write_blog",
+                         use_container_width=True):
+                st.switch_page(PG_BLOG_ADMIN)
         with _b1:
             st.markdown(
                 "<div style='display:inline-block;background:#4a2733;color:#fb7185;"
@@ -1198,6 +1207,7 @@ def _render_footer():
   <div class='sdd-f-cols'>
     <div><h5>StocksDeepDive</h5>
       <a href='/' target='_self'>Home</a>
+      <a href='/blog'>Blog</a>
       <a href='/about' target='_self'>About the author</a>
       <a href='/methodology' target='_self'>How the scores work</a>
       <a href='/research' target='_self'>Rational Compounder Research</a>
@@ -1398,7 +1408,8 @@ def _render_header(compact, page_label=None):
     # inside the narrow search column now that button text never wraps.
     _bsp1, _bmid, _bsp2 = st.columns([2, 6, 2])
     with _bmid:
-        _nav_col1, _nav_col2, _nav_col3 = st.columns(3, gap="small")
+        _nav_col1, _nav_col2, _nav_col3, _nav_col4 = st.columns(
+            [3, 3, 2.2, 1.3], gap="small")
         with _nav_col1:
             if st.button(
                 "Rational Compounder Analysis",
@@ -1417,6 +1428,17 @@ def _render_header(compact, page_label=None):
                 use_container_width=True, key="nav_scanner",
             ):
                 st.switch_page(PG_SCANNER)
+        with _nav_col4:
+            # The blog is served outside Streamlit (server.py), so this is
+            # a real link styled to match the nav buttons, not st.button.
+            st.markdown(
+                "<a href='/blog' style='display:block;text-align:center;"
+                "border:1.5px solid #2dd4bf;border-radius:10px;color:#2dd4bf;"
+                "background-color:rgba(45,212,191,0.07);font-weight:600;"
+                "padding:0.55rem 0.5rem;text-decoration:none;"
+                "white-space:nowrap;'>Blog</a>",
+                unsafe_allow_html=True,
+            )
 
     if _searched:
         _dispatch_search(_search_text)
@@ -3195,6 +3217,43 @@ as a fact &mdash; you always know which numbers are computed and which are assum
             "<div class='sdd-secsub'>New companies are added as the research completes &mdash; "
             "each one takes weeks, not minutes.</div>"
             f"<div class='sdd-covgrid'>{''.join(_cov_cards)}</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ---- from the blog ----
+    # The blog itself is server-rendered at /blog (see server.py); this is
+    # its shop window on the app's home page - the latest posts as cards,
+    # refreshed automatically whenever a post is published.
+    try:
+        _bposts = blog_store.list_posts(limit=3)
+    except Exception:
+        _bposts = []
+    if _bposts:
+        _post_cards = []
+        for _bp in _bposts:
+            _bdate = (_bp.get("published_at") or "")[:10]
+            try:
+                _bmins = blog_render.reading_time(_bp.get("body_md") or "")
+            except Exception:
+                _bmins = 1
+            _bsum = html.escape((_bp.get("summary") or "")[:170])
+            _post_cards.append(
+                f"<a class='sdd-cov' style='text-decoration:none;' "
+                f"href='/blog/{html.escape(_bp['slug'])}'>"
+                f"<div style='color:#e6edf5;font-weight:600;font-size:15px;"
+                f"line-height:1.4;'>{html.escape(_bp['title'])}</div>"
+                f"<div style='color:#5b7290;font-size:12px;margin:6px 0;'>"
+                f"{_bdate} &middot; {_bmins} min read</div>"
+                f"<div style='color:#8aa0b8;font-size:13px;line-height:1.5;'>"
+                f"{_bsum}</div></a>"
+            )
+        st.markdown(
+            "<div class='sdd-kicker' style='margin-top:40px;'>FROM THE BLOG</div>"
+            "<div class='sdd-h2'>Latest research notes</div>"
+            "<div class='sdd-secsub'>The reasoning behind the numbers, written "
+            "out in full &mdash; <a href='/blog' style='color:#2dd4bf;'>all "
+            "posts &rarr;</a></div>"
+            f"<div class='sdd-covgrid'>{''.join(_post_cards)}</div>",
             unsafe_allow_html=True,
         )
 
@@ -5847,6 +5906,348 @@ noted on the site.
 
 
 # -----------------------------------
+# BLOG ADMIN - the writing desk for the public blog
+#
+# The blog itself is deliberately NOT rendered by Streamlit. Streamlit
+# streams its content over a websocket, so a search crawler fetching any
+# app page receives an empty shell - nothing on this site can be indexed
+# from inside the app. server.py therefore serves /blog and /blog/<slug>
+# as real server-rendered HTML (with per-post <title>, meta description,
+# canonical URL, Open Graph card, JSON-LD article schema, sitemap.xml and
+# robots.txt) straight from blog_store, and proxies every other URL
+# through to this app untouched. See server.py's module docstring.
+#
+# This page is only the editor: it reads and writes the same blog_store
+# rows the public HTML is rendered from. Gated by ADMIN_REFRESH_KEY, the
+# same key as the Rational Compounder rebuild panel - with no key set on
+# the deployment the page renders nothing.
+# -----------------------------------
+
+# widget key -> blog_store field
+_BLOG_FIELDS = {
+    "blog_f_title": "title",
+    "blog_f_slug": "slug",
+    "blog_f_summary": "summary",
+    "blog_f_body": "body_md",
+    "blog_f_tags": "tags",
+    "blog_f_author": "author",
+    "blog_f_hero_alt": "hero_alt",
+}
+
+
+def _blog_admin_unlocked() -> bool:
+    """Admin gate. The full-view unlock (?admin= / the RC view popover)
+    counts, so an already-unlocked admin session doesn't have to type the
+    key twice; otherwise the key is asked for on this page."""
+    if not _admin_key_env:
+        return False
+    return bool(st.session_state.get("full_view_unlocked")
+                or st.session_state.get("blog_admin_unlocked"))
+
+
+def _blog_load_form(post):
+    """Copy a post's stored values into the editor widgets. Called only
+    when the selected post CHANGES - doing it on every run would fight the
+    user for control of the text boxes as they type."""
+    for widget_key, field in _BLOG_FIELDS.items():
+        st.session_state[widget_key] = (post or {}).get(field) or ""
+    st.session_state["blog_f_status"] = (
+        "Published" if (post or {}).get("status") == blog_store.STATUS_PUBLISHED
+        else "Draft"
+    )
+    st.session_state["blog_loaded_id"] = (post or {}).get("id")
+
+
+def _blog_len_hint(text, low, high, what):
+    """Google truncates a title around 60 characters and a description
+    around 155, so length is worth showing while writing rather than
+    discovering in the search results weeks later."""
+    n = len(text or "")
+    if n == 0:
+        return f":grey[{what}: empty]"
+    if n < low:
+        return f":orange[{what}: {n} chars - shorter than ideal ({low}-{high})]"
+    if n > high:
+        return f":orange[{what}: {n} chars - will be truncated (aim {low}-{high})]"
+    return f":green[{what}: {n} chars]"
+
+
+def page_blog_admin():
+    _content_page_shell("Blog")
+
+    if not _admin_key_env:
+        st.info("The blog editor is unavailable on this deployment "
+                "(ADMIN_REFRESH_KEY is not set).")
+        return
+
+    if not _blog_admin_unlocked():
+        st.caption("Admin only.")
+        _k = st.text_input("Admin key", type="password", key="blog_admin_key_in")
+        if st.button("Unlock", type="primary", key="blog_admin_unlock_btn"):
+            if _k.strip() == _admin_key_env:
+                st.session_state["blog_admin_unlocked"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect key.")
+        return
+
+    # Streamlit refuses to let a widget's session_state key be written
+    # after that widget has been created in the same run, so any control
+    # that wants to change another control's value (Delete moving the
+    # selection, "From title" filling the slug) parks the new value here
+    # and reruns; it is applied at the top of the next run, before a single
+    # widget exists.
+    _pending = st.session_state.pop("_blog_pending", None)
+    if _pending:
+        st.session_state.update(_pending)
+
+    posts = blog_store.list_posts(include_drafts=True)
+    by_id = {p["id"]: p for p in posts}
+    # The selectbox carries post IDs rather than labels: two posts can
+    # share a title, and an ID stays valid when one gets renamed.
+    _options = [None] + [p["id"] for p in posts]
+
+    def _post_label(pid):
+        if pid is None:
+            return "+ New post"
+        p = by_id.get(pid, {})
+        mark = "●" if p.get("status") == blog_store.STATUS_PUBLISHED else "○"
+        return f"{mark}  {p.get('title', '')}"
+
+    _sel_col, _new_col = st.columns([4, 1])
+    with _sel_col:
+        choice = st.selectbox(
+            "Post", _options, format_func=_post_label, key="blog_select",
+            help="● published · ○ draft",
+        )
+    with _new_col:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        if st.button("Reload", use_container_width=True, key="blog_reload"):
+            st.session_state.pop("blog_loaded_id", None)
+            st.rerun()
+
+    selected_id = choice
+    selected = by_id.get(selected_id)
+    if st.session_state.get("blog_loaded_id", "__unset__") != selected_id:
+        _blog_load_form(selected)
+        st.rerun()
+
+    _saved_msg = st.session_state.pop("_blog_saved_msg", None)
+    if _saved_msg:
+        st.success(_saved_msg)
+
+    _just_saved = st.session_state.pop("blog_open_after_save", None)
+    if _just_saved:
+        _u = f"/blog/{_just_saved}"
+        if (st.session_state.get("blog_f_status") != "Published"
+                and _admin_key_env):
+            _u += f"?preview={_admin_key_env}"
+        st.link_button("Open the saved post ↗", _u)
+
+    st.markdown("---")
+    _edit, _side = st.columns([3, 2], gap="large")
+
+    with _edit:
+        st.text_input("Title", key="blog_f_title",
+                      placeholder="Why margin of safety is the whole game")
+        _title = st.session_state.get("blog_f_title", "")
+
+        # The slug is the URL and therefore the most permanent thing about
+        # a post: suggested from the title, but never silently rewritten
+        # once a post exists, because changing it changes a public address.
+        _slug_col, _btn_col = st.columns([3, 1])
+        with _slug_col:
+            st.text_input("URL slug", key="blog_f_slug",
+                          placeholder="why-margin-of-safety-is-the-whole-game")
+        with _btn_col:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            if st.button("From title", use_container_width=True,
+                         key="blog_slug_from_title"):
+                st.session_state["_blog_pending"] = {
+                    "blog_f_slug": blog_store.slugify(_title)}
+                st.rerun()
+
+        st.text_area(
+            "Meta description", key="blog_f_summary", height=90,
+            help="The sentence Google shows under the title in search "
+                 "results, and the text of the link preview when the post "
+                 "is shared. Left blank, the opening of the post is used.",
+        )
+        st.markdown(_blog_len_hint(st.session_state.get("blog_f_summary"),
+                                   120, 158, "Description"))
+
+        st.text_area(
+            "Post body (Markdown)", key="blog_f_body", height=460,
+            help="Markdown: ## for headings, **bold**, - for bullets, "
+                 "> for quotes, tables and [links](https://…) all work. "
+                 "Use ## and ### for structure - headings are a real "
+                 "ranking signal and make the post skimmable.",
+        )
+
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            st.text_input("Tags (comma separated)", key="blog_f_tags",
+                          placeholder="valuation, method, asx")
+        with _c2:
+            st.text_input("Author", key="blog_f_author", placeholder="Andrew")
+
+        st.radio("Status", ["Draft", "Published"], key="blog_f_status",
+                 horizontal=True,
+                 help="Drafts are hidden from the blog index, the sitemap "
+                      "and the feed, and carry a noindex tag. They are "
+                      "still viewable at their own URL with ?preview=<admin key>.")
+
+        _hero = st.file_uploader(
+            "Hero image (optional)", type=["png", "jpg", "jpeg", "webp"],
+            key="blog_f_hero_file",
+            help="Used as the social-share card image. 1200×630 is the "
+                 "size Facebook, LinkedIn and X all crop to.",
+        )
+        st.text_input("Hero image alt text", key="blog_f_hero_alt",
+                      placeholder="Chart of free cash flow vs price")
+        _remove_hero = False
+        if selected and selected.get("hero_file"):
+            st.caption(f"Current image: {selected['hero_file']}")
+            _remove_hero = st.checkbox("Remove the current image",
+                                       key="blog_f_hero_remove")
+
+        st.markdown("")
+        _b1, _b2, _b3 = st.columns([1.2, 1, 1])
+        with _b1:
+            _save = st.button("Save", type="primary", use_container_width=True,
+                              key="blog_save")
+        with _b2:
+            _save_view = st.button("Save & view", use_container_width=True,
+                                   key="blog_save_view")
+        with _b3:
+            if selected:
+                _delete = st.button("Delete", use_container_width=True,
+                                    key="blog_delete")
+            else:
+                _delete = False
+
+        if _delete:
+            if st.session_state.get("blog_confirm_delete") == selected_id:
+                blog_store.delete_post(selected_id)
+                st.session_state.pop("blog_confirm_delete", None)
+                st.session_state.pop("blog_loaded_id", None)
+                st.session_state["_blog_pending"] = {"blog_select": None}
+                st.rerun()
+            else:
+                st.session_state["blog_confirm_delete"] = selected_id
+                st.warning("Press Delete again to confirm - this cannot be "
+                           "undone.")
+
+        if _save or _save_view:
+            _title_v = (st.session_state.get("blog_f_title") or "").strip()
+            if not _title_v:
+                st.error("A post needs a title.")
+            else:
+                _status = (blog_store.STATUS_PUBLISHED
+                           if st.session_state.get("blog_f_status") == "Published"
+                           else blog_store.STATUS_DRAFT)
+                _hero_name = Ellipsis
+                if _hero is not None:
+                    _hero_name = blog_store.save_media(_hero.name,
+                                                       _hero.getvalue())
+                elif _remove_hero:
+                    _hero_name = None
+
+                if selected_id:
+                    _slug = blog_store.update_post(
+                        selected_id,
+                        title=_title_v,
+                        slug=(st.session_state.get("blog_f_slug") or "").strip()
+                             or _title_v,
+                        summary=st.session_state.get("blog_f_summary") or "",
+                        body_md=st.session_state.get("blog_f_body") or "",
+                        tags=st.session_state.get("blog_f_tags") or "",
+                        author=st.session_state.get("blog_f_author") or "",
+                        hero_file=_hero_name,
+                        hero_alt=st.session_state.get("blog_f_hero_alt") or "",
+                        status=_status,
+                    )
+                    _new_id = selected_id
+                else:
+                    _new_id = blog_store.create_post(
+                        title=_title_v,
+                        slug=(st.session_state.get("blog_f_slug") or "").strip()
+                             or _title_v,
+                        summary=st.session_state.get("blog_f_summary") or "",
+                        body_md=st.session_state.get("blog_f_body") or "",
+                        tags=st.session_state.get("blog_f_tags") or "",
+                        author=st.session_state.get("blog_f_author") or "",
+                        hero_file=(None if _hero_name is Ellipsis else _hero_name),
+                        hero_alt=st.session_state.get("blog_f_hero_alt") or "",
+                        status=_status,
+                    )
+                    _slug = blog_store.get_post_by_id(_new_id)["slug"]
+
+                # Keep the just-saved post selected rather than dropping
+                # back to a blank "new post" form - saving is usually the
+                # middle of writing, not the end of it.
+                st.session_state.pop("blog_loaded_id", None)
+                st.session_state["_blog_pending"] = {"blog_select": _new_id}
+                st.session_state["_blog_saved_msg"] = (
+                    f"Saved. Public URL: /blog/{_slug}")
+                if _save_view:
+                    st.session_state["blog_open_after_save"] = _slug
+                st.rerun()
+
+    with _side:
+        st.markdown("##### Preview")
+        _body = st.session_state.get("blog_f_body") or ""
+        _slug_now = ((st.session_state.get("blog_f_slug") or "").strip()
+                     or blog_store.slugify(st.session_state.get("blog_f_title")))
+        if _slug_now:
+            _url = f"/blog/{_slug_now}"
+            _preview_url = _url
+            if (st.session_state.get("blog_f_status") != "Published"
+                    and _admin_key_env):
+                _preview_url = f"{_url}?preview={_admin_key_env}"
+            st.markdown(
+                f"<div style='font-family:ui-monospace,Menlo,monospace;"
+                f"font-size:12.5px;color:#8aa0b8;word-break:break-all'>"
+                f"stocksdeepdive.com{html.escape(_url)}</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<a href='{html.escape(_preview_url)}' target='_blank'>"
+                f"Open the real page &rarr;</a>", unsafe_allow_html=True)
+        st.caption(
+            f"{len(_body.split())} words · "
+            f"{blog_render.reading_time(_body)} min read"
+        )
+        st.markdown(_blog_len_hint(st.session_state.get("blog_f_title"),
+                                   30, 60, "Title"))
+        st.markdown("---")
+        with st.container(height=520, border=True):
+            try:
+                st.markdown(blog_render.md_to_html(_body),
+                            unsafe_allow_html=True)
+            except Exception:
+                st.markdown(_body)
+
+    st.markdown("---")
+    _f1, _f2 = st.columns(2)
+    with _f1:
+        st.markdown(
+            "<a href='/blog' target='_blank'>Open the public blog &rarr;</a>"
+            "<br><a href='/sitemap.xml' target='_blank'>sitemap.xml</a> · "
+            "<a href='/robots.txt' target='_blank'>robots.txt</a> · "
+            "<a href='/blog/feed.xml' target='_blank'>RSS feed</a>",
+            unsafe_allow_html=True,
+        )
+    with _f2:
+        st.caption(
+            f"{blog_store.count_posts()} published · "
+            f"{blog_store.count_posts(include_drafts=True)} total. "
+            "Posts and images are stored on the Railway volume alongside the "
+            "site's other data, so they survive redeploys."
+        )
+
+
+# -----------------------------------
 # PAGE ROUTING
 #
 # Real Streamlit pages (st.navigation/st.Page) so Search and Rational
@@ -5865,10 +6266,16 @@ PG_METHODOLOGY = st.Page(page_methodology, title="How the scores work", url_path
 PG_ABOUT = st.Page(page_about, title="About", url_path="about")
 PG_MODEL_HISTORY = st.Page(page_model_history, title="Model history", url_path="model-history")
 PG_PRIVACY = st.Page(page_privacy, title="Privacy policy", url_path="privacy")
+# The public blog lives at /blog and is served as HTML by server.py, NOT by
+# Streamlit - this page is the admin-only editor behind it, and is
+# Disallowed in robots.txt.
+PG_BLOG_ADMIN = st.Page(page_blog_admin, title="Blog admin",
+                        url_path="blog-admin")
 
 _nav = st.navigation(
     [PG_HOME, PG_DEEP_DIVE, PG_COMPARISON, PG_RESEARCH, PG_SCANNER,
-     PG_METHODOLOGY, PG_ABOUT, PG_MODEL_HISTORY, PG_PRIVACY], position="hidden"
+     PG_METHODOLOGY, PG_ABOUT, PG_MODEL_HISTORY, PG_PRIVACY,
+     PG_BLOG_ADMIN], position="hidden"
 )
 _nav.run()
 
