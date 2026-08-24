@@ -3390,6 +3390,21 @@ def page_deep_dive():
         else:
             _dd_signal = "AVOID"
 
+        # Same tiering as _dd_signal, reworded for the factual/public view -
+        # that view deliberately never shows the LONG/AVOID-style signal
+        # words (see the Signal metric, which only appears in the full/RC
+        # column layout below), so the Value Score heading uses the same
+        # neutral EXCELLENT/GOOD/FAIR/WEAK vocabulary Quality already uses
+        # instead of a second recommendation-flavoured label.
+        if _dd["long_score"] > SIGNAL_THRESHOLDS["STRONG_LONG"]:
+            _dd_value_word = "EXCELLENT"
+        elif _dd["long_score"] > SIGNAL_THRESHOLDS["LONG"]:
+            _dd_value_word = "GOOD"
+        elif _dd["long_score"] > SIGNAL_THRESHOLDS["WATCHLIST"]:
+            _dd_value_word = "FAIR"
+        else:
+            _dd_value_word = "WEAK"
+
         st.subheader(f"{_dd['ticker']} - {_dd['name']}")
         _render_data_as_of(_dd["ticker"])
         _render_recent_results_banner(_dd["ticker"])
@@ -3620,8 +3635,11 @@ def page_deep_dive():
 
         # Value Score gauge stacked on top of Price vs Intrinsic Value
         # (previously side-by-side columns - moved to a single vertical
-        # stack per request).
+        # stack per request). Heading added to match the Quality/Discovery/
+        # Psychology sections below, each of which leads with a
+        # "X Score: value - LABEL" subheader before their gauge.
         if _factual():
+            st.subheader(f"Value Score: {_dd['long_score']:.1f} - {_dd_value_word}")
             st.plotly_chart(
                 _dd_gauge(
                     _dd["long_score"], "Value Score",
@@ -3635,6 +3653,7 @@ def page_deep_dive():
                 use_container_width=True,
             )
         else:
+            st.subheader(f"Long Score: {_dd['long_score']:.1f} - {_dd_signal}")
             st.plotly_chart(
                 _dd_gauge(
                     _dd["long_score"], f"Long Score - {_dd_signal}",
