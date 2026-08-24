@@ -2639,203 +2639,15 @@ def _render_position_disclosure(ticker):
                 st.rerun()
 
 
-def page_research():
-    _render_header(compact=True, page_label="Rational Compounder Analysis")
-
-    # Article-arrival welcome banner: shown only to visitors who arrived
-    # via a src= link (an article) and haven't dismissed it yet this
-    # session. Rendered at the very top, before the admin panel/data, so
-    # it's the first thing an article reader sees.
-    if (st.session_state.get("first_src")
-            and not st.session_state.get("research_banner_dismissed")):
-        with st.container(border=True, key="research_welcome_banner"):
-            _wb1, _wb2 = st.columns([24, 1])
-            with _wb1:
-                st.markdown(
-                    "**You've read the analysis — this is the live research "
-                    "behind it.** Every chart on this page comes from the "
-                    "same workbook the article was written from, refreshed "
-                    "with each rebuild. Follow the company below to get the "
-                    "next update by email."
-                )
-            with _wb2:
-                if st.button("✕", key="research_banner_dismiss"):
-                    st.session_state["research_banner_dismissed"] = True
-                    st.rerun()
-
-    _render_compounder_admin_panel()
-
-    data = _load_compounder_data()
-
-    # Data snapshot picker: the author starts a fresh research workbook
-    # every 6-10 months; every rebuild archives the previous dataset with
-    # its timestamp, and any of them can be viewed here. Only shown when
-    # archives exist.
-    _snapshots = build_compounder_data.list_archived_snapshots()
-    if _snapshots:
-        _snap_labels = ["Current (latest rebuild)"] + [
-            f"Archived - {s['label']}" for s in _snapshots
-        ]
-        # Task 9: the Model History page's "View" buttons land here with a
-        # specific archive path pre-selected - written to the selectbox's
-        # own session-state key BEFORE the widget is created (the one safe
-        # time to do so), same pattern research_jump_ticker uses below for
-        # "cp_ticker".
-        _cp_snapshot_jump_path = st.session_state.pop("cp_snapshot_jump", None)
-        if _cp_snapshot_jump_path:
-            for _i, _s in enumerate(_snapshots):
-                if _s["path"] == _cp_snapshot_jump_path:
-                    st.session_state["cp_snapshot_pick"] = _snap_labels[_i + 1]
-                    break
-        _snap_pick = st.selectbox(
-            "Data snapshot", _snap_labels, key="cp_snapshot_pick",
-        )
-        if _snap_pick != "Current (latest rebuild)":
-            _snap = _snapshots[_snap_labels.index(_snap_pick) - 1]
-            _snap_data = build_compounder_data.load_snapshot(_snap["path"])
-            if _snap_data:
-                data = _snap_data
-                st.warning(
-                    f"You're viewing an ARCHIVED snapshot ({_snap['label']}). "
-                    "Numbers reflect the research workbook as of that date - "
-                    "switch back to 'Current' for the latest data."
-                )
-
-    if not data or not data.get("tickers"):
-        st.info(
-            "Rational Compounder Analysis - the research data is being "
-            "prepared. Check back shortly."
-        )
-        _bump_page_view("research")
-        return
-
-    section_order = [
-        "Fundamentals", "Value vs Book", "Dividends", "Earnings Trends",
-        "Cost of Capital", "Fair Value", "Company Potential",
-    ]
-    section_order = [s for s in section_order if s in data["sections"]]
-
-    # This data is a snapshot from whenever the workbook was last uploaded
-    # and rebuilt, not live -- shown once here (above the Stock/Section
-    # pickers, not inside the per-section branches below) so it's visible
-    # no matter which section you pick, not just one of them.
-    _render_last_updated(data.get("generated_at"))
-
-    st.caption(
-        "Hand-built research, not a screen: every chart, threshold and "
-        "colour band on this page comes straight from the author's own "
-        "research workbook. Pick a stock, then a section."
-    )
-
-    # Task 9: link out to the Model History page - a changelog of when this
-    # workbook has been rebuilt, not shown inline here since it applies to
-    # every archive at once, not just the ones surfaced by the snapshot
-    # picker above.
-    if st.button("See the model's rebuild history →", key="research_to_model_history"):
-        st.switch_page(PG_MODEL_HISTORY)
-
-    st.caption(
-        f"{len(data['tickers'])} companies covered in depth today - new "
-        "names are added as each one's research completes. Want a stock "
-        "prioritised? Say so via the Feedback button above."
-    )
-
-    tickers = sorted(data["tickers"].keys())
-
-    def _ticker_label(t):
-        industry = data["tickers"][t].get("industry")
-        return f"{t} - {industry}" if industry else t
-
-    # Deep Dive -> Research cross-link (Task 5): page_deep_dive stores the
-    # ticker here instead of setting st.query_params["ticker"] before
-    # st.switch_page, because st.switch_page CLEARS all non-embed query
-    # params on navigation by default (confirmed against the installed
-    # streamlit version's own switch_page() docstring/source) - a query
-    # param set right before switch_page never actually reaches this page.
-    # Popped (one-shot, then cleared) and takes PRIORITY over both the
-    # query param below and any ticker already picked earlier this session,
-    # since clicking that cross-link is an explicit request to jump to this
-    # exact company - written to the "cp_ticker" widget key BEFORE the
-    # selectbox below is created, which is the one time it's safe to poke a
-    # widget's session-state key directly.
-    _cp_jump_ticker = (st.session_state.pop("research_jump_ticker", None) or "").strip().upper()
-    if _cp_jump_ticker and _cp_jump_ticker in tickers:
-        st.session_state["cp_ticker"] = _cp_jump_ticker
-
-    # Shareable deep links: /research?ticker=CSL.AX&section=Fair+Value opens
-    # straight on that company/section - the same idea as page_deep_dive's
-    # ?ticker= (see its "dd_qp_tried" one-shot guard). The index is computed
-    # BEFORE the selectbox exists (never poke a widget's session-state key
-    # after creation) and only from the query param when the widget's own
-    # session-state key isn't set yet - once "cp_ticker"/"cp_section" exist
-    # (after the first render, or the user's own pick), Streamlit uses that
-    # stored value regardless of `index`, which is the one-shot guard here:
-    # a bad/stale query param can't fight the user's later picks.
-    _cp_ticker_index = 0
-    if "cp_ticker" not in st.session_state:
-        _qp_ticker = (st.query_params.get("ticker") or "").strip().upper()
-        if _qp_ticker in tickers:
-            _cp_ticker_index = tickers.index(_qp_ticker)
-    _cp_section_index = 0
-    if "cp_section" not in st.session_state:
-        _qp_section = (st.query_params.get("section") or "").strip().lower()
-        if _qp_section:
-            for _i, _s in enumerate(section_order):
-                if _s.lower() == _qp_section:
-                    _cp_section_index = _i
-                    break
-
-    # Narrow columns sized just enough for these two dropdowns, followed by
-    # a wide empty spacer column -- keeps both boxes compact and bunched on
-    # the left instead of stretching one to each half of the page.
-    st.markdown(
-        """
-        <style>
-        div.st-key-cp_pick_row div[data-testid="stSelectbox"] {
-            max-width: 260px;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    with st.container(key="cp_pick_row"):
-        pick_col1, pick_col2, _ = st.columns([1, 1, 3])
-        with pick_col1:
-            ticker = st.selectbox(
-                "Stock", tickers, format_func=_ticker_label, key="cp_ticker",
-                index=_cp_ticker_index,
-            )
-        with pick_col2:
-            section_label = st.selectbox(
-                "Section", section_order, key="cp_section",
-                index=_cp_section_index,
-            )
-
-    # Keep the address bar shareable: it always reflects the current pick,
-    # the same pattern page_deep_dive uses for its ?ticker=.
-    st.query_params["ticker"] = ticker
-    st.query_params["section"] = section_label
-
-    _bump_page_view("research", ticker=ticker)
-
-    # Author position disclosure strip (positions_store.py) - directly
-    # after the stock/section picker and before any section content, so
-    # it's visible no matter which section is selected. Shown identically
-    # in the public factual view and the admin full view; the "Edit
-    # position (admin)" expander inside it only renders when
-    # full_view_unlocked is True.
-    _render_position_disclosure(ticker)
-
-    # Per-company header card (Task 5): ticker/industry/section-count/
-    # last-updated + a link-button to the live Deep Dive.
-    _render_research_header_card(ticker, data, section_order)
-
-    # "Follow this company" email capture (Task 2) - per selected ticker,
-    # open to signed-in and anonymous visitors alike.
-    _render_follow_control(ticker, key_prefix="follow_research")
-
-    st.markdown(f"### {ticker} - {section_label}")
-
+def _render_cp_section(ticker, section_label, data):
+    """
+    Renders one Research-page section (Fundamentals / Value vs Book /
+    Dividends / Earnings Trends / Cost of Capital / Fair Value / Company
+    Potential) for the given ticker. Extracted out of page_research() so it
+    can be called once per st.tabs() tab - unlike the old single-selection
+    dropdown, st.tabs() renders every tab's body on every run, so this now
+    runs up to 7x per page load instead of once.
+    """
     section = data["sections"][section_label]
     metrics = section["metrics"]
 
@@ -2985,6 +2797,211 @@ def page_research():
 
     if share_price_growth_fig:
         st.plotly_chart(share_price_growth_fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def page_research():
+    _render_header(compact=True, page_label="Rational Compounder Analysis")
+
+    # Article-arrival welcome banner: shown only to visitors who arrived
+    # via a src= link (an article) and haven't dismissed it yet this
+    # session. Rendered at the very top, before the admin panel/data, so
+    # it's the first thing an article reader sees.
+    if (st.session_state.get("first_src")
+            and not st.session_state.get("research_banner_dismissed")):
+        with st.container(border=True, key="research_welcome_banner"):
+            _wb1, _wb2 = st.columns([24, 1])
+            with _wb1:
+                st.markdown(
+                    "**You've read the analysis — this is the live research "
+                    "behind it.** Every chart on this page comes from the "
+                    "same workbook the article was written from, refreshed "
+                    "with each rebuild. Follow the company below to get the "
+                    "next update by email."
+                )
+            with _wb2:
+                if st.button("✕", key="research_banner_dismiss"):
+                    st.session_state["research_banner_dismissed"] = True
+                    st.rerun()
+
+    _render_compounder_admin_panel()
+
+    data = _load_compounder_data()
+
+    # Data snapshot picker: the author starts a fresh research workbook
+    # every 6-10 months; every rebuild archives the previous dataset with
+    # its timestamp, and any of them can be viewed here. Only shown when
+    # archives exist.
+    _snapshots = build_compounder_data.list_archived_snapshots()
+    if _snapshots:
+        _snap_labels = ["Current (latest rebuild)"] + [
+            f"Archived - {s['label']}" for s in _snapshots
+        ]
+        # Task 9: the Model History page's "View" buttons land here with a
+        # specific archive path pre-selected - written to the selectbox's
+        # own session-state key BEFORE the widget is created (the one safe
+        # time to do so), same pattern research_jump_ticker uses below for
+        # "cp_ticker".
+        _cp_snapshot_jump_path = st.session_state.pop("cp_snapshot_jump", None)
+        if _cp_snapshot_jump_path:
+            for _i, _s in enumerate(_snapshots):
+                if _s["path"] == _cp_snapshot_jump_path:
+                    st.session_state["cp_snapshot_pick"] = _snap_labels[_i + 1]
+                    break
+        _snap_pick = st.selectbox(
+            "Data snapshot", _snap_labels, key="cp_snapshot_pick",
+        )
+        if _snap_pick != "Current (latest rebuild)":
+            _snap = _snapshots[_snap_labels.index(_snap_pick) - 1]
+            _snap_data = build_compounder_data.load_snapshot(_snap["path"])
+            if _snap_data:
+                data = _snap_data
+                st.warning(
+                    f"You're viewing an ARCHIVED snapshot ({_snap['label']}). "
+                    "Numbers reflect the research workbook as of that date - "
+                    "switch back to 'Current' for the latest data."
+                )
+
+    if not data or not data.get("tickers"):
+        st.info(
+            "Rational Compounder Analysis - the research data is being "
+            "prepared. Check back shortly."
+        )
+        _bump_page_view("research")
+        return
+
+    section_order = [
+        "Fundamentals", "Value vs Book", "Dividends", "Earnings Trends",
+        "Cost of Capital", "Fair Value", "Company Potential",
+    ]
+    section_order = [s for s in section_order if s in data["sections"]]
+
+    # This data is a snapshot from whenever the workbook was last uploaded
+    # and rebuilt, not live -- shown once here (above the Stock/Section
+    # pickers, not inside the per-section branches below) so it's visible
+    # no matter which section you pick, not just one of them.
+    _render_last_updated(data.get("generated_at"))
+
+    st.caption(
+        "Hand-built research, not a screen: every chart, threshold and "
+        "colour band on this page comes straight from the author's own "
+        "research workbook. Pick a stock, then a section."
+    )
+
+    # Task 9: link out to the Model History page - a changelog of when this
+    # workbook has been rebuilt, not shown inline here since it applies to
+    # every archive at once, not just the ones surfaced by the snapshot
+    # picker above.
+    if st.button("See the model's rebuild history →", key="research_to_model_history"):
+        st.switch_page(PG_MODEL_HISTORY)
+
+    st.caption(
+        f"{len(data['tickers'])} companies covered in depth today - new "
+        "names are added as each one's research completes. Want a stock "
+        "prioritised? Say so via the Feedback button above."
+    )
+
+    tickers = sorted(data["tickers"].keys())
+
+    def _ticker_label(t):
+        industry = data["tickers"][t].get("industry")
+        return f"{t} - {industry}" if industry else t
+
+    # Deep Dive -> Research cross-link (Task 5): page_deep_dive stores the
+    # ticker here instead of setting st.query_params["ticker"] before
+    # st.switch_page, because st.switch_page CLEARS all non-embed query
+    # params on navigation by default (confirmed against the installed
+    # streamlit version's own switch_page() docstring/source) - a query
+    # param set right before switch_page never actually reaches this page.
+    # Popped (one-shot, then cleared) and takes PRIORITY over both the
+    # query param below and any ticker already picked earlier this session,
+    # since clicking that cross-link is an explicit request to jump to this
+    # exact company - written to the "cp_ticker" widget key BEFORE the
+    # selectbox below is created, which is the one time it's safe to poke a
+    # widget's session-state key directly.
+    _cp_jump_ticker = (st.session_state.pop("research_jump_ticker", None) or "").strip().upper()
+    if _cp_jump_ticker and _cp_jump_ticker in tickers:
+        st.session_state["cp_ticker"] = _cp_jump_ticker
+
+    # Shareable deep links: /research?ticker=CSL.AX&section=Fair+Value opens
+    # straight on that company/section - the same idea as page_deep_dive's
+    # ?ticker= (see its "dd_qp_tried" one-shot guard). The index is computed
+    # BEFORE the selectbox exists (never poke a widget's session-state key
+    # after creation) and only from the query param when the widget's own
+    # session-state key isn't set yet - once "cp_ticker"/"cp_section" exist
+    # (after the first render, or the user's own pick), Streamlit uses that
+    # stored value regardless of `index`, which is the one-shot guard here:
+    # a bad/stale query param can't fight the user's later picks.
+    _cp_ticker_index = 0
+    if "cp_ticker" not in st.session_state:
+        _qp_ticker = (st.query_params.get("ticker") or "").strip().upper()
+        if _qp_ticker in tickers:
+            _cp_ticker_index = tickers.index(_qp_ticker)
+    # Section is now a row of clickable tabs (was a dropdown) - the default
+    # tab still honours ?section= the same way the dropdown's `index` did,
+    # but note the address bar can no longer live-sync to whichever tab is
+    # currently open: st.tabs() doesn't report which tab is active back to
+    # Python (only which one to open BY DEFAULT), so unlike the ticker
+    # picker below, a link shared mid-session will reopen on the tab the
+    # page first loaded on, not necessarily the one being looked at when
+    # the link was copied.
+    _cp_default_section = section_order[0]
+    _qp_section = (st.query_params.get("section") or "").strip().lower()
+    if _qp_section:
+        for _s in section_order:
+            if _s.lower() == _qp_section:
+                _cp_default_section = _s
+                break
+
+    # Narrow column sized just enough for the Stock dropdown, followed by a
+    # wide empty spacer column -- keeps it compact and bunched on the left
+    # instead of stretching to half the page.
+    st.markdown(
+        """
+        <style>
+        div.st-key-cp_pick_row div[data-testid="stSelectbox"] {
+            max-width: 260px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.container(key="cp_pick_row"):
+        pick_col1, _ = st.columns([1, 4])
+        with pick_col1:
+            ticker = st.selectbox(
+                "Stock", tickers, format_func=_ticker_label, key="cp_ticker",
+                index=_cp_ticker_index,
+            )
+
+    # Keep the address bar shareable for the ticker, the same pattern
+    # page_deep_dive uses for its ?ticker= - "section" is seeded once from
+    # the tab default above and not kept live (see note above).
+    st.query_params["ticker"] = ticker
+    st.query_params["section"] = _cp_default_section
+
+    _bump_page_view("research", ticker=ticker)
+
+    # Author position disclosure strip (positions_store.py) - directly
+    # after the stock/section picker and before any section content, so
+    # it's visible no matter which section is selected. Shown identically
+    # in the public factual view and the admin full view; the "Edit
+    # position (admin)" expander inside it only renders when
+    # full_view_unlocked is True.
+    _render_position_disclosure(ticker)
+
+    # Per-company header card (Task 5): ticker/industry/section-count/
+    # last-updated + a link-button to the live Deep Dive.
+    _render_research_header_card(ticker, data, section_order)
+
+    # "Follow this company" email capture (Task 2) - per selected ticker,
+    # open to signed-in and anonymous visitors alike.
+    _render_follow_control(ticker, key_prefix="follow_research")
+
+    _cp_tabs = st.tabs(section_order, default=_cp_default_section)
+    for _cp_label, _cp_tab in zip(section_order, _cp_tabs):
+        with _cp_tab:
+            st.markdown(f"### {ticker} - {_cp_label}")
+            _render_cp_section(ticker, _cp_label, data)
 
 
 def page_home():
