@@ -3806,8 +3806,8 @@ def page_deep_dive():
                 )
                 st.plotly_chart(fig_val, use_container_width=True)
             st.caption(
-                "A stock trading 25%+ below intrinsic value is labelled "
-                "UNDERVALUED; above intrinsic value, EXPENSIVE; between, FAIR."
+                "Green (25%+) = UNDERVALUED. Amber (0-25%) = FAIR. "
+                "Red (below 0%) = EXPENSIVE - trading above intrinsic value."
             )
         else:
             st.subheader("Margin of Safety: Price vs Intrinsic Value")
