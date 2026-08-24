@@ -1432,18 +1432,26 @@ def _dd_gauge(value, title, zones, bar_color="#e6edf5", height=260, axis_range=(
     rebuilt each time. zones: list of (lo, hi, color) tuples covering
     axis_range. axis_range defaults to the usual 0-100 score scale; the
     Margin of Safety dial is the one caller that passes a signed range.
+
+    The indicator's own title/number font sizes auto-scale to the chart's
+    pixel domain by default, which is what was clipping the title on a
+    full-width gauge (a wide/short domain computes a larger font than the
+    same gauge does in a half-width column) - pin both explicitly instead
+    of leaving them to Plotly's auto-sizing, and give the title a bit more
+    top margin to sit in.
     """
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=value,
-        title={"text": title},
+        title={"text": title, "font": {"size": 16}},
+        number={"font": {"size": 34}},
         gauge={
             "axis": {"range": list(axis_range)},
             "bar": {"color": bar_color},
             "steps": [{"range": [lo, hi], "color": color} for lo, hi, color in zones],
         },
     ))
-    fig.update_layout(height=height, margin=dict(l=10, r=10, t=40, b=10))
+    fig.update_layout(height=height, margin=dict(l=10, r=10, t=56, b=10))
     return fig
 
 
@@ -3748,34 +3756,52 @@ def page_deep_dive():
                 use_container_width=True,
             )
 
-        # Margin of Safety dial - moved here (after Discovery Score, before
-        # Trade Setup) and redesigned from the old two-bar Price vs Intrinsic
-        # Value chart into a single gauge, same visual family as the
-        # Quality/Psychology/Discovery dials above instead of a bespoke bar
-        # chart shape.
+        # Margin of Safety - moved here (after Discovery Score, before Trade
+        # Setup) and redesigned into a gauge (same visual family as the
+        # Quality/Psychology/Discovery dials above) paired with the actual
+        # Price vs Intrinsic Value bar chart, same gauge+chart column layout
+        # as those three sections use.
         st.divider()
-        st.subheader("Margin of Safety: Price vs Intrinsic Value")
         if _dd["intrinsic_value"]:
             _mos_val = _dd["mos"] if _dd["mos"] is not None else 0.0
+            st.subheader(f"Margin of Safety: {_mos_val:+.1f}% - {_dd['valuation']}")
             _mos_gauge_val = max(-50, min(_mos_val, 100))
-            st.plotly_chart(
-                _dd_gauge(
-                    _mos_gauge_val, "Margin of Safety",
-                    [(-50, 0, "#43222e"), (0, 25, "#43371c"),
-                     (25, 50, "#1e3d34"), (50, 100, "#27584a")],
-                    axis_range=(-50, 100),
-                ),
-                use_container_width=True,
+            _mos_col1, _mos_col2 = st.columns(2)
+            with _mos_col1:
+                st.plotly_chart(
+                    _dd_gauge(
+                        _mos_gauge_val, f"Margin of Safety - {_dd['valuation']}",
+                        [(-50, 0, "#43222e"), (0, 25, "#43371c"),
+                         (25, 50, "#1e3d34"), (50, 100, "#27584a")],
+                        axis_range=(-50, 100),
+                    ),
+                    use_container_width=True,
+                )
+                if _mos_val != _mos_gauge_val:
+                    st.caption("Dial capped at -50%/100% for readability.")
+            with _mos_col2:
+                _iv_color = "#34d399" if _dd["intrinsic_value"] > _dd["price"] else "#fb7185"
+                fig_val = go.Figure(go.Bar(
+                    x=[_dd["price"], _dd["intrinsic_value"]],
+                    y=["Current Price", "Intrinsic Value (Base Case)"],
+                    orientation="h",
+                    marker_color=["#8aa0b8", _iv_color],
+                    text=[f"{_dd['price']:,.2f}", f"{_dd['intrinsic_value']:,.2f}"],
+                    textposition="outside",
+                ))
+                fig_val.update_layout(
+                    title="Price vs Intrinsic Value (the numbers behind the gauge)",
+                    showlegend=False, height=260,
+                    margin=dict(l=10, r=10, t=40, b=10),
+                    xaxis_title=_dd["currency"],
+                )
+                st.plotly_chart(fig_val, use_container_width=True)
+            st.caption(
+                "A stock trading 25%+ below intrinsic value is labelled "
+                "UNDERVALUED; above intrinsic value, EXPENSIVE; between, FAIR."
             )
-            _mos_cap = (
-                f"Price {_dd['currency']} {_dd['price']:,.2f}  vs.  "
-                f"Intrinsic value (base case) {_dd['currency']} "
-                f"{_dd['intrinsic_value']:,.2f}  ->  MOS {_mos_val:+.1f}%"
-            )
-            if _mos_val != _mos_gauge_val:
-                _mos_cap += "  (dial capped at -50%/100% for readability)"
-            st.caption(_mos_cap)
         else:
+            st.subheader("Margin of Safety: Price vs Intrinsic Value")
             st.warning(
                 "No intrinsic value could be computed for this ticker "
                 "(DCF and P/E-blend both unavailable - likely a "
