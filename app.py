@@ -1424,19 +1424,21 @@ def _render_header(compact, page_label=None):
     _sp_margin = "10px" if compact else "20px"
     st.markdown(f"<div style='margin-bottom:{_sp_margin};'></div>", unsafe_allow_html=True)
 
-def _dd_gauge(value, title, zones, bar_color="#e6edf5", height=260):
+def _dd_gauge(value, title, zones, bar_color="#e6edf5", height=260, axis_range=(0, 100)):
     """
-    One consistent 0-100 gauge for the Deep Dive tab's per-factor scores
-    (Quality / Psychology / Discovery / Trade Setup) - same shape as the
-    Long Score gauge above, parameterised so it isn't rebuilt 4x.
-    zones: list of (lo, hi, color) tuples covering 0-100.
+    One consistent gauge for the Deep Dive tab's per-factor scores
+    (Quality / Psychology / Discovery / Trade Setup / Margin of Safety) -
+    same shape as the Long Score gauge above, parameterised so it isn't
+    rebuilt each time. zones: list of (lo, hi, color) tuples covering
+    axis_range. axis_range defaults to the usual 0-100 score scale; the
+    Margin of Safety dial is the one caller that passes a signed range.
     """
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=value,
         title={"text": title},
         gauge={
-            "axis": {"range": [0, 100]},
+            "axis": {"range": list(axis_range)},
             "bar": {"color": bar_color},
             "steps": [{"range": [lo, hi], "color": color} for lo, hi, color in zones],
         },
@@ -3641,30 +3643,6 @@ def page_deep_dive():
                 f"= LONG territory, above {SIGNAL_THRESHOLDS['STRONG_LONG']} = STRONG LONG."
             )
 
-        if _dd["intrinsic_value"]:
-            _iv_color = "#34d399" if _dd["intrinsic_value"] > _dd["price"] else "#fb7185"
-            fig_val = go.Figure(go.Bar(
-                x=[_dd["price"], _dd["intrinsic_value"]],
-                y=["Current Price", "Intrinsic Value (Base Case)"],
-                orientation="h",
-                marker_color=["#8aa0b8", _iv_color],
-                text=[f"{_dd['price']:,.2f}", f"{_dd['intrinsic_value']:,.2f}"],
-                textposition="outside",
-            ))
-            fig_val.update_layout(
-                title="Price vs Intrinsic Value",
-                showlegend=False, height=260,
-                margin=dict(l=10, r=10, t=40, b=10),
-                xaxis_title=_dd["currency"],
-            )
-            st.plotly_chart(fig_val, use_container_width=True)
-        else:
-            st.warning(
-                "No intrinsic value could be computed for this ticker "
-                "(DCF and P/E-blend both unavailable - likely a "
-                "financial or a name with no positive EPS/FCF)."
-            )
-
         _score_word = "Value Score" if _factual() else "Long Score"
         st.plotly_chart(
             _dd_contrib_chart(
@@ -3768,6 +3746,40 @@ def page_deep_dive():
                     xaxis_title="Points toward Discovery",
                 ),
                 use_container_width=True,
+            )
+
+        # Margin of Safety dial - moved here (after Discovery Score, before
+        # Trade Setup) and redesigned from the old two-bar Price vs Intrinsic
+        # Value chart into a single gauge, same visual family as the
+        # Quality/Psychology/Discovery dials above instead of a bespoke bar
+        # chart shape.
+        st.divider()
+        st.subheader("Margin of Safety: Price vs Intrinsic Value")
+        if _dd["intrinsic_value"]:
+            _mos_val = _dd["mos"] if _dd["mos"] is not None else 0.0
+            _mos_gauge_val = max(-50, min(_mos_val, 100))
+            st.plotly_chart(
+                _dd_gauge(
+                    _mos_gauge_val, "Margin of Safety",
+                    [(-50, 0, "#43222e"), (0, 25, "#43371c"),
+                     (25, 50, "#1e3d34"), (50, 100, "#27584a")],
+                    axis_range=(-50, 100),
+                ),
+                use_container_width=True,
+            )
+            _mos_cap = (
+                f"Price {_dd['currency']} {_dd['price']:,.2f}  vs.  "
+                f"Intrinsic value (base case) {_dd['currency']} "
+                f"{_dd['intrinsic_value']:,.2f}  ->  MOS {_mos_val:+.1f}%"
+            )
+            if _mos_val != _mos_gauge_val:
+                _mos_cap += "  (dial capped at -50%/100% for readability)"
+            st.caption(_mos_cap)
+        else:
+            st.warning(
+                "No intrinsic value could be computed for this ticker "
+                "(DCF and P/E-blend both unavailable - likely a "
+                "financial or a name with no positive EPS/FCF)."
             )
 
         if not _factual():
