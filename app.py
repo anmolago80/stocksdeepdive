@@ -1451,7 +1451,7 @@ def _dd_gauge(value, title, zones, bar_color="#e6edf5", height=260, axis_range=(
             "steps": [{"range": [lo, hi], "color": color} for lo, hi, color in zones],
         },
     ))
-    fig.update_layout(height=height, margin=dict(l=10, r=10, t=56, b=10))
+    fig.update_layout(height=height, margin=dict(l=10, r=10, t=44, b=10))
     return fig
 
 
