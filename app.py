@@ -1433,25 +1433,34 @@ def _dd_gauge(value, title, zones, bar_color="#e6edf5", height=260, axis_range=(
     axis_range. axis_range defaults to the usual 0-100 score scale; the
     Margin of Safety dial is the one caller that passes a signed range.
 
-    The indicator's own title/number font sizes auto-scale to the chart's
-    pixel domain by default, which is what was clipping the title on a
-    full-width gauge (a wide/short domain computes a larger font than the
-    same gauge does in a half-width column) - pin both explicitly instead
-    of leaving them to Plotly's auto-sizing, and give the title a bit more
-    top margin to sit in.
+    The title is drawn as its own paper-space annotation pinned above an
+    explicitly-shrunk gauge domain, rather than using the Indicator's
+    built-in "title" - that built-in title auto-scales/positions itself
+    against the gauge domain (that's what was clipping it on a full-width
+    gauge earlier, and kept crowding it against the dial even after
+    several margin tweaks, since margin alone doesn't reserve title
+    space - the gauge just grows to fill it). Reserving the top ~28% of
+    the domain for the gauge to NOT use, then placing the annotation in
+    that reserved band, gives a fixed, direct gap that holds regardless
+    of chart width or title length.
     """
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=value,
-        title={"text": title, "font": {"size": 16}},
         number={"font": {"size": 34}},
+        domain={"x": [0, 1], "y": [0, 0.72]},
         gauge={
             "axis": {"range": list(axis_range)},
             "bar": {"color": bar_color},
             "steps": [{"range": [lo, hi], "color": color} for lo, hi, color in zones],
         },
     ))
-    fig.update_layout(height=height, margin=dict(l=10, r=10, t=44, b=10))
+    fig.add_annotation(
+        text=title, xref="paper", yref="paper", x=0.5, y=0.93,
+        xanchor="center", yanchor="top", showarrow=False,
+        font=dict(size=16),
+    )
+    fig.update_layout(height=height, margin=dict(l=10, r=10, t=20, b=10))
     return fig
 
 
