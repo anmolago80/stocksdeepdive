@@ -2334,8 +2334,12 @@ def _render_follow_control(ticker, key_prefix):
                     placeholder="you@example.com", label_visibility="collapsed",
                 )
             with _c2:
+                # Short label - this button now often renders in a narrow
+                # column (the Research page's Stock/Deep Dive/Follow row),
+                # where the old full-length "Get research updates by
+                # email" overflowed past the box border.
                 if st.button(
-                    "Get research updates by email",
+                    "Notify me",
                     key=f"{key_prefix}_submit_{ticker}", use_container_width=True,
                 ):
                     if email_auth.valid_email(_em_in):
@@ -2401,8 +2405,9 @@ def _render_research_header_card(ticker, data, section_order):
     divs (dark #121f36 background, #1f3352 border, rounded) - ticker large,
     industry, how many of the page's sections actually have data for this
     company, and when the underlying workbook snapshot was last rebuilt.
-    The link-button reuses `_dispatch_search` (search app.py) rather than
-    reimplementing the ticker -> Deep Dive navigation it already does."""
+    The "Open the live Deep Dive" link-button used to live at the bottom of
+    this card - it now renders in the Stock/Deep Dive/Follow row above,
+    next to the Stock picker, so this card is just the info strip."""
     industry = (data["tickers"].get(ticker, {}) or {}).get("industry") or "—"
     section_count = sum(
         1 for _s in section_order
@@ -2445,24 +2450,21 @@ def _render_research_header_card(ticker, data, section_order):
             """,
             unsafe_allow_html=True,
         )
-        if st.button(
-            f"Open the live Deep Dive for {ticker} →",
-            key=f"cp_open_dd_{ticker}",
-        ):
-            _dispatch_search(ticker)
 
 
 # Badge copy per author-position status (positions_store.py) - a missing row
 # is treated as 'never'. Colour is teal for 'holds' (the one status that
-# reads as noteworthy) and the site's neutral grey for 'never'/'closed' -
-# red/green/amber are reserved for data verdicts elsewhere on the site and
-# must never appear in this disclosure feature.
+# reads as noteworthy) and gold for 'never'/'closed' (was the site's neutral
+# grey - too easy to lose against the dark background, per Andrew's request)
+# - red/green/amber are reserved for data verdicts elsewhere on the site
+# and must never appear in this disclosure feature, so gold rather than
+# straight orange, which sits too close to the site's amber verdict colour.
 _POS_BADGE = {
     "holds": ("#2dd4bf", "✓ Skin in the game — the author holds this "
                           "stock in his personal portfolio"),
-    "never": ("#8aa0b8", "○ No position — the author has never held "
+    "never": ("#e0b050", "○ No position — the author has never held "
                           "this stock"),
-    "closed": ("#8aa0b8", "◐ Position closed — the author previously "
+    "closed": ("#e0b050", "◐ Position closed — the author previously "
                            "held this stock"),
 }
 
@@ -2954,7 +2956,10 @@ def page_research():
 
     # Narrow column sized just enough for the Stock dropdown, followed by a
     # wide empty spacer column -- keeps it compact and bunched on the left
-    # instead of stretching to half the page.
+    # instead of stretching to half the page. The Stock picker, the Deep
+    # Dive link-button, and the email-follow box all sit on this one row
+    # now (previously the button lived at the bottom of the header card
+    # and the follow box was its own full-width section below).
     st.markdown(
         """
         <style>
@@ -2966,12 +2971,23 @@ def page_research():
         unsafe_allow_html=True,
     )
     with st.container(key="cp_pick_row"):
-        pick_col1, _ = st.columns([1, 4])
+        pick_col1, pick_col2, pick_col3 = st.columns([1.1, 1.15, 1.75])
         with pick_col1:
             ticker = st.selectbox(
                 "Stock", tickers, format_func=_ticker_label, key="cp_ticker",
                 index=_cp_ticker_index,
             )
+        with pick_col2:
+            # Empty-label spacer so the button lines up with the selectbox
+            # baseline instead of sitting higher (the selectbox has a
+            # "Stock" label above it; the button has none of its own).
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            if st.button(f"Open the live Deep Dive for {ticker} →", key=f"cp_open_dd_{ticker}"):
+                _dispatch_search(ticker)
+        with pick_col3:
+            # "Follow this company" email capture (Task 2) - per selected
+            # ticker, open to signed-in and anonymous visitors alike.
+            _render_follow_control(ticker, key_prefix="follow_research")
 
     # Keep the address bar shareable for the ticker, the same pattern
     # page_deep_dive uses for its ?ticker= - "section" is seeded once from
@@ -2990,12 +3006,9 @@ def page_research():
     _render_position_disclosure(ticker)
 
     # Per-company header card (Task 5): ticker/industry/section-count/
-    # last-updated + a link-button to the live Deep Dive.
+    # last-updated. The link-button that used to sit at the bottom of this
+    # card now renders in the row above instead (see pick_col2).
     _render_research_header_card(ticker, data, section_order)
-
-    # "Follow this company" email capture (Task 2) - per selected ticker,
-    # open to signed-in and anonymous visitors alike.
-    _render_follow_control(ticker, key_prefix="follow_research")
 
     _cp_tabs = st.tabs(section_order, default=_cp_default_section)
     for _cp_label, _cp_tab in zip(section_order, _cp_tabs):
