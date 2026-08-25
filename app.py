@@ -1572,7 +1572,27 @@ def _load_compounder_data():
     if not os.path.exists(_path):
         return None
     with open(_path) as _f:
-        return json.load(_f)
+        loaded = json.load(_f)
+
+    # One-time migration: the "Dividends" section was renamed to "Retained
+    # Earnings" in code, but a volume that already had its own
+    # compounder_data.json from a prior admin rebuild never gets reseeded
+    # from the git-tracked copy (_cp_seed_from_repo_if_missing is a no-op
+    # once the volume has *any* file there) - so a live volume can still be
+    # sitting on the old key, which makes the section_order filter below
+    # drop the tab entirely (it's neither "Dividends" nor "Retained
+    # Earnings" anymore). Heal it here and persist the rename back to the
+    # volume so this only has to run once.
+    _sections = (loaded or {}).get("sections")
+    if _sections and "Dividends" in _sections and "Retained Earnings" not in _sections:
+        _sections["Retained Earnings"] = _sections.pop("Dividends")
+        try:
+            with open(_path, "w") as _f:
+                json.dump(loaded, _f, indent=1)
+        except OSError:
+            pass  # in-memory rename still applies this run even if the write fails
+
+    return loaded
 
 
 def _cp_clean_comment(text):
