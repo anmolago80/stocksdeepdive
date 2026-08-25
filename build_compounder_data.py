@@ -104,7 +104,7 @@ HEADER_ROWS = {
 SECTIONS = [
     ("Fundamentals", "Stock Analysis"),
     ("Value vs Book", "IV2BV"),
-    ("Dividends", "Dividend Ratio"),
+    ("Retained Earnings", "Dividend Ratio"),
     ("Earnings Trends", "Earnings Analysis"),
     ("Cost of Capital", "Cost of Capital Analysis"),
     ("Fair Value", "Valuation"),
@@ -278,7 +278,7 @@ EXCLUDE_COLUMNS = {
 }
 
 # Andrew's follow-up: for the three "thin" sheets that only had 1-2
-# commented columns (Value vs Book, Dividends, Cost of Capital), also show
+# commented columns (Value vs Book, Retained Earnings, Cost of Capital), also show
 # the sheet's other headline numbers as plain (uncoloured) cards - he never
 # wrote a comment/threshold on these, but they're clearly main data (share
 # price, market cap, WACC's building blocks, etc.), not incidental. Where a
@@ -535,7 +535,7 @@ VALUATION_METHOD_COLS = {
     "dcf": "P", "equity_10y": "U",
 }
 
-# Dividends: Andrew's own workbook already computes a genuine "Value
+# Retained Earnings: Andrew's own workbook already computes a genuine "Value
 # Created" test (Ben Graham/Buffett style: for every $1 of earnings
 # retained, how much market cap value did that create) at four horizons.
 # Never had a comment on it, but it's exactly the "value created" chart he
@@ -1131,9 +1131,9 @@ def build(path, anthropic_api_key=None):
     _cp_save_corrections_cache(cp_corrections_cache)
     out["sections"]["Company Potential"]["text_groups"] = text_groups
 
-    # ---- Dividends: Andrew's own "Value Created" retained-earnings test,
-    # at 2Y/5Y/10Y/TTM horizons - never had a comment, but it's exactly the
-    # "value created" chart he asked for. ----
+    # ---- Retained Earnings: Andrew's own "Value Created" retained-earnings
+    # test, at 2Y/5Y/10Y/TTM horizons - never had a comment, but it's
+    # exactly the "value created" chart he asked for. ----
     div_rows = row_for_ticker_by_sheet.get("Dividend Ratio", {})
     ws_div = wb_v["Dividend Ratio"]
     value_created = {}
@@ -1146,7 +1146,7 @@ def build(path, anthropic_api_key=None):
                 horizons[label] = {"retained_earnings": retained, "value_created": created}
         if horizons:
             value_created[tkr] = horizons
-    out["sections"]["Dividends"]["value_created"] = value_created
+    out["sections"]["Retained Earnings"]["value_created"] = value_created
 
     return out
 

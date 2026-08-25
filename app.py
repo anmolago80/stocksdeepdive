@@ -2666,8 +2666,8 @@ def _render_position_disclosure(ticker):
 def _render_cp_section(ticker, section_label, data):
     """
     Renders one Research-page section (Fundamentals / Value vs Book /
-    Dividends / Earnings Trends / Cost of Capital / Fair Value / Company
-    Potential) for the given ticker. Extracted out of page_research() so it
+    Retained Earnings / Earnings Trends / Cost of Capital / Fair Value /
+    Company Potential) for the given ticker. Extracted out of page_research() so it
     can be called once per st.tabs() tab - unlike the old single-selection
     dropdown, st.tabs() renders every tab's body on every run, so this now
     runs up to 7x per page load instead of once.
@@ -2730,7 +2730,7 @@ def _render_cp_section(ticker, section_label, data):
         if fig2:
             st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
         metrics = [m for m in metrics if m["key"] != "AP"]
-    elif section_label == "Dividends":
+    elif section_label == "Retained Earnings":
         fig = _cp_value_created_chart(ticker, section.get("value_created", {}))
         if fig:
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -2894,7 +2894,7 @@ def page_research():
         return
 
     section_order = [
-        "Fundamentals", "Value vs Book", "Dividends", "Earnings Trends",
+        "Fundamentals", "Value vs Book", "Retained Earnings", "Earnings Trends",
         "Cost of Capital", "Fair Value", "Company Potential",
     ]
     section_order = [s for s in section_order if s in data["sections"]]
