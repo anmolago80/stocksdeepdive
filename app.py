@@ -2016,7 +2016,18 @@ def _cp_pill(text, color_key=None):
 _CP_HML_POLARITY_FIX = {"Insights": "good_high", "Market Activity": "good_high"}
 
 
-def _cp_render_hml_ratings(ratings):
+# Colour convention for the short Yes/No/Medium "quick checks" now folded
+# into the Ratings section (see _render_cp_section) - same green/amber/red
+# vocabulary as the H/M/L ratings above, just without a per-question
+# good_high/good_low polarity to key off (the workbook doesn't encode one
+# for these). Note "High fixed charges?" is a genuinely double-edged
+# question (high fixed costs magnify earnings on the way up too), so it's
+# deliberately left uninverted here rather than guessed at - flag it if
+# you'd rather it read the other way.
+_CP_CHECK_COLOR = {"yes": "green", "no": "red", "medium": "amber"}
+
+
+def _cp_render_hml_ratings(ratings, extra_checks=None):
     st.markdown("##### Ratings (called directly from your Low/Medium/High cells)")
     html_parts = []
     for r in ratings:
@@ -2031,6 +2042,13 @@ def _cp_render_hml_ratings(ratings):
         html_parts.append(
             f"<div style='margin-bottom:6px;'><span style='font-size:13px;color:#aebfd4;'>"
             f"{_md_safe(r['label'])}: </span>{_cp_pill(_md_safe(r['value'].strip()), color_key)}</div>"
+        )
+    for c in (extra_checks or []):
+        _val = c["value"].strip().lower()
+        color_key = _CP_CHECK_COLOR.get(_val)
+        html_parts.append(
+            f"<div style='margin-bottom:6px;'><span style='font-size:13px;color:#aebfd4;'>"
+            f"{_md_safe(c['label'])}: </span>{_cp_pill(_md_safe(c['value'].strip()), color_key)}</div>"
         )
     # two columns of pills so a long ratings list doesn't run the whole page
     half = (len(html_parts) + 1) // 2
@@ -2061,17 +2079,6 @@ def _md_safe(text):
     trigger LaTeX math rendering, which mangles everything between them
     (seen with 'A$750 million' in a CSL buyback answer)."""
     return html.escape(str(text)).replace("$", "&#36;").replace("~", "&#126;")
-
-
-def _cp_render_yesno_checks(checks):
-    st.markdown("##### Quick checks")
-    _pills_html = "".join(
-        f"<span style='display:inline-block;margin:2px 8px 8px 0;padding:4px 10px;"
-        f"border-radius:8px;font-size:12.5px;background:#1f3352;color:#aebfd4;'>"
-        f"{_md_safe(c['label'])}: <b>{_md_safe(c['value'].strip())}</b></span>"
-        for c in checks
-    )
-    st.markdown(_pills_html, unsafe_allow_html=True)
 
 
 def _cp_render_text_groups(groups):
@@ -2699,8 +2706,8 @@ def _render_cp_section(ticker, section_label, data):
         if not paywall_engine.render_gate(
             "Company Potential - your own research notes",
             teaser=(
-                "The author's Low/Medium/High ratings, quick checks, and "
-                "full written analysis for every covered company."
+                "The author's Low/Medium/High ratings and full written "
+                "analysis for every covered company."
             ),
             key_prefix=f"cp_potential_{ticker}",
         ):
@@ -2708,7 +2715,29 @@ def _render_cp_section(ticker, section_label, data):
         ratings = section.get("hml_ratings", {}).get(ticker, [])
         checks = section.get("yesno_checks", {}).get(ticker, [])
         groups = section.get("text_groups", {}).get(ticker, [])
-        if not ratings and not checks and not groups:
+
+        # "Quick checks" used to be its own section, but its answers are two
+        # different shapes: short Yes/No/Medium calls that read like more
+        # ratings, and a couple of questions (Any share buybacks?,
+        # Forecasted earnings possible/plausible/probable?) that sometimes
+        # carry a full written explanation instead of a one-word answer.
+        # Split on answer length and fold each into the section it actually
+        # belongs with - short ones alongside the Low/Medium/High ratings
+        # (colour-coded the same way), long ones into the Investment Case
+        # write-up. This retires "Quick checks" as its own section.
+        _CHECK_LONGFORM_MIN = 30
+        short_checks = [c for c in checks if len(c["value"].strip()) <= _CHECK_LONGFORM_MIN]
+        long_checks = [c for c in checks if len(c["value"].strip()) > _CHECK_LONGFORM_MIN]
+
+        if long_checks:
+            _ic_items = [{"label": c["label"], "text": c["value"]} for c in long_checks]
+            _ic_group = next((g for g in groups if g["title"] == "The Investment Case"), None)
+            if _ic_group is not None:
+                _ic_group["items"] = _ic_group.get("items", []) + _ic_items
+            else:
+                groups = groups + [{"title": "The Investment Case", "items": _ic_items}]
+
+        if not ratings and not short_checks and not groups:
             st.warning(f"No Company Potential notes yet for {ticker}.")
             return
         st.caption(
@@ -2716,10 +2745,8 @@ def _render_cp_section(ticker, section_label, data):
             "and more - shown exactly as researched - plus the full written "
             "analysis, grouped by theme."
         )
-        if ratings:
-            _cp_render_hml_ratings(ratings)
-        if checks:
-            _cp_render_yesno_checks(checks)
+        if ratings or short_checks:
+            _cp_render_hml_ratings(ratings, short_checks)
         if groups:
             _cp_render_text_groups(groups)
         return
