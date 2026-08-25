@@ -2971,19 +2971,15 @@ def page_research():
         unsafe_allow_html=True,
     )
     with st.container(key="cp_pick_row"):
-        pick_col1, pick_col2, pick_col3 = st.columns([1.1, 1.15, 1.75])
+        # "Open the live Deep Dive" link-button (previously the middle
+        # column here) was dropped per Andrew's request - just Stock and
+        # the email-follow box now.
+        pick_col1, pick_col3 = st.columns([1.3, 1.75])
         with pick_col1:
             ticker = st.selectbox(
                 "Stock", tickers, format_func=_ticker_label, key="cp_ticker",
                 index=_cp_ticker_index,
             )
-        with pick_col2:
-            # Empty-label spacer so the button lines up with the selectbox
-            # baseline instead of sitting higher (the selectbox has a
-            # "Stock" label above it; the button has none of its own).
-            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-            if st.button(f"Open the live Deep Dive for {ticker} →", key=f"cp_open_dd_{ticker}"):
-                _dispatch_search(ticker)
         with pick_col3:
             # "Follow this company" email capture (Task 2) - per selected
             # ticker, open to signed-in and anonymous visitors alike.
