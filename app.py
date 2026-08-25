@@ -640,15 +640,25 @@ st.markdown(
     }
     /* The "Notify me" email-follow box (_render_follow_control, used on
        both the Research and Deep Dive pages) is an st.container(border=True).
-       Streamlit's default container border is a near-white, semi-transparent
-       line (rgba of the theme's textColor) which reads as a stray white
-       outline against the site's dark cards. Restyle it to the same subtle
-       navy border every other card on the site uses (#1f3352, see .sdd-card
-       etc. above) so it blends in instead of standing out. Matches on any
-       ticker suffix and both call sites (follow_research_box_* /
-       follow_dd_box_*). */
+       Two problems compounded here: (1) Streamlit's default container
+       border is a near-white, semi-transparent line, and (2) the container
+       itself has a TRANSPARENT background, while the text input inside it
+       has its own solid fill (#121f36, the theme's secondaryBackgroundColor)
+       - so even after fixing the border, the input still visibly "pops" as
+       a lighter box-within-a-box, which reads as a stray outline around
+       just the email field. Fix both: give the outer box the same
+       background+border every other card on the site uses (#121f36 /
+       #1f3352, see .sdd-card etc. above), so the input's fill no longer
+       contrasts against its container and the whole thing reads as one
+       card. Matches on any ticker suffix and both call sites
+       (follow_research_box_* / follow_dd_box_*). */
     [class*="st-key-follow_"][class*="_box_"] {
         border: 1px solid #1f3352 !important;
+        background: #121f36 !important;
+    }
+    [class*="st-key-follow_"][class*="_box_"] div[data-testid="stTextInputRootElement"] {
+        background: transparent !important;
+        border-color: #1f3352 !important;
     }
     /* Streamlit's default block-container top padding (several rem) leaves
        a large empty gap above the account bar/header on every page. Same
