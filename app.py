@@ -2075,7 +2075,7 @@ def _cp_render_yesno_checks(checks):
 
 
 def _cp_render_text_groups(groups):
-    st.markdown("##### Your notes, grouped")
+    st.markdown("##### Company Analysis")
     for g in groups:
         with st.expander(g["title"], expanded=False):
             for item in g["items"]:
