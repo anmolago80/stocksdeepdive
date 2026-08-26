@@ -896,19 +896,26 @@ def _equity_growth_rate(bundle):
 
 
 def _equity_10y_method(bundle, avg_pe):
-    """Mirrors the workbook's own 'Rational Compounder Method 10y': book
-    value per share compounded at its own historical growth rate for 10
-    years, multiplied by the average P/E to get a year-10 value, discounted
-    back to today. The discount rate here is a flagged default (3%, the
-    same figure seen in the hand-built workbook's own equity_10y inputs)
-    since there's no per-stock equivalent computed elsewhere in this
-    module - see the module docstring's note on best-effort formulas."""
+    """Approximates the workbook's own 'Rational Compounder Method 10y':
+    book value per share compounded at its own historical growth rate for
+    10 years, discounted back to today. The discount rate here is a
+    flagged default (3%, the same figure seen in the hand-built workbook's
+    own equity_10y inputs) since there's no per-stock equivalent computed
+    elsewhere in this module.
+
+    Does NOT multiply by average P/E - checked against a covered ticker's
+    real value and that multiplication overstated it by roughly 18x (the
+    exact "too large" symptom this was flagging), so it's been dropped.
+    Without it this still lands ~20% under the one covered ticker it could
+    be checked against, so avg_pe isn't the only difference from the
+    original workbook formula - this remains a best-effort reconstruction,
+    not a verified match; see the module docstring's note on that."""
     bvps = _bvps(bundle)
     growth = _equity_growth_rate(bundle)
-    if bvps is None or growth is None or avg_pe is None:
+    if bvps is None or growth is None:
         return None
     discount = 0.03
-    future_value = bvps * ((1 + growth) ** 10) * avg_pe
+    future_value = bvps * ((1 + growth) ** 10)
     return future_value / ((1 + discount) ** 10), growth, discount
 
 
@@ -923,7 +930,7 @@ def _build_fair_value(bundle, ticker, dcf_result):
     pe_forward_value = (forward_eps * avg_pe) if (forward_eps is not None and avg_pe is not None) else None
     dcf_value = dcf_result.get("value")
 
-    equity_10y_result = _safe(_equity_10y_method, bundle, avg_pe)
+    equity_10y_result = _safe(_equity_10y_method, bundle)
     equity_10y_value, equity_growth, equity_discount = equity_10y_result if equity_10y_result else (None, None, None)
 
     valuation_methods = {}
@@ -956,10 +963,12 @@ def _build_fair_value(bundle, ticker, dcf_result):
             {"label": "Base Case Growth", "value": dcf_result.get("growth"), "format": "pct"},
         ]
     if "equity_10y" in valuation_methods:
+        # No "Average P/E" here - matches the hand-built workbook's own
+        # equity_10y inputs (Equity Growth + Discount Rate only), and this
+        # method no longer multiplies by it either (see _equity_10y_method).
         valuation_inputs["equity_10y"] = [
             {"label": "Equity Growth", "value": equity_growth, "format": "pct"},
             {"label": "Discount Rate (this calc)", "value": equity_discount, "format": "pct"},
-            {"label": "Average P/E", "value": avg_pe, "format": "x"},
         ]
 
     return {
