@@ -5447,6 +5447,19 @@ history, four independent fair-value methods (trailing P/E, forward P/E, DCF, an
 and risk. Every threshold and colour band on those pages comes from the original
 research, not a generic screen.
 
+#### Compounder View (auto)
+
+The Deep Dive page for any ticker also has a collapsed "Compounder View (auto)"
+section: the same six research sections described above (Fundamentals, Value
+vs Book, Retained Earnings, Earnings Trends, Cost of Capital, Fair Value),
+computed live from that company's own reported financial statements and price
+history instead of from the hand-built workbook. Metrics are coloured against
+the author's own threshold bands wherever a matching one exists; any figure
+resting on an estimate or a fallback assumption is flagged in red, the same
+convention used everywhere else on the site. Statement depth depends on the
+data source in use - a handful of years by default, or up to ten years when
+the site is configured with an extended data key.
+
 #### Limitations, honestly
 
 Data is sourced from free public feeds and can be delayed, revised or occasionally
