@@ -1100,6 +1100,17 @@ def _build_cost_of_capital(bundle, ticker, ref):
     for target_year in _year_points()[1:]:
         if target_year not in years_desc:
             continue
+        if years_desc and target_year == years_desc[0]:
+            # y-2/-4/-5 is relative to TODAY's calendar year, but the TTM
+            # point above is really "the latest fiscal year on file" - for
+            # a ticker whose most recent filed FY is already 2 (or more)
+            # years behind today (a common lag, not just a stale-data
+            # edge case), one of those computed years can land on the
+            # exact same fiscal year as TTM. ROIC would then be a bit-for-
+            # bit duplicate of the TTM bar (it doesn't use market price at
+            # all), which reads as a rendering glitch rather than real
+            # data - skip it rather than show the same year twice.
+            continue
         e_y = None
         py = year_end_prices.get(target_year)
         if py is not None and shares:
