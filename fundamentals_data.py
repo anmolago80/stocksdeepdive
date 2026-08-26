@@ -73,7 +73,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # currency-conversion fix below) - mirrors auto_compounder_engine's own
 # ENGINE_VERSION cache-busting pattern. A cached bundle written under an
 # older version is treated as a miss, same as an expired one.
-BUNDLE_VERSION = 2
+BUNDLE_VERSION = 3
 
 
 def _data_dir():
@@ -132,6 +132,7 @@ def _bundle_to_cache(bundle):
         "income": _df_to_json(bundle.get("income")),
         "balance": _df_to_json(bundle.get("balance")),
         "cashflow": _df_to_json(bundle.get("cashflow")),
+        "income_q": _df_to_json(bundle.get("income_q")),
         "prices_10y": bundle.get("prices_10y"),
         "dividends": bundle.get("dividends"),
         "spx_prices_10y": bundle.get("spx_prices_10y"),
@@ -145,6 +146,11 @@ def _bundle_from_cache(obj):
         "income": _df_from_json(obj.get("income")),
         "balance": _df_from_json(obj.get("balance")),
         "cashflow": _df_from_json(obj.get("cashflow")),
+        # income_q is a newer field than some still-live cache entries -
+        # .get(...) already tolerates that (None -> empty DataFrame via
+        # _df_from_json), but BUNDLE_VERSION is bumped alongside this
+        # anyway so old entries miss the cache and refetch with it present.
+        "income_q": _df_from_json(obj.get("income_q")),
         "prices_10y": obj.get("prices_10y") or {"dates": [], "prices": []},
         "dividends": obj.get("dividends") or {"dates": [], "amounts": []},
         "spx_prices_10y": obj.get("spx_prices_10y") or {"dates": [], "prices": []},
@@ -249,6 +255,23 @@ def _fetch_yfinance_statements(tk):
         balance if isinstance(balance, pd.DataFrame) else pd.DataFrame(),
         cashflow if isinstance(cashflow, pd.DataFrame) else pd.DataFrame(),
     )
+
+
+def _fetch_yfinance_quarterly_income(tk):
+    """Quarterly income statement, same shape as the annual one (columns =
+    quarter-end dates, newest first) - used ONLY to build a genuine
+    trailing-twelve-month figure (sum of the last 4 quarters) for line
+    items where "the latest annual column" is a bad stand-in for TTM,
+    e.g. interest expense right after a company takes on new debt
+    mid-fiscal-year: the annual column still reflects the old, mostly
+    debt-free year, while the real run-rate has already jumped. Every
+    other "TTM" figure in this app still means "latest annual column" -
+    this is intentionally narrow, not a wholesale TTM redefinition."""
+    try:
+        q = tk.quarterly_income_stmt
+        return q if isinstance(q, pd.DataFrame) else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
 
 # -----------------------------------
@@ -368,6 +391,17 @@ def get_bundle(ticker, force_refresh=False):
     if statement_years == 0:
         flags.append("no_statements")
 
+    # income_q: quarterly income statement, yfinance-only regardless of
+    # which annual source won above (EODHD has no quarterly endpoint this
+    # module uses) - see _fetch_yfinance_quarterly_income's docstring for
+    # why this exists (a real trailing-4-quarter sum for the handful of
+    # line items where the latest annual column is a bad TTM stand-in).
+    # Best-effort: an empty result here degrades those specific metrics
+    # back to the annual-column convention, same as before this existed.
+    income_q = _fetch_yfinance_quarterly_income(tk)
+    if income_q.empty:
+        flags.append("quarterly_income_unavailable")
+
     # Currency fix: statement line items are reported in the company's
     # financialCurrency, but price/market-cap-derived figures elsewhere in
     # the app are in its listing currency - for a handful of ASX-listed,
@@ -387,6 +421,7 @@ def get_bundle(ticker, force_refresh=False):
             income = _convert_statement_currency(income, fx)
             balance = _convert_statement_currency(balance, fx)
             cashflow = _convert_statement_currency(cashflow, fx)
+            income_q = _convert_statement_currency(income_q, fx)
             for _eps_key in ("trailingEps", "forwardEps"):
                 if info.get(_eps_key) is not None:
                     try:
@@ -429,6 +464,7 @@ def get_bundle(ticker, force_refresh=False):
         "income": income,
         "balance": balance,
         "cashflow": cashflow,
+        "income_q": income_q,
         "prices_10y": prices_10y,
         "dividends": dividends,
         "spx_prices_10y": spx_prices_10y,

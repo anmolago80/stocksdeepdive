@@ -81,7 +81,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 3
+ENGINE_VERSION = 4
 
 
 # -----------------------------------
@@ -379,6 +379,33 @@ def _dividend_ttm(bundle):
     return 0.0, True
 
 
+def _interest_expense_ttm(bundle):
+    """(value, flagged). A genuine trailing-4-quarter sum, not "the latest
+    annual column" (every other TTM figure in this app's convention) -
+    interest expense specifically breaks that convention badly right
+    after a company takes on new debt mid-fiscal-year: the most recent
+    completed annual statement can still be from before the debt existed
+    (near-zero interest expense), while the real current run-rate is
+    already much higher. Confirmed on OCL.AX: the annual column read
+    ~$15K while the last 4 quarters (TradingView) summed to roughly
+    $2.3M, and Interest Coverage using the annual figure was ~2,024x vs
+    ~60x from the user's own spreadsheet.
+
+    Falls back (flagged) to the annual column when quarterly data isn't
+    available at all - same as before this existed."""
+    income_q = bundle.get("income_q")
+    if income_q is not None and not income_q.empty:
+        q_series = [(y, v) for y, v in _series(income_q, "interest_expense") if v is not None]
+        if q_series:
+            last4 = q_series[:4]
+            total = sum(abs(v) for _, v in last4)
+            return total, len(last4) < 4
+    annual = _latest(bundle["income"], "interest_expense")
+    if annual is not None:
+        return annual, True
+    return None, True
+
+
 def _dividends_per_share_by_year(dividends):
     out = {}
     for d, a in zip(dividends.get("dates") or [], dividends.get("amounts") or []):
@@ -519,7 +546,7 @@ def _build_fundamentals(bundle, ticker, ref):
     operating_income = _latest(income, "operating_income")
     pretax_income = _latest(income, "pretax_income")
     tax_provision = _latest(income, "tax_provision")
-    interest_expense = _latest(income, "interest_expense")
+    interest_expense, interest_expense_flagged = _interest_expense_ttm(bundle)
 
     total_assets = _latest(balance, "total_assets")
     current_assets = _latest(balance, "current_assets")
@@ -573,8 +600,9 @@ def _build_fundamentals(bundle, ticker, ref):
     add("1.5xBV", (bvps * 1.5) if bvps is not None else None, "cur")
 
     interest_coverage = (operating_income / abs(interest_expense)) if (operating_income is not None and interest_expense) else None
-    add("Interest Coverage", interest_coverage, "x", flagged=interest_expense is None,
-        fallback="Operating income divided by interest expense.")
+    add("Interest Coverage", interest_coverage, "x",
+        flagged=(interest_expense is None or interest_expense_flagged),
+        fallback="Operating income divided by a trailing-4-quarter interest expense.")
 
     # Workbook divides by Long Term Debt (V4/W4), not Total Debt - falls
     # back (flagged) to Total Debt only when the balance sheet doesn't
@@ -980,12 +1008,18 @@ def _build_earnings_trends(bundle, ticker, ref):
 # -----------------------------------
 
 def _year_points():
-    """['TTM', 'YYYY', 'YYYY', 'YYYY'] for current_year-2, -4, -5 -
+    """['TTM', 'YYYY', 'YYYY', 'YYYY'] for current_year-1, -5, -10 -
     computed from the current date (never hardcoded), generalising the
     workbook's own (hand-built, so hardcoded when it was built) period
-    list to always be relative to today."""
+    list to always be relative to today.
+
+    compounder_data.json's real hand-built periods are TTM/2025/2021/2016,
+    generated 2026-08-11 - i.e. TTM, 1 year back, 5 years back, 10 years
+    back. An earlier version of this used -2/-4/-5, which doesn't match
+    that spacing at all (confirmed against the real reference data) -
+    fixed to -1/-5/-10."""
     y = datetime.datetime.now(datetime.timezone.utc).year
-    return ["TTM", str(y - 2), str(y - 4), str(y - 5)]
+    return ["TTM", str(y - 1), str(y - 5), str(y - 10)]
 
 
 def _avg_invested_capital_for_year(equity_by_year, debt_by_year, cash_by_year, years_desc, target_year):
@@ -1051,7 +1085,7 @@ def _build_cost_of_capital(bundle, ticker, ref):
     shares = b["shares"]
     total_debt = _latest(bundle["balance"], "total_debt")
     long_term_debt = _latest(bundle["balance"], "long_term_debt")
-    interest_expense = _latest(bundle["income"], "interest_expense")
+    interest_expense, interest_expense_flagged = _interest_expense_ttm(bundle)
     pretax_income = _latest(bundle["income"], "pretax_income")
     tax_provision = _latest(bundle["income"], "tax_provision")
     operating_income = _latest(bundle["income"], "operating_income")
@@ -1105,7 +1139,7 @@ def _build_cost_of_capital(bundle, ticker, ref):
     # TTM point
     ltd_ttm = long_term_debt if long_term_debt is not None else total_debt
     ltd_ttm_flagged = long_term_debt is None
-    wacc_ttm, wacc_ttm_flagged = _wacc_for(mcap, ltd_ttm, interest_expense, ltd_ttm_flagged)
+    wacc_ttm, wacc_ttm_flagged = _wacc_for(mcap, ltd_ttm, interest_expense, ltd_ttm_flagged or interest_expense_flagged)
     roic_ttm = _roic_for(years_desc[0]) if years_desc else None
     periods.append("TTM")
     wacc_vals.append(wacc_ttm)
@@ -1155,7 +1189,7 @@ def _build_cost_of_capital(bundle, ticker, ref):
     add("Market Cap (TTM)", mcap, "cur")
     add("Enterprise Value (TTM)", ev, "cur")
     add("Long Term Debt (TTM)", ltd_ttm, "cur", flagged=ltd_ttm_flagged)
-    add("Interest Expense (TTM)", interest_expense, "cur")
+    add("Interest Expense (TTM)", interest_expense, "cur", flagged=interest_expense_flagged)
     add("ROIC (TTM)", roic_ttm, "pct", flagged=True)
     add("Income Before Tax (TTM)", pretax_income, "cur")
     add("WACC", wacc_ttm, "pct", flagged=wacc_ttm_flagged or ce_flagged)
