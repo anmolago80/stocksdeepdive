@@ -728,7 +728,8 @@ st.markdown(
     .sdd-pill { font-size:11px; font-weight:700; font-family:ui-monospace,Menlo,monospace;
       padding:3px 10px; border-radius:999px; letter-spacing:.4px; display:inline-block; }
     .sdd-spark-cap { font-size:11px; color:#5b7290; margin-bottom:4px; display:flex; justify-content:space-between; }
-    .sdd-strip { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin:26px 0 8px; }
+    .sdd-strip { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+      gap:14px; margin:26px 0 8px; }
     .sdd-tile { background:#121f36; border:1px solid #1f3352; border-radius:12px; padding:13px 16px; }
     .sdd-tile .k { font-size:11px; color:#5b7290; letter-spacing:.7px; }
     .sdd-tile .v { font-family:ui-monospace,Menlo,monospace; font-size:19px; font-weight:700; color:#e6edf5; margin-top:5px; }
@@ -2707,7 +2708,14 @@ every estimated number is flagged.</div>
     _render_watchlist_row()
     _render_watchlist_bulk_import()
 
-    _mood_box = st.container()
+    # In hero_l (not full-width) on purpose: this used to be a top-level
+    # container, which meant it could only start rendering below BOTH
+    # hero columns - since hero_r's featured-analysis card is taller than
+    # hero_l's search/chips block, that left a large dead gap under the
+    # "Try one" chips before the ASX 200 / S&P 500 tiles appeared. Putting
+    # it in hero_l lets it sit directly under hero_l's own content instead
+    # of waiting on hero_r's height.
+    _mood_box = hero_l.container()
 
     # ---- feature cards ----
     if _factual():
