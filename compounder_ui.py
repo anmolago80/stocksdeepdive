@@ -582,7 +582,7 @@ def render_tabs(sections, ticker, section_order, key_prefix, gates=None):
         openly.
     """
     gates = gates or {}
-    tabs = st.tabs(section_order)
+    tabs = st.tabs(section_order, key=key_prefix)
     for label, tab in zip(section_order, tabs):
         with tab:
             render_section(sections, ticker, label, gate=gates.get(label))

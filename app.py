@@ -43,6 +43,7 @@ import score_history
 import blog_store
 import blog_render
 import compounder_ui
+import auto_compounder_engine
 
 # -----------------------------------
 # PAGE SETUP
@@ -3576,6 +3577,89 @@ def page_deep_dive():
                   "(risk/reward is measured from today's price, not the discounted "
                   "entry zone above - the same convention the Trade Filter table uses)."
             )
+
+        # --- Compounder View (auto): the same six research sections the
+        # Rational Compounder Research page shows for its hand-covered
+        # tickers, computed live here for WHATEVER ticker was just looked
+        # up (auto_compounder_engine.py), rendered through the exact same
+        # compounder_ui.render_section() the Research page itself uses -
+        # one shared component, so the two views can never visually drift
+        # apart. Collapsed by default so it never competes with the score
+        # gauges above; cached 24h, so a second open of the same ticker is
+        # instant. "Company Potential" (hand-written judgment) has no
+        # live-data equivalent and is intentionally not part of this. ---
+        st.divider()
+        with st.expander(
+            "\U0001F4DA Compounder View (auto) - Fundamentals · Value vs Book · "
+            "Retained Earnings · Earnings Trends · Cost of Capital · "
+            f"Fair Value - computed live for {_dd['ticker']}",
+            expanded=False,
+        ):
+            with st.status(
+                f"Computing live research sections for {_dd['ticker']}...",
+                expanded=False,
+            ) as _acv_status:
+                _acv_sections = auto_compounder_engine.build_sections(_dd["ticker"])
+                _acv_status.update(
+                    label=f"Live research sections for {_dd['ticker']}",
+                    state="complete" if _acv_sections else "error",
+                )
+            if not _acv_sections:
+                st.warning(
+                    f"Couldn't compute the auto Compounder View for "
+                    f"{_dd['ticker']} right now - the underlying data "
+                    "source may be unavailable."
+                )
+            else:
+                _acv_section_order = [
+                    "Fundamentals", "Value vs Book", "Retained Earnings",
+                    "Earnings Trends", "Cost of Capital", "Fair Value",
+                ]
+                # Fair Value stays paywalled here too, same gate text/
+                # convention as the Research page's own Fair Value section -
+                # otherwise the paywall would be trivially bypassed by
+                # opening this expander on any ticker instead.
+                _acv_gates = {
+                    "Fair Value": (
+                        "Fair Value - full valuation methods breakdown",
+                        "Four independent valuation methods side by side, "
+                        "with the exact inputs behind each one.",
+                        f"cp_fairvalue_auto_{_dd['ticker']}",
+                    ),
+                }
+                compounder_ui.render_tabs(
+                    _acv_sections, _dd["ticker"], _acv_section_order,
+                    key_prefix=f"acv_{_dd['ticker']}", gates=_acv_gates,
+                )
+                _acv_meta = _acv_sections.get("_meta", {}) or {}
+                _acv_years = _acv_meta.get("statement_years")
+                if _acv_years:
+                    _acv_years_note = f"{_acv_years} year(s) of statements"
+                    if _acv_years < 8:
+                        _acv_years_note += (
+                            " (adding an EODHD_API_KEY unlocks full "
+                            "10-year statement depth)"
+                        )
+                else:
+                    _acv_years_note = "statement depth unavailable"
+                st.caption(
+                    "Every value computed live from reported data - "
+                    "estimates shown in red - thresholds are the author's "
+                    f"own (see Methodology) - statement history: "
+                    f"{_acv_years_note} - descriptions of calculations, "
+                    "not recommendations."
+                )
+                # Same hand-built-research cross-link as above, offered a
+                # second time down here since a visitor who opened this
+                # expander may not have scrolled back up to see it.
+                if _dd_has_research:
+                    if st.button(
+                        "\U0001F4D6 Hand-built research exists for this "
+                        "company - open Rational Compounder Analysis →",
+                        key=f"acv_research_xlink_{_dd['ticker']}",
+                    ):
+                        st.session_state["research_jump_ticker"] = _dd["ticker"]
+                        st.switch_page(PG_RESEARCH)
 
 
 def _render_country_mood_line(country):
