@@ -478,8 +478,11 @@ def _render_view_badge():
     if _FACTUAL_DEFAULT and st.session_state.get("full_view_unlocked"):
         # Write blog sits here rather than in the site nav on purpose: the
         # editor is admin-only, so its entry point belongs in the strip
-        # that only an unlocked session ever sees.
-        _b1, _bw, _bs, _b2 = st.columns([6.8, 1.6, 1.6, 2])
+        # that only an unlocked session ever sees. Taken out of the
+        # trailing padding column (2 -> 1 + 1) rather than shrinking _b1
+        # or _bs, so the badge and Stats popover keep their original,
+        # already-tuned widths.
+        _b1, _bs, _bw, _b2 = st.columns([8.4, 1.6, 1, 1])
         with _bw:
             if st.button("Write blog", key="admin_write_blog",
                          use_container_width=True):
@@ -1430,10 +1433,16 @@ def _render_header(compact, page_label=None):
     # The three page buttons get their OWN, wider row (60% of the page vs
     # the search box's 40%) - three labels, one of them long, don't fit
     # inside the narrow search column now that button text never wraps.
-    _bsp1, _bmid, _bsp2 = st.columns([2, 6, 2])
+    # Blog gets its OWN outer column rather than a 4th slot inside _bmid -
+    # squeezing it in there previously shrank the three main buttons enough
+    # that "Rational Compounder Analysis" (the longest label) started
+    # wrapping and threw off row alignment across every page. This keeps
+    # _bmid's three buttons at their original, wrap-safe equal-third width
+    # and takes the extra room for Blog out of the right-hand padding
+    # column instead.
+    _bsp1, _bmid, _bblog, _bsp2 = st.columns([2, 6, 1, 1])
     with _bmid:
-        _nav_col1, _nav_col2, _nav_col3, _nav_col4 = st.columns(
-            [3, 3, 2.2, 1.3], gap="small")
+        _nav_col1, _nav_col2, _nav_col3 = st.columns(3, gap="small")
         with _nav_col1:
             if st.button(
                 "Rational Compounder Analysis",
@@ -1452,17 +1461,17 @@ def _render_header(compact, page_label=None):
                 use_container_width=True, key="nav_scanner",
             ):
                 st.switch_page(PG_SCANNER)
-        with _nav_col4:
-            # The blog is served outside Streamlit (server.py), so this is
-            # a real link styled to match the nav buttons, not st.button.
-            st.markdown(
-                "<a href='/blog' style='display:block;text-align:center;"
-                "border:1.5px solid #2dd4bf;border-radius:10px;color:#2dd4bf;"
-                "background-color:rgba(45,212,191,0.07);font-weight:600;"
-                "padding:0.55rem 0.5rem;text-decoration:none;"
-                "white-space:nowrap;'>Blog</a>",
-                unsafe_allow_html=True,
-            )
+    with _bblog:
+        # The blog is served outside Streamlit (server.py), so this is
+        # a real link styled to match the nav buttons, not st.button.
+        st.markdown(
+            "<a href='/blog' style='display:block;text-align:center;"
+            "border:1.5px solid #2dd4bf;border-radius:10px;color:#2dd4bf;"
+            "background-color:rgba(45,212,191,0.07);font-weight:600;"
+            "padding:0.55rem 0.5rem;text-decoration:none;"
+            "white-space:nowrap;margin-top:1px;'>Blog</a>",
+            unsafe_allow_html=True,
+        )
 
     if _searched:
         _dispatch_search(_search_text)

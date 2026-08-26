@@ -201,6 +201,7 @@ _ROW_ALIASES = {
     "inventory": ["Inventory"],
     "cash": ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"],
     "total_debt": ["Total Debt"],
+    "long_term_debt": ["Long Term Debt", "Long Term Debt And Capital Lease Obligation"],
     "total_liabilities": ["Total Liabilities Net Minority Interest", "Total Liab"],
     "stockholders_equity": ["Stockholders Equity", "Common Stock Equity", "Total Equity Gross Minority Interest"],
     "goodwill_and_intangibles": ["Goodwill And Other Intangible Assets"],
@@ -630,7 +631,6 @@ def _build_retained_earnings(bundle, ticker, ref):
             ratio_p_ed = price / denom
 
     retained_ttm = (trailing_eps - div_ttm) if (trailing_eps is not None and div_ttm is not None) else None
-    retained_ttm_pct = (retained_ttm / trailing_eps) if (retained_ttm is not None and trailing_eps) else None
 
     metrics = []
 
@@ -647,7 +647,11 @@ def _build_retained_earnings(bundle, ticker, ref):
     add("Dividend (TTM)", div_ttm, "cur")
     add("Ratio P/(E-D)", ratio_p_ed, "x")
     add("Dividend Yield (TTM)", (div_ttm / price) if (div_ttm is not None and price) else None, "pct")
-    add("Retained Earnings (TTM)", retained_ttm_pct, "pct", flagged=True)
+    # Confirmed against a covered ticker: the workbook's "Retained Earnings
+    # (TTM)" is the raw per-share dollar figure (EPS minus Dividend), run
+    # through the "pct" formatter like the variance metric above - not
+    # retained-as-a-fraction-of-EPS, despite the "pct" tag.
+    add("Retained Earnings (TTM)", retained_ttm, "pct", flagged=True)
     add("10Y Retained Earnings (From Last FY)", _ten_year_retained(bundle), "cur", flagged=True)
 
     value_created = _value_created(bundle, retained_ttm, price)
@@ -738,7 +742,12 @@ def _build_earnings_trends(bundle, ticker, ref):
     if n >= 2:
         variance = sum((v - ten_avg) ** 2 for v in eps_vals) / n
         sd = math.sqrt(variance)
-        add("10y EPS  Variance", (variance / ten_avg) if ten_avg else None, "pct")
+        # The hand-built workbook's own "10y EPS Variance" is the raw
+        # population variance itself (confirmed against a covered ticker:
+        # its stored value equals this section's own "10y EPS SD" squared,
+        # not variance/mean) - just happens to be run through the site's
+        # "pct" formatter (value*100 with a % sign) rather than "cur"/"num".
+        add("10y EPS  Variance", variance, "pct")
         add("10y EPS SD", sd, "cur")
         add("10y AVG+SD", ten_avg + sd, "x")
         four_vals = eps_vals[:4]
@@ -779,10 +788,36 @@ def _build_earnings_trends(bundle, ticker, ref):
 # Cost of Capital
 # -----------------------------------
 
+def _avg_invested_capital(bundle):
+    """Average of the latest two years' (equity + total debt - cash) - the
+    standard ROIC convention (average capital employed over the period,
+    not a single point-in-time snapshot). This is what actually
+    distinguishes "ROIC (TTM)" from Fundamentals' own point-in-time
+    "ROIC" - confirmed against a covered ticker, where the two are
+    legitimately different numbers in the hand-built workbook, not a
+    formula that should be forced to agree. Falls back to the latest
+    year alone when a prior year isn't available."""
+    equity_s = _series(bundle["balance"], "stockholders_equity")
+    debt_s = dict(_series(bundle["balance"], "total_debt"))
+    cash_s = dict(_series(bundle["balance"], "cash"))
+    points = []
+    for y, eq in equity_s:
+        if eq is None:
+            continue
+        ic = eq + (debt_s.get(y) or 0) - (cash_s.get(y) or 0)
+        points.append(ic)
+        if len(points) == 2:
+            break
+    if not points:
+        return None
+    return sum(points) / len(points)
+
+
 def _build_cost_of_capital(bundle, ticker, ref):
     b = _basics(bundle)
     info, mcap, ccy = b["info"], b["market_cap"], b["currency"]
     total_debt = _latest(bundle["balance"], "total_debt")
+    long_term_debt = _latest(bundle["balance"], "long_term_debt")
     interest_expense = _latest(bundle["income"], "interest_expense")
     pretax_income = _latest(bundle["income"], "pretax_income")
     tax_provision = _latest(bundle["income"], "tax_provision")
@@ -791,11 +826,12 @@ def _build_cost_of_capital(bundle, ticker, ref):
     cash = _latest(bundle["balance"], "cash")
     tax_rate = (tax_provision / pretax_income) if (tax_provision is not None and pretax_income) else 0.25
 
-    ev = (mcap + (total_debt or 0)) if mcap is not None else None
-    # Same invested-capital definition as Fundamentals' own ROIC (equity +
-    # debt - cash) - kept identical so the two ROIC figures never quietly
-    # disagree with each other for the same ticker.
-    invested_capital = (equity + (total_debt or 0) - (cash or 0)) if equity is not None else None
+    # Same "- cash" convention as Fundamentals' own Enterprise Value
+    # (verified against a covered ticker's EV-to-FCF-implied EV) - Cost of
+    # Capital's EV had been missing this term, overstating EV by the
+    # entire cash balance.
+    ev = (mcap + (total_debt or 0) - (cash or 0)) if mcap is not None else None
+    invested_capital = _avg_invested_capital(bundle)
     nopat = (operating_income * (1 - tax_rate)) if operating_income is not None else None
     roic_ttm = (nopat / invested_capital) if (nopat is not None and invested_capital) else None
 
@@ -819,7 +855,12 @@ def _build_cost_of_capital(bundle, ticker, ref):
 
     add("Market Cap (TTM)", mcap, "cur")
     add("Enterprise Value (TTM)", ev, "cur")
-    add("Long Term Debt (TTM)", total_debt, "cur")
+    # The label says Long Term Debt specifically, not Total Debt - use the
+    # dedicated statement row when it exists; only fall back to (and flag)
+    # the broader Total Debt figure when the balance sheet doesn't break
+    # the two out separately.
+    add("Long Term Debt (TTM)", long_term_debt if long_term_debt is not None else total_debt,
+        "cur", flagged=long_term_debt is None)
     add("Interest Expense (TTM)", interest_expense, "cur")
     add("ROIC (TTM)", roic_ttm, "pct", flagged=True)
     add("Income Before Tax (TTM)", pretax_income, "cur")
