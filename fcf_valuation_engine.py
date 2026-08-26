@@ -480,6 +480,8 @@ def dcf_intrinsic_value(
                                        # 3-year median (see FCF_OUTLIER_THRESHOLD)
         "fcf_base_raw":   float | None,  # the un-swapped latest-year value, when normalized
         "fcf_base_used":  float | None,  # the median actually used, when normalized
+        "fcf_used":       float | None,  # the actual base FCF (listing currency, post-FX) fed into the model
+        "fcf_per_share_used": float | None,  # fcf_used / shares - the number stage 1 compounds from
         "discount_floored": bool,  # DCF fix: True if capm_engine floored beta and/or the rate itself
         "fx_converted":   str | None,  # DCF fix: "USD->AUD" etc. when financials/listing currency differ
         "fx_rate_used":   float | None,  # the rate actually applied
@@ -506,6 +508,8 @@ def dcf_intrinsic_value(
         "fcf_base_normalized": False,
         "fcf_base_raw": None,
         "fcf_base_used": None,
+        "fcf_used": None,
+        "fcf_per_share_used": None,
         "discount_floored": False,
         "fx_converted": None,
         "fx_rate_used": None,
@@ -624,6 +628,14 @@ def dcf_intrinsic_value(
                 meta["defaulted"] = True
 
         fcf_per_share = fcf / shares
+        # Surfaced so the app can actually show what went into the model -
+        # previously the normalised base FCF (fcf) and the per-share figure
+        # derived from it (fcf_per_share, the number the whole stage-1/
+        # terminal-value ladder above is built on) were computed here and
+        # then discarded; nothing downstream could answer "what FCF is this
+        # using" without recomputing it by hand.
+        meta["fcf_used"] = round(fcf, 2)
+        meta["fcf_per_share_used"] = round(fcf_per_share, 4)
 
         # Stage 1: discount each year's grown cash flow back to today.
         intrinsic = 0.0

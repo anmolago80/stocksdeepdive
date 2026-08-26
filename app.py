@@ -4948,6 +4948,18 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                         round(iv_meta.get("perpetual_rate_used") * 100, 1)
                         if iv_meta.get("perpetual_rate_used") is not None else "-"
                     ),
+                    # The actual per-share free cash flow the DCF compounded
+                    # from (fcf_valuation_engine's fcf_per_share) - previously
+                    # computed and thrown away, with no way to answer "what
+                    # FCF is this using" for a given stock without recreating
+                    # the model by hand. fcf_source is the same provenance
+                    # label already used for the "FCF" column further down
+                    # ("ocf-normcapex" = latest OCF minus average capex,
+                    # "fcf-median" = 3-year median of the reported FCF line,
+                    # "info" = Yahoo's single freeCashflow figure, "manual" =
+                    # your own override).
+                    "FCF/Share Used": iv_meta.get("fcf_per_share_used"),
+                    "FCF Source": iv_meta.get("fcf_source") or "-",
                     "MOS": round(margin_of_safety, 2) if intrinsic_value > 0 else "N/A",
                     "IV/Price Multiple": (
                         round(intrinsic_value / current_price, 2)
@@ -5482,7 +5494,13 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     "currency-based, or the global defaults above), or your saved "
                     "override - alongside the resulting Intrinsic Value and the latest "
                     "Price, for a quick read of which stocks the DCF calls under/over "
-                    "the market. Click \"Enable manual override\" to type your own "
+                    "the market. \"FCF/Share\" is the actual per-share free cash flow "
+                    "the model compounded from (base FCF divided by shares "
+                    "outstanding) - \"FCF Source\" says where that base came from: "
+                    "ocf-normcapex (latest operating cash flow minus average capex), "
+                    "fcf-median (3-year median of reported FCF), info (Yahoo's single "
+                    "freeCashflow figure), or manual (your own override). Click "
+                    "\"Enable manual override\" to type your own "
                     "value for any stock - leave a cell blank to keep it auto. Saved "
                     "overrides apply only to your own session - they reset to "
                     "defaults the moment you leave or reload this page, and never "
@@ -5554,6 +5572,11 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                             + _td(str(_dr.get("Growth Governor", "-")))
                             + _td(f"{_dr['DCF Discount %']}" + ("%" if _dr["DCF Discount %"] != "-" else ""))
                             + _td(f"{_dr['DCF Perpetual %']}" + ("%" if _dr["DCF Perpetual %"] != "-" else ""))
+                            + _td(
+                                _money_cell(_dr.get("FCF/Share Used"), fmt="{:,.2f}")
+                                if _dr.get("FCF/Share Used") is not None else "-"
+                            )
+                            + _td(str(_dr.get("FCF Source") or "-"))
                             + _td(_bar_cell(_dr["Long Score"], SIGNAL_THRESHOLDS["WATCHLIST"],
                                             SIGNAL_THRESHOLDS["LONG"]), minw=90)
                             + "</tr>"
@@ -5562,7 +5585,7 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                         _sdd_table(
                             ["Ticker", "Price", "Intrinsic Value", "IV/Price",
                              "Upside %", "DCF Growth", "Governor", "Discount",
-                             "Perpetual",
+                             "Perpetual", "FCF/Share", "FCF Source",
                              "Value Score" if _factual() else "Long Score"],
                             _dcf_rows_html, max_height=480,
                         ),

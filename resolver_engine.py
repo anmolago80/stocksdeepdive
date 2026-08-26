@@ -64,6 +64,8 @@ def resolve_intrinsic_value(
         meta["growth_source"]    : "analyst"|"history"|"analyst+history"|"info"|"default"|"manual"|None
         meta["growth_governor"]  : "Yahoo"|"History"|"Info"|"Default"|"Manual"|None
         meta["fcf_source"]       : "history" | "info" | "manual" | "none"
+        meta["fcf_used"]         : float | None (the base FCF the DCF actually compounded from)
+        meta["fcf_per_share_used"] : float | None (fcf_used / shares outstanding)
         meta["discount_source"]  : "capm" | "capm-default" | "manual" | "fallback"
         meta["perpetual_source"] : "currency" | "manual" | "fallback"
         meta["discount_rate_used"]  : float | None
@@ -88,6 +90,8 @@ def resolve_intrinsic_value(
             "growth_governor": dcf_meta.get("growth_governor"),
             "growth_ceiling_used": dcf_meta.get("growth_ceiling_used"),
             "fcf_source": dcf_meta.get("fcf_source"),
+            "fcf_used": dcf_meta.get("fcf_used"),
+            "fcf_per_share_used": dcf_meta.get("fcf_per_share_used"),
             "discount_source": dcf_meta.get("discount_source"),
             "perpetual_source": dcf_meta.get("perpetual_source"),
             "discount_rate_used": dcf_meta.get("discount_rate_used"),
