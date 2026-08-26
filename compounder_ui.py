@@ -285,7 +285,20 @@ def _cp_pe_ratio_chart(ticker, series, pe_ratio_refs):
     return fig
 
 
-_CP_WACC_ROIC_PERIOD_ORDER = ["TTM", "2025", "2021", "2016"]
+def _cp_wacc_roic_period_order(available_periods):
+    """TTM first (if present), then every other period newest-year-first.
+    Replaces the old hardcoded ["TTM","2025","2021","2016"] list, which
+    only ever matched the hand-built Research page's own four fixed
+    periods - the auto Compounder View computes WACC/ROIC at whatever
+    years its own statement history actually has (see auto_compounder_
+    engine._year_points), so the chart needs to sort those dynamically
+    instead of silently dropping every period not on that fixed list."""
+    rest = sorted(
+        (p for p in available_periods if p != "TTM"),
+        key=lambda p: int(p) if p.isdigit() else -1,
+        reverse=True,
+    )
+    return (["TTM"] if "TTM" in available_periods else []) + rest
 
 
 def _cp_wacc_roic_chart(ticker, wacc_roic_series):
@@ -297,7 +310,7 @@ def _cp_wacc_roic_chart(ticker, wacc_roic_series):
         return None
     wacc_by_period = dict(zip(entry["wacc"]["periods"], entry["wacc"]["values"]))
     roic_by_period = dict(zip(entry["roic"]["periods"], entry["roic"]["values"]))
-    periods = [p for p in _CP_WACC_ROIC_PERIOD_ORDER if p in wacc_by_period or p in roic_by_period]
+    periods = _cp_wacc_roic_period_order(set(wacc_by_period) | set(roic_by_period))
     if not periods:
         return None
     wacc_vals = [wacc_by_period.get(p) for p in periods]
