@@ -597,10 +597,18 @@ def _build_fundamentals(bundle, ticker, ref):
     add("Operating Income Ratio", (operating_income / revenue) if (operating_income is not None and revenue) else None, "pct")
     add("PFCF Ratio", (mcap / fcf) if (mcap and fcf) else None, "x")
 
-    invested_capital = (equity + (total_debt or 0) - (cash or 0)) if equity is not None else None
+    # Invested Capital = Equity + Total Debt (capital employed) - NOT
+    # net of cash. An earlier version of this subtracted cash too, which
+    # is fine for a normally-levered company but blows up into a
+    # meaningless 100%+ ROIC for a cash-rich, low-debt name where cash
+    # roughly offsets equity+debt (confirmed on OCL.AX: subtracting cash
+    # gave ~250% here vs TradingView/the user's own spreadsheet showing
+    # ~25-40%, while dropping the cash subtraction lands in that same
+    # band - cross-checked against real numbers, not a guess).
+    invested_capital = (equity + (total_debt or 0)) if equity is not None else None
     nopat = (operating_income * (1 - (tax_rate if tax_rate is not None else 0.25))) if operating_income is not None else None
     add("ROIC", (nopat / invested_capital) if (nopat is not None and invested_capital) else None, "pct",
-        flagged=True, fallback="NOPAT (operating income after an estimated tax rate) divided by invested capital.")
+        flagged=True, fallback="NOPAT (operating income after an estimated tax rate) divided by invested capital (equity + total debt).")
 
     add("Debt to Assets", (total_debt / total_assets) if (total_debt is not None and total_assets) else None, "pct")
     add("Quick Ratio", ((current_assets - (inventory or 0)) / current_liabilities) if (current_assets is not None and current_liabilities) else None, "x")
@@ -981,10 +989,19 @@ def _year_points():
 
 
 def _avg_invested_capital_for_year(equity_by_year, debt_by_year, cash_by_year, years_desc, target_year):
-    """Average (equity + total debt - cash) for target_year and the year
+    """Average (equity + total debt) for target_year and the year
     immediately prior in the statement's own year list - the standard
     ROIC "average capital employed over the period" convention,
-    generalised to any statement year (not just the latest two)."""
+    generalised to any statement year (not just the latest two).
+
+    Deliberately NOT net of cash (cash_by_year is accepted but unused -
+    kept in the signature so both call sites don't need touching again).
+    Subtracting cash here matched the hand-covered tickers (AUB/CSL/RMD,
+    all normally levered) but breaks down for a cash-rich, low-debt name:
+    on OCL.AX, subtracting cash left an invested-capital base of ~$10-14M
+    against ~$25M of NOPAT - a ~250% ROIC - while TradingView and the
+    user's own spreadsheet both show ~25-40% for the same ticker, which
+    is what (equity + debt) with no cash netting reproduces."""
     if target_year not in years_desc:
         return None
     idx = years_desc.index(target_year)
@@ -993,7 +1010,7 @@ def _avg_invested_capital_for_year(equity_by_year, debt_by_year, cash_by_year, y
         eq = equity_by_year.get(y)
         if eq is None:
             continue
-        points.append(eq + (debt_by_year.get(y) or 0) - (cash_by_year.get(y) or 0))
+        points.append(eq + (debt_by_year.get(y) or 0))
     if not points:
         return None
     return sum(points) / len(points)
