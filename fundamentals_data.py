@@ -56,6 +56,8 @@ import urllib.request
 import pandas as pd
 import yfinance as yf
 
+import fcf_valuation_engine
+
 # -----------------------------------
 # Persistence - same resolution rule as every other persisted file in this
 # app (see watchlist_store.py / build_compounder_data._cp_data_dir):
@@ -65,6 +67,13 @@ import yfinance as yf
 
 _CACHE_DIR_NAME = "auto_cv_cache"
 _CACHE_TTL_SECONDS = 24 * 3600
+
+# Bumped whenever get_bundle()'s output shape/content changes in a way that
+# would make an old cached bundle wrong to keep serving (e.g. the Part 6a
+# currency-conversion fix below) - mirrors auto_compounder_engine's own
+# ENGINE_VERSION cache-busting pattern. A cached bundle written under an
+# older version is treated as a miss, same as an expired one.
+BUNDLE_VERSION = 2
 
 
 def _data_dir():
@@ -153,8 +162,11 @@ def _read_cache(ticker):
             return None
         with open(path) as f:
             obj = json.load(f)
-        fetched_at = (obj.get("meta") or {}).get("fetched_at")
+        cache_meta = obj.get("meta") or {}
+        fetched_at = cache_meta.get("fetched_at")
         if not fetched_at:
+            return None
+        if cache_meta.get("bundle_version") != BUNDLE_VERSION:
             return None
         age = (
             datetime.datetime.now(datetime.timezone.utc)
@@ -179,6 +191,19 @@ def _write_cache(ticker, bundle):
         os.replace(tmp_path, path)
     except OSError:
         pass
+
+
+def _convert_statement_currency(df, rate):
+    """Multiply every cell of a statement DataFrame by an fx rate, coercing
+    anything non-numeric to NaN first so a stray string/None cell can never
+    raise - same best-effort spirit as the rest of this module. Returns the
+    input unchanged if it's empty or the multiply fails outright."""
+    if df is None or df.empty:
+        return df
+    try:
+        return df.apply(pd.to_numeric, errors="coerce") * rate
+    except Exception:
+        return df
 
 
 # -----------------------------------
@@ -343,6 +368,33 @@ def get_bundle(ticker, force_refresh=False):
     if statement_years == 0:
         flags.append("no_statements")
 
+    # Currency fix: statement line items are reported in the company's
+    # financialCurrency, but price/market-cap-derived figures elsewhere in
+    # the app are in its listing currency - for a handful of ASX-listed,
+    # USD-reporting names (CSL.AX, RMD.AX, ...) those two diverge, and
+    # mixing them without conversion silently produces ratios off by the
+    # fx rate. Convert every statement DataFrame (and the two EPS fields
+    # used directly alongside price) into the listing currency here, once,
+    # so nothing downstream has to know this ever happened.
+    fin_ccy = (info.get("financialCurrency") or "").upper()
+    list_ccy = (info.get("currency") or "").upper()
+    if fin_ccy and list_ccy and fin_ccy != list_ccy:
+        try:
+            fx, fx_source = fcf_valuation_engine.fx_rate(fin_ccy, list_ccy)
+        except Exception:
+            fx, fx_source = 1.0, "fallback"
+        if fx and fx > 0 and fx != 1.0:
+            income = _convert_statement_currency(income, fx)
+            balance = _convert_statement_currency(balance, fx)
+            cashflow = _convert_statement_currency(cashflow, fx)
+            for _eps_key in ("trailingEps", "forwardEps"):
+                if info.get(_eps_key) is not None:
+                    try:
+                        info[_eps_key] = float(info[_eps_key]) * fx
+                    except (TypeError, ValueError):
+                        pass
+            flags.append("currency_converted")
+
     try:
         hist = tk.history(period="10y", interval="1mo")
     except Exception:
@@ -385,6 +437,7 @@ def get_bundle(ticker, force_refresh=False):
             "statement_years": statement_years,
             "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "flags": flags,
+            "bundle_version": BUNDLE_VERSION,
         },
     }
     _write_cache(ticker, bundle)
