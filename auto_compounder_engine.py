@@ -81,7 +81,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 2
+ENGINE_VERSION = 3
 
 
 # -----------------------------------
