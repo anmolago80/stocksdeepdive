@@ -42,6 +42,7 @@ import name_directory
 import score_history
 import blog_store
 import blog_render
+import compounder_ui
 
 # -----------------------------------
 # PAGE SETUP
@@ -1576,10 +1577,15 @@ def _dd_gate_chart(contributions, title, xaxis_title="Points", height=260):
 # is one he personally annotated with an explanatory comment in Excel; the
 # colour bands on the gauges are the red/amber/green (or 4th "very high"
 # blue) ranges spelled out in his own comment text, not invented cutoffs.
+#
+# The colour vocabulary, section chart-builders, the band-gauge kit, and
+# the shared render_section()/render_tabs() now live in compounder_ui.py
+# (imported above) so the Deep Dive page's "Compounder View (auto)" can
+# render live-computed data with the exact same look - see that module's
+# docstring. Only what's specific to the hand-built workbook data (loading
+# it, and the Company Potential section's own ratings/text rendering,
+# which auto view never shows) stays here.
 # -----------------------------------
-
-_CP_COLOR_FILL = {"red": "#43222e", "amber": "#43371c", "green": "#27584a", "blue": "#1d4356"}
-_CP_COLOR_TEXT = {"red": "#fb7185", "amber": "#fbbf24", "green": "#34d399", "blue": "#5ed3f0"}
 
 
 @st.cache_data
@@ -1617,401 +1623,10 @@ def _load_compounder_data():
     return loaded
 
 
-def _cp_clean_comment(text):
-    """Strip the Excel 'threaded comment' boilerplate down to just what
-    Andrew actually wrote, joining a 'Comment:' + any 'Reply:' follow-ups
-    into one readable block."""
-    if not text:
-        return ""
-    parts = []
-    for chunk in text.split("Reply:"):
-        chunk = chunk.strip()
-        if chunk.startswith("[Threaded comment]"):
-            idx = chunk.find("Comment:")
-            chunk = chunk[idx + len("Comment:"):] if idx != -1 else ""
-        if chunk.strip():
-            parts.append(chunk.strip())
-    return "\n\n".join(parts)
-
-
-def _cp_format(value, fmt):
-    if value is None:
-        return "N/A"
-    if fmt == "pct":
-        return f"{value * 100:,.1f}%"
-    if fmt == "x":
-        return f"{value:,.2f}x"
-    if fmt == "cur":
-        return f"${value:,.0f}" if abs(value) >= 1000 else f"${value:,.2f}"
-    return f"{value:,.2f}"
-
-
-def _cp_band(value, thresholds):
-    if value is None or not thresholds:
-        return None
-    for lo, hi, color, band_label in thresholds:
-        if (lo is None or value >= lo) and (hi is None or value < hi):
-            return color, band_label
-    return None
-
-
-def _cp_gauge(value, label, fmt, thresholds, height=130):
-    breakpoints = sorted(
-        {b for t in thresholds for b in (t[0], t[1]) if b is not None}
-    )
-    lo_bound = breakpoints[0] if breakpoints else 0.0
-    hi_bound = breakpoints[-1] if breakpoints else 1.0
-    span = (hi_bound - lo_bound) or (abs(hi_bound) or 1.0)
-    pad = span * 0.2
-    axis_min, axis_max = lo_bound - pad, hi_bound + pad
-    if value < axis_min:
-        axis_min = value - span * 0.1
-    if value > axis_max:
-        axis_max = value + span * 0.1
-
-    steps = [
-        {
-            "range": [lo if lo is not None else axis_min, hi if hi is not None else axis_max],
-            "color": _CP_COLOR_FILL.get(color, "#26334a"),
-        }
-        for lo, hi, color, _ in thresholds
-    ]
-    number_fmt = {"pct": ".1%", "x": ",.2f", "cur": ",.0f"}.get(fmt, ",.2f")
-    number_suffix = "x" if fmt == "x" else ""
-    number_prefix = "$" if fmt == "cur" else ""
-
-    fig = go.Figure(go.Indicator(
-        mode="number+gauge",
-        value=value,
-        number={"valueformat": number_fmt, "suffix": number_suffix, "prefix": number_prefix, "font": {"size": 20}},
-        domain={"x": [0.32, 1], "y": [0.25, 0.75]},
-        gauge={
-            "shape": "bullet",
-            "axis": {"range": [axis_min, axis_max], "tickfont": {"size": 9}},
-            "bar": {"color": "#e6edf5", "thickness": 0.45},
-            "steps": steps,
-            "threshold": {"line": {"color": "#e6edf5", "width": 2}, "thickness": 0.9, "value": value},
-        },
-    ))
-    fig.update_layout(
-        height=height, margin=dict(l=10, r=10, t=22, b=8),
-        title={"text": label, "font": {"size": 13, "color": "#e6edf5"}, "x": 0, "xanchor": "left"},
-    )
-    return fig
-
-
-def _cp_price_chart(ticker, price_history):
-    """Share price history (Price Calc, ~10y monthly) with Andrew's own
-    '10y Average' (Stock Analysis col CF) drawn as a flat reference line -
-    this is the "price vs the median I calculated" chart he asked for."""
-    entry = price_history.get(ticker)
-    if not entry or not entry.get("dates"):
-        return None
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=entry["dates"], y=entry["prices"], mode="lines", name="Price",
-        line=dict(color="#2dd4bf", width=2),
-    ))
-    if entry.get("avg_10y") is not None:
-        fig.add_hline(
-            y=entry["avg_10y"], line_dash="dash", line_color="#e6edf5",
-            annotation_text=f"10y Average ${entry['avg_10y']:,.2f}",
-            annotation_position="top left", annotation_font_size=11,
-        )
-    fig.update_layout(
-        title="Share Price vs 10-Year Average", height=320, showlegend=False,
-        margin=dict(l=10, r=10, t=40, b=10), yaxis_title="Price",
-    )
-    return fig
-
-
-def _cp_share_price_growth_chart(ticker, share_price_growth):
-    """Share Price Growth by year - Andrew's own workbook figure (avg price
-    this year vs avg price last year), same green/red convention as EPS
-    Growth by Year on the Earnings Trends tab."""
-    entry = share_price_growth.get(ticker)
-    if not entry or not entry.get("years"):
-        return None
-    years = list(reversed(entry["years"]))
-    values = list(reversed(entry["values"]))
-    colors = ["#34d399" if v >= 0 else "#fb7185" for v in values]
-    fig = go.Figure(go.Bar(
-        x=years, y=values, marker_color=colors,
-        text=[f"{v * 100:+.1f}%" for v in values], textposition="outside",
-    ))
-    fig.update_layout(
-        title="Share Price Growth by Year", height=320, showlegend=False,
-        margin=dict(l=10, r=10, t=40, b=10), yaxis_title="Share Price Growth",
-        yaxis_tickformat=".0%", xaxis_type="category",
-    )
-    return fig
-
-
-def _cp_value_created_chart(ticker, value_created):
-    """Andrew's own retained-earnings 'Value Created' test (Dividend Ratio
-    sheet) at 2Y/5Y/10Y/TTM horizons - for every $ of earnings retained,
-    how much market value did that create."""
-    entry = value_created.get(ticker)
-    if not entry:
-        return None
-    order = [h for h in ["2Y", "5Y", "10Y", "TTM"] if h in entry]
-    if not order:
-        return None
-    retained = [entry[h]["retained_earnings"] for h in order]
-    created = [entry[h]["value_created"] for h in order]
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=order, y=retained, name="Retained Earnings Per Share", marker_color="#94a3b8"))
-    fig.add_trace(go.Bar(x=order, y=created, name="Market Value Created for every dollar retained", marker_color="#2dd4bf"))
-    fig.update_layout(
-        barmode="group", title="Value Created per $ Retained, by horizon",
-        height=320, margin=dict(l=10, r=10, t=40, b=10),
-        legend=dict(orientation="h", y=-0.2),
-    )
-    return fig
-
-
-def _cp_iv_bv_series_chart(ticker, iv_bv_series, thresholds):
-    """IV/BV for every year Andrew has modelled (X=year, Y=IV/BV) - colour
-    per year uses the same red/amber/green bands as the IV/BV gauge did."""
-    entry = iv_bv_series.get(ticker)
-    if not entry or not entry.get("years"):
-        return None
-    years = list(reversed(entry["years"]))
-    ratios = list(reversed(entry["ratios"]))
-    colors = []
-    for r in ratios:
-        band = _cp_band(r, thresholds) if thresholds else None
-        colors.append(_CP_COLOR_FILL.get(band[0], "#2dd4bf") if band else "#2dd4bf")
-    fig = go.Figure(go.Bar(
-        x=years, y=ratios, marker_color=colors,
-        text=[f"{v:.2f}x" for v in ratios], textposition="outside",
-    ))
-    avg_ratio = sum(ratios) / len(ratios)
-    fig.add_hline(
-        y=avg_ratio, line_dash="dash", line_color="#e6edf5",
-        annotation_text=f"Average {avg_ratio:.2f}x",
-        annotation_position="top left", annotation_font_size=11,
-    )
-    fig.update_layout(
-        title="IV/BV by Year Modelled", height=300, showlegend=False,
-        margin=dict(l=10, r=10, t=40, b=10), yaxis_title="IV/BV",
-        xaxis_type="category",
-    )
-    return fig
-
-
-def _cp_year_bar_chart(ticker, series, key, title, yaxis_title, fmt="num", color="#2dd4bf"):
-    """Generic X=year bar chart for a year-series pulled straight from the
-    workbook (EPS, PE Ratio, ...) - one consistent shape reused per metric."""
-    entry = series.get(ticker, {}).get(key)
-    if not entry or not entry.get("years"):
-        return None
-    years = list(reversed(entry["years"]))
-    values = list(reversed(entry["values"]))
-    text = [_cp_format(v, fmt) for v in values]
-    fig = go.Figure(go.Bar(x=years, y=values, marker_color=color, text=text, textposition="outside"))
-    fig.update_layout(
-        title=title, height=300, showlegend=False,
-        margin=dict(l=10, r=10, t=40, b=10), yaxis_title=yaxis_title,
-        xaxis_type="category",
-    )
-    return fig
-
-
-def _cp_eps_growth_chart(ticker, series):
-    """EPS Growth by year - diverging red/green bars (negative growth
-    years read as red, same convention as the rest of the app)."""
-    entry = series.get(ticker, {}).get("eps_growth")
-    if not entry or not entry.get("years"):
-        return None
-    years = list(reversed(entry["years"]))
-    values = list(reversed(entry["values"]))
-    colors = ["#34d399" if v >= 0 else "#fb7185" for v in values]
-    fig = go.Figure(go.Bar(
-        x=years, y=values, marker_color=colors,
-        text=[f"{v * 100:+.1f}%" for v in values], textposition="outside",
-    ))
-    fig.update_layout(
-        title="EPS Growth by Year", height=300, showlegend=False,
-        margin=dict(l=10, r=10, t=40, b=10), yaxis_title="EPS Growth", yaxis_tickformat=".0%",
-        xaxis_type="category",
-    )
-    return fig
-
-
-def _cp_pe_ratio_chart(ticker, series, pe_ratio_refs):
-    """PE Ratio by Year, plus two reference lines Andrew asked for so they
-    read at a glance against the year-by-year bars: 'PE ratio (Current
-    price to 3y average EPS)' (his AV column) and the plain 'PE Ratio
-    Average' (AU). Drawn as a full-width shape (edge to edge, not just from
-    the first bar's centre to the last bar's centre) with its value written
-    directly next to it via a plain xref="paper" annotation -- NOT
-    fig.add_hline()'s own annotation_* kwargs, which silently clip the text
-    when pushed out past the plot area with an xshift; a manually-added
-    add_annotation() call doesn't have that problem. Whichever of the two
-    lines sits lower gets its label pushed further down (and the higher one
-    further up) so the two labels don't collide when the values are close."""
-    entry = series.get(ticker, {}).get("pe_ratio")
-    if not entry or not entry.get("years"):
-        return None
-    years = list(reversed(entry["years"]))
-    values = list(reversed(entry["values"]))
-    fig = go.Figure(go.Bar(
-        x=years, y=values, marker_color="#8aa0b8",
-        text=[_cp_format(v, "x") for v in values], textposition="outside",
-        name="PE Ratio", showlegend=False,
-    ))
-    refs = pe_ratio_refs.get(ticker, {})
-    avg_3y = refs.get("avg_3y")
-    overall_avg = refs.get("overall_avg")
-    # Label placed just past the right edge of the plot (not above the last
-    # bar) so it never collides with that bar's own outside value label.
-    # Whichever line sits lower gets its label anchored to hang further
-    # below the line, and the higher one anchored to sit further above it,
-    # so the two labels open away from each other instead of colliding when
-    # the two values are close together.
-    if avg_3y is not None and overall_avg is not None and avg_3y <= overall_avg:
-        avg_3y_yanchor, overall_avg_yanchor = "top", "bottom"
-    else:
-        avg_3y_yanchor, overall_avg_yanchor = "bottom", "top"
-
-    def _cp_pe_ref_line(value, color, dash, label, yanchor):
-        if value is None:
-            return
-        fig.add_shape(
-            type="line", xref="x", x0=-0.5, x1=len(years) - 0.5, yref="y",
-            y0=value, y1=value, line=dict(color=color, dash=dash, width=2),
-        )
-        fig.add_annotation(
-            xref="paper", x=1.0, xanchor="left", xshift=10,
-            yref="y", y=value, yanchor=yanchor,
-            text=f"{label}: {value:.2f}x", showarrow=False,
-            font=dict(color=color, size=11), align="left",
-        )
-
-    _cp_pe_ref_line(avg_3y, "#fb923c", "dash", "3y EPS avg", avg_3y_yanchor)
-    _cp_pe_ref_line(overall_avg, "#60a5fa", "dot", "Overall avg", overall_avg_yanchor)
-    fig.update_layout(
-        title="PE Ratio by Year", height=340, showlegend=False,
-        margin=dict(l=10, r=100, t=40, b=10), yaxis_title="PE Ratio",
-        xaxis_type="category",
-    )
-    return fig
-
-
-_CP_WACC_ROIC_PERIOD_ORDER = ["TTM", "2025", "2021", "2016"]
-
-
-def _cp_wacc_roic_chart(ticker, wacc_roic_series):
-    """WACC vs ROIC per period, as a grouped bar - lets you see at a glance
-    whether the business is earning more on invested capital than its cost
-    of capital (ROIC > WACC = value creation).
-
-    WACC and ROIC don't always have data for the same periods (a #VALUE!
-    cell in one series but not the other, e.g. CSL is missing WACC for
-    TTM/2025) - align both series to a fixed period order and leave gaps
-    (None) rather than assuming the two lists line up 1:1."""
-    entry = wacc_roic_series.get(ticker)
-    if not entry or not entry.get("wacc") or not entry.get("roic"):
-        return None
-    wacc_by_period = dict(zip(entry["wacc"]["periods"], entry["wacc"]["values"]))
-    roic_by_period = dict(zip(entry["roic"]["periods"], entry["roic"]["values"]))
-    periods = [p for p in _CP_WACC_ROIC_PERIOD_ORDER if p in wacc_by_period or p in roic_by_period]
-    if not periods:
-        return None
-    wacc_vals = [wacc_by_period.get(p) for p in periods]
-    roic_vals = [roic_by_period.get(p) for p in periods]
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=periods, y=wacc_vals, name="WACC", marker_color="#94a3b8",
-        text=[f"{v * 100:.1f}%" if v is not None else "" for v in wacc_vals], textposition="outside",
-    ))
-    fig.add_trace(go.Bar(
-        x=periods, y=roic_vals, name="ROIC", marker_color="#2dd4bf",
-        text=[f"{v * 100:.1f}%" if v is not None else "" for v in roic_vals], textposition="outside",
-    ))
-    fig.update_layout(
-        barmode="group", title="WACC vs ROIC by Year", height=320,
-        margin=dict(l=10, r=10, t=40, b=10), yaxis_title="Rate", yaxis_tickformat=".0%",
-        xaxis_type="category", legend=dict(orientation="h", y=-0.2),
-    )
-    return fig
-
-
-# Fair Value bar order/labels/colours - shared between the chart and the
-# "inputs under each bar" row so the two line up. "Rational Compounder
-# Method 10y" was "Equity Method 10y" until Andrew asked for the rename.
-_CP_VALUATION_METHOD_ORDER = [
-    ("price", "Current Price", "#2dd4bf"),
-    ("pe_forward", "PE Forward", "#94a3b8"),
-    ("pe_trailing", "PE Trailing", "#8aa0b8"),
-    ("dcf", "DCF (10y FCF)", "#34d399"),
-    ("equity_10y", "Rational Compounder Method 10y", "#4cc38a"),
-]
-
-
-def _cp_valuation_methods_chart(ticker, valuation_methods):
-    """The 4 intrinsic-value methods Andrew asked for (PE Trailing, PE
-    Forward, DCF, Rational Compounder Method 10y) vs current price -
-    replaces the previous general Fair Value metrics grid entirely, per his
-    request. Returns (figure, [(key, label), ...] actually plotted) so the
-    caller can line up the "inputs used" row underneath each bar."""
-    entry = valuation_methods.get(ticker)
-    if not entry:
-        return None, []
-    labels, values, colors, used = [], [], [], []
-    for key, label, color in _CP_VALUATION_METHOD_ORDER:
-        if entry.get(key) is not None:
-            labels.append(label)
-            values.append(entry[key])
-            colors.append(color)
-            used.append((key, label))
-    if not values:
-        return None, []
-    fig = go.Figure(go.Bar(
-        x=labels, y=values, marker_color=colors,
-        text=[f"${v:,.2f}" for v in values], textposition="outside",
-    ))
-    # Average of the intrinsic-value METHODS only (Current Price is the
-    # market's number, not a valuation estimate - it stays out of the
-    # average), drawn as a dashed line across the chart with its value in
-    # the label.
-    _method_vals = [v for (k, _), v in zip(used, values) if k != "price"]
-    if len(_method_vals) >= 2:
-        _avg = sum(_method_vals) / len(_method_vals)
-        fig.add_hline(
-            y=_avg, line_dash="dash", line_color="#e6edf5", line_width=1.5,
-            annotation_text=f"Average ${_avg:,.2f}",
-            annotation_position="top left",
-            annotation_font=dict(size=12, color="#e6edf5"),
-        )
-    fig.update_layout(
-        title="Intrinsic Value by Method vs Current Price", height=340,
-        showlegend=False, margin=dict(l=10, r=10, t=40, b=10),
-    )
-    return fig, used
-
-
-def _cp_render_valuation_inputs(ticker, used, valuation_inputs, valuation_methods):
-    """The key inputs behind each bar, shown directly underneath it (one
-    Streamlit column per bar, same left-to-right order as the chart)."""
-    entry = valuation_inputs.get(ticker, {})
-    method_values = valuation_methods.get(ticker, {})
-    cols = st.columns(len(used))
-    for col, (key, label) in zip(cols, used):
-        with col:
-            st.markdown(f"<div style='text-align:center;font-size:12px;font-weight:600;color:#aebfd4;'>{label}</div>", unsafe_allow_html=True)
-            # "Current Price" is the actual market price, not a valuation
-            # estimate - skip the "Intrinsic Value" line for that one bar.
-            lines = [] if key == "price" else [f"Intrinsic Value: {_cp_format(method_values.get(key), 'cur')}"]
-            for item in entry.get(key, []):
-                lines.append(f"{item['label']}: {_cp_format(item['value'], item['format'])}")
-            if lines:
-                st.markdown(
-                    "<div style='text-align:center;font-size:11.5px;color:#8aa0b8;line-height:1.6;'>"
-                    + "<br>".join(lines) + "</div>",
-                    unsafe_allow_html=True,
-                )
+# _cp_clean_comment, _cp_format, _cp_band, the old plotly _cp_gauge (now
+# retired in favour of compounder_ui.band_gauge), and every _cp_*_chart()
+# figure-builder now live in compounder_ui.py - see this module's header
+# comment above and compounder_ui.py's own docstring.
 
 
 _CP_HML_COLOR = {
@@ -2022,7 +1637,7 @@ _CP_HML_COLOR = {
 
 
 def _cp_pill(text, color_key=None):
-    c = _CP_COLOR_TEXT.get(color_key, "#9db1c7")
+    c = compounder_ui._CP_COLOR_TEXT.get(color_key, "#9db1c7")
     return (
         f"<span style='display:inline-block;margin:2px 6px 2px 0;padding:3px 10px;"
         f"border-radius:12px;font-size:12.5px;font-weight:600;"
@@ -2081,17 +1696,9 @@ def _cp_render_hml_ratings(ratings, extra_checks=None):
         st.markdown("".join(html_parts[half:]), unsafe_allow_html=True)
 
 
-def _cp_note(text, size="14px"):
-    """Render workbook free text as escaped plain HTML - markdown is never
-    parsed, so a stray $, ~, lone-dash line (setext heading!), #, or list
-    marker in the author's notes can't restyle the page. Newlines are
-    preserved as line breaks, matching how the text reads in Excel."""
-    body = _md_safe(text).replace("\n", "<br>")
-    st.markdown(
-        f"<div style='color:#8aa0b8;font-size:{size};line-height:1.65;"
-        f"margin:2px 0 10px;'>{body}</div>",
-        unsafe_allow_html=True,
-    )
+# _cp_note now lives in compounder_ui.py (imported above as
+# compounder_ui._cp_note) - used below by _cp_render_text_groups, the one
+# remaining hand-research-only caller in this file.
 
 
 def _md_safe(text):
@@ -2109,7 +1716,7 @@ def _cp_render_text_groups(groups):
         with st.expander(g["title"], expanded=False):
             for item in g["items"]:
                 st.markdown(f"**{_md_safe(item['label'])}**")
-                _cp_note(item["text"])
+                compounder_ui._cp_note(item["text"])
 
 
 _ADMIN_REFRESH_KEY_ENV = "ADMIN_REFRESH_KEY"
@@ -2720,9 +2327,15 @@ def _render_cp_section(ticker, section_label, data):
     can be called once per st.tabs() tab - unlike the old single-selection
     dropdown, st.tabs() renders every tab's body on every run, so this now
     runs up to 7x per page load instead of once.
+
+    "Company Potential" (the author's own ratings/written analysis) is
+    hand-research-only and rendered directly below. The other six sections
+    are computed data with charts + a metrics grid - that rendering is
+    SHARED with the Deep Dive page's "Compounder View (auto)" expander via
+    compounder_ui.render_section(), so the two can never visually drift
+    apart (see compounder_ui.py's docstring).
     """
     section = data["sections"][section_label]
-    metrics = section["metrics"]
 
     if section_label == "Company Potential":
         if not paywall_engine.render_gate(
@@ -2773,123 +2386,18 @@ def _render_cp_section(ticker, section_label, data):
             _cp_render_text_groups(groups)
         return
 
-    # Trend/comparison charts (a different shape than the single-value
-    # gauges below) - price history, IV vs BV, and the retained-earnings
-    # "value created" test, each per Andrew's own workbook figures.
-    share_price_growth_fig = None
-    if section_label == "Fundamentals":
-        fig = _cp_price_chart(ticker, section.get("price_history", {}))
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        # Share Price Growth chart goes after Other Metrics below - render
-        # it there, just building the figure now while we have the data.
-        share_price_growth_fig = _cp_share_price_growth_chart(ticker, section.get("share_price_growth", {}))
-    elif section_label == "Value vs Book":
-        # The IV vs BV vs Price 3-bar comparison was dropped per Andrew's
-        # request - the year-by-year chart below (with its new average
-        # line) carries this section on its own now.
-        # The IV/BV ratio column now lives in that chart instead of its own
-        # gauge - grab its thresholds for the series chart's colouring,
-        # then drop it from the metrics grid so it isn't shown a second time.
-        ap_metric = next((m for m in metrics if m["key"] == "AP"), None)
-        fig2 = _cp_iv_bv_series_chart(
-            ticker, section.get("iv_bv_series", {}),
-            ap_metric["thresholds"] if ap_metric else None,
-        )
-        if fig2:
-            st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
-        metrics = [m for m in metrics if m["key"] != "AP"]
-    elif section_label == "Retained Earnings":
-        fig = _cp_value_created_chart(ticker, section.get("value_created", {}))
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    elif section_label == "Earnings Trends":
-        series = section.get("series", {})
-        fig1 = _cp_year_bar_chart(ticker, series, "eps", "EPS by Year", "EPS", fmt="cur")
-        fig2 = _cp_eps_growth_chart(ticker, series)
-        fig3 = _cp_pe_ratio_chart(ticker, series, section.get("pe_ratio_refs", {}))
-        chart_cols = st.columns(3)
-        for col, fig in zip(chart_cols, [fig1, fig2, fig3]):
-            with col:
-                if fig:
-                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    elif section_label == "Cost of Capital":
-        fig = _cp_wacc_roic_chart(ticker, section.get("wacc_roic_series", {}))
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    elif section_label == "Fair Value":
-        if not paywall_engine.render_gate(
+    # The six computed sections all render through the shared component.
+    # Fair Value stays paywalled here exactly as before (same gate text/key
+    # as always) - render_section() applies it before drawing anything.
+    gate = None
+    if section_label == "Fair Value":
+        gate = (
             "Fair Value - full valuation methods breakdown",
-            teaser=(
-                "Four independent valuation methods side by side, with the "
-                "exact inputs behind each one."
-            ),
-            key_prefix=f"cp_fairvalue_{ticker}",
-        ):
-            return
-        fig, used = _cp_valuation_methods_chart(ticker, section.get("valuation_methods", {}))
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-            _cp_render_valuation_inputs(
-                ticker, used, section.get("valuation_inputs", {}), section.get("valuation_methods", {})
-            )
-        else:
-            st.warning(f"No valuation data yet for {ticker}.")
-        # Andrew asked for ONLY these four methods here - the previous
-        # general Fair Value metrics grid (Factor of Safety, forecast EPS,
-        # discount rate, etc.) is intentionally not shown any more.
-        return
-
-    colored = [m for m in metrics if m.get("thresholds") and m["values"].get(ticker) is not None]
-    plain = [m for m in metrics if not (m.get("thresholds") and m["values"].get(ticker) is not None)]
-
-    if colored:
-        st.markdown("##### Colour-coded (against your own thresholds)")
-        cols = st.columns(3)
-        for i, m in enumerate(colored):
-            value = m["values"][ticker]
-            with cols[i % 3]:
-                st.plotly_chart(
-                    _cp_gauge(value, m["label"], m["format"], m["thresholds"]),
-                    use_container_width=True,
-                    config={"displayModeBar": False},
-                )
-                band = _cp_band(value, m["thresholds"])
-                if band:
-                    color, band_label = band
-                    _band_html = (
-                        f"<div style='margin-top:-14px; margin-bottom:8px; "
-                        f"font-size:12px; min-height:18px; "
-                        f"color:{_CP_COLOR_TEXT.get(color, '#aebfd4')};'>"
-                        f"{band_label}</div>"
-                    )
-                else:
-                    # Same-height placeholder so the "What this measures"
-                    # expanders line up across all three columns even when
-                    # a metric has no band label under its chart.
-                    _band_html = (
-                        "<div style='margin-top:-14px; margin-bottom:8px; "
-                        "font-size:12px; min-height:18px;'>&nbsp;</div>"
-                    )
-                st.markdown(_band_html, unsafe_allow_html=True)
-                with st.expander("What this measures", expanded=False):
-                    _cp_note(_cp_clean_comment(m["comment"]), size="12.5px")
-
-    if plain:
-        st.markdown("##### Other metrics")
-        cols = st.columns(4)
-        for i, m in enumerate(plain):
-            value = m["values"].get(ticker)
-            with cols[i % 4]:
-                st.metric(m["label"], _cp_format(value, m["format"]))
-                with st.expander("What this measures", expanded=False):
-                    _cp_note(_cp_clean_comment(m["comment"]), size="12.5px")
-
-    if not colored and not plain:
-        st.warning(f"No data yet for {ticker} in {section_label}.")
-
-    if share_price_growth_fig:
-        st.plotly_chart(share_price_growth_fig, use_container_width=True, config={"displayModeBar": False})
+            "Four independent valuation methods side by side, with the "
+            "exact inputs behind each one.",
+            f"cp_fairvalue_{ticker}",
+        )
+    compounder_ui.render_section(data["sections"], ticker, section_label, gate=gate)
 
 
 def page_research():
