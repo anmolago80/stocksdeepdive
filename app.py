@@ -3911,12 +3911,22 @@ def page_deep_dive():
                     marker_color=["#8aa0b8", _iv_color],
                     text=[f"{_dd['price']:,.2f}", f"{_dd['intrinsic_value']:,.2f}"],
                     textposition="outside",
+                    cliponaxis=False,
                 ))
+                # The longer bar's outside label was getting clipped at the
+                # right edge (its value sits right at Plotly's auto-ranged
+                # axis max, with no room left to draw the text past it) -
+                # cliponaxis=False stops the axis boundary from cutting the
+                # text off, and padding the range ~18% past the larger of
+                # the two values gives it room to actually sit outside the
+                # bar instead of overlapping it.
+                _mos_bar_max = max(_dd["price"], _dd["intrinsic_value"])
                 fig_val.update_layout(
                     title="Price vs Intrinsic Value (the numbers behind the gauge)",
                     showlegend=False, height=260,
-                    margin=dict(l=10, r=10, t=40, b=10),
+                    margin=dict(l=10, r=45, t=40, b=10),
                     xaxis_title=_dd["currency"],
+                    xaxis=dict(range=[0, _mos_bar_max * 1.18]),
                 )
                 st.plotly_chart(fig_val, use_container_width=True)
             st.caption(
@@ -3970,11 +3980,18 @@ def page_deep_dive():
                 marker_color=_tt_colors,
                 text=[f"{v:,.2f}" for v in _tt_x],
                 textposition="outside",
+                cliponaxis=False,
             ))
+            # Same fix as the Margin of Safety chart above: the longest bar's
+            # outside label sat right at Plotly's auto-ranged axis max and
+            # got clipped - cliponaxis=False plus ~18% range padding past
+            # the largest value gives it room to render.
+            _tt_max = max(v for v in _tt_x if v is not None)
             fig_trade.update_layout(
                 title="Trade Setup - Entry / Stop Loss / Targets",
                 xaxis_title=_dd["currency"], showlegend=False, height=300,
-                margin=dict(l=10, r=10, t=40, b=10),
+                margin=dict(l=10, r=45, t=40, b=10),
+                xaxis=dict(range=[0, _tt_max * 1.18]),
             )
             st.plotly_chart(fig_trade, use_container_width=True)
 
