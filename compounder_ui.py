@@ -636,8 +636,30 @@ def render_section(sections, ticker, section_label, gate=None):
         cols = st.columns(4)
         for i, m in enumerate(plain):
             value = m["values"].get(ticker)
+            # "Other metrics" (no color thresholds -> plain st.metric, not
+            # band_gauge) used to drop the engine's flagged/estimated
+            # signal entirely - band_gauge shows a red asterisk + red
+            # value for a flagged metric, but a metric with no thresholds
+            # never reached band_gauge at all, so e.g. Retained Earnings
+            # (TTM) and Cost of Capital's ROIC (TTM)/WACC/Total
+            # Investments (TTM), which the engine flags as estimates every
+            # single time, showed with no indicator whatsoever. Match the
+            # same "red asterisk on the label" convention here via
+            # st.metric's own limited-markdown label support (no
+            # unsafe_allow_html needed), plus a hover tooltip via `help`
+            # spelling out why - so the flag actually reaches the user
+            # regardless of which of the two metric styles it renders
+            # through. Hand-built workbook data never sets flagged=True,
+            # so this is a no-op on the Research page.
+            flagged = bool(m.get("flagged"))
+            label = f"{m['label']} :red[*]" if flagged else m["label"]
+            help_text = (
+                "Estimated - rests on a fallback assumption or incomplete "
+                "statement data. See “What this measures” below."
+                if flagged else None
+            )
             with cols[i % 4]:
-                st.metric(m["label"], _cp_format(value, m["format"]))
+                st.metric(label, _cp_format(value, m["format"]), help=help_text)
                 with st.expander("What this measures", expanded=False):
                     _cp_note(_cp_clean_comment(m["comment"]), size="12.5px")
 
