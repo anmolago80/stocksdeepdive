@@ -80,7 +80,97 @@ def _conn():
             seeded_at TEXT NOT NULL
         )"""
     )
+    # Per-user, per-ticker manual intrinsic-value override (1d) - lets an
+    # owner substitute their own number for the site's DCF model without
+    # touching the model itself. One row per (email, ticker); absence means
+    # "use the model value".
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS iv_overrides (
+            email TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            value REAL NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (email, ticker)
+        )"""
+    )
+    # Optional per-user portfolio-level numbers (Part 2 workbook parity)
+    # the site has no other way to know: total capital ever transferred in,
+    # and cash currently held outside any holding. Both stay unset (row
+    # absent) until the user fills in "Portfolio settings" - every reader
+    # of this table must treat a missing row as "hide the derived figures",
+    # never as zero.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS portfolio_settings (
+            email TEXT PRIMARY KEY,
+            total_transferred REAL,
+            cash_held REAL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
     return conn
+
+
+def get_iv_override(email, ticker):
+    if not email or not ticker:
+        return None
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT value FROM iv_overrides WHERE email = ? AND ticker = ?",
+            (email, ticker.upper()),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def set_iv_override(email, ticker, value):
+    if not email or not ticker or value is None:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO iv_overrides (email, ticker, value, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(email, ticker) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            (email, ticker.upper(), float(value), now),
+        )
+
+
+def clear_iv_override(email, ticker):
+    if not email or not ticker:
+        return
+    with _conn() as conn:
+        conn.execute(
+            "DELETE FROM iv_overrides WHERE email = ? AND ticker = ?",
+            (email, ticker.upper()),
+        )
+
+
+def get_settings(email):
+    """{'total_transferred': float|None, 'cash_held': float|None} - both
+    None (not 0) when the user has never filled in the Portfolio settings
+    expander, so callers can tell "not set" from "set to zero"."""
+    if not email:
+        return {"total_transferred": None, "cash_held": None}
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT total_transferred, cash_held FROM portfolio_settings WHERE email = ?",
+            (email,),
+        ).fetchone()
+    if not row:
+        return {"total_transferred": None, "cash_held": None}
+    return {"total_transferred": row[0], "cash_held": row[1]}
+
+
+def set_settings(email, total_transferred=None, cash_held=None):
+    if not email:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO portfolio_settings (email, total_transferred, cash_held, updated_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(email) DO UPDATE SET "
+            "total_transferred = excluded.total_transferred, cash_held = excluded.cash_held, "
+            "updated_at = excluded.updated_at",
+            (email, total_transferred, cash_held, now),
+        )
 
 
 def _row_to_dict(row):
@@ -182,6 +272,29 @@ def update_thesis(email, ticker, thesis, thesis_drivers=None):
             "UPDATE portfolio_holdings SET thesis = ?, thesis_drivers_json = ?, "
             "updated_at = ? WHERE email = ? AND ticker = ?",
             (thesis, json.dumps(thesis_drivers or []), now, email, ticker.upper()),
+        )
+
+
+def update_position(email, ticker, shares=None, buy_price=None, buy_date=None):
+    """Correct a holding's cost-basis fields (shares / buy price / buy
+    date) - deliberately separate from the locked baseline snapshot
+    (baseline_json / baseline_date), which this never touches, same
+    separation-of-concerns as update_thesis() above. Only the fields
+    passed (not None) are changed."""
+    if not email or not ticker:
+        return
+    existing = get_holding(email, ticker)
+    if not existing:
+        return
+    shares = existing["shares"] if shares is None else shares
+    buy_price = existing["buy_price"] if buy_price is None else buy_price
+    buy_date = existing["buy_date"] if buy_date is None else buy_date
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE portfolio_holdings SET shares = ?, buy_price = ?, buy_date = ?, "
+            "updated_at = ? WHERE email = ? AND ticker = ?",
+            (shares, buy_price, buy_date, now, email, ticker.upper()),
         )
 
 
