@@ -149,6 +149,17 @@ def _cp_share_price_growth_chart(ticker, share_price_growth):
     return fig
 
 
+def _vc_horizon_sort_key(h):
+    """Span-order for Value-Created horizon keys ("1Y", "2Y", "4Y*", "5Y",
+    "10Y", "TTM"...) - numeric span ascending, TTM always last. Shared by
+    the chart's bar order and render_section's measured-window caption so
+    the two always list horizons identically."""
+    if h.startswith("TTM"):
+        return (999, h)
+    m = re.match(r"(\d+)Y", h)
+    return (int(m.group(1)) if m else 500, h)
+
+
 def _cp_value_created_chart(ticker, value_created):
     """Retained-earnings 'Value Created' test at 2Y/5Y/10Y/TTM horizons -
     for every $ of earnings retained, how much market value did that
@@ -162,13 +173,7 @@ def _cp_value_created_chart(ticker, value_created):
     # (1Y / 2Y / e.g. "4Y*" max-available, starred) when it doesn't - see
     # _value_created in auto_compounder_engine.py. Sort by span, TTM
     # last; "_years_available" is metadata, not a horizon.
-    def _vc_sort_key(h):
-        if h.startswith("TTM"):
-            return (999, h)
-        m = re.match(r"(\d+)Y", h)
-        return (int(m.group(1)) if m else 500, h)
-
-    order = sorted([h for h in entry if not h.startswith("_")], key=_vc_sort_key)
+    order = sorted([h for h in entry if not h.startswith("_")], key=_vc_horizon_sort_key)
     if not order:
         return None
     retained = [entry[h]["retained_earnings"] for h in order]
@@ -560,6 +565,22 @@ def render_section(sections, ticker, section_label, gate=None):
             # data never carries starred keys, so this caption never shows
             # on the Research page.
             _vc_entry = vc.get(ticker) or {}
+            # "Measured over" line: each auto-engine horizon carries a
+            # "window" string ("Jun 2024 -> Jun 2025", "Jun 2022 -> today")
+            # stating exactly which two dates its price change spans.
+            # Hand-built data has no window strings (the workbook's own
+            # market-cap snapshots come from its data provider), so this
+            # never shows on the Research page.
+            _vc_windows = [
+                f"{h} = {_vc_entry[h]['window']}"
+                for h in sorted(
+                    [k for k in _vc_entry if not k.startswith("_")],
+                    key=_vc_horizon_sort_key,
+                )
+                if isinstance(_vc_entry.get(h), dict) and _vc_entry[h].get("window")
+            ]
+            if _vc_windows:
+                st.caption("Measured over: " + "   \u00b7   ".join(_vc_windows))
             if any(h.endswith("*") for h in _vc_entry):
                 _vc_years = _vc_entry.get("_years_available")
                 _vc_span = f"all {_vc_years} year(s)" if _vc_years else "all years"

@@ -81,7 +81,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 11
+ENGINE_VERSION = 12
 
 
 # -----------------------------------
@@ -1008,6 +1008,20 @@ def _value_created(bundle, retained_ttm, price_now):
     year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
     n_avail = len(eps_series)
 
+    # Fiscal-year-end dates by year label, for the "measured from -> to"
+    # annotation each horizon carries (rendered as a caption under the
+    # chart by compounder_ui) - so a bar anchored at "Jun 2025 -> today"
+    # can never be mistaken for a calendar-year window.
+    fy_dates = {}
+    for c, d in _statement_col_dates(bundle.get("income")):
+        m = re.search(r"(19|20)\d{2}", str(c))
+        if m and m.group(0) not in fy_dates:
+            fy_dates[m.group(0)] = d
+
+    def _fy_end(y):
+        d = fy_dates.get(y)
+        return d.strftime("%b %Y") if d else f"FY{y} end"
+
     def _fy_window(n_years, key):
         """Workbook-style fixed-FY horizon (2Y/5Y/10Y formula)."""
         slice_ = eps_series[:n_years]
@@ -1018,7 +1032,11 @@ def _value_created(bundle, retained_ttm, price_now):
         start_price = year_end_prices.get(slice_[-1][0])
         if re_val in (None, 0) or end_price is None or start_price is None:
             return None
-        return {"retained_earnings": re_val, "value_created": (end_price - start_price) / re_val}
+        return {
+            "retained_earnings": re_val,
+            "value_created": (end_price - start_price) / re_val,
+            "window": f"{_fy_end(slice_[-1][0])} \u2192 {_fy_end(slice_[0][0])}",
+        }
 
     out = {}
 
@@ -1039,6 +1057,7 @@ def _value_created(bundle, retained_ttm, price_now):
                 out["TTM"] = {
                     "retained_earnings": re_val,
                     "value_created": (price_now - start_price) / re_val,
+                    "window": f"{_fy_end(ttm_slice[-1][0])} \u2192 today",
                 }
     else:
         # Shallow depth: 1Y / 2Y / max-available cumulative.
@@ -1048,6 +1067,7 @@ def _value_created(bundle, retained_ttm, price_now):
                 out["1Y"] = {
                     "retained_earnings": retained_ttm,
                     "value_created": (price_now - last_fy_price) / retained_ttm,
+                    "window": f"{_fy_end(eps_series[0][0])} \u2192 today",
                 }
         entry = _fy_window(2, "2Y")
         if entry:
@@ -1059,6 +1079,7 @@ def _value_created(bundle, retained_ttm, price_now):
                 out[f"{n_avail}Y*"] = {
                     "retained_earnings": re_val,
                     "value_created": (price_now - start_price) / re_val,
+                    "window": f"{_fy_end(eps_series[-1][0])} \u2192 today",
                 }
 
     if not out:
