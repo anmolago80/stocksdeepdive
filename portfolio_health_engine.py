@@ -31,10 +31,13 @@ baseline captured the day a holding was added (see portfolio_store.py) -
 same formula as the desktop app: unchanged = 50, doubled = 100, halved = 0,
 linear and clamped in between.
 
-NOT PORTED YET: the desktop app's News Intelligence (News Risk Score,
-thesis-breaking-event detection, the GDELT/ASX/Google/NewsAPI feeds). The
-Thesis component below is fundamentals-only until that's built - it is
-labelled as such everywhere it's shown rather than faking a news signal.
+NEWS INTELLIGENCE: ported separately, in portfolio_news_engine.py
+(analyze_holding_news()). When a `news` dict from that module is passed
+into compute_health_components()/compute_health() below, the Thesis
+component blends in the News Risk Score and a thesis-breaking event caps
+Thesis at 30, exactly like the desktop app; the overall score also takes
+the same News-only adjustment. Called without `news`, both functions
+still work but fall back to a fundamentals-only Thesis score.
 
 A NOTE ON FIDELITY: health_score_engine.py and progress_engine.py's exact
 aggregation formulas were fully read and are reproduced faithfully below
@@ -47,12 +50,14 @@ made where the source line wasn't available is called out in a comment at
 that spot.
 """
 
-from datetime import datetime, timezone
+import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import streamlit as st
 import yfinance as yf
 
 import nightly_scan
+import portfolio_news_engine as pne
 
 # ---------------------------------------------------------------------
 # Scoring tables - transcribed from the desktop Portfolio Health Monitor's
@@ -237,6 +242,80 @@ def fx_to_aud(currency):
     return None
 
 
+def to_aud(amount, currency, missing=None):
+    """Convert `amount` (in `currency`) to AUD via fx_to_aud() - shared by
+    the Holdings tab's pie charts and the Portfolio Overview tab's Weight %
+    column so both handle a missing FX rate the same way. Returns None
+    (never a guessed 1:1 rate) when the rate can't be found; if a `missing`
+    list is passed, the currency is appended to it so callers can flag/
+    exclude that holding instead of silently mis-summing it."""
+    if amount is None:
+        return None
+    rate = fx_to_aud(currency)
+    if rate is None:
+        if missing is not None and currency not in missing:
+            missing.append(currency)
+        return None
+    return amount * rate
+
+
+# ---------------------------------------------------------------------
+# Health run history - powers "Δ run" on the Portfolio Overview tab. The
+# desktop app's runs were manually triggered by the user opening the
+# script; this website reruns on every click, so writes are throttled to
+# min_gap_hours apart while every render still returns the last WRITTEN
+# score for comparison.
+# ---------------------------------------------------------------------
+
+def _health_runs_conn():
+    conn = sqlite3.connect(pne.DB_PATH, timeout=10)
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS portfolio_health_runs (
+            email TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            as_of TEXT NOT NULL,
+            overall REAL,
+            news_risk REAL
+        )"""
+    )
+    return conn
+
+
+def record_health_run(email, ticker, overall, news_risk=None, min_gap_hours=4):
+    """Log this Health run and return the PREVIOUS run's overall score (or
+    None if there isn't one yet) so callers can show 'Δ run'. A new row is
+    only written if the last one is older than min_gap_hours, so Streamlit's
+    rerun-on-every-click model doesn't flood the table - but the previous
+    score is always returned regardless of whether a write happened."""
+    if not email or not ticker:
+        return None
+    now = datetime.now(timezone.utc)
+    with _health_runs_conn() as conn:
+        row = conn.execute(
+            "SELECT as_of, overall FROM portfolio_health_runs "
+            "WHERE email = ? AND ticker = ? ORDER BY as_of DESC LIMIT 1",
+            (email, ticker),
+        ).fetchone()
+        prev_overall = row[1] if row else None
+        should_insert = True
+        if row and row[0]:
+            try:
+                last = datetime.fromisoformat(row[0])
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                if (now - last) < timedelta(hours=min_gap_hours):
+                    should_insert = False
+            except Exception:
+                pass
+        if should_insert and overall is not None:
+            conn.execute(
+                "INSERT INTO portfolio_health_runs (email, ticker, as_of, overall, news_risk) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (email, ticker, now.isoformat(), overall, news_risk),
+            )
+    return prev_overall
+
+
 def baseline_snapshot_fields(snapshot):
     """The subset of fetch_snapshot()'s fields that make up a locked
     baseline - same field names the desktop-import seed already uses
@@ -300,7 +379,7 @@ def _post_purchase_drawdown(hist, buy_date, price):
 # Health Score
 # ---------------------------------------------------------------------
 
-def compute_health_components(snapshot, kind, baseline=None, buy_date=None):
+def compute_health_components(snapshot, kind, baseline=None, buy_date=None, news=None):
     is_etf = (kind or "STOCK").upper() == "ETF"
     baseline = _normalize_baseline(baseline)
     comps = {}
@@ -350,9 +429,28 @@ def compute_health_components(snapshot, kind, baseline=None, buy_date=None):
         _set("Income", None, note="No dividend data")
 
     fund_scores = [comps[k]["score"] for k in _FUND_KEYS if comps.get(k, {}).get("score") is not None]
-    thesis_score = round(sum(fund_scores) / len(fund_scores), 1) if fund_scores else None
-    _set("Thesis", thesis_score,
-         note="Fundamentals-only for now - News Intelligence isn't wired in on the website yet")
+    fund_avg = round(sum(fund_scores) / len(fund_scores), 1) if fund_scores else None
+
+    # Thesis blends fundamentals with the News Risk Score, exactly like the
+    # desktop app's compute_thesis_component(): 65% fundamentals / 35% news,
+    # and any thesis-breaking event caps the whole component at 30 no matter
+    # how healthy the fundamentals read.
+    if news is not None:
+        news_risk = news.get("news_risk_score")
+        thesis_breaking = bool((news.get("counts") or {}).get("thesis-threatening"))
+        if fund_avg is not None and news_risk is not None:
+            thesis_score = round(0.65 * fund_avg + 0.35 * news_risk, 1)
+        elif news_risk is not None:
+            thesis_score = news_risk
+        else:
+            thesis_score = fund_avg
+        note = "Blends fundamentals with the News Risk Score"
+        if thesis_breaking and thesis_score is not None:
+            thesis_score = min(thesis_score, 30.0)
+            note = "Capped at 30 - thesis-breaking news detected"
+        _set("Thesis", thesis_score, note=note)
+    else:
+        _set("Thesis", fund_avg, note="Fundamentals-only - no news data available for this holding")
 
     return comps
 
@@ -383,17 +481,38 @@ def _red_flags(components):
     return flags
 
 
-def compute_health(components):
+def compute_health(components, news=None):
     weighted = [(BASE_WEIGHTS[k], components[k]["score"]) for k in COMPONENT_ORDER
                 if components.get(k, {}).get("score") is not None]
     overall = round(sum(w * s for w, s in weighted) / sum(w for w, _ in weighted), 1) if weighted else None
+
+    thesis_breaking = False
+    news_adjustment = None
+    if news is not None:
+        thesis_breaking = bool((news.get("counts") or {}).get("thesis-threatening"))
+        # Same News-only adjustment as the desktop app: only material news
+        # nudges the overall score, and only by how far below 100 the News
+        # Risk Score has fallen, scaled by NEWS_IMPACT.
+        news_risk = news.get("news_risk_score")
+        if news.get("material") and news_risk is not None and overall is not None:
+            news_adjustment = -(100.0 - news_risk) * pne.NEWS_IMPACT
+            overall = round(max(0.0, min(100.0, overall + news_adjustment)), 1)
+
     action, action_tone = _recommend(overall, (components.get("Valuation") or {}).get("score"))
+    red_flags = _red_flags(components)
+    if thesis_breaking:
+        red_flags = ["Thesis-breaking news detected - immediate review warranted"] + red_flags
+
     return {
         "components": components,
         "overall": overall,
         "action": action,
         "action_tone": action_tone,
-        "red_flags": _red_flags(components),
+        "red_flags": red_flags,
+        "thesis_breaking": thesis_breaking,
+        "thesis_intact": not thesis_breaking,
+        "news_adjustment": news_adjustment,
+        "news": news,
     }
 
 

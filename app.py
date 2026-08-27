@@ -42,6 +42,7 @@ import screen_import_store
 import nightly_scan
 import portfolio_store
 import portfolio_health_engine
+import portfolio_news_engine
 import name_directory
 import score_history
 import blog_store
@@ -5614,6 +5615,30 @@ def _phe_pie(labels, values, title):
     return fig
 
 
+def _analyze_holding(h):
+    """One holding's full analysis - live snapshot, News Intelligence, Health
+    Score, and Progress Score - computed once per render and shared across
+    the Portfolio Overview, Health, and Progress tabs so each holding is
+    only scored (and its news only re-fetched/reclassified) a single time."""
+    _snap = portfolio_health_engine.fetch_snapshot(h["ticker"])
+    try:
+        _news = portfolio_news_engine.analyze_holding_news(
+            h["ticker"], name=h.get("name"), thesis_drivers=h.get("thesis_drivers"),
+            buy_date=h.get("buy_date"),
+        )
+    except Exception:
+        _news = None
+    _components = portfolio_health_engine.compute_health_components(
+        _snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"), news=_news,
+    )
+    _health = portfolio_health_engine.compute_health(_components, news=_news)
+    _progress = portfolio_health_engine.compute_progress(
+        _snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), buy_date=h.get("buy_date"),
+    )
+    return {"snapshot": _snap, "news": _news, "components": _components,
+            "health": _health, "progress": _progress}
+
+
 def page_portfolio():
     _render_header(compact=True, page_label="Portfolio")
     _bump_page_view("portfolio")
@@ -5634,18 +5659,29 @@ def page_portfolio():
 
     _holdings = portfolio_store.get_holdings(email)
 
-    _tab_holdings, _tab_health, _tab_progress, _tab_scoring = st.tabs(
-        ["Holdings", "Health Score", "Progress vs Baseline", "How it's scored"]
-    )
+    _analyses = {}
+    if _holdings:
+        with st.spinner("Scoring your holdings..."):
+            _analyses = {h["ticker"]: _analyze_holding(h) for h in _holdings}
+
+    (_tab_holdings, _tab_overview, _tab_health, _tab_progress,
+     _tab_health_method, _tab_progress_method) = st.tabs([
+        "Holdings", "Portfolio Overview", "Health — by holding",
+        "Progress — by holding", "Health scoring method", "Progress scoring method",
+    ])
 
     with _tab_holdings:
         _render_portfolio_holdings_tab(email, _holdings)
+    with _tab_overview:
+        _render_portfolio_overview_tab(email, _holdings, _analyses)
     with _tab_health:
-        _render_portfolio_health_tab(_holdings)
+        _render_portfolio_health_tab(_holdings, _analyses)
     with _tab_progress:
-        _render_portfolio_progress_tab(_holdings)
-    with _tab_scoring:
-        _render_portfolio_scoring_tab()
+        _render_portfolio_progress_tab(_holdings, _analyses)
+    with _tab_health_method:
+        _render_portfolio_health_scoring_tab()
+    with _tab_progress_method:
+        _render_portfolio_progress_scoring_tab()
 
 
 def _render_portfolio_holdings_tab(email, _holdings):
@@ -5757,11 +5793,7 @@ def _render_portfolio_holdings_tab(email, _holdings):
     _fx_missing = []
 
     def _aud(amount, currency):
-        rate = portfolio_health_engine.fx_to_aud(currency)
-        if rate is None:
-            _fx_missing.append(currency)
-            return None
-        return amount * rate
+        return portfolio_health_engine.to_aud(amount, currency, missing=_fx_missing)
 
     st.markdown("##### Invested (by holding)")
     st.caption("Converted to AUD using a live FX snapshot so holdings in different currencies can share one chart.")
@@ -5808,32 +5840,121 @@ def _render_portfolio_holdings_tab(email, _holdings):
         )
 
 
-def _render_portfolio_health_tab(_holdings):
+def _render_portfolio_overview_tab(email, _holdings, _analyses):
+    st.caption(
+        "The Portfolio Overview from the desktop Health Monitor app - Health, "
+        "Progress, News Risk, and weight in the portfolio for every holding "
+        "at a glance, plus a second table of progress since purchase."
+    )
+    if not _holdings:
+        st.info("Add a holding on the Holdings tab to see your Portfolio Overview.")
+        return
+
+    _fx_missing = []
+    _rows, _prog_rows = [], []
+    _current_aud_by_ticker, _invested_aud_by_ticker = {}, {}
+    _thesis_intact_count = 0
+
+    for h in _holdings:
+        _a = _analyses[h["ticker"]]
+        _snap, _news, _health, _progress = _a["snapshot"], _a["news"], _a["health"], _a["progress"]
+
+        _current_val = (h.get("shares") or 0) * (_snap.get("price") or h.get("buy_price") or 0)
+        _invested_val = (h.get("shares") or 0) * (h.get("buy_price") or 0)
+        _current_aud_by_ticker[h["ticker"]] = portfolio_health_engine.to_aud(
+            _current_val, h.get("currency"), missing=_fx_missing)
+        _invested_aud_by_ticker[h["ticker"]] = portfolio_health_engine.to_aud(
+            _invested_val, h.get("currency"), missing=_fx_missing)
+
+        _prev = portfolio_health_engine.record_health_run(
+            email, h["ticker"], _health["overall"], news_risk=(_news or {}).get("news_risk_score"),
+        )
+        _delta_run = round(_health["overall"] - _prev, 1) if (_prev is not None and _health["overall"] is not None) else None
+
+        _return_pct = None
+        if h.get("buy_price") and _snap.get("price") is not None:
+            _return_pct = (_snap["price"] - h["buy_price"]) / h["buy_price"] * 100
+
+        _thesis_breaking = bool(_health.get("thesis_breaking"))
+        if not _thesis_breaking:
+            _thesis_intact_count += 1
+
+        _rows.append({
+            "Ticker": h["ticker"], "Name": h.get("name") or h["ticker"],
+            "Health": _health["overall"], "Δ run": _delta_run, "Action": _health["action"],
+            "Thesis": "Review" if _thesis_breaking else "Intact",
+            "Buy price": h.get("buy_price"), "Current price": _snap.get("price"),
+            "Return %": _return_pct, "News Risk": (_news or {}).get("news_risk_score"),
+            "Flags": len(_health.get("red_flags") or []), "Weight %": None,
+        })
+        _prog_rows.append({
+            "Ticker": h["ticker"], "Progress": _progress["overall"],
+            "Return since buy %": _return_pct, "Verdict": _progress["verdict"],
+            "Baseline date": h.get("baseline_date"),
+        })
+
+    _total_current_aud = sum(v for v in _current_aud_by_ticker.values() if v is not None)
+    _total_invested_aud = sum(v for v in _invested_aud_by_ticker.values() if v is not None)
+    for row in _rows:
+        _cur = _current_aud_by_ticker.get(row["Ticker"])
+        row["Weight %"] = (_cur / _total_current_aud * 100) if (_cur is not None and _total_current_aud) else None
+    _concentrated = [r for r in _rows if r["Weight %"] is not None and r["Weight %"] >= 35]
+
+    _k1, _k2, _k3, _k4 = st.columns(4)
+    _k1.metric("Holdings", len(_holdings))
+    _k2.metric("Thesis intact", f"{_thesis_intact_count}/{len(_holdings)}")
+    if _total_current_aud and _total_invested_aud:
+        _pl = _total_current_aud - _total_invested_aud
+        _k3.metric("Unrealised P/L (AUD)", f"A${_pl:,.0f}", f"{_pl / _total_invested_aud * 100:+.1f}%")
+    else:
+        _k3.metric("Unrealised P/L (AUD)", "–")
+    _k4.metric("Concentration warning", ", ".join(r["Ticker"] for r in _concentrated) if _concentrated else "None")
+
+    _df = pd.DataFrame(_rows)
+    st.dataframe(
+        _df.style.format({
+            "Health": "{:.0f}", "Δ run": "{:+.1f}", "Buy price": "{:.4f}", "Current price": "{:.4f}",
+            "Return %": "{:+.1f}%", "News Risk": "{:.0f}", "Weight %": "{:.1f}%",
+        }, na_rep="–")
+        .map(lambda v: f"color: {portfolio_health_engine.score_color(v)}; font-weight:700"
+             if isinstance(v, (int, float)) else "", subset=["Health", "News Risk"])
+        .map(lambda v: "color:#d03b3b;font-weight:700" if v == "Review" else "", subset=["Thesis"]),
+        use_container_width=True, hide_index=True,
+    )
+    if _fx_missing:
+        st.caption(
+            "Couldn't fetch a live FX rate for: " + ", ".join(sorted(set(_fx_missing)))
+            + " - those holdings are left out of the P/L, concentration, and weight figures above rather than guessed."
+        )
+
+    st.markdown("##### Progress since purchase")
+    _prog_df = pd.DataFrame(_prog_rows)
+    st.dataframe(
+        _prog_df.style.format({"Progress": "{:.0f}", "Return since buy %": "{:+.1f}%"}, na_rep="–")
+        .map(lambda v: f"color: {portfolio_health_engine.score_color(v)}; font-weight:700"
+             if isinstance(v, (int, float)) else "", subset=["Progress"]),
+        use_container_width=True, hide_index=True,
+    )
+
+
+def _render_portfolio_health_tab(_holdings, _analyses):
     st.caption(
         "How healthy each holding looks right now - fundamentals blended with "
-        "purchase-relative price action, ported from the desktop Portfolio "
-        "Health Monitor app's scoring model. News Intelligence isn't wired in "
-        "yet, so the Thesis component is fundamentals-only for now."
+        "purchase-relative price action AND News Intelligence, ported from "
+        "the desktop Portfolio Health Monitor app's scoring model."
     )
     if not _holdings:
         st.info("Add a holding on the Holdings tab to see its Health Score.")
         return
 
     _rows = []
-    _health_by_ticker = {}
-    with st.spinner("Scoring your holdings..."):
-        for h in _holdings:
-            _snap = portfolio_health_engine.fetch_snapshot(h["ticker"])
-            _components = portfolio_health_engine.compute_health_components(
-                _snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"),
-            )
-            _health = portfolio_health_engine.compute_health(_components)
-            _health_by_ticker[h["ticker"]] = (_snap, _health)
-            _rows.append({
-                "Ticker": h["ticker"], "Name": h.get("name") or h["ticker"],
-                "Health": _health["overall"], "Action": _health["action"],
-                "Price": _snap.get("price"), "Buy price": h.get("buy_price"),
-            })
+    for h in _holdings:
+        _a = _analyses[h["ticker"]]
+        _rows.append({
+            "Ticker": h["ticker"], "Name": h.get("name") or h["ticker"],
+            "Health": _a["health"]["overall"], "Action": _a["health"]["action"],
+            "Price": _a["snapshot"].get("price"), "Buy price": h.get("buy_price"),
+        })
 
     _df = pd.DataFrame(_rows)
     st.dataframe(
@@ -5846,7 +5967,8 @@ def _render_portfolio_health_tab(_holdings):
     st.markdown("##### Holding detail")
     _tk = st.selectbox("Choose a holding", [h["ticker"] for h in _holdings], key="pf_health_ticker")
     _h = next(h for h in _holdings if h["ticker"] == _tk)
-    _snap, _health = _health_by_ticker[_tk]
+    _a = _analyses[_tk]
+    _snap, _news, _health = _a["snapshot"], _a["news"], _a["health"]
 
     _m1, _m2, _m3, _m4 = st.columns(4)
     _m1.metric("Buy price", f"{(_h.get('buy_price') or 0):,.4f}")
@@ -5877,8 +5999,39 @@ def _render_portfolio_health_tab(_holdings):
         with st.expander("Thesis"):
             st.write(_h["thesis"])
 
+    st.markdown("##### News Intelligence")
+    if _news is None:
+        st.caption("News data isn't available for this holding right now - try again shortly.")
+    else:
+        _nc1, _nc2 = st.columns([1, 2])
+        with _nc1:
+            st.markdown(portfolio_health_engine.big_score_html("News Risk Score", _news["news_risk_score"]),
+                         unsafe_allow_html=True)
+        with _nc2:
+            st.caption(_news["explain"])
+            st.caption(f"{_news['all_relevant']} relevant item(s) out of {_news['scanned']} scanned.")
+            if _news.get("source_counts"):
+                st.caption("Sources — " + ", ".join(
+                    f"{k}: {v}" for k, v in sorted(_news["source_counts"].items())))
 
-def _render_portfolio_progress_tab(_holdings):
+        if _news.get("today"):
+            st.markdown("**Today's critical news**")
+            st.markdown(portfolio_news_engine.timeline_html(_news["today"]), unsafe_allow_html=True)
+
+        st.markdown("**Timeline of significant events**")
+        st.markdown(portfolio_news_engine.timeline_html(_news.get("timeline", []), limit=12),
+                     unsafe_allow_html=True)
+
+        st.markdown("**Summary**")
+        for line in portfolio_news_engine.summarise(_news):
+            st.markdown(f"- {line}")
+
+        with st.expander(f"All classified events ({len(_news.get('timeline', []))})"):
+            st.markdown(portfolio_news_engine.timeline_html(_news.get("timeline", []), limit=200),
+                         unsafe_allow_html=True)
+
+
+def _render_portfolio_progress_tab(_holdings, _analyses):
     st.caption(
         "How each tracked metric has moved since the locked baseline snapshot "
         "taken the day a holding was added. 50 = unchanged, 100 = doubled, "
@@ -5889,19 +6042,13 @@ def _render_portfolio_progress_tab(_holdings):
         return
 
     _rows = []
-    _progress_by_ticker = {}
-    with st.spinner("Comparing against locked baselines..."):
-        for h in _holdings:
-            _snap = portfolio_health_engine.fetch_snapshot(h["ticker"])
-            _progress = portfolio_health_engine.compute_progress(
-                _snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), buy_date=h.get("buy_date"),
-            )
-            _progress_by_ticker[h["ticker"]] = (_snap, _progress)
-            _rows.append({
-                "Ticker": h["ticker"], "Name": h.get("name") or h["ticker"],
-                "Progress": _progress["overall"], "Verdict": _progress["verdict"],
-                "Baseline date": h.get("baseline_date"),
-            })
+    for h in _holdings:
+        _progress = _analyses[h["ticker"]]["progress"]
+        _rows.append({
+            "Ticker": h["ticker"], "Name": h.get("name") or h["ticker"],
+            "Progress": _progress["overall"], "Verdict": _progress["verdict"],
+            "Baseline date": h.get("baseline_date"),
+        })
 
     _df = pd.DataFrame(_rows)
     st.dataframe(
@@ -5914,7 +6061,8 @@ def _render_portfolio_progress_tab(_holdings):
     st.markdown("##### Holding detail")
     _tk = st.selectbox("Choose a holding", [h["ticker"] for h in _holdings], key="pf_progress_ticker")
     _h = next(h for h in _holdings if h["ticker"] == _tk)
-    _snap, _progress = _progress_by_ticker[_tk]
+    _a = _analyses[_tk]
+    _snap, _progress = _a["snapshot"], _a["progress"]
 
     _sc1, _sc2 = st.columns([1, 2])
     with _sc1:
@@ -5939,13 +6087,13 @@ def _render_portfolio_progress_tab(_holdings):
     st.dataframe(pd.DataFrame(_detail_rows), use_container_width=True, hide_index=True)
 
 
-def _render_portfolio_scoring_tab():
+def _render_portfolio_health_scoring_tab():
     st.markdown("##### Health Score - how healthy the holding looks right now")
     st.caption(
         "A weighted blend of fundamentals (looked up against fixed score "
-        "bands) and two purchase-relative reads (price action, dividend "
-        "change) - only components with data available contribute, "
-        "reweighted so the rest still sum to 100%."
+        "bands, below), two purchase-relative reads (price action, dividend "
+        "change), and News Intelligence - only components with data "
+        "available contribute, reweighted so the rest still sum to 100%."
     )
     st.dataframe(
         pd.DataFrame(
@@ -5955,12 +6103,72 @@ def _render_portfolio_scoring_tab():
         ),
         use_container_width=True, hide_index=True,
     )
+
+    st.markdown("**Score bands**")
+    st.caption(
+        "Each fundamental/price-action/income read is looked up on a fixed "
+        "piecewise curve - unchanged from the desktop app's config.py."
+    )
+    _band_specs = [
+        ("Growth (mean of revenue & earnings growth; also reused for FCF growth)",
+         portfolio_health_engine.GROWTH_BAND, "Growth rate"),
+        ("Margins (profit margin)", portfolio_health_engine.MARGIN_BAND, "Margin"),
+        ("ROIC (return on equity)", portfolio_health_engine.ROE_BAND, "ROE"),
+        ("Debt (debt/equity)", portfolio_health_engine.DEBT_BAND, "Debt/Equity"),
+        ("Valuation (margin of safety %)", portfolio_health_engine.VAL_BAND, "MOS %"),
+        ("Price Action - drawdown from the post-purchase peak",
+         portfolio_health_engine.DRAWDOWN_BAND, "Drawdown %"),
+        ("Price Action - position in the 52-week range",
+         portfolio_health_engine.RANGE52_BAND, "Position (0-1)"),
+        ("Income - dividend yield change since the baseline",
+         portfolio_health_engine.INCOME_BAND, "Yield change"),
+    ]
+    for label, band, unit in _band_specs:
+        with st.expander(label):
+            st.dataframe(
+                pd.DataFrame({unit: [b[0] for b in band], "Score": [b[1] for b in band]}),
+                use_container_width=True, hide_index=True,
+            )
+
     st.caption(
         f"Action bands: below {portfolio_health_engine.ACTION_REVIEW} = REVIEW/REDUCE, "
         f"below {portfolio_health_engine.ACTION_WATCH} = HOLD & WATCH, "
         f"{portfolio_health_engine.ACTION_STRONG}+ = HOLD or HOLD/ADD depending on valuation."
     )
 
+    st.markdown("##### News Intelligence - how news moves the Health Score")
+    st.caption(
+        "Every headline is classified on two axes - severity (noise → "
+        "temporary → material → thesis-breaking) and relevance (does it "
+        "touch this holding's thesis?) - and only news that's BOTH relevant "
+        "AND at least material can move the News Risk Score."
+    )
+    st.dataframe(
+        pd.DataFrame([
+            {"Severity": name, "Score hit": portfolio_news_engine.SEVERITY_HIT.get(key),
+             "What it means": desc, "Effect": effect}
+            for name, key, desc, effect in portfolio_news_engine.SEVERITY_DEFS
+        ]),
+        use_container_width=True, hide_index=True,
+    )
+    st.code(
+        "Thesis component = 0.65 x fundamentals average + 0.35 x News Risk Score\n"
+        "    (capped at 30 if a thesis-breaking event is detected)\n"
+        "\n"
+        "News Risk Score starts at 100. For each day with relevant, at-least-\n"
+        "material news: subtract severity_hit x recency_weight for that day's\n"
+        "worst event, plus severity_hit x recency_weight x 0.40 for every\n"
+        "additional event the same day (NEWS_PERDAY_EXTRA) - so five outlets\n"
+        "covering one event in one day doesn't quintuple the penalty.\n"
+        "\n"
+        "Overall Health Score adjustment (only applied when material news exists):\n"
+        f"    news_adjustment = -(100 - News Risk Score) x {portfolio_news_engine.NEWS_IMPACT}\n"
+        "    overall = clamp(overall + news_adjustment, 0, 100)",
+        language="text",
+    )
+
+
+def _render_portfolio_progress_scoring_tab():
     st.markdown("##### Progress Score - how it's moved since you bought")
     st.caption(
         "Each metric's % change since the locked baseline, mapped so "
@@ -5975,15 +6183,18 @@ def _render_portfolio_scoring_tab():
         ),
         use_container_width=True, hide_index=True,
     )
-    st.caption(
-        f"{portfolio_health_engine.PROGRESS_VERDICT_UP}+ = improved since purchase, "
-        f"below {portfolio_health_engine.PROGRESS_VERDICT_DOWN} = deteriorated, in between = roughly flat."
+    st.code(
+        "rel = (current - baseline) / abs(baseline)     # clamped to [-1, +1]\n"
+        "                                                 # (Debt is higher_better=False, so rel is negated)\n"
+        "progress_score = clamp(50 + rel * 50, 0, 100)   # unchanged=50, doubled=100, halved=0\n"
+        "\n"
+        "overall = weighted average of every component with data,\n"
+        "          reweighted so the available components still sum to 100%",
+        language="text",
     )
-    st.info(
-        "Not yet on the website: News Intelligence (the desktop app's News "
-        "Risk Score and thesis-breaking-event detection). Planned as a "
-        "follow-up - until then the Thesis component above reflects "
-        "fundamentals only."
+    st.caption(
+        f"Verdict: {portfolio_health_engine.PROGRESS_VERDICT_UP}+ = improved since purchase, "
+        f"below {portfolio_health_engine.PROGRESS_VERDICT_DOWN} = deteriorated, in between = roughly flat."
     )
 
 
