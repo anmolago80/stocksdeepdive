@@ -4070,10 +4070,13 @@ def _render_overnight_scan_table(universe_label, overnight):
 
 def _render_screen_import_admin():
     """
-    Admin-only block (Stock Scanner page, full-view/ADMIN_REFRESH_KEY
-    gated - same convention as the rest of this page's admin-only bits,
-    e.g. Signal/Trade Setup/Opportunity Details) for the TradingView
-    screen CSV -> nightly scan queue workflow (screen_import_store.py):
+    Admin-only block (Comparison page, full-view/ADMIN_REFRESH_KEY gated -
+    same convention used elsewhere on this site for admin-only bits, e.g.
+    the Scanner page's Signal/Trade Setup/Opportunity Details columns) for
+    the TradingView screen CSV -> nightly scan queue workflow
+    (screen_import_store.py). Lives on Comparison (not Scanner, where it
+    originally shipped) so the owner can review an import's scanned
+    stocks right where they'd actually compare them:
 
       1. An "Import screen CSV" expander: upload -> parse -> preview ->
          confirm.
@@ -4111,6 +4114,28 @@ def _render_screen_import_admin():
             "Name this import", key="scr_import_name",
             placeholder="e.g. TV small-cap lens A",
         )
+        _BARE_TICKER_OPTIONS = {
+            "Already Yahoo-format (e.g. AAPL, BHP.AX) - default": None,
+            "ASX - add .AX to every bare code": "ASX",
+            "US (NASDAQ/NYSE/AMEX/CBOE/OTC) - use as-is": "NASDAQ",
+        }
+        _bare_choice = st.selectbox(
+            "Fallback ONLY for a bare code this file's own “Price - "
+            "Currency” column doesn't cover (no such column, or a "
+            "currency other than AUD/USD) - treat it as:",
+            list(_BARE_TICKER_OPTIONS.keys()), key="scr_import_bare_exchange",
+        )
+        _default_exchange = _BARE_TICKER_OPTIONS[_bare_choice]
+        st.caption(
+            "Some TradingView export presets drop the exchange prefix "
+            "entirely (just a bare code like “OCL”, no “ASX:”) - a bare "
+            "ASX code with no “.AX” added silently fails every price "
+            "lookup (shows up as “delisted”, not “wrong ticker”). This is "
+            "handled automatically per row from the file's own “Price - "
+            "Currency” column when it has one (AUD -> ASX, USD -> US) - "
+            "correct even for a file that mixes both. The dropdown above "
+            "only matters for a bare code that column can't explain."
+        )
         _uploaded_csv = st.file_uploader(
             "TradingView CSV export", type=["csv"], key="scr_import_upload",
         )
@@ -4119,7 +4144,9 @@ def _render_screen_import_admin():
                 _csv_text = _uploaded_csv.getvalue().decode("utf-8-sig")
             except UnicodeDecodeError:
                 _csv_text = _uploaded_csv.getvalue().decode("latin-1")
-            _parsed = screen_import_store.parse_tv_csv(_csv_text)
+            _parsed = screen_import_store.parse_tv_csv(
+                _csv_text, default_exchange=_default_exchange,
+            )
             if _parsed["error"]:
                 st.error(_parsed["error"])
             else:
@@ -4213,10 +4240,6 @@ def _render_screen_import_admin():
 def page_scanner():
     _render_header(compact=True, page_label="Scanner")
     _bump_page_view("scanner")
-
-    if not _factual():
-        _render_screen_import_admin()
-        st.divider()
 
     st.session_state.setdefault("scanner_country_au", True)
     st.session_state.setdefault("scanner_country_us", False)
@@ -4321,6 +4344,10 @@ def page_scanner():
 def page_comparison():
     _render_header(compact=True, page_label="Comparison")
     _bump_page_view("comparison")
+
+    if not _factual():
+        _render_screen_import_admin()
+        st.divider()
 
     # Shareable URLs: /comparison?tickers=CSL.AX,BHP.AX runs the comparison
     # directly (blog posts can deep-link a specific matchup), and once

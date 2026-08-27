@@ -103,6 +103,17 @@ _BARE_SYMBOL_RE = re.compile(r"^[A-Za-z0-9.]+$")
 # it as skipped.
 _US_EXCHANGES = {"NASDAQ", "NYSE", "AMEX", "CBOE", "OTC"}
 
+# Some TradingView export presets (e.g. a plain "Symbol" column, no
+# "EXCHANGE:CODE" prefix at all) drop the exchange entirely - but they
+# usually still carry a "Price - Currency" column, which is just as
+# reliable a signal: AUD really only means ASX here, USD means one of the
+# US exchanges. Used to auto-map a bare code PER ROW (see
+# _find_currency_column/parse_tv_csv below) - important because a single
+# file can genuinely mix AUD and USD rows (a "USA or AUS" screen), so one
+# global guess for the whole file isn't always right.
+_CURRENCY_TO_EXCHANGE = {"AUD": "ASX", "USD": "NASDAQ"}
+_CURRENCY_HEADER_NAMES = {"price - currency", "currency"}
+
 
 def _map_symbol(exchange, code):
     exchange = exchange.upper()
@@ -133,7 +144,17 @@ def _find_symbol_column(header, sample_rows):
     return None
 
 
-def parse_tv_csv(text):
+def _find_currency_column(header):
+    """The "Price - Currency" column TradingView exports alongside Price,
+    by exact header name (case/spacing insensitive) - or None if this
+    export doesn't have one."""
+    for i, h in enumerate(header):
+        if (h or "").strip().lower() in _CURRENCY_HEADER_NAMES:
+            return i
+    return None
+
+
+def parse_tv_csv(text, default_exchange=None):
     """
     Parse a TradingView screener CSV export (as text). Returns:
       {"mapped": [yahoo_ticker, ...],           # deduped, order preserved
@@ -145,6 +166,25 @@ def parse_tv_csv(text):
     either the file/column couldn't be read, or the recognised-ticker
     count exceeds MAX_TICKERS_PER_IMPORT (rejected outright, never
     silently truncated - the nightly budget is the real constraint).
+
+    HANDLING A ROW WITH NO "EXCHANGE:CODE" PREFIX AT ALL - just a bare
+    code like "OCL" (some TradingView export presets, e.g. a plain
+    "Symbol" column, drop the exchange entirely). Left unhandled, a bare
+    ASX code with no ".AX" added silently fails every yfinance lookup
+    (looks like "delisted", not "wrong ticker"). Two ways this file
+    might still say what exchange it means, tried in order:
+      1. A "Price - Currency" column (TradingView includes one on most
+         presets) - AUD -> ASX, USD -> a US exchange, checked PER ROW,
+         since one file can genuinely mix AUD and USD names (a "USA or
+         AUS" screen) where a single guess for the whole file would be
+         wrong for half of it.
+      2. `default_exchange` (one of _US_EXCHANGES, or "ASX", or None) -
+         the caller's (the import UI's) fallback for a bare code whose
+         row has no usable currency value either. When both this and the
+         currency column are unavailable/unrecognised, a bare code is
+         assumed to already be Yahoo-formatted and passed through as-is
+         (the original, pre-this-parameter behaviour) - never guessed
+         silently beyond what the file itself or the caller says.
     """
     empty = {"mapped": [], "skipped_unsupported": [], "skipped_unparsed": [], "raw_count": 0}
 
@@ -167,6 +207,7 @@ def parse_tv_csv(text):
                       "'Ticker' or 'Symbol', or a column formatted like "
                       "EXCHANGE:CODE (e.g. ASX:OCL)."),
         }
+    ccy_idx = _find_currency_column(header)
 
     mapped, skipped_unsupported, skipped_unparsed = [], [], []
     seen = set()
@@ -184,9 +225,23 @@ def parse_tv_csv(text):
                 skipped_unsupported.append((raw, exch.upper()))
                 continue
         elif _BARE_SYMBOL_RE.match(raw):
-            # No EXCHANGE: prefix - accepted as-is (assumed already a
-            # Yahoo-style ticker); never guessed at an exchange.
-            yahoo = raw.upper()
+            # No EXCHANGE: prefix - figure out the exchange for THIS row:
+            # this row's own currency value first (most reliable, and
+            # correct even when a file mixes AUD/USD rows), else the
+            # caller's file-wide default_exchange, else leave as-is
+            # (assumed already Yahoo-formatted - unchanged pre-currency-
+            # detection behaviour).
+            row_ccy = (row[ccy_idx] or "").strip().upper() if (
+                ccy_idx is not None and ccy_idx < len(row)
+            ) else ""
+            row_exchange = _CURRENCY_TO_EXCHANGE.get(row_ccy) or default_exchange
+            if row_exchange and not raw.upper().endswith(".AX"):
+                yahoo = _map_symbol(row_exchange, raw)
+                if yahoo is None:
+                    skipped_unsupported.append((raw, row_exchange.upper()))
+                    continue
+            else:
+                yahoo = raw.upper()
         else:
             skipped_unparsed.append(raw)
             continue
