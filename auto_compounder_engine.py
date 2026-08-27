@@ -81,7 +81,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 10
+ENGINE_VERSION = 11
 
 
 # -----------------------------------
@@ -986,54 +986,84 @@ def _value_created(bundle, retained_ttm, price_now):
     ÷ today's share count collapses to a plain price difference since
     the same share count cancels on both sides).
 
-    A horizon whose full window ISN'T covered by the statement history
-    still renders (the user wants every horizon visible), but its key is
-    starred - "5Y*", "10Y*", "TTM*" - and computed over the years that DO
-    exist, with "_years_available" carried alongside so the UI can spell
-    out exactly how many years the starred bars actually cover. (An
-    earlier iteration hid partial horizons entirely; before that they
-    rendered under their full labels, silently computed over ~3.5-year
-    windows - both wrong in different ways. Starred-but-shown is the
-    compromise: every horizon visible, no label lying about its window.)
+    With FULL statement depth (>= 10 FYs) the four workbook horizons
+    render under their own labels, exactly as the hand-built data does.
+
+    With SHALLOW depth (yfinance's usual 4-5 years) the horizons the data
+    can't cover aren't faked and aren't hidden - per the owner's own
+    choice ("we can only do 4y, 2y and 1y for this one"): the chart
+    switches to the honest windows the data DOES support:
+      "1Y"  - the TTM year alone: TTM retained earnings vs the price
+              change since the last fiscal year-end.
+      "2Y"  - the true 2-FY window (same formula as the workbook's 2Y).
+      "NY*" - one cumulative max-available bar (e.g. "4Y*"): TTM retained
+              plus every available FY, price change from the oldest
+              year-end to today - starred, with "_years_available" carried
+              so the UI caption can spell the span out. Skipped when it
+              would duplicate 2Y.
     A negative value on a covered window is real data and still renders -
     the workbook allows it too."""
     eps_series = [(y, v) for y, v in _eps_series(bundle) if v is not None]
     dps_by_year = _dividends_per_share_by_year(bundle.get("dividends") or {})
     year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
+    n_avail = len(eps_series)
+
+    def _fy_window(n_years, key):
+        """Workbook-style fixed-FY horizon (2Y/5Y/10Y formula)."""
+        slice_ = eps_series[:n_years]
+        if len(slice_) < n_years:
+            return None
+        re_val = sum(eps - dps_by_year.get(y, 0.0) for y, eps in slice_)
+        end_price = year_end_prices.get(slice_[0][0])
+        start_price = year_end_prices.get(slice_[-1][0])
+        if re_val in (None, 0) or end_price is None or start_price is None:
+            return None
+        return {"retained_earnings": re_val, "value_created": (end_price - start_price) / re_val}
 
     out = {}
-    for label, n_years in (("2Y", 2), ("5Y", 5), ("10Y", 10)):
-        slice_ = eps_series[:n_years]
-        if len(slice_) < 2:
-            continue
-        key = label if len(slice_) >= n_years else label + "*"
-        re_val = sum(eps - dps_by_year.get(y, 0.0) for y, eps in slice_)
-        end_year, start_year = slice_[0][0], slice_[-1][0]
-        end_price, start_price = year_end_prices.get(end_year), year_end_prices.get(start_year)
-        if re_val in (None, 0) or end_price is None or start_price is None:
-            continue
-        out[key] = {
-            "retained_earnings": re_val,
-            "value_created": (end_price - start_price) / re_val,
-        }
 
-    # TTM horizon = the workbook's own "11Y (From TTM)": TTM retained plus
-    # the last 10 FYs, value change measured from today's price back to
-    # the oldest year in that 10Y window.
-    ttm_slice = eps_series[:10]
-    if retained_ttm is not None and ttm_slice:
-        key = "TTM" if len(ttm_slice) == 10 else "TTM*"
-        re_val = retained_ttm + sum(eps - dps_by_year.get(y, 0.0) for y, eps in ttm_slice)
-        start_price = year_end_prices.get(ttm_slice[-1][0])
-        if re_val not in (None, 0) and start_price is not None and price_now is not None:
-            out[key] = {
-                "retained_earnings": re_val,
-                "value_created": (price_now - start_price) / re_val,
-            }
+    if n_avail >= 10:
+        # Full workbook horizons, exactly as the hand-built data.
+        for label, n_years in (("2Y", 2), ("5Y", 5), ("10Y", 10)):
+            entry = _fy_window(n_years, label)
+            if entry:
+                out[label] = entry
+        # TTM = the workbook's "11Y (From TTM)": TTM retained plus the
+        # last 10 FYs, price change from that window's oldest year-end
+        # to today.
+        ttm_slice = eps_series[:10]
+        if retained_ttm is not None:
+            re_val = retained_ttm + sum(eps - dps_by_year.get(y, 0.0) for y, eps in ttm_slice)
+            start_price = year_end_prices.get(ttm_slice[-1][0])
+            if re_val not in (None, 0) and start_price is not None and price_now is not None:
+                out["TTM"] = {
+                    "retained_earnings": re_val,
+                    "value_created": (price_now - start_price) / re_val,
+                }
+    else:
+        # Shallow depth: 1Y / 2Y / max-available cumulative.
+        if retained_ttm not in (None, 0) and eps_series and price_now is not None:
+            last_fy_price = year_end_prices.get(eps_series[0][0])
+            if last_fy_price is not None:
+                out["1Y"] = {
+                    "retained_earnings": retained_ttm,
+                    "value_created": (price_now - last_fy_price) / retained_ttm,
+                }
+        entry = _fy_window(2, "2Y")
+        if entry:
+            out["2Y"] = entry
+        if n_avail > 2 and retained_ttm is not None and price_now is not None:
+            re_val = retained_ttm + sum(eps - dps_by_year.get(y, 0.0) for y, eps in eps_series)
+            start_price = year_end_prices.get(eps_series[-1][0])
+            if re_val not in (None, 0) and start_price is not None:
+                out[f"{n_avail}Y*"] = {
+                    "retained_earnings": re_val,
+                    "value_created": (price_now - start_price) / re_val,
+                }
 
     if not out:
         return None
-    out["_years_available"] = len(eps_series)
+    out["_years_available"] = n_avail
     return out
 
 

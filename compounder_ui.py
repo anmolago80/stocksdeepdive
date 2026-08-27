@@ -29,6 +29,7 @@ it any more.
 """
 
 import html
+import re
 
 import plotly.graph_objects as go
 import streamlit as st
@@ -155,13 +156,19 @@ def _cp_value_created_chart(ticker, value_created):
     entry = value_created.get(ticker)
     if not entry:
         return None
-    # Starred keys ("5Y*", "10Y*", "TTM*") come from the auto engine when a
-    # horizon's full window isn't covered by the statement history - the
-    # bar is computed over the years available and the star says so (the
-    # caption underneath, in render_section, spells out the count).
-    # "_years_available" is metadata, not a horizon. Hand-built data only
-    # ever has the four plain keys, so this renders it exactly as before.
-    order = [h for h in ["2Y", "2Y*", "5Y", "5Y*", "10Y", "10Y*", "TTM", "TTM*"] if h in entry]
+    # Horizon keys are dynamic: hand-built data always carries the four
+    # plain workbook horizons (2Y/5Y/10Y/TTM); the auto engine emits the
+    # same four when statement depth allows, or the honest shallow set
+    # (1Y / 2Y / e.g. "4Y*" max-available, starred) when it doesn't - see
+    # _value_created in auto_compounder_engine.py. Sort by span, TTM
+    # last; "_years_available" is metadata, not a horizon.
+    def _vc_sort_key(h):
+        if h.startswith("TTM"):
+            return (999, h)
+        m = re.match(r"(\d+)Y", h)
+        return (int(m.group(1)) if m else 500, h)
+
+    order = sorted([h for h in entry if not h.startswith("_")], key=_vc_sort_key)
     if not order:
         return None
     retained = [entry[h]["retained_earnings"] for h in order]
@@ -527,24 +534,39 @@ def render_section(sections, ticker, section_label, gate=None):
         )
         if fig2:
             st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+            # Same statement-depth honesty as the Retained Earnings chart:
+            # the IV/BV series only ever plots years the statements
+            # actually cover, so when that's fewer than the workbook's
+            # ~10, say so. Hand-built data always carries the full run,
+            # so this caption never shows on the Research page.
+            _ivbv_entry = section.get("iv_bv_series", {}).get(ticker) or {}
+            _ivbv_years = [y for y in (_ivbv_entry.get("years") or []) if y != "TTM"]
+            if _ivbv_years and len(_ivbv_years) < 10:
+                st.caption(
+                    f"IV/BV modelled for the {len(_ivbv_years)} year(s) of "
+                    "statement history available (plus TTM) - the full "
+                    "10-year series unlocks as deeper statement history "
+                    "becomes available."
+                )
         metrics = [m for m in metrics if m["key"] != "AP"]
     elif section_label == "Retained Earnings":
         vc = section.get("value_created", {})
         fig = _cp_value_created_chart(ticker, vc)
         if fig:
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-            # Starred horizons come from the auto engine when the statement
-            # history doesn't cover the full window - the bar is computed
-            # over the years that exist, and this caption says exactly how
-            # many. Hand-built data never carries starred keys, so this
-            # caption never shows on the Research page.
+            # A starred bar is the auto engine's max-available cumulative
+            # horizon (statement depth too shallow for the workbook's full
+            # 5Y/10Y/TTM windows) - say exactly what it covers. Hand-built
+            # data never carries starred keys, so this caption never shows
+            # on the Research page.
             _vc_entry = vc.get(ticker) or {}
             if any(h.endswith("*") for h in _vc_entry):
                 _vc_years = _vc_entry.get("_years_available")
-                _vc_span = f"the {_vc_years} year(s)" if _vc_years else "the years"
+                _vc_span = f"all {_vc_years} year(s)" if _vc_years else "all years"
                 st.caption(
-                    f"* computed over {_vc_span} of statement history "
-                    "available - the full window unlocks as deeper "
+                    f"* cumulative over {_vc_span} of statement history "
+                    "available (plus the trailing twelve months) - the "
+                    "full 5Y / 10Y / TTM horizons unlock as deeper "
                     "statement history becomes available."
                 )
     elif section_label == "Earnings Trends":
