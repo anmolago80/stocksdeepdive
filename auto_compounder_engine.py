@@ -81,7 +81,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 13
+ENGINE_VERSION = 14
 
 
 # -----------------------------------
@@ -1425,9 +1425,14 @@ def _build_cost_of_capital(bundle, ticker, ref):
         ltd_ttm_flagged or interest_expense_flagged or interest_expense_estimated,
     )
     roic_ttm = _roic_for(years_desc[0]) if years_desc else None
-    periods.append("TTM")
-    wacc_vals.append(wacc_ttm)
-    roic_vals.append(roic_ttm)
+    # Per the owner's choice: a period only renders when BOTH bars can be
+    # computed - a WACC-only (or ROIC-only) bar reads as a rendering
+    # glitch rather than a real, deliberate data gap. Same rule applied
+    # to the historical-year loop below, for the identical reason.
+    if wacc_ttm is not None and roic_ttm is not None:
+        periods.append("TTM")
+        wacc_vals.append(wacc_ttm)
+        roic_vals.append(roic_ttm)
 
     # current_year-2, -4, -5 points - only years the statements actually
     # cover; with yfinance's usual 4-yr depth, -5 (and often -4) will
@@ -1461,7 +1466,14 @@ def _build_cost_of_capital(bundle, ticker, ref):
         int_y, int_y_estimated = _plausible_interest_for_debt(interest_by_year.get(target_year), ltd_y)
         wacc_y, wacc_y_flagged = _wacc_for(e_y, ltd_y, int_y, ltd_y_flagged or int_y_estimated)
         roic_y = _roic_for(target_year)
-        if wacc_y is None and roic_y is None:
+        # Confirmed on a real ticker (YELP, 2021): WACC can compute for a
+        # year (it only needs price/shares/debt/interest) while ROIC
+        # can't (a specific year's Operating Income cell is missing from
+        # the statement, even though the column itself exists) - leaving
+        # a WACC bar with no ROIC partner, which reads as a chart bug
+        # rather than the real data gap it is. Skip the whole period
+        # unless BOTH compute, so every bar shown always has its pair.
+        if wacc_y is None or roic_y is None:
             continue
         periods.append(target_year)
         wacc_vals.append(wacc_y)
