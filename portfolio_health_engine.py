@@ -141,6 +141,16 @@ def score_color(score):
 # Live data fetch
 # ---------------------------------------------------------------------
 
+def _normalize_dividend_yield(v):
+    """See the call site's comment - Yahoo has returned dividendYield as
+    both a fraction and an already-percent number depending on version/
+    endpoint. No real security yields >100%, so >1 unambiguously means
+    the percent form; divide it back down to a fraction."""
+    if v is None:
+        return None
+    return v / 100.0 if v > 1 else v
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_snapshot(ticker):
     """Live fundamentals + price snapshot for one ticker: whatever
@@ -191,13 +201,14 @@ def fetch_snapshot(ticker):
     # and `.info` often lacks currentPrice/regularMarketPrice for them) even
     # though `.history()` almost never misses for anything actually listed -
     # so fall all the way down to the history close before giving up.
-    price = (lite or {}).get("Price")
+    _lite_price = (lite or {}).get("Price")
+    price = _lite_price if isinstance(_lite_price, (int, float)) and _lite_price == _lite_price else None  # guard NaN
     if price is None:
         price = _num("currentPrice") or _num("regularMarketPrice") or _num("previousClose")
     if price is None and tk is not None:
         try:
             fi = tk.fast_info
-            for key in ("last_price", "lastPrice"):
+            for key in ("last_price", "lastPrice", "regularMarketPreviousClose"):
                 try:
                     v = fi[key] if hasattr(fi, "__getitem__") else getattr(fi, key, None)
                 except Exception:
@@ -210,6 +221,33 @@ def fetch_snapshot(ticker):
     if price is None and hist is not None and not hist.empty:
         try:
             price = float(hist["Close"].iloc[-1])
+        except Exception:
+            pass
+    # A 2y history request can come back empty for some ETFs/structured
+    # products even when the ticker is live - retry with a much shorter
+    # window before giving up entirely.
+    if price is None and tk is not None and (hist is None or hist.empty):
+        for _period in ("5d", "1mo"):
+            try:
+                _short_hist = tk.history(period=_period)
+            except Exception:
+                _short_hist = None
+            if _short_hist is not None and not _short_hist.empty:
+                try:
+                    price = float(_short_hist["Close"].iloc[-1])
+                    if hist is None or hist.empty:
+                        hist = _short_hist  # so 52wk/MA200 fallbacks below have something too
+                    break
+                except Exception:
+                    pass
+    if price is None:
+        # Every fallback exhausted - log it so the next occurrence shows up
+        # in Railway's deploy logs with an actual reason instead of just a
+        # silent A$nan downstream (this was previously swallowed entirely).
+        try:
+            print(f"[portfolio] fetch_snapshot({ticker!r}): no price from lite/info/fast_info/history. "
+                  f"info keys: {sorted(info.keys())[:15] if info else '(empty)'}; "
+                  f"hist empty: {hist is None or hist.empty}")
         except Exception:
             pass
 
@@ -254,7 +292,14 @@ def fetch_snapshot(ticker):
         "debt_to_equity": _num("debtToEquity"),
         "fcf_growth": fcf_growth,
         "dividend_rate": _num("dividendRate"),
-        "dividend_yield": _num("dividendYield"),
+        # yfinance/Yahoo has shipped both a fraction (0.0235 = 2.35%) and a
+        # already-percent number (2.35 = 2.35%) under this same key across
+        # versions - a real yield over 100% doesn't exist, so treat >1 as
+        # the percent form and normalize down. Bug this fixed: CSL showed
+        # "235.00%" div yield and a $54k "potential dividend income" on a
+        # $23k holding because the raw 2.35 was used as a fraction (K=2.35
+        # instead of 0.0235) in both the display and the L = K x T formula.
+        "dividend_yield": _normalize_dividend_yield(_num("dividendYield")),
         "quote_type": info.get("quoteType"),
         "sector": info.get("sector"),
         "currency": info.get("currency"),

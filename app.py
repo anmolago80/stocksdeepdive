@@ -6052,35 +6052,37 @@ def _render_portfolio_holdings_tab(email, _holdings, _analyses):
 
     st.markdown("##### Holdings table")
     _table_rows = []
+    _raw_profit, _raw_return_pct = [], []
     for r in _rows:
+        _return_pct_val = (r["return_pct"] * 100) if r["return_pct"] is not None else None
         _row = {
             "Ticker": r["ticker"], "Name": r["name"], "Buy date": r["buy_date"],
-            "Shares": r["shares"], "Buy price": r["buy_price"], "Current price": r["current_price"],
-            "Purchased→Current %": (r["return_pct"] * 100) if r["return_pct"] is not None else None,
-            "Cost (AUD)": r["cost_aud"], "Value (AUD)": r["value_aud"], "Profit (AUD)": r["profit_aud"],
-            "% at purchase": (r["pct_at_purchase"] * 100) if r["pct_at_purchase"] is not None else None,
-            "% now": (r["pct_now"] * 100) if r["pct_now"] is not None else None,
-            "Div yield": (r["div_yield"] * 100) if r["div_yield"] is not None else None,
-            "Pot. div income (AUD)": r["pot_div_income_aud"],
+            "Shares": _pf_cell(r["shares"], "{:,.0f}"),
+            "Buy price": _pf_cell(r["buy_price"], "{:,.2f}"),
+            "Current price": _pf_cell(r["current_price"], "{:,.2f}"),
+            "Purchased→Current %": _pf_cell(_return_pct_val, "{:+.2f}%"),
+            "Cost (AUD)": _pf_cell(r["cost_aud"], "A${:,.2f}"),
+            "Value (AUD)": _pf_cell(r["value_aud"], "A${:,.2f}"),
+            "Profit (AUD)": _pf_cell(r["profit_aud"], "A${:,.2f}"),
+            "% at purchase": _pf_cell((r["pct_at_purchase"] * 100) if r["pct_at_purchase"] is not None else None, "{:.2f}%"),
+            "% now": _pf_cell((r["pct_now"] * 100) if r["pct_now"] is not None else None, "{:.2f}%"),
+            "Div yield": _pf_cell((r["div_yield"] * 100) if r["div_yield"] is not None else None, "{:.2f}%"),
+            "Pot. div income (AUD)": _pf_cell(r["pot_div_income_aud"], "A${:,.2f}"),
         }
         if _transferred:
-            _row["% of balance"] = (r["pct_of_balance"] * 100) if r["pct_of_balance"] is not None else None
+            _row["% of balance"] = _pf_cell((r["pct_of_balance"] * 100) if r["pct_of_balance"] is not None else None, "{:.2f}%")
         _table_rows.append(_row)
+        _raw_profit.append(r["profit_aud"])
+        _raw_return_pct.append(_return_pct_val)
 
     _tdf = pd.DataFrame(_table_rows)
-    _fmt = {
-        "Shares": "{:,.0f}", "Buy price": "{:,.2f}", "Current price": "{:,.2f}",
-        "Purchased→Current %": "{:+.2f}%", "Cost (AUD)": "A${:,.2f}", "Value (AUD)": "A${:,.2f}",
-        "Profit (AUD)": "A${:,.2f}", "% at purchase": "{:.2f}%", "% now": "{:.2f}%",
-        "Div yield": "{:.2f}%", "Pot. div income (AUD)": "A${:,.2f}",
-    }
-    if "% of balance" in _tdf.columns:
-        _fmt["% of balance"] = "{:.2f}%"
+    # Every cell above is already its final display string (see _pf_cell) -
+    # colouring below keys off the parallel raw-value lists by row
+    # position instead of the (now-stringified) column values.
     st.dataframe(
-        _tdf.style.format(_fmt, na_rep="–")
-        .map(lambda v: "color:#22c55e;font-weight:700" if isinstance(v, (int, float)) and v > 0
-             else ("color:#fb7185;font-weight:700" if isinstance(v, (int, float)) and v < 0 else ""),
-             subset=["Profit (AUD)", "Purchased→Current %"]),
+        _tdf.style
+        .apply(lambda col: _pf_pl_color(_raw_profit), subset=["Profit (AUD)"])
+        .apply(lambda col: _pf_pl_color(_raw_return_pct), subset=["Purchased→Current %"]),
         use_container_width=True, hide_index=True,
     )
 
@@ -6112,6 +6114,7 @@ def _render_portfolio_overview_tab(email, _holdings, _analyses):
     _by_ticker = {r["ticker"]: r for r in _rows}
 
     _table_rows, _prog_rows = [], []
+    _raw_health, _raw_news_risk, _raw_pl, _raw_progress = [], [], [], []
     _thesis_intact_count = 0
     for h in _holdings:
         _a = _analyses[h["ticker"]]
@@ -6129,25 +6132,35 @@ def _render_portfolio_overview_tab(email, _holdings, _analyses):
         if not _thesis_breaking:
             _thesis_intact_count += 1
 
+        _health_val = _health["overall"]
+        _news_risk_val = (_news or {}).get("news_risk_score")
+        _pl_val = _r["profit_aud"]
+        _progress_val = _progress["overall"]
+
         _table_rows.append({
             "Ticker": h["ticker"], "Name": h.get("name") or h["ticker"],
-            "Health": _health["overall"], "Δ run": _delta_run,
+            "Health": _pf_cell(_health_val, "{:.0f}"), "Δ run": _pf_cell(_delta_run, "{:+.1f}"),
             "Action": _health["action"],
             "Thesis": ("N/A (ETF)" if _is_etf else ("Review" if _thesis_breaking else "Intact")),
-            "Buy price": h.get("buy_price"), "Current price": _r["current_price"],
-            "Return %": _return_pct, "Unrealised P/L (AUD)": _r["profit_aud"],
+            "Buy price": _pf_cell(h.get("buy_price"), "{:.4f}"),
+            "Current price": _pf_cell(_r["current_price"], "{:.4f}"),
+            "Return %": _pf_cell(_return_pct, "{:+.1f}%"),
+            "Unrealised P/L (AUD)": _pf_cell(_pl_val, "A${:,.2f}"),
             # ETFs skip company News Intelligence outright (1b) - shows as
-            # "–" (na_rep), never the misleading "100 = clean" a stub score
-            # would imply.
-            "News Risk": (_news or {}).get("news_risk_score"),
+            # "–", never the misleading "100 = clean" a stub score would imply.
+            "News Risk": _pf_cell(_news_risk_val, "{:.0f}"),
             "Flags": len(_health.get("red_flags") or []),
-            "Weight %": (_r["pct_now"] * 100) if _r["pct_now"] is not None else None,
+            "Weight %": _pf_cell((_r["pct_now"] * 100) if _r["pct_now"] is not None else None, "{:.1f}%"),
         })
         _prog_rows.append({
-            "Ticker": h["ticker"], "Progress": _progress["overall"],
-            "Return since buy %": _return_pct, "Verdict": _progress["verdict"],
+            "Ticker": h["ticker"], "Progress": _pf_cell(_progress_val, "{:.0f}"),
+            "Return since buy %": _pf_cell(_return_pct, "{:+.1f}%"), "Verdict": _progress["verdict"],
             "Baseline date": h.get("baseline_date"),
         })
+        _raw_health.append(_health_val)
+        _raw_news_risk.append(_news_risk_val)
+        _raw_pl.append(_pl_val)
+        _raw_progress.append(_progress_val)
 
     # Concentration warning (1a fix): amber when one holding exceeds 40% of
     # current value, or the top two together exceed 65% - genuinely
@@ -6177,17 +6190,16 @@ def _render_portfolio_overview_tab(email, _holdings, _analyses):
         )
 
     _df = pd.DataFrame(_table_rows)
+    # See _pf_cell: every cell above is already its final display string;
+    # colouring keys off the parallel raw-value lists by row position.
+    def _score_color(vals):
+        return [(f"color: {portfolio_health_engine.score_color(v)}; font-weight:700" if v is not None else "")
+                for v in vals]
     st.dataframe(
-        _df.style.format({
-            "Health": "{:.0f}", "Δ run": "{:+.1f}", "Buy price": "{:.4f}", "Current price": "{:.4f}",
-            "Return %": "{:+.1f}%", "Unrealised P/L (AUD)": "A${:,.2f}",
-            "News Risk": "{:.0f}", "Weight %": "{:.1f}%",
-        }, na_rep="–")
-        .map(lambda v: f"color: {portfolio_health_engine.score_color(v)}; font-weight:700"
-             if isinstance(v, (int, float)) else "", subset=["Health", "News Risk"])
-        .map(lambda v: ("color:#22c55e;font-weight:700" if isinstance(v, (int, float)) and v > 0
-             else ("color:#fb7185;font-weight:700" if isinstance(v, (int, float)) and v < 0 else "")),
-             subset=["Unrealised P/L (AUD)"])
+        _df.style
+        .apply(lambda col: _score_color(_raw_health), subset=["Health"])
+        .apply(lambda col: _score_color(_raw_news_risk), subset=["News Risk"])
+        .apply(lambda col: _pf_pl_color(_raw_pl), subset=["Unrealised P/L (AUD)"])
         .map(lambda v: "color:#d03b3b;font-weight:700" if v == "Review" else "", subset=["Thesis"]),
         use_container_width=True, hide_index=True,
     )
@@ -6205,15 +6217,45 @@ def _render_portfolio_overview_tab(email, _holdings, _analyses):
     st.markdown("##### Progress since purchase")
     _prog_df = pd.DataFrame(_prog_rows)
     st.dataframe(
-        _prog_df.style.format({"Progress": "{:.0f}", "Return since buy %": "{:+.1f}%"}, na_rep="–")
-        .map(lambda v: f"color: {portfolio_health_engine.score_color(v)}; font-weight:700"
-             if isinstance(v, (int, float)) else "", subset=["Progress"]),
+        _prog_df.style
+        .apply(lambda col: [(f"color: {portfolio_health_engine.score_color(v)}; font-weight:700" if v is not None else "")
+                             for v in _raw_progress], subset=["Progress"]),
         use_container_width=True, hide_index=True,
     )
 
 
 def _pf_pct_or_dash(v):
     return f"{v * 100:+.1f}%" if v is not None else "n/a"
+
+
+def _pf_cell(v, template):
+    """Format v with template, or '-' for missing - baked directly into
+    the final display string rather than left as a bare None/NaN for
+    pandas Styler's na_rep to hide later.
+
+    Real bug this fixed: the deployed pandas/streamlit combo (this repo
+    pins neither version, so the exact build can drift) round-trips a
+    styled dataframe's raw values through `.astype(str)` before patching
+    in the Styler-computed display strings - and that patch didn't
+    reliably cover every None/NaN cell, so missing values rendered as the
+    literal text "None" in production instead of "-". Pre-baking every
+    cell into its final string here means there is never a None/NaN left
+    in the DataFrame for that round-trip to leak."""
+    if v is None:
+        return "–"
+    if isinstance(v, float) and v != v:  # NaN
+        return "–"
+    return template.format(v)
+
+
+def _pf_pl_color(vals):
+    """Green/red CSS per row from a parallel list of raw (possibly None)
+    numeric values - shared by every Portfolio table that colours a P/L or
+    return-% column by row position (see _pf_cell for why raw values are
+    kept separately from the already-stringified display cells)."""
+    return [("color:#22c55e;font-weight:700" if (v is not None and v > 0)
+             else ("color:#fb7185;font-weight:700" if (v is not None and v < 0) else ""))
+            for v in vals]
 
 
 def _render_portfolio_health_scoring_expander():
@@ -6324,21 +6366,25 @@ def _render_portfolio_health_news_tab(email, _holdings, _analyses):
         return
 
     _rows = []
+    _raw_health_summary = []
     for h in _holdings:
         _a = _analyses[h["ticker"]]
+        _health_val = _a["health"]["overall"]
         _rows.append({
             "Ticker": h["ticker"], "Name": h.get("name") or h["ticker"],
-            "Health": _a["health"]["overall"],
+            "Health": _pf_cell(_health_val, "{:.0f}"),
             "Score type": _a["health"].get("score_label", "Investment Health Score"),
             "Action": _a["health"]["action"],
-            "Price": _a["snapshot"].get("price"), "Buy price": h.get("buy_price"),
+            "Price": _pf_cell(_a["snapshot"].get("price"), "{:.2f}"),
+            "Buy price": _pf_cell(h.get("buy_price"), "{:.4f}"),
         })
+        _raw_health_summary.append(_health_val)
 
     _df = pd.DataFrame(_rows)
     st.dataframe(
-        _df.style.format({"Health": "{:.0f}", "Price": "{:.2f}", "Buy price": "{:.4f}"}, na_rep="–")
-        .map(lambda v: f"color: {portfolio_health_engine.score_color(v)}; font-weight:700"
-             if isinstance(v, (int, float)) else "", subset=["Health"]),
+        _df.style
+        .apply(lambda col: [(f"color: {portfolio_health_engine.score_color(v)}; font-weight:700" if v is not None else "")
+                             for v in _raw_health_summary], subset=["Health"]),
         use_container_width=True, hide_index=True,
     )
 
@@ -6531,19 +6577,22 @@ def _render_portfolio_progress_tab(_holdings, _analyses):
         return
 
     _rows = []
+    _raw_progress_summary = []
     for h in _holdings:
         _progress = _analyses[h["ticker"]]["progress"]
+        _progress_val = _progress["overall"]
         _rows.append({
             "Ticker": h["ticker"], "Name": h.get("name") or h["ticker"],
-            "Progress": _progress["overall"], "Verdict": _progress["verdict"],
+            "Progress": _pf_cell(_progress_val, "{:.0f}"), "Verdict": _progress["verdict"],
             "Baseline date": h.get("baseline_date"),
         })
+        _raw_progress_summary.append(_progress_val)
 
     _df = pd.DataFrame(_rows)
     st.dataframe(
-        _df.style.format({"Progress": "{:.0f}"}, na_rep="–")
-        .map(lambda v: f"color: {portfolio_health_engine.score_color(v)}; font-weight:700"
-             if isinstance(v, (int, float)) else "", subset=["Progress"]),
+        _df.style
+        .apply(lambda col: [(f"color: {portfolio_health_engine.score_color(v)}; font-weight:700" if v is not None else "")
+                             for v in _raw_progress_summary], subset=["Progress"]),
         use_container_width=True, hide_index=True,
     )
 
