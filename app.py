@@ -4068,9 +4068,6 @@ def _render_overnight_scan_table(universe_label, overnight):
         st.caption(f"Universe source at scan time: {overnight['source']}")
 
 
-_IMPORTED_UNIVERSE_LABEL = "Imported screen"
-
-
 def _render_screen_import_admin():
     """
     Admin-only block (Stock Scanner page, full-view/ADMIN_REFRESH_KEY
@@ -4078,13 +4075,19 @@ def _render_screen_import_admin():
     e.g. Signal/Trade Setup/Opportunity Details) for the TradingView
     screen CSV -> nightly scan queue workflow (screen_import_store.py):
 
-      1. The ranked "Imported screen" cohort so far (reuses the exact
-         same overnight-table renderer every other universe uses).
-      2. An "Import screen CSV" expander: upload -> parse -> preview ->
-         confirm, and a table of existing imports with per-import delete
-         and "Scan next 25 now" (synchronous, same per-ticker scoring the
-         nightly job uses - for same-day results on the top of a list
-         instead of waiting for the overnight run).
+      1. An "Import screen CSV" expander: upload -> parse -> preview ->
+         confirm.
+      2. A table of existing imports, each with its own "Scan next 25
+         now" (synchronous, same per-ticker scoring the nightly job
+         uses) and "Delete" buttons, plus - once it has scanned tickers -
+         its OWN results table right underneath it.
+
+    Each import's results are deliberately shown in isolation, never
+    merged with any other import's: the owner uploads a screen, reviews
+    just that screen's stocks, and deletes it when done, then repeats -
+    so mixing every import's scanned tickers into one shared table (as
+    an earlier version of this did via screen_import_store.all_scanned_rows())
+    would defeat the point. See screen_import_store.scanned_rows_for_import().
 
     Self-gates on _factual() so it's a no-op if this is ever called from
     somewhere that forgot to check first.
@@ -4093,15 +4096,6 @@ def _render_screen_import_admin():
         return
 
     st.markdown("#### Imported screen (TradingView, admin-only)")
-
-    _imported_overnight = scan_store.load_scan(nightly_scan.IMPORTED_UNIVERSE)
-    if _imported_overnight:
-        _render_overnight_scan_table(_IMPORTED_UNIVERSE_LABEL, _imported_overnight)
-    else:
-        st.caption(
-            "No imported tickers scanned yet - import a CSV below, then either "
-            "wait for the nightly run or use “Scan next 25 now”."
-        )
 
     with st.expander("Import screen CSV (admin)"):
         st.caption(
@@ -4154,52 +4148,66 @@ def _render_screen_import_admin():
                     )
                     st.rerun()
 
-        st.markdown("##### Existing imports")
-        _imports = screen_import_store.list_imports()
-        if not _imports:
-            st.caption("No imports yet.")
-        else:
-            for _imp in _imports:
-                _c1, _c2, _c3 = st.columns([4, 2, 2])
-                with _c1:
-                    st.write(
-                        f"**{_imp['name']}** - {_imp['ticker_count']} ticker(s), "
-                        f"{_imp['scanned_count']} scanned / {_imp['pending_count']} "
-                        f"pending / {_imp['failed_count']} failed "
-                        f"(imported {_imp['created_at'][:10]})"
-                    )
-                with _c2:
-                    if st.button(
-                        "Scan next 25 now", key=f"scr_scan25_{_imp['id']}",
-                        disabled=_imp["pending_count"] == 0,
-                    ):
-                        _batch = screen_import_store.get_pending_for_import(_imp["id"], limit=25)
-                        with st.status(
-                            f"Scanning {len(_batch)} ticker(s) from “{_imp['name']}”...",
-                            expanded=True,
-                        ) as _status:
-                            for _bi, _bt in enumerate(_batch):
-                                _status.update(label=f"Scanning {_bt} ({_bi + 1}/{len(_batch)})...")
-                                try:
-                                    _brow = nightly_scan.analyze_ticker_lite(_bt)
-                                    screen_import_store.mark_scanned(_bt, ok=bool(_brow), row=_brow)
-                                except Exception as _bexc:
-                                    st.write(f"{_bt}: {_bexc}")
-                                    screen_import_store.mark_scanned(_bt, ok=False)
-                            _all_rows = screen_import_store.all_scanned_rows()
-                            _all_rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
-                            scan_store.save_scan(
-                                nightly_scan.IMPORTED_UNIVERSE, _all_rows, "TradingView import",
-                            )
-                            _status.update(
-                                label=f"Done - {len(_batch)} ticker(s) scanned.",
-                                state="complete",
-                            )
-                        st.rerun()
-                with _c3:
-                    if st.button("Delete", key=f"scr_delete_{_imp['id']}"):
-                        screen_import_store.delete_import(_imp["id"])
-                        st.rerun()
+    # NOTE: deliberately OUTSIDE the "Import screen CSV (admin)" expander
+    # above - each import's results table below opens its own st.expander
+    # (via _render_overnight_scan_table), and Streamlit doesn't allow an
+    # expander nested inside another expander.
+    st.markdown("##### Existing imports")
+    _imports = screen_import_store.list_imports()
+    if not _imports:
+        st.caption("No imports yet.")
+    else:
+        for _imp in _imports:
+            _c1, _c2, _c3 = st.columns([4, 2, 2])
+            with _c1:
+                st.write(
+                    f"**{_imp['name']}** - {_imp['ticker_count']} ticker(s), "
+                    f"{_imp['scanned_count']} scanned / {_imp['pending_count']} "
+                    f"pending / {_imp['failed_count']} failed "
+                    f"(imported {_imp['created_at'][:10]})"
+                )
+            with _c2:
+                if st.button(
+                    "Scan next 25 now", key=f"scr_scan25_{_imp['id']}",
+                    disabled=_imp["pending_count"] == 0,
+                ):
+                    _batch = screen_import_store.get_pending_for_import(_imp["id"], limit=25)
+                    with st.status(
+                        f"Scanning {len(_batch)} ticker(s) from “{_imp['name']}”...",
+                        expanded=True,
+                    ) as _status:
+                        for _bi, _bt in enumerate(_batch):
+                            _status.update(label=f"Scanning {_bt} ({_bi + 1}/{len(_batch)})...")
+                            try:
+                                _brow = nightly_scan.analyze_ticker_lite(_bt)
+                                screen_import_store.mark_scanned(_bt, ok=bool(_brow), row=_brow)
+                            except Exception as _bexc:
+                                st.write(f"{_bt}: {_bexc}")
+                                screen_import_store.mark_scanned(_bt, ok=False)
+                        _status.update(
+                            label=f"Done - {len(_batch)} ticker(s) scanned.",
+                            state="complete",
+                        )
+                    st.rerun()
+            with _c3:
+                if st.button("Delete", key=f"scr_delete_{_imp['id']}"):
+                    screen_import_store.delete_import(_imp["id"])
+                    st.rerun()
+
+            _imp_rows = screen_import_store.scanned_rows_for_import(_imp["id"])
+            if _imp_rows:
+                _imp_rows = sorted(
+                    _imp_rows, key=lambda r: r.get("Long Score") or 0, reverse=True,
+                )
+                _render_overnight_scan_table(
+                    _imp["name"],
+                    {
+                        "rows": _imp_rows,
+                        "source": "TradingView import",
+                        "generated_at_label": "so far - this import only",
+                    },
+                )
+            st.divider()
 
 
 def page_scanner():

@@ -310,6 +310,29 @@ def get_pending_for_import(import_id, limit=None):
     return [r[0] for r in rows]
 
 
+def scanned_rows_for_import(import_id):
+    """Every successfully-scanned result row belonging to ONE import, most
+    recently scanned first - what the admin panel shows per-import so
+    reviewing "Import A" never surfaces a ticker that actually came from
+    a different import (see all_scanned_rows(), which pools every import
+    together for the nightly job's fair-queue scanning - display stays
+    per-import, only the scan queue itself is shared)."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT result_json FROM screen_import_tickers "
+            "WHERE import_id = ? AND status = 'scanned' AND result_json IS NOT NULL "
+            "ORDER BY last_scanned_at DESC",
+            (import_id,),
+        ).fetchall()
+    out = []
+    for (rj,) in rows:
+        try:
+            out.append(json.loads(rj))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def mark_scanned(ticker, ok, row=None):
     """Record the outcome of scanning one ticker. `row` (the same dict
     shape nightly_scan.analyze_ticker_lite returns) is stored so
