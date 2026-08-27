@@ -38,6 +38,8 @@ import positions_store
 import announce_engine
 import scan_store
 import scanner_engine
+import screen_import_store
+import nightly_scan
 import name_directory
 import score_history
 import blog_store
@@ -3976,9 +3978,237 @@ def _td(inner, minw=None):
     return f"<td style='padding:6px 10px;{_w}'>{inner}</td>"
 
 
+def _render_overnight_scan_table(universe_label, overnight):
+    """The pre-computed overnight-scan table, shared by every universe on
+    the Scanner page - originally inline in page_scanner(), extracted here
+    unchanged (behaviour-for-behaviour) so the "Imported screen" cohort
+    (see _render_screen_import_admin()) can show the exact same table
+    instead of a second hand-maintained copy. `overnight` is a
+    scan_store.load_scan(...) payload; `universe_label` only decorates the
+    expander heading text.
+
+    Each Ticker cell now links straight to that stock's Deep Dive (which
+    carries the auto Compounder View) - it didn't before this was
+    extracted; added here since the imported-screen row is otherwise a
+    dead end (no sector/universe browse path back to it elsewhere), and
+    every existing universe gets the same convenience for free."""
+    with st.expander(
+        f"Overnight {universe_label} scan - {len(overnight['rows'])} stocks "
+        f"ranked by Long Score, computed {overnight['generated_at_label']}",
+        expanded=st.session_state.get("scan_stocks") is None,
+    ):
+        st.caption(
+            "Pre-computed while nobody was waiting. Attention-lite "
+            "(price/volume only - no news/trends/social inputs), same "
+            "rule as live scans this size. Estimated/default values "
+            "carry their own flag columns. Run a live scan below for "
+            "current prices."
+        )
+        _on_rows_html = []
+        for _orow in overnight["rows"]:
+            _tk = _orow.get("Ticker") or "-"
+            _tk_cell = (
+                f"<a href='/deep-dive?ticker={_tk}' target='_self' "
+                "style='color:inherit;text-decoration:underline;'><b>"
+                f"{_tk}</b></a>" if _tk != "-" else "<b>-</b>"
+            )
+            _row_html = (
+                "<tr>"
+                + _td(_tk_cell)
+                + _td(_badge_cell(_orow.get("Type", "-"), _TYPE_NEUTRAL))
+                + _td(f"{(_orow.get('Price') or 0):,.2f}")
+                + _td(_money_cell(_orow.get("Intrinsic Value"),
+                                  ref=_orow.get("Price"),
+                                  flag=bool(_orow.get("Intrinsic Default"))))
+                + _td(_bar_cell(_orow.get("MOS %"), 0, 25, "%",
+                                flag=bool(_orow.get("Intrinsic Default"))), minw=90)
+                + _td(_bar_cell(_orow.get("Long Score"),
+                                SIGNAL_THRESHOLDS["WATCHLIST"],
+                                SIGNAL_THRESHOLDS["LONG"]), minw=90)
+                + _td(_bar_cell(_orow.get("Quality"), 40, 80,
+                                flag=bool(_orow.get("Quality Default"))), minw=90)
+                + _td(_bar_cell(_orow.get("Psychology"), -5, 20), minw=90)
+                + _td(_bar_cell(_orow.get("Discovery (lite)"), 25, 50), minw=90)
+            )
+            if _factual():
+                _row_html += (
+                    _td(_badge_cell(_orow.get("Valuation", "-")))
+                    + _td(_badge_cell(_orow.get("Trend", "-")))
+                )
+            else:
+                _row_html += (
+                    _td(_badge_cell(_orow.get("Valuation", "-")))
+                    + _td(_badge_cell(_orow.get("Signal", "-")))
+                    + _td(_badge_cell(_orow.get("Trend", "-")))
+                    + _td(_badge_cell(_orow.get("Trade Setup", "-")))
+                )
+            _on_rows_html.append(_row_html + "</tr>")
+        if _factual():
+            _on_headers = ["Ticker", "Type", "Price", "Intrinsic Value",
+                           "MOS", "Value Score", "Quality", "Psychology",
+                           "Discovery", "Valuation", "Trend"]
+        else:
+            _on_headers = ["Ticker", "Type", "Price", "Intrinsic Value",
+                           "MOS", "Long Score", "Quality", "Psychology",
+                           "Discovery", "Valuation", "Signal", "Trend",
+                           "Trade Setup"]
+        st.markdown(
+            _sdd_table(_on_headers, _on_rows_html, max_height=480),
+            unsafe_allow_html=True,
+        )
+        if _factual():
+            st.caption(
+                "Sorted by Value Score - a described calculation (see "
+                "Methodology). Sorting is arithmetic, not a recommendation."
+            )
+        st.caption(
+            "Red values = computed from a default/average because real "
+            "data wasn't available (the site-wide red-flag rule)."
+        )
+        st.caption(f"Universe source at scan time: {overnight['source']}")
+
+
+_IMPORTED_UNIVERSE_LABEL = "Imported screen"
+
+
+def _render_screen_import_admin():
+    """
+    Admin-only block (Stock Scanner page, full-view/ADMIN_REFRESH_KEY
+    gated - same convention as the rest of this page's admin-only bits,
+    e.g. Signal/Trade Setup/Opportunity Details) for the TradingView
+    screen CSV -> nightly scan queue workflow (screen_import_store.py):
+
+      1. The ranked "Imported screen" cohort so far (reuses the exact
+         same overnight-table renderer every other universe uses).
+      2. An "Import screen CSV" expander: upload -> parse -> preview ->
+         confirm, and a table of existing imports with per-import delete
+         and "Scan next 25 now" (synchronous, same per-ticker scoring the
+         nightly job uses - for same-day results on the top of a list
+         instead of waiting for the overnight run).
+
+    Self-gates on _factual() so it's a no-op if this is ever called from
+    somewhere that forgot to check first.
+    """
+    if _factual():
+        return
+
+    st.markdown("#### Imported screen (TradingView, admin-only)")
+
+    _imported_overnight = scan_store.load_scan(nightly_scan.IMPORTED_UNIVERSE)
+    if _imported_overnight:
+        _render_overnight_scan_table(_IMPORTED_UNIVERSE_LABEL, _imported_overnight)
+    else:
+        st.caption(
+            "No imported tickers scanned yet - import a CSV below, then either "
+            "wait for the nightly run or use “Scan next 25 now”."
+        )
+
+    with st.expander("Import screen CSV (admin)"):
+        st.caption(
+            "Upload a TradingView screener export (.csv). The symbol column is "
+            "found by header name (“Ticker”/“Symbol”) or by "
+            "EXCHANGE:CODE formatting; ASX -> .AX, "
+            "NASDAQ/NYSE/AMEX/CBOE/OTC -> bare code (share classes like BRK.B "
+            "become BRK-B). Unsupported exchanges are skipped, never guessed. "
+            f"Capped at {screen_import_store.MAX_TICKERS_PER_IMPORT} recognised "
+            "tickers per file - the nightly scan budget is the real constraint."
+        )
+        _import_name = st.text_input(
+            "Name this import", key="scr_import_name",
+            placeholder="e.g. TV small-cap lens A",
+        )
+        _uploaded_csv = st.file_uploader(
+            "TradingView CSV export", type=["csv"], key="scr_import_upload",
+        )
+        if _uploaded_csv is not None:
+            try:
+                _csv_text = _uploaded_csv.getvalue().decode("utf-8-sig")
+            except UnicodeDecodeError:
+                _csv_text = _uploaded_csv.getvalue().decode("latin-1")
+            _parsed = screen_import_store.parse_tv_csv(_csv_text)
+            if _parsed["error"]:
+                st.error(_parsed["error"])
+            else:
+                _mapped = _parsed["mapped"]
+                _n_skipped = len(_parsed["skipped_unsupported"]) + len(_parsed["skipped_unparsed"])
+                _already_tracked = set(screen_import_store.all_imported_tickers())
+                _n_dupe = sum(1 for t in _mapped if t in _already_tracked)
+                st.info(
+                    f"{len(_mapped)} ticker(s) recognised, {_n_skipped} skipped "
+                    f"(unsupported exchange), {_n_dupe} already queued."
+                )
+                if _parsed["skipped_unsupported"]:
+                    st.caption(
+                        "Skipped (unsupported exchange): "
+                        + ", ".join(f"{raw}" for raw, _exch in _parsed["skipped_unsupported"][:20])
+                        + (" ..." if len(_parsed["skipped_unsupported"]) > 20 else "")
+                    )
+                if st.button("Confirm import", type="primary", key="scr_import_confirm"):
+                    _saved = screen_import_store.save_import(
+                        _import_name, _mapped, skipped_count=_n_skipped,
+                    )
+                    st.success(
+                        f"Imported “{_saved['name']}”: {len(_saved['added'])} "
+                        f"newly queued, {len(_saved['duplicate'])} already queued "
+                        "elsewhere (left alone)."
+                    )
+                    st.rerun()
+
+        st.markdown("##### Existing imports")
+        _imports = screen_import_store.list_imports()
+        if not _imports:
+            st.caption("No imports yet.")
+        else:
+            for _imp in _imports:
+                _c1, _c2, _c3 = st.columns([4, 2, 2])
+                with _c1:
+                    st.write(
+                        f"**{_imp['name']}** - {_imp['ticker_count']} ticker(s), "
+                        f"{_imp['scanned_count']} scanned / {_imp['pending_count']} "
+                        f"pending / {_imp['failed_count']} failed "
+                        f"(imported {_imp['created_at'][:10]})"
+                    )
+                with _c2:
+                    if st.button(
+                        "Scan next 25 now", key=f"scr_scan25_{_imp['id']}",
+                        disabled=_imp["pending_count"] == 0,
+                    ):
+                        _batch = screen_import_store.get_pending_for_import(_imp["id"], limit=25)
+                        with st.status(
+                            f"Scanning {len(_batch)} ticker(s) from “{_imp['name']}”...",
+                            expanded=True,
+                        ) as _status:
+                            for _bi, _bt in enumerate(_batch):
+                                _status.update(label=f"Scanning {_bt} ({_bi + 1}/{len(_batch)})...")
+                                try:
+                                    _brow = nightly_scan.analyze_ticker_lite(_bt)
+                                    screen_import_store.mark_scanned(_bt, ok=bool(_brow), row=_brow)
+                                except Exception as _bexc:
+                                    st.write(f"{_bt}: {_bexc}")
+                                    screen_import_store.mark_scanned(_bt, ok=False)
+                            _all_rows = screen_import_store.all_scanned_rows()
+                            _all_rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
+                            scan_store.save_scan(
+                                nightly_scan.IMPORTED_UNIVERSE, _all_rows, "TradingView import",
+                            )
+                            _status.update(
+                                label=f"Done - {len(_batch)} ticker(s) scanned.",
+                                state="complete",
+                            )
+                        st.rerun()
+                with _c3:
+                    if st.button("Delete", key=f"scr_delete_{_imp['id']}"):
+                        screen_import_store.delete_import(_imp["id"])
+                        st.rerun()
+
+
 def page_scanner():
     _render_header(compact=True, page_label="Scanner")
     _bump_page_view("scanner")
+
+    if not _factual():
+        _render_screen_import_admin()
+        st.divider()
 
     st.session_state.setdefault("scanner_country_au", True)
     st.session_state.setdefault("scanner_country_us", False)
@@ -4060,76 +4290,7 @@ def page_scanner():
     # prices and the full attention model.
     _overnight = scan_store.load_scan(universe)
     if _overnight:
-        with st.expander(
-            f"Overnight {universe} scan - {len(_overnight['rows'])} stocks "
-            f"ranked by Long Score, computed {_overnight['generated_at_label']}",
-            expanded=st.session_state.get("scan_stocks") is None,
-        ):
-            st.caption(
-                "Pre-computed while nobody was waiting. Attention-lite "
-                "(price/volume only - no news/trends/social inputs), same "
-                "rule as live scans this size. Estimated/default values "
-                "carry their own flag columns. Run a live scan below for "
-                "current prices."
-            )
-            _on_rows_html = []
-            for _orow in _overnight["rows"]:
-                _row_html = (
-                    "<tr>"
-                    + _td(f"<b>{_orow.get('Ticker', '-')}</b>")
-                    + _td(_badge_cell(_orow.get("Type", "-"), _TYPE_NEUTRAL))
-                    + _td(f"{(_orow.get('Price') or 0):,.2f}")
-                    + _td(_money_cell(_orow.get("Intrinsic Value"),
-                                      ref=_orow.get("Price"),
-                                      flag=bool(_orow.get("Intrinsic Default"))))
-                    + _td(_bar_cell(_orow.get("MOS %"), 0, 25, "%",
-                                    flag=bool(_orow.get("Intrinsic Default"))), minw=90)
-                    + _td(_bar_cell(_orow.get("Long Score"),
-                                    SIGNAL_THRESHOLDS["WATCHLIST"],
-                                    SIGNAL_THRESHOLDS["LONG"]), minw=90)
-                    + _td(_bar_cell(_orow.get("Quality"), 40, 80,
-                                    flag=bool(_orow.get("Quality Default"))), minw=90)
-                    + _td(_bar_cell(_orow.get("Psychology"), -5, 20), minw=90)
-                    + _td(_bar_cell(_orow.get("Discovery (lite)"), 25, 50), minw=90)
-                )
-                if _factual():
-                    # Valuation and Trend labels stay public; Signal and
-                    # Trade Setup (recommendations) are admin-only.
-                    _row_html += (
-                        _td(_badge_cell(_orow.get("Valuation", "-")))
-                        + _td(_badge_cell(_orow.get("Trend", "-")))
-                    )
-                else:
-                    _row_html += (
-                        _td(_badge_cell(_orow.get("Valuation", "-")))
-                        + _td(_badge_cell(_orow.get("Signal", "-")))
-                        + _td(_badge_cell(_orow.get("Trend", "-")))
-                        + _td(_badge_cell(_orow.get("Trade Setup", "-")))
-                    )
-                _on_rows_html.append(_row_html + "</tr>")
-            if _factual():
-                _on_headers = ["Ticker", "Type", "Price", "Intrinsic Value",
-                               "MOS", "Value Score", "Quality", "Psychology",
-                               "Discovery", "Valuation", "Trend"]
-            else:
-                _on_headers = ["Ticker", "Type", "Price", "Intrinsic Value",
-                               "MOS", "Long Score", "Quality", "Psychology",
-                               "Discovery", "Valuation", "Signal", "Trend",
-                               "Trade Setup"]
-            st.markdown(
-                _sdd_table(_on_headers, _on_rows_html, max_height=480),
-                unsafe_allow_html=True,
-            )
-            if _factual():
-                st.caption(
-                    "Sorted by Value Score - a described calculation (see "
-                    "Methodology). Sorting is arithmetic, not a recommendation."
-                )
-            st.caption(
-                "Red values = computed from a default/average because real "
-                "data wasn't available (the site-wide red-flag rule)."
-            )
-            st.caption(f"Universe source at scan time: {_overnight['source']}")
+        _render_overnight_scan_table(universe, _overnight)
 
     if st.button("Run Scan", type="primary", key="run_scanner"):
         with st.spinner("Resolving universe..."):

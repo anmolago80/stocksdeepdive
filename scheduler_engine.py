@@ -21,7 +21,11 @@ dir records last-run dates so a redeploy mid-evening doesn't double-run.
 CONFIG (Railway environment variables, all optional):
   SCHEDULER_ENABLED      - "false" disables everything (default: enabled).
   NIGHTLY_UNIVERSES      - comma-separated, default "ASX 200". These are
-                           the universes pre-scanned overnight.
+                           the universes pre-scanned overnight. Include
+                           "imported" to also work through the TradingView
+                           CSV import queue (screen_import_store.py) - it
+                           always runs last, after the real index
+                           universes, however it's ordered in this list.
   NIGHTLY_SCAN_UTC_HOUR  - default 20 (= 6am Brisbane).
   DIGEST_UTC_WEEKDAY     - default 6 = Sunday (so ~7am Monday Brisbane).
   DIGEST_UTC_HOUR        - default 21.
@@ -75,9 +79,22 @@ def _cfg():
 
 def _run_nightly(cfg, log):
     import nightly_scan
-    for universe in cfg["universes"]:
+    # The "imported" virtual universe (screen_import_store's TradingView
+    # CSV queue - see nightly_scan.run_imported_scan) always runs LAST,
+    # after every configured index universe, regardless of where
+    # "imported" sits in NIGHTLY_UNIVERSES - it's opportunistic overflow
+    # work over an owner-curated watchlist, not something that should
+    # delay the regular index scans everything else here depends on.
+    ordered = (
+        [u for u in cfg["universes"] if u != nightly_scan.IMPORTED_UNIVERSE]
+        + [u for u in cfg["universes"] if u == nightly_scan.IMPORTED_UNIVERSE]
+    )
+    for universe in ordered:
         try:
-            nightly_scan.run_universe_scan(universe, log=log)
+            if universe == nightly_scan.IMPORTED_UNIVERSE:
+                nightly_scan.run_imported_scan(log=log)
+            else:
+                nightly_scan.run_universe_scan(universe, log=log)
         except Exception as e:
             log(f"[scheduler] nightly scan {universe} failed: {e}")
 

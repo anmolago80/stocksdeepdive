@@ -30,6 +30,7 @@ import yfinance as yf
 import scan_store
 import score_history
 import scanner_engine
+import screen_import_store
 import indicators_engine
 import trade_filter_engine
 from ranking_engine import calculate_long_score
@@ -40,6 +41,16 @@ from resolver_engine import (
 )
 
 PER_TICKER_SLEEP = 0.5
+
+# The TradingView-CSV import queue (screen_import_store.py) - a virtual
+# "universe" that isn't a real index, resolved from the import queue
+# instead of scanner_engine. See run_imported_scan() below.
+IMPORTED_UNIVERSE = "imported"
+IMPORTED_NIGHTLY_BATCH = 100  # per-run cap: a big CSV import (up to
+# screen_import_store.MAX_TICKERS_PER_IMPORT = 500) simply spreads across
+# multiple nights instead of blowing the nightly budget in one go -
+# screen_import_store.mark_scanned() persists progress per ticker, so a
+# partial run always resumes exactly where it left off.
 
 
 def analyze_ticker_lite(ticker):
@@ -192,6 +203,58 @@ def run_universe_scan(universe, max_tickers=None, log=print):
     return payload
 
 
+def run_imported_scan(max_tickers=IMPORTED_NIGHTLY_BATCH, log=print):
+    """
+    Scan up to `max_tickers` PENDING tickers from screen_import_store (the
+    TradingView CSV import queue), using the exact same per-ticker scoring
+    as every other universe (analyze_ticker_lite). Unlike
+    run_universe_scan (which always rescans its whole universe fresh from
+    scratch), this is incremental: each ticker is scanned at most once,
+    screen_import_store.mark_scanned() persists the outcome immediately,
+    and a screen bigger than one night's batch just continues on the next
+    call - nothing here raises or depends on the existing universes'
+    per-run behaviour, which is untouched.
+
+    After the batch, rebuilds scan_store's "imported" payload from EVERY
+    successfully-scanned ticker across all imports (not just this batch),
+    so the Scanner page's "Imported screen" view always reflects
+    everything scanned so far, the same way a normal universe's saved scan
+    always reflects its most recent full pass. Returns the saved payload,
+    or None if there was nothing pending.
+    """
+    pending = screen_import_store.get_pending(limit=max_tickers)
+    if not pending:
+        log("[nightly_scan] imported: nothing pending")
+        return None
+    log(f"[nightly_scan] imported: scanning {len(pending)} pending ticker(s)")
+
+    for i, t in enumerate(pending):
+        try:
+            row = analyze_ticker_lite(t)
+            screen_import_store.mark_scanned(t, ok=bool(row), row=row)
+        except Exception as e:  # one bad ticker never kills the batch
+            log(f"[nightly_scan] imported {t}: {e}")
+            screen_import_store.mark_scanned(t, ok=False)
+        if i % 25 == 24:
+            log(f"[nightly_scan] imported: {i + 1}/{len(pending)} done")
+        time.sleep(PER_TICKER_SLEEP)
+
+    rows = screen_import_store.all_scanned_rows()
+    rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
+    payload = scan_store.save_scan(IMPORTED_UNIVERSE, rows, "TradingView import")
+    log(f"[nightly_scan] imported: saved {len(rows)} total scanned row(s) "
+        f"({len(pending)} newly scanned this run)")
+    try:
+        score_history.record(rows)
+        log(f"[nightly_scan] imported: recorded {len(rows)} rows to score_history")
+    except Exception as e:  # history logging must never fail the scan itself
+        log(f"[nightly_scan] imported: score_history.record failed: {e}")
+    return payload
+
+
 if __name__ == "__main__":
     target = sys.argv[1] if len(sys.argv) > 1 else "ASX 200"
-    run_universe_scan(target)
+    if target == IMPORTED_UNIVERSE:
+        run_imported_scan()
+    else:
+        run_universe_scan(target)
