@@ -741,7 +741,7 @@ st.markdown(
       color:#2dd4bf; margin-top:34px; }
     .sdd-h2 { font-size:25px; letter-spacing:-.3px; margin:8px 0 6px; font-weight:700; color:#e6edf5; }
     .sdd-secsub { color:#8aa0b8; font-size:14.5px; max-width:640px; line-height:1.5; }
-    .sdd-cards4 { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-top:22px; }
+    .sdd-cards5 { display:grid; grid-template-columns:repeat(5,1fr); gap:14px; margin-top:22px; }
     .sdd-feat { background:#121f36; border:1px solid #1f3352; border-radius:14px; padding:18px 20px;
       text-decoration:none !important; display:block; transition:border-color .15s; }
     .sdd-feat:hover { border-color:#14b8a6; }
@@ -778,7 +778,7 @@ st.markdown(
     .sdd-disclaimer { border-top:1px solid #1f3352; padding-top:14px; max-width:900px; }
     .sdd-disclaimer b { color:#8aa0b8; }
     @media (max-width:900px) {
-      .sdd-cards4, .sdd-covgrid { grid-template-columns:1fr 1fr; }
+      .sdd-cards5, .sdd-covgrid { grid-template-columns:1fr 1fr; }
       .sdd-steps { grid-template-columns:1fr; }
       .sdd-strip { grid-template-columns:1fr 1fr; }
       .sdd-h1 { font-size:30px; }
@@ -1439,14 +1439,15 @@ def _render_header(compact, page_label=None):
     # The three page buttons get their OWN, wider row (60% of the page vs
     # the search box's 40%) - three labels, one of them long, don't fit
     # inside the narrow search column now that button text never wraps.
-    # Blog gets its OWN outer column rather than a 4th slot inside _bmid -
-    # squeezing it in there previously shrank the three main buttons enough
-    # that "Rational Compounder Analysis" (the longest label) started
-    # wrapping and threw off row alignment across every page. This keeps
-    # _bmid's three buttons at their original, wrap-safe equal-third width
-    # and takes the extra room for Blog out of the right-hand padding
-    # column instead.
-    _bsp1, _bmid, _bblog, _bsp2 = st.columns([2, 6, 1, 1])
+    # My Portfolio (previously Blog here - Blog stays reachable from the
+    # footer) gets its OWN outer column rather than a 4th slot inside
+    # _bmid - squeezing it in there previously shrank the three main
+    # buttons enough that "Rational Compounder Analysis" (the longest
+    # label) started wrapping and threw off row alignment across every
+    # page. This keeps _bmid's three buttons at their original,
+    # wrap-safe equal-third width and takes the extra room for My
+    # Portfolio out of the right-hand padding column instead.
+    _bsp1, _bmid, _bportfolio, _bsp2 = st.columns([2, 6, 1, 1])
     with _bmid:
         _nav_col1, _nav_col2, _nav_col3 = st.columns(3, gap="small")
         with _nav_col1:
@@ -1467,17 +1468,15 @@ def _render_header(compact, page_label=None):
                 use_container_width=True, key="nav_scanner",
             ):
                 st.switch_page(PG_SCANNER)
-    with _bblog:
-        # The blog is served outside Streamlit (server.py), so this is
-        # a real link styled to match the nav buttons, not st.button.
-        st.markdown(
-            "<a href='/blog' style='display:block;text-align:center;"
-            "border:1.5px solid #2dd4bf;border-radius:10px;color:#2dd4bf;"
-            "background-color:rgba(45,212,191,0.07);font-weight:600;"
-            "padding:0.55rem 0.5rem;text-decoration:none;"
-            "white-space:nowrap;margin-top:1px;'>Blog</a>",
-            unsafe_allow_html=True,
-        )
+    with _bportfolio:
+        # Signed-in-only page - page_portfolio() itself shows the sign-in
+        # prompt when nobody's logged in, so this button never needs to
+        # check auth state itself before navigating.
+        if st.button(
+            "My Portfolio",
+            use_container_width=True, key="nav_portfolio",
+        ):
+            st.switch_page(PG_PORTFOLIO)
 
     if _searched:
         _dispatch_search(_search_text)
@@ -2743,11 +2742,11 @@ every estimated number is flagged.</div>
         st.markdown(
             """
 <div class='sdd-kicker'>THE TOOLKIT</div>
-<div class='sdd-h2'>Four ways in. One consistent model.</div>
+<div class='sdd-h2'>Five ways in. One consistent model.</div>
 <div class='sdd-secsub'>Every tool runs the same engine &mdash; the same DCF model, the same
 quality calculation, the same psychology read &mdash; so the numbers always agree with
 each other.</div>
-<div class='sdd-cards4'>
+<div class='sdd-cards5'>
   <a class='sdd-feat' href='/deep-dive' target='_self'>
     <div class='ic'>&#128269;</div><h3>Stock Deep Dive</h3>
     <p>The full picture for one ticker: intrinsic value vs today's price, what drives the
@@ -2768,6 +2767,11 @@ each other.</div>
     <p>Hand-built research on selected compounders &mdash; a decade of reported earnings, four
     fair-value models, and documented company histories.</p>
   </a>
+  <a class='sdd-feat' href='/portfolio' target='_self'>
+    <div class='ic'>&#128188;</div><h3>My Portfolio</h3>
+    <p>Track what you actually own against the price and fundamentals on the day you bought
+    &mdash; private to your signed-in account, sign-in required.</p>
+  </a>
 </div>
 """,
             unsafe_allow_html=True,
@@ -2776,10 +2780,10 @@ each other.</div>
         st.markdown(
             """
 <div class='sdd-kicker'>THE TOOLKIT</div>
-<div class='sdd-h2'>Four ways in. One consistent model.</div>
+<div class='sdd-h2'>Five ways in. One consistent model.</div>
 <div class='sdd-secsub'>Every tool runs the same engine &mdash; the same DCF, the same quality
 tests, the same psychology read &mdash; so the numbers always agree with each other.</div>
-<div class='sdd-cards4'>
+<div class='sdd-cards5'>
   <a class='sdd-feat' href='/deep-dive' target='_self'>
     <div class='ic'>&#128269;</div><h3>Stock Deep Dive</h3>
     <p>The full picture for one ticker: intrinsic value vs price, what drives the Long Score,
@@ -2799,6 +2803,11 @@ tests, the same psychology read &mdash; so the numbers always agree with each ot
     <div class='ic'>&#128218;</div><h3>Rational Compounder Research</h3>
     <p>Hand-built, Buffett/Munger-style research on selected compounders &mdash; a decade of
     earnings, four fair-value methods, and written judgment on every business.</p>
+  </a>
+  <a class='sdd-feat' href='/portfolio' target='_self'>
+    <div class='ic'>&#128188;</div><h3>My Portfolio</h3>
+    <p>Add what you actually own and lock in the day-you-bought baseline &mdash; private to
+    your signed-in account only, sign-in required.</p>
   </a>
 </div>
 """,
