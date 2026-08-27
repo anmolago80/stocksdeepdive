@@ -81,7 +81,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 9
+ENGINE_VERSION = 10
 
 
 # -----------------------------------
@@ -526,8 +526,16 @@ def _eps_ttm(bundle):
     income_q = bundle.get("income_q")
     q_cols = _statement_col_dates(income_q)
     a_cols = _statement_col_dates(bundle.get("income"))
+    # trailingEps is only as fresh as the statements behind it - when the
+    # newest ANNUAL column is over a year old (a full new fiscal year has
+    # ended and Yahoo hasn't ingested it yet - OCL.AX right after its Aug
+    # 2026 FY26 release is the verified case: Yahoo's own quote page
+    # still showed the FY25-based 0.38 while the market was already
+    # trading the new numbers), the fallback figure is flagged red as a
+    # stale estimate rather than presented as current.
+    stale_annual = bool(a_cols) and (datetime.date.today() - a_cols[0][1]).days > 365
     if not q_cols or (a_cols and q_cols[0][1] <= a_cols[0][1]):
-        return fallback, False
+        return fallback, stale_annual
     gap_days = (q_cols[0][1] - q_cols[1][1]).days if len(q_cols) >= 2 else None
     n_needed = 2 if (gap_days is not None and gap_days > 135) else 4
     take = q_cols[:n_needed]
@@ -544,7 +552,7 @@ def _eps_ttm(bundle):
     if ni_sum is not None and shares:
         return ni_sum / shares, True
 
-    return fallback, False
+    return fallback, stale_annual
 
 
 def _interest_expense_ttm(bundle):
@@ -978,17 +986,17 @@ def _value_created(bundle, retained_ttm, price_now):
     ÷ today's share count collapses to a plain price difference since
     the same share count cancels on both sides).
 
-    A horizon renders ONLY when its full window is covered by the
-    available statement years (2Y needs 2 FYs, 5Y needs 5, 10Y needs 10,
-    TTM needs TTM + 10). Verified live on OCL.AX: with 4 statement
-    years, the old behaviour quietly computed the "10Y" and "TTM" bars
-    over ~3.5-year windows - the label lied about the window and the TTM
-    bar went deeply negative against a price anchor from 2022 (when the
-    stock traded at ~2x today's price). With yfinance's usual 4-5 years
-    of depth only 2Y (and sometimes 5Y) will show; the longer horizons
-    light up automatically once a deeper source (EODHD) is configured. A
-    negative value on a FULLY covered window is real data and still
-    renders - the workbook allows it too."""
+    A horizon whose full window ISN'T covered by the statement history
+    still renders (the user wants every horizon visible), but its key is
+    starred - "5Y*", "10Y*", "TTM*" - and computed over the years that DO
+    exist, with "_years_available" carried alongside so the UI can spell
+    out exactly how many years the starred bars actually cover. (An
+    earlier iteration hid partial horizons entirely; before that they
+    rendered under their full labels, silently computed over ~3.5-year
+    windows - both wrong in different ways. Starred-but-shown is the
+    compromise: every horizon visible, no label lying about its window.)
+    A negative value on a covered window is real data and still renders -
+    the workbook allows it too."""
     eps_series = [(y, v) for y, v in _eps_series(bundle) if v is not None]
     dps_by_year = _dividends_per_share_by_year(bundle.get("dividends") or {})
     year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
@@ -996,14 +1004,15 @@ def _value_created(bundle, retained_ttm, price_now):
     out = {}
     for label, n_years in (("2Y", 2), ("5Y", 5), ("10Y", 10)):
         slice_ = eps_series[:n_years]
-        if len(slice_) < n_years:
+        if len(slice_) < 2:
             continue
+        key = label if len(slice_) >= n_years else label + "*"
         re_val = sum(eps - dps_by_year.get(y, 0.0) for y, eps in slice_)
         end_year, start_year = slice_[0][0], slice_[-1][0]
         end_price, start_price = year_end_prices.get(end_year), year_end_prices.get(start_year)
         if re_val in (None, 0) or end_price is None or start_price is None:
             continue
-        out[label] = {
+        out[key] = {
             "retained_earnings": re_val,
             "value_created": (end_price - start_price) / re_val,
         }
@@ -1012,16 +1021,20 @@ def _value_created(bundle, retained_ttm, price_now):
     # the last 10 FYs, value change measured from today's price back to
     # the oldest year in that 10Y window.
     ttm_slice = eps_series[:10]
-    if retained_ttm is not None and len(ttm_slice) == 10:
+    if retained_ttm is not None and ttm_slice:
+        key = "TTM" if len(ttm_slice) == 10 else "TTM*"
         re_val = retained_ttm + sum(eps - dps_by_year.get(y, 0.0) for y, eps in ttm_slice)
         start_price = year_end_prices.get(ttm_slice[-1][0])
         if re_val not in (None, 0) and start_price is not None and price_now is not None:
-            out["TTM"] = {
+            out[key] = {
                 "retained_earnings": re_val,
                 "value_created": (price_now - start_price) / re_val,
             }
 
-    return out or None
+    if not out:
+        return None
+    out["_years_available"] = len(eps_series)
+    return out
 
 
 def _ten_year_retained(bundle):

@@ -155,7 +155,13 @@ def _cp_value_created_chart(ticker, value_created):
     entry = value_created.get(ticker)
     if not entry:
         return None
-    order = [h for h in ["2Y", "5Y", "10Y", "TTM"] if h in entry]
+    # Starred keys ("5Y*", "10Y*", "TTM*") come from the auto engine when a
+    # horizon's full window isn't covered by the statement history - the
+    # bar is computed over the years available and the star says so (the
+    # caption underneath, in render_section, spells out the count).
+    # "_years_available" is metadata, not a horizon. Hand-built data only
+    # ever has the four plain keys, so this renders it exactly as before.
+    order = [h for h in ["2Y", "2Y*", "5Y", "5Y*", "10Y", "10Y*", "TTM", "TTM*"] if h in entry]
     if not order:
         return None
     retained = [entry[h]["retained_earnings"] for h in order]
@@ -527,18 +533,19 @@ def render_section(sections, ticker, section_label, gate=None):
         fig = _cp_value_created_chart(ticker, vc)
         if fig:
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-            # The auto engine only emits horizons whose FULL window the
-            # statement history covers (see _value_created's docstring in
-            # auto_compounder_engine.py) - when any of the four is absent,
-            # say why, so a 2Y-only chart reads as a data-depth fact
-            # rather than a rendering bug. Hand-built data always carries
-            # all four, so this caption never shows on the Research page.
+            # Starred horizons come from the auto engine when the statement
+            # history doesn't cover the full window - the bar is computed
+            # over the years that exist, and this caption says exactly how
+            # many. Hand-built data never carries starred keys, so this
+            # caption never shows on the Research page.
             _vc_entry = vc.get(ticker) or {}
-            if any(h not in _vc_entry for h in ("2Y", "5Y", "10Y", "TTM")):
+            if any(h.endswith("*") for h in _vc_entry):
+                _vc_years = _vc_entry.get("_years_available")
+                _vc_span = f"the {_vc_years} year(s)" if _vc_years else "the years"
                 st.caption(
-                    "Only horizons fully covered by the available statement "
-                    "history are shown - longer horizons appear as statement "
-                    "depth grows."
+                    f"* computed over {_vc_span} of statement history "
+                    "available - the full window unlocks as deeper "
+                    "statement history becomes available."
                 )
     elif section_label == "Earnings Trends":
         series = section.get("series", {})
