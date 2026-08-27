@@ -155,6 +155,7 @@ def fetch_snapshot(ticker):
     info = {}
     hist = None
     fcf_growth = None
+    tk = None
     try:
         tk = yf.Ticker(ticker)
         info = tk.info or {}
@@ -185,12 +186,53 @@ def fetch_snapshot(ticker):
         v = info.get(key)
         return float(v) if isinstance(v, (int, float)) else None
 
+    # Price fallback chain (1a fix): analyze_ticker_lite() and yfinance's
+    # own `.info` frequently come back empty for ETFs (no quality/IV model,
+    # and `.info` often lacks currentPrice/regularMarketPrice for them) even
+    # though `.history()` almost never misses for anything actually listed -
+    # so fall all the way down to the history close before giving up.
     price = (lite or {}).get("Price")
     if price is None:
-        price = _num("currentPrice") or _num("regularMarketPrice")
+        price = _num("currentPrice") or _num("regularMarketPrice") or _num("previousClose")
+    if price is None and tk is not None:
+        try:
+            fi = tk.fast_info
+            for key in ("last_price", "lastPrice"):
+                try:
+                    v = fi[key] if hasattr(fi, "__getitem__") else getattr(fi, key, None)
+                except Exception:
+                    v = None
+                if v:
+                    price = float(v)
+                    break
+        except Exception:
+            pass
+    if price is None and hist is not None and not hist.empty:
+        try:
+            price = float(hist["Close"].iloc[-1])
+        except Exception:
+            pass
 
     high_52wk, low_52wk = _num("fiftyTwoWeekHigh"), _num("fiftyTwoWeekLow")
     ma200 = _num("twoHundredDayAverage")
+    # Same story as price: ETFs' `.info` often skips these too, but both are
+    # derivable straight from the 2y history already fetched above - needed
+    # for the ETF price-based health mode (1c) to have anything to score.
+    if (high_52wk is None or low_52wk is None) and hist is not None and not hist.empty:
+        try:
+            window = hist.tail(252)
+            if high_52wk is None:
+                high_52wk = float(window["Close"].max())
+            if low_52wk is None:
+                low_52wk = float(window["Close"].min())
+        except Exception:
+            pass
+    if ma200 is None and hist is not None and not hist.empty:
+        try:
+            ma200 = float(hist["Close"].tail(200).mean())
+        except Exception:
+            ma200 = None
+
     range52 = None
     if price is not None and high_52wk and low_52wk and high_52wk > low_52wk:
         range52 = (price - low_52wk) / (high_52wk - low_52wk)
@@ -199,6 +241,7 @@ def fetch_snapshot(ticker):
     return {
         "ticker": ticker,
         "price": price,
+        "name": info.get("longName") or info.get("shortName"),
         "quality_score": (lite or {}).get("Quality"),
         "intrinsic_value": (lite or {}).get("Intrinsic Value"),
         "mos_pct": (lite or {}).get("MOS %"),
@@ -212,6 +255,7 @@ def fetch_snapshot(ticker):
         "fcf_growth": fcf_growth,
         "dividend_rate": _num("dividendRate"),
         "dividend_yield": _num("dividendYield"),
+        "quote_type": info.get("quoteType"),
         "sector": info.get("sector"),
         "currency": info.get("currency"),
         "high_52wk": high_52wk,
@@ -379,7 +423,7 @@ def _post_purchase_drawdown(hist, buy_date, price):
 # Health Score
 # ---------------------------------------------------------------------
 
-def compute_health_components(snapshot, kind, baseline=None, buy_date=None, news=None):
+def compute_health_components(snapshot, kind, baseline=None, buy_date=None, news=None, iv_override=None):
     is_etf = (kind or "STOCK").upper() == "ETF"
     baseline = _normalize_baseline(baseline)
     comps = {}
@@ -403,7 +447,23 @@ def compute_health_components(snapshot, kind, baseline=None, buy_date=None, news
         _set("FCF", _interp(GROWTH_BAND, snapshot.get("fcf_growth")), current=snapshot.get("fcf_growth"))
         _set("Debt", _interp(DEBT_BAND, snapshot.get("debt_to_equity")), current=snapshot.get("debt_to_equity"))
 
-    _set("Valuation", _interp(VAL_BAND, snapshot.get("mos_pct")), current=snapshot.get("mos_pct"))
+    if is_etf:
+        # No DCF/intrinsic-value model exists for funds (analyze_ticker_lite
+        # returns no MOS% for them) - excluded outright rather than scored
+        # against a missing baseline of zero (1c).
+        _set("Valuation", None, note="No DCF model for ETFs/funds")
+    elif iv_override is not None and iv_override > 0 and snapshot.get("price") is not None:
+        # Manual override (1d): the same MOS% formula nightly_scan uses
+        # (mos = (intrinsic - price) / intrinsic * 100), just against the
+        # user's own number instead of the model's.
+        model_iv = snapshot.get("intrinsic_value")
+        _mos_override = ((iv_override - snapshot["price"]) / iv_override) * 100
+        _note = "Using your manual override IV (A${:,.2f})".format(iv_override)
+        if model_iv:
+            _note += " - model says A${:,.2f}".format(model_iv)
+        _set("Valuation", _interp(VAL_BAND, _mos_override), current=_mos_override, note=_note)
+    else:
+        _set("Valuation", _interp(VAL_BAND, snapshot.get("mos_pct")), current=snapshot.get("mos_pct"))
 
     drawdown = _post_purchase_drawdown(snapshot.get("history"), buy_date, snapshot.get("price"))
     range52 = snapshot.get("range52")
@@ -427,6 +487,14 @@ def compute_health_components(snapshot, kind, baseline=None, buy_date=None, news
              note="No baseline dividend rate on file - showing current yield only")
     else:
         _set("Income", None, note="No dividend data")
+
+    if is_etf:
+        # A fund doesn't have a "thesis" the way a company does (no
+        # management, no earnings call, nothing for News Intelligence to
+        # check against) - excluded from the blend rather than defaulted
+        # from whatever fundamentals happen to still be present (1c).
+        _set("Thesis", None, note="Not applicable for ETFs/funds - no company thesis to score")
+        return comps
 
     fund_scores = [comps[k]["score"] for k in _FUND_KEYS if comps.get(k, {}).get("score") is not None]
     fund_avg = round(sum(fund_scores) / len(fund_scores), 1) if fund_scores else None
@@ -481,7 +549,36 @@ def _red_flags(components):
     return flags
 
 
-def compute_health(components, news=None):
+def compute_health(components, news=None, is_etf=False, progress_overall=None):
+    """
+    is_etf=True switches to the ETF/fund price-based blend (1c): the
+    overall score is the average of Price Action (trend vs MA200, position
+    in the 52-week range, post-purchase drawdown - already blended into
+    that one component) and Progress vs baseline, with fundamentals,
+    Valuation/MOS, Income and News excluded outright rather than defaulted
+    to a neutral read - there's nothing to default them FROM for a fund.
+    """
+    if is_etf:
+        parts = [p for p in (
+            (components.get("Price Action") or {}).get("score"),
+            progress_overall,
+        ) if p is not None]
+        overall = round(sum(parts) / len(parts), 1) if parts else None
+        action, action_tone = _recommend(overall, None)
+        return {
+            "components": components,
+            "overall": overall,
+            "action": action,
+            "action_tone": action_tone,
+            "red_flags": _red_flags(components),
+            "thesis_breaking": False,
+            "thesis_intact": True,
+            "news_adjustment": None,
+            "news": None,
+            "is_etf": True,
+            "score_label": "Price-based health (ETF)",
+        }
+
     weighted = [(BASE_WEIGHTS[k], components[k]["score"]) for k in COMPONENT_ORDER
                 if components.get(k, {}).get("score") is not None]
     overall = round(sum(w * s for w, s in weighted) / sum(w for w, _ in weighted), 1) if weighted else None
@@ -513,6 +610,8 @@ def compute_health(components, news=None):
         "thesis_intact": not thesis_breaking,
         "news_adjustment": news_adjustment,
         "news": news,
+        "is_etf": False,
+        "score_label": "Investment Health Score",
     }
 
 

@@ -411,7 +411,11 @@ def _queries(name, ticker):
     if name:
         qs.append(name)
     root = ticker.split(".")[0]
-    if root and root.upper() not in {q.upper() for q in qs}:
+    # 1b fix: never search on the bare ticker root when it's a plain
+    # English/boilerplate word (e.g. "GOLD") - that alone was pulling in
+    # every unrelated story containing the word, not just this holding's.
+    if (root and root.upper() not in {q.upper() for q in qs}
+            and root.lower() not in _NON_DISTINCTIVE_WORDS):
         qs.append(root)
     return qs
 
@@ -494,8 +498,42 @@ SEVERITY_DEFS = [
     ("Positive", "positive", "Beats, upgrades, approvals, buybacks, dividend "
      "raises.", "Adds a little back when thesis-relevant."),
 ]
-_NAME_STOPWORDS = {"the", "ltd", "limited", "inc", "corp", "group", "holdings",
-                    "company", "co", "plc", "etf", "fund", "index"}
+_NAME_STOPWORDS = {"the", "ltd", "limited", "inc", "corp", "corporation",
+                    "group", "holdings", "company", "co", "plc"}
+
+# 1b fix: fund/company boilerplate AND plain-English common words - neither
+# can be used on their own to establish relevance, and neither is used as a
+# standalone search query term. Without this, GOLD.AX's ticker root "GOLD"
+# (a common word, not a distinctive identifier) pulled in every gold-MINING
+# story on the wire ("…strikes 225.7m gold…" reads as "relevant" news about
+# a physical-gold ETF that holds no mining exposure at all).
+_FUND_BOILERPLATE = {
+    "etf", "fund", "funds", "index", "trust", "series", "class", "shares",
+    "share", "structured", "physical", "resources", "ishares", "betashares",
+    "vanguard", "vaneck", "spdr", "x", "s&p", "500", "global", "australian",
+    "international", "national",
+}
+_COMMON_ENGLISH_WORDS = {
+    "gold", "silver", "coal", "oil", "gas", "air", "water", "star", "one",
+    "first", "capital", "growth", "income", "value", "energy", "metals",
+    "mining", "bank", "financial", "property", "real", "estate", "health",
+    "care", "technology", "tech",
+}
+_NON_DISTINCTIVE_WORDS = _NAME_STOPWORDS | _FUND_BOILERPLATE | _COMMON_ENGLISH_WORDS
+
+
+def _distinctive_name_tokens(name):
+    """Name words with boilerplate AND common English words stripped - the
+    only words allowed to establish relevance (or be used as a search
+    query) on their own. A name like "Global X Physical Gold Structured"
+    has nothing distinctive left after stripping - by design, so relevance
+    falls back to the full quoted name instead of any one of its words."""
+    out = []
+    for w in (name or "").lower().replace(",", " ").split():
+        w = w.strip(".()")
+        if len(w) > 2 and w not in _NON_DISTINCTIVE_WORDS:
+            out.append(w)
+    return out
 
 
 def _classify_severity(text):
@@ -525,11 +563,17 @@ def _is_relevant(text, name, ticker, thesis_drivers, source):
     if source == "asx":
         return True
     t = (text or "").lower()
-    for word in (name or "").lower().split():
-        if len(word) > 2 and word in t and word not in _NAME_STOPWORDS:
+    distinctive = _distinctive_name_tokens(name)
+    if distinctive:
+        if any(word in t for word in distinctive):
             return True
+    elif name and name.strip().lower() in t:
+        # Nothing distinctive survived stripping the name (e.g. "Global X
+        # Physical Gold Structured") - fall back to requiring the exact
+        # full name, so a headline merely containing "gold" can't pass.
+        return True
     root = ticker.split(".")[0].lower()
-    if len(root) >= 3 and root in t:
+    if len(root) >= 3 and root not in _NON_DISTINCTIVE_WORDS and root in t:
         return True
     for driver in (thesis_drivers or []):
         if driver.lower() in t:
@@ -564,7 +608,27 @@ def _parse_date(s):
 # Main entry point
 # --------------------------------------------------------------------------- #
 
-def analyze_holding_news(ticker, name=None, thesis_drivers=None, buy_date=None, now=None):
+EXCLUDED_ETF_EXPLAIN = (
+    "News intelligence applies to individual companies. ETFs are monitored "
+    "by price and trend only."
+)
+
+
+def _excluded_result(explain=EXCLUDED_ETF_EXPLAIN):
+    """The stub returned for ETFs/funds (1b: ETF mode) - no feeds are
+    fetched at all, so a fund never accidentally inherits a component's or
+    sector's news. news_risk_score is None (excluded), not 100 (scored as
+    clean) - the Health blend for ETFs drops News entirely rather than
+    treating 'nothing fetched' as 'nothing wrong'."""
+    return {
+        "news_risk_score": None, "material": False, "timeline": [], "today": [],
+        "counts": {"positive": 0, "neutral": 0, "warning": 0, "thesis-threatening": 0},
+        "all_relevant": 0, "scanned": 0, "source_counts": {}, "explain": explain,
+        "excluded": True,
+    }
+
+
+def analyze_holding_news(ticker, name=None, thesis_drivers=None, buy_date=None, now=None, is_etf=False):
     """
     Full News Intelligence result for one holding - same shape as the
     desktop app's news_intel_engine.analyse():
@@ -577,7 +641,15 @@ def analyze_holding_news(ticker, name=None, thesis_drivers=None, buy_date=None, 
     in the last REFETCH_STALE_HOURS - every call still reclassifies
     whatever's already stored, so editing a holding's thesis re-applies
     instantly without waiting on a refetch.
+
+    is_etf=True (1b) skips company news intelligence entirely - no feeds
+    fetched, nothing classified - and returns a stub result explaining why,
+    instead of risking an unrelated sector/commodity story (a physical-gold
+    ETF pulling in gold-MINING news) being misread as thesis-relevant.
     """
+    if is_etf:
+        return _excluded_result()
+
     now = now or _now()
     buy_dt = _parse_date(buy_date) or (now - _dt.timedelta(days=365))
     ticker = ticker.upper()
