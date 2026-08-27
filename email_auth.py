@@ -18,9 +18,12 @@ watchlist_store - codes and sessions are hashed (sha256), so a leaked DB
 never yields a usable code or cookie value.
 
 SIGN-UP REGISTRY: every first sign-in (email OR Google) upserts a row in
-`signups`. The admin panel only ever reads AGGREGATE COUNTS from it
-(total / last 7 days / last 30 days, split by method) - per Andrew's
-choice, no identities are displayed anywhere.
+`signups`. The admin Stats popover mostly reads AGGREGATE COUNTS from it
+(total / last 7 days / last 30 days, split by method); the one exception
+is list_signups() (added 2026-08-27, at Andrew's request), which returns
+the raw per-email rows for the admin-only "Show email list" view - still
+gated behind the same ADMIN_REFRESH_KEY / full-view unlock as everything
+else in that popover, never shown to a public visitor.
 
 ABUSE LIMITS: max 5 code emails per address per day, codes expire after
 15 minutes, and 5 wrong attempts burn the code.
@@ -327,6 +330,27 @@ def signup_stats():
     return {"total": total, "email": by_email, "google": by_google,
             "last_7_days": last7, "last_30_days": last30,
             "active_7_days": active7}
+
+
+def list_signups(limit=1000):
+    """The raw per-email sign-up registry - email, method, first_seen,
+    last_seen, signin_count, src - newest first. UNLIKE every other
+    function in this module, this deliberately DOES let identities leave
+    the module: it backs the admin-only "Show email list" view (added at
+    Andrew's request, 2026-08-27), which sits behind the same
+    ADMIN_REFRESH_KEY / full-view gate as the rest of the Stats popover.
+    Never call this from anything a public visitor can reach."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """SELECT email, method, first_seen, last_seen, signin_count, src
+               FROM signups ORDER BY first_seen DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [
+        {"email": r[0], "method": r[1], "first_seen": r[2],
+         "last_seen": r[3], "signin_count": r[4], "src": r[5]}
+        for r in rows
+    ]
 
 
 def signup_counts_by_src():

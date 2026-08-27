@@ -514,6 +514,24 @@ def _render_view_badge():
                                "Railway volume, survives redeploys.")
                 except Exception:
                     st.caption("No sign-up data yet.")
+
+                if st.checkbox("Show email list", key="admin_show_signup_emails"):
+                    try:
+                        _signup_rows = email_auth.list_signups()
+                    except Exception:
+                        _signup_rows = []
+                    if _signup_rows:
+                        _signup_df = pd.DataFrame(_signup_rows)
+                        st.dataframe(_signup_df, use_container_width=True, hide_index=True)
+                        st.download_button(
+                            "Download as CSV",
+                            _signup_df.to_csv(index=False).encode("utf-8"),
+                            file_name="stocksdeepdive_signups.csv",
+                            mime="text/csv",
+                            key="admin_download_signup_emails",
+                        )
+                    else:
+                        st.caption("No sign-up data yet.")
                 st.markdown("---")
                 st.markdown("### Page views")
                 try:
