@@ -41,6 +41,7 @@ import scanner_engine
 import screen_import_store
 import nightly_scan
 import portfolio_store
+import portfolio_health_engine
 import name_directory
 import score_history
 import blog_store
@@ -1436,47 +1437,36 @@ def _render_header(compact, page_label=None):
                 "tickers can be mixed freely."
             )
 
-    # The three page buttons get their OWN, wider row (60% of the page vs
-    # the search box's 40%) - three labels, one of them long, don't fit
-    # inside the narrow search column now that button text never wraps.
-    # My Portfolio (previously Blog here - Blog stays reachable from the
-    # footer) gets its OWN outer column rather than a 4th slot inside
-    # _bmid - squeezing it in there previously shrank the three main
-    # buttons enough that "Rational Compounder Analysis" (the longest
-    # label) started wrapping and threw off row alignment across every
-    # page. This keeps _bmid's three buttons at their original,
-    # wrap-safe equal-third width and takes the extra room for My
-    # Portfolio out of the right-hand padding column instead.
-    _bsp1, _bmid, _bportfolio, _bsp2 = st.columns([2, 6, 1, 1])
+    # Symmetric 15%/15% outer margins (vs the old [2, 6, 1, 1]'s uneven
+    # 20% left / 10% right) so this row is centered under the page the
+    # same way the search row above it is - just over its own wider 70%
+    # content band, since four text-heavy labels don't fit in the search
+    # box's narrower 40%. Inside that band, each button gets a column
+    # WIDTH PROPORTIONAL TO ITS OWN LABEL LENGTH (plus a fixed padding
+    # allowance) rather than equal-width columns sized to fit the longest
+    # label - that's what made "Stock Scanner" and "My Portfolio" render
+    # as oversized boxes around short text. Streamlit still stretches
+    # each button to fill its column (use_container_width=True) and
+    # centers its label inside that box by default, so a column sized
+    # close to the label's own width is what makes the pill look tightly
+    # fitted and centered.
+    _bsp1, _bmid, _bsp2 = st.columns([3, 14, 3])
     with _bmid:
-        _nav_col1, _nav_col2, _nav_col3 = st.columns(3, gap="small")
-        with _nav_col1:
-            if st.button(
-                "Rational Compounder Analysis",
-                use_container_width=True, key="nav_research",
-            ):
-                st.switch_page(PG_RESEARCH)
-        with _nav_col2:
-            if st.button(
-                "Side-by-side Comparison",
-                use_container_width=True, key="nav_comparison",
-            ):
-                st.switch_page(PG_COMPARISON)
-        with _nav_col3:
-            if st.button(
-                "Stock Scanner",
-                use_container_width=True, key="nav_scanner",
-            ):
-                st.switch_page(PG_SCANNER)
-    with _bportfolio:
-        # Signed-in-only page - page_portfolio() itself shows the sign-in
-        # prompt when nobody's logged in, so this button never needs to
-        # check auth state itself before navigating.
-        if st.button(
-            "My Portfolio",
-            use_container_width=True, key="nav_portfolio",
-        ):
-            st.switch_page(PG_PORTFOLIO)
+        _nav_buttons = [
+            ("Rational Compounder Analysis", "nav_research", PG_RESEARCH),
+            ("Side-by-side Comparison", "nav_comparison", PG_COMPARISON),
+            ("Stock Scanner", "nav_scanner", PG_SCANNER),
+            ("My Portfolio", "nav_portfolio", PG_PORTFOLIO),
+        ]
+        _nav_widths = [len(_label) + 6 for _label, _key, _page in _nav_buttons]
+        _nav_cols = st.columns(_nav_widths, gap="small")
+        for _col, (_label, _key, _page) in zip(_nav_cols, _nav_buttons):
+            with _col:
+                # Signed-in-only for My Portfolio - page_portfolio() itself
+                # shows the sign-in prompt when nobody's logged in, so this
+                # button never needs to check auth state before navigating.
+                if st.button(_label, use_container_width=True, key=_key):
+                    st.switch_page(_page)
 
     if _searched:
         _dispatch_search(_search_text)
@@ -2935,7 +2925,7 @@ as a fact &mdash; you always know which numbers are computed and which are assum
   <div>
     <div class='sdd-h2' style='margin:0 0 6px;'>Everything is free.</div>
     <div style='color:#8aa0b8;font-size:14.5px;max-width:560px;line-height:1.5;'>Sign in (top
-    right) to save a watchlist and get the weekly {digest_word} digest.</div>
+    left) to save a watchlist and get the weekly {digest_word} digest.</div>
   </div>
 </div>
 """.format(digest_word="watchlist" if _factual() else "signal"),
@@ -3234,7 +3224,7 @@ def page_deep_dive():
                     st.rerun()
             else:
                 st.caption(
-                    "Sign in (top right) to save this stock to a watchlist and "
+                    "Sign in (top left) to save this stock to a watchlist and "
                     + ("get the weekly watchlist digest."
                        if _factual() else "get the weekly signal digest.")
                 )
@@ -5584,6 +5574,28 @@ def _render_scan_results(page_label, state_prefix, empty_message,
 # another signed-in visitor, can see a holding that isn't theirs.
 # -----------------------------------
 
+_PHE_PIE_COLORS = ["#2dd4bf", "#7c8cf8", "#f2a154", "#5fb0e8", "#c792ea",
+                    "#f2789f", "#8bd17c", "#e8d05a", "#ef8a7a", "#79c7c0"]
+
+
+def _phe_pie(labels, values, title):
+    _pairs = [(l, v) for l, v in zip(labels, values) if v and v > 0]
+    if not _pairs:
+        return None
+    _labels, _values = zip(*_pairs)
+    fig = go.Figure(data=[go.Pie(
+        labels=list(_labels), values=list(_values), hole=0.4,
+        marker=dict(colors=[_PHE_PIE_COLORS[i % len(_PHE_PIE_COLORS)] for i in range(len(_labels))]),
+        textinfo="label+percent", textfont=dict(size=12),
+    )])
+    fig.update_layout(
+        title=title, margin=dict(t=44, b=10, l=10, r=10), height=360,
+        legend=dict(orientation="h", y=-0.1),
+        paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2e0"),
+    )
+    return fig
+
+
 def page_portfolio():
     _render_header(compact=True, page_label="Portfolio")
     _bump_page_view("portfolio")
@@ -5592,7 +5604,7 @@ def page_portfolio():
 
     if not paywall_engine.is_logged_in():
         st.info(
-            "Sign in (top right) to track your long-term holdings here. "
+            "Sign in (top left) to track your long-term holdings here. "
             "This is private to your account - nobody else, including "
             "other signed-in visitors, can see it."
         )
@@ -5602,13 +5614,28 @@ def page_portfolio():
     portfolio_store.seed_desktop_import(email)  # no-op for everyone except
     # the one-off import owner, and only ever fires once even for them.
 
+    _holdings = portfolio_store.get_holdings(email)
+
+    _tab_holdings, _tab_health, _tab_progress, _tab_scoring = st.tabs(
+        ["Holdings", "Health Score", "Progress vs Baseline", "How it's scored"]
+    )
+
+    with _tab_holdings:
+        _render_portfolio_holdings_tab(email, _holdings)
+    with _tab_health:
+        _render_portfolio_health_tab(_holdings)
+    with _tab_progress:
+        _render_portfolio_progress_tab(_holdings)
+    with _tab_scoring:
+        _render_portfolio_scoring_tab()
+
+
+def _render_portfolio_holdings_tab(email, _holdings):
     st.caption(
         "Your long-term holdings, visible only to your signed-in account. "
         "Add a holding once and its starting snapshot locks in as the "
         "baseline - editing its thesis later never changes that lock."
     )
-
-    _holdings = portfolio_store.get_holdings(email)
 
     with st.expander("Add a holding", expanded=not _holdings):
         _ac1, _ac2, _ac3 = st.columns(3)
@@ -5647,17 +5674,17 @@ def page_portfolio():
             else:
                 with st.spinner(f"Capturing today's baseline for {_add_ticker}..."):
                     try:
-                        _row = nightly_scan.analyze_ticker_lite(_add_ticker)
+                        _snap = portfolio_health_engine.fetch_snapshot(_add_ticker)
                     except Exception:
-                        _row = None
-                if not _row:
+                        _snap = None
+                if not _snap or _snap.get("price") is None:
                     st.error(
                         f"Couldn't find price data for {_add_ticker} - "
                         "double check the ticker (Yahoo format, e.g. "
                         "CSL.AX for ASX, AAPL for Nasdaq)."
                     )
                 else:
-                    _baseline = {"schema": "website_v1", **_row}
+                    _baseline = portfolio_health_engine.baseline_snapshot_fields(_snap)
                     _today = datetime.now(timezone.utc).date().isoformat()
                     portfolio_store.add_holding(
                         email, _add_ticker,
@@ -5703,19 +5730,243 @@ def page_portfolio():
                 st.rerun()
         st.divider()
 
+    # Live snapshots (cached 30 min) power the current-value and dividend
+    # pies below - fetched once per ticker here and reused by the Health/
+    # Progress tabs too (same st.cache_data-backed function).
+    with st.spinner("Loading live prices..."):
+        _snaps = {h["ticker"]: portfolio_health_engine.fetch_snapshot(h["ticker"]) for h in _holdings}
+
+    _fx_missing = []
+
+    def _aud(amount, currency):
+        rate = portfolio_health_engine.fx_to_aud(currency)
+        if rate is None:
+            _fx_missing.append(currency)
+            return None
+        return amount * rate
+
     st.markdown("##### Invested (by holding)")
+    st.caption("Converted to AUD using a live FX snapshot so holdings in different currencies can share one chart.")
+    _invested_aud = [
+        _aud((h.get("shares") or 0) * (h.get("buy_price") or 0), h.get("currency"))
+        for h in _holdings
+    ]
+    _fig_invested = _phe_pie([h["ticker"] for h in _holdings], _invested_aud, "Initial investment by holding (AUD)")
+    if _fig_invested:
+        st.plotly_chart(_fig_invested, use_container_width=True)
+
+    st.markdown("##### Initial vs current investment")
+    _current_aud = [
+        _aud((h.get("shares") or 0) * (_snaps.get(h["ticker"], {}).get("price") or h.get("buy_price") or 0),
+             h.get("currency"))
+        for h in _holdings
+    ]
+    _initial_total = sum(v for v in _invested_aud if v is not None)
+    _current_total = sum(v for v in _current_aud if v is not None)
+    _fig_ic = _phe_pie(["Initial investment", "Current value"], [_initial_total, _current_total],
+                        "Initial vs current investment (AUD, all holdings)")
+    if _fig_ic:
+        st.plotly_chart(_fig_ic, use_container_width=True)
+
+    st.markdown("##### Estimated annual dividend income (by holding)")
     st.caption(
-        "Shares × buy price, in each holding's own currency (not "
-        "converted to AUD - mixing currencies in one total would be "
-        "misleading)."
+        "Estimated from each holding's current per-share dividend rate × shares - "
+        "not a record of dividends actually received (the site doesn't track that yet)."
     )
-    _chart_df = pd.DataFrame(
-        {
-            "Holding": [f"{h['ticker']} ({h['currency']})" for h in _holdings],
-            "Invested": [(h.get("shares") or 0) * (h.get("buy_price") or 0) for h in _holdings],
-        }
-    ).set_index("Holding")
-    st.bar_chart(_chart_df)
+    _div_aud = [
+        _aud((h.get("shares") or 0) * (_snaps.get(h["ticker"], {}).get("dividend_rate") or 0), h.get("currency"))
+        for h in _holdings
+    ]
+    _fig_div = _phe_pie([h["ticker"] for h in _holdings], _div_aud, "Estimated annual dividend income (AUD)")
+    if _fig_div:
+        st.plotly_chart(_fig_div, use_container_width=True)
+    else:
+        st.info("No dividend-paying holdings yet.")
+
+    if _fx_missing:
+        st.caption(
+            "Couldn't fetch a live FX rate for: " + ", ".join(sorted(set(_fx_missing)))
+            + " - those holdings are left out of the AUD totals above rather than guessed."
+        )
+
+
+def _render_portfolio_health_tab(_holdings):
+    st.caption(
+        "How healthy each holding looks right now - fundamentals blended with "
+        "purchase-relative price action, ported from the desktop Portfolio "
+        "Health Monitor app's scoring model. News Intelligence isn't wired in "
+        "yet, so the Thesis component is fundamentals-only for now."
+    )
+    if not _holdings:
+        st.info("Add a holding on the Holdings tab to see its Health Score.")
+        return
+
+    _rows = []
+    _health_by_ticker = {}
+    with st.spinner("Scoring your holdings..."):
+        for h in _holdings:
+            _snap = portfolio_health_engine.fetch_snapshot(h["ticker"])
+            _components = portfolio_health_engine.compute_health_components(
+                _snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"),
+            )
+            _health = portfolio_health_engine.compute_health(_components)
+            _health_by_ticker[h["ticker"]] = (_snap, _health)
+            _rows.append({
+                "Ticker": h["ticker"], "Name": h.get("name") or h["ticker"],
+                "Health": _health["overall"], "Action": _health["action"],
+                "Price": _snap.get("price"), "Buy price": h.get("buy_price"),
+            })
+
+    _df = pd.DataFrame(_rows)
+    st.dataframe(
+        _df.style.format({"Health": "{:.0f}", "Price": "{:.2f}", "Buy price": "{:.4f}"}, na_rep="–")
+        .map(lambda v: f"color: {portfolio_health_engine.score_color(v)}; font-weight:700"
+             if isinstance(v, (int, float)) else "", subset=["Health"]),
+        use_container_width=True, hide_index=True,
+    )
+
+    st.markdown("##### Holding detail")
+    _tk = st.selectbox("Choose a holding", [h["ticker"] for h in _holdings], key="pf_health_ticker")
+    _h = next(h for h in _holdings if h["ticker"] == _tk)
+    _snap, _health = _health_by_ticker[_tk]
+
+    _m1, _m2, _m3, _m4 = st.columns(4)
+    _m1.metric("Buy price", f"{(_h.get('buy_price') or 0):,.4f}")
+    _m2.metric("Current price", f"{(_snap.get('price') or 0):,.4f}" if _snap.get("price") is not None else "–")
+    if _h.get("buy_price") and _snap.get("price") is not None:
+        _ret = (_snap["price"] - _h["buy_price"]) / _h["buy_price"] * 100
+        _m3.metric("Return since buy", f"{_ret:+.1f}%")
+    else:
+        _m3.metric("Return since buy", "–")
+    _m4.metric("Shares", f"{(_h.get('shares') or 0):,.0f}")
+
+    _sc1, _sc2 = st.columns([1, 2])
+    with _sc1:
+        st.markdown(portfolio_health_engine.big_score_html("Investment Health Score", _health["overall"]),
+                     unsafe_allow_html=True)
+        st.markdown(portfolio_health_engine.action_badge_html(_health["action"], _health["action_tone"]),
+                     unsafe_allow_html=True)
+    with _sc2:
+        st.markdown(
+            portfolio_health_engine.component_bars_html(_health["components"], portfolio_health_engine.COMPONENT_ORDER),
+            unsafe_allow_html=True,
+        )
+
+    if _health["red_flags"]:
+        st.warning("**Red flags:** " + "; ".join(_health["red_flags"]))
+
+    if _h.get("thesis"):
+        with st.expander("Thesis"):
+            st.write(_h["thesis"])
+
+
+def _render_portfolio_progress_tab(_holdings):
+    st.caption(
+        "How each tracked metric has moved since the locked baseline snapshot "
+        "taken the day a holding was added. 50 = unchanged, 100 = doubled, "
+        "0 = halved (or worse), linear in between."
+    )
+    if not _holdings:
+        st.info("Add a holding on the Holdings tab to see its Progress Score.")
+        return
+
+    _rows = []
+    _progress_by_ticker = {}
+    with st.spinner("Comparing against locked baselines..."):
+        for h in _holdings:
+            _snap = portfolio_health_engine.fetch_snapshot(h["ticker"])
+            _progress = portfolio_health_engine.compute_progress(
+                _snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), buy_date=h.get("buy_date"),
+            )
+            _progress_by_ticker[h["ticker"]] = (_snap, _progress)
+            _rows.append({
+                "Ticker": h["ticker"], "Name": h.get("name") or h["ticker"],
+                "Progress": _progress["overall"], "Verdict": _progress["verdict"],
+                "Baseline date": h.get("baseline_date"),
+            })
+
+    _df = pd.DataFrame(_rows)
+    st.dataframe(
+        _df.style.format({"Progress": "{:.0f}"}, na_rep="–")
+        .map(lambda v: f"color: {portfolio_health_engine.score_color(v)}; font-weight:700"
+             if isinstance(v, (int, float)) else "", subset=["Progress"]),
+        use_container_width=True, hide_index=True,
+    )
+
+    st.markdown("##### Holding detail")
+    _tk = st.selectbox("Choose a holding", [h["ticker"] for h in _holdings], key="pf_progress_ticker")
+    _h = next(h for h in _holdings if h["ticker"] == _tk)
+    _snap, _progress = _progress_by_ticker[_tk]
+
+    _sc1, _sc2 = st.columns([1, 2])
+    with _sc1:
+        st.markdown(portfolio_health_engine.big_score_html("Progress Score", _progress["overall"]),
+                     unsafe_allow_html=True)
+        st.caption(_progress["verdict"])
+    with _sc2:
+        st.markdown(
+            portfolio_health_engine.component_bars_html(_progress["components"], portfolio_health_engine.PROGRESS_ORDER),
+            unsafe_allow_html=True,
+        )
+
+    _detail_rows = []
+    for name in portfolio_health_engine.PROGRESS_ORDER:
+        c = _progress["components"].get(name) or {}
+        _detail_rows.append({
+            "Metric": name,
+            "Progress score": c.get("score"),
+            "Current": c.get("current"),
+            "At baseline": c.get("baseline"),
+        })
+    st.dataframe(pd.DataFrame(_detail_rows), use_container_width=True, hide_index=True)
+
+
+def _render_portfolio_scoring_tab():
+    st.markdown("##### Health Score - how healthy the holding looks right now")
+    st.caption(
+        "A weighted blend of fundamentals (looked up against fixed score "
+        "bands) and two purchase-relative reads (price action, dividend "
+        "change) - only components with data available contribute, "
+        "reweighted so the rest still sum to 100%."
+    )
+    st.dataframe(
+        pd.DataFrame(
+            {"Component": portfolio_health_engine.COMPONENT_ORDER,
+             "Weight": [f"{portfolio_health_engine.BASE_WEIGHTS[k]*100:.0f}%"
+                        for k in portfolio_health_engine.COMPONENT_ORDER]}
+        ),
+        use_container_width=True, hide_index=True,
+    )
+    st.caption(
+        f"Action bands: below {portfolio_health_engine.ACTION_REVIEW} = REVIEW/REDUCE, "
+        f"below {portfolio_health_engine.ACTION_WATCH} = HOLD & WATCH, "
+        f"{portfolio_health_engine.ACTION_STRONG}+ = HOLD or HOLD/ADD depending on valuation."
+    )
+
+    st.markdown("##### Progress Score - how it's moved since you bought")
+    st.caption(
+        "Each metric's % change since the locked baseline, mapped so "
+        "unchanged = 50, doubled = 100, halved = 0 (clamped at those "
+        "extremes), then weighted and summed."
+    )
+    st.dataframe(
+        pd.DataFrame(
+            {"Component": portfolio_health_engine.PROGRESS_ORDER,
+             "Weight": [f"{portfolio_health_engine.PROGRESS_WEIGHTS[k]*100:.0f}%"
+                        for k in portfolio_health_engine.PROGRESS_ORDER]}
+        ),
+        use_container_width=True, hide_index=True,
+    )
+    st.caption(
+        f"{portfolio_health_engine.PROGRESS_VERDICT_UP}+ = improved since purchase, "
+        f"below {portfolio_health_engine.PROGRESS_VERDICT_DOWN} = deteriorated, in between = roughly flat."
+    )
+    st.info(
+        "Not yet on the website: News Intelligence (the desktop app's News "
+        "Risk Score and thesis-breaking-event detection). Planned as a "
+        "follow-up - until then the Thesis component above reflects "
+        "fundamentals only."
+    )
 
 
 def _content_page_shell(title):
