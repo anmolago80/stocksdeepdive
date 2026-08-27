@@ -379,6 +379,28 @@ def _fetch_fresh_price(tk):
     return None
 
 
+def _overlay_fresh_price(info, tk):
+    """Patches info["currentPrice"] with a fresh fast_info quote (see
+    _fetch_fresh_price) and, critically, also DROPS info["marketCap"] when
+    it does so. _basics() in auto_compounder_engine.py reads
+    info.get("marketCap") first and only recomputes price * shares when
+    that key is absent/None - so a stale-but-present "marketCap" (also
+    cached inside .info, computed by Yahoo from the same stale quote) would
+    silently keep every market-cap-derived metric (WACC, Market Cap/TAV,
+    the P/E-style ratios) priced off yesterday's close even after
+    currentPrice itself was refreshed. Confirmed live on OCL.AX: after the
+    first version of this fix, currentPrice updated but Market Cap/TAV and
+    Price to Equity Ratio still worked out to the old ~$7.46 close, because
+    they were routing through this untouched cached field the whole time.
+    Mutates and returns info; a no-op (returns info unchanged) if no fresh
+    price is available."""
+    fresh_price = _fetch_fresh_price(tk)
+    if fresh_price is not None:
+        info["currentPrice"] = fresh_price
+        info.pop("marketCap", None)
+    return info
+
+
 def get_bundle(ticker, force_refresh=False):
     """The statement/price/dividend bundle for one ticker - see the module
     docstring for the exact shape. Cached 24h on the persisted volume;
@@ -397,11 +419,7 @@ def get_bundle(ticker, force_refresh=False):
     if not force_refresh:
         cached = _read_cache(ticker)
         if cached is not None:
-            fresh_price = _fetch_fresh_price(yf.Ticker(ticker))
-            if fresh_price is not None:
-                cached_info = cached.get("info") or {}
-                cached_info["currentPrice"] = fresh_price
-                cached["info"] = cached_info
+            cached["info"] = _overlay_fresh_price(cached.get("info") or {}, yf.Ticker(ticker))
             return cached
 
     flags = []
@@ -416,11 +434,10 @@ def get_bundle(ticker, force_refresh=False):
         flags.append("info_unavailable")
 
     # Same fresh-quote overlay as the cache-hit path above (see
-    # _fetch_fresh_price's docstring) - .info's own price fields can lag
-    # even on a live fetch, so this isn't just a cache-staleness patch.
-    _fresh_price = _fetch_fresh_price(tk)
-    if _fresh_price is not None:
-        info["currentPrice"] = _fresh_price
+    # _overlay_fresh_price's docstring) - .info's own price/marketCap
+    # fields can lag even on a live fetch, so this isn't just a
+    # cache-staleness patch.
+    info = _overlay_fresh_price(info, tk)
 
     income, balance, cashflow = _fetch_yfinance_statements(tk)
     statement_years = max(
