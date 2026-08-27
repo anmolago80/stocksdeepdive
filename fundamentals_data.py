@@ -346,11 +346,50 @@ def _fetch_eodhd_statements(ticker, api_key):
 # Public entry point
 # -----------------------------------
 
+def _fetch_fresh_price(tk):
+    """A live-ish current price via yfinance's fast_info, which is backed by
+    a lighter/faster-updating Yahoo endpoint than .info's own quoteSummary
+    - unlike the rest of this bundle, this is deliberately called on EVERY
+    get_bundle() invocation, cache hit or not, and patched over whatever
+    price .info carries. Reason: the bundle (including .info, hence its
+    price fields) is cached for 24h, and on a day with a large intraday
+    move that leaves every price-derived Compounder View metric (PE-style
+    ratios, market-cap-based WACC, Value vs Book) silently priced off a
+    stale pre-move quote for up to 24h - confirmed live on OCL.AX, which
+    dropped ~17% intraday while the cached bundle's .info still carried the
+    prior close. fast_info's own several small internal requests are cheap
+    enough to run unconditionally. Returns None on any failure (missing
+    ticker, network hiccup, unexpected fast_info shape) - callers must
+    treat that as "keep whatever price was already in info", not as a
+    reason to fail the whole bundle."""
+    try:
+        fi = tk.fast_info
+        for key in ("last_price", "lastPrice", "regularMarketPrice"):
+            val = None
+            try:
+                val = fi[key]
+            except Exception:
+                pass
+            if val is None:
+                val = getattr(fi, key, None)
+            if isinstance(val, (int, float)) and val > 0:
+                return float(val)
+    except Exception:
+        pass
+    return None
+
+
 def get_bundle(ticker, force_refresh=False):
     """The statement/price/dividend bundle for one ticker - see the module
     docstring for the exact shape. Cached 24h on the persisted volume;
     pass force_refresh=True to bypass the cache (e.g. an admin rebuild
-    action, mirroring compounder_data.json's own rebuild pattern)."""
+    action, mirroring compounder_data.json's own rebuild pattern).
+
+    The price fields inside the (potentially 24h-stale) cached bundle are
+    always overlaid with a fresh fast_info quote before returning - see
+    _fetch_fresh_price's docstring. This runs on every call, cached or not,
+    so it takes effect immediately on deploy without waiting for any cache
+    to expire and without needing a BUNDLE_VERSION bump."""
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return None
@@ -358,6 +397,11 @@ def get_bundle(ticker, force_refresh=False):
     if not force_refresh:
         cached = _read_cache(ticker)
         if cached is not None:
+            fresh_price = _fetch_fresh_price(yf.Ticker(ticker))
+            if fresh_price is not None:
+                cached_info = cached.get("info") or {}
+                cached_info["currentPrice"] = fresh_price
+                cached["info"] = cached_info
             return cached
 
     flags = []
@@ -370,6 +414,13 @@ def get_bundle(ticker, force_refresh=False):
     except Exception:
         info = {}
         flags.append("info_unavailable")
+
+    # Same fresh-quote overlay as the cache-hit path above (see
+    # _fetch_fresh_price's docstring) - .info's own price fields can lag
+    # even on a live fetch, so this isn't just a cache-staleness patch.
+    _fresh_price = _fetch_fresh_price(tk)
+    if _fresh_price is not None:
+        info["currentPrice"] = _fresh_price
 
     income, balance, cashflow = _fetch_yfinance_statements(tk)
     statement_years = max(
