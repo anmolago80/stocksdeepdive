@@ -1614,23 +1614,40 @@ def _load_compounder_data():
     with open(_path) as _f:
         loaded = json.load(_f)
 
-    # One-time migration: the "Dividends" section was renamed to "Retained
-    # Earnings" in code, but a volume that already had its own
-    # compounder_data.json from a prior admin rebuild never gets reseeded
-    # from the git-tracked copy (_cp_seed_from_repo_if_missing is a no-op
-    # once the volume has *any* file there) - so a live volume can still be
-    # sitting on the old key, which makes the section_order filter below
-    # drop the tab entirely (it's neither "Dividends" nor "Retained
-    # Earnings" anymore). Heal it here and persist the rename back to the
-    # volume so this only has to run once.
+    # One-time migrations for a Railway Volume's own compounder_data.json:
+    # _cp_seed_from_repo_if_missing() only ever seeds an EMPTY volume, so a
+    # volume that already has its own file from a prior admin rebuild never
+    # picks up fixes made to the git-tracked copy - it can be sitting on
+    # stale keys/formats indefinitely. Heal each such issue here and
+    # persist the fix back to the volume so it only has to run once; both
+    # migrations share a single write at the end.
+    _migrated = False
+
+    # (1) the "Dividends" section was renamed to "Retained Earnings" in
+    # code - an old volume still on the old key makes the section_order
+    # filter below drop the tab entirely (it's neither key anymore).
     _sections = (loaded or {}).get("sections")
     if _sections and "Dividends" in _sections and "Retained Earnings" not in _sections:
         _sections["Retained Earnings"] = _sections.pop("Dividends")
+        _migrated = True
+
+    # (2) "Retained Earnings (TTM)" (Dividend Ratio!BQ - EPS minus
+    # Dividend) was mistagged format "pct" by the importer; it's a dollar
+    # figure and should be "cur" (see auto_compounder_engine.py's
+    # _build_retained_earnings for the full story). An old volume's data
+    # can still carry the "pct" tag even after this is fixed in code.
+    _re_metrics = (_sections or {}).get("Retained Earnings", {}).get("metrics") if _sections else None
+    for _m in (_re_metrics or []):
+        if _m.get("key") == "BQ" and _m.get("label") == "Retained Earnings (TTM)" and _m.get("format") == "pct":
+            _m["format"] = "cur"
+            _migrated = True
+
+    if _migrated:
         try:
             with open(_path, "w") as _f:
                 json.dump(loaded, _f, indent=1)
         except OSError:
-            pass  # in-memory rename still applies this run even if the write fails
+            pass  # in-memory fix still applies this run even if the write fails
 
     return loaded
 

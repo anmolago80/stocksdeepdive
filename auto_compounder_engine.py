@@ -974,13 +974,17 @@ def _build_retained_earnings(bundle, ticker, ref):
     add("Dividend (TTM)", div_ttm, "cur", flagged=div_ttm_flagged)
     add("Ratio P/(E-D)", ratio_p_ed, "x", flagged=div_ttm_flagged)
     add("Dividend Yield (TTM)", (div_ttm / price) if (div_ttm is not None and price) else None, "pct", flagged=div_ttm_flagged)
-    # Confirmed against a covered ticker: the workbook's "Retained Earnings
-    # (TTM)" is the raw per-share dollar figure (EPS minus Dividend), run
-    # through the "pct" formatter like the variance metric below - not
-    # retained-as-a-fraction-of-EPS, despite the "pct" tag. A negative
-    # value here is a real, possible result (trailing payout > 100%), not
-    # necessarily a bug.
-    add("Retained Earnings (TTM)", retained_ttm, "pct", flagged=True)
+    # "Retained Earnings (TTM)" is the raw per-share dollar figure (EPS
+    # minus Dividend) - format "cur", NOT "pct". The workbook's own BQ
+    # cell (Dividend Ratio sheet) is genuinely currency-formatted
+    # ($0.00); the "pct" tag on this metric was an importer mistake
+    # (PLAIN_EXTRA["Dividend Ratio"] had ("BQ", "pct")) that this engine
+    # inherited without re-checking the workbook's actual cell format. A
+    # round-1 comment here claimed the pct formatter was "confirmed
+    # against a covered ticker" - only the VALUE matched (AUB.AX:
+    # 1.62 - 0.93 = 0.69), the format never did. A negative value here is
+    # a real, possible result (trailing payout > 100%), not a bug.
+    add("Retained Earnings (TTM)", retained_ttm, "cur", flagged=True)
     ten_yr_re, ten_yr_n = _ten_year_retained(bundle)
     add("10Y Retained Earnings (From Last FY)", ten_yr_re, "cur", flagged=(ten_yr_n < 10))
 

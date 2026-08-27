@@ -1814,7 +1814,7 @@
      "key": "BQ",
      "label": "Retained Earnings (TTM)",
      "comment": "",
-     "format": "pct",
+     "format": "cur",
      "thresholds": null,
      "values": {
       "AUB.AX": 0.6900000000000001,

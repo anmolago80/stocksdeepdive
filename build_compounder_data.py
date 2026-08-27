@@ -299,7 +299,12 @@ PLAIN_EXTRA = {
     ],
     "Dividend Ratio": [
         ("F", "cur"), ("G", "cur"), ("H", "cur"), ("I", "cur"),
-        ("Y", "cur"), ("AJ", "cur"), ("BF", "pct"), ("BQ", "pct"),
+        # BQ ("Retained Earnings (TTM)" = EPS - Dividend) is genuinely
+        # currency-formatted ($0.00) in the workbook, not a percent - it
+        # was mistagged "pct" here (importer error, not a workbook fact),
+        # which the auto engine then inherited unquestioned. Fixed to
+        # "cur" so future workbook rebuilds import it correctly.
+        ("Y", "cur"), ("AJ", "cur"), ("BF", "pct"), ("BQ", "cur"),
     ],
     "Cost of Capital Analysis": [
         ("I", "cur"), ("M", "cur"), ("Q", "cur"), ("U", "cur"),
