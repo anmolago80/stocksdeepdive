@@ -40,6 +40,7 @@ import scan_store
 import scanner_engine
 import screen_import_store
 import nightly_scan
+import portfolio_store
 import name_directory
 import score_history
 import blog_store
@@ -1248,6 +1249,7 @@ def _render_footer():
       <a href='/deep-dive' target='_self'>Stock Deep Dive</a>
       <a href='/comparison' target='_self'>Comparison</a>
       <a href='/scanner' target='_self'>Stock Scanner</a>
+      <a href='/portfolio' target='_self'>My Portfolio (sign in)</a>
     </div>
     <div><h5>Contact</h5>
       <a href='mailto:rationalcompounder@stocksdeepdive.com'>rationalcompounder@stocksdeepdive.com</a>
@@ -5563,13 +5565,149 @@ def _render_scan_results(page_label, state_prefix, empty_message,
 
 
 # -----------------------------------
-# CONTENT PAGES - Methodology / About / Privacy
-#
-# Plain-prose pages that make the site sellable: people subscribe to a
-# system they believe they understand, run by a person they trust, with a
-# clear statement of what happens to their data. All three are linked from
-# the footer on every page.
+# MY PORTFOLIO - sign-in-only, per-user long-term holdings tracker
+# (portfolio_store.py). This is the "Invested" entry tab: add a holding
+# once and its starting snapshot LOCKS as the baseline everything else
+# will eventually compare against (Health Score / Progress Score / News
+# tabs are a later stage - this page is the entry point + the private
+# holdings list only). Every read/write below is scoped to the signed-in
+# user's own email, exactly like watchlist_store.py - nobody, including
+# another signed-in visitor, can see a holding that isn't theirs.
 # -----------------------------------
+
+def page_portfolio():
+    _render_header(compact=True, page_label="Portfolio")
+    _bump_page_view("portfolio")
+
+    st.markdown("#### My Portfolio")
+
+    if not paywall_engine.is_logged_in():
+        st.info(
+            "Sign in (top right) to track your long-term holdings here. "
+            "This is private to your account - nobody else, including "
+            "other signed-in visitors, can see it."
+        )
+        return
+
+    email = paywall_engine.current_user_email()
+    portfolio_store.seed_desktop_import(email)  # no-op for everyone except
+    # the one-off import owner, and only ever fires once even for them.
+
+    st.caption(
+        "Your long-term holdings, visible only to your signed-in account. "
+        "Add a holding once and its starting snapshot locks in as the "
+        "baseline - editing its thesis later never changes that lock."
+    )
+
+    _holdings = portfolio_store.get_holdings(email)
+
+    with st.expander("Add a holding", expanded=not _holdings):
+        _ac1, _ac2, _ac3 = st.columns(3)
+        with _ac1:
+            _add_ticker = st.text_input(
+                "Ticker (Yahoo format, e.g. CSL.AX)", key="pf_add_ticker",
+            ).strip().upper()
+            _add_name = st.text_input(
+                "Company/fund name (optional)", key="pf_add_name",
+            )
+        with _ac2:
+            _add_kind = st.selectbox("Type", ["STOCK", "ETF"], key="pf_add_kind")
+            _add_currency = st.selectbox("Currency", ["AUD", "USD"], key="pf_add_currency")
+        with _ac3:
+            _add_shares = st.number_input(
+                "Shares", min_value=0.0, step=1.0, key="pf_add_shares",
+            )
+            _add_buy_price = st.number_input(
+                "Buy price (per share)", min_value=0.0, step=0.01,
+                format="%.4f", key="pf_add_price",
+            )
+        _add_buy_date = st.date_input("Buy date", key="pf_add_date")
+        _add_thesis = st.text_area(
+            "Thesis (optional)", key="pf_add_thesis", height=100,
+            placeholder="Why you bought it - sharpens the (future) news "
+                        "relevance check, same as the desktop app.",
+        )
+        if st.button("Add holding", type="primary", key="pf_add_submit"):
+            if not _add_ticker:
+                st.error("Enter a ticker.")
+            elif portfolio_store.has_holding(email, _add_ticker):
+                st.warning(
+                    f"{_add_ticker} is already in your portfolio - its "
+                    "locked baseline stays as-is."
+                )
+            else:
+                with st.spinner(f"Capturing today's baseline for {_add_ticker}..."):
+                    try:
+                        _row = nightly_scan.analyze_ticker_lite(_add_ticker)
+                    except Exception:
+                        _row = None
+                if not _row:
+                    st.error(
+                        f"Couldn't find price data for {_add_ticker} - "
+                        "double check the ticker (Yahoo format, e.g. "
+                        "CSL.AX for ASX, AAPL for Nasdaq)."
+                    )
+                else:
+                    _baseline = {"schema": "website_v1", **_row}
+                    _today = datetime.now(timezone.utc).date().isoformat()
+                    portfolio_store.add_holding(
+                        email, _add_ticker,
+                        name=_add_name or _add_ticker, kind=_add_kind,
+                        currency=_add_currency, shares=_add_shares,
+                        buy_price=_add_buy_price,
+                        buy_date=_add_buy_date.isoformat(),
+                        thesis=_add_thesis, baseline=_baseline,
+                        baseline_date=_today, source="website",
+                    )
+                    st.success(f"Added {_add_ticker} - baseline locked as of today.")
+                    st.rerun()
+
+    if not _holdings:
+        st.info("No holdings yet - add one above to get started.")
+        return
+
+    st.markdown("##### Your holdings")
+    for h in _holdings:
+        _hc1, _hc2, _hc3 = st.columns([4, 3, 1.2])
+        _ccy_sign = "US$" if h["currency"] == "USD" else "A$"
+        with _hc1:
+            st.write(
+                f"**{h['ticker']}**"
+                + (f" - {h['name']}" if h.get("name") and h["name"] != h["ticker"] else "")
+                + f"  \n{h.get('kind', '-')} · {h.get('shares') or 0:,.0f} shares @ "
+                f"{_ccy_sign}{(h.get('buy_price') or 0):,.4f} "
+                f"(bought {h.get('buy_date') or '-'})"
+            )
+        with _hc2:
+            _src_label = (
+                "Baseline: imported from desktop app"
+                if h.get("source") == "desktop_import"
+                else "Baseline: captured on this site"
+            )
+            st.caption(f"{_src_label}, locked {h.get('baseline_date') or '-'}")
+            if h.get("thesis"):
+                with st.expander("Thesis"):
+                    st.write(h["thesis"])
+        with _hc3:
+            if st.button("Delete", key=f"pf_delete_{h['ticker']}"):
+                portfolio_store.remove_holding(email, h["ticker"])
+                st.rerun()
+        st.divider()
+
+    st.markdown("##### Invested (by holding)")
+    st.caption(
+        "Shares × buy price, in each holding's own currency (not "
+        "converted to AUD - mixing currencies in one total would be "
+        "misleading)."
+    )
+    _chart_df = pd.DataFrame(
+        {
+            "Holding": [f"{h['ticker']} ({h['currency']})" for h in _holdings],
+            "Invested": [(h.get("shares") or 0) * (h.get("buy_price") or 0) for h in _holdings],
+        }
+    ).set_index("Holding")
+    st.bar_chart(_chart_df)
+
 
 def _content_page_shell(title):
     _render_header(compact=True)
@@ -6299,6 +6437,9 @@ PG_DEEP_DIVE = st.Page(page_deep_dive, title="Deep Dive", url_path="deep-dive")
 PG_COMPARISON = st.Page(page_comparison, title="Comparison", url_path="comparison")
 PG_RESEARCH = st.Page(page_research, title="Rational Compounder Analysis", url_path="research")
 PG_SCANNER = st.Page(page_scanner, title="Stock Scanner", url_path="scanner")
+# Sign-in-only, private per-user long-term holdings tracker - see
+# page_portfolio()'s own docstring/comment block for the full design.
+PG_PORTFOLIO = st.Page(page_portfolio, title="My Portfolio", url_path="portfolio")
 PG_METHODOLOGY = st.Page(page_methodology, title="How the scores work", url_path="methodology")
 PG_ABOUT = st.Page(page_about, title="About", url_path="about")
 PG_MODEL_HISTORY = st.Page(page_model_history, title="Model history", url_path="model-history")
@@ -6311,7 +6452,7 @@ PG_BLOG_ADMIN = st.Page(page_blog_admin, title="Blog admin",
 
 _nav = st.navigation(
     [PG_HOME, PG_DEEP_DIVE, PG_COMPARISON, PG_RESEARCH, PG_SCANNER,
-     PG_METHODOLOGY, PG_ABOUT, PG_MODEL_HISTORY, PG_PRIVACY,
+     PG_PORTFOLIO, PG_METHODOLOGY, PG_ABOUT, PG_MODEL_HISTORY, PG_PRIVACY,
      PG_BLOG_ADMIN], position="hidden"
 )
 _nav.run()
