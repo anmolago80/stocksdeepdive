@@ -7,7 +7,7 @@ import html
 import os
 import concurrent.futures
 import contextlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date as _date
 
 from trends_engine import get_trend_score
 from news_engine import get_news_score, get_yahoo_news_score
@@ -5597,46 +5597,106 @@ _PHE_PIE_COLORS = ["#2dd4bf", "#7c8cf8", "#f2a154", "#5fb0e8", "#c792ea",
                     "#f2789f", "#8bd17c", "#e8d05a", "#ef8a7a", "#79c7c0"]
 
 
-def _phe_pie(labels, values, title):
+def _ticker_color_map(tickers):
+    """One colour per ticker, assigned in a fixed order and reused across
+    every chart on the Holdings tab (allocation-at-purchase donut,
+    allocation-now donut, P/L bar, dividend donut) so the same holding is
+    always the same colour and allocation drift is visible at a glance."""
+    seen = []
+    for t in tickers:
+        if t not in seen:
+            seen.append(t)
+    return {t: _PHE_PIE_COLORS[i % len(_PHE_PIE_COLORS)] for i, t in enumerate(seen)}
+
+
+def _phe_pie(labels, values, title, color_map=None):
     _pairs = [(l, v) for l, v in zip(labels, values) if v and v > 0]
     if not _pairs:
         return None
     _labels, _values = zip(*_pairs)
+    if color_map:
+        _colors = [color_map.get(l, _PHE_PIE_COLORS[i % len(_PHE_PIE_COLORS)]) for i, l in enumerate(_labels)]
+    else:
+        _colors = [_PHE_PIE_COLORS[i % len(_PHE_PIE_COLORS)] for i in range(len(_labels))]
     fig = go.Figure(data=[go.Pie(
-        labels=list(_labels), values=list(_values), hole=0.4,
-        marker=dict(colors=[_PHE_PIE_COLORS[i % len(_PHE_PIE_COLORS)] for i in range(len(_labels))]),
+        labels=list(_labels), values=list(_values), hole=0.45,
+        marker=dict(colors=_colors),
         textinfo="label+percent", textfont=dict(size=12),
     )])
     fig.update_layout(
-        title=title, margin=dict(t=44, b=10, l=10, r=10), height=360,
-        legend=dict(orientation="h", y=-0.1),
+        title=title, margin=dict(t=44, b=10, l=10, r=10), height=340,
+        legend=dict(orientation="h", y=-0.15),
         paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2e0"),
     )
     return fig
 
 
-def _analyze_holding(h):
+def _phe_pl_bar(tickers, pl_values, title, color_map=None):
+    """Horizontal Profit/Loss-by-holding bar (the workbook's U column as a
+    chart) - green for positive, red for negative, value labels outside
+    the bars so they're legible against either colour."""
+    _pairs = [(t, v) for t, v in zip(tickers, pl_values) if v is not None]
+    if not _pairs:
+        return None
+    _pairs.sort(key=lambda p: p[1])
+    _labels, _values = zip(*_pairs)
+    _colors = ["#fb7185" if v < 0 else "#22c55e" for v in _values]
+    _text = [f"A${v:,.0f}" for v in _values]
+    fig = go.Figure(data=[go.Bar(
+        x=list(_values), y=list(_labels), orientation="h",
+        marker=dict(color=_colors), text=_text, textposition="outside",
+        cliponaxis=False,
+    )])
+    fig.update_layout(
+        title=title, margin=dict(t=44, b=10, l=10, r=40), height=max(320, 40 * len(_labels)),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#c7d2e0"), showlegend=False,
+        xaxis=dict(showgrid=False, zeroline=True, zerolinecolor="rgba(138,160,184,0.35)"),
+        yaxis=dict(showgrid=False),
+    )
+    return fig
+
+
+def _analyze_holding(h, email=None):
     """One holding's full analysis - live snapshot, News Intelligence, Health
     Score, and Progress Score - computed once per render and shared across
-    the Portfolio Overview, Health, and Progress tabs so each holding is
-    only scored (and its news only re-fetched/reclassified) a single time."""
+    the Holdings, Overview & P/L, Health & News, and Progress tabs so each
+    holding is only scored (and its news only re-fetched/reclassified) a
+    single time.
+
+    ETFs (1b/1c) skip company News Intelligence entirely (analyze_holding_news
+    is called with is_etf=True, which short-circuits before any feed fetch)
+    and get the price-based Health blend instead of the fundamentals blend.
+    A manual intrinsic-value override (1d), if one is on file for this
+    user+ticker, is looked up and folded into the Valuation component."""
+    is_etf = (h.get("kind") or "STOCK").upper() == "ETF"
     _snap = portfolio_health_engine.fetch_snapshot(h["ticker"])
+    _iv_override = None
+    if not is_etf and email:
+        try:
+            _iv_override = portfolio_store.get_iv_override(email, h["ticker"])
+        except Exception:
+            _iv_override = None
     try:
         _news = portfolio_news_engine.analyze_holding_news(
             h["ticker"], name=h.get("name"), thesis_drivers=h.get("thesis_drivers"),
-            buy_date=h.get("buy_date"),
+            buy_date=h.get("buy_date"), is_etf=is_etf,
         )
     except Exception:
         _news = None
     _components = portfolio_health_engine.compute_health_components(
-        _snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"), news=_news,
+        _snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"),
+        news=_news, iv_override=_iv_override,
     )
-    _health = portfolio_health_engine.compute_health(_components, news=_news)
     _progress = portfolio_health_engine.compute_progress(
         _snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), buy_date=h.get("buy_date"),
     )
+    _health = portfolio_health_engine.compute_health(
+        _components, news=_news, is_etf=is_etf, progress_overall=_progress.get("overall"),
+    )
     return {"snapshot": _snap, "news": _news, "components": _components,
-            "health": _health, "progress": _progress}
+            "health": _health, "progress": _progress, "is_etf": is_etf,
+            "iv_override": _iv_override}
 
 
 def page_portfolio():
@@ -5662,230 +5722,426 @@ def page_portfolio():
     _analyses = {}
     if _holdings:
         with st.spinner("Scoring your holdings..."):
-            _analyses = {h["ticker"]: _analyze_holding(h) for h in _holdings}
+            _analyses = {h["ticker"]: _analyze_holding(h, email=email) for h in _holdings}
 
-    (_tab_holdings, _tab_overview, _tab_health, _tab_progress,
-     _tab_health_method, _tab_progress_method) = st.tabs([
-        "Holdings", "Portfolio Overview", "Health — by holding",
-        "Progress — by holding", "Health scoring method", "Progress scoring method",
-    ])
+    _tab_holdings, _tab_overview, _tab_health, _tab_progress = st.tabs(
+        ["💼 Holdings", "📊 Overview & P/L", "🩺 Health & News", "📈 Progress"]
+    )
 
     with _tab_holdings:
-        _render_portfolio_holdings_tab(email, _holdings)
+        _render_portfolio_holdings_tab(email, _holdings, _analyses)
     with _tab_overview:
         _render_portfolio_overview_tab(email, _holdings, _analyses)
     with _tab_health:
-        _render_portfolio_health_tab(_holdings, _analyses)
+        _render_portfolio_health_news_tab(email, _holdings, _analyses)
     with _tab_progress:
         _render_portfolio_progress_tab(_holdings, _analyses)
-    with _tab_health_method:
-        _render_portfolio_health_scoring_tab()
-    with _tab_progress_method:
-        _render_portfolio_progress_scoring_tab()
 
 
-def _render_portfolio_holdings_tab(email, _holdings):
-    st.caption(
-        "Your long-term holdings, visible only to your signed-in account. "
-        "Add a holding once and its starting snapshot locks in as the "
-        "baseline - editing its thesis later never changes that lock."
-    )
+def _build_portfolio_rows(_holdings, _analyses):
+    """The workbook's Invested-tab math (Part 2), computed once and shared
+    by the Holdings and Overview & P/L tabs:
+        cost S = shares x buy price (AUD)          value T = shares x price (AUD)
+        profit U = T - S                            Purchased->Current % = (price-buy)/buy
+        % at purchase = S / total cost               % now = T / total current value
+        pot. dividend income L = dividend yield x T
+    A holding whose live price is still unavailable contributes cost but
+    not value/profit/% now - never a silent A$nan (1a) - and is named in
+    the returned fx/price-missing list instead.
+    """
+    _fx_missing = []
+    _price_missing = []
+    rows = []
+    for h in _holdings:
+        _a = _analyses.get(h["ticker"], {})
+        _snap = _a.get("snapshot") or {}
+        price = _snap.get("price")
+        if price is None:
+            _price_missing.append(h["ticker"])
+        shares = h.get("shares") or 0
+        buy_price = h.get("buy_price") or 0
+        currency = h.get("currency")
 
+        cost_aud = portfolio_health_engine.to_aud(shares * buy_price, currency, missing=_fx_missing)
+        value_aud = (portfolio_health_engine.to_aud(shares * price, currency, missing=_fx_missing)
+                     if price is not None else None)
+        profit_aud = (value_aud - cost_aud) if (value_aud is not None and cost_aud is not None) else None
+        return_pct = ((price - buy_price) / buy_price) if (price is not None and buy_price) else None
+        div_yield = _snap.get("dividend_yield")
+        pot_div_income_aud = (div_yield * value_aud) if (div_yield is not None and value_aud is not None) else None
+
+        rows.append({
+            "ticker": h["ticker"], "name": h.get("name") or h["ticker"], "kind": h.get("kind"),
+            "currency": currency, "buy_date": h.get("buy_date"), "shares": shares,
+            "buy_price": buy_price, "current_price": price,
+            "cost_aud": cost_aud, "value_aud": value_aud, "profit_aud": profit_aud,
+            "return_pct": return_pct, "div_yield": div_yield,
+            "pot_div_income_aud": pot_div_income_aud,
+            "pct_at_purchase": None, "pct_now": None, "pct_of_balance": None,
+        })
+
+    total_cost = sum(r["cost_aud"] for r in rows if r["cost_aud"] is not None)
+    total_value = sum(r["value_aud"] for r in rows if r["value_aud"] is not None)
+    for r in rows:
+        if r["cost_aud"] is not None and total_cost:
+            r["pct_at_purchase"] = r["cost_aud"] / total_cost
+        if r["value_aud"] is not None and total_value:
+            r["pct_now"] = r["value_aud"] / total_value
+
+    totals = {
+        "cost_aud": total_cost or None,
+        "value_aud": total_value or None,
+        "profit_aud": (total_value - total_cost) if (total_value and total_cost) else None,
+        "div_income_aud": sum(r["pot_div_income_aud"] for r in rows if r["pot_div_income_aud"] is not None) or None,
+    }
+    return rows, totals, _fx_missing, _price_missing
+
+
+def _render_add_holding_expander(email, _holdings):
     with st.expander("Add a holding", expanded=not _holdings):
-        _ac1, _ac2, _ac3 = st.columns(3)
-        with _ac1:
-            _add_ticker = st.text_input(
-                "Ticker (Yahoo format, e.g. CSL.AX)", key="pf_add_ticker",
+        st.caption("Enter a ticker and look it up, then confirm the details.")
+        _lc1, _lc2 = st.columns([3, 1])
+        with _lc1:
+            _lookup_ticker = st.text_input(
+                "Ticker (Yahoo format, e.g. CSL.AX)", key="pf_lookup_ticker_input",
             ).strip().upper()
-            _add_name = st.text_input(
-                "Company/fund name (optional)", key="pf_add_name",
-            )
-        with _ac2:
-            _add_kind = st.selectbox("Type", ["STOCK", "ETF"], key="pf_add_kind")
-            _add_currency = st.selectbox("Currency", ["AUD", "USD"], key="pf_add_currency")
-        with _ac3:
-            _add_shares = st.number_input(
-                "Shares", min_value=0.0, step=1.0, key="pf_add_shares",
-            )
-            _add_buy_price = st.number_input(
-                "Buy price (per share)", min_value=0.0, step=0.01,
-                format="%.4f", key="pf_add_price",
-            )
-        _add_buy_date = st.date_input("Buy date", key="pf_add_date")
-        _add_thesis = st.text_area(
-            "Thesis (optional)", key="pf_add_thesis", height=100,
-            placeholder="Why you bought it - sharpens the (future) news "
-                        "relevance check, same as the desktop app.",
-        )
-        if st.button("Add holding", type="primary", key="pf_add_submit"):
-            if not _add_ticker:
-                st.error("Enter a ticker.")
-            elif portfolio_store.has_holding(email, _add_ticker):
-                st.warning(
-                    f"{_add_ticker} is already in your portfolio - its "
-                    "locked baseline stays as-is."
-                )
+        with _lc2:
+            st.write("")
+            _do_lookup = st.button("Look up", key="pf_lookup_btn")
+
+        if _do_lookup:
+            if not _lookup_ticker:
+                st.error("Enter a ticker first.")
+                st.session_state.pop("pf_lookup_result", None)
+            elif portfolio_store.has_holding(email, _lookup_ticker):
+                st.warning(f"{_lookup_ticker} is already in your portfolio - its locked baseline stays as-is.")
+                st.session_state.pop("pf_lookup_result", None)
             else:
-                with st.spinner(f"Capturing today's baseline for {_add_ticker}..."):
+                with st.spinner(f"Looking up {_lookup_ticker}..."):
                     try:
-                        _snap = portfolio_health_engine.fetch_snapshot(_add_ticker)
+                        _snap = portfolio_health_engine.fetch_snapshot(_lookup_ticker)
                     except Exception:
                         _snap = None
                 if not _snap or _snap.get("price") is None:
                     st.error(
-                        f"Couldn't find price data for {_add_ticker} - "
-                        "double check the ticker (Yahoo format, e.g. "
-                        "CSL.AX for ASX, AAPL for Nasdaq)."
+                        f"Couldn't find price data for {_lookup_ticker} - double-check "
+                        "the ticker (Yahoo format, e.g. CSL.AX for ASX, AAPL for Nasdaq)."
                     )
+                    st.session_state.pop("pf_lookup_result", None)
                 else:
-                    _baseline = portfolio_health_engine.baseline_snapshot_fields(_snap)
-                    _today = datetime.now(timezone.utc).date().isoformat()
-                    portfolio_store.add_holding(
-                        email, _add_ticker,
-                        name=_add_name or _add_ticker, kind=_add_kind,
-                        currency=_add_currency, shares=_add_shares,
-                        buy_price=_add_buy_price,
-                        buy_date=_add_buy_date.isoformat(),
-                        thesis=_add_thesis, baseline=_baseline,
-                        baseline_date=_today, source="website",
+                    st.session_state["pf_lookup_result"] = {
+                        "ticker": _lookup_ticker,
+                        "name": _snap.get("name") or _lookup_ticker,
+                        "currency": _snap.get("currency") or "AUD",
+                        "price": _snap.get("price"),
+                        "kind": "ETF" if _snap.get("quote_type") == "ETF" else "STOCK",
+                    }
+
+        _lr = st.session_state.get("pf_lookup_result")
+        if _lr and _lr.get("ticker") == _lookup_ticker:
+            st.success(f"Found **{_lr['ticker']}** · {_lr['name']} · {_lr['currency']} · current price {_lr['price']:,.4f}")
+            with st.form("pf_add_form"):
+                _fc1, _fc2 = st.columns(2)
+                with _fc1:
+                    _add_name = st.text_input("Company/fund name", value=_lr["name"], key="pf_add_name")
+                    _add_kind = st.selectbox(
+                        "Type", ["STOCK", "ETF"], index=(0 if _lr["kind"] == "STOCK" else 1), key="pf_add_kind",
                     )
-                    st.success(f"Added {_add_ticker} - baseline locked as of today.")
-                    st.rerun()
+                    _add_currency = st.selectbox(
+                        "Currency", ["AUD", "USD"], index=(0 if _lr["currency"] == "AUD" else 1), key="pf_add_currency",
+                    )
+                with _fc2:
+                    _add_shares = st.number_input("Shares", min_value=0.0, step=1.0, key="pf_add_shares")
+                    _add_buy_price = st.number_input(
+                        "Buy price (per share)", min_value=0.0, step=0.01, format="%.4f",
+                        value=float(_lr["price"]), key="pf_add_price",
+                    )
+                    _add_buy_date = st.date_input("Buy date", key="pf_add_date")
+                _add_thesis = st.text_area(
+                    "Thesis (optional)", key="pf_add_thesis", height=100,
+                    placeholder="Why you bought it - sharpens the News Intelligence relevance check.",
+                )
+                if st.form_submit_button("Add holding", type="primary"):
+                    if _add_shares <= 0:
+                        st.error("Shares must be greater than zero.")
+                    elif _add_buy_price <= 0:
+                        st.error("Buy price must be greater than zero.")
+                    elif not _add_name.strip():
+                        st.error("Enter a company/fund name.")
+                    else:
+                        with st.spinner(f"Capturing today's baseline for {_lr['ticker']}..."):
+                            _snap2 = portfolio_health_engine.fetch_snapshot(_lr["ticker"])
+                        _baseline = portfolio_health_engine.baseline_snapshot_fields(_snap2 or {"price": _lr["price"]})
+                        _today = datetime.now(timezone.utc).date().isoformat()
+                        portfolio_store.add_holding(
+                            email, _lr["ticker"], name=_add_name.strip(), kind=_add_kind,
+                            currency=_add_currency, shares=_add_shares, buy_price=_add_buy_price,
+                            buy_date=_add_buy_date.isoformat(), thesis=_add_thesis,
+                            baseline=_baseline, baseline_date=_today, source="website",
+                        )
+                        st.session_state.pop("pf_lookup_result", None)
+                        st.toast(f"Added {_lr['ticker']} - baseline locked as of today.", icon="✅")
+                        st.rerun()
+
+
+def _render_manage_holding(email, h):
+    _mc1, _mc2 = st.columns([3, 1])
+    with _mc1:
+        with st.expander(f"Edit {h['ticker']}"):
+            with st.form(f"pf_edit_form_{h['ticker']}"):
+                _e_shares = st.number_input(
+                    "Shares", min_value=0.0, step=1.0, value=float(h.get("shares") or 0),
+                    key=f"pf_edit_shares_{h['ticker']}",
+                )
+                _e_buy_price = st.number_input(
+                    "Buy price (per share)", min_value=0.0, step=0.01, format="%.4f",
+                    value=float(h.get("buy_price") or 0), key=f"pf_edit_price_{h['ticker']}",
+                )
+                try:
+                    _default_date = _date.fromisoformat(h["buy_date"]) if h.get("buy_date") else _date.today()
+                except Exception:
+                    _default_date = _date.today()
+                _e_buy_date = st.date_input("Buy date", value=_default_date, key=f"pf_edit_date_{h['ticker']}")
+                _e_thesis = st.text_area(
+                    "Thesis", value=h.get("thesis") or "", height=100, key=f"pf_edit_thesis_{h['ticker']}",
+                )
+                if st.form_submit_button("Save changes", type="primary"):
+                    if _e_shares <= 0 or _e_buy_price <= 0:
+                        st.error("Shares and buy price must be greater than zero.")
+                    else:
+                        portfolio_store.update_position(
+                            email, h["ticker"], shares=_e_shares, buy_price=_e_buy_price,
+                            buy_date=_e_buy_date.isoformat(),
+                        )
+                        portfolio_store.update_thesis(email, h["ticker"], _e_thesis, thesis_drivers=h.get("thesis_drivers"))
+                        st.toast(f"Saved changes to {h['ticker']}.", icon="✅")
+                        st.rerun()
+            st.caption(
+                ("Baseline: imported from desktop app" if h.get("source") == "desktop_import"
+                 else "Baseline: captured on this site") + f", locked {h.get('baseline_date') or '-'} (never changed by edits above)."
+            )
+    with _mc2:
+        _confirm_key = f"pf_confirm_delete_{h['ticker']}"
+        if not st.session_state.get(_confirm_key):
+            if st.button("Delete", key=f"pf_delete_{h['ticker']}"):
+                st.session_state[_confirm_key] = True
+                st.rerun()
+        else:
+            st.warning(f"Delete {h['ticker']}? This can't be undone.")
+            if st.button("Yes, delete", key=f"pf_delete_confirm_{h['ticker']}", type="primary"):
+                portfolio_store.remove_holding(email, h["ticker"])
+                st.session_state.pop(_confirm_key, None)
+                st.toast(f"Removed {h['ticker']}.", icon="🗑️")
+                st.rerun()
+            if st.button("Cancel", key=f"pf_delete_cancel_{h['ticker']}"):
+                st.session_state.pop(_confirm_key, None)
+                st.rerun()
+
+
+def _render_portfolio_holdings_tab(email, _holdings, _analyses):
+    st.caption(
+        "Your long-term holdings, live - the workbook's Invested tab. Add a "
+        "holding once and its starting snapshot locks in as the baseline; "
+        "editing its thesis or correcting shares/buy price later never "
+        "changes that lock."
+    )
+
+    _render_add_holding_expander(email, _holdings)
 
     if not _holdings:
         st.info("No holdings yet - add one above to get started.")
         return
 
-    st.markdown("##### Your holdings")
-    for h in _holdings:
-        _hc1, _hc2, _hc3 = st.columns([4, 3, 1.2])
-        _ccy_sign = "US$" if h["currency"] == "USD" else "A$"
-        with _hc1:
-            st.write(
-                f"**{h['ticker']}**"
-                + (f" - {h['name']}" if h.get("name") and h["name"] != h["ticker"] else "")
-                + f"  \n{h.get('kind', '-')} · {h.get('shares') or 0:,.0f} shares @ "
-                f"{_ccy_sign}{(h.get('buy_price') or 0):,.4f} "
-                f"(bought {h.get('buy_date') or '-'})"
+    _rows, _totals, _fx_missing, _price_missing = _build_portfolio_rows(_holdings, _analyses)
+
+    _settings = portfolio_store.get_settings(email)
+    _transferred, _cash = _settings.get("total_transferred"), _settings.get("cash_held")
+    if _transferred:
+        for r in _rows:
+            r["pct_of_balance"] = (r["cost_aud"] / _transferred) if r["cost_aud"] is not None else None
+
+    with st.expander("Portfolio settings"):
+        st.caption(
+            "Optional - fill these in to see Profit-to-Transferred and each "
+            "holding's % of your total balance."
+        )
+        _sc1, _sc2 = st.columns(2)
+        with _sc1:
+            _new_transferred = st.number_input(
+                "Total capital transferred (AUD)", min_value=0.0, step=100.0,
+                value=float(_transferred or 0.0), key="pf_settings_transferred",
             )
-        with _hc2:
-            _src_label = (
-                "Baseline: imported from desktop app"
-                if h.get("source") == "desktop_import"
-                else "Baseline: captured on this site"
+        with _sc2:
+            _new_cash = st.number_input(
+                "Cash held (AUD)", min_value=0.0, step=100.0,
+                value=float(_cash or 0.0), key="pf_settings_cash",
             )
-            st.caption(f"{_src_label}, locked {h.get('baseline_date') or '-'}")
-            if h.get("thesis"):
-                with st.expander("Thesis"):
-                    st.write(h["thesis"])
-        with _hc3:
-            if st.button("Delete", key=f"pf_delete_{h['ticker']}"):
-                portfolio_store.remove_holding(email, h["ticker"])
-                st.rerun()
-        st.divider()
+        if st.button("Save portfolio settings", key="pf_settings_save"):
+            portfolio_store.set_settings(email, total_transferred=(_new_transferred or None), cash_held=(_new_cash or None))
+            st.toast("Saved.", icon="✅")
+            st.rerun()
 
-    # Live snapshots (cached 30 min) power the current-value and dividend
-    # pies below - fetched once per ticker here and reused by the Health/
-    # Progress tabs too (same st.cache_data-backed function).
-    with st.spinner("Loading live prices..."):
-        _snaps = {h["ticker"]: portfolio_health_engine.fetch_snapshot(h["ticker"]) for h in _holdings}
-
-    _fx_missing = []
-
-    def _aud(amount, currency):
-        return portfolio_health_engine.to_aud(amount, currency, missing=_fx_missing)
-
-    st.markdown("##### Invested (by holding)")
-    st.caption("Converted to AUD using a live FX snapshot so holdings in different currencies can share one chart.")
-    _invested_aud = [
-        _aud((h.get("shares") or 0) * (h.get("buy_price") or 0), h.get("currency"))
-        for h in _holdings
-    ]
-    _fig_invested = _phe_pie([h["ticker"] for h in _holdings], _invested_aud, "Initial investment by holding (AUD)")
-    if _fig_invested:
-        st.plotly_chart(_fig_invested, use_container_width=True)
-
-    st.markdown("##### Initial vs current investment")
-    _current_aud = [
-        _aud((h.get("shares") or 0) * (_snaps.get(h["ticker"], {}).get("price") or h.get("buy_price") or 0),
-             h.get("currency"))
-        for h in _holdings
-    ]
-    _initial_total = sum(v for v in _invested_aud if v is not None)
-    _current_total = sum(v for v in _current_aud if v is not None)
-    _fig_ic = _phe_pie(["Initial investment", "Current value"], [_initial_total, _current_total],
-                        "Initial vs current investment (AUD, all holdings)")
-    if _fig_ic:
-        st.plotly_chart(_fig_ic, use_container_width=True)
-
-    st.markdown("##### Estimated annual dividend income (by holding)")
-    st.caption(
-        "Estimated from each holding's current per-share dividend rate × shares - "
-        "not a record of dividends actually received (the site doesn't track that yet)."
-    )
-    _div_aud = [
-        _aud((h.get("shares") or 0) * (_snaps.get(h["ticker"], {}).get("dividend_rate") or 0), h.get("currency"))
-        for h in _holdings
-    ]
-    _fig_div = _phe_pie([h["ticker"] for h in _holdings], _div_aud, "Estimated annual dividend income (AUD)")
-    if _fig_div:
-        st.plotly_chart(_fig_div, use_container_width=True)
+    _has_transfer_kpi = bool(_transferred)
+    _kpi_cols = st.columns(5 if _has_transfer_kpi else 4)
+    _kpi_cols[0].metric("Total invested", f"A${_totals['cost_aud']:,.0f}" if _totals["cost_aud"] else "–")
+    _kpi_cols[1].metric("Current value", f"A${_totals['value_aud']:,.0f}" if _totals["value_aud"] else "–")
+    if _totals["profit_aud"] is not None and _totals["cost_aud"]:
+        _kpi_cols[2].metric("Unrealised P/L (AUD)", f"A${_totals['profit_aud']:,.0f}",
+                             f"{_totals['profit_aud'] / _totals['cost_aud'] * 100:+.1f}%")
     else:
-        st.info("No dividend-paying holdings yet.")
+        _kpi_cols[2].metric("Unrealised P/L (AUD)", "–")
+    _kpi_cols[3].metric("Est. annual dividends", f"A${_totals['div_income_aud']:,.0f}" if _totals["div_income_aud"] else "–")
+    if _has_transfer_kpi:
+        _pt = None
+        if _totals["value_aud"] is not None and _totals["cost_aud"] is not None:
+            _cash_v = _cash or 0.0
+            # Owner's formula: (value + cash + (transferred - cost) - transferred) / transferred
+            # - algebraically (value + cash - cost) / transferred; kept both
+            # forms here so the spreadsheet expression stays traceable.
+            _pt = (_totals["value_aud"] + _cash_v - _totals["cost_aud"]) / _transferred
+        _kpi_cols[4].metric("Profit-to-Transferred", f"{_pt * 100:+.1f}%" if _pt is not None else "–")
 
+    if _price_missing:
+        st.caption(
+            "No live price yet for: " + ", ".join(sorted(set(_price_missing)))
+            + " - those holdings are left out of current value, P/L, and % now above rather than shown as A$nan."
+        )
     if _fx_missing:
         st.caption(
             "Couldn't fetch a live FX rate for: " + ", ".join(sorted(set(_fx_missing)))
             + " - those holdings are left out of the AUD totals above rather than guessed."
         )
 
+    _cmap = _ticker_color_map([r["ticker"] for r in _rows])
+
+    st.markdown("##### Allocation")
+    _dc1, _dc2 = st.columns(2)
+    with _dc1:
+        _fig_purchase = _phe_pie([r["ticker"] for r in _rows], [r["cost_aud"] for r in _rows],
+                                  "Allocation at purchase (% of cost)", color_map=_cmap)
+        if _fig_purchase:
+            st.plotly_chart(_fig_purchase, use_container_width=True)
+        else:
+            st.caption("No cost data yet.")
+    with _dc2:
+        _fig_now = _phe_pie([r["ticker"] for r in _rows], [r["value_aud"] for r in _rows],
+                             "Allocation now (% of current value)", color_map=_cmap)
+        if _fig_now:
+            st.plotly_chart(_fig_now, use_container_width=True)
+        else:
+            st.caption("No current-value data yet.")
+
+    st.markdown("##### Profit/Loss by holding")
+    _fig_pl = _phe_pl_bar([r["ticker"] for r in _rows], [r["profit_aud"] for r in _rows], "Profit/Loss by holding (AUD)")
+    if _fig_pl:
+        st.plotly_chart(_fig_pl, use_container_width=True)
+    else:
+        st.caption("No P/L data yet.")
+
+    st.markdown("##### Estimated annual dividend income")
+    st.caption(
+        "Estimated from each holding's current dividend yield × current value (AUD) - "
+        "not a record of dividends actually received (the site doesn't track that yet)."
+    )
+    _fig_div = _phe_pie([r["ticker"] for r in _rows], [r["pot_div_income_aud"] for r in _rows],
+                         "Estimated annual dividend income (AUD)", color_map=_cmap)
+    if _fig_div:
+        st.plotly_chart(_fig_div, use_container_width=True)
+    else:
+        st.caption("No dividend-paying holdings yet.")
+
+    st.markdown("##### Holdings table")
+    _table_rows = []
+    for r in _rows:
+        _row = {
+            "Ticker": r["ticker"], "Name": r["name"], "Buy date": r["buy_date"],
+            "Shares": r["shares"], "Buy price": r["buy_price"], "Current price": r["current_price"],
+            "Purchased→Current %": (r["return_pct"] * 100) if r["return_pct"] is not None else None,
+            "Cost (AUD)": r["cost_aud"], "Value (AUD)": r["value_aud"], "Profit (AUD)": r["profit_aud"],
+            "% at purchase": (r["pct_at_purchase"] * 100) if r["pct_at_purchase"] is not None else None,
+            "% now": (r["pct_now"] * 100) if r["pct_now"] is not None else None,
+            "Div yield": (r["div_yield"] * 100) if r["div_yield"] is not None else None,
+            "Pot. div income (AUD)": r["pot_div_income_aud"],
+        }
+        if _transferred:
+            _row["% of balance"] = (r["pct_of_balance"] * 100) if r["pct_of_balance"] is not None else None
+        _table_rows.append(_row)
+
+    _tdf = pd.DataFrame(_table_rows)
+    _fmt = {
+        "Shares": "{:,.0f}", "Buy price": "{:,.2f}", "Current price": "{:,.2f}",
+        "Purchased→Current %": "{:+.2f}%", "Cost (AUD)": "A${:,.2f}", "Value (AUD)": "A${:,.2f}",
+        "Profit (AUD)": "A${:,.2f}", "% at purchase": "{:.2f}%", "% now": "{:.2f}%",
+        "Div yield": "{:.2f}%", "Pot. div income (AUD)": "A${:,.2f}",
+    }
+    if "% of balance" in _tdf.columns:
+        _fmt["% of balance"] = "{:.2f}%"
+    st.dataframe(
+        _tdf.style.format(_fmt, na_rep="–")
+        .map(lambda v: "color:#22c55e;font-weight:700" if isinstance(v, (int, float)) and v > 0
+             else ("color:#fb7185;font-weight:700" if isinstance(v, (int, float)) and v < 0 else ""),
+             subset=["Profit (AUD)", "Purchased→Current %"]),
+        use_container_width=True, hide_index=True,
+    )
+
+    _costed = [r for r in _rows if r["cost_aud"] is not None]
+    if _costed:
+        _by_cost = sorted(_costed, key=lambda r: r["cost_aud"])
+        _max_r, _min_r = _by_cost[-1], _by_cost[0]
+        st.caption(
+            f"Max investment: **{_max_r['ticker']}** (A${_max_r['cost_aud']:,.0f}) · "
+            f"Min investment: **{_min_r['ticker']}** (A${_min_r['cost_aud']:,.0f})"
+        )
+
+    st.markdown("##### Manage a holding")
+    _mtk = st.selectbox("Choose a holding to edit or delete", [r["ticker"] for r in _rows], key="pf_manage_ticker")
+    _mh = next(h for h in _holdings if h["ticker"] == _mtk)
+    _render_manage_holding(email, _mh)
+
 
 def _render_portfolio_overview_tab(email, _holdings, _analyses):
     st.caption(
-        "The Portfolio Overview from the desktop Health Monitor app - Health, "
-        "Progress, News Risk, and weight in the portfolio for every holding "
-        "at a glance, plus a second table of progress since purchase."
+        "Health, Progress, News Risk, and P/L for every holding at a glance, "
+        "plus a second table of progress since purchase."
     )
     if not _holdings:
-        st.info("Add a holding on the Holdings tab to see your Portfolio Overview.")
+        st.info("Add a holding on the Holdings tab to see your Overview.")
         return
 
-    _fx_missing = []
-    _rows, _prog_rows = [], []
-    _current_aud_by_ticker, _invested_aud_by_ticker = {}, {}
-    _thesis_intact_count = 0
+    _rows, _totals, _fx_missing, _price_missing = _build_portfolio_rows(_holdings, _analyses)
+    _by_ticker = {r["ticker"]: r for r in _rows}
 
+    _table_rows, _prog_rows = [], []
+    _thesis_intact_count = 0
     for h in _holdings:
         _a = _analyses[h["ticker"]]
-        _snap, _news, _health, _progress = _a["snapshot"], _a["news"], _a["health"], _a["progress"]
-
-        _current_val = (h.get("shares") or 0) * (_snap.get("price") or h.get("buy_price") or 0)
-        _invested_val = (h.get("shares") or 0) * (h.get("buy_price") or 0)
-        _current_aud_by_ticker[h["ticker"]] = portfolio_health_engine.to_aud(
-            _current_val, h.get("currency"), missing=_fx_missing)
-        _invested_aud_by_ticker[h["ticker"]] = portfolio_health_engine.to_aud(
-            _invested_val, h.get("currency"), missing=_fx_missing)
+        _health, _news, _progress = _a["health"], _a["news"], _a["progress"]
+        _r = _by_ticker[h["ticker"]]
+        _is_etf = bool(_a.get("is_etf"))
 
         _prev = portfolio_health_engine.record_health_run(
             email, h["ticker"], _health["overall"], news_risk=(_news or {}).get("news_risk_score"),
         )
         _delta_run = round(_health["overall"] - _prev, 1) if (_prev is not None and _health["overall"] is not None) else None
 
-        _return_pct = None
-        if h.get("buy_price") and _snap.get("price") is not None:
-            _return_pct = (_snap["price"] - h["buy_price"]) / h["buy_price"] * 100
-
+        _return_pct = (_r["return_pct"] * 100) if _r["return_pct"] is not None else None
         _thesis_breaking = bool(_health.get("thesis_breaking"))
         if not _thesis_breaking:
             _thesis_intact_count += 1
 
-        _rows.append({
+        _table_rows.append({
             "Ticker": h["ticker"], "Name": h.get("name") or h["ticker"],
-            "Health": _health["overall"], "Δ run": _delta_run, "Action": _health["action"],
-            "Thesis": "Review" if _thesis_breaking else "Intact",
-            "Buy price": h.get("buy_price"), "Current price": _snap.get("price"),
-            "Return %": _return_pct, "News Risk": (_news or {}).get("news_risk_score"),
-            "Flags": len(_health.get("red_flags") or []), "Weight %": None,
+            "Health": _health["overall"], "Δ run": _delta_run,
+            "Action": _health["action"],
+            "Thesis": ("N/A (ETF)" if _is_etf else ("Review" if _thesis_breaking else "Intact")),
+            "Buy price": h.get("buy_price"), "Current price": _r["current_price"],
+            "Return %": _return_pct, "Unrealised P/L (AUD)": _r["profit_aud"],
+            # ETFs skip company News Intelligence outright (1b) - shows as
+            # "–" (na_rep), never the misleading "100 = clean" a stub score
+            # would imply.
+            "News Risk": (_news or {}).get("news_risk_score"),
+            "Flags": len(_health.get("red_flags") or []),
+            "Weight %": (_r["pct_now"] * 100) if _r["pct_now"] is not None else None,
         })
         _prog_rows.append({
             "Ticker": h["ticker"], "Progress": _progress["overall"],
@@ -5893,34 +6149,53 @@ def _render_portfolio_overview_tab(email, _holdings, _analyses):
             "Baseline date": h.get("baseline_date"),
         })
 
-    _total_current_aud = sum(v for v in _current_aud_by_ticker.values() if v is not None)
-    _total_invested_aud = sum(v for v in _invested_aud_by_ticker.values() if v is not None)
-    for row in _rows:
-        _cur = _current_aud_by_ticker.get(row["Ticker"])
-        row["Weight %"] = (_cur / _total_current_aud * 100) if (_cur is not None and _total_current_aud) else None
-    _concentrated = [r for r in _rows if r["Weight %"] is not None and r["Weight %"] >= 35]
+    # Concentration warning (1a fix): amber when one holding exceeds 40% of
+    # current value, or the top two together exceed 65% - genuinely
+    # computable now that ETF prices resolve (see the fallback chain in
+    # fetch_snapshot); previously Weight % never populated for this
+    # portfolio's ETFs, so the warning was permanently dead ("None").
+    _weighted = sorted((r for r in _rows if r["pct_now"] is not None), key=lambda r: r["pct_now"], reverse=True)
+    _warn_tickers = []
+    if _weighted and _weighted[0]["pct_now"] > 0.40:
+        _warn_tickers = [_weighted[0]["ticker"]]
+    elif len(_weighted) >= 2 and (_weighted[0]["pct_now"] + _weighted[1]["pct_now"]) > 0.65:
+        _warn_tickers = [_weighted[0]["ticker"], _weighted[1]["ticker"]]
 
     _k1, _k2, _k3, _k4 = st.columns(4)
     _k1.metric("Holdings", len(_holdings))
     _k2.metric("Thesis intact", f"{_thesis_intact_count}/{len(_holdings)}")
-    if _total_current_aud and _total_invested_aud:
-        _pl = _total_current_aud - _total_invested_aud
-        _k3.metric("Unrealised P/L (AUD)", f"A${_pl:,.0f}", f"{_pl / _total_invested_aud * 100:+.1f}%")
+    if _totals["profit_aud"] is not None and _totals["cost_aud"]:
+        _k3.metric("Unrealised P/L (AUD)", f"A${_totals['profit_aud']:,.0f}",
+                   f"{_totals['profit_aud'] / _totals['cost_aud'] * 100:+.1f}%")
     else:
         _k3.metric("Unrealised P/L (AUD)", "–")
-    _k4.metric("Concentration warning", ", ".join(r["Ticker"] for r in _concentrated) if _concentrated else "None")
+    _k4.metric("Concentration warning", "Balanced" if not _warn_tickers else ", ".join(_warn_tickers))
+    if _warn_tickers:
+        st.caption(
+            ("⚠️ " + ", ".join(_warn_tickers) + (" makes up over 40% of your current value."
+             if len(_warn_tickers) == 1 else " together make up over 65% of your current value."))
+        )
 
-    _df = pd.DataFrame(_rows)
+    _df = pd.DataFrame(_table_rows)
     st.dataframe(
         _df.style.format({
             "Health": "{:.0f}", "Δ run": "{:+.1f}", "Buy price": "{:.4f}", "Current price": "{:.4f}",
-            "Return %": "{:+.1f}%", "News Risk": "{:.0f}", "Weight %": "{:.1f}%",
+            "Return %": "{:+.1f}%", "Unrealised P/L (AUD)": "A${:,.2f}",
+            "News Risk": "{:.0f}", "Weight %": "{:.1f}%",
         }, na_rep="–")
         .map(lambda v: f"color: {portfolio_health_engine.score_color(v)}; font-weight:700"
              if isinstance(v, (int, float)) else "", subset=["Health", "News Risk"])
+        .map(lambda v: ("color:#22c55e;font-weight:700" if isinstance(v, (int, float)) and v > 0
+             else ("color:#fb7185;font-weight:700" if isinstance(v, (int, float)) and v < 0 else "")),
+             subset=["Unrealised P/L (AUD)"])
         .map(lambda v: "color:#d03b3b;font-weight:700" if v == "Review" else "", subset=["Thesis"]),
         use_container_width=True, hide_index=True,
     )
+    if _price_missing:
+        st.caption(
+            "No live price yet for: " + ", ".join(sorted(set(_price_missing)))
+            + " - those holdings are left out of P/L and Weight % above rather than shown as A$nan."
+        )
     if _fx_missing:
         st.caption(
             "Couldn't fetch a live FX rate for: " + ", ".join(sorted(set(_fx_missing)))
@@ -5937,12 +6212,113 @@ def _render_portfolio_overview_tab(email, _holdings, _analyses):
     )
 
 
-def _render_portfolio_health_tab(_holdings, _analyses):
+def _pf_pct_or_dash(v):
+    return f"{v * 100:+.1f}%" if v is not None else "n/a"
+
+
+def _render_portfolio_health_scoring_expander():
+    with st.expander("How this score works"):
+        st.markdown("##### Health Score - how healthy the holding looks right now")
+        st.caption(
+            "A weighted blend of fundamentals (looked up against fixed score "
+            "bands, below), two purchase-relative reads (price action, dividend "
+            "change), Valuation/DCF, and News Intelligence - only components "
+            "with data available contribute, reweighted so the rest still sum "
+            "to 100%. ETFs/funds use a separate price-based blend instead (see "
+            "below) since there's no fundamentals model or company thesis for a fund."
+        )
+        st.dataframe(
+            pd.DataFrame(
+                {"Component": portfolio_health_engine.COMPONENT_ORDER,
+                 "Weight": [f"{portfolio_health_engine.BASE_WEIGHTS[k]*100:.0f}%"
+                            for k in portfolio_health_engine.COMPONENT_ORDER]}
+            ),
+            use_container_width=True, hide_index=True,
+        )
+
+        st.markdown("**Score bands**")
+        st.caption(
+            "Each fundamental/price-action/income read is looked up on a fixed "
+            "piecewise curve - unchanged from the desktop app's config.py."
+        )
+        _band_specs = [
+            ("Growth (mean of revenue & earnings growth; also reused for FCF growth)",
+             portfolio_health_engine.GROWTH_BAND, "Growth rate"),
+            ("Margins (profit margin)", portfolio_health_engine.MARGIN_BAND, "Margin"),
+            ("ROIC (return on equity)", portfolio_health_engine.ROE_BAND, "ROE"),
+            ("Debt (debt/equity)", portfolio_health_engine.DEBT_BAND, "Debt/Equity"),
+            ("Valuation (margin of safety %)", portfolio_health_engine.VAL_BAND, "MOS %"),
+            ("Price Action - drawdown from the post-purchase peak",
+             portfolio_health_engine.DRAWDOWN_BAND, "Drawdown %"),
+            ("Price Action - position in the 52-week range",
+             portfolio_health_engine.RANGE52_BAND, "Position (0-1)"),
+            ("Income - dividend yield change since the baseline",
+             portfolio_health_engine.INCOME_BAND, "Yield change"),
+        ]
+        for label, band, unit in _band_specs:
+            with st.expander(label):
+                st.dataframe(
+                    pd.DataFrame({unit: [b[0] for b in band], "Score": [b[1] for b in band]}),
+                    use_container_width=True, hide_index=True,
+                )
+
+        st.caption(
+            f"Action bands: below {portfolio_health_engine.ACTION_REVIEW} = REVIEW/REDUCE, "
+            f"below {portfolio_health_engine.ACTION_WATCH} = HOLD & WATCH, "
+            f"{portfolio_health_engine.ACTION_STRONG}+ = HOLD or HOLD/ADD depending on valuation."
+        )
+
+        st.markdown("##### ETFs/funds - Price-based health")
+        st.caption(
+            "No fundamentals, DCF, Income, or News component exists for a "
+            "fund, so rather than default those to a neutral read, ETF "
+            "holdings get a dedicated blend: the average of Price Action "
+            "(trend vs the 200-day average, position in the 52-week range, "
+            "drawdown from the post-purchase peak) and the Progress score vs "
+            "the locked baseline."
+        )
+
+        st.markdown("##### News Intelligence - how news moves the Health Score")
+        st.caption(
+            "Companies only (ETFs/funds skip this entirely - see above). Every "
+            "headline is classified on two axes - severity (noise → "
+            "temporary → material → thesis-breaking) and relevance (does it "
+            "touch this holding's thesis?) - and only news that's BOTH relevant "
+            "AND at least material can move the News Risk Score."
+        )
+        st.dataframe(
+            pd.DataFrame([
+                {"Severity": name, "Score hit": portfolio_news_engine.SEVERITY_HIT.get(key),
+                 "What it means": desc, "Effect": effect}
+                for name, key, desc, effect in portfolio_news_engine.SEVERITY_DEFS
+            ]),
+            use_container_width=True, hide_index=True,
+        )
+        st.code(
+            "Thesis component = 0.65 x fundamentals average + 0.35 x News Risk Score\n"
+            "    (capped at 30 if a thesis-breaking event is detected)\n"
+            "\n"
+            "News Risk Score starts at 100. For each day with relevant, at-least-\n"
+            "material news: subtract severity_hit x recency_weight for that day's\n"
+            "worst event, plus severity_hit x recency_weight x 0.40 for every\n"
+            "additional event the same day (NEWS_PERDAY_EXTRA) - so five outlets\n"
+            "covering one event in one day doesn't quintuple the penalty.\n"
+            "\n"
+            "Overall Health Score adjustment (only applied when material news exists):\n"
+            f"    news_adjustment = -(100 - News Risk Score) x {portfolio_news_engine.NEWS_IMPACT}\n"
+            "    overall = clamp(overall + news_adjustment, 0, 100)",
+            language="text",
+        )
+
+
+def _render_portfolio_health_news_tab(email, _holdings, _analyses):
     st.caption(
         "How healthy each holding looks right now - fundamentals blended with "
-        "purchase-relative price action AND News Intelligence, ported from "
-        "the desktop Portfolio Health Monitor app's scoring model."
+        "purchase-relative price action, Valuation/DCF, and News Intelligence "
+        "for companies; a dedicated price-based blend for ETFs/funds."
     )
+    _render_portfolio_health_scoring_expander()
+
     if not _holdings:
         st.info("Add a holding on the Holdings tab to see its Health Score.")
         return
@@ -5952,7 +6328,9 @@ def _render_portfolio_health_tab(_holdings, _analyses):
         _a = _analyses[h["ticker"]]
         _rows.append({
             "Ticker": h["ticker"], "Name": h.get("name") or h["ticker"],
-            "Health": _a["health"]["overall"], "Action": _a["health"]["action"],
+            "Health": _a["health"]["overall"],
+            "Score type": _a["health"].get("score_label", "Investment Health Score"),
+            "Action": _a["health"]["action"],
             "Price": _a["snapshot"].get("price"), "Buy price": h.get("buy_price"),
         })
 
@@ -5968,7 +6346,8 @@ def _render_portfolio_health_tab(_holdings, _analyses):
     _tk = st.selectbox("Choose a holding", [h["ticker"] for h in _holdings], key="pf_health_ticker")
     _h = next(h for h in _holdings if h["ticker"] == _tk)
     _a = _analyses[_tk]
-    _snap, _news, _health = _a["snapshot"], _a["news"], _a["health"]
+    _snap, _news, _health, _progress = _a["snapshot"], _a["news"], _a["health"], _a["progress"]
+    _is_etf = bool(_a.get("is_etf"))
 
     _m1, _m2, _m3, _m4 = st.columns(4)
     _m1.metric("Buy price", f"{(_h.get('buy_price') or 0):,.4f}")
@@ -5980,17 +6359,43 @@ def _render_portfolio_health_tab(_holdings, _analyses):
         _m3.metric("Return since buy", "–")
     _m4.metric("Shares", f"{(_h.get('shares') or 0):,.0f}")
 
-    _sc1, _sc2 = st.columns([1, 2])
-    with _sc1:
-        st.markdown(portfolio_health_engine.big_score_html("Investment Health Score", _health["overall"]),
-                     unsafe_allow_html=True)
-        st.markdown(portfolio_health_engine.action_badge_html(_health["action"], _health["action_tone"]),
-                     unsafe_allow_html=True)
-    with _sc2:
-        st.markdown(
-            portfolio_health_engine.component_bars_html(_health["components"], portfolio_health_engine.COMPONENT_ORDER),
-            unsafe_allow_html=True,
+    _score_label = _health.get("score_label", "Investment Health Score")
+    if _is_etf:
+        st.info(
+            f"**{_score_label}** - this is a fund, so Health blends Price "
+            "Action (trend vs the 200-day average, position in the 52-week "
+            "range, drawdown from the post-purchase peak) with Progress vs "
+            "baseline. Fundamentals, DCF/Valuation, Income, and News are "
+            "excluded outright rather than defaulted."
         )
+        _sc1, _sc2 = st.columns([1, 2])
+        with _sc1:
+            st.markdown(portfolio_health_engine.big_score_html(_score_label, _health["overall"]),
+                         unsafe_allow_html=True)
+            st.markdown(portfolio_health_engine.action_badge_html(_health["action"], _health["action_tone"]),
+                         unsafe_allow_html=True)
+        with _sc2:
+            _pa = (_health["components"].get("Price Action") or {})
+            _pa_score = _pa.get("score")
+            st.markdown(
+                f"**Price Action:** {_pa_score:.0f}/100" if _pa_score is not None else "**Price Action:** n/a",
+            )
+            st.markdown(
+                f"**Progress vs baseline:** {_progress['overall']:.0f}/100"
+                if _progress.get("overall") is not None else "**Progress vs baseline:** n/a",
+            )
+    else:
+        _sc1, _sc2 = st.columns([1, 2])
+        with _sc1:
+            st.markdown(portfolio_health_engine.big_score_html(_score_label, _health["overall"]),
+                         unsafe_allow_html=True)
+            st.markdown(portfolio_health_engine.action_badge_html(_health["action"], _health["action_tone"]),
+                         unsafe_allow_html=True)
+        with _sc2:
+            st.markdown(
+                portfolio_health_engine.component_bars_html(_health["components"], portfolio_health_engine.COMPONENT_ORDER),
+                unsafe_allow_html=True,
+            )
 
     if _health["red_flags"]:
         st.warning("**Red flags:** " + "; ".join(_health["red_flags"]))
@@ -5998,6 +6403,61 @@ def _render_portfolio_health_tab(_holdings, _analyses):
     if _h.get("thesis"):
         with st.expander("Thesis"):
             st.write(_h["thesis"])
+
+    # Valuation / DCF block + manual override (1d)
+    st.markdown("##### Valuation (DCF)")
+    if _is_etf:
+        st.caption(
+            "No DCF/intrinsic-value model exists for ETFs/funds, so there's "
+            "nothing here to override either - ETF Health is scored from "
+            "price action and progress instead (see above)."
+        )
+    else:
+        _model_iv = _snap.get("intrinsic_value")
+        _cur_price = _snap.get("price")
+        _mos = _snap.get("mos_pct")
+        _iv_override = _a.get("iv_override")
+        _vc1, _vc2, _vc3 = st.columns(3)
+        _vc1.metric("Model intrinsic value", f"A${_model_iv:,.2f}" if _model_iv else "–")
+        _vc2.metric("Current price", f"A${_cur_price:,.2f}" if _cur_price is not None else "–")
+        _vc3.metric("Margin of safety", f"{_mos:+.1f}%" if _mos is not None else "–")
+        st.caption(
+            f"Key inputs: revenue growth {_pf_pct_or_dash(_snap.get('revenue_growth'))} · "
+            f"earnings growth {_pf_pct_or_dash(_snap.get('earnings_growth'))} · "
+            f"profit margin {_pf_pct_or_dash(_snap.get('profit_margin'))} · "
+            f"ROE {_pf_pct_or_dash(_snap.get('roe'))} · "
+            f"debt/equity {_snap.get('debt_to_equity'):.0f}" if _snap.get("debt_to_equity") is not None
+            else "debt/equity n/a"
+        )
+        if _iv_override is not None:
+            _badge = f"Using your manual override: A${_iv_override:,.2f}"
+            if _model_iv:
+                _badge += f" (model says A${_model_iv:,.2f})"
+            st.success(_badge)
+        with st.form(f"pf_iv_override_form_{_tk}"):
+            _new_override = st.number_input(
+                "My intrinsic value (manual override)", min_value=0.0, step=0.01, format="%.2f",
+                value=float(_iv_override or _model_iv or 0.0), key=f"pf_iv_override_{_tk}",
+            )
+            _oc1, _oc2 = st.columns(2)
+            with _oc1:
+                _save_override = st.form_submit_button("Save override", type="primary")
+            with _oc2:
+                _clear_override = st.form_submit_button("Clear override")
+        if _save_override:
+            if _new_override <= 0:
+                st.error("Enter a value greater than zero.")
+            else:
+                portfolio_store.set_iv_override(email, _tk, _new_override)
+                st.toast(f"Saved - {_tk}'s Health will use your value.", icon="✅")
+                st.rerun()
+        if _clear_override:
+            portfolio_store.clear_iv_override(email, _tk)
+            st.toast(f"Cleared - {_tk}'s Health will use the model value again.", icon="✅")
+            st.rerun()
+
+    if _is_etf:
+        return
 
     st.markdown("##### News Intelligence")
     if _news is None:
@@ -6037,6 +6497,35 @@ def _render_portfolio_progress_tab(_holdings, _analyses):
         "taken the day a holding was added. 50 = unchanged, 100 = doubled, "
         "0 = halved (or worse), linear in between."
     )
+    with st.expander("How this score works"):
+        st.markdown("##### Progress Score - how it's moved since you bought")
+        st.caption(
+            "Each metric's % change since the locked baseline, mapped so "
+            "unchanged = 50, doubled = 100, halved = 0 (clamped at those "
+            "extremes), then weighted and summed."
+        )
+        st.dataframe(
+            pd.DataFrame(
+                {"Component": portfolio_health_engine.PROGRESS_ORDER,
+                 "Weight": [f"{portfolio_health_engine.PROGRESS_WEIGHTS[k]*100:.0f}%"
+                            for k in portfolio_health_engine.PROGRESS_ORDER]}
+            ),
+            use_container_width=True, hide_index=True,
+        )
+        st.code(
+            "rel = (current - baseline) / abs(baseline)     # clamped to [-1, +1]\n"
+            "                                                 # (Debt is higher_better=False, so rel is negated)\n"
+            "progress_score = clamp(50 + rel * 50, 0, 100)   # unchanged=50, doubled=100, halved=0\n"
+            "\n"
+            "overall = weighted average of every component with data,\n"
+            "          reweighted so the available components still sum to 100%",
+            language="text",
+        )
+        st.caption(
+            f"Verdict: {portfolio_health_engine.PROGRESS_VERDICT_UP}+ = improved since purchase, "
+            f"below {portfolio_health_engine.PROGRESS_VERDICT_DOWN} = deteriorated, in between = roughly flat."
+        )
+
     if not _holdings:
         st.info("Add a holding on the Holdings tab to see its Progress Score.")
         return
@@ -6085,117 +6574,6 @@ def _render_portfolio_progress_tab(_holdings, _analyses):
             "At baseline": c.get("baseline"),
         })
     st.dataframe(pd.DataFrame(_detail_rows), use_container_width=True, hide_index=True)
-
-
-def _render_portfolio_health_scoring_tab():
-    st.markdown("##### Health Score - how healthy the holding looks right now")
-    st.caption(
-        "A weighted blend of fundamentals (looked up against fixed score "
-        "bands, below), two purchase-relative reads (price action, dividend "
-        "change), and News Intelligence - only components with data "
-        "available contribute, reweighted so the rest still sum to 100%."
-    )
-    st.dataframe(
-        pd.DataFrame(
-            {"Component": portfolio_health_engine.COMPONENT_ORDER,
-             "Weight": [f"{portfolio_health_engine.BASE_WEIGHTS[k]*100:.0f}%"
-                        for k in portfolio_health_engine.COMPONENT_ORDER]}
-        ),
-        use_container_width=True, hide_index=True,
-    )
-
-    st.markdown("**Score bands**")
-    st.caption(
-        "Each fundamental/price-action/income read is looked up on a fixed "
-        "piecewise curve - unchanged from the desktop app's config.py."
-    )
-    _band_specs = [
-        ("Growth (mean of revenue & earnings growth; also reused for FCF growth)",
-         portfolio_health_engine.GROWTH_BAND, "Growth rate"),
-        ("Margins (profit margin)", portfolio_health_engine.MARGIN_BAND, "Margin"),
-        ("ROIC (return on equity)", portfolio_health_engine.ROE_BAND, "ROE"),
-        ("Debt (debt/equity)", portfolio_health_engine.DEBT_BAND, "Debt/Equity"),
-        ("Valuation (margin of safety %)", portfolio_health_engine.VAL_BAND, "MOS %"),
-        ("Price Action - drawdown from the post-purchase peak",
-         portfolio_health_engine.DRAWDOWN_BAND, "Drawdown %"),
-        ("Price Action - position in the 52-week range",
-         portfolio_health_engine.RANGE52_BAND, "Position (0-1)"),
-        ("Income - dividend yield change since the baseline",
-         portfolio_health_engine.INCOME_BAND, "Yield change"),
-    ]
-    for label, band, unit in _band_specs:
-        with st.expander(label):
-            st.dataframe(
-                pd.DataFrame({unit: [b[0] for b in band], "Score": [b[1] for b in band]}),
-                use_container_width=True, hide_index=True,
-            )
-
-    st.caption(
-        f"Action bands: below {portfolio_health_engine.ACTION_REVIEW} = REVIEW/REDUCE, "
-        f"below {portfolio_health_engine.ACTION_WATCH} = HOLD & WATCH, "
-        f"{portfolio_health_engine.ACTION_STRONG}+ = HOLD or HOLD/ADD depending on valuation."
-    )
-
-    st.markdown("##### News Intelligence - how news moves the Health Score")
-    st.caption(
-        "Every headline is classified on two axes - severity (noise → "
-        "temporary → material → thesis-breaking) and relevance (does it "
-        "touch this holding's thesis?) - and only news that's BOTH relevant "
-        "AND at least material can move the News Risk Score."
-    )
-    st.dataframe(
-        pd.DataFrame([
-            {"Severity": name, "Score hit": portfolio_news_engine.SEVERITY_HIT.get(key),
-             "What it means": desc, "Effect": effect}
-            for name, key, desc, effect in portfolio_news_engine.SEVERITY_DEFS
-        ]),
-        use_container_width=True, hide_index=True,
-    )
-    st.code(
-        "Thesis component = 0.65 x fundamentals average + 0.35 x News Risk Score\n"
-        "    (capped at 30 if a thesis-breaking event is detected)\n"
-        "\n"
-        "News Risk Score starts at 100. For each day with relevant, at-least-\n"
-        "material news: subtract severity_hit x recency_weight for that day's\n"
-        "worst event, plus severity_hit x recency_weight x 0.40 for every\n"
-        "additional event the same day (NEWS_PERDAY_EXTRA) - so five outlets\n"
-        "covering one event in one day doesn't quintuple the penalty.\n"
-        "\n"
-        "Overall Health Score adjustment (only applied when material news exists):\n"
-        f"    news_adjustment = -(100 - News Risk Score) x {portfolio_news_engine.NEWS_IMPACT}\n"
-        "    overall = clamp(overall + news_adjustment, 0, 100)",
-        language="text",
-    )
-
-
-def _render_portfolio_progress_scoring_tab():
-    st.markdown("##### Progress Score - how it's moved since you bought")
-    st.caption(
-        "Each metric's % change since the locked baseline, mapped so "
-        "unchanged = 50, doubled = 100, halved = 0 (clamped at those "
-        "extremes), then weighted and summed."
-    )
-    st.dataframe(
-        pd.DataFrame(
-            {"Component": portfolio_health_engine.PROGRESS_ORDER,
-             "Weight": [f"{portfolio_health_engine.PROGRESS_WEIGHTS[k]*100:.0f}%"
-                        for k in portfolio_health_engine.PROGRESS_ORDER]}
-        ),
-        use_container_width=True, hide_index=True,
-    )
-    st.code(
-        "rel = (current - baseline) / abs(baseline)     # clamped to [-1, +1]\n"
-        "                                                 # (Debt is higher_better=False, so rel is negated)\n"
-        "progress_score = clamp(50 + rel * 50, 0, 100)   # unchanged=50, doubled=100, halved=0\n"
-        "\n"
-        "overall = weighted average of every component with data,\n"
-        "          reweighted so the available components still sum to 100%",
-        language="text",
-    )
-    st.caption(
-        f"Verdict: {portfolio_health_engine.PROGRESS_VERDICT_UP}+ = improved since purchase, "
-        f"below {portfolio_health_engine.PROGRESS_VERDICT_DOWN} = deteriorated, in between = roughly flat."
-    )
 
 
 def _content_page_shell(title):
