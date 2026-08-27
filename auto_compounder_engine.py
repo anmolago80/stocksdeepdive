@@ -81,7 +81,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 7
+ENGINE_VERSION = 8
 
 
 # -----------------------------------
@@ -433,31 +433,81 @@ def _dividend_ttm(bundle):
     return 0.0, True
 
 
-def _interest_expense_ttm(bundle):
-    """(value, flagged). A genuine trailing-4-quarter sum, not "the latest
-    annual column" (every other TTM figure in this app's convention) -
-    interest expense specifically breaks that convention badly right
-    after a company takes on new debt mid-fiscal-year: the most recent
-    completed annual statement can still be from before the debt existed
-    (near-zero interest expense), while the real current run-rate is
-    already much higher. Confirmed on OCL.AX: the annual column read
-    ~$15K while the last 4 quarters (TradingView) summed to roughly
-    $2.3M, and Interest Coverage using the annual figure was ~2,024x vs
-    ~60x from the user's own spreadsheet.
+def _plausible_interest_for_debt(candidate, debt):
+    """(value, estimated) - a real-world interest expense lands within
+    roughly 0.5%-30% of the debt that generates it (implied_rate =
+    interest / debt). Used both for the TTM interest figure
+    (_interest_expense_ttm below) and per-year in the Cost of Capital
+    WACC loop, where each historical year's own reported interest
+    expense is checked against that same year's own debt.
 
-    Falls back (flagged) to the annual column when quarterly data isn't
-    available at all - same as before this existed."""
+    yfinance's raw "Interest Expense" row is, for some tickers (OCL.AX
+    confirmed), off from the company's real finance costs by 1-2 orders
+    of magnitude - REGARDLESS of which row it's read from (annual or
+    quarterly). No amount of row-picking rescues a bad source value, so
+    when the candidate fails this plausibility window (or is simply
+    missing) this falls back to a flat 6%-of-debt estimate - a
+    conservative placeholder borrowing cost, always marked estimated so
+    callers can flag/red it - rather than propagate a number that's
+    wrong by 100x+ into Interest Coverage and WACC.
+
+    No debt to check against (0/None) -> the candidate is returned
+    as-is, unestimated (there's nothing to gate it against; callers that
+    need "no debt" to mean "omit this metric" handle that themselves -
+    see _interest_expense_ttm)."""
+    if not debt:
+        return candidate, False
+    if candidate is not None:
+        implied_rate = abs(candidate) / debt
+        if 0.005 <= implied_rate <= 0.30:
+            return candidate, False
+    return debt * 0.06, True
+
+
+def _interest_expense_ttm(bundle):
+    """(value, flagged, estimated). Two layers of defense against a bad
+    interest-expense figure:
+
+    1) WHICH statement row: a genuine trailing-4-quarter sum, not "the
+       latest annual column" (every other TTM figure in this app's
+       convention) - interest expense specifically breaks that
+       convention badly right after a company takes on new debt
+       mid-fiscal-year, when the last completed annual report can still
+       predate the debt (near-zero interest expense) while the real
+       run-rate has already jumped. Falls back (flagged) to the annual
+       column when quarterly data isn't available at all.
+
+    2) WHETHER the resulting value is even plausible against the
+       company's total debt (see _plausible_interest_for_debt) - added
+       because step 1 alone did NOT rescue OCL.AX: its quarterly income
+       statement has no usable interest row, so it fell back to the
+       same bad annual column (~$15K, vs real finance costs of roughly
+       $1-2M), producing an Interest Coverage of ~2,024x. The problem
+       was the source VALUE, not which row it came from.
+
+    No total debt on the balance sheet at all -> (None, True, False):
+    there's nothing to estimate a borrowing cost against, so
+    interest-based metrics are simply omitted by their callers."""
     income_q = bundle.get("income_q")
+    candidate, candidate_flagged = None, True
     if income_q is not None and not income_q.empty:
         q_series = [(y, v) for y, v in _series(income_q, "interest_expense") if v is not None]
         if q_series:
             last4 = q_series[:4]
-            total = sum(abs(v) for _, v in last4)
-            return total, len(last4) < 4
-    annual = _latest(bundle["income"], "interest_expense")
-    if annual is not None:
-        return annual, True
-    return None, True
+            candidate = sum(abs(v) for _, v in last4)
+            candidate_flagged = len(last4) < 4
+    if candidate is None:
+        annual = _latest(bundle["income"], "interest_expense")
+        if annual is not None:
+            candidate = annual
+            candidate_flagged = True
+
+    total_debt = _latest(bundle["balance"], "total_debt")
+    if not total_debt:
+        return None, True, False
+
+    value, estimated = _plausible_interest_for_debt(candidate, total_debt)
+    return value, (candidate_flagged or estimated), estimated
 
 
 def _dividends_per_share_by_year(dividends):
@@ -600,7 +650,7 @@ def _build_fundamentals(bundle, ticker, ref):
     operating_income = _latest(income, "operating_income")
     pretax_income = _latest(income, "pretax_income")
     tax_provision = _latest(income, "tax_provision")
-    interest_expense, interest_expense_flagged = _interest_expense_ttm(bundle)
+    interest_expense, interest_expense_flagged, interest_expense_estimated = _interest_expense_ttm(bundle)
 
     total_assets = _latest(balance, "total_assets")
     current_assets = _latest(balance, "current_assets")
@@ -655,8 +705,10 @@ def _build_fundamentals(bundle, ticker, ref):
 
     interest_coverage = (operating_income / abs(interest_expense)) if (operating_income is not None and interest_expense) else None
     add("Interest Coverage", interest_coverage, "x",
-        flagged=(interest_expense is None or interest_expense_flagged),
-        fallback="Operating income divided by a trailing-4-quarter interest expense.")
+        flagged=(interest_expense is None or interest_expense_flagged or interest_expense_estimated),
+        fallback="Operating income divided by a trailing-4-quarter interest expense; when the "
+                  "reported figure is implausible against total debt, interest is estimated at "
+                  "6% of total debt and shown in red.")
 
     # Workbook divides by Long Term Debt (V4/W4), not Total Debt - falls
     # back (flagged) to Total Debt only when the balance sheet doesn't
@@ -1062,18 +1114,27 @@ def _build_earnings_trends(bundle, ticker, ref):
 # -----------------------------------
 
 def _year_points():
-    """['TTM', 'YYYY', 'YYYY', 'YYYY'] for current_year-1, -5, -10 -
-    computed from the current date (never hardcoded), generalising the
-    workbook's own (hand-built, so hardcoded when it was built) period
-    list to always be relative to today.
+    """['TTM', 'YYYY', 'YYYY', 'YYYY'] for current_year-2, -4, -5 -
+    computed from the current date (never hardcoded).
 
-    compounder_data.json's real hand-built periods are TTM/2025/2021/2016,
-    generated 2026-08-11 - i.e. TTM, 1 year back, 5 years back, 10 years
-    back. An earlier version of this used -2/-4/-5, which doesn't match
-    that spacing at all (confirmed against the real reference data) -
-    fixed to -1/-5/-10."""
+    compounder_data.json's real hand-built periods are TTM/2025/2021/2016
+    (i.e. -1/-5/-10 relative to when that workbook was generated) - a
+    prior version of this function matched that spacing exactly. But that
+    workbook is built on a paid data source with 10+ years of statement
+    history; this app's free yfinance feed typically only has ~4 years on
+    file, so -1 collides with the latest fiscal year (skipped by the
+    duplicate-period guard below) and -5/-10 fall outside the data
+    entirely - every computed year got skipped, leaving only the TTM bar
+    on the WACC vs ROIC chart for every free-tier ticker.
+
+    Andrew (the site owner) explicitly chose -2/-4/-5 instead, specifically
+    because it fits within the free feed's real depth (confirmed: OCL.AX's
+    2022-2025 statements yield TTM + 2024 + 2022 bars, with 2021 appearing
+    once a 5th year of data exists). This is a deliberate product decision
+    for the auto (free-tier) view, not a formula-accuracy bug to be
+    "corrected" back to the workbook's own spacing - do not revert this."""
     y = datetime.datetime.now(datetime.timezone.utc).year
-    return ["TTM", str(y - 1), str(y - 5), str(y - 10)]
+    return ["TTM", str(y - 2), str(y - 4), str(y - 5)]
 
 
 def _avg_invested_capital_for_year(equity_by_year, debt_by_year, cash_by_year, years_desc, target_year):
@@ -1139,7 +1200,7 @@ def _build_cost_of_capital(bundle, ticker, ref):
     shares = b["shares"]
     total_debt = _latest(bundle["balance"], "total_debt")
     long_term_debt = _latest(bundle["balance"], "long_term_debt")
-    interest_expense, interest_expense_flagged = _interest_expense_ttm(bundle)
+    interest_expense, interest_expense_flagged, interest_expense_estimated = _interest_expense_ttm(bundle)
     pretax_income = _latest(bundle["income"], "pretax_income")
     tax_provision = _latest(bundle["income"], "tax_provision")
     operating_income = _latest(bundle["income"], "operating_income")
@@ -1193,7 +1254,10 @@ def _build_cost_of_capital(bundle, ticker, ref):
     # TTM point
     ltd_ttm = long_term_debt if long_term_debt is not None else total_debt
     ltd_ttm_flagged = long_term_debt is None
-    wacc_ttm, wacc_ttm_flagged = _wacc_for(mcap, ltd_ttm, interest_expense, ltd_ttm_flagged or interest_expense_flagged)
+    wacc_ttm, wacc_ttm_flagged = _wacc_for(
+        mcap, ltd_ttm, interest_expense,
+        ltd_ttm_flagged or interest_expense_flagged or interest_expense_estimated,
+    )
     roic_ttm = _roic_for(years_desc[0]) if years_desc else None
     periods.append("TTM")
     wacc_vals.append(wacc_ttm)
@@ -1224,8 +1288,12 @@ def _build_cost_of_capital(bundle, ticker, ref):
         ltd_y_flagged = ltd_y is None
         if ltd_y is None:
             ltd_y = debt_by_year.get(target_year)
-        int_y = interest_by_year.get(target_year)
-        wacc_y, wacc_y_flagged = _wacc_for(e_y, ltd_y, int_y, ltd_y_flagged)
+        # Same plausibility gate as the TTM figure (_plausible_interest_
+        # for_debt), applied per-year: that year's own reported interest
+        # expense checked against that year's own debt, estimated at 6%
+        # of debt when it fails the window.
+        int_y, int_y_estimated = _plausible_interest_for_debt(interest_by_year.get(target_year), ltd_y)
+        wacc_y, wacc_y_flagged = _wacc_for(e_y, ltd_y, int_y, ltd_y_flagged or int_y_estimated)
         roic_y = _roic_for(target_year)
         if wacc_y is None and roic_y is None:
             continue
@@ -1243,7 +1311,8 @@ def _build_cost_of_capital(bundle, ticker, ref):
     add("Market Cap (TTM)", mcap, "cur")
     add("Enterprise Value (TTM)", ev, "cur")
     add("Long Term Debt (TTM)", ltd_ttm, "cur", flagged=ltd_ttm_flagged)
-    add("Interest Expense (TTM)", interest_expense, "cur", flagged=interest_expense_flagged)
+    add("Interest Expense (TTM)", interest_expense, "cur",
+        flagged=interest_expense_flagged or interest_expense_estimated)
     add("ROIC (TTM)", roic_ttm, "pct", flagged=True)
     add("Income Before Tax (TTM)", pretax_income, "cur")
     add("WACC", wacc_ttm, "pct", flagged=wacc_ttm_flagged or ce_flagged)
