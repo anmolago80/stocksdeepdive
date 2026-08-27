@@ -81,7 +81,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 8
+ENGINE_VERSION = 9
 
 
 # -----------------------------------
@@ -464,6 +464,89 @@ def _plausible_interest_for_debt(candidate, debt):
     return debt * 0.06, True
 
 
+def _statement_col_dates(df):
+    """[(column_label, datetime.date), ...] for statement columns whose
+    label carries a parseable YYYY-MM-DD end date, newest first. Column
+    labels look like '2026-06-30 00:00:00' (yfinance) or '2026-06-30'
+    (EODHD/cache round-trip)."""
+    out = []
+    if df is None or getattr(df, "empty", True):
+        return out
+    for c in df.columns:
+        m = re.search(r"((?:19|20)\d{2})-(\d{2})-(\d{2})", str(c))
+        if not m:
+            continue
+        try:
+            out.append((c, datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))))
+        except ValueError:
+            continue
+    out.sort(key=lambda t: t[1], reverse=True)
+    return out
+
+
+def _sum_q_row(income_q, key, cols):
+    """Sum a mapped row over the given quarterly columns; None if the row
+    is missing or any cell in the window is missing (a partial sum would
+    silently understate a trailing-twelve-month figure)."""
+    row = _find_row(income_q, _ROW_ALIASES.get(key, [key]))
+    if row is None:
+        return None
+    total = 0.0
+    for c, _ in cols:
+        try:
+            v = income_q.loc[row][c]
+        except Exception:
+            return None
+        if v is None or (isinstance(v, float) and v != v):
+            return None
+        total += float(v)
+    return total
+
+
+def _eps_ttm(bundle):
+    """(value, flagged). The TTM EPS every TTM-consuming metric uses.
+
+    Yahoo's info["trailingEps"] can lag a just-reported fiscal year by
+    weeks. Verified on OCL.AX (30 June FY end, FY26 reported ~Aug 2026):
+    the workbook's Wise TTM EPS already showed $0.29 while trailingEps
+    still said $0.38 - which made Retained Earnings (TTM) read $0.12
+    against the workbook's $0.03 even though the EPS-minus-dividend
+    subtraction itself was right.
+
+    So: when the QUARTERLY income statement has columns ending AFTER the
+    newest annual column, a genuine trailing-12-month EPS is summed from
+    it instead - the last 4 quarterly or last 2 semiannual columns
+    (ASX names report half-yearly; detected from the column spacing).
+    Falls back to net-income-per-share over the same window when the
+    quarterly statement carries no EPS row (flagged - today's share
+    count), and to info["trailingEps"] when there is no fresher
+    quarterly data at all."""
+    info = bundle.get("info") or {}
+    fallback = info.get("trailingEps")
+    income_q = bundle.get("income_q")
+    q_cols = _statement_col_dates(income_q)
+    a_cols = _statement_col_dates(bundle.get("income"))
+    if not q_cols or (a_cols and q_cols[0][1] <= a_cols[0][1]):
+        return fallback, False
+    gap_days = (q_cols[0][1] - q_cols[1][1]).days if len(q_cols) >= 2 else None
+    n_needed = 2 if (gap_days is not None and gap_days > 135) else 4
+    take = q_cols[:n_needed]
+    period_days = gap_days if gap_days is not None else 90
+    window_days = ((take[0][1] - take[-1][1]).days + period_days) if take else 0
+    short_window = window_days < 330 or len(take) < n_needed
+
+    eps_sum = _sum_q_row(income_q, "basic_eps", take)
+    if eps_sum is not None:
+        return eps_sum, short_window
+
+    ni_sum = _sum_q_row(income_q, "net_income", take)
+    shares = info.get("sharesOutstanding")
+    if ni_sum is not None and shares:
+        return ni_sum / shares, True
+
+    return fallback, False
+
+
 def _interest_expense_ttm(bundle):
     """(value, flagged, estimated). Two layers of defense against a bad
     interest-expense figure:
@@ -580,7 +663,7 @@ def _avg_pe_3pt(bundle):
     TTM; falls back to info["trailingPE"] only if nothing is computable."""
     info = bundle.get("info") or {}
     price_now = info.get("currentPrice") or info.get("regularMarketPrice")
-    trailing_eps = info.get("trailingEps")
+    trailing_eps, _ = _eps_ttm(bundle)
     year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
     pes = []
     if price_now and trailing_eps and trailing_eps > 0:
@@ -602,7 +685,7 @@ def _pe_avg_3y_by_eps(bundle):
     separate P/E ratios). Both are real, distinct workbook metrics."""
     info = bundle.get("info") or {}
     price_now = info.get("currentPrice") or info.get("regularMarketPrice")
-    trailing_eps = info.get("trailingEps")
+    trailing_eps, _ = _eps_ttm(bundle)
     eps_points = [trailing_eps] if trailing_eps is not None else []
     eps_points += [v for _, v in _eps_series(bundle)[:2] if v is not None]
     if not price_now or not eps_points:
@@ -895,10 +978,17 @@ def _value_created(bundle, retained_ttm, price_now):
     ÷ today's share count collapses to a plain price difference since
     the same share count cancels on both sides).
 
-    With yfinance's usual 4-5 years of statement depth, 2Y computes
-    cleanly; 5Y/10Y/TTM sums cover only the years actually available
-    (flagged when short of the full horizon - also noted in the
-    section's own statement-depth caption)."""
+    A horizon renders ONLY when its full window is covered by the
+    available statement years (2Y needs 2 FYs, 5Y needs 5, 10Y needs 10,
+    TTM needs TTM + 10). Verified live on OCL.AX: with 4 statement
+    years, the old behaviour quietly computed the "10Y" and "TTM" bars
+    over ~3.5-year windows - the label lied about the window and the TTM
+    bar went deeply negative against a price anchor from 2022 (when the
+    stock traded at ~2x today's price). With yfinance's usual 4-5 years
+    of depth only 2Y (and sometimes 5Y) will show; the longer horizons
+    light up automatically once a deeper source (EODHD) is configured. A
+    negative value on a FULLY covered window is real data and still
+    renders - the workbook allows it too."""
     eps_series = [(y, v) for y, v in _eps_series(bundle) if v is not None]
     dps_by_year = _dividends_per_share_by_year(bundle.get("dividends") or {})
     year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
@@ -906,7 +996,7 @@ def _value_created(bundle, retained_ttm, price_now):
     out = {}
     for label, n_years in (("2Y", 2), ("5Y", 5), ("10Y", 10)):
         slice_ = eps_series[:n_years]
-        if len(slice_) < 2:
+        if len(slice_) < n_years:
             continue
         re_val = sum(eps - dps_by_year.get(y, 0.0) for y, eps in slice_)
         end_year, start_year = slice_[0][0], slice_[-1][0]
@@ -922,7 +1012,7 @@ def _value_created(bundle, retained_ttm, price_now):
     # the last 10 FYs, value change measured from today's price back to
     # the oldest year in that 10Y window.
     ttm_slice = eps_series[:10]
-    if retained_ttm is not None and ttm_slice:
+    if retained_ttm is not None and len(ttm_slice) == 10:
         re_val = retained_ttm + sum(eps - dps_by_year.get(y, 0.0) for y, eps in ttm_slice)
         start_price = year_end_prices.get(ttm_slice[-1][0])
         if re_val not in (None, 0) and start_price is not None and price_now is not None:
@@ -948,7 +1038,7 @@ def _ten_year_retained(bundle):
 def _build_retained_earnings(bundle, ticker, ref):
     b = _basics(bundle)
     info, price, mcap = b["info"], b["price"], b["market_cap"]
-    trailing_eps = info.get("trailingEps")
+    trailing_eps, eps_ttm_flagged = _eps_ttm(bundle)
     div_ttm, div_ttm_flagged = _dividend_ttm(bundle)
 
     ratio_p_ed = None
@@ -970,9 +1060,9 @@ def _build_retained_earnings(bundle, ticker, ref):
     add("52 Week High", info.get("fiftyTwoWeekHigh"), "cur")
     add("52 Week Low", info.get("fiftyTwoWeekLow"), "cur")
     add("Market Cap (TTM)", mcap, "cur")
-    add("EPS (TTM)", trailing_eps, "cur")
+    add("EPS (TTM)", trailing_eps, "cur", flagged=eps_ttm_flagged)
     add("Dividend (TTM)", div_ttm, "cur", flagged=div_ttm_flagged)
-    add("Ratio P/(E-D)", ratio_p_ed, "x", flagged=div_ttm_flagged)
+    add("Ratio P/(E-D)", ratio_p_ed, "x", flagged=div_ttm_flagged or eps_ttm_flagged)
     add("Dividend Yield (TTM)", (div_ttm / price) if (div_ttm is not None and price) else None, "pct", flagged=div_ttm_flagged)
     # "Retained Earnings (TTM)" is the raw per-share dollar figure (EPS
     # minus Dividend) - format "cur", NOT "pct". The workbook's own BQ
@@ -999,7 +1089,7 @@ def _build_retained_earnings(bundle, ticker, ref):
 def _build_earnings_trends(bundle, ticker, ref):
     info = bundle.get("info") or {}
     fy_eps = [(y, v) for y, v in _eps_series(bundle) if v is not None]  # fiscal years only, no TTM
-    trailing_eps = info.get("trailingEps")
+    trailing_eps, _ = _eps_ttm(bundle)
     full_eps = ([("TTM", trailing_eps)] if trailing_eps is not None else []) + fy_eps
     year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
     price_now = info.get("currentPrice") or info.get("regularMarketPrice")
@@ -1402,7 +1492,7 @@ def _pe_forward_method(bundle, g_earn):
     if g_earn is None:
         return None
     info = bundle.get("info") or {}
-    trailing_eps = info.get("trailingEps")
+    trailing_eps, _ = _eps_ttm(bundle)
     price_now = info.get("currentPrice") or info.get("regularMarketPrice")
     if trailing_eps is None or trailing_eps <= 0 or not price_now:
         return None
@@ -1414,7 +1504,7 @@ def _pe_forward_method(bundle, g_earn):
 def _build_fair_value(bundle, ticker, dcf_result):
     b = _basics(bundle)
     info, price = b["info"], b["price"]
-    trailing_eps = info.get("trailingEps")
+    trailing_eps, _ = _eps_ttm(bundle)
     g_earn = dcf_result.get("growth")
     avg_pe = _avg_pe_3pt(bundle)
 

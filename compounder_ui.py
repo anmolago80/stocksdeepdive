@@ -523,9 +523,23 @@ def render_section(sections, ticker, section_label, gate=None):
             st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
         metrics = [m for m in metrics if m["key"] != "AP"]
     elif section_label == "Retained Earnings":
-        fig = _cp_value_created_chart(ticker, section.get("value_created", {}))
+        vc = section.get("value_created", {})
+        fig = _cp_value_created_chart(ticker, vc)
         if fig:
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            # The auto engine only emits horizons whose FULL window the
+            # statement history covers (see _value_created's docstring in
+            # auto_compounder_engine.py) - when any of the four is absent,
+            # say why, so a 2Y-only chart reads as a data-depth fact
+            # rather than a rendering bug. Hand-built data always carries
+            # all four, so this caption never shows on the Research page.
+            _vc_entry = vc.get(ticker) or {}
+            if any(h not in _vc_entry for h in ("2Y", "5Y", "10Y", "TTM")):
+                st.caption(
+                    "Only horizons fully covered by the available statement "
+                    "history are shown - longer horizons appear as statement "
+                    "depth grows."
+                )
     elif section_label == "Earnings Trends":
         series = section.get("series", {})
         fig1 = _cp_year_bar_chart(ticker, series, "eps", "EPS by Year", "EPS", fmt="cur")
