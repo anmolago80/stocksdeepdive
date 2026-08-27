@@ -81,7 +81,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 6
+ENGINE_VERSION = 7
 
 
 # -----------------------------------
@@ -300,13 +300,67 @@ def _eps_series(bundle):
     return []
 
 
-def _year_end_prices(prices_10y):
-    """{year: last-seen monthly close that year} - the monthly series is
-    chronological ascending, so the last month seen per year is that
-    year's most recent available close (a genuine year-end close for a
-    complete year, the latest available price for the current year)."""
+def _year_end_prices(prices_10y, statement_df=None):
+    """{fiscal_year_label: price as of (on or just before) that fiscal
+    year's own real period-end date}.
+
+    Bug fixed here: the previous version bucketed monthly closes by
+    CALENDAR year and took the last one seen ("2024" -> the December 2024
+    close) - correct only for a December-fiscal-year-end company. Every
+    _eps_series()/_series() year label in this module comes from the
+    statement column's own end-of-period date (e.g. "2024" from a
+    "2024-06-30" column), so for any company with a non-calendar fiscal
+    year - a 30 June year end is the norm for ASX-listed companies,
+    Objective Corporation (OCL.AX) included - the old lookup paired a
+    fiscal year's EPS with a closing price up to ~6 months after that
+    fiscal year actually ended, producing a materially wrong PE (and
+    everything downstream of it: PE Ratio Average, Fair Value's PE-based
+    method, Retained Earnings' Value Created chart, Cost of Capital's
+    WACC by year). Confirmed live: OCL.AX's "2024 PE" was computed from a
+    December-2024 close against FY2024 (ended June 2024) EPS.
+
+    When `statement_df` is given, each fiscal year label is instead
+    matched to the nearest available monthly close ON OR BEFORE that
+    column's own real end date (falling back to the earliest available
+    price only if the series starts after the fiscal year-end). Without
+    a statement_df, falls back to the old calendar-year bucketing -
+    still needed by callers that only have year labels, not statement
+    dates, in scope."""
+    dates = prices_10y.get("dates") or []
+    prices = prices_10y.get("prices") or []
+
+    if statement_df is not None and not statement_df.empty:
+        price_points = []
+        for d, p in zip(dates, prices):
+            try:
+                price_points.append((datetime.date.fromisoformat(d[:10]), p))
+            except (ValueError, TypeError):
+                continue
+        price_points.sort(key=lambda t: t[0])
+        out = {}
+        for c in statement_df.columns:
+            m = re.search(r"(19|20)\d{2}-\d{2}-\d{2}", str(c))
+            if not m:
+                continue
+            try:
+                end_date = datetime.date.fromisoformat(m.group(0))
+            except ValueError:
+                continue
+            on_or_before = [p for d, p in price_points if d <= end_date]
+            candidate = on_or_before[-1] if on_or_before else (
+                price_points[0][1] if price_points else None
+            )
+            if candidate is not None:
+                out[str(end_date.year)] = candidate
+        if out:
+            return out
+
+    # Fallback: old calendar-year-end bucketing (no statement dates given,
+    # or none of them parsed) - the monthly series is chronological
+    # ascending, so the last month seen per calendar year is that year's
+    # most recent available close.
     out = {}
-    for d, p in zip(prices_10y.get("dates") or [], prices_10y.get("prices") or []):
+    for d, p in zip(dates, prices):
         out[d[:4]] = p
     return out
 
@@ -477,7 +531,7 @@ def _avg_pe_3pt(bundle):
     info = bundle.get("info") or {}
     price_now = info.get("currentPrice") or info.get("regularMarketPrice")
     trailing_eps = info.get("trailingEps")
-    year_end_prices = _year_end_prices(bundle["prices_10y"])
+    year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
     pes = []
     if price_now and trailing_eps and trailing_eps > 0:
         pes.append(price_now / trailing_eps)
@@ -795,7 +849,7 @@ def _value_created(bundle, retained_ttm, price_now):
     section's own statement-depth caption)."""
     eps_series = [(y, v) for y, v in _eps_series(bundle) if v is not None]
     dps_by_year = _dividends_per_share_by_year(bundle.get("dividends") or {})
-    year_end_prices = _year_end_prices(bundle["prices_10y"])
+    year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
 
     out = {}
     for label, n_years in (("2Y", 2), ("5Y", 5), ("10Y", 10)):
@@ -891,7 +945,7 @@ def _build_earnings_trends(bundle, ticker, ref):
     fy_eps = [(y, v) for y, v in _eps_series(bundle) if v is not None]  # fiscal years only, no TTM
     trailing_eps = info.get("trailingEps")
     full_eps = ([("TTM", trailing_eps)] if trailing_eps is not None else []) + fy_eps
-    year_end_prices = _year_end_prices(bundle["prices_10y"])
+    year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
     price_now = info.get("currentPrice") or info.get("regularMarketPrice")
 
     eps_growth = []
@@ -1109,7 +1163,7 @@ def _build_cost_of_capital(bundle, ticker, ref):
     interest_by_year = dict(_series(bundle["income"], "interest_expense"))
     op_income_by_year = dict(_series(bundle["income"], "operating_income"))
     years_desc = [y for y, _ in _series(bundle["balance"], "stockholders_equity")]
-    year_end_prices = _year_end_prices(bundle["prices_10y"])
+    year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
 
     def _wacc_for(e_val, ltd_val, int_val, ltd_flagged):
         """WACC_Y = E/(E+LTD)*CoE + LTD/(E+LTD)*(Int/LTD)*(1-tax_ttm) -
