@@ -81,7 +81,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 12
+ENGINE_VERSION = 13
 
 
 # -----------------------------------
@@ -913,15 +913,23 @@ def _iv_bv_series(bundle, dcf_result, bvps_ttm):
             years.append(y)
             ratios.append(iv_y / bvps_y)
 
-        # TTM point: TTM FCF (info's own freeCashflow when present, else
-        # the latest statement year) over current BVPS - the same mini-DCF
-        # shape as every other point, for internal consistency of the
-        # chart (the headline "IV/BV" metric below stays the site DCF's
-        # own value, unrelated to this per-year series).
-        info = bundle.get("info") or {}
-        fcf_ttm = info.get("freeCashflow")
-        if fcf_ttm is None:
-            fcf_ttm = _latest(bundle["cashflow"], "free_cash_flow")
+        # TTM point: TTM FCF from the SAME source/convention as every
+        # other point on this chart AND as the "Free Cash Flow (TTM)"
+        # metric card shown right next to it - the latest statement
+        # year's FCF (or OCF-capex fallback), never info["freeCashflow"].
+        # That info-blob field was tried first here previously; for some
+        # tickers (MKTX confirmed) it disagrees badly with the statement
+        # figure - almost certainly a different convention (Yahoo's
+        # "freeCashflow" reads as a levered figure, after financing
+        # activity, vs the unlevered OCF-minus-capex convention used
+        # everywhere else in this app). Fed through this mini-DCF's 9-year
+        # growth compounding plus a Gordon terminal value, that mismatch
+        # didn't just nudge the TTM point, it produced a wildly negative
+        # "intrinsic value" for TTM alone while every FY bar (which never
+        # used info["freeCashflow"]) looked normal. MKTX's real TTM free
+        # cash flow was, per outside sources, a healthy positive figure -
+        # down sharply from the prior year, but nowhere near negative.
+        fcf_ttm = _latest(bundle["cashflow"], "free_cash_flow")
         if fcf_ttm is None:
             ocf_ttm = _latest(bundle["cashflow"], "operating_cash_flow")
             capex_ttm = _latest(bundle["cashflow"], "capex")
