@@ -81,7 +81,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 20
+ENGINE_VERSION = 21
 
 
 # -----------------------------------
@@ -536,6 +536,75 @@ def _sum_q_row(income_q, key, cols):
     return total
 
 
+def _q_row_value(income_q, key, col):
+    """Single cell of a mapped row at one quarterly column; None if the
+    row or cell is missing."""
+    row = _find_row(income_q, _ROW_ALIASES.get(key, [key]))
+    if row is None:
+        return None
+    try:
+        v = income_q.loc[row][col]
+    except Exception:
+        return None
+    if v is None or (isinstance(v, float) and v != v):
+        return None
+    return float(v)
+
+
+def _half_year_cumulative_ttm(income_q, q_cols):
+    """TTM basic EPS for a half-yearly (ASX-style) reporter, reconstructed
+    correctly from CUMULATIVE columns - or None to fall through to the
+    existing sum-of-last-2 path when there isn't enough to work with.
+
+    yfinance's "quarterly" statement for a half-yearly reporter isn't
+    made of independent discrete slices: each column is cumulative SINCE
+    THAT FISCAL YEAR'S START - a 6-month total at the interim mark, a
+    12-month total at the full-year close. Confirmed on CPU.AX (FY ends
+    30 June): the newest column was the just-released FY26 total
+    (106.97c, already a full 12 months) and the one before it was the
+    1H26 interim (48.48c) - which is ALREADY COUNTED INSIDE that FY26
+    total. The previous code (see _eps_ttm) summed them anyway ->
+    155.45c, a trailing EPS ~45% too high, which understated P/E by a
+    similar amount (the reported "19.11x vs TradingView's ~25x" bug).
+
+    Position alone can't tell a fresh interim column from a full-year
+    column (both cases are ~182 days apart from their immediate
+    neighbour) - so this checks the RATIO between the newest column and
+    the one before it instead:
+      * ~1.5x-3.0x of its predecessor -> the newest column is itself a
+        full-year cumulative total (its predecessor is that same year's
+        own first half) -> TTM is that column's value ALONE, no summing.
+      * otherwise -> the newest column is a fresh interim for a year
+        that hasn't closed yet, and the predecessor is LAST year's full
+        cumulative total -> TTM = newest interim + (last year's total -
+        last year's own interim), i.e. this half plus the discrete other
+        half of the trailing year (needs a 3rd column for that last
+        term).
+    A ratio in neither recognizable shape, or too little history to
+    check it, returns None - the caller keeps its previous behaviour
+    rather than guess."""
+    if len(q_cols) < 2:
+        return None
+    newest, prior = q_cols[0], q_cols[1]
+    v_newest = _q_row_value(income_q, "basic_eps", newest[0])
+    v_prior = _q_row_value(income_q, "basic_eps", prior[0])
+    if v_newest is None or v_prior is None or v_prior == 0:
+        return None
+    ratio = v_newest / v_prior
+    if 1.5 <= ratio <= 3.0:
+        return v_newest
+    if ratio < 0 or ratio > 3.0:
+        # Doesn't match either recognizable shape (e.g. a loss period
+        # flipping the sign) - don't guess, let the caller fall back.
+        return None
+    if len(q_cols) < 3:
+        return None
+    v_prior_prior = _q_row_value(income_q, "basic_eps", q_cols[2][0])
+    if v_prior_prior is None:
+        return None
+    return v_newest + (v_prior - v_prior_prior)
+
+
 def _eps_ttm(bundle):
     """(value, flagged). The TTM EPS every TTM-consuming metric uses.
 
@@ -575,6 +644,11 @@ def _eps_ttm(bundle):
     period_days = gap_days if gap_days is not None else 90
     window_days = ((take[0][1] - take[-1][1]).days + period_days) if take else 0
     short_window = window_days < 330 or len(take) < n_needed
+
+    if n_needed == 2:
+        cumulative_ttm = _half_year_cumulative_ttm(income_q, q_cols)
+        if cumulative_ttm is not None:
+            return cumulative_ttm, short_window
 
     eps_sum = _sum_q_row(income_q, "basic_eps", take)
     if eps_sum is not None:
