@@ -3646,7 +3646,7 @@ def page_deep_dive():
         # instant. "Company Potential" (hand-written judgment) has no
         # live-data equivalent and is intentionally not part of this. ---
         st.divider()
-        st.subheader("\U0001F4DA Compounder View (auto)")
+        st.subheader(f"\U0001F4DA {_dd['ticker']} Rational Compounder Analysis (Auto)")
         st.caption(
             f"The Rational Compounder research sections - Fundamentals · "
             f"Value vs Book · Retained Earnings · Earnings Trends · "
