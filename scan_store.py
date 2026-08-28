@@ -34,13 +34,21 @@ def _path(universe):
     return os.path.join(_data_dir(), f"{_slug(universe)}.json")
 
 
-def save_scan(universe, rows, source_label, attention_lite=True):
+def save_scan(universe, rows, source_label, attention_lite=True, degraded=False):
+    """`degraded` (audit fix 2.3): True when the caller (nightly_scan.
+    run_universe_scan) completed for fewer tickers than its own
+    completeness threshold - saved anyway only because no better prior
+    scan existed to keep instead. Purely informational for now (not yet
+    surfaced in the Scanner UI); the load-bearing part of the fix is
+    run_universe_scan choosing not to overwrite a good prior scan with a
+    worse partial one in the first place."""
     payload = {
         "universe": universe,
         "source": source_label,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "rows": rows,
         "attention_lite": attention_lite,
+        "degraded": degraded,
     }
     tmp = _path(universe) + ".tmp"
     with open(tmp, "w") as f:

@@ -30,6 +30,17 @@ DB_PATH = os.path.join(_data_dir(), "stocksdeepdive.db")
 
 def _conn():
     conn = sqlite3.connect(DB_PATH, timeout=10)
+    # Audit fix 2.9: default SQLite rollback-journal mode takes a whole-
+    # file write lock, so heavy concurrent write load (e.g. during the
+    # nightly scan writing score_history alongside a visitor's page-view
+    # bump) can surface as an uncaught "database is locked" error instead
+    # of degrading silently like everything else in this app. WAL lets
+    # readers and a writer proceed concurrently and is a property of the
+    # DB file itself (persists once set) - set on every connect since it's
+    # a cheap no-op once already enabled, and any of the several modules
+    # sharing this same stocksdeepdive.db file could be the first to open
+    # it in a fresh process.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS page_views (
             day TEXT NOT NULL,

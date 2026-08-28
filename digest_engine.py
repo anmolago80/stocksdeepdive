@@ -193,16 +193,33 @@ def run_weekly_digest(log=print):
     from nightly_scan import analyze_ticker_lite  # deferred: heavy import
     site = _cfg()["site"]
 
-    for email, tickers in watchlist_store.all_users():
+    all_users = watchlist_store.all_users()
+
+    # Audit fix 2.5: fetch each DISTINCT ticker once for the whole digest
+    # run, not once per subscriber - previously this looped per-user and
+    # called the uncached analyze_ticker_lite() per ticker per user, so a
+    # ticker on 50 watchlists was fetched from Yahoo 50 times in one run
+    # for an identical result each time. Compute the union of watched
+    # tickers up front, fetch each once into ticker_cache, then fan the
+    # (already-computed) results back out per user below.
+    union_tickers = set()
+    for _email, _tickers in all_users:
+        union_tickers.update(_tickers[:20])  # same per-user sanity cap as before
+
+    ticker_cache = {}
+    for t in union_tickers:
+        try:
+            ticker_cache[t] = analyze_ticker_lite(t)
+        except Exception:
+            ticker_cache[t] = None
+
+    for email, tickers in all_users:
         try:
             rows = []
             for t in tickers[:20]:  # sanity cap per user
-                try:
-                    r = analyze_ticker_lite(t)
-                    if r:
-                        rows.append(r)
-                except Exception:
-                    continue
+                r = ticker_cache.get(t)
+                if r:
+                    rows.append(r)
             if not rows:
                 summary["skipped"] += 1
                 continue

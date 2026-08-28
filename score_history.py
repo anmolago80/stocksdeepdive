@@ -30,6 +30,9 @@ DB_PATH = os.path.join(_data_dir(), "stocksdeepdive.db")
 
 def _conn():
     conn = sqlite3.connect(DB_PATH, timeout=10)
+    # Audit fix 2.9: see metrics_store.py's identical comment - same
+    # shared stocksdeepdive.db file, same WAL rationale.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS score_history (
             day TEXT NOT NULL,

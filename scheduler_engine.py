@@ -77,6 +77,62 @@ def _cfg():
     }
 
 
+# Audit fix 2.8: the "never double-start" guard in _loop() below (the
+# state-file attempt counter) only protects one thread inside ONE process
+# against itself - nothing stops a second Railway replica (if this
+# service is ever scaled beyond the single-replica assumption this module
+# is documented above to require) from independently deciding the same
+# scan/digest is due and running it at the same time. This is currently
+# safe only because nothing enforces single-replica in code. A file-based
+# lock on the same Railway Volume every other persisted file in this app
+# already relies on being shared/durable across replicas of one service
+# gives real cross-process coordination without needing any Railway-
+# platform-specific API: os.O_CREAT|O_EXCL is atomic at the filesystem
+# level, so only one process can ever win the race to create the lock
+# file. A lock older than _JOB_LOCK_STALE_SECONDS is treated as
+# abandoned (from a process that crashed before releasing it) and
+# cleared, so a dead lock can't wedge every future run forever.
+_JOB_LOCK_STALE_SECONDS = 3 * 3600
+
+
+def _lock_path(job_name):
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, f"scheduler_{job_name}.lock")
+
+
+def _acquire_job_lock(job_name):
+    """True if this process just acquired the lock for `job_name` (caller
+    must call _release_job_lock when done); False if another process
+    already holds it. Fails OPEN (returns True without a real lock) on any
+    filesystem error, matching this module's existing single-replica
+    fail-safe stance - a lock that can't be checked should never be the
+    reason the scheduler stops running altogether."""
+    path = _lock_path(job_name)
+    try:
+        if os.path.exists(path):
+            age = time.time() - os.path.getmtime(path)
+            if age > _JOB_LOCK_STALE_SECONDS:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w") as f:
+            f.write(f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()}\n")
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        return True
+
+
+def _release_job_lock(job_name):
+    try:
+        os.remove(_lock_path(job_name))
+    except OSError:
+        pass
+
+
 def _run_nightly(cfg, log):
     import nightly_scan
     # The "imported" virtual universe (screen_import_store's TradingView
@@ -121,8 +177,44 @@ def _universes_needing_scan(cfg):
     return due
 
 
+# Audit fix 2.10: the scheduler thread is memoized once via
+# st.cache_resource (app.py); if it ever dies (an unusual exception type
+# escaping the try/except in _loop() below, or the thread simply never
+# scheduled by the interpreter for some reason), nightly scans and the
+# weekly digest silently stop until the next full redeploy, with nothing
+# surfacing that it's dead. This module-level timestamp is updated once
+# per loop tick (whether or not there was anything to do that tick) so
+# any caller can answer "is the loop still alive" without needing access
+# to the thread object itself - see heartbeat_age_seconds() below.
+# Process-local (a plain module global, not persisted) is intentional:
+# the loop only ever runs in the same process that's asking, so there's
+# nothing to gain from persisting it across a restart.
+_last_heartbeat = None
+
+
+def heartbeat_age_seconds():
+    """Seconds since the scheduler loop last ticked, or None if it has
+    never ticked in this process (start() hasn't been called yet, or the
+    process is too young for the thread to have run its first iteration).
+    Ticks every _CHECK_EVERY_SECONDS regardless of SCHEDULER_ENABLED - the
+    loop itself keeps running even when disabled, it just skips doing any
+    work - so this correctly reflects "is the thread alive", not "is a
+    job currently due". A healthy scheduler updates this every
+    _CHECK_EVERY_SECONDS; a stuck/dead thread shows a growing age with no
+    ceiling. Exposed for an admin-only diagnostic (app.py's Stats
+    popover) - deliberately not a public route, since a health-check
+    endpoint answering "is the background job thread alive" is himself
+    the kind of internal-state a public FastAPI route (server.py) has no
+    reason to expose."""
+    if _last_heartbeat is None:
+        return None
+    return time.time() - _last_heartbeat
+
+
 def _loop(log):
+    global _last_heartbeat
     while True:
+        _last_heartbeat = time.time()
         try:
             cfg = _cfg()
             if cfg["enabled"]:
@@ -139,9 +231,19 @@ def _loop(log):
                         state["scan_attempts"] = {today: n_today + 1}
                         state["last_scan_date"] = today
                         _save_state(state)  # mark first: never double-start
-                        log(f"[scheduler] starting nightly scans ({', '.join(due)}) "
-                            f"[attempt {n_today + 1}/3 today]")
-                        _run_nightly({**cfg, "universes": due}, log)
+                        # Audit fix 2.8: cross-process lock, on top of the
+                        # in-process state-file guard above - see
+                        # _acquire_job_lock's docstring.
+                        if _acquire_job_lock("nightly"):
+                            try:
+                                log(f"[scheduler] starting nightly scans ({', '.join(due)}) "
+                                    f"[attempt {n_today + 1}/3 today]")
+                                _run_nightly({**cfg, "universes": due}, log)
+                            finally:
+                                _release_job_lock("nightly")
+                        else:
+                            log("[scheduler] nightly scan skipped - another process "
+                                "already holds the lock")
 
                 # DIGEST_FORCE: set this variable to any NEW value (e.g.
                 # "test1") to send the digest immediately, once per value -
@@ -152,16 +254,30 @@ def _loop(log):
                 if force and state.get("digest_force_done") != force:
                     state["digest_force_done"] = force
                     _save_state(state)
-                    log(f"[scheduler] starting weekly digest (forced: {force})")
-                    _run_digest(log)
+                    if _acquire_job_lock("digest"):
+                        try:
+                            log(f"[scheduler] starting weekly digest (forced: {force})")
+                            _run_digest(log)
+                        finally:
+                            _release_job_lock("digest")
+                    else:
+                        log("[scheduler] forced digest skipped - another process "
+                            "already holds the lock")
                 elif (now.weekday() == cfg["digest_weekday"]
                         and now.hour >= cfg["digest_hour"]
                         and state.get("last_digest_date") != today):
                     state = _load_state()
                     state["last_digest_date"] = today
                     _save_state(state)
-                    log("[scheduler] starting weekly digest")
-                    _run_digest(log)
+                    if _acquire_job_lock("digest"):
+                        try:
+                            log("[scheduler] starting weekly digest")
+                            _run_digest(log)
+                        finally:
+                            _release_job_lock("digest")
+                    else:
+                        log("[scheduler] weekly digest skipped - another process "
+                            "already holds the lock")
         except Exception as e:
             log(f"[scheduler] loop error: {e}")
         time.sleep(_CHECK_EVERY_SECONDS)

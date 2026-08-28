@@ -50,6 +50,7 @@ import datetime
 import json
 import os
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -393,6 +394,22 @@ def _fetch_eodhd_statements(ticker, api_key):
 # Public entry point
 # -----------------------------------
 
+# Audit fix 2.7: unlike every other feed in this module, this is
+# deliberately called on EVERY get_bundle() invocation AND on every
+# build_sections() cache-hit check (get_live_price(), added for fix 2.1) -
+# "always live" is the whole point (see the docstring below), so it can't
+# use the normal 24h/section-level caching. But that also means it was an
+# unthrottled synchronous Yahoo call with no backoff on any cold-cache
+# path or warm-cache staleness check. A short TTL, keyed by ticker, is
+# long enough to collapse a burst of concurrent renders for the same
+# ticker (several visitors hitting the same popular stock within a few
+# seconds) down to one live fetch, but short enough to still catch a real
+# intraday move almost immediately - the exact tradeoff this whole
+# mechanism exists for.
+_FRESH_PRICE_CACHE = {}
+_FRESH_PRICE_TTL_SECONDS = 90
+
+
 def _fetch_fresh_price(tk):
     """A live-ish current price via yfinance's fast_info, which is backed by
     a lighter/faster-updating Yahoo endpoint than .info's own quoteSummary
@@ -408,7 +425,21 @@ def _fetch_fresh_price(tk):
     enough to run unconditionally. Returns None on any failure (missing
     ticker, network hiccup, unexpected fast_info shape) - callers must
     treat that as "keep whatever price was already in info", not as a
-    reason to fail the whole bundle."""
+    reason to fail the whole bundle.
+
+    Cached for _FRESH_PRICE_TTL_SECONDS (see the constants above this
+    function - audit fix 2.7) so a burst of concurrent requests for the
+    same ticker collapses to one live fast_info call."""
+    symbol = getattr(tk, "ticker", None)
+    now = time.time()
+    if symbol:
+        cached = _FRESH_PRICE_CACHE.get(symbol)
+        if cached is not None:
+            price, fetched_at = cached
+            if now - fetched_at < _FRESH_PRICE_TTL_SECONDS:
+                return price
+
+    price = None
     try:
         fi = tk.fast_info
         for key in ("last_price", "lastPrice", "regularMarketPrice"):
@@ -420,10 +451,14 @@ def _fetch_fresh_price(tk):
             if val is None:
                 val = getattr(fi, key, None)
             if isinstance(val, (int, float)) and val > 0:
-                return float(val)
+                price = float(val)
+                break
     except Exception:
-        pass
-    return None
+        price = None
+
+    if symbol:
+        _FRESH_PRICE_CACHE[symbol] = (price, now)
+    return price
 
 
 def get_live_price(ticker):

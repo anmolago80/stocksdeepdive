@@ -58,6 +58,16 @@ PER_TICKER_SLEEP = 0.5
 # and live scans agree about what counts as "big enough to go lite".
 NIGHTLY_LITE_THRESHOLD = 100
 
+# Audit fix 2.3: a scan that completed for fewer than this fraction of its
+# resolved universe is treated as failed/degraded rather than a
+# legitimate result - the realistic cause is Yahoo rate-limiting mid-run,
+# not a genuinely smaller universe (the universe is resolved up front via
+# scanner_engine.resolve_tickers(), so its size is already known). Without
+# this, a 100/500-ticker partial run would silently overwrite last night's
+# complete 500-row ranking, "succeed", and not be retried until the next
+# scheduled window because the save looks perfectly fresh.
+SCAN_COMPLETENESS_THRESHOLD = 0.5
+
 # The TradingView-CSV import queue (screen_import_store.py) - a virtual
 # "universe" that isn't a real index, resolved from the import queue
 # instead of scanner_engine. See run_imported_scan() below.
@@ -261,8 +271,30 @@ def run_universe_scan(universe, max_tickers=None, log=print):
         time.sleep(PER_TICKER_SLEEP)
 
     rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
-    payload = scan_store.save_scan(universe, rows, source, attention_lite=attention_lite)
-    log(f"[nightly_scan] {universe}: saved {len(rows)} rows")
+
+    # Audit fix 2.3: don't let a partially-failed run silently clobber a
+    # complete prior scan (see SCAN_COMPLETENESS_THRESHOLD above).
+    completeness = (len(rows) / len(tickers)) if tickers else 0.0
+    degraded = completeness < SCAN_COMPLETENESS_THRESHOLD
+    if degraded:
+        prior = scan_store.load_scan(universe)
+        prior_rows = len(prior.get("rows") or []) if prior else 0
+        if prior_rows > len(rows):
+            log(f"[nightly_scan] {universe}: only {len(rows)}/{len(tickers)} tickers "
+                f"succeeded ({completeness:.0%}, below the "
+                f"{SCAN_COMPLETENESS_THRESHOLD:.0%} completeness threshold) and worse than "
+                f"the existing saved scan ({prior_rows} rows) - skipping the save so the "
+                f"prior scan stays live; this universe will be retried on the next "
+                f"scheduler check (age-based staleness check finds nothing new here).")
+            return None
+        log(f"[nightly_scan] {universe}: only {len(rows)}/{len(tickers)} tickers succeeded "
+            f"({completeness:.0%}, below threshold) but no better prior scan exists - "
+            f"saving anyway, flagged degraded.")
+
+    payload = scan_store.save_scan(universe, rows, source, attention_lite=attention_lite,
+                                    degraded=degraded)
+    log(f"[nightly_scan] {universe}: saved {len(rows)} rows"
+        + (" (degraded)" if degraded else ""))
     try:
         score_history.record(rows)
         log(f"[nightly_scan] {universe}: recorded {len(rows)} rows to score_history")

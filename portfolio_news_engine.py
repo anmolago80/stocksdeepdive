@@ -64,6 +64,9 @@ DB_PATH = os.path.join(_data_dir(), "stocksdeepdive.db")
 
 def _conn():
     conn = sqlite3.connect(DB_PATH, timeout=10)
+    # Audit fix 2.9: see metrics_store.py's identical comment - same
+    # shared stocksdeepdive.db file, same WAL rationale.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS news_events (
             ticker TEXT NOT NULL,
@@ -182,6 +185,67 @@ def _mark_fetched(ticker):
             "ON CONFLICT(ticker) DO UPDATE SET last_fetched_at = excluded.last_fetched_at",
             (ticker, now_iso),
         )
+
+
+def _claim_fetch(ticker, max_age_hours=REFETCH_STALE_HOURS):
+    """Atomic check-and-claim, replacing the separate _should_refetch() /
+    _mark_fetched() pair at the actual call site below (both functions are
+    left in place since other code may still reason about staleness alone,
+    but the fetch path itself now uses this instead).
+
+    Audit fix 2.6: _should_refetch/_mark_fetched used to be independent,
+    non-atomic reads/writes with the mark happening AFTER the fetch
+    completed - two users loading the same held ticker within the same
+    few seconds (most likely right after a redeploy, when the fetch log
+    is empty) both saw "stale" and both triggered a full 5-feed news
+    fetch concurrently.
+
+    This claims the row (writes last_fetched_at = now) BEFORE fetching,
+    inside a single BEGIN IMMEDIATE transaction, which takes SQLite's
+    write lock up front - a second concurrent caller's BEGIN IMMEDIATE
+    blocks until the first one commits its claim, then reads the
+    just-updated (fresh) timestamp and correctly backs off instead of
+    fetching again. Returns True if THIS caller won the claim and should
+    proceed to fetch; False if another caller already claimed it (or it's
+    genuinely still fresh) - the caller should read the already-stored
+    events instead, same as the old is-fresh path."""
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.isolation_level = None  # manual transaction control
+    try:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS news_fetch_log (
+                ticker TEXT PRIMARY KEY,
+                last_fetched_at TEXT NOT NULL
+            )"""
+        )
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT last_fetched_at FROM news_fetch_log WHERE ticker = ?", (ticker,)
+        ).fetchone()
+        due = True
+        if row:
+            try:
+                last = _dt.datetime.fromisoformat(row[0])
+                due = (_now() - last) > _dt.timedelta(hours=max_age_hours)
+            except Exception:
+                due = True
+        if due:
+            now_iso = _iso(_now())
+            conn.execute(
+                "INSERT INTO news_fetch_log (ticker, last_fetched_at) VALUES (?, ?) "
+                "ON CONFLICT(ticker) DO UPDATE SET last_fetched_at = excluded.last_fetched_at",
+                (ticker, now_iso),
+            )
+        conn.execute("COMMIT")
+        return due
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -654,7 +718,11 @@ def analyze_holding_news(ticker, name=None, thesis_drivers=None, buy_date=None, 
     buy_dt = _parse_date(buy_date) or (now - _dt.timedelta(days=365))
     ticker = ticker.upper()
 
-    if _should_refetch(ticker):
+    # Audit fix 2.6: _claim_fetch() atomically checks staleness AND marks
+    # the ticker fetched in one step, before the fetch itself runs - see
+    # its own docstring. Replaces the old _should_refetch() / ...
+    # _mark_fetched() pair, which left a race window open between the two.
+    if _claim_fetch(ticker):
         raw = _fetch_all_feeds(ticker, name, buy_dt, now)
         fresh = []
         for it in raw:
@@ -668,7 +736,6 @@ def analyze_holding_news(ticker, name=None, thesis_drivers=None, buy_date=None, 
                 "source": it.get("source", ""), "domain": it.get("domain", ""),
             })
         merged = _merge_and_save(ticker, fresh)
-        _mark_fetched(ticker)
     else:
         merged = _load_events(ticker)
 

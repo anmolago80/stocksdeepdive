@@ -51,6 +51,8 @@ Returns (intrinsic_value_per_share, growth_rate_used, meta) where meta records
 where each input came from and whether a default/average had to be assumed.
 """
 
+import time
+
 import yfinance as yf
 
 import capm_engine
@@ -417,9 +419,19 @@ _FX_STATIC_FALLBACK = {
 
 # Per-process cache so one page render (which can call fx_rate for several
 # tickers sharing the same currency pair) fetches each live rate at most
-# once. A plain dict is enough - this module doesn't import streamlit, and
-# the cache only needs to live for the duration of one run anyway.
+# once.
+#
+# Audit fix 2.4: this used to have no TTL at all, despite the comment
+# above claiming it only needs to live "for the duration of one run" - but
+# this IS a long-running server process (Streamlit on Railway), not a
+# script, so the first USD/AUD (etc.) rate fetched after a deploy used to
+# stay frozen for that whole deployment's uptime, drifting further from
+# the real rate the longer the process ran. Now stores (result, fetched_at)
+# and expires after _FX_CACHE_TTL_SECONDS, the same kind of TTL every
+# other live feed in this app uses (e.g. capm_engine.get_risk_free_rate's
+# 3h TTL - FX moves faster than a bond yield, so this uses a shorter one).
 _fx_cache = {}
+_FX_CACHE_TTL_SECONDS = 1800
 
 
 def fx_rate(from_ccy, to_ccy):
@@ -438,8 +450,11 @@ def fx_rate(from_ccy, to_ccy):
         return 1.0, "live"
 
     cache_key = (from_ccy, to_ccy)
-    if cache_key in _fx_cache:
-        return _fx_cache[cache_key]
+    cached = _fx_cache.get(cache_key)
+    if cached is not None:
+        result, fetched_at = cached
+        if time.time() - fetched_at < _FX_CACHE_TTL_SECONDS:
+            return result
 
     result = None
     try:
@@ -463,7 +478,7 @@ def fx_rate(from_ccy, to_ccy):
             # still flagged as a fallback so it's visibly not a real rate.
             result = (1.0, "fallback")
 
-    _fx_cache[cache_key] = result
+    _fx_cache[cache_key] = (result, time.time())
     return result
 
 

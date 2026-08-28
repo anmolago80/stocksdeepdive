@@ -632,6 +632,30 @@ def _render_view_badge():
                     )
                 except Exception:
                     st.caption("No page-view data yet.")
+
+                # Audit fix 2.10: surfaces the background scheduler
+                # thread's heartbeat so a dead thread (nightly scans/
+                # weekly digest silently stopped) is visible somewhere
+                # reachable instead of only discoverable by noticing scans
+                # have stopped updating days later.
+                st.markdown("---")
+                st.markdown("### Scheduler")
+                try:
+                    import scheduler_engine
+                    _hb_age = scheduler_engine.heartbeat_age_seconds()
+                    if _hb_age is None:
+                        st.caption("No heartbeat recorded yet (thread hasn't "
+                                   "ticked, or hasn't started).")
+                    elif _hb_age < 300:
+                        st.caption(f"Alive - last tick {_hb_age:.0f}s ago.")
+                    else:
+                        st.markdown(
+                            f":red[**Stuck?**] last tick {_hb_age / 60:.0f} min ago "
+                            "(expected every few minutes) - nightly scans/weekly "
+                            "digest may have silently stopped. A redeploy restarts it."
+                        )
+                except Exception:
+                    st.caption("Scheduler status unavailable.")
         with _b2:
             if st.button("Exit full view", key="exit_full_view"):
                 st.session_state["full_view_unlocked"] = False

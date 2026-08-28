@@ -1156,81 +1156,23 @@ def build(path, anthropic_api_key=None):
     return out
 
 
-# ---- Merge-not-overwrite on re-upload ----
+# ---- Merge-not-overwrite on re-upload: REMOVED (audit fix 2.11) ----
 #
-# Andrew re-creates his research workbook from scratch every 10-12 months
-# rather than editing one file forever. A fresh/leaner spreadsheet upload
-# through the admin panel would otherwise silently DELETE anything not
-# re-typed into the new file (a ticker he hasn't gotten to re-analysing
-# yet, a Company Potential paragraph he left blank this round, a whole
-# metric for one stock). merge_compounder_data() fixes that: it prefers
-# everything from the freshly-built data, but anywhere that's missing or
-# blank, it falls back to whatever the PREVIOUS compounder_data.json
-# already had, at whatever depth that gap is - a missing ticker, a blank
-# field on an existing ticker, a blank cell inside an existing metric.
-# Only the admin panel's rebuild flow uses this (see app.py) - the plain
-# `python3 build_compounder_data.py` CLI path always writes exactly what
-# it read, unmerged, since that's normally run against the one true
-# ongoing workbook rather than a fresh replacement.
-
-
-def _cp_is_empty(v):
-    if v is None:
-        return True
-    if isinstance(v, str):
-        return not v.strip()
-    if isinstance(v, (list, dict)):
-        return len(v) == 0
-    return False
-
-
-def _cp_list_item_id(item):
-    """A list of dicts can be merged item-by-item only if each item has a
-    stable identity across builds. This app's list-of-dict shapes always
-    use one of these three fields for that (a metric/rating's column
-    'key', a text group's 'title', or a valuation-input's 'label') -
-    whichever is present wins, in that priority order."""
-    if not isinstance(item, dict):
-        return None
-    for id_field in ("key", "title", "label"):
-        if id_field in item:
-            return (id_field, item[id_field])
-    return None
-
-
-def _cp_merge_value(new_v, old_v):
-    """Recursively merge old_v into new_v: prefer new_v at every level,
-    but fall back to old_v wherever new_v is missing/blank, at any depth -
-    dicts merge key by key (recursing into keys present in both), lists of
-    identifiable dicts (see _cp_list_item_id) merge item by item and
-    recurse into matched pairs, anything else just prefers new_v unless
-    it's empty. This one function is what makes merge_compounder_data()
-    work correctly across every differently-shaped section in this file
-    (flat per-ticker dicts, per-column metric lists, the nested Company
-    Potential text groups) without hand-writing a merge per shape."""
-    if isinstance(new_v, dict) and isinstance(old_v, dict):
-        merged = dict(new_v)
-        for k, ov in old_v.items():
-            merged[k] = _cp_merge_value(merged[k], ov) if k in merged else ov
-        return merged
-
-    if isinstance(new_v, list) and isinstance(old_v, list):
-        new_ids = [_cp_list_item_id(it) for it in new_v]
-        if new_ids and all(i is not None for i in new_ids):
-            old_by_id = {
-                _cp_list_item_id(it): it for it in old_v if _cp_list_item_id(it) is not None
-            }
-            merged, seen = [], set()
-            for it, iid in zip(new_v, new_ids):
-                merged.append(_cp_merge_value(it, old_by_id[iid]) if iid in old_by_id else it)
-                seen.add(iid)
-            merged.extend(it for iid, it in old_by_id.items() if iid not in seen)
-            return merged
-        # Items without a stable identity (or an empty new list) can't be
-        # matched up - treat the list as one atomic value instead.
-        return new_v if not _cp_is_empty(new_v) else old_v
-
-    return old_v if (_cp_is_empty(new_v) and not _cp_is_empty(old_v)) else new_v
+# This used to be where merge_compounder_data() + its helpers
+# (_cp_is_empty/_cp_list_item_id/_cp_merge_value) lived - built to stop a
+# fresh/leaner spreadsheet re-upload from silently deleting anything not
+# re-typed into the new file. The admin rebuild flow (app.py) deliberately
+# moved to a full replace instead: "the workbook you upload is exactly
+# what the site shows, and history lives in the archive instead of
+# leaking into the present" (see app.py's rebuild handler, and
+# archive_current_snapshot()/list_archived_snapshots() below, which are
+# the actual safety net now - every rebuild is archived first and
+# browsable via the Research page's snapshot picker). merge_compounder_data()
+# was never called from that path (or anywhere else) once that decision
+# was made, leaving ~85 lines of dead code whose comments described
+# protection that wasn't actually active - removed rather than left to
+# mislead the next reader. Recoverable from git history if a future
+# rebuild flow ever wants merge-on-upload back.
 
 
 ARCHIVE_DIR_NAME = "compounder_archive"
@@ -1311,22 +1253,6 @@ def load_snapshot(path):
             return json.load(f)
     except (OSError, ValueError):
         return None
-
-
-def merge_compounder_data(new_data, old_data):
-    """Merge a freshly-built compounder_data.json over the previous one -
-    see the block comment above for why this exists. `generated_at` and
-    `build_warnings` intentionally come straight from new_data, unmerged:
-    they describe THIS rebuild specifically, not accumulated history, so
-    an empty build_warnings this time should stay empty rather than
-    resurrecting old warnings, and generated_at should always reflect the
-    most recent rebuild."""
-    if not old_data:
-        return new_data
-    merged = dict(new_data)
-    merged["tickers"] = _cp_merge_value(new_data.get("tickers", {}), old_data.get("tickers", {}))
-    merged["sections"] = _cp_merge_value(new_data.get("sections", {}), old_data.get("sections", {}))
-    return merged
 
 
 if __name__ == "__main__":
