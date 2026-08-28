@@ -7,6 +7,23 @@ Monitor app's Invested-tab + locked-baseline design, but multi-tenant:
 every row is scoped to the signed-in user's email, so one visitor never
 sees another's holdings).
 
+MULTIPLE NAMED PORTFOLIOS: a user can split their holdings across more
+than one named portfolio (e.g. "SMSF" and "Personal") - including holding
+the SAME ticker in more than one portfolio at once, each with its own
+shares/buy price/baseline. The `portfolios` table is the registry of a
+user's portfolio names (so an empty, just-created portfolio still shows
+up); every holding row is scoped by (email, portfolio, ticker), which is
+also now the primary key - the same ticker can only appear once WITHIN a
+given portfolio, but can appear in as many different portfolios as the
+user likes, each tracked completely independently (its own shares, buy
+price/date, thesis, and - critically - its own locked baseline, captured
+the first time that (email, portfolio, ticker) triple is added). The one
+exception is `iv_overrides` (manual intrinsic-value override): that
+stays keyed by (email, ticker) with no portfolio dimension, since a
+manual "what I think this company is worth" estimate is a property of
+the ticker, not of which account happens to hold it - added twice over
+in SMSF and Personal, it's still the same override.
+
 WHERE THE FILE LIVES / WHY SQLITE: identical rule to every other store in
 this app - the attached Railway Volume when one exists, falling back to
 this directory locally (see watchlist_store.py); SQLite serialises
@@ -22,8 +39,8 @@ return one user's holdings for another user's email.
 THE BASELINE LOCK (same philosophy as the desktop app's baselines_store.py
 + spreadsheet_engine.py): a holding's baseline - the fundamentals
 snapshot it's judged against later - is captured ONCE, the first time
-that (email, ticker) pair is added, and never silently overwritten after
-that (add_holding() below is INSERT OR IGNORE on the (email, ticker)
+that (email, portfolio, ticker) triple is added, and never silently
+overwritten after that (add_holding() below is INSERT OR IGNORE on that
 primary key). Two baseline shapes exist, tagged by the "schema" key
 inside baseline_json so a later reader always knows which it has:
   - "desktop_v1"  - carried over as-is from the desktop app's own
@@ -34,6 +51,12 @@ inside baseline_json so a later reader always knows which it has:
                     engine every other page on this site already uses -
                     deliberately NOT a separate/ported copy) for any
                     holding added going forward.
+
+SCHEMA MIGRATION: this module originally shipped with portfolio_holdings
+keyed by (email, ticker) only - one portfolio per user, no name. See
+_migrate_legacy_schema() below for how any already-live rows in that
+shape are folded into a named portfolio in place, without losing
+anything, the first time this module runs after the upgrade.
 """
 
 import json
@@ -48,12 +71,31 @@ def _data_dir():
 
 DB_PATH = os.path.join(_data_dir(), "stocksdeepdive.db")
 
+# The one-off desktop-import owner (see seed_desktop_import at the bottom)
+# is also the one whose pre-existing, pre-multi-portfolio holdings are
+# known to be their super - _migrate_legacy_schema() below uses this same
+# constant to fold those specific rows into a portfolio named "SMSF"
+# rather than the generic "Main" every other already-live user's legacy
+# rows fold into.
+_SEED_OWNER_EMAIL = "anmolago@hotmail.com"
+_SEED_OWNER_LEGACY_PORTFOLIO = "SMSF"
+_DEFAULT_LEGACY_PORTFOLIO = "Main"
+
 
 def _conn():
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.execute(
+        """CREATE TABLE IF NOT EXISTS portfolios (
+            email TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (email, name)
+        )"""
+    )
+    conn.execute(
         """CREATE TABLE IF NOT EXISTS portfolio_holdings (
             email TEXT NOT NULL,
+            portfolio TEXT NOT NULL,
             ticker TEXT NOT NULL,
             name TEXT,
             kind TEXT NOT NULL DEFAULT 'STOCK',
@@ -68,7 +110,7 @@ def _conn():
             source TEXT NOT NULL DEFAULT 'website',
             added_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            PRIMARY KEY (email, ticker)
+            PRIMARY KEY (email, portfolio, ticker)
         )"""
     )
     # One row per email that has ever received the one-off desktop-import
@@ -83,7 +125,8 @@ def _conn():
     # Per-user, per-ticker manual intrinsic-value override (1d) - lets an
     # owner substitute their own number for the site's DCF model without
     # touching the model itself. One row per (email, ticker); absence means
-    # "use the model value".
+    # "use the model value". Deliberately NOT scoped by portfolio - see
+    # the module docstring's "one exception" note.
     conn.execute(
         """CREATE TABLE IF NOT EXISTS iv_overrides (
             email TEXT NOT NULL,
@@ -93,21 +136,205 @@ def _conn():
             PRIMARY KEY (email, ticker)
         )"""
     )
-    # Optional per-user portfolio-level numbers (Part 2 workbook parity)
-    # the site has no other way to know: total capital ever transferred in,
-    # and cash currently held outside any holding. Both stay unset (row
-    # absent) until the user fills in "Portfolio settings" - every reader
-    # of this table must treat a missing row as "hide the derived figures",
-    # never as zero.
+    # Optional per-user, per-portfolio numbers (Part 2 workbook parity) the
+    # site has no other way to know: total capital ever transferred into
+    # THAT portfolio, and cash currently held outside any holding in it.
+    # Both stay unset (row absent) until the user fills in "Portfolio
+    # settings" for that portfolio - every reader of this table must treat
+    # a missing row as "hide the derived figures", never as zero.
     conn.execute(
         """CREATE TABLE IF NOT EXISTS portfolio_settings (
-            email TEXT PRIMARY KEY,
+            email TEXT NOT NULL,
+            portfolio TEXT NOT NULL,
             total_transferred REAL,
             cash_held REAL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (email, portfolio)
         )"""
     )
+    _migrate_legacy_schema(conn)
     return conn
+
+
+def _table_columns(conn, table):
+    return [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+
+
+def _migrate_legacy_schema(conn):
+    """One-time, idempotent fold-up from the original single-portfolio
+    shape into the multi-portfolio one. Runs on every connection but is a
+    single cheap PRAGMA check once already migrated, so it costs nothing
+    after the first call post-upgrade.
+
+    Two tables predate the `portfolio` column: portfolio_holdings (was PK
+    (email, ticker)) and portfolio_settings (was PK (email,)). Both get
+    rebuilt with the new PK and every existing row assigned to a named
+    portfolio - "SMSF" for the seed owner (see the module docstring:
+    those specific holdings are known to be their super), "Main" for
+    every other already-live user - so nothing already tracked
+    disappears, silently merges, or has to be re-entered.
+    """
+    _holdings_cols = _table_columns(conn, "portfolio_holdings")
+    if "portfolio" not in _holdings_cols:
+        conn.execute("ALTER TABLE portfolio_holdings RENAME TO portfolio_holdings_pre_multi")
+        conn.execute(
+            """CREATE TABLE portfolio_holdings (
+                email TEXT NOT NULL,
+                portfolio TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                name TEXT,
+                kind TEXT NOT NULL DEFAULT 'STOCK',
+                currency TEXT,
+                shares REAL,
+                buy_price REAL,
+                buy_date TEXT,
+                thesis TEXT NOT NULL DEFAULT '',
+                thesis_drivers_json TEXT NOT NULL DEFAULT '[]',
+                baseline_json TEXT NOT NULL DEFAULT '{}',
+                baseline_date TEXT,
+                source TEXT NOT NULL DEFAULT 'website',
+                added_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (email, portfolio, ticker)
+            )"""
+        )
+        _old_cols = _table_columns(conn, "portfolio_holdings_pre_multi")
+        _old_rows = conn.execute(f"SELECT {', '.join(_old_cols)} FROM portfolio_holdings_pre_multi").fetchall()
+        _now = datetime.now(timezone.utc).isoformat()
+        for row in _old_rows:
+            d = dict(zip(_old_cols, row))
+            portfolio = (_SEED_OWNER_LEGACY_PORTFOLIO if d["email"] == _SEED_OWNER_EMAIL
+                         else _DEFAULT_LEGACY_PORTFOLIO)
+            conn.execute(
+                "INSERT OR IGNORE INTO portfolios (email, name, created_at) VALUES (?, ?, ?)",
+                (d["email"], portfolio, _now),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO portfolio_holdings "
+                "(email, portfolio, ticker, name, kind, currency, shares, buy_price, "
+                "buy_date, thesis, thesis_drivers_json, baseline_json, baseline_date, "
+                "source, added_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (d["email"], portfolio, d["ticker"], d["name"], d["kind"], d["currency"],
+                 d["shares"], d["buy_price"], d["buy_date"], d["thesis"],
+                 d["thesis_drivers_json"], d["baseline_json"], d["baseline_date"],
+                 d["source"], d["added_at"], d["updated_at"]),
+            )
+        conn.execute("DROP TABLE portfolio_holdings_pre_multi")
+
+    _settings_cols = _table_columns(conn, "portfolio_settings")
+    if _settings_cols and "portfolio" not in _settings_cols:
+        conn.execute("ALTER TABLE portfolio_settings RENAME TO portfolio_settings_pre_multi")
+        conn.execute(
+            """CREATE TABLE portfolio_settings (
+                email TEXT NOT NULL,
+                portfolio TEXT NOT NULL,
+                total_transferred REAL,
+                cash_held REAL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (email, portfolio)
+            )"""
+        )
+        _old_cols = _table_columns(conn, "portfolio_settings_pre_multi")
+        _old_rows = conn.execute(f"SELECT {', '.join(_old_cols)} FROM portfolio_settings_pre_multi").fetchall()
+        for row in _old_rows:
+            d = dict(zip(_old_cols, row))
+            portfolio = (_SEED_OWNER_LEGACY_PORTFOLIO if d["email"] == _SEED_OWNER_EMAIL
+                         else _DEFAULT_LEGACY_PORTFOLIO)
+            conn.execute(
+                "INSERT OR IGNORE INTO portfolio_settings "
+                "(email, portfolio, total_transferred, cash_held, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (d["email"], portfolio, d["total_transferred"], d["cash_held"], d["updated_at"]),
+            )
+        conn.execute("DROP TABLE portfolio_settings_pre_multi")
+
+
+# --------------------------------------------------------------------------
+# Portfolio registry - create/list/rename/delete a named portfolio. A
+# portfolio can exist with zero holdings (created ahead of adding
+# anything to it), which is why this is a real table and not just
+# DISTINCT portfolio values off portfolio_holdings.
+# --------------------------------------------------------------------------
+
+def list_portfolios(email):
+    """Every portfolio name this user has, oldest-created first. Never
+    empty for a user who has been through page_portfolio() at least once
+    (see ensure_default_portfolio) - empty only for an email this module
+    has never seen."""
+    if not email:
+        return []
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT name FROM portfolios WHERE email = ? ORDER BY created_at ASC",
+            (email,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def create_portfolio(email, name):
+    """INSERT OR IGNORE on (email, name): creating a portfolio that
+    already exists is a no-op. Returns True if a new portfolio was
+    actually created."""
+    name = (name or "").strip()
+    if not email or not name:
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO portfolios (email, name, created_at) VALUES (?, ?, ?)",
+            (email, name, now),
+        )
+        return cur.rowcount > 0
+
+
+def ensure_default_portfolio(email):
+    """Called on every Portfolio page load: if this user has no portfolio
+    at all yet (brand new visitor, or an email seed_desktop_import never
+    touches), give them one named "Main" so the portfolio selector is
+    never empty and "Add a holding" always has somewhere to go. No-op for
+    anyone who already has at least one portfolio."""
+    if not email:
+        return
+    if not list_portfolios(email):
+        create_portfolio(email, _DEFAULT_LEGACY_PORTFOLIO)
+
+
+def rename_portfolio(email, old_name, new_name):
+    """Rename a portfolio and cascade the rename onto every holding and
+    settings row filed under its old name. No-op if old_name doesn't
+    exist for this user, or if new_name is blank/unchanged."""
+    old_name = (old_name or "").strip()
+    new_name = (new_name or "").strip()
+    if not email or not old_name or not new_name or old_name == new_name:
+        return False
+    with _conn() as conn:
+        cur = conn.execute(
+            "UPDATE portfolios SET name = ? WHERE email = ? AND name = ?",
+            (new_name, email, old_name),
+        )
+        if cur.rowcount == 0:
+            return False
+        conn.execute(
+            "UPDATE portfolio_holdings SET portfolio = ? WHERE email = ? AND portfolio = ?",
+            (new_name, email, old_name),
+        )
+        conn.execute(
+            "UPDATE portfolio_settings SET portfolio = ? WHERE email = ? AND portfolio = ?",
+            (new_name, email, old_name),
+        )
+        return True
+
+
+def delete_portfolio(email, name):
+    """Delete a portfolio AND every holding/settings row filed under it.
+    Irreversible - the caller (the UI) is responsible for confirming with
+    the user first, same as remove_holding()."""
+    name = (name or "").strip()
+    if not email or not name:
+        return
+    with _conn() as conn:
+        conn.execute("DELETE FROM portfolios WHERE email = ? AND name = ?", (email, name))
+        conn.execute("DELETE FROM portfolio_holdings WHERE email = ? AND portfolio = ?", (email, name))
+        conn.execute("DELETE FROM portfolio_settings WHERE email = ? AND portfolio = ?", (email, name))
 
 
 def get_iv_override(email, ticker):
@@ -143,38 +370,62 @@ def clear_iv_override(email, ticker):
         )
 
 
-def get_settings(email):
+def get_settings(email, portfolio):
     """{'total_transferred': float|None, 'cash_held': float|None} - both
-    None (not 0) when the user has never filled in the Portfolio settings
-    expander, so callers can tell "not set" from "set to zero"."""
-    if not email:
+    None (not 0) when the user has never filled in this portfolio's
+    Portfolio settings expander, so callers can tell "not set" from "set
+    to zero"."""
+    if not email or not portfolio:
         return {"total_transferred": None, "cash_held": None}
     with _conn() as conn:
         row = conn.execute(
-            "SELECT total_transferred, cash_held FROM portfolio_settings WHERE email = ?",
-            (email,),
+            "SELECT total_transferred, cash_held FROM portfolio_settings WHERE email = ? AND portfolio = ?",
+            (email, portfolio),
         ).fetchone()
     if not row:
         return {"total_transferred": None, "cash_held": None}
     return {"total_transferred": row[0], "cash_held": row[1]}
 
 
-def set_settings(email, total_transferred=None, cash_held=None):
+def get_settings_all(email):
+    """Every portfolio's settings for this user, summed for the "All
+    portfolios" combined view: {'total_transferred': float|None,
+    'cash_held': float|None}, each None only if NOT A SINGLE portfolio
+    has that figure set (mirrors get_settings()'s "None means unset, 0 is
+    a real value" contract) - otherwise it's the sum of whichever
+    portfolios did set it, same "exclude rather than guess" rule the rest
+    of this page's totals already follow for missing prices/FX."""
     if not email:
+        return {"total_transferred": None, "cash_held": None}
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT total_transferred, cash_held FROM portfolio_settings WHERE email = ?",
+            (email,),
+        ).fetchall()
+    _transferred = [r[0] for r in rows if r[0] is not None]
+    _cash = [r[1] for r in rows if r[1] is not None]
+    return {
+        "total_transferred": sum(_transferred) if _transferred else None,
+        "cash_held": sum(_cash) if _cash else None,
+    }
+
+
+def set_settings(email, portfolio, total_transferred=None, cash_held=None):
+    if not email or not portfolio:
         return
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as conn:
         conn.execute(
-            "INSERT INTO portfolio_settings (email, total_transferred, cash_held, updated_at) "
-            "VALUES (?, ?, ?, ?) ON CONFLICT(email) DO UPDATE SET "
+            "INSERT INTO portfolio_settings (email, portfolio, total_transferred, cash_held, updated_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(email, portfolio) DO UPDATE SET "
             "total_transferred = excluded.total_transferred, cash_held = excluded.cash_held, "
             "updated_at = excluded.updated_at",
-            (email, total_transferred, cash_held, now),
+            (email, portfolio, total_transferred, cash_held, now),
         )
 
 
 def _row_to_dict(row):
-    (email, ticker, name, kind, currency, shares, buy_price, buy_date,
+    (email, portfolio, ticker, name, kind, currency, shares, buy_price, buy_date,
      thesis, thesis_drivers_json, baseline_json, baseline_date, source,
      added_at, updated_at) = row
     try:
@@ -186,8 +437,8 @@ def _row_to_dict(row):
     except (TypeError, ValueError):
         baseline = {}
     return {
-        "email": email, "ticker": ticker, "name": name, "kind": kind,
-        "currency": currency, "shares": shares, "buy_price": buy_price,
+        "email": email, "portfolio": portfolio, "ticker": ticker, "name": name,
+        "kind": kind, "currency": currency, "shares": shares, "buy_price": buy_price,
         "buy_date": buy_date, "thesis": thesis,
         "thesis_drivers": thesis_drivers, "baseline": baseline,
         "baseline_date": baseline_date, "source": source,
@@ -195,95 +446,123 @@ def _row_to_dict(row):
     }
 
 
-def get_holdings(email):
-    """Every holding for one signed-in user, oldest-added first (empty
-    list if none / no email - never falls back to "everyone's holdings",
-    the one invariant this whole module exists to guarantee)."""
+_HOLDING_COLUMNS = (
+    "email, portfolio, ticker, name, kind, currency, shares, buy_price, "
+    "buy_date, thesis, thesis_drivers_json, baseline_json, "
+    "baseline_date, source, added_at, updated_at"
+)
+
+
+def get_holdings(email, portfolio):
+    """Every holding in one of this user's portfolios, oldest-added first
+    (empty list if none / no email or portfolio - never falls back to
+    "everyone's holdings" or "every portfolio", the one invariant this
+    whole module exists to guarantee)."""
+    if not email or not portfolio:
+        return []
+    with _conn() as conn:
+        rows = conn.execute(
+            f"SELECT {_HOLDING_COLUMNS} FROM portfolio_holdings "
+            "WHERE email = ? AND portfolio = ? ORDER BY added_at ASC",
+            (email, portfolio),
+        ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def get_holdings_all(email):
+    """Every holding across every one of this user's portfolios, for the
+    "All portfolios" combined view - each row still carries its own
+    "portfolio" field, so a ticker held in more than one portfolio comes
+    back as more than one row rather than being merged into one (that
+    merge would silently average together two different buy prices/
+    baselines/theses - see the module docstring)."""
     if not email:
         return []
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT email, ticker, name, kind, currency, shares, buy_price, "
-            "buy_date, thesis, thesis_drivers_json, baseline_json, "
-            "baseline_date, source, added_at, updated_at "
-            "FROM portfolio_holdings WHERE email = ? ORDER BY added_at ASC",
+            f"SELECT {_HOLDING_COLUMNS} FROM portfolio_holdings "
+            "WHERE email = ? ORDER BY portfolio ASC, added_at ASC",
             (email,),
         ).fetchall()
     return [_row_to_dict(r) for r in rows]
 
 
-def get_holding(email, ticker):
-    if not email or not ticker:
+def get_holding(email, portfolio, ticker):
+    if not email or not portfolio or not ticker:
         return None
     with _conn() as conn:
         row = conn.execute(
-            "SELECT email, ticker, name, kind, currency, shares, buy_price, "
-            "buy_date, thesis, thesis_drivers_json, baseline_json, "
-            "baseline_date, source, added_at, updated_at "
-            "FROM portfolio_holdings WHERE email = ? AND ticker = ?",
-            (email, ticker.upper()),
+            f"SELECT {_HOLDING_COLUMNS} FROM portfolio_holdings "
+            "WHERE email = ? AND portfolio = ? AND ticker = ?",
+            (email, portfolio, ticker.upper()),
         ).fetchone()
     return _row_to_dict(row) if row else None
 
 
-def has_holding(email, ticker):
-    return get_holding(email, ticker) is not None
+def has_holding(email, portfolio, ticker):
+    return get_holding(email, portfolio, ticker) is not None
 
 
-def add_holding(email, ticker, name="", kind="STOCK", currency="AUD",
+def add_holding(email, portfolio, ticker, name="", kind="STOCK", currency="AUD",
                 shares=0.0, buy_price=0.0, buy_date=None, thesis="",
                 thesis_drivers=None, baseline=None, baseline_date=None,
                 source="website"):
     """
-    Add one holding for `email` and lock its baseline. INSERT OR IGNORE on
-    (email, ticker): if this user already has this ticker, the existing
-    row (and its already-locked baseline) is left completely untouched -
-    re-adding a ticker is a no-op, never a silent overwrite of the lock.
-    Returns True if a new row was actually inserted, False if it already
-    existed.
+    Add one holding to `portfolio` for `email` and lock its baseline.
+    INSERT OR IGNORE on (email, portfolio, ticker): if this user already
+    has this ticker IN THIS PORTFOLIO, the existing row (and its
+    already-locked baseline) is left completely untouched - re-adding a
+    ticker to the same portfolio is a no-op, never a silent overwrite of
+    the lock. The same ticker can still be added to a DIFFERENT portfolio
+    for this user with no conflict - that's a separate row entirely.
+    Also registers `portfolio` in the portfolios table if it doesn't
+    already exist, so adding a holding to a not-yet-created portfolio
+    name just creates it. Returns True if a new row was actually
+    inserted, False if it already existed.
     """
-    if not email or not ticker:
+    if not email or not portfolio or not ticker:
         return False
+    create_portfolio(email, portfolio)
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as conn:
         cur = conn.execute(
             "INSERT OR IGNORE INTO portfolio_holdings "
-            "(email, ticker, name, kind, currency, shares, buy_price, "
+            "(email, portfolio, ticker, name, kind, currency, shares, buy_price, "
             "buy_date, thesis, thesis_drivers_json, baseline_json, "
             "baseline_date, source, added_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (email, ticker.upper(), name, kind, currency, shares, buy_price,
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (email, portfolio, ticker.upper(), name, kind, currency, shares, buy_price,
              buy_date, thesis, json.dumps(thesis_drivers or []),
              json.dumps(baseline or {}), baseline_date, source, now, now),
         )
         return cur.rowcount > 0
 
 
-def update_thesis(email, ticker, thesis, thesis_drivers=None):
+def update_thesis(email, portfolio, ticker, thesis, thesis_drivers=None):
     """Revise a holding's thesis text/drivers WITHOUT touching its locked
     baseline - the same separation the desktop app's baselines_store
     (fundamentals) vs theses.json (thesis) keeps, so refining a thesis
     later never re-captures or perturbs the baseline snapshot."""
-    if not email or not ticker:
+    if not email or not portfolio or not ticker:
         return
     now = datetime.now(timezone.utc).isoformat()
     with _conn() as conn:
         conn.execute(
             "UPDATE portfolio_holdings SET thesis = ?, thesis_drivers_json = ?, "
-            "updated_at = ? WHERE email = ? AND ticker = ?",
-            (thesis, json.dumps(thesis_drivers or []), now, email, ticker.upper()),
+            "updated_at = ? WHERE email = ? AND portfolio = ? AND ticker = ?",
+            (thesis, json.dumps(thesis_drivers or []), now, email, portfolio, ticker.upper()),
         )
 
 
-def update_position(email, ticker, shares=None, buy_price=None, buy_date=None):
+def update_position(email, portfolio, ticker, shares=None, buy_price=None, buy_date=None):
     """Correct a holding's cost-basis fields (shares / buy price / buy
     date) - deliberately separate from the locked baseline snapshot
     (baseline_json / baseline_date), which this never touches, same
     separation-of-concerns as update_thesis() above. Only the fields
     passed (not None) are changed."""
-    if not email or not ticker:
+    if not email or not portfolio or not ticker:
         return
-    existing = get_holding(email, ticker)
+    existing = get_holding(email, portfolio, ticker)
     if not existing:
         return
     shares = existing["shares"] if shares is None else shares
@@ -293,18 +572,18 @@ def update_position(email, ticker, shares=None, buy_price=None, buy_date=None):
     with _conn() as conn:
         conn.execute(
             "UPDATE portfolio_holdings SET shares = ?, buy_price = ?, buy_date = ?, "
-            "updated_at = ? WHERE email = ? AND ticker = ?",
-            (shares, buy_price, buy_date, now, email, ticker.upper()),
+            "updated_at = ? WHERE email = ? AND portfolio = ? AND ticker = ?",
+            (shares, buy_price, buy_date, now, email, portfolio, ticker.upper()),
         )
 
 
-def remove_holding(email, ticker):
-    if not email or not ticker:
+def remove_holding(email, portfolio, ticker):
+    if not email or not portfolio or not ticker:
         return
     with _conn() as conn:
         conn.execute(
-            "DELETE FROM portfolio_holdings WHERE email = ? AND ticker = ?",
-            (email, ticker.upper()),
+            "DELETE FROM portfolio_holdings WHERE email = ? AND portfolio = ? AND ticker = ?",
+            (email, portfolio, ticker.upper()),
         )
 
 
@@ -325,10 +604,9 @@ def remove_holding(email, ticker):
 # Nothing else from that app (its other 4 historical tickers with no
 # current Invested-tab row, its scores/news caches) is imported - this is
 # a starting point for the holdings actually owned today, not a full
-# archive migration.
+# archive migration. All four land in the "SMSF" portfolio - literally
+# the SMSF workbook these were transcribed from.
 # --------------------------------------------------------------------------
-
-_SEED_OWNER_EMAIL = "anmolago@hotmail.com"
 
 _CSL_AX_THESIS = (
     "CSL is a high-quality, large-cap healthcare compounder built on a "
@@ -446,10 +724,10 @@ def seed_desktop_import(email):
             return  # already seeded (or raced with another process that just did)
     for h in _SEED_HOLDINGS:
         add_holding(
-            email, h["ticker"], name=h.get("name", ""), kind=h.get("kind", "STOCK"),
-            currency=h.get("currency", "AUD"), shares=h.get("shares", 0),
-            buy_price=h.get("buy_price", 0), buy_date=h.get("buy_date"),
-            thesis=h.get("thesis", ""), thesis_drivers=h.get("thesis_drivers"),
-            baseline=h.get("baseline"), baseline_date=h.get("baseline_date"),
-            source="desktop_import",
+            email, _SEED_OWNER_LEGACY_PORTFOLIO, h["ticker"], name=h.get("name", ""),
+            kind=h.get("kind", "STOCK"), currency=h.get("currency", "AUD"),
+            shares=h.get("shares", 0), buy_price=h.get("buy_price", 0),
+            buy_date=h.get("buy_date"), thesis=h.get("thesis", ""),
+            thesis_drivers=h.get("thesis_drivers"), baseline=h.get("baseline"),
+            baseline_date=h.get("baseline_date"), source="desktop_import",
         )

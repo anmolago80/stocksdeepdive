@@ -5699,6 +5699,124 @@ def _analyze_holding(h, email=None):
             "iv_override": _iv_override}
 
 
+def _hkey(h):
+    """Unique key for one holding ROW: (portfolio, ticker) rather than
+    just ticker. A user can now hold the same ticker in more than one of
+    their portfolios at once (different shares/buy price/baseline each
+    time), so ticker alone is no longer a unique key once holdings from
+    more than one portfolio can appear together (the "All portfolios"
+    combined view)."""
+    return (h.get("portfolio"), h["ticker"])
+
+
+def _hlabels(_holdings):
+    """Map _hkey(h) -> display label for every holding in `_holdings`:
+    the bare ticker, unless that ticker appears in more than one
+    portfolio among these holdings (only possible in the combined view),
+    in which case it's disambiguated as "TICKER (Portfolio)" so two
+    distinct positions in the same company never collapse into one chart
+    slice or table row."""
+    _counts = {}
+    for h in _holdings:
+        _counts[h["ticker"]] = _counts.get(h["ticker"], 0) + 1
+    return {
+        _hkey(h): (f"{h['ticker']} ({h.get('portfolio')})" if _counts[h["ticker"]] > 1 else h["ticker"])
+        for h in _holdings
+    }
+
+
+def _pf_key(active_portfolio, name):
+    """Streamlit widget key scoped to the currently active portfolio (or
+    'all' in the combined view), so switching portfolios never carries
+    over a stale text-input/selectbox value left behind by a different
+    portfolio - Streamlit persists widget state by key across reruns,
+    and these widgets' options/defaults change when the active portfolio
+    does."""
+    return f"{name}_{active_portfolio or 'all'}"
+
+
+def _render_portfolio_switcher(email):
+    """Portfolio selector + create/rename/delete, at the top of the
+    Portfolio page above the four tabs. Returns (active_portfolio,
+    is_combined) - active_portfolio is None exactly when the user has
+    "All portfolios" selected, which every tab below treats as a
+    read-only combined view (see the module's per-tab _is_combined
+    checks)."""
+    _portfolio_names = portfolio_store.list_portfolios(email)
+    _combined_option = "📦 All portfolios"
+    _options = [_combined_option] + _portfolio_names
+    _choice = st.selectbox("Portfolio", _options, key="pf_active_portfolio_select")
+    _active = None if _choice == _combined_option else _choice
+
+    with st.expander("Manage portfolios"):
+        st.caption("Create a new portfolio, or rename/delete the one currently selected above.")
+        _nc1, _nc2 = st.columns([3, 1])
+        with _nc1:
+            _new_name = st.text_input("New portfolio name", key="pf_new_portfolio_name",
+                                        placeholder="e.g. Personal")
+        with _nc2:
+            st.write("")
+            if st.button("Create", key="pf_create_portfolio_btn"):
+                _new_name = _new_name.strip()
+                if not _new_name:
+                    st.error("Enter a name.")
+                elif _new_name in _portfolio_names:
+                    st.error(f'You already have a portfolio named "{_new_name}".')
+                else:
+                    portfolio_store.create_portfolio(email, _new_name)
+                    st.toast(f'Created "{_new_name}" - select it above to add holdings.', icon="✅")
+                    st.rerun()
+
+        if _active:
+            st.divider()
+            st.caption(f'Rename or delete **{_active}**')
+            _rc1, _rc2 = st.columns([3, 1])
+            with _rc1:
+                _rename_to = st.text_input(
+                    "Rename to", value=_active, key=_pf_key(_active, "pf_rename_input"),
+                )
+            with _rc2:
+                st.write("")
+                if st.button("Rename", key=_pf_key(_active, "pf_rename_btn")):
+                    _rename_to = _rename_to.strip()
+                    if not _rename_to:
+                        st.error("Enter a name.")
+                    elif _rename_to != _active and _rename_to in _portfolio_names:
+                        st.error(f'You already have a portfolio named "{_rename_to}".')
+                    elif _rename_to != _active:
+                        portfolio_store.rename_portfolio(email, _active, _rename_to)
+                        st.toast(f'Renamed to "{_rename_to}".', icon="✅")
+                        st.rerun()
+
+            if len(_portfolio_names) <= 1:
+                st.caption("This is your only portfolio, so it can't be deleted - create another one first.")
+            else:
+                _confirm_key = _pf_key(_active, "pf_confirm_delete_portfolio")
+                if not st.session_state.get(_confirm_key):
+                    if st.button(f'Delete "{_active}"', key=_pf_key(_active, "pf_delete_portfolio_btn")):
+                        st.session_state[_confirm_key] = True
+                        st.rerun()
+                else:
+                    _n_here = len(portfolio_store.get_holdings(email, _active))
+                    st.warning(
+                        f'Delete "{_active}"' + (f" and its {_n_here} holding(s)" if _n_here else "")
+                        + "? This can't be undone."
+                    )
+                    _dc1, _dc2 = st.columns(2)
+                    with _dc1:
+                        if st.button("Yes, delete", key=_pf_key(_active, "pf_delete_portfolio_confirm"), type="primary"):
+                            portfolio_store.delete_portfolio(email, _active)
+                            st.session_state.pop(_confirm_key, None)
+                            st.toast(f'Deleted "{_active}".', icon="🗑️")
+                            st.rerun()
+                    with _dc2:
+                        if st.button("Cancel", key=_pf_key(_active, "pf_delete_portfolio_cancel")):
+                            st.session_state.pop(_confirm_key, None)
+                            st.rerun()
+
+    return _active
+
+
 def page_portfolio():
     _render_header(compact=True, page_label="Portfolio")
     _bump_page_view("portfolio")
@@ -5716,8 +5834,17 @@ def page_portfolio():
     email = paywall_engine.current_user_email()
     portfolio_store.seed_desktop_import(email)  # no-op for everyone except
     # the one-off import owner, and only ever fires once even for them.
+    portfolio_store.ensure_default_portfolio(email)  # no-op for anyone who
+    # already has at least one portfolio (true for the seed owner right
+    # after the line above); creates "Main" for a brand new visitor so
+    # the selector below is never empty.
 
-    _holdings = portfolio_store.get_holdings(email)
+    _active_portfolio = _render_portfolio_switcher(email)
+
+    if _active_portfolio:
+        _holdings = portfolio_store.get_holdings(email, _active_portfolio)
+    else:
+        _holdings = portfolio_store.get_holdings_all(email)
 
     _analyses = {}
     if _holdings:
@@ -5730,9 +5857,11 @@ def page_portfolio():
             # (cold st.cache_data) take as long as ~4 holdings' worth of
             # sequential network round-trips. Fetch them concurrently
             # instead; a cache-warm reload within the 30-min TTL stays fast
-            # either way.
+            # either way. Keyed by _hkey (portfolio, ticker), not ticker
+            # alone - the same ticker can appear more than once in the
+            # combined view, each occurrence with its own analysis.
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(_holdings))) as _pool:
-                _futures = {_pool.submit(_analyze_holding, h, email=email): h["ticker"] for h in _holdings}
+                _futures = {_pool.submit(_analyze_holding, h, email=email): _hkey(h) for h in _holdings}
                 for _fut in concurrent.futures.as_completed(_futures):
                     _analyses[_futures[_fut]] = _fut.result()
 
@@ -5741,13 +5870,13 @@ def page_portfolio():
     )
 
     with _tab_holdings:
-        _render_portfolio_holdings_tab(email, _holdings, _analyses)
+        _render_portfolio_holdings_tab(email, _active_portfolio, _holdings, _analyses)
     with _tab_overview:
-        _render_portfolio_overview_tab(email, _holdings, _analyses)
+        _render_portfolio_overview_tab(email, _active_portfolio, _holdings, _analyses)
     with _tab_health:
-        _render_portfolio_health_news_tab(email, _holdings, _analyses)
+        _render_portfolio_health_news_tab(email, _active_portfolio, _holdings, _analyses)
     with _tab_progress:
-        _render_portfolio_progress_tab(_holdings, _analyses)
+        _render_portfolio_progress_tab(_active_portfolio, _holdings, _analyses)
 
 
 def _build_portfolio_rows(_holdings, _analyses):
@@ -5763,9 +5892,10 @@ def _build_portfolio_rows(_holdings, _analyses):
     """
     _fx_missing = []
     _price_missing = []
+    _labels = _hlabels(_holdings)
     rows = []
     for h in _holdings:
-        _a = _analyses.get(h["ticker"], {})
+        _a = _analyses.get(_hkey(h), {})
         _snap = _a.get("snapshot") or {}
         price = _snap.get("price")
         if price is None:
@@ -5783,7 +5913,8 @@ def _build_portfolio_rows(_holdings, _analyses):
         pot_div_income_aud = (div_yield * value_aud) if (div_yield is not None and value_aud is not None) else None
 
         rows.append({
-            "ticker": h["ticker"], "name": h.get("name") or h["ticker"], "kind": h.get("kind"),
+            "ticker": h["ticker"], "portfolio": h.get("portfolio"), "label": _labels[_hkey(h)],
+            "name": h.get("name") or h["ticker"], "kind": h.get("kind"),
             "currency": currency, "buy_date": h.get("buy_date"), "shares": shares,
             "buy_price": buy_price, "current_price": price,
             "cost_aud": cost_aud, "value_aud": value_aud, "profit_aud": profit_aud,
@@ -5809,25 +5940,27 @@ def _build_portfolio_rows(_holdings, _analyses):
     return rows, totals, _fx_missing, _price_missing
 
 
-def _render_add_holding_expander(email, _holdings):
+def _render_add_holding_expander(email, portfolio, _holdings):
     with st.expander("Add a holding", expanded=not _holdings):
-        st.caption("Enter a ticker and look it up, then confirm the details.")
+        st.caption(f'Enter a ticker and look it up, then confirm the details. Added to **{portfolio}**.')
         _lc1, _lc2 = st.columns([3, 1])
         with _lc1:
             _lookup_ticker = st.text_input(
-                "Ticker (Yahoo format, e.g. CSL.AX)", key="pf_lookup_ticker_input",
+                "Ticker (Yahoo format, e.g. CSL.AX)", key=_pf_key(portfolio, "pf_lookup_ticker_input"),
             ).strip().upper()
         with _lc2:
             st.write("")
-            _do_lookup = st.button("Look up", key="pf_lookup_btn")
+            _do_lookup = st.button("Look up", key=_pf_key(portfolio, "pf_lookup_btn"))
 
+        _lookup_result_key = _pf_key(portfolio, "pf_lookup_result")
         if _do_lookup:
             if not _lookup_ticker:
                 st.error("Enter a ticker first.")
-                st.session_state.pop("pf_lookup_result", None)
-            elif portfolio_store.has_holding(email, _lookup_ticker):
-                st.warning(f"{_lookup_ticker} is already in your portfolio - its locked baseline stays as-is.")
-                st.session_state.pop("pf_lookup_result", None)
+                st.session_state.pop(_lookup_result_key, None)
+            elif portfolio_store.has_holding(email, portfolio, _lookup_ticker):
+                st.warning(f"{_lookup_ticker} is already in **{portfolio}** - its locked baseline stays as-is. "
+                           "(You can still add it to a different portfolio.)")
+                st.session_state.pop(_lookup_result_key, None)
             else:
                 with st.spinner(f"Looking up {_lookup_ticker}..."):
                     try:
@@ -5839,9 +5972,9 @@ def _render_add_holding_expander(email, _holdings):
                         f"Couldn't find price data for {_lookup_ticker} - double-check "
                         "the ticker (Yahoo format, e.g. CSL.AX for ASX, AAPL for Nasdaq)."
                     )
-                    st.session_state.pop("pf_lookup_result", None)
+                    st.session_state.pop(_lookup_result_key, None)
                 else:
-                    st.session_state["pf_lookup_result"] = {
+                    st.session_state[_lookup_result_key] = {
                         "ticker": _lookup_ticker,
                         "name": _snap.get("name") or _lookup_ticker,
                         "currency": _snap.get("currency") or "AUD",
@@ -5849,28 +5982,30 @@ def _render_add_holding_expander(email, _holdings):
                         "kind": "ETF" if _snap.get("quote_type") == "ETF" else "STOCK",
                     }
 
-        _lr = st.session_state.get("pf_lookup_result")
+        _lr = st.session_state.get(_lookup_result_key)
         if _lr and _lr.get("ticker") == _lookup_ticker:
             st.success(f"Found **{_lr['ticker']}** · {_lr['name']} · {_lr['currency']} · current price {_lr['price']:,.4f}")
-            with st.form("pf_add_form"):
+            with st.form(_pf_key(portfolio, "pf_add_form")):
                 _fc1, _fc2 = st.columns(2)
                 with _fc1:
-                    _add_name = st.text_input("Company/fund name", value=_lr["name"], key="pf_add_name")
+                    _add_name = st.text_input("Company/fund name", value=_lr["name"], key=_pf_key(portfolio, "pf_add_name"))
                     _add_kind = st.selectbox(
-                        "Type", ["STOCK", "ETF"], index=(0 if _lr["kind"] == "STOCK" else 1), key="pf_add_kind",
+                        "Type", ["STOCK", "ETF"], index=(0 if _lr["kind"] == "STOCK" else 1),
+                        key=_pf_key(portfolio, "pf_add_kind"),
                     )
                     _add_currency = st.selectbox(
-                        "Currency", ["AUD", "USD"], index=(0 if _lr["currency"] == "AUD" else 1), key="pf_add_currency",
+                        "Currency", ["AUD", "USD"], index=(0 if _lr["currency"] == "AUD" else 1),
+                        key=_pf_key(portfolio, "pf_add_currency"),
                     )
                 with _fc2:
-                    _add_shares = st.number_input("Shares", min_value=0.0, step=1.0, key="pf_add_shares")
+                    _add_shares = st.number_input("Shares", min_value=0.0, step=1.0, key=_pf_key(portfolio, "pf_add_shares"))
                     _add_buy_price = st.number_input(
                         "Buy price (per share)", min_value=0.0, step=0.01, format="%.4f",
-                        value=float(_lr["price"]), key="pf_add_price",
+                        value=float(_lr["price"]), key=_pf_key(portfolio, "pf_add_price"),
                     )
-                    _add_buy_date = st.date_input("Buy date", key="pf_add_date")
+                    _add_buy_date = st.date_input("Buy date", key=_pf_key(portfolio, "pf_add_date"))
                 _add_thesis = st.text_area(
-                    "Thesis (optional)", key="pf_add_thesis", height=100,
+                    "Thesis (optional)", key=_pf_key(portfolio, "pf_add_thesis"), height=100,
                     placeholder="Why you bought it - sharpens the News Intelligence relevance check.",
                 )
                 if st.form_submit_button("Add holding", type="primary"):
@@ -5886,46 +6021,47 @@ def _render_add_holding_expander(email, _holdings):
                         _baseline = portfolio_health_engine.baseline_snapshot_fields(_snap2 or {"price": _lr["price"]})
                         _today = datetime.now(timezone.utc).date().isoformat()
                         portfolio_store.add_holding(
-                            email, _lr["ticker"], name=_add_name.strip(), kind=_add_kind,
+                            email, portfolio, _lr["ticker"], name=_add_name.strip(), kind=_add_kind,
                             currency=_add_currency, shares=_add_shares, buy_price=_add_buy_price,
                             buy_date=_add_buy_date.isoformat(), thesis=_add_thesis,
                             baseline=_baseline, baseline_date=_today, source="website",
                         )
-                        st.session_state.pop("pf_lookup_result", None)
-                        st.toast(f"Added {_lr['ticker']} - baseline locked as of today.", icon="✅")
+                        st.session_state.pop(_lookup_result_key, None)
+                        st.toast(f"Added {_lr['ticker']} to {portfolio} - baseline locked as of today.", icon="✅")
                         st.rerun()
 
 
-def _render_manage_holding(email, h):
+def _render_manage_holding(email, portfolio, h):
+    _wkey = f"{portfolio}_{h['ticker']}"
     _mc1, _mc2 = st.columns([3, 1])
     with _mc1:
         with st.expander(f"Edit {h['ticker']}"):
-            with st.form(f"pf_edit_form_{h['ticker']}"):
+            with st.form(f"pf_edit_form_{_wkey}"):
                 _e_shares = st.number_input(
                     "Shares", min_value=0.0, step=1.0, value=float(h.get("shares") or 0),
-                    key=f"pf_edit_shares_{h['ticker']}",
+                    key=f"pf_edit_shares_{_wkey}",
                 )
                 _e_buy_price = st.number_input(
                     "Buy price (per share)", min_value=0.0, step=0.01, format="%.4f",
-                    value=float(h.get("buy_price") or 0), key=f"pf_edit_price_{h['ticker']}",
+                    value=float(h.get("buy_price") or 0), key=f"pf_edit_price_{_wkey}",
                 )
                 try:
                     _default_date = _date.fromisoformat(h["buy_date"]) if h.get("buy_date") else _date.today()
                 except Exception:
                     _default_date = _date.today()
-                _e_buy_date = st.date_input("Buy date", value=_default_date, key=f"pf_edit_date_{h['ticker']}")
+                _e_buy_date = st.date_input("Buy date", value=_default_date, key=f"pf_edit_date_{_wkey}")
                 _e_thesis = st.text_area(
-                    "Thesis", value=h.get("thesis") or "", height=100, key=f"pf_edit_thesis_{h['ticker']}",
+                    "Thesis", value=h.get("thesis") or "", height=100, key=f"pf_edit_thesis_{_wkey}",
                 )
                 if st.form_submit_button("Save changes", type="primary"):
                     if _e_shares <= 0 or _e_buy_price <= 0:
                         st.error("Shares and buy price must be greater than zero.")
                     else:
                         portfolio_store.update_position(
-                            email, h["ticker"], shares=_e_shares, buy_price=_e_buy_price,
+                            email, portfolio, h["ticker"], shares=_e_shares, buy_price=_e_buy_price,
                             buy_date=_e_buy_date.isoformat(),
                         )
-                        portfolio_store.update_thesis(email, h["ticker"], _e_thesis, thesis_drivers=h.get("thesis_drivers"))
+                        portfolio_store.update_thesis(email, portfolio, h["ticker"], _e_thesis, thesis_drivers=h.get("thesis_drivers"))
                         st.toast(f"Saved changes to {h['ticker']}.", icon="✅")
                         st.rerun()
             st.caption(
@@ -5933,24 +6069,25 @@ def _render_manage_holding(email, h):
                  else "Baseline: captured on this site") + f", locked {h.get('baseline_date') or '-'} (never changed by edits above)."
             )
     with _mc2:
-        _confirm_key = f"pf_confirm_delete_{h['ticker']}"
+        _confirm_key = f"pf_confirm_delete_{_wkey}"
         if not st.session_state.get(_confirm_key):
-            if st.button("Delete", key=f"pf_delete_{h['ticker']}"):
+            if st.button("Delete", key=f"pf_delete_{_wkey}"):
                 st.session_state[_confirm_key] = True
                 st.rerun()
         else:
             st.warning(f"Delete {h['ticker']}? This can't be undone.")
-            if st.button("Yes, delete", key=f"pf_delete_confirm_{h['ticker']}", type="primary"):
-                portfolio_store.remove_holding(email, h["ticker"])
+            if st.button("Yes, delete", key=f"pf_delete_confirm_{_wkey}", type="primary"):
+                portfolio_store.remove_holding(email, portfolio, h["ticker"])
                 st.session_state.pop(_confirm_key, None)
                 st.toast(f"Removed {h['ticker']}.", icon="🗑️")
                 st.rerun()
-            if st.button("Cancel", key=f"pf_delete_cancel_{h['ticker']}"):
+            if st.button("Cancel", key=f"pf_delete_cancel_{_wkey}"):
                 st.session_state.pop(_confirm_key, None)
                 st.rerun()
 
 
-def _render_portfolio_holdings_tab(email, _holdings, _analyses):
+def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses):
+    _is_combined = active_portfolio is None
     st.caption(
         "Your long-term holdings, live - the workbook's Invested tab. Add a "
         "holding once and its starting snapshot locks in as the baseline; "
@@ -5958,40 +6095,61 @@ def _render_portfolio_holdings_tab(email, _holdings, _analyses):
         "changes that lock."
     )
 
-    _render_add_holding_expander(email, _holdings)
+    if _is_combined:
+        st.info(
+            "Viewing **all portfolios** combined - totals and charts below are "
+            "summed across every portfolio you have. Switch to a single "
+            "portfolio above to add, edit, or delete a holding."
+        )
+    else:
+        _render_add_holding_expander(email, active_portfolio, _holdings)
 
     if not _holdings:
-        st.info("No holdings yet - add one above to get started.")
+        st.info("No holdings yet - add one above to get started."
+                 if not _is_combined else "No holdings in any portfolio yet.")
         return
 
     _rows, _totals, _fx_missing, _price_missing = _build_portfolio_rows(_holdings, _analyses)
 
-    _settings = portfolio_store.get_settings(email)
+    if _is_combined:
+        _settings = portfolio_store.get_settings_all(email)
+    else:
+        _settings = portfolio_store.get_settings(email, active_portfolio)
     _transferred, _cash = _settings.get("total_transferred"), _settings.get("cash_held")
     if _transferred:
         for r in _rows:
             r["pct_of_balance"] = (r["cost_aud"] / _transferred) if r["cost_aud"] is not None else None
 
-    with st.expander("Portfolio settings"):
-        st.caption(
-            "Optional - fill these in to see Profit-to-Transferred and each "
-            "holding's % of your total balance."
-        )
-        _sc1, _sc2 = st.columns(2)
-        with _sc1:
-            _new_transferred = st.number_input(
-                "Total capital transferred (AUD)", min_value=0.0, step=100.0,
-                value=float(_transferred or 0.0), key="pf_settings_transferred",
+    if _is_combined:
+        if _transferred or _cash:
+            st.caption(
+                f"Portfolio settings shown below are the sum across your portfolios "
+                f"that have them filled in - edit an individual portfolio's settings "
+                f"from its own Holdings tab."
             )
-        with _sc2:
-            _new_cash = st.number_input(
-                "Cash held (AUD)", min_value=0.0, step=100.0,
-                value=float(_cash or 0.0), key="pf_settings_cash",
+    else:
+        with st.expander("Portfolio settings"):
+            st.caption(
+                "Optional - fill these in to see Profit-to-Transferred and each "
+                "holding's % of your total balance."
             )
-        if st.button("Save portfolio settings", key="pf_settings_save"):
-            portfolio_store.set_settings(email, total_transferred=(_new_transferred or None), cash_held=(_new_cash or None))
-            st.toast("Saved.", icon="✅")
-            st.rerun()
+            _sc1, _sc2 = st.columns(2)
+            with _sc1:
+                _new_transferred = st.number_input(
+                    "Total capital transferred (AUD)", min_value=0.0, step=100.0,
+                    value=float(_transferred or 0.0), key=_pf_key(active_portfolio, "pf_settings_transferred"),
+                )
+            with _sc2:
+                _new_cash = st.number_input(
+                    "Cash held (AUD)", min_value=0.0, step=100.0,
+                    value=float(_cash or 0.0), key=_pf_key(active_portfolio, "pf_settings_cash"),
+                )
+            if st.button("Save portfolio settings", key=_pf_key(active_portfolio, "pf_settings_save")):
+                portfolio_store.set_settings(
+                    email, active_portfolio, total_transferred=(_new_transferred or None), cash_held=(_new_cash or None),
+                )
+                st.toast("Saved.", icon="✅")
+                st.rerun()
 
     _has_transfer_kpi = bool(_transferred)
     _kpi_cols = st.columns(5 if _has_transfer_kpi else 4)
@@ -6024,19 +6182,19 @@ def _render_portfolio_holdings_tab(email, _holdings, _analyses):
             + " - those holdings are left out of the AUD totals above rather than guessed."
         )
 
-    _cmap = _ticker_color_map([r["ticker"] for r in _rows])
+    _cmap = _ticker_color_map([r["label"] for r in _rows])
 
     st.markdown("##### Allocation")
     _dc1, _dc2 = st.columns(2)
     with _dc1:
-        _fig_purchase = _phe_pie([r["ticker"] for r in _rows], [r["cost_aud"] for r in _rows],
+        _fig_purchase = _phe_pie([r["label"] for r in _rows], [r["cost_aud"] for r in _rows],
                                   "Allocation at purchase (% of cost)", color_map=_cmap)
         if _fig_purchase:
             st.plotly_chart(_fig_purchase, use_container_width=True)
         else:
             st.caption("No cost data yet.")
     with _dc2:
-        _fig_now = _phe_pie([r["ticker"] for r in _rows], [r["value_aud"] for r in _rows],
+        _fig_now = _phe_pie([r["label"] for r in _rows], [r["value_aud"] for r in _rows],
                              "Allocation now (% of current value)", color_map=_cmap)
         if _fig_now:
             st.plotly_chart(_fig_now, use_container_width=True)
@@ -6044,7 +6202,7 @@ def _render_portfolio_holdings_tab(email, _holdings, _analyses):
             st.caption("No current-value data yet.")
 
     st.markdown("##### Profit/Loss by holding")
-    _fig_pl = _phe_pl_bar([r["ticker"] for r in _rows], [r["profit_aud"] for r in _rows], "Profit/Loss by holding (AUD)")
+    _fig_pl = _phe_pl_bar([r["label"] for r in _rows], [r["profit_aud"] for r in _rows], "Profit/Loss by holding (AUD)")
     if _fig_pl:
         st.plotly_chart(_fig_pl, use_container_width=True)
     else:
@@ -6055,7 +6213,7 @@ def _render_portfolio_holdings_tab(email, _holdings, _analyses):
         "Estimated from each holding's current dividend yield × current value (AUD) - "
         "not a record of dividends actually received (the site doesn't track that yet)."
     )
-    _fig_div = _phe_pie([r["ticker"] for r in _rows], [r["pot_div_income_aud"] for r in _rows],
+    _fig_div = _phe_pie([r["label"] for r in _rows], [r["pot_div_income_aud"] for r in _rows],
                          "Estimated annual dividend income (AUD)", color_map=_cmap)
     if _fig_div:
         st.plotly_chart(_fig_div, use_container_width=True)
@@ -6067,8 +6225,11 @@ def _render_portfolio_holdings_tab(email, _holdings, _analyses):
     _raw_profit, _raw_return_pct = [], []
     for r in _rows:
         _return_pct_val = (r["return_pct"] * 100) if r["return_pct"] is not None else None
-        _row = {
-            "Ticker": r["ticker"], "Name": r["name"], "Buy date": r["buy_date"],
+        _row = {"Ticker": r["ticker"]}
+        if _is_combined:
+            _row["Portfolio"] = r["portfolio"]
+        _row.update({
+            "Name": r["name"], "Buy date": r["buy_date"],
             "Shares": _pf_cell(r["shares"], "{:,.0f}"),
             "Buy price": _pf_cell(r["buy_price"], "{:,.2f}"),
             "Current price": _pf_cell(r["current_price"], "{:,.2f}"),
@@ -6080,7 +6241,7 @@ def _render_portfolio_holdings_tab(email, _holdings, _analyses):
             "% now": _pf_cell((r["pct_now"] * 100) if r["pct_now"] is not None else None, "{:.2f}%"),
             "Div yield": _pf_cell((r["div_yield"] * 100) if r["div_yield"] is not None else None, "{:.2f}%"),
             "Pot. div income (AUD)": _pf_cell(r["pot_div_income_aud"], "A${:,.2f}"),
-        }
+        })
         if _transferred:
             _row["% of balance"] = _pf_cell((r["pct_of_balance"] * 100) if r["pct_of_balance"] is not None else None, "{:.2f}%")
         _table_rows.append(_row)
@@ -6103,17 +6264,20 @@ def _render_portfolio_holdings_tab(email, _holdings, _analyses):
         _by_cost = sorted(_costed, key=lambda r: r["cost_aud"])
         _max_r, _min_r = _by_cost[-1], _by_cost[0]
         st.caption(
-            f"Max investment: **{_max_r['ticker']}** (A${_max_r['cost_aud']:,.0f}) · "
-            f"Min investment: **{_min_r['ticker']}** (A${_min_r['cost_aud']:,.0f})"
+            f"Max investment: **{_max_r['label']}** (A${_max_r['cost_aud']:,.0f}) · "
+            f"Min investment: **{_min_r['label']}** (A${_min_r['cost_aud']:,.0f})"
         )
 
-    st.markdown("##### Manage a holding")
-    _mtk = st.selectbox("Choose a holding to edit or delete", [r["ticker"] for r in _rows], key="pf_manage_ticker")
-    _mh = next(h for h in _holdings if h["ticker"] == _mtk)
-    _render_manage_holding(email, _mh)
+    if not _is_combined:
+        st.markdown("##### Manage a holding")
+        _mtk = st.selectbox("Choose a holding to edit or delete", [r["ticker"] for r in _rows],
+                             key=_pf_key(active_portfolio, "pf_manage_ticker"))
+        _mh = next(h for h in _holdings if h["ticker"] == _mtk)
+        _render_manage_holding(email, active_portfolio, _mh)
 
 
-def _render_portfolio_overview_tab(email, _holdings, _analyses):
+def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses):
+    _is_combined = active_portfolio is None
     st.caption(
         "Health, Progress, News Risk, and P/L for every holding at a glance, "
         "plus a second table of progress since purchase."
@@ -6123,19 +6287,19 @@ def _render_portfolio_overview_tab(email, _holdings, _analyses):
         return
 
     _rows, _totals, _fx_missing, _price_missing = _build_portfolio_rows(_holdings, _analyses)
-    _by_ticker = {r["ticker"]: r for r in _rows}
+    _by_key = {(r["portfolio"], r["ticker"]): r for r in _rows}
 
     _table_rows, _prog_rows = [], []
     _raw_health, _raw_news_risk, _raw_pl, _raw_progress = [], [], [], []
     _thesis_intact_count = 0
     for h in _holdings:
-        _a = _analyses[h["ticker"]]
+        _a = _analyses[_hkey(h)]
         _health, _news, _progress = _a["health"], _a["news"], _a["progress"]
-        _r = _by_ticker[h["ticker"]]
+        _r = _by_key[_hkey(h)]
         _is_etf = bool(_a.get("is_etf"))
 
         _prev = portfolio_health_engine.record_health_run(
-            email, h["ticker"], _health["overall"], news_risk=(_news or {}).get("news_risk_score"),
+            email, h.get("portfolio"), h["ticker"], _health["overall"], news_risk=(_news or {}).get("news_risk_score"),
         )
         _delta_run = round(_health["overall"] - _prev, 1) if (_prev is not None and _health["overall"] is not None) else None
 
@@ -6149,8 +6313,11 @@ def _render_portfolio_overview_tab(email, _holdings, _analyses):
         _pl_val = _r["profit_aud"]
         _progress_val = _progress["overall"]
 
-        _table_rows.append({
-            "Ticker": h["ticker"], "Name": h.get("name") or h["ticker"],
+        _table_row = {"Ticker": h["ticker"]}
+        if _is_combined:
+            _table_row["Portfolio"] = h.get("portfolio")
+        _table_row.update({
+            "Name": h.get("name") or h["ticker"],
             "Health": _pf_cell(_health_val, "{:.0f}"), "Δ run": _pf_cell(_delta_run, "{:+.1f}"),
             "Action": _health["action"],
             "Thesis": ("N/A (ETF)" if _is_etf else ("Review" if _thesis_breaking else "Intact")),
@@ -6164,11 +6331,16 @@ def _render_portfolio_overview_tab(email, _holdings, _analyses):
             "Flags": len(_health.get("red_flags") or []),
             "Weight %": _pf_cell((_r["pct_now"] * 100) if _r["pct_now"] is not None else None, "{:.1f}%"),
         })
-        _prog_rows.append({
-            "Ticker": h["ticker"], "Progress": _pf_cell(_progress_val, "{:.0f}"),
+        _table_rows.append(_table_row)
+        _prog_row = {"Ticker": h["ticker"]}
+        if _is_combined:
+            _prog_row["Portfolio"] = h.get("portfolio")
+        _prog_row.update({
+            "Progress": _pf_cell(_progress_val, "{:.0f}"),
             "Return since buy %": _pf_cell(_return_pct, "{:+.1f}%"), "Verdict": _progress["verdict"],
             "Baseline date": h.get("baseline_date"),
         })
+        _prog_rows.append(_prog_row)
         _raw_health.append(_health_val)
         _raw_news_risk.append(_news_risk_val)
         _raw_pl.append(_pl_val)
@@ -6182,9 +6354,9 @@ def _render_portfolio_overview_tab(email, _holdings, _analyses):
     _weighted = sorted((r for r in _rows if r["pct_now"] is not None), key=lambda r: r["pct_now"], reverse=True)
     _warn_tickers = []
     if _weighted and _weighted[0]["pct_now"] > 0.40:
-        _warn_tickers = [_weighted[0]["ticker"]]
+        _warn_tickers = [_weighted[0]["label"]]
     elif len(_weighted) >= 2 and (_weighted[0]["pct_now"] + _weighted[1]["pct_now"]) > 0.65:
-        _warn_tickers = [_weighted[0]["ticker"], _weighted[1]["ticker"]]
+        _warn_tickers = [_weighted[0]["label"], _weighted[1]["label"]]
 
     _k1, _k2, _k3, _k4 = st.columns(4)
     _k1.metric("Holdings", len(_holdings))
@@ -6365,7 +6537,8 @@ def _render_portfolio_health_scoring_expander():
         )
 
 
-def _render_portfolio_health_news_tab(email, _holdings, _analyses):
+def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analyses):
+    _is_combined = active_portfolio is None
     st.caption(
         "How healthy each holding looks right now - fundamentals blended with "
         "purchase-relative price action, Valuation/DCF, and News Intelligence "
@@ -6377,19 +6550,24 @@ def _render_portfolio_health_news_tab(email, _holdings, _analyses):
         st.info("Add a holding on the Holdings tab to see its Health Score.")
         return
 
+    _labels = _hlabels(_holdings)
     _rows = []
     _raw_health_summary = []
     for h in _holdings:
-        _a = _analyses[h["ticker"]]
+        _a = _analyses[_hkey(h)]
         _health_val = _a["health"]["overall"]
-        _rows.append({
-            "Ticker": h["ticker"], "Name": h.get("name") or h["ticker"],
+        _row = {"Ticker": h["ticker"]}
+        if _is_combined:
+            _row["Portfolio"] = h.get("portfolio")
+        _row.update({
+            "Name": h.get("name") or h["ticker"],
             "Health": _pf_cell(_health_val, "{:.0f}"),
             "Score type": _a["health"].get("score_label", "Investment Health Score"),
             "Action": _a["health"]["action"],
             "Price": _pf_cell(_a["snapshot"].get("price"), "{:.2f}"),
             "Buy price": _pf_cell(h.get("buy_price"), "{:.4f}"),
         })
+        _rows.append(_row)
         _raw_health_summary.append(_health_val)
 
     _df = pd.DataFrame(_rows)
@@ -6401,8 +6579,11 @@ def _render_portfolio_health_news_tab(email, _holdings, _analyses):
     )
 
     st.markdown("##### Holding detail")
-    _tk = st.selectbox("Choose a holding", [h["ticker"] for h in _holdings], key="pf_health_ticker")
-    _h = next(h for h in _holdings if h["ticker"] == _tk)
+    _tk = st.selectbox(
+        "Choose a holding", [_hkey(h) for h in _holdings], format_func=lambda k: _labels[k],
+        key=_pf_key(active_portfolio, "pf_health_ticker"),
+    )
+    _h = next(h for h in _holdings if _hkey(h) == _tk)
     _a = _analyses[_tk]
     _snap, _news, _health, _progress = _a["snapshot"], _a["news"], _a["health"], _a["progress"]
     _is_etf = bool(_a.get("is_etf"))
@@ -6492,10 +6673,16 @@ def _render_portfolio_health_news_tab(email, _holdings, _analyses):
             if _model_iv:
                 _badge += f" (model says A${_model_iv:,.2f})"
             st.success(_badge)
-        with st.form(f"pf_iv_override_form_{_tk}"):
+        # iv_overrides is keyed by (email, ticker) only, deliberately shared
+        # across every portfolio that holds this ticker (see
+        # portfolio_store's module docstring) - so the store calls below use
+        # _h["ticker"] alone, never the (portfolio, ticker) _tk key that
+        # only identifies this one row on screen.
+        with st.form(_pf_key(active_portfolio, f"pf_iv_override_form_{_h['ticker']}")):
             _new_override = st.number_input(
                 "My intrinsic value (manual override)", min_value=0.0, step=0.01, format="%.2f",
-                value=float(_iv_override or _model_iv or 0.0), key=f"pf_iv_override_{_tk}",
+                value=float(_iv_override or _model_iv or 0.0),
+                key=_pf_key(active_portfolio, f"pf_iv_override_{_h['ticker']}"),
             )
             _oc1, _oc2 = st.columns(2)
             with _oc1:
@@ -6506,12 +6693,12 @@ def _render_portfolio_health_news_tab(email, _holdings, _analyses):
             if _new_override <= 0:
                 st.error("Enter a value greater than zero.")
             else:
-                portfolio_store.set_iv_override(email, _tk, _new_override)
-                st.toast(f"Saved - {_tk}'s Health will use your value.", icon="✅")
+                portfolio_store.set_iv_override(email, _h["ticker"], _new_override)
+                st.toast(f"Saved - {_h['ticker']}'s Health will use your value (in every portfolio that holds it).", icon="✅")
                 st.rerun()
         if _clear_override:
-            portfolio_store.clear_iv_override(email, _tk)
-            st.toast(f"Cleared - {_tk}'s Health will use the model value again.", icon="✅")
+            portfolio_store.clear_iv_override(email, _h["ticker"])
+            st.toast(f"Cleared - {_h['ticker']}'s Health will use the model value again.", icon="✅")
             st.rerun()
 
     if _is_etf:
@@ -6549,7 +6736,8 @@ def _render_portfolio_health_news_tab(email, _holdings, _analyses):
                          unsafe_allow_html=True)
 
 
-def _render_portfolio_progress_tab(_holdings, _analyses):
+def _render_portfolio_progress_tab(active_portfolio, _holdings, _analyses):
+    _is_combined = active_portfolio is None
     st.caption(
         "How each tracked metric has moved since the locked baseline snapshot "
         "taken the day a holding was added. 50 = unchanged, 100 = doubled, "
@@ -6588,16 +6776,21 @@ def _render_portfolio_progress_tab(_holdings, _analyses):
         st.info("Add a holding on the Holdings tab to see its Progress Score.")
         return
 
+    _labels = _hlabels(_holdings)
     _rows = []
     _raw_progress_summary = []
     for h in _holdings:
-        _progress = _analyses[h["ticker"]]["progress"]
+        _progress = _analyses[_hkey(h)]["progress"]
         _progress_val = _progress["overall"]
-        _rows.append({
-            "Ticker": h["ticker"], "Name": h.get("name") or h["ticker"],
+        _row = {"Ticker": h["ticker"]}
+        if _is_combined:
+            _row["Portfolio"] = h.get("portfolio")
+        _row.update({
+            "Name": h.get("name") or h["ticker"],
             "Progress": _pf_cell(_progress_val, "{:.0f}"), "Verdict": _progress["verdict"],
             "Baseline date": h.get("baseline_date"),
         })
+        _rows.append(_row)
         _raw_progress_summary.append(_progress_val)
 
     _df = pd.DataFrame(_rows)
@@ -6609,8 +6802,11 @@ def _render_portfolio_progress_tab(_holdings, _analyses):
     )
 
     st.markdown("##### Holding detail")
-    _tk = st.selectbox("Choose a holding", [h["ticker"] for h in _holdings], key="pf_progress_ticker")
-    _h = next(h for h in _holdings if h["ticker"] == _tk)
+    _tk = st.selectbox(
+        "Choose a holding", [_hkey(h) for h in _holdings], format_func=lambda k: _labels[k],
+        key=_pf_key(active_portfolio, "pf_progress_ticker"),
+    )
+    _h = next(h for h in _holdings if _hkey(h) == _tk)
     _a = _analyses[_tk]
     _snap, _progress = _a["snapshot"], _a["progress"]
 

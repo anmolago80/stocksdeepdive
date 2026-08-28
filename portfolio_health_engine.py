@@ -368,23 +368,40 @@ def _health_runs_conn():
             news_risk REAL
         )"""
     )
+    # portfolio was added after this table first shipped, so CREATE TABLE
+    # IF NOT EXISTS above is a no-op against an already-live table and
+    # never adds it - do that explicitly. Existing rows (all
+    # pre-multi-portfolio, so effectively one portfolio per user) default
+    # to '' and simply won't match a real portfolio name any more, which
+    # only means "Δ run" starts fresh for them rather than showing a
+    # comparison against a run that predates portfolios existing at all.
+    # No data loss - this table is a rolling convenience log, not a
+    # record of anything that needs to survive forever.
+    _cols = [r[1] for r in conn.execute("PRAGMA table_info(portfolio_health_runs)").fetchall()]
+    if "portfolio" not in _cols:
+        conn.execute("ALTER TABLE portfolio_health_runs ADD COLUMN portfolio TEXT NOT NULL DEFAULT ''")
     return conn
 
 
-def record_health_run(email, ticker, overall, news_risk=None, min_gap_hours=4):
+def record_health_run(email, portfolio, ticker, overall, news_risk=None, min_gap_hours=4):
     """Log this Health run and return the PREVIOUS run's overall score (or
-    None if there isn't one yet) so callers can show 'Δ run'. A new row is
-    only written if the last one is older than min_gap_hours, so Streamlit's
+    None if there isn't one yet) so callers can show 'Δ run'. Scoped by
+    (email, portfolio, ticker) - the same ticker held in two different
+    portfolios is scored independently (different shares/baseline/buy
+    date), so its run history must stay independent too, or one
+    portfolio's holding could show a 'Δ run' computed against the OTHER
+    portfolio's last score for the same ticker. A new row is only written
+    if the last one is older than min_gap_hours, so Streamlit's
     rerun-on-every-click model doesn't flood the table - but the previous
     score is always returned regardless of whether a write happened."""
-    if not email or not ticker:
+    if not email or not portfolio or not ticker:
         return None
     now = datetime.now(timezone.utc)
     with _health_runs_conn() as conn:
         row = conn.execute(
             "SELECT as_of, overall FROM portfolio_health_runs "
-            "WHERE email = ? AND ticker = ? ORDER BY as_of DESC LIMIT 1",
-            (email, ticker),
+            "WHERE email = ? AND portfolio = ? AND ticker = ? ORDER BY as_of DESC LIMIT 1",
+            (email, portfolio, ticker),
         ).fetchone()
         prev_overall = row[1] if row else None
         should_insert = True
@@ -399,9 +416,9 @@ def record_health_run(email, ticker, overall, news_risk=None, min_gap_hours=4):
                 pass
         if should_insert and overall is not None:
             conn.execute(
-                "INSERT INTO portfolio_health_runs (email, ticker, as_of, overall, news_risk) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (email, ticker, now.isoformat(), overall, news_risk),
+                "INSERT INTO portfolio_health_runs (email, portfolio, ticker, as_of, overall, news_risk) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (email, portfolio, ticker, now.isoformat(), overall, news_risk),
             )
     return prev_overall
 
