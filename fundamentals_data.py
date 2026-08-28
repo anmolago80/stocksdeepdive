@@ -73,7 +73,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # currency-conversion fix below) - mirrors auto_compounder_engine's own
 # ENGINE_VERSION cache-busting pattern. A cached bundle written under an
 # older version is treated as a miss, same as an expired one.
-BUNDLE_VERSION = 3
+BUNDLE_VERSION = 4
 
 
 def _data_dir():
@@ -219,13 +219,31 @@ def _convert_statement_currency(df, rate):
 def _monthly_series(hist_df):
     """yfinance history DataFrame -> ~10y of monthly closes (first trading
     close of each month), same "one point per month" shape the hand-built
-    workbook's own price_history series uses."""
+    workbook's own price_history series uses.
+
+    yfinance's `.history()` index is tz-AWARE, localized to that ticker's
+    own exchange (Australia/Sydney for a .AX stock, America/New_York for
+    ^GSPC). `Timestamp.isoformat()` on a tz-aware value includes that
+    offset ("...T00:00:00+11:00" vs "...T00:00:00-05:00") - so the SAME
+    calendar month produced two different-looking date strings depending
+    on which exchange the series came from. _cov_corr() (and anything
+    else joining a stock's own prices_10y against spx_prices_10y by date
+    string) built its {date: price} dicts straight off these strings, so
+    for every non-US ticker the two dicts shared ZERO keys and Covariance/
+    Correlation/Variance silently came back None for the entire ASX
+    lineup - not a missing feature, a broken join. Strip the tz (this is
+    already a monthly-first-close bucket, not an intraday timestamp, so
+    the offset carries no real information) so every ticker's dates land
+    on the same plain "YYYY-MM-01T00:00:00" grid regardless of exchange."""
     if hist_df is None or hist_df.empty or "Close" not in hist_df.columns:
         return {"dates": [], "prices": []}
     try:
         monthly = hist_df["Close"].resample("MS").first().dropna()
+        idx = monthly.index
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_localize(None)
         return {
-            "dates": [d.isoformat() for d in monthly.index.to_pydatetime()],
+            "dates": [d.isoformat() for d in idx.to_pydatetime()],
             "prices": [round(float(v), 4) for v in monthly.values],
         }
     except Exception:
