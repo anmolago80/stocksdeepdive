@@ -399,23 +399,46 @@ def _fetch_fresh_price(tk):
 
 def _overlay_fresh_price(info, tk):
     """Patches info["currentPrice"] with a fresh fast_info quote (see
-    _fetch_fresh_price) and, critically, also DROPS info["marketCap"] when
-    it does so. _basics() in auto_compounder_engine.py reads
-    info.get("marketCap") first and only recomputes price * shares when
-    that key is absent/None - so a stale-but-present "marketCap" (also
-    cached inside .info, computed by Yahoo from the same stale quote) would
-    silently keep every market-cap-derived metric (WACC, Market Cap/TAV,
-    the P/E-style ratios) priced off yesterday's close even after
-    currentPrice itself was refreshed. Confirmed live on OCL.AX: after the
-    first version of this fix, currentPrice updated but Market Cap/TAV and
-    Price to Equity Ratio still worked out to the old ~$7.46 close, because
-    they were routing through this untouched cached field the whole time.
-    Mutates and returns info; a no-op (returns info unchanged) if no fresh
-    price is available."""
+    _fetch_fresh_price) and RECOMPUTES info["marketCap"] from that fresh
+    price x sharesOutstanding, rather than leaving Yahoo's own (possibly
+    stale, pre-move) cached marketCap in place. Confirmed live on OCL.AX:
+    after an earlier version of this fix that only patched currentPrice,
+    Market Cap/TAV and Price to Equity Ratio still worked out to the old
+    ~$7.46 close, because they were routing through this untouched cached
+    field the whole time.
+
+    An even earlier version of this fix just POPPED marketCap instead of
+    recomputing it, on the theory that _basics() in
+    auto_compounder_engine.py already recomputes price*shares itself when
+    marketCap is missing - true, but that recomputed value only lives
+    inside _basics()'s own returned dict, never written back into `info`.
+    fcf_valuation_engine.growth_ceiling_for(info, ...) reads
+    info.get("marketCap") directly (it has no such fallback), so popping
+    the key meant it silently saw "no market cap" on EVERY ticker whenever
+    a fresh price was available - which is essentially always, since
+    fast_info rarely fails - and fell back to the flat 20% small-cap
+    growth ceiling regardless of the company's actual size. Confirmed on
+    CPU.AX: a large-cap (ASX-listed, market cap well over the USD $10B
+    large-cap threshold) that should get the ~12% ceiling instead got 20%,
+    which is why its Compounder View DCF/PE Forward/Rational Compounder
+    Method/IV-BV all ran high versus the main site's own Intrinsic Value
+    (which fetches `info` fresh via a separate, unmodified yf.Ticker(...).
+    info call in app.py's get_ticker_info() and so was never affected).
+
+    Recomputing (instead of popping) keeps both consumers correct: a
+    stale cached marketCap is still never used, but a real, current one
+    is always available. Falls back to popping only if sharesOutstanding
+    itself isn't available (can't recompute), matching the original
+    fail-safe intent. Mutates and returns info; a no-op (returns info
+    unchanged) if no fresh price is available."""
     fresh_price = _fetch_fresh_price(tk)
     if fresh_price is not None:
         info["currentPrice"] = fresh_price
-        info.pop("marketCap", None)
+        shares = info.get("sharesOutstanding")
+        if isinstance(shares, (int, float)) and shares > 0:
+            info["marketCap"] = fresh_price * shares
+        else:
+            info.pop("marketCap", None)
     return info
 
 
