@@ -26,6 +26,7 @@ Two tables:
                     permanent 301 behind instead.
 """
 
+import contextlib
 import os
 import re
 import sqlite3
@@ -51,7 +52,20 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
+@contextlib.contextmanager
 def _conn():
+    """Audit fix 4.7: every call site in this module uses
+    `with _conn() as conn:` for its commit-or-rollback behavior - but a
+    plain sqlite3.Connection's own __enter__/__exit__ only commits or
+    rolls back per the stdlib docs, it does NOT close the connection.
+    Every one of those 10 call sites was therefore relying on CPython's
+    refcounting to eventually close the connection once `conn` went out
+    of scope - works today, but is documented API misuse. Making _conn()
+    itself a @contextlib.contextmanager generator (rather than a plain
+    function returning a bare Connection) preserves the exact same
+    `with _conn() as conn:` calling convention at every existing call
+    site - none of them need to change - while adding a real commit/
+    rollback/close lifecycle around the connection."""
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.execute(
         """CREATE TABLE IF NOT EXISTS blog_posts (
@@ -77,7 +91,14 @@ def _conn():
             created_at TEXT NOT NULL
         )"""
     )
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def ensure_media_dir():

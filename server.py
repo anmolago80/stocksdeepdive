@@ -280,6 +280,25 @@ def _renders_html(path) -> bool:
     return _INDEXABLE_ALL or path in _INDEXABLE
 
 
+# Audit fix 4.3: the specific query param keys that mean "this is a real
+# use of the app, not a plain visit" - ?ticker=/?tickers= (a Deep
+# Dive/Comparison/Scanner lookup), ?admin= (full-view unlock), ?code=/
+# ?state= (Google's OAuth callback), ?app=1 (the explicit "give me the
+# live app" link), ?src= (article attribution the app records). home()
+# and tool_landing() used to gate on "any query string present at all",
+# which also caught harmless marketing/tracking params (utm_source,
+# utm_medium, gclid, fbclid, ...) - sending exactly the visitors most
+# likely to convert (people who just clicked a link) to the slow,
+# title-less JS shell instead of the fast indexed static page.
+# content_page() already gets this right by ignoring the query entirely
+# (its pages never behave differently based on query params).
+_STREAMLIT_ONLY_PARAMS = {"ticker", "tickers", "admin", "code", "state", "app", "src"}
+
+
+def _needs_streamlit(request: Request) -> bool:
+    return bool(set(request.query_params.keys()) & _STREAMLIT_ONLY_PARAMS)
+
+
 def _count_view(page, ticker=None):
     """Keep the admin Stats popover honest. These pages used to be counted
     by app.py's _bump_page_view; now that they are served here, the count
@@ -363,14 +382,16 @@ def _coverage():
 async def home(request: Request):
     """The indexable homepage - but ONLY for a bare "/".
 
-    Any query string means this is not a plain visit: ?src= is an article
-    attribution the app records, ?admin= is the full-view unlock, and
-    ?code=/?state= is Google's OAuth callback landing back on the site.
-    All of those have to reach Streamlit exactly as they did before, so
-    anything with a query is proxied untouched. ?app=1 is the explicit
-    "give me the live app" link on the static page, and works by the same
-    rule."""
-    if request.url.query or not _renders_html("/"):
+    A query string containing one of _STREAMLIT_ONLY_PARAMS means this is
+    not a plain visit: ?src= is an article attribution the app records,
+    ?admin= is the full-view unlock, and ?code=/?state= is Google's OAuth
+    callback landing back on the site. All of those have to reach
+    Streamlit exactly as they did before. ?app=1 is the explicit "give me
+    the live app" link on the static page, and works by the same rule.
+    (Audit fix 4.3: this used to gate on ANY query string at all, which
+    also sent harmless marketing/UTM links to the slow JS shell - see
+    _needs_streamlit()'s comment above.)"""
+    if _needs_streamlit(request) or not _renders_html("/"):
         return await _proxy(request)
     _count_view("home")
     return _html(blog_render.render_home(
@@ -540,15 +561,18 @@ async def content_page(request: Request):
 @app.get("/research", include_in_schema=False)
 async def tool_landing(request: Request):
     """Same rule as the homepage: a BARE tool URL is the tool's front door
-    and is served as an indexable page describing it; the instant there is
-    a query on the URL (?ticker=, ?tickers=, ?app=1, ?src=, ?admin=) the
-    request is a real use of the tool and goes straight to Streamlit.
+    and is served as an indexable page describing it; the instant the URL
+    carries one of _STREAMLIT_ONLY_PARAMS (?ticker=, ?tickers=, ?app=1,
+    ?src=, ?admin=, ?code=, ?state=) the request is a real use of the tool
+    and goes straight to Streamlit. (Audit fix 4.3: previously gated on
+    ANY query string at all, including harmless UTM/marketing params -
+    see _needs_streamlit()'s comment above.)
 
     In-app navigation is unaffected - Streamlit switches pages inside the
     browser without a round trip, so these routes only ever see a fresh
     page load."""
     path = request.url.path.rstrip("/") or "/"
-    if (request.url.query or path not in blog_render.TOOL_PAGES
+    if (_needs_streamlit(request) or path not in blog_render.TOOL_PAGES
             or not _renders_html(path)):
         return await _proxy(request)
     _count_view(path.lstrip("/"))
@@ -615,6 +639,23 @@ async def _proxy(request: Request):
                 yield chunk
         finally:
             await upstream.aclose()
+
+    # Audit fix 4.1: everything that reaches this function is proxied
+    # straight through to the Streamlit JS shell - no server-rendered
+    # <head>, so nothing anywhere in this codebase can otherwise mark
+    # these noindex (no meta tag is possible on a page that's just a JS
+    # bootstrap div). Every ?ticker=/?tickers= URL on /deep-dive,
+    # /comparison, /scanner, /research lands here, and the server-rendered
+    # homepage/research page both link crawlers into exactly these URLs
+    # via ticker chips and the research coverage grid - without this
+    # header, robots.txt's default-allow lets a crawler index a large
+    # footprint of near-identical empty-shell pages, which can drag down
+    # ranking for the pages that ARE real content. The response headers
+    # here are already fully rewritable (see the content-length/date/
+    # server stripping just above), so this needs no HTML changes and
+    # applies uniformly to every proxied route, curated server-rendered
+    # routes never reach _proxy() at all.
+    resp_headers.append((b"x-robots-tag", b"noindex"))
 
     response = StreamingResponse(body(), status_code=upstream.status_code)
     # raw_headers rather than a dict: a dict would collapse repeated
@@ -730,7 +771,26 @@ async def ws_proxy(ws: WebSocket, path: str):
             with suppress(Exception):
                 await ws.close()
 
-    await asyncio.gather(browser_to_app(), app_to_browser())
+    # Audit fix 4.4: asyncio.gather() joins both directions, but if one
+    # side finishes (its finally block above closes the shared ws/upstream
+    # resource) while the OTHER side is blocked on a stale/unresponsive
+    # connection (closed laptop, dead network) rather than a clean
+    # disconnect event, closing the resource from this side doesn't
+    # reliably unblock a read that's stuck at the transport level - gather
+    # then just waits forever for a task that will never finish, and this
+    # accumulates over the normal churn of Streamlit session recycling.
+    # asyncio.wait(..., FIRST_COMPLETED) + explicit cancellation of
+    # whichever task is still pending is the standard bidirectional-proxy
+    # fix: once either direction ends for any reason, the other is force-
+    # cancelled rather than trusted to notice on its own.
+    task_b2a = asyncio.create_task(browser_to_app())
+    task_a2b = asyncio.create_task(app_to_browser())
+    _, pending = await asyncio.wait(
+        {task_b2a, task_a2b}, return_when=asyncio.FIRST_COMPLETED)
+    for t in pending:
+        t.cancel()
+        with suppress(Exception):
+            await t
 
 
 if __name__ == "__main__":

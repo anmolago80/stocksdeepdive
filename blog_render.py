@@ -23,6 +23,7 @@ import html
 import os
 import re
 from datetime import datetime, timezone
+from email.utils import format_datetime as _rfc2822
 from xml.sax.saxutils import escape as xml_escape
 
 import blog_store
@@ -220,7 +221,16 @@ def _head(title, description, canonical, base_url, image=None,
     title and description, an explicit canonical (so a URL reached with a
     tracking ?src= parameter still consolidates to one address), and an
     Open Graph card so a shared link renders as a card rather than a bare
-    URL."""
+    URL.
+
+    canonical=None (audit fix 4.6) omits BOTH the <link rel="canonical">
+    tag and og:url - used by render_not_found(), which used to pass
+    "{base_url}/blog" as an unrelated page's canonical for every 404,
+    asserting the wrong page is the "real" URL for whatever was actually
+    requested. Mostly inert (crawlers largely ignore canonicals on error
+    pages) but not a meaningful value as written, so dropped rather than
+    threading the originally-requested path through just to
+    self-reference it."""
     e = html.escape
     # og:image is emitted only when there is a real image to point at - a
     # card referencing a 404 renders worse on Twitter/LinkedIn than no card
@@ -231,14 +241,20 @@ def _head(title, description, canonical, base_url, image=None,
         '<meta name="viewport" content="width=device-width,initial-scale=1">',
         f"<title>{e(title)}</title>",
         f'<meta name="description" content="{e(description)}">',
-        f'<link rel="canonical" href="{e(canonical)}">',
+    ]
+    if canonical:
+        tags.append(f'<link rel="canonical" href="{e(canonical)}">')
+    tags += [
         ('<meta name="robots" content="noindex,follow">' if noindex else
          '<meta name="robots" content="index,follow,max-image-preview:large,'
          'max-snippet:-1">'),
         f'<meta property="og:site_name" content="{e(SITE_NAME)}">',
         f'<meta property="og:title" content="{e(title)}">',
         f'<meta property="og:description" content="{e(description)}">',
-        f'<meta property="og:url" content="{e(canonical)}">',
+    ]
+    if canonical:
+        tags.append(f'<meta property="og:url" content="{e(canonical)}">')
+    tags += [
         ('<meta name="twitter:card" content="summary_large_image">' if img
          else '<meta name="twitter:card" content="summary">'),
         f'<meta name="twitter:title" content="{e(title)}">',
@@ -1098,7 +1114,7 @@ def render_not_found(base_url, message="That page doesn't exist."):
 </div></main>
 """
     head = _head("Not found | " + SITE_NAME, "This page does not exist.",
-                 f"{base_url}/blog", base_url, noindex=True)
+                 None, base_url, noindex=True)
     return _page(head, body)
 
 
@@ -1115,12 +1131,19 @@ def render_sitemap(posts, base_url, renders_html=None):
     for whether a path is served as real HTML. When provided, app pages
     that would only serve the empty Streamlit shell are LEFT OUT of the
     sitemap: a sitemap must never advertise a URL a crawler will find
-    blank. ("/" is always listed - the domain root gets crawled whether or
-    not it's in the sitemap, so hiding it would change nothing.)"""
+    blank. This now includes "/" itself (audit fix 4.2) - it used to be
+    special-cased as "always listed" on the assumption the domain root
+    gets crawled regardless of the sitemap, but the live "/" route only
+    serves real HTML when INDEXABLE_PAGES includes it, and the module's
+    own documented example config (INDEXABLE_PAGES=/methodology,/about,
+    /privacy) omits it - under that exact config this used to assert
+    priority=1.0, changefreq=daily for a URL that actually proxies to an
+    empty JS shell. "/" now goes through the identical renders_html()
+    check as every other app path."""
     rows = []
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     for path, priority, freq in APP_PATHS:
-        if renders_html is not None and path != "/" and not renders_html(path):
+        if renders_html is not None and not renders_html(path):
             continue
         rows.append(
             f"  <url><loc>{xml_escape(base_url + path)}</loc>"
@@ -1170,7 +1193,14 @@ def render_feed(posts, base_url):
             try:
                 dt = datetime.fromisoformat(
                     p["published_at"].replace("Z", "+00:00"))
-                pub = dt.strftime("%a, %d %b %Y %H:%M:%S +0000")
+                # Audit fix 4.5: %a/%b render in the PROCESS locale, but
+                # RFC 2822 (what RSS pubDate requires) mandates English
+                # day/month abbreviations regardless of locale - a non-
+                # English locale here would emit a spec-invalid date that
+                # readers/aggregators may reject or mis-parse.
+                # email.utils.format_datetime() is stdlib and always
+                # locale-independent.
+                pub = _rfc2822(dt)
             except Exception:
                 pass
         items.append(
