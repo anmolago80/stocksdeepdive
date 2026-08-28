@@ -6671,8 +6671,21 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
     else:
         _model_iv = _snap.get("intrinsic_value")
         _cur_price = _snap.get("price")
-        _mos = _snap.get("mos_pct")
         _iv_override = _a.get("iv_override")
+        # Same override formula compute_health_components() already uses
+        # for the Health score's own Valuation component - that one WAS
+        # reflecting a saved override correctly, but this tile was reading
+        # the model's own mos_pct straight off the snapshot regardless of
+        # any override, so it kept showing the pre-override number right
+        # next to the "Using your manual override" badge confirming the
+        # override was in effect. Model intrinsic value above is left
+        # showing the model's own figure on purpose (it's labelled
+        # "Model" specifically); only the derived MOS% needs to track
+        # whichever value (override or model) is actually being scored.
+        if _iv_override is not None and _iv_override > 0 and _cur_price is not None:
+            _mos = ((_iv_override - _cur_price) / _iv_override) * 100
+        else:
+            _mos = _snap.get("mos_pct")
         _vc1, _vc2, _vc3 = st.columns(3)
         _vc1.metric("Model intrinsic value", f"A${_model_iv:,.2f}" if _model_iv else "–")
         _vc2.metric("Current price", f"A${_cur_price:,.2f}" if _cur_price is not None else "–")
