@@ -464,6 +464,39 @@ def _plausible_interest_for_debt(candidate, debt):
     return debt * 0.06, True
 
 
+def _plausible_operating_income(candidate, revenue, info):
+    """(value, estimated) - cross-checks the income-statement-row-derived
+    operating income against operatingMargins, a ratio yfinance's `info`
+    dict reports directly (not read off a row in the statement table), the
+    same "second, independent source + plausibility band, fall back and
+    flag" pattern _plausible_interest_for_debt already uses for interest
+    expense.
+
+    Confirmed necessary on FID.AX (Fiducian Group): the statement-row
+    lookup returned an operating income implying a ~2% margin, while three
+    independent sources (TradingView, stockanalysis.com, Stockopedia) all
+    put this company's real operating margin at roughly 30%, and yfinance's
+    own operatingMargins agreed with that - so the statement ROW was the
+    bad value, not the company's actual reported data. Same failure mode
+    as OCL.AX's interest expense (see _plausible_interest_for_debt), just
+    showing up in a different row/ticker.
+
+    No revenue, or operatingMargins missing from info -> candidate is
+    returned as-is, unestimated (nothing independent to check it
+    against)."""
+    margin = (info or {}).get("operatingMargins")
+    if not revenue or margin is None:
+        return candidate, False
+    expected = margin * revenue
+    if candidate is not None:
+        implied_margin = candidate / revenue
+        margin_close = abs(implied_margin - margin) <= 0.25
+        ratio_close = expected != 0 and 0.5 <= (candidate / expected) <= 2.0
+        if margin_close or ratio_close:
+            return candidate, False
+    return expected, True
+
+
 def _statement_col_dates(df):
     """[(column_label, datetime.date), ...] for statement columns whose
     label carries a parseable YYYY-MM-DD end date, newest first. Column
@@ -739,6 +772,9 @@ def _build_fundamentals(bundle, ticker, ref):
     net_income = _latest(income, "net_income")
     revenue = _latest(income, "revenue")
     operating_income = _latest(income, "operating_income")
+    operating_income, operating_income_estimated = _plausible_operating_income(
+        operating_income, revenue, bundle.get("info")
+    )
     pretax_income = _latest(income, "pretax_income")
     tax_provision = _latest(income, "tax_provision")
     interest_expense, interest_expense_flagged, interest_expense_estimated = _interest_expense_ttm(bundle)
@@ -796,10 +832,11 @@ def _build_fundamentals(bundle, ticker, ref):
 
     interest_coverage = (operating_income / abs(interest_expense)) if (operating_income is not None and interest_expense) else None
     add("Interest Coverage", interest_coverage, "x",
-        flagged=(interest_expense is None or interest_expense_flagged or interest_expense_estimated),
-        fallback="Operating income divided by a trailing-4-quarter interest expense; when the "
-                  "reported figure is implausible against total debt, interest is estimated at "
-                  "6% of total debt and shown in red.")
+        flagged=(interest_expense is None or interest_expense_flagged or interest_expense_estimated
+                 or operating_income_estimated),
+        fallback="Operating income divided by a trailing-4-quarter interest expense; when either "
+                  "figure is implausible against total debt or the company's own reported margin, "
+                  "it's estimated from a second, independent source and shown in red.")
 
     # Workbook divides by Long Term Debt (V4/W4), not Total Debt - falls
     # back (flagged) to Total Debt only when the balance sheet doesn't
@@ -819,7 +856,11 @@ def _build_fundamentals(bundle, ticker, ref):
     rota = (net_income / (total_assets - (goodwill_intangibles or 0))) if (net_income is not None and total_assets is not None) else None
     add("Return on Tangible Assets", rota, "pct")
     add("ROE", (net_income / equity) if (net_income is not None and equity) else None, "pct")
-    add("Operating Income Ratio", (operating_income / revenue) if (operating_income is not None and revenue) else None, "pct")
+    add("Operating Income Ratio", (operating_income / revenue) if (operating_income is not None and revenue) else None, "pct",
+        flagged=operating_income_estimated,
+        fallback="Operating income divided by revenue; when the statement figure is implausible "
+                  "against the company's own reported operating margin, it's estimated from that "
+                  "margin instead and shown in red.")
     add("PFCF Ratio", (mcap / fcf) if (mcap and fcf) else None, "x")
 
     # Invested Capital = Equity + Total Debt (capital employed) - NOT
