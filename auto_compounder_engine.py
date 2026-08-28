@@ -81,7 +81,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 18
+ENGINE_VERSION = 19
 
 
 # -----------------------------------
@@ -674,11 +674,26 @@ def _share_price_growth_entry(prices_10y):
 
 
 def _cov_corr(a_series, b_series):
-    """(cov, corr, var_a) - covariance and correlation of `a`'s (the
-    stock's) monthly-ish returns against `b`'s (the S&P 500's), plus the
-    stock's own return variance - the same three numbers used together
-    to hand-derive beta (cov / var_b) elsewhere, so all three are exposed
-    as their own metric cards rather than only the two ratios."""
+    """(cov, corr, var_a) - covariance, correlation and variance of `a`'s
+    (the stock's) raw monthly closing PRICES against `b`'s (the S&P
+    500's) - i.e. Excel's COVARIANCE.S(priceRange, priceRange) / CORREL /
+    VAR.S applied directly to the two price series, NOT to returns.
+
+    This used to run on month-over-month % returns instead, which is the
+    more standard finance-textbook definition - but it doesn't match this
+    site's own reference: the hand-built workbook's real output (Andrew's
+    own numbers, in compounder_data.json) shows Covariance (SP500) values
+    of 11,112 / 22,311 / 13,261 for AUB.AX / CSL.AX / RMD.AX - three and
+    four DIGITS, only possible when both series are raw price LEVELS
+    (a stock trading in the hundreds against an index in the thousands).
+    A returns-based covariance is a small fraction (typically
+    0.0001-0.01) and would round to "0.00" on every single ticker - which
+    is exactly the bug reported (0.00 / 0.36x / 0.01 shown for a live
+    ticker, when the workbook's own real tickers all read in the
+    thousands and the correlations spread from ~0.2 to ~0.9). Switched
+    to price levels to match; Variance (the stock's own var_a) follows
+    the same basis so Correlation = Cov / sqrt(Var_a * Var_b) stays
+    internally consistent."""
     a_by_date = dict(zip(a_series.get("dates") or [], a_series.get("prices") or []))
     b_by_date = dict(zip(b_series.get("dates") or [], b_series.get("prices") or []))
     common = sorted(set(a_by_date) & set(b_by_date))
@@ -686,16 +701,11 @@ def _cov_corr(a_series, b_series):
         return None, None, None
     a_vals = [a_by_date[d] for d in common]
     b_vals = [b_by_date[d] for d in common]
-    a_ret = [(a_vals[i] - a_vals[i - 1]) / a_vals[i - 1] for i in range(1, len(a_vals)) if a_vals[i - 1]]
-    b_ret = [(b_vals[i] - b_vals[i - 1]) / b_vals[i - 1] for i in range(1, len(b_vals)) if b_vals[i - 1]]
-    n = min(len(a_ret), len(b_ret))
-    if n < 3:
-        return None, None, None
-    a_ret, b_ret = a_ret[:n], b_ret[:n]
-    mean_a, mean_b = sum(a_ret) / n, sum(b_ret) / n
-    cov = sum((a_ret[i] - mean_a) * (b_ret[i] - mean_b) for i in range(n)) / (n - 1)
-    var_a = sum((x - mean_a) ** 2 for x in a_ret) / (n - 1)
-    var_b = sum((x - mean_b) ** 2 for x in b_ret) / (n - 1)
+    n = len(a_vals)
+    mean_a, mean_b = sum(a_vals) / n, sum(b_vals) / n
+    cov = sum((a_vals[i] - mean_a) * (b_vals[i] - mean_b) for i in range(n)) / (n - 1)
+    var_a = sum((x - mean_a) ** 2 for x in a_vals) / (n - 1)
+    var_b = sum((x - mean_b) ** 2 for x in b_vals) / (n - 1)
     corr = cov / math.sqrt(var_a * var_b) if var_a > 0 and var_b > 0 else None
     return cov, corr, var_a
 
