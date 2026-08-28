@@ -2140,7 +2140,20 @@ def _render_follow_control(ticker, key_prefix):
             return
 
         st.caption(f"Get an email when {ticker}'s research updates.")
-        _sent_flag = f"{key_prefix}_code_sent"
+        # Audit fix 5.5: _sent_flag/_sent_to/_pending_ticker used to be
+        # keyed ONLY by key_prefix (page-level), not by ticker - sign up
+        # for ticker A, get emailed a code, switch the dropdown to ticker
+        # B before entering it, and this control (now re-rendered for
+        # ticker B) still found the page-level "code sent" flag set and
+        # jumped straight to "enter the code", with no ticker named and
+        # no error - entering it would then follow ticker A while the
+        # visitor is looking at ticker B. Scoping every one of these keys
+        # by ticker (not just the widget keys, which already were) means
+        # each ticker gets its own independent state: switching tickers
+        # naturally shows "enter your email" again for a ticker that
+        # hasn't had a code sent, and "enter the code" (correctly, for
+        # THAT ticker) if one already was.
+        _sent_flag = f"{key_prefix}_code_sent_{ticker}"
         if not st.session_state.get(_sent_flag):
             _c1, _c2 = st.columns([3, 2])
             with _c1:
@@ -2161,16 +2174,15 @@ def _render_follow_control(ticker, key_prefix):
                         _ok, _msg = email_auth.send_code(_em_in)
                         if _ok:
                             st.session_state[_sent_flag] = True
-                            st.session_state[f"{key_prefix}_sent_to"] = _em_in.strip().lower()
-                            st.session_state[f"{key_prefix}_pending_ticker"] = ticker
+                            st.session_state[f"{key_prefix}_sent_to_{ticker}"] = _em_in.strip().lower()
                             st.success(_msg)
                         else:
                             st.error(_msg)
                     else:
                         st.error("That doesn't look like a valid email address.")
         else:
-            _sent_to = st.session_state.get(f"{key_prefix}_sent_to", "")
-            st.caption(f"Enter the 6-digit code sent to {_sent_to}.")
+            _sent_to = st.session_state.get(f"{key_prefix}_sent_to_{ticker}", "")
+            st.caption(f"Enter the 6-digit code sent to {_sent_to} for {ticker}.")
             _code = st.text_input(
                 "6-digit code", key=f"{key_prefix}_code_{ticker}",
                 max_chars=6, placeholder="123456",
@@ -2195,14 +2207,16 @@ def _render_follow_control(ticker, key_prefix):
                         # verify_code already recorded the sign-up.
                         st.session_state["_signup_recorded"] = True
                         try:
-                            follow_store.follow(
-                                _sent_to,
-                                st.session_state.get(f"{key_prefix}_pending_ticker", ticker),
-                            )
+                            # `ticker` is now safe to use directly here -
+                            # this whole control (and its state, per the
+                            # fix above) is scoped to this specific
+                            # ticker, so there's no longer a separate
+                            # "pending ticker" that could disagree with it.
+                            follow_store.follow(_sent_to, ticker)
                         except Exception:
                             pass
                         st.session_state.pop(_sent_flag, None)
-                        st.session_state.pop(f"{key_prefix}_pending_ticker", None)
+                        st.session_state.pop(f"{key_prefix}_sent_to_{ticker}", None)
                         st.rerun()
                     else:
                         st.error(_msg)
@@ -3234,7 +3248,13 @@ def page_deep_dive():
             _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
             _m2.metric(
                 "Intrinsic Value",
-                f"{_dd['intrinsic_value']:,.2f}" if _dd["intrinsic_value"] else "N/A",
+                # Audit fix 5.4: Price (right next to this tile) shows
+                # "123.45 AUD"; this used to show just "123.45" - the same
+                # currency, ambiguous with no unit, right beside a metric
+                # that does show one, and genuinely confusing given the
+                # page separately explains a currency-conversion note for
+                # cross-currency names nearby.
+                f"{_dd['intrinsic_value']:,.2f} {_dd['currency']}" if _dd["intrinsic_value"] else "N/A",
                 help=METRIC_HELP["Intrinsic Value"],
             )
             _m3.metric(
@@ -3248,7 +3268,13 @@ def page_deep_dive():
             _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
             _m2.metric(
                 "Intrinsic Value",
-                f"{_dd['intrinsic_value']:,.2f}" if _dd["intrinsic_value"] else "N/A",
+                # Audit fix 5.4: Price (right next to this tile) shows
+                # "123.45 AUD"; this used to show just "123.45" - the same
+                # currency, ambiguous with no unit, right beside a metric
+                # that does show one, and genuinely confusing given the
+                # page separately explains a currency-conversion note for
+                # cross-currency names nearby.
+                f"{_dd['intrinsic_value']:,.2f} {_dd['currency']}" if _dd["intrinsic_value"] else "N/A",
                 help=METRIC_HELP["Intrinsic Value"],
             )
             _m3.metric(
@@ -3632,8 +3658,18 @@ def page_deep_dive():
                 st.plotly_chart(
                     _dd_gauge(
                         _mos_gauge_val, f"Margin of Safety - {_dd['valuation']}",
+                        # Audit fix 5.6: the underlying label logic
+                        # genuinely is 3-bucket (UNDERVALUED/FAIR/EXPENSIVE
+                        # - see the caption right below), but the gauge
+                        # used to draw the >=25% zone as two slightly
+                        # different green shades (25-50, 50-100), which
+                        # the caption doesn't describe as two separate
+                        # things. One shade for the whole >=25% zone now
+                        # matches the caption exactly - cosmetic only, the
+                        # 25% threshold and the UNDERVALUED/FAIR/EXPENSIVE
+                        # labels themselves are unchanged.
                         [(-50, 0, "#43222e"), (0, 25, "#43371c"),
-                         (25, 50, "#1e3d34"), (50, 100, "#27584a")],
+                         (25, 100, "#1e3d34")],
                         axis_range=(-50, 100),
                     ),
                     use_container_width=True,
@@ -6153,10 +6189,34 @@ def _render_add_holding_expander(email, portfolio, _holdings):
                         "Type", ["STOCK", "ETF"], index=(0 if _lr["kind"] == "STOCK" else 1),
                         key=_pf_key(portfolio, "pf_add_kind"),
                     )
+                    # Audit fix 5.2: this picker used to hard-code
+                    # ["AUD", "USD"] - the ticker lookup above correctly
+                    # fetches the REAL currency (into _lr["currency"]),
+                    # but any holding in a third currency (GBP, EUR, CAD,
+                    # HKD, ...) silently defaulted to USD here, and that
+                    # wrong-but-present currency is what gets persisted
+                    # and later FX-converted - producing a wrong AUD total
+                    # for that holding with no flag (the existing
+                    # missing-FX safeguard in portfolio_health_engine.
+                    # to_aud() only catches a FAILED lookup, not a
+                    # wrong-but-present one). to_aud()/fx_to_aud() already
+                    # support any currency yfinance can quote against AUD,
+                    # not just AUD/USD, so the fix is purely to stop
+                    # discarding the fetched currency here: it's now
+                    # always in the option list and selected by default.
+                    _ccy_options = sorted({"AUD", "USD", _lr["currency"]})
                     _add_currency = st.selectbox(
-                        "Currency", ["AUD", "USD"], index=(0 if _lr["currency"] == "AUD" else 1),
+                        "Currency", _ccy_options,
+                        index=_ccy_options.index(_lr["currency"]),
                         key=_pf_key(portfolio, "pf_add_currency"),
                     )
+                    if _lr["currency"] not in ("AUD", "USD"):
+                        st.caption(
+                            f"Fetched currency is **{_lr['currency']}** (not AUD/USD) - "
+                            "kept as-is. AUD totals depend on a live FX rate for it "
+                            "being available; if not, this holding is flagged and "
+                            "excluded from AUD-denominated totals rather than mis-summed."
+                        )
                 with _fc2:
                     _add_shares = st.number_input("Shares", min_value=0.0, step=1.0, key=_pf_key(portfolio, "pf_add_shares"))
                     _add_buy_price = st.number_input(
@@ -6395,11 +6455,19 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
         _row = {"Ticker": r["ticker"]}
         if _is_combined:
             _row["Portfolio"] = r["portfolio"]
+        # Audit fix 5.3: price columns showed a bare number with no
+        # currency unit - in a portfolio mixing .AX and US tickers, a
+        # "150.00" could be AUD or USD with no way to tell from the table.
+        # Also standardizes precision to 4dp, matching the Holdings/
+        # Portfolio Health tabs elsewhere in this file (this table was the
+        # one still at 2dp) - the same number used to render at different
+        # precision depending which tab you were on.
+        _ccy_suffix = f" {r['currency']}" if r.get("currency") else ""
         _row.update({
             "Name": r["name"], "Buy date": r["buy_date"],
             "Shares": _pf_cell(r["shares"], "{:,.0f}"),
-            "Buy price": _pf_cell(r["buy_price"], "{:,.2f}"),
-            "Current price": _pf_cell(r["current_price"], "{:,.2f}"),
+            "Buy price": _pf_cell(r["buy_price"], "{:,.4f}" + _ccy_suffix),
+            "Current price": _pf_cell(r["current_price"], "{:,.4f}" + _ccy_suffix),
             "Purchased→Current %": _pf_cell(_return_pct_val, "{:+.2f}%"),
             "Cost (AUD)": _pf_cell(r["cost_aud"], "A${:,.2f}"),
             "Value (AUD)": _pf_cell(r["value_aud"], "A${:,.2f}"),
@@ -6483,13 +6551,17 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
         _table_row = {"Ticker": h["ticker"]}
         if _is_combined:
             _table_row["Portfolio"] = h.get("portfolio")
+        # Audit fix 5.3: currency unit + 4dp precision, matching the
+        # Portfolio Overview tab's Holdings table (see that fix's comment
+        # for why).
+        _ccy_suffix = f" {h['currency']}" if h.get("currency") else ""
         _table_row.update({
             "Name": h.get("name") or h["ticker"],
             "Health": _pf_cell(_health_val, "{:.0f}"), "Δ run": _pf_cell(_delta_run, "{:+.1f}"),
             "Action": _health["action"],
             "Thesis": ("N/A (ETF)" if _is_etf else ("Review" if _thesis_breaking else "Intact")),
-            "Buy price": _pf_cell(h.get("buy_price"), "{:.4f}"),
-            "Current price": _pf_cell(_r["current_price"], "{:.4f}"),
+            "Buy price": _pf_cell(h.get("buy_price"), "{:.4f}" + _ccy_suffix),
+            "Current price": _pf_cell(_r["current_price"], "{:.4f}" + _ccy_suffix),
             "Return %": _pf_cell(_return_pct, "{:+.1f}%"),
             "Unrealised P/L (AUD)": _pf_cell(_pl_val, "A${:,.2f}"),
             # ETFs skip company News Intelligence outright (1b) - shows as
@@ -6726,13 +6798,17 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
         _row = {"Ticker": h["ticker"]}
         if _is_combined:
             _row["Portfolio"] = h.get("portfolio")
+        # Audit fix 5.3: currency unit + 4dp precision - same fix as the
+        # other two Portfolio price tables (see the Holdings-table
+        # comment for the full rationale).
+        _ccy_suffix = f" {h['currency']}" if h.get("currency") else ""
         _row.update({
             "Name": h.get("name") or h["ticker"],
             "Health": _pf_cell(_health_val, "{:.0f}"),
             "Score type": _a["health"].get("score_label", "Investment Health Score"),
             "Action": _a["health"]["action"],
-            "Price": _pf_cell(_a["snapshot"].get("price"), "{:.2f}"),
-            "Buy price": _pf_cell(h.get("buy_price"), "{:.4f}"),
+            "Price": _pf_cell(_a["snapshot"].get("price"), "{:.4f}" + _ccy_suffix),
+            "Buy price": _pf_cell(h.get("buy_price"), "{:.4f}" + _ccy_suffix),
         })
         _rows.append(_row)
         _raw_health_summary.append(_health_val)
