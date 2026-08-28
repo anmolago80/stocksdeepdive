@@ -81,7 +81,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 15
+ENGINE_VERSION = 16
 
 
 # -----------------------------------
@@ -1410,7 +1410,10 @@ def _build_cost_of_capital(bundle, ticker, ref):
     interest_expense, interest_expense_flagged, interest_expense_estimated = _interest_expense_ttm(bundle)
     pretax_income = _latest(bundle["income"], "pretax_income")
     tax_provision = _latest(bundle["income"], "tax_provision")
-    operating_income = _latest(bundle["income"], "operating_income")
+    revenue = _latest(bundle["income"], "revenue")
+    operating_income, _operating_income_estimated = _plausible_operating_income(
+        _latest(bundle["income"], "operating_income"), revenue, info
+    )
     equity = _latest(bundle["balance"], "stockholders_equity")
     cash = _latest(bundle["balance"], "cash")
     tax_ttm = (tax_provision / pretax_income) if (tax_provision is not None and pretax_income) else 0.25
@@ -1466,6 +1469,24 @@ def _build_cost_of_capital(bundle, ticker, ref):
         ltd_ttm_flagged or interest_expense_flagged or interest_expense_estimated,
     )
     roic_ttm = _roic_for(years_desc[0]) if years_desc else None
+    if roic_ttm is None and operating_income is not None and years_desc:
+        # _roic_for() looks operating income up by the BALANCE SHEET's own
+        # newest year label, in a dict keyed by the INCOME STATEMENT's own
+        # year labels - normally the same year, but when the two
+        # statements' fiscal year-end dates land in different calendar
+        # years (seen on FID.AX) that lookup misses and silently returns
+        # None, taking the whole TTM bar (and often the whole chart, if
+        # every historical year has the same mismatch) down with it - not
+        # a bad VALUE this time, a lookup that finds nothing. Recover
+        # using the plausibility-checked operating_income above (same
+        # value/fallback the Fundamentals tab's ROIC now uses) paired with
+        # the TTM invested capital, rather than leave the TTM point
+        # missing whenever the two statements' years don't line up.
+        ic_ttm = _avg_invested_capital_for_year(
+            equity_by_year, debt_by_year, cash_by_year, years_desc, years_desc[0]
+        )
+        if ic_ttm:
+            roic_ttm = (operating_income * (1 - tax_ttm)) / ic_ttm
     # Per the owner's choice: a period only renders when BOTH bars can be
     # computed - a WACC-only (or ROIC-only) bar reads as a rendering
     # glitch rather than a real, deliberate data gap. Same rule applied
