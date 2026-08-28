@@ -204,6 +204,22 @@ def _email_auth_available():
         return False
 
 
+def _client_ip():
+    """Best-effort visitor IP for email_auth's per-IP send rate limit
+    (see email_auth.MAX_SENDS_PER_IP_PER_DAY). Railway terminates TLS and
+    proxies every request, setting X-Forwarded-For to "<client>, <hop>,
+    ..." - the first entry is the original visitor. Fails open (returns
+    None, which email_auth treats as "skip the per-IP check") on anything
+    unexpected rather than ever blocking a real sign-in over a header
+    parsing issue."""
+    try:
+        xff = st.context.headers.get("X-Forwarded-For", "")
+        ip = xff.split(",")[0].strip()
+        return ip or None
+    except Exception:
+        return None
+
+
 def write_auth_cookie(token):
     """Write (token) or clear (token=None) the sdd_auth cookie. ONLY call
     this at the very top of a run (app.py's pending-flag flush) - a call
@@ -324,16 +340,34 @@ def _render_signin_control(key="account_bar_signin"):
             "Email address", key=f"{key}_email",
             placeholder="you@example.com",
         )
+        # Honeypot: a field real visitors never see or fill in (label
+        # collapsed, styled off-screen below), but a scripted bot filling
+        # every input on the form will populate. A non-empty value here
+        # means "not a human" - silently pretend success without ever
+        # calling email_auth.send_code(), so no Mailgun quota is spent and
+        # the bot gets no signal to distinguish this from a real send.
+        st.markdown(
+            "<div style='position:absolute;left:-9999px;width:1px;height:1px;"
+            "overflow:hidden;' aria-hidden='true'>",
+            unsafe_allow_html=True,
+        )
+        _hp = st.text_input("Website", key=f"{key}_hp", label_visibility="collapsed")
+        st.markdown("</div>", unsafe_allow_html=True)
         if not st.session_state.get(f"{key}_code_sent"):
             if st.button("Email me a sign-in code", key=f"{key}_send",
                          use_container_width=True):
-                _ok, _msg = email_auth.send_code(_em_input)
-                if _ok:
+                if _hp:
                     st.session_state[f"{key}_code_sent"] = True
                     st.session_state[f"{key}_sent_to"] = _em_input.strip().lower()
-                    st.success(_msg)
+                    st.success(f"Code sent to {_em_input.strip()} - check your inbox (and spam folder).")
                 else:
-                    st.error(_msg)
+                    _ok, _msg = email_auth.send_code(_em_input, client_ip=_client_ip())
+                    if _ok:
+                        st.session_state[f"{key}_code_sent"] = True
+                        st.session_state[f"{key}_sent_to"] = _em_input.strip().lower()
+                        st.success(_msg)
+                    else:
+                        st.error(_msg)
         if st.session_state.get(f"{key}_code_sent"):
             _sent_to = st.session_state.get(f"{key}_sent_to", "")
             _code = st.text_input(
@@ -361,7 +395,7 @@ def _render_signin_control(key="account_bar_signin"):
             with _cr:
                 if st.button("Resend code", key=f"{key}_resend",
                              use_container_width=True):
-                    _ok, _msg = email_auth.send_code(_sent_to)
+                    _ok, _msg = email_auth.send_code(_sent_to, client_ip=_client_ip())
                     (st.success if _ok else st.error)(_msg)
 
 

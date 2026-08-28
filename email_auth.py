@@ -26,7 +26,15 @@ gated behind the same ADMIN_REFRESH_KEY / full-view unlock as everything
 else in that popover, never shown to a public visitor.
 
 ABUSE LIMITS: max 5 code emails per address per day, codes expire after
-15 minutes, and 5 wrong attempts burn the code.
+15 minutes, and 5 wrong attempts burn the code. Since 2026-08-28 there's
+also a per-IP daily cap (MAX_SENDS_PER_IP_PER_DAY) - the per-address limit
+alone doesn't stop one visitor from cycling through many throwaway
+addresses to burn the whole shared Mailgun account's free-tier daily quota
+(100 emails/day) in minutes; see send_code()'s `client_ip` param. The
+caller (paywall_engine._render_signin_control) also renders a hidden
+honeypot field alongside the real email input - real browsers never fill
+it in, so a non-empty value marks the submission as a bot and it's
+silently dropped before ever reaching this module.
 """
 
 import hashlib
@@ -50,6 +58,14 @@ MAX_ATTEMPTS = 5
 MAX_SENDS_PER_DAY = 5
 SESSION_TTL_DAYS = 90
 
+# Per-IP cap, on top of the per-address MAX_SENDS_PER_DAY above. A single
+# visitor can trivially cycle through many throwaway addresses (each one
+# individually under the per-address limit) and still exhaust the whole
+# shared Mailgun free-tier quota (100/day) in minutes - see the module
+# docstring. Deliberately looser than MAX_SENDS_PER_DAY since one IP can
+# legitimately be a household/office NAT with several real sign-ins a day.
+MAX_SENDS_PER_IP_PER_DAY = 15
+
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -71,6 +87,14 @@ def _conn():
             email TEXT NOT NULL,
             created_at TEXT NOT NULL,
             last_seen TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS auth_ip_sends (
+            ip TEXT NOT NULL,
+            day TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (ip, day)
         )"""
     )
     conn.execute(
@@ -158,8 +182,29 @@ def _send_email(to_email, code):
     resp.raise_for_status()
 
 
-def send_code(email):
-    """Email a fresh 6-digit code. Returns (ok, user_message)."""
+def _ip_sends_today(conn, ip, today):
+    row = conn.execute(
+        "SELECT count FROM auth_ip_sends WHERE ip = ? AND day = ?", (ip, today),
+    ).fetchone()
+    return row[0] if row else 0
+
+
+def _record_ip_send(conn, ip, today):
+    conn.execute(
+        """INSERT INTO auth_ip_sends (ip, day, count) VALUES (?, ?, 1)
+           ON CONFLICT(ip, day) DO UPDATE SET count = count + 1""",
+        (ip, today),
+    )
+
+
+def send_code(email, client_ip=None):
+    """Email a fresh 6-digit code. Returns (ok, user_message).
+
+    `client_ip` (the caller's best guess at the visitor's IP - see
+    paywall_engine._client_ip()) is optional and the per-IP check is
+    skipped (fails open) when it's None/empty, e.g. if Streamlit's
+    X-Forwarded-For header is ever unavailable - a missed rate-limit check
+    is far better than blocking every real sign-in."""
     email = (email or "").strip().lower()
     if not valid_email(email):
         return False, "That doesn't look like a valid email address."
@@ -167,7 +212,11 @@ def send_code(email):
         return False, "Email sign-in isn't available right now - try Google."
 
     today = _now().strftime("%Y-%m-%d")
+    client_ip = (client_ip or "").strip() or None
     with _conn() as conn:
+        if client_ip and _ip_sends_today(conn, client_ip, today) >= MAX_SENDS_PER_IP_PER_DAY:
+            return False, "Too many codes requested from this connection today - please try again tomorrow."
+
         row = conn.execute(
             "SELECT sends_today, last_send_date FROM auth_codes WHERE email = ?",
             (email,),
@@ -190,6 +239,8 @@ def send_code(email):
                  last_send_date = excluded.last_send_date""",
             (email, _hash(f"{email}:{code}"), expires, sends_today + 1, today),
         )
+        if client_ip:
+            _record_ip_send(conn, client_ip, today)
     try:
         _send_email(email, code)
     except Exception:
@@ -283,9 +334,11 @@ def cleanup():
     must never break sign-in."""
     codes_cutoff = _iso(_now() - timedelta(days=1))
     sessions_cutoff = _iso(_now() - timedelta(days=SESSION_TTL_DAYS))
+    ip_sends_cutoff = (_now() - timedelta(days=2)).strftime("%Y-%m-%d")
     with _conn() as conn:
         conn.execute("DELETE FROM auth_codes WHERE expires_at < ?", (codes_cutoff,))
         conn.execute("DELETE FROM auth_sessions WHERE created_at < ?", (sessions_cutoff,))
+        conn.execute("DELETE FROM auth_ip_sends WHERE day < ?", (ip_sends_cutoff,))
 
 
 def record_signup(email, method, src=None):
