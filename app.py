@@ -4228,6 +4228,11 @@ def _render_screen_import_admin():
                     disabled=_imp["pending_count"] == 0,
                 ):
                     _batch = screen_import_store.get_pending_for_import(_imp["id"], limit=25)
+                    # Same size-threshold rule as nightly_scan.run_imported_scan():
+                    # judged on the whole import's ticker count (not just this
+                    # 25-ticker page) so every batch of the same import agrees on
+                    # attention mode instead of flip-flopping call to call.
+                    _attention_lite = _imp["ticker_count"] > nightly_scan.NIGHTLY_LITE_THRESHOLD
                     with st.status(
                         f"Scanning {len(_batch)} ticker(s) from “{_imp['name']}”...",
                         expanded=True,
@@ -4235,7 +4240,9 @@ def _render_screen_import_admin():
                         for _bi, _bt in enumerate(_batch):
                             _status.update(label=f"Scanning {_bt} ({_bi + 1}/{len(_batch)})...")
                             try:
-                                _brow = nightly_scan.analyze_ticker_lite(_bt)
+                                _brow = nightly_scan.analyze_ticker_lite(
+                                    _bt, attention_lite=_attention_lite
+                                )
                                 screen_import_store.mark_scanned(_bt, ok=bool(_brow), row=_brow)
                             except Exception as _bexc:
                                 st.write(f"{_bt}: {_bexc}")
@@ -4261,6 +4268,7 @@ def _render_screen_import_admin():
                         "rows": _imp_rows,
                         "source": "TradingView import",
                         "generated_at_label": "so far - this import only",
+                        "attention_lite": _imp["ticker_count"] > nightly_scan.NIGHTLY_LITE_THRESHOLD,
                     },
                 )
             st.divider()
