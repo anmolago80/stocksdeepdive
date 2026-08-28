@@ -53,6 +53,7 @@ paywall specifically.
 """
 
 import html
+import json
 import os
 
 import streamlit as st
@@ -204,16 +205,31 @@ def _email_auth_available():
 
 
 def write_auth_cookie(token):
-    """Write (token) or clear (token=None) the sdd_auth cookie via a tiny
-    <script>. ONLY call this at the very top of a run (app.py's pending-
-    flag flush) - a call immediately followed by st.rerun() never reaches
-    the browser (same lesson as the RC view cookie)."""
+    """Write (token) or clear (token=None) the sdd_auth cookie. ONLY call
+    this at the very top of a run (app.py's pending-flag flush) - a call
+    immediately followed by st.rerun() never reaches the browser (same
+    lesson as the RC view cookie).
+
+    Audit fix (3.2): this used to write the cookie directly via
+    `document.cookie=...`, which meant it had no HttpOnly flag and was
+    fully readable (and stealable) by any JS on the page - a real risk
+    given this token alone gates a signed-in session for 90 days. Fixed
+    by having the browser fetch() a same-origin server.py endpoint
+    instead (see server.py's /_auth/set-cookie, /_auth/clear-cookie and
+    their shared docstring) - THAT process controls a real HTTP response
+    and can set Set-Cookie with HttpOnly/Secure/SameSite properly, which
+    nothing running inside Streamlit itself can do. The token's own
+    generation/validation in email_auth.py is unchanged; only how it
+    lands in the browser changes."""
     import streamlit.components.v1 as _components
     if token:
-        _js = (f"document.cookie='sdd_auth={token}; path=/; "
-               f"max-age={90 * 24 * 3600}; SameSite=Lax';")
+        _js = (
+            "fetch('/_auth/set-cookie', {method: 'POST', credentials: 'same-origin', "
+            "headers: {'Content-Type': 'application/json'}, "
+            f"body: JSON.stringify({{tok: {json.dumps(token)}}})}});"
+        )
     else:
-        _js = "document.cookie='sdd_auth=; path=/; max-age=0; SameSite=Lax';"
+        _js = "fetch('/_auth/clear-cookie', {method: 'POST', credentials: 'same-origin'});"
     _components.html(f"<script>{_js}</script>", height=0)
 
 

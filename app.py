@@ -5,6 +5,7 @@ import time
 import json
 import html
 import os
+import hmac
 import concurrent.futures
 import contextlib
 from datetime import datetime, timezone, date as _date
@@ -401,6 +402,37 @@ _FACTUAL_DEFAULT = (os.environ.get("FACTUAL_MODE", "true").strip().lower()
 _admin_qp = (st.query_params.get("admin") or "").strip()
 _admin_key_env = os.environ.get("ADMIN_REFRESH_KEY", "").strip()
 
+# Audit fix (3.1): a process-wide (not per-session - Streamlit reruns a
+# fresh session per browser tab, so a per-session counter would let an
+# attacker just open a new tab per guess) failed-attempt lockout for the
+# admin key. Before this there was NO rate limit anywhere on this check -
+# a plain `==` comparison with unlimited guesses, script-brute-forceable.
+# @st.cache_resource (same pattern already used for the background
+# scheduler thread below) gives one shared, mutable object across every
+# session in this process, without relying on undocumented module-global
+# rerun behaviour - a redeploy resetting the counter is an acceptable,
+# rare edge case for a control whose main job is slowing down an
+# automated guesser within one deploy's lifetime.
+_ADMIN_LOCKOUT_MAX_ATTEMPTS = 8
+_ADMIN_LOCKOUT_WINDOW_SECONDS = 600
+
+
+@st.cache_resource
+def _admin_key_fail_state():
+    return {"times": []}
+
+
+def _admin_key_locked_out() -> bool:
+    times = _admin_key_fail_state()["times"]
+    now = time.time()
+    while times and now - times[0] > _ADMIN_LOCKOUT_WINDOW_SECONDS:
+        times.pop(0)
+    return len(times) >= _ADMIN_LOCKOUT_MAX_ATTEMPTS
+
+
+def _record_admin_key_failure():
+    _admin_key_fail_state()["times"].append(time.time())
+
 
 def _admin_cookie_value() -> str:
     """A signed-ish token derived from the admin key - never the key
@@ -421,10 +453,26 @@ def _set_admin_cookie(clear: bool = False):
 
 
 if _admin_key_env:
-    if _admin_qp and _admin_qp == _admin_key_env:
+    if _admin_qp and _admin_key_locked_out():
+        # Audit fix (3.1): too many recent wrong guesses - don't even
+        # compare the key while locked out, and don't strip ?admin= (so a
+        # legitimate operator who's mistyped it repeatedly can still see
+        # in the URL what they actually sent).
+        pass
+    elif _admin_qp and hmac.compare_digest(_admin_qp, _admin_key_env):
         st.session_state["full_view_unlocked"] = True
         st.session_state.pop("full_view_exited", None)
         _set_admin_cookie()
+        # Audit fix (3.1): the key was sitting in the URL (address bar,
+        # browser history, any access/proxy logs) for the rest of the
+        # admin session - strip it immediately on a successful unlock, the
+        # same way the Exit button already does on the way out.
+        st.query_params.pop("admin", None)
+    elif _admin_qp:
+        # Audit fix (3.1): a non-empty but WRONG key was supplied - count
+        # it toward the lockout. (An empty/absent admin= param is not an
+        # attempt at all, so it's excluded from both branches above.)
+        _record_admin_key_failure()
     elif (not st.session_state.get("full_view_unlocked")
           and not st.session_state.get("full_view_exited")):
         # "full_view_exited" matters here: after Exit, the browser's old
@@ -433,7 +481,7 @@ if _admin_key_env:
         # the cookie check would re-unlock the session instantly - the
         # "I can't get out" bug.
         try:
-            if st.context.cookies.get("sdd_fullview") == _admin_cookie_value():
+            if hmac.compare_digest(st.context.cookies.get("sdd_fullview") or "", _admin_cookie_value()):
                 st.session_state["full_view_unlocked"] = True
         except Exception:
             pass

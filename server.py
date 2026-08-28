@@ -49,6 +49,7 @@ DEFAULT_OG_IMAGE                absolute URL used as the social card image
 """
 
 import asyncio
+import hmac
 import logging
 import os
 import signal
@@ -187,6 +188,69 @@ def _base_url(request: Request) -> str:
     return f"{proto}://{host}"
 
 
+def _is_https(request: Request) -> bool:
+    return request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+
+
+def _same_origin(request: Request) -> bool:
+    """True only when the request's own Origin (or, failing that, Referer)
+    header names THIS site's own host - a real fetch() call from a page
+    served by this app always sends one of these; a cross-site request
+    (an <img>/<form> from another page, or a bare curl) generally won't
+    have a matching one. Used to gate the auth-cookie-setting endpoints
+    below against CSRF/session-fixation (see their own docstrings)."""
+    origin = request.headers.get("origin") or request.headers.get("referer") or ""
+    host = request.headers.get("host", "")
+    return bool(host) and host in origin
+
+
+# Audit fix (3.2): paywall_engine.write_auth_cookie() previously wrote the
+# 90-day sdd_auth session cookie via client-side `document.cookie=...`
+# (the only option available from inside Streamlit itself, which can't set
+# real response headers) - meaning it had no HttpOnly flag and was fully
+# readable by any JS on the page. That's a structural risk: a future XSS
+# ANYWHERE on the site (this codebase's own blog CMS renders admin-authored
+# HTML - see the admin-key hardening above) would be an immediate full
+# account-takeover, not just page defacement, since the token itself is
+# the only thing protecting a signed-in session. This process (server.py)
+# DOES control real HTTP response headers, and proxies every request to
+# the same origin Streamlit serves from - so Streamlit can fire a same-
+# origin fetch() here instead of writing the cookie itself, and let this
+# process set it properly. The session token's own generation/validation
+# in email_auth.py is completely unchanged by this - only HOW the browser
+# ends up holding it changes.
+#
+# POST (not GET) + the _same_origin() check together are what stop this
+# becoming a session-fixation hole: a GET endpoint that sets a cookie from
+# a plain query param would be triggerable from a bare <img src=...> tag
+# planted on any other website, letting an attacker fixate a victim's
+# cookie to a token the attacker already controls.
+@app.post("/_auth/set-cookie", include_in_schema=False)
+async def auth_set_cookie(request: Request):
+    if not _same_origin(request):
+        return Response(status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    tok = (body.get("tok") or "").strip()
+    if not tok or len(tok) > 256:
+        return Response(status_code=400)
+    resp = Response(status_code=204)
+    resp.set_cookie("sdd_auth", tok, max_age=90 * 24 * 3600, path="/",
+                     httponly=True, secure=_is_https(request), samesite="lax")
+    return resp
+
+
+@app.post("/_auth/clear-cookie", include_in_schema=False)
+async def auth_clear_cookie(request: Request):
+    if not _same_origin(request):
+        return Response(status_code=403)
+    resp = Response(status_code=204)
+    resp.delete_cookie("sdd_auth", path="/")
+    return resp
+
+
 def _html(content, status=200, cache="public, max-age=300"):
     return HTMLResponse(content, status_code=status,
                         headers={"Cache-Control": cache})
@@ -228,6 +292,26 @@ def _count_view(page, ticker=None):
         pass
 
 
+# Audit fix (3.1): this endpoint is a stateless GET with no session
+# overhead - before this fix it was directly brute-forceable from a
+# script with zero rate limiting anywhere. Same process-wide lockout
+# shape as app.py's admin-key check (see _admin_key_locked_out() there);
+# this is a separate process (server.py is the FastAPI proxy, app.py is
+# the Streamlit process it launches as a subprocess - see this module's
+# own docstring), so it needs its own counter rather than sharing state.
+_ADMIN_PREVIEW_LOCKOUT_MAX_ATTEMPTS = 8
+_ADMIN_PREVIEW_LOCKOUT_WINDOW_SECONDS = 600
+_admin_preview_fail_times: list = []
+
+
+def _admin_preview_locked_out() -> bool:
+    now = time.time()
+    while (_admin_preview_fail_times
+           and now - _admin_preview_fail_times[0] > _ADMIN_PREVIEW_LOCKOUT_WINDOW_SECONDS):
+        _admin_preview_fail_times.pop(0)
+    return len(_admin_preview_fail_times) >= _ADMIN_PREVIEW_LOCKOUT_MAX_ATTEMPTS
+
+
 def _admin_preview_ok(request: Request) -> bool:
     """Draft posts are viewable at their real URL only by the admin - the
     same ADMIN_REFRESH_KEY the app uses, passed as ?preview=<key>. Drafts
@@ -235,7 +319,15 @@ def _admin_preview_ok(request: Request) -> bool:
     key = os.environ.get("ADMIN_REFRESH_KEY", "").strip()
     if not key:
         return False
-    return (request.query_params.get("preview") or "").strip() == key
+    supplied = (request.query_params.get("preview") or "").strip()
+    if not supplied:
+        return False
+    if _admin_preview_locked_out():
+        return False
+    if hmac.compare_digest(supplied, key):
+        return True
+    _admin_preview_fail_times.append(time.time())
+    return False
 
 
 # -----------------------------------

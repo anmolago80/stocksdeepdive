@@ -20,13 +20,18 @@ anthropic>=0.40
 Authlib>=1.3.2
 stripe>=10.0
 
-# --- Added for the indexable blog (server.py / blog_render.py).
-# server.py is now the app's entrypoint: it serves /blog, /sitemap.xml and
-# /robots.txt as real HTML that search engines can read, and proxies every
-# other URL - including Streamlit's websocket - through to the Streamlit
-# app exactly as before. ---
-fastapi>=0.110
-uvicorn[standard]>=0.29
+# --- Audit fix: server.py (the FastAPI reverse proxy that runs in front
+# of Streamlit - Railway's start command is "python server.py", see
+# server.py's own module docstring) imports fastapi, uvicorn and httpx
+# directly, but none of the three were ever listed here. The live site
+# currently boots fine, which means SOME dependency-resolution path is
+# providing them (a cached build layer, or Railpack's own auto-detection)
+# - but that's exactly the kind of implicit, unverified mechanism that
+# breaks silently and catastrophically on the next platform/cache change,
+# taking down the entire site (server.py fails on its very first import
+# line, before Streamlit ever even starts) with no code change to blame.
+# Declaring them explicitly costs nothing when they're already present
+# and removes that risk entirely when they aren't.
+fastapi>=0.115
+uvicorn[standard]>=0.30
 httpx>=0.27
-websockets>=12.0
-markdown>=3.5
