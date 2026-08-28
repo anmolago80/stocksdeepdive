@@ -1006,10 +1006,13 @@ def _dispatch_search(text):
         # doing and then how it ended.
         with st.status(f"Analyzing {tk}...", expanded=False) as _status:
             st.write(f"Fetching price history and fundamentals for {tk}, then computing valuation, quality, psychology and discovery scores...")
+            _dd_discount, _dd_perpetual, _dd_growth, _dd_manual_fcf = _dcf_overrides_for(tk)
             st.session_state["dd_result"] = deep_dive_engine.analyze(
                 tk, get_price_history, get_ticker_info, get_cashflow_df,
                 news_api_key=news_api_key, live_data=live_data,
                 enable_social=enable_social,
+                discount_rate=_dd_discount, perpetual_rate=_dd_perpetual,
+                growth_rate=_dd_growth, manual_fcf=_dd_manual_fcf,
             )
             _dd_res = st.session_state["dd_result"]
             if _dd_res.get("error"):
@@ -3079,10 +3082,13 @@ def page_deep_dive():
         if st.session_state.get("dd_qp_tried") != _qp_ticker:
             st.session_state["dd_qp_tried"] = _qp_ticker
             with st.spinner(f"Analyzing {_qp_ticker}..."):
+                _dd_discount, _dd_perpetual, _dd_growth, _dd_manual_fcf = _dcf_overrides_for(_qp_ticker)
                 st.session_state["dd_result"] = deep_dive_engine.analyze(
                     _qp_ticker, get_price_history, get_ticker_info,
                     get_cashflow_df, news_api_key=news_api_key,
                     live_data=live_data, enable_social=enable_social,
+                    discount_rate=_dd_discount, perpetual_rate=_dd_perpetual,
+                    growth_rate=_dd_growth, manual_fcf=_dd_manual_fcf,
                 )
             _dd = st.session_state["dd_result"]
     if _dd is not None and not _dd.get("error") and _dd.get("ticker"):

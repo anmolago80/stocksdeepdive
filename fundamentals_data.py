@@ -397,6 +397,29 @@ def _fetch_fresh_price(tk):
     return None
 
 
+def get_live_price(ticker):
+    """Public, cheap wrapper around _fetch_fresh_price() for callers that
+    need to know "has this ticker moved" WITHOUT paying for a full
+    get_bundle() call (statements, dividends, 10y monthly history, ...).
+
+    Added for auto_compounder_engine.build_sections()'s cache-hit path: its
+    24h section cache was found to short-circuit BEFORE get_bundle() is
+    ever called (see build_sections()'s own comment), which meant the
+    "always overlay a fresh price, cache hit or not" mechanism this module
+    was built around (see _fetch_fresh_price's docstring - the OCL.AX
+    incident) never actually ran for a returning visitor within that 24h
+    window. build_sections() now uses this to cheaply check the live price
+    against the price its cached section was built against, and forces a
+    rebuild when they've diverged meaningfully - same intent as
+    _fetch_fresh_price, reachable from a warm cache instead of only a cold
+    one. Returns None on any failure, same fail-open contract as
+    _fetch_fresh_price itself."""
+    try:
+        return _fetch_fresh_price(yf.Ticker(ticker))
+    except Exception:
+        return None
+
+
 def _overlay_fresh_price(info, tk):
     """Patches info["currentPrice"] with a fresh fast_info quote (see
     _fetch_fresh_price) and RECOMPUTES info["marketCap"] from that fresh

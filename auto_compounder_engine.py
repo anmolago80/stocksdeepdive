@@ -132,6 +132,21 @@ def _read_cache(ticker, overrides=()):
         meta = obj.get("_meta") or {}
         if meta.get("engine_version") != ENGINE_VERSION:
             return None
+        # Audit fix (2.2): a bundle-format/logic change in fundamentals_data.py
+        # bumps BUNDLE_VERSION, but this section cache previously had no idea
+        # that number existed - a bundle fix with no ACCOMPANYING
+        # ENGINE_VERSION bump (easy to forget; nothing enforced doing both)
+        # meant every already-cached section kept serving results computed
+        # from the OLD, broken bundle for up to 24h, since build_sections()
+        # never even calls get_bundle() on a cache hit (see build_sections()'s
+        # own comment) to notice anything changed. Tying BUNDLE_VERSION into
+        # this cache's own validity check closes that gap structurally,
+        # instead of relying on remembering to bump two constants by hand
+        # every time. Old cache entries written before this field existed
+        # (bundle_version missing) are correctly treated as stale - fetching
+        # them once to fill in the size is the honest choice.
+        if meta.get("bundle_version") != fundamentals_data.BUNDLE_VERSION:
+            return None
         fetched_at = meta.get("generated_at")
         if not fetched_at:
             return None
@@ -1979,7 +1994,29 @@ def build_sections(ticker, force_refresh=False, discount_rate=None,
     if not force_refresh:
         cached = _read_cache(ticker, overrides)
         if cached is not None:
-            return cached
+            # Audit fix (2.1): a cache hit here used to return immediately,
+            # WITHOUT ever calling fundamentals_data.get_bundle() - which is
+            # the only place a fresh price gets overlaid on every call (see
+            # its own docstring, written specifically so a large intraday
+            # move like OCL.AX's -17% doesn't sit stale for up to 24h). That
+            # meant the mechanism this cache was explicitly designed to
+            # cooperate with never actually fired on a warm cache - exactly
+            # the scenario it exists for. Rather than paying full
+            # recomputation cost on every hit (which would defeat the point
+            # of caching at all), do one cheap live-price check and only
+            # fall through to a real rebuild when the price has genuinely
+            # moved - same "OCL.AX" trigger condition, reachable now from a
+            # warm cache instead of only a cold one.
+            price_then = (cached.get("_meta") or {}).get("price_at_build")
+            if price_then:
+                price_now = fundamentals_data.get_live_price(ticker)
+                if price_now and abs(price_now - price_then) / price_then <= 0.03:
+                    return cached
+                # else: no live price available (fail open - serve the
+                # cache rather than block on a flaky quote), or it moved
+                # >3% - fall through to a real rebuild either way below.
+            else:
+                return cached  # pre-fix cache entry with no baseline price recorded - nothing to compare against, serve as-is
 
     bundle = fundamentals_data.get_bundle(ticker, force_refresh=force_refresh)
     if not bundle:
@@ -2015,6 +2052,16 @@ def build_sections(ticker, force_refresh=False, discount_rate=None,
         "source": bundle_meta.get("source"),
         "flags": bundle_meta.get("flags"),
         "engine_version": ENGINE_VERSION,
+        # Audit fixes (2.1/2.2): bundle_version ties this section cache's
+        # validity to fundamentals_data.BUNDLE_VERSION (see _read_cache) so
+        # a bundle-format fix there can't silently keep serving sections
+        # built from the old bundle; price_at_build is the price this
+        # section's numbers were actually computed against, checked on a
+        # cache hit against a fresh live quote (see build_sections()'s
+        # cache-hit branch above) so a big intraday move still gets picked
+        # up on a warm cache, not just a cold one.
+        "bundle_version": fundamentals_data.BUNDLE_VERSION,
+        "price_at_build": _basics(bundle).get("price"),
     }
 
     _write_cache(ticker, sections, overrides)

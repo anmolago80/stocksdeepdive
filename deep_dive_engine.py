@@ -93,7 +93,9 @@ def _quality_breakdown(info):
 
 
 def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
-            news_api_key=None, live_data=True, enable_social=True):
+            news_api_key=None, live_data=True, enable_social=True,
+            discount_rate=None, perpetual_rate=None, growth_rate=None,
+            manual_fcf=None):
     """
     Run a full single-ticker analysis and return a dict of everything the
     Deep Dive tab needs to render (metrics + chart data), or
@@ -104,6 +106,20 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     callables (rather than imported directly) so this module reuses the
     SAME st.cache_data-wrapped fetchers app.py already defines - one fetch
     per ticker per session, not a second uncached copy of the same calls.
+
+    discount_rate/perpetual_rate/growth_rate/manual_fcf: audit fix (5.1) -
+    passed straight through to resolve_intrinsic_value(). Before this,
+    this page's own headline Intrinsic Value/Margin of Safety gauges were
+    hardcoded to fully-auto regardless of the viewer's Valuation & FCF
+    Inputs settings, while the Compounder View "Rational Compounder
+    Analysis (Auto)" section further down this SAME page for the SAME
+    ticker already respected them (see app.py's _dcf_overrides_for()) -
+    two different intrinsic values on one page with no explanation. Leave
+    all four at None for the original fully-auto behaviour (used by the
+    landing-page featured-card caller, which has no per-user settings to
+    apply); a caller with access to the viewer's settings should pass
+    _dcf_overrides_for(ticker)'s result through, the same pattern already
+    used at the Compounder View/Scanner/Portfolio call sites.
     """
     ticker = (ticker or "").strip().upper()
     if not ticker:
@@ -157,13 +173,18 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
                                           "bearish": 0, "net_sentiment": 0,
                                           "provider": "off"}
 
-    # --- Fundamentals / DCF (base case only, fully auto) --------------------
+    # --- Fundamentals / DCF (respects the viewer's own settings - see
+    # discount_rate/perpetual_rate/growth_rate/manual_fcf in this
+    # function's own docstring; all None = fully auto, unchanged from
+    # before) --------------------
     quality_score, quality_src, quality_default = resolve_quality_score(ticker, info=info)
 
     cashflow_df = get_cashflow_df(ticker)
     intrinsic_value, intrinsic_src, dcf_growth, iv_meta = resolve_intrinsic_value(
         ticker, quality_score, info=info, cashflow_df=cashflow_df,
         currency=info.get("currency"),
+        discount_rate=discount_rate, perpetual_rate=perpetual_rate,
+        growth_rate=growth_rate, manual_fcf=manual_fcf,
     )
 
     stock_type, stock_type_src, type_default = resolve_stock_type(ticker, info=info)
