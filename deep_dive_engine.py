@@ -350,6 +350,8 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         # DCF fixes: same pure passthrough, no scoring logic touched - see
         # resolver_engine.py's identical comment on these same keys.
         "dcf_discount_floored": bool(iv_meta.get("discount_floored")),
+        "dcf_discount_manual_clamped": bool(iv_meta.get("discount_manual_clamped")),
+        "dcf_perpetual_manual_clamped": bool(iv_meta.get("perpetual_manual_clamped")),
         "dcf_fx_converted": iv_meta.get("fx_converted"),
         "dcf_fx_rate_used": iv_meta.get("fx_rate_used"),
         "dcf_fx_fallback": bool(iv_meta.get("fx_fallback")),

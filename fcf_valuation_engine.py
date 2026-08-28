@@ -127,27 +127,50 @@ def growth_ceiling_for(info, currency=None):
             return ceiling
     return GROWTH_CEIL
 
-# Cash-flow-statement row labels vary across yfinance versions / listings.
-_FCF_LABELS = ("Free Cash Flow", "FreeCashFlow", "Free cash flow")
+# Cash-flow-statement row labels vary across yfinance versions / listings -
+# AND across data sources: a bundle built from EODHD instead of yfinance
+# returns the same rows under EODHD's own lower-camelCase JSON keys
+# (audit fix 1.2). auto_compounder_engine.py's own _ROW_ALIASES already
+# lists both spellings for exactly this reason; these lists mirror that
+# (kept as a separate, local list rather than importing
+# auto_compounder_engine, which itself imports this module - importing it
+# back would be a circular import).
+_FCF_LABELS = ("Free Cash Flow", "FreeCashFlow", "Free cash flow", "freeCashFlow")
 _OCF_LABELS = (
     "Operating Cash Flow", "Total Cash From Operating Activities",
     "OperatingCashFlow", "Cash Flow From Continuing Operating Activities",
+    "totalCashFromOperatingActivities",
 )
-_CAPEX_LABELS = ("Capital Expenditure", "CapitalExpenditures", "Capital Expenditures")
+_CAPEX_LABELS = (
+    "Capital Expenditure", "CapitalExpenditures", "Capital Expenditures",
+    "capitalExpenditures",
+)
 
 
 def _row(cashflow_df, labels):
     """Return the first matching row (as a list of floats, most-recent-first)
-    from a yfinance cash-flow DataFrame, or None."""
+    from a cash-flow DataFrame, or None. Tries an exact label match first,
+    then falls back to a case-insensitive substring match (mirrors
+    auto_compounder_engine._find_row()'s tolerance) so a source whose exact
+    spelling isn't in `labels` - e.g. an EODHD key we haven't enumerated -
+    still resolves instead of silently returning None."""
     if cashflow_df is None or getattr(cashflow_df, "empty", True):
         return None
     for label in labels:
         if label in cashflow_df.index:
             try:
-                vals = [float(v) for v in cashflow_df.loc[label].tolist()]
-                return vals
+                return [float(v) for v in cashflow_df.loc[label].tolist()]
             except Exception:
                 continue
+    lower_idx = {str(i).lower(): i for i in cashflow_df.index}
+    for label in labels:
+        nl = label.lower()
+        for li, orig in lower_idx.items():
+            if nl in li or li in nl:
+                try:
+                    return [float(v) for v in cashflow_df.loc[orig].tolist()]
+                except Exception:
+                    continue
     return None
 
 
@@ -576,7 +599,25 @@ def dcf_intrinsic_value(
 
         # --- Discount rate (CAPM, per stock) --------------------------------
         if discount_rate is not None:
+            # Audit fix 1.4: a manual override used to bypass the CAPM
+            # auto-path's [MIN_DISCOUNT_RATE, DISCOUNT_CEIL] band entirely -
+            # a typo (e.g. "1" meant as "10") could push the discount rate
+            # to near-zero, force the perpetual-rate guard below down to
+            # match, and inflate the intrinsic value by roughly an order of
+            # magnitude with nothing on screen flagging it as unusual
+            # (manual overrides don't set value_default). Clamp to the same
+            # band the auto path is already held to.
+            _dr_capped = not (capm_engine.MIN_DISCOUNT_RATE <= discount_rate <= capm_engine.DISCOUNT_CEIL)
+            discount_rate = max(capm_engine.MIN_DISCOUNT_RATE,
+                                 min(discount_rate, capm_engine.DISCOUNT_CEIL))
             meta["discount_source"] = "manual"
+            # Deliberately a separate key from discount_floored (which the
+            # auto/CAPM path below sets for a different reason - a low
+            # measured beta - and which the app renders with beta-specific
+            # caption text): this is a manual value that was out of bounds
+            # and got clamped, which needs its own, accurate on-screen text.
+            if _dr_capped:
+                meta["discount_manual_clamped"] = True
         else:
             try:
                 discount_rate, capm_meta = capm_engine.resolve_discount_rate(info, currency)
@@ -588,7 +629,20 @@ def dcf_intrinsic_value(
 
         # --- Terminal / perpetual growth rate (currency-based) --------------
         if perpetual_rate is not None:
+            # Audit fix 1.4 (continued): bound a manual perpetual-rate
+            # override too, not just discount rate - an unbounded high
+            # value would otherwise survive up to the "must be strictly
+            # below discount_rate" guard just below and could still land
+            # within a hair of the (now-floored) discount rate, reproducing
+            # the same near-zero-spread blowup. Currency-based auto rates
+            # only ever run 2.0-2.5% (see PERPETUAL_GROWTH_BY_CCY); allow a
+            # manual override some real headroom either side of that
+            # without permitting an extreme value.
+            _pr_capped = not (-0.02 <= perpetual_rate <= 0.06)
+            perpetual_rate = max(-0.02, min(perpetual_rate, 0.06))
             meta["perpetual_source"] = "manual"
+            if _pr_capped:
+                meta["perpetual_manual_clamped"] = True
         else:
             try:
                 perpetual_rate = capm_engine.resolve_perpetual_rate(currency, discount_rate)

@@ -106,6 +106,9 @@ def resolve_intrinsic_value(
             "fcf_base_used": dcf_meta.get("fcf_base_used"),
             # DCF fix passthrough - same pure-provenance pattern as above.
             "discount_floored": dcf_meta.get("discount_floored", False),
+            # Audit fix 1.4 passthrough - same pattern as discount_floored.
+            "discount_manual_clamped": dcf_meta.get("discount_manual_clamped", False),
+            "perpetual_manual_clamped": dcf_meta.get("perpetual_manual_clamped", False),
             "fx_converted": dcf_meta.get("fx_converted"),
             "fx_rate_used": dcf_meta.get("fx_rate_used"),
             "fx_fallback": dcf_meta.get("fx_fallback", False),
@@ -181,7 +184,16 @@ def dcf_scenarios(ticker, quality_score, info=None, cashflow_df=None, currency=N
         return None
 
     def _case(dd, dg, dp):
-        d = max(capm_engine.DISCOUNT_FLOOR, min(d0 + dd, capm_engine.DISCOUNT_CEIL))
+        # Audit fix 1.3: clamp to MIN_DISCOUNT_RATE (0.075), not the
+        # superseded DISCOUNT_FLOOR (0.05) - MIN_DISCOUNT_RATE is the
+        # tightened floor capm_engine.resolve_discount_rate() itself now
+        # enforces, added specifically because a rate that close to AUD
+        # terminal growth blows the Gordon-growth terminal value up by an
+        # order of magnitude (see capm_engine.py's module docstring for
+        # the CSL.AX case this was fixed for). Clamping a Bear/Bull
+        # scenario to the old, looser floor could reproduce exactly that
+        # bug for a defensive low-beta stock with a negative Bull delta.
+        d = max(capm_engine.MIN_DISCOUNT_RATE, min(d0 + dd, capm_engine.DISCOUNT_CEIL))
         g = max(GROWTH_FLOOR, min(g0 + dg, GROWTH_CEIL))
         p = p0 + dp
         if p >= d:

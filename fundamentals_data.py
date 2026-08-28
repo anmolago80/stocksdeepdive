@@ -199,15 +199,44 @@ def _write_cache(ticker, bundle):
         pass
 
 
+# Row-label substrings for the two NON-monetary row types a yfinance
+# income/balance/cashflow statement can actually contain - a share count
+# ("Basic Average Shares", "Diluted Average Shares", "Shares Outstanding")
+# and a tax rate ("Tax Rate For Calcs"). Multiplying either by an FX rate
+# would corrupt it, since neither is a dollar figure. Everything else in
+# these statements (revenue, income, assets, EPS, etc.) genuinely is a
+# dollar amount in the statement's own currency and does need converting.
+_NON_MONETARY_ROW_PATTERNS = ("shares", "tax rate")
+
+
+def _is_non_monetary_row(label):
+    l = str(label).lower()
+    return any(p in l for p in _NON_MONETARY_ROW_PATTERNS)
+
+
 def _convert_statement_currency(df, rate):
-    """Multiply every cell of a statement DataFrame by an fx rate, coercing
-    anything non-numeric to NaN first so a stray string/None cell can never
-    raise - same best-effort spirit as the rest of this module. Returns the
-    input unchanged if it's empty or the multiply fails outright."""
+    """Multiply every MONETARY cell of a statement DataFrame by an fx rate,
+    coercing anything non-numeric to NaN first so a stray string/None cell
+    can never raise - same best-effort spirit as the rest of this module.
+    Returns the input unchanged if it's empty or the multiply fails
+    outright.
+
+    Audit fix 1.7: this used to blanket-multiply the WHOLE DataFrame by
+    `rate`, which would corrupt a share-count or tax-rate row if one were
+    ever read from it - nothing downstream currently reads such a row
+    through this path, so this was a landmine for the next metric added
+    rather than a live bug (see _NON_MONETARY_ROW_PATTERNS above). Rows
+    matching that list are coerced to numeric but left unconverted;
+    everything else converts as before."""
     if df is None or df.empty:
         return df
     try:
-        return df.apply(pd.to_numeric, errors="coerce") * rate
+        numeric = df.apply(pd.to_numeric, errors="coerce")
+        converted = numeric * rate
+        non_monetary = [label for label in numeric.index if _is_non_monetary_row(label)]
+        if non_monetary:
+            converted.loc[non_monetary] = numeric.loc[non_monetary]
+        return converted
     except Exception:
         return df
 

@@ -25,7 +25,18 @@ def _clean(series):
 
 
 def rsi(closes, period=14):
-    """Wilder's RSI. Needs > period data points; returns None if too short."""
+    """Wilder's RSI. Needs > period data points; returns None if too short.
+
+    Audit fix 1.5: this used a plain rolling SMA of gains/losses, which is
+    labeled "Wilder's" in the docstring but isn't the same calculation -
+    genuine Wilder's smoothing is a recursive/exponential average
+    (equivalent to an EWM with alpha=1/period), which is what every
+    charting platform (TradingView, etc.) actually computes. The RSI
+    thresholds hard-coded downstream (e.g. in scanner_engine.py) are tuned
+    against that standard definition, so the plain-SMA version was
+    numerically diverging from what those thresholds assume, not just
+    mislabeled. `adjust=False` matches the recursive form; a `min_periods`
+    floor keeps the same "needs > period points" behavior as before."""
     c = _clean(closes)
     if len(c) < period + 1:
         return None
@@ -34,8 +45,8 @@ def rsi(closes, period=14):
     gains = delta.clip(lower=0)
     losses = -delta.clip(upper=0)
 
-    avg_gain = gains.rolling(period).mean().iloc[-1]
-    avg_loss = losses.rolling(period).mean().iloc[-1]
+    avg_gain = gains.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean().iloc[-1]
+    avg_loss = losses.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean().iloc[-1]
 
     if pd.isna(avg_gain) or pd.isna(avg_loss):
         return None
@@ -91,6 +102,10 @@ def atr(high, low, close, period=14):
     Average True Range - the basis for volatility-scaled stops. Needs OHLC;
     if high/low aren't available (some feeds), returns None and the caller
     should fall back to a percentage stop.
+
+    Audit fix 1.5: same fix as rsi() above - true Wilder's ATR smooths the
+    true-range series recursively (EWM, alpha=1/period), not a plain
+    rolling SMA; see rsi()'s comment for why that matters here too.
     """
     h = _clean(high)
     l = _clean(low)
@@ -108,7 +123,7 @@ def atr(high, low, close, period=14):
         (l - prev_close).abs(),
     ], axis=1).max(axis=1)
 
-    atr_val = tr.rolling(period).mean().iloc[-1]
+    atr_val = tr.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean().iloc[-1]
     if pd.isna(atr_val):
         return None
     return round(float(atr_val), 4)

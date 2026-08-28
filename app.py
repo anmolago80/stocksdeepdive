@@ -3257,6 +3257,20 @@ def page_deep_dive():
                 "Discount rate floored at 7.5% (low measured beta - see "
                 "Methodology)."
             )
+        # Audit fix 1.4: a manually-typed discount/perpetual-rate override
+        # that fell outside the defensible band got silently clamped back
+        # into it - same provenance-flag pattern as the caption above, just
+        # for the manual-input path instead of the auto/CAPM one.
+        if _dd.get("dcf_discount_manual_clamped"):
+            st.caption(
+                "Manual discount rate override was outside the 7.5%-15% "
+                "band and was clamped to it."
+            )
+        if _dd.get("dcf_perpetual_manual_clamped"):
+            st.caption(
+                "Manual perpetual growth rate override was outside the "
+                "defensible range and was clamped to it."
+            )
         if _dd.get("dcf_fx_converted"):
             _fx_rate_val = _dd.get("dcf_fx_rate_used")
             _fx_rate_txt = f"{_fx_rate_val:.2f}" if _fx_rate_val is not None else "N/A"
@@ -5626,10 +5640,19 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                         column_config={
                             "Growth % override": st.column_config.NumberColumn(
                                 help="Blank = stay auto/calculated.", step=0.5, format="%.2f"),
+                            # Audit fix 1.4: min/max on the editor itself
+                            # (Streamlit rejects an out-of-range edit at the
+                            # UI level before it's ever saved) - belt and
+                            # braces alongside fcf_valuation_engine's own
+                            # clamp+flag, which still catches anything that
+                            # gets in some other way (e.g. a pre-existing
+                            # saved override from before this fix).
                             "Discount % override": st.column_config.NumberColumn(
-                                help="Blank = stay auto/calculated.", step=0.1, format="%.2f"),
+                                help="Blank = stay auto/calculated. 7.5-15% (matches the auto/CAPM band).",
+                                step=0.1, format="%.2f", min_value=7.5, max_value=15.0),
                             "Perpetual % override": st.column_config.NumberColumn(
-                                help="Blank = stay auto/calculated.", step=0.1, format="%.2f"),
+                                help="Blank = stay auto/calculated. -2% to 6%.",
+                                step=0.1, format="%.2f", min_value=-2.0, max_value=6.0),
                         },
                         key="dcf_override_editor",
                     )

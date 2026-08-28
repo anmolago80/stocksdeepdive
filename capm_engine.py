@@ -76,7 +76,15 @@ DEFAULT_PERPETUAL_GROWTH = 0.025
 # constant below (like every other optional feed in this app) when it can't
 # be fetched.
 _RISK_FREE_TICKERS = {"USD": "^TNX", "AUD": "AU10Y=RR"}
-_RISK_FREE_DIVISOR = {"^TNX": 10.0, "AU10Y=RR": 100.0}
+# ^TNX is quoted as yield*10 (a 4.2% yield reads as ~42.0), so dividing by
+# 10 alone only recovers the percentage-point number (~4.2), not the
+# decimal fraction (~0.042) the sanity band below expects - that value
+# always failed `0.0 < rate < 0.20`, so the USD live-rate path was dead
+# code (silently falling to RISK_FREE_FALLBACK on every call). Audit fix
+# 1.1: divide by 1000 (10 for the quoting convention, x100 to go from a
+# percentage-point number to a decimal fraction) so a live ^TNX read
+# actually clears the sanity band and gets used.
+_RISK_FREE_DIVISOR = {"^TNX": 1000.0, "AU10Y=RR": 100.0}
 
 # Fallback risk-free rates (approximate 10-year yields), used only when the
 # live bond-yield fetch fails or returns something outside a sane band.

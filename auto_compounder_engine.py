@@ -82,7 +82,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 23
+ENGINE_VERSION = 24
 
 
 # -----------------------------------
@@ -1083,9 +1083,14 @@ def _build_fundamentals(bundle, ticker, ref):
     add("Debt to Equity", (total_debt / equity) if (total_debt is not None and equity) else None, "x")
 
     cov, corr, var_a = _cov_corr(bundle["prices_10y"], bundle["spx_prices_10y"])
-    add("Covariance (SP500)", cov, "num", fallback="Covariance of monthly returns vs the S&P 500 over the available price history.")
-    add("Correlation (SP500)", corr, "x", fallback="Correlation of monthly returns vs the S&P 500 over the available price history.")
-    add("Variance", var_a, "num", fallback="Variance of the stock's own monthly returns over the same price history used for "
+    # Audit fix 1.6: this fallback text said "monthly returns", but
+    # _cov_corr() deliberately computes on raw monthly price LEVELS (see
+    # its own docstring for why - matches the reference workbook). The
+    # code was already correct; only this caption was describing the
+    # opposite of what it actually shows.
+    add("Covariance (SP500)", cov, "num", fallback="Covariance of monthly closing price levels vs the S&P 500 over the available price history.")
+    add("Correlation (SP500)", corr, "x", fallback="Correlation of monthly closing price levels vs the S&P 500 over the available price history.")
+    add("Variance", var_a, "num", fallback="Variance of the stock's own monthly closing price levels over the same price history used for "
                                             "Covariance and Correlation above.")
 
     return {
