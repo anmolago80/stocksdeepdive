@@ -81,7 +81,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 19
+ENGINE_VERSION = 20
 
 
 # -----------------------------------
@@ -654,6 +654,24 @@ def _price_history_entry(prices_10y):
 
 
 def _share_price_growth_entry(prices_10y):
+    """{"years": [...], "values": [...], "ytd_year": str|None} - each
+    COMPLETED year's bar is (avg price that year - avg price the year
+    before) / avg price the year before, matching the hand-built
+    workbook's own convention exactly (confirmed against real workbook
+    output - AUB.AX/CSL.AX/RMD.AX all show this same average-vs-average
+    shape, including a large swing on their own still-in-progress year).
+
+    The one exception is the LATEST year when it's still in progress
+    (fewer than 12 monthly points): averaging a partial year against a
+    full prior year lets whichever months happened to occur so far
+    (e.g. an early-year slump) dominate the whole bar, even while the
+    stock has since recovered - confirmed on CPU.AX, whose 2026 bar read
+    -7.7% (average-vs-average, dragged down by a Jan-Mar trough) while
+    the actual price was +17-22% since the 2025 close/2026 open by
+    August. For that one open year only, use a plain start-of-year-close
+    vs latest-close return instead - a real YTD number, not blended
+    against last year's now-closed average. Every completed year is
+    untouched."""
     dates, prices = prices_10y.get("dates") or [], prices_10y.get("prices") or []
     if len(dates) < 24:
         return None
@@ -662,15 +680,28 @@ def _share_price_growth_entry(prices_10y):
         by_year.setdefault(d[:4], []).append(p)
     years_sorted = sorted(by_year)
     avgs = {y: sum(v) / len(v) for y, v in by_year.items()}
-    out_years, out_values = [], []
+    latest_year = years_sorted[-1]
+    latest_is_partial = len(by_year[latest_year]) < 12
+    out_years, out_values, ytd_year = [], [], None
     for i in range(1, len(years_sorted)):
         y0, y1 = years_sorted[i - 1], years_sorted[i]
+        if y1 == latest_year and latest_is_partial:
+            year_prices = by_year[y1]
+            if year_prices[0]:
+                out_years.append(y1)
+                out_values.append((year_prices[-1] - year_prices[0]) / year_prices[0])
+                ytd_year = y1
+            continue
         if avgs[y0]:
             out_years.append(y1)
             out_values.append((avgs[y1] - avgs[y0]) / avgs[y0])
     if not out_years:
         return None
-    return {"years": list(reversed(out_years)), "values": list(reversed(out_values))}
+    return {
+        "years": list(reversed(out_years)),
+        "values": list(reversed(out_values)),
+        "ytd_year": ytd_year,
+    }
 
 
 def _cov_corr(a_series, b_series):

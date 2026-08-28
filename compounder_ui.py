@@ -686,6 +686,18 @@ def render_section(sections, ticker, section_label, gate=None):
 
     if share_price_growth_fig:
         st.plotly_chart(share_price_growth_fig, use_container_width=True, config={"displayModeBar": False})
+        _spg_entry = section.get("share_price_growth", {}).get(ticker) or {}
+        _ytd_year = _spg_entry.get("ytd_year")
+        if _ytd_year:
+            st.caption(
+                f"{_ytd_year} is still in progress, so that bar is a plain "
+                f"start-of-year vs latest-price return - every other bar is "
+                f"that year's average price vs the year before's, the "
+                f"workbook's own convention. The two aren't computed the "
+                f"same way; a still-open year averaged against a closed one "
+                f"can otherwise look far more extreme than the stock's "
+                f"actual year-to-date move."
+            )
 
 
 def render_tabs(sections, ticker, section_order, key_prefix, gates=None):
