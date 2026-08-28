@@ -634,6 +634,12 @@ def render_section(sections, ticker, section_label, gate=None):
 
     if colored:
         st.markdown("##### Colour-coded (against your own thresholds)")
+        if any(m.get("flagged") for m in colored):
+            st.caption(
+                "Red name + red value + \\* = estimated — rests on a fallback "
+                "assumption or incomplete statement data, not a reported figure. "
+                "See “What this measures” below for detail."
+            )
         cols = st.columns(3)
         for i, m in enumerate(colored):
             value = m["values"][ticker]
