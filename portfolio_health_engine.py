@@ -792,7 +792,12 @@ def component_bars_html(components, order):
         score = c.get("score")
         color = score_color(score)
         pct = max(0.0, min(100.0, score)) if score is not None else 0.0
-        label = f"{score:.0f}%" if score is not None else "n/a"
+        # "/100" rather than "%" - each component is a 0-100 SCORE (the
+        # band-lookup output), not a literal percentage of the underlying
+        # metric (e.g. Debt's score of 92 comes from a debt/equity ratio
+        # of 9 read against the Debt band - "92%" read as if it were the
+        # debt ratio itself, which is exactly what it isn't).
+        label = f"{score:.0f}/100" if score is not None else "n/a"
         rows.append(
             "<div style='display:flex;align-items:center;gap:10px;margin:7px 0;'>"
             f"<div style='width:18px;color:#8aa0b8;font-size:12px;text-align:right;'>{i}</div>"
@@ -800,7 +805,7 @@ def component_bars_html(components, order):
             "<div style='flex:1;height:10px;border-radius:5px;background:#e7e6e122;position:relative;'>"
             f"<div style='width:{pct}%;height:100%;border-radius:5px;background:{color};'></div>"
             "</div>"
-            f"<div style='width:48px;text-align:right;font-weight:700;font-size:13px;color:{color};'>{label}</div>"
+            f"<div style='width:64px;text-align:right;font-weight:700;font-size:13px;color:{color};'>{label}</div>"
             "</div>"
         )
     return "<div>" + "".join(rows) + "</div>"
