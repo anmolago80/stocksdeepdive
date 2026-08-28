@@ -82,7 +82,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 22
+ENGINE_VERSION = 23
 
 
 # -----------------------------------
@@ -900,9 +900,37 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
     with whichever settings actually produced it."""
     info = bundle.get("info") or {}
     currency = info.get("currency") or "USD"
+
+    # Double-FX-conversion fix: fundamentals_data.get_bundle() already
+    # converts every statement DataFrame in this bundle (including
+    # "cashflow") from the company's reporting currency to its listing
+    # currency whenever they differ - e.g. CSL.AX/RMD.AX-style ASX names
+    # that report in USD despite trading in AUD (see
+    # _convert_statement_currency in fundamentals_data.py). That's correct
+    # for every OTHER section built from this bundle (Fundamentals,
+    # Retained Earnings, the IV/BV series's own TTM FCF point, etc.), which
+    # read the DataFrame directly and have no FX logic of their own.
+    #
+    # dcf_intrinsic_value() is different: it does its OWN
+    # financialCurrency-vs-currency conversion internally (designed for the
+    # main site's caller, which always passes a RAW, un-converted
+    # cashflow_df). Handed this bundle's already-converted cashflow_df
+    # alongside the unmodified info["financialCurrency"], it can't tell the
+    # conversion already happened - it sees the same currency mismatch and
+    # applies the SAME fx rate a second time, squaring the effective
+    # conversion for any ticker where the two currencies differ. Passing a
+    # copy of `info` with financialCurrency overridden to match the
+    # listing currency (only for this one call - the bundle's real info,
+    # used everywhere else, is untouched) tells it "already converted, skip
+    # it" instead.
+    dcf_info = info
+    if (info.get("financialCurrency") or "").upper() != currency.upper():
+        dcf_info = dict(info)
+        dcf_info["financialCurrency"] = currency
+
     result = _safe(
         fcf_valuation_engine.dcf_intrinsic_value,
-        ticker, info=info, cashflow_df=bundle.get("cashflow"), currency=currency,
+        ticker, info=dcf_info, cashflow_df=bundle.get("cashflow"), currency=currency,
         discount_rate=discount_rate, perpetual_rate=perpetual_rate,
         growth_rate=growth_rate, manual_fcf=manual_fcf,
     )
