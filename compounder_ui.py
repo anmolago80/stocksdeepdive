@@ -406,13 +406,25 @@ def _cp_render_valuation_inputs(ticker, used, valuation_inputs, valuation_method
     for col, (key, label) in zip(cols, used):
         with col:
             st.markdown(f"<div style='text-align:center;font-size:12px;font-weight:600;color:#aebfd4;'>{label}</div>", unsafe_allow_html=True)
-            lines = [] if key == "price" else [f"Intrinsic Value: {_cp_format(method_values.get(key), 'cur')}"]
+            lines = [] if key == "price" else [
+                (f"Intrinsic Value: {_cp_format(method_values.get(key), 'cur')}", False)
+            ]
             for item in entry.get(key, []):
-                lines.append(f"{item['label']}: {_cp_format(item['value'], item['format'])}")
+                text = f"{item['label']}: {_cp_format(item['value'], item['format'])}"
+                lines.append((text, bool(item.get("flagged"))))
             if lines:
+                # Flagged lines (e.g. a growth rate that hit its cap) render
+                # red, same "estimates shown in red" convention as the rest
+                # of the Compounder View - each line independently, so one
+                # capped input doesn't tint the whole block.
+                spans = [
+                    (f"<span style='color:#fb7185;'>{html.escape(text)}</span>"
+                     if flagged else html.escape(text))
+                    for text, flagged in lines
+                ]
                 st.markdown(
                     "<div style='text-align:center;font-size:11.5px;color:#8aa0b8;line-height:1.6;'>"
-                    + "<br>".join(lines) + "</div>",
+                    + "<br>".join(spans) + "</div>",
                     unsafe_allow_html=True,
                 )
 

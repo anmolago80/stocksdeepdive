@@ -1511,17 +1511,55 @@ def _build_cost_of_capital(bundle, ticker, ref):
 # -----------------------------------
 
 def _equity_growth_rate(bundle):
+    """Historical per-share stockholders'-equity CAGR, gated the same way
+    fcf_valuation_engine.estimate_growth() gates the DCF's own growth rate -
+    the raw endpoint-to-endpoint CAGR alone let a thin, noisy equity base on
+    a micro-cap compound into a fantasy valuation (84%+ raw on a name like
+    ETST).
+
+    Two backstops, applied independently:
+      - CLEAN check: trusted only when the per-share series isn't too
+        volatile (coefficient of variation <= 0.60, same threshold and same
+        helper the DCF's own historical-CAGR trust check uses). A noisy
+        series (a capital raise, an impairment) makes the CAGR endpoints
+        meaningless regardless of sign, so an unclean series returns
+        unavailable entirely (None) rather than a number - equity growth
+        has no second source to fall back to the way the DCF does, and this
+        method already degrades gracefully to "not shown" for missing
+        balance-sheet data, so that's the natural failure mode here too.
+      - FLOOR/CEILING: a clean rate is then clamped to [0, ceiling], where
+        ceiling is the SAME market-cap-tiered ceiling the DCF uses
+        (fcf_valuation_engine.growth_ceiling_for - 8%/12%/16%/20% by size)
+        rather than a second, separately-tuned number. The floor stops a
+        shrinking-equity name from producing a negative fair value; the
+        ceiling stops a hot-but-clean CAGR from compounding into the same
+        kind of fantasy number for 10 years.
+
+    Returns (growth_rate, capped) - capped is True only when the ceiling
+    actually bound (mirrors the DCF's own governor="Cap"), so callers can
+    flag the number as an estimate the same way the DCF does. Returns
+    (None, False) whenever the series isn't usable at all.
+    """
     equity_series = [(y, v) for y, v in _series(bundle["balance"], "stockholders_equity") if v]
-    shares = (bundle.get("info") or {}).get("sharesOutstanding")
-    if len(equity_series) >= 2 and shares:
-        newest, oldest = equity_series[0][1] / shares, equity_series[-1][1] / shares
-        n = len(equity_series) - 1
-        if oldest > 0 and n > 0:
-            try:
-                return (newest / oldest) ** (1 / n) - 1
-            except (ValueError, ZeroDivisionError):
-                return None
-    return None
+    info = bundle.get("info") or {}
+    shares = info.get("sharesOutstanding")
+    if len(equity_series) < 2 or not shares:
+        return None, False
+    per_share = [v / shares for _y, v in equity_series]
+    newest, oldest = per_share[0], per_share[-1]
+    n = len(equity_series) - 1
+    if oldest <= 0 or n <= 0:
+        return None, False
+    try:
+        raw = (newest / oldest) ** (1 / n) - 1
+    except (ValueError, ZeroDivisionError):
+        return None, False
+    if fcf_valuation_engine._coeff_of_variation(per_share) > 0.60:
+        return None, False  # too volatile to trust the CAGR at all
+    ceiling = fcf_valuation_engine.growth_ceiling_for(info, info.get("currency"))
+    capped = raw > ceiling
+    g_eq = max(fcf_valuation_engine.GROWTH_FLOOR, min(raw, ceiling))
+    return g_eq, capped
 
 
 def _equity_10y_method(bundle, g_earn):
@@ -1543,13 +1581,13 @@ def _equity_10y_method(bundle, g_earn):
     method is dropped entirely if the DCF has no growth figure to share.
     (E - NI) is deliberately NOT clamped at zero - it can legitimately go
     negative for a high-ROE company, and the workbook doesn't clamp it
-    either."""
+    either. g_eq itself IS gated - see _equity_growth_rate()."""
     if g_earn is None:
         return None
     equity = _latest(bundle["balance"], "stockholders_equity")
     net_income = _latest(bundle["income"], "net_income")
     shares = (bundle.get("info") or {}).get("sharesOutstanding")
-    g_eq = _equity_growth_rate(bundle)
+    g_eq, g_eq_capped = _equity_growth_rate(bundle)
     if equity is None or net_income is None or not shares or g_eq is None:
         return None
     discount = 0.03
@@ -1562,7 +1600,7 @@ def _equity_10y_method(bundle, g_earn):
         annuity_fv = net_income * (((1 + g_earn) ** 10) - 1) / g_earn
     earnings_term = annuity_fv / disc10
     value_per_share = (equity_term + earnings_term) / shares
-    return value_per_share, g_eq, discount
+    return value_per_share, g_eq, discount, g_eq_capped
 
 
 def _pe_forward_method(bundle, g_earn):
@@ -1599,7 +1637,9 @@ def _build_fair_value(bundle, ticker, dcf_result):
     dcf_value = dcf_result.get("value")
 
     equity_10y_result = _safe(_equity_10y_method, bundle, g_earn)
-    equity_10y_value, equity_growth, equity_discount = equity_10y_result if equity_10y_result else (None, None, None)
+    equity_10y_value, equity_growth, equity_discount, equity_growth_capped = (
+        equity_10y_result if equity_10y_result else (None, None, None, False)
+    )
 
     valuation_methods = {}
     if price is not None:
@@ -1635,7 +1675,10 @@ def _build_fair_value(bundle, ticker, dcf_result):
         # equity_10y inputs (Equity Growth + Discount Rate only), and the
         # real formula (see _equity_10y_method) never uses it either.
         valuation_inputs["equity_10y"] = [
-            {"label": "Equity Growth", "value": equity_growth, "format": "pct"},
+            {
+                "label": "Equity Growth", "value": equity_growth, "format": "pct",
+                "flagged": equity_growth_capped,
+            },
             {"label": "Discount Rate (this calc)", "value": equity_discount, "format": "pct"},
         ]
 
