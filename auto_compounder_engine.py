@@ -81,7 +81,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 16
+ENGINE_VERSION = 17
 
 
 # -----------------------------------
@@ -674,25 +674,30 @@ def _share_price_growth_entry(prices_10y):
 
 
 def _cov_corr(a_series, b_series):
+    """(cov, corr, var_a) - covariance and correlation of `a`'s (the
+    stock's) monthly-ish returns against `b`'s (the S&P 500's), plus the
+    stock's own return variance - the same three numbers used together
+    to hand-derive beta (cov / var_b) elsewhere, so all three are exposed
+    as their own metric cards rather than only the two ratios."""
     a_by_date = dict(zip(a_series.get("dates") or [], a_series.get("prices") or []))
     b_by_date = dict(zip(b_series.get("dates") or [], b_series.get("prices") or []))
     common = sorted(set(a_by_date) & set(b_by_date))
     if len(common) < 4:
-        return None, None
+        return None, None, None
     a_vals = [a_by_date[d] for d in common]
     b_vals = [b_by_date[d] for d in common]
     a_ret = [(a_vals[i] - a_vals[i - 1]) / a_vals[i - 1] for i in range(1, len(a_vals)) if a_vals[i - 1]]
     b_ret = [(b_vals[i] - b_vals[i - 1]) / b_vals[i - 1] for i in range(1, len(b_vals)) if b_vals[i - 1]]
     n = min(len(a_ret), len(b_ret))
     if n < 3:
-        return None, None
+        return None, None, None
     a_ret, b_ret = a_ret[:n], b_ret[:n]
     mean_a, mean_b = sum(a_ret) / n, sum(b_ret) / n
     cov = sum((a_ret[i] - mean_a) * (b_ret[i] - mean_b) for i in range(n)) / (n - 1)
     var_a = sum((x - mean_a) ** 2 for x in a_ret) / (n - 1)
     var_b = sum((x - mean_b) ** 2 for x in b_ret) / (n - 1)
     corr = cov / math.sqrt(var_a * var_b) if var_a > 0 and var_b > 0 else None
-    return cov, corr
+    return cov, corr, var_a
 
 
 def _avg_pe_3pt(bundle):
@@ -881,9 +886,11 @@ def _build_fundamentals(bundle, ticker, ref):
     add("Current Ratio", (current_assets / current_liabilities) if (current_assets is not None and current_liabilities) else None, "x")
     add("Debt to Equity", (total_debt / equity) if (total_debt is not None and equity) else None, "x")
 
-    cov, corr = _cov_corr(bundle["prices_10y"], bundle["spx_prices_10y"])
+    cov, corr, var_a = _cov_corr(bundle["prices_10y"], bundle["spx_prices_10y"])
     add("Covariance (SP500)", cov, "num", fallback="Covariance of monthly returns vs the S&P 500 over the available price history.")
     add("Correlation (SP500)", corr, "x", fallback="Correlation of monthly returns vs the S&P 500 over the available price history.")
+    add("Variance", var_a, "num", fallback="Variance of the stock's own monthly returns over the same price history used for "
+                                            "Covariance and Correlation above.")
 
     return {
         "metrics": metrics,
