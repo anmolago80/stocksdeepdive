@@ -224,22 +224,23 @@ def fetch_snapshot(ticker):
         except Exception:
             pass
     # A 2y history request can come back empty for some ETFs/structured
-    # products even when the ticker is live - retry with a much shorter
-    # window before giving up entirely.
+    # products even when the ticker is live - one retry with a much
+    # shorter window before giving up entirely. Kept to a single extra
+    # network round-trip (not several periods in sequence) since this
+    # runs on every cache-cold page load and a chain of retries per
+    # holding is what made the page slow to load in the first place.
     if price is None and tk is not None and (hist is None or hist.empty):
-        for _period in ("5d", "1mo"):
+        try:
+            _short_hist = tk.history(period="5d")
+        except Exception:
+            _short_hist = None
+        if _short_hist is not None and not _short_hist.empty:
             try:
-                _short_hist = tk.history(period=_period)
+                price = float(_short_hist["Close"].iloc[-1])
+                if hist is None or hist.empty:
+                    hist = _short_hist  # so 52wk/MA200 fallbacks below have something too
             except Exception:
-                _short_hist = None
-            if _short_hist is not None and not _short_hist.empty:
-                try:
-                    price = float(_short_hist["Close"].iloc[-1])
-                    if hist is None or hist.empty:
-                        hist = _short_hist  # so 52wk/MA200 fallbacks below have something too
-                    break
-                except Exception:
-                    pass
+                pass
     if price is None:
         # Every fallback exhausted - log it so the next occurrence shows up
         # in Railway's deploy logs with an actual reason instead of just a

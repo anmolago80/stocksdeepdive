@@ -5722,7 +5722,19 @@ def page_portfolio():
     _analyses = {}
     if _holdings:
         with st.spinner("Scoring your holdings..."):
-            _analyses = {h["ticker"]: _analyze_holding(h, email=email) for h in _holdings}
+            # Each holding's analysis is dominated by network I/O (yfinance
+            # price/history/cashflow, News Intelligence feeds for non-ETFs)
+            # with no shared mutable state between holdings (each opens its
+            # own sqlite connection, never touches st.* itself) - fetching
+            # them one at a time made a 4-holding portfolio's first load
+            # (cold st.cache_data) take as long as ~4 holdings' worth of
+            # sequential network round-trips. Fetch them concurrently
+            # instead; a cache-warm reload within the 30-min TTL stays fast
+            # either way.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(_holdings))) as _pool:
+                _futures = {_pool.submit(_analyze_holding, h, email=email): h["ticker"] for h in _holdings}
+                for _fut in concurrent.futures.as_completed(_futures):
+                    _analyses[_futures[_fut]] = _fut.result()
 
     _tab_holdings, _tab_overview, _tab_health, _tab_progress = st.tabs(
         ["💼 Holdings", "📊 Overview & P/L", "🩺 Health & News", "📈 Progress"]
