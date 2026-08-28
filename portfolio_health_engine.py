@@ -152,13 +152,29 @@ def _normalize_dividend_yield(v):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_snapshot(ticker):
+def fetch_snapshot(ticker, discount_rate=None, perpetual_rate=None, growth_rate=None, manual_fcf=None):
     """Live fundamentals + price snapshot for one ticker: whatever
     analyze_ticker_lite() doesn't already cover (growth/margin/ROE/
     debt/dividend/FCF), fetched straight from yfinance and cached for 30
-    minutes - the same caching window the desktop app used."""
+    minutes - the same caching window the desktop app used.
+
+    discount_rate/perpetual_rate/growth_rate/manual_fcf: optional DCF
+    overrides, resolved by the caller from the viewer's own global/
+    per-ticker settings (see app.py's _dcf_overrides_for()) and passed
+    straight through to analyze_ticker_lite() -> resolve_intrinsic_value()
+    so the Portfolio page's intrinsic value agrees with the Deep Dive
+    page's for the same ticker instead of always being pure-auto.
+    @st.cache_data keys on all arguments automatically, so passing
+    different overrides for the same ticker naturally gets its own cache
+    entry rather than colliding with the pure-auto one."""
     try:
-        lite = nightly_scan.analyze_ticker_lite(ticker)
+        lite = nightly_scan.analyze_ticker_lite(
+            ticker,
+            discount_rate=discount_rate,
+            perpetual_rate=perpetual_rate,
+            growth_rate=growth_rate,
+            manual_fcf=manual_fcf,
+        )
     except Exception:
         lite = None
 

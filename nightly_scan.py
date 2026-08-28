@@ -71,7 +71,8 @@ IMPORTED_NIGHTLY_BATCH = 100  # per-run cap: a big CSV import (up to
 # therefore always gets full (not lite) attention - see run_imported_scan().
 
 
-def analyze_ticker_lite(ticker, attention_lite=True):
+def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
+                         perpetual_rate=None, growth_rate=None, manual_fcf=None):
     """Core value/quality/psychology scoring for one ticker - the same
     resolvers and Long Score the site uses. Returns a plain dict, or None
     if no usable price data. Also used by digest_engine for the weekly
@@ -89,7 +90,17 @@ def analyze_ticker_lite(ticker, attention_lite=True):
     equivalent) - this is what makes a small overnight scan's Long Score
     agree with the Deep Dive page for the same ticker, rather than always
     coming in lower via the lite-only Discovery term. Callers choose which
-    mode by ticker-count (see NIGHTLY_LITE_THRESHOLD)."""
+    mode by ticker-count (see NIGHTLY_LITE_THRESHOLD).
+
+    discount_rate/perpetual_rate/growth_rate/manual_fcf: passed straight
+    through to resolve_intrinsic_value() - left at None (the default) for
+    the overnight/background scan and the digest email, which have no
+    per-user settings to apply. A foreground caller with access to the
+    viewer's Valuation & FCF Inputs settings (see portfolio_health_engine.
+    fetch_snapshot()) can pass them so this ticker's Intrinsic Value/MOS
+    here actually matches what the Deep Dive page shows for the same
+    ticker under the same settings, instead of always being pure-auto
+    regardless of what the user has configured."""
     tk = yf.Ticker(ticker)
     try:
         df = tk.history(period="6mo")
@@ -119,7 +130,8 @@ def analyze_ticker_lite(ticker, attention_lite=True):
     intrinsic, _ivsrc, _g, iv_meta = resolve_intrinsic_value(
         ticker, quality, info=info, cashflow_df=cashflow_df,
         currency=info.get("currency"),
-        discount_rate=None, perpetual_rate=None, growth_rate=None, manual_fcf=None,
+        discount_rate=discount_rate, perpetual_rate=perpetual_rate,
+        growth_rate=growth_rate, manual_fcf=manual_fcf,
     )
     stock_type, stock_type_src, _tdef = resolve_stock_type(ticker, info=info)
     if stock_type_src == "auto":

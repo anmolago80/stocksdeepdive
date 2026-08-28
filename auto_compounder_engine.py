@@ -63,6 +63,7 @@ and is flagged accordingly.
 """
 
 import datetime
+import hashlib
 import json
 import math
 import os
@@ -101,13 +102,28 @@ def _cache_dir():
     return path
 
 
-def _cache_path(ticker):
+def _overrides_signature(overrides):
+    """Short stable suffix for the cache filename when non-default DCF
+    overrides are in play - '' for the common case (pure auto, no
+    overrides), so existing cache entries for that case keep working
+    unchanged. A ticker viewed with two different override combinations
+    (e.g. Auto vs a manual discount rate) needs two separate cache
+    entries, since the resulting Fair Value numbers genuinely differ -
+    a single per-ticker cache key would silently serve one caller's
+    settings to another."""
+    if not any(v is not None for v in overrides):
+        return ""
+    raw = json.dumps(overrides, sort_keys=True, default=str)
+    return "_" + hashlib.sha1(raw.encode()).hexdigest()[:10]
+
+
+def _cache_path(ticker, overrides=()):
     safe = "".join(c if (c.isalnum() or c in "._-") else "-" for c in ticker.upper())
-    return os.path.join(_cache_dir(), f"{safe}.json")
+    return os.path.join(_cache_dir(), f"{safe}{_overrides_signature(overrides)}.json")
 
 
-def _read_cache(ticker):
-    path = _cache_path(ticker)
+def _read_cache(ticker, overrides=()):
+    path = _cache_path(ticker, overrides)
     try:
         if not os.path.exists(path):
             return None
@@ -130,8 +146,8 @@ def _read_cache(ticker):
         return None
 
 
-def _write_cache(ticker, sections):
-    path = _cache_path(ticker)
+def _write_cache(ticker, sections, overrides=()):
+    path = _cache_path(ticker, overrides)
     try:
         fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp_", suffix=".json")
         with os.fdopen(fd, "w") as f:
@@ -861,12 +877,34 @@ def _pe_avg_3y_by_eps(bundle):
 # DCF (existing engine - called, never modified)
 # -----------------------------------
 
-def _run_dcf(bundle, ticker):
+def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rate=None, manual_fcf=None):
+    """Runs the SAME dcf_intrinsic_value() the main site's Deep Dive page
+    uses for its own headline Intrinsic Value/Margin of Safety - not a
+    separate valuation model. Left with every override at None (the
+    default), this auto-resolves exactly like the main site's Deep Dive
+    page does whenever ITS Auto mode is on and no per-ticker override is
+    set: CAPM discount rate, min(analyst 5y estimate, historical FCF
+    CAGR) growth, market-cap-tiered ceiling.
+
+    When a caller passes the same discount_rate/perpetual_rate/
+    growth_rate/manual_fcf the main site is currently using for this
+    ticker (its global Valuation & FCF Inputs settings, resolved against
+    any per-ticker override - see app.py's _dcf_overrides_for()), the
+    resulting Fair Value DCF genuinely matches the main site's own
+    number for the same ticker, rather than the two silently diverging
+    whenever the main site's Auto mode is off or a manual override is in
+    play. g_earn used by PE Forward, the Rational Compounder Method's
+    earnings term, and the Value vs Book IV/BV series all come from this
+    same result (see _build_fair_value/_build_value_vs_book), so this
+    one change is what keeps every growth-driven auto figure aligned
+    with whichever settings actually produced it."""
     info = bundle.get("info") or {}
     currency = info.get("currency") or "USD"
     result = _safe(
         fcf_valuation_engine.dcf_intrinsic_value,
         ticker, info=info, cashflow_df=bundle.get("cashflow"), currency=currency,
+        discount_rate=discount_rate, perpetual_rate=perpetual_rate,
+        growth_rate=growth_rate, manual_fcf=manual_fcf,
     )
     if not result:
         return {"value": None, "growth": None, "perpetual_rate": None, "discount_rate": None, "flagged": True}
@@ -1883,7 +1921,8 @@ _SECTION_BUILDERS = [
 ]
 
 
-def build_sections(ticker, force_refresh=False):
+def build_sections(ticker, force_refresh=False, discount_rate=None,
+                    perpetual_rate=None, growth_rate=None, manual_fcf=None):
     """The six computed Research sections for `ticker`, shaped exactly
     like compounder_data.json's own "sections" dict (see module docstring)
     - ready to pass straight into compounder_ui.render_section()/
@@ -1892,13 +1931,25 @@ def build_sections(ticker, force_refresh=False):
     provenance (source, statement year depth, fetch time, engine version,
     flags) for the Deep Dive page's disclosure caption and for cache
     invalidation - render_tabs() simply never looks at that key, so its
-    presence is harmless."""
+    presence is harmless.
+
+    discount_rate/perpetual_rate/growth_rate/manual_fcf: passed straight
+    through to the DCF (see _run_dcf) - leave all None for the default
+    pure-auto behaviour every caller used before this parameter existed.
+    A caller that wants this section's Fair Value numbers to actually
+    MATCH the main site's own Intrinsic Value for the same ticker should
+    pass the same resolved values the main site is using (see app.py's
+    _dcf_overrides_for()). Cached per (ticker, these override values) -
+    see _overrides_signature() - so two different override combinations
+    for the same ticker never collide in the cache."""
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return None
 
+    overrides = (discount_rate, perpetual_rate, growth_rate, manual_fcf)
+
     if not force_refresh:
-        cached = _read_cache(ticker)
+        cached = _read_cache(ticker, overrides)
         if cached is not None:
             return cached
 
@@ -1907,7 +1958,11 @@ def build_sections(ticker, force_refresh=False):
         return None
 
     ref = _reference_lookup()
-    dcf_result = _safe(_run_dcf, bundle, ticker) or {
+    dcf_result = _safe(
+        _run_dcf, bundle, ticker,
+        discount_rate=discount_rate, perpetual_rate=perpetual_rate,
+        growth_rate=growth_rate, manual_fcf=manual_fcf,
+    ) or {
         "value": None, "growth": None, "perpetual_rate": None, "discount_rate": None, "flagged": True,
     }
 
@@ -1934,5 +1989,5 @@ def build_sections(ticker, force_refresh=False):
         "engine_version": ENGINE_VERSION,
     }
 
-    _write_cache(ticker, sections)
+    _write_cache(ticker, sections, overrides)
     return sections

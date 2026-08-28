@@ -341,6 +341,27 @@ dcf_growth_override = (
 )
 fcf_overrides = st.session_state["fcf_overrides"]
 
+
+def _dcf_overrides_for(ticker):
+    """Resolve the same per-ticker-falls-back-to-global DCF overrides the
+    main scan loop uses (see the "Per-stock overrides... win over the
+    global defaults" block below), for callers OUTSIDE that loop - the
+    Compounder View auto section and the Portfolio Health page. Returns a
+    (discount_rate, perpetual_rate, growth_rate, manual_fcf) tuple ready
+    to pass straight into build_sections()/fetch_snapshot(), so those
+    surfaces respect the viewer's own Auto/manual DCF settings instead of
+    always being pure-auto."""
+    _override = fcf_overrides.get(ticker, {})
+    _manual_fcf = _override.get("fcf")
+    _t_discount = _override.get("discount") or dcf_discount
+    _t_perpetual = _override.get("perpetual")
+    if _t_perpetual is None:
+        _t_perpetual = dcf_perpetual
+    _growth_for_ticker = _override.get("growth")
+    if _growth_for_ticker is None:
+        _growth_for_ticker = dcf_growth_override
+    return _t_discount, _t_perpetual, _growth_for_ticker, _manual_fcf
+
 # -----------------------------------
 # BACKGROUND SCHEDULER - nightly universe scans + weekly Mailgun digest.
 # In-process (daemon thread) rather than a separate Railway cron service,
@@ -3657,7 +3678,14 @@ def page_deep_dive():
             f"Computing live research sections for {_dd['ticker']}...",
             expanded=False,
         ) as _acv_status:
-            _acv_sections = auto_compounder_engine.build_sections(_dd["ticker"])
+            _acv_discount, _acv_perpetual, _acv_growth, _acv_manual_fcf = _dcf_overrides_for(_dd["ticker"])
+            _acv_sections = auto_compounder_engine.build_sections(
+                _dd["ticker"],
+                discount_rate=_acv_discount,
+                perpetual_rate=_acv_perpetual,
+                growth_rate=_acv_growth,
+                manual_fcf=_acv_manual_fcf,
+            )
             _acv_status.update(
                 label=f"Live research sections for {_dd['ticker']}",
                 state="complete" if _acv_sections else "error",
@@ -5687,7 +5715,14 @@ def _analyze_holding(h, email=None):
     A manual intrinsic-value override (1d), if one is on file for this
     user+ticker, is looked up and folded into the Valuation component."""
     is_etf = (h.get("kind") or "STOCK").upper() == "ETF"
-    _snap = portfolio_health_engine.fetch_snapshot(h["ticker"])
+    _ph_discount, _ph_perpetual, _ph_growth, _ph_manual_fcf = _dcf_overrides_for(h["ticker"])
+    _snap = portfolio_health_engine.fetch_snapshot(
+        h["ticker"],
+        discount_rate=_ph_discount,
+        perpetual_rate=_ph_perpetual,
+        growth_rate=_ph_growth,
+        manual_fcf=_ph_manual_fcf,
+    )
     _iv_override = None
     if not is_etf and email:
         try:
@@ -5981,7 +6016,14 @@ def _render_add_holding_expander(email, portfolio, _holdings):
             else:
                 with st.spinner(f"Looking up {_lookup_ticker}..."):
                     try:
-                        _snap = portfolio_health_engine.fetch_snapshot(_lookup_ticker)
+                        _lk_discount, _lk_perpetual, _lk_growth, _lk_manual_fcf = _dcf_overrides_for(_lookup_ticker)
+                        _snap = portfolio_health_engine.fetch_snapshot(
+                            _lookup_ticker,
+                            discount_rate=_lk_discount,
+                            perpetual_rate=_lk_perpetual,
+                            growth_rate=_lk_growth,
+                            manual_fcf=_lk_manual_fcf,
+                        )
                     except Exception:
                         _snap = None
                 if not _snap or _snap.get("price") is None:
@@ -6034,7 +6076,14 @@ def _render_add_holding_expander(email, portfolio, _holdings):
                         st.error("Enter a company/fund name.")
                     else:
                         with st.spinner(f"Capturing today's baseline for {_lr['ticker']}..."):
-                            _snap2 = portfolio_health_engine.fetch_snapshot(_lr["ticker"])
+                            _bl_discount, _bl_perpetual, _bl_growth, _bl_manual_fcf = _dcf_overrides_for(_lr["ticker"])
+                            _snap2 = portfolio_health_engine.fetch_snapshot(
+                                _lr["ticker"],
+                                discount_rate=_bl_discount,
+                                perpetual_rate=_bl_perpetual,
+                                growth_rate=_bl_growth,
+                                manual_fcf=_bl_manual_fcf,
+                            )
                         _baseline = portfolio_health_engine.baseline_snapshot_fields(_snap2 or {"price": _lr["price"]})
                         _today = datetime.now(timezone.utc).date().isoformat()
                         portfolio_store.add_holding(
