@@ -34,12 +34,13 @@ def _path(universe):
     return os.path.join(_data_dir(), f"{_slug(universe)}.json")
 
 
-def save_scan(universe, rows, source_label):
+def save_scan(universe, rows, source_label, attention_lite=True):
     payload = {
         "universe": universe,
         "source": source_label,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "rows": rows,
+        "attention_lite": attention_lite,
     }
     tmp = _path(universe) + ".tmp"
     with open(tmp, "w") as f:

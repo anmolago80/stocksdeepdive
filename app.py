@@ -4017,13 +4017,22 @@ def _render_overnight_scan_table(universe_label, overnight):
         f"ranked by Long Score, computed {overnight['generated_at_label']}",
         expanded=st.session_state.get("scan_stocks") is None,
     ):
-        st.caption(
-            "Pre-computed while nobody was waiting. Attention-lite "
-            "(price/volume only - no news/trends/social inputs), same "
-            "rule as live scans this size. Estimated/default values "
-            "carry their own flag columns. Run a live scan below for "
-            "current prices."
-        )
+        if overnight.get("attention_lite", True):
+            st.caption(
+                "Pre-computed while nobody was waiting. Attention-lite "
+                "(price/volume only - no news/trends/social inputs), same "
+                "rule as live scans this size. Estimated/default values "
+                "carry their own flag columns. Run a live scan below for "
+                "current prices."
+            )
+        else:
+            st.caption(
+                "Pre-computed while nobody was waiting. Full attention "
+                "(price/volume plus news/trends/social inputs) - this batch "
+                "was small enough to get the same signals as a live scan or "
+                "Deep Dive. Estimated/default values carry their own flag "
+                "columns. Run a live scan below for current prices."
+            )
         _on_rows_html = []
         for _orow in overnight["rows"]:
             _tk = _orow.get("Ticker") or "-"
