@@ -4725,7 +4725,22 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     (high_price - current_price) / high_price
                 ) * 100 if high_price else 0
 
-                ma50 = window_3mo["Close"].rolling(50).mean().iloc[-1]
+                # Rolling mean runs over _close_series (already de-NaN'd,
+                # two lines up), NOT the raw window_3mo["Close"] - a live
+                # Railway diagnostic (2026-08-29, deep_dive_engine.py's
+                # matching call site) found yfinance routinely returns the
+                # most recent trading day's Close as NaN (that day's bar
+                # not yet finalized upstream) even on ordinary, highly
+                # liquid names - reproduced simultaneously on CPRT, AAPL
+                # and MSFT. With the raw series, that trailing NaN leaves
+                # the last rolling(50) window one value short (49/50) and
+                # the whole calc silently comes back NaN, wrongly tripping
+                # the ma50-defaulted fallback below (Greed forced to 0) on
+                # stocks with plenty of real history. Using _close_series
+                # drops that single bad row instead of leaving a gap in
+                # the window, so a real 50-day average comes back whenever
+                # 50 genuine closes exist.
+                ma50 = _close_series.rolling(50).mean().iloc[-1]
 
                 if pd.isna(ma50) or ma50 == 0:
                     ma50 = current_price
