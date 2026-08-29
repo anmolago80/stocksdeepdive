@@ -82,7 +82,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 24
+ENGINE_VERSION = 25
 
 
 # -----------------------------------
@@ -582,10 +582,13 @@ def _q_row_value(income_q, key, col):
     return float(v)
 
 
-def _half_year_cumulative_ttm(income_q, q_cols):
+def _half_year_cumulative_ttm(income_q, q_cols, last_annual_end=None):
     """TTM basic EPS for a half-yearly (ASX-style) reporter, reconstructed
-    correctly from CUMULATIVE columns - or None to fall through to the
-    existing sum-of-last-2 path when there isn't enough to work with.
+    correctly from CUMULATIVE columns - or None when there isn't enough
+    to work with (see _eps_ttm: for this reporting cadence, unlike a true
+    discrete-quarter reporter, there is no safe fallback when this
+    returns None - every column here is cumulative, so naively summing
+    two of them is never correct, only sometimes wrong by more).
 
     yfinance's "quarterly" statement for a half-yearly reporter isn't
     made of independent discrete slices: each column is cumulative SINCE
@@ -598,28 +601,64 @@ def _half_year_cumulative_ttm(income_q, q_cols):
     155.45c, a trailing EPS ~45% too high, which understated P/E by a
     similar amount (the reported "19.11x vs TradingView's ~25x" bug).
 
-    Position alone can't tell a fresh interim column from a full-year
-    column (both cases are ~182 days apart from their immediate
-    neighbour) - so this checks the RATIO between the newest column and
-    the one before it instead:
-      * ~1.5x-3.0x of its predecessor -> the newest column is itself a
-        full-year cumulative total (its predecessor is that same year's
-        own first half) -> TTM is that column's value ALONE, no summing.
-      * otherwise -> the newest column is a fresh interim for a year
-        that hasn't closed yet, and the predecessor is LAST year's full
-        cumulative total -> TTM = newest interim + (last year's total -
-        last year's own interim), i.e. this half plus the discrete other
-        half of the trailing year (needs a 3rd column for that last
-        term).
-    A ratio in neither recognizable shape, or too little history to
-    check it, returns None - the caller keeps its previous behaviour
-    rather than guess."""
+    Bug fix: this used to classify the newest column by the RATIO of its
+    value against the column before it (~1.5x-3.0x of its predecessor ->
+    a full-year total; otherwise -> a fresh interim). That band is an
+    assumption about a company's own H1-vs-H2 (or FY-vs-H1) split, and
+    ordinary business reality - an uneven half, a one-off item, a weak
+    or strong period on either side - can push the ratio outside it for
+    reasons that have nothing to do with which case actually applies.
+    When that happened, the function returned None and the caller fell
+    straight through into the exact double-counting sum-of-both-columns
+    bug this function exists to prevent (confirmed: CPU.AX's own ratio
+    landed just above the 3.0x ceiling and hit this path).
+
+    Classification is now by CALENDAR POSITION against the last ANNUAL
+    column on file (`last_annual_end`), which is deterministic rather
+    than sensitive to how the two halves happened to compare in size:
+      * the newest column's period-end is ~12 months (330-400 days,
+        tolerant of reporting-date drift) after the last annual column's
+        end date -> the newest column is itself a new full fiscal year's
+        cumulative total (its predecessor is that same year's own first
+        half) -> TTM is that column's value ALONE, no summing.
+      * ~6 months (150-215 days) after it -> the newest column is a
+        fresh interim for a year that hasn't closed yet, and the
+        predecessor is LAST year's full cumulative total -> TTM = newest
+        interim + (last year's total - last year's own interim), i.e.
+        this half plus the discrete other half of the trailing year
+        (needs a 3rd column for that last term).
+      * a gap in neither window -> don't guess, return None.
+    Only when there's no annual column at all to anchor on
+    (`last_annual_end` is None) does this fall back to the old
+    value-ratio heuristic as a last resort, rather than as the primary
+    signal."""
     if len(q_cols) < 2:
         return None
     newest, prior = q_cols[0], q_cols[1]
     v_newest = _q_row_value(income_q, "basic_eps", newest[0])
     v_prior = _q_row_value(income_q, "basic_eps", prior[0])
-    if v_newest is None or v_prior is None or v_prior == 0:
+    if v_newest is None or v_prior is None:
+        return None
+
+    def _reconstruct_interim():
+        if len(q_cols) < 3:
+            return None
+        v_prior_prior = _q_row_value(income_q, "basic_eps", q_cols[2][0])
+        if v_prior_prior is None:
+            return None
+        return v_newest + (v_prior - v_prior_prior)
+
+    if last_annual_end is not None:
+        gap = (newest[1] - last_annual_end).days
+        if 330 <= gap <= 400:
+            return v_newest
+        if 150 <= gap <= 215:
+            return _reconstruct_interim()
+        # Doesn't match either recognizable shape against the known
+        # annual close - don't guess, let the caller fall back.
+        return None
+
+    if v_prior == 0:
         return None
     ratio = v_newest / v_prior
     if 1.5 <= ratio <= 3.0:
@@ -628,12 +667,7 @@ def _half_year_cumulative_ttm(income_q, q_cols):
         # Doesn't match either recognizable shape (e.g. a loss period
         # flipping the sign) - don't guess, let the caller fall back.
         return None
-    if len(q_cols) < 3:
-        return None
-    v_prior_prior = _q_row_value(income_q, "basic_eps", q_cols[2][0])
-    if v_prior_prior is None:
-        return None
-    return v_newest + (v_prior - v_prior_prior)
+    return _reconstruct_interim()
 
 
 def _eps_ttm(bundle):
@@ -677,9 +711,23 @@ def _eps_ttm(bundle):
     short_window = window_days < 330 or len(take) < n_needed
 
     if n_needed == 2:
-        cumulative_ttm = _half_year_cumulative_ttm(income_q, q_cols)
+        last_annual_end = a_cols[0][1] if a_cols else None
+        cumulative_ttm = _half_year_cumulative_ttm(income_q, q_cols, last_annual_end)
         if cumulative_ttm is not None:
             return cumulative_ttm, short_window
+        # Every column in a half-yearly reporter's quarterly statement is
+        # CUMULATIVE (see _half_year_cumulative_ttm's docstring) - there
+        # is no safe naive-sum fallback the way there is for a genuine
+        # discrete-quarter reporter below: summing two cumulative columns
+        # always double-counts the first half, regardless of which case
+        # actually applies. Bug fix: this used to fall through into
+        # exactly that `_sum_q_row` summing when the reconstruction
+        # above returned None - reproducing the same "TTM ~45% too high"
+        # bug the reconstruction exists to prevent, just for whichever
+        # inputs happened to fall outside its classification. Falling
+        # back to the flagged annual figure instead is honest about not
+        # having a reliable fresh number, rather than guessing wrong.
+        return fallback, True
 
     eps_sum = _sum_q_row(income_q, "basic_eps", take)
     if eps_sum is not None:
@@ -1449,9 +1497,24 @@ def _build_earnings_trends(bundle, ticker, ref):
 
     ten_avg = sum(fy_vals) / n_fy if n_fy else None
     four_avg = sum(fy_vals[:4]) / min(4, n_fy) if n_fy else None
-    add("10y Average Earnings", ten_avg, "cur", flagged=(n_fy < 10),
+    # Every "10y ..." metric below is built from the SAME fy_vals as this
+    # one - when statement depth is short (n_fy < 10, e.g. a name with
+    # only 4 years of filings on record), they're all silently computed
+    # over fewer years than their label claims, not just this average.
+    # Previously only this one metric carried the flag/caption explaining
+    # that; the other three ("10y EPS  Variance", "10y EPS SD", "10y
+    # AVG+SD") showed with no indicator at all, which is exactly what
+    # made a 4-statement-year ticker's "4y EPS SD" and "10y EPS SD" come
+    # out byte-identical with no explanation (4y's own window IS the
+    # full n_fy=4 available, so four_vals == fy_vals exactly in that
+    # case - correct, not a coincidence, but invisible without the flag).
+    ten_y_flag = n_fy < 10
+    ten_y_fallback = f"Computed over the {n_fy} fiscal year(s) of statements available (excludes TTM), not the full 10."
+    four_y_flag = n_fy < 4
+    four_y_fallback = f"Computed over the {min(4, n_fy)} fiscal year(s) of statements available (excludes TTM), not the full 4."
+    add("10y Average Earnings", ten_avg, "cur", flagged=ten_y_flag,
         fallback=f"Average EPS over the {n_fy} fiscal year(s) of statements available (excludes TTM).")
-    add("4y Average Earnings", four_avg, "cur")
+    add("4y Average Earnings", four_avg, "cur", flagged=four_y_flag, fallback=four_y_fallback)
     if all_vals:
         add("Max Earnings", max(all_vals), "cur")
         add("Min Earnings", min(all_vals), "cur")
@@ -1463,15 +1526,15 @@ def _build_earnings_trends(bundle, ticker, ref):
         # population variance itself (confirmed against a covered ticker),
         # run through the site's "pct" formatter (value*100 with a % sign)
         # rather than "cur"/"num".
-        add("10y EPS  Variance", variance, "pct")
-        add("10y EPS SD", sd, "cur")
-        add("10y AVG+SD", ten_avg + sd, "x")
+        add("10y EPS  Variance", variance, "pct", flagged=ten_y_flag, fallback=ten_y_fallback)
+        add("10y EPS SD", sd, "cur", flagged=ten_y_flag, fallback=ten_y_fallback)
+        add("10y AVG+SD", ten_avg + sd, "x", flagged=ten_y_flag, fallback=ten_y_fallback)
         four_vals = fy_vals[:4]
         if len(four_vals) >= 2:
             four_var = sum((v - four_avg) ** 2 for v in four_vals) / len(four_vals)
             four_sd = math.sqrt(four_var)
-            add("4y EPS SD", four_sd, "cur")
-            add("4y AVG+SD", four_avg + four_sd, "x")
+            add("4y EPS SD", four_sd, "cur", flagged=four_y_flag, fallback=four_y_fallback)
+            add("4y AVG+SD", four_avg + four_sd, "x", flagged=four_y_flag, fallback=four_y_fallback)
 
     # "Average 10 Year Growth" = the arithmetic MEAN of the year-over-year
     # EPS growth series above (which correctly includes the TTM-vs-lastFY
