@@ -130,6 +130,14 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         return {"error": f"No price history found for '{ticker}' - check the ticker symbol "
                           f"(e.g. CSL.AX for the ASX, AAPL for the US)."}
 
+    _MA50_DEBUG_TICKERS = {"CPRT", "AAPL", "MSFT"}
+    if ticker in _MA50_DEBUG_TICKERS:
+        print(f"[MA50-DEBUG] {ticker} raw df: rows={len(df)} "
+              f"first={df.index[0] if len(df) else None} "
+              f"last={df.index[-1] if len(df) else None} "
+              f"close_nan={int(df['Close'].isna().sum()) if 'Close' in df else 'no-Close-col'}",
+              flush=True)
+
     info = get_ticker_info(ticker)
 
     # Fear/Greed/Activity/Volume Ratio/MA50 - same 3-month-window formulas
@@ -137,6 +145,12 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     # logic). This same ma50 also feeds the Trade Filter below, exactly as
     # it does in the main scan.
     window_3mo = df.tail(63)
+    if ticker in _MA50_DEBUG_TICKERS:
+        _w_close = window_3mo["Close"] if "Close" in window_3mo else None
+        print(f"[MA50-DEBUG] {ticker} window_3mo: rows={len(window_3mo)} "
+              f"close_nan={int(_w_close.isna().sum()) if _w_close is not None else 'no-Close-col'} "
+              f"last10_close={list(_w_close.tail(10)) if _w_close is not None else None}",
+              flush=True)
     _close_series = window_3mo["Close"].dropna()
     if _close_series.empty:
         return {"error": f"No usable price data for {ticker}."}
@@ -145,6 +159,10 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     fear_score = ((high_price - current_price) / high_price) * 100 if high_price else 0
 
     ma50_raw = window_3mo["Close"].rolling(50).mean().iloc[-1]
+    if ticker in _MA50_DEBUG_TICKERS:
+        print(f"[MA50-DEBUG] {ticker} ma50_raw={ma50_raw!r} "
+              f"rolling_valid_count_at_end={int(window_3mo['Close'].tail(50).notna().sum())}",
+              flush=True)
     # Real gap this masked: when there isn't 50 valid trading days in the
     # window (sparse history, a long trading halt, a recent listing), the
     # rolling average comes back NaN and this silently falls back to
