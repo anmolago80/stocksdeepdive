@@ -291,6 +291,31 @@ def _cp_fcf_growth_chart(ticker, fcf_growth):
     return fig
 
 
+def _cp_book_value_growth_chart(ticker, book_value_growth):
+    """Book Value Growth by year, Value vs Book tab - same diverging
+    red/green bar convention as the FCF Growth chart right above it on
+    this tab, just for (per-share) Book Value instead of FCF. No TTM bar
+    here (unlike FCF/EPS Growth) - see _book_value_growth_entry's own
+    docstring for why there isn't a distinct TTM point to add for balance
+    sheet data."""
+    entry = book_value_growth.get(ticker)
+    if not entry or not entry.get("years"):
+        return None
+    years = list(reversed(entry["years"]))
+    values = list(reversed(entry["values"]))
+    colors = ["#34d399" if v >= 0 else "#fb7185" for v in values]
+    fig = go.Figure(go.Bar(
+        x=years, y=values, marker_color=colors,
+        text=[f"{v * 100:+.1f}%" for v in values], textposition="outside",
+    ))
+    fig.update_layout(
+        title="Book Value Growth by Year", height=300, showlegend=False,
+        margin=dict(l=10, r=10, t=40, b=10), yaxis_title="Book Value Growth", yaxis_tickformat=".0%",
+        xaxis_type="category",
+    )
+    return fig
+
+
 def _cp_pe_ratio_chart(ticker, series, pe_ratio_refs):
     """PE Ratio by Year, plus two reference lines (3y-EPS-average P/E and
     the overall average P/E) drawn full-width with a manual add_annotation
@@ -608,6 +633,18 @@ def render_section(sections, ticker, section_label, gate=None):
                 st.caption(
                     f"FCF Growth plotted for the {len(_fcfg_years)} year(s) of "
                     "statement history available - the full 9-bar (10-year) "
+                    "series unlocks as deeper statement history becomes "
+                    "available."
+                )
+        fig4 = _cp_book_value_growth_chart(ticker, section.get("book_value_growth", {}))
+        if fig4:
+            st.plotly_chart(fig4, use_container_width=True, config={"displayModeBar": False})
+            _bvg_entry = section.get("book_value_growth", {}).get(ticker) or {}
+            _bvg_years = _bvg_entry.get("years") or []
+            if _bvg_years and len(_bvg_years) < 9:
+                st.caption(
+                    f"Book Value Growth plotted for the {len(_bvg_years)} year(s) "
+                    "of statement history available - the full 9-bar (10-year) "
                     "series unlocks as deeper statement history becomes "
                     "available."
                 )
