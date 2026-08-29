@@ -84,7 +84,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 31
+ENGINE_VERSION = 32
 
 
 # -----------------------------------
@@ -1646,39 +1646,54 @@ def _build_earnings_trends(bundle, ticker, ref):
 
     ten_avg = sum(fy_vals) / n_fy if n_fy else None
     four_avg = sum(fy_vals[:4]) / min(4, n_fy) if n_fy else None
-    # Every "10y ..." metric below is built from the SAME fy_vals as this
-    # one - when statement depth is short (n_fy < 10, e.g. a name with
-    # only 4 years of filings on record), they're all silently computed
-    # over fewer years than their label claims, not just this average.
-    # Previously only this one metric carried the flag/caption explaining
-    # that; the other three ("10y EPS  Variance", "10y EPS SD", "10y
-    # AVG+SD") showed with no indicator at all, which is exactly what
-    # made a 4-statement-year ticker's "4y EPS SD" and "10y EPS SD" come
-    # out byte-identical with no explanation (4y's own window IS the
-    # full n_fy=4 available, so four_vals == fy_vals exactly in that
-    # case - correct, not a coincidence, but invisible without the flag).
-    ten_y_flag = n_fy < 10
-    ten_y_fallback = f"Computed over the {n_fy} fiscal year(s) of statements available (excludes TTM), not the full 10."
     four_y_flag = n_fy < 4
     four_y_fallback = f"Computed over the {min(4, n_fy)} fiscal year(s) of statements available (excludes TTM), not the full 4."
-    # When statement depth is <= 4 fiscal years, the "10y" window and the
-    # "4y" window are literally the same years - four_vals == fy_vals
-    # exactly - so the "10y ..." and "4y ..." cards below are always
-    # byte-identical (confirmed live on CPU.AX and HEI: "10y EPS SD" and
-    # "4y EPS SD" both $0.91, etc.). That's real, correctly-computed data,
-    # not a bug - but showing the same number twice under two different
-    # labels (one of them wrongly implying a 10-year window) is redundant
-    # and reads as an error even with the red-asterisk flag. Where a "4y
-    # ..." card already exists to show that exact number, skip the "10y
-    # ..." duplicate entirely rather than flagging it - "4y" alone, with
-    # no asterisk (it's a complete, accurate 4-year figure at that
-    # point), is the honest single source of truth. Metrics with no "4y"
-    # sibling ("10y EPS  Variance", "Average 10 Year Growth", "10Y Growth
-    # (3Y AVG)" below) have no duplicate card to collide with, so they
-    # keep showing as before, still flagged when n_fy < 10.
-    ten_y_dup_of_4y = n_fy <= 4
-    if not ten_y_dup_of_4y:
-        add("10y Average Earnings", ten_avg, "cur", flagged=ten_y_flag,
+
+    def dyn_10y_label(literal_10y_label, depth):
+        """(label, flagged) for a metric that's conceptually a "10y"
+        figure but only ever covers `depth` REAL fiscal years - this never
+        invents extra history to fill the gap to 10, it relabels instead.
+        Andrew's own call after seeing this live on CPU.AX and HEI (both
+        stuck at a real depth of 4, "10y EPS SD"/"4y EPS SD" byte-
+        identical, both $0.91) and AAPL (a real depth of 5, per that
+        page's own "statement history: 5 year(s)" footer) - this data
+        source generally caps out well short of 10 years for most/every
+        auto-scanned ticker right now (a paid EODHD_API_KEY, not
+        currently configured, is what the page's own footer says would
+        unlock the full 10y depth), so this isn't a rare edge case, it's
+        closer to the norm. The number itself was never fabricated - it's
+        a genuine average/SD/etc over whatever real years exist - only
+        the LABEL was overclaiming a 10-year window it didn't have. Fix:
+        state the real window in the label instead of flagging a
+        mismatch. depth >= 10 keeps the literal "10y"/"10 Year" wording
+        (true) and unflagged - same as before. Otherwise the leading
+        "10y"/"10 Year" token is replaced with the real depth (e.g. "10y
+        EPS SD" -> "7y EPS SD", "Average 10 Year Growth" -> "Average 7
+        Year Growth") and ALSO unflagged - once a label states its real
+        window, there's nothing left to flag as a mismatch (same
+        principle the "4y ..." metrics already use below: four_y_flag =
+        n_fy < 4, flagged only when even THAT smaller claim isn't met -
+        a dynamically-relabeled figure is by construction never short of
+        what it now claims)."""
+        if depth >= 10:
+            return literal_10y_label, False
+        if "10y" in literal_10y_label:
+            return literal_10y_label.replace("10y", f"{depth}y", 1), False
+        if "10 Year" in literal_10y_label:
+            return literal_10y_label.replace("10 Year", f"{depth} Year", 1), False
+        return literal_10y_label, False
+
+    # When statement depth is <= 4 fiscal years, the dynamically-relabeled
+    # "Ny Average Earnings"/"Ny EPS SD"/"Ny AVG+SD" would land on N==4 -
+    # literally the same years AND same label as the "4y ..." cards below
+    # (four_vals == fy_vals exactly; confirmed live on CPU.AX and HEI:
+    # "10y EPS SD" and "4y EPS SD" both $0.91). Rather than show that
+    # exact card twice under the same name, skip the dynamic version here
+    # and let the purpose-built "4y ..." card be the single copy.
+    skip_dup_of_4y = n_fy <= 4
+    if not skip_dup_of_4y:
+        lbl, flg = dyn_10y_label("10y Average Earnings", n_fy)
+        add(lbl, ten_avg, "cur", flagged=flg,
             fallback=f"Average EPS over the {n_fy} fiscal year(s) of statements available (excludes TTM).")
     add("4y Average Earnings", four_avg, "cur", flagged=four_y_flag, fallback=four_y_fallback)
     if all_vals:
@@ -1688,16 +1703,21 @@ def _build_earnings_trends(bundle, ticker, ref):
     if n_fy >= 2:
         variance = sum((v - ten_avg) ** 2 for v in fy_vals) / n_fy
         sd = math.sqrt(variance)
+        var_fallback = f"Population variance of EPS over the {n_fy} fiscal year(s) of statements available (excludes TTM)."
+        sd_fallback = f"Standard deviation of EPS over the {n_fy} fiscal year(s) of statements available (excludes TTM)."
         # The hand-built workbook's own "10y EPS Variance" is the raw
         # population variance itself (confirmed against a covered ticker),
         # run through the site's "pct" formatter (value*100 with a % sign)
         # rather than "cur"/"num". No "4y EPS Variance" card exists to
-        # duplicate, so this always shows (see ten_y_dup_of_4y comment
-        # above for why EPS SD/AVG+SD are different).
-        add("10y EPS  Variance", variance, "pct", flagged=ten_y_flag, fallback=ten_y_fallback)
-        if not ten_y_dup_of_4y:
-            add("10y EPS SD", sd, "cur", flagged=ten_y_flag, fallback=ten_y_fallback)
-            add("10y AVG+SD", ten_avg + sd, "x", flagged=ten_y_flag, fallback=ten_y_fallback)
+        # duplicate, so this always shows (dynamically relabeled, same as
+        # Average Earnings/EPS SD above).
+        lbl, flg = dyn_10y_label("10y EPS  Variance", n_fy)
+        add(lbl, variance, "pct", flagged=flg, fallback=var_fallback)
+        if not skip_dup_of_4y:
+            lbl, flg = dyn_10y_label("10y EPS SD", n_fy)
+            add(lbl, sd, "cur", flagged=flg, fallback=sd_fallback)
+            lbl, flg = dyn_10y_label("10y AVG+SD", n_fy)
+            add(lbl, ten_avg + sd, "x", flagged=flg, fallback=sd_fallback)
         four_vals = fy_vals[:4]
         if len(four_vals) >= 2:
             four_var = sum((v - four_avg) ** 2 for v in four_vals) / len(four_vals)
@@ -1708,11 +1728,14 @@ def _build_earnings_trends(bundle, ticker, ref):
     # "Average 10 Year Growth" = the arithmetic MEAN of the year-over-year
     # EPS growth series above (which correctly includes the TTM-vs-lastFY
     # point) - NOT a CAGR. Decoded from the workbook's own
-    # AVERAGEIF(AE:AN).
+    # AVERAGEIF(AE:AN). Depth here is len(growth_vals) (the real count of
+    # YoY comparisons - matches the "EPS Growth by Year" chart's own bar
+    # count), not n_fy directly, since TTM adds one more real comparison
+    # point on top of the fiscal years.
     if eps_growth:
         growth_vals = [g for _, g in eps_growth]
-        add("Average 10 Year Growth", sum(growth_vals) / len(growth_vals), "pct",
-            flagged=(len(growth_vals) < 9))
+        lbl, flg = dyn_10y_label("Average 10 Year Growth", len(growth_vals))
+        add(lbl, sum(growth_vals) / len(growth_vals), "pct", flagged=flg)
 
     # "10Y Growth (3Y AVG)" = TOTAL (not annualised) growth between the
     # newest-3 average (including TTM) and the oldest-3 average.
