@@ -130,7 +130,9 @@ def _cp_price_chart(ticker, price_history):
 
 def _cp_share_price_growth_chart(ticker, share_price_growth):
     """Share Price Growth by year, same green/red convention as EPS Growth
-    by Year on the Earnings Trends tab."""
+    by Year on the Earnings Trends tab. A dashed reference line marks the
+    average growth across the plotted years (same add_hline convention as
+    the 10y-average price chart and the valuation-methods average)."""
     entry = share_price_growth.get(ticker)
     if not entry or not entry.get("years"):
         return None
@@ -141,6 +143,14 @@ def _cp_share_price_growth_chart(ticker, share_price_growth):
         x=years, y=values, marker_color=colors,
         text=[f"{v * 100:+.1f}%" for v in values], textposition="outside",
     ))
+    if values:
+        _avg = sum(values) / len(values)
+        fig.add_hline(
+            y=_avg, line_dash="dash", line_color="#e6edf5", line_width=1.5,
+            annotation_text=f"Average {_avg * 100:+.1f}%",
+            annotation_position="top left",
+            annotation_font=dict(size=12, color="#e6edf5"),
+        )
     fig.update_layout(
         title="Share Price Growth by Year", height=320, showlegend=False,
         margin=dict(l=10, r=10, t=40, b=10), yaxis_title="Share Price Growth",
