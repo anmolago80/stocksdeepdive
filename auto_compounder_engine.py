@@ -84,7 +84,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 30
+ENGINE_VERSION = 31
 
 
 # -----------------------------------
@@ -1661,8 +1661,25 @@ def _build_earnings_trends(bundle, ticker, ref):
     ten_y_fallback = f"Computed over the {n_fy} fiscal year(s) of statements available (excludes TTM), not the full 10."
     four_y_flag = n_fy < 4
     four_y_fallback = f"Computed over the {min(4, n_fy)} fiscal year(s) of statements available (excludes TTM), not the full 4."
-    add("10y Average Earnings", ten_avg, "cur", flagged=ten_y_flag,
-        fallback=f"Average EPS over the {n_fy} fiscal year(s) of statements available (excludes TTM).")
+    # When statement depth is <= 4 fiscal years, the "10y" window and the
+    # "4y" window are literally the same years - four_vals == fy_vals
+    # exactly - so the "10y ..." and "4y ..." cards below are always
+    # byte-identical (confirmed live on CPU.AX and HEI: "10y EPS SD" and
+    # "4y EPS SD" both $0.91, etc.). That's real, correctly-computed data,
+    # not a bug - but showing the same number twice under two different
+    # labels (one of them wrongly implying a 10-year window) is redundant
+    # and reads as an error even with the red-asterisk flag. Where a "4y
+    # ..." card already exists to show that exact number, skip the "10y
+    # ..." duplicate entirely rather than flagging it - "4y" alone, with
+    # no asterisk (it's a complete, accurate 4-year figure at that
+    # point), is the honest single source of truth. Metrics with no "4y"
+    # sibling ("10y EPS  Variance", "Average 10 Year Growth", "10Y Growth
+    # (3Y AVG)" below) have no duplicate card to collide with, so they
+    # keep showing as before, still flagged when n_fy < 10.
+    ten_y_dup_of_4y = n_fy <= 4
+    if not ten_y_dup_of_4y:
+        add("10y Average Earnings", ten_avg, "cur", flagged=ten_y_flag,
+            fallback=f"Average EPS over the {n_fy} fiscal year(s) of statements available (excludes TTM).")
     add("4y Average Earnings", four_avg, "cur", flagged=four_y_flag, fallback=four_y_fallback)
     if all_vals:
         add("Max Earnings", max(all_vals), "cur")
@@ -1674,10 +1691,13 @@ def _build_earnings_trends(bundle, ticker, ref):
         # The hand-built workbook's own "10y EPS Variance" is the raw
         # population variance itself (confirmed against a covered ticker),
         # run through the site's "pct" formatter (value*100 with a % sign)
-        # rather than "cur"/"num".
+        # rather than "cur"/"num". No "4y EPS Variance" card exists to
+        # duplicate, so this always shows (see ten_y_dup_of_4y comment
+        # above for why EPS SD/AVG+SD are different).
         add("10y EPS  Variance", variance, "pct", flagged=ten_y_flag, fallback=ten_y_fallback)
-        add("10y EPS SD", sd, "cur", flagged=ten_y_flag, fallback=ten_y_fallback)
-        add("10y AVG+SD", ten_avg + sd, "x", flagged=ten_y_flag, fallback=ten_y_fallback)
+        if not ten_y_dup_of_4y:
+            add("10y EPS SD", sd, "cur", flagged=ten_y_flag, fallback=ten_y_fallback)
+            add("10y AVG+SD", ten_avg + sd, "x", flagged=ten_y_flag, fallback=ten_y_fallback)
         four_vals = fy_vals[:4]
         if len(four_vals) >= 2:
             four_var = sum((v - four_avg) ** 2 for v in four_vals) / len(four_vals)
