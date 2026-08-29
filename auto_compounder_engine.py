@@ -84,7 +84,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 29
+ENGINE_VERSION = 30
 
 
 # -----------------------------------
@@ -1296,26 +1296,31 @@ def _iv_bv_series(bundle, dcf_result, bvps_ttm):
 
 def _fcf_growth_entry(bundle):
     """{"years": [...], "values": [...]} newest-first - year-over-year Free
-    Cash Flow growth, one bar per pair of consecutive points, over a TTM
-    point (when available) plus up to the most recent 9 fiscal years of
-    statement data - up to 10 total data points, same "as much history as
-    the statements have, capped at 10" convention as _ten_year_retained
-    and every other "10y ..." metric in this module, giving up to 9 growth
-    bars (a ticker with only 4-5 years of statements on file correctly
-    gets fewer, not a padded or fabricated 9). Same (v - v0) / abs(v0)
-    year-over-year convention, and the same TTM-vs-most-recent-FY handling,
-    as the Earnings Trends tab's own "EPS Growth by Year" chart (see
-    _build_earnings_trends's full_eps/eps_growth) - just for FCF instead
-    of EPS. Bug fixed here: this originally never included a TTM point at
-    all (fcf_series was fiscal years only), so a ticker with N years of
-    statements silently showed only N-1 growth bars instead of the N bars
-    a TTM-vs-newest-FY point would add - inconsistent with the IV/BV
-    series chart directly above this one on the same tab, which does
-    include TTM and so visibly covered one more year than this chart did.
-    FCF read convention (FCF-row-or-OCF-minus-CapEx fallback, and the TTM
-    point specifically using the statement figure rather than
-    info["freeCashflow"] - see _iv_bv_series's own comment on why) is
-    shared with _iv_bv_series/_build_fundamentals/_build_value_vs_book."""
+    Cash Flow growth, one bar per pair of consecutive fiscal years, over
+    up to the most recent 10 fiscal years of statement data (same "as much
+    history as the statements have, capped at 10" convention as
+    _ten_year_retained and every other "10y ..." metric in this module -
+    a ticker with only 4-5 years of statements on file correctly gets 3-4
+    growth bars, not a padded or fabricated 10). Same (v - v0) / abs(v0)
+    year-over-year convention as the Earnings Trends tab's own "EPS Growth
+    by Year" chart, just for FCF instead of EPS - and the same
+    FCF-row-or-OCF-minus-CapEx fallback used everywhere else FCF is read
+    in this module (_iv_bv_series, _build_fundamentals, _build_value_vs_book).
+
+    Deliberately NO TTM point here, unlike EPS Growth - tried and reverted
+    (confirmed live on HSN.AX). Unlike EPS, which has a real quarterly
+    income statement (income_q) to sum a genuine trailing-twelve-month
+    figure from, this bundle carries no quarterly cash flow statement at
+    all (see fundamentals_data.py's bundle-shape comment) - so the "TTM"
+    FCF used elsewhere on this page (the Fundamentals tab's "Free Cash
+    Flow (TTM)" card, and _iv_bv_series's own TTM point - which for the
+    exact same reason is why HSN.AX's IV/BV chart shows its 2026 and TTM
+    bars as identical, 17.73x both) is really just the latest fiscal
+    year's reported FCF relabeled "TTM", not a distinct rolling-12-month
+    sum. Growth from "latest FY" to that same number, relabeled, is
+    mathematically guaranteed to be exactly 0.0% for every ticker, every
+    time - not a real data point, so it was dropped rather than shown as
+    a misleadingly precise "+0.0%" bar."""
     fcf_series = [(y, v) for y, v in _series(bundle["cashflow"], "free_cash_flow") if v is not None]
     if not fcf_series:
         ocf_s = dict(_series(bundle["cashflow"], "operating_cash_flow"))
@@ -1325,20 +1330,12 @@ def _fcf_growth_entry(bundle):
             for y in ocf_s
             if y in capex_s and ocf_s[y] is not None and capex_s[y] is not None
         ]
-
-    fcf_ttm = _latest(bundle["cashflow"], "free_cash_flow")
-    if fcf_ttm is None:
-        ocf_ttm = _latest(bundle["cashflow"], "operating_cash_flow")
-        capex_ttm = _latest(bundle["cashflow"], "capex")
-        if ocf_ttm is not None and capex_ttm is not None:
-            fcf_ttm = ocf_ttm - abs(capex_ttm)
-    full_fcf = ([("TTM", fcf_ttm)] if fcf_ttm is not None else []) + fcf_series
-    full_fcf = full_fcf[:10]
+    fcf_series = fcf_series[:10]
 
     out_years, out_values = [], []
-    for i in range(len(full_fcf) - 1):
-        y, v = full_fcf[i]
-        _, v0 = full_fcf[i + 1]
+    for i in range(len(fcf_series) - 1):
+        y, v = fcf_series[i]
+        _, v0 = fcf_series[i + 1]
         if v0:
             out_years.append(y)
             out_values.append((v - v0) / abs(v0))
