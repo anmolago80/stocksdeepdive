@@ -16,7 +16,8 @@ build_sections(ticker) -> {
     "Fundamentals": {"metrics": [...], "price_history": {ticker: {...}},
                       "share_price_growth": {ticker: {...}}},
     "Value vs Book": {"metrics": [...], "iv_bv_bar": {ticker: {...}},
-                       "iv_bv_series": {ticker: {...}}},
+                       "iv_bv_series": {ticker: {...}},
+                       "fcf_growth": {ticker: {...}}},
     "Retained Earnings": {"metrics": [...], "value_created": {ticker: {...}}},
     "Earnings Trends": {"metrics": [...], "series": {ticker: {...}},
                          "pe_ratio_refs": {ticker: {...}}},
@@ -82,7 +83,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 27
+ENGINE_VERSION = 28
 
 
 # -----------------------------------
@@ -200,9 +201,16 @@ def _reference_lookup():
     return lookup
 
 
-def _metric(ref, section, label, ticker, value, fmt, key=None, flagged=False, fallback_comment=""):
+def _metric(ref, section, label, ticker, value, fmt, key=None, flagged=False, fallback_comment="", thresholds=None):
+    """thresholds: normally left None, in which case this pulls the
+    workbook's own thresholds for `label` (if any) - pass an explicit list
+    of (lo, hi, color, band_label) tuples here only for a metric that has
+    no hand-built workbook equivalent at all (e.g. "EBIT to FCF
+    Conversion" in _build_fundamentals), where there's no workbook
+    convention to transcribe and Andrew's own bands are used instead."""
     r = (ref.get(section) or {}).get(label)
-    thresholds = r["thresholds"] if r else None
+    if thresholds is None:
+        thresholds = r["thresholds"] if r else None
     comment = (r["comment"] if r and r.get("comment") else None) or fallback_comment
     return {
         "key": key or label,
@@ -1067,10 +1075,11 @@ def _build_fundamentals(bundle, ticker, ref):
 
     metrics = []
 
-    def add(label, value, fmt, key=None, flagged=False, fallback=""):
+    def add(label, value, fmt, key=None, flagged=False, fallback="", thresholds=None):
         if value is None:
             return
-        metrics.append(_metric(ref, "Fundamentals", label, ticker, value, fmt, key=key, flagged=flagged, fallback_comment=fallback))
+        metrics.append(_metric(ref, "Fundamentals", label, ticker, value, fmt, key=key, flagged=flagged,
+                                fallback_comment=fallback, thresholds=thresholds))
 
     add("Earning Yield", (net_income / mcap) if (net_income is not None and mcap) else None, "pct",
         fallback="Net income divided by market cap.")
@@ -1112,6 +1121,35 @@ def _build_fundamentals(bundle, ticker, ref):
 
     add("Net Income Ratio", (net_income / revenue) if (net_income is not None and revenue) else None, "pct")
     add("Free Cash Flow Yield", (fcf / mcap) if (fcf is not None and mcap) else None, "pct")
+
+    # EBIT to FCF Conversion: how much of operating earnings actually
+    # shows up as free cash flow - Andrew's own formula/bands (no workbook
+    # equivalent exists for this one, so there's no cell to transcribe;
+    # confirmed via compounder_data.json - nothing under this or a similar
+    # label anywhere in the hand-built data). FCF uses the same
+    # OCF-minus-CapEx-or-statement-row convention as every other FCF
+    # figure already on this page (Free Cash Flow (TTM), Free Cash Flow
+    # Yield, PFCF Ratio) rather than a second definition.
+    #
+    # Flagged when EBIT is zero/negative or itself estimated
+    # (operating_income_estimated) - the ratio flips sign/meaning in a
+    # misleading way once the denominator goes negative (e.g. a small
+    # negative FCF over a small negative EBIT can read as a big *positive*
+    # percentage that says nothing about cash-conversion quality), so it's
+    # shown with the same red-asterisk "don't take this number at face
+    # value" treatment as every other fragile ratio on this page rather
+    # than silently presented as a normal band.
+    ebit_fcf_conversion = (fcf / operating_income) if (fcf is not None and operating_income) else None
+    add("EBIT to FCF Conversion", ebit_fcf_conversion, "pct",
+        flagged=bool(operating_income_estimated or (operating_income is not None and operating_income <= 0)),
+        fallback="Free Cash Flow divided by Operating Income (EBIT). Above 80% = exceptional cash "
+                  "conversion, very low capital intensity. 50-80% = normal - some earnings absorbed by "
+                  "working capital or capex. Below 50% = weak - earnings aren't converting well to cash.",
+        thresholds=[
+            [None, 0.50, "red", "Weak - earnings heavily tied up in working capital or capex"],
+            [0.50, 0.80, "amber", "Average - normal operating cash generation"],
+            [0.80, None, "green", "Exceptional - converts almost all EBIT into cash"],
+        ])
     add("Intangibles To Total Assets", (goodwill_intangibles / total_assets) if (goodwill_intangibles is not None and total_assets) else None, "pct")
     add("Price to Equity Ratio", (mcap / equity) if (mcap and equity) else None, "x")
 
@@ -1255,6 +1293,41 @@ def _iv_bv_series(bundle, dcf_result, bvps_ttm):
     return {"years": years, "ratios": ratios}
 
 
+def _fcf_growth_entry(bundle):
+    """{"years": [...], "values": [...]} newest-first - year-over-year Free
+    Cash Flow growth, one bar per pair of consecutive fiscal years, over
+    up to the most recent 10 fiscal years of statement data (same "as much
+    history as the statements have, capped at 10" convention as
+    _ten_year_retained and every other "10y ..." metric in this module -
+    a ticker with only 4-5 years of statements on file correctly gets 3-4
+    growth bars, not a padded or fabricated 10). Same (v - v0) / abs(v0)
+    year-over-year convention as the Earnings Trends tab's own "EPS Growth
+    by Year" chart, just for FCF instead of EPS - and the same
+    FCF-row-or-OCF-minus-CapEx fallback used everywhere else FCF is read
+    in this module (_iv_bv_series, _build_fundamentals, _build_value_vs_book)."""
+    fcf_series = [(y, v) for y, v in _series(bundle["cashflow"], "free_cash_flow") if v is not None]
+    if not fcf_series:
+        ocf_s = dict(_series(bundle["cashflow"], "operating_cash_flow"))
+        capex_s = dict(_series(bundle["cashflow"], "capex"))
+        fcf_series = [
+            (y, ocf_s[y] - abs(capex_s[y]))
+            for y in ocf_s
+            if y in capex_s and ocf_s[y] is not None and capex_s[y] is not None
+        ]
+    fcf_series = fcf_series[:10]
+
+    out_years, out_values = [], []
+    for i in range(len(fcf_series) - 1):
+        y, v = fcf_series[i]
+        _, v0 = fcf_series[i + 1]
+        if v0:
+            out_years.append(y)
+            out_values.append((v - v0) / abs(v0))
+    if not out_years:
+        return None
+    return {"years": out_years, "values": out_values}
+
+
 def _build_value_vs_book(bundle, ticker, ref, dcf_result):
     b = _basics(bundle)
     price, info = b["price"], b["info"]
@@ -1281,11 +1354,13 @@ def _build_value_vs_book(bundle, ticker, ref, dcf_result):
 
     iv_bv_bar = {"price": price, "iv": iv, "bv": bvps} if (price is not None and iv is not None and bvps is not None) else None
     iv_bv_series = _iv_bv_series(bundle, dcf_result, bvps)
+    fcf_growth = _fcf_growth_entry(bundle)
 
     return {
         "metrics": metrics,
         "iv_bv_bar": {ticker: iv_bv_bar} if iv_bv_bar else {},
         "iv_bv_series": {ticker: iv_bv_series} if iv_bv_series else {},
+        "fcf_growth": {ticker: fcf_growth} if fcf_growth else {},
     }
 
 

@@ -267,6 +267,30 @@ def _cp_eps_growth_chart(ticker, series):
     return fig
 
 
+def _cp_fcf_growth_chart(ticker, fcf_growth):
+    """FCF Growth by year, Value vs Book tab - same diverging red/green
+    bar convention as the Earnings Trends tab's own "EPS Growth by Year"
+    chart, just for Free Cash Flow instead of EPS. Plots as many fiscal
+    years as the statements have on file, up to a max of 10 (same cap the
+    underlying _fcf_growth_entry() already applies)."""
+    entry = fcf_growth.get(ticker)
+    if not entry or not entry.get("years"):
+        return None
+    years = list(reversed(entry["years"]))
+    values = list(reversed(entry["values"]))
+    colors = ["#34d399" if v >= 0 else "#fb7185" for v in values]
+    fig = go.Figure(go.Bar(
+        x=years, y=values, marker_color=colors,
+        text=[f"{v * 100:+.1f}%" for v in values], textposition="outside",
+    ))
+    fig.update_layout(
+        title="FCF Growth by Year", height=300, showlegend=False,
+        margin=dict(l=10, r=10, t=40, b=10), yaxis_title="FCF Growth", yaxis_tickformat=".0%",
+        xaxis_type="category",
+    )
+    return fig
+
+
 def _cp_pe_ratio_chart(ticker, series, pe_ratio_refs):
     """PE Ratio by Year, plus two reference lines (3y-EPS-average P/E and
     the overall average P/E) drawn full-width with a manual add_annotation
@@ -574,6 +598,18 @@ def render_section(sections, ticker, section_label, gate=None):
                     "statement history available (plus TTM) - the full "
                     "10-year series unlocks as deeper statement history "
                     "becomes available."
+                )
+        fig3 = _cp_fcf_growth_chart(ticker, section.get("fcf_growth", {}))
+        if fig3:
+            st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar": False})
+            _fcfg_entry = section.get("fcf_growth", {}).get(ticker) or {}
+            _fcfg_years = _fcfg_entry.get("years") or []
+            if _fcfg_years and len(_fcfg_years) < 9:
+                st.caption(
+                    f"FCF Growth plotted for the {len(_fcfg_years)} year(s) of "
+                    "statement history available - the full 9-bar (10-year) "
+                    "series unlocks as deeper statement history becomes "
+                    "available."
                 )
         metrics = [m for m in metrics if m["key"] != "AP"]
     elif section_label == "Retained Earnings":
