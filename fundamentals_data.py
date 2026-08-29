@@ -74,7 +74,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # currency-conversion fix below) - mirrors auto_compounder_engine's own
 # ENGINE_VERSION cache-busting pattern. A cached bundle written under an
 # older version is treated as a miss, same as an expired one.
-BUNDLE_VERSION = 4
+BUNDLE_VERSION = 5
 
 
 def _data_dir():
@@ -598,14 +598,34 @@ def get_bundle(ticker, force_refresh=False):
     if income_q.empty:
         flags.append("quarterly_income_unavailable")
 
-    # Currency fix: statement line items are reported in the company's
-    # financialCurrency, but price/market-cap-derived figures elsewhere in
-    # the app are in its listing currency - for a handful of ASX-listed,
-    # USD-reporting names (CSL.AX, RMD.AX, ...) those two diverge, and
-    # mixing them without conversion silently produces ratios off by the
-    # fx rate. Convert every statement DataFrame (and the two EPS fields
-    # used directly alongside price) into the listing currency here, once,
-    # so nothing downstream has to know this ever happened.
+    # Currency fix: statement line items (the income/balance/cashflow/
+    # income_q DataFrames) are reported in the company's financialCurrency,
+    # but price/market-cap-derived figures elsewhere in the app are in its
+    # listing currency - for a handful of ASX-listed, USD-reporting names
+    # (CSL.AX, RMD.AX, CPU.AX, ...) those two diverge, and mixing raw
+    # statement rows with the listing-currency price without conversion
+    # silently produces ratios off by the fx rate. Convert every statement
+    # DataFrame into the listing currency here, once, so nothing downstream
+    # has to know this ever happened.
+    #
+    # Bug fix: this used to ALSO multiply info["trailingEps"]/["forwardEps"]
+    # by the same fx rate, on the assumption that yfinance reports those two
+    # quote-level fields in financialCurrency too, same as the statements.
+    # Root-caused via a live production diagnostic on CPU.AX (2026-08-29):
+    # its quarterly income statement was unavailable that day (a routine
+    # yfinance gap - see _eps_ttm), so the app fell back to this now-doubly
+    # -converted trailingEps, landing on $2.06 - a ~40% overstatement
+    # against TradingView's own $1.57 AUD "Basic EPS (TTM)" figure and,
+    # independently, Yahoo Finance's own Statistics page for CPU.AX, which
+    # shows "Diluted EPS (ttm): 1.48" - almost exactly the PRE-multiply raw
+    # value (2.0553 / 1.40 = 1.468). Both external sources display their
+    # EPS figure paired directly against the AUD price, confirming
+    # trailingEps/forwardEps come back from yfinance already in the
+    # LISTING currency (same as currentPrice), not financialCurrency - so,
+    # unlike the statement DataFrames, they must NOT be converted again
+    # here. (info["currentPrice"]/["regularMarketPrice"] were never
+    # converted either, for the same reason - this brings trailingEps/
+    # forwardEps into line with that existing, correct assumption.)
     fin_ccy = (info.get("financialCurrency") or "").upper()
     list_ccy = (info.get("currency") or "").upper()
     if fin_ccy and list_ccy and fin_ccy != list_ccy:
@@ -618,12 +638,6 @@ def get_bundle(ticker, force_refresh=False):
             balance = _convert_statement_currency(balance, fx)
             cashflow = _convert_statement_currency(cashflow, fx)
             income_q = _convert_statement_currency(income_q, fx)
-            for _eps_key in ("trailingEps", "forwardEps"):
-                if info.get(_eps_key) is not None:
-                    try:
-                        info[_eps_key] = float(info[_eps_key]) * fx
-                    except (TypeError, ValueError):
-                        pass
             flags.append("currency_converted")
 
     try:

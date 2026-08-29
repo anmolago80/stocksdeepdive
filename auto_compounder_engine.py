@@ -82,7 +82,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 26
+ENGINE_VERSION = 27
 
 
 # -----------------------------------
@@ -582,7 +582,7 @@ def _q_row_value(income_q, key, col):
     return float(v)
 
 
-def _half_year_cumulative_ttm(income_q, q_cols, last_annual_end=None, debug=False):
+def _half_year_cumulative_ttm(income_q, q_cols, last_annual_end=None):
     """TTM basic EPS for a half-yearly (ASX-style) reporter, reconstructed
     correctly from CUMULATIVE columns - or None when there isn't enough
     to work with (see _eps_ttm: for this reporting cadence, unlike a true
@@ -593,13 +593,17 @@ def _half_year_cumulative_ttm(income_q, q_cols, last_annual_end=None, debug=Fals
     yfinance's "quarterly" statement for a half-yearly reporter isn't
     made of independent discrete slices: each column is cumulative SINCE
     THAT FISCAL YEAR'S START - a 6-month total at the interim mark, a
-    12-month total at the full-year close. Confirmed on CPU.AX (FY ends
-    30 June): the newest column was the just-released FY26 total
-    (106.97c, already a full 12 months) and the one before it was the
-    1H26 interim (48.48c) - which is ALREADY COUNTED INSIDE that FY26
-    total. The previous code (see _eps_ttm) summed them anyway ->
-    155.45c, a trailing EPS ~45% too high, which understated P/E by a
-    similar amount (the reported "19.11x vs TradingView's ~25x" bug).
+    12-month total at the full-year close. (An earlier pass here cited
+    specific CPU.AX column values as "confirmed" - a live diagnostic run
+    on 2026-08-29 found CPU.AX's quarterly income statement actually came
+    back EMPTY that day (q_cols=[], meta flag "quarterly_income_unavailable"),
+    so this function was never even reached for CPU.AX and those numbers
+    were never verified against real data. CPU.AX's actual TTM EPS bug
+    turned out to be unrelated to this function entirely - see
+    fundamentals_data.get_bundle()'s currency-conversion fix. This
+    function's calendar-based classification is left in place as
+    correct, defensive handling for the tickers where quarterly data IS
+    available - it just wasn't CPU.AX's bug.)
 
     Bug fix: this used to classify the newest column by the RATIO of its
     value against the column before it (~1.5x-3.0x of its predecessor ->
@@ -633,61 +637,34 @@ def _half_year_cumulative_ttm(income_q, q_cols, last_annual_end=None, debug=Fals
     value-ratio heuristic as a last resort, rather than as the primary
     signal."""
     if len(q_cols) < 2:
-        if debug:
-            print(f"[TTM-DEBUG] half_year_cumulative_ttm: <2 q_cols ({q_cols}) -> None", flush=True)
         return None
     newest, prior = q_cols[0], q_cols[1]
     v_newest = _q_row_value(income_q, "basic_eps", newest[0])
     v_prior = _q_row_value(income_q, "basic_eps", prior[0])
-    if debug:
-        print(
-            f"[TTM-DEBUG] half_year_cumulative_ttm: newest={newest} v_newest={v_newest!r} "
-            f"prior={prior} v_prior={v_prior!r} last_annual_end={last_annual_end!r}",
-            flush=True,
-        )
     if v_newest is None or v_prior is None:
-        if debug:
-            print("[TTM-DEBUG] half_year_cumulative_ttm: missing basic_eps cell(s) -> None", flush=True)
         return None
 
     def _reconstruct_interim():
         if len(q_cols) < 3:
-            if debug:
-                print("[TTM-DEBUG] _reconstruct_interim: <3 q_cols -> None", flush=True)
             return None
         v_prior_prior = _q_row_value(income_q, "basic_eps", q_cols[2][0])
-        if debug:
-            print(f"[TTM-DEBUG] _reconstruct_interim: q_cols[2]={q_cols[2]} v_prior_prior={v_prior_prior!r}", flush=True)
         if v_prior_prior is None:
             return None
-        result = v_newest + (v_prior - v_prior_prior)
-        if debug:
-            print(f"[TTM-DEBUG] _reconstruct_interim: {v_newest} + ({v_prior} - {v_prior_prior}) = {result}", flush=True)
-        return result
+        return v_newest + (v_prior - v_prior_prior)
 
     if last_annual_end is not None:
         gap = (newest[1] - last_annual_end).days
-        if debug:
-            print(f"[TTM-DEBUG] half_year_cumulative_ttm: gap={gap} days between newest end and last_annual_end", flush=True)
         if 330 <= gap <= 400:
-            if debug:
-                print(f"[TTM-DEBUG] half_year_cumulative_ttm: CASE 1 (new full FY) -> v_newest={v_newest}", flush=True)
             return v_newest
         if 150 <= gap <= 215:
-            if debug:
-                print("[TTM-DEBUG] half_year_cumulative_ttm: CASE 2 (fresh interim) -> _reconstruct_interim()", flush=True)
             return _reconstruct_interim()
         # Doesn't match either recognizable shape against the known
         # annual close - don't guess, let the caller fall back.
-        if debug:
-            print(f"[TTM-DEBUG] half_year_cumulative_ttm: gap={gap} matches neither window -> None", flush=True)
         return None
 
     if v_prior == 0:
         return None
     ratio = v_newest / v_prior
-    if debug:
-        print(f"[TTM-DEBUG] half_year_cumulative_ttm: no last_annual_end, ratio fallback ratio={ratio}", flush=True)
     if 1.5 <= ratio <= 3.0:
         return v_newest
     if ratio < 0 or ratio > 3.0:
@@ -699,6 +676,13 @@ def _half_year_cumulative_ttm(income_q, q_cols, last_annual_end=None, debug=Fals
 
 def _eps_ttm(bundle, ticker=None):
     """(value, flagged). The TTM EPS every TTM-consuming metric uses.
+
+    `ticker` is accepted (and otherwise unused) only as a ready hook for a
+    future ticker-gated diagnostic print, the way CPU.AX's TTM EPS bug was
+    root-caused on 2026-08-29 - see fundamentals_data.get_bundle()'s
+    currency-conversion comment for what that investigation actually
+    found (info["trailingEps"] was being converted twice, not a bug in
+    this function's own classification logic).
 
     Yahoo's info["trailingEps"] can lag a just-reported fiscal year by
     weeks. Verified on OCL.AX (30 June FY end, FY26 reported ~Aug 2026):
@@ -714,28 +698,14 @@ def _eps_ttm(bundle, ticker=None):
     Falls back to net-income-per-share over the same window when the
     quarterly statement carries no EPS row (flagged - today's share
     count), and to info["trailingEps"] when there is no fresher
-    quarterly data at all."""
+    quarterly data at all (e.g. its own quarterly statement is
+    unavailable that day - a routine yfinance gap, flagged
+    "quarterly_income_unavailable" in the bundle's meta)."""
     info = bundle.get("info") or {}
     fallback = info.get("trailingEps")
     income_q = bundle.get("income_q")
     q_cols = _statement_col_dates(income_q)
     a_cols = _statement_col_dates(bundle.get("income"))
-    debug = (ticker == "CPU.AX")
-    if debug:
-        meta = bundle.get("meta") or {}
-        print(
-            f"[TTM-DEBUG] {ticker}: q_cols={q_cols} a_cols={a_cols} "
-            f"trailingEps={fallback!r} financialCurrency={info.get('financialCurrency')!r} "
-            f"currency={info.get('currency')!r} meta_flags={meta.get('flags')!r} "
-            f"bundle_source={meta.get('source')!r}",
-            flush=True,
-        )
-        try:
-            row = _find_row(income_q, _ROW_ALIASES.get("basic_eps", ["basic_eps"]))
-            if row is not None and income_q is not None and not income_q.empty:
-                print(f"[TTM-DEBUG] {ticker}: income_q basic_eps row raw values = {income_q.loc[row].to_dict()!r}", flush=True)
-        except Exception as _dbg_exc:
-            print(f"[TTM-DEBUG] {ticker}: failed to dump basic_eps row: {_dbg_exc!r}", flush=True)
     # trailingEps is only as fresh as the statements behind it - when the
     # newest ANNUAL column is over a year old (a full new fiscal year has
     # ended and Yahoo hasn't ingested it yet - OCL.AX right after its Aug
@@ -745,17 +715,9 @@ def _eps_ttm(bundle, ticker=None):
     # stale estimate rather than presented as current.
     stale_annual = bool(a_cols) and (datetime.date.today() - a_cols[0][1]).days > 365
     if not q_cols or (a_cols and q_cols[0][1] <= a_cols[0][1]):
-        if debug:
-            print(
-                f"[TTM-DEBUG] {ticker}: no fresher quarterly data than annual "
-                f"(q_cols empty or q_cols[0] <= a_cols[0]) -> fallback={fallback!r} stale_annual={stale_annual}",
-                flush=True,
-            )
         return fallback, stale_annual
     gap_days = (q_cols[0][1] - q_cols[1][1]).days if len(q_cols) >= 2 else None
     n_needed = 2 if (gap_days is not None and gap_days > 135) else 4
-    if debug:
-        print(f"[TTM-DEBUG] {ticker}: gap_days={gap_days} n_needed={n_needed}", flush=True)
     take = q_cols[:n_needed]
     period_days = gap_days if gap_days is not None else 90
     window_days = ((take[0][1] - take[-1][1]).days + period_days) if take else 0
@@ -763,9 +725,7 @@ def _eps_ttm(bundle, ticker=None):
 
     if n_needed == 2:
         last_annual_end = a_cols[0][1] if a_cols else None
-        cumulative_ttm = _half_year_cumulative_ttm(income_q, q_cols, last_annual_end, debug=debug)
-        if debug:
-            print(f"[TTM-DEBUG] {ticker}: _half_year_cumulative_ttm returned {cumulative_ttm!r} (short_window={short_window})", flush=True)
+        cumulative_ttm = _half_year_cumulative_ttm(income_q, q_cols, last_annual_end)
         if cumulative_ttm is not None:
             return cumulative_ttm, short_window
         # Every column in a half-yearly reporter's quarterly statement is
@@ -780,8 +740,6 @@ def _eps_ttm(bundle, ticker=None):
         # inputs happened to fall outside its classification. Falling
         # back to the flagged annual figure instead is honest about not
         # having a reliable fresh number, rather than guessing wrong.
-        if debug:
-            print(f"[TTM-DEBUG] {ticker}: no classification -> returning fallback={fallback!r}", flush=True)
         return fallback, True
 
     eps_sum = _sum_q_row(income_q, "basic_eps", take)
