@@ -100,7 +100,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # the same, none of the updates went through". Any change meant to
 # observably re-run this module's builders - a real formula fix or a
 # diagnostic print - needs its own version bump, no exceptions.
-ENGINE_VERSION = 33
+ENGINE_VERSION = 34
 
 
 # -----------------------------------
@@ -1059,20 +1059,6 @@ def _build_fundamentals(bundle, ticker, ref):
     net_income = _latest(income, "net_income")
     revenue = _latest(income, "revenue")
 
-    if ticker == "HEI":
-        _matched_row = _find_row(income, _ROW_ALIASES["net_income"])
-        _ni_common_row = _find_row(income, ["Net Income Common Stockholders"])
-        _ni_incl_nci_row = _find_row(income, ["Net Income Including Noncontrolling Interests"])
-        _nci_row = _find_row(income, ["Minority Interest", "Net Income From Continuing And Discontinued Operation"])
-        _trailing_eps_diag, _ = _eps_ttm(bundle, ticker=ticker)
-        print(f"[NETINCOME-DEBUG] HEI matched_row={_matched_row!r} net_income={net_income!r} "
-              f"revenue={revenue!r} income_index={list(income.index) if income is not None else None} "
-              f"ni_common_row={_ni_common_row!r} "
-              f"ni_common_val={(_latest(income, 'Net Income Common Stockholders') if _ni_common_row else None)!r} "
-              f"ni_incl_nci_row={_ni_incl_nci_row!r} "
-              f"trailing_eps={_trailing_eps_diag!r} shares={(bundle.get('info') or {}).get('sharesOutstanding')!r} "
-              f"mcap={(bundle.get('info') or {}).get('marketCap')!r}",
-              flush=True)
     operating_income = _latest(income, "operating_income")
     operating_income, operating_income_estimated = _plausible_operating_income(
         operating_income, revenue, bundle.get("info")
@@ -1113,8 +1099,46 @@ def _build_fundamentals(bundle, ticker, ref):
         metrics.append(_metric(ref, "Fundamentals", label, ticker, value, fmt, key=key, flagged=flagged,
                                 fallback_comment=fallback, thresholds=thresholds))
 
-    add("Earning Yield", (net_income / mcap) if (net_income is not None and mcap) else None, "pct",
-        fallback="Net income divided by market cap.")
+    # Earning Yield: trailing_eps/price rather than net_income/mcap.
+    #
+    # Root-caused on HEI (HEICO Corporation, [NETINCOME-DEBUG] diagnostic,
+    # commit c93dae2): net_income/mcap looked wrong (implied a ~27x P/E
+    # against a real EPS-based P/E of 59.46x, a ~2.2x gap) but net_income
+    # itself was confirmed correct - 'Net Income' and 'Net Income Common
+    # Stockholders' are identical for HEI ($690,385,000 both), so this was
+    # never a _ROW_ALIASES row-selection bug.
+    #
+    # The actual cause: HEICO trades as two share classes (Common "HEI" +
+    # Class A Common "HEI.A"). Yahoo's sharesOutstanding/marketCap for the
+    # ticker "HEI" reflect ONLY the Common class (55,235,561 shares /
+    # $18.59B) while net_income is the whole-company GAAP figure (both
+    # classes combined) - net_income/trailing_eps implies a real total
+    # diluted share count around 122M, roughly double the single-class
+    # count mcap is built from. Dividing a whole-company number by a
+    # single-class mcap understates earning yield's implied P/E for any
+    # true dual-class ticker.
+    #
+    # trailing_eps sidesteps this entirely: _eps_ttm sums the company's own
+    # reported quarterly EPS rows (already correctly divided by whichever
+    # total diluted share count the company itself used to report EPS),
+    # so trailing_eps/price is share-class-proof the same way the site's
+    # own "PE Ratio by Year" chart (price/trailing_eps) already is -
+    # mathematically the same E/P ratio net_income/mcap was trying to be,
+    # just computed on a basis that doesn't require mcap to already have a
+    # correct whole-company share count behind it.
+    #
+    # Deliberately narrow: Price to Sales, EV To Free Cash Flow, Free Cash
+    # Flow Yield, and Market Cap/Tangible Asset Value below still divide
+    # by the same single-class mcap and stay understated for a true
+    # dual-class ticker like HEI - flagged to Andrew as a broader fix, he
+    # chose to scope this one to Earning Yield only for now.
+    trailing_eps_for_ey, trailing_eps_for_ey_flagged = _eps_ttm(bundle, ticker=ticker)
+    add("Earning Yield", (trailing_eps_for_ey / price) if (trailing_eps_for_ey is not None and price) else None, "pct",
+        flagged=bool(trailing_eps_for_ey_flagged),
+        fallback="Trailing-twelve-month EPS divided by price - equivalent to net income divided by "
+                  "market cap when share count is well-defined, computed this way instead so it stays "
+                  "correct for dual-class companies (e.g. HEICO's HEI/HEI.A) where market cap for one "
+                  "listed class understates the whole company.")
     add("Price to Sales ratio", (mcap / revenue) if (mcap and revenue) else None, "x",
         fallback="Market cap divided by revenue.")
     add("Total Current Assets", current_assets, "cur")
