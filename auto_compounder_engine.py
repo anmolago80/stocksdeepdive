@@ -84,7 +84,23 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # "_meta.engine_version" doesn't match is treated as expired, so a formula
 # fix doesn't sit invisible behind a stale 24h cache entry (or worse, a
 # stale Railway Volume file from before a redeploy).
-ENGINE_VERSION = 32
+#
+# Also bumped for the [NETINCOME-DEBUG] diagnostic print added to
+# _build_fundamentals (commit c93dae2): that commit deliberately did NOT
+# bump this, reasoned as "ships in the same deploy as the 31->32 bump, so
+# HEI's cache is already fresh under 32" - wrong. HEI's Fundamentals had
+# ALREADY been computed and cached under version 32 during this session's
+# own earlier verification (legend-star/dyn-relabel checks), on the same
+# persistent Railway Volume this cache lives on (build_sections()'s
+# _read_cache, not an in-memory st.cache_data - a redeploy does NOT clear
+# it). So the very next HEI page load hit that warm cache and returned
+# straight from _read_cache() without ever calling _build_fundamentals()
+# again - the print never ran, [NETINCOME-DEBUG] never appeared in the
+# logs, and nothing on the page changed, exactly matching Andrew's "still
+# the same, none of the updates went through". Any change meant to
+# observably re-run this module's builders - a real formula fix or a
+# diagnostic print - needs its own version bump, no exceptions.
+ENGINE_VERSION = 33
 
 
 # -----------------------------------
@@ -1166,6 +1182,47 @@ def _build_fundamentals(bundle, ticker, ref):
             [0.50, 0.80, "amber", "Average - normal operating cash generation"],
             [0.80, None, "green", "Exceptional - converts almost all EBIT into cash"],
         ])
+    # Capital Intensity Ratio (Andrew's own formula/bands): how much
+    # balance-sheet asset base a dollar of revenue requires. Low = capital-
+    # light (SaaS, software, consulting, asset-light retail); High =
+    # capital-heavy (infrastructure, utilities, REITs, telecom, mining,
+    # heavy industrials) - not itself a red flag, but this app's Quality
+    # score already weights Free Cash Flow/ROIC favourably, so green/red
+    # here follows that same "capital-light is the more favourable
+    # compounder trait" lens, same as EBIT to FCF Conversion above.
+    add("Capital Intensity Ratio", (total_assets / revenue) if (total_assets is not None and revenue) else None, "x",
+        fallback="Total Assets divided by Total Revenue - how much balance-sheet asset base is "
+                  "needed to generate a dollar of revenue. Below 0.50x = capital-light (asset "
+                  "turnover above 2.0x) - common in SaaS, software, consulting, asset-light retail. "
+                  "0.50x-1.00x = moderate intensity (asset turnover 1.0x-2.0x) - light manufacturing, "
+                  "FMCG, specialized logistics, traditional retail. Above 1.00x = capital-heavy (asset "
+                  "turnover below 1.0x) - infrastructure, utilities, REITs, telecom, mining, heavy "
+                  "industrials.",
+        thresholds=[
+            [None, 0.50, "green", "Capital-light - high asset turnover"],
+            [0.50, 1.00, "amber", "Moderate intensity"],
+            [1.00, None, "red", "Capital-heavy - low asset turnover"],
+        ])
+
+    # CapEx-to-Operating Cash Flow Ratio (Andrew's own formula/bands): how
+    # much of operating cash flow is continuously reinvested into capex vs
+    # available to flow through to FCF. capex is stored as a negative
+    # (outflow) figure by convention throughout this module (see the
+    # ocf - abs(capex) pattern used for the FCF fallback everywhere else),
+    # hence the abs() here too.
+    capex_to_ocf = (abs(capex) / ocf) if (capex is not None and ocf) else None
+    add("CapEx to Operating Cash Flow", capex_to_ocf, "pct",
+        fallback="CapEx divided by Operating Cash Flow. Below 20% = capital-light - over 80% of "
+                  "OCF flows through to Free Cash Flow. 20%-50% = moderate reinvestment - a healthy "
+                  "balance between maintaining/expanding assets and cash available for distribution "
+                  "or debt paydown. Above 50% = capital-heavy - over half of OCF is continuously tied "
+                  "up in physical asset replacement, machinery, property, or store build-outs.",
+        thresholds=[
+            [None, 0.20, "green", "Capital-light - high cash conversion"],
+            [0.20, 0.50, "amber", "Moderate reinvestment"],
+            [0.50, None, "red", "Capital-heavy - high cash drain"],
+        ])
+
     add("Intangibles To Total Assets", (goodwill_intangibles / total_assets) if (goodwill_intangibles is not None and total_assets) else None, "pct")
     add("Price to Equity Ratio", (mcap / equity) if (mcap and equity) else None, "x")
 
