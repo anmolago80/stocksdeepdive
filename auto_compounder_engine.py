@@ -100,7 +100,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # the same, none of the updates went through". Any change meant to
 # observably re-run this module's builders - a real formula fix or a
 # diagnostic print - needs its own version bump, no exceptions.
-ENGINE_VERSION = 36
+ENGINE_VERSION = 37
 
 
 # -----------------------------------
@@ -270,6 +270,7 @@ _ROW_ALIASES = {
     "total_liabilities": ["Total Liabilities Net Minority Interest", "Total Liab", "totalLiab"],
     "stockholders_equity": ["Stockholders Equity", "Common Stock Equity", "Total Equity Gross Minority Interest", "totalStockholderEquity"],
     "goodwill_and_intangibles": ["Goodwill And Other Intangible Assets", "goodWill", "intangibleAssets"],
+    "net_ppe": ["Net PPE", "Property Plant Equipment Net", "netPPE"],
     "working_capital": ["Working Capital", "netWorkingCapital"],
     # "Cash Flowsfromusedin Operating Activities Direct" (yfinance's own
     # mangled spacing) is the total operating cash flow row for a company
@@ -1089,6 +1090,7 @@ def _build_fundamentals(bundle, ticker, ref):
     total_liabilities = _latest(balance, "total_liabilities")
     equity = _latest(balance, "stockholders_equity")
     goodwill_intangibles = _latest(balance, "goodwill_and_intangibles")
+    net_ppe = _latest(balance, "net_ppe")
     working_capital = _latest(balance, "working_capital")
     if working_capital is None and current_assets is not None and current_liabilities is not None:
         working_capital = current_assets - current_liabilities
@@ -1239,26 +1241,45 @@ def _build_fundamentals(bundle, ticker, ref):
             [0.50, 0.80, "amber", "Average - normal operating cash generation"],
             [0.80, None, "green", "Exceptional - converts almost all EBIT into cash"],
         ])
-    # Capital Intensity Ratio (Andrew's own formula/bands): how much
-    # balance-sheet asset base a dollar of revenue requires. Low = capital-
-    # light (SaaS, software, consulting, asset-light retail); High =
-    # capital-heavy (infrastructure, utilities, REITs, telecom, mining,
-    # heavy industrials) - not itself a red flag, but this app's Quality
-    # score already weights Free Cash Flow/ROIC favourably, so green/red
-    # here follows that same "capital-light is the more favourable
-    # compounder trait" lens, same as EBIT to FCF Conversion above.
-    add("Capital Intensity Ratio", (total_assets / revenue) if (total_assets is not None and revenue) else None, "x",
-        fallback="Total Assets divided by Total Revenue - how much balance-sheet asset base is "
-                  "needed to generate a dollar of revenue. Below 0.50x = capital-light (asset "
-                  "turnover above 2.0x) - common in SaaS, software, consulting, asset-light retail. "
-                  "0.50x-1.00x = moderate intensity (asset turnover 1.0x-2.0x) - light manufacturing, "
-                  "FMCG, specialized logistics, traditional retail. Above 1.00x = capital-heavy (asset "
-                  "turnover below 1.0x) - infrastructure, utilities, REITs, telecom, mining, heavy "
-                  "industrials.",
+    # Capital Intensity Ratio (Andrew's own formula/bands, REDEFINED - see
+    # below): originally Total Assets/Revenue. Root-caused live on
+    # OCL.AX: that version read 1.51x ("Capital-heavy") for a software
+    # company, and the calc was confirmed correct (total_assets
+    # $172,898,000 / revenue $114,804,000 = 1.506x, no currency
+    # mismatch) - the DEFINITION was the problem, not a bug. Total Assets
+    # counts goodwill from acquisitions and cash sitting on the balance
+    # sheet exactly the same as physical plant/equipment, so any company
+    # that has grown by M&A or simply holds a lot of cash reads as
+    # "capital-heavy" regardless of how little physical infrastructure it
+    # actually needs to run - Andrew's own read: "I don't think that
+    # ratio is giving us anything meaningful."
+    #
+    # Redefined to Net PP&E / Revenue - property, plant and equipment
+    # only, which isolates genuine PHYSICAL capital intensity (factories,
+    # machinery, real estate, network infrastructure) from goodwill/cash.
+    # Thresholds rescaled accordingly - PP&E/Revenue runs far lower than
+    # Total Assets/Revenue for nearly every business (a services or
+    # software company's PP&E is often just office fit-out and computers,
+    # a few percent of revenue at most), so the old 0.50x/1.00x cutoffs
+    # would have called almost everything "capital-light" under the new
+    # numerator. New bands follow the same green/amber/red "capital-light
+    # is the more favourable compounder trait" lens as before, just
+    # calibrated to PP&E-only ratios: under ~0.15x is typical of
+    # asset-light software/services/consulting; 0.15x-0.40x covers most
+    # retail/distribution/light manufacturing; above 0.40x is where real
+    # heavy-plant businesses (utilities, telecom, mining, heavy
+    # industrials) actually sit.
+    add("Capital Intensity Ratio", (net_ppe / revenue) if (net_ppe is not None and revenue) else None, "x",
+        fallback="Net Property, Plant & Equipment divided by Total Revenue - how much PHYSICAL plant "
+                  "and equipment (not goodwill, not cash) is needed to generate a dollar of revenue. "
+                  "Below 0.15x = capital-light - common in software, consulting, asset-light services. "
+                  "0.15x-0.40x = moderate - typical retail, distribution, light manufacturing. Above "
+                  "0.40x = capital-heavy - real physical infrastructure, common in utilities, telecom, "
+                  "mining, heavy industrials.",
         thresholds=[
-            [None, 0.50, "green", "Capital-light - high asset turnover"],
-            [0.50, 1.00, "amber", "Moderate intensity"],
-            [1.00, None, "red", "Capital-heavy - low asset turnover"],
+            [None, 0.15, "green", "Capital-light - minimal physical plant"],
+            [0.15, 0.40, "amber", "Moderate physical capital intensity"],
+            [0.40, None, "red", "Capital-heavy - substantial plant/equipment"],
         ])
 
     # CapEx-to-Operating Cash Flow Ratio (Andrew's own formula/bands): how
