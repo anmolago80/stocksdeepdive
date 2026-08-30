@@ -3153,7 +3153,8 @@ as a fact &mdash; you always know which numbers are computed and which are assum
   <div>
     <div class='sdd-h2' style='margin:0 0 6px;'>Everything is free.</div>
     <div style='color:#8aa0b8;font-size:14.5px;max-width:560px;line-height:1.5;'>Sign in (top
-    left) to save a watchlist and get the weekly {digest_word} digest.</div>
+    left) to build a watchlist across every ticker you check and get the weekly
+    {digest_word} digest.</div>
   </div>
 </div>
 """.format(digest_word="watchlist" if _factual() else "signal"),
@@ -3498,9 +3499,9 @@ def page_deep_dive():
                     st.rerun()
             else:
                 st.caption(
-                    "Sign in (top left) to save this stock to a watchlist and "
-                    + ("get the weekly watchlist digest."
-                       if _factual() else "get the weekly signal digest.")
+                    f"Sign in (top left) to add {_dd['ticker']} to your "
+                    "watchlist and hear about it in the weekly "
+                    + ("watchlist digest." if _factual() else "signal digest.")
                 )
         if _dd_has_research:
             with _follow_col:
@@ -3557,6 +3558,26 @@ def page_deep_dive():
             # "What the model shows": neutral statements about inputs and
             # outputs - no buy/wait framing, no holding-period suggestion.
             with st.expander("What the model shows", expanded=True):
+                # P4.2: one synthesized sentence up front for a first-time
+                # visitor who won't read every bullet below - built only
+                # from values already computed above, so it can never say
+                # anything the rest of the page doesn't already show.
+                # Follows the same red-flag convention as everywhere else:
+                # when no intrinsic value exists, the valuation clause says
+                # so plainly rather than guessing.
+                _dd_val_clause = {
+                    "UNDERVALUED": "trading below the model's estimated value",
+                    "FAIR": "trading close to the model's estimated value",
+                    "EXPENSIVE": "trading above the model's estimated value",
+                    "N/A": "with no computable intrinsic value to compare against",
+                }.get(_dd["valuation"], "with an unclear valuation")
+                st.markdown(
+                    f"**In one line:** {_dd['ticker']}'s Value Score is "
+                    f"{_dd['long_score']:.1f} ({_dd_value_word.lower()}) - "
+                    f"{_dd_val_clause}, with {_dd['quality_label'].lower()} "
+                    f"quality, a {_dd['psychology_sentiment'].lower()} crowd, "
+                    f"and {_dd['discovery_label'].lower()} attention."
+                )
                 _obs = []
                 if _dd.get("intrinsic_value") and _dd.get("mos") is not None:
                     _obs.append(
@@ -3615,6 +3636,10 @@ def page_deep_dive():
         # "X Score: value - LABEL" subheader before their gauge.
         if _factual():
             st.subheader(f"Value Score: {_dd['long_score']:.1f} - {_dd_value_word}")
+            st.caption(
+                "In plain English: one number blending business quality, price "
+                "versus estimated value, crowd psychology, and market attention."
+            )
             st.plotly_chart(
                 _dd_gauge(
                     _dd["long_score"], "Value Score",
@@ -3629,6 +3654,10 @@ def page_deep_dive():
             )
         else:
             st.subheader(f"Long Score: {_dd['long_score']:.1f} - {_dd_signal}")
+            st.caption(
+                "In plain English: one number blending business quality, price "
+                "versus estimated value, crowd psychology, and market attention."
+            )
             st.plotly_chart(
                 _dd_gauge(
                     _dd["long_score"], f"Long Score - {_dd_signal}",
@@ -3720,6 +3749,10 @@ def page_deep_dive():
 
         st.divider()
         st.subheader(f"Psychology Score: {_dd['psychology']:+.1f} - {_dd['psychology_sentiment']}")
+        st.caption(
+            "In plain English: whether the crowd trading this stock right now "
+            "looks fearful, calm, or greedy, read from recent price behaviour."
+        )
         if _dd.get("ma50_defaulted"):
             st.warning(
                 f"MA50 couldn't be computed (fewer than 50 trading days available in "
@@ -3751,6 +3784,10 @@ def page_deep_dive():
 
         st.divider()
         st.subheader(f"Discovery Score: {_dd['discovery']:.1f} - {_dd['discovery_label']}")
+        st.caption(
+            "In plain English: how much attention this stock is getting right "
+            "now, from search interest, news, and trading volume."
+        )
         if _dd.get("trend_score_failed"):
             st.warning(
                 "Trend Score's fetch failed on this load (Google Trends and/or "
@@ -3787,6 +3824,11 @@ def page_deep_dive():
         st.divider()
         if _dd.get("moat") is None:
             st.subheader(f"Moat Score: {_dd.get('moat_band_label', 'N/A')}")
+            st.caption(
+                "In plain English: how well this business's profits are "
+                "protected from competitors, based on returns on capital and "
+                "margin durability."
+            )
             if _dd.get("moat_mode") == "na" and _dd.get("moat_flags"):
                 st.caption(_dd["moat_flags"][0])
             else:
@@ -3796,6 +3838,11 @@ def page_deep_dive():
                 )
         else:
             st.subheader(f"Moat Score: {_dd['moat']:.1f} - {_dd['moat_band_label']}")
+            st.caption(
+                "In plain English: how well this business's profits are "
+                "protected from competitors, based on returns on capital and "
+                "margin durability."
+            )
             if _dd.get("moat_erosion") == "eroding":
                 st.error(
                     "Moat watch: ROIC and operating margin both sit meaningfully "
@@ -3851,6 +3898,10 @@ def page_deep_dive():
         if _dd["intrinsic_value"]:
             _mos_val = _dd["mos"] if _dd["mos"] is not None else 0.0
             st.subheader(f"Margin of Safety: {_mos_val:+.1f}% - {_dd['valuation']}")
+            st.caption(
+                "In plain English: how much cheaper today's price is than what "
+                "the model estimates the business is worth."
+            )
             _mos_gauge_val = max(-50, min(_mos_val, 100))
             _mos_col1, _mos_col2 = st.columns(2)
             with _mos_col1:
