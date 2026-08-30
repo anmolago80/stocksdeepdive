@@ -64,6 +64,7 @@ from fastapi import FastAPI, Request, Response, WebSocket
 from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse,
                                RedirectResponse, StreamingResponse)
 
+import blog_comments_store
 import blog_render
 import blog_store
 import site_content
@@ -147,6 +148,12 @@ async def _wait_for_streamlit(timeout=180):
 async def lifespan(app: FastAPI):
     global _streamlit_proc, _client
     blog_store.ensure_media_dir()
+    # One-time-per-post inference for posts that predate primary_ticker
+    # (P3.2) - deterministic given the same title, so safe on every
+    # startup; see blog_store.backfill_primary_tickers()'s own docstring.
+    # Never allowed to stop the site serving.
+    with suppress(Exception):
+        blog_store.backfill_primary_tickers()
     _client = httpx.AsyncClient(
         base_url=UPSTREAM, timeout=httpx.Timeout(None, connect=10.0),
         follow_redirects=False, limits=httpx.Limits(max_connections=200),
@@ -202,6 +209,17 @@ def _same_origin(request: Request) -> bool:
     origin = request.headers.get("origin") or request.headers.get("referer") or ""
     host = request.headers.get("host", "")
     return bool(host) and host in origin
+
+
+def _client_ip(request: Request) -> str:
+    """Best-effort visitor IP for the comment rate-limit hash - Railway
+    sits this process behind a proxy, so the socket peer (request.client)
+    is the proxy, not the visitor; X-Forwarded-For's first hop is the
+    real one when present."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else ""
 
 
 # Audit fix (3.2): paywall_engine.write_auth_cookie() previously wrote the
@@ -484,8 +502,48 @@ async def blog_post(slug: str, request: Request):
     newer = published[idx - 1] if idx not in (None, 0) else None
     older = (published[idx + 1] if idx is not None
              and idx + 1 < len(published) else None)
-    return _html(blog_render.render_post(post, base, prev_post=older,
-                                         next_post=newer))
+    comments = blog_comments_store.approved_for(slug)
+    comment_status = request.query_params.get("comment")
+    comment_msg = request.query_params.get("msg")
+    html_out = blog_render.render_post(
+        post, base, prev_post=older, next_post=newer, comments=comments,
+        comment_status=comment_status, comment_msg=comment_msg,
+    )
+    # A page carrying a one-time "thanks"/error banner from a just-submitted
+    # comment must never be cached and handed to the next visitor.
+    cache = "no-store" if comment_status else "public, max-age=300"
+    return _html(html_out, cache=cache)
+
+
+@app.post("/blog/{slug}/comments", include_in_schema=False)
+async def blog_comment_submit(slug: str, request: Request):
+    """Moderated comment submission (P2.2): a plain HTML form POST, no JS
+    required. Same CSRF guard as the auth-cookie endpoints - a normal
+    browser form submit from the post page itself sends a Referer header
+    naming this host, which is exactly what _same_origin() checks for."""
+    if not _same_origin(request):
+        return Response(status_code=403)
+    slug = slug.strip().lower().rstrip("/")
+    post = blog_store.get_post(slug)
+    if not post:
+        return Response(status_code=404)
+    try:
+        form = await request.form()
+    except Exception:
+        form = {}
+    name = str(form.get("name") or "").strip()
+    body = str(form.get("body") or "").strip()
+    honeypot = str(form.get("website") or "").strip()
+    ip_hash = blog_comments_store.hash_ip(_client_ip(request))
+    result = blog_comments_store.add_comment(slug, name, body, ip_hash,
+                                             honeypot=honeypot)
+    if result["ok"]:
+        target = f"/blog/{slug}?comment=thanks#comments"
+    else:
+        from urllib.parse import quote
+        msg = quote(result.get("reason") or "Something went wrong.")
+        target = f"/blog/{slug}?comment=error&msg={msg}#comments"
+    return RedirectResponse(target, status_code=303)
 
 
 # -----------------------------------

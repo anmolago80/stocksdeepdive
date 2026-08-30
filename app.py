@@ -47,6 +47,7 @@ import portfolio_health_engine
 import portfolio_news_engine
 import name_directory
 import score_history
+import blog_comments_store
 import blog_store
 import blog_render
 import compounder_ui
@@ -461,7 +462,48 @@ def _set_admin_cookie(clear: bool = False):
     _components.html(f"<script>{_js}</script>", height=0)
 
 
+# Audit fix (P2.2): a long-lived, low-stakes marker distinct from
+# sdd_fullview - it just remembers "this browser has typed ?admin= at
+# least once", right or wrong, so the RC view control (below) can stay
+# hidden from ordinary visitors who've never touched the admin flow at
+# all, without needing to hold a valid unlock to keep seeing it.
+_ADMIN_SEEN_COOKIE = "sdd_admin_seen"
+
+
+def _set_admin_seen_cookie():
+    import streamlit.components.v1 as _components
+    _js = (f"document.cookie='{_ADMIN_SEEN_COOKIE}=1; "
+           "path=/; max-age=2592000; SameSite=Lax';")
+    _components.html(f"<script>{_js}</script>", height=0)
+
+
+def _admin_ever_seen() -> bool:
+    """True once this browser has engaged the admin/full-view flow in any
+    way - supplied ?admin= (this run), is or has been unlocked this
+    session, or carries either long-lived cookie from a past visit.
+    Ordinary visitors who've never touched any of this never see the RC
+    view control rendered at all (P2.2 - it used to be visible, just
+    behind a key prompt, to every visitor)."""
+    if _admin_qp:
+        return True
+    if st.session_state.get("full_view_unlocked") or st.session_state.get("full_view_exited"):
+        return True
+    try:
+        cookies = st.context.cookies
+        if cookies.get("sdd_fullview") or cookies.get(_ADMIN_SEEN_COOKIE):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 if _admin_key_env:
+    if _admin_qp:
+        # Set (or refresh) the long-lived "seen" marker on ANY ?admin=
+        # attempt, correct or not - a wrong guess still proves this
+        # visitor knows the flow exists, so hiding the control from them
+        # afterwards would just be confusing.
+        st.session_state["_pending_admin_seen_cookie"] = True
     if _admin_qp and _admin_key_locked_out():
         # Audit fix (3.1): too many recent wrong guesses - don't even
         # compare the key while locked out, and don't strip ?admin= (so a
@@ -503,6 +545,8 @@ if st.session_state.pop("_pending_admin_cookie", False):
     _set_admin_cookie()
 if st.session_state.pop("_pending_admin_cookie_clear", False):
     _set_admin_cookie(clear=True)
+if st.session_state.pop("_pending_admin_seen_cookie", False):
+    _set_admin_seen_cookie()
 
 # Email sign-in plumbing (same pending-flag pattern): flush any cookie
 # write/clear queued by last run's sign-in/sign-out, then restore the
@@ -683,6 +727,8 @@ def _render_admin_unlock():
         return
     if st.session_state.get("full_view_unlocked"):
         return  # the FULL VIEW badge row already shows state + Exit
+    if not _admin_ever_seen():
+        return  # ordinary visitor who's never touched the admin flow
     with st.popover("RC view", key="rc_view_pop"):
         _key_try = st.text_input(
             "Access key", type="password", key="rc_view_key_input",
@@ -3615,13 +3661,18 @@ def page_deep_dive():
             "the full Deep Dive breakdown",
             teaser=(
                 "Quality, Psychology, Discovery, and Trade Setup scores - the "
-                "full factor breakdown behind the Long Score above."
+                f"full factor breakdown behind the {_score_word} above."
             ),
             key_prefix=f"dd_{_dd['ticker']}",
         ):
             return
 
         st.subheader(f"Quality Score: {_dd['quality_score']} - {_dd['quality_label']}")
+        st.caption(
+            "In plain English: how strong the underlying business is - "
+            "profitability, balance sheet strength, and growth - judged "
+            "from its own financial statements."
+        )
         _q_col1, _q_col2 = st.columns(2)
         with _q_col1:
             st.plotly_chart(
@@ -4766,6 +4817,16 @@ def _render_scan_results(page_label, state_prefix, empty_message,
     # skipped and Discovery reflects price/volume attention only.
     attention_lite = len(stocks) > lite_threshold
 
+    # P2.3: a small Comparison (<=5 tickers, typed by hand) can afford a
+    # live Moat compute per ticker - the "too slow for 10+ names" cost
+    # get_cached_moat's docstring warns about scales with ticker count, and
+    # 5 fundamentals-bundle fetches is a couple of seconds, not minutes.
+    # Scanner never qualifies (state_prefix != "cmp") even on a tiny
+    # sector filter, since nothing here guarantees it stays small on the
+    # next rerun. Falls back to the cache-only read otherwise, same as
+    # before this change.
+    _live_moat_ok = state_prefix == "cmp" and len(stocks) <= 5
+
     # Comparison and Scanner each get their own fixed cache key (via
     # state_prefix) so switching between them never overwrites the other's
     # last completed scan.
@@ -5030,7 +5091,10 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 # enabled via MOAT_IN_VALUE_SCORE, can fold it into the
                 # blend below - same "stored value only" convention the
                 # Moat table column further down this function uses.
-                _moat_cached = moat_engine.get_cached_moat(ticker)
+                _moat_cached = (
+                    moat_engine.compute_moat(ticker) if _live_moat_ok
+                    else moat_engine.get_cached_moat(ticker)
+                )
 
                 if moat_engine.MOAT_IN_VALUE_SCORE:
                     long_score = calculate_long_score(
@@ -5552,7 +5616,7 @@ def _render_scan_results(page_label, state_prefix, empty_message,
             if _factual():
                 st.caption(
                     "Every column is a described calculation from stated inputs "
-                    "(hover the Methodology page for definitions). Red values "
+                    "(see the Methodology page for definitions). Red values "
                     "rest on default or estimated inputs."
                 )
 
@@ -5603,7 +5667,10 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     col2.metric("Highest MOS", ranked.loc[_mos_ranked.idxmax()]["Ticker"])
                 else:
                     col2.metric("Highest MOS", "-")
-                col3.metric("Best Long Score", best_long["Ticker"])
+                col3.metric(
+                    "Best Value Score" if _factual() else "Best Long Score",
+                    best_long["Ticker"],
+                )
 
             # Only meaningful once there are enough names for a group
             # average to say anything (it groups by TYPE, not GICS sector).
@@ -8103,6 +8170,43 @@ def page_blog_admin():
             "Posts and images are stored on the Railway volume alongside the "
             "site's other data, so they survive redeploys."
         )
+
+    # ---- comment moderation (P2.2) ----
+    st.markdown("---")
+    _pending_comments = blog_comments_store.pending_all()
+    st.markdown(f"##### Comments &nbsp;:orange[({len(_pending_comments)} pending)]"
+                if _pending_comments else "##### Comments &nbsp;:grey[(0 pending)]")
+    if not _pending_comments:
+        st.caption("Nothing waiting on review.")
+    else:
+        for _c in _pending_comments:
+            # blog_comments_store rows carry post_slug (not an id) - resolve
+            # the post's title for display via the slug against the posts
+            # list already loaded above for the selector.
+            _c_post = next((p for p in posts if p["slug"] == _c["post_slug"]), None)
+            _c_post_title = _c_post["title"] if _c_post else _c["post_slug"]
+            with st.container(border=True):
+                st.markdown(
+                    f"**{html.escape(_c.get('author_name') or 'Anonymous')}** "
+                    f"on *{html.escape(_c_post_title)}* &middot; {_c.get('created_at', '')[:10]}"
+                )
+                st.markdown(
+                    f"<div style='white-space:pre-wrap;color:#cddaea;"
+                    f"font-size:14.5px'>{html.escape(_c.get('body') or '')}</div>",
+                    unsafe_allow_html=True,
+                )
+                _bc1, _bc2, _bc3 = st.columns([1, 1, 4])
+                with _bc1:
+                    if st.button("Approve", key=f"cmt_approve_{_c['id']}",
+                                 type="primary"):
+                        blog_comments_store.set_status(
+                            _c["id"], blog_comments_store.STATUS_APPROVED)
+                        st.rerun()
+                with _bc2:
+                    if st.button("Reject", key=f"cmt_reject_{_c['id']}"):
+                        blog_comments_store.set_status(
+                            _c["id"], blog_comments_store.STATUS_REJECTED)
+                        st.rerun()
 
 
 # -----------------------------------
