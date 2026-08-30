@@ -100,7 +100,10 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # the same, none of the updates went through". Any change meant to
 # observably re-run this module's builders - a real formula fix or a
 # diagnostic print - needs its own version bump, no exceptions.
-ENGINE_VERSION = 39
+# 39->40 (2026-08-30): Capital Intensity Ratio's top band split in two
+# (0.40x-1.00x "Capital-heavy" / 1.00x+ "Very capital-heavy") - see that
+# metric's own comment in _build_fundamentals for why.
+ENGINE_VERSION = 40
 
 
 # -----------------------------------
@@ -1326,17 +1329,30 @@ def _build_fundamentals(bundle, ticker, ref):
     # retail/distribution/light manufacturing; above 0.40x is where real
     # heavy-plant businesses (utilities, telecom, mining, heavy
     # industrials) actually sit.
+    # Top band split 2026-08-30: the old single "0.40x = capital-heavy,
+    # no ceiling" band lumped an ordinary heavy manufacturer (~0.45x)
+    # together with genuine infrastructure operators (utilities/telecom/
+    # pipelines, often 1.0x-3.0x+) in the exact same bucket - and because
+    # band_gauge()'s axis auto-extends to fit whatever value is passed,
+    # an unbounded top band made any outlier reading (e.g. 0.80x) pin the
+    # marker to the far edge of the gauge, visually reading as "maxed
+    # out" even though it wasn't close to the real high end for that
+    # band. Split at 1.00x - a clean round number that keeps ordinary
+    # heavy industrials/manufacturers (0.40x-1.00x) as "Capital-heavy"
+    # and gives true infrastructure-scale operators their own band.
     add("Capital Intensity Ratio", (net_ppe / revenue) if (net_ppe is not None and revenue) else None, "x",
         fallback="Net Property, Plant & Equipment divided by Total Revenue - how much PHYSICAL plant "
                   "and equipment (not goodwill, not cash) is needed to generate a dollar of revenue. "
                   "Below 0.15x = capital-light - common in software, consulting, asset-light services. "
-                  "0.15x-0.40x = moderate - typical retail, distribution, light manufacturing. Above "
-                  "0.40x = capital-heavy - real physical infrastructure, common in utilities, telecom, "
-                  "mining, heavy industrials.",
+                  "0.15x-0.40x = moderate - typical retail, distribution, light manufacturing. "
+                  "0.40x-1.00x = capital-heavy - real physical infrastructure, common in heavy "
+                  "industrials and manufacturers. 1.00x and above = very capital-heavy - "
+                  "infrastructure-scale plant, common in utilities, telecom networks, pipelines, mining.",
         thresholds=[
             [None, 0.15, "green", "Capital-light - minimal physical plant"],
             [0.15, 0.40, "amber", "Moderate physical capital intensity"],
-            [0.40, None, "red", "Capital-heavy - substantial plant/equipment"],
+            [0.40, 1.00, "red", "Capital-heavy - substantial plant/equipment"],
+            [1.00, None, "blue", "Very capital-heavy - infrastructure-scale plant"],
         ])
 
     # CapEx-to-Operating Cash Flow Ratio (Andrew's own formula/bands): how
