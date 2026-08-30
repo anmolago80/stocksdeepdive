@@ -1042,6 +1042,21 @@ def _build_fundamentals(bundle, ticker, ref):
 
     net_income = _latest(income, "net_income")
     revenue = _latest(income, "revenue")
+
+    if ticker == "HEI":
+        _matched_row = _find_row(income, _ROW_ALIASES["net_income"])
+        _ni_common_row = _find_row(income, ["Net Income Common Stockholders"])
+        _ni_incl_nci_row = _find_row(income, ["Net Income Including Noncontrolling Interests"])
+        _nci_row = _find_row(income, ["Minority Interest", "Net Income From Continuing And Discontinued Operation"])
+        _trailing_eps_diag, _ = _eps_ttm(bundle, ticker=ticker)
+        print(f"[NETINCOME-DEBUG] HEI matched_row={_matched_row!r} net_income={net_income!r} "
+              f"revenue={revenue!r} income_index={list(income.index) if income is not None else None} "
+              f"ni_common_row={_ni_common_row!r} "
+              f"ni_common_val={(_latest(income, 'Net Income Common Stockholders') if _ni_common_row else None)!r} "
+              f"ni_incl_nci_row={_ni_incl_nci_row!r} "
+              f"trailing_eps={_trailing_eps_diag!r} shares={(bundle.get('info') or {}).get('sharesOutstanding')!r} "
+              f"mcap={(bundle.get('info') or {}).get('marketCap')!r}",
+              flush=True)
     operating_income = _latest(income, "operating_income")
     operating_income, operating_income_estimated = _plausible_operating_income(
         operating_income, revenue, bundle.get("info")
