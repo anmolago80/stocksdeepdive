@@ -2990,6 +2990,50 @@ as a fact &mdash; you always know which numbers are computed and which are assum
             unsafe_allow_html=True,
         )
 
+    # ---- tonight's top 5 (P1.1: show value instantly, zero clicks) ----
+    # Same store the Scanner page reads (scan_store, written nightly by
+    # nightly_scan.py) - zero live fetching here. Renders nothing at all
+    # (no empty box) when no stored scan exists yet, per spec.
+    _tt5_scan = scan_store.load_scan("ASX 200")
+    if _tt5_scan and _tt5_scan.get("rows"):
+        _tt5_rows = sorted(
+            _tt5_scan["rows"], key=lambda r: r.get("Long Score") or 0, reverse=True
+        )[:5]
+        _tt5_html = []
+        for _tr in _tt5_rows:
+            _ttk = _tr.get("Ticker") or "-"
+            _ttk_cell = (
+                f"<a href='/deep-dive?ticker={_ttk}' target='_self' "
+                "style='color:inherit;text-decoration:underline;'><b>"
+                f"{_ttk}</b></a>" if _ttk != "-" else "<b>-</b>"
+            )
+            _tt5_html.append(
+                "<tr>"
+                + _td(_ttk_cell)
+                + _td(f"{(_tr.get('Price') or 0):,.2f}")
+                + _td(_bar_cell(_tr.get("Long Score"),
+                                SIGNAL_THRESHOLDS["WATCHLIST"],
+                                SIGNAL_THRESHOLDS["LONG"]), minw=90)
+                + _td(_badge_cell(_tr.get("Valuation", "-")))
+                + "</tr>"
+            )
+        st.markdown(
+            "<div class='sdd-kicker' style='margin-top:40px;'>TONIGHT'S TOP 5</div>"
+            "<div class='sdd-h2'>Tonight's top 5 &mdash; ASX 200 by Value Score</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            _sdd_table(["Ticker", "Price", "Value Score", "Valuation"], _tt5_html),
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "From last night's overnight scan - a sort result from described "
+            "calculations, not a recommendation. Full table in the "
+            "<a href='/scanner' target='_self' style='color:inherit;'>"
+            "Stock Scanner &rarr;</a>",
+            unsafe_allow_html=True,
+        )
+
     # ---- compounder coverage ----
     _cov_data = _load_compounder_data()
     if _cov_data and _cov_data.get("tickers"):
@@ -4532,87 +4576,102 @@ def page_scanner():
     _render_header(compact=True, page_label="Scanner")
     _bump_page_view("scanner")
 
+    # Defaults for a first-ever visit (no prior session_state at all):
+    # Australia + ASX 200 - picked so the very first script run has a
+    # concrete universe to look up an overnight scan for, before any
+    # picker widget below has been touched or even instantiated.
     st.session_state.setdefault("scanner_country_au", True)
     st.session_state.setdefault("scanner_country_us", False)
+    st.session_state.setdefault("scanner_universe", "ASX 200")
 
-    st.write(
-        "Tick one or more countries, then pick a single universe to scan - "
-        "each universe below is scanned entirely on its own (ASX 200 and "
-        "ASX 300 are never blended together, and neither are any of the "
-        "USA universes)."
-    )
+    # ---- Instant results: rendered FIRST, above every picker, using
+    # whichever universe is currently selected in session_state (ASX 200
+    # on a first visit). This is the fix for "the site makes visitors ask
+    # for value instead of showing it" - a first-time visitor sees a
+    # ranked table with zero interaction. The picker below can change the
+    # universe; Streamlit reruns top-to-bottom on any widget change, so
+    # this table simply re-reads session_state and shows the new
+    # universe's overnight scan on the next run - "universe switch keeps
+    # working exactly as now."
+    _top_universe = st.session_state.get("scanner_universe", "ASX 200")
+    _overnight_top = scan_store.load_scan(_top_universe)
+    if _overnight_top:
+        _render_overnight_scan_table(_top_universe, _overnight_top)
 
-    _col_au, _col_us = st.columns(2)
-    with _col_au:
-        _want_au = st.checkbox("Australia", key="scanner_country_au")
-    with _col_us:
-        _want_us = st.checkbox("USA", key="scanner_country_us")
+    with st.expander(
+        "Change country / universe / sector", expanded=not bool(_overnight_top)
+    ):
+        st.write(
+            "Tick one or more countries, then pick a single universe to scan - "
+            "each universe below is scanned entirely on its own (ASX 200 and "
+            "ASX 300 are never blended together, and neither are any of the "
+            "USA universes)."
+        )
 
-    if _want_au:
-        _render_country_mood_line("Australia")
-    if _want_us:
-        _render_country_mood_line("USA")
+        _col_au, _col_us = st.columns(2)
+        with _col_au:
+            _want_au = st.checkbox("Australia", key="scanner_country_au")
+        with _col_us:
+            _want_us = st.checkbox("USA", key="scanner_country_us")
 
-    _universe_options = []
-    if _want_au:
-        _universe_options += scanner_engine.get_universes("Australia")
-    if _want_us:
-        _universe_options += scanner_engine.get_universes("USA")
+        if _want_au:
+            _render_country_mood_line("Australia")
+        if _want_us:
+            _render_country_mood_line("USA")
 
-    if not _universe_options:
-        st.info("Tick at least one country above to pick a universe to scan.")
-        return
+        _universe_options = []
+        if _want_au:
+            _universe_options += scanner_engine.get_universes("Australia")
+        if _want_us:
+            _universe_options += scanner_engine.get_universes("USA")
 
-    # Guard against a previously-picked universe/sector no longer being a
-    # valid option (e.g. unticking USA while "S&P 500" was selected) -
-    # Streamlit raises if a selectbox's session_state value isn't in its
-    # current options, so this has to be fixed up BEFORE the widget below
-    # is instantiated, not after.
-    if st.session_state.get("scanner_universe") not in _universe_options:
-        st.session_state["scanner_universe"] = _universe_options[0]
+        if not _universe_options:
+            st.info("Tick at least one country above to pick a universe to scan.")
+            return
 
-    universe = st.selectbox("Universe", _universe_options, key="scanner_universe")
-    universe_country = (
-        "Australia" if universe in scanner_engine.get_universes("Australia") else "USA"
-    )
+        # Guard against a previously-picked universe/sector no longer being a
+        # valid option (e.g. unticking USA while "S&P 500" was selected) -
+        # Streamlit raises if a selectbox's session_state value isn't in its
+        # current options, so this has to be fixed up BEFORE the widget below
+        # is instantiated, not after.
+        if st.session_state.get("scanner_universe") not in _universe_options:
+            st.session_state["scanner_universe"] = _universe_options[0]
 
-    _pool_df, _pool_source = scanner_engine.get_universe_pool(universe_country, universe)
-    _sectors = scanner_engine.get_sectors(_pool_df)
+        universe = st.selectbox("Universe", _universe_options, key="scanner_universe")
+        universe_country = (
+            "Australia" if universe in scanner_engine.get_universes("Australia") else "USA"
+        )
 
-    if st.session_state.get("scanner_sector") not in _sectors:
-        st.session_state["scanner_sector"] = "All"
+        _pool_df, _pool_source = scanner_engine.get_universe_pool(universe_country, universe)
+        _sectors = scanner_engine.get_sectors(_pool_df)
 
-    # Sector heat decorates each dropdown OPTION's label (e.g. "\U0001F7E2
-    # Technology - Hot (+14.3% 12m)") - it never changes the underlying
-    # selected value (still the plain sector name), and there's no separate
-    # detail table/expander for it on this site, unlike the original app.
-    # Cached a day per exact universe/sector set, so this is only slow the
-    # first time a given universe's sector list is shown.
-    # Sector heat decorates each sector option with a colored dot
-    # (green/amber/red = hot/medium/cold vs the rest of this universe).
-    # First computation for a universe takes a while; cached for a day.
-    _heat_pairs = ()
-    if _pool_df is not None and not _pool_df.empty and "Sector" in _pool_df.columns:
-        _heat_pairs = tuple(zip(_pool_df["Ticker"], _pool_df["Sector"]))
-    _sector_heat = {}
-    if _heat_pairs:
-        with st.spinner("Reading sector heat (cached for the day once computed)..."):
-            _sector_heat = scanner_engine.compute_sector_heat(_heat_pairs)
+        if st.session_state.get("scanner_sector") not in _sectors:
+            st.session_state["scanner_sector"] = "All"
 
-    sector = st.selectbox(
-        "Sector (optional)", _sectors, key="scanner_sector",
-        format_func=lambda s: scanner_engine.label_for(s, _sector_heat),
-    )
+        # Sector heat decorates each dropdown OPTION's label (e.g. "\U0001F7E2
+        # Technology - Hot (+14.3% 12m)") - it never changes the underlying
+        # selected value (still the plain sector name), and there's no separate
+        # detail table/expander for it on this site, unlike the original app.
+        # Cached a day per exact universe/sector set, so this is only slow the
+        # first time a given universe's sector list is shown. Lives inside
+        # this expander (below the instant table above) precisely so it can
+        # never block that table's render - Streamlit streams each st.*
+        # call to the frontend as the script executes, so the table above
+        # is already on screen well before this spinner even starts.
+        _heat_pairs = ()
+        if _pool_df is not None and not _pool_df.empty and "Sector" in _pool_df.columns:
+            _heat_pairs = tuple(zip(_pool_df["Ticker"], _pool_df["Sector"]))
+        _sector_heat = {}
+        if _heat_pairs:
+            with st.spinner("Reading sector heat (cached for the day once computed)..."):
+                _sector_heat = scanner_engine.compute_sector_heat(_heat_pairs)
 
-    st.caption(f"Universe source: {_pool_source}")
+        sector = st.selectbox(
+            "Sector (optional)", _sectors, key="scanner_sector",
+            format_func=lambda s: scanner_engine.label_for(s, _sector_heat),
+        )
 
-    # ---- Overnight scan: served instantly when the nightly job has run
-    # for this universe - the answer to "what should I look at?" without
-    # a 30-minute live wait. Live scan below stays available for current
-    # prices and the full attention model.
-    _overnight = scan_store.load_scan(universe)
-    if _overnight:
-        _render_overnight_scan_table(universe, _overnight)
+        st.caption(f"Universe source: {_pool_source}")
 
     if st.button("Run Scan", type="primary", key="run_scanner"):
         with st.spinner("Resolving universe..."):
