@@ -49,7 +49,12 @@ def _get_client():
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_google_trend_score(keyword):
     """Google Trends interest-over-time value (0-100 scale) for `keyword`,
-    most recent point in the last 3 months. Returns 0 on any failure.
+    most recent point in the last 3 months. Returns (0, False) when the
+    call succeeds but genuinely has nothing to report (no data for this
+    keyword) - a real reading, not a failure. Returns (0, True) only when
+    the call itself raised (rate limit, broken session flow, network
+    issue) - see get_trend_score's docstring for why that distinction
+    matters to the caller.
 
     Cached (30-minute TTL, keyed by keyword) - trendspy sits on an
     unofficial Google endpoint that's already known to be fragile under
@@ -61,10 +66,10 @@ def get_google_trend_score(keyword):
         tr = _get_client()
         data = tr.interest_over_time([keyword])
         if data is None or data.empty or keyword not in data.columns:
-            return 0
-        return int(data[keyword].iloc[-1])
+            return 0, False
+        return int(data[keyword].iloc[-1]), False
     except Exception:
-        return 0
+        return 0, True
 
 
 @st.cache_data(ttl=10800, show_spinner=False)
@@ -72,16 +77,18 @@ def get_news_trend_score(keyword, api_key=None):
     """Count of NewsAPI articles mentioning `keyword`, strictly in the last 7
     days - the crowd-attention signal that used to come from Reddit mentions
     (see module docstring). Needs a NewsAPI key - pass api_key through from
-    app.py's "NewsAPI Key" box (same key News Score uses); returns 0 if
-    none is available. Returns 0 on any failure (rate limit, network issue,
-    no results) - this is a nice-to-have signal, never something that
-    should break a scan.
+    app.py's "NewsAPI Key" box (same key News Score uses); returns (0,
+    False) if none is available - a missing key is an expected, configured
+    state, not a failure. Returns (0, True) only on an actual fetch failure
+    (rate limit, network issue) - this is still a nice-to-have signal,
+    never something that should break a scan, but the caller can now tell
+    "fetch broke" apart from "zero real mentions."
 
     Cached at the same longer 3-hour TTL as news_engine.get_news_score(),
     for the same reason: this also spends NewsAPI's free-tier daily quota,
     which is shared across every visitor to this site."""
     if not api_key:
-        return 0
+        return 0, False
     try:
         from newsapi import NewsApiClient
         client = NewsApiClient(api_key=api_key)
@@ -89,13 +96,28 @@ def get_news_trend_score(keyword, api_key=None):
         resp = client.get_everything(
             q=keyword, language="en", from_param=since, page_size=100
         )
-        return len(resp.get("articles", []))
+        return len(resp.get("articles", [])), False
     except Exception:
-        return 0
+        return 0, True
 
 
 def get_trend_score(keyword, api_key=None):
     """Combined score: Google Trends interest + NewsAPI mention count (past
     7 days). `api_key`, if passed, is the NewsAPI key from app.py - without
-    it, the NewsAPI half is always 0 and this is Google Trends alone."""
-    return get_google_trend_score(keyword) + get_news_trend_score(keyword, api_key=api_key)
+    it, the NewsAPI half is always (0, False) and this is Google Trends
+    alone.
+
+    Returns (score, failed). `failed=True` means at least one half's fetch
+    actually raised and silently fell back to 0 - as opposed to a
+    legitimate zero (no search interest, no matching articles, or simply
+    no NewsAPI key configured). Root-caused live on CPRT (2026-08-30): the
+    Comparison table showed Discovery=68 while the Deep Dive page for the
+    same ticker, computed moments later, showed 89 - a fresh scan matched
+    Deep Dive exactly, confirming the 68 reading was this exact silent
+    fallback (Trend Score's Google half briefly failed and returned 0
+    instead of its real ~21), not a bug in the Discovery formula or the
+    caching architecture. Callers use `failed` to disclose that instead of
+    presenting a fetch failure as if it were a confirmed reading."""
+    google_value, google_failed = get_google_trend_score(keyword)
+    news_value, news_failed = get_news_trend_score(keyword, api_key=api_key)
+    return google_value + news_value, (google_failed or news_failed)

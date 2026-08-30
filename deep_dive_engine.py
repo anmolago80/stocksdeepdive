@@ -176,11 +176,12 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
 
     keyword = ticker.split(".")[0]
     if live_data:
-        trend_score = get_trend_score(keyword, api_key=news_api_key or None)
+        trend_score, trend_score_failed = get_trend_score(keyword, api_key=news_api_key or None)
         news_score = get_news_score(keyword, api_key=news_api_key or None) + get_yahoo_news_score(ticker)
     else:
         trend_score = 0
         news_score = 0
+        trend_score_failed = False
 
     if enable_social:
         social_score, social_detail = social_engine.get_social_score(ticker)
@@ -391,6 +392,13 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         "activity": round(activity_score, 2),
         "volume_ratio": round(volume_ratio, 2),
         "trend_score": round(trend_score, 2),
+        # True only when Trend Score's own fetch actually raised (Google
+        # Trends and/or NewsAPI) and silently fell back to 0 - see
+        # trends_engine.get_trend_score's docstring for the CPRT
+        # root-cause writeup. Lets the page disclose "this may be
+        # understated" instead of presenting a fetch failure as a
+        # confirmed zero-attention reading.
+        "trend_score_failed": trend_score_failed,
         "news_score": round(news_score, 2),
         "social_score": round(social_score, 2),
         "discovery": round(discovery_score, 2),

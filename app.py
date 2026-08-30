@@ -3623,6 +3623,14 @@ def page_deep_dive():
 
         st.divider()
         st.subheader(f"Discovery Score: {_dd['discovery']:.1f} - {_dd['discovery_label']}")
+        if _dd.get("trend_score_failed"):
+            st.warning(
+                "Trend Score's fetch failed on this load (Google Trends and/or "
+                "NewsAPI didn't respond) and silently fell back to 0 - Discovery "
+                "may be understated as a result. This isn't a confirmed 'no "
+                "attention' reading; refreshing in a few minutes may pick up a "
+                "different, higher number."
+            )
         _dv_col1, _dv_col2 = st.columns(2)
         with _dv_col1:
             st.plotly_chart(
@@ -3940,6 +3948,7 @@ _FLAG_FOR_COL = {
     "MOS": "_flag_intrinsic",
     "Val Method": "_flag_growth",
     "DCF Growth %": "_flag_growth",
+    "Discovery": "_flag_discovery",
 }
 
 
@@ -4750,7 +4759,7 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 keyword = ticker.split(".")[0]
 
                 if live_data and not attention_lite:
-                    trend_score = get_trend_score(keyword, api_key=news_api_key or None)
+                    trend_score, trend_score_failed = get_trend_score(keyword, api_key=news_api_key or None)
                     # Combined from two independent sources: NewsAPI (keyword text
                     # search, needs NEWS_API_KEY - returns 0 if that's not
                     # configured) and Yahoo Finance via yfinance (free, no key
@@ -4762,6 +4771,7 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 else:
                     trend_score = 0
                     news_score = 0
+                    trend_score_failed = False
 
                 if enable_social and not attention_lite:
                     social_score, social_detail = social_engine.get_social_score(ticker)
@@ -5064,6 +5074,12 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     "_flag_quality": bool(quality_default),
                     "_flag_intrinsic": bool(intrinsic_default),
                     "_flag_growth": bool(growth_default),
+                    # True only when Trend Score's own fetch actually failed
+                    # this run (see trends_engine.get_trend_score's
+                    # docstring) and silently fell back to 0 - discloses that
+                    # Discovery may be understated, rather than presenting a
+                    # fetch failure as a confirmed reading.
+                    "_flag_discovery": bool(trend_score_failed),
 
                     "Entry": entry_price,
                     "Target": target_price,
@@ -5297,7 +5313,8 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     + _td(_bar_cell(r["Quality"], 40, 80,
                                     flag=bool(r.get("_flag_quality"))), minw=90)
                     + _td(_bar_cell(r["Psychology"], -5, 20), minw=90)
-                    + _td(_bar_cell(r["Discovery"], 25, 50), minw=90)
+                    + _td(_bar_cell(r["Discovery"], 25, 50,
+                                    flag=bool(r.get("_flag_discovery"))), minw=90)
                 )
                 if _factual():
                     # Valuation / Sentiment / Trend labels stay in the

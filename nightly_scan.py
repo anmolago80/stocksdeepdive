@@ -170,7 +170,14 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         # other caller of these functions.
         keyword = ticker.split(".")[0]
         try:
-            trend_score = get_trend_score(keyword)
+            # get_trend_score now returns (score, failed) - see
+            # trends_engine.py's docstring for the CPRT root-cause writeup
+            # this distinction exists for. This standalone/overnight path
+            # has no UI to surface a disclosure through (it just writes a
+            # ranking via scan_store), so the failed half is intentionally
+            # discarded here rather than threaded further - unpacking it is
+            # only to keep trend_score itself a plain number, not a tuple.
+            trend_score, _ = get_trend_score(keyword)
         except Exception:
             trend_score = 0
         try:
