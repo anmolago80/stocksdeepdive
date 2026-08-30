@@ -5,3 +5,5 @@ stocksdeepdive.db
 russell2000_cache.csv
 overnight_scans/
 scheduler_state.json
+auto_cv_cache/
+moat_cache/

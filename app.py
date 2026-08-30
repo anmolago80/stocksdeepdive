@@ -1060,8 +1060,13 @@ def _render_tape(quotes=None):
             f"<span class='{cls}'>{arrow} {chg:+.1f}%</span></span>"
         )
     row = "".join(items)
+    # The row is duplicated back-to-back so the CSS marquee can scroll
+    # seamlessly with no visible seam - the second copy is a pure visual
+    # trick, never new information, so a screen reader should skip it
+    # rather than reading every ticker twice.
     st.markdown(
-        f"<div class='sdd-tape'><div class='sdd-tape-inner'>{row}{row}</div></div>",
+        "<div class='sdd-tape'><div class='sdd-tape-inner'>"
+        f"{row}<span aria-hidden='true'>{row}</span></div></div>",
         unsafe_allow_html=True,
     )
 
@@ -7461,25 +7466,34 @@ def _content_page_shell(title):
     st.markdown(f"## {title}")
 
 
-_METHODOLOGY_FACTUAL_SWAPS = [
-    # Verdict bands paragraph -> value-score description
-    ("Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise\n**AVOID**. If no intrinsic value could be computed at all, the signal is capped at\nWATCHLIST - a thesis whose value leg can't be verified doesn't get a full\nrecommendation.",
-     "On this site the number is displayed as the **Value Score** - a weighted\ndescription of the four calculations above, shown without signal labels or\nrecommendations. Where no intrinsic value could be computed, that is stated\nplainly and the affected values are marked."),
-    ("The Long Score (0\u2013100) and Investment Signal", "The Value Score (0\u2013100)"),
-    # Score heading + intro question -> neutral description
-    ("#### The Long Score (0\u2013100)\n\nOne number answering \"is this a good business to own at this price?\" It blends four\nfactors, each clamped to a fixed band first so no single factor can run away with the\nresult:",
-     "#### The Value Score (0\u2013100)\n\nOne number summarising four calculations, each clamped to a fixed band first so no\nsingle factor can run away with the result:"),
-    # Psychology row: drop the advice-flavoured sentence, keep the maths.
-    # Two variants - the weight itself differs (20% when Moat isn't
-    # blended in, 15% when it is) but both get the same softened wording.
-    ("| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
-     "| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
-    ("| Psychology | 15% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
-     "| Psychology | 15% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
-    # Trade Setup / two-verdicts section -> psychology-readings description
-    ("#### Value vs timing - two separate verdicts\n\nThe **Investment Signal** answers \"good business to own?\" The **Trade Setup** answers\n\"is right now a sane entry?\" - support/resistance-based entry zone, stop loss and\ntargets, gated on trend safety and risk/reward. A great company can be a poor entry\ntoday; the site shows both rather than blurring them into one contradictory verdict.",
-     "#### Psychology and discovery readings\n\nAlongside the valuation models, the site reports what the crowd has been doing:\ndistance below the 3-month high (fear), distance from the 50-day average and greed/\nFOMO terms, and a discovery reading built from volume, search interest, news and\nsocial chatter. These are measurements, stated as numbers - the site does not\ndisplay entry levels, targets or trade verdicts."),
-]
+def _methodology_factual_swaps(moat_blended):
+    """Built per-call (not a static list) because two of these pairs quote
+    the factor count in the non-factual source text, and that count itself
+    depends on moat_engine.MOAT_IN_VALUE_SCORE - five factors when Moat is
+    blended into the Value Score, four when it isn't (same "N calculations"
+    fix as _md_text's @@FACTOR_COUNT@@ placeholder below). Mirrors the
+    existing two-variant Psychology-row pattern below, which already
+    handles the weight itself (20% vs 15%) changing the same way."""
+    _factor_word = "five" if moat_blended else "four"
+    return [
+        # Verdict bands paragraph -> value-score description
+        ("Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise\n**AVOID**. If no intrinsic value could be computed at all, the signal is capped at\nWATCHLIST - a thesis whose value leg can't be verified doesn't get a full\nrecommendation.",
+         f"On this site the number is displayed as the **Value Score** - a weighted\ndescription of the {_factor_word} calculations above, shown without signal labels or\nrecommendations. Where no intrinsic value could be computed, that is stated\nplainly and the affected values are marked."),
+        ("The Long Score (0\u2013100) and Investment Signal", "The Value Score (0\u2013100)"),
+        # Score heading + intro question -> neutral description
+        (f"#### The Long Score (0\u2013100)\n\nOne number answering \"is this a good business to own at this price?\" It blends {_factor_word}\nfactors, each clamped to a fixed band first so no single factor can run away with the\nresult:",
+         f"#### The Value Score (0\u2013100)\n\nOne number summarising {_factor_word} calculations, each clamped to a fixed band first so no\nsingle factor can run away with the result:"),
+        # Psychology row: drop the advice-flavoured sentence, keep the maths.
+        # Two variants - the weight itself differs (20% when Moat isn't
+        # blended in, 15% when it is) but both get the same softened wording.
+        ("| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
+         "| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
+        ("| Psychology | 15% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
+         "| Psychology | 15% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
+        # Trade Setup / two-verdicts section -> psychology-readings description
+        ("#### Value vs timing - two separate verdicts\n\nThe **Investment Signal** answers \"good business to own?\" The **Trade Setup** answers\n\"is right now a sane entry?\" - support/resistance-based entry zone, stop loss and\ntargets, gated on trend safety and risk/reward. A great company can be a poor entry\ntoday; the site shows both rather than blurring them into one contradictory verdict.",
+         "#### Psychology and discovery readings\n\nAlongside the valuation models, the site reports what the crowd has been doing:\ndistance below the 3-month high (fear), distance from the 50-day average and greed/\nFOMO terms, and a discovery reading built from volume, search interest, news and\nsocial chatter. These are measurements, stated as numbers - the site does not\ndisplay entry levels, targets or trade verdicts."),
+    ]
 
 
 def page_methodology():
@@ -7532,7 +7546,7 @@ score's inputs are charted right next to it on the site.
 
 #### The Long Score (0–100)
 
-One number answering "is this a good business to own at this price?" It blends four
+One number answering "is this a good business to own at this price?" It blends @@FACTOR_COUNT@@
 factors, each clamped to a fixed band first so no single factor can run away with the
 result:
 
@@ -7656,8 +7670,9 @@ starting point for your own judgment, not a substitute for it.
 """
     _md_text = _md_text.replace("@@LONG_SCORE_TABLE@@", _long_score_table)
     _md_text = _md_text.replace("@@MOAT_FOLD_NOTE@@", _moat_fold_note)
+    _md_text = _md_text.replace("@@FACTOR_COUNT@@", "five" if _moat_blended else "four")
     if _factual():
-        for _old, _new in _METHODOLOGY_FACTUAL_SWAPS:
+        for _old, _new in _methodology_factual_swaps(_moat_blended):
             _md_text = _md_text.replace(_old, _new)
     st.markdown(_md_text)
 

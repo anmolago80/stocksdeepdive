@@ -17,23 +17,32 @@ Everything below is Markdown.
 
 import moat_engine
 
-METHODOLOGY_FACTUAL_SWAPS = [
-    # Verdict bands paragraph -> value-score description
-    ("Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise\n**AVOID**. If no intrinsic value could be computed at all, the signal is capped at\nWATCHLIST - a thesis whose value leg can't be verified doesn't get a full\nrecommendation.",
-     "On this site the number is displayed as the **Value Score** - a weighted\ndescription of the four calculations above, shown without signal labels or\nrecommendations. Where no intrinsic value could be computed, that is stated\nplainly and the affected values are marked."),
-    ("The Long Score (0\u2013100) and Investment Signal", "The Value Score (0\u2013100)"),
-    # Score heading + intro question -> neutral description
-    ("#### The Long Score (0\u2013100)\n\nOne number answering \"is this a good business to own at this price?\" It blends four\nfactors, each clamped to a fixed band first so no single factor can run away with the\nresult:",
-     "#### The Value Score (0\u2013100)\n\nOne number summarising four calculations, each clamped to a fixed band first so no\nsingle factor can run away with the result:"),
-    # Psychology row: drop the advice-flavoured sentence, keep the maths
-    ("| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
-     "| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
-    ("| Psychology | 15% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
-     "| Psychology | 15% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
-    # Trade Setup / two-verdicts section -> psychology-readings description
-    ("#### Value vs timing - two separate verdicts\n\nThe **Investment Signal** answers \"good business to own?\" The **Trade Setup** answers\n\"is right now a sane entry?\" - support/resistance-based entry zone, stop loss and\ntargets, gated on trend safety and risk/reward. A great company can be a poor entry\ntoday; the site shows both rather than blurring them into one contradictory verdict.",
-     "#### Psychology and discovery readings\n\nAlongside the valuation models, the site reports what the crowd has been doing:\ndistance below the 3-month high (fear), distance from the 50-day average and greed/\nFOMO terms, and a discovery reading built from volume, search interest, news and\nsocial chatter. These are measurements, stated as numbers - the site does not\ndisplay entry levels, targets or trade verdicts."),
-]
+def _methodology_factual_swaps(moat_blended):
+    """Built per-call (not a static list) because two of these pairs quote
+    the factor count in the non-factual source text, and that count itself
+    depends on moat_engine.MOAT_IN_VALUE_SCORE - five factors when Moat is
+    blended into the Value Score, four when it isn't (same "N calculations"
+    fix as the METHODOLOGY_MD intro line just above). Mirrors the existing
+    two-variant Psychology-row pattern below, which already handles the
+    weight itself (20% vs 15%) changing the same way."""
+    factor_word = "five" if moat_blended else "four"
+    return [
+        # Verdict bands paragraph -> value-score description
+        ("Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise\n**AVOID**. If no intrinsic value could be computed at all, the signal is capped at\nWATCHLIST - a thesis whose value leg can't be verified doesn't get a full\nrecommendation.",
+         f"On this site the number is displayed as the **Value Score** - a weighted\ndescription of the {factor_word} calculations above, shown without signal labels or\nrecommendations. Where no intrinsic value could be computed, that is stated\nplainly and the affected values are marked."),
+        ("The Long Score (0\u2013100) and Investment Signal", "The Value Score (0\u2013100)"),
+        # Score heading + intro question -> neutral description
+        (f"#### The Long Score (0\u2013100)\n\nOne number answering \"is this a good business to own at this price?\" It blends {factor_word}\nfactors, each clamped to a fixed band first so no single factor can run away with the\nresult:",
+         f"#### The Value Score (0\u2013100)\n\nOne number summarising {factor_word} calculations, each clamped to a fixed band first so no\nsingle factor can run away with the result:"),
+        # Psychology row: drop the advice-flavoured sentence, keep the maths
+        ("| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
+         "| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
+        ("| Psychology | 15% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
+         "| Psychology | 15% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
+        # Trade Setup / two-verdicts section -> psychology-readings description
+        ("#### Value vs timing - two separate verdicts\n\nThe **Investment Signal** answers \"good business to own?\" The **Trade Setup** answers\n\"is right now a sane entry?\" - support/resistance-based entry zone, stop loss and\ntargets, gated on trend safety and risk/reward. A great company can be a poor entry\ntoday; the site shows both rather than blurring them into one contradictory verdict.",
+         "#### Psychology and discovery readings\n\nAlongside the valuation models, the site reports what the crowd has been doing:\ndistance below the 3-month high (fear), distance from the 50-day average and greed/\nFOMO terms, and a discovery reading built from volume, search interest, news and\nsocial chatter. These are measurements, stated as numbers - the site does not\ndisplay entry levels, targets or trade verdicts."),
+    ]
 
 # Shown above the methodology text in the public (factual) presentation.
 METHODOLOGY_FACTUAL_NOTE = (
@@ -53,7 +62,7 @@ score's inputs are charted right next to it on the site.
 
 #### The Long Score (0–100)
 
-One number answering "is this a good business to own at this price?" It blends four
+One number answering "is this a good business to own at this price?" It blends @@FACTOR_COUNT@@
 factors, each clamped to a fixed band first so no single factor can run away with the
 result:
 
@@ -318,8 +327,9 @@ def methodology_md(factual=True):
         )
     text = METHODOLOGY_MD.replace("@@LONG_SCORE_TABLE@@", long_score_table)
     text = text.replace("@@MOAT_FOLD_NOTE@@", moat_fold_note)
+    text = text.replace("@@FACTOR_COUNT@@", "five" if moat_blended else "four")
     if factual:
-        for old, new in METHODOLOGY_FACTUAL_SWAPS:
+        for old, new in _methodology_factual_swaps(moat_blended):
             text = text.replace(old, new)
     return text
 
