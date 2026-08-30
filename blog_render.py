@@ -20,6 +20,7 @@ tools doesn't feel like they changed sites.
 """
 
 import html
+import json
 import os
 import re
 from datetime import datetime, timezone
@@ -205,6 +206,29 @@ footer.site .wrap{max-width:1080px}
 .disclaimer b{color:#8aa0b8}
 .empty{color:#8aa0b8;background:#121f36;border:1px solid #1f3352;
   border-radius:12px;padding:26px;text-align:center}
+.comments{margin:46px 0 0}
+.comments h2{font-size:22px;margin:0 0 18px}
+.comment{background:#121f36;border:1px solid #1f3352;border-radius:10px;
+  padding:14px 18px;margin-bottom:12px}
+.comment .c-meta{color:#8aa0b8;font-size:13px;margin:0 0 6px}
+.comment .c-meta b{color:#e6edf5}
+.comment .c-body{color:#cddaea;font-size:15px;white-space:pre-wrap;margin:0}
+.comment-form{background:#121f36;border:1px solid #1f3352;border-radius:12px;
+  padding:22px;margin-top:18px}
+.comment-form h3{margin:0 0 12px;font-size:17px}
+.comment-form input[type=text],.comment-form textarea{
+  width:100%;background:#0b1220;border:1px solid #1f3352;border-radius:8px;
+  padding:11px 13px;color:#e6edf5;font-size:15px;font-family:inherit;margin:0 0 10px}
+.comment-form textarea{min-height:110px;resize:vertical}
+.comment-form input:focus,.comment-form textarea:focus{outline:none;border-color:#2dd4bf}
+.comment-form button{background:#2dd4bf;color:#06231f;border:0;border-radius:8px;
+  padding:11px 24px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit}
+.comment-form button:hover{filter:brightness(1.08)}
+.comment-form .hp{position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;
+  opacity:0;overflow:hidden}
+.comment-banner{border-radius:10px;padding:12px 16px;margin:0 0 16px;font-size:14.5px}
+.comment-banner.ok{background:#0f2d27;border:1px solid #1a4a3f;color:#7ee8cf}
+.comment-banner.err{background:#2d1414;border:1px solid #4a1f1f;color:#f3a6a6}
 @media(max-width:640px){
   body{font-size:16px}
   h1{font-size:31px}
@@ -467,7 +491,112 @@ def render_index(posts, base_url, page_title=None, description=None,
     return _page(head, body)
 
 
-def render_post(post, base_url, prev_post=None, next_post=None):
+# -----------------------------------
+# TICKER AUTO-LINKING (P3.3a)
+#
+# Conservative on purpose: .AX tickers are linked wherever they appear in
+# prose (the pattern is specific enough not to false-positive), while a
+# bare US symbol is only linked when it's already written inside a
+# markdown code span (backticks -> <code>...</code>) AND is 2-5 uppercase
+# letters with nothing else in the span - so `AAPL` links but `THE` (in
+# stray all-caps code text) or a partial match inside a longer code
+# string does not. Existing <a>...</a> spans and whole headings are
+# protected first so nothing gets double-linked and no heading is
+# touched.
+# -----------------------------------
+_TICKER_AX_RE = re.compile(r"\b([A-Z]{1,5}\.AX)\b")
+_TICKER_CODE_RE = re.compile(r"(<code>)([A-Z]{2,5})(</code>)")
+_PROTECT_RE = re.compile(r"<a\b[^>]*>.*?</a>|<h[1-6][^>]*>.*?</h[1-6]>",
+                         re.S | re.I)
+
+
+def _autolink_tickers(html_body):
+    if not html_body:
+        return html_body
+    protected = []
+
+    def _stash(m):
+        protected.append(m.group(0))
+        return f"\x00PROTECTED{len(protected) - 1}\x00"
+
+    out = _PROTECT_RE.sub(_stash, html_body)
+    out = _TICKER_AX_RE.sub(
+        lambda m: f'<a href="/deep-dive?ticker={m.group(1)}">{m.group(1)}</a>', out
+    )
+    out = _TICKER_CODE_RE.sub(
+        lambda m: (f'{m.group(1)}<a href="/deep-dive?ticker={m.group(2)}">'
+                   f'{m.group(2)}</a>{m.group(3)}'),
+        out,
+    )
+    for i, original in enumerate(protected):
+        out = out.replace(f"\x00PROTECTED{i}\x00", original)
+    return out
+
+
+def _covered_tickers():
+    """The set of tickers with hand-built Rational Compounder research -
+    read straight from compounder_data.json (same file app.py's own
+    _load_compounder_data() reads), no Streamlit dependency needed since
+    it's a plain JSON file on disk/volume."""
+    try:
+        import build_compounder_data
+        path = os.path.join(build_compounder_data._cp_data_dir(),
+                            "compounder_data.json")
+        if not os.path.exists(path):
+            path = os.path.join(os.path.dirname(__file__), "compounder_data.json")
+        if not os.path.exists(path):
+            return set()
+        with open(path) as f:
+            data = json.load(f)
+        return {t.strip().upper() for t in (data.get("tickers") or {}).keys()}
+    except Exception:
+        return set()
+
+
+def _ticker_has_research(ticker):
+    return (ticker or "").strip().upper() in _covered_tickers()
+
+
+def _comments_section_html(slug, comments, comment_status=None, comment_msg=None):
+    e = html.escape
+    comments = comments or []
+    items = []
+    for c in comments:
+        name = e(c.get("author_name") or "Anonymous")
+        date = _human_date(c.get("created_at"))
+        body = e(c.get("body") or "")
+        items.append(
+            f'<div class="comment"><div class="c-meta"><b>{name}</b>'
+            f' &middot; {date}</div><p class="c-body">{body}</p></div>'
+        )
+    banner = ""
+    if comment_status == "thanks":
+        banner = ('<div class="comment-banner ok">Thanks - your comment is '
+                  'in the queue and appears after review.</div>')
+    elif comment_status == "error":
+        banner = (f'<div class="comment-banner err">{e(comment_msg or "Something went wrong.")}</div>')
+    return f"""
+<div class="comments" id="comments">
+  <h2>Comments ({len(items)})</h2>
+  {"".join(items) if items else '<p style="color:#8aa0b8;font-size:14.5px">No comments yet - be the first.</p>'}
+  <div class="comment-form">
+    <h3>Join the discussion</h3>
+    {banner}
+    <form method="post" action="/blog/{e(slug)}/comments#comments">
+      <input type="text" name="name" placeholder="Name (optional)" maxlength="80">
+      <textarea name="body" placeholder="Comment" required maxlength="2000"></textarea>
+      <input type="text" name="website" class="hp" tabindex="-1" autocomplete="off">
+      <button type="submit">Post comment</button>
+    </form>
+    <p style="color:#5b7290;font-size:12.5px;margin:10px 0 0">Comments appear
+    after review. No account needed.</p>
+  </div>
+</div>
+"""
+
+
+def render_post(post, base_url, prev_post=None, next_post=None,
+                comments=None, comment_status=None, comment_msg=None):
     e = html.escape
     url = post_url(base_url, post["slug"])
     desc = post_description(post)
@@ -514,6 +643,46 @@ def render_post(post, base_url, prev_post=None, next_post=None):
                         'not published. It is hidden from the blog index, the '
                         'sitemap and the feed, and is marked noindex.</p></div>')
 
+    # P3.1: ticker mentions in the body link straight to that stock's Deep
+    # Dive - see _autolink_tickers()'s own docstring for exactly what does
+    # and doesn't get linked.
+    body_html = _autolink_tickers(md_to_html(post.get("body_md")))
+
+    # P3.2: a ticker-focused post gets a specific end-CTA instead of the
+    # generic "put a ticker in" line - one reader-intent click shouldn't
+    # be wasted on a post that's already about one company.
+    primary_ticker = (post.get("primary_ticker") or "").strip().upper()
+    if primary_ticker:
+        _research_link = (
+            f'<p><a href="/research?ticker={e(primary_ticker)}">Read the '
+            f'hand-built {e(primary_ticker)} research &rarr;</a></p>'
+            if _ticker_has_research(primary_ticker) else ""
+        )
+        cta_html = f"""
+  <div class="cta">
+    <h3>Check {e(primary_ticker)} against the live numbers</h3>
+    <p><a href="/deep-dive?ticker={e(primary_ticker)}">See {e(primary_ticker)}'s
+    live numbers &rarr;</a></p>
+    {_research_link}
+    <p>See <a href="/methodology">how the scores work</a>.</p>
+  </div>
+"""
+    else:
+        cta_html = """
+  <div class="cta">
+    <h3>Check any of this against the live numbers</h3>
+    <p>Put a ticker into <a href="/deep-dive">Stock Deep Dive</a> and the same
+    valuation, quality and psychology maths described here runs on it &mdash;
+    with every input shown next to the score. See
+    <a href="/methodology">how the scores work</a>.</p>
+  </div>
+"""
+
+    comments_html = (
+        _comments_section_html(post["slug"], comments, comment_status, comment_msg)
+        if not is_draft else ""
+    )
+
     body = f"""
 <main><div class="wrap">
   <article>
@@ -522,17 +691,12 @@ def render_post(post, base_url, prev_post=None, next_post=None):
     <h1>{e(post['title'])}</h1>
     <div class="meta">{e(' · '.join(meta_bits))}</div>
     {hero}
-    {md_to_html(post.get('body_md'))}
+    {body_html}
     {tags}
   </article>
-  <div class="cta">
-    <h3>Check any of this against the live numbers</h3>
-    <p>Put a ticker into <a href="/deep-dive">Stock Deep Dive</a> and the same
-    valuation, quality and psychology maths described here runs on it &mdash;
-    with every input shown next to the score. See
-    <a href="/methodology">how the scores work</a>.</p>
-  </div>
+  {cta_html}
   {nav_html}
+  {comments_html}
 </div></main>
 """
     head = _head(

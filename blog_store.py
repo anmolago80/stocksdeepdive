@@ -27,6 +27,7 @@ Two tables:
 """
 
 import contextlib
+import json
 import os
 import re
 import sqlite3
@@ -81,9 +82,22 @@ def _conn():
             status TEXT NOT NULL DEFAULT 'draft',
             published_at TEXT,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            primary_ticker TEXT NOT NULL DEFAULT ''
         )"""
     )
+    # primary_ticker was added after this table existed on production (no
+    # migration framework here - see module docstring) - CREATE TABLE IF
+    # NOT EXISTS above is a no-op against an existing table, so a plain
+    # ALTER TABLE guard is the only way an already-deployed DB picks up
+    # the new column. Ignored if it's already there (re-run every
+    # connection, cheap, and sqlite has no "ADD COLUMN IF NOT EXISTS").
+    try:
+        conn.execute(
+            "ALTER TABLE blog_posts ADD COLUMN primary_ticker TEXT NOT NULL DEFAULT ''"
+        )
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
         """CREATE TABLE IF NOT EXISTS blog_redirects (
             old_slug TEXT PRIMARY KEY,
@@ -247,13 +261,33 @@ def last_modified(include_drafts=False):
         return conn.execute(sql).fetchone()[0]
 
 
+def posts_for_ticker(ticker, include_drafts=False):
+    """Published posts (newest first) whose primary_ticker matches, for the
+    Deep Dive -> blog backlink (P3.3): "N research note(s) written on this
+    company". A plain indexed-free equality scan is fine at this table's
+    size; callers on a hot page (app.py's Deep Dive) should cache the
+    result per run rather than call this more than once per ticker."""
+    ticker = (ticker or "").strip().upper()
+    if not ticker:
+        return []
+    sql = "SELECT * FROM blog_posts WHERE primary_ticker = ?"
+    params = [ticker]
+    if not include_drafts:
+        sql += " AND status = 'published'"
+    sql += " ORDER BY COALESCE(published_at, updated_at) DESC"
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
 # -----------------------------------
 # WRITES
 # -----------------------------------
 
 def create_post(title, slug=None, summary="", body_md="", tags="", author="",
                 hero_file=None, hero_alt="", status=STATUS_DRAFT,
-                published_at=None):
+                published_at=None, primary_ticker=""):
     slug = unique_slug(slug or title)
     now = _now()
     if status == STATUS_PUBLISHED and not published_at:
@@ -262,18 +296,19 @@ def create_post(title, slug=None, summary="", body_md="", tags="", author="",
         cur = conn.execute(
             """INSERT INTO blog_posts
                  (slug, title, summary, body_md, hero_file, hero_alt, tags,
-                  author, status, published_at, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  author, status, published_at, created_at, updated_at,
+                  primary_ticker)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (slug, title.strip(), summary.strip(), body_md, hero_file,
              (hero_alt or "").strip(), _clean_tags(tags), author.strip(),
-             status, published_at, now, now),
+             status, published_at, now, now, (primary_ticker or "").strip().upper()),
         )
         return cur.lastrowid
 
 
 def update_post(post_id, title=None, slug=None, summary=None, body_md=None,
                 tags=None, author=None, hero_file=..., hero_alt=None,
-                status=None, published_at=...):
+                status=None, published_at=..., primary_ticker=None):
     """Partial update - only the fields passed are touched. hero_file and
     published_at use Ellipsis rather than None as their "not supplied"
     marker, because None is a meaningful value for both (remove the image /
@@ -317,6 +352,8 @@ def update_post(post_id, title=None, slug=None, summary=None, body_md=None,
             fields["published_at"] = _now()
     if published_at is not Ellipsis:
         fields["published_at"] = published_at
+    if primary_ticker is not None:
+        fields["primary_ticker"] = primary_ticker.strip().upper()
 
     if not fields:
         return existing["slug"]
@@ -422,3 +459,78 @@ def list_media():
         f for f in os.listdir(MEDIA_DIR)
         if _SAFE_MEDIA.match(f) and os.path.isfile(os.path.join(MEDIA_DIR, f))
     )
+
+
+# -----------------------------------
+# PRIMARY-TICKER BACKFILL (P3.2)
+#
+# primary_ticker was added after posts already existed on production (the
+# two OCL.AX posts, the RMD.AX post) - there is no migration framework
+# here (see the ALTER TABLE guard in _conn() above), so those posts would
+# otherwise sit with an empty primary_ticker forever. This infers it from
+# the title, conservatively, and is safe to call on every process start:
+# given the same title and the same covered-tickers list, the result is
+# always the same, so a post with no unambiguous match just stays blank
+# every time - identical to a genuine "not about one company" post.
+# -----------------------------------
+
+_TITLE_WORD_RE = re.compile(r"\b([A-Za-z]{2,6})\b")
+
+# Bare symbol -> full ticker for posts already known (as of the P3.2
+# rollout) to be about a company that ISN'T (yet) covered by hand-built
+# research - compounder_data.json alone wouldn't catch these, but the
+# posts and their subject are unambiguous. Extend this list by hand if a
+# future ticker-focused post needs the same one-time backfill treatment;
+# ordinary new posts don't need an entry here at all, since the editor
+# sets primary_ticker directly in the blog-admin form going forward.
+_EXTRA_BACKFILL_SYMBOLS = {"OCL": "OCL.AX"}
+
+
+def _covered_ticker_symbols():
+    """{bare symbol -> full ticker} for every stock with hand-built
+    research, e.g. {'RMD': 'RMD.AX'} - read straight from
+    compounder_data.json, same file app.py's _load_compounder_data() and
+    blog_render._covered_tickers() both read. This is deliberately
+    narrower than the full backfill symbol set below - it answers "does
+    this ticker have hand-built research", not "is this a real ticker"."""
+    try:
+        import build_compounder_data
+        path = os.path.join(build_compounder_data._cp_data_dir(),
+                            "compounder_data.json")
+        if not os.path.exists(path):
+            path = os.path.join(os.path.dirname(__file__), "compounder_data.json")
+        if not os.path.exists(path):
+            return {}
+        with open(path) as f:
+            data = json.load(f)
+        out = {}
+        for t in (data.get("tickers") or {}).keys():
+            bare = t.split(".")[0].strip().upper()
+            if bare:
+                out[bare] = t.strip().upper()
+        return out
+    except Exception:
+        return {}
+
+
+def backfill_primary_tickers():
+    """Sets primary_ticker on any post that doesn't have one yet, when
+    exactly one known ticker's bare symbol appears as a whole,
+    case-insensitive word in the post's title - the union of the
+    hand-built-research coverage list and _EXTRA_BACKFILL_SYMBOLS above.
+    Only fills a currently-blank field, so a post an editor sets
+    explicitly (in the blog-admin editor) is never touched again - the
+    one edge case worth knowing: an editor who deliberately blanks a
+    correctly-inferred ticker back out will see it re-inferred on the
+    next process start, since a blank field can't be told apart from one
+    that was never set."""
+    symbols = {**_EXTRA_BACKFILL_SYMBOLS, **_covered_ticker_symbols()}
+    if not symbols:
+        return
+    for post in list_posts(include_drafts=True):
+        if (post.get("primary_ticker") or "").strip():
+            continue
+        title_words = {w.upper() for w in _TITLE_WORD_RE.findall(post.get("title") or "")}
+        matches = {symbols[w] for w in title_words if w in symbols}
+        if len(matches) == 1:
+            update_post(post["id"], primary_ticker=next(iter(matches)))

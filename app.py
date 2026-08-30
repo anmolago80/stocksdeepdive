@@ -3458,6 +3458,23 @@ def page_deep_dive():
                 st.session_state["research_jump_ticker"] = _dd["ticker"]
                 st.switch_page(PG_RESEARCH)
 
+        # --- Blog backlink (P3.3): published blog posts written about this
+        # exact ticker (primary_ticker), if any - one lookup per page
+        # render, reused wherever this run needs it (there's only the one
+        # use today). Links to the single most recent matching post; the
+        # count is shown so a visitor knows there's more than one without
+        # a dedicated per-ticker listing page existing yet. ---
+        _dd_blog_posts = blog_store.posts_for_ticker(_dd["ticker"])
+        if _dd_blog_posts:
+            _dd_bp_word = "note" if len(_dd_blog_posts) == 1 else "notes"
+            st.markdown(
+                f"<a href='/blog/{_dd_blog_posts[0]['slug']}' target='_self' "
+                "style='color:inherit;text-decoration:underline;'>"
+                f"\U0001F4DD {len(_dd_blog_posts)} research {_dd_bp_word} written "
+                "on this company &rarr;</a>",
+                unsafe_allow_html=True,
+            )
+
         # --- Watchlist (signed-in users): the sign-in carrot, and the
         # audience the weekly digest goes to. Follow (Task 2) sits in the
         # column next to it when this ticker has hand-built research
@@ -7857,6 +7874,7 @@ _BLOG_FIELDS = {
     "blog_f_tags": "tags",
     "blog_f_author": "author",
     "blog_f_hero_alt": "hero_alt",
+    "blog_f_primary_ticker": "primary_ticker",
 }
 
 
@@ -8016,6 +8034,16 @@ def page_blog_admin():
         with _c2:
             st.text_input("Author", key="blog_f_author", placeholder="Andrew")
 
+        st.text_input(
+            "Primary ticker (optional)", key="blog_f_primary_ticker",
+            placeholder="OCL.AX",
+            help="When set, the post's end-CTA becomes two specific links - "
+                 "\"See <ticker>'s live numbers\" and, if hand-built research "
+                 "covers it, \"Read the hand-built <ticker> research\" - "
+                 "instead of the generic \"put a ticker in\" line. Also "
+                 "drives the Deep Dive page's backlink to this post.",
+        )
+
         st.radio("Status", ["Draft", "Published"], key="blog_f_status",
                  horizontal=True,
                  help="Drafts are hidden from the blog index, the sitemap "
@@ -8091,6 +8119,7 @@ def page_blog_admin():
                         hero_file=_hero_name,
                         hero_alt=st.session_state.get("blog_f_hero_alt") or "",
                         status=_status,
+                        primary_ticker=st.session_state.get("blog_f_primary_ticker") or "",
                     )
                     _new_id = selected_id
                 else:
@@ -8105,6 +8134,7 @@ def page_blog_admin():
                         hero_file=(None if _hero_name is Ellipsis else _hero_name),
                         hero_alt=st.session_state.get("blog_f_hero_alt") or "",
                         status=_status,
+                        primary_ticker=st.session_state.get("blog_f_primary_ticker") or "",
                     )
                     _slug = blog_store.get_post_by_id(_new_id)["slug"]
 
