@@ -40,6 +40,7 @@ from resolver_engine import resolve_quality_score, resolve_intrinsic_value, reso
 from ranking_engine import calculate_long_score, MOS_CLAMP, PSY_CLAMP, DISCOVERY_CAP
 from trends_engine import get_trend_score
 from news_engine import get_news_score, get_yahoo_news_score
+import moat_engine
 import social_engine
 import indicators_engine
 import trade_filter_engine
@@ -233,9 +234,27 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         + social_score
     )
 
-    long_score = calculate_long_score(
-        quality_score, margin_of_safety, psychology_score, discovery_score
-    )
+    # --- Moat Score (Phase 1 - display only, NOT part of Value Score/
+    # Long Score by default - see moat_engine.py's own module docstring
+    # for the full pillar breakdown and MOAT_IN_VALUE_SCORE, the Phase-2
+    # switch that's built but left off). Own 24h cache keyed off the
+    # ticker's fundamentals bundle, so a repeat Deep Dive view within a
+    # day doesn't recompute it. Computed here (before long_score) so
+    # Phase 2, when enabled, can fold its score straight into the blend
+    # below - moved up from its previous spot further down this
+    # function. -------------------------------------
+    _moat = moat_engine.compute_moat(ticker)
+    moat_band = moat_engine.moat_band(_moat["score"])
+
+    if moat_engine.MOAT_IN_VALUE_SCORE:
+        long_score = calculate_long_score(
+            quality_score, margin_of_safety, psychology_score, discovery_score,
+            mode="moat_blend", moat_score=_moat["score"],
+        )
+    else:
+        long_score = calculate_long_score(
+            quality_score, margin_of_safety, psychology_score, discovery_score
+        )
 
     if intrinsic_value <= 0:
         valuation = "N/A"
@@ -406,16 +425,55 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         "discovery_label": discovery_label,
         "discovery_contributions": discovery_contributions,
 
+        # Moat Score (Phase 1, display-only - see moat_engine.py). "moat"
+        # is None for a fund/ETF or under-2-year ticker (rendered
+        # "N/A"); "moat_gauge" is always a plotted number (0 when None,
+        # same convention the gauge helper expects) so the chart never
+        # errors on a missing score.
+        "moat": _moat["score"],
+        "moat_gauge": _moat["score"] if _moat["score"] is not None else 0,
+        "moat_mode": _moat["mode"],
+        "moat_erosion": _moat["erosion"],
+        "moat_flags": _moat["flags"],
+        "moat_years": _moat["years"],
+        "moat_contributions": moat_engine.moat_contributions(_moat["components"]),
+        "moat_band_color": moat_band[0] if moat_band else None,
+        "moat_band_label": moat_band[1] if moat_band else ("N/A (fund)" if _moat["mode"] == "na" else "N/A"),
+
         "long_score": round(long_score, 2),
 
         # Points each factor actually contributed to the final Long Score
-        # (clamped value x its weight) - the four bars sum to long_score.
-        "contributions": {
-            "Quality": round(quality_score * 0.35, 2),
-            "Valuation (MOS)": round(mos_c * 0.25, 2),
-            "Psychology": round(psy_c * 0.20, 2),
-            "Discovery": round(disc_c * 0.20, 2),
-        },
+        # (clamped value x its weight) - the bars sum to long_score.
+        # Phase 2 (MOAT_IN_VALUE_SCORE, off by default): gains a Moat bar
+        # and re-weights the other four to ranking_engine's own
+        # MOAT_BLEND_WEIGHTS - see calculate_long_score's "moat_blend"
+        # mode for the exact weights (including the reweight-when-None
+        # case, mirrored here so the chart always sums to long_score).
+        "contributions": (
+            {
+                "Quality": round(quality_score * 0.35, 2),
+                "Valuation (MOS)": round(mos_c * 0.25, 2),
+                "Psychology": round(psy_c * 0.20, 2),
+                "Discovery": round(disc_c * 0.20, 2),
+            }
+            if not moat_engine.MOAT_IN_VALUE_SCORE
+            else (
+                {
+                    "Quality": round(quality_score * 0.25, 2),
+                    "Moat": round(_moat["score"] * 0.15, 2),
+                    "Valuation (MOS)": round(mos_c * 0.25, 2),
+                    "Psychology": round(psy_c * 0.20, 2),
+                    "Discovery": round(disc_c * 0.15, 2),
+                }
+                if _moat["score"] is not None
+                else {
+                    "Quality": round(quality_score * (0.25 + 0.25 * (0.15 / 0.85)), 2),
+                    "Valuation (MOS)": round(mos_c * (0.25 + 0.25 * (0.15 / 0.85)), 2),
+                    "Psychology": round(psy_c * (0.20 + 0.20 * (0.15 / 0.85)), 2),
+                    "Discovery": round(disc_c * (0.15 + 0.15 * (0.15 / 0.85)), 2),
+                }
+            )
+        ),
 
         "trade_setup_signal": trade_result["signal"],
         "trade_setup_score": trade_setup_score,

@@ -34,6 +34,7 @@ import time
 import pandas as pd
 import yfinance as yf
 
+import moat_engine
 import scan_store
 import score_history
 import scanner_engine
@@ -79,6 +80,27 @@ IMPORTED_NIGHTLY_BATCH = 100  # per-run cap: a big CSV import (up to
 # partial run always resumes exactly where it left off. Capped at exactly
 # NIGHTLY_LITE_THRESHOLD, so an import batch is always <= the threshold and
 # therefore always gets full (not lite) attention - see run_imported_scan().
+
+
+def _attach_moat(row, ticker, log=print):
+    """Adds "Moat"/"Moat Erosion" to an already-built row dict, in place -
+    called only from the two REAL nightly scan paths below (run_universe_
+    scan/run_imported_scan), deliberately NOT from inside
+    analyze_ticker_lite() itself, since that function is shared with
+    digest_engine's weekly watchlist email (many users' tickers, on its
+    own schedule) - attaching a full fundamentals-bundle-backed Moat
+    computation there would slow/change a feature nobody asked to touch.
+    Moat's own 24h per-ticker cache (moat_engine.py) means this is cheap
+    on any ticker already scanned today by either path. One bad ticker
+    never kills the row - Moat/erosion are simply left out of it, and the
+    Scanner's own stored-value convention already renders that as "-"."""
+    try:
+        moat = moat_engine.compute_moat(ticker)
+        row["Moat"] = moat["score"]
+        row["Moat Erosion"] = moat["erosion"]
+        row["Moat Mode"] = moat["mode"]
+    except Exception as e:
+        log(f"[nightly_scan] {ticker}: moat_engine failed: {e}")
 
 
 def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
@@ -270,6 +292,7 @@ def run_universe_scan(universe, max_tickers=None, log=print):
         try:
             row = analyze_ticker_lite(t, attention_lite=attention_lite)
             if row:
+                _attach_moat(row, t, log=log)
                 rows.append(row)
         except Exception as e:  # one bad ticker never kills the run
             log(f"[nightly_scan] {t}: {e}")
@@ -346,6 +369,8 @@ def run_imported_scan(max_tickers=IMPORTED_NIGHTLY_BATCH, log=print):
     for i, t in enumerate(pending):
         try:
             row = analyze_ticker_lite(t, attention_lite=attention_lite)
+            if row:
+                _attach_moat(row, t, log=log)
             screen_import_store.mark_scanned(t, ok=bool(row), row=row)
         except Exception as e:  # one bad ticker never kills the batch
             log(f"[nightly_scan] imported {t}: {e}")

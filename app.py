@@ -41,6 +41,7 @@ import scan_store
 import scanner_engine
 import screen_import_store
 import nightly_scan
+import moat_engine
 import portfolio_store
 import portfolio_health_engine
 import portfolio_news_engine
@@ -3651,6 +3652,64 @@ def page_deep_dive():
                 use_container_width=True,
             )
 
+        # Moat Score (Phase 1 - display only, NOT part of Value Score -
+        # see moat_engine.py's own module docstring). Same gauge +
+        # "what's driving" chart pattern as Quality/Psychology/Discovery
+        # above, reusing the same _dd_gauge/_dd_contrib_chart helpers -
+        # no new chart style invented for this.
+        st.divider()
+        if _dd.get("moat") is None:
+            st.subheader(f"Moat Score: {_dd.get('moat_band_label', 'N/A')}")
+            if _dd.get("moat_mode") == "na" and _dd.get("moat_flags"):
+                st.caption(_dd["moat_flags"][0])
+            else:
+                st.caption(
+                    "Not enough statement history to compute a Moat Score for this "
+                    "ticker yet."
+                )
+        else:
+            st.subheader(f"Moat Score: {_dd['moat']:.1f} - {_dd['moat_band_label']}")
+            if _dd.get("moat_erosion") == "eroding":
+                st.error(
+                    "Moat watch: ROIC and operating margin both sit meaningfully "
+                    "below their preceding multi-year average, across the two most "
+                    "recent periods - the score above is capped at 50 as a result."
+                )
+            elif _dd.get("moat_erosion") == "watch":
+                st.warning(
+                    "Moat watch: the latest period's ROIC and operating margin sit "
+                    "below the preceding multi-year average."
+                )
+            if _dd.get("moat_mode") == "financials":
+                st.caption(
+                    "Financials mode: ROE and cost of equity used in place of ROIC "
+                    "and WACC (ROIC is not meaningful for a bank/insurer's balance "
+                    "sheet)."
+                )
+            st.caption(
+                f"{_dd.get('moat_years', 0)} year(s) of statement data used. "
+                "Not currently part of the Value Score - see Methodology."
+            )
+            _moat_col1, _moat_col2 = st.columns(2)
+            with _moat_col1:
+                st.plotly_chart(
+                    _dd_gauge(
+                        _dd["moat_gauge"], f"Moat - {_dd['moat_band_label']}",
+                        [(0, 40, "#43222e"), (40, 70, "#43371c"), (70, 100, "#27584a")],
+                    ),
+                    use_container_width=True,
+                )
+            with _moat_col2:
+                if _dd.get("moat_contributions"):
+                    st.plotly_chart(
+                        _dd_contrib_chart(
+                            _dd["moat_contributions"],
+                            "What's driving Moat (durability of the return)",
+                            xaxis_title="Points toward Moat",
+                        ),
+                        use_container_width=True,
+                    )
+
         # Margin of Safety - moved here (after Discovery Score, before Trade
         # Setup) and redesigned into a gauge (same visual family as the
         # Quality/Psychology/Discovery dials above) paired with the actual
@@ -4223,6 +4282,16 @@ def _render_overnight_scan_table(universe_label, overnight):
                                 flag=bool(_orow.get("Quality Default"))), minw=90)
                 + _td(_bar_cell(_orow.get("Psychology"), -5, 20), minw=90)
                 + _td(_bar_cell(_orow.get("Discovery (lite)"), 25, 50), minw=90)
+                # Moat Score (Phase 1, display-only - see moat_engine.py):
+                # stored-value-only here, same as every other column on
+                # this table - nightly_scan.py's _attach_moat() is what
+                # actually computes and stores it. Bands green>70/
+                # amber 40-70/red<=40 fall straight out of _bar_cell's
+                # own (low, high) semantics with low=40, high=70.
+                # Flagged (red-bold number) whenever the erosion overlay
+                # fired, on top of the colour band.
+                + _td(_bar_cell(_orow.get("Moat"), 40, 70,
+                                flag=_orow.get("Moat Erosion") in ("watch", "eroding")), minw=90)
             )
             if _factual():
                 _row_html += (
@@ -4240,11 +4309,11 @@ def _render_overnight_scan_table(universe_label, overnight):
         if _factual():
             _on_headers = ["Ticker", "Type", "Price", "Intrinsic Value",
                            "MOS", "Value Score", "Quality", "Psychology",
-                           "Discovery", "Valuation", "Trend"]
+                           "Discovery", "Moat", "Valuation", "Trend"]
         else:
             _on_headers = ["Ticker", "Type", "Price", "Intrinsic Value",
                            "MOS", "Long Score", "Quality", "Psychology",
-                           "Discovery", "Valuation", "Signal", "Trend",
+                           "Discovery", "Moat", "Valuation", "Signal", "Trend",
                            "Trade Setup"]
         st.markdown(
             _sdd_table(_on_headers, _on_rows_html, max_height=480),
@@ -4873,9 +4942,27 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     + social_score
                 )
 
-                long_score = calculate_long_score(
-                    quality_score, margin_of_safety, psychology_score, discovery_score
-                )
+                # Moat Score (Phase 1, display-only): read-only peek at
+                # whatever's already cached for this ticker (nightly scan,
+                # or an earlier Deep Dive view) - never computed live in
+                # this loop, a full multi-year fundamentals bundle per
+                # ticker is too slow for a live scan/comparison page.
+                # Computed here (before long_score) so Phase 2, when
+                # enabled via MOAT_IN_VALUE_SCORE, can fold it into the
+                # blend below - same "stored value only" convention the
+                # Moat table column further down this function uses.
+                _moat_cached = moat_engine.get_cached_moat(ticker)
+
+                if moat_engine.MOAT_IN_VALUE_SCORE:
+                    long_score = calculate_long_score(
+                        quality_score, margin_of_safety, psychology_score, discovery_score,
+                        mode="moat_blend",
+                        moat_score=_moat_cached["score"] if _moat_cached else None,
+                    )
+                else:
+                    long_score = calculate_long_score(
+                        quality_score, margin_of_safety, psychology_score, discovery_score
+                    )
 
                 # --- Valuation label: driven by MOS, audited ------------------------
                 # Old mapping gated UNDERVALUED behind Quality >= 60, so RYM (MOS
@@ -5080,6 +5167,19 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     # Discovery may be understated, rather than presenting a
                     # fetch failure as a confirmed reading.
                     "_flag_discovery": bool(trend_score_failed),
+
+                    # Moat Score (Phase 1, display-only - see
+                    # moat_engine.py): stored-nightly-value-only here,
+                    # never computed live in this loop - a full
+                    # multi-year fundamentals bundle per ticker is too
+                    # slow for a live comparison page (~10+ tickers).
+                    # None until the nightly scan (or an earlier Deep
+                    # Dive view of this same ticker) has computed and
+                    # cached it - renders "N/A" in the table, same
+                    # attention-lite convention Discovery already uses
+                    # for a large live scan.
+                    "Moat": _moat_cached["score"] if _moat_cached else None,
+                    "_flag_moat": bool(_moat_cached and _moat_cached.get("erosion") in ("watch", "eroding")),
 
                     "Entry": entry_price,
                     "Target": target_price,
@@ -5326,6 +5426,16 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     + _td(_bar_cell(r["Psychology"], -5, 20), minw=90)
                     + _td(_bar_cell(r["Discovery"], 25, 50,
                                     flag=bool(r.get("_flag_discovery"))), minw=90)
+                    # Moat Score (Phase 1, display-only - see moat_engine.py):
+                    # stored-nightly-value-only, same convention as the
+                    # Overnight scan table above - bands green>70/
+                    # amber 40-70/red<=40 fall out of _bar_cell's own
+                    # (low, high) semantics; flagged (red-bold) whenever
+                    # the erosion overlay fired, in place of a separate
+                    # erosion badge widget (this red-bold-number convention
+                    # already IS the site's erosion signal elsewhere).
+                    + _td(_bar_cell(r.get("Moat"), 40, 70,
+                                    flag=bool(r.get("_flag_moat"))), minw=90)
                 )
                 if _factual():
                     # Valuation / Sentiment / Trend labels stay in the
@@ -5350,13 +5460,13 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 _cmp_headers = [
                     "Ticker", "Type", "Price", "Intrinsic Value",
                     "MOS", "Value Score", "Quality", "Psychology", "Discovery",
-                    "Valuation", "Sentiment", "Trend",
+                    "Moat", "Valuation", "Sentiment", "Trend",
                 ]
             else:
                 _cmp_headers = [
                     "Ticker", "Type", "Price", "Intrinsic Value", "MOS",
                     "Long Score", "Quality Score", "Psychology", "Discovery",
-                    "Valuation", "Sentiment", "Trend", "Trade Setup",
+                    "Moat", "Valuation", "Sentiment", "Trend", "Trade Setup",
                     "Trade Setup Score",
                 ]
             st.markdown(_sdd_table(_cmp_headers, _cmp_rows_html), unsafe_allow_html=True)
@@ -7189,6 +7299,48 @@ Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, other
 **AVOID**. If no intrinsic value could be computed at all, the signal is capped at
 WATCHLIST - a thesis whose value leg can't be verified doesn't get a full
 recommendation.
+
+#### Moat Score (0–100)
+
+Quality (above) measures how good the business is **right now** - today's margins,
+returns and growth. Moat is a different question: how likely is the business to
+**stay** that good, over time? It's shown separately on the Deep Dive page, the
+Side-by-side comparison and the Scanner - it is not currently folded into the Value
+Score above. Four pillars, each computed from the company's own multi-year
+statement history:
+
+| Pillar | Weight | What it measures |
+|---|---|---|
+| Excess-return spread | 30 pts | TTM return on capital (ROIC, or ROE for banks/insurers) minus the cost of that capital (WACC, or cost of equity for financials). ≤0% spread scores 0, 0–5% scores 10, 5–15% scores 20, above 15% scores the full 30. |
+| Persistence | 25 pts | The share of available fiscal years in which return on capital cleared 12%. Capped at 20/25 while fewer than 8 years of statement history are on file - the full 25-point read needs real multi-year depth. |
+| Pricing power | 25 pts | The gross-margin trend (falls back to operating margin, flagged, if no Gross Profit line is reported): held or expanded margin (10 pts), stability - low year-to-year variance (10 pts), and margin holding up while revenue actually grew (5 pts). |
+| Reinvestment | 20 pts | Incremental return on newly-deployed capital - the change in after-tax operating profit versus the change in invested capital, oldest available year to newest. A capital-light business that shrinks invested capital while holding or growing profit scores 16 here directly. |
+
+Above 70 = **Strong moat**, 40–70 = **Moderate moat**, 40 and below = **Weak/no
+moat** - the same colour bands (green/amber/red) used everywhere else on the site.
+
+**Erosion overlay.** Independently of the score above, if TTM return on capital and
+operating margin have both fallen meaningfully below their own recent multi-year
+average - return down more than 20% in relative terms, margin down more than 3
+points - the read becomes a **moat watch** caption (no score penalty). If that same
+weakness holds across the two most recent multi-year windows in a row, the read
+becomes **eroding**, and the score itself is capped at 50: a business can't read as
+a "strong moat" while its own numbers are actively deteriorating, however good its
+history looks. A single weak window is a caption, not a cap - a real business has
+uneven years.
+
+**Missing data is dropped, not guessed at.** If a pillar can't be computed from the
+data on file, it's left out entirely and the remaining pillars are reweighted to
+100 - never defaulted to a neutral or average score. (Silently defaulting a missing
+pillar to "average" is exactly what once let index ETFs outscore a genuine
+compounder like CSL on an earlier version of this site's portfolio health score;
+Moat does not repeat that mistake.) The Deep Dive page's Moat section always shows
+how many pillars were actually used.
+
+Funds and ETFs don't get a Moat Score at all (a moat is a property of an operating
+business, not a basket of one) - shown as **N/A (fund)**. A ticker with fewer than
+two usable years of statement history also shows **N/A**, plainly, rather than a
+score built on too little to mean anything.
 
 #### Intrinsic value
 
