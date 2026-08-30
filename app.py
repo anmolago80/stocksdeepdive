@@ -106,10 +106,18 @@ METRIC_HELP = {
         "negative means it's above."
     ),
     "Value Score": (
+        "A 0-100 weighted calculation: quality 25%, moat 15%, MOS 25%, "
+        "psychology 20%, discovery 15% (moat weight dropped and the rest "
+        "reweighted proportionally where no Moat Score exists)."
+        if moat_engine.MOAT_IN_VALUE_SCORE else
         "A 0-100 weighted calculation: quality 35%, MOS 25%, psychology "
         "20%, discovery 20%."
     ),
     "Long Score": (
+        "A 0-100 weighted calculation: quality 25%, moat 15%, MOS 25%, "
+        "psychology 20%, discovery 15% (moat weight dropped and the rest "
+        "reweighted proportionally where no Moat Score exists)."
+        if moat_engine.MOAT_IN_VALUE_SCORE else
         "A 0-100 weighted calculation: quality 35%, MOS 25%, psychology "
         "20%, discovery 20%."
     ),
@@ -3528,9 +3536,16 @@ def page_deep_dive():
             )
         if _factual():
             st.caption(
-                "Value Score is a weighted calculation: quality 35%, "
-                "MOS 25%, psychology 20%, discovery 20%. It is a "
-                "description of data, not a recommendation."
+                (
+                    "Value Score is a weighted calculation: quality 25%, moat "
+                    "15%, MOS 25%, psychology 20%, discovery 15% (moat "
+                    "reweighted into the others where no Moat Score exists). "
+                    "It is a description of data, not a recommendation."
+                    if moat_engine.MOAT_IN_VALUE_SCORE else
+                    "Value Score is a weighted calculation: quality 35%, "
+                    "MOS 25%, psychology 20%, discovery 20%. It is a "
+                    "description of data, not a recommendation."
+                )
             )
         else:
             st.caption(
@@ -3688,7 +3703,12 @@ def page_deep_dive():
                 )
             st.caption(
                 f"{_dd.get('moat_years', 0)} year(s) of statement data used. "
-                "Not currently part of the Value Score - see Methodology."
+                + (
+                    "Folded into the Value Score above at a 15% weight - see "
+                    "Methodology."
+                    if moat_engine.MOAT_IN_VALUE_SCORE else
+                    "Not currently part of the Value Score - see Methodology."
+                )
             )
             _moat_col1, _moat_col2 = st.columns(2)
             with _moat_col1:
