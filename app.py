@@ -44,6 +44,7 @@ import nightly_scan
 import moat_engine
 import portfolio_store
 import portfolio_health_engine
+import portfolio_charts_engine
 import portfolio_news_engine
 import name_directory
 import score_history
@@ -6211,6 +6212,232 @@ def _phe_pl_bar(tickers, pl_values, title, color_map=None):
     return fig
 
 
+def _phe_unused_color(cmap):
+    """First colour in the shared ticker palette not already assigned to
+    any ticker in `cmap` - used for the value-over-time chart's index
+    line so it never accidentally lands on the same colour as a holding
+    that also appears in that chart's buy-event markers."""
+    _used = set((cmap or {}).values())
+    for _c in _PHE_PIE_COLORS:
+        if _c not in _used:
+            return _c
+    return "#94a3b8"
+
+
+def _render_portfolio_value_chart(_vseries, _cmap):
+    """Section 1 of the My Portfolio additions: portfolio value over time
+    vs a same-dollars index line, computed by
+    portfolio_charts_engine.compute_value_vs_index_series() and rendered
+    here (that module returns data only, never a figure)."""
+    st.markdown("##### Portfolio value over time")
+    if not _vseries:
+        st.caption("Not enough purchase history yet to chart portfolio value over time.")
+        return
+
+    _dates = _vseries["dates"]
+    _idx_color = _phe_unused_color(_cmap)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=_dates, y=_vseries["value"], mode="lines", name="Portfolio value",
+        line=dict(color="#2dd4bf", width=2), fill="tozeroy", fillcolor="rgba(45,212,191,0.12)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=_dates, y=_vseries["cost"], mode="lines", name="Cost basis",
+        line=dict(color="#8aa0b8", width=2, shape="hv"),
+    ))
+    fig.add_trace(go.Scatter(
+        x=_dates, y=_vseries["index"], mode="lines", name="Index, same dollars",
+        line=dict(color=_idx_color, width=2, dash="dash"),
+    ))
+
+    _be = _vseries["buy_events"]
+    if _be:
+        _be_x = [e["date"] for e in _be]
+        _be_y = [float(_vseries["value"].loc[e["date"]]) for e in _be]
+        _be_text = [f"+ {e['ticker']}" for e in _be]
+        fig.add_trace(go.Scatter(
+            x=_be_x, y=_be_y, mode="markers+text", text=_be_text, textposition="top center",
+            textfont=dict(size=10, color="#c7d2e0"),
+            marker=dict(size=8, color="#2dd4bf", line=dict(width=1, color="#0b1220")),
+            name="Buy", showlegend=False, hovertemplate="%{text}<extra></extra>",
+        ))
+
+    _last_x = _dates[-1]
+    for _key, _color in (("value", "#2dd4bf"), ("cost", "#8aa0b8"), ("index", _idx_color)):
+        _last_y = float(_vseries[_key].iloc[-1])
+        fig.add_annotation(
+            x=_last_x, y=_last_y, text=f"A${_last_y:,.0f}", showarrow=False,
+            xanchor="left", xshift=8, font=dict(size=11, color=_color),
+        )
+
+    fig.update_layout(
+        title="Portfolio value over time", margin=dict(t=44, b=10, l=10, r=90), height=420,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#c7d2e0"), hovermode="x unified",
+        legend=dict(orientation="h", y=-0.18),
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor="rgba(138,160,184,0.15)", tickprefix="A$", separatethousands=True),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    _bench_caption = ", ".join(sorted(_vseries["benchmarks_used"])) or "n/a"
+    st.caption(
+        f"Index line: {_bench_caption}, same dollars invested at each purchase - each "
+        "holding compared to its own listing's benchmark (ASX 200 for .AX tickers, S&P "
+        "500 for US tickers). Converted at today's FX rate across the whole series, not "
+        "historical rates."
+    )
+    if _vseries["excluded"]:
+        st.caption(
+            "Excluded from this chart (no price history or FX rate available): "
+            + ", ".join(_vseries["excluded"])
+        )
+
+
+def _render_portfolio_dividends_received(_rows, _cmap):
+    """Section 3 of the My Portfolio additions: dividends actually
+    received since purchase vs the existing donut's "potential next 12
+    months" figure, per holding, plus yield-on-cost and next-ex-date
+    chips. Placed directly below the existing dividend donut (which stays
+    unchanged) on the Holdings tab."""
+    st.markdown("##### Dividends - received vs potential")
+    st.caption(
+        "Received: actual per-share payments since your recorded purchase date x shares, "
+        "converted at today's FX rate. Potential: the estimate above (current yield x "
+        "current value) - not recomputed differently here."
+    )
+
+    _labels, _received, _potential, _colors = [], [], [], []
+    _no_dist, _chips = [], []
+    for r in _rows:
+        if not r.get("buy_date") or not r.get("shares"):
+            continue
+        _rec_aud, _trailing_ps = portfolio_charts_engine.dividends_received(
+            r["ticker"], r.get("currency"), r["shares"], r["buy_date"],
+        )
+        if _rec_aud is None:
+            _no_dist.append(r["label"])
+            continue
+        _labels.append(r["label"])
+        _received.append(_rec_aud)
+        _potential.append(r.get("pot_div_income_aud") or 0.0)
+        _colors.append(_cmap.get(r["label"], "#2dd4bf"))
+
+        _yoc = (_trailing_ps / r["buy_price"]) if (_trailing_ps and r.get("buy_price")) else None
+        _next_ex = portfolio_charts_engine.fetch_next_ex_dividend(r["ticker"])
+        _chip_bits = []
+        if _yoc is not None:
+            _chip_bits.append(f"yield on cost {_yoc * 100:.2f}%")
+        if _next_ex:
+            _chip_bits.append(f"next ex-div {_next_ex}")
+        if _chip_bits:
+            _chips.append(f"**{r['label']}** - " + " · ".join(_chip_bits))
+
+    if not _labels:
+        st.caption("No dividend history available for any holding yet.")
+    else:
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            y=_labels, x=_received, orientation="h", name="Received",
+            marker=dict(color=_colors), text=[f"A${v:,.0f} received" for v in _received],
+            textposition="outside", cliponaxis=False,
+        ))
+        fig.add_trace(go.Bar(
+            y=_labels, x=_potential, orientation="h", name="Potential (12m)",
+            marker=dict(color="rgba(138,160,184,0.35)"),
+            text=[f"A${v:,.0f} potential" for v in _potential],
+            textposition="outside", cliponaxis=False,
+        ))
+        fig.update_layout(
+            barmode="group", margin=dict(t=20, b=10, l=10, r=60),
+            height=max(280, 60 * len(_labels)),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#c7d2e0"), legend=dict(orientation="h", y=-0.15),
+            xaxis=dict(showgrid=False, tickprefix="A$", separatethousands=True),
+            yaxis=dict(showgrid=False),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    if _no_dist:
+        st.caption("No distributions on file for: " + ", ".join(sorted(set(_no_dist))))
+    if _chips:
+        st.markdown(" &nbsp;|&nbsp; ".join(_chips))
+
+
+def _render_portfolio_cheap_healthy_map(_rows, _analyses, _cmap):
+    """Section 2 of the My Portfolio additions: MOS% (x) vs Health score
+    (y) scatter, bubble size = current weight, placed under the Overview
+    tab's main table. ETFs have no MOS - no DCF model exists for funds
+    (see compute_health_components' Valuation branch) - so they're never
+    plotted; they get a compact side list instead of a misleading dot."""
+    st.markdown("##### Cheap vs healthy")
+
+    _company_pts, _etf_lines = [], []
+    for r in _rows:
+        _a = _analyses.get((r["portfolio"], r["ticker"])) or {}
+        if not _a:
+            continue
+        _health_val = (_a.get("health") or {}).get("overall")
+        if _a.get("is_etf"):
+            _etf_lines.append(
+                f"{r['label']} · health {_health_val:.0f}" if _health_val is not None else f"{r['label']} · health n/a"
+            )
+            continue
+        # Same MOS% the Health tab's Valuation component uses - already
+        # override-aware (compute_health_components folds a manual IV
+        # override in here before this function ever sees it).
+        _mos = ((_a.get("components") or {}).get("Valuation") or {}).get("current")
+        if _mos is None or _health_val is None:
+            continue
+        _company_pts.append({
+            "label": r["label"], "mos": _mos, "health": _health_val,
+            "weight": (r["pct_now"] or 0.0) * 100, "color": _cmap.get(r["label"], "#2dd4bf"),
+        })
+
+    if not _company_pts:
+        st.caption(
+            "No company holdings with both a valuation and Health Score yet - "
+            "positions of described calculations, not recommendations."
+        )
+        if _etf_lines:
+            st.caption("ETFs - valuation N/A: " + " · ".join(_etf_lines))
+        return
+
+    _sizes = [max(14.0, min(60.0, 14 + p["weight"] * 1.6)) for p in _company_pts]
+    _xs = [p["mos"] for p in _company_pts]
+    _x_pad = max(10.0, (max(_xs) - min(_xs)) * 0.15) if len(_xs) > 1 else 10.0
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=_xs, y=[p["health"] for p in _company_pts],
+        mode="markers+text", text=[p["label"] for p in _company_pts], textposition="top center",
+        textfont=dict(size=11, color="#c7d2e0"),
+        marker=dict(size=_sizes, color=[p["color"] for p in _company_pts], line=dict(width=1, color="#0b1220")),
+        hovertemplate="%{text}<br>MOS %{x:.1f}%<br>Health %{y:.0f}<extra></extra>",
+        showlegend=False,
+    ))
+    fig.add_vline(x=0, line=dict(color="rgba(138,160,184,0.4)", dash="dash", width=1))
+    fig.add_hline(y=50, line=dict(color="rgba(138,160,184,0.4)", dash="dash", width=1))
+    fig.add_annotation(x=max(_xs) + _x_pad * 0.3, y=98, text="cheap & healthy ↗", showarrow=False,
+                        font=dict(size=11, color="#5b6b80"), xanchor="right")
+    fig.add_annotation(x=min(_xs) - _x_pad * 0.3, y=2, text="expensive & weak ↙", showarrow=False,
+                        font=dict(size=11, color="#5b6b80"), xanchor="left")
+    fig.update_layout(
+        margin=dict(t=20, b=10, l=10, r=10), height=420,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2e0"),
+        xaxis=dict(title="Margin of safety %", showgrid=True, gridcolor="rgba(138,160,184,0.12)", zeroline=False),
+        yaxis=dict(title="Health score", range=[0, 100], showgrid=True, gridcolor="rgba(138,160,184,0.12)"),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "Bubble size = current weight in the portfolio. Positions of described "
+        "calculations (MOS% from each holding's valuation, Health Score from the "
+        "Health & News tab) - not recommendations."
+    )
+    if _etf_lines:
+        st.caption("ETFs - valuation N/A: " + " · ".join(_etf_lines))
+
+
 def _analyze_holding(h, email=None):
     """One holding's full analysis - live snapshot, News Intelligence, Health
     Score, and Progress Score - computed once per render and shared across
@@ -6709,6 +6936,10 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
         return
 
     _rows, _totals, _fx_missing, _price_missing = _build_portfolio_rows(_holdings, _analyses)
+    # Computed here (not inside _render_portfolio_value_chart below) so its
+    # lead_pp is available for the KPI tile too - one fetch/compute shared
+    # by both, instead of the chart section redoing it.
+    _vseries = portfolio_charts_engine.compute_value_vs_index_series(_holdings)
 
     if _is_combined:
         _settings = portfolio_store.get_settings_all(email)
@@ -6751,7 +6982,8 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
                 st.rerun()
 
     _has_transfer_kpi = bool(_transferred)
-    _kpi_cols = st.columns(5 if _has_transfer_kpi else 4)
+    _n_base_kpi = 5 if _has_transfer_kpi else 4
+    _kpi_cols = st.columns(_n_base_kpi + 1)
     _kpi_cols[0].metric("Total invested", f"A${_totals['cost_aud']:,.0f}" if _totals["cost_aud"] else "–")
     _kpi_cols[1].metric("Current value", f"A${_totals['value_aud']:,.0f}" if _totals["value_aud"] else "–")
     if _totals["profit_aud"] is not None and _totals["cost_aud"]:
@@ -6770,6 +7002,16 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
             _pt = (_totals["value_aud"] + _cash_v - _totals["cost_aud"]) / _transferred
         _kpi_cols[4].metric("Profit-to-Transferred", f"{_pt * 100:+.1f}%" if _pt is not None else "–")
 
+    _lead_pp = _vseries["lead_pp"] if _vseries else None
+    if _lead_pp is not None:
+        _kpi_cols[_n_base_kpi].metric(
+            "vs ASX 200 (same dollars)",
+            "Ahead of index" if _lead_pp >= 0 else "Behind index",
+            f"{_lead_pp:+.1f} pp",
+        )
+    else:
+        _kpi_cols[_n_base_kpi].metric("vs ASX 200 (same dollars)", "–")
+
     if _price_missing:
         st.caption(
             "No live price yet for: " + ", ".join(sorted(set(_price_missing)))
@@ -6782,6 +7024,8 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
         )
 
     _cmap = _ticker_color_map([r["label"] for r in _rows])
+
+    _render_portfolio_value_chart(_vseries, _cmap)
 
     st.markdown("##### Allocation")
     _dc1, _dc2 = st.columns(2)
@@ -6818,6 +7062,8 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
         st.plotly_chart(_fig_div, use_container_width=True)
     else:
         st.caption("No dividend-paying holdings yet.")
+
+    _render_portfolio_dividends_received(_rows, _cmap)
 
     st.markdown("##### Holdings table")
     _table_rows = []
@@ -6896,8 +7142,9 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
     _rows, _totals, _fx_missing, _price_missing = _build_portfolio_rows(_holdings, _analyses)
     _by_key = {(r["portfolio"], r["ticker"]): r for r in _rows}
 
-    _table_rows, _prog_rows = [], []
+    _table_rows, _prog_rows, _csv_rows = [], [], []
     _raw_health, _raw_news_risk, _raw_pl, _raw_progress = [], [], [], []
+    _raw_moat, _moat_flagged, _raw_drift = [], [], []
     _thesis_intact_count = 0
     for h in _holdings:
         _a = _analyses[_hkey(h)]
@@ -6909,6 +7156,10 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
             email, h.get("portfolio"), h["ticker"], _health["overall"], news_risk=(_news or {}).get("news_risk_score"),
         )
         _delta_run = round(_health["overall"] - _prev, 1) if (_prev is not None and _health["overall"] is not None) else None
+        # Includes the run just recorded above (same sqlite file, committed
+        # before this read) - so the sparkline's last point is always this
+        # render's own score, not one run behind it.
+        _spark_vals = portfolio_health_engine.get_recent_health_runs(email, h.get("portfolio"), h["ticker"], limit=8)
 
         _return_pct = (_r["return_pct"] * 100) if _r["return_pct"] is not None else None
         _thesis_breaking = bool(_health.get("thesis_breaking"))
@@ -6920,6 +7171,27 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
         _pl_val = _r["profit_aud"]
         _progress_val = _progress["overall"]
 
+        # Moat Score (Phase 1, display-only - see moat_engine.py): ETFs
+        # get "N/A" without a wasted lookup, since a fund has no moat to
+        # score by construction (same reasoning already used for the
+        # Valuation/Thesis components above in compute_health_components).
+        if _is_etf:
+            _moat_val, _moat_flag = None, False
+        else:
+            _moat_result = moat_engine.compute_moat(h["ticker"])
+            _moat_val = _moat_result.get("score")
+            _moat_flag = _moat_result.get("erosion") in ("watch", "eroding")
+        _raw_moat.append(_moat_val)
+        _moat_flagged.append(_moat_flag)
+
+        # Weight drift: current weight vs weight-at-purchase (cost share) -
+        # both already computed once in _build_portfolio_rows, reused here
+        # rather than recomputed.
+        _drift_pp = None
+        if _r["pct_now"] is not None and _r["pct_at_purchase"] is not None:
+            _drift_pp = (_r["pct_now"] - _r["pct_at_purchase"]) * 100
+        _raw_drift.append(_drift_pp)
+
         _table_row = {"Ticker": h["ticker"]}
         if _is_combined:
             _table_row["Portfolio"] = h.get("portfolio")
@@ -6930,8 +7202,10 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
         _table_row.update({
             "Name": h.get("name") or h["ticker"],
             "Health": _pf_cell(_health_val, "{:.0f}"), "Δ run": _pf_cell(_delta_run, "{:+.1f}"),
+            "Health trend": portfolio_charts_engine.sparkline_data_uri(_spark_vals),
             "Action": _health["action"],
             "Thesis": ("N/A (ETF)" if _is_etf else ("Review" if _thesis_breaking else "Intact")),
+            "Moat": "N/A" if _is_etf else _pf_cell(_moat_val, "{:.0f}"),
             "Buy price": _pf_cell(h.get("buy_price"), "{:.4f}" + _ccy_suffix),
             "Current price": _pf_cell(_r["current_price"], "{:.4f}" + _ccy_suffix),
             "Return %": _pf_cell(_return_pct, "{:+.1f}%"),
@@ -6941,6 +7215,7 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
             "News Risk": _pf_cell(_news_risk_val, "{:.0f}"),
             "Flags": len(_health.get("red_flags") or []),
             "Weight %": _pf_cell((_r["pct_now"] * 100) if _r["pct_now"] is not None else None, "{:.1f}%"),
+            "Weight drift": _pf_weight_drift_str(_r["pct_now"], _r["pct_at_purchase"]),
         })
         _table_rows.append(_table_row)
         _prog_row = {"Ticker": h["ticker"]}
@@ -6956,6 +7231,22 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
         _raw_news_risk.append(_news_risk_val)
         _raw_pl.append(_pl_val)
         _raw_progress.append(_progress_val)
+
+        # CSV export (below the table): raw numbers/ISO dates, not the
+        # display-formatted strings above - a spreadsheet re-user wants
+        # 0.427, not "42.7%".
+        _csv_rows.append({
+            "ticker": h["ticker"], "portfolio": h.get("portfolio"), "name": h.get("name") or h["ticker"],
+            "kind": h.get("kind"), "currency": h.get("currency"), "buy_date": h.get("buy_date"),
+            "shares": h.get("shares"), "buy_price": h.get("buy_price"), "current_price": _r["current_price"],
+            "return_pct": _r["return_pct"], "cost_aud": _r["cost_aud"], "value_aud": _r["value_aud"],
+            "profit_aud": _pl_val, "weight_pct_now": _r["pct_now"], "weight_pct_at_buy": _r["pct_at_purchase"],
+            "health": _health_val, "health_delta_run": _delta_run, "moat": _moat_val,
+            "moat_erosion_flag": _moat_flag, "news_risk": _news_risk_val, "flags": len(_health.get("red_flags") or []),
+            "thesis": ("N/A" if _is_etf else ("Review" if _thesis_breaking else "Intact")),
+            "progress": _progress_val, "progress_verdict": _progress["verdict"],
+            "baseline_date": h.get("baseline_date"),
+        })
 
     # Concentration warning (1a fix): amber when one holding exceeds 40% of
     # current value, or the top two together exceed 65% - genuinely
@@ -6995,8 +7286,15 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
         .apply(lambda col: _score_color(_raw_health), subset=["Health"])
         .apply(lambda col: _score_color(_raw_news_risk), subset=["News Risk"])
         .apply(lambda col: _pf_pl_color(_raw_pl), subset=["Unrealised P/L (AUD)"])
+        .apply(lambda col: _pf_moat_color(_raw_moat, _moat_flagged), subset=["Moat"])
+        .apply(lambda col: _pf_weight_drift_color(_raw_drift), subset=["Weight drift"])
         .map(lambda v: "color:#d03b3b;font-weight:700" if v == "Review" else "", subset=["Thesis"]),
         use_container_width=True, hide_index=True,
+        column_config={
+            "Health trend": st.column_config.ImageColumn(
+                "Health trend", help="Last up to 8 recorded Health runs - green if holding steady or up, red if declining.",
+            ),
+        },
     )
     if _price_missing:
         st.caption(
@@ -7008,6 +7306,18 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
             "Couldn't fetch a live FX rate for: " + ", ".join(sorted(set(_fx_missing)))
             + " - those holdings are left out of the P/L, concentration, and weight figures above rather than guessed."
         )
+
+    _csv_df = pd.DataFrame(_csv_rows)
+    st.download_button(
+        "Download holdings as CSV",
+        data=_csv_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"portfolio_{(active_portfolio or 'all_portfolios').replace(' ', '_')}_{datetime.now(timezone.utc).date().isoformat()}.csv",
+        mime="text/csv",
+        key=_pf_key(active_portfolio, "pf_overview_csv_download"),
+    )
+
+    _cmap = _ticker_color_map([r["label"] for r in _rows])
+    _render_portfolio_cheap_healthy_map(_rows, _analyses, _cmap)
 
     st.markdown("##### Progress since purchase")
     _prog_df = pd.DataFrame(_prog_rows)
@@ -7051,6 +7361,46 @@ def _pf_pl_color(vals):
     return [("color:#22c55e;font-weight:700" if (v is not None and v > 0)
              else ("color:#fb7185;font-weight:700" if (v is not None and v < 0) else ""))
             for v in vals]
+
+
+def _pf_weight_drift_str(pct_now, pct_at_purchase):
+    """'37% ▲ (31% at buy)' - current weight vs weight-at-purchase (cost
+    share), both already computed in _build_portfolio_rows."""
+    if pct_now is None or pct_at_purchase is None:
+        return "–"
+    now_p, at_p = pct_now * 100, pct_at_purchase * 100
+    if now_p > at_p + 0.05:
+        arrow = "▲"
+    elif now_p < at_p - 0.05:
+        arrow = "▼"
+    else:
+        arrow = "▶"
+    return f"{now_p:.0f}% {arrow} ({at_p:.0f}% at buy)"
+
+
+def _pf_weight_drift_color(vals):
+    """vals: parallel list of raw (now% - at-buy%) deltas, possibly None -
+    green when weight has grown, red when it's shrunk."""
+    return [("color:#22c55e;font-weight:700" if (v is not None and v > 0.05)
+             else ("color:#fb7185;font-weight:700" if (v is not None and v < -0.05) else ""))
+            for v in vals]
+
+
+def _pf_moat_color(vals, erosion_flags):
+    """vals: raw Moat scores (possibly None for ETFs/n-a); erosion_flags:
+    parallel bool list. A flagged erosion state always wins red-bold,
+    matching the site's existing erosion convention elsewhere (Deep Dive/
+    Scanner/Comparison tables' red-bold Moat cell) regardless of the raw
+    score's own band colour."""
+    out = []
+    for v, flagged in zip(vals, erosion_flags):
+        if flagged:
+            out.append("color:#d03b3b;font-weight:700")
+        elif v is not None:
+            out.append(f"color:{portfolio_health_engine.score_color(v)};font-weight:700")
+        else:
+            out.append("")
+    return out
 
 
 def _render_portfolio_health_scoring_expander():
