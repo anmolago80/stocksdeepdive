@@ -5299,9 +5299,20 @@ def _render_scan_results(page_label, state_prefix, empty_message,
             _cmp_rows_html = []
             for _, r in _cmp.iterrows():
                 _type_color = _BAR_RED if r.get("_flag_type") else _TYPE_NEUTRAL
+                # Link straight to that ticker's Deep Dive - same convention
+                # already used by the Overnight scan table's Ticker cell
+                # (_render_overnight_scan_table); this table's Ticker cell
+                # was plain bold text with no link at all, so "click a
+                # ticker to open its Deep Dive" never actually worked here.
+                _cmp_tk = r["Ticker"]
+                _cmp_tk_cell = (
+                    f"<a href='/deep-dive?ticker={_cmp_tk}' target='_self' "
+                    "style='color:inherit;text-decoration:underline;'><b>"
+                    f"{_cmp_tk}</b></a>"
+                )
                 _row_html = (
                     "<tr>"
-                    + _td(f"<b>{r['Ticker']}</b>")
+                    + _td(_cmp_tk_cell)
                     + _td(_badge_cell(r["Type"], _type_color))
                     + _td(f"{r['Price']:,.2f}")
                     + _td(_money_cell(r["Intrinsic Value"], ref=r["Price"],
