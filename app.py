@@ -7275,6 +7275,36 @@ def page_methodology():
             "of how each calculation works are exactly that: descriptions of "
             "arithmetic, not guidance on what to do."
         )
+    # The Long/Value Score weight table and the Moat section's fold-in note
+    # both depend on whether Phase 2 (Moat folded into the Value Score) is
+    # live - read moat_engine.MOAT_IN_VALUE_SCORE at render time so this page
+    # always describes whatever is actually running, in either direction.
+    _moat_blended = moat_engine.MOAT_IN_VALUE_SCORE
+    if _moat_blended:
+        _long_score_table = """| Factor | Weight | What it measures |
+|---|---|---|
+| Quality | 25% | Is this a good business? Return on equity, profit margin, revenue and earnings growth, free cash flow, debt - computed from the company's own fundamentals. Loss-making, cash-burning businesses are capped: a company that doesn't make money can't score as "high quality" no matter how fast it grows. |
+| Moat | 15% | How likely is the business to **stay** that good, not just how good it is today - the Moat Score described below, folded in directly. If no Moat Score can be computed (funds/ETFs, or too little statement history), this weight is dropped and the other four factors are reweighted proportionally to fill the gap - never defaulted to zero. |
+| Margin of Safety | 25% | Is the price below the value? The gap between our intrinsic-value estimate and today's price, clamped to ±50 so a wild discount (or premium) can move the score but never dominate it. |
+| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |
+| Discovery | 15% | Is the market noticing? Price activity, unusual volume, search trends, news flow and social chatter - attention only, deliberately separate from sentiment. |"""
+        _moat_fold_note = (
+            "It's shown separately on the Deep Dive page, the Side-by-side comparison and "
+            "the Scanner, **and it is folded directly into the Value Score above** at a 15% "
+            "weight (see the weight table there) - dropped and the remaining factors "
+            "reweighted, never defaulted to zero, on any ticker it can't be computed for."
+        )
+    else:
+        _long_score_table = """| Factor | Weight | What it measures |
+|---|---|---|
+| Quality | 35% | Is this a good business? Return on equity, profit margin, revenue and earnings growth, free cash flow, debt - computed from the company's own fundamentals. Loss-making, cash-burning businesses are capped: a company that doesn't make money can't score as "high quality" no matter how fast it grows. |
+| Margin of Safety | 25% | Is the price below the value? The gap between our intrinsic-value estimate and today's price, clamped to ±50 so a wild discount (or premium) can move the score but never dominate it. |
+| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |
+| Discovery | 20% | Is the market noticing? Price activity, unusual volume, search trends, news flow and social chatter - attention only, deliberately separate from sentiment. |"""
+        _moat_fold_note = (
+            "It's shown separately on the Deep Dive page, the Side-by-side comparison and "
+            "the Scanner - it is not currently folded into the Value Score above."
+        )
     _md_text = """
 Every tool on this site runs the same engine. A ticker goes in; live data comes back
 (prices and volumes, financial statements and analyst estimates via Yahoo Finance, search
@@ -7288,12 +7318,7 @@ One number answering "is this a good business to own at this price?" It blends f
 factors, each clamped to a fixed band first so no single factor can run away with the
 result:
 
-| Factor | Weight | What it measures |
-|---|---|---|
-| Quality | 35% | Is this a good business? Return on equity, profit margin, revenue and earnings growth, free cash flow, debt - computed from the company's own fundamentals. Loss-making, cash-burning businesses are capped: a company that doesn't make money can't score as "high quality" no matter how fast it grows. |
-| Margin of Safety | 25% | Is the price below the value? The gap between our intrinsic-value estimate and today's price, clamped to ±50 so a wild discount (or premium) can move the score but never dominate it. |
-| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |
-| Discovery | 20% | Is the market noticing? Price activity, unusual volume, search trends, news flow and social chatter - attention only, deliberately separate from sentiment. |
+@@LONG_SCORE_TABLE@@
 
 Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise
 **AVOID**. If no intrinsic value could be computed at all, the signal is capped at
@@ -7304,10 +7329,8 @@ recommendation.
 
 Quality (above) measures how good the business is **right now** - today's margins,
 returns and growth. Moat is a different question: how likely is the business to
-**stay** that good, over time? It's shown separately on the Deep Dive page, the
-Side-by-side comparison and the Scanner - it is not currently folded into the Value
-Score above. Four pillars, each computed from the company's own multi-year
-statement history:
+**stay** that good, over time? @@MOAT_FOLD_NOTE@@ Four pillars, each computed from
+the company's own multi-year statement history:
 
 | Pillar | Weight | What it measures |
 |---|---|---|
@@ -7413,6 +7436,8 @@ shown openly, but assumptions. Scores are model outputs, not personal advice, an
 of this considers your circumstances. Use it the way it was built to be used: as the
 starting point for your own judgment, not a substitute for it.
 """
+    _md_text = _md_text.replace("@@LONG_SCORE_TABLE@@", _long_score_table)
+    _md_text = _md_text.replace("@@MOAT_FOLD_NOTE@@", _moat_fold_note)
     if _factual():
         for _old, _new in _METHODOLOGY_FACTUAL_SWAPS:
             _md_text = _md_text.replace(_old, _new)
