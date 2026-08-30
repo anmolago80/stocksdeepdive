@@ -15,6 +15,8 @@ is a legal requirement rather than a nicety.
 Everything below is Markdown.
 """
 
+import moat_engine
+
 METHODOLOGY_FACTUAL_SWAPS = [
     # Verdict bands paragraph -> value-score description
     ("Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise\n**AVOID**. If no intrinsic value could be computed at all, the signal is capped at\nWATCHLIST - a thesis whose value leg can't be verified doesn't get a full\nrecommendation.",
@@ -53,17 +55,49 @@ One number answering "is this a good business to own at this price?" It blends f
 factors, each clamped to a fixed band first so no single factor can run away with the
 result:
 
-| Factor | Weight | What it measures |
-|---|---|---|
-| Quality | 35% | Is this a good business? Return on equity, profit margin, revenue and earnings growth, free cash flow, debt - computed from the company's own fundamentals. Loss-making, cash-burning businesses are capped: a company that doesn't make money can't score as "high quality" no matter how fast it grows. |
-| Margin of Safety | 25% | Is the price below the value? The gap between our intrinsic-value estimate and today's price, clamped to ±50 so a wild discount (or premium) can move the score but never dominate it. |
-| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |
-| Discovery | 20% | Is the market noticing? Price activity, unusual volume, search trends, news flow and social chatter - attention only, deliberately separate from sentiment. |
+@@LONG_SCORE_TABLE@@
 
 Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise
 **AVOID**. If no intrinsic value could be computed at all, the signal is capped at
 WATCHLIST - a thesis whose value leg can't be verified doesn't get a full
 recommendation.
+
+#### Moat Score (0–100)
+
+Quality (above) measures how good the business is **right now** - today's margins,
+returns and growth. Moat is a different question: how likely is the business to
+**stay** that good, over time? @@MOAT_FOLD_NOTE@@ Four pillars, each computed from
+the company's own multi-year statement history:
+
+| Pillar | Weight | What it measures |
+|---|---|---|
+| Excess-return spread | 30 pts | TTM return on capital (ROIC, or ROE for banks/insurers) minus the cost of that capital (WACC, or cost of equity for financials). ≤0% spread scores 0, 0–5% scores 10, 5–15% scores 20, above 15% scores the full 30. |
+| Persistence | 25 pts | The share of available fiscal years in which return on capital cleared 12%. Capped at 20/25 while fewer than 8 years of statement history are on file - the full 25-point read needs real multi-year depth. |
+| Pricing power | 25 pts | The gross-margin trend (falls back to operating margin, flagged, if no Gross Profit line is reported): held or expanded margin (10 pts), stability - low year-to-year variance (10 pts), and margin holding up while revenue actually grew (5 pts). |
+| Reinvestment | 20 pts | Incremental return on newly-deployed capital - the change in after-tax operating profit versus the change in invested capital, oldest available year to newest. A capital-light business that shrinks invested capital while holding or growing profit scores 16 here directly. |
+
+Above 70 = **Strong moat**, 40–70 = **Moderate moat**, 40 and below = **Weak/no
+moat** - the same colour bands (green/amber/red) used everywhere else on the site.
+
+**Erosion overlay.** Independently of the score above, if TTM return on capital and
+operating margin have both fallen meaningfully below their own recent multi-year
+average - return down more than 20% in relative terms, margin down more than 3
+points - the read becomes a **moat watch** caption (no score penalty). If that same
+weakness holds across the two most recent multi-year windows in a row, the read
+becomes **eroding**, and the score itself is capped at 50: a business can't read as
+a "strong moat" while its own numbers are actively deteriorating, however good its
+history looks. A single weak window is a caption, not a cap - a real business has
+uneven years.
+
+**Missing data is dropped, not guessed at.** If a pillar can't be computed from the
+data on file, it's left out entirely and the remaining pillars are reweighted to
+100 - never defaulted to a neutral or average score. The Deep Dive page's Moat
+section always shows how many pillars were actually used.
+
+Funds and ETFs don't get a Moat Score at all (a moat is a property of an operating
+business, not a basket of one) - shown as **N/A (fund)**. A ticker with fewer than
+two usable years of statement history also shows **N/A**, plainly, rather than a
+score built on too little to mean anything.
 
 #### Intrinsic value
 
@@ -247,8 +281,41 @@ noted on the site.
 def methodology_md(factual=True):
     """The methodology text as the given presentation sees it. In factual
     mode the signal/verdict language is swapped for descriptions of the
-    same arithmetic - the public site must not read as a recommendation."""
-    text = METHODOLOGY_MD
+    same arithmetic - the public site must not read as a recommendation.
+
+    The Long/Value Score weight table and the Moat section's fold-in note
+    are resolved here at call time from moat_engine.MOAT_IN_VALUE_SCORE,
+    mirroring app.py's page_methodology() so this crawled/static copy of
+    the page can never describe a different formula than the one actually
+    running."""
+    moat_blended = moat_engine.MOAT_IN_VALUE_SCORE
+    if moat_blended:
+        long_score_table = """| Factor | Weight | What it measures |
+|---|---|---|
+| Quality | 25% | Is this a good business? Return on equity, profit margin, revenue and earnings growth, free cash flow, debt - computed from the company's own fundamentals. Loss-making, cash-burning businesses are capped: a company that doesn't make money can't score as "high quality" no matter how fast it grows. |
+| Moat | 15% | How likely is the business to **stay** that good, not just how good it is today - the Moat Score described below, folded in directly. If no Moat Score can be computed (funds/ETFs, or too little statement history), this weight is dropped and the other four factors are reweighted proportionally to fill the gap - never defaulted to zero. |
+| Margin of Safety | 25% | Is the price below the value? The gap between our intrinsic-value estimate and today's price, clamped to ±50 so a wild discount (or premium) can move the score but never dominate it. |
+| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |
+| Discovery | 15% | Is the market noticing? Price activity, unusual volume, search trends, news flow and social chatter - attention only, deliberately separate from sentiment. |"""
+        moat_fold_note = (
+            "It's shown separately on the Deep Dive page, the Side-by-side comparison and "
+            "the Scanner, **and it is folded directly into the Value Score above** at a 15% "
+            "weight (see the weight table there) - dropped and the remaining factors "
+            "reweighted, never defaulted to zero, on any ticker it can't be computed for."
+        )
+    else:
+        long_score_table = """| Factor | Weight | What it measures |
+|---|---|---|
+| Quality | 35% | Is this a good business? Return on equity, profit margin, revenue and earnings growth, free cash flow, debt - computed from the company's own fundamentals. Loss-making, cash-burning businesses are capped: a company that doesn't make money can't score as "high quality" no matter how fast it grows. |
+| Margin of Safety | 25% | Is the price below the value? The gap between our intrinsic-value estimate and today's price, clamped to ±50 so a wild discount (or premium) can move the score but never dominate it. |
+| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |
+| Discovery | 20% | Is the market noticing? Price activity, unusual volume, search trends, news flow and social chatter - attention only, deliberately separate from sentiment. |"""
+        moat_fold_note = (
+            "It's shown separately on the Deep Dive page, the Side-by-side comparison and "
+            "the Scanner - it is not currently folded into the Value Score above."
+        )
+    text = METHODOLOGY_MD.replace("@@LONG_SCORE_TABLE@@", long_score_table)
+    text = text.replace("@@MOAT_FOLD_NOTE@@", moat_fold_note)
     if factual:
         for old, new in METHODOLOGY_FACTUAL_SWAPS:
             text = text.replace(old, new)
