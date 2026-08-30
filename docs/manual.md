@@ -228,26 +228,32 @@ no single factor can dominate. Which formula runs depends on the `MOAT_IN_VALUE_
 environment variable (§13) — currently **set (on)**, so Moat is folded in:
 
 ```
-With MOAT_IN_VALUE_SCORE set (current production formula):
-Value Score = Quality × 0.25 + Moat × 0.15 + MOS clamped to ±50 × 0.25
-             + Psychology clamped to ±50 × 0.20 + Discovery clamped to 0–100 × 0.15
+With MOAT_IN_VALUE_SCORE set, and a Moat Score available (current production formula):
+Value Score = Quality × 0.25 + Moat × 0.15 + MOS clamped to ±50 × 0.30
+             + Psychology clamped to ±50 × 0.15 + Discovery clamped to 0–100 × 0.15
 
-Without it (the formula used before Moat was folded in, and the one that
-still runs for any ticker with no Moat Score — funds/ETFs, or too little
-statement history):
+With MOAT_IN_VALUE_SCORE set, but no Moat Score available for this ticker
+(funds/ETFs, or too little statement history) — Moat's 15% weight is dropped
+and the other four are reweighted proportionally (divided by 0.85, i.e. each
+factor's blended-formula weight ÷ 0.85), never defaulted to zero:
+Value Score = Quality × 0.2941 + MOS clamped to ±50 × 0.3529
+             + Psychology clamped to ±50 × 0.1765 + Discovery clamped to 0–100 × 0.1765
+
+Without MOAT_IN_VALUE_SCORE set at all (the formula used before Moat existed;
+kept in the code as mode="current" but not the one running in production today):
 Value Score = Quality × 0.35 + MOS clamped to ±50 × 0.25
              + Psychology clamped to ±50 × 0.20 + Discovery clamped to 0–100 × 0.20
 ```
 
-When a ticker has no Moat Score, its 15% weight isn't dropped to zero — it's redistributed
-proportionally across the other four factors, so the second formula above is exactly what
-runs for that ticker even while the switch is on. The clamps affect only the score's
-arithmetic; tables always display the true, unclamped MOS/Psychology/Discovery values. This
-is the same underlying calculation the site's own code calls the "Long Score" internally
-(computed there via a `mode="moat_blend"` argument when the switch is on), and the same
-number the site's owner sees paired with an Investment Signal label in the admin view — see
-§12. On the public site it is shown purely as a descriptive number ("Value Score: 48.9 —
-FAIR" and similar), with no buy/hold/avoid label attached.
+The middle formula is arithmetically distinct from the third — it is not a fallback to the
+pre-Moat formula, just the same blended weights with Moat's share folded back into the other
+four in proportion to their own size. The clamps affect only the score's arithmetic; tables
+always display the true, unclamped MOS/Psychology/Discovery values. This is the same
+underlying calculation the site's own code calls the "Long Score" internally (computed there
+via a `mode="moat_blend"` argument when the switch is on), and the same number the site's
+owner sees paired with an Investment Signal label in the admin view — see §12. On the public
+site it is shown purely as a descriptive number ("Value Score: 48.9 — FAIR" and similar),
+with no buy/hold/avoid label attached.
 
 ### 3.7 The red-flag rule
 
@@ -579,7 +585,7 @@ Configured with Railway environment variables; changing one restarts the service
 | `NIGHTLY_SCAN_UTC_HOUR` | yes | Scan hour, UTC. Scans retry up to 3×/day if a run was interrupted |
 | `RAILWAY_VOLUME_MOUNT_PATH` | yes (set by Railway) | Where persistent data — watchlists, overnight scans, compounder data, the Moat cache, scheduler state — actually lives, and survives redeploys |
 | `EODHD_API_KEY` | **not set** | Optional deeper statement history (§3, §11); without it the site runs on Yahoo Finance's shorter history only |
-| `MOAT_IN_VALUE_SCORE` | **set to `1` (on)** | Folds the Moat Score into the Value Score's own weighting — Quality 25% / Moat 15% / MOS 25% / Psychology 20% / Discovery 15%, proportionally reweighted to the pre-Moat formula for any ticker with no Moat Score (funds/ETFs, thin statement history). Read once at process start (`moat_engine.py`), so changing it restarts the service, same as any other variable here. See §3.5–§3.6 for the full formula. |
+| `MOAT_IN_VALUE_SCORE` | **set to `1` (on)** | Folds the Moat Score into the Value Score's own weighting — Quality 25% / Moat 15% / MOS 30% / Psychology 15% / Discovery 15%. For any ticker with no Moat Score (funds/ETFs, thin statement history), Moat's 15% is dropped and the other four are reweighted proportionally to fill the gap — never defaulted to zero, and not the same as the pre-Moat formula (see §3.6). Read once at process start (`moat_engine.py`), so changing it restarts the service, same as any other variable here. See §3.5–§3.6 for the full formula. |
 | `SCHEDULER_ENABLED` | code default `true` | Set to `false` to disable both the nightly scan and the weekly digest jobs |
 | `DIGEST_UTC_WEEKDAY` / `DIGEST_UTC_HOUR` | code default (Sunday 21:00 UTC) | Weekly digest schedule |
 | `NEWS_API_KEY` | optional | Enriches the News Score; without it, Yahoo headlines only |

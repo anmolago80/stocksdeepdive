@@ -106,16 +106,16 @@ METRIC_HELP = {
         "negative means it's above."
     ),
     "Value Score": (
-        "A 0-100 weighted calculation: quality 25%, moat 15%, MOS 25%, "
-        "psychology 20%, discovery 15% (moat weight dropped and the rest "
+        "A 0-100 weighted calculation: quality 25%, moat 15%, MOS 30%, "
+        "psychology 15%, discovery 15% (moat weight dropped and the rest "
         "reweighted proportionally where no Moat Score exists)."
         if moat_engine.MOAT_IN_VALUE_SCORE else
         "A 0-100 weighted calculation: quality 35%, MOS 25%, psychology "
         "20%, discovery 20%."
     ),
     "Long Score": (
-        "A 0-100 weighted calculation: quality 25%, moat 15%, MOS 25%, "
-        "psychology 20%, discovery 15% (moat weight dropped and the rest "
+        "A 0-100 weighted calculation: quality 25%, moat 15%, MOS 30%, "
+        "psychology 15%, discovery 15% (moat weight dropped and the rest "
         "reweighted proportionally where no Moat Score exists)."
         if moat_engine.MOAT_IN_VALUE_SCORE else
         "A 0-100 weighted calculation: quality 35%, MOS 25%, psychology "
@@ -3538,7 +3538,7 @@ def page_deep_dive():
             st.caption(
                 (
                     "Value Score is a weighted calculation: quality 25%, moat "
-                    "15%, MOS 25%, psychology 20%, discovery 15% (moat "
+                    "15%, MOS 30%, psychology 15%, discovery 15% (moat "
                     "reweighted into the others where no Moat Score exists). "
                     "It is a description of data, not a recommendation."
                     if moat_engine.MOAT_IN_VALUE_SCORE else
@@ -7275,9 +7275,13 @@ _METHODOLOGY_FACTUAL_SWAPS = [
     # Score heading + intro question -> neutral description
     ("#### The Long Score (0\u2013100)\n\nOne number answering \"is this a good business to own at this price?\" It blends four\nfactors, each clamped to a fixed band first so no single factor can run away with the\nresult:",
      "#### The Value Score (0\u2013100)\n\nOne number summarising four calculations, each clamped to a fixed band first so no\nsingle factor can run away with the result:"),
-    # Psychology row: drop the advice-flavoured sentence, keep the maths
+    # Psychology row: drop the advice-flavoured sentence, keep the maths.
+    # Two variants - the weight itself differs (20% when Moat isn't
+    # blended in, 15% when it is) but both get the same softened wording.
     ("| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
      "| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
+    ("| Psychology | 15% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
+     "| Psychology | 15% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
     # Trade Setup / two-verdicts section -> psychology-readings description
     ("#### Value vs timing - two separate verdicts\n\nThe **Investment Signal** answers \"good business to own?\" The **Trade Setup** answers\n\"is right now a sane entry?\" - support/resistance-based entry zone, stop loss and\ntargets, gated on trend safety and risk/reward. A great company can be a poor entry\ntoday; the site shows both rather than blurring them into one contradictory verdict.",
      "#### Psychology and discovery readings\n\nAlongside the valuation models, the site reports what the crowd has been doing:\ndistance below the 3-month high (fear), distance from the 50-day average and greed/\nFOMO terms, and a discovery reading built from volume, search interest, news and\nsocial chatter. These are measurements, stated as numbers - the site does not\ndisplay entry levels, targets or trade verdicts."),
@@ -7305,8 +7309,8 @@ def page_methodology():
 |---|---|---|
 | Quality | 25% | Is this a good business? Return on equity, profit margin, revenue and earnings growth, free cash flow, debt - computed from the company's own fundamentals. Loss-making, cash-burning businesses are capped: a company that doesn't make money can't score as "high quality" no matter how fast it grows. |
 | Moat | 15% | How likely is the business to **stay** that good, not just how good it is today - the Moat Score described below, folded in directly. If no Moat Score can be computed (funds/ETFs, or too little statement history), this weight is dropped and the other four factors are reweighted proportionally to fill the gap - never defaulted to zero. |
-| Margin of Safety | 25% | Is the price below the value? The gap between our intrinsic-value estimate and today's price, clamped to ±50 so a wild discount (or premium) can move the score but never dominate it. |
-| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |
+| Margin of Safety | 30% | Is the price below the value? The gap between our intrinsic-value estimate and today's price, clamped to ±50 so a wild discount (or premium) can move the score but never dominate it. |
+| Psychology | 15% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |
 | Discovery | 15% | Is the market noticing? Price activity, unusual volume, search trends, news flow and social chatter - attention only, deliberately separate from sentiment. |"""
         _moat_fold_note = (
             "It's shown separately on the Deep Dive page, the Side-by-side comparison and "

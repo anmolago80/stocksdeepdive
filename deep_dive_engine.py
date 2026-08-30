@@ -444,11 +444,11 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
 
         # Points each factor actually contributed to the final Long Score
         # (clamped value x its weight) - the bars sum to long_score.
-        # Phase 2 (MOAT_IN_VALUE_SCORE, off by default): gains a Moat bar
-        # and re-weights the other four to ranking_engine's own
-        # MOAT_BLEND_WEIGHTS - see calculate_long_score's "moat_blend"
-        # mode for the exact weights (including the reweight-when-None
-        # case, mirrored here so the chart always sums to long_score).
+        # Phase 2 (MOAT_IN_VALUE_SCORE): gains a Moat bar and re-weights
+        # the other four to ranking_engine's own MOAT_BLEND_WEIGHTS -
+        # see calculate_long_score's "moat_blend" mode for the exact
+        # weights (including the reweight-when-None case, mirrored here
+        # so the chart always sums to long_score).
         "contributions": (
             {
                 "Quality": round(quality_score * 0.35, 2),
@@ -461,15 +461,15 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
                 {
                     "Quality": round(quality_score * 0.25, 2),
                     "Moat": round(_moat["score"] * 0.15, 2),
-                    "Valuation (MOS)": round(mos_c * 0.25, 2),
-                    "Psychology": round(psy_c * 0.20, 2),
+                    "Valuation (MOS)": round(mos_c * 0.30, 2),
+                    "Psychology": round(psy_c * 0.15, 2),
                     "Discovery": round(disc_c * 0.15, 2),
                 }
                 if _moat["score"] is not None
                 else {
                     "Quality": round(quality_score * (0.25 + 0.25 * (0.15 / 0.85)), 2),
-                    "Valuation (MOS)": round(mos_c * (0.25 + 0.25 * (0.15 / 0.85)), 2),
-                    "Psychology": round(psy_c * (0.20 + 0.20 * (0.15 / 0.85)), 2),
+                    "Valuation (MOS)": round(mos_c * (0.30 + 0.30 * (0.15 / 0.85)), 2),
+                    "Psychology": round(psy_c * (0.15 + 0.15 * (0.15 / 0.85)), 2),
                     "Discovery": round(disc_c * (0.15 + 0.15 * (0.15 / 0.85)), 2),
                 }
             )

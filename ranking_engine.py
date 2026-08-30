@@ -42,7 +42,7 @@ def _clamp(value, lo, hi):
     return max(lo, min(value, hi))
 
 
-MOAT_BLEND_WEIGHTS = {"quality": 0.25, "moat": 0.15, "mos": 0.25, "psy": 0.20, "disc": 0.15}
+MOAT_BLEND_WEIGHTS = {"quality": 0.25, "moat": 0.15, "mos": 0.30, "psy": 0.15, "disc": 0.15}
 
 
 def calculate_long_score(
@@ -67,9 +67,9 @@ def calculate_long_score(
         (technical/insider/macro default to 0 so it runs today.)
 
     mode="moat_blend": Phase 2 of moat_engine.py's Moat Score
-        (MOAT_IN_VALUE_SCORE env-var switch, OFF by default - see that
-        module's docstring). Quality 25% + Moat 15% + MOS(capped) 25%
-        + Psychology(capped) 20% + Discovery(capped) 15%. When
+        (MOAT_IN_VALUE_SCORE env-var switch - see that module's
+        docstring). Quality 25% + Moat 15% + MOS(capped) 30%
+        + Psychology(capped) 15% + Discovery(capped) 15%. When
         moat_score is None (fund, or too little statement history),
         Moat's 15 points are redistributed proportionally across the
         other four weights, never scored as 0 - the exact "drop and
