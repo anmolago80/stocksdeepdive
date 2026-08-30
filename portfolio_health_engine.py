@@ -439,6 +439,25 @@ def record_health_run(email, portfolio, ticker, overall, news_risk=None, min_gap
     return prev_overall
 
 
+def get_recent_health_runs(email, portfolio, ticker, limit=8):
+    """Last `limit` recorded Health runs for (email, portfolio, ticker),
+    OLDEST first, as a plain list of scores (None entries dropped) - feeds
+    the Overview tab's Health-trend sparkline column. Read-only: unlike
+    record_health_run() this never writes a row, so viewing the Overview
+    tab alone never fabricates run history that wasn't actually recorded
+    on the Holdings/Health & News tabs' own renders."""
+    if not email or not portfolio or not ticker:
+        return []
+    with _health_runs_conn() as conn:
+        rows = conn.execute(
+            "SELECT overall FROM portfolio_health_runs "
+            "WHERE email = ? AND portfolio = ? AND ticker = ? "
+            "ORDER BY as_of DESC LIMIT ?",
+            (email, portfolio, ticker, limit),
+        ).fetchall()
+    return [r[0] for r in reversed(rows) if r[0] is not None]
+
+
 def baseline_snapshot_fields(snapshot):
     """The subset of fetch_snapshot()'s fields that make up a locked
     baseline - same field names the desktop-import seed already uses
