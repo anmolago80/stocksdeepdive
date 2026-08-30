@@ -100,7 +100,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # the same, none of the updates went through". Any change meant to
 # observably re-run this module's builders - a real formula fix or a
 # diagnostic print - needs its own version bump, no exceptions.
-ENGINE_VERSION = 35
+ENGINE_VERSION = 36
 
 
 # -----------------------------------
@@ -271,7 +271,19 @@ _ROW_ALIASES = {
     "stockholders_equity": ["Stockholders Equity", "Common Stock Equity", "Total Equity Gross Minority Interest", "totalStockholderEquity"],
     "goodwill_and_intangibles": ["Goodwill And Other Intangible Assets", "goodWill", "intangibleAssets"],
     "working_capital": ["Working Capital", "netWorkingCapital"],
-    "operating_cash_flow": ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities", "totalCashFromOperatingActivities"],
+    # "Cash Flowsfromusedin Operating Activities Direct" (yfinance's own
+    # mangled spacing) is the total operating cash flow row for a company
+    # that reports its cash flow statement under the DIRECT method (line
+    # items like "Receipts from Customers"/"Payments to Suppliers") rather
+    # than the usual indirect-method summary. Root-caused live on OCL.AX
+    # ([OCL-DEBUG]): its cashflow statement has no "Operating Cash Flow"/
+    # "Cash Flow From Continuing Operating Activities" row at all - only
+    # this direct-method total - so ocf came back None, silently dropping
+    # "CapEx to Operating Cash Flow" (needs both capex AND ocf) even
+    # though capex itself and a directly-reported "Free Cash Flow" row
+    # were both present (which is why FCF Yield/EBIT-to-FCF/PFCF all
+    # rendered fine - none of them need ocf specifically).
+    "operating_cash_flow": ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities", "totalCashFromOperatingActivities", "Cash Flowsfromusedin Operating Activities Direct"],
     "capex": ["Capital Expenditure", "Purchase Of PPE", "capitalExpenditures"],
     "free_cash_flow": ["Free Cash Flow", "freeCashFlow"],
 }
@@ -1086,31 +1098,6 @@ def _build_fundamentals(bundle, ticker, ref):
     fcf = _latest(cashflow, "free_cash_flow")
     if fcf is None and ocf is not None and capex is not None:
         fcf = ocf - abs(capex)
-
-    if ticker == "OCL.AX":
-        # Andrew flagged two live issues on OCL.AX: "CapEx to Operating
-        # Cash Flow" is missing entirely (capex_to_ocf needs BOTH capex
-        # and ocf non-None - one of them is probably None under this
-        # ticker's row naming even though fcf/EBIT-to-FCF/FCF-Yield all
-        # render fine, meaning fcf itself came either from a direct
-        # "free_cash_flow" row or from ocf-and-capex both being present -
-        # this print settles which), and "Capital Intensity Ratio" reads
-        # 1.51x ("Capital-heavy") which looks wrong for a software
-        # company - could be a genuine large-acquisition/goodwill-loaded
-        # balance sheet (Total Assets/Revenue isn't the same thing as
-        # "physically capital intensive"), or a currency mismatch between
-        # total_assets and revenue (OCL.AX has a known history of
-        # currency-conversion bugs in this codebase - see
-        # fundamentals_data.py's Part 6a fix and _year_end_prices' own
-        # OCL.AX-specific comment).
-        print(f"[OCL-DEBUG] source={(bundle.get('meta') or {}).get('source')!r} "
-              f"currency={(bundle.get('info') or {}).get('currency')!r} "
-              f"financialCurrency={(bundle.get('info') or {}).get('financialCurrency')!r} "
-              f"total_assets={total_assets!r} revenue={revenue!r} "
-              f"ocf={ocf!r} capex={capex!r} fcf={fcf!r} "
-              f"cashflow_index={list(cashflow.index) if cashflow is not None else None} "
-              f"balance_index={list(balance.index) if balance is not None else None}",
-              flush=True)
 
     tangible_book_value = (equity - goodwill_intangibles) if (equity is not None and goodwill_intangibles is not None) else equity
 
