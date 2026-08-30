@@ -100,7 +100,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # the same, none of the updates went through". Any change meant to
 # observably re-run this module's builders - a real formula fix or a
 # diagnostic print - needs its own version bump, no exceptions.
-ENGINE_VERSION = 37
+ENGINE_VERSION = 38
 
 
 # -----------------------------------
@@ -255,6 +255,11 @@ def _safe(fn, *args, **kwargs):
 _ROW_ALIASES = {
     "revenue": ["Total Revenue", "Revenue", "Operating Revenue", "totalRevenue"],
     "net_income": ["Net Income", "Net Income Common Stockholders", "Net Income Continuous Operations", "netIncome"],
+    # Company-filed total diluted share count - the same denominator the
+    # company itself used to compute reported (whole-company) EPS. Used
+    # only to detect/correct a dual-class market cap mismatch - see
+    # _build_fundamentals's own comment above its mcap correction.
+    "diluted_average_shares": ["Diluted Average Shares", "Basic Average Shares"],
     "operating_income": ["Operating Income", "Total Operating Income As Reported"],
     "pretax_income": ["Pretax Income", "Income Before Tax", "incomeBeforeTax"],
     "tax_provision": ["Tax Provision", "Income Tax Expense", "incomeTaxExpense"],
@@ -1072,6 +1077,39 @@ def _build_fundamentals(bundle, ticker, ref):
     net_income = _latest(income, "net_income")
     revenue = _latest(income, "revenue")
 
+    # Whole-company vs single-class market cap correction (dual-class
+    # tickers). Follow-up to the Earning Yield fix above: Andrew flagged
+    # PFCF Ratio still reading 21.58x for HEI three separate times after
+    # that fix, since PFCF divides by this same single-class mcap - this
+    # widens the fix to every ratio below that divides a WHOLE-COMPANY
+    # figure (revenue, tangible book value, enterprise value, free cash
+    # flow, stockholders' equity) by mcap: Price to Sales, Market
+    # Cap/Tangible Asset Value, EV To Free Cash Flow, Free Cash Flow
+    # Yield, Price to Equity Ratio, PFCF Ratio. Every one of them
+    # understates for a true dual-class ticker the same way Earning Yield
+    # did, for the identical reason (see that fix's own comment for the
+    # full HEI/HEICO root cause).
+    #
+    # Correction: the income statement's own "Diluted Average Shares" row
+    # is the TOTAL share count the company itself used to compute its
+    # reported (whole-company) EPS - already correct for a dual-class
+    # company the same way trailing_eps already is. When that figure is
+    # meaningfully larger than the single-class sharesOutstanding Yahoo
+    # reports (>30% higher - comfortably past ordinary buyback/issuance
+    # drift over a fiscal year, which is usually single-digit-to-low-
+    # teens percent, but catches a genuine second share class like
+    # HEI/HEI.A's ~2.2x gap), rebuild mcap from price x that filed share
+    # count instead of Yahoo's single-class figure. Deliberately
+    # conservative: for the vast majority of ordinary single-class
+    # tickers this never triggers and mcap stays exactly what it always
+    # was - every metric below is flagged (red asterisk) only on the
+    # tickers where the correction actually fires, disclosing that mcap
+    # was rebuilt rather than taken from Yahoo directly.
+    filed_shares = _latest(income, "diluted_average_shares")
+    dual_class_mcap_fix = bool(filed_shares and shares and price and filed_shares > shares * 1.3)
+    if dual_class_mcap_fix:
+        mcap = price * filed_shares
+
     operating_income = _latest(income, "operating_income")
     operating_income, operating_income_estimated = _plausible_operating_income(
         operating_income, revenue, bundle.get("info")
@@ -1141,11 +1179,10 @@ def _build_fundamentals(bundle, ticker, ref):
     # just computed on a basis that doesn't require mcap to already have a
     # correct whole-company share count behind it.
     #
-    # Deliberately narrow: Price to Sales, EV To Free Cash Flow, Free Cash
-    # Flow Yield, and Market Cap/Tangible Asset Value below still divide
-    # by the same single-class mcap and stay understated for a true
-    # dual-class ticker like HEI - flagged to Andrew as a broader fix, he
-    # chose to scope this one to Earning Yield only for now.
+    # Every ratio below that also divides by mcap now uses the corrected
+    # value from the dual-class mcap fix above (when it fired) - Price to
+    # Sales, EV To Free Cash Flow, Free Cash Flow Yield, Market
+    # Cap/Tangible Asset Value, Price to Equity Ratio, and PFCF Ratio.
     trailing_eps_for_ey, trailing_eps_for_ey_flagged = _eps_ttm(bundle, ticker=ticker)
     add("Earning Yield", (trailing_eps_for_ey / price) if (trailing_eps_for_ey is not None and price) else None, "pct",
         flagged=bool(trailing_eps_for_ey_flagged),
@@ -1154,6 +1191,7 @@ def _build_fundamentals(bundle, ticker, ref):
                   "correct for dual-class companies (e.g. HEICO's HEI/HEI.A) where market cap for one "
                   "listed class understates the whole company.")
     add("Price to Sales ratio", (mcap / revenue) if (mcap and revenue) else None, "x",
+        flagged=dual_class_mcap_fix,
         fallback="Market cap divided by revenue.")
     add("Total Current Assets", current_assets, "cur")
     add("Inventory", inventory, "cur")
@@ -1179,6 +1217,7 @@ def _build_fundamentals(bundle, ticker, ref):
     # (>15x) company still gets classified instead of falling through.
     mcap_tangible = (mcap / tangible_book_value) if (mcap and tangible_book_value not in (None, 0)) else None
     add("Market Cap/Tangible Asset Value", mcap_tangible, "x",
+        flagged=dual_class_mcap_fix,
         thresholds=[
             [None, 1.5, "red", "Near/below tangible backing"],
             [1.5, 3.0, "amber", "Fairly valued, stable"],
@@ -1208,10 +1247,12 @@ def _build_fundamentals(bundle, ticker, ref):
     add("Working Capital  to Debt", wc_debt, "x", flagged=(long_term_debt is None))
 
     ev = (mcap + (total_debt or 0) - (cash or 0)) if mcap is not None else None
-    add("EV To Free Cash Flow", (ev / fcf) if (ev is not None and fcf) else None, "x")
+    add("EV To Free Cash Flow", (ev / fcf) if (ev is not None and fcf) else None, "x",
+        flagged=dual_class_mcap_fix)
 
     add("Net Income Ratio", (net_income / revenue) if (net_income is not None and revenue) else None, "pct")
-    add("Free Cash Flow Yield", (fcf / mcap) if (fcf is not None and mcap) else None, "pct")
+    add("Free Cash Flow Yield", (fcf / mcap) if (fcf is not None and mcap) else None, "pct",
+        flagged=dual_class_mcap_fix)
 
     # EBIT to FCF Conversion: how much of operating earnings actually
     # shows up as free cash flow - Andrew's own formula/bands (no workbook
@@ -1302,7 +1343,8 @@ def _build_fundamentals(bundle, ticker, ref):
         ])
 
     add("Intangibles To Total Assets", (goodwill_intangibles / total_assets) if (goodwill_intangibles is not None and total_assets) else None, "pct")
-    add("Price to Equity Ratio", (mcap / equity) if (mcap and equity) else None, "x")
+    add("Price to Equity Ratio", (mcap / equity) if (mcap and equity) else None, "x",
+        flagged=dual_class_mcap_fix)
 
     rota = (net_income / (total_assets - (goodwill_intangibles or 0))) if (net_income is not None and total_assets is not None) else None
     add("Return on Tangible Assets", rota, "pct")
@@ -1312,7 +1354,8 @@ def _build_fundamentals(bundle, ticker, ref):
         fallback="Operating income divided by revenue; when the statement figure is implausible "
                   "against the company's own reported operating margin, it's estimated from that "
                   "margin instead and shown in red.")
-    add("PFCF Ratio", (mcap / fcf) if (mcap and fcf) else None, "x")
+    add("PFCF Ratio", (mcap / fcf) if (mcap and fcf) else None, "x",
+        flagged=dual_class_mcap_fix)
 
     # Invested Capital = Equity + Total Debt (capital employed) - NOT
     # net of cash. An earlier version of this subtracted cash too, which
