@@ -100,7 +100,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # the same, none of the updates went through". Any change meant to
 # observably re-run this module's builders - a real formula fix or a
 # diagnostic print - needs its own version bump, no exceptions.
-ENGINE_VERSION = 34
+ENGINE_VERSION = 35
 
 
 # -----------------------------------
@@ -1087,6 +1087,31 @@ def _build_fundamentals(bundle, ticker, ref):
     if fcf is None and ocf is not None and capex is not None:
         fcf = ocf - abs(capex)
 
+    if ticker == "OCL.AX":
+        # Andrew flagged two live issues on OCL.AX: "CapEx to Operating
+        # Cash Flow" is missing entirely (capex_to_ocf needs BOTH capex
+        # and ocf non-None - one of them is probably None under this
+        # ticker's row naming even though fcf/EBIT-to-FCF/FCF-Yield all
+        # render fine, meaning fcf itself came either from a direct
+        # "free_cash_flow" row or from ocf-and-capex both being present -
+        # this print settles which), and "Capital Intensity Ratio" reads
+        # 1.51x ("Capital-heavy") which looks wrong for a software
+        # company - could be a genuine large-acquisition/goodwill-loaded
+        # balance sheet (Total Assets/Revenue isn't the same thing as
+        # "physically capital intensive"), or a currency mismatch between
+        # total_assets and revenue (OCL.AX has a known history of
+        # currency-conversion bugs in this codebase - see
+        # fundamentals_data.py's Part 6a fix and _year_end_prices' own
+        # OCL.AX-specific comment).
+        print(f"[OCL-DEBUG] source={(bundle.get('meta') or {}).get('source')!r} "
+              f"currency={(bundle.get('info') or {}).get('currency')!r} "
+              f"financialCurrency={(bundle.get('info') or {}).get('financialCurrency')!r} "
+              f"total_assets={total_assets!r} revenue={revenue!r} "
+              f"ocf={ocf!r} capex={capex!r} fcf={fcf!r} "
+              f"cashflow_index={list(cashflow.index) if cashflow is not None else None} "
+              f"balance_index={list(balance.index) if balance is not None else None}",
+              flush=True)
+
     tangible_book_value = (equity - goodwill_intangibles) if (equity is not None and goodwill_intangibles is not None) else equity
 
     tax_rate = (tax_provision / pretax_income) if (tax_provision is not None and pretax_income) else None
@@ -1148,8 +1173,29 @@ def _build_fundamentals(bundle, ticker, ref):
         fallback="Shareholders' equity minus goodwill and other intangible assets.",
         flagged=goodwill_intangibles is None)
 
+    # Root-caused live on OCL.AX: the workbook's own thresholds for this
+    # metric are CLOSED-ended - [0.5,1.5) Low, [1.5,3.0) Medium, [3.0,6.0)
+    # High, [6.0,15.0) Very High - with no band covering below 0.5x or at
+    #/above 15.0x. OCL.AX's real value (16.72x) falls one band above the
+    # top edge, so _metric()'s band lookup matches nothing and the page
+    # renders the number with no colour/classification text at all -
+    # not a missing-data bug, a too-narrow band table. The workbook's own
+    # comment for this metric even cites "biotech like CSL" as a "Very
+    # High" example, and CSL.AX itself routinely prices above 15x NTA -
+    # so the table was already at risk of clipping its own example.
+    #
+    # Fix: pass the same cutoffs/labels explicitly instead of relying on
+    # the workbook lookup, with both ends opened up (None instead of 0.5
+    # and 15.0) so a genuinely very cheap (<0.5x) or very expensive
+    # (>15x) company still gets classified instead of falling through.
     mcap_tangible = (mcap / tangible_book_value) if (mcap and tangible_book_value not in (None, 0)) else None
-    add("Market Cap/Tangible Asset Value", mcap_tangible, "x")
+    add("Market Cap/Tangible Asset Value", mcap_tangible, "x",
+        thresholds=[
+            [None, 1.5, "red", "Near/below tangible backing"],
+            [1.5, 3.0, "amber", "Fairly valued, stable"],
+            [3.0, 6.0, "green", "Premium, high quality"],
+            [6.0, None, "blue", "Very high (IP-driven / growth)"],
+        ])
     add("Income Tax Expense", tax_provision, "cur")
     add("% Income Paid on Taxes", tax_rate, "pct")
 
