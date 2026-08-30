@@ -718,10 +718,15 @@ def render_section(sections, ticker, section_label, gate=None):
     if colored:
         st.markdown("##### Colour-coded (against your own thresholds)")
         if any(m.get("flagged") for m in colored):
+            # The "*" matches band_gauge's own flagged-star color (#fb7185)
+            # so the legend's asterisk looks like the one it's describing,
+            # instead of rendering in the caption's default muted grey.
             st.caption(
-                "Red name + red value + \\* = estimated — rests on a fallback "
-                "assumption or incomplete statement data, not a reported figure. "
-                "See “What this measures” below for detail."
+                "Red name + red value + <span style='color:#fb7185;'>*</span> "
+                "= estimated — rests on a fallback assumption or incomplete "
+                "statement data, not a reported figure. See “What this "
+                "measures” below for detail.",
+                unsafe_allow_html=True,
             )
         cols = st.columns(3)
         for i, m in enumerate(colored):
