@@ -100,7 +100,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # the same, none of the updates went through". Any change meant to
 # observably re-run this module's builders - a real formula fix or a
 # diagnostic print - needs its own version bump, no exceptions.
-ENGINE_VERSION = 38
+ENGINE_VERSION = 39
 
 
 # -----------------------------------
@@ -1215,11 +1215,27 @@ def _build_fundamentals(bundle, ticker, ref):
     # the workbook lookup, with both ends opened up (None instead of 0.5
     # and 15.0) so a genuinely very cheap (<0.5x) or very expensive
     # (>15x) company still gets classified instead of falling through.
+    #
+    # Second fix, surfaced live on HEI right after the dual-class mcap
+    # widening: HEI's tangible_book_value (equity minus goodwill/
+    # intangibles) is itself negative - a heavy-M&A-history balance sheet
+    # where accumulated goodwill exceeds total equity, unrelated to the
+    # mcap correction (mcap is always positive, so a negative ratio only
+    # happens when tangible_book_value < 0). The old bottom band
+    # ([None, 1.5)) swallowed that case too and labelled it "Near/below
+    # tangible backing", which is wrong: a negative ratio doesn't mean
+    # "priced near tangible value", it means there IS no positive
+    # tangible value to be near - a fundamentally different, worse
+    # signal. Split out a dedicated band for it, and flag it (red
+    # asterisk) independent of the dual-class mcap fix, since a negative
+    # denominator is itself worth disclosing.
     mcap_tangible = (mcap / tangible_book_value) if (mcap and tangible_book_value not in (None, 0)) else None
+    negative_tangible_equity = tangible_book_value is not None and tangible_book_value < 0
     add("Market Cap/Tangible Asset Value", mcap_tangible, "x",
-        flagged=dual_class_mcap_fix,
+        flagged=bool(dual_class_mcap_fix or negative_tangible_equity),
         thresholds=[
-            [None, 1.5, "red", "Near/below tangible backing"],
+            [None, 0, "red", "Negative tangible equity - goodwill/intangibles exceed book value"],
+            [0, 1.5, "red", "Near/below tangible backing"],
             [1.5, 3.0, "amber", "Fairly valued, stable"],
             [3.0, 6.0, "green", "Premium, high quality"],
             [6.0, None, "blue", "Very high (IP-driven / growth)"],
