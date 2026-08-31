@@ -63,6 +63,12 @@ import ai_client
 import ai_settings_store
 import ai_usage_store
 
+# AI-readiness roadmap Phase 5: the nightly Portfolio AI watchdog itself
+# runs from scheduler_engine.py, not from a live page render - imported
+# here only for its two small read helpers (get_last_notified(), for the
+# "last watchdog brief" caption below) and the settings toggle wiring.
+import portfolio_watchdog_engine
+
 # -----------------------------------
 # PAGE SETUP
 # -----------------------------------
@@ -7589,6 +7595,12 @@ def _render_manage_holding(email, portfolio, h):
                 ("Baseline: imported from desktop app" if h.get("source") == "desktop_import"
                  else "Baseline: captured on this site") + f", locked {h.get('baseline_date') or '-'} (never changed by edits above)."
             )
+            # AI-readiness roadmap Phase 5: read-only - the nightly job
+            # itself only ever runs from scheduler_engine.py, never from
+            # this page render.
+            _last_brief = portfolio_watchdog_engine.get_last_notified(email, portfolio, h["ticker"])
+            if _last_brief:
+                st.caption(f"Last AI watchdog brief: {_last_brief[:10]}.")
     with _mc2:
         _confirm_key = f"pf_confirm_delete_{_wkey}"
         if not st.session_state.get(_confirm_key):
@@ -7675,6 +7687,33 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
                 )
                 st.toast("Saved.", icon="✅")
                 st.rerun()
+
+            # AI-readiness roadmap Phase 5: kept as its own form/save step,
+            # deliberately separate from the transferred/cash fields above
+            # (portfolio_store.set_watchdog_enabled() is its own UPSERT for
+            # the same reason) - toggling AI features on/off shouldn't ride
+            # on the same button as unrelated numeric settings, and vice
+            # versa. Only shown at all once ai_client.available() - a
+            # toggle for a feature that can never actually send anything
+            # (no ANTHROPIC_API_KEY configured) would just be confusing.
+            if ai_client.available():
+                st.divider()
+                _wd_now = portfolio_store.get_watchdog_enabled(email, active_portfolio)
+                _wd_new = st.toggle(
+                    "AI watchdog - nightly, per-holding “what changed” brief",
+                    value=_wd_now, key=_pf_key(active_portfolio, "pf_settings_watchdog"),
+                    help=(
+                        "Only sent when something material actually changes for a "
+                        "holding (a news event, a real Health-score move, or your "
+                        "saved thesis being challenged) - never a nightly email just "
+                        "because a day went by. Uses the same AI question quota as "
+                        "the Ask boxes on this site. " + ai_client.ANSWER_LABEL
+                    ),
+                )
+                if _wd_new != _wd_now:
+                    portfolio_store.set_watchdog_enabled(email, active_portfolio, _wd_new)
+                    st.toast("AI watchdog " + ("enabled." if _wd_new else "disabled."), icon="✅")
+                    st.rerun()
 
     _has_transfer_kpi = bool(_transferred)
     _n_base_kpi = 5 if _has_transfer_kpi else 4

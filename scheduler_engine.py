@@ -1,10 +1,11 @@
 """
 scheduler_engine.py
 
-A tiny in-process scheduler for the two background jobs this site needs:
+A tiny in-process scheduler for the background jobs this site needs:
 
-  1. NIGHTLY universe scans  -> nightly_scan.run_universe_scan(...)
-  2. WEEKLY watchlist digest -> digest_engine.run_weekly_digest()
+  1. NIGHTLY universe scans   -> nightly_scan.run_universe_scan(...)
+  2. WEEKLY watchlist digest  -> digest_engine.run_weekly_digest()
+  3. NIGHTLY portfolio watchdog -> portfolio_watchdog_engine.run_nightly_watchdog()
 
 WHY IN-PROCESS, NOT A SEPARATE RAILWAY CRON SERVICE: Railway volumes
 attach to exactly ONE service, and the web app needs the volume (for the
@@ -29,6 +30,12 @@ CONFIG (Railway environment variables, all optional):
   NIGHTLY_SCAN_UTC_HOUR  - default 20 (= 6am Brisbane).
   DIGEST_UTC_WEEKDAY     - default 6 = Sunday (so ~7am Monday Brisbane).
   DIGEST_UTC_HOUR        - default 21.
+  WATCHDOG_UTC_HOUR      - default 22. AI-readiness roadmap Phase 5: the
+                           Portfolio AI watchdog (portfolio_watchdog_engine.
+                           py) - runs nightly (every day, unlike the
+                           weekly digest), scheduled after the nightly
+                           scan hour so that night's scan data is fresh
+                           when the watchdog reads it.
 """
 
 import json
@@ -74,6 +81,7 @@ def _cfg():
         "scan_hour": int(os.environ.get("NIGHTLY_SCAN_UTC_HOUR", "20")),
         "digest_weekday": int(os.environ.get("DIGEST_UTC_WEEKDAY", "6")),
         "digest_hour": int(os.environ.get("DIGEST_UTC_HOUR", "21")),
+        "watchdog_hour": int(os.environ.get("WATCHDOG_UTC_HOUR", "22")),
     }
 
 
@@ -175,6 +183,20 @@ def _run_digest(log):
         log(f"[scheduler] weekly digest failed: {e}")
 
 
+def _run_watchdog(log):
+    """AI-readiness roadmap Phase 5: the nightly Portfolio AI watchdog -
+    see portfolio_watchdog_engine.py's own docstring for what it does and
+    why. Same shape as _run_digest above: import deferred (a background
+    job's heavy imports shouldn't slow every other scheduler tick), the
+    whole run wrapped so a failure here logs and waits for tomorrow night
+    rather than ever taking the scheduler thread down."""
+    try:
+        import portfolio_watchdog_engine
+        portfolio_watchdog_engine.run_nightly_watchdog(log=log)
+    except Exception as e:
+        log(f"[scheduler] portfolio watchdog failed: {e}")
+
+
 def _universes_needing_scan(cfg):
     """Universes whose SAVED scan is missing or stale (>20h) - the source of
     truth is the result file, not a 'ran today' marker, so a deploy/restart
@@ -256,6 +278,25 @@ def _loop(log):
                         else:
                             log("[scheduler] nightly scan skipped - another process "
                                 "already holds the lock")
+
+                # AI-readiness roadmap Phase 5: nightly (every day, unlike
+                # the weekly digest below), one calendar-day-per-run guard
+                # exactly like the nightly scan's own state-then-lock
+                # pattern above.
+                if (now.hour >= cfg["watchdog_hour"]
+                        and state.get("last_watchdog_date") != today):
+                    state = _load_state()
+                    state["last_watchdog_date"] = today
+                    _save_state(state)
+                    if _acquire_job_lock("watchdog"):
+                        try:
+                            log("[scheduler] starting portfolio watchdog")
+                            _run_watchdog(log)
+                        finally:
+                            _release_job_lock("watchdog")
+                    else:
+                        log("[scheduler] portfolio watchdog skipped - another process "
+                            "already holds the lock")
 
                 # DIGEST_FORCE: set this variable to any NEW value (e.g.
                 # "test1") to send the digest immediately, once per value -

@@ -152,6 +152,20 @@ def _conn():
             PRIMARY KEY (email, portfolio)
         )"""
     )
+    # AI-readiness roadmap Phase 5: per-portfolio opt-in for the nightly
+    # Portfolio AI watchdog (portfolio_watchdog_engine.py) - defaults to 0
+    # (off) for every portfolio, including every one that already existed
+    # before this column did, so nothing starts sending AI-written email/
+    # push until a user explicitly turns it on in Portfolio settings.
+    # Guarded ALTER TABLE, same belt-and-braces pattern positions_store.py
+    # uses for its own added-later column.
+    try:
+        conn.execute(
+            "ALTER TABLE portfolio_settings ADD COLUMN "
+            "watchdog_enabled INTEGER NOT NULL DEFAULT 0"
+        )
+    except sqlite3.OperationalError:
+        pass
     _migrate_legacy_schema(conn)
     return conn
 
@@ -422,6 +436,59 @@ def set_settings(email, portfolio, total_transferred=None, cash_held=None):
             "updated_at = excluded.updated_at",
             (email, portfolio, total_transferred, cash_held, now),
         )
+
+
+def get_watchdog_enabled(email, portfolio):
+    """AI-readiness roadmap Phase 5: whether this portfolio has the
+    nightly AI watchdog turned on. False (never sent) for any portfolio
+    with no portfolio_settings row at all, same "missing row = not set /
+    off" convention get_settings() above already uses."""
+    if not email or not portfolio:
+        return False
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT watchdog_enabled FROM portfolio_settings WHERE email = ? AND portfolio = ?",
+            (email, portfolio),
+        ).fetchone()
+    return bool(row[0]) if row else False
+
+
+def set_watchdog_enabled(email, portfolio, enabled):
+    """Kept deliberately separate from set_settings() above (same
+    separation-of-concerns precedent as update_thesis() vs
+    update_position()) so toggling the watchdog can never accidentally
+    clobber total_transferred/cash_held, and vice versa - each is its own
+    UPSERT touching only its own column(s)."""
+    if not email or not portfolio:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO portfolio_settings (email, portfolio, watchdog_enabled, updated_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(email, portfolio) DO UPDATE SET "
+            "watchdog_enabled = excluded.watchdog_enabled, updated_at = excluded.updated_at",
+            (email, portfolio, 1 if enabled else 0, now),
+        )
+
+
+def list_portfolio_owners():
+    """[(email, portfolio), ...] for every portfolio that has the AI
+    watchdog turned on AND has at least one holding - the nightly
+    watchdog's (portfolio_watchdog_engine.py) fan-out list. Mirrors
+    watchlist_store.all_users()'s role for the weekly digest: the one
+    function that answers "who should this background job visit tonight"
+    without a live Streamlit session to ask current_user_email()."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT ps.email, ps.portfolio FROM portfolio_settings ps
+               WHERE ps.watchdog_enabled = 1
+               AND EXISTS (
+                   SELECT 1 FROM portfolio_holdings ph
+                   WHERE ph.email = ps.email AND ph.portfolio = ps.portfolio
+               )
+               ORDER BY ps.email, ps.portfolio"""
+        ).fetchall()
+    return [(r[0], r[1]) for r in rows]
 
 
 def _row_to_dict(row):
