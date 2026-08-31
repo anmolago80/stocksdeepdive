@@ -4232,7 +4232,7 @@ def _render_explain_popover(dd, metric_key):
         except Exception:
             cached = None
         if cached:
-            st.markdown(f"**{ai_client.ANSWER_LABEL}:**\n\n{cached}")
+            _render_ai_answer(cached)
             return
         if not ai_client.available():
             st.caption("AI explanations aren't configured on this deploy yet.")
@@ -4268,7 +4268,7 @@ def _render_explain_popover(dd, metric_key):
                     explain_cache_store.set(ticker, metric_key, result["text"], result.get("model"))
                 except Exception:
                     pass
-                st.markdown(f"**{ai_client.ANSWER_LABEL}:**\n\n{result['text']}")
+                _render_ai_answer(result["text"])
             else:
                 st.caption(result.get("error") or "Couldn't get an answer right now - please try again.")
 
@@ -5241,6 +5241,38 @@ def _dd_ask_context(dd, acv_sections=None):
     return "\n".join(lines)
 
 
+def _render_ai_answer(text):
+    """Safely renders one AI-generated free-text answer (an Ask box's
+    reply, an "Explain this number" popover, ...) with the standard
+    "AI-written summary..." label above it.
+
+    Root-caused live (2026-08-31): plain st.markdown(f"**{label}:**\\n\\n
+    {text}") mangled a real Ask-box answer into a chunk of green
+    monospace inline-code styling mid-sentence - the answer happened to
+    contain two dollar-formatted figures ("$9.54" and "$32.99"), and
+    Streamlit's markdown renderer treats a `$...$` span as inline LaTeX
+    math (KaTeX) by default. This is the EXACT same bug class already
+    fixed once in Part 4 for results_engine's "what moved" bullet list
+    (see that fix's own comment) - except there the text was our own
+    fixed-format output we controlled; here it's free-form AI-generated
+    prose that WILL routinely mention dollar figures on a stock-analysis
+    site, so this was only a matter of time. Same fix: escape and render
+    via unsafe_allow_html, which bypasses the math parser entirely,
+    instead of plain markdown. Paragraph breaks in the model's own answer
+    (blank line between paragraphs) are preserved as separate <p> tags;
+    single newlines within a paragraph become <br>."""
+    paragraphs = [p for p in (text or "").split("\n\n") if p.strip()]
+    body_html = "".join(
+        f"<p style='margin:0 0 10px 0;'>{html.escape(p).replace(chr(10), '<br>')}</p>"
+        for p in paragraphs
+    )
+    st.markdown(
+        f"<p style='margin:0 0 8px 0;'><b>{html.escape(ai_client.ANSWER_LABEL)}:</b></p>"
+        + body_html,
+        unsafe_allow_html=True,
+    )
+
+
 _DD_ASK_SYSTEM_PROMPT = (
     "You are answering a visitor's question about ONE stock on "
     "StocksDeepDive, using ONLY the computed data given to you below - "
@@ -5338,7 +5370,7 @@ def _render_deep_dive_ask_box(dd, acv_sections=None):
     _render_ask_quota_caption(email, "deep_dive_ask")
     _answer = st.session_state.get(f"{_key}_answer")
     if _answer:
-        st.markdown(f"**{ai_client.ANSWER_LABEL}:**\n\n{_answer}")
+        _render_ai_answer(_answer)
 
 
 def _render_country_mood_line(country):
@@ -8440,7 +8472,7 @@ def _render_portfolio_ask_tab(email, _active_portfolio, _holdings, _analyses):
     _render_ask_quota_caption(email, "portfolio_ask")
     _answer = st.session_state.get(f"{_key}_answer")
     if _answer:
-        st.markdown(f"**{ai_client.ANSWER_LABEL}:**\n\n{_answer}")
+        _render_ai_answer(_answer)
 
 
 def _render_add_holding_expander(email, portfolio, _holdings):
