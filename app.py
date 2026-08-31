@@ -1649,6 +1649,7 @@ def _render_footer():
       <a href='/methodology' target='_self'>How the scores work</a>
       <a href='/research' target='_self'>Rational Compounder Research</a>
       <a href='/model-history' target='_self'>Model history</a>
+      <a href='/track-record' target='_self'>Track record</a>
     </div>
     <div><h5>Tools</h5>
       <a href='/deep-dive' target='_self'>Stock Deep Dive</a>

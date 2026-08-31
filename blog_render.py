@@ -30,7 +30,19 @@ from xml.sax.saxutils import escape as xml_escape
 import blog_store
 
 SITE_NAME = "StocksDeepDive"
-DEFAULT_AUTHOR = "StocksDeepDive"
+
+# AI-readiness roadmap Phase 4 (citation helpers): the one place the
+# author's name is spelled for structured data, reused by every JSON-LD
+# block below via _person_json_ld()/_organization_json_ld() rather than
+# each page hand-rolling its own partial Organization dict (which is how
+# this drifted before - the homepage's Organization block had an email
+# and a founder Person; every other page's did not, and posts with no
+# explicit author fell back to a Person literally named "StocksDeepDive").
+# Matches the prose already on /about and /methodology (site_content.py)
+# and server.py's own site-description string - not a new fact, just the
+# first place it's centralised for schema use.
+AUTHOR_NAME = "Andres Moreno"
+DEFAULT_AUTHOR = AUTHOR_NAME
 
 # -----------------------------------
 # PWA (Part 1c): the same tag block is injected in two places -
@@ -214,6 +226,41 @@ def _human_date(value):
         return value[:10]
 
 
+# -----------------------------------
+# AI-readiness roadmap Phase 4 (citation helpers): a small "Copy citation"
+# button, reused by blog posts, snapshot pages and the track-record page
+# (track_record_render.py imports this same function). Plain client-side
+# clipboard write - no library, no network request, nothing server-side to
+# build or cache. The citation text is HTML-escaped into a data attribute
+# rather than interpolated into the inline <script> itself, so nothing in
+# a post title or ticker name can ever break out of the JS string.
+# -----------------------------------
+
+def _copy_citation_html(citation_text):
+    e = html.escape
+    return f"""
+<div class="sdd-cite">
+  <button type="button" class="sdd-cite-btn" id="sdd-cite-btn"
+    data-citation="{e(citation_text)}">Copy citation</button>
+</div>
+<script>
+(function(){{
+  var b=document.getElementById('sdd-cite-btn');
+  if(!b) return;
+  b.addEventListener('click', function(){{
+    var t=b.getAttribute('data-citation');
+    var reset=b.textContent;
+    function ok(){{b.textContent='Copied \\u2713';setTimeout(function(){{b.textContent=reset;}},1500);}}
+    function fail(){{b.textContent='Copy failed';setTimeout(function(){{b.textContent=reset;}},1500);}}
+    if(navigator.clipboard && navigator.clipboard.writeText){{
+      navigator.clipboard.writeText(t).then(ok, fail);
+    }} else {{ fail(); }}
+  }});
+}})();
+</script>
+"""
+
+
 def post_url(base_url, slug):
     return f"{base_url}/blog/{slug}"
 
@@ -318,6 +365,10 @@ footer.site .wrap{max-width:1080px}
 .comment-banner{border-radius:10px;padding:12px 16px;margin:0 0 16px;font-size:14.5px}
 .comment-banner.ok{background:#0f2d27;border:1px solid #1a4a3f;color:#7ee8cf}
 .comment-banner.err{background:#2d1414;border:1px solid #4a1f1f;color:#f3a6a6}
+.sdd-cite{margin:10px 0 22px}
+.sdd-cite-btn{background:#121f36;border:1px solid #1f3352;border-radius:8px;
+  color:#8aa0b8;font-size:12.5px;padding:6px 12px;cursor:pointer;font-family:inherit}
+.sdd-cite-btn:hover{color:#e6edf5;border-color:#2dd4bf}
 @media(max-width:640px){
   body{font-size:16px}
   h1{font-size:31px}
@@ -420,6 +471,7 @@ def _footer_html():
       <a href="/about">About the author</a>
       <a href="/methodology">How the scores work</a>
       <a href="/research">Rational Compounder Research</a>
+      <a href="/track-record">Track record</a>
     </div>
     <div><h5>Tools</h5>
       <a href="/deep-dive">Stock Deep Dive</a>
@@ -455,6 +507,25 @@ def _json_ld(obj):
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
+def _person_json_ld(name=None):
+    return {"@type": "Person", "name": name or AUTHOR_NAME}
+
+
+def _organization_json_ld(base_url):
+    """The site's Organization block, complete (name/url/email/founder) -
+    every JSON-LD graph below embeds this SAME dict rather than a
+    page-specific partial copy, so "author/organisation schema on every
+    page/post" (Phase 4) means every page agrees, not eight slightly
+    different Organization objects that happen to share a name."""
+    return {
+        "@type": "Organization",
+        "name": SITE_NAME,
+        "url": base_url,
+        "email": "rationalcompounder@stocksdeepdive.com",
+        "founder": _person_json_ld(),
+    }
+
+
 def _post_json_ld(post, base_url):
     url = post_url(base_url, post["slug"])
     graph = {
@@ -467,13 +538,8 @@ def _post_json_ld(post, base_url):
         "datePublished": _iso_date(post.get("published_at")),
         "dateModified": _iso_date(post.get("updated_at")
                                   or post.get("published_at")),
-        "author": {"@type": "Person",
-                   "name": post.get("author") or DEFAULT_AUTHOR},
-        "publisher": {
-            "@type": "Organization",
-            "name": SITE_NAME,
-            "url": base_url,
-        },
+        "author": _person_json_ld(post.get("author") or None),
+        "publisher": _organization_json_ld(base_url),
         "inLanguage": "en",
         "isAccessibleForFree": True,
     }
@@ -506,7 +572,7 @@ def _index_json_ld(posts, base_url):
         "url": f"{base_url}/blog",
         "description": ("Value-investing research notes, valuation walk-throughs "
                         "and method explainers from StocksDeepDive."),
-        "publisher": {"@type": "Organization", "name": SITE_NAME, "url": base_url},
+        "publisher": _organization_json_ld(base_url),
         "blogPost": [
             {"@type": "BlogPosting",
              "headline": p["title"][:110],
@@ -777,6 +843,14 @@ def render_post(post, base_url, prev_post=None, next_post=None,
         if not is_draft else ""
     )
 
+    citation_html = ""
+    if not is_draft:
+        author_name = post.get("author") or AUTHOR_NAME
+        cite_date = _human_date(post.get("published_at")) or ""
+        citation_text = f'{author_name}, "{post["title"]}," {SITE_NAME}' + (
+            f", {cite_date}" if cite_date else "") + f". {url}"
+        citation_html = _copy_citation_html(citation_text)
+
     body = f"""
 <main><div class="wrap">
   <article>
@@ -784,6 +858,7 @@ def render_post(post, base_url, prev_post=None, next_post=None,
     <div class="kicker"><a href="/blog" style="color:#2dd4bf">Blog</a></div>
     <h1>{e(post['title'])}</h1>
     <div class="meta">{e(' · '.join(meta_bits))}</div>
+    {citation_html}
     {hero}
     {body_html}
     {tags}
@@ -1057,10 +1132,7 @@ document.getElementById('tickerform').addEventListener('submit', function (ev) {
              "target": {"@type": "EntryPoint",
                         "urlTemplate": f"{base_url}/deep-dive?ticker={{search_term_string}}"},
              "query-input": "required name=search_term_string"}},
-        {"@context": "https://schema.org", "@type": "Organization",
-         "name": SITE_NAME, "url": base_url,
-         "email": "rationalcompounder@stocksdeepdive.com",
-         "founder": {"@type": "Person", "name": "Andres Moreno"}},
+        {"@context": "https://schema.org", **_organization_json_ld(base_url)},
     ])
     head = _head(
         f"{SITE_NAME} - what a stock is worth, with every input shown",
@@ -1305,7 +1377,8 @@ def render_tool_landing(path, base_url, coverage=None):
         "applicationCategory": "FinanceApplication",
         "operatingSystem": "Any (web)",
         "offers": {"@type": "Offer", "price": "0", "priceCurrency": "AUD"},
-        "publisher": {"@type": "Organization", "name": SITE_NAME, "url": base_url},
+        "author": _person_json_ld(),
+        "publisher": _organization_json_ld(base_url),
     })
     head = _head(f"{spec['title']} | {SITE_NAME}", spec["description"],
                  canonical, base_url, json_ld=json_ld,
@@ -1352,8 +1425,8 @@ def render_content_page(title, markdown_text, description, path, base_url,
         "description": description,
         "url": canonical,
         "isPartOf": {"@type": "WebSite", "name": SITE_NAME, "url": base_url},
-        "publisher": {"@type": "Organization", "name": SITE_NAME,
-                      "url": base_url},
+        "author": _person_json_ld(),
+        "publisher": _organization_json_ld(base_url),
         "inLanguage": "en",
     })
     head = _head(f"{title} | {SITE_NAME}", description, canonical, base_url,
@@ -1438,6 +1511,68 @@ def render_robots(base_url):
         "\n"
         f"Sitemap: {base_url}/sitemap.xml\n"
     )
+
+
+def render_llms_txt(base_url):
+    """AI-readiness roadmap Phase 4 (citation helpers): llms.txt - the
+    emerging convention (llmstxt.org) for a plain-Markdown index an LLM
+    can fetch instead of crawling/rendering the whole site, pointing
+    straight at the pages worth reading. No AI key, no computation - a
+    static list of the same URLs already in the sitemap, just curated and
+    described for a language model rather than exhaustive for a crawler."""
+    return f"""# {SITE_NAME}
+
+> Computed stock valuation, quality and psychology scores for ASX and US \
+stocks, built and run by {AUTHOR_NAME}, a private investor in Australia. \
+Factual data and described calculations only - nothing here is financial \
+advice, and every number states the inputs it was computed from.
+
+StocksDeepDive publishes intrinsic value (DCF), quality, crowd-psychology \
+and discovery scores for any ASX or US stock, with every input shown, \
+plus hand-written value-investing research notes. All computed output is \
+free and read-only.
+
+## Tools
+
+- [Stock Deep Dive]({base_url}/deep-dive): one ticker in, a full valuation, \
+quality and psychology picture out.
+- [Comparison]({base_url}/comparison): the same scores for two or more \
+stocks side by side.
+- [Stock Scanner]({base_url}/scanner): the ranked overnight scan across a \
+whole index.
+- [How the scores work]({base_url}/methodology): the calculation behind \
+every number, in plain language.
+
+## Data and API
+
+- [Stock snapshots]({base_url}/s/): a plain HTML page per scanned stock, \
+updated nightly - start here to read computed scores without a browser \
+that runs JavaScript.
+- [JSON API]({base_url}/api): free, read-only, no key required - the same \
+computed scores as structured data, with attribution and disclaimer \
+fields in every response.
+- [MCP server]({base_url}/ai): the same data as callable tools for AI \
+assistants (endpoint: {base_url}/mcp).
+- [Track record]({base_url}/track-record): a dated, past-tense record of \
+what the engine computed for each stock and what its price did \
+afterwards - not a claim about recommendation accuracy or investment \
+performance, see the page itself.
+
+## Research and writing
+
+- [Rational Compounder research]({base_url}/research): hand-built, dated \
+research notes on individual companies.
+- [Blog]({base_url}/blog): value-investing notes and method explainers.
+- [About the author]({base_url}/about): who built and runs this site.
+
+## Terms
+
+Free for any use, commercial or not, with attribution and a link back to \
+stocksdeepdive.com. Nothing on this site is financial product advice - \
+see {base_url}/methodology and the disclaimer on every page. No user data \
+(portfolios, watchlists, emails) is ever published here. Contact: \
+rationalcompounder@stocksdeepdive.com.
+"""
 
 
 def render_feed(posts, base_url):

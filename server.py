@@ -84,6 +84,13 @@ import snapshot_store
 # callable tools for AI assistants. See mcp_server.py.
 import mcp_server
 
+# AI-readiness roadmap Phase 4: citation helpers (llms.txt, the
+# track-record page, author/organisation schema - the schema itself lives
+# in blog_render.py/snapshot_render.py, reused as-is; only the new
+# /track-record page needs its own render module and score_history read).
+import score_history
+import track_record_render
+
 try:
     import metrics_store
 except Exception:  # analytics must never be able to stop the site serving
@@ -619,6 +626,16 @@ async def robots(request: Request):
     )
 
 
+@app.get("/llms.txt", include_in_schema=False)
+async def llms_txt(request: Request):
+    """AI-readiness roadmap Phase 4 (citation helpers) - see
+    blog_render.render_llms_txt()'s own docstring."""
+    return PlainTextResponse(
+        blog_render.render_llms_txt(_base_url(request)),
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
 def _snapshot_sitemap_urls(base_url):
     """<url> entries for every /s/<ticker> snapshot page, spliced into the
     existing sitemap XML below rather than changing blog_render.py's
@@ -646,6 +663,13 @@ async def sitemap(request: Request):
     xml = blog_render.render_sitemap(blog_store.list_posts(), base,
                                      renders_html=_renders_html)
     extra = "\n".join(_snapshot_sitemap_urls(base))
+    # AI-readiness roadmap Phase 4: /track-record has no Streamlit
+    # equivalent (always served as real HTML, same as /s/*) so it goes in
+    # here rather than through blog_render.APP_PATHS's renders_html() gate,
+    # exactly like the snapshot URLs just above.
+    from xml.sax.saxutils import escape as _xml_escape
+    extra += (f'\n  <url><loc>{_xml_escape(base)}/track-record</loc>'
+              f'<changefreq>daily</changefreq><priority>0.4</priority></url>')
     xml = xml.replace("</urlset>", extra + "\n</urlset>\n")
     return Response(xml, media_type="application/xml",
                     headers={"Cache-Control": "public, max-age=900"})
@@ -893,6 +917,24 @@ async def snapshot_page(ticker: str, request: Request):
                 cache="public, max-age=1800")
 
 
+# -----------------------------------
+# AI-readiness roadmap Phase 4 (AI_ROADMAP_stocksdeepdive.md): citation
+# helpers. /track-record has no Streamlit equivalent (see
+# track_record_render.py's own docstring for what it is and, just as
+# importantly, what it deliberately is not) so - like /s/* above - it is
+# always served as real HTML, with no INDEXABLE_PAGES/_renders_html gate.
+# -----------------------------------
+
+@app.get("/track-record", include_in_schema=False)
+async def track_record(request: Request):
+    _count_view("track_record")
+    rows = score_history.tracked_summary()
+    return _html(
+        track_record_render.render_track_record(rows, _base_url(request)),
+        cache="public, max-age=1800",
+    )
+
+
 _API_DOCS_TITLE = f"API | {blog_render.SITE_NAME}"
 _API_DOCS_DESC = (
     "Read-only, free, public JSON API for StocksDeepDive's computed stock "
@@ -1019,6 +1061,13 @@ Streamable HTTP) accept a server URL directly. Point yours at:
 ```
 
 No headers, no authentication, no configuration beyond the URL.
+
+### Prefer just reading pages?
+
+[{base}/llms.txt]({base}/llms.txt) is a plain-Markdown index of the
+site's worthwhile pages, meant to be fetched directly instead of
+crawling the whole site - a lighter option than either the API or MCP
+when all an assistant needs is to read, not call tools.
 
 ### Terms
 

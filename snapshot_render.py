@@ -130,11 +130,18 @@ def render_snapshot(snap, base_url):
             "Computed scores for this stock, from the same engine behind "
             "the site's Deep Dive and Scanner pages.")
 
+    title = f"{ticker} snapshot - {signal or 'computed scores'} | {SITE_NAME}"
+    canonical = snapshot_url(base_url, ticker)
+    cite_date = (snap.get("generated_at") or "")[:10]
+    citation_text = f'{SITE_NAME}, "{ticker} snapshot,"' + (
+        f" {cite_date}" if cite_date else "") + f". {canonical}"
+
     body = f"""
 <main><div class="wrap">
   <div class="kicker">Snapshot &middot; {e(universe)} &middot; generated {e(generated)} UTC</div>
   <h1>{e(ticker)}</h1>
   <p class="lede">{lede}</p>
+  {blog_render._copy_citation_html(citation_text)}
   <div class="sdd-snap-grid">{cell_html}</div>
   <p><a href="/deep-dive?ticker={e(ticker)}">Open the interactive Deep Dive for {e(ticker)} &rarr;</a></p>
   <div class="cta">
@@ -146,13 +153,11 @@ def render_snapshot(snap, base_url):
   </div>
 </div></main>
 """
-    title = f"{ticker} snapshot - {signal or 'computed scores'} | {SITE_NAME}"
     description = (
         f"{ticker}: {valuation}, Long Score {_fmt(data.get('Long Score'))}, "
         f"Quality {_fmt(data.get('Quality'))}/100 - computed scores from "
         f"{SITE_NAME}'s Deep Dive engine, updated nightly."
     )
-    canonical = snapshot_url(base_url, ticker)
     json_ld = blog_render._json_ld({
         "@context": "https://schema.org",
         "@type": "WebPage",
@@ -160,7 +165,7 @@ def render_snapshot(snap, base_url):
         "description": description,
         "url": canonical,
         "isPartOf": {"@type": "WebSite", "name": SITE_NAME, "url": base_url},
-        "publisher": {"@type": "Organization", "name": SITE_NAME, "url": base_url},
+        "publisher": blog_render._organization_json_ld(base_url),
         "about": {"@type": "Corporation", "name": ticker},
         "dateModified": (snap.get("generated_at") or "")[:19],
         "inLanguage": "en",
@@ -232,7 +237,7 @@ def render_index(rows, base_url, page=1, per_page=200):
         "name": f"Stock snapshots | {SITE_NAME}",
         "url": canonical,
         "isPartOf": {"@type": "WebSite", "name": SITE_NAME, "url": base_url},
-        "publisher": {"@type": "Organization", "name": SITE_NAME, "url": base_url},
+        "publisher": blog_render._organization_json_ld(base_url),
     })
     head = blog_render._head(
         f"Stock snapshots ({total} covered) | {SITE_NAME}",

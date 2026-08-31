@@ -110,3 +110,63 @@ def latest(ticker):
             (ticker.strip().upper(),),
         ).fetchone()
     return dict(row) if row else None
+
+
+def tracked_summary(min_days=60, limit=500):
+    """AI-readiness roadmap Phase 4 (citation helpers): one row per ticker
+    with enough recorded history to be worth publishing - its FIRST and
+    most recent recorded (day, long_score, price), spanning at least
+    min_days. Purely descriptive of what the nightly scan actually wrote
+    down, on the actual dates it wrote it - see track_record_render.py's
+    own docstring for why this is deliberately not framed as investment
+    performance.
+
+    Returns a list of {"ticker", "first_day", "first_score", "first_price",
+    "last_day", "last_score", "last_price", "days_span"} sorted by ticker.
+    One query (SQLite window functions - available since 3.25, comfortably
+    older than anything this app runs on) rather than an N+1 loop issuing
+    a separate earliest/latest lookup per ticker across what is, in
+    production, several hundred tracked tickers.
+    """
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT ticker, day, long_score, price, rn_asc, rn_desc FROM (
+                SELECT ticker, day, long_score, price,
+                       ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY day ASC) AS rn_asc,
+                       ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY day DESC) AS rn_desc
+                FROM score_history
+            ) WHERE rn_asc = 1 OR rn_desc = 1
+            """
+        ).fetchall()
+
+    by_ticker = {}
+    for r in rows:
+        d = by_ticker.setdefault(r["ticker"], {})
+        if r["rn_asc"] == 1:
+            d["first_day"] = r["day"]
+            d["first_score"] = r["long_score"]
+            d["first_price"] = r["price"]
+        if r["rn_desc"] == 1:
+            d["last_day"] = r["day"]
+            d["last_score"] = r["long_score"]
+            d["last_price"] = r["price"]
+
+    out = []
+    for ticker, d in by_ticker.items():
+        if "first_day" not in d or "last_day" not in d:
+            continue
+        if d["first_day"] == d["last_day"]:
+            continue  # only one day on record - nothing "over time" to show
+        try:
+            span = (datetime.strptime(d["last_day"], "%Y-%m-%d")
+                    - datetime.strptime(d["first_day"], "%Y-%m-%d")).days
+        except ValueError:
+            continue
+        if span < min_days:
+            continue
+        out.append({"ticker": ticker, "days_span": span, **d})
+
+    out.sort(key=lambda x: x["ticker"])
+    return out[:limit]
