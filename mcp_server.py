@@ -37,6 +37,7 @@ always show where it came from and link them to the live page.
 import os
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 import blog_render
 import blog_store
@@ -117,6 +118,41 @@ mcp = FastMCP(
     ),
     streamable_http_path="/",
     stateless_http=True,
+    # Fix 1, round 1 (2026-08-31): the mcp 1.x Streamable-HTTP transport's
+    # DNS-rebinding protection defaults to trusting only localhost/
+    # 127.0.0.1 Host headers - every request behind Railway arrives with
+    # Host: stocksdeepdive.com (or www.), so every /mcp call was getting
+    # a flat 421 "Invalid Host header", meaning no external AI client
+    # could ever connect. Listing the real production hosts/origins here
+    # fixes that without disabling the protection outright.
+    #
+    # NOT included: a "*.up.railway.app" wildcard entry (present in an
+    # earlier draft of this fix). Checked against the installed mcp
+    # package's own TransportSecurityMiddleware._validate_host (mcp
+    # 1.27.0, mcp/server/transport_security.py): its only wildcard form
+    # is a ":*" PORT suffix ("localhost:*" matches any port on
+    # localhost) - there is no "*." subdomain-prefix wildcard support at
+    # all, so a literal "*.up.railway.app" entry would only ever match a
+    # Host header that is the literal 8-character string "*.up.railway.
+    # app", which no real request sends. It was dead weight, not a
+    # working rule. It's also unnecessary here: `list-domains` on the
+    # live Railway service shows no active Railway-generated
+    # service domain, only the two custom domains below - the site is
+    # reached exclusively via stocksdeepdive.com / www.stocksdeepdive.com.
+    # If a Railway subdomain is ever added back, list its exact hostname
+    # (e.g. "stocksdeepdive-production.up.railway.app") here explicitly
+    # rather than a non-functional wildcard.
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[
+            "stocksdeepdive.com", "www.stocksdeepdive.com",
+            "localhost:*", "127.0.0.1:*",
+        ],
+        allowed_origins=[
+            "https://stocksdeepdive.com", "https://www.stocksdeepdive.com",
+            "http://localhost:*", "http://127.0.0.1:*",
+        ],
+    ),
 )
 
 
