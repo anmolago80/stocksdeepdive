@@ -1658,7 +1658,7 @@ rationalcompounder@stocksdeepdive.com.
 """
 
 
-def render_llms_full_txt(base_url, methodology_md, snapshot_rows):
+def render_llms_full_txt(base_url, methodology_md, snapshot_rows, universe_cadence=None):
     """AI-readiness roadmap Phase 4 (citation helpers), Fix 3 (AI fixes
     round 1, 2026-08-31): the llms-full.txt half of the llmstxt.org
     convention. Where render_llms_txt() above is a curated, described
@@ -1672,7 +1672,15 @@ def render_llms_full_txt(base_url, methodology_md, snapshot_rows):
     separation as every other render_* function in this module - server.
     py owns fetching site_content/snapshot_store data, this module only
     formats it) - `methodology_md` is site_content.methodology_md(...)'s
-    return value, `snapshot_rows` is snapshot_store.all_snapshots()'s."""
+    return value, `snapshot_rows` is snapshot_store.all_snapshots()'s.
+
+    `universe_cadence` (Fix 8c, AI fixes round 2, 2026-08-31): optional
+    {universe: cadence} dict (scheduler_engine._cfg()["universe_cadence"]
+    - "daily"/"weekly"/a pinned weekday) - when given, adds a short
+    "Coverage & update cadence" section so a client reading this file
+    doesn't have to guess which universes refresh nightly vs weekly.
+    None (the default) omits the section entirely rather than showing a
+    misleading empty one."""
     from collections import OrderedDict
     by_universe = OrderedDict()
     for r in (snapshot_rows or []):
@@ -1687,6 +1695,17 @@ def render_llms_full_txt(base_url, methodology_md, snapshot_rows):
         snapshot_index = ("\n(No snapshots yet - the first nightly scan "
                           "will populate this.)\n")
 
+    cadence_section = ""
+    if universe_cadence:
+        daily = sorted(u for u, c in universe_cadence.items() if c == "daily")
+        weekly = sorted(u for u, c in universe_cadence.items() if c != "daily")
+        cadence_section = f"""
+## Coverage & update cadence
+
+Updated nightly: {', '.join(daily) or '(none)'}.
+Updated weekly (one day/week each): {', '.join(weekly) or '(none)'}.
+"""
+
     return f"""# {SITE_NAME} - full reference
 
 > This is the llms-full.txt companion to {base_url}/llms.txt: the same \
@@ -1697,7 +1716,7 @@ fetch covers both the methodology and the current ticker index. See \
 ## Methodology
 
 {methodology_md}
-
+{cadence_section}
 ## Stock snapshot index
 
 Every ticker StocksDeepDive currently has a computed snapshot for \

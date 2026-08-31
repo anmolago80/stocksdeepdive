@@ -6,22 +6,34 @@ Sector filter -> a plain ticker list, fed straight into the same scan/
 results pipeline Comparison already uses (_render_scan_page in app.py).
 
 Ported from the original desktop app's universe_engine.py, trimmed down to
-exactly the six universes the public site offers - each one maps to ONE
+real, well-known indices the public site offers - each one maps to ONE
 real index, never a blend of two (the original had several "USA Momentum
 (S&P 500 + Nasdaq 100)"-style combined universes; those are deliberately
 not carried over here, so picking a universe always means exactly one
-real, well-known index and nothing gets double-counted):
+real, well-known index and nothing gets double-counted), plus (Fix 8a, AI
+fixes round 2, 2026-08-31) a handful of DERIVED universes built by
+filtering an already-fetched parent pool rather than a scrape of their
+own (labeled as such in get_universe_pool's source string):
 
-  Australia: ASX 200, ASX 300
-  USA:       S&P 500, Nasdaq 100, Russell 2000, Small Caps (S&P SmallCap 600)
+  Australia: ASX 200, ASX 300, All Ordinaries, ASX Small Ordinaries
+             (derived), ASX 100, ASX 50, ASX 20, ASX All Technology
+             (derived)
+  USA:       S&P 500, Nasdaq 100, Russell 2000, Small Caps (S&P SmallCap
+             600), Dow Jones 30, S&P 400 MidCap, Russell 1000, S&P 1500
+             (derived)
 
-Every fetcher is a live scrape (Wikipedia constituent tables, or an iShares
-ETF holdings export for Russell 2000) cached for 24h via st.cache_data, with
-a small static/derived fallback if the live source is unreachable or its
-page structure has changed - so Run Scan always returns SOMETHING rather
-than a silent empty universe. The source actually used is always shown back
-to the user (see get_universe_pool's second return value) so it's never
-ambiguous whether a scan is running on live or fallback data.
+Every non-derived fetcher is a live scrape (Wikipedia constituent tables,
+or an iShares ETF holdings export for Russell 2000/1000) cached for 24h
+via st.cache_data, with a small static/derived fallback if the live
+source is unreachable or its page structure has changed - so Run Scan
+always returns SOMETHING rather than a silent empty universe. The source
+actually used is always shown back to the user (see get_universe_pool's
+second return value) so it's never ambiguous whether a scan is running on
+live, derived or fallback data. The five new source URLs added in round 2
+(Dow 30, S&P 400, Russell 1000, All Ordinaries, ASX 20/50/100) could not
+be live-verified from either dev environment used to build this - see
+their own constants' comments above for that caveat; their first real
+test is the actual nightly run after this deploys.
 """
 
 import io
@@ -41,6 +53,57 @@ SP600_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies"
 NASDAQ100_WIKI_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
 ASX200_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/ASX_200"
 ASX300_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/ASX_300"
+
+# Fix 8a, AI fixes round 2 (2026-08-31). Every URL below follows the
+# exact same "Wikipedia constituent table, or an iShares ETF holdings
+# CSV" pattern the six sources above already use - see get_universe_
+# pool()'s dispatch and each fetch_*() function for the specific
+# fallback chain per universe. IMPORTANT CAVEAT (stated plainly rather
+# than silently assumed): neither this dev sandbox nor the owner's
+# device has live network access to Wikipedia/iShares/asx300list.com
+# (a standing constraint for this whole engagement - see every prior
+# fix that touched a live data source), so these five new URLs/sources
+# could not be fetched and test-parsed against real HTML the way the
+# six existing ones originally were. Each new fetcher below reuses the
+# same defensive _parse_table() (keyword-matched columns, min/max-row
+# guards) and the same graceful multi-level fallback discipline as the
+# existing fetchers, so a broken/changed source degrades to a fallback
+# universe rather than a 500 or a silently-empty scan - but their FIRST
+# real test is the actual nightly run after this deploys. Report this
+# clearly rather than claiming false certainty.
+DOW30_WIKI_URL = "https://en.wikipedia.org/wiki/Dow_Jones_Industrial_Average"
+SP400_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies"
+ASX20_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/ASX_20"
+ASX50_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/ASX_50"
+
+# No dedicated Wikipedia constituent-table page could be confirmed for
+# S&P/ASX 100 (searched during development; the obvious candidate URL
+# redirects to a generic ASX overview article, not a constituent
+# table) - fetch_asx100() below tries it anyway (harmless if it 404s or
+# fails the row-count guard) and falls back to ASX 200 (live) if it
+# doesn't pan out, exactly like fetch_asx300()'s own existing fallback
+# chain. Kept as a named constant so a real source can be swapped in
+# later without hunting through the function body.
+ASX100_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/ASX_100"
+
+# allordslist.com mirrors asx300list.com's own naming/URL pattern (root
+# page IS the list, same as ASX300LIST_URL below) and was confirmed to
+# exist via web search during development ("All Ords List - Company
+# Data for All Ordinaries Index") but, per the caveat above, could not
+# be fetched and test-parsed directly - best-effort by direct analogy
+# to the already-working asx300list.com fetcher.
+ALLORDSLIST_URL = "https://www.allordslist.com/"
+
+# iShares Russell 1000 ETF (IWB) holdings export - same mechanism as
+# IWM_HOLDINGS_CSV_URL below (Russell 2000). iShares' shorter
+# query-string-only URL form (no numeric product-id path segment)
+# redirects to the real export; requests.get follows redirects by
+# default, same as every other _get()/direct-requests call in this
+# module.
+IWB_HOLDINGS_CSV_URL = (
+    "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf/"
+    "?fileType=csv&fileName=IWB_holdings&dataType=fund"
+)
 
 # Wikipedia's own S&P/ASX 300 page does not carry a real ~300-row constituent
 # table (only a ~10-row "Top Ten Companies" table) - asx300list.com does, and
@@ -140,13 +203,21 @@ def _normalize_asx_ticker(ticker):
     return t if t.endswith(".AX") else f"{t}.AX"
 
 
-def _parse_table(html_text, ticker_keywords, sector_keywords, normalize_fn, min_rows=1):
+def _parse_table(html_text, ticker_keywords, sector_keywords, normalize_fn, min_rows=1, max_rows=None):
     """
     Scans every table on the page for the first one with a ticker-like
     column, returned as a ['Ticker','Sector'] frame. `min_rows` guards
     against a small "Top N Holdings"-style summary table (which can also
     have a ticker + sector column) being mistaken for the real, full
     constituent table - any table shorter than min_rows is skipped.
+
+    `max_rows` (Fix 8a, AI fixes round 2, 2026-08-31): an optional upper
+    bound, for sources whose real constituent count is well-known and
+    small (e.g. Dow 30) - tightens the match beyond min_rows alone so an
+    unrelated, larger table elsewhere on the same page can't be silently
+    mistaken for the real one just because it also happens to have a
+    ticker-like column and enough rows. None (the default) keeps every
+    existing caller's behaviour unchanged.
     """
     try:
         tables = pd.read_html(io.StringIO(html_text))
@@ -166,6 +237,8 @@ def _parse_table(html_text, ticker_keywords, sector_keywords, normalize_fn, min_
         df = df.dropna(subset=["Ticker"])
 
         if df.empty or len(df) < min_rows:
+            continue
+        if max_rows is not None and len(df) > max_rows:
             continue
 
         df["Ticker"] = df["Ticker"].apply(normalize_fn)
@@ -315,12 +388,223 @@ def fetch_asx300():
     return df
 
 
+# -----------------------------------------------------------------
+# Fix 8a, AI fixes round 2 (2026-08-31): new universes. See the URL
+# constants' own comments above for the live-network-verification
+# caveat that applies to every fetcher below.
+# -----------------------------------------------------------------
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_dow30():
+    """Dow Jones Industrial Average's own Wikipedia article carries the
+    30-component table directly (no separate "List of..." page exists
+    for the Dow, unlike S&P 500/400/600) - columns confirmed during
+    development: Company/Exchange/Symbol/Sector/Date added/Notes/Index
+    weighting. max_rows=35 (on top of min_rows=25) narrows the match
+    beyond just "has a Symbol column and enough rows", since this is a
+    long article with other tables on it (historical components,
+    sector breakdowns) that a looser match could mistake for the real
+    one."""
+    try:
+        html = _get(DOW30_WIKI_URL)
+    except Exception:
+        return None
+    return _parse_table(html, ["symbol"], ["sector", "gics sector"],
+                         _normalize_us_ticker, min_rows=25, max_rows=35)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_sp400():
+    try:
+        html = _get(SP400_WIKI_URL)
+    except Exception:
+        return None
+    return _parse_table(html, ["symbol", "ticker"], ["gics sector", "sector"], _normalize_us_ticker, min_rows=350)
+
+
+def _sp1500_df():
+    """S&P 1500 = S&P 500 + S&P 400 + S&P 600 (Composite index definition) -
+    derived from the three already-fetched pools rather than a fourth
+    scrape, per the round 2 instruction doc. None if none of the three
+    source pools are available at all; otherwise the union of whichever
+    ones are, de-duplicated by ticker (a name occasionally appears in
+    more than one Wikipedia snapshot during index-reconstitution
+    windows)."""
+    parts = [df for df in (fetch_sp500(), fetch_sp400(), fetch_sp600()) if df is not None]
+    if not parts:
+        return None
+    return pd.concat(parts, ignore_index=True).drop_duplicates(subset="Ticker", keep="first")
+
+
+def _r1k_cache_path():
+    """Same reasoning as _r2k_cache_path() above, for Russell 1000."""
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, "russell1000_cache.csv")
+
+
+def _r1k_from_disk_cache():
+    try:
+        df = pd.read_csv(_r1k_cache_path())
+        if "Ticker" in df.columns and len(df) > 500:
+            if "Sector" not in df.columns:
+                df["Sector"] = None
+            return df[["Ticker", "Sector"]]
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_russell1000():
+    """Mirrors fetch_russell2000() exactly (same iShares CSV-export
+    mechanism, same disk-cache-on-failure fallback) - see that
+    function's own docstring for the shared reasoning."""
+    try:
+        resp = requests.get(IWB_HOLDINGS_CSV_URL, headers=_HEADERS, timeout=20)
+        resp.raise_for_status()
+        raw = pd.read_csv(io.StringIO(resp.text), skiprows=9, on_bad_lines="skip")
+    except Exception:
+        return _r1k_from_disk_cache()
+
+    ticker_col = _find_column(raw.columns, ["ticker"])
+    if ticker_col is None:
+        return _r1k_from_disk_cache()
+
+    df = raw[[ticker_col]].copy()
+    df.columns = ["Ticker"]
+    df = df.dropna(subset=["Ticker"])
+    _t = df["Ticker"].astype(str).str.strip().str.upper()
+    df = df[~_t.str.contains("CASH|USD", na=False) & (_t.str.len() <= 6)]
+    if df.empty:
+        return None
+
+    df["Ticker"] = df["Ticker"].apply(_normalize_us_ticker)
+    df["Sector"] = None
+    out = df[["Ticker", "Sector"]]
+    try:
+        out.to_csv(_r1k_cache_path(), index=False)
+    except OSError:
+        pass
+    return out
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_allords():
+    """All Ordinaries (~500 names, effectively "every ASX company big
+    enough to be liquid"). Primary source allordslist.com, by direct
+    analogy to fetch_asx300()'s own asx300list.com fetcher (see
+    ALLORDSLIST_URL's comment for the verification caveat). Sector is
+    merged in afterwards from fetch_asx200()'s live GICS sectors, same
+    as fetch_asx300() does - neither the All Ords nor ASX 300 list
+    sources carry their own Sector column for the full membership."""
+    try:
+        html = _get(ALLORDSLIST_URL)
+        df = _parse_table(html, ["code"], ["sector", "industry"], _normalize_asx_ticker, min_rows=400)
+    except Exception:
+        df = None
+
+    if df is None:
+        return None
+
+    df200 = fetch_asx200()
+    if df200 is not None:
+        sector_by_ticker = dict(zip(df200["Ticker"], df200["Sector"]))
+        df = df.copy()
+        df["Sector"] = df["Ticker"].map(sector_by_ticker).combine_first(df["Sector"])
+
+    return df
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_asx20():
+    try:
+        html = _get(ASX20_WIKI_URL)
+    except Exception:
+        return None
+    return _parse_table(html, ["symbol", "code"], ["sector", "industry"],
+                         _normalize_asx_ticker, min_rows=15, max_rows=25)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_asx50():
+    try:
+        html = _get(ASX50_WIKI_URL)
+    except Exception:
+        return None
+    return _parse_table(html, ["symbol", "code"], ["sector", "industry"],
+                         _normalize_asx_ticker, min_rows=40, max_rows=55)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_asx100():
+    """No dedicated live constituent-table source could be confirmed for
+    this one (see ASX100_WIKI_URL's comment) - tried anyway since it's
+    free to attempt and harmless on failure; get_universe_pool() falls
+    back to ASX 200 (live) if this returns None, exactly like ASX 300's
+    own existing fallback chain."""
+    try:
+        html = _get(ASX100_WIKI_URL)
+    except Exception:
+        return None
+    return _parse_table(html, ["symbol", "code", "ticker"], ["sector", "industry"],
+                         _normalize_asx_ticker, min_rows=80, max_rows=110)
+
+
+def _asx_small_ords_df():
+    """ASX Small Ordinaries = ASX 300 minus ASX 100 (the standard
+    definition) - derived from the two pools already fetched above, no
+    new scrape. None if ASX 300 itself isn't available (nothing to
+    subtract from); if ASX 100's own live/fallback source is
+    unavailable too, falls back to ASX 300 minus ASX 200 instead (still
+    a real, if less precise, "smaller names" cut) rather than returning
+    the whole ASX 300 unfiltered under the Small Ordinaries name."""
+    df300 = fetch_asx300()
+    if df300 is None:
+        return None
+    df100 = fetch_asx100()
+    exclude = set((df100 if df100 is not None else fetch_asx200())["Ticker"]) \
+        if (df100 is not None or fetch_asx200() is not None) else set()
+    return df300[~df300["Ticker"].isin(exclude)]
+
+
+def _asx_alltech_df():
+    """ASX All Technology, derived: ASX 300 members whose GICS sector is
+    Information Technology. Per the round 2 instruction doc, this is
+    the fallback path when no live "ASX All Technology" index page can
+    be confirmed - which is the case here (see the URL constants'
+    comment on the live-verification caveat), so it's used directly as
+    the only implementation rather than as a secondary fallback behind
+    an unverifiable guessed URL that risks silently parsing the WRONG
+    page's table as if it were correct. Labeled "ASX 300 tech
+    (derived)" everywhere it's surfaced so nothing claims to be the
+    official index."""
+    df300 = fetch_asx300()
+    if df300 is None:
+        return None
+    return df300[df300["Sector"].astype(str).str.contains(
+        "Information Technology|Technology", case=False, na=False)]
+
+
 def _asx_fallback_df():
     return pd.DataFrame({"Ticker": list(ASX_SECTOR_MAP.keys()), "Sector": list(ASX_SECTOR_MAP.values())})
 
 
-AUSTRALIA_UNIVERSES = ["ASX 200", "ASX 300"]
-USA_UNIVERSES = ["S&P 500", "Nasdaq 100", "Russell 2000", "Small Caps (S&P 600)"]
+# Fix 8a, AI fixes round 2 (2026-08-31): broader coverage, both markets.
+# Derived universes (Small Ordinaries, ASX 100/50/20, S&P 1500) need no
+# scan of their own - scheduler_engine builds their scan tables/
+# snapshots by filtering the parent scans (Fix 8b/8c) - but they still
+# belong in these two lists so the Scanner dropdown, resolve_tickers()
+# and every downstream consumer (api_v1._KNOWN_UNIVERSES, mcp_server.
+# _KNOWN_UNIVERSES, the sitemap/scan endpoints' "unknown universe"
+# error) picks them up automatically, same as any other universe.
+AUSTRALIA_UNIVERSES = [
+    "ASX 200", "ASX 300", "All Ordinaries", "ASX Small Ordinaries",
+    "ASX 100", "ASX 50", "ASX 20", "ASX All Technology",
+]
+USA_UNIVERSES = [
+    "S&P 500", "Nasdaq 100", "Russell 2000", "Small Caps (S&P 600)",
+    "Dow Jones 30", "S&P 400 MidCap", "Russell 1000", "S&P 1500",
+]
 
 
 def get_universes(country):
@@ -371,6 +655,84 @@ def get_universe_pool(country, universe):
     if universe == "Small Caps (S&P 600)":
         df = fetch_sp600()
         return (df, "Wikipedia S&P SmallCap 600 (live)") if df is not None else (None, "Web scrape unavailable")
+
+    # --- Fix 8a, AI fixes round 2 (2026-08-31): new universes below ---
+
+    if universe == "All Ordinaries":
+        df = fetch_allords()
+        if df is not None:
+            return df, "allordslist.com All Ordinaries constituent list (live)"
+        df300 = fetch_asx300()
+        if df300 is not None:
+            return df300, "All Ordinaries unavailable - showing ASX 300 (live) instead"
+        return _asx_fallback_df(), "Live scrape unavailable - local curated ASX 200 list instead"
+
+    if universe == "ASX Small Ordinaries":
+        df = _asx_small_ords_df()
+        if df is not None and not df.empty:
+            return df, "Derived: ASX 300 minus ASX 100 (live)"
+        df300 = fetch_asx300()
+        if df300 is not None:
+            return df300, "ASX Small Ordinaries unavailable - showing ASX 300 (live) instead"
+        return _asx_fallback_df(), "Live scrape unavailable - local curated ASX 200 list instead"
+
+    if universe == "ASX 100":
+        df = fetch_asx100()
+        if df is not None:
+            return df, "Wikipedia S&P/ASX 100 (live)"
+        df200 = fetch_asx200()
+        if df200 is not None:
+            return df200, "ASX 100 unavailable - showing ASX 200 (live) instead"
+        return _asx_fallback_df(), "Live scrape unavailable - local curated ASX 200 list instead"
+
+    if universe == "ASX 50":
+        df = fetch_asx50()
+        if df is not None:
+            return df, "Wikipedia S&P/ASX 50 (live)"
+        df100 = fetch_asx100()
+        if df100 is not None:
+            return df100, "ASX 50 unavailable - showing ASX 100 (live) instead"
+        df200 = fetch_asx200()
+        if df200 is not None:
+            return df200, "ASX 50 unavailable - showing ASX 200 (live) instead"
+        return _asx_fallback_df(), "Live scrape unavailable - local curated ASX 200 list instead"
+
+    if universe == "ASX 20":
+        df = fetch_asx20()
+        if df is not None:
+            return df, "Wikipedia S&P/ASX 20 (live)"
+        df50 = fetch_asx50()
+        if df50 is not None:
+            return df50, "ASX 20 unavailable - showing ASX 50 (live) instead"
+        df200 = fetch_asx200()
+        if df200 is not None:
+            return df200, "ASX 20 unavailable - showing ASX 200 (live) instead"
+        return _asx_fallback_df(), "Live scrape unavailable - local curated ASX 200 list instead"
+
+    if universe == "ASX All Technology":
+        df = _asx_alltech_df()
+        if df is not None and not df.empty:
+            return df, "ASX 300 tech (derived)"
+        df300 = fetch_asx300()
+        if df300 is not None:
+            return df300, "ASX All Technology unavailable - showing ASX 300 (live) instead"
+        return _asx_fallback_df(), "Live scrape unavailable - local curated ASX 200 list instead"
+
+    if universe == "Dow Jones 30":
+        df = fetch_dow30()
+        return (df, "Wikipedia Dow Jones Industrial Average (live)") if df is not None else (None, "Web scrape unavailable")
+
+    if universe == "S&P 400 MidCap":
+        df = fetch_sp400()
+        return (df, "Wikipedia S&P 400 (live)") if df is not None else (None, "Web scrape unavailable")
+
+    if universe == "Russell 1000":
+        df = fetch_russell1000()
+        return (df, "iShares IWB ETF holdings (live)") if df is not None else (None, "Web scrape unavailable")
+
+    if universe == "S&P 1500":
+        df = _sp1500_df()
+        return (df, "Derived: S&P 500 + S&P 400 + S&P 600 (live)") if df is not None else (None, "Web scrape unavailable")
 
     return None, "Unknown universe"
 

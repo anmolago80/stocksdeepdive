@@ -38,12 +38,51 @@ dir records last-run dates so a redeploy mid-evening doesn't double-run.
 
 CONFIG (Railway environment variables, all optional):
   SCHEDULER_ENABLED      - "false" disables everything (default: enabled).
-  NIGHTLY_UNIVERSES      - comma-separated, default "ASX 200". These are
-                           the universes pre-scanned overnight. Include
-                           "imported" to also work through the TradingView
-                           CSV import queue (screen_import_store.py) - it
-                           always runs last, after the real index
-                           universes, however it's ordered in this list.
+  NIGHTLY_UNIVERSES      - comma-separated "name" or "name:cadence" items
+                           (Fix 8b, AI fixes round 2, 2026-08-31) - these
+                           are the universes pre-scanned overnight. A
+                           plain "name" (no colon) defaults to cadence
+                           "daily", for back-compat with every value this
+                           variable has ever held before this fix.
+                           cadence is one of:
+                             daily          - due whenever its saved scan
+                                              is >20h old (as before).
+                             weekly         - due whenever its saved scan
+                                              is >6 days old, on whatever
+                                              night that falls.
+                             mon/tue/wed/thu/fri/sat/sun - due (>6 days
+                                              old) ONLY on that UTC
+                                              weekday - this is what
+                                              actually spreads several
+                                              large weekly universes
+                                              across separate nights
+                                              instead of letting them all
+                                              go stale together and pile
+                                              onto one. See
+                                              _universes_needing_scan()'s
+                                              own docstring.
+                           Include "imported" to also work through the
+                           TradingView CSV import queue (screen_import_
+                           store.py) - it always runs last, after every
+                           real index universe due that night, regardless
+                           of where it sits in this list. Defaults to
+                           _DEFAULT_NIGHTLY_UNIVERSES below - the round 2
+                           instruction doc's own recommended cadence line
+                           (daily: ASX 200/S&P 500/Nasdaq 100/Dow Jones 30/
+                           ASX 300/ASX All Technology; one large weekly
+                           universe per weekday Mon-Fri: All Ordinaries/
+                           S&P 400 MidCap/Small Caps (S&P 600)/Russell
+                           1000/Russell 2000) - set as the code default so
+                           broader coverage works without the owner
+                           needing to touch Railway at all; still
+                           override-able there if the first live run's
+                           actual per-universe minutes (see 8b's own
+                           verify step) says the split needs adjusting.
+                           Derived universes (ASX Small Ordinaries/ASX
+                           100/ASX 50/S&P 1500) are NOT listed here and
+                           need no scan slot of their own - Fix 8c below
+                           builds their scan tables/snapshots by
+                           filtering an already-scanned parent universe.
   NIGHTLY_SCAN_UTC_HOUR  - default 20 (= 6am Brisbane).
   DIGEST_UTC_WEEKDAY     - default 6 = Sunday (so ~7am Monday Brisbane).
   DIGEST_UTC_HOUR        - default 21.
@@ -97,13 +136,77 @@ def _save_state(state):
         pass
 
 
+# Fix 8b, AI fixes round 2 (2026-08-31): the round 2 instruction doc's
+# own recommended default cadence line, set as the code default so
+# broader coverage works out of the box without the owner touching
+# Railway - see NIGHTLY_UNIVERSES' own docstring above for what each
+# cadence means. Daily: the six smaller/higher-priority universes.
+# One large weekly universe per weekday Mon-Fri, spreading them across
+# separate nights rather than piling onto one.
+_DEFAULT_NIGHTLY_UNIVERSES = (
+    "ASX 200:daily, S&P 500:daily, Nasdaq 100:daily, Dow Jones 30:daily, "
+    "ASX 300:daily, ASX All Technology:daily, All Ordinaries:mon, "
+    "S&P 400 MidCap:tue, Small Caps (S&P 600):wed, Russell 1000:thu, "
+    "Russell 2000:fri"
+)
+
+_WEEKDAY_ABBR = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+
+# Rough constituent-count table, ONLY used to order tonight's due
+# universes smallest-first (8b's own verify step: "order the nightly
+# run smallest-first so the daily ones always finish") - not used for
+# anything else, so an approximate/stale count here is harmless; an
+# unlisted universe sorts last (safest assumption - never lets an
+# unknown-size universe jump the queue ahead of a known-small one).
+_APPROX_UNIVERSE_SIZE = {
+    "ASX 20": 20, "Dow Jones 30": 30, "ASX 50": 50, "ASX All Technology": 60,
+    "Nasdaq 100": 100, "ASX 100": 100, "ASX 200": 200,
+    "ASX Small Ordinaries": 200, "ASX 300": 300, "S&P 400 MidCap": 400,
+    "All Ordinaries": 500, "S&P 500": 500, "Small Caps (S&P 600)": 600,
+    "Russell 1000": 1000, "S&P 1500": 1500, "Russell 2000": 2000,
+}
+
+
+def _parse_nightly_universes(raw):
+    """Parses NIGHTLY_UNIVERSES' "name" or "name:cadence" syntax - see
+    that env var's own docstring above for the full cadence vocabulary.
+    A bare "name" (no colon) defaults to cadence "daily", for back-compat
+    with every value this variable has ever held before Fix 8b. An
+    unrecognised cadence also falls back to "daily" (never silently
+    drops the universe entirely just because of a typo). Returns an
+    ordered {universe_name: cadence} dict, insertion order preserved
+    from `raw` (though _universes_needing_scan below re-sorts its own
+    output smallest-first, so this function's order isn't load-bearing
+    on its own)."""
+    from collections import OrderedDict
+    out = OrderedDict()
+    for item in (raw or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if ":" in item:
+            name, cadence = item.split(":", 1)
+            name, cadence = name.strip(), cadence.strip().lower()
+        else:
+            name, cadence = item, "daily"
+        if cadence not in ("daily", "weekly") and cadence not in _WEEKDAY_ABBR:
+            cadence = "daily"
+        if name:
+            out[name] = cadence
+    return out
+
+
 def _cfg():
+    cadence = _parse_nightly_universes(
+        os.environ.get("NIGHTLY_UNIVERSES", _DEFAULT_NIGHTLY_UNIVERSES))
     return {
         "enabled": (os.environ.get("SCHEDULER_ENABLED", "true").strip().lower()
                     not in ("false", "0", "no", "off")),
-        "universes": [u.strip() for u in
-                      os.environ.get("NIGHTLY_UNIVERSES", "ASX 200").split(",")
-                      if u.strip()],
+        # Kept alongside "universe_cadence" (not derived on the fly at
+        # every call site) since _run_nightly and other existing readers
+        # of cfg["universes"] only ever need the plain name list.
+        "universes": list(cadence.keys()),
+        "universe_cadence": cadence,
         "scan_hour": int(os.environ.get("NIGHTLY_SCAN_UTC_HOUR", "20")),
         "digest_weekday": int(os.environ.get("DIGEST_UTC_WEEKDAY", "6")),
         "digest_hour": int(os.environ.get("DIGEST_UTC_HOUR", "21")),
@@ -261,6 +364,76 @@ def _run_nightly(cfg, log):
     except Exception as e:
         log(f"[scheduler] results-day check failed: {e}")
 
+    # Fix 8c, AI fixes round 2 (2026-08-31) - see _build_derived_
+    # universes()'s own docstring above.
+    try:
+        _build_derived_universes(log)
+    except Exception as e:
+        log(f"[scheduler] derived universes build failed: {e}")
+
+
+# Fix 8c, AI fixes round 2 (2026-08-31): derived universes (no scan slot
+# of their own - see NIGHTLY_UNIVERSES' own docstring above) get their
+# scan_store/snapshot_store entries built by filtering an already-
+# scanned parent universe's rows down to the correct membership
+# (scanner_engine.get_universe_pool() - the exact same live-fetch-with-
+# fallback logic the Scanner UI's own "Run Scan" button already uses
+# for these universes), rather than a second independent nightly scan.
+# Genuinely free: no new network call, no new yfinance/quality/moat
+# computation - every row here was already computed scanning the
+# parent(s). Called unconditionally at the end of _run_nightly() below
+# (not gated on which real universes were due tonight) so a derived
+# universe never silently goes stale past scan_store.load_scan()'s own
+# 72h cutoff on a night none of its parents happened to need rescanning.
+_DERIVED_UNIVERSE_PARENTS = {
+    "ASX Small Ordinaries": ["ASX 300", "ASX 200"],
+    "ASX 100": ["ASX 200", "ASX 300"],
+    "ASX 50": ["ASX 200", "ASX 300"],
+    "ASX 20": ["ASX 200", "ASX 300"],
+    "S&P 1500": ["S&P 500", "S&P 400 MidCap", "Small Caps (S&P 600)"],
+}
+
+
+def _build_derived_universes(log):
+    import scan_store
+    import scanner_engine
+    import snapshot_store
+
+    for universe, parents in _DERIVED_UNIVERSE_PARENTS.items():
+        try:
+            country = ("Australia" if universe in scanner_engine.AUSTRALIA_UNIVERSES
+                       else "USA")
+            pool_df, source = scanner_engine.get_universe_pool(country, universe)
+            if pool_df is None or pool_df.empty:
+                log(f"[scheduler] derived universe {universe}: no membership "
+                    f"resolved ({source}), skipping")
+                continue
+            wanted = set(pool_df["Ticker"])
+
+            row_by_ticker = {}
+            for parent in parents:
+                payload = scan_store.load_scan(parent)
+                if not payload:
+                    continue
+                for row in payload.get("rows") or []:
+                    t = (row.get("Ticker") or "").strip().upper()
+                    if t and t not in row_by_ticker:
+                        row_by_ticker[t] = row
+
+            rows = [row_by_ticker[t] for t in sorted(wanted) if t in row_by_ticker]
+            if not rows:
+                log(f"[scheduler] derived universe {universe}: none of its "
+                    f"{len(wanted)} members have a scanned parent row yet, skipping")
+                continue
+            rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
+
+            scan_store.save_scan(universe, rows, f"Derived from {'/'.join(parents)} ({source})")
+            snapshot_store.build_snapshots_from_scan(universe, rows, log=log)
+            log(f"[scheduler] derived universe {universe}: {len(rows)}/{len(wanted)} "
+                f"members covered from {'/'.join(parents)}")
+        except Exception as e:
+            log(f"[scheduler] derived universe {universe} failed: {e}")
+
 
 def _run_digest(log):
     """AI-readiness roadmap Phase 8: this job slot now sends
@@ -312,16 +485,38 @@ def _run_earnings_refresh(log):
 
 
 def _universes_needing_scan(cfg):
-    """Universes whose SAVED scan is missing or stale (>20h) - the source of
-    truth is the result file, not a 'ran today' marker, so a deploy/restart
-    that kills a scan mid-run self-heals on the next check instead of
-    silently skipping a whole day."""
+    """Universes whose SAVED scan is missing or stale - the source of
+    truth is the result file, not a 'ran today' marker, so a deploy/
+    restart that kills a scan mid-run self-heals on the next check
+    instead of silently skipping a whole day.
+
+    Fix 8b, AI fixes round 2 (2026-08-31): staleness threshold now
+    depends on the universe's own cadence (cfg["universe_cadence"]) -
+    "daily" keeps the original >20h threshold; "weekly" and a specific
+    weekday (mon..sun) both use >6 days (144h), since neither is meant
+    to re-scan every night. A weekday-pinned universe is additionally
+    only ever considered due on ITS OWN weekday (UTC) - that's what
+    actually spreads several large weekly universes across separate
+    nights instead of letting them all go stale together in the same
+    ~6-day window and pile onto one night; a bare "weekly" (no pinned
+    day) has no such restriction - simply due whenever its 6 days are
+    up, on whichever night that falls.
+
+    Result is sorted smallest-first (8b's own verify step) using the
+    rough _APPROX_UNIVERSE_SIZE table above, so on a night with a mix
+    of small daily and one large weekly universe due, the small ones
+    finish first even if the run gets cut short."""
     import scan_store
+    today_weekday = datetime.now(timezone.utc).weekday()  # Monday=0..Sunday=6
     due = []
-    for u in cfg["universes"]:
+    for u, cadence in cfg["universe_cadence"].items():
+        if cadence in _WEEKDAY_ABBR and _WEEKDAY_ABBR[cadence] != today_weekday:
+            continue  # not this universe's night
+        threshold_hours = 20 if cadence == "daily" else 144
         payload = scan_store.load_scan(u)
-        if payload is None or payload.get("age_hours", 999) > 20:
+        if payload is None or payload.get("age_hours", 999) > threshold_hours:
             due.append(u)
+    due.sort(key=lambda u: _APPROX_UNIVERSE_SIZE.get(u, 9999))
     return due
 
 

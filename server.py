@@ -659,11 +659,13 @@ async def llms_full_txt(request: Request):
     gate and no noindex header - same "no gate at all" treatment as
     /llms.txt itself and /s/*, not the opt-in _renders_html() gate the
     three legacy content pages use."""
+    import scheduler_engine
     return PlainTextResponse(
         blog_render.render_llms_full_txt(
             _base_url(request),
             site_content.methodology_md(_FACTUAL),
             snapshot_store.all_snapshots(),
+            universe_cadence=scheduler_engine._cfg()["universe_cadence"],
         ),
         headers={"Cache-Control": "public, max-age=3600"},
     )
@@ -692,6 +694,20 @@ def _snapshot_sitemap_urls(base_url):
 
 @app.get("/sitemap.xml", include_in_schema=False)
 async def sitemap(request: Request):
+    """Fix 7, AI fixes round 2 (2026-08-31): investigated the reported
+    "/s/OCL.AX exists but sitemap.xml doesn't list it" symptom directly -
+    _snapshot_sitemap_urls() below has never filtered by universe (a
+    "live" row from Fix 2a's hook is included exactly like a nightly
+    one) and always reads snapshot_store.all_snapshots() fresh on every
+    request, no server-side caching. Confirmed live: the one snapshot
+    currently in the store (CPRT) appears correctly in both /s/ and
+    this route right now. The one real gap found: this route's own
+    Cache-Control was max-age=900 (15 min) - a visitor's Deep Dive view
+    can create a brand-new "live" snapshot (Fix 2a) that then doesn't
+    show up here for up to 15 minutes if a browser/proxy is honouring
+    that header, which plausibly explains what was observed. Cut to 60s
+    - short enough that a freshly-created snapshot is reflected almost
+    immediately, still long enough to absorb repeated crawler hits."""
     base = _base_url(request)
     xml = blog_render.render_sitemap(blog_store.list_posts(), base,
                                      renders_html=_renders_html)
@@ -705,7 +721,7 @@ async def sitemap(request: Request):
               f'<changefreq>daily</changefreq><priority>0.4</priority></url>')
     xml = xml.replace("</urlset>", extra + "\n</urlset>\n")
     return Response(xml, media_type="application/xml",
-                    headers={"Cache-Control": "public, max-age=900"})
+                    headers={"Cache-Control": "public, max-age=60"})
 
 
 @app.get("/feed.xml", include_in_schema=False)
@@ -999,6 +1015,26 @@ async def api_docs(request: Request):
     base = _base_url(request)
     universes = ", ".join(f"<code>{s}</code>" for s in
                           sorted(api_v1._SLUG_TO_UNIVERSE))
+    # Fix 8c, AI fixes round 2 (2026-08-31): "the API/MCP docs and
+    # /llms-full.txt list the universes and their cadence" - read live
+    # from scheduler_engine's own config rather than a second hardcoded
+    # copy, so this can never drift from what NIGHTLY_UNIVERSES actually
+    # says. Deferred import, same convention as every other background-
+    # job-module import in this codebase (server.py otherwise has no
+    # reason to import scheduler_engine at module load).
+    import scheduler_engine
+    _cadence = scheduler_engine._cfg()["universe_cadence"]
+    _daily = sorted(u for u, c in _cadence.items() if c == "daily")
+    _weekly = sorted(u for u, c in _cadence.items() if c != "daily")
+    _derived = sorted(scheduler_engine._DERIVED_UNIVERSE_PARENTS)
+    coverage_md = (
+        "**Updated nightly:** " + ", ".join(_daily) + ".\n\n"
+        "**Updated weekly** (one day/week each, so the scan window fits "
+        "before the next nightly run): " + ", ".join(_weekly) + ".\n\n"
+        "**Derived** (no scan of their own - built by filtering an "
+        "already-scanned parent universe, refreshed nightly): "
+        + ", ".join(_derived) + "."
+    )
     markdown_text = f"""
 StocksDeepDive's stock scores are also available as a small, free, read-only
 JSON API - no key, no sign-in, GET requests only. Every response includes
@@ -1019,9 +1055,14 @@ machine-readable schema at [{base}/api/v1/openapi.json]({base}/api/v1/openapi.js
   index, e.g. [{base}/api/v1/scan/asx-200]({base}/api/v1/scan/asx-200).
   Universe slugs: {universes}
 
-A ticker only has data once it has been through a nightly scan - if you get
-a 404, it may not be in a covered universe yet. Every scored ticker also has
-a plain HTML page at `/s/<ticker>` (e.g. [{base}/s/CSL.AX]({base}/s/CSL.AX)),
+### Coverage & update cadence
+
+{coverage_md}
+
+A ticker only has data once it has been through a scan for a universe that
+covers it - if you get a 404, it may not be in a covered universe yet, or
+(for a weekly one) this week's scan hasn't landed. Every scored ticker also
+has a plain HTML page at `/s/<ticker>` (e.g. [{base}/s/CSL.AX]({base}/s/CSL.AX)),
 and the whole covered list is at [{base}/s/]({base}/s/).
 
 ### Using this in an AI assistant
@@ -1089,7 +1130,10 @@ nothing here is user data.
   scores for one stock.
 - **compare(tickers)** - the same scores for up to 10 stocks side by side.
 - **scan(universe, top_n)** - the ranked overnight scan for a whole index
-  (e.g. "ASX 200", "S&P 500"), highest score first.
+  (e.g. "ASX 200", "S&P 500"), highest score first. Most universes update
+  nightly; a few large ones update weekly instead - see
+  [{base}/api]({base}/api)'s "Coverage & update cadence" section for
+  which is which.
 - **moat(ticker)** - the cached Moat Score and erosion flag for one stock.
 - **research_notes(ticker)** - any StocksDeepDive research notes written
   about that company, with links.
