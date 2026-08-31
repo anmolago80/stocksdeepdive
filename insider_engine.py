@@ -166,14 +166,21 @@ def _parse_asx_pdf(url, kind, log=print):
     try:
         r = requests.get(url, headers=_UA, timeout=_TIMEOUT)
         if r.status_code != 200 or not r.content:
+            log(f"[insider_engine] ASX PDF fetch non-200/empty for {url}: "
+                f"status={r.status_code} bytes={len(r.content or b'')}")
             return out
         text = _extract_pdf_text(r.content)
         if not text.strip():
+            log(f"[insider_engine] ASX PDF had no extractable text for {url} "
+                f"({len(r.content)} bytes fetched)")
             return out
         if kind == "insider":
             out.update(_parse_director_notice_text(text))
         else:
             out.update(_parse_buyback_notice_text(text))
+        if not any(out.values()):
+            log(f"[insider_engine] ASX PDF text extracted for {url} but no "
+                f"fields matched the expected labels (kind={kind})")
     except Exception as e:
         log(f"[insider_engine] PDF parse failed for {url}: {e}")
     return out
@@ -213,11 +220,13 @@ def refresh_asx(ticker, log=print):
         return
 
     buyback_done = False
+    matched = 0
     for a in data:
         header = a.get("header") or a.get("title") or ""
         code_type, kind = _match_asx_type(header)
         if not code_type:
             continue
+        matched += 1
         link = a.get("url") or a.get("document_url") or ""
         if not link:
             continue
@@ -233,6 +242,18 @@ def refresh_asx(ticker, log=print):
         if kind == "buyback" and not buyback_done:
             _update_asx_buyback_summary(ticker, filed_at, parsed)
             buyback_done = True
+    # Distinguishes "endpoint/filter problem" from "this company simply has
+    # no insider/buyback notices of the 5 tracked types" (e.g. a
+    # majority-founder-owned company like OCL.AX, where a stable 60%+
+    # holder who isn't trading can genuinely have zero recent director's-
+    # interest CHANGE notices) - both looked identical ("No filings found")
+    # on the page with no way to tell them apart until now.
+    if not data:
+        log(f"[insider_engine] {ticker}: ASX announcements endpoint returned 0 announcements total")
+    elif matched == 0:
+        log(f"[insider_engine] {ticker}: {len(data)} ASX announcement(s) fetched, "
+            f"0 matched the tracked notice types - sample headers: "
+            f"{[(a.get('header') or a.get('title') or '')[:60] for a in data[:5]]}")
     insider_store.mark_fetched(ticker)
 
 
@@ -268,10 +289,25 @@ def _cik_for_ticker(ticker, log=print):
 
 
 def _parse_form4(url, log=print):
+    """Best-effort reporting-owner/transaction extraction from a Form 4's
+    primary document. Every failure branch below LOGS why (status code,
+    content-type, a short content snippet) rather than silently returning
+    an all-None `out` - root-caused live on CPRT (2026-08-31): every one
+    of its Form 4 rows came back with person/action/quantity/price all
+    blank, and there was no log trail at all to tell a genuine fetch
+    block (e.g. SEC's bot mitigation on www.sec.gov, which is stricter
+    than the data.sec.gov API endpoint the filing LIST itself came from -
+    CPRT's filing dates/links DID come through fine) apart from the
+    filing simply not being raw XML (the one case this already
+    anticipated). This logging is what turns the next real refresh into
+    an actual diagnosis instead of another silent no-op."""
     out = {"person": None, "action": None, "quantity": None, "price": None}
+    r = None
     try:
         r = requests.get(url, headers=_SEC_UA, timeout=_TIMEOUT)
         if r.status_code != 200 or not r.content:
+            log(f"[insider_engine] Form 4 fetch non-200/empty for {url}: "
+                f"status={r.status_code} bytes={len(r.content or b'')}")
             return out
         root = ET.fromstring(r.content)
         name_el = root.find(".//rptOwnerName")
@@ -289,10 +325,20 @@ def _parse_form4(url, log=print):
         price_el = root.find(".//transactionPricePerShare/value")
         if price_el is not None and price_el.text:
             out["price"] = _num(price_el.text)
-    except ET.ParseError:
+        if out["person"] is None and code_el is None:
+            log(f"[insider_engine] Form 4 XML for {url} parsed but had "
+                f"neither rptOwnerName nor transactionCode - unexpected shape, "
+                f"root tag={root.tag!r}")
+    except ET.ParseError as e:
         # primaryDocument wasn't raw XML for this filing (e.g. an
-        # XSL-rendered HTML link) - leave unparsed, still stored/listed.
-        pass
+        # XSL-rendered HTML link, a rate-limit/error page, or a redirect) -
+        # leave unparsed, still stored/listed, but log what we actually
+        # got back so this is diagnosable instead of a silent dead end.
+        ctype = r.headers.get("Content-Type") if r is not None else None
+        snippet = r.content[:200].decode("utf-8", "replace") if (r is not None and r.content) else ""
+        log(f"[insider_engine] Form 4 XML parse failed for {url}: {e} - "
+            f"status={r.status_code if r is not None else None} content-type={ctype} "
+            f"snippet={snippet!r}")
     except Exception as e:
         log(f"[insider_engine] Form 4 parse failed for {url}: {e}")
     return out

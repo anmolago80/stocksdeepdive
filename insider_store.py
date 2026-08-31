@@ -88,19 +88,39 @@ def _now():
 
 def add_filing(ticker, source, filing_type, filed_at=None, person=None,
                action=None, quantity=None, price=None, link=None, raw_title=None):
-    """INSERT OR IGNORE on the (ticker, source, link) uniqueness - a
-    re-fetch of an announcement/filing already stored is a silent no-op,
-    never a duplicate row. A filing whose parse failed still gets a row
-    (person/action/quantity/price all None) - "a listed filing is valuable
-    even unparsed" per the Part 2 spec."""
+    """UPSERT on the (ticker, source, link) uniqueness - a re-fetch of an
+    announcement/filing already stored never creates a duplicate row. A
+    filing whose parse failed still gets a row (person/action/quantity/
+    price all None) - "a listed filing is valuable even unparsed" per the
+    Part 2 spec.
+
+    Root-caused live (CPRT, 2026-08-31): this used to be INSERT OR IGNORE,
+    which meant a filing whose parse failed on its first fetch stayed
+    permanently blank forever, even after the parser itself got fixed -
+    a later refresh's successful parse had nowhere to land, since the
+    (ticker, source, link) row already existed and IGNORE is a no-op on
+    conflict. Every one of CPRT's Form 4 rows was stuck exactly this way.
+    Now an UPSERT: filed_at/raw_title are refreshed unconditionally
+    (cheap, and a filing's own type never changes), while person/action/
+    quantity/price use COALESCE so a later refresh can fill in a field
+    this one didn't parse, but never overwrites an already-successfully-
+    parsed value with a fresh None (e.g. a transient fetch hiccup on a
+    later re-check doesn't erase an earlier good parse)."""
     if not ticker or not link:
         return
     with _conn() as conn:
         conn.execute(
-            """INSERT OR IGNORE INTO insider_filings
+            """INSERT INTO insider_filings
                  (ticker, source, filing_type, filed_at, person, action,
                   quantity, price, link, raw_title, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(ticker, source, link) DO UPDATE SET
+                 filed_at = excluded.filed_at,
+                 person = COALESCE(excluded.person, person),
+                 action = COALESCE(excluded.action, action),
+                 quantity = COALESCE(excluded.quantity, quantity),
+                 price = COALESCE(excluded.price, price),
+                 raw_title = excluded.raw_title""",
             (ticker.strip().upper(), source, filing_type, filed_at, person,
              action, quantity, price, link, raw_title, _now()),
         )
