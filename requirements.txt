@@ -43,5 +43,13 @@ pywebpush>=2.0
 
 # --- AI-readiness roadmap Phase 2 (AI_ROADMAP_stocksdeepdive.md): the
 # MCP server mounted at /mcp - see mcp_server.py's module docstring. No
-# AI key needed for this package itself; it's the protocol library only. ---
-mcp>=1.9
+# AI key needed for this package itself; it's the protocol library only.
+# PINNED <2: mcp_server.py uses the v1.x API (mcp.server.fastmcp.FastMCP).
+# mcp 2.x renamed FastMCP to MCPServer and changed other APIs - an
+# unpinned upper bound let Railway's build resolve to 2.x on a later
+# rebuild than the one this was first tested against, which crashed the
+# whole app at import time (server.py -> mcp_server.py -> ModuleNotFoundError:
+# no mcp.server.fastmcp) and took the site down. Re-pin here rather than
+# porting to the v2 API as a live hotfix - a full migration is safer to
+# do deliberately, not under production-outage pressure. ---
+mcp>=1.9,<2
