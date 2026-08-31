@@ -6,6 +6,7 @@ import json
 import html
 import os
 import hmac
+import difflib
 import concurrent.futures
 import contextlib
 from datetime import datetime, timezone, date as _date
@@ -3445,6 +3446,12 @@ tests, the same psychology read &mdash; so the numbers always agree with each ot
             unsafe_allow_html=True,
         )
 
+    # AI-readiness roadmap Phase 6: natural-language screening teaser -
+    # a new, self-contained section (nothing above/below it changed) that
+    # hands off to the Scanner page, which does the actual gated AI call.
+    st.divider()
+    _render_nl_screen_box("home")
+
     # ---- how it works ----
     if _factual():
         st.markdown(
@@ -5281,9 +5288,242 @@ def _render_screen_import_admin():
             st.divider()
 
 
+# -----------------------------------
+# AI-readiness roadmap Phase 6: Natural-language screening
+#
+# A free-text box ("cheap ASX tech stocks", "US small caps in healthcare")
+# that gets turned into the Scanner's own REAL filters - country, universe,
+# sector - and then runs the exact same scan the manual "Change country /
+# universe / sector" controls + Run Scan button already do. This never
+# invents a new filter dimension (no P/E range, no market-cap slider) that
+# the scanner doesn't already have; it only picks values FOR the three
+# controls that already exist, and only from the exact option lists those
+# controls themselves use (scanner_engine.get_universes /
+# scanner_engine.get_sectors) - the model's raw output is never trusted as
+# a final value, only as a hint that gets snapped to a real option or
+# discarded. Gated like every other AI feature (sign-in + ai_gate quota).
+#
+# Two entry points, one shared parser/gate/AI-call path: Home gets a small
+# teaser box that hands the raw query text to Scanner via session_state and
+# switches page (same pattern _dispatch_search already uses for ticker
+# search); Scanner has its own local box AND is where the one-shot
+# "pending query" (from either box) actually gets parsed, gated and run -
+# so the Anthropic call happens in exactly one place.
+# -----------------------------------
+
+_NL_SCREEN_SYSTEM_PROMPT = (
+    "You translate a visitor's plain-English stock-screening request into "
+    "TWO fields, using ONLY the option list given below - never invent an "
+    "option that isn't in the list. Reply with ONLY a JSON object, no "
+    "other text, no markdown fences: "
+    '{{"universe": "<exactly one string from the Universe options below, '
+    'or empty string if nothing in the request suggests one>", '
+    '"sector_query": "<a short industry/theme phrase from the request, '
+    "e.g. technology, banks, mining, healthcare - empty string if the "
+    'request names no particular industry>"}}\n\n'
+    "Universe options (each already means a specific country and index - "
+    "pick the single best match, or empty string if the request gives no "
+    "clue at all about country/size/index):\n{universe_options}\n\n"
+    "Visitor's request: {query}"
+)
+
+
+def _nl_screen_universe_options():
+    """[(universe_label, country), ...] across both countries - the exact
+    same fixed lists scanner_engine.get_universes() already returns, so
+    nothing here can ever drift from what the manual Universe dropdown
+    itself offers."""
+    opts = []
+    for c in ("Australia", "USA"):
+        for u in scanner_engine.get_universes(c):
+            opts.append((u, c))
+    return opts
+
+
+def _nl_parse_screen_query(query_text, email):
+    """Turns free text into a REAL (country, universe, sector) triple for
+    scanner_engine.resolve_tickers(). One Haiku call proposes a universe
+    (snapped against the fixed, real option list - a non-matching or
+    empty reply falls back to the site's own default of Australia/ASX 200,
+    same default page_scanner() itself uses on a first-ever visit) and a
+    short sector/theme phrase; matching that phrase to an actual sector
+    name is then done LOCALLY with difflib against the chosen universe's
+    own real sector list (scanner_engine.get_sectors on its real pool) -
+    never a second AI call, and never a sector string the model invented,
+    since only a close match against the real list is ever used (anything
+    else falls back to "All", which is itself a real, valid option).
+    Returns a dict: {"universe", "country", "sector", "ok", "error"} -
+    "ok" False means the AI call itself failed (network/config/API error);
+    a successful call that couldn't confidently match anything still
+    returns "ok": True with the site's defaults, since "show me the
+    default screen" is a perfectly reasonable outcome for a vague query."""
+    _universe_opts = _nl_screen_universe_options()
+    _options_text = "\n".join(f"- {u} ({c})" for u, c in _universe_opts)
+    _system = _NL_SCREEN_SYSTEM_PROMPT.format(
+        universe_options=_options_text, query=query_text,
+    )
+    _result = ai_client.ask(_system, query_text, max_tokens=200)
+    if _result["input_tokens"] or _result["output_tokens"]:
+        try:
+            ai_gate.record(
+                email, "nl_screen", _result["model"],
+                _result["input_tokens"], _result["output_tokens"],
+                _result["cost_usd"],
+            )
+        except Exception:
+            pass
+    if not _result["ok"]:
+        return {"ok": False, "error": _result["error"]}
+
+    _raw = (_result["text"] or "").strip()
+    # Strip a stray ```json fence if the model added one anyway.
+    if _raw.startswith("```"):
+        _raw = _raw.strip("`")
+        if _raw.lower().startswith("json"):
+            _raw = _raw[4:]
+        _raw = _raw.strip()
+    try:
+        _parsed = json.loads(_raw)
+    except Exception:
+        _parsed = {}
+
+    _model_universe = str(_parsed.get("universe") or "").strip()
+    _model_sector_query = str(_parsed.get("sector_query") or "").strip()
+
+    # Snap the universe: exact match only (case-insensitive) against the
+    # real option list - a near-miss or invented name is treated the same
+    # as "didn't say" rather than guessed at.
+    _universe_labels = [u for u, _ in _universe_opts]
+    _snapped_universe = None
+    for _u in _universe_labels:
+        if _u.lower() == _model_universe.lower():
+            _snapped_universe = _u
+            break
+    if not _snapped_universe:
+        _snapped_universe = "ASX 200"  # page_scanner()'s own first-visit default
+    _country = next(c for u, c in _universe_opts if u == _snapped_universe)
+
+    _sector = "All"
+    if _model_sector_query:
+        try:
+            _pool_df, _ = scanner_engine.get_universe_pool(_country, _snapped_universe)
+            _real_sectors = scanner_engine.get_sectors(_pool_df)  # includes "All"
+            _matches = difflib.get_close_matches(
+                _model_sector_query, _real_sectors, n=1, cutoff=0.5,
+            )
+            if not _matches:
+                # Try a plain substring match too - difflib's ratio can
+                # miss short one-word cases like "tech" vs "Information
+                # Technology" that a human would call an obvious match.
+                _q_lower = _model_sector_query.lower()
+                _matches = [
+                    s for s in _real_sectors
+                    if s != "All" and (_q_lower in s.lower() or s.lower() in _q_lower)
+                ][:1]
+            if _matches:
+                _sector = _matches[0]
+        except Exception:
+            pass  # fall back to "All" - a failed sector lookup should never block the screen
+
+    return {"ok": True, "universe": _snapped_universe, "country": _country, "sector": _sector}
+
+
+def _apply_nl_screen_result(parsed):
+    """Pushes a resolved (country, universe, sector) into the exact same
+    session_state keys the manual Scanner controls read/write, then flags
+    a fresh Run Scan - so a natural-language screen behaves, from this
+    point on, EXACTLY like the visitor had picked those same values by
+    hand and clicked Run Scan themselves."""
+    st.session_state["scanner_country_au"] = parsed["country"] == "Australia"
+    st.session_state["scanner_country_us"] = parsed["country"] == "USA"
+    st.session_state["scanner_universe"] = parsed["universe"]
+    st.session_state["scanner_sector"] = parsed["sector"]
+    _tickers, _source = scanner_engine.resolve_tickers(
+        parsed["country"], parsed["universe"], parsed["sector"])
+    st.session_state["scan_stocks"] = _tickers
+    st.session_state["scan_universe_source"] = f"{parsed['universe']} - {_source}"
+    st.session_state["scan_scan_country"] = parsed["country"]
+    st.session_state["scan_fresh"] = True
+    st.session_state["nl_screen_last_result"] = parsed
+
+
+def _render_nl_screen_box(location):
+    """Shared free-text box. `location` is "scanner" (parses + gates +
+    runs the AI call directly) or "home" (a lighter teaser that just hands
+    the raw text to the Scanner page via session_state and switches page -
+    mirrors _dispatch_search's own ticker-search handoff pattern exactly,
+    so this never duplicates the actual Anthropic call/gate logic)."""
+    if not ai_client.available():
+        return
+    _signed_in = paywall_engine.is_logged_in()
+    with st.container(border=True):
+        st.markdown("**\U0001F50E Describe what you're looking for**")
+        st.caption(
+            "Plain English, e.g. “cheap ASX tech stocks” or “US "
+            "small caps in healthcare” - translated into the Scanner's "
+            "own country/universe/sector filters, which are always shown "
+            "before results run so you can see (and change) exactly what "
+            "was applied."
+        )
+        if not _signed_in:
+            st.info("Sign in (top left) to try natural-language screening.")
+            return
+        _key = f"nl_screen_{location}"
+        _q = st.text_input(
+            "Describe a screen", key=f"{_key}_q",
+            placeholder="e.g. cheap quality compounders in Australian mining",
+            label_visibility="collapsed",
+        )
+        if st.button("Screen", key=f"{_key}_btn"):
+            if not _q.strip():
+                st.warning("Type what you're looking for first.")
+            elif location == "home":
+                st.session_state["nl_screen_pending_query"] = _q.strip()
+                st.switch_page(PG_SCANNER)
+            else:
+                email = paywall_engine.current_user_email()
+                _allowed, _msg, _tier = ai_gate.check(email, "nl_screen")
+                if not _allowed:
+                    st.warning(_msg)
+                else:
+                    with st.spinner("Reading your request..."):
+                        _parsed = _nl_parse_screen_query(_q.strip(), email)
+                    if not _parsed["ok"]:
+                        st.error(_parsed["error"])
+                    else:
+                        _apply_nl_screen_result(_parsed)
+                        st.rerun()
+        if location == "scanner":
+            _render_ask_quota_caption(paywall_engine.current_user_email(), "nl_screen")
+
+
+def _consume_pending_nl_screen_query():
+    """Runs once, at the top of page_scanner(), for a query handed off
+    from Home's teaser box (see _render_nl_screen_box("home") above) -
+    the one-shot pop() means a rerun of Scanner (e.g. switching universe
+    by hand afterwards) never re-runs the same AI call again."""
+    _pending = st.session_state.pop("nl_screen_pending_query", None)
+    if not _pending:
+        return
+    if not paywall_engine.is_logged_in():
+        return  # shouldn't happen (home box already gates on sign-in), but never crash a page load over it
+    email = paywall_engine.current_user_email()
+    _allowed, _msg, _tier = ai_gate.check(email, "nl_screen")
+    if not _allowed:
+        st.warning(_msg)
+        return
+    with st.spinner("Reading your request..."):
+        _parsed = _nl_parse_screen_query(_pending, email)
+    if not _parsed["ok"]:
+        st.error(_parsed["error"])
+    else:
+        _apply_nl_screen_result(_parsed)
+
+
 def page_scanner():
     _render_header(compact=True, page_label="Scanner")
     _bump_page_view("scanner")
+    _consume_pending_nl_screen_query()
 
     # Defaults for a first-ever visit (no prior session_state at all):
     # Australia + ASX 200 - picked so the very first script run has a
@@ -5292,6 +5532,16 @@ def page_scanner():
     st.session_state.setdefault("scanner_country_au", True)
     st.session_state.setdefault("scanner_country_us", False)
     st.session_state.setdefault("scanner_universe", "ASX 200")
+
+    _render_nl_screen_box("scanner")
+    _nl_last = st.session_state.get("nl_screen_last_result")
+    if _nl_last:
+        st.info(
+            f"Translated your request to: **{_nl_last['country']} · "
+            f"{_nl_last['universe']} · {_nl_last['sector']}** - shown "
+            "(and results run) below. Not advice: this only picks the same "
+            "country/universe/sector filters you could set by hand."
+        )
 
     # ---- Instant results: rendered FIRST, above every picker, using
     # whichever universe is currently selected in session_state (ASX 200
@@ -5392,6 +5642,10 @@ def page_scanner():
             st.session_state["scan_universe_source"] = f"{universe} - {_source}"
             st.session_state["scan_scan_country"] = universe_country
             st.session_state["scan_fresh"] = True
+            # A manual Run Scan is a deliberate, distinct action - clear
+            # any earlier natural-language translation caption so it never
+            # lingers on a screen the visitor just chose by hand instead.
+            st.session_state.pop("nl_screen_last_result", None)
 
     _render_scan_results(
         page_label="Scanner",
