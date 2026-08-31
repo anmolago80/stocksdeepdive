@@ -19,6 +19,7 @@ import html
 import re
 
 import blog_render
+import score_history
 
 SITE_NAME = blog_render.SITE_NAME
 
@@ -87,6 +88,25 @@ def _stat_cells(data, moat):
     return cells
 
 
+def _score_history_line(ticker, today_score):
+    """Server-rendered "Value Score 30 days ago: X -> today Y" text line
+    (Services batch Part 5) - reads the same nightly-recorded history the
+    Deep Dive page's own score-history chart uses (score_history.py);
+    nothing computed here beyond formatting. None (renders nothing) when
+    there's no stored history 30+ days back yet, or today's score isn't
+    known - a missing history point should never be shown as "no
+    change"."""
+    if today_score is None:
+        return None
+    try:
+        past = score_history.get(ticker, 30)
+    except Exception:
+        past = None
+    if not past or past.get("long_score") is None:
+        return None
+    return f"Value Score 30 days ago: {past['long_score']:g} &rarr; today {today_score:g}"
+
+
 def _grid_css():
     return """
 .sdd-snap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));
@@ -101,6 +121,7 @@ def _grid_css():
   text-align:left}
 .sdd-snap-table th{color:#8aa0b8;font-weight:600;font-size:13px}
 .sdd-snap-table a{color:#2dd4bf}
+.sdd-hist-line{color:#8aa0b8;font-size:14.5px;margin:-8px 0 18px}
 """
 
 
@@ -130,6 +151,9 @@ def render_snapshot(snap, base_url):
             "Computed scores for this stock, from the same engine behind "
             "the site's Deep Dive and Scanner pages.")
 
+    hist_line = _score_history_line(ticker, data.get("Long Score"))
+    hist_html = f'<p class="sdd-hist-line">{hist_line}</p>' if hist_line else ""
+
     title = f"{ticker} snapshot - {signal or 'computed scores'} | {SITE_NAME}"
     canonical = snapshot_url(base_url, ticker)
     cite_date = (snap.get("generated_at") or "")[:10]
@@ -141,6 +165,7 @@ def render_snapshot(snap, base_url):
   <div class="kicker">Snapshot &middot; {e(universe)} &middot; generated {e(generated)} UTC</div>
   <h1>{e(ticker)}</h1>
   <p class="lede">{lede}</p>
+  {hist_html}
   {blog_render._copy_citation_html(citation_text)}
   <div class="sdd-snap-grid">{cell_html}</div>
   <p><a href="/deep-dive?ticker={e(ticker)}">Open the interactive Deep Dive for {e(ticker)} &rarr;</a></p>

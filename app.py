@@ -1542,6 +1542,79 @@ def _render_score_history_caption(ticker, current_score):
         pass
 
 
+def _render_score_history_chart(ticker, score_word="Value Score"):
+    """"Value Score over time" (Services batch Part 5) - a small line
+    chart on the Deep Dive score section, sourced entirely from
+    score_history.series() (the nightly overnight scan's own recorded
+    history - nothing computed live here, nothing AI-written). Quality/
+    Moat overlay toggles share Value Score's own 0-100 scale, so adding
+    them never needs a second axis; MOS gets its own small chart below
+    since it's a %, not a 0-100 score - putting it on the same axis as
+    the others (or a second, dual axis) would misrepresent the numbers
+    exactly the way this site's other charts never do. Renders nothing
+    at all when fewer than 5 recorded points exist - a 2-3 point "chart"
+    reads as noise, not a trend."""
+    try:
+        series = score_history.series(ticker, limit_days=365)
+    except Exception:
+        series = []
+    series = [s for s in series if s.get("long_score") is not None]
+    if len(series) < 5:
+        return
+
+    dates = [s["day"] for s in series]
+    st.markdown(f"#### \U0001F4C8 {score_word} over time")
+    _shc1, _shc2 = st.columns(2)
+    with _shc1:
+        _show_quality = st.checkbox("Show Quality", key=f"sh_quality_{ticker}")
+    with _shc2:
+        _show_moat = st.checkbox("Show Moat", key=f"sh_moat_{ticker}")
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates, y=[s["long_score"] for s in series], mode="lines", name=score_word,
+        line=dict(color="#2dd4bf", width=2), connectgaps=False,
+    ))
+    if _show_quality:
+        fig.add_trace(go.Scatter(
+            x=dates, y=[s.get("quality") for s in series], mode="lines", name="Quality",
+            line=dict(color="#60a5fa", width=2, dash="dot"), connectgaps=False,
+        ))
+    if _show_moat:
+        fig.add_trace(go.Scatter(
+            x=dates, y=[s.get("moat") for s in series], mode="lines", name="Moat",
+            line=dict(color="#f0a34e", width=2, dash="dash"), connectgaps=False,
+        ))
+    fig.update_layout(
+        margin=dict(t=10, b=10, l=10, r=10), height=280,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#c7d2e0"), hovermode="x unified",
+        legend=dict(orientation="h", y=-0.2),
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor="rgba(138,160,184,0.15)", range=[0, 100]),
+    )
+    sdd_plotly_chart(fig)
+
+    mos_series = [s for s in series if s.get("mos_pct") is not None]
+    if len(mos_series) >= 5:
+        fig_mos = go.Figure()
+        fig_mos.add_trace(go.Scatter(
+            x=[s["day"] for s in mos_series], y=[s["mos_pct"] for s in mos_series],
+            mode="lines", name="MOS", line=dict(color="#a78bfa", width=2),
+            fill="tozeroy", fillcolor="rgba(167,139,250,0.10)", connectgaps=False,
+        ))
+        fig_mos.update_layout(
+            title="MOS over time", margin=dict(t=36, b=10, l=10, r=10), height=200,
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#c7d2e0"), hovermode="x unified", showlegend=False,
+            xaxis=dict(showgrid=False),
+            yaxis=dict(showgrid=True, gridcolor="rgba(138,160,184,0.15)", ticksuffix="%"),
+        )
+        sdd_plotly_chart(fig_mos)
+
+    st.caption("Computed nightly; gaps = days the stock wasn't scanned.")
+
+
 def _render_results_day_card(ticker):
     """"Reported on <date> - before/after" card (Services batch Part 4) -
     at the top of the Deep Dive score section for 14 days after a
@@ -4654,6 +4727,8 @@ def page_deep_dive():
                 height=280,
             ),
         )
+
+        _render_score_history_chart(_dd["ticker"], _score_word)
 
         st.divider()
 
