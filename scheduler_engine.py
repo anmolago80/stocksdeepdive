@@ -201,6 +201,16 @@ def _run_nightly(cfg, log):
                     alert_engine.check_universe_rows(payload["rows"], alert_prev_map, log=log)
                 except Exception as e:
                     log(f"[scheduler] alert check {universe} failed: {e}")
+                # Services batch, Part 2: refresh insider/buyback data for
+                # up to INSIDER_NIGHTLY_CAP stale tickers from this
+                # universe - see insider_engine.py's own module docstring
+                # for why this is capped per universe rather than covering
+                # every scanned ticker every night.
+                try:
+                    import insider_engine
+                    insider_engine.refresh_universe(payload["rows"], log=log)
+                except Exception as e:
+                    log(f"[scheduler] insider refresh {universe} failed: {e}")
         except Exception as e:
             log(f"[scheduler] nightly scan {universe} failed: {e}")
 

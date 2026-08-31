@@ -77,6 +77,11 @@ import ai_usage_store
 import alert_store
 import alert_engine
 
+# Services batch, Part 2: insider dealings & buybacks - filings and
+# figures only, no Anthropic API call anywhere in this feature either.
+import insider_store
+import insider_engine
+
 # AI-readiness roadmap Phase 5: the nightly Portfolio AI watchdog itself
 # runs from scheduler_engine.py, not from a live page render - imported
 # here only for its two small read helpers (get_last_notified(), for the
@@ -2859,6 +2864,73 @@ def _render_alert_control(ticker, dd, key_prefix="alert_dd"):
                 st.error(_res["error"])
 
 
+def _render_insider_panel(ticker):
+    """"Insider & capital" (Services batch Part 2) - the last 12 months of
+    director/insider transactions and the current buyback status, pulled
+    from ASX announcements or SEC EDGAR Form 4s (insider_engine.py) and
+    two factual roll-ups computed from whatever filings had both a
+    quantity and a price successfully parsed. Filings and figures only -
+    deliberately no "signal" language anywhere here, matching this
+    batch's shared ground rules. A stale (>24h) refresh is attempted
+    on-demand here; the nightly job (insider_engine.refresh_universe,
+    wired from scheduler_engine.py) keeps most scanned tickers already
+    fresh, so this on-demand path is the exception, not the common case."""
+    try:
+        insider_engine.refresh(ticker)
+    except Exception:
+        pass  # a fetch failure here just means today's data is whatever
+        # was already stored - never a page crash over a factual sidebar.
+
+    st.markdown("##### Insider & capital")
+    st.caption(
+        "Director/insider transactions and buyback activity, from ASX "
+        "announcements or SEC filings - described calculations from public "
+        "filings, not a signal to buy, hold or sell."
+    )
+
+    _buyback = insider_store.get_buyback_summary(ticker)
+    st.caption(_buyback["text"] if _buyback else
+               "No buyback notices or repurchase figures found.")
+
+    _net = insider_store.net_insider_value_12m(ticker)
+    if _net is not None:
+        _ccy = "AUD" if ticker.upper().endswith(".AX") else "USD"
+        _dir_word = "net buying" if _net >= 0 else "net selling"
+        st.caption(
+            f"Net insider {_dir_word} (12m): {_ccy} {abs(_net):,.0f} "
+            "(from filings with both quantity and price parsed - an "
+            "unparsed filing below isn't counted in this figure)."
+        )
+
+    _filings = insider_store.filings_for(ticker, months=12)
+    if not _filings:
+        st.caption(f"No filings found in the last 12 months for {ticker}.")
+        return
+
+    _rows_html = []
+    for f in _filings[:25]:
+        _date_s = f["filed_at"][:10] if f.get("filed_at") else "-"
+        _person = html.escape(f.get("person") or "-")
+        _action = f.get("action") or "-"
+        _qty = f"{f['quantity']:,.0f}" if f.get("quantity") else "-"
+        _price = f"{f['price']:,.2f}" if f.get("price") else "-"
+        _link = f.get("link") or "#"
+        _rows_html.append(
+            f"<tr><td style='padding:6px 10px;'>{_date_s}</td>"
+            f"<td style='padding:6px 10px;'>{_person}</td>"
+            f"<td style='padding:6px 10px;'>{_action}</td>"
+            f"<td style='padding:6px 10px;'>{_qty}</td>"
+            f"<td style='padding:6px 10px;'>{_price}</td>"
+            f"<td style='padding:6px 10px;'>"
+            f"<a href='{_link}' target='_blank' rel='noopener'>filing</a></td></tr>"
+        )
+    st.markdown(
+        _sdd_table(["Date", "Person", "Action", "Quantity", "Price", "Link"],
+                   _rows_html, max_height=340),
+        unsafe_allow_html=True,
+    )
+
+
 def _render_research_header_card(ticker, data, section_order):
     """Per-company header card (Task 5): styled like the site's `.sdd-card`
     divs (dark #121f36 background, #1f3352 border, rounded) - ticker large,
@@ -4791,6 +4863,14 @@ def page_deep_dive():
                   "entry zone above - the same convention the Trade Filter table uses)."
             )
 
+        # --- Services batch, Part 2: insider & capital - director/insider
+        # filings and buyback status, straight from ASX announcements/SEC
+        # EDGAR. Sits after every score gauge (this is fundamentals-
+        # adjacent context, not another score) and before Compounder View
+        # per the Part 2 spec. ---
+        st.divider()
+        _render_insider_panel(_dd["ticker"])
+
         # --- Compounder View (auto): the same six research sections the
         # Rational Compounder Research page shows for its hand-covered
         # tickers, computed live here for WHATEVER ticker was just looked
@@ -5252,6 +5332,24 @@ def _signed_cell(value, suffix="%"):
     return f"<span style='color:{c};font-weight:600;'>{v:+,.1f}{suffix}</span>"
 
 
+def _insider_cell(ticker, value):
+    """Services batch Part 2: the Scanner's "Insider net 12m" column -
+    `value` comes from insider_store.net_insider_values_for(), computed
+    ONCE per table (a single batched query) rather than per row - a
+    500-ticker scan table would otherwise open 500 separate SQLite
+    connections just for this column. Same green/red-by-sign convention
+    as _signed_cell, shown in thousands of the ticker's own currency
+    since insider filing values can run into the millions. "-" when
+    nothing's been parsed for this ticker yet (most tickers, most nights
+    - see insider_engine.INSIDER_NIGHTLY_CAP)."""
+    if value is None:
+        return "<span style='color:#8aa0b8;'>-</span>"
+    ccy = "A$" if ticker.upper().endswith(".AX") else "$"
+    c = _BAR_GREEN if value > 0 else (_BAR_RED if value < 0 else "#8aa0b8")
+    return (f"<span style='color:{c};font-weight:600;'>"
+            f"{'+' if value >= 0 else '-'}{ccy}{abs(value) / 1000:,.0f}k</span>")
+
+
 def _rank_cell(value, column_values, fmt="{:,.2f}"):
     """Rank-coloured number: best value in the column green, worst red,
     everything between amber (used for the RR columns, where 'good' is
@@ -5344,6 +5442,12 @@ def _render_overnight_scan_table(universe_label, overnight):
                 "Deep Dive. Estimated/default values carry their own flag "
                 "columns. Run a live scan below for current prices."
             )
+        # Services batch, Part 2: one batched query for every ticker in
+        # this table's "Insider net 12m" column - see _insider_cell's own
+        # docstring for why this must be computed once, not per row.
+        _on_insider_map = insider_store.net_insider_values_for(
+            [r.get("Ticker") for r in overnight["rows"] if r.get("Ticker")]
+        )
         _on_rows_html = []
         for _orow in overnight["rows"]:
             _tk = _orow.get("Ticker") or "-"
@@ -5379,6 +5483,8 @@ def _render_overnight_scan_table(universe_label, overnight):
                 # fired, on top of the colour band.
                 + _td(_bar_cell(_orow.get("Moat"), 40, 70,
                                 flag=_orow.get("Moat Erosion") in ("watch", "eroding")), minw=90)
+                + _td(_insider_cell(_tk, _on_insider_map.get(_tk.strip().upper()) if _tk != "-" else None),
+                      minw=90)
             )
             if _factual():
                 _row_html += (
@@ -5396,12 +5502,12 @@ def _render_overnight_scan_table(universe_label, overnight):
         if _factual():
             _on_headers = ["Ticker", "Type", "Price", "Intrinsic Value",
                            "MOS", "Value Score", "Quality", "Psychology",
-                           "Discovery", "Moat", "Valuation", "Trend"]
+                           "Discovery", "Moat", "Insider net 12m", "Valuation", "Trend"]
         else:
             _on_headers = ["Ticker", "Type", "Price", "Intrinsic Value",
                            "MOS", "Long Score", "Quality", "Psychology",
-                           "Discovery", "Moat", "Valuation", "Signal", "Trend",
-                           "Trade Setup"]
+                           "Discovery", "Moat", "Insider net 12m", "Valuation", "Signal",
+                           "Trend", "Trade Setup"]
         st.markdown(
             _sdd_table(_on_headers, _on_rows_html, max_height=480),
             unsafe_allow_html=True,
@@ -6758,6 +6864,11 @@ def _render_scan_results(page_label, state_prefix, empty_message,
             _cmp = results.copy()
             _cmp["Trade Setup Score"] = _cmp["Ticker"].map(trade_score_lookup)
 
+            # Services batch, Part 2: one batched query for the whole
+            # table's "Insider net 12m" column - see _insider_cell's own
+            # docstring.
+            _cmp_insider_map = insider_store.net_insider_values_for(list(_cmp["Ticker"]))
+
             _cmp_rows_html = []
             for _, r in _cmp.iterrows():
                 _type_color = _BAR_RED if r.get("_flag_type") else _TYPE_NEUTRAL
@@ -6798,6 +6909,8 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     # already IS the site's erosion signal elsewhere).
                     + _td(_bar_cell(r.get("Moat"), 40, 70,
                                     flag=bool(r.get("_flag_moat"))), minw=90)
+                    + _td(_insider_cell(_cmp_tk, _cmp_insider_map.get(_cmp_tk.strip().upper())),
+                          minw=90)
                 )
                 if _factual():
                     # Valuation / Sentiment / Trend labels stay in the
@@ -6822,14 +6935,14 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 _cmp_headers = [
                     "Ticker", "Type", "Price", "Intrinsic Value",
                     "MOS", "Value Score", "Quality", "Psychology", "Discovery",
-                    "Moat", "Valuation", "Sentiment", "Trend",
+                    "Moat", "Insider net 12m", "Valuation", "Sentiment", "Trend",
                 ]
             else:
                 _cmp_headers = [
                     "Ticker", "Type", "Price", "Intrinsic Value", "MOS",
                     "Long Score", "Quality Score", "Psychology", "Discovery",
-                    "Moat", "Valuation", "Sentiment", "Trend", "Trade Setup",
-                    "Trade Setup Score",
+                    "Moat", "Insider net 12m", "Valuation", "Sentiment", "Trend",
+                    "Trade Setup", "Trade Setup Score",
                 ]
             st.markdown(_sdd_table(_cmp_headers, _cmp_rows_html), unsafe_allow_html=True)
             if _factual():

@@ -53,3 +53,9 @@ pywebpush>=2.0
 # porting to the v2 API as a live hotfix - a full migration is safer to
 # do deliberately, not under production-outage pressure. ---
 mcp>=1.9,<2
+
+# --- Services batch, Part 2 (insider dealings & buybacks): best-effort
+# text extraction from ASX Appendix 3X/3Y/3Z/3C/3E PDF announcements -
+# see insider_engine.py's module docstring. Pure-python, no native/system
+# dependency, cheap to install. ---
+pypdf>=3.17
