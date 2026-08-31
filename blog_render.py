@@ -144,6 +144,7 @@ APP_PATHS = [
     ("/scanner", "0.6", "weekly"),
     ("/methodology", "0.7", "monthly"),
     ("/about", "0.5", "monthly"),
+    ("/how-we-use-ai", "0.4", "monthly"),
     ("/privacy", "0.3", "yearly"),
 ]
 
@@ -481,6 +482,7 @@ def _footer_html():
     <div><h5>Contact</h5>
       <a href="mailto:rationalcompounder@stocksdeepdive.com">rationalcompounder@stocksdeepdive.com</a>
       <a href="/privacy">Privacy policy</a>
+      <a href="/how-we-use-ai">How this site uses AI</a>
       <a href="/blog/feed.xml">RSS feed</a>
     </div>
   </div>

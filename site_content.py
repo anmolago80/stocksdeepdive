@@ -336,3 +336,84 @@ def methodology_md(factual=True):
 
 def about_md(factual=True):
     return ABOUT_FACTUAL_MD if factual else ABOUT_FULL_MD
+
+
+# AI-readiness roadmap Phase 10: "public 'How this site uses AI' page
+# (computed vs AI-written, always labelled)". A single version, not a
+# factual/full pair like methodology_md/about_md above - this page
+# describes site INFRASTRUCTURE (which features call an AI model, how
+# they're gated, what's computed instead) rather than any stock's
+# numbers, so there is no factual-vs-full framing to branch on; the same
+# words are accurate in both presentations. Same reason PRIVACY_MD above
+# has no factual parameter either.
+HOW_AI_IS_USED_MD = """
+*Last updated: 31 August 2026*
+
+Short version: every SCORE and NUMBER on this site - Intrinsic Value, Quality,
+Psychology, Discovery, Moat, the Value/Long Score, Trade Setup - is **computed**, not
+AI-written. A handful of specific features additionally use Claude (Anthropic's AI
+model) to turn already-computed numbers into a written paragraph. Every one of those
+paragraphs is labelled where it appears, every time, with the words "AI-written
+summary of the site's data - not advice."
+
+#### What's computed (never AI)
+
+The DCF, the quality calculation, the psychology and discovery readings, the Moat
+Score, the Trade Setup gates and targets - all of it is deterministic arithmetic run
+against live market data, exactly as [How the scores work](/methodology) describes.
+No AI model ever sees this arithmetic or influences what it outputs. This is true
+whether or not any AI feature below is even configured on a given deployment.
+
+#### What's AI-written, and where
+
+- **Ask boxes** (Deep Dive, and My Portfolio for signed-in users) - a grounded answer
+  to a typed question, built only from that page's own already-computed numbers.
+- **Natural-language screening** (Home, Scanner) - a plain-English query translated
+  into the Scanner's own real filters (country, universe, sector); the resolved
+  filters are always shown back to you before the results run.
+- **Portfolio AI watchdog** - a nightly "what changed" brief for holdings you've
+  opted a portfolio into, sent only when something material actually happened.
+- **Personalised weekly brief** - the weekly watchlist email's written paragraph,
+  covering your own watchlist moves, portfolio health changes, and relevant new
+  research from that week.
+- **"Explain this number"** - the (i) next to a Deep Dive gauge, explaining what that
+  specific figure means for that specific stock.
+- **Admin research-note drafting** and **comment spam/abuse triage** - admin-only
+  tools that draft a first-pass blog post for review, and flag a pending comment for
+  the admin's attention. Neither one publishes or moderates anything by itself - a
+  human reviews and clicks Save/Publish, or Approve/Reject, every time.
+
+None of it gives investment advice. Every AI feature is instructed to describe what
+the site's own numbers show and to cite which section a claim rests on, never to
+recommend buying, holding or selling anything - the same rule the computed scores
+themselves follow.
+
+#### Models, and why two
+
+Claude Haiku 4.5 is the default model for every AI feature above. Research-note
+drafting and the weekly brief use Claude Sonnet 5 instead, because both call sites
+draft longer first-pass text meant for review (an admin drafting one note, or one
+brief per subscriber per week) rather than a short grounded answer - low-frequency
+enough that the higher per-call cost stays immaterial. Nothing about which model runs
+changes what data it's allowed to see or what it's allowed to say.
+
+#### Limits, and why
+
+Using an AI feature requires signing in - free accounts get 20 questions a day; a
+Plus subscription (where offered) raises that to 300 a month. A site-wide monthly
+spend cap stops all AI features except the owner's own once reached, and every call
+is logged (which feature, which model, how many tokens, estimated cost) so usage
+stays visible and bounded. "Explain this number" additionally caches each explanation
+per stock and metric, so the same figure is only ever explained once, no matter how
+many visitors read it.
+
+#### Your data
+
+Nothing from **My Portfolio**, your watchlist, or your email address is ever sent
+anywhere except into the grounded prompt for a question you yourself asked (e.g. your
+own Portfolio Ask, or your own watchdog brief) - never exposed through the public
+snapshot pages, the JSON API, or the MCP server, and never used to train any model.
+See the [privacy policy](/privacy) for the site's full data-handling practices; this
+page only covers what the AI features specifically do and don't do with what they see.
+"""
+

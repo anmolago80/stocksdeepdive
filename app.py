@@ -66,6 +66,9 @@ import ai_client
 # AI-readiness roadmap Phase 9: "Explain this number" - the (ticker,
 # metric) explanation cache _render_explain_popover() reads/writes below.
 import explain_cache_store
+
+# AI-readiness roadmap Phase 10: comment spam/abuse triage cache.
+import comment_triage_store
 import ai_settings_store
 import ai_usage_store
 
@@ -1673,6 +1676,7 @@ def _render_footer():
       <a href='mailto:rationalcompounder@stocksdeepdive.com'>rationalcompounder@stocksdeepdive.com</a>
       <span style='display:block;color:#8aa0b8;margin-top:6px;font-size:13px;'>or the Feedback button on any results page</span>
       <a href='/privacy' target='_self'>Privacy policy</a>
+      <a href='/how-we-use-ai' target='_self'>How this site uses AI</a>
     </div>
   </div>
   <div class='sdd-disclaimer'>{disclaimer}</div>
@@ -9439,6 +9443,22 @@ noted on the site.
     )
 
 
+def page_how_ai_is_used():
+    """AI-readiness roadmap Phase 10: the public "How this site uses AI"
+    page. Unlike page_methodology/page_about/page_privacy above (which
+    each independently inline their own copy of their prose), this page
+    calls site_content.HOW_AI_IS_USED_MD directly - the one and only copy
+    of this page's words, also what server.py's static HTML route
+    renders for crawlers (see that function's own docstring for why: this
+    page IS a disclosure/trust document, the same category privacy policy
+    accuracy concerns apply to, so a single source of truth matters here
+    more than the mechanical-rename cost of the pattern the older three
+    pages already use."""
+    _content_page_shell("How this site uses AI")
+    _bump_page_view("how_ai_is_used")
+    st.markdown(site_content.HOW_AI_IS_USED_MD)
+
+
 # -----------------------------------
 # BLOG ADMIN - the writing desk for the public blog
 #
@@ -9765,6 +9785,127 @@ def _render_research_note_drafter():
                    "settings panel next to Stats).")
 
 
+# ---------------------------------------------------------------------
+# AI-readiness roadmap Phase 10: AI-assisted comment moderation. A
+# spam/abuse triage LABEL next to each pending comment in the blog admin
+# editor's own comment queue, below - never a moderation decision. The
+# AI never approves, rejects, or hides a comment; blog_comments_store.
+# set_status(), called only from the admin's own existing Approve/Reject
+# buttons, remains the ONLY path a comment's status ever changes through,
+# completely unchanged by this phase. Same human-in-the-loop-by-
+# construction discipline the research-note drafter (Phase 7) already
+# follows: the AI only ever adds something for the admin to read.
+#
+# Admin-only, so - same reasoning as the research-note drafter - there is
+# no visitor sign-in to gate/log against; calls are checked/recorded
+# against ai_gate.owner_email() instead. Haiku 4.5, per the roadmap's own
+# model-policy note naming "moderation" a Haiku-default feature. Cached
+# forever per comment id (comment_triage_store.py) - a submitted
+# comment's text never changes, so a comment is triaged at most once,
+# ever, no matter how many times the admin re-opens this page.
+# ---------------------------------------------------------------------
+
+_COMMENT_TRIAGE_SYSTEM_PROMPT = """You are triaging ONE pending reader comment on a stock-analysis blog, to help
+the site's admin scan a queue of comments faster. You are NOT moderating -
+you never approve, reject, or hide anything; you only flag what you see so
+a human can decide.
+
+Classify the comment into exactly one label:
+  OK    - looks like genuine reader engagement (a question, an opinion, a
+          reaction to the post) - even if blunt, sarcastic, or critical of
+          the site's numbers or the stock discussed.
+  SPAM  - promotional, unrelated to the post, or clearly trying to drive
+          traffic or sell something - judge the CONTENT's intent, not
+          just whether it contains a link.
+  ABUSE - hostile, harassing, or abusive language directed at a person
+          (the author, another commenter, a company's staff) - mere
+          disagreement or criticism of a company/stock/thesis is OK, not
+          ABUSE.
+
+Respond in EXACTLY this format, two lines, nothing else:
+LABEL: <OK|SPAM|ABUSE>
+REASON: <one short sentence, under 20 words, saying what you saw>"""
+
+
+def _parse_triage_response(text):
+    label, reason = comment_triage_store.LABEL_UNKNOWN, None
+    for _line in (text or "").splitlines():
+        _line = _line.strip()
+        if _line.upper().startswith("LABEL:"):
+            _val = _line.split(":", 1)[1].strip().upper()
+            if _val in comment_triage_store.VALID_LABELS:
+                label = _val
+        elif _line.upper().startswith("REASON:"):
+            reason = _line.split(":", 1)[1].strip()
+    return label, reason
+
+
+def _triage_comment(comment_id, author_name, body):
+    """Returns {'label', 'reason'} for one pending comment - a cache hit
+    if it's already been triaged, otherwise runs one Haiku call and
+    caches the result. Never raises and never blocks the admin queue from
+    rendering: any failure (no key, gate denial, a bad response) just
+    means no label shows for that one comment this render - the
+    Approve/Reject buttons underneath are completely unaffected either
+    way."""
+    cached = comment_triage_store.get(comment_id)
+    if cached:
+        return cached
+    if not ai_client.available():
+        return None
+    try:
+        allowed, _msg, _tier = ai_gate.check(ai_gate.owner_email(), "comment_triage")
+    except Exception:
+        allowed = False
+    if not allowed:
+        return None
+    result = ai_client.ask(
+        _COMMENT_TRIAGE_SYSTEM_PROMPT,
+        f"Author: {author_name or 'Anonymous'}\nComment:\n{body}",
+        model=ai_client.MODEL_HAIKU, max_tokens=60,
+    )
+    if result.get("input_tokens") or result.get("output_tokens"):
+        try:
+            ai_gate.record(ai_gate.owner_email(), "comment_triage", result.get("model"),
+                            result.get("input_tokens"), result.get("output_tokens"),
+                            result.get("cost_usd"))
+        except Exception:
+            pass
+    if not result.get("ok"):
+        return None
+    label, reason = _parse_triage_response(result["text"])
+    try:
+        comment_triage_store.set(comment_id, label, reason, result.get("model"))
+    except Exception:
+        pass
+    return {"label": label, "reason": reason, "model": result.get("model")}
+
+
+_TRIAGE_BADGE_STYLE = {
+    comment_triage_store.LABEL_OK: ("#0f3d2e", "#6ee7b7", "OK"),
+    comment_triage_store.LABEL_SPAM: ("#453110", "#fbbf24", "LIKELY SPAM"),
+    comment_triage_store.LABEL_ABUSE: ("#4a1414", "#fca5a5", "POSSIBLE ABUSE"),
+    comment_triage_store.LABEL_UNKNOWN: ("#2a3446", "#94a3b8", "UNCLASSIFIED"),
+}
+
+
+def _render_triage_badge(comment_id, author_name, body):
+    _triage = _triage_comment(comment_id, author_name, body)
+    if not _triage:
+        return
+    _bg, _fg, _word = _TRIAGE_BADGE_STYLE.get(
+        _triage["label"], _TRIAGE_BADGE_STYLE[comment_triage_store.LABEL_UNKNOWN])
+    _reason_html = f" - {html.escape(_triage['reason'])}" if _triage.get("reason") else ""
+    st.markdown(
+        f"<span style='background-color:{_bg};color:{_fg};padding:2px 8px;"
+        f"border-radius:10px;font-size:11px;font-weight:bold;letter-spacing:0.3px;'>"
+        f"AI TRIAGE: {_word}</span>"
+        f"<span style='color:#8aa0b8;font-size:12.5px;'>{_reason_html}</span>",
+        unsafe_allow_html=True,
+    )
+    st.caption("A suggestion, not a decision - you approve or reject below either way.")
+
+
 def page_blog_admin():
     _content_page_shell("Blog")
 
@@ -10081,6 +10222,7 @@ def page_blog_admin():
                     f"font-size:14.5px'>{html.escape(_c.get('body') or '')}</div>",
                     unsafe_allow_html=True,
                 )
+                _render_triage_badge(_c["id"], _c.get("author_name"), _c.get("body"))
                 _bc1, _bc2, _bc3 = st.columns([1, 1, 4])
                 with _bc1:
                     if st.button("Approve", key=f"cmt_approve_{_c['id']}",
@@ -10117,6 +10259,8 @@ PG_METHODOLOGY = st.Page(page_methodology, title="How the scores work", url_path
 PG_ABOUT = st.Page(page_about, title="About", url_path="about")
 PG_MODEL_HISTORY = st.Page(page_model_history, title="Model history", url_path="model-history")
 PG_PRIVACY = st.Page(page_privacy, title="Privacy policy", url_path="privacy")
+PG_HOW_AI_IS_USED = st.Page(page_how_ai_is_used, title="How this site uses AI",
+                            url_path="how-we-use-ai")
 # The public blog lives at /blog and is served as HTML by server.py, NOT by
 # Streamlit - this page is the admin-only editor behind it, and is
 # Disallowed in robots.txt.
@@ -10126,7 +10270,7 @@ PG_BLOG_ADMIN = st.Page(page_blog_admin, title="Blog admin",
 _nav = st.navigation(
     [PG_HOME, PG_DEEP_DIVE, PG_COMPARISON, PG_RESEARCH, PG_SCANNER,
      PG_PORTFOLIO, PG_METHODOLOGY, PG_ABOUT, PG_MODEL_HISTORY, PG_PRIVACY,
-     PG_BLOG_ADMIN], position="hidden"
+     PG_HOW_AI_IS_USED, PG_BLOG_ADMIN], position="hidden"
 )
 _nav.run()
 

@@ -821,6 +821,17 @@ _CONTENT_PAGES = {
                         "third-party analytics, nothing sold."),
         "page": "privacy",
     },
+    # AI-readiness roadmap Phase 10: "public 'How this site uses AI' page
+    # (computed vs AI-written, always labelled)". Same opt-in-via-
+    # INDEXABLE_PAGES pattern as the three pages above - add
+    # /how-we-use-ai to that env var to serve it as indexable HTML here.
+    "/how-we-use-ai": {
+        "title": "How this site uses AI",
+        "description": ("Which StocksDeepDive features use Claude (Anthropic's "
+                        "AI model), which numbers are computed instead, and how "
+                        "AI-written text is always labelled and gated."),
+        "page": "how_ai_is_used",
+    },
 }
 
 
@@ -829,12 +840,15 @@ def _content_markdown(path):
         return site_content.methodology_md(_FACTUAL)
     if path == "/about":
         return site_content.about_md(_FACTUAL)
+    if path == "/how-we-use-ai":
+        return site_content.HOW_AI_IS_USED_MD
     return site_content.PRIVACY_MD
 
 
 @app.get("/methodology", include_in_schema=False)
 @app.get("/about", include_in_schema=False)
 @app.get("/privacy", include_in_schema=False)
+@app.get("/how-we-use-ai", include_in_schema=False)
 async def content_page(request: Request):
     path = request.url.path.rstrip("/") or "/"
     spec = _CONTENT_PAGES.get(path)

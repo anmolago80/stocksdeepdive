@@ -28,6 +28,7 @@ approved compact HTML look) and deleted from app.py once nothing referenced
 it any more.
 """
 
+import hashlib
 import html
 import re
 
@@ -93,6 +94,74 @@ def _is_mobile_request():
     return is_mobile
 
 
+def _chart_text_equivalent(fig):
+    """Best-effort plain-text description of a Plotly figure, generated
+    purely from the figure's own title and trace data - AI-readiness
+    roadmap Phase 10 ("text equivalents for every chart"). Deliberately
+    NOT authored per call site: every chart on the site already funnels
+    through sdd_plotly_chart() below, so a generic, data-driven summary
+    here covers every one of them uniformly, with zero changes needed at
+    any of the ~40 individual chart call sites. Handles the 4 trace
+    types actually used anywhere on this site (Indicator/gauge, Bar,
+    Scatter/line, Pie) with a generic per-trace fallback for anything
+    else, and never raises - a figure shape this doesn't recognise just
+    gets a shorter description, never a broken page.
+
+    Every gauge on this site (_dd_gauge in app.py) deliberately draws its
+    title as a paper-space annotation rather than fig.layout.title or the
+    Indicator's own built-in title (see that function's own docstring for
+    why) - so a figure with no layout title falls back to its first
+    annotation's text, which is exactly where a gauge's title actually
+    lives. Without this fallback every gauge's text equivalent would read
+    as a generic "Chart." with no indication of which score it is."""
+    try:
+        title = None
+        if fig.layout.title and fig.layout.title.text:
+            title = re.sub(r"<[^>]+>", "", fig.layout.title.text).strip()
+        elif fig.layout.annotations:
+            _first_ann = fig.layout.annotations[0].text
+            if _first_ann:
+                title = re.sub(r"<[^>]+>", "", _first_ann).strip()
+        lines = [f"Chart: {title}." if title else "Chart."]
+        for trace in fig.data:
+            ttype = getattr(trace, "type", None)
+            tname = (getattr(trace, "name", None) or "").strip()
+            if ttype == "indicator":
+                val = getattr(trace, "value", None)
+                if val is not None:
+                    lines.append(f"Gauge value: {val:,.1f}." if isinstance(val, (int, float)) else f"Gauge value: {val}.")
+            elif ttype == "bar":
+                xs = list(getattr(trace, "x", None) or [])
+                ys = list(getattr(trace, "y", None) or [])
+                pairs = list(zip(ys, xs)) if getattr(trace, "orientation", None) == "h" else list(zip(xs, ys))
+                if pairs:
+                    parts = "; ".join(
+                        f"{c}: {v:,.2f}" if isinstance(v, (int, float)) else f"{c}: {v}"
+                        for c, v in pairs[:25]
+                    )
+                    prefix = f"{tname} bar values" if tname else "Bar values"
+                    lines.append(f"{prefix} - {parts}.")
+            elif ttype == "pie":
+                labels = list(getattr(trace, "labels", None) or [])
+                values = list(getattr(trace, "values", None) or [])
+                if labels and values:
+                    parts = "; ".join(f"{l}: {v}" for l, v in zip(labels, values))
+                    lines.append(f"Pie shares - {parts}.")
+            elif ttype == "scatter":
+                ys = [v for v in (list(getattr(trace, "y", None) or [])) if isinstance(v, (int, float))]
+                if ys:
+                    prefix = f"{tname} line" if tname else "Line"
+                    lines.append(
+                        f"{prefix}: starts at {ys[0]:,.2f}, ends at {ys[-1]:,.2f}, "
+                        f"ranging {min(ys):,.2f} to {max(ys):,.2f} over {len(ys)} points."
+                    )
+            elif tname:
+                lines.append(f"{tname}: see chart.")
+        return " ".join(lines)
+    except Exception:
+        return "Chart (text description unavailable)."
+
+
 def sdd_plotly_chart(fig, **kwargs):
     """Drop-in replacement for st.plotly_chart - same call signature, so
     every call site on the site was a mechanical rename to this function.
@@ -107,16 +176,42 @@ def sdd_plotly_chart(fig, **kwargs):
     completely unchanged (dragmode left at the figure's own default -
     no call site on this site sets it explicitly, so that's plotly's
     normal 'zoom' drag-to-zoom behaviour; config exactly what the call
-    site passed, or omitted entirely if the call site passed none)."""
+    site passed, or omitted entirely if the call site passed none).
+
+    AI-readiness roadmap Phase 10: after rendering, also renders a
+    COLLAPSED text-equivalent of the same chart (see
+    _chart_text_equivalent above) - additive only, the chart itself is
+    completely unchanged. The expander's key is derived from the
+    figure's own title + trace data (not a per-run counter), so it's
+    stable across reruns yet still unique between two DIFFERENT charts
+    that happen to share a title (e.g. a "Long Score" gauge repeated per
+    Scanner row) - each gets its own key because its underlying numbers
+    differ."""
     config = kwargs.pop("config", None)
     if _is_mobile_request():
         fig.update_layout(dragmode=False)
         merged = {"displayModeBar": False, "scrollZoom": False, "doubleClick": False, "responsive": True}
         merged.update(config or {})
-        return st.plotly_chart(fig, use_container_width=True, config=merged, **kwargs)
-    if config is not None:
-        return st.plotly_chart(fig, use_container_width=True, config=config, **kwargs)
-    return st.plotly_chart(fig, use_container_width=True, **kwargs)
+        result = st.plotly_chart(fig, use_container_width=True, config=merged, **kwargs)
+    elif config is not None:
+        result = st.plotly_chart(fig, use_container_width=True, config=config, **kwargs)
+    else:
+        result = st.plotly_chart(fig, use_container_width=True, **kwargs)
+
+    try:
+        _anns = [getattr(a, "text", None) for a in (fig.layout.annotations or ())]
+        _sig = repr(getattr(fig.layout.title, "text", None)) + repr(_anns) + "|".join(
+            repr(list(getattr(t, "x", None) or [])) + repr(list(getattr(t, "y", None) or []))
+            + repr(getattr(t, "value", None)) + repr(list(getattr(t, "values", None) or []))
+            for t in fig.data
+        )
+        _key = "sdd_chart_txt_" + hashlib.md5(_sig.encode()).hexdigest()[:16]
+        with st.expander("Text description of this chart", expanded=False, key=_key):
+            st.caption(_chart_text_equivalent(fig))
+    except Exception:
+        pass
+
+    return result
 
 
 def _md_safe(text):
