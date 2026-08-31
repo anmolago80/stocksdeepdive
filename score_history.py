@@ -42,6 +42,23 @@ def _conn():
             PRIMARY KEY (day, ticker)
         )"""
     )
+    # Services batch, Part 1 (metric alerts) / Part 5 (score history chart):
+    # widened from long_score/price only to every metric an alert or the
+    # history chart can reference - quality/moat/mos_pct/intrinsic_value as
+    # numbers, valuation_label/moat_state as their categorical strings.
+    # Guarded ALTER TABLE (portfolio_store.py's own precedent) so an
+    # existing on-disk DB upgrades in place; rows recorded before this
+    # migration simply read back NULL for the new columns, same as any
+    # other "no data yet" case this module already handles.
+    for _col, _type in (
+        ("quality", "REAL"), ("moat", "REAL"), ("mos_pct", "REAL"),
+        ("intrinsic_value", "REAL"), ("valuation_label", "TEXT"),
+        ("moat_state", "TEXT"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE score_history ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     return conn
 
 
@@ -52,11 +69,15 @@ def _today():
 def record(rows, day=None):
     """
     Upsert one row per ticker for `day` (defaults to today, UTC). `rows` is
-    an iterable of dicts shaped like nightly_scan's row output - only
-    "Ticker", "Long Score" and "Price" are read, so a caller can pass the
-    exact same row list the overnight scan already built without reshaping
-    it first. Re-running the same day's scan twice just overwrites that
-    day's rows, so this is safe to call more than once for the same day.
+    an iterable of dicts shaped like nightly_scan's row output - "Ticker",
+    "Long Score", "Price", and (Services batch) "Quality", "Moat", "MOS %",
+    "Intrinsic Value", "Valuation", "Moat Erosion" are read when present, so
+    a caller can pass the exact same row list the overnight scan already
+    built without reshaping it first; a caller (e.g. digest_engine's
+    lighter-weight row shape) that omits the newer keys just gets NULLs for
+    those columns, exactly as before this widening. Re-running the same
+    day's scan twice just overwrites that day's rows, so this is safe to
+    call more than once for the same day.
     """
     day = day or _today()
     with _conn() as conn:
@@ -65,12 +86,22 @@ def record(rows, day=None):
             if not ticker:
                 continue
             conn.execute(
-                """INSERT INTO score_history (day, ticker, long_score, price)
-                     VALUES (?, ?, ?, ?)
+                """INSERT INTO score_history
+                     (day, ticker, long_score, price, quality, moat, mos_pct,
+                      intrinsic_value, valuation_label, moat_state)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(day, ticker) DO UPDATE SET
                      long_score = excluded.long_score,
-                     price = excluded.price""",
-                (day, ticker, r.get("Long Score"), r.get("Price")),
+                     price = excluded.price,
+                     quality = excluded.quality,
+                     moat = excluded.moat,
+                     mos_pct = excluded.mos_pct,
+                     intrinsic_value = excluded.intrinsic_value,
+                     valuation_label = excluded.valuation_label,
+                     moat_state = excluded.moat_state""",
+                (day, ticker, r.get("Long Score"), r.get("Price"), r.get("Quality"),
+                 r.get("Moat"), r.get("MOS %"), r.get("Intrinsic Value"),
+                 r.get("Valuation"), r.get("Moat Erosion")),
             )
 
 
@@ -90,7 +121,9 @@ def get(ticker, days_ago):
     with _conn() as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            """SELECT day, long_score, price FROM score_history
+            """SELECT day, long_score, price, quality, moat, mos_pct,
+                      intrinsic_value, valuation_label, moat_state
+                 FROM score_history
                  WHERE ticker = ? AND day <= ?
                  ORDER BY day DESC LIMIT 1""",
             (ticker.strip().upper(), cutoff),
@@ -99,17 +132,46 @@ def get(ticker, days_ago):
 
 
 def latest(ticker):
-    """Most recent stored row for `ticker`, or None."""
+    """Most recent stored row for `ticker`, or None. Used by alert_engine.py
+    as the "previous value" side of crossing-detection (read BEFORE
+    tonight's record() call for that ticker lands, so it genuinely reflects
+    the last night this ticker was scanned - see alert_engine.
+    snapshot_previous_values())."""
     if not ticker:
         return None
     with _conn() as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            """SELECT day, long_score, price FROM score_history
+            """SELECT day, long_score, price, quality, moat, mos_pct,
+                      intrinsic_value, valuation_label, moat_state
+                 FROM score_history
                  WHERE ticker = ? ORDER BY day DESC LIMIT 1""",
             (ticker.strip().upper(),),
         ).fetchone()
     return dict(row) if row else None
+
+
+def series(ticker, limit_days=365):
+    """Ascending-by-day list of every stored row for `ticker` within the
+    last `limit_days` - the Deep Dive score-history chart's (Services batch
+    Part 5) one data source. Each item is {"day","long_score","price",
+    "quality","moat","mos_pct","intrinsic_value","valuation_label",
+    "moat_state"}. No interpolation - a night the ticker wasn't scanned is
+    simply a gap in the returned list, and the chart's own caption says so."""
+    if not ticker:
+        return []
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=limit_days)).strftime("%Y-%m-%d")
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT day, long_score, price, quality, moat, mos_pct,
+                      intrinsic_value, valuation_label, moat_state
+                 FROM score_history
+                 WHERE ticker = ? AND day >= ?
+                 ORDER BY day ASC""",
+            (ticker.strip().upper(), cutoff),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def tracked_summary(min_days=60, limit=500):

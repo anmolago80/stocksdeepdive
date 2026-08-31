@@ -72,6 +72,11 @@ import comment_triage_store
 import ai_settings_store
 import ai_usage_store
 
+# Services batch, Part 1: metric alerts - no Anthropic API call anywhere in
+# this feature, see alert_engine.py's own docstring.
+import alert_store
+import alert_engine
+
 # AI-readiness roadmap Phase 5: the nightly Portfolio AI watchdog itself
 # runs from scheduler_engine.py, not from a live page render - imported
 # here only for its two small read helpers (get_last_notified(), for the
@@ -2751,6 +2756,109 @@ def _render_follow_control(ticker, key_prefix):
                     (st.success if _ok else st.error)(_msg)
 
 
+# Services batch, Part 1: metric alerts. Options shown in the "Alert me
+# when..." control below - label order matches alert_store.NUMERIC_METRICS/
+# CATEGORICAL_METRICS declaration order (numeric metrics first, the two
+# categorical states last).
+_ALERT_METRIC_OPTIONS = [
+    ("mos_pct", "MOS %"),
+    ("value_score", "Value Score"),
+    ("quality", "Quality"),
+    ("moat", "Moat"),
+    ("price", "Price"),
+    ("intrinsic_value", "Intrinsic value"),
+    ("moat_state", "Moat state"),
+    ("valuation_label", "Valuation"),
+]
+
+# metric -> the matching key in page_deep_dive()'s `_dd` dict (deep_dive_
+# engine.analyze()'s output), used only to prefill a sensible default
+# threshold and show "current value" - never read at evaluation time
+# (alert_engine.py evaluates against the nightly scan's own row instead).
+_ALERT_METRIC_TO_DD_KEY = {
+    "mos_pct": "mos", "value_score": "long_score", "quality": "quality_score",
+    "moat": "moat", "price": "price", "intrinsic_value": "intrinsic_value",
+    "moat_state": "moat_erosion", "valuation_label": "valuation",
+}
+
+
+def _render_alert_control(ticker, dd, key_prefix="alert_dd"):
+    """"Alert me when..." control (Services batch Part 1) - signed-in only
+    (a plain sign-in caption otherwise). Lets a visitor set one threshold/
+    crossing/state rule on this ticker's own already-computed numbers;
+    evaluated nightly by alert_engine.py and delivered by email/push,
+    batched with any other alerts that fired the same night. Purely
+    descriptive by construction - it can only ever say a stated number
+    crossed a stated line, never "buy" or "sell"."""
+    email = paywall_engine.current_user_email()
+    with st.expander(f"\U0001F514 Alert me when {ticker}...", expanded=False):
+        if not email:
+            st.caption(
+                f"Sign in (top left) to get an email or push notification when "
+                f"{ticker}'s own computed numbers cross a line you choose."
+            )
+            return
+
+        _existing = alert_store.list_for_ticker(email, ticker)
+        if _existing:
+            st.caption(f"Your alerts for {ticker}:")
+            for a in _existing:
+                _state_word = "active" if a["active"] else "paused"
+                _label = alert_engine.METRIC_LABELS.get(a["metric"], a["metric"])
+                _op_word = {"becomes": "becomes"}.get(a["operator"], a["operator"])
+                _c1, _c2 = st.columns([5, 1])
+                with _c1:
+                    st.caption(f"{_label} {_op_word} {a['threshold']} — {_state_word}")
+                with _c2:
+                    if st.button("✕", key=f"{key_prefix}_del_{a['id']}",
+                                 help="Delete this alert"):
+                        alert_store.delete_alert(a["id"], email)
+                        st.rerun()
+            st.divider()
+
+        if alert_store.count_active(email) >= alert_store.MAX_ACTIVE_ALERTS_PER_USER:
+            st.caption(
+                f"You've reached the {alert_store.MAX_ACTIVE_ALERTS_PER_USER}-alert limit "
+                "across every ticker. Delete one above (or from My Portfolio → My "
+                "alerts) to add another."
+            )
+            return
+
+        _metric_labels = [lbl for _key, lbl in _ALERT_METRIC_OPTIONS]
+        _label_to_key = {lbl: key for key, lbl in _ALERT_METRIC_OPTIONS}
+        _metric_sel = st.selectbox("Metric", _metric_labels, key=f"{key_prefix}_metric_{ticker}")
+        _metric_key = _label_to_key[_metric_sel]
+        _current_val = dd.get(_ALERT_METRIC_TO_DD_KEY.get(_metric_key))
+
+        if _metric_key in alert_store.CATEGORICAL_METRICS:
+            _allowed = (alert_store.MOAT_STATE_VALUES if _metric_key == "moat_state"
+                        else alert_store.VALUATION_LABEL_VALUES)
+            _threshold = st.selectbox("Becomes", _allowed, key=f"{key_prefix}_thresh_{ticker}")
+            _operator = "becomes"
+            st.caption(f"Currently: {_current_val or '-'}.")
+        else:
+            _op_labels = {">=": "is at or above (≥)", "<=": "is at or below (≤)",
+                          "crosses_above": "crosses above", "crosses_below": "crosses below"}
+            _operator = st.selectbox(
+                "Condition", list(_op_labels.keys()),
+                format_func=lambda o: _op_labels[o], key=f"{key_prefix}_op_{ticker}",
+            )
+            _default = float(_current_val) if isinstance(_current_val, (int, float)) else 0.0
+            _threshold = st.number_input(
+                "Threshold", value=round(_default, 1), step=1.0,
+                key=f"{key_prefix}_val_{ticker}",
+            )
+            st.caption(f"Current {_metric_sel.lower()}: "
+                       f"{_current_val if _current_val is not None else '-'}.")
+
+        if st.button("Save alert", key=f"{key_prefix}_save_{ticker}"):
+            _res = alert_store.create_alert(email, ticker, _metric_key, _operator, _threshold)
+            if _res["ok"]:
+                st.rerun()
+            else:
+                st.error(_res["error"])
+
+
 def _render_research_header_card(ticker, data, section_order):
     """Per-company header card (Task 5): styled like the site's `.sdd-card`
     divs (dark #121f36 background, #1f3352 border, rounded) - ticker large,
@@ -4154,6 +4262,13 @@ def page_deep_dive():
         if _dd_has_research:
             with _follow_col:
                 _render_follow_control(_dd["ticker"], key_prefix="follow_dd")
+
+        # --- Services batch, Part 1: metric alerts. Sits directly under
+        # the watchlist/follow row - a lighter-weight sibling to both:
+        # watchlist is "keep this on my list", follow is "email me new
+        # research", this is "tell me when a specific number crosses a
+        # line I choose." ---
+        _render_alert_control(_dd["ticker"], _dd, key_prefix="alert_dd")
 
         # --- Price chart: the 6-month history behind every calculation on
         # this page, finally shown - with the 50-day average and the Trade
@@ -7683,9 +7798,9 @@ def page_portfolio():
                 for _fut in concurrent.futures.as_completed(_futures):
                     _analyses[_futures[_fut]] = _fut.result()
 
-    _tab_holdings, _tab_overview, _tab_health, _tab_progress, _tab_ask = st.tabs(
+    _tab_holdings, _tab_overview, _tab_health, _tab_progress, _tab_ask, _tab_alerts = st.tabs(
         ["💼 Holdings", "📊 Overview & P/L", "🩺 Health & News", "📈 Progress",
-         "\U0001F4AC Ask"]
+         "\U0001F4AC Ask", "\U0001F514 My alerts"]
     )
 
     with _tab_holdings:
@@ -7701,6 +7816,89 @@ def page_portfolio():
         # shown to, or answerable about, anyone else's holdings. See
         # _render_portfolio_ask_tab's own docstring.
         _render_portfolio_ask_tab(email, _active_portfolio, _holdings, _analyses)
+    with _tab_alerts:
+        # Services batch, Part 1: every alert this account owns, across
+        # every ticker (not scoped to the active portfolio - an alert is a
+        # ticker-level thing, not a holding-level one).
+        _render_my_alerts_tab(email)
+
+
+def _render_my_alerts_tab(email):
+    """"My alerts" (Services batch Part 1) - every alert this account
+    owns, across every ticker, with a toggle/delete per row and a form to
+    add a new one for any ticker (not just the one you happen to be
+    looking at on its Deep Dive page - the Deep Dive page's own "Alert me
+    when..." control, _render_alert_control, covers that narrower case;
+    this tab is the one place to see and manage everything at once)."""
+    _alerts = alert_store.list_for_user(email)
+    st.caption(
+        f"{alert_store.count_active(email)} of {alert_store.MAX_ACTIVE_ALERTS_PER_USER} "
+        "active alerts. Checked every night a ticker is scanned; batched into one email "
+        "and one push per night, however many fire."
+    )
+
+    if _alerts:
+        for a in _alerts:
+            _label = alert_engine.METRIC_LABELS.get(a["metric"], a["metric"])
+            _state_word = "active" if a["active"] else "paused"
+            _last = a.get("last_fired_at")
+            _last_word = f"last fired {_last[:10]}" if _last else "never fired"
+            _c1, _c2, _c3 = st.columns([5, 1, 1])
+            with _c1:
+                st.markdown(
+                    f"**{a['ticker']}** — {_label} {a['operator']} {a['threshold']} "
+                    f"<span style='color:#8aa0b8;font-size:12px;'>({_state_word} · {_last_word})</span>",
+                    unsafe_allow_html=True,
+                )
+            with _c2:
+                _toggle_label = "Pause" if a["active"] else "Resume"
+                if st.button(_toggle_label, key=f"myalerts_toggle_{a['id']}"):
+                    alert_store.set_active(a["id"], email, not a["active"])
+                    st.rerun()
+            with _c3:
+                if st.button("Delete", key=f"myalerts_del_{a['id']}"):
+                    alert_store.delete_alert(a["id"], email)
+                    st.rerun()
+        st.divider()
+    else:
+        st.caption("No alerts yet - set one from any stock's Deep Dive page, or add one below.")
+
+    if alert_store.count_active(email) >= alert_store.MAX_ACTIVE_ALERTS_PER_USER:
+        st.caption(
+            f"You've reached the {alert_store.MAX_ACTIVE_ALERTS_PER_USER}-alert limit. "
+            "Delete or pause one above to add another."
+        )
+        return
+
+    st.markdown("##### Add an alert")
+    _t_in = st.text_input("Ticker", key="myalerts_new_ticker", placeholder="e.g. OCL.AX")
+    _metric_labels = [lbl for _key, lbl in _ALERT_METRIC_OPTIONS]
+    _label_to_key = {lbl: key for key, lbl in _ALERT_METRIC_OPTIONS}
+    _metric_sel = st.selectbox("Metric", _metric_labels, key="myalerts_new_metric")
+    _metric_key = _label_to_key[_metric_sel]
+    if _metric_key in alert_store.CATEGORICAL_METRICS:
+        _allowed = (alert_store.MOAT_STATE_VALUES if _metric_key == "moat_state"
+                    else alert_store.VALUATION_LABEL_VALUES)
+        _threshold = st.selectbox("Becomes", _allowed, key="myalerts_new_thresh")
+        _operator = "becomes"
+    else:
+        _op_labels = {">=": "is at or above (≥)", "<=": "is at or below (≤)",
+                      "crosses_above": "crosses above", "crosses_below": "crosses below"}
+        _operator = st.selectbox(
+            "Condition", list(_op_labels.keys()),
+            format_func=lambda o: _op_labels[o], key="myalerts_new_op",
+        )
+        _threshold = st.number_input("Threshold", value=0.0, step=1.0, key="myalerts_new_val")
+    if st.button("Save alert", key="myalerts_new_save"):
+        if not _t_in.strip():
+            st.error("Enter a ticker first.")
+        else:
+            _res = alert_store.create_alert(
+                email, _t_in.strip().upper(), _metric_key, _operator, _threshold)
+            if _res["ok"]:
+                st.rerun()
+            else:
+                st.error(_res["error"])
 
 
 def _build_portfolio_rows(_holdings, _analyses):

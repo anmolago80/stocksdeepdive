@@ -150,6 +150,21 @@ def _release_job_lock(job_name):
 
 def _run_nightly(cfg, log):
     import nightly_scan
+
+    # Services batch, Part 1 (metric alerts): snapshot every alerted
+    # ticker's LAST recorded value before any of tonight's scans touch
+    # score_history - see alert_engine.py's module docstring for exactly
+    # why this has to happen up front rather than inside the per-universe
+    # loop below. A failure here degrades to "no crossing-detection
+    # tonight" (>=/<=/becomes alerts still work fine), never blocks the
+    # scan itself.
+    try:
+        import alert_engine
+        alert_prev_map = alert_engine.snapshot_previous_values(log=log)
+    except Exception as e:
+        log(f"[scheduler] alert prev-value snapshot failed: {e}")
+        alert_prev_map = {}
+
     # The "imported" virtual universe (screen_import_store's TradingView
     # CSV queue - see nightly_scan.run_imported_scan) always runs LAST,
     # after every configured index universe, regardless of where
@@ -178,8 +193,31 @@ def _run_nightly(cfg, log):
                         universe, payload["rows"], log=log)
                 except Exception as e:
                     log(f"[scheduler] snapshot build {universe} failed: {e}")
+                # Services batch, Part 1: evaluate this universe's alerts
+                # right away (queues hits only - nothing is emailed/pushed
+                # here, see the batched send after the loop below).
+                try:
+                    import alert_engine
+                    alert_engine.check_universe_rows(payload["rows"], alert_prev_map, log=log)
+                except Exception as e:
+                    log(f"[scheduler] alert check {universe} failed: {e}")
         except Exception as e:
             log(f"[scheduler] nightly scan {universe} failed: {e}")
+
+    # Services batch, Part 1: tickers with an active alert that weren't
+    # covered by any universe/imported scan above get one lightweight
+    # snapshot each, then a single batched email+push covering every hit
+    # queued tonight (from the loop above AND this extra pass).
+    try:
+        import alert_engine
+        alert_engine.run_extra_ticker_pass(alert_prev_map, log=log)
+    except Exception as e:
+        log(f"[scheduler] alert extra pass failed: {e}")
+    try:
+        import alert_engine
+        alert_engine.send_batched_notifications(log=log)
+    except Exception as e:
+        log(f"[scheduler] alert notifications failed: {e}")
 
 
 def _run_digest(log):
