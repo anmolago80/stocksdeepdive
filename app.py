@@ -55,6 +55,14 @@ import compounder_ui
 from compounder_ui import sdd_plotly_chart
 import auto_compounder_engine
 
+# AI-readiness roadmap Phase 3 (AI_ROADMAP_stocksdeepdive.md): the AI
+# gate, usage/spend tracking, admin-editable quotas, and the Anthropic
+# client every Ask box below goes through.
+import ai_gate
+import ai_client
+import ai_settings_store
+import ai_usage_store
+
 # -----------------------------------
 # PAGE SETUP
 # -----------------------------------
@@ -610,8 +618,12 @@ def _render_view_badge():
         # that only an unlocked session ever sees. Taken out of the
         # trailing padding column (2 -> 1 + 1) rather than shrinking _b1
         # or _bs, so the badge and Stats popover keep their original,
-        # already-tuned widths.
-        _b1, _bs, _bw, _b2 = st.columns([8.4, 1.6, 1, 1])
+        # already-tuned widths. AI-readiness roadmap Phase 3 adds one more
+        # column the same way (_ba, "AI settings") - shaved from _b1's
+        # own width (8.4 -> 7.1, a bit more than the others took since
+        # "AI settings" is a longer label than "Stats") rather than
+        # _bs/_bw/_b2, which all stay exactly as tuned before.
+        _b1, _bs, _ba, _bw, _b2 = st.columns([7.1, 1.6, 1.4, 1, 1])
         with _bw:
             if st.button("Write blog", key="admin_write_blog",
                          use_container_width=True):
@@ -711,6 +723,9 @@ def _render_view_badge():
                         )
                 except Exception:
                     st.caption("Scheduler status unavailable.")
+        with _ba:
+            with st.popover("AI settings", key="admin_ai_settings"):
+                _render_ai_admin_panel()
         with _b2:
             if st.button("Exit full view", key="exit_full_view"):
                 st.session_state["full_view_unlocked"] = False
@@ -718,6 +733,101 @@ def _render_view_badge():
                 st.query_params.pop("admin", None)
                 st.session_state["_pending_admin_cookie_clear"] = True
                 st.rerun()
+
+
+def _render_ai_admin_panel():
+    """AI-readiness roadmap Phase 3: admin-only "AI settings" popover -
+    a live spend meter (this month's actual Anthropic spend against the
+    configured cap, per-feature breakdown) plus the editable quota
+    knobs every ai_gate.check() call reads from ai_settings_store. Same
+    admin-only reach as the rest of _render_view_badge (this function is
+    only ever called from inside that column) - no separate gate needed
+    here."""
+    if not ai_client.available():
+        st.caption(
+            "ANTHROPIC_API_KEY isn't set on this deploy - every AI "
+            "feature (Ask boxes, and later phases) stays hidden/inert "
+            "until it is. Nothing below does anything until then."
+        )
+        return
+
+    try:
+        _settings = ai_settings_store.get_settings()
+    except Exception:
+        st.caption("Couldn't load AI settings right now.")
+        return
+
+    try:
+        _spend = ai_usage_store.spend_this_month()
+    except Exception:
+        _spend = None
+
+    st.markdown("### Spend this month")
+    if _spend is None:
+        st.caption("Couldn't load usage data right now.")
+    else:
+        _cap = _settings["monthly_spend_cap_usd"] or 0
+        _pct = (_spend / _cap) if _cap else 0
+        # Escaped \$ - Streamlit's markdown treats a bare $...$ pair as
+        # inline LaTeX math, which mangles a plain dollar amount like
+        # this into garbled output.
+        st.markdown(f"**US\\${_spend:,.2f}** of US\\${_cap:,.2f} cap")
+        st.progress(min(1.0, _pct))
+        if _pct >= 1.0:
+            st.markdown(":red[**Cap reached** - AI features are paused "
+                        "for everyone except the owner until next month.]")
+        elif _pct >= 0.8:
+            st.markdown(f":orange[**{_pct * 100:.0f}%** of this month's cap used.]")
+        else:
+            st.caption(f"{_pct * 100:.0f}% of this month's cap used.")
+        try:
+            _by_feature = ai_usage_store.usage_by_feature_this_month()
+        except Exception:
+            _by_feature = {}
+        if _by_feature:
+            st.markdown("**By feature**")
+            for _feat, _v in _by_feature.items():
+                st.markdown(f"- {_feat}: {_v['count']} calls, US\\${_v['cost_usd']:,.2f}")
+        try:
+            _n_users = ai_usage_store.distinct_users_this_month()
+            st.caption(f"{_n_users} distinct account(s) used AI features this month.")
+        except Exception:
+            pass
+
+    st.markdown("---")
+    st.markdown("### Limits")
+    st.caption(
+        "The site owner's own account is always unlimited and never "
+        "counted against the cap above."
+    )
+    with st.form("ai_settings_form"):
+        _free_daily = st.number_input(
+            "Free tier - questions/day", min_value=1, max_value=1000,
+            value=int(_settings["free_daily_limit"]), step=1,
+        )
+        _plus_daily = st.number_input(
+            "Plus tier - questions/day", min_value=1, max_value=1000,
+            value=int(_settings["plus_daily_limit"]), step=1,
+        )
+        _plus_monthly = st.number_input(
+            "Plus tier - questions/month", min_value=1, max_value=100000,
+            value=int(_settings["plus_monthly_limit"]), step=10,
+        )
+        _cap_input = st.number_input(
+            "Monthly spend cap (US$)", min_value=1.0, max_value=100000.0,
+            value=float(_settings["monthly_spend_cap_usd"]), step=1.0,
+        )
+        if st.form_submit_button("Save"):
+            try:
+                ai_settings_store.update_settings(
+                    free_daily_limit=int(_free_daily),
+                    plus_daily_limit=int(_plus_daily),
+                    plus_monthly_limit=int(_plus_monthly),
+                    monthly_spend_cap_usd=float(_cap_input),
+                )
+                st.success("Saved.")
+            except Exception as exc:
+                st.error(f"Couldn't save: {exc}")
 
 
 def _render_admin_unlock():
@@ -4451,6 +4561,146 @@ def page_deep_dive():
                     st.session_state["research_jump_ticker"] = _dd["ticker"]
                     st.switch_page(PG_RESEARCH)
 
+        # AI-readiness roadmap Phase 3: the Ask box, last thing on the
+        # page - only ever shown once a real (non-error) analysis is on
+        # screen, since it answers questions about THIS ticker's data.
+        _render_deep_dive_ask_box(_dd)
+
+
+def _dd_ask_context(dd):
+    """Compact plain-text summary of dd (deep_dive_engine.analyze()'s
+    result) for the Ask box's system prompt - deliberately only numbers
+    already rendered publicly on this exact page, formatted the same
+    way, so the model can never appear to know more about this stock
+    than a visitor can already see above."""
+    def _f(v, suffix=""):
+        if v is None:
+            return "n/a"
+        return f"{v:g}{suffix}" if isinstance(v, float) else f"{v}{suffix}"
+
+    return "\n".join([
+        f"Ticker: {dd.get('ticker')}",
+        f"Name: {dd.get('name') or dd.get('ticker')}",
+        f"Price: {_f(dd.get('price'))} {dd.get('currency') or ''}".strip(),
+        f"Valuation: {dd.get('valuation') or 'n/a'} "
+        f"(margin of safety {_f(dd.get('mos'), '%')})",
+        f"Intrinsic value (DCF): {_f(dd.get('intrinsic_value'))}",
+        f"Long Score: {_f(dd.get('long_score'))}/100",
+        f"Quality: {_f(dd.get('quality_score'))}/100 "
+        f"({dd.get('quality_label') or 'n/a'}"
+        + (", estimated - no reported figure" if dd.get("quality_default") else "")
+        + ")",
+        f"Psychology: {_f(dd.get('psychology'))}/100 "
+        f"({dd.get('psychology_sentiment') or 'n/a'})",
+        f"Discovery/attention: {_f(dd.get('discovery'))}/100 "
+        f"({dd.get('discovery_label') or 'n/a'})",
+        f"Moat score: {_f(dd.get('moat'))}/100 "
+        f"({dd.get('moat_band_label') or 'n/a'}, "
+        f"erosion: {dd.get('moat_erosion') or 'n/a'})",
+        f"Trade setup signal: {dd.get('trade_setup_signal') or 'n/a'}",
+        f"Stock type: {dd.get('stock_type') or 'n/a'}",
+    ])
+
+
+_DD_ASK_SYSTEM_PROMPT = (
+    "You are answering a visitor's question about ONE stock on "
+    "StocksDeepDive, using ONLY the computed data given to you below - "
+    "never anything else you may know about this company. Answer "
+    "briefly (2-4 sentences) and refer to the specific numbers given. "
+    "If the data doesn't answer the question, say so plainly rather "
+    "than guessing or using outside knowledge. You must NEVER give "
+    "financial advice, a recommendation to buy/hold/sell, or a personal "
+    "opinion on whether this is a good investment - describe what the "
+    "data shows and let the visitor draw their own conclusion. If asked "
+    "for advice or a recommendation, say you can only describe the "
+    "data, not advise, and describe the most relevant numbers instead."
+    "\n\nData for this stock:\n{context}"
+)
+
+
+def _render_ask_quota_caption(email, feature):
+    """Small 'N questions left today' transparency line under an Ask
+    box - purely informational (ai_gate.check() is the only function
+    that actually decides allow/deny), and cheap enough (a couple of
+    indexed SQLite reads) to compute on every render."""
+    try:
+        _r = ai_gate.remaining(email)
+    except Exception:
+        return
+    if _r["tier"] == "owner":
+        st.caption("Signed in as the site owner - unlimited questions.")
+    elif _r["tier"] == "plus":
+        _left_today = max(0, _r["today_limit"] - _r["today_used"])
+        _left_month = max(0, _r["month_limit"] - _r["month_used"])
+        st.caption(
+            f"Plus: {_left_today} of {_r['today_limit']} questions left "
+            f"today ({_left_month} of {_r['month_limit']} left this month)."
+        )
+    elif _r["tier"] == "free":
+        _left_today = max(0, _r["today_limit"] - _r["today_used"])
+        st.caption(
+            f"Free: {_left_today} of {_r['today_limit']} questions left "
+            "today - subscribe for 300/month."
+        )
+
+
+def _render_deep_dive_ask_box(dd):
+    if not ai_client.available():
+        return  # AI features aren't configured on this deploy - stay
+        # completely invisible (dormant-by-default, same convention as
+        # paywall_engine when Google sign-in isn't configured) rather
+        # than showing an empty-looking header on every Deep Dive page.
+    st.divider()
+    st.subheader(f"\U0001F4AC Ask about {dd['ticker']}")
+    st.caption(
+        "Ask a question about this stock's computed data above - the "
+        "model only knows what's shown on this page, and never gives "
+        "advice."
+    )
+    if not paywall_engine.is_logged_in():
+        st.info(
+            "Sign in (top left) to ask - each account gets a daily "
+            "allowance of free questions."
+        )
+        return
+    email = paywall_engine.current_user_email()
+
+    _key = f"dd_ask_{dd['ticker']}"
+    _q = st.text_input(
+        "Your question", key=f"{_key}_q",
+        placeholder="e.g. Why is the Quality score lower than the Value score?",
+    )
+    if st.button("Ask", key=f"{_key}_btn"):
+        if not _q.strip():
+            st.warning("Type a question first.")
+        else:
+            _allowed, _msg, _tier = ai_gate.check(email, "deep_dive_ask")
+            if not _allowed:
+                st.warning(_msg)
+            else:
+                with st.spinner("Thinking..."):
+                    _system = _DD_ASK_SYSTEM_PROMPT.format(
+                        context=_dd_ask_context(dd))
+                    _result = ai_client.ask(_system, _q.strip())
+                if _result["input_tokens"] or _result["output_tokens"]:
+                    try:
+                        ai_gate.record(
+                            email, "deep_dive_ask", _result["model"],
+                            _result["input_tokens"], _result["output_tokens"],
+                            _result["cost_usd"],
+                        )
+                    except Exception:
+                        pass
+                if _result["ok"]:
+                    st.session_state[f"{_key}_answer"] = _result["text"]
+                else:
+                    st.error(_result["error"])
+                    st.session_state.pop(f"{_key}_answer", None)
+    _render_ask_quota_caption(email, "deep_dive_ask")
+    _answer = st.session_state.get(f"{_key}_answer")
+    if _answer:
+        st.markdown(f"**{ai_client.ANSWER_LABEL}:**\n\n{_answer}")
+
 
 def _render_country_mood_line(country):
     """
@@ -6980,8 +7230,9 @@ def page_portfolio():
                 for _fut in concurrent.futures.as_completed(_futures):
                     _analyses[_futures[_fut]] = _fut.result()
 
-    _tab_holdings, _tab_overview, _tab_health, _tab_progress = st.tabs(
-        ["💼 Holdings", "📊 Overview & P/L", "🩺 Health & News", "📈 Progress"]
+    _tab_holdings, _tab_overview, _tab_health, _tab_progress, _tab_ask = st.tabs(
+        ["💼 Holdings", "📊 Overview & P/L", "🩺 Health & News", "📈 Progress",
+         "\U0001F4AC Ask"]
     )
 
     with _tab_holdings:
@@ -6992,6 +7243,11 @@ def page_portfolio():
         _render_portfolio_health_news_tab(email, _active_portfolio, _holdings, _analyses)
     with _tab_progress:
         _render_portfolio_progress_tab(_active_portfolio, _holdings, _analyses)
+    with _tab_ask:
+        # AI-readiness roadmap Phase 3: private to this account - never
+        # shown to, or answerable about, anyone else's holdings. See
+        # _render_portfolio_ask_tab's own docstring.
+        _render_portfolio_ask_tab(email, _active_portfolio, _holdings, _analyses)
 
 
 def _build_portfolio_rows(_holdings, _analyses):
@@ -7053,6 +7309,117 @@ def _build_portfolio_rows(_holdings, _analyses):
         "div_income_aud": sum(r["pot_div_income_aud"] for r in rows if r["pot_div_income_aud"] is not None) or None,
     }
     return rows, totals, _fx_missing, _price_missing
+
+
+def _fmt_aud(v):
+    return f"A${v:,.0f}" if v is not None else "n/a"
+
+
+def _fmt_pct1(v):
+    return f"{v * 100:.1f}%" if v is not None else "n/a"
+
+
+def _portfolio_ask_context(_holdings, _analyses):
+    """Compact plain-text summary of THIS visitor's OWN holdings for the
+    Ask box's system prompt - built fresh on every call from data
+    already scoped to `email` by page_portfolio (see that function's
+    own docstring on how `_holdings`/`_analyses` get their per-user
+    isolation), never cached or written anywhere. ai_usage_store logs
+    only who/what/how-much for a call, never the prompt or answer text
+    (see that module's docstring) - so this private financial detail
+    exists only for the duration of one Anthropic call and is never
+    persisted, indexed, or visible to anyone but the account it's
+    about - not even the admin AI settings panel."""
+    if not _holdings:
+        return "This portfolio has no holdings yet."
+    _rows, _totals, _fx_missing, _price_missing = _build_portfolio_rows(_holdings, _analyses)
+    lines = [
+        f"Portfolio total: cost {_fmt_aud(_totals['cost_aud'])}, "
+        f"current value {_fmt_aud(_totals['value_aud'])}, "
+        f"profit {_fmt_aud(_totals['profit_aud'])}",
+        "",
+        "Holdings:",
+    ]
+    for r in _rows:
+        _health = (_analyses.get((r["portfolio"], r["ticker"]), {}) or {}).get("health") or {}
+        lines.append(
+            f"- {r['ticker']} ({r['name']}): {r['shares']:g} shares, "
+            f"cost {_fmt_aud(r['cost_aud'])}, value {_fmt_aud(r['value_aud'])}, "
+            f"return {_fmt_pct1(r['return_pct'])}, "
+            f"weight {_fmt_pct1(r['pct_now'])} of this portfolio, "
+            f"health score {_health.get('overall', 'n/a')}/100"
+        )
+    if _price_missing:
+        lines.append(f"(Live price unavailable right now for: {', '.join(_price_missing)})")
+    return "\n".join(lines)
+
+
+_PF_ASK_SYSTEM_PROMPT = (
+    "You are answering a visitor's question about THEIR OWN private "
+    "portfolio on StocksDeepDive, using ONLY the holdings data given to "
+    "you below - never anything else you may know about these "
+    "companies. Answer briefly (2-4 sentences) and refer to specific "
+    "numbers from the data. You must NEVER give financial advice, tell "
+    "them to buy/hold/sell anything, or suggest a specific action - "
+    "describe what the data shows (concentration, performance, "
+    "composition) and let them draw their own conclusions. If asked for "
+    "advice or a recommendation, say you can only describe the data, "
+    "not advise, and describe the most relevant numbers instead."
+    "\n\nThis visitor's holdings:\n{context}"
+)
+
+
+def _render_portfolio_ask_tab(email, _active_portfolio, _holdings, _analyses):
+    """Private per-account Ask box over the visitor's OWN holdings only
+    - never another account's. Isolation comes for free from this
+    function's own inputs: `_holdings`/`_analyses` are already scoped to
+    `email` by page_portfolio before this is ever called (same as every
+    other portfolio tab), and _portfolio_ask_context() above builds its
+    summary from nothing else."""
+    st.markdown("#### Ask about your portfolio")
+    if not ai_client.available():
+        st.caption("AI features aren't configured on this deploy yet.")
+        return
+    st.caption(
+        "Ask a question about your own holdings - private to your "
+        "account, the model only knows what's in this portfolio, and "
+        "never gives advice."
+    )
+    _key = f"pf_ask_{_active_portfolio or 'all'}"
+    _q = st.text_input(
+        "Your question", key=f"{_key}_q",
+        placeholder="e.g. How concentrated is this portfolio?",
+    )
+    if st.button("Ask", key=f"{_key}_btn"):
+        if not _q.strip():
+            st.warning("Type a question first.")
+        else:
+            _allowed, _msg, _tier = ai_gate.check(email, "portfolio_ask")
+            if not _allowed:
+                st.warning(_msg)
+            else:
+                with st.spinner("Thinking..."):
+                    _system = _PF_ASK_SYSTEM_PROMPT.format(
+                        context=_portfolio_ask_context(_holdings, _analyses))
+                    _result = ai_client.ask(_system, _q.strip())
+                if _result["input_tokens"] or _result["output_tokens"]:
+                    try:
+                        ai_gate.record(
+                            email, "portfolio_ask", _result["model"],
+                            _result["input_tokens"], _result["output_tokens"],
+                            _result["cost_usd"],
+                        )
+                    except Exception:
+                        pass
+                if _result["ok"]:
+                    st.session_state[f"{_key}_answer"] = _result["text"]
+                else:
+                    st.error(_result["error"])
+                    st.session_state.pop(f"{_key}_answer", None)
+    _render_ask_quota_caption(email, "portfolio_ask")
+    _answer = st.session_state.get(f"{_key}_answer")
+    if _answer:
+        st.markdown(f"**{ai_client.ANSWER_LABEL}:**\n\n{_answer}")
 
 
 def _render_add_holding_expander(email, portfolio, _holdings):
