@@ -52,6 +52,7 @@ import asyncio
 import hmac
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -63,6 +64,7 @@ import httpx
 from fastapi import FastAPI, Request, Response, WebSocket
 from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse,
                                RedirectResponse, StreamingResponse)
+from fastapi.staticfiles import StaticFiles
 
 import blog_comments_store
 import blog_render
@@ -87,6 +89,18 @@ DEFAULT_BASE_URL = os.environ.get(
 
 # Streamlit's own app script - unchanged, still the whole app.
 APP_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
+
+# PWA static assets (icons, offline fallback) - see scripts/generate_icons.py
+# for the icons themselves. On disk this is still ./static (matches the
+# brief), but it is deliberately mounted at URL prefix /pwa, NOT /static -
+# Streamlit's own shell references its JS/CSS bundle at "./static/js/..."
+# and "./static/css/..." relative to "/", i.e. at the URL /static/js/... on
+# this site. Mounting our own assets at /static shadows that path entirely
+# (StaticFiles 404s before the request ever reaches the proxy to Streamlit)
+# and silently breaks the whole app - blank, unstyled page, no JS. Caught
+# by hand-testing every route after wiring this up; do not rename this
+# mount back to /static.
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 # Headers that describe one TCP hop and must not be copied to the next one.
 HOP_BY_HOP = {
@@ -175,6 +189,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app.mount("/pwa", StaticFiles(directory=STATIC_DIR), name="pwa_static")
 
 
 # -----------------------------------
@@ -365,6 +380,63 @@ def _admin_preview_ok(request: Request) -> bool:
         return True
     _admin_preview_fail_times.append(time.time())
     return False
+
+
+# -----------------------------------
+# PWA ROUTES (Part 1/2) - manifest, service worker, favicon.
+#
+# Registered here, well before the catch-all proxy at the bottom of this
+# file, so they answer directly instead of falling through to Streamlit.
+# Icons themselves are plain files under STATIC_DIR, served by the
+# app.mount("/pwa", ...) above - see scripts/generate_icons.py.
+# -----------------------------------
+
+_MANIFEST_JSON = """{
+  "name": "StocksDeepDive",
+  "short_name": "StocksDD",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "description": "Free-data intrinsic value, quality and crowd-psychology research for any ASX or US stock.",
+  "icons": [
+    {"src": "/pwa/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/pwa/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "/pwa/icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}
+"""
+
+
+@app.get("/manifest.webmanifest", include_in_schema=False)
+async def manifest():
+    return Response(_MANIFEST_JSON, media_type="application/manifest+json",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    path = os.path.join(STATIC_DIR, "icons", "favicon.ico")
+    return FileResponse(
+        path, media_type="image/x-icon",
+        headers={"Cache-Control": "public, max-age=86400"})
+
+
+# Part 2's minimal service worker. Served from the ROOT (not /static/sw.js)
+# deliberately: a service worker's scope is capped at the directory it's
+# served from, and Part 2 needs it controlling the whole origin (/) to
+# intercept navigations on every page, not just /static/*.
+@app.get("/sw.js", include_in_schema=False)
+async def service_worker():
+    path = os.path.join(STATIC_DIR, "sw.js")
+    return FileResponse(
+        path, media_type="application/javascript",
+        # Never cached by the browser's HTTP cache - a stale SW.js would
+        # keep re-registering old logic indefinitely (the browser only
+        # checks for a new SW.js on navigation/registration, and an HTTP
+        # cache hit would hide a real update from even that check).
+        headers={"Cache-Control": "no-cache"})
 
 
 # -----------------------------------
@@ -691,13 +763,6 @@ async def _proxy(request: Request):
     resp_headers = [(k, v) for k, v in upstream.headers.raw
                     if k.decode().lower() not in _drop]
 
-    async def body():
-        try:
-            async for chunk in upstream.aiter_raw():
-                yield chunk
-        finally:
-            await upstream.aclose()
-
     # Audit fix 4.1: everything that reaches this function is proxied
     # straight through to the Streamlit JS shell - no server-rendered
     # <head>, so nothing anywhere in this codebase can otherwise mark
@@ -715,11 +780,84 @@ async def _proxy(request: Request):
     # routes never reach _proxy() at all.
     resp_headers.append((b"x-robots-tag", b"noindex"))
 
+    content_type = (upstream.headers.get("content-type") or "").lower()
+
+    # PWA head-tag injection (Part 1c): the Streamlit shell is the ONLY
+    # thing this proxy ever serves with content-type text/html - every
+    # other proxied response (the /_stcore JS/CSS bundles, images, JSON
+    # API calls) is some other type and falls straight through to the
+    # streaming path below, completely untouched. Gated on content-type,
+    # never on URL, per the brief: guessing by path (e.g. "/" or
+    # "?ticker=") would silently miss a route this file doesn't know
+    # about yet, where matching the actual header can't.
+    #
+    # The shell is a few KB (see Streamlit's static/index.html) - reading
+    # it fully into memory here costs nothing, unlike buffering a large
+    # asset or a long-lived /_stcore stream would.
+    if content_type.startswith("text/html"):
+        html_bytes = await upstream.aread()
+        await upstream.aclose()
+        html_bytes = _inject_pwa_head_tags(html_bytes)
+        # aread() already transparently decompressed the body (httpx
+        # decodes Content-Encoding for a normal .aread()/.content read,
+        # unlike the raw passthrough in aiter_raw() below) - forwarding
+        # the original Content-Encoding header here would tell the
+        # browser to gunzip bytes that are no longer gzipped.
+        html_headers = [(k, v) for k, v in resp_headers
+                        if k.decode().lower() != "content-encoding"]
+        html_headers.append((b"content-length", str(len(html_bytes)).encode()))
+        response = HTMLResponse(html_bytes, status_code=upstream.status_code)
+        response.raw_headers = html_headers
+        return response
+
+    async def body():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+
     response = StreamingResponse(body(), status_code=upstream.status_code)
     # raw_headers rather than a dict: a dict would collapse repeated
     # headers, and Set-Cookie legitimately repeats.
     response.raw_headers = resp_headers
     return response
+
+
+_VIEWPORT_RE = re.compile(r'<meta\s+name="viewport"[^>]*/?>',
+                          re.IGNORECASE | re.DOTALL)
+
+
+def _inject_pwa_head_tags(html_bytes: bytes) -> bytes:
+    """Insert the manifest/icon/PWA meta tags and the service-worker
+    registration snippet into the proxied Streamlit shell's own <head>,
+    and add viewport-fit=cover to its existing viewport tag so the
+    safe-area padding in app.py's top bar means something in standalone
+    (installed) mode. blog_render.PWA_HEAD_TAGS is the SAME constant the
+    server-rendered pages use (see blog_render._head()) - one source for
+    both injection points, so they can't drift apart.
+
+    Never raises on unexpected shell markup: a decode failure or a
+    missing </head> just returns the original bytes untouched rather than
+    risking a mangled page - a missing PWA tag is a MUCH smaller problem
+    than a broken app shell."""
+    try:
+        text = html_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return html_bytes
+
+    def _add_viewport_fit(match):
+        tag = match.group(0)
+        if "viewport-fit" in tag:
+            return tag
+        return re.sub(r'content="([^"]*)"', r'content="\1, viewport-fit=cover"',
+                      tag, count=1)
+
+    text = _VIEWPORT_RE.sub(_add_viewport_fit, text, count=1)
+
+    if "</head>" in text:
+        text = text.replace("</head>", blog_render.PWA_HEAD_TAGS + "\n</head>", 1)
+    return text.encode("utf-8")
 
 
 @app.api_route("/{path:path}", include_in_schema=False,

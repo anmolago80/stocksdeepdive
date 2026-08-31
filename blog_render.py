@@ -32,6 +32,29 @@ import blog_store
 SITE_NAME = "StocksDeepDive"
 DEFAULT_AUTHOR = "StocksDeepDive"
 
+# -----------------------------------
+# PWA (Part 1c): the same tag block is injected in two places -
+# _head() below, for every page THIS module renders, and server.py's
+# proxy response rewrite, for the proxied Streamlit shell - single source
+# so the two paths can never drift apart. theme-color lives here (not as
+# a separate literal in _head()'s tag list) for the same reason.
+# manifest.webmanifest/icons/sw.js are all served by server.py directly
+# (see its STATIC_DIR mount and the routes just above the blog routes).
+# -----------------------------------
+PWA_HEAD_TAGS = (
+    '<meta name="theme-color" content="#0b1220">\n'
+    '<link rel="manifest" href="/manifest.webmanifest">\n'
+    '<link rel="icon" type="image/png" sizes="32x32" '
+    'href="/pwa/icons/favicon-32.png">\n'
+    '<link rel="apple-touch-icon" href="/pwa/icons/apple-touch-icon.png">\n'
+    '<meta name="apple-mobile-web-app-capable" content="yes">\n'
+    '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">\n'
+    '<meta name="apple-mobile-web-app-title" content="StocksDeepDive">\n'
+    "<script>if('serviceWorker' in navigator){window.addEventListener('load',"
+    "function(){navigator.serviceWorker.register('/sw.js').catch(function(){});});}"
+    "</script>"
+)
+
 # The app's own pages, listed in the sitemap alongside the posts. Crawlers
 # will not get readable content from these (Streamlit again), but listing
 # them is still how the URLs get discovered and how the site's shape is
@@ -148,7 +171,9 @@ body{margin:0;background:#0b1220;color:#e6edf5;
 a{color:#2dd4bf;text-decoration:none}
 a:hover{text-decoration:underline}
 .wrap{max-width:760px;margin:0 auto;padding:0 22px}
-header.site{border-bottom:1px solid #1f3352;padding:16px 0}
+header.site{border-bottom:1px solid #1f3352;padding:16px 0;
+  padding-top:calc(16px + env(safe-area-inset-top));
+  padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}
 header.site .wrap{max-width:1080px;display:flex;align-items:center;gap:26px;flex-wrap:wrap}
 .brand{font-size:21px;font-weight:800;color:#e6edf5;text-decoration:none}
 .brand .accent{color:#2dd4bf}
@@ -262,7 +287,12 @@ def _head(title, description, canonical, base_url, image=None,
     img = image or os.environ.get("DEFAULT_OG_IMAGE", "").strip() or None
     tags = [
         '<meta charset="utf-8">',
-        '<meta name="viewport" content="width=device-width,initial-scale=1">',
+        # viewport-fit=cover (Part 4): without it, iOS ignores
+        # env(safe-area-inset-*) entirely in standalone (installed) mode,
+        # and header.site's safe-area padding below would be a no-op.
+        # Harmless in an ordinary browser tab - the env() value is just 0.
+        '<meta name="viewport" content="width=device-width,initial-scale=1,'
+        'viewport-fit=cover">',
         f"<title>{e(title)}</title>",
         f'<meta name="description" content="{e(description)}">',
     ]
@@ -285,7 +315,7 @@ def _head(title, description, canonical, base_url, image=None,
         f'<meta name="twitter:description" content="{e(description)}">',
         f'<link rel="alternate" type="application/rss+xml" '
         f'title="{e(SITE_NAME)} blog" href="{base_url}/blog/feed.xml">',
-        '<meta name="theme-color" content="#0b1220">',
+        PWA_HEAD_TAGS,
     ]
     if img:
         tags.append(f'<meta property="og:image" content="{e(img)}">')
