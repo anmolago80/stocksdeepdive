@@ -40,3 +40,8 @@ httpx>=0.27
 # Inert unless VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_CLAIMS_EMAIL
 # are all set on Railway - see push_send.py's module docstring. ---
 pywebpush>=2.0
+
+# --- AI-readiness roadmap Phase 2 (AI_ROADMAP_stocksdeepdive.md): the
+# MCP server mounted at /mcp - see mcp_server.py's module docstring. No
+# AI key needed for this package itself; it's the protocol library only. ---
+mcp>=1.9

@@ -57,7 +57,7 @@ import signal
 import subprocess
 import sys
 import time
-from contextlib import asynccontextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from urllib.parse import urlparse
 
 import httpx
@@ -79,6 +79,10 @@ import site_content
 import api_v1
 import snapshot_render
 import snapshot_store
+
+# AI-readiness roadmap Phase 2: the MCP server exposing the same data as
+# callable tools for AI assistants. See mcp_server.py.
+import mcp_server
 
 try:
     import metrics_store
@@ -185,16 +189,26 @@ async def lifespan(app: FastAPI):
     # Don't block startup on it: /blog must answer even while the app is
     # still importing, and Railway's own health probe shouldn't time out.
     asyncio.create_task(_wait_for_streamlit())
-    try:
-        yield
-    finally:
-        if _client:
-            await _client.aclose()
-        if _streamlit_proc and _streamlit_proc.poll() is None:
-            log.info("stopping Streamlit")
-            _streamlit_proc.send_signal(signal.SIGTERM)
-            with suppress(Exception):
-                _streamlit_proc.wait(timeout=10)
+    # AI-readiness roadmap Phase 2: mcp_server.mcp is mounted below as a
+    # Streamable HTTP sub-app (app.mount("/mcp", ...)), but Starlette does
+    # NOT propagate this app's lifespan into a mounted sub-app on its own -
+    # its session manager only starts accepting requests once its own
+    # `.run()` async context has been entered. AsyncExitStack lets that
+    # happen inside this same lifespan without restructuring the function
+    # into nested `async with` blocks; it's exited automatically at
+    # shutdown, right alongside everything below.
+    async with AsyncExitStack() as mcp_stack:
+        await mcp_stack.enter_async_context(mcp_server.mcp.session_manager.run())
+        try:
+            yield
+        finally:
+            if _client:
+                await _client.aclose()
+            if _streamlit_proc and _streamlit_proc.poll() is None:
+                log.info("stopping Streamlit")
+                _streamlit_proc.send_signal(signal.SIGTERM)
+                with suppress(Exception):
+                    _streamlit_proc.wait(timeout=10)
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -924,8 +938,8 @@ and the whole covered list is at [{base}/s/]({base}/s/).
 ### Using this in an AI assistant
 
 Prefer structured tool access over scraping the API by hand? See
-[{base}/ai]({base}/ai) once Phase 2 ships - an MCP server exposing this same
-data as callable tools for Claude, ChatGPT and other assistants.
+[{base}/ai]({base}/ai) - an MCP server exposing this same data as callable
+tools for Claude, ChatGPT and other MCP-compatible assistants.
 
 ### Terms
 
@@ -945,6 +959,102 @@ is ever served here or ever will be.
 
 
 app.mount("/api/v1", api_v1.api_app)
+
+
+# -----------------------------------
+# AI-readiness roadmap Phase 2 (AI_ROADMAP_stocksdeepdive.md): an MCP
+# server over the same data as /api/v1/*, for AI assistants that speak
+# MCP instead of raw HTTP. No AI key anywhere here either - see
+# mcp_server.py's own docstring. /ai is linked from /api only (not the
+# site nav/footer): it's aimed at assistants and the people configuring
+# them, not casual visitors.
+# -----------------------------------
+
+_AI_DOCS_TITLE = f"AI / MCP | {blog_render.SITE_NAME}"
+_AI_DOCS_DESC = (
+    "MCP server for AI assistants: deep_dive, compare, scan, moat and "
+    "research_notes tools over StocksDeepDive's public computed stock "
+    "scores. No API key, no auth, Streamable HTTP at /mcp.")
+
+
+@app.get("/ai", include_in_schema=False)
+async def ai_docs(request: Request):
+    """Human-readable docs for the MCP server mounted at /mcp (see
+    mcp_server.py). Linked from /api's "Using this in an AI assistant"
+    section - deliberately not from the main nav or footer, since this
+    page is aimed at assistants and the people configuring MCP clients,
+    not casual visitors."""
+    base = _base_url(request)
+    markdown_text = f"""
+StocksDeepDive runs an [MCP](https://modelcontextprotocol.io) (Model Context
+Protocol) server - the same read-only, public stock-score data as
+[the JSON API]({base}/api), exposed as callable tools for AI assistants like
+Claude and ChatGPT instead of raw HTTP endpoints. No API key, no sign-in,
+nothing here is user data.
+
+**Endpoint:** `{base}/mcp` (Streamable HTTP transport).
+
+### Tools
+
+- **deep_dive(ticker)** - computed value/quality/psychology/discovery/moat
+  scores for one stock.
+- **compare(tickers)** - the same scores for up to 10 stocks side by side.
+- **scan(universe, top_n)** - the ranked overnight scan for a whole index
+  (e.g. "ASX 200", "S&P 500"), highest score first.
+- **moat(ticker)** - the cached Moat Score and erosion flag for one stock.
+- **research_notes(ticker)** - any StocksDeepDive research notes written
+  about that company, with links.
+
+Every tool result includes `attribution`, `disclaimer` and `as_of`/`link`
+fields, same as the JSON API - please attribute and link back to the site
+when you surface this data to someone.
+
+### Connecting a client
+
+Most MCP clients (Claude Desktop, Claude Code, and others that support
+Streamable HTTP) accept a server URL directly. Point yours at:
+
+```
+{base}/mcp
+```
+
+No headers, no authentication, no configuration beyond the URL.
+
+### Terms
+
+Free for any use, commercial or not, with attribution and a link back to
+stocksdeepdive.com. Nothing served here is financial advice - see the
+disclaimer in every tool result. No user data (portfolios, watchlists,
+emails) is ever served here or ever will be.
+"""
+    return _html(blog_render.render_content_page(
+        title=_AI_DOCS_TITLE,
+        markdown_text=markdown_text,
+        description=_AI_DOCS_DESC,
+        path="/ai",
+        base_url=base,
+        heading="AI / MCP",
+    ), cache="public, max-age=1800")
+
+
+@app.api_route("/mcp", methods=["GET", "POST", "DELETE"], include_in_schema=False)
+async def mcp_bare_path_redirect():
+    """Starlette's Mount("/mcp", ...) below only matches "/mcp/..." (a
+    trailing slash or deeper), never the bare "/mcp" path itself - and
+    because this app also registers a catch-all proxy route (further
+    down, for Streamlit), an unmatched bare "/mcp" would silently fall
+    through to THAT instead of ever reaching the MCP sub-app or getting
+    Starlette's usual redirect-slash handling. Nearly every MCP client
+    (including the official Python SDK, which always sets
+    follow_redirects=True) is given a server URL without a trailing
+    slash, so this exists purely to make plain {base}/mcp - the URL the
+    /ai docs page and every client config actually uses - work. 307
+    preserves the original method and body, so POST's JSON-RPC payload
+    survives the redirect intact."""
+    return RedirectResponse(url="/mcp/", status_code=307)
+
+
+app.mount("/mcp", mcp_server.mcp.streamable_http_app())
 
 
 @app.get("/{token}.html", include_in_schema=False)
