@@ -2280,11 +2280,29 @@ _PUSH_CONTROL_JS = r"""
     return out;
   }
 
-  var isStandalone = window.matchMedia('(display-mode: standalone)').matches
-    || window.navigator.standalone === true;
-  var isIOS = /iP(hone|ad|od)/.test(navigator.userAgent);
+  // This runs inside Streamlit's sandboxed srcdoc iframe. The service
+  // worker registered at scope "/" controls the PARENT document (a real
+  // URL), never an about:srcdoc frame - so navigator.serviceWorker.ready
+  // in here never resolves and the button stayed hidden forever (the bug
+  // the owner hit: "I can see the email button but not the other one").
+  // The iframe is same-origin (allow-same-origin), so use the parent's
+  // navigator/Notification/PushManager instead; user activation from a
+  // click in here propagates to the same-origin parent, so the permission
+  // prompt is still allowed. Falls back to this window if parent access
+  // ever throws (cross-origin embedding).
+  var host = window;
+  try {
+    if (window.parent && window.parent !== window && window.parent.document) { host = window.parent; }
+  } catch (e) { host = window; }
+  var nav = host.navigator;
+  var NotificationRef = host.Notification;
+  var origin = host.location.origin;
 
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+  var isStandalone = host.matchMedia('(display-mode: standalone)').matches
+    || nav.standalone === true;
+  var isIOS = /iP(hone|ad|od)/.test(nav.userAgent);
+
+  if (!('serviceWorker' in nav) || !('PushManager' in host) || !NotificationRef) {
     if (isIOS && !isStandalone) {
       setStatus('On iPhone, install the app first — Share → Add to Home Screen — then enable notifications.');
     } else {
@@ -2293,7 +2311,16 @@ _PUSH_CONTROL_JS = r"""
     return;
   }
 
-  navigator.serviceWorker.ready.then(function (reg) {
+  // Never leave the user staring at nothing: if the worker isn't ready
+  // within a few seconds, say so instead of silently hiding the button.
+  var readyTimer = setTimeout(function () {
+    if (btn.style.display === 'none') {
+      setStatus("Notifications aren't available on this page right now - reload the page and try again.");
+    }
+  }, 6000);
+
+  nav.serviceWorker.ready.then(function (reg) {
+    clearTimeout(readyTimer);
     return reg.pushManager.getSubscription().then(function (sub) {
       btn.style.display = 'inline-block';
       if (sub) { btn.textContent = '\u{1F514} Notifications on — click to turn off'; }
@@ -2304,7 +2331,7 @@ _PUSH_CONTROL_JS = r"""
           if (existing) {
             var endpoint = existing.endpoint;
             existing.unsubscribe().then(function () {
-              fetch('/push/unsubscribe', {
+              fetch(origin + '/push/unsubscribe', {
                 method: 'POST', credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ endpoint: endpoint }),
@@ -2315,14 +2342,14 @@ _PUSH_CONTROL_JS = r"""
             });
             return;
           }
-          if (Notification.permission === 'denied') {
+          if (NotificationRef.permission === 'denied') {
             setStatus('Notifications are blocked for this site in your browser settings.');
             btn.disabled = false;
             return;
           }
-          Notification.requestPermission().then(function (perm) {
+          NotificationRef.requestPermission().then(function (perm) {
             if (perm !== 'granted') { btn.disabled = false; return; }
-            fetch('/push/vapid-public-key').then(function (r) { return r.text(); }).then(function (key) {
+            fetch(origin + '/push/vapid-public-key', { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (key) {
               if (!key) {
                 setStatus("Push notifications aren't set up on the server yet.");
                 btn.disabled = false;
@@ -2332,7 +2359,7 @@ _PUSH_CONTROL_JS = r"""
                 userVisibleOnly: true,
                 applicationServerKey: urlBase64ToUint8Array(key),
               }).then(function (newSub) {
-                return fetch('/push/subscribe', {
+                return fetch(origin + '/push/subscribe', {
                   method: 'POST', credentials: 'include',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify(newSub.toJSON()),
@@ -2379,7 +2406,7 @@ def _render_push_control(key_prefix, ticker):
     (credentials: 'include' sends it automatically) - this function only
     decides whether to render the control at all."""
     import streamlit.components.v1 as _components
-    _components.html(_PUSH_CONTROL_JS, height=60)
+    _components.html(_PUSH_CONTROL_JS, height=84)  # room for a status line + the 40px button
 
 
 _PUSH_TEST_JS = """
