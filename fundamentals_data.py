@@ -484,7 +484,54 @@ def get_live_price(ticker):
         return None
 
 
-def _overlay_fresh_price(info, tk):
+def _shares_outstanding_fallback(info, income):
+    """Best-effort share count for the handful of tickers where Yahoo's
+    .info blob doesn't carry sharesOutstanding at all - root-caused live
+    on CPRT (2026-08-31): its info blob had no sharesOutstanding, which
+    silently broke far more than just the field itself. _overlay_fresh_price
+    below, unable to recompute marketCap without a share count, was
+    POPPING it - which cascaded into 6 Fundamentals ratios vanishing
+    outright (add() drops a metric entirely when its value is None, same
+    "missing" symptom the OCL.AX/CapEx-to-OCF incident hit): Price to
+    Sales ratio, Market Cap/Tangible Asset Value, EV To Free Cash Flow,
+    Free Cash Flow Yield, PFCF Ratio and Price to Equity Ratio all divide
+    by (or build) mcap. Separately, auto_compounder_engine._bvps() reads
+    info.get("sharesOutstanding") directly for Book Value Per Share/
+    1.5xBV, so those two vanished too - 8 missing metrics from one absent
+    upstream field, confirmed by diffing CPRT's live Fundamentals grid
+    against OCL.AX's (which has the field and shows all of them).
+
+    Two independent, already-available sources are tried before giving
+    up: Yahoo's own impliedSharesOutstanding field (a separate
+    quoteSummary field that's sometimes populated when sharesOutstanding
+    isn't), then the income statement's own Diluted/Basic Average Shares
+    row - the company's own filed share count, already trusted elsewhere
+    in this codebase for the dual-class market-cap correction (see
+    auto_compounder_engine.py's dual_class_mcap_fix, which reads the same
+    row). Returns None (not a guess) if neither source has anything
+    usable - callers keep today's existing no-marketCap fail-open
+    behaviour in that case."""
+    shares = info.get("sharesOutstanding")
+    if isinstance(shares, (int, float)) and shares > 0:
+        return shares
+    implied = info.get("impliedSharesOutstanding")
+    if isinstance(implied, (int, float)) and implied > 0:
+        return implied
+    if income is not None and not income.empty:
+        for key in ("Diluted Average Shares", "Basic Average Shares"):
+            if key in income.index:
+                try:
+                    row = income.loc[key].dropna()
+                    if not row.empty:
+                        val = float(row.iloc[0])
+                        if val > 0:
+                            return val
+                except Exception:
+                    pass
+    return None
+
+
+def _overlay_fresh_price(info, tk, income=None):
     """Patches info["currentPrice"] with a fresh fast_info quote (see
     _fetch_fresh_price) and RECOMPUTES info["marketCap"] from that fresh
     price x sharesOutstanding, rather than leaving Yahoo's own (possibly
@@ -514,16 +561,28 @@ def _overlay_fresh_price(info, tk):
 
     Recomputing (instead of popping) keeps both consumers correct: a
     stale cached marketCap is still never used, but a real, current one
-    is always available. Falls back to popping only if sharesOutstanding
-    itself isn't available (can't recompute), matching the original
-    fail-safe intent. Mutates and returns info; a no-op (returns info
-    unchanged) if no fresh price is available."""
+    is always available.
+
+    `income` (optional, the bundle's annual income-statement DataFrame):
+    passed through to _shares_outstanding_fallback() so a ticker whose
+    .info blob is simply missing sharesOutstanding (confirmed live on
+    CPRT - see that function's own docstring) still gets a real,
+    non-estimated share count instead of losing marketCap entirely. The
+    backfilled share count is also written back into
+    info["sharesOutstanding"] itself, so every other direct
+    info.get("sharesOutstanding") reader downstream (auto_compounder_
+    engine.py's _basics()/_bvps()) benefits from the same fallback
+    without needing its own copy of this logic. Falls back to popping
+    marketCap only when no share count can be found anywhere, matching
+    the original fail-safe intent. Mutates and returns info; a no-op
+    (returns info unchanged) if no fresh price is available."""
     fresh_price = _fetch_fresh_price(tk)
     if fresh_price is not None:
         info["currentPrice"] = fresh_price
-        shares = info.get("sharesOutstanding")
+        shares = _shares_outstanding_fallback(info, income)
         if isinstance(shares, (int, float)) and shares > 0:
             info["marketCap"] = fresh_price * shares
+            info["sharesOutstanding"] = shares
         else:
             info.pop("marketCap", None)
     return info
@@ -547,7 +606,9 @@ def get_bundle(ticker, force_refresh=False):
     if not force_refresh:
         cached = _read_cache(ticker)
         if cached is not None:
-            cached["info"] = _overlay_fresh_price(cached.get("info") or {}, yf.Ticker(ticker))
+            cached["info"] = _overlay_fresh_price(
+                cached.get("info") or {}, yf.Ticker(ticker), income=cached.get("income")
+            )
             return cached
 
     flags = []
@@ -560,12 +621,6 @@ def get_bundle(ticker, force_refresh=False):
     except Exception:
         info = {}
         flags.append("info_unavailable")
-
-    # Same fresh-quote overlay as the cache-hit path above (see
-    # _overlay_fresh_price's docstring) - .info's own price/marketCap
-    # fields can lag even on a live fetch, so this isn't just a
-    # cache-staleness patch.
-    info = _overlay_fresh_price(info, tk)
 
     income, balance, cashflow = _fetch_yfinance_statements(tk)
     statement_years = max(
@@ -586,6 +641,18 @@ def get_bundle(ticker, force_refresh=False):
 
     if statement_years == 0:
         flags.append("no_statements")
+
+    # Same fresh-quote overlay as the cache-hit path above (see
+    # _overlay_fresh_price's docstring) - .info's own price/marketCap
+    # fields can lag even on a live fetch, so this isn't just a
+    # cache-staleness patch. Moved to run AFTER the statements fetch just
+    # above (was before it) so _shares_outstanding_fallback() has this
+    # ticker's own income statement on hand as a fallback share count
+    # when .info's sharesOutstanding is missing (see that function's
+    # docstring - the CPRT incident) - nothing else here reads `info`
+    # between the old and new call sites, so the reorder is behaviour-
+    # neutral apart from that fallback becoming available.
+    info = _overlay_fresh_price(info, tk, income=income)
 
     # income_q: quarterly income statement, yfinance-only regardless of
     # which annual source won above (EODHD has no quarterly endpoint this
