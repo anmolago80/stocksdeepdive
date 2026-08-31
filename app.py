@@ -5160,21 +5160,50 @@ def page_deep_dive():
         # AI-readiness roadmap Phase 3: the Ask box, last thing on the
         # page - only ever shown once a real (non-error) analysis is on
         # screen, since it answers questions about THIS ticker's data.
-        _render_deep_dive_ask_box(_dd)
+        # acv_sections=_acv_sections (Services batch follow-up, 2026-08-31):
+        # Andrew reported the Ask box couldn't answer questions about any
+        # of the Compounder View (auto) tabs' indicators - root cause was
+        # that _dd_ask_context() only ever summarized the score-gauge
+        # section above (Value/Quality/Psychology/Discovery/Moat/MOS), so
+        # a question about e.g. "Interest Coverage" or "ROIC" had nothing
+        # in the model's context to answer from, and it correctly said so
+        # per its own system prompt ("if the data doesn't answer the
+        # question, say so plainly"). _acv_sections is already computed
+        # above for the Compounder View tabs themselves, so passing it
+        # through here is free.
+        _render_deep_dive_ask_box(_dd, acv_sections=_acv_sections)
 
 
-def _dd_ask_context(dd):
+def _dd_ask_context(dd, acv_sections=None):
     """Compact plain-text summary of dd (deep_dive_engine.analyze()'s
     result) for the Ask box's system prompt - deliberately only numbers
     already rendered publicly on this exact page, formatted the same
     way, so the model can never appear to know more about this stock
-    than a visitor can already see above."""
+    than a visitor can already see above.
+
+    acv_sections (optional): the ticker's auto_compounder_engine.
+    build_sections() result, already computed by page_deep_dive() for
+    the "Compounder View (auto)" tabs right above this box - passing it
+    through here is what lets the Ask box answer questions about THOSE
+    indicators too (Interest Coverage, ROIC, Working Capital to Debt,
+    ...), not just the score-gauge summary above. Root-caused live
+    (2026-08-31): before this, the box's context never included the
+    Compounder View tabs at all, so a question about any ratio living
+    only in those tabs had nothing to answer from. Reuses
+    _research_note_flatten_sections() - the exact same "- Label: value
+    (comment)" flattening the admin research-note drafter already uses -
+    minus the "Fair Value" section, which stays paywalled: that section's
+    numbers are gated behind paywall_engine.render_gate() in the tabs
+    themselves (see the Compounder View block's own "_acv_gates" comment
+    above), and handing them to the model unconditionally would trivially
+    bypass that paywall for any visitor who just asks about it here
+    instead of opening the tab."""
     def _f(v, suffix=""):
         if v is None:
             return "n/a"
         return f"{v:g}{suffix}" if isinstance(v, float) else f"{v}{suffix}"
 
-    return "\n".join([
+    lines = [
         f"Ticker: {dd.get('ticker')}",
         f"Name: {dd.get('name') or dd.get('ticker')}",
         f"Price: {_f(dd.get('price'))} {dd.get('currency') or ''}".strip(),
@@ -5195,7 +5224,21 @@ def _dd_ask_context(dd):
         f"erosion: {dd.get('moat_erosion') or 'n/a'})",
         f"Trade setup signal: {dd.get('trade_setup_signal') or 'n/a'}",
         f"Stock type: {dd.get('stock_type') or 'n/a'}",
-    ])
+    ]
+
+    if acv_sections:
+        _acv_public = {k: v for k, v in acv_sections.items() if k != "Fair Value"}
+        _acv_text = _research_note_flatten_sections(_acv_public, dd.get("ticker"))
+        if _acv_text and not _acv_text.startswith("(No computed"):
+            lines.append(
+                "\nAdditional Compounder View (auto) indicators for this "
+                "ticker - Fundamentals, Value vs Book, Retained Earnings, "
+                "Earnings Trends, Cost of Capital (Fair Value is a "
+                "separate, paywalled section not included here):"
+            )
+            lines.append(_acv_text)
+
+    return "\n".join(lines)
 
 
 _DD_ASK_SYSTEM_PROMPT = (
@@ -5240,7 +5283,7 @@ def _render_ask_quota_caption(email, feature):
         )
 
 
-def _render_deep_dive_ask_box(dd):
+def _render_deep_dive_ask_box(dd, acv_sections=None):
     if not ai_client.available():
         return  # AI features aren't configured on this deploy - stay
         # completely invisible (dormant-by-default, same convention as
@@ -5276,7 +5319,7 @@ def _render_deep_dive_ask_box(dd):
             else:
                 with st.spinner("Thinking..."):
                     _system = _DD_ASK_SYSTEM_PROMPT.format(
-                        context=_dd_ask_context(dd))
+                        context=_dd_ask_context(dd, acv_sections=acv_sections))
                     _result = ai_client.ask(_system, _q.strip())
                 if _result["input_tokens"] or _result["output_tokens"]:
                     try:
