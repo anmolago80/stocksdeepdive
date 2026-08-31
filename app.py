@@ -86,6 +86,11 @@ import insider_engine
 # parsing/mapping, no network and no Anthropic API call.
 import broker_import_engine
 
+# Services batch, Part 4: results-day re-analysis - a computed before/
+# after comparison, no Anthropic API call anywhere in this feature.
+import results_store
+import results_engine
+
 # AI-readiness roadmap Phase 5: the nightly Portfolio AI watchdog itself
 # runs from scheduler_engine.py, not from a live page render - imported
 # here only for its two small read helpers (get_last_notified(), for the
@@ -1535,6 +1540,71 @@ def _render_score_history_caption(ticker, current_score):
         )
     except Exception:
         pass
+
+
+def _render_results_day_card(ticker):
+    """"Reported on <date> - before/after" card (Services batch Part 4) -
+    at the top of the Deep Dive score section for 14 days after a
+    results_events row exists for this ticker. Every number here is a
+    computed before/after comparison from this site's own scoring
+    engines (see results_engine.py's own docstring) - never a
+    recommendation, and "what moved" is a ranked list of the metrics
+    with the largest computed change, never an AI-written summary."""
+    try:
+        event = results_store.recent_event_for_ticker(ticker, within_days=14)
+    except Exception:
+        event = None
+    if not event:
+        return
+    before, after = event.get("before") or {}, event.get("after") or {}
+    rows_html = []
+    for key in results_engine.METRIC_ORDER:
+        meta = results_engine.METRIC_META[key]
+        b, a = before.get(key), after.get(key)
+        if b is None and a is None:
+            continue
+        delta = (a - b) if (a is not None and b is not None) else None
+        _na = "<span style='color:#8aa0b8;'>N/A</span>"
+        rows_html.append(
+            "<tr>" + _td(meta["label"])
+            + _td(meta["fmt"](b) if b is not None else _na)
+            + _td(meta["fmt"](a) if a is not None else _na)
+            + _td(_results_delta_cell(delta, kind=meta["kind"]))
+            + "</tr>"
+        )
+    if not rows_html:
+        return
+    with st.container(border=True):
+        st.markdown(f"#### \U0001F4CA Reported on {event['report_date']} - before/after")
+        if event.get("stale"):
+            st.warning(
+                "The \"after\" figures below may still rest on a statement Yahoo "
+                "hasn't fully ingested yet - re-checked automatically a few days "
+                "after the report; if these look unchanged from \"before\", check "
+                "back in a few days."
+            )
+        st.markdown(
+            _sdd_table(["Metric", "Before", "After", "Change"], rows_html),
+            unsafe_allow_html=True,
+        )
+        if event.get("what_moved"):
+            st.caption("What moved:")
+            # unsafe_allow_html (not plain st.markdown per-bullet): a plain
+            # markdown pass treats "$500.0K ... $620.0K" as LaTeX inline
+            # math (Streamlit's $...$ convention) and mangles the dollar
+            # figures - found during this session's own boot test. HTML
+            # mode skips that parse entirely, same as the table above.
+            st.markdown(
+                "".join(
+                    f"<div style='padding:2px 0;'>&bull; {html.escape(item['text'])}</div>"
+                    for item in event["what_moved"]
+                ),
+                unsafe_allow_html=True,
+            )
+        st.caption(
+            "A computed before/after comparison from this site's own scoring - "
+            "described calculation, not a recommendation."
+        )
 
 
 @st.cache_data(ttl=21600, show_spinner=False)
@@ -3737,6 +3807,51 @@ as a fact &mdash; you always know which numbers are computed and which are assum
             unsafe_allow_html=True,
         )
 
+    # ---- reported this week (Services batch Part 4) ----
+    # Skipped entirely (no empty box) when fewer than 2 tickers reported
+    # in the last 7 days - a strip with one lonely row isn't worth the
+    # space next to Tonight's top 5, per Part 4's own spec.
+    try:
+        _rtw_events = results_store.events_this_week()
+    except Exception:
+        _rtw_events = []
+    if len(_rtw_events) >= 2:
+        _rtw_html = []
+        for _rev in _rtw_events[:4]:
+            _rtk = _rev["ticker"]
+            _rt_after = _rev.get("after") or {}
+            _rt_before = _rev.get("before") or {}
+            _rt_after_vs = _rt_after.get("value_score")
+            _rt_before_vs = _rt_before.get("value_score")
+            _rt_delta = (
+                _rt_after_vs - _rt_before_vs
+                if _rt_after_vs is not None and _rt_before_vs is not None else None
+            )
+            _rtw_html.append(
+                "<tr>"
+                + _td(f"<a href='/deep-dive?ticker={_rtk}' target='_self' "
+                      "style='color:inherit;text-decoration:underline;'>"
+                      f"<b>{_rtk}</b></a>")
+                + _td(_rev["report_date"])
+                + _td(f"{_rt_after_vs:.1f}" if _rt_after_vs is not None else "-")
+                + _td(_results_delta_cell(_rt_delta, kind="pts"))
+                + "</tr>"
+            )
+        st.markdown(
+            "<div class='sdd-kicker' style='margin-top:40px;'>RESULTS DAY</div>"
+            "<div class='sdd-h2'>Reported this week</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            _sdd_table(["Ticker", "Reported", "Value Score now", "vs before"], _rtw_html),
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Tickers that reported results in the last 7 days, with a computed "
+            "before/after re-analysis - open a ticker's Deep Dive page for the "
+            "full comparison and what moved."
+        )
+
     # ---- compounder coverage ----
     _cov_data = _load_compounder_data()
     if _cov_data and _cov_data.get("tickers"):
@@ -4174,6 +4289,7 @@ def page_deep_dive():
         _render_data_as_of(_dd["ticker"])
         _render_recent_results_banner(_dd["ticker"])
         _render_score_history_caption(_dd["ticker"], _dd.get("long_score"))
+        _render_results_day_card(_dd["ticker"])
 
         if _factual():
             _m1, _m2, _m3, _m4 = st.columns(4)
@@ -5352,6 +5468,25 @@ def _insider_cell(ticker, value):
     c = _BAR_GREEN if value > 0 else (_BAR_RED if value < 0 else "#8aa0b8")
     return (f"<span style='color:{c};font-weight:600;'>"
             f"{'+' if value >= 0 else '-'}{ccy}{abs(value) / 1000:,.0f}k</span>")
+
+
+def _results_delta_cell(delta, kind="pts"):
+    """The "Change" column of the results-day before/after card (Services
+    batch Part 4) - same green/red-by-sign convention as _signed_cell,
+    but unit-aware (kind from results_engine.METRIC_META) so a $ metric
+    reads as a dollar delta and a points/percent metric reads as "pts",
+    instead of _signed_cell's fixed "%" suffix."""
+    if delta is None:
+        return "<span style='color:#8aa0b8;'>-</span>"
+    c = _BAR_GREEN if delta > 0 else (_BAR_RED if delta < 0 else "#8aa0b8")
+    sign = "+" if delta >= 0 else ""
+    if kind == "money":
+        text = f"{sign}${delta:,.2f}"
+    elif kind == "money_compact":
+        text = f"{sign}{results_engine.fmt_money_compact(delta)}"
+    else:  # "pts"/"pct" - both point-scale deltas on this card
+        text = f"{sign}{delta:,.1f}pts"
+    return f"<span style='color:{c};font-weight:600;'>{text}</span>"
 
 
 def _rank_cell(value, column_values, fmt="{:,.2f}"):

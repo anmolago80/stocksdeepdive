@@ -91,6 +91,18 @@ def followers_of(ticker):
     return [r[0] for r in rows]
 
 
+def all_followed_tickers():
+    """Distinct tickers with at least one follower, excluding the "*"
+    ("any research") wildcard - Services batch Part 4's earnings-calendar
+    watch list unions this with score_history.all_tracked_tickers()."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ticker FROM followers WHERE ticker != ?",
+            (ALL_TICKERS,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
 def all_followers():
     """Distinct emails following anything at all (any ticker, including
     the "*" wildcard)."""

@@ -174,6 +174,38 @@ def series(ticker, limit_days=365):
     return [dict(r) for r in rows]
 
 
+def before_date(ticker, target_day):
+    """The closest stored row for `ticker` strictly BEFORE `target_day`
+    ('YYYY-MM-DD') - Services batch Part 4's "before" half of a results-
+    day before/after comparison, where the caller already knows the exact
+    calendar day (a report date) rather than a relative "days ago" offset
+    (see get() above for that case). Strictly before (not at-or-before)
+    since the report date itself is when "after" starts."""
+    if not ticker or not target_day:
+        return None
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """SELECT day, long_score, price, quality, moat, mos_pct,
+                      intrinsic_value, valuation_label, moat_state
+                 FROM score_history
+                 WHERE ticker = ? AND day < ?
+                 ORDER BY day DESC LIMIT 1""",
+            (ticker.strip().upper(), target_day),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def all_tracked_tickers():
+    """Every distinct ticker with at least one recorded score_history row
+    - i.e. "every ticker ever scanned overnight". Services batch Part 4's
+    weekly earnings-calendar refresh watches this list unioned with
+    follow_store.all_followed_tickers()."""
+    with _conn() as conn:
+        rows = conn.execute("SELECT DISTINCT ticker FROM score_history").fetchall()
+    return [r[0] for r in rows]
+
+
 def tracked_summary(min_days=60, limit=500):
     """AI-readiness roadmap Phase 4 (citation helpers): one row per ticker
     with enough recorded history to be worth publishing - its FIRST and

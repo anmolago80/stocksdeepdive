@@ -13,6 +13,16 @@ A tiny in-process scheduler for the background jobs this site needs:
                                  edit to digest_engine.py, which stays
                                  untouched and unused by the live schedule)
   3. NIGHTLY portfolio watchdog -> portfolio_watchdog_engine.run_nightly_watchdog()
+  4. WEEKLY earnings-calendar refresh -> results_engine.refresh_earnings_calendar()
+                                 (Services batch, Part 4: results-day
+                                 re-analysis. Separate weekday/hour from
+                                 the digest so the two weekly jobs don't
+                                 compete for the same lock window.)
+  5. NIGHTLY results-day check -> results_engine.check_results_day()
+                                 (Services batch, Part 4 - runs every
+                                 night as part of _run_nightly() below,
+                                 same as the alert checks; cheap even on
+                                 nights nothing reported.)
 
 WHY IN-PROCESS, NOT A SEPARATE RAILWAY CRON SERVICE: Railway volumes
 attach to exactly ONE service, and the web app needs the volume (for the
@@ -43,6 +53,15 @@ CONFIG (Railway environment variables, all optional):
                            weekly digest), scheduled after the nightly
                            scan hour so that night's scan data is fresh
                            when the watchdog reads it.
+  EARNINGS_REFRESH_UTC_WEEKDAY - default 2 = Wednesday. Services batch
+                           Part 4: which day the earnings-calendar
+                           refresh runs - deliberately not the same day
+                           as the weekly digest (Sunday), so the two
+                           weekly jobs never compete for the same lock.
+  EARNINGS_REFRESH_UTC_HOUR    - default 19 (before the nightly scan
+                           hour, so a ticker whose earnings date changed
+                           this week is picked up before that night's
+                           results-day check runs).
 """
 
 import json
@@ -89,6 +108,8 @@ def _cfg():
         "digest_weekday": int(os.environ.get("DIGEST_UTC_WEEKDAY", "6")),
         "digest_hour": int(os.environ.get("DIGEST_UTC_HOUR", "21")),
         "watchdog_hour": int(os.environ.get("WATCHDOG_UTC_HOUR", "22")),
+        "earnings_refresh_weekday": int(os.environ.get("EARNINGS_REFRESH_UTC_WEEKDAY", "2")),
+        "earnings_refresh_hour": int(os.environ.get("EARNINGS_REFRESH_UTC_HOUR", "19")),
     }
 
 
@@ -229,6 +250,17 @@ def _run_nightly(cfg, log):
     except Exception as e:
         log(f"[scheduler] alert notifications failed: {e}")
 
+    # Services batch, Part 4: results-day re-analysis. Runs every night
+    # (cheap - a small local table scan, one live re-score only for a
+    # ticker that genuinely reported 1 or 3 days ago) - see
+    # results_engine.check_results_day()'s own docstring for the day+1/
+    # day+3 pass logic and its idempotency guarantees.
+    try:
+        import results_engine
+        results_engine.check_results_day(log=log)
+    except Exception as e:
+        log(f"[scheduler] results-day check failed: {e}")
+
 
 def _run_digest(log):
     """AI-readiness roadmap Phase 8: this job slot now sends
@@ -257,6 +289,26 @@ def _run_watchdog(log):
         portfolio_watchdog_engine.run_nightly_watchdog(log=log)
     except Exception as e:
         log(f"[scheduler] portfolio watchdog failed: {e}")
+
+
+def _run_earnings_refresh(log):
+    """Services batch, Part 4, WEEKLY job: refresh the earnings calendar
+    for every ticker this site has ever scanned or that anyone follows -
+    see results_engine.refresh_earnings_calendar()'s own docstring for
+    what "refresh" means and why it's capped per run. Deferred imports,
+    same shape as _run_digest/_run_watchdog above."""
+    try:
+        import score_history
+        import follow_store
+        import results_engine
+        tickers = sorted(set(score_history.all_tracked_tickers())
+                          | set(follow_store.all_followed_tickers()))
+        if not tickers:
+            log("[scheduler] earnings calendar refresh: no tickers to watch yet")
+            return
+        results_engine.refresh_earnings_calendar(tickers, log=log)
+    except Exception as e:
+        log(f"[scheduler] earnings calendar refresh failed: {e}")
 
 
 def _universes_needing_scan(cfg):
@@ -359,6 +411,26 @@ def _loop(log):
                     else:
                         log("[scheduler] portfolio watchdog skipped - another process "
                             "already holds the lock")
+
+                # Services batch, Part 4: earnings-calendar refresh -
+                # WEEKLY, same one-day-per-run-per-weekday guard as the
+                # digest below, deliberately on its own weekday/hour so
+                # the two weekly jobs never compete for the same lock.
+                if (now.weekday() == cfg["earnings_refresh_weekday"]
+                        and now.hour >= cfg["earnings_refresh_hour"]
+                        and state.get("last_earnings_refresh_date") != today):
+                    state = _load_state()
+                    state["last_earnings_refresh_date"] = today
+                    _save_state(state)
+                    if _acquire_job_lock("earnings_refresh"):
+                        try:
+                            log("[scheduler] starting earnings calendar refresh")
+                            _run_earnings_refresh(log)
+                        finally:
+                            _release_job_lock("earnings_refresh")
+                    else:
+                        log("[scheduler] earnings calendar refresh skipped - another "
+                            "process already holds the lock")
 
                 # DIGEST_FORCE: set this variable to any NEW value (e.g.
                 # "test1") to send the digest immediately, once per value -
