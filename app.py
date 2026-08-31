@@ -5251,19 +5251,42 @@ def _render_ai_answer(text):
     monospace inline-code styling mid-sentence - the answer happened to
     contain two dollar-formatted figures ("$9.54" and "$32.99"), and
     Streamlit's markdown renderer treats a `$...$` span as inline LaTeX
-    math (KaTeX) by default. This is the EXACT same bug class already
-    fixed once in Part 4 for results_engine's "what moved" bullet list
-    (see that fix's own comment) - except there the text was our own
-    fixed-format output we controlled; here it's free-form AI-generated
-    prose that WILL routinely mention dollar figures on a stock-analysis
-    site, so this was only a matter of time. Same fix: escape and render
-    via unsafe_allow_html, which bypasses the math parser entirely,
-    instead of plain markdown. Paragraph breaks in the model's own answer
-    (blank line between paragraphs) are preserved as separate <p> tags;
-    single newlines within a paragraph become <br>."""
+    math (KaTeX) by default.
+
+    FOLLOW-UP (2026-08-31, same day): the first fix - wrapping the escaped
+    text in <p> tags and rendering via unsafe_allow_html=True - shipped,
+    deployed clean, and changed NOTHING: Andrew re-asked the identical
+    question and got the identical mangled rendering. Checked against
+    Streamlit's own docs and community threads rather than guessing again:
+    unsafe_allow_html only relaxes HTML-tag sanitization - it does NOT
+    disable math parsing. Streamlit's markdown-it + remark-math pipeline
+    still scans the raw body string for an un-escaped `$...$` span
+    regardless of unsafe_allow_html or of that span sitting inside a
+    hand-built <p> tag, so "$9.54 ... $32.99" (or any answer with two-plus
+    dollar figures) got treated as inline math exactly as before. html.
+    escape() alone never touched the literal "$" characters, so the actual
+    trigger was untouched by the first fix. The documented workaround
+    (Streamlit forum: discuss.streamlit.io "How to stop attempted K/LaTeX
+    rendering of $1 million") is a backslash escape - CommonMark treats
+    `\\$` as an escaped literal "$", which remark-math honors and skips.
+    Now backslash-escaping every literal "$" in the model's text (after
+    HTML-escaping, so a literal "<b>" from the model is still neutralized)
+    is what actually suppresses the math parser; the <p>-tag/
+    unsafe_allow_html structure is kept only because it's still needed for
+    paragraph-break formatting, not because it does anything for the $
+    bug on its own. Paragraph breaks in the model's own answer (blank
+    line between paragraphs) are preserved as separate <p> tags; single
+    newlines within a paragraph become <br>."""
+    def _escape_for_markdown(p):
+        # HTML-escape first (safety - AI text is untrusted, a literal
+        # "<b>" must render as text not a tag), then backslash-escape any
+        # literal "$" so Streamlit's math parser leaves it alone (see the
+        # docstring above - unsafe_allow_html does NOT do this on its own).
+        return html.escape(p).replace("$", "\\$").replace(chr(10), "<br>")
+
     paragraphs = [p for p in (text or "").split("\n\n") if p.strip()]
     body_html = "".join(
-        f"<p style='margin:0 0 10px 0;'>{html.escape(p).replace(chr(10), '<br>')}</p>"
+        f"<p style='margin:0 0 10px 0;'>{_escape_for_markdown(p)}</p>"
         for p in paragraphs
     )
     st.markdown(
