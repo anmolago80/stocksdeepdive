@@ -70,13 +70,24 @@ def _envelope(data, as_of=None, link=None):
 
 
 def _snapshot_payload(snap):
+    # Fix 6, AI fixes round 2 (2026-08-31): public_view() whitelists and
+    # renames the internal row's fields - see snapshot_store.py's own
+    # docstring. Signal/Trade Setup/Trend are dropped here (they read as
+    # recommendations to an AI assistant surfacing this data); moat is
+    # untouched.
     return {
         "ticker": snap["ticker"],
         "universe": snap.get("universe"),
         "generated_at": snap.get("generated_at"),
-        **(snap.get("data") or {}),
+        **snapshot_store.public_view(snap.get("data") or {}),
         "moat": snap.get("moat"),
     }
+
+
+def _public_scan_row(row):
+    """Same public_view() mapping as _snapshot_payload, applied to one
+    raw scan_store row - see api_v1.py's identical helper."""
+    return {"ticker": row.get("Ticker"), **snapshot_store.public_view(row)}
 
 
 _KNOWN_UNIVERSES = scanner_engine.AUSTRALIA_UNIVERSES + scanner_engine.USA_UNIVERSES
@@ -205,7 +216,7 @@ def compare(tickers: list[str]) -> dict[str, object]:
 def scan(universe: str, top_n: int = 25) -> dict[str, object]:
     """The ranked overnight scan for a whole index/universe (e.g.
     "ASX 200", "S&P 500", "Nasdaq 100", "Russell 2000",
-    "Small Caps (S&P 600)", "ASX 300"), highest Long Score first - the
+    "Small Caps (S&P 600)", "ASX 300"), highest Value Score first - the
     same list the public Scanner page shows on load. top_n caps how many
     rows come back (default 25, max 100); pass a display name or a
     hyphenated slug, either works."""
@@ -222,7 +233,7 @@ def scan(universe: str, top_n: int = 25) -> dict[str, object]:
             "scan for it may not have completed."
         )
     top_n = max(1, min(int(top_n or 25), 100))
-    rows = (payload.get("rows") or [])[:top_n]
+    rows = [_public_scan_row(r) for r in (payload.get("rows") or [])[:top_n]]
     return _envelope(
         {"universe": resolved, "source": payload.get("source"), "rows": rows},
         as_of=payload.get("generated_at"),

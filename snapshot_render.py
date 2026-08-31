@@ -20,6 +20,7 @@ import re
 
 import blog_render
 import score_history
+import snapshot_store
 
 SITE_NAME = blog_render.SITE_NAME
 
@@ -53,29 +54,38 @@ def _fmt(value, suffix="", none="-"):
     return f"{value}{suffix}"
 
 
-def _valuation_note(data):
-    val = data.get("Valuation")
-    mos = data.get("MOS %")
+def _valuation_note(pub):
+    """`pub` is snapshot_store.public_view(data)'s output - see that
+    function's own docstring for the internal->public field mapping
+    (Fix 6, AI fixes round 2, 2026-08-31)."""
+    val = pub.get("valuation_label")
+    mos = pub.get("mos_pct")
     if val and val != "N/A" and mos is not None:
-        return f"{val} (MOS {mos:g}%)"
+        return f"{val} (MOS {mos:+.1f}%)"
     return val or "-"
 
 
-def _stat_cells(data, moat):
-    """[(label, value, hint), ...] for the stat grid - deliberately every
-    number the page shows, so nothing here needs any computation of its
-    own beyond formatting; the site's engines already computed all of it."""
+def _stat_cells(pub, moat):
+    """[(label, value, hint), ...] for the stat grid. `pub` is
+    snapshot_store.public_view(data)'s output, not the raw stored row -
+    Fix 6, AI fixes round 2 (2026-08-31) dropped Signal/Trade Setup/
+    Trend from every public surface (they read as recommendations on an
+    indexable page) and renamed "Long Score" to the neutral "Value
+    Score" the Deep Dive page's own factual view already uses. KPI
+    order matches the round 2 instruction doc: Price, Intrinsic value,
+    Margin of safety, Value Score, Quality, Moat as the primary row,
+    Psychology/Discovery as secondary."""
     cells = [
-        ("Price", _fmt(data.get("Price"), suffix=""), None),
-        ("Long Score", _fmt(data.get("Long Score")), data.get("Signal")),
-        ("Valuation", _valuation_note(data), None),
-        ("Quality", _fmt(data.get("Quality")),
-         "estimated (no reported figure)" if data.get("Quality Default") else None),
-        ("Psychology", _fmt(data.get("Psychology")), None),
-        ("Discovery", _fmt(data.get("Discovery (lite)")),
+        ("Price", _fmt(pub.get("price"), suffix=""), None),
+        ("Intrinsic value", _fmt(pub.get("intrinsic_value")), None),
+        ("Margin of safety",
+         f"{pub['mos_pct']:+.1f}%" if pub.get("mos_pct") is not None else "-", None),
+        ("Value Score", _fmt(pub.get("value_score")), None),
+        ("Quality", _fmt(pub.get("quality")),
+         "estimated (no reported figure)" if pub.get("quality_estimated") else None),
+        ("Psychology", _fmt(pub.get("psychology")), None),
+        ("Discovery", _fmt(pub.get("discovery")),
          "price/volume attention only"),
-        ("Trend", data.get("Trend") or "-", None),
-        ("Trade setup", data.get("Trade Setup") or "-", None),
     ]
     if moat:
         moat_score = moat.get("score")
@@ -125,40 +135,41 @@ def _grid_css():
 """
 
 
-def _snapshot_copy_text(ticker, data, moat, generated, universe, lede, base_url):
+def _snapshot_copy_text(ticker, pub, moat, generated, universe, lede, base_url,
+                         company_name=None):
     """Fix 4, AI fixes round 1 (2026-08-31): the plain-text payload for
     this page's "Copy as text" button (blog_render._copy_as_text_html) -
     see that function's own docstring for the button/fallback mechanics.
 
-    `data`/`moat` are the same row/moat shape build_snapshots_from_scan()
-    (or app.py's live-Deep-Dive hook - Fix 2a) produces - see
-    _stat_cells()'s own comment for the authoritative field list. This
-    row shape is a strict subset of deep_dive_engine.analyze()'s full
-    dict (no company name, no intrinsic-value method/source, no
-    psychology/discovery sentiment labels), so this deliberately reads
-    narrower than app.py's own _dd_copy_text() for the same reason
-    _stat_cells() above only shows what's actually in `data` - nothing
-    invented here that isn't already on this page. `lede` is the same
-    one-line summary string render_snapshot() already builds for the
-    page itself (recomputing it here would risk it drifting from what's
-    actually displayed)."""
+    `pub` is snapshot_store.public_view(data)'s output, not the raw
+    stored row - Fix 6, AI fixes round 2 (2026-08-31) dropped Signal/
+    Trade Setup/Trend from this text (they read as recommendations) and
+    renamed the fields to their public names; see _stat_cells()'s own
+    comment for the authoritative field list this mirrors. This row
+    shape is a strict subset of deep_dive_engine.analyze()'s full dict
+    (no intrinsic-value method/source, no psychology/discovery
+    sentiment labels), so this deliberately reads narrower than app.py's
+    own _dd_copy_text() for the same reason _stat_cells() above only
+    shows what's actually in `pub` - nothing invented here that isn't
+    already on this page. `lede` is the same one-line summary string
+    render_snapshot() already builds for the page itself (recomputing it
+    here would risk it drifting from what's actually displayed)."""
     currency = "AUD" if ticker.upper().endswith(".AX") else "USD"
-    lines = [ticker]
+    lines = [f"{ticker} - {company_name}" if company_name and company_name != ticker else ticker]
     if generated:
         lines.append(f"Data generated {generated} UTC (nightly scan, universe: {universe or '-'}).")
-    if data.get("Price") is not None:
-        lines.append(f"Price: {_fmt(data.get('Price'))} {currency}")
-    if data.get("Intrinsic Value") is not None:
-        lines.append(f"Intrinsic value: {_fmt(data.get('Intrinsic Value'))} {currency}")
-    if data.get("MOS %") is not None:
-        lines.append(f"Margin of safety: {data['MOS %']:+.1f}%")
-    if data.get("Valuation"):
-        lines.append(f"Valuation: {data['Valuation']}")
-    if data.get("Long Score") is not None:
-        lines.append(f"Value Score: {_fmt(data.get('Long Score'))}"
-                     + (f" ({data['Signal']})" if data.get("Signal") else ""))
-    if data.get("Quality") is not None:
-        lines.append(f"Quality: {_fmt(data.get('Quality'))}/100")
+    if pub.get("price") is not None:
+        lines.append(f"Price: {_fmt(pub.get('price'))} {currency}")
+    if pub.get("intrinsic_value") is not None:
+        lines.append(f"Intrinsic value: {_fmt(pub.get('intrinsic_value'))} {currency}")
+    if pub.get("mos_pct") is not None:
+        lines.append(f"Margin of safety: {pub['mos_pct']:+.1f}%")
+    if pub.get("valuation_label"):
+        lines.append(f"Valuation: {pub['valuation_label']}")
+    if pub.get("value_score") is not None:
+        lines.append(f"Value Score: {_fmt(pub.get('value_score'))}")
+    if pub.get("quality") is not None:
+        lines.append(f"Quality: {_fmt(pub.get('quality'))}/100")
     if moat and moat.get("score") is not None:
         state = (moat.get("erosion") or "").replace("_", " ")
         lines.append(f"Moat score: {_fmt(moat.get('score'))}"
@@ -167,9 +178,9 @@ def _snapshot_copy_text(ticker, data, moat, generated, universe, lede, base_url)
         lines.append(lede.replace("&middot;", "-").replace("&rarr;", "->"))
 
     flags = []
-    if data.get("Quality Default"):
+    if pub.get("quality_estimated"):
         flags.append("Quality rests on a default/estimated input (no reported figure).")
-    if data.get("Intrinsic Default"):
+    if pub.get("intrinsic_estimated"):
         flags.append("Intrinsic value rests on a default/estimated input.")
     if flags:
         lines.append("Red flags: " + " ".join(flags))
@@ -181,15 +192,27 @@ def _snapshot_copy_text(ticker, data, moat, generated, universe, lede, base_url)
 
 def render_snapshot(snap, base_url):
     """snap is snapshot_store.get_snapshot(ticker)'s return value (not
-    None - caller handles the unknown-ticker/404 case)."""
+    None - caller handles the unknown-ticker/404 case).
+
+    Fix 6, AI fixes round 2 (2026-08-31): every number below now comes
+    through snapshot_store.public_view(data) rather than the raw stored
+    row - see that function's own docstring. This page no longer shows
+    the LONG/AVOID-style Signal word anywhere (title, H1, lede or meta
+    description) - those read as recommendations on an indexable page,
+    which conflicts with the site's factual framing and its own
+    disclaimer. "Long Score" is now "Value Score" throughout, matching
+    the Deep Dive page's own factual-view wording."""
     e = html.escape
     ticker = snap["ticker"]
     data = snap.get("data") or {}
+    pub = snapshot_store.public_view(data)
     moat = snap.get("moat")
     universe = snap.get("universe") or ""
     generated = (snap.get("generated_at") or "")[:16].replace("T", " ")
+    company_name = pub.get("company_name")
+    has_name = bool(company_name) and company_name != ticker
 
-    cells = _stat_cells(data, moat)
+    cells = _stat_cells(pub, moat)
     cell_html = "".join(
         f'<div class="sdd-snap-cell"><div class="lbl">{e(label)}</div>'
         f'<div class="val">{e(str(value))}</div>'
@@ -198,17 +221,18 @@ def render_snapshot(snap, base_url):
         for label, value, hint in cells
     )
 
-    signal = data.get("Signal") or ""
-    valuation = _valuation_note(data)
-    lede = (f"{e(signal)} &middot; {e(valuation)} &middot; "
-            f"Quality {e(_fmt(data.get('Quality')))}/100" if signal else
+    valuation = _valuation_note(pub)
+    lede = (f"{e(valuation)} &middot; Quality {e(_fmt(pub.get('quality')))}/100"
+            if pub.get("valuation_label") else
             "Computed scores for this stock, from the same engine behind "
             "the site's Deep Dive and Scanner pages.")
 
-    hist_line = _score_history_line(ticker, data.get("Long Score"))
+    hist_line = _score_history_line(ticker, pub.get("value_score"))
     hist_html = f'<p class="sdd-hist-line">{hist_line}</p>' if hist_line else ""
 
-    title = f"{ticker} snapshot - {signal or 'computed scores'} | {SITE_NAME}"
+    display_name = f"{ticker} — {company_name}" if has_name else ticker
+    title = (f"{display_name}: intrinsic value, Value Score, Moat | {SITE_NAME}"
+              if has_name else f"{ticker} snapshot - computed scores | {SITE_NAME}")
     canonical = snapshot_url(base_url, ticker)
     cite_date = (snap.get("generated_at") or "")[:10]
     citation_text = f'{SITE_NAME}, "{ticker} snapshot,"' + (
@@ -219,14 +243,15 @@ def render_snapshot(snap, base_url):
     # docstrings. dom_id is ticker-qualified since /s/<ticker> is a
     # distinct page per ticker but the id namespace is still global HTML.
     copy_text = _snapshot_copy_text(
-        ticker, data, moat, generated, universe, lede, base_url)
+        ticker, pub, moat, generated, universe, lede, base_url,
+        company_name=company_name)
     copy_html = blog_render._copy_as_text_html(
         copy_text, dom_id=f"sdd-copytext-{ticker}")
 
     body = f"""
 <main><div class="wrap">
   <div class="kicker">Snapshot &middot; {e(universe)} &middot; generated {e(generated)} UTC</div>
-  <h1>{e(ticker)}</h1>
+  <h1>{e(display_name)}</h1>
   <p class="lede">{lede}</p>
   {hist_html}
   {blog_render._copy_citation_html(citation_text)}
@@ -242,11 +267,30 @@ def render_snapshot(snap, base_url):
   </div>
 </div></main>
 """
-    description = (
-        f"{ticker}: {valuation}, Long Score {_fmt(data.get('Long Score'))}, "
-        f"Quality {_fmt(data.get('Quality'))}/100 - computed scores from "
-        f"{SITE_NAME}'s Deep Dive engine, updated nightly."
-    )
+    desc_subject = f"{ticker} ({company_name})" if has_name else ticker
+    facts = []
+    if pub.get("intrinsic_value") is not None and pub.get("price") is not None:
+        facts.append(
+            f"intrinsic value {_fmt(pub['intrinsic_value'])} vs price {_fmt(pub['price'])}"
+            + (f" (MOS {pub['mos_pct']:+.1f}%)" if pub.get("mos_pct") is not None else "")
+        )
+    if pub.get("value_score") is not None:
+        facts.append(f"Value Score {_fmt(pub['value_score'])}")
+    if pub.get("quality") is not None:
+        facts.append(f"Quality {_fmt(pub['quality'])}")
+    if moat and moat.get("score") is not None:
+        facts.append(f"Moat {_fmt(moat['score'])}")
+    if facts:
+        description = (
+            f"{desc_subject}: {', '.join(facts)} - computed scores from "
+            f"{SITE_NAME}, descriptions of calculations, not recommendations."
+        )
+    else:
+        description = (
+            f"{desc_subject}: computed scores from {SITE_NAME}'s Deep Dive "
+            "engine, updated nightly - descriptions of calculations, not "
+            "recommendations."
+        )
     json_ld = blog_render._json_ld({
         "@context": "https://schema.org",
         "@type": "WebPage",
@@ -255,7 +299,7 @@ def render_snapshot(snap, base_url):
         "url": canonical,
         "isPartOf": {"@type": "WebSite", "name": SITE_NAME, "url": base_url},
         "publisher": blog_render._organization_json_ld(base_url),
-        "about": {"@type": "Corporation", "name": ticker},
+        "about": {"@type": "Corporation", "name": company_name or ticker},
         "dateModified": (snap.get("generated_at") or "")[:19],
         "inLanguage": "en",
     })

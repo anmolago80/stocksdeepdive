@@ -123,13 +123,27 @@ def _envelope(data, as_of=None, link=None):
 
 
 def _snapshot_payload(snap, base_url=""):
+    # Fix 6, AI fixes round 2 (2026-08-31): public_view() whitelists and
+    # renames the internal row's fields - see snapshot_store.py's own
+    # docstring. Signal/Trade Setup/Trend are dropped here (they read as
+    # recommendations on a public API response); moat is untouched.
     return {
         "ticker": snap["ticker"],
         "universe": snap.get("universe"),
         "generated_at": snap.get("generated_at"),
-        **(snap.get("data") or {}),
+        **snapshot_store.public_view(snap.get("data") or {}),
         "moat": snap.get("moat"),
     }
+
+
+def _public_scan_row(row):
+    """Same public_view() mapping as _snapshot_payload, applied to one
+    raw scan_store row (nightly_scan.analyze_ticker_lite()'s own return
+    shape - scan_store rows were never passed through snapshot_store's
+    save/get round trip, so they need the same treatment applied
+    directly here). Preserves rank order - callers already sorted
+    `rows` by the (now-dropped) internal Long Score before this runs."""
+    return {"ticker": row.get("Ticker"), **snapshot_store.public_view(row)}
 
 
 # -----------------------------------
@@ -207,7 +221,7 @@ def get_compare(
 @api_app.get("/scan/{universe}", summary="Ranked overnight scan for a universe")
 def get_scan(universe: str, request: Request):
     """The saved overnight scan for a whole index/universe (e.g. ASX 200),
-    ranked by Long Score - the same data the Scanner page shows on load.
+    ranked by Value Score - the same data the Scanner page shows on load.
     `universe` is a slug: asx-200, asx-300, sp-500, nasdaq-100,
     russell-2000, small-caps-sp-600."""
     _check_rate_limit(request)
@@ -230,7 +244,7 @@ def get_scan(universe: str, request: Request):
         {
             "universe": resolved,
             "source": payload.get("source"),
-            "rows": payload.get("rows") or [],
+            "rows": [_public_scan_row(r) for r in (payload.get("rows") or [])],
         },
         as_of=payload.get("generated_at"),
         link=f"{base}/scanner",

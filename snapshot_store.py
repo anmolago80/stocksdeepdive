@@ -127,6 +127,63 @@ def snapshot_count():
         return conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
 
 
+# -----------------------------------------------------------------
+# Fix 6, AI fixes round 2 (2026-08-31): a single public field mapping,
+# applied to every public-facing surface that reads a stored snapshot
+# row (or a raw scan_store row of the same shape - both are
+# nightly_scan.analyze_ticker_lite()'s field names, or app.py's
+# live-hook equivalent): snapshot_render.py (page/copy-as-text/meta/
+# JSON-LD), api_v1.py (deep-dive/compare/scan) and mcp_server.py (all
+# five tools). Whitelist, not blacklist - only keys listed in
+# _PUBLIC_FIELD_MAP are ever copied through, so a new internal column
+# added to the scan row later never leaks onto a public surface by
+# default. "Signal"/"Trade Setup"/"Trend" are deliberately dropped
+# everywhere this touches: on an indexable page "LONG"/"AVOID" read as
+# recommendations, which conflicts with the site's factual framing
+# (descriptions of calculations, never advice) and its own disclaimer.
+# The Deep Dive page's own factual view already calls this same number
+# "Value Score", not "Long Score" - this brings the new public
+# surfaces into line with that. The Scanner/Deep Dive pages themselves
+# are NOT touched by this - that naming is a separate, existing
+# decision (see the round 2 instruction doc's own scope note).
+# -----------------------------------------------------------------
+
+_PUBLIC_FIELD_MAP = {
+    "Price": "price",
+    "Intrinsic Value": "intrinsic_value",
+    "MOS %": "mos_pct",
+    "Quality": "quality",
+    "Psychology": "psychology",
+    "Discovery (lite)": "discovery",
+    "Long Score": "value_score",
+    "Valuation": "valuation_label",
+    "Type": "company_type",
+    "Quality Default": "quality_estimated",
+    "Intrinsic Default": "intrinsic_estimated",
+    "Company Name": "company_name",
+}
+
+
+def public_view(row):
+    """Maps one stored/scan row's internal field names to the neutral
+    public names above. Returns a NEW dict (never mutates `row`) holding
+    only the whitelisted keys that are actually present on `row` - a
+    ticker whose snapshot predates this fix (no "Company Name" cached
+    yet) simply omits company_name rather than inventing one; callers
+    that need a display name should fall back to the ticker itself,
+    same as deep_dive_engine.analyze()'s own `info.get("longName") or
+    info.get("shortName") or ticker` pattern. Deliberately does not
+    include "Ticker" itself - every caller already has the ticker from
+    the outer snapshot/scan-row shape, so this stays purely about
+    field *names*, not a full row reshape."""
+    row = row or {}
+    return {
+        public_key: row[internal_key]
+        for internal_key, public_key in _PUBLIC_FIELD_MAP.items()
+        if internal_key in row
+    }
+
+
 def build_snapshots_from_scan(universe, rows, log=print):
     """Called after a nightly universe scan saves its rows
     (scheduler_engine._run_nightly -> nightly_scan.run_universe_scan) -

@@ -694,6 +694,12 @@ def _save_live_snapshot(dd, signal):
         row = {
             "Ticker": ticker,
             "Type": dd.get("stock_type"),
+            # Fix 6, AI fixes round 2 (2026-08-31): same field
+            # nightly_scan.analyze_ticker_lite() now caches - dd["name"]
+            # is deep_dive_engine.analyze()'s own long/short-name field,
+            # already computed for this page's own header, so this adds
+            # no new lookup.
+            "Company Name": dd.get("name"),
             "Price": dd.get("price"),
             "Quality": dd.get("quality_score"),
             "Quality Default": bool(dd.get("quality_default")),

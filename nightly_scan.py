@@ -254,6 +254,13 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     return {
         "Ticker": ticker,
         "Type": stock_type,
+        # Fix 6, AI fixes round 2 (2026-08-31): same source/fallback as
+        # deep_dive_engine.analyze()'s own "name" field - `info` is
+        # already fetched above for quality/intrinsic resolution, so
+        # this is free (no extra network call). Cached in the row so
+        # snapshot_store's public surfaces never need to hit Yahoo just
+        # to show a company name.
+        "Company Name": info.get("longName") or info.get("shortName") or ticker,
         "Price": round(current_price, 2),
         "Quality": quality,
         "Quality Default": bool(quality_default),
