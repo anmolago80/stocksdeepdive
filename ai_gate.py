@@ -56,6 +56,18 @@ def _owner_email():
             or "anmolago@hotmail.com").strip().lower()
 
 
+def owner_email():
+    """Public accessor for _owner_email() - for an admin-only AI feature
+    (Phase 7's research-note drafting) that runs behind the separate
+    ADMIN_REFRESH_KEY gate rather than the visitor email/Google sign-in
+    flow: there's no paywall_engine.current_user_email() to pass to
+    check()/record() in that context, and every admin-key-authenticated
+    request already IS the owner, so this is the identity those calls are
+    logged and quota-checked against (owner tier: unlimited, exempt even
+    from the site-wide spend cap - see this module's own docstring)."""
+    return _owner_email()
+
+
 def is_owner(email):
     return bool(email) and email.strip().lower() == _owner_email()
 

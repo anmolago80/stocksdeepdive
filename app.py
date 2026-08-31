@@ -55,6 +55,7 @@ import blog_render
 import compounder_ui
 from compounder_ui import sdd_plotly_chart
 import auto_compounder_engine
+import site_content
 
 # AI-readiness roadmap Phase 3 (AI_ROADMAP_stocksdeepdive.md): the AI
 # gate, usage/spend tracking, admin-editable quotas, and the Anthropic
@@ -9319,6 +9320,264 @@ def _blog_len_hint(text, low, high, what):
     return f":green[{what}: {n} chars]"
 
 
+# -----------------------------------
+# AI-readiness roadmap Phase 7: Admin research-note drafting
+#
+# A "Draft with AI" button inside the existing blog admin editor page
+# (defined further below) that has Claude write a first-pass Rational
+# Compounder research note for one ticker, grounded in ONLY: that
+# ticker's own Compounder View numbers (auto_compounder_engine.
+# build_sections() - the same engine the live Compounder View tab
+# renders, called exactly as it already is, never modified), its recent
+# public news/announcements (portfolio_news_engine.analyze_holding_news -
+# the same function Phase 5's watchdog already reuses), the site's own
+# Methodology definitions (site_content.methodology_md), and one sample
+# of the author's own most recently published post as a concrete voice
+# reference. The result only ever fills the SAME "Post body (Markdown)"
+# text box the admin already edits by hand - nothing is saved, let alone
+# published, until the admin clicks the editor's own existing Save
+# button, which itself defaults new/edited posts to Draft status. This is
+# the human-in-the-loop gate the roadmap calls for ("for review/approval").
+#
+# Admin-only per the whole page's existing ADMIN_REFRESH_KEY gate, but
+# still logged/capped through the SAME ai_gate every other AI feature
+# goes through (roadmap: "Admin-only (still logged/capped)") - there is
+# no visitor sign-in inside this admin panel to get an email from, so
+# every draft is checked/recorded against ai_gate.owner_email(), which
+# is accurate (only the owner ever reaches this page) and keeps this
+# feature's spend visible in the same admin spend meter as everything
+# else, even though the owner tier itself is unlimited and exempt from
+# the site-wide cap.
+#
+# Uses ai_client.MODEL_SONNET (not the Haiku every visitor-facing AI
+# feature uses) per the roadmap's own model policy - a longer, more
+# capable first draft is worth the higher per-call cost here specifically
+# because this call is low-frequency (one admin, drafting one note at a
+# time) rather than something many visitors trigger per day.
+# -----------------------------------
+
+_RESEARCH_NOTE_SECTION_ORDER = [
+    "Fundamentals", "Value vs Book", "Retained Earnings",
+    "Earnings Trends", "Cost of Capital", "Fair Value",
+]
+
+_RESEARCH_NOTE_SYSTEM_PROMPT = (
+    "You are drafting a FIRST-PASS Rational Compounder research note for "
+    "StocksDeepDive, in the style of the sample post given below. This is "
+    "a draft for the human author to review, fact-check and rewrite "
+    "before anything is published - write it as if it will go out under "
+    "the author's own byline, in their voice, not as an AI assistant "
+    "addressing the reader.\n\n"
+    "Ground rules, non-negotiable:\n"
+    "- Use ONLY the computed numbers given to you below. Never invent, "
+    "estimate, or bring in a figure from outside knowledge - if the data "
+    "doesn't cover something, say the data doesn't cover it rather than "
+    "filling the gap yourself.\n"
+    "- Describe what the data shows. NEVER give a recommendation, a "
+    "buy/hold/sell call, or a personal opinion on whether this is a good "
+    "investment - the site's whole editorial stance is factual framing, "
+    "never advice.\n"
+    "- Where you state a number, make clear which section it came from "
+    "(e.g. \"the Fundamentals section shows...\", \"per Fair Value...\").\n"
+    "- Structure with ## and ### Markdown headings, matching the sample "
+    "post's structure - a company overview, then the numbers grouped "
+    "sensibly (quality/returns, value, growth, capital), then recent "
+    "developments from the news given, then a closing note pointing the "
+    "reader to the site's own live Compounder View tab for the full "
+    "detail and current numbers.\n"
+    "- 700-1100 words. Markdown only, no code fences around the whole "
+    "output.\n\n"
+    "=== Sample of the author's own recent published writing (match this "
+    "voice and structure, not this specific company) ===\n{style_sample}\n\n"
+    "=== {ticker} - computed Compounder View data (StocksDeepDive's own "
+    "engine; every figure below is what you must ground the note in) "
+    "===\n{sections_text}\n\n"
+    "=== {ticker} - recent public news/announcements ===\n{news_text}\n\n"
+    "=== Site Methodology (how these figures are calculated and what "
+    "they mean - use this vocabulary, don't redefine terms your own way) "
+    "===\n{methodology_text}"
+)
+
+
+def _research_note_flatten_sections(sections, ticker):
+    """Turns build_sections()'s nested dict into plain "- Label: value
+    (comment)" lines, grouped under a "## Section" heading per section -
+    the exact same label/format/comment/values fields compounder_ui.
+    render_section() already displays, just as text instead of Streamlit
+    widgets. Skips a section entirely when it has no metrics (a builder
+    that failed for this ticker, or genuinely has none) rather than
+    showing an empty heading - and skips any metric with no value at all
+    (N/A) rather than telling the model "N/A", so it never has to reason
+    about a value that plainly isn't there."""
+    lines = []
+    for sec_name in _RESEARCH_NOTE_SECTION_ORDER:
+        sec = (sections or {}).get(sec_name) or {}
+        metrics = sec.get("metrics") or []
+        sec_lines = []
+        for m in metrics:
+            val = (m.get("values") or {}).get(ticker)
+            if val is None:
+                continue
+            val_str = compounder_ui._cp_format(val, m.get("format"))
+            label = m.get("label", "")
+            comment = (m.get("comment") or "").strip()
+            line = f"- {label}: {val_str}"
+            if comment:
+                line += f" ({comment[:140]})"
+            sec_lines.append(line)
+        if sec_lines:
+            lines.append(f"## {sec_name}")
+            lines.extend(sec_lines)
+    return "\n".join(lines) if lines else "(No computed Compounder View data was available for this ticker.)"
+
+
+def _research_note_news_text(ticker):
+    """Up to 15 most recent classified news/announcement items for
+    `ticker`, formatted as plain "[date] Title (publisher)" lines -
+    reuses portfolio_news_engine.analyze_holding_news() exactly as
+    Phase 5's watchdog already does (same function, same shape), just
+    read for its `timeline` instead of its `today` window since a
+    research note wants recent history, not only the last 3 days. Never
+    raises: any failure here just means the note drafts without a news
+    section, same fail-open convention used everywhere else this
+    function is called from."""
+    try:
+        news = portfolio_news_engine.analyze_holding_news(ticker)
+    except Exception:
+        return "(Couldn't fetch recent news for this ticker.)"
+    items = (news or {}).get("timeline") or (news or {}).get("all_relevant") or []
+    try:
+        items = sorted(
+            items, key=lambda e: e.get("date") or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+    except TypeError:
+        pass  # mixed naive/aware dates in the source data - fall back to
+        # whatever order analyze_holding_news() already returned rather
+        # than let a sort-key mismatch break the whole draft.
+    items = items[:15]
+    if not items:
+        return "(No recent classified news/announcements found for this ticker.)"
+    lines = []
+    for e in items:
+        d = e.get("date")
+        d_str = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else "undated"
+        lines.append(f"- [{d_str}] {e.get('title', '')} ({e.get('publisher', '') or e.get('source', '')})")
+    return "\n".join(lines)
+
+
+def _research_note_style_sample():
+    """The most recently PUBLISHED post's body, trimmed to ~600 words -
+    a concrete, current sample of the author's own voice rather than a
+    hand-written description of it (which risks drifting from how the
+    author actually writes as their style evolves). Falls back to a
+    plain instruction if there's no published post yet to sample from
+    (a brand-new site)."""
+    try:
+        _recent = blog_store.list_posts(include_drafts=False, limit=1)
+    except Exception:
+        _recent = []
+    if not _recent:
+        return ("(No published post exists yet to sample - write in a "
+                "plain, factual, first-principles tone with no hype.)")
+    _body = (_recent[0].get("body_md") or "").strip()
+    _words = _body.split()
+    return " ".join(_words[:600])
+
+
+def _draft_research_note(ticker, email):
+    """Runs the whole Phase 7 draft: builds the grounded context, calls
+    Sonnet through the same ai_gate/ai_client every AI feature goes
+    through, and returns {"ok", "text"/"error"} - never raises."""
+    ticker = (ticker or "").strip().upper()
+    if not ticker:
+        return {"ok": False, "error": "Enter a ticker first."}
+
+    sections = auto_compounder_engine.build_sections(ticker)
+    if sections is None:
+        return {"ok": False, "error": f"Couldn't fetch Compounder View data for {ticker}."}
+
+    _system = _RESEARCH_NOTE_SYSTEM_PROMPT.format(
+        style_sample=_research_note_style_sample(),
+        ticker=ticker,
+        sections_text=_research_note_flatten_sections(sections, ticker),
+        news_text=_research_note_news_text(ticker),
+        methodology_text=site_content.methodology_md(factual=True),
+    )
+    _result = ai_client.ask(
+        _system,
+        f"Draft the {ticker} Rational Compounder research note now.",
+        model=ai_client.MODEL_SONNET, max_tokens=2400,
+    )
+    if _result["input_tokens"] or _result["output_tokens"]:
+        try:
+            ai_gate.record(
+                email, "research_note_draft", _result["model"],
+                _result["input_tokens"], _result["output_tokens"],
+                _result["cost_usd"],
+            )
+        except Exception:
+            pass
+    if not _result["ok"]:
+        return {"ok": False, "error": _result["error"]}
+    return {"ok": True, "text": _result["text"]}
+
+
+def _render_research_note_drafter():
+    """The "Draft with AI" panel inside the blog admin editor page - see the
+    Phase 7 block comment above for the full design. Entirely invisible
+    when AI features aren't configured, same convention as every other
+    AI panel on the site."""
+    if not ai_client.available():
+        return
+    with st.expander("✨ Draft with AI (Rational Compounder note)"):
+        st.caption(
+            "Drafts a first-pass note from this ticker's own computed "
+            "Compounder View data, recent news, and the site's "
+            "Methodology - grounded, not invented. Read it carefully, "
+            "verify every figure, and rewrite anything that doesn't sound "
+            "like you before publishing. Filling the box below changes "
+            "nothing until you click Save."
+        )
+        _default_ticker = st.session_state.get("blog_f_primary_ticker", "")
+        _rn_ticker = st.text_input(
+            "Ticker to draft from", value=_default_ticker,
+            key="research_note_ticker", placeholder="OCL.AX",
+        )
+        if st.button("Draft note", key="research_note_draft_btn"):
+            if not _rn_ticker.strip():
+                st.warning("Enter a ticker first.")
+            else:
+                _email = ai_gate.owner_email()
+                _allowed, _msg, _tier = ai_gate.check(_email, "research_note_draft")
+                if not _allowed:
+                    st.warning(_msg)
+                else:
+                    with st.spinner(f"Drafting {_rn_ticker.strip().upper()}... "
+                                    "this reads a lot of data, give it a moment."):
+                        _drafted = _draft_research_note(_rn_ticker, _email)
+                    if not _drafted["ok"]:
+                        st.error(_drafted["error"])
+                    else:
+                        st.session_state["_blog_pending"] = {
+                            "blog_f_body": _drafted["text"],
+                        }
+                        if not st.session_state.get("blog_f_primary_ticker"):
+                            st.session_state["_blog_pending"]["blog_f_primary_ticker"] = \
+                                _rn_ticker.strip().upper()
+                        if not st.session_state.get("blog_f_title"):
+                            st.session_state["_blog_pending"]["blog_f_title"] = \
+                                f"{_rn_ticker.strip().upper()}: a first look at the numbers"
+                        st.session_state["_research_note_drafted_msg"] = (
+                            f"Draft ready below - {ai_client.ANSWER_LABEL}. "
+                            "Review before saving."
+                        )
+                        st.rerun()
+        st.caption("Owner AI usage - unlimited, exempt from the spend cap "
+                   "(logged for the admin spend meter only, via the AI "
+                   "settings panel next to Stats).")
+
+
 def page_blog_admin():
     _content_page_shell("Blog")
 
@@ -9383,6 +9642,10 @@ def page_blog_admin():
     if _saved_msg:
         st.success(_saved_msg)
 
+    _drafted_msg = st.session_state.pop("_research_note_drafted_msg", None)
+    if _drafted_msg:
+        st.info(_drafted_msg)
+
     _just_saved = st.session_state.pop("blog_open_after_save", None)
     if _just_saved:
         _u = f"/blog/{_just_saved}"
@@ -9413,6 +9676,8 @@ def page_blog_admin():
                 st.session_state["_blog_pending"] = {
                     "blog_f_slug": blog_store.slugify(_title)}
                 st.rerun()
+
+        _render_research_note_drafter()
 
         st.text_area(
             "Meta description", key="blog_f_summary", height=90,

@@ -26,19 +26,28 @@ import os
 # one spelling of the model name across the whole app. Every Phase 3-6
 # and Phase 9-10 AI feature uses this model per the owner's locked-in
 # decision (Sonnet 5 is reserved for Phase 7's research-note drafting
-# and Phase 8's weekly brief only - added here once those phases are
-# built, not speculatively now).
+# and Phase 8's weekly brief only).
 MODEL_HAIKU = "claude-haiku-4-5"
 
-# Anthropic's published per-million-token API pricing for this model
-# (anthropic.com/claude/haiku, checked 2026-08) - used to estimate each
-# call's cost_usd for the spend cap/meter. A hardcoded constant rather
-# than a live lookup: list pricing changes rarely enough that an
-# occasionally-rechecked constant is simpler and more reliable than an
-# extra network call (with its own failure modes) on every single
-# question asked.
+# Sonnet 5 - reserved for the two roadmap features that need a longer,
+# more capable first draft rather than a short grounded answer: Phase 7's
+# admin research-note drafting and Phase 8's personalised weekly brief.
+# Never used for anything visitor-facing/high-volume (those stay on
+# Haiku) - both its call sites are low-frequency (an admin drafting one
+# note at a time; one brief per user per week), which is what keeps the
+# higher per-call cost below immaterial even without prompt caching.
+MODEL_SONNET = "claude-sonnet-5"
+
+# Anthropic's published per-million-token API pricing for these models
+# (anthropic.com/claude, checked 2026-08) - used to estimate each call's
+# cost_usd for the spend cap/meter. Hardcoded constants rather than a
+# live lookup: list pricing changes rarely enough that an occasionally-
+# rechecked constant is simpler and more reliable than an extra network
+# call (with its own failure modes) on every single question asked.
 HAIKU_INPUT_USD_PER_MTOK = 1.00
 HAIKU_OUTPUT_USD_PER_MTOK = 5.00
+SONNET_INPUT_USD_PER_MTOK = 2.00
+SONNET_OUTPUT_USD_PER_MTOK = 10.00
 
 # The one required label (master AI-readiness instruction: "every
 # AI-written block visibly labelled") every AI-written block on the
@@ -69,6 +78,9 @@ def estimate_cost_usd(model, input_tokens, output_tokens):
     if model == MODEL_HAIKU:
         return ((input_tokens or 0) / 1_000_000) * HAIKU_INPUT_USD_PER_MTOK + \
                ((output_tokens or 0) / 1_000_000) * HAIKU_OUTPUT_USD_PER_MTOK
+    if model == MODEL_SONNET:
+        return ((input_tokens or 0) / 1_000_000) * SONNET_INPUT_USD_PER_MTOK + \
+               ((output_tokens or 0) / 1_000_000) * SONNET_OUTPUT_USD_PER_MTOK
     return 0.0
 
 
