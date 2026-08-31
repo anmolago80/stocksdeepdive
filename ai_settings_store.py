@@ -11,12 +11,23 @@ the running site without a redeploy - same "editable without a
 redeploy" spirit as paywall_engine's PAYWALL_ENABLED switch, just for
 numbers instead of an on/off flag.
 
-Defaults match the owner's locked-in decisions from the master AI-
-readiness instruction: 20 free questions/day, 300/month + 40/day on
-Plus, US$25/month site-wide spend cap. A brand-new deploy with no
-row yet returns these defaults - get_settings() never returns partial
-data, so callers (ai_gate.py) never need to guard against a missing
-key.
+Defaults match the owner's locked-in decisions: 3 free questions/day
+(tightened from the original 20 on 2026-08-31, Andrew's own call -
+the owner account itself, AI_OWNER_EMAIL, is exempt from every limit
+here regardless of this number), 300/month + 40/day on Plus, US$25/
+month site-wide spend cap. A brand-new deploy with no row yet returns
+these defaults - get_settings() never returns partial data, so callers
+(ai_gate.py) never need to guard against a missing key.
+
+NOTE: on a deploy that already has a settings row (id=1) in its
+stocksdeepdive.db - i.e. this production site, since the admin AI
+settings panel has already been used here - changing DEFAULTS above
+does NOT change what's live. The row in the DB always wins over
+DEFAULTS; DEFAULTS only seeds a brand-new deploy that's never had the
+admin panel touched. To change the LIVE free-tier limit, use the admin
+panel itself (https://<site>/?admin=<ADMIN_REFRESH_KEY> -> AI settings
+-> "Free tier - questions/day" -> Save) - that's what actually calls
+update_settings() and upserts the live row.
 
 Same SQLite file / volume-resolution rule as every other store here -
 see positions_store.py's docstring for why SQLite over a hand-rolled
@@ -35,7 +46,7 @@ def _data_dir():
 DB_PATH = os.path.join(_data_dir(), "stocksdeepdive.db")
 
 DEFAULTS = {
-    "free_daily_limit": 20,
+    "free_daily_limit": 3,
     "plus_daily_limit": 40,
     "plus_monthly_limit": 300,
     "monthly_spend_cap_usd": 25.0,
