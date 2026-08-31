@@ -42,36 +42,81 @@ _CP_COLOR_TEXT = {"red": "#fb7185", "amber": "#fbbf24", "green": "#34d399", "blu
 
 
 # -----------------------------------
-# Mobile PWA brief Part 2: shared sdd_plotly_chart() wrapper, used for
-# EVERY plotly figure on the site (app.py, this module, the portfolio
-# rendering code - all import it from here). Problem it fixes: on a
-# touch device, a one-finger drag that starts on top of a plotly chart
-# pans/zooms the CHART instead of scrolling the page - the browser has no
-# way to know a swipe "meant" the page until plotly's own JS decides
-# what to do with it, and plotly's default drag/scroll-zoom handlers
-# claim that gesture for themselves. Nothing on this site ever needed
-# drag-pan or scroll-zoom on a chart (every plot here is a fixed,
-# already-fully-visible view - value-over-time, gauges, contribution
-# bars, driver charts), so turning them off site-wide costs nothing and
-# hands every touch gesture on a chart back to the page. Hover (desktop)
-# and tap-to-read (touch) both keep working - only DRAG-to-pan and
-# pinch/scroll-to-zoom are disabled. Belt-and-braces CSS
-# (touch-action: pan-y pinch-zoom on the plotly DOM nodes) lives in
-# app.py's site-wide <style> block for the brief window before plotly's
-# own JS finishes attaching its handlers.
+# Mobile PWA brief Part 2 (amended): shared sdd_plotly_chart() wrapper,
+# used for EVERY plotly figure on the site (app.py, this module, the
+# portfolio rendering code - all import it from here). Problem it fixes:
+# on a touch device, a one-finger drag that starts on top of a plotly
+# chart pans/zooms the CHART instead of scrolling the page - the browser
+# has no way to know a swipe "meant" the page until plotly's own JS
+# decides what to do with it, and plotly's default drag/scroll-zoom
+# handlers claim that gesture for themselves.
+#
+# The owner wants desktop chart behaviour left alone (drag-to-zoom kept)
+# - only phones/tablets get the touch-safe treatment - so the decision is
+# made per REQUEST, server-side, from the visitor's User-Agent
+# (_is_mobile_request() below), not applied site-wide any more. Hover
+# (desktop) and tap-to-read (touch) both keep working everywhere either
+# way - only DRAG-to-pan and pinch/scroll-to-zoom are conditionally
+# disabled, and only for a mobile request. Belt-and-braces CSS
+# (touch-action: pan-y pinch-zoom on the plotly DOM nodes, scoped to
+# `@media (max-width:640px) and (pointer:coarse)`) lives in app.py's
+# site-wide <style> block for the brief window before plotly's own JS
+# finishes attaching its handlers - scoped to match this same
+# mobile-only behaviour so a desktop visitor never gets it.
 # -----------------------------------
+
+_MOBILE_UA = re.compile(r"Mobi|Android|iPhone|iPad|iPod", re.I)
+
+
+def _is_mobile_request():
+    """Server-side per-request device check used by sdd_plotly_chart() to
+    decide whether to disable chart drag/zoom - touch devices only,
+    desktop keeps plotly's normal drag-to-zoom untouched. Memoized in
+    st.session_state per script run (keyed once per browser tab, not
+    recomputed for every chart on the page) since the request's
+    User-Agent never changes mid-session for a given tab.
+
+    st.context.headers needs Streamlit >= 1.37; this site runs 1.6x, well
+    past that, but the lookup is still wrapped defensively - any failure
+    here is treated as "not mobile" so the worst case is a phone visitor
+    briefly keeping desktop drag/zoom behaviour, never a desktop visitor
+    losing it."""
+    if "_sdd_is_mobile_request" in st.session_state:
+        return st.session_state["_sdd_is_mobile_request"]
+    is_mobile = False
+    try:
+        ua = st.context.headers.get("User-Agent", "")
+        is_mobile = bool(_MOBILE_UA.search(ua or ""))
+    except Exception:
+        is_mobile = False
+    st.session_state["_sdd_is_mobile_request"] = is_mobile
+    return is_mobile
+
 
 def sdd_plotly_chart(fig, **kwargs):
     """Drop-in replacement for st.plotly_chart - same call signature, so
     every call site on the site was a mechanical rename to this function.
-    Forces dragmode off on the figure itself and merges
-    displayModeBar/scrollZoom/doubleClick off into whatever `config` (if
-    any) the caller already passed, so a caller-supplied config still
-    wins on any OTHER key."""
-    fig.update_layout(dragmode=False)
-    config = {"displayModeBar": False, "scrollZoom": False, "doubleClick": False, "responsive": True}
-    config.update(kwargs.pop("config", None) or {})
-    return st.plotly_chart(fig, use_container_width=True, config=config, **kwargs)
+
+    Mobile request (_is_mobile_request()): forces dragmode off on the
+    figure itself and merges displayModeBar/scrollZoom/doubleClick off
+    into whatever `config` (if any) the caller already passed, so a
+    caller-supplied config still wins on any OTHER key - same touch-safe
+    behaviour as before this amendment.
+
+    Desktop request: the figure and `config` are passed straight through
+    completely unchanged (dragmode left at the figure's own default -
+    no call site on this site sets it explicitly, so that's plotly's
+    normal 'zoom' drag-to-zoom behaviour; config exactly what the call
+    site passed, or omitted entirely if the call site passed none)."""
+    config = kwargs.pop("config", None)
+    if _is_mobile_request():
+        fig.update_layout(dragmode=False)
+        merged = {"displayModeBar": False, "scrollZoom": False, "doubleClick": False, "responsive": True}
+        merged.update(config or {})
+        return st.plotly_chart(fig, use_container_width=True, config=merged, **kwargs)
+    if config is not None:
+        return st.plotly_chart(fig, use_container_width=True, config=config, **kwargs)
+    return st.plotly_chart(fig, use_container_width=True, **kwargs)
 
 
 def _md_safe(text):

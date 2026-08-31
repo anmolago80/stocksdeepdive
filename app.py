@@ -876,20 +876,29 @@ st.markdown(
       padding:7px 0; margin:0 0 14px 0; }
     .sdd-tape-inner { display:inline-block; animation:sddscroll 45s linear infinite; }
     @keyframes sddscroll { from { transform:translateX(0); } to { transform:translateX(-50%); } }
-    /* Mobile PWA brief Part 2: every plotly chart on the site is rendered
-       via the shared sdd_plotly_chart() helper (app.py/compounder_ui.py),
-       which already turns off dragmode/scrollZoom/doubleClick in the
-       figure's own config - this is the belt-and-braces half, so the
-       BROWSER already knows a touch-start on the chart's own drag layer
-       means "let the page scroll vertically" before plotly's JS has even
-       finished attaching its own touch handlers (there's a brief window
-       right after a chart mounts where only the CSS default - which
-       otherwise defaults to grabbing every touch axis for pan/zoom - is
-       in effect). pan-y pinch-zoom (not "none") keeps pinch-zoom gestures
-       from feeling broken while still handing vertical swipes to the page. */
-    .stPlotlyChart, .js-plotly-plot, .js-plotly-plot .plotly,
-    .js-plotly-plot .draglayer, .js-plotly-plot .nsewdrag {
-      touch-action: pan-y pinch-zoom !important;
+    /* Mobile PWA brief Part 2 (amended): every plotly chart on the site is
+       rendered via the shared sdd_plotly_chart() helper (compounder_ui.py),
+       which now only turns off dragmode/scrollZoom/doubleClick for a
+       mobile REQUEST (decided server-side from the User-Agent - see
+       _is_mobile_request()) - desktop keeps native plotly drag-to-zoom.
+       This CSS is the belt-and-braces half of the SAME mobile-only
+       behaviour, so it's scoped to match: pointer:coarse (touch screens,
+       not a mouse/trackpad) AND max-width:640px (phone width, not a
+       touch-capable desktop monitor), so a desktop visitor - mouse or
+       touchscreen - never gets the pan-y override and keeps drag-zoom.
+       On a real phone it hands a touch-start on the chart's own drag
+       layer to the page ("let the page scroll vertically") before
+       plotly's JS has even finished attaching its own touch handlers
+       (there's a brief window right after a chart mounts where only the
+       CSS default - which otherwise defaults to grabbing every touch
+       axis for pan/zoom - is in effect). pan-y pinch-zoom (not "none")
+       keeps pinch-zoom gestures from feeling broken while still handing
+       vertical swipes to the page. */
+    @media (max-width: 640px) and (pointer: coarse) {
+      .stPlotlyChart, .js-plotly-plot, .js-plotly-plot .plotly,
+      .js-plotly-plot .draglayer, .js-plotly-plot .nsewdrag {
+        touch-action: pan-y pinch-zoom !important;
+      }
     }
     .sdd-tk { margin:0 18px; color:#8aa0b8; }
     .sdd-tk b { color:#e6edf5; font-weight:600; }
