@@ -125,6 +125,60 @@ def _grid_css():
 """
 
 
+def _snapshot_copy_text(ticker, data, moat, generated, universe, lede, base_url):
+    """Fix 4, AI fixes round 1 (2026-08-31): the plain-text payload for
+    this page's "Copy as text" button (blog_render._copy_as_text_html) -
+    see that function's own docstring for the button/fallback mechanics.
+
+    `data`/`moat` are the same row/moat shape build_snapshots_from_scan()
+    (or app.py's live-Deep-Dive hook - Fix 2a) produces - see
+    _stat_cells()'s own comment for the authoritative field list. This
+    row shape is a strict subset of deep_dive_engine.analyze()'s full
+    dict (no company name, no intrinsic-value method/source, no
+    psychology/discovery sentiment labels), so this deliberately reads
+    narrower than app.py's own _dd_copy_text() for the same reason
+    _stat_cells() above only shows what's actually in `data` - nothing
+    invented here that isn't already on this page. `lede` is the same
+    one-line summary string render_snapshot() already builds for the
+    page itself (recomputing it here would risk it drifting from what's
+    actually displayed)."""
+    currency = "AUD" if ticker.upper().endswith(".AX") else "USD"
+    lines = [ticker]
+    if generated:
+        lines.append(f"Data generated {generated} UTC (nightly scan, universe: {universe or '-'}).")
+    if data.get("Price") is not None:
+        lines.append(f"Price: {_fmt(data.get('Price'))} {currency}")
+    if data.get("Intrinsic Value") is not None:
+        lines.append(f"Intrinsic value: {_fmt(data.get('Intrinsic Value'))} {currency}")
+    if data.get("MOS %") is not None:
+        lines.append(f"Margin of safety: {data['MOS %']:+.1f}%")
+    if data.get("Valuation"):
+        lines.append(f"Valuation: {data['Valuation']}")
+    if data.get("Long Score") is not None:
+        lines.append(f"Value Score: {_fmt(data.get('Long Score'))}"
+                     + (f" ({data['Signal']})" if data.get("Signal") else ""))
+    if data.get("Quality") is not None:
+        lines.append(f"Quality: {_fmt(data.get('Quality'))}/100")
+    if moat and moat.get("score") is not None:
+        state = (moat.get("erosion") or "").replace("_", " ")
+        lines.append(f"Moat score: {_fmt(moat.get('score'))}"
+                     + (f" (erosion: {state})" if state else ""))
+    if lede:
+        lines.append(lede.replace("&middot;", "-").replace("&rarr;", "->"))
+
+    flags = []
+    if data.get("Quality Default"):
+        flags.append("Quality rests on a default/estimated input (no reported figure).")
+    if data.get("Intrinsic Default"):
+        flags.append("Intrinsic value rests on a default/estimated input.")
+    if flags:
+        lines.append("Red flags: " + " ".join(flags))
+
+    lines.append(f"Source: {SITE_NAME} - {snapshot_url(base_url, ticker)}")
+    lines.append(PLAIN_DISCLAIMER)
+    return "\n".join(lines)
+
+
 def render_snapshot(snap, base_url):
     """snap is snapshot_store.get_snapshot(ticker)'s return value (not
     None - caller handles the unknown-ticker/404 case)."""
@@ -160,6 +214,15 @@ def render_snapshot(snap, base_url):
     citation_text = f'{SITE_NAME}, "{ticker} snapshot,"' + (
         f" {cite_date}" if cite_date else "") + f". {canonical}"
 
+    # Fix 4, AI fixes round 1 (2026-08-31): "Copy as text" - see
+    # _snapshot_copy_text()'s and blog_render._copy_as_text_html()'s own
+    # docstrings. dom_id is ticker-qualified since /s/<ticker> is a
+    # distinct page per ticker but the id namespace is still global HTML.
+    copy_text = _snapshot_copy_text(
+        ticker, data, moat, generated, universe, lede, base_url)
+    copy_html = blog_render._copy_as_text_html(
+        copy_text, dom_id=f"sdd-copytext-{ticker}")
+
     body = f"""
 <main><div class="wrap">
   <div class="kicker">Snapshot &middot; {e(universe)} &middot; generated {e(generated)} UTC</div>
@@ -167,6 +230,7 @@ def render_snapshot(snap, base_url):
   <p class="lede">{lede}</p>
   {hist_html}
   {blog_render._copy_citation_html(citation_text)}
+  {copy_html}
   <div class="sdd-snap-grid">{cell_html}</div>
   <p><a href="/deep-dive?ticker={e(ticker)}">Open the interactive Deep Dive for {e(ticker)} &rarr;</a></p>
   <div class="cta">

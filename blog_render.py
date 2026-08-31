@@ -262,6 +262,87 @@ def _copy_citation_html(citation_text):
 """
 
 
+def _copy_as_text_html(copy_text, dom_id="sdd-copytext"):
+    """Fix 4, AI fixes round 1 (2026-08-31): "Copy as text" button - same
+    click-to-clipboard shape as _copy_citation_html() right above (a
+    plain button + a small vanilla-JS IIFE, no framework), but this one
+    additionally satisfies the spec's fallback requirement: where
+    _copy_citation_html's failure path only changes the BUTTON's own
+    label ("Copy failed"), clipboard access can be blocked entirely in
+    some contexts (iOS inside Streamlit's components.html() sandboxed
+    iframe is the specific case named in the spec) with nothing further
+    the page can do about it - the visitor still needs the text, so on
+    any failure this reveals a genuinely selectable, pre-filled,
+    auto-selected <textarea> instead of just an error label.
+
+    The textarea also IS the copy source (its own .value, read fresh on
+    each click) rather than a separate data-* attribute - a <textarea>
+    round-trips arbitrary multi-line text (quotes, newlines) through the
+    DOM with zero manual JS-string escaping, which a single-line HTML
+    attribute (as citation_text uses, being one line) can't do as
+    cleanly for a multi-paragraph payload like this one. It starts
+    positioned off-screen (not display:none - some browsers won't let a
+    display:none element receive focus()/select(), which the fallback
+    path needs) and is only moved on-screen if the clipboard call fails.
+
+    dom_id lets a page render this more than once (e.g. a future page
+    with two copy buttons) without id collisions; every caller today
+    passes a ticker-qualified id already since the callers themselves
+    are per-ticker (a Deep Dive page, a /s/<ticker> snapshot page)."""
+    e = html.escape
+    return f"""
+<div class="sdd-cite">
+  <button type="button" class="sdd-cite-btn" id="{e(dom_id)}-btn">Copy as text</button>
+  <div class="sdd-copytext-status" id="{e(dom_id)}-status"
+    style="color:#8aa0b8;font-size:12.5px;margin-top:6px"></div>
+  <textarea id="{e(dom_id)}-src" readonly
+    style="position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;"
+  >{e(copy_text)}</textarea>
+</div>
+<script>
+(function(){{
+  var b = document.getElementById('{e(dom_id)}-btn');
+  var ta = document.getElementById('{e(dom_id)}-src');
+  var status = document.getElementById('{e(dom_id)}-status');
+  if (!b || !ta) return;
+  var reset = b.textContent;
+  function hideTextarea(){{
+    ta.style.position = 'absolute'; ta.style.left = '-9999px';
+    ta.style.top = '-9999px'; ta.style.width = '1px'; ta.style.height = '1px';
+  }}
+  function showTextarea(){{
+    ta.style.position = 'static'; ta.style.width = '100%'; ta.style.height = '110px';
+    ta.style.marginTop = '8px'; ta.style.background = '#0f1a2e';
+    ta.style.color = '#e6edf5'; ta.style.border = '1px solid #1f3352';
+    ta.style.borderRadius = '6px'; ta.style.padding = '8px';
+    ta.style.fontFamily = 'ui-monospace,Menlo,monospace'; ta.style.fontSize = '11.5px';
+    ta.focus();
+    ta.select();
+  }}
+  b.addEventListener('click', function(){{
+    var text = ta.value;
+    if (navigator.clipboard && navigator.clipboard.writeText) {{
+      navigator.clipboard.writeText(text).then(function(){{
+        b.textContent = 'Copied \\u2713';
+        status.textContent = '';
+        hideTextarea();
+        setTimeout(function(){{ b.textContent = reset; }}, 1500);
+      }}, function(){{
+        status.textContent = "Couldn't copy automatically - the text "
+          + "below is selected, copy it manually.";
+        showTextarea();
+      }});
+    }} else {{
+      status.textContent = "Couldn't copy automatically - the text "
+        + "below is selected, copy it manually.";
+      showTextarea();
+    }}
+  }});
+}})();
+</script>
+"""
+
+
 def post_url(base_url, slug):
     return f"{base_url}/blog/{slug}"
 
@@ -1573,6 +1654,63 @@ Free for any use, commercial or not, with attribution and a link back to \
 stocksdeepdive.com. Nothing on this site is financial product advice - \
 see {base_url}/methodology and the disclaimer on every page. No user data \
 (portfolios, watchlists, emails) is ever published here. Contact: \
+rationalcompounder@stocksdeepdive.com.
+"""
+
+
+def render_llms_full_txt(base_url, methodology_md, snapshot_rows):
+    """AI-readiness roadmap Phase 4 (citation helpers), Fix 3 (AI fixes
+    round 1, 2026-08-31): the llms-full.txt half of the llmstxt.org
+    convention. Where render_llms_txt() above is a curated, described
+    list of LINKS, llms-full.txt inlines actual content instead - the
+    full methodology (every input/weight/assumption every score on the
+    site is built from) plus a plain-text index of every ticker
+    currently covered by a snapshot, grouped by universe with its direct
+    /s/<ticker> link - so a client can fetch this one file and have both
+    in hand without a second request per page. `methodology_md` and
+    `snapshot_rows` are passed in rather than computed here (same
+    separation as every other render_* function in this module - server.
+    py owns fetching site_content/snapshot_store data, this module only
+    formats it) - `methodology_md` is site_content.methodology_md(...)'s
+    return value, `snapshot_rows` is snapshot_store.all_snapshots()'s."""
+    from collections import OrderedDict
+    by_universe = OrderedDict()
+    for r in (snapshot_rows or []):
+        by_universe.setdefault(r.get("universe") or "Other", []).append(r["ticker"])
+    if by_universe:
+        index_parts = []
+        for universe, tickers in by_universe.items():
+            index_parts.append(f"\n### {universe} ({len(tickers)})\n")
+            index_parts.extend(f"- {t}: {base_url}/s/{t}" for t in tickers)
+        snapshot_index = "\n".join(index_parts)
+    else:
+        snapshot_index = ("\n(No snapshots yet - the first nightly scan "
+                          "will populate this.)\n")
+
+    return f"""# {SITE_NAME} - full reference
+
+> This is the llms-full.txt companion to {base_url}/llms.txt: the same \
+site, but with key content inlined here rather than just linked, so one \
+fetch covers both the methodology and the current ticker index. See \
+{base_url}/llms.txt instead for a shorter, curated page-by-page index.
+
+## Methodology
+
+{methodology_md}
+
+## Stock snapshot index
+
+Every ticker StocksDeepDive currently has a computed snapshot for \
+({len(snapshot_rows or [])} total), grouped by universe - the same data \
+as {base_url}/s/ and {base_url}/api/v1/scan/<universe>, as plain text.
+{snapshot_index}
+
+## Terms
+
+Free for any use, commercial or not, with attribution and a link back to \
+stocksdeepdive.com. Nothing on this site is financial product advice - \
+see {base_url}/methodology and the disclaimer on every page. No user \
+data (portfolios, watchlists, emails) is ever published here. Contact: \
 rationalcompounder@stocksdeepdive.com.
 """
 

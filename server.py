@@ -354,6 +354,20 @@ _INDEXABLE = {p.strip() for p in _INDEXABLE_RAW.split(",") if p.strip()}
 
 
 def _renders_html(path) -> bool:
+    # Fix 3, AI fixes round 1 (2026-08-31): /how-we-use-ai is a NEW page
+    # (added under AI-readiness roadmap Phase 10), not one of the three
+    # legacy word-identical static pages this INDEXABLE_PAGES opt-in gate
+    # was built for - it was falling through to the proxied Streamlit
+    # shell (and picking up that path's x-robots-tag: noindex) unless an
+    # operator remembered to also add it to INDEXABLE_PAGES. Served
+    # unconditionally instead, the same way /s/* and /track-record
+    # already are below (no _renders_html gate on either) - this is the
+    # single gate function content_page() AND the sitemap builder both
+    # call, so returning True here for this one path fixes indexing and
+    # sitemap inclusion together, with zero change to how /methodology,
+    # /about and /privacy behave (they still need INDEXABLE_PAGES).
+    if path == "/how-we-use-ai":
+        return True
     return _INDEXABLE_ALL or path in _INDEXABLE
 
 
@@ -632,6 +646,25 @@ async def llms_txt(request: Request):
     blog_render.render_llms_txt()'s own docstring."""
     return PlainTextResponse(
         blog_render.render_llms_txt(_base_url(request)),
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+@app.get("/llms-full.txt", include_in_schema=False)
+async def llms_full_txt(request: Request):
+    """Fix 3, AI fixes round 1 (2026-08-31): the llms-full.txt companion
+    to /llms.txt above - see blog_render.render_llms_full_txt()'s own
+    docstring for what it inlines (methodology + the current snapshot
+    index) and why. Always served as real text/plain, no INDEXABLE_PAGES
+    gate and no noindex header - same "no gate at all" treatment as
+    /llms.txt itself and /s/*, not the opt-in _renders_html() gate the
+    three legacy content pages use."""
+    return PlainTextResponse(
+        blog_render.render_llms_full_txt(
+            _base_url(request),
+            site_content.methodology_md(_FACTUAL),
+            snapshot_store.all_snapshots(),
+        ),
         headers={"Cache-Control": "public, max-age=3600"},
     )
 

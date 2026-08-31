@@ -42,6 +42,8 @@ import scan_store
 import scanner_engine
 import screen_import_store
 import nightly_scan
+import snapshot_store
+import snapshot_render
 import moat_engine
 import portfolio_store
 import portfolio_health_engine
@@ -638,6 +640,83 @@ def _bump_page_view(page, ticker=None):
             st.session_state["_src_counted"] = True
             _src = st.session_state.get("first_src")
         metrics_store.bump(page, ticker=ticker, src=_src)
+    except Exception:
+        pass
+
+
+def _save_live_snapshot(dd, signal):
+    """Fix 2a, AI fixes round 1 (2026-08-31): the live-Deep-Dive hook from
+    the Phase 1 snapshot-store spec was never actually built - snapshot_
+    store.save_snapshot() was only ever called from scheduler_engine's
+    nightly job, so a ticker nobody's nightly-scanned universe covers
+    (or one scanned attention_lite, before its first nightly re-run)
+    stayed permanently absent from /s/<ticker>, /api/v1/deep-dive/*,
+    /api/v1/compare and the sitemap's /s/ listing, even after a visitor
+    had just looked straight at its numbers on this exact page.
+
+    Same wrapped-in-try/except, must-never-affect-the-page convention as
+    _bump_page_view right above - a snapshot-store hiccup must never
+    surface as a visible error on a Deep Dive result the visitor already
+    has. Called once, right after a successful analyze(), with the
+    `_dd_signal` the page already computed for its own STRONG LONG/LONG/
+    WATCHLIST/AVOID display - no second computation of the same
+    threshold logic.
+
+    `row` is shaped to match nightly_scan.analyze_ticker_lite()'s own
+    return dict field-for-field (snapshot_store.save_snapshot's own
+    docstring: "or an equivalent shape") so /s/<ticker> and the API read
+    it exactly like a nightly-built snapshot - see snapshot_render.py's
+    _stat_cells() for the authoritative field list this mirrors. Two
+    fields nightly_scan computes that deep_dive_engine.analyze() doesn't
+    return (and this must NOT reach into indicators_engine itself to
+    get - engines stay untouched) get the same "-" sentinel nightly_
+    scan's own analyze_ticker_lite() defaults them to before its own
+    try block: "Trend" (indicators_engine's price-trend word - a
+    genuinely different thing from dd["trend_score"], which is Google
+    Trends *search interest*, not price trend). "Trade Setup" IS
+    available (dd["trade_setup_signal"], the same trade_filter_engine
+    call nightly_scan makes) so that one is real, not a placeholder.
+    "Discovery (lite)" holds dd["discovery"] - the FULL discovery score
+    (live_data=True path), not a lite-only number; this matches nightly_
+    scan's own behaviour for a small/attention_lite=False scan of the
+    same ticker (see analyze_ticker_lite's docstring), so the same key
+    already carries either value elsewhere in this codebase - nothing
+    new introduced by reusing it here. universe="live" (not any real
+    scanned-universe name) marks this row as filled in by a visitor's
+    Deep Dive view rather than the overnight scan; a ticker later
+    picked up by a real nightly scan gets its universe/values refreshed
+    to that scan's own row (save_snapshot is a plain UPSERT - latest
+    write always wins, whichever source it came from)."""
+    try:
+        ticker = dd.get("ticker")
+        if not ticker or dd.get("error"):
+            return
+        row = {
+            "Ticker": ticker,
+            "Type": dd.get("stock_type"),
+            "Price": dd.get("price"),
+            "Quality": dd.get("quality_score"),
+            "Quality Default": bool(dd.get("quality_default")),
+            "Intrinsic Value": dd.get("intrinsic_value"),
+            "Intrinsic Default": bool(dd.get("value_default")),
+            "MOS %": dd.get("mos"),
+            "Psychology": dd.get("psychology"),
+            "Discovery (lite)": dd.get("discovery"),
+            "Long Score": dd.get("long_score"),
+            "Valuation": dd.get("valuation"),
+            "Signal": signal,
+            "Trend": "-",
+            "Trade Setup": dd.get("trade_setup_signal") or "-",
+        }
+        moat = None
+        if (dd.get("moat") is not None or dd.get("moat_erosion")
+                or dd.get("moat_mode")):
+            moat = {
+                "score": dd.get("moat"),
+                "erosion": dd.get("moat_erosion"),
+                "mode": dd.get("moat_mode"),
+            }
+        snapshot_store.save_snapshot(ticker, "live", row, moat=moat)
     except Exception:
         pass
 
@@ -2717,6 +2796,130 @@ _PUSH_CONTROL_JS = r"""
 """
 
 
+def _dd_copy_text(dd, value_word):
+    """Fix 4, AI fixes round 1 (2026-08-31): the plain-text payload for
+    the Deep Dive's "Copy as text" button (_render_copy_as_text_button
+    below, blog_render._copy_as_text_html for the button/fallback
+    mechanics themselves). Ticker + company, as-of date, the headline
+    numbers, a one-sentence summary, red-flag notes if any, then the
+    same Source + disclaimer lines every snapshot page and MCP tool
+    result already carries (snapshot_render.SITE_NAME/PLAIN_DISCLAIMER -
+    one string, reused everywhere data leaves the page, never a second
+    copy of this wording to keep in sync).
+
+    The one-sentence summary mirrors the "In one line" sentence the
+    factual "What the model shows" panel opens with further down this
+    same page (see that block's own comment for the wording this
+    matches) - computed independently here rather than reused directly,
+    since this button is placed next to the follow/alert controls
+    (per the spec: "no layout change" from where those already sit),
+    which render BEFORE that panel does; `value_word` (EXCELLENT/GOOD/
+    FAIR/WEAK) is the one piece already computed by the time this
+    renders, so it's passed in rather than recomputed. Deliberately
+    uses that neutral vocabulary rather than the LONG/AVOID-style signal
+    words for the same reason the page's own Value Score heading does -
+    a copy-pasted snippet that might get shared off-site should read
+    even less like a buy/sell recommendation than the page itself does."""
+    ticker = dd.get("ticker") or ""
+    currency = dd.get("currency") or ""
+    lines = [f"{ticker} - {dd.get('name') or ticker}"]
+
+    try:
+        _hist = get_price_history(ticker)
+        if _hist is not None and not _hist.empty:
+            lines.append(
+                f"Data as of {_hist.index[-1].strftime('%d %b %Y')} "
+                "(latest available daily close)."
+            )
+    except Exception:
+        pass
+
+    if dd.get("price") is not None:
+        lines.append(f"Price: {dd['price']:,.2f} {currency}".rstrip())
+    if dd.get("intrinsic_value") is not None:
+        method = dd.get("intrinsic_source") or "DCF"
+        lines.append(
+            f"Intrinsic value: {dd['intrinsic_value']:,.2f} {currency} "
+            f"({method})".replace("  ", " ")
+        )
+    if dd.get("mos") is not None:
+        lines.append(f"Margin of safety: {dd['mos']:+.1f}%")
+    if dd.get("valuation"):
+        lines.append(f"Valuation: {dd['valuation']}")
+    if dd.get("long_score") is not None:
+        lines.append(f"Value Score: {dd['long_score']:.1f} ({value_word})")
+    if dd.get("quality_score") is not None:
+        q_line = f"Quality: {dd['quality_score']}/100"
+        if dd.get("quality_label"):
+            q_line += f" ({dd['quality_label']})"
+        lines.append(q_line)
+    if dd.get("moat") is not None:
+        moat_state = dd.get("moat_band_label") or dd.get("moat_mode") or ""
+        moat_line = f"Moat score: {dd['moat']:.1f}"
+        if moat_state:
+            moat_line += f" ({moat_state})"
+        lines.append(moat_line)
+
+    if dd.get("long_score") is not None and dd.get("quality_label"):
+        val_clause = {
+            "UNDERVALUED": "trading below the model's estimated value",
+            "FAIR": "trading close to the model's estimated value",
+            "EXPENSIVE": "trading above the model's estimated value",
+            "N/A": "with no computable intrinsic value to compare against",
+        }.get(dd.get("valuation"), "with an unclear valuation")
+        sentence = (
+            f"In one line: {ticker}'s Value Score is {dd['long_score']:.1f} "
+            f"({value_word.lower()}) - {val_clause}, with "
+            f"{dd['quality_label'].lower()} quality"
+        )
+        if dd.get("psychology_sentiment"):
+            sentence += f", a {dd['psychology_sentiment'].lower()} crowd"
+        if dd.get("discovery_label"):
+            sentence += f", and {dd['discovery_label'].lower()} attention"
+        sentence += "."
+        lines.append(sentence)
+
+    flags = []
+    if dd.get("quality_default"):
+        flags.append("Quality rests on a default/estimated input (no reported figure).")
+    if dd.get("value_default"):
+        flags.append("Intrinsic value rests on a default/estimated input.")
+    for _f in (dd.get("moat_flags") or []):
+        flags.append(f"Moat: {_f}")
+    if flags:
+        lines.append("Red flags: " + " ".join(flags))
+
+    lines.append(f"Source: {snapshot_render.SITE_NAME} - https://stocksdeepdive.com/s/{ticker}")
+    lines.append(snapshot_render.PLAIN_DISCLAIMER)
+    return "\n".join(lines)
+
+
+def _render_copy_as_text_button(dd, value_word):
+    """Fix 4, AI fixes round 1 (2026-08-31): renders next to the follow/
+    alert controls (see this function's call site in page_deep_dive) -
+    "one small button, no layout change" per the spec. Runs inside
+    streamlit.components.v1.html() for the same reason _render_push_
+    control above does (plain st.markdown doesn't execute <script>
+    tags) - reuses blog_render._copy_as_text_html() unchanged rather
+    than a second copy of the same click/clipboard/fallback JS, since
+    that helper is plain HTML+JS with no dependency on being served by
+    server.py specifically; app.py already imports blog_render for the
+    AI-answer/portfolio pages elsewhere."""
+    try:
+        ticker = dd.get("ticker") or ""
+        if not ticker or dd.get("error"):
+            return
+        copy_text = _dd_copy_text(dd, value_word)
+        import streamlit.components.v1 as _components
+        _components.html(
+            blog_render._copy_as_text_html(
+                copy_text, dom_id=f"sdd-copytext-dd-{ticker}"),
+            height=190,
+        )
+    except Exception:
+        pass
+
+
 def _render_push_control(key_prefix, ticker):
     """"Also notify on this device" - Web Push opt-in (Part 3 of the PWA
     brief), rendered next to the follow toggle for signed-in visitors
@@ -4343,6 +4546,8 @@ def page_deep_dive():
         else:
             _dd_signal = "AVOID"
 
+        _save_live_snapshot(_dd, _dd_signal)
+
         # Same tiering as _dd_signal, reworded for the factual/public view -
         # that view deliberately never shows the LONG/AVOID-style signal
         # words (see the Signal metric, which only appears in the full/RC
@@ -4534,6 +4739,10 @@ def page_deep_dive():
         # research", this is "tell me when a specific number crosses a
         # line I choose." ---
         _render_alert_control(_dd["ticker"], _dd, key_prefix="alert_dd")
+
+        # --- Fix 4, AI fixes round 1: "Copy as text" - see
+        # _render_copy_as_text_button's own docstring. ---
+        _render_copy_as_text_button(_dd, _dd_value_word)
 
         # --- Price chart: the 6-month history behind every calculation on
         # this page, finally shown - with the 50-day average and the Trade
