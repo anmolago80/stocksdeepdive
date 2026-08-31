@@ -148,9 +148,21 @@ def _run_nightly(cfg, log):
     for universe in ordered:
         try:
             if universe == nightly_scan.IMPORTED_UNIVERSE:
-                nightly_scan.run_imported_scan(log=log)
+                payload = nightly_scan.run_imported_scan(log=log)
             else:
-                nightly_scan.run_universe_scan(universe, log=log)
+                payload = nightly_scan.run_universe_scan(universe, log=log)
+            # AI-readiness Phase 1 (AI_ROADMAP_stocksdeepdive.md): build the
+            # public /s/<TICKER> snapshot + /api/v1 data for this universe
+            # right after its scan lands - re-shapes rows the scan just
+            # computed, no extra network calls. A failure here must never
+            # take down the scan it rides on.
+            if payload and payload.get("rows"):
+                try:
+                    import snapshot_store
+                    snapshot_store.build_snapshots_from_scan(
+                        universe, payload["rows"], log=log)
+                except Exception as e:
+                    log(f"[scheduler] snapshot build {universe} failed: {e}")
         except Exception as e:
             log(f"[scheduler] nightly scan {universe} failed: {e}")
 

@@ -74,6 +74,12 @@ import push_send
 import push_store
 import site_content
 
+# AI-readiness roadmap Phase 1 (AI_ROADMAP_stocksdeepdive.md): the public
+# snapshot pages + read-only JSON API. See api_v1.py / snapshot_render.py.
+import api_v1
+import snapshot_render
+import snapshot_store
+
 try:
     import metrics_store
 except Exception:  # analytics must never be able to stop the site serving
@@ -599,10 +605,34 @@ async def robots(request: Request):
     )
 
 
+def _snapshot_sitemap_urls(base_url):
+    """<url> entries for every /s/<ticker> snapshot page, spliced into the
+    existing sitemap XML below rather than changing blog_render.py's
+    render_sitemap() signature - keeps that function (and every other
+    caller of it) exactly as it was. AI-readiness roadmap Phase 1."""
+    from xml.sax.saxutils import escape as xml_escape
+    rows = snapshot_store.all_snapshots()
+    urls = [
+        f"  <url><loc>{xml_escape(base_url)}/s/</loc>"
+        f"<changefreq>daily</changefreq><priority>0.6</priority></url>"
+    ]
+    for r in rows:
+        lastmod = (r.get("generated_at") or "")[:10]
+        urls.append(
+            f"  <url><loc>{xml_escape(base_url)}/s/{xml_escape(r['ticker'])}</loc>"
+            + (f"<lastmod>{lastmod}</lastmod>" if lastmod else "")
+            + "<changefreq>daily</changefreq><priority>0.5</priority></url>"
+        )
+    return urls
+
+
 @app.get("/sitemap.xml", include_in_schema=False)
 async def sitemap(request: Request):
-    xml = blog_render.render_sitemap(blog_store.list_posts(), _base_url(request),
+    base = _base_url(request)
+    xml = blog_render.render_sitemap(blog_store.list_posts(), base,
                                      renders_html=_renders_html)
+    extra = "\n".join(_snapshot_sitemap_urls(base))
+    xml = xml.replace("</urlset>", extra + "\n</urlset>\n")
     return Response(xml, media_type="application/xml",
                     headers={"Cache-Control": "public, max-age=900"})
 
@@ -810,6 +840,111 @@ async def tool_landing(request: Request):
         path, _base_url(request),
         coverage=_coverage() if path == "/research" else None,
     ))
+
+
+# -----------------------------------
+# AI-readiness roadmap Phase 1 (AI_ROADMAP_stocksdeepdive.md): public
+# snapshot pages + read-only JSON API. No AI key anywhere below; every
+# byte served here already appears on the public Scanner/Deep Dive
+# pages, built by the nightly scan (see scheduler_engine.py /
+# snapshot_store.py). /api/v1/* is a separate FastAPI sub-app (api_v1.py)
+# mounted below the routes, so it can carry its own CORS policy and its
+# own /openapi.json without touching this app's docs_url=None.
+# -----------------------------------
+
+_TICKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,14}$")
+
+
+@app.get("/s/", include_in_schema=False)
+async def snapshot_index(request: Request):
+    _count_view("snapshot_index")
+    rows = snapshot_store.all_snapshots()
+    return _html(snapshot_render.render_index(rows, _base_url(request)),
+                cache="public, max-age=900")
+
+
+@app.get("/s/{ticker}", include_in_schema=False)
+async def snapshot_page(ticker: str, request: Request):
+    ticker = ticker.strip().upper()
+    base = _base_url(request)
+    if not _TICKER_RE.match(ticker):
+        return _html(snapshot_render.render_snapshot_not_found(base, ticker),
+                    status=404, cache="no-store")
+    snap = snapshot_store.get_snapshot(ticker)
+    if not snap:
+        return _html(snapshot_render.render_snapshot_not_found(base, ticker),
+                    status=404, cache="no-store")
+    _count_view("snapshot", ticker=ticker)
+    return _html(snapshot_render.render_snapshot(snap, base),
+                cache="public, max-age=1800")
+
+
+_API_DOCS_TITLE = f"API | {blog_render.SITE_NAME}"
+_API_DOCS_DESC = (
+    "Read-only, free, public JSON API for StocksDeepDive's computed stock "
+    "scores - value, quality, psychology, discovery and moat. No API key, "
+    "GET only, rate-limited, attribution requested.")
+
+
+@app.get("/api", include_in_schema=False)
+async def api_docs(request: Request):
+    """Human-readable docs for /api/v1/* (interactive Swagger UI lives at
+    /api/v1/docs, generated straight from api_v1.py). A plain prose page
+    here - example requests, the universe slugs, the attribution ask -
+    is what makes the API discoverable and citable by both people and
+    the AI systems the roadmap is aimed at."""
+    base = _base_url(request)
+    universes = ", ".join(f"<code>{s}</code>" for s in
+                          sorted(api_v1._SLUG_TO_UNIVERSE))
+    markdown_text = f"""
+StocksDeepDive's stock scores are also available as a small, free, read-only
+JSON API - no key, no sign-in, GET requests only. Every response includes
+`attribution`, `disclaimer` and `as_of`/`link` fields; please attribute and
+link back to the site when you use this data.
+
+**Rate limit:** 60 requests/minute per IP. **CORS:** open to any origin, GET
+only. **Interactive docs (Swagger):** [{base}/api/v1/docs]({base}/api/v1/docs) -
+machine-readable schema at [{base}/api/v1/openapi.json]({base}/api/v1/openapi.json).
+
+### Endpoints
+
+- `GET /api/v1/deep-dive/{{ticker}}` - computed scores for one ticker, e.g.
+  [{base}/api/v1/deep-dive/CSL.AX]({base}/api/v1/deep-dive/CSL.AX)
+- `GET /api/v1/compare?tickers=A,B,C` - up to 10 tickers side by side, e.g.
+  [{base}/api/v1/compare?tickers=CSL.AX,BHP.AX]({base}/api/v1/compare?tickers=CSL.AX,BHP.AX)
+- `GET /api/v1/scan/{{universe}}` - the ranked overnight scan for a whole
+  index, e.g. [{base}/api/v1/scan/asx-200]({base}/api/v1/scan/asx-200).
+  Universe slugs: {universes}
+
+A ticker only has data once it has been through a nightly scan - if you get
+a 404, it may not be in a covered universe yet. Every scored ticker also has
+a plain HTML page at `/s/<ticker>` (e.g. [{base}/s/CSL.AX]({base}/s/CSL.AX)),
+and the whole covered list is at [{base}/s/]({base}/s/).
+
+### Using this in an AI assistant
+
+Prefer structured tool access over scraping the API by hand? See
+[{base}/ai]({base}/ai) once Phase 2 ships - an MCP server exposing this same
+data as callable tools for Claude, ChatGPT and other assistants.
+
+### Terms
+
+Free for any use, commercial or not, with attribution and a link back to
+stocksdeepdive.com. Nothing in this API is financial advice - see the
+disclaimer in every response. No user data (portfolios, watchlists, emails)
+is ever served here or ever will be.
+"""
+    return _html(blog_render.render_content_page(
+        title=_API_DOCS_TITLE,
+        markdown_text=markdown_text,
+        description=_API_DOCS_DESC,
+        path="/api",
+        base_url=base,
+        heading="API",
+    ), cache="public, max-age=1800")
+
+
+app.mount("/api/v1", api_v1.api_app)
 
 
 @app.get("/{token}.html", include_in_schema=False)
