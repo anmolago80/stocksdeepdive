@@ -24,6 +24,7 @@ score_history.py if a time series is ever needed).
 """
 
 import json
+import math
 import os
 import sqlite3
 from datetime import datetime, timezone
@@ -175,13 +176,31 @@ def public_view(row):
     info.get("shortName") or ticker` pattern. Deliberately does not
     include "Ticker" itself - every caller already has the ticker from
     the outer snapshot/scan-row shape, so this stays purely about
-    field *names*, not a full row reshape."""
+    field *names*, not a full row reshape.
+
+    Post-fix, 2026-08-31 (live-caught while verifying this same round's
+    deploy): a ticker whose price/intrinsic-value fetch failed can have
+    a literal NaN float sitting in the stored row (e.g. yfinance
+    returning no price that day). NaN silently rendered as the text
+    "nan" on /s/<ticker>, and crashed /api/v1/deep-dive/* and every
+    other JSON surface outright - Starlette's JSONResponse calls
+    json.dumps(..., allow_nan=False), so a NaN in the payload is a 500,
+    not just a cosmetic glitch. Every value that reaches a public
+    surface goes through this one function, so sanitizing NaN/Infinity
+    to None here (rather than patching each of the call sites) fixes the
+    JSON crash and, for free, makes the HTML/copy-text paths fall back
+    to their existing "-" / omit-this-fact handling for a missing
+    number, instead of ever having a NaN to format in the first place."""
     row = row or {}
-    return {
+    out = {
         public_key: row[internal_key]
         for internal_key, public_key in _PUBLIC_FIELD_MAP.items()
         if internal_key in row
     }
+    for key, value in out.items():
+        if isinstance(value, float) and not math.isfinite(value):
+            out[key] = None
+    return out
 
 
 def build_snapshots_from_scan(universe, rows, log=print):
