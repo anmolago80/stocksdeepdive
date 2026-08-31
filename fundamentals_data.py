@@ -74,7 +74,20 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # currency-conversion fix below) - mirrors auto_compounder_engine's own
 # ENGINE_VERSION cache-busting pattern. A cached bundle written under an
 # older version is treated as a miss, same as an expired one.
-BUNDLE_VERSION = 5
+#
+# 5->6 (2026-08-31): the sharesOutstanding-fallback fix in
+# _overlay_fresh_price()/_shares_outstanding_fallback() (CPRT's 8 vanished
+# Fundamentals ratios). Confirmed live that skipping this bump means the
+# fix ships invisibly: CPRT's Compounder View is cached per-ticker on the
+# Railway Volume by auto_compounder_engine.py's own section cache, which
+# only calls get_bundle() again (and so only re-runs this fix) once its
+# stored bundle_version stops matching this constant - otherwise it keeps
+# serving the pre-fix cached section for up to 24h, exactly matching
+# Andrew's "still showing the same indicators, nothing changed" even
+# though the deploy itself succeeded. See auto_compounder_engine.py's own
+# _read_cache() comment (audit fixes 2.1/2.2) for the full mechanism this
+# bump exists to trigger.
+BUNDLE_VERSION = 6
 
 
 def _data_dir():
