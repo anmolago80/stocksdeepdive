@@ -1,6 +1,6 @@
 # StocksDeepDive — Complete User Manual
 
-stocksdeepdive.com · Version of 30 August 2026 · supersedes the 13 August 2026 edition
+stocksdeepdive.com · Version of 31 August 2026 · supersedes the 30 August 2026 edition
 
 This manual describes every page, every table, every score and every colour on the public
 site, exactly as deployed. Nothing here is left to interpretation: each formula is written
@@ -63,6 +63,13 @@ the address bar at any time captures the current view.
 owner's own admin unlock (an access-key prompt) — it switches that one browser into the full
 admin view described in §12. It has no function for anyone without the key, and entering the
 wrong one simply shows "Incorrect key."
+
+**On your phone.** The site can be installed as an app: open it in Safari on iPhone, tap
+Share, then "Add to Home Screen" — it then opens full-screen from its own icon, with no
+address bar. Chrome on Android offers the same via an "Install app" prompt. Once installed,
+if you're signed in you can also turn on push notifications for a followed company's research
+updates (see §9) — that needs the app to be installed first; a plain browser tab can't receive
+them on iPhone.
 
 ---
 
@@ -473,7 +480,10 @@ Signing in unlocks:
 full sign-in: on the Research and Deep Dive pages, a Follow toggle lets you leave just an
 email address to be notified when that company's Rational Compounder research is updated (or,
 via a follow-all option, when any company's research changes) — it's a notification
-subscription for one thing changing, not a saved list you manage.
+subscription for one thing changing, not a saved list you manage. If you're signed in and have
+installed the site as an app (§1), an "Also notify on this device" button sits next to the
+Follow toggle — it's a second, independent channel (a phone/browser push notification) for the
+same research-update event, not a replacement for the email.
 
 **Feedback** — the "Tell us what you think" button on any results page goes straight to the
 author's inbox, or email rationalcompounder@stocksdeepdive.com.
