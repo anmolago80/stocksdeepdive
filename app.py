@@ -870,7 +870,7 @@ st.markdown(
     }
     /* ---------------- StocksDeepDive dark-terminal components ---------------- */
     .sdd-tape { background:#060b14; border:1px solid #1f3352; border-radius:8px;
-      overflow:hidden; white-space:nowrap;
+      overflow:hidden; white-space:nowrap; width:100%; max-width:100vw;
       font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px;
       padding:7px 0; margin:0 0 14px 0; }
     .sdd-tape-inner { display:inline-block; animation:sddscroll 45s linear infinite; }
@@ -885,6 +885,15 @@ st.markdown(
     .sdd-h1 em { font-style:normal; color:#2dd4bf; }
     .sdd-sub { color:#8aa0b8; font-size:16px; line-height:1.55; margin:14px 0 18px; max-width:540px; }
     .sdd-sub b { color:#e6edf5; }
+    /* Mobile PWA brief Part 1: every custom-HTML "infill bar" table on the
+       site (comparison, overnight scan, DCF Parameters, trade
+       filter/signals - anything built on _sdd_table()) goes through this
+       one wrapper class, added once in _sdd_table() itself so it applies
+       everywhere those tables are used without touching each call site.
+       The TABLE scrolls sideways inside its own box; the PAGE never does
+       - a table clipped instead of scrollable would silently hide real
+       columns, which is worse than a horizontal scrollbar on one card. */
+    .sdd-table-scroll { overflow-x:auto; -webkit-overflow-scrolling:touch; max-width:100%; }
     .sdd-card { background:#121f36; border:1px solid #1f3352; border-radius:14px; padding:18px 20px; }
     .sdd-card-tag { display:flex; justify-content:space-between; font-family:ui-monospace,Menlo,monospace;
       font-size:10.5px; letter-spacing:1.2px; color:#5b7290; margin-bottom:12px; }
@@ -958,6 +967,21 @@ st.markdown(
        brief's own checklist; each rule below maps to one concrete thing that was
        actually broken at that width, not a stylistic change. */
     @media (max-width:640px) {
+      /* Mobile PWA brief Part 1: safety net against sideways page drift,
+         NOT the actual fix (an element clipped-not-fixed still hides real
+         data) - the wide elements themselves are fixed individually below
+         and at their own rendering helpers (_sdd_table, the market tape).
+         Confirmed via Playwright at 390x844 on Deep Dive/Comparison/
+         Scanner: without this, tapping/scrolling near an over-wide
+         element (a plotly figure with a fixed internal width, a
+         still-too-wide table before its own wrapper below) drags the
+         whole PAGE sideways, not just that element. */
+      html, body, [data-testid="stAppViewContainer"],
+      [data-testid="stMainBlockContainer"], .main {
+        overflow-x: hidden !important;
+        max-width: 100vw;
+      }
+      body { overscroll-behavior-x: none; }
       /* The existing @media(900px) rule above only takes .sdd-cards5 /
          .sdd-covgrid / .sdd-strip down to 2 columns - fine at tablet
          width, still a squeeze at phone width (each card down to
@@ -4674,7 +4698,14 @@ def _rank_cell(value, column_values, fmt="{:,.2f}"):
 
 def _sdd_table(headers, rows_html, max_height=None):
     """Assemble the shared table shell (same styling as the side-by-side
-    comparison). rows_html = list of '<tr>...</tr>' strings."""
+    comparison). rows_html = list of '<tr>...</tr>' strings.
+
+    Mobile PWA brief Part 1: every caller (comparison, overnight scan,
+    DCF Parameters, trade filter/signals) goes through here, so the
+    horizontal-scroll wrapper (.sdd-table-scroll, defined in the
+    site-wide <style> block) is added ONCE, here, rather than at each of
+    the 6 call sites - the table itself scrolls sideways inside its own
+    box at phone width instead of widening the page or clipping columns."""
     table = (
         "<table style='width:100%;border-collapse:collapse;font-size:14px;'>"
         "<thead><tr>"
@@ -4687,8 +4718,8 @@ def _sdd_table(headers, rows_html, max_height=None):
         + "</tbody></table>"
     )
     if max_height:
-        return f"<div style='max-height:{max_height}px;overflow-y:auto;'>{table}</div>"
-    return table
+        table = f"<div style='max-height:{max_height}px;overflow-y:auto;'>{table}</div>"
+    return f"<div class='sdd-table-scroll'>{table}</div>"
 
 
 def _td(inner, minw=None):
