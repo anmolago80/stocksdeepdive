@@ -952,6 +952,75 @@ st.markdown(
       .sdd-strip { grid-template-columns:1fr 1fr; }
       .sdd-h1 { font-size:30px; }
     }
+    /* ---------------- Mobile fit-and-legibility pass (PWA brief Part 4) ----------------
+       iPhone-width (<=640px) fixes only - no redesign, same components, same colours.
+       Found by screenshotting every main page at 390x844/3x and comparing against the
+       brief's own checklist; each rule below maps to one concrete thing that was
+       actually broken at that width, not a stylistic change. */
+    @media (max-width:640px) {
+      /* The existing @media(900px) rule above only takes .sdd-cards5 /
+         .sdd-covgrid / .sdd-strip down to 2 columns - fine at tablet
+         width, still a squeeze at phone width (each card down to
+         roughly half the already-narrow viewport). One more column at
+         this breakpoint. */
+      .sdd-cards5, .sdd-covgrid, .sdd-strip { grid-template-columns:1fr; }
+      /* st.columns() does NOT auto-stack at this width in this Streamlit
+         version (verified: stHorizontalBlock stays flex-direction:row down
+         to 390px) - every ratio-based column layout on the site (the
+         header search box's [3,4,3] centering columns being the worst
+         offender: a ~40%-width input with 30% dead margin on each side,
+         clipping its own placeholder text mid-word) was quietly relying on
+         a stacking behaviour that never actually happens on a phone. This
+         is the single highest-leverage fix in this pass - it also
+         straightens out every metric/gauge column row and control row
+         sitewide that was squeezing instead of stacking. */
+      div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+        width: 100% !important;
+        flex: 1 1 100% !important;
+        min-width: 0 !important;
+      }
+      /* The footer's 3-column layout (.sdd-f-cols, defined above with a
+         fixed 60px gap) pushed its own third column ("Contact") off the
+         right edge of the viewport at phone width, clipping the contact
+         email and the "or the Feedback button" line - confirmed on every
+         page that uses this footer (home, deep-dive, comparison, scanner,
+         research, portfolio). Stack it instead. */
+      .sdd-f-cols { flex-direction: column; gap: 22px; }
+      /* st.pills (the "Try one:" example-ticker chips, and the blog
+         index's tag filter pills) rendered at ~32px tall - under the
+         ~40px minimum touch target called for in the brief. */
+      div[data-testid="stButtonGroup"] button {
+        min-height: 40px !important;
+        padding-top: 8px !important;
+        padding-bottom: 8px !important;
+      }
+      /* st.tabs()'s tab strip (Research page: Fundamentals / Value vs
+         Book / ... / Company Potential) already scrolls horizontally on
+         its own (Streamlit's default, confirmed via its own
+         overflow-x:auto) - it just isn't obvious that it does, and at
+         640px width the first two-and-a-bit tab labels are all that fit.
+         Tightening each tab's own padding/size lets more of the strip
+         show at once without touching the scroll mechanism itself. */
+      [data-testid="stTabs"] [role="tablist"] {
+        -webkit-overflow-scrolling: touch;
+      }
+      [data-testid="stTabs"] button[role="tab"] {
+        padding-left: 10px !important;
+        padding-right: 10px !important;
+        font-size: 13px !important;
+      }
+    }
+    /* iOS safe-area: in standalone (installed-app) mode there is no browser
+       chrome to absorb the notch/Dynamic Island, so the market tape at the
+       very top of the page (the first thing rendered - see _render_tape())
+       needs its own top inset or it renders partly under it. Scoped to
+       display-mode:standalone only, so this is a no-op in an ordinary
+       browser tab. */
+    @media (display-mode: standalone) {
+      div[data-testid="stAppViewContainer"] .block-container {
+        padding-top: calc(2.5rem + env(safe-area-inset-top)) !important;
+      }
+    }
     </style>
     """,
     unsafe_allow_html=True,
