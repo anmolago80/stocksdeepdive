@@ -41,6 +41,39 @@ _CP_COLOR_FILL = {"red": "#43222e", "amber": "#43371c", "green": "#27584a", "blu
 _CP_COLOR_TEXT = {"red": "#fb7185", "amber": "#fbbf24", "green": "#34d399", "blue": "#5ed3f0"}
 
 
+# -----------------------------------
+# Mobile PWA brief Part 2: shared sdd_plotly_chart() wrapper, used for
+# EVERY plotly figure on the site (app.py, this module, the portfolio
+# rendering code - all import it from here). Problem it fixes: on a
+# touch device, a one-finger drag that starts on top of a plotly chart
+# pans/zooms the CHART instead of scrolling the page - the browser has no
+# way to know a swipe "meant" the page until plotly's own JS decides
+# what to do with it, and plotly's default drag/scroll-zoom handlers
+# claim that gesture for themselves. Nothing on this site ever needed
+# drag-pan or scroll-zoom on a chart (every plot here is a fixed,
+# already-fully-visible view - value-over-time, gauges, contribution
+# bars, driver charts), so turning them off site-wide costs nothing and
+# hands every touch gesture on a chart back to the page. Hover (desktop)
+# and tap-to-read (touch) both keep working - only DRAG-to-pan and
+# pinch/scroll-to-zoom are disabled. Belt-and-braces CSS
+# (touch-action: pan-y pinch-zoom on the plotly DOM nodes) lives in
+# app.py's site-wide <style> block for the brief window before plotly's
+# own JS finishes attaching its handlers.
+# -----------------------------------
+
+def sdd_plotly_chart(fig, **kwargs):
+    """Drop-in replacement for st.plotly_chart - same call signature, so
+    every call site on the site was a mechanical rename to this function.
+    Forces dragmode off on the figure itself and merges
+    displayModeBar/scrollZoom/doubleClick off into whatever `config` (if
+    any) the caller already passed, so a caller-supplied config still
+    wins on any OTHER key."""
+    fig.update_layout(dragmode=False)
+    config = {"displayModeBar": False, "scrollZoom": False, "doubleClick": False, "responsive": True}
+    config.update(kwargs.pop("config", None) or {})
+    return st.plotly_chart(fig, use_container_width=True, config=config, **kwargs)
+
+
 def _md_safe(text):
     """Duplicated from app.py's own _md_safe (a 2-line HTML/LaTeX-escape
     helper also used outside the compounder rendering path, e.g. the
@@ -600,7 +633,7 @@ def render_section(sections, ticker, section_label, gate=None):
     if section_label == "Fundamentals":
         fig = _cp_price_chart(ticker, section.get("price_history", {}))
         if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            sdd_plotly_chart(fig, config={"displayModeBar": False})
         share_price_growth_fig = _cp_share_price_growth_chart(ticker, section.get("share_price_growth", {}))
     elif section_label == "Value vs Book":
         ap_metric = next((m for m in metrics if m["key"] == "AP"), None)
@@ -609,7 +642,7 @@ def render_section(sections, ticker, section_label, gate=None):
             ap_metric["thresholds"] if ap_metric else None,
         )
         if fig2:
-            st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+            sdd_plotly_chart(fig2, config={"displayModeBar": False})
             # Same statement-depth honesty as the Retained Earnings chart:
             # the IV/BV series only ever plots years the statements
             # actually cover, so when that's fewer than the workbook's
@@ -626,7 +659,7 @@ def render_section(sections, ticker, section_label, gate=None):
                 )
         fig3 = _cp_fcf_growth_chart(ticker, section.get("fcf_growth", {}))
         if fig3:
-            st.plotly_chart(fig3, use_container_width=True, config={"displayModeBar": False})
+            sdd_plotly_chart(fig3, config={"displayModeBar": False})
             _fcfg_entry = section.get("fcf_growth", {}).get(ticker) or {}
             _fcfg_years = _fcfg_entry.get("years") or []
             if _fcfg_years and len(_fcfg_years) < 9:
@@ -638,7 +671,7 @@ def render_section(sections, ticker, section_label, gate=None):
                 )
         fig4 = _cp_book_value_growth_chart(ticker, section.get("book_value_growth", {}))
         if fig4:
-            st.plotly_chart(fig4, use_container_width=True, config={"displayModeBar": False})
+            sdd_plotly_chart(fig4, config={"displayModeBar": False})
             _bvg_entry = section.get("book_value_growth", {}).get(ticker) or {}
             _bvg_years = _bvg_entry.get("years") or []
             if _bvg_years and len(_bvg_years) < 9:
@@ -653,7 +686,7 @@ def render_section(sections, ticker, section_label, gate=None):
         vc = section.get("value_created", {})
         fig = _cp_value_created_chart(ticker, vc)
         if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            sdd_plotly_chart(fig, config={"displayModeBar": False})
             # A starred bar is the auto engine's max-available cumulative
             # horizon (statement depth too shallow for the workbook's full
             # 5Y/10Y/TTM windows) - say exactly what it covers. Hand-built
@@ -694,15 +727,15 @@ def render_section(sections, ticker, section_label, gate=None):
         for col, fig in zip(chart_cols, [fig1, fig2, fig3]):
             with col:
                 if fig:
-                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                    sdd_plotly_chart(fig, config={"displayModeBar": False})
     elif section_label == "Cost of Capital":
         fig = _cp_wacc_roic_chart(ticker, section.get("wacc_roic_series", {}))
         if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            sdd_plotly_chart(fig, config={"displayModeBar": False})
     elif section_label == "Fair Value":
         fig, used = _cp_valuation_methods_chart(ticker, section.get("valuation_methods", {}))
         if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            sdd_plotly_chart(fig, config={"displayModeBar": False})
             _cp_render_valuation_inputs(
                 ticker, used, section.get("valuation_inputs", {}), section.get("valuation_methods", {})
             )
@@ -773,7 +806,7 @@ def render_section(sections, ticker, section_label, gate=None):
         st.warning(f"No data yet for {ticker} in {section_label}.")
 
     if share_price_growth_fig:
-        st.plotly_chart(share_price_growth_fig, use_container_width=True, config={"displayModeBar": False})
+        sdd_plotly_chart(share_price_growth_fig, config={"displayModeBar": False})
         _spg_entry = section.get("share_price_growth", {}).get(ticker) or {}
         _ytd_year = _spg_entry.get("ytd_year")
         if _ytd_year:

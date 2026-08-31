@@ -52,6 +52,7 @@ import blog_comments_store
 import blog_store
 import blog_render
 import compounder_ui
+from compounder_ui import sdd_plotly_chart
 import auto_compounder_engine
 
 # -----------------------------------
@@ -875,6 +876,21 @@ st.markdown(
       padding:7px 0; margin:0 0 14px 0; }
     .sdd-tape-inner { display:inline-block; animation:sddscroll 45s linear infinite; }
     @keyframes sddscroll { from { transform:translateX(0); } to { transform:translateX(-50%); } }
+    /* Mobile PWA brief Part 2: every plotly chart on the site is rendered
+       via the shared sdd_plotly_chart() helper (app.py/compounder_ui.py),
+       which already turns off dragmode/scrollZoom/doubleClick in the
+       figure's own config - this is the belt-and-braces half, so the
+       BROWSER already knows a touch-start on the chart's own drag layer
+       means "let the page scroll vertically" before plotly's JS has even
+       finished attaching its own touch handlers (there's a brief window
+       right after a chart mounts where only the CSS default - which
+       otherwise defaults to grabbing every touch axis for pan/zoom - is
+       in effect). pan-y pinch-zoom (not "none") keeps pinch-zoom gestures
+       from feeling broken while still handing vertical swipes to the page. */
+    .stPlotlyChart, .js-plotly-plot, .js-plotly-plot .plotly,
+    .js-plotly-plot .draglayer, .js-plotly-plot .nsewdrag {
+      touch-action: pan-y pinch-zoom !important;
+    }
     .sdd-tk { margin:0 18px; color:#8aa0b8; }
     .sdd-tk b { color:#e6edf5; font-weight:600; }
     .sdd-tk .up { color:#34d399; } .sdd-tk .dn { color:#fb7185; }
@@ -3852,7 +3868,7 @@ def page_deep_dive():
                     legend=dict(orientation="h", y=1.14),
                     yaxis_title=_dd["currency"],
                 )
-                st.plotly_chart(fig_px, use_container_width=True)
+                sdd_plotly_chart(fig_px)
 
         # --- Plain-English verdict: the same thesis engine Comparison
         # uses, so every Deep Dive opens with sentences, not just gauges. ---
@@ -3955,7 +3971,7 @@ def page_deep_dive():
                 "In plain English: one number blending business quality, price "
                 "versus estimated value, crowd psychology, and market attention."
             )
-            st.plotly_chart(
+            sdd_plotly_chart(
                 _dd_gauge(
                     _dd["long_score"], "Value Score",
                     [
@@ -3965,7 +3981,6 @@ def page_deep_dive():
                         (SIGNAL_THRESHOLDS["STRONG_LONG"], 100, "#27584a"),
                     ],
                 ),
-                use_container_width=True,
             )
         else:
             st.subheader(f"Long Score: {_dd['long_score']:.1f} - {_dd_signal}")
@@ -3973,7 +3988,7 @@ def page_deep_dive():
                 "In plain English: one number blending business quality, price "
                 "versus estimated value, crowd psychology, and market attention."
             )
-            st.plotly_chart(
+            sdd_plotly_chart(
                 _dd_gauge(
                     _dd["long_score"], f"Long Score - {_dd_signal}",
                     [
@@ -3983,7 +3998,6 @@ def page_deep_dive():
                         (SIGNAL_THRESHOLDS["STRONG_LONG"], 100, "#27584a"),
                     ],
                 ),
-                use_container_width=True,
             )
         if _factual():
             st.caption(
@@ -4006,14 +4020,13 @@ def page_deep_dive():
             )
 
         _score_word = "Value Score" if _factual() else "Long Score"
-        st.plotly_chart(
+        sdd_plotly_chart(
             _dd_contrib_chart(
                 _dd["contributions"],
                 f"What's driving the {_score_word} (points contributed by each factor)",
                 xaxis_title=f"Points toward {_score_word}",
                 height=280,
             ),
-            use_container_width=True,
         )
 
         st.divider()
@@ -4036,23 +4049,21 @@ def page_deep_dive():
         )
         _q_col1, _q_col2 = st.columns(2)
         with _q_col1:
-            st.plotly_chart(
+            sdd_plotly_chart(
                 _dd_gauge(
                     _dd["quality_score"], f"Quality - {_dd['quality_label']}",
                     [(0, 40, "#43222e"), (40, 60, "#43371c"),
                      (60, 80, "#1e3d34"), (80, 100, "#27584a")],
                 ),
-                use_container_width=True,
             )
         with _q_col2:
             if _dd["quality_components"]:
-                st.plotly_chart(
+                sdd_plotly_chart(
                     _dd_contrib_chart(
                         _dd["quality_components"],
                         "What's driving Quality (weighted terms)",
                         xaxis_title="Points toward Quality",
                     ),
-                    use_container_width=True,
                 )
             else:
                 st.info(
@@ -4079,22 +4090,20 @@ def page_deep_dive():
             st.caption(f"MA50: {_dd['currency']} {_dd['ma50']:,.2f}")
         _p_col1, _p_col2 = st.columns(2)
         with _p_col1:
-            st.plotly_chart(
+            sdd_plotly_chart(
                 _dd_gauge(
                     _dd["psychology_gauge"], f"Psychology - {_dd['psychology_sentiment']}",
                     [(0, 30, "#43222e"), (30, 45, "#43371c"), (45, 55, "#1f3352"),
                      (55, 70, "#1e3d34"), (70, 100, "#27584a")],
                 ),
-                use_container_width=True,
             )
         with _p_col2:
-            st.plotly_chart(
+            sdd_plotly_chart(
                 _dd_contrib_chart(
                     _dd["psychology_contributions"],
                     "What's driving Psychology (Fear - Greed - FOMO)",
                     xaxis_title="Points toward Psychology",
                 ),
-                use_container_width=True,
             )
 
         st.divider()
@@ -4113,22 +4122,20 @@ def page_deep_dive():
             )
         _dv_col1, _dv_col2 = st.columns(2)
         with _dv_col1:
-            st.plotly_chart(
+            sdd_plotly_chart(
                 _dd_gauge(
                     _dd["discovery_gauge"], f"Discovery - {_dd['discovery_label']}",
                     [(0, 25, "#43222e"), (25, 50, "#43371c"),
                      (50, 75, "#1e3d34"), (75, 100, "#27584a")],
                 ),
-                use_container_width=True,
             )
         with _dv_col2:
-            st.plotly_chart(
+            sdd_plotly_chart(
                 _dd_contrib_chart(
                     _dd["discovery_contributions"],
                     "What's driving Discovery (attention & momentum)",
                     xaxis_title="Points toward Discovery",
                 ),
-                use_container_width=True,
             )
 
         # Moat Score (Phase 1 - display only, NOT part of Value Score -
@@ -4186,22 +4193,20 @@ def page_deep_dive():
             )
             _moat_col1, _moat_col2 = st.columns(2)
             with _moat_col1:
-                st.plotly_chart(
+                sdd_plotly_chart(
                     _dd_gauge(
                         _dd["moat_gauge"], f"Moat - {_dd['moat_band_label']}",
                         [(0, 40, "#43222e"), (40, 70, "#43371c"), (70, 100, "#27584a")],
                     ),
-                    use_container_width=True,
                 )
             with _moat_col2:
                 if _dd.get("moat_contributions"):
-                    st.plotly_chart(
+                    sdd_plotly_chart(
                         _dd_contrib_chart(
                             _dd["moat_contributions"],
                             "What's driving Moat (durability of the return)",
                             xaxis_title="Points toward Moat",
                         ),
-                        use_container_width=True,
                     )
 
         # Margin of Safety - moved here (after Discovery Score, before Trade
@@ -4220,7 +4225,7 @@ def page_deep_dive():
             _mos_gauge_val = max(-50, min(_mos_val, 100))
             _mos_col1, _mos_col2 = st.columns(2)
             with _mos_col1:
-                st.plotly_chart(
+                sdd_plotly_chart(
                     _dd_gauge(
                         _mos_gauge_val, f"Margin of Safety - {_dd['valuation']}",
                         # Audit fix 5.6: the underlying label logic
@@ -4237,7 +4242,6 @@ def page_deep_dive():
                          (25, 100, "#1e3d34")],
                         axis_range=(-50, 100),
                     ),
-                    use_container_width=True,
                 )
                 if _mos_val != _mos_gauge_val:
                     st.caption("Dial capped at -50%/100% for readability.")
@@ -4267,7 +4271,7 @@ def page_deep_dive():
                     xaxis_title=_dd["currency"],
                     xaxis=dict(range=[0, _mos_bar_max * 1.18]),
                 )
-                st.plotly_chart(fig_val, use_container_width=True)
+                sdd_plotly_chart(fig_val)
             st.caption(
                 "Green (25%+) = UNDERVALUED. Amber (0-25%) = FAIR. "
                 "Red (below 0%) = EXPENSIVE - trading above intrinsic value."
@@ -4285,21 +4289,19 @@ def page_deep_dive():
             st.subheader(f"Trade Setup: {_dd['trade_setup_score']} - {_dd['trade_setup_signal']}")
             _t_col1, _t_col2 = st.columns(2)
             with _t_col1:
-                st.plotly_chart(
+                sdd_plotly_chart(
                     _dd_gauge(
                         _dd["trade_setup_score"], f"Trade Setup - {_dd['trade_setup_signal']}",
                         [(0, 45, "#43222e"), (45, 65, "#43371c"), (65, 100, "#27584a")],
                     ),
-                    use_container_width=True,
                 )
             with _t_col2:
-                st.plotly_chart(
+                sdd_plotly_chart(
                     _dd_gate_chart(
                         _dd["trade_setup_contributions"],
                         "What's driving the Trade Setup Score",
                         xaxis_title="Points toward Setup Score",
                     ),
-                    use_container_width=True,
                 )
 
             _tt_x = [_dd["trade_setup_stop"], _dd["trade_setup_entry"], _dd["trade_setup_target1"]]
@@ -4332,7 +4334,7 @@ def page_deep_dive():
                 margin=dict(l=10, r=45, t=40, b=10),
                 xaxis=dict(range=[0, _tt_max * 1.18]),
             )
-            st.plotly_chart(fig_trade, use_container_width=True)
+            sdd_plotly_chart(fig_trade)
 
             _tt_rr = f"RR1 {_dd['trade_setup_rr1']}"
             if _dd["trade_setup_rr2"] is not None:
@@ -6594,7 +6596,7 @@ def _render_portfolio_value_chart(_vseries, _cmap):
         xaxis=dict(showgrid=False),
         yaxis=dict(showgrid=True, gridcolor="rgba(138,160,184,0.15)", tickprefix="A$", separatethousands=True),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    sdd_plotly_chart(fig)
 
     _bench_caption = ", ".join(sorted(_vseries["benchmarks_used"])) or "n/a"
     st.caption(
@@ -6672,7 +6674,7 @@ def _render_portfolio_dividends_received(_rows, _cmap):
             xaxis=dict(showgrid=False, tickprefix="A$", separatethousands=True),
             yaxis=dict(showgrid=False),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        sdd_plotly_chart(fig)
 
     if _no_dist:
         st.caption("No distributions on file for: " + ", ".join(sorted(set(_no_dist))))
@@ -6744,7 +6746,7 @@ def _render_portfolio_cheap_healthy_map(_rows, _analyses, _cmap):
         xaxis=dict(title="Margin of safety %", showgrid=True, gridcolor="rgba(138,160,184,0.12)", zeroline=False),
         yaxis=dict(title="Health score", range=[0, 100], showgrid=True, gridcolor="rgba(138,160,184,0.12)"),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    sdd_plotly_chart(fig)
     st.caption(
         "Bubble size = current weight in the portfolio. Positions of described "
         "calculations (MOS% from each holding's valuation, Health Score from the "
@@ -7349,21 +7351,21 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
         _fig_purchase = _phe_pie([r["label"] for r in _rows], [r["cost_aud"] for r in _rows],
                                   "Allocation at purchase (% of cost)", color_map=_cmap)
         if _fig_purchase:
-            st.plotly_chart(_fig_purchase, use_container_width=True)
+            sdd_plotly_chart(_fig_purchase)
         else:
             st.caption("No cost data yet.")
     with _dc2:
         _fig_now = _phe_pie([r["label"] for r in _rows], [r["value_aud"] for r in _rows],
                              "Allocation now (% of current value)", color_map=_cmap)
         if _fig_now:
-            st.plotly_chart(_fig_now, use_container_width=True)
+            sdd_plotly_chart(_fig_now)
         else:
             st.caption("No current-value data yet.")
 
     st.markdown("##### Profit/Loss by holding")
     _fig_pl = _phe_pl_bar([r["label"] for r in _rows], [r["profit_aud"] for r in _rows], "Profit/Loss by holding (AUD)")
     if _fig_pl:
-        st.plotly_chart(_fig_pl, use_container_width=True)
+        sdd_plotly_chart(_fig_pl)
     else:
         st.caption("No P/L data yet.")
 
@@ -7375,7 +7377,7 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
     _fig_div = _phe_pie([r["label"] for r in _rows], [r["pot_div_income_aud"] for r in _rows],
                          "Estimated annual dividend income (AUD)", color_map=_cmap)
     if _fig_div:
-        st.plotly_chart(_fig_div, use_container_width=True)
+        sdd_plotly_chart(_fig_div)
     else:
         st.caption("No dividend-paying holdings yet.")
 
