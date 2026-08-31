@@ -4,7 +4,14 @@ scheduler_engine.py
 A tiny in-process scheduler for the background jobs this site needs:
 
   1. NIGHTLY universe scans   -> nightly_scan.run_universe_scan(...)
-  2. WEEKLY watchlist digest  -> digest_engine.run_weekly_digest()
+  2. WEEKLY watchlist digest  -> weekly_brief_engine.run_weekly_brief()
+                                 (AI-readiness roadmap Phase 8: the same
+                                 Sunday send slot digest_engine.py always
+                                 used, now sent by weekly_brief_engine.py
+                                 instead - see that module's own docstring
+                                 for why it's a new module rather than an
+                                 edit to digest_engine.py, which stays
+                                 untouched and unused by the live schedule)
   3. NIGHTLY portfolio watchdog -> portfolio_watchdog_engine.run_nightly_watchdog()
 
 WHY IN-PROCESS, NOT A SEPARATE RAILWAY CRON SERVICE: Railway volumes
@@ -176,11 +183,18 @@ def _run_nightly(cfg, log):
 
 
 def _run_digest(log):
+    """AI-readiness roadmap Phase 8: this job slot now sends
+    weekly_brief_engine's personalised AI brief rather than
+    digest_engine's plain table - see weekly_brief_engine.py's own
+    docstring. Kept the name _run_digest / the "digest" lock and state
+    keys below unchanged (same weekday/hour config, same job-lock
+    discipline) since only the content generator changed, not the
+    schedule or the single-process coordination around it."""
     try:
-        import digest_engine
-        digest_engine.run_weekly_digest(log=log)
+        import weekly_brief_engine
+        weekly_brief_engine.run_weekly_brief(log=log)
     except Exception as e:
-        log(f"[scheduler] weekly digest failed: {e}")
+        log(f"[scheduler] weekly brief failed: {e}")
 
 
 def _run_watchdog(log):

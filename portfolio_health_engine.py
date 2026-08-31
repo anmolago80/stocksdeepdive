@@ -458,6 +458,34 @@ def get_recent_health_runs(email, portfolio, ticker, limit=8):
     return [r[0] for r in reversed(rows) if r[0] is not None]
 
 
+def get_health_as_of(email, portfolio, ticker, days_ago):
+    """The closest recorded Health run for (email, portfolio, ticker) at or
+    before `days_ago` days back from now (UTC) - the 'N days ago' sibling
+    of get_recent_health_runs() above, added for AI-readiness roadmap
+    Phase 8 (the weekly brief's "portfolio health changes" section), which
+    needs a specific point in time to compare against rather than "the
+    last few times someone opened the Health tab": get_recent_health_runs'
+    oldest-of-limit entry can be anywhere from hours to months back
+    depending entirely on how often this holding's Health tab happens to
+    get opened, so it is not a reliable "~7 days ago" reading on its own.
+    Read-only, same as get_recent_health_runs - never writes a row.
+    Returns the `overall` score (float) of the closest run at or before
+    that cutoff, or None if this holding has no recorded run that far
+    back yet (most holdings, most of the time - a Health run is only ever
+    written when someone actually opens the Health tab)."""
+    if not email or not portfolio or not ticker:
+        return None
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+    with _health_runs_conn() as conn:
+        row = conn.execute(
+            "SELECT overall FROM portfolio_health_runs "
+            "WHERE email = ? AND portfolio = ? AND ticker = ? AND as_of <= ? "
+            "ORDER BY as_of DESC LIMIT 1",
+            (email, portfolio, ticker, cutoff),
+        ).fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
 def baseline_snapshot_fields(snapshot):
     """The subset of fetch_snapshot()'s fields that make up a locked
     baseline - same field names the desktop-import seed already uses
