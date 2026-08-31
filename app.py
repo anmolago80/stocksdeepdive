@@ -82,6 +82,10 @@ import alert_engine
 import insider_store
 import insider_engine
 
+# Services batch, Part 3: broker CSV import for My Portfolio - pure
+# parsing/mapping, no network and no Anthropic API call.
+import broker_import_engine
+
 # AI-readiness roadmap Phase 5: the nightly Portfolio AI watchdog itself
 # runs from scheduler_engine.py, not from a live page render - imported
 # here only for its two small read helpers (get_last_notified(), for the
@@ -8315,6 +8319,171 @@ def _render_add_holding_expander(email, portfolio, _holdings):
                         st.rerun()
 
 
+def _render_broker_import_expander(email, portfolio):
+    """"Import from broker CSV" - Services batch Part 3. Parses via
+    broker_import_engine.parse_broker_csv() (pure, no network), previews
+    the aggregated per-ticker rows, then on confirm looks each ticker up
+    exactly like the manual Add-a-holding flow above (double
+    portfolio_health_engine.fetch_snapshot + baseline_snapshot_fields) so
+    baseline snapshot locking behaves exactly the same for an imported
+    holding as a manually-added one. A ticker already held in this
+    portfolio is merged (quantity summed, buy price recomputed as a
+    quantity-weighted average of the existing and imported positions) via
+    portfolio_store.update_position - the existing locked baseline is
+    never touched, same separation update_position always keeps. A
+    ticker that fails snapshot lookup (unknown/mistyped) is listed and
+    skipped - never guessed further than broker_import_engine's own
+    ticker-format mapping already attempted."""
+    with st.expander("Import from broker CSV"):
+        st.caption(
+            "Upload a transaction export from CommSec, SelfWealth or Stake, or a "
+            "generic Ticker/Units/Avg Cost/Date spreadsheet. Each ticker is looked "
+            f"up and baselined exactly like adding it by hand above - into **{portfolio}**."
+        )
+        _fmt_keys = ["commsec", "selfwealth", "stake", "generic"]
+        _fmt_names = ["CommSec", "SelfWealth", "Stake", "Generic"]
+        _samp_cols = st.columns(4)
+        for _sc, _sk, _sn in zip(_samp_cols, _fmt_keys, _fmt_names):
+            with _sc:
+                st.download_button(
+                    f"Sample: {_sn}", data=broker_import_engine.SAMPLE_CSV[_sk],
+                    file_name=f"sample_{_sk}.csv", mime="text/csv",
+                    key=_pf_key(portfolio, f"pf_import_sample_{_sk}"),
+                )
+        for _sk, _sn in zip(_fmt_keys, _fmt_names):
+            st.caption(f"**{_sn}**: {broker_import_engine.EXPORT_HINTS[_sk]}")
+
+        # The file_uploader's key carries a generation counter, bumped after
+        # a successful confirm below, so the widget resets to empty rather
+        # than leaving the just-imported file "loaded" - without this, the
+        # next rerun re-parses the same file into a preview that now shows
+        # the just-added tickers as existing positions, and a second
+        # "Confirm import" click on that stale preview would merge them a
+        # second time.
+        _gen_key = _pf_key(portfolio, "pf_import_gen")
+        _gen = st.session_state.get(_gen_key, 0)
+        _upload = st.file_uploader(
+            "CSV file", type=["csv"], key=_pf_key(portfolio, f"pf_import_upload_{_gen}"),
+        )
+        _parsed_key = _pf_key(portfolio, "pf_import_parsed")
+        if _upload is not None:
+            try:
+                _text = _upload.getvalue().decode("utf-8-sig", errors="replace")
+            except Exception:
+                _text = ""
+            st.session_state[_parsed_key] = broker_import_engine.parse_broker_csv(_text)
+
+        _result = st.session_state.get(_parsed_key)
+        if _result:
+            if _result.get("error"):
+                st.error(_result["error"])
+            else:
+                st.success(
+                    f"Detected format: **{_result['format_detected']}** - "
+                    f"{len(_result['rows'])} ticker(s) found from {_result['raw_row_count']} row(s)."
+                )
+                if _result["skipped_unparsed_rows"]:
+                    st.caption(f"{_result['skipped_unparsed_rows']} row(s) couldn't be read and were skipped.")
+                if _result["skipped_zero_or_negative"]:
+                    st.caption(
+                        "Fully or over-sold within this file, nothing left to hold: "
+                        + ", ".join(_result["skipped_zero_or_negative"])
+                    )
+                if _result["rows"]:
+                    _preview_rows = []
+                    for _r in _result["rows"]:
+                        _existing = portfolio_store.get_holding(email, portfolio, _r["yahoo_ticker"])
+                        _preview_rows.append({
+                            "Ticker": _r["yahoo_ticker"],
+                            "Quantity": _r["quantity"],
+                            "Avg price": round(_r["avg_price"], 4),
+                            "Buy date": _r["buy_date"].isoformat() + (" (defaulted to today)" if _r["date_defaulted"] else ""),
+                            "Action": (f"Merge into existing {_existing['shares']:,.4f}-share position"
+                                       if _existing else "New holding"),
+                        })
+                    st.dataframe(_preview_rows, hide_index=True, use_container_width=True)
+
+                    if st.button("Confirm import", key=_pf_key(portfolio, "pf_import_confirm"), type="primary"):
+                        _added, _merged, _unknown = [], [], []
+                        with st.spinner(f"Looking up and baselining {len(_result['rows'])} ticker(s)..."):
+                            for _r in _result["rows"]:
+                                _tk = _r["yahoo_ticker"]
+                                _discount, _perpetual, _growth, _manual_fcf = _dcf_overrides_for(_tk)
+                                try:
+                                    _snap1 = portfolio_health_engine.fetch_snapshot(
+                                        _tk, discount_rate=_discount, perpetual_rate=_perpetual,
+                                        growth_rate=_growth, manual_fcf=_manual_fcf,
+                                    )
+                                except Exception:
+                                    _snap1 = None
+                                if not _snap1 or _snap1.get("price") is None:
+                                    _unknown.append(_tk)
+                                    continue
+
+                                _existing = portfolio_store.get_holding(email, portfolio, _tk)
+                                if _existing:
+                                    # Already held in this portfolio: merge quantity
+                                    # + weighted-average cost, never re-baseline (the
+                                    # locked baseline stays exactly as it was, same
+                                    # invariant add_holding()'s own docstring
+                                    # guarantees for a re-add).
+                                    _old_shares = float(_existing.get("shares") or 0)
+                                    _old_price = float(_existing.get("buy_price") or 0)
+                                    _new_shares = _old_shares + _r["quantity"]
+                                    _new_price = (
+                                        ((_old_shares * _old_price) + (_r["quantity"] * _r["avg_price"])) / _new_shares
+                                        if _new_shares > 0 else _old_price
+                                    )
+                                    _new_date = _existing.get("buy_date")
+                                    try:
+                                        if _existing.get("buy_date") and _r["buy_date"] < _date.fromisoformat(_existing["buy_date"]):
+                                            _new_date = _r["buy_date"].isoformat()
+                                    except Exception:
+                                        pass
+                                    portfolio_store.update_position(
+                                        email, portfolio, _tk, shares=_new_shares,
+                                        buy_price=round(_new_price, 6), buy_date=_new_date,
+                                    )
+                                    _merged.append(_tk)
+                                else:
+                                    # New holding: capture today's baseline with a
+                                    # second fetch_snapshot, exactly matching
+                                    # _render_add_holding_expander's own two-fetch
+                                    # pattern above (once for lookup, once at
+                                    # confirm-time for the locked baseline).
+                                    try:
+                                        _snap2 = portfolio_health_engine.fetch_snapshot(
+                                            _tk, discount_rate=_discount, perpetual_rate=_perpetual,
+                                            growth_rate=_growth, manual_fcf=_manual_fcf,
+                                        )
+                                    except Exception:
+                                        _snap2 = _snap1
+                                    _baseline = portfolio_health_engine.baseline_snapshot_fields(_snap2 or _snap1)
+                                    _today = datetime.now(timezone.utc).date().isoformat()
+                                    portfolio_store.add_holding(
+                                        email, portfolio, _tk, name=_snap1.get("name") or _tk,
+                                        kind="ETF" if _snap1.get("quote_type") == "ETF" else "STOCK",
+                                        currency=_snap1.get("currency") or "AUD",
+                                        shares=_r["quantity"], buy_price=_r["avg_price"],
+                                        buy_date=_r["buy_date"].isoformat(),
+                                        baseline=_baseline, baseline_date=_today,
+                                        source="broker_import",
+                                    )
+                                    _added.append(_tk)
+                        st.session_state.pop(_parsed_key, None)
+                        st.session_state[_gen_key] = _gen + 1  # reset the file_uploader widget
+                        if _added:
+                            st.toast(f"Added {len(_added)} holding(s): {', '.join(_added)}.", icon="✅")
+                        if _merged:
+                            st.toast(f"Merged into {len(_merged)} existing holding(s): {', '.join(_merged)}.", icon="🔀")
+                        if _unknown:
+                            st.warning(
+                                f"Couldn't find price data for: {', '.join(_unknown)} - skipped, not "
+                                "guessed. Add these by hand above if the ticker format needs adjusting."
+                            )
+                        st.rerun()
+
+
 def _render_manage_holding(email, portfolio, h):
     _wkey = f"{portfolio}_{h['ticker']}"
     _mc1, _mc2 = st.columns([3, 1])
@@ -8393,6 +8562,7 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
         )
     else:
         _render_add_holding_expander(email, active_portfolio, _holdings)
+        _render_broker_import_expander(email, active_portfolio)
 
     if not _holdings:
         st.info("No holdings yet - add one above to get started."
