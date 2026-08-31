@@ -62,6 +62,10 @@ import site_content
 # client every Ask box below goes through.
 import ai_gate
 import ai_client
+
+# AI-readiness roadmap Phase 9: "Explain this number" - the (ticker,
+# metric) explanation cache _render_explain_popover() reads/writes below.
+import explain_cache_store
 import ai_settings_store
 import ai_usage_store
 
@@ -3718,6 +3722,181 @@ as a fact &mdash; you always know which numbers are computed and which are assum
             )
 
 
+# ---------------------------------------------------------------------
+# AI-readiness roadmap Phase 9: "Explain this number" - a small (i)
+# popover next to each Deep Dive gauge that answers "what does this mean
+# for THIS stock", grounded in ONLY the Methodology's definition of that
+# metric plus this ticker's own already-on-the-page computed figures -
+# never a generic re-explanation of the metric itself (METRIC_HELP above
+# already covers that, in the plain st.metric() tooltips). Cached per
+# (ticker, metric_key) via explain_cache_store.py - see that module's own
+# docstring for why the cache is shared across every visitor rather than
+# per-user, and _EXPLAIN_CACHE_TTL_HOURS below for the freshness window
+# (same 24h cadence the neighbouring auto Compounder View cache already
+# uses on this exact page).
+#
+# Haiku 4.5 (ai_client.MODEL_HAIKU) - explicitly named as a Haiku-default
+# feature in the roadmap's own model-policy note (ground rule 7: "Ask
+# boxes, explain this number, watchdog and moderation" all default to
+# Haiku; Sonnet is reserved for Phase 7/8 only).
+# ---------------------------------------------------------------------
+
+_EXPLAIN_CACHE_TTL_HOURS = 24
+
+_EXPLAIN_SYSTEM_PROMPT = """You are explaining ONE calculated number on a stock analysis site to the
+visitor looking at it right now, using ONLY the Methodology definition and
+the specific figures given below - never invent a number, a comparison, or
+a fact not present in the data. This is a factual description of what the
+site's own calculator computed for this specific stock, not investment
+advice: never tell the reader to buy, hold or sell anything, and never
+predict what the number will do next.
+
+Write 2-3 short sentences of plain prose - no headings, no bullet points.
+Explain what this specific figure means for THIS stock in particular, not
+a generic definition of the metric (the site already shows that
+separately) - grounded in the exact inputs/components given below. Use
+the Methodology's own definition to explain HOW the number is calculated,
+then state what that calculation came out to for this stock and why
+(citing the components given)."""
+
+
+def _explain_context_text(dd, metric_key):
+    """The exact, already-computed figures behind one gauge/metric on the
+    Deep Dive page for `dd['ticker']` - the only ticker-specific facts the
+    AI call is allowed to reason from. Every field read here is already
+    rendered somewhere on this same page render, nothing new is computed."""
+    lines = [f"TICKER: {dd['ticker']} ({dd.get('name') or ''})"]
+
+    if metric_key == "value_score":
+        _label = "Value Score" if _factual() else "Long Score"
+        lines.append(f"{_label}: {dd['long_score']:.1f}/100")
+        lines.append(f"Valuation read: {dd.get('valuation')}")
+        for _name, _val in (dd.get("contributions") or {}).items():
+            lines.append(f"  - {_name}: {_val:+.1f} points")
+    elif metric_key == "quality":
+        lines.append(f"Quality Score: {dd['quality_score']}/100 ({dd['quality_label']})")
+        if dd.get("quality_default"):
+            lines.append("No fundamentals data was available - this is the base/default score.")
+        for _name, _val in (dd.get("quality_components") or {}).items():
+            lines.append(f"  - {_name}: {_val:+.1f} points")
+    elif metric_key == "psychology":
+        lines.append(f"Psychology Score: {dd['psychology']:+.1f} ({dd['psychology_sentiment']})")
+        lines.append(f"Fear: {dd.get('fear')}, Greed: {dd.get('greed')}, FOMO: {dd.get('fomo')}")
+        if dd.get("ma50_defaulted"):
+            lines.append("MA50 could not be computed this run - Greed defaulted to 0.")
+        elif dd.get("ma50") is not None:
+            lines.append(f"50-day moving average: {dd['ma50']:,.2f} {dd.get('currency')}")
+        for _name, _val in (dd.get("psychology_contributions") or {}).items():
+            lines.append(f"  - {_name}: {_val:+.1f} points")
+    elif metric_key == "discovery":
+        lines.append(f"Discovery Score: {dd['discovery']:.1f} ({dd['discovery_label']})")
+        if dd.get("trend_score_failed"):
+            lines.append("Trend Score's fetch failed this run - Discovery may be understated.")
+        for _name, _val in (dd.get("discovery_contributions") or {}).items():
+            lines.append(f"  - {_name}: {_val:+.1f} points")
+    elif metric_key == "moat":
+        lines.append(f"Moat Score: {dd.get('moat')}/100 ({dd.get('moat_band_label')})")
+        lines.append(f"{dd.get('moat_years', 0)} year(s) of statement data used, mode={dd.get('moat_mode')}")
+        if dd.get("moat_erosion") in ("eroding", "watch"):
+            lines.append(f"Moat erosion flag: {dd['moat_erosion']}")
+        for _name, _val in (dd.get("moat_contributions") or {}).items():
+            lines.append(f"  - {_name}: {_val:+.1f} points")
+    elif metric_key == "margin_of_safety":
+        lines.append(f"Price: {dd['price']:,.2f} {dd['currency']}")
+        lines.append(f"Intrinsic Value (DCF base case): {dd['intrinsic_value']:,.2f} {dd['currency']}")
+        lines.append(f"Margin of Safety: {dd['mos']:+.1f}% ({dd['valuation']})")
+    elif metric_key == "trade_setup":
+        lines.append(f"Trade Setup Score: {dd.get('trade_setup_score')} ({dd.get('trade_setup_signal')})")
+        lines.append(
+            f"Current price {dd.get('trade_setup_current_price')}, "
+            f"Entry zone {dd.get('trade_setup_entry')}, Stop {dd.get('trade_setup_stop')}, "
+            f"Target 1 {dd.get('trade_setup_target1')}"
+        )
+        for _name, _val in (dd.get("trade_setup_contributions") or {}).items():
+            lines.append(f"  - {_name}: {_val:+.1f} points")
+    return "\n".join(lines)
+
+
+def _render_explain_popover(dd, metric_key):
+    """The (i) popover itself - see this section's own comment above for
+    the full design. An already-fresh cached explanation is shown to ANY
+    visitor (no sign-in needed to READ one - nothing private in a
+    description of a public number); generating a FRESH one requires
+    sign-in and passes through the same ai_gate quota every AI feature
+    uses."""
+    ticker = dd["ticker"]
+    _wrap_key = f"dd_explain_wrap_{metric_key}"
+    st.markdown(
+        f"""
+        <style>
+        div.st-key-{_wrap_key} button {{
+            border: none !important;
+            background: transparent !important;
+            box-shadow: none !important;
+            padding: 0.05rem 0.4rem !important;
+            min-height: 0 !important;
+            font-size: 0.85rem !important;
+            color: #64748b !important;
+        }}
+        div.st-key-{_wrap_key} button:hover,
+        div.st-key-{_wrap_key} button:focus,
+        div.st-key-{_wrap_key} button:active {{
+            border: none !important;
+            background: transparent !important;
+            box-shadow: none !important;
+            color: #0d9488 !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.container(key=_wrap_key), st.popover(f"ⓘ Explain this for {ticker}"):
+        try:
+            cached = explain_cache_store.get_fresh(ticker, metric_key, _EXPLAIN_CACHE_TTL_HOURS)
+        except Exception:
+            cached = None
+        if cached:
+            st.markdown(f"**{ai_client.ANSWER_LABEL}:**\n\n{cached}")
+            return
+        if not ai_client.available():
+            st.caption("AI explanations aren't configured on this deploy yet.")
+            return
+        email = paywall_engine.current_user_email()
+        if not email:
+            st.caption("Sign in to generate an AI explanation for this number.")
+            return
+        allowed, msg, _tier = ai_gate.check(email, "explain_number")
+        if not allowed:
+            st.caption(msg)
+            return
+        _render_ask_quota_caption(email, "explain_number")
+        if st.button("Generate explanation", key=f"dd_explain_btn_{metric_key}_{ticker}"):
+            with st.spinner("Asking..."):
+                _context = _explain_context_text(dd, metric_key)
+                _methodology = site_content.methodology_md(factual=_factual())
+                result = ai_client.ask(
+                    _EXPLAIN_SYSTEM_PROMPT,
+                    f"METHODOLOGY:\n{_methodology}\n\n{_context}\n\n"
+                    f"Explain this number for {ticker}.",
+                    model=ai_client.MODEL_HAIKU, max_tokens=350,
+                )
+            if result.get("input_tokens") or result.get("output_tokens"):
+                try:
+                    ai_gate.record(email, "explain_number", result.get("model"),
+                                    result.get("input_tokens"), result.get("output_tokens"),
+                                    result.get("cost_usd"))
+                except Exception:
+                    pass
+            if result.get("ok"):
+                try:
+                    explain_cache_store.set(ticker, metric_key, result["text"], result.get("model"))
+                except Exception:
+                    pass
+                st.markdown(f"**{ai_client.ANSWER_LABEL}:**\n\n{result['text']}")
+            else:
+                st.caption(result.get("error") or "Couldn't get an answer right now - please try again.")
+
+
 def page_deep_dive():
     _render_header(compact=True, page_label="Deep Dive")
     _dd = st.session_state.get("dd_result")
@@ -4105,6 +4284,7 @@ def page_deep_dive():
                 "In plain English: one number blending business quality, price "
                 "versus estimated value, crowd psychology, and market attention."
             )
+            _render_explain_popover(_dd, "value_score")
             sdd_plotly_chart(
                 _dd_gauge(
                     _dd["long_score"], "Value Score",
@@ -4122,6 +4302,7 @@ def page_deep_dive():
                 "In plain English: one number blending business quality, price "
                 "versus estimated value, crowd psychology, and market attention."
             )
+            _render_explain_popover(_dd, "value_score")
             sdd_plotly_chart(
                 _dd_gauge(
                     _dd["long_score"], f"Long Score - {_dd_signal}",
@@ -4181,6 +4362,7 @@ def page_deep_dive():
             "profitability, balance sheet strength, and growth - judged "
             "from its own financial statements."
         )
+        _render_explain_popover(_dd, "quality")
         _q_col1, _q_col2 = st.columns(2)
         with _q_col1:
             sdd_plotly_chart(
@@ -4213,6 +4395,7 @@ def page_deep_dive():
             "In plain English: whether the crowd trading this stock right now "
             "looks fearful, calm, or greedy, read from recent price behaviour."
         )
+        _render_explain_popover(_dd, "psychology")
         if _dd.get("ma50_defaulted"):
             st.warning(
                 f"MA50 couldn't be computed (fewer than 50 trading days available in "
@@ -4246,6 +4429,7 @@ def page_deep_dive():
             "In plain English: how much attention this stock is getting right "
             "now, from search interest, news, and trading volume."
         )
+        _render_explain_popover(_dd, "discovery")
         if _dd.get("trend_score_failed"):
             st.warning(
                 "Trend Score's fetch failed on this load (Google Trends and/or "
@@ -4299,6 +4483,7 @@ def page_deep_dive():
                 "protected from competitors, based on returns on capital and "
                 "margin durability."
             )
+            _render_explain_popover(_dd, "moat")
             if _dd.get("moat_erosion") == "eroding":
                 st.error(
                     "Moat watch: ROIC and operating margin both sit meaningfully "
@@ -4356,6 +4541,7 @@ def page_deep_dive():
                 "In plain English: how much cheaper today's price is than what "
                 "the model estimates the business is worth."
             )
+            _render_explain_popover(_dd, "margin_of_safety")
             _mos_gauge_val = max(-50, min(_mos_val, 100))
             _mos_col1, _mos_col2 = st.columns(2)
             with _mos_col1:
@@ -4421,6 +4607,7 @@ def page_deep_dive():
         if not _factual():
             st.divider()
             st.subheader(f"Trade Setup: {_dd['trade_setup_score']} - {_dd['trade_setup_signal']}")
+            _render_explain_popover(_dd, "trade_setup")
             _t_col1, _t_col2 = st.columns(2)
             with _t_col1:
                 sdd_plotly_chart(
