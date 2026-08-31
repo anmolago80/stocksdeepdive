@@ -69,6 +69,9 @@ from fastapi.staticfiles import StaticFiles
 import blog_comments_store
 import blog_render
 import blog_store
+import email_auth
+import push_send
+import push_store
 import site_content
 
 try:
@@ -224,6 +227,20 @@ def _same_origin(request: Request) -> bool:
     origin = request.headers.get("origin") or request.headers.get("referer") or ""
     host = request.headers.get("host", "")
     return bool(host) and host in origin
+
+
+def _signed_in_email(request: Request):
+    """The visitor's signed-in email, resolved directly from the sdd_auth
+    cookie (email_auth.session_email) - completely independent of
+    Streamlit's own session state, since this process never talks to
+    Streamlit for these calls. Used only by the /push/* routes below."""
+    tok = request.cookies.get("sdd_auth")
+    if not tok:
+        return None
+    try:
+        return email_auth.session_email(tok)
+    except Exception:
+        return None
 
 
 def _client_ip(request: Request) -> str:
@@ -437,6 +454,89 @@ async def service_worker():
         # checks for a new SW.js on navigation/registration, and an HTTP
         # cache hit would hide a real update from even that check).
         headers={"Cache-Control": "no-cache"})
+
+
+# -----------------------------------
+# WEB PUSH (Part 3) - subscribe/unsubscribe/test, plus the public key the
+# browser needs to create a subscription in the first place.
+#
+# Identity for all three POST routes below comes ONLY from the sdd_auth
+# cookie (see _signed_in_email above), resolved the exact same way
+# email_auth/paywall_engine resolve it - never from anything the client
+# claims about itself in the request body. This is what lets these routes
+# work with zero Streamlit involvement: the browser's own push-subscribe
+# JS (rendered inside the app via st.components.v1.html, since it needs a
+# same-origin frame with real script execution - see app.py's
+# _render_push_control) calls straight back to this process with
+# credentials:'include', and this process alone decides whose account the
+# subscription belongs to.
+# -----------------------------------
+
+@app.get("/push/vapid-public-key", include_in_schema=False)
+async def push_vapid_public_key():
+    """Public by design - this is the applicationServerKey every browser's
+    pushManager.subscribe() call needs, not a secret. Empty string (not an
+    error) when VAPID isn't configured yet, so the UI can show "not
+    available yet" instead of a broken fetch."""
+    key = os.environ.get("VAPID_PUBLIC_KEY", "").strip()
+    return PlainTextResponse(key, headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.post("/push/subscribe", include_in_schema=False)
+async def push_subscribe(request: Request):
+    if not _same_origin(request):
+        return Response(status_code=403)
+    email = _signed_in_email(request)
+    if not email:
+        return Response(status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return Response(status_code=400)
+    if not push_store.subscribe(email, body):
+        return Response(status_code=400)
+    return Response(status_code=204)
+
+
+@app.post("/push/unsubscribe", include_in_schema=False)
+async def push_unsubscribe(request: Request):
+    if not _same_origin(request):
+        return Response(status_code=403)
+    email = _signed_in_email(request)
+    if not email:
+        return Response(status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    endpoint = (body.get("endpoint") or "").strip()
+    # Only ever unsubscribe a device that actually belongs to the caller -
+    # a signed-in visitor has no business deleting anyone else's
+    # subscription even if they somehow knew (or guessed) its endpoint.
+    if endpoint and push_store.endpoint_owner(endpoint) == email:
+        push_store.unsubscribe(endpoint)
+    return Response(status_code=204)
+
+
+@app.post("/push/send-test", include_in_schema=False)
+async def push_send_test(request: Request):
+    """Backs the admin-only "send test notification to my devices" button
+    (app.py gates who ever sees that button; this route itself just
+    requires sign-in and always targets the caller's OWN devices, never
+    an arbitrary email, so there is no privilege check to get wrong here)."""
+    if not _same_origin(request):
+        return Response(status_code=403)
+    email = _signed_in_email(request)
+    if not email:
+        return Response(status_code=401)
+    if not push_send.is_configured():
+        return Response(status_code=503)
+    summary = push_send.send_to_email(
+        email, "StocksDeepDive test notification",
+        "If you can see this, push notifications are working on this device.",
+        url="/",
+    )
+    return Response(status_code=200, content=str(summary), media_type="text/plain")
 
 
 # -----------------------------------

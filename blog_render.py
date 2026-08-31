@@ -40,7 +40,70 @@ DEFAULT_AUTHOR = "StocksDeepDive"
 # a separate literal in _head()'s tag list) for the same reason.
 # manifest.webmanifest/icons/sw.js are all served by server.py directly
 # (see its STATIC_DIR mount and the routes just above the blog routes).
+#
+# The trailing <script> also carries the Part 3a install nudge. It rides
+# the SAME <head>-injected tag (rather than a second injection point
+# aimed at </body>) because it only ever needs to run after `load`, by
+# which point document.body definitely exists - one injection point, one
+# script tag, same "never block page load" rule as the SW registration
+# it sits next to.
 # -----------------------------------
+_INSTALL_NUDGE_JS = r"""
+(function () {
+  var KEY = 'sdd_install_nudge_count';
+  function shownCount() { try { return parseInt(localStorage.getItem(KEY) || '0', 10); } catch (e) { return 99; } }
+  function bumpShown() { try { localStorage.setItem(KEY, String(shownCount() + 1)); } catch (e) {} }
+  function isStandalone() {
+    return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  }
+  function showBanner(text, actionLabel, onAction) {
+    if (isStandalone() || shownCount() >= 2 || document.getElementById('sdd-install-nudge')) return;
+    bumpShown();
+    var bar = document.createElement('div');
+    bar.id = 'sdd-install-nudge';
+    bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:999999;'
+      + 'background:#121f36;border-top:1px solid #2dd4bf;color:#e6edf5;'
+      + 'padding:12px 14px;padding-bottom:calc(12px + env(safe-area-inset-bottom));'
+      + 'font-family:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;'
+      + 'font-size:13.5px;display:flex;align-items:center;gap:10px;'
+      + 'box-shadow:0 -2px 10px rgba(0,0,0,.3);';
+    var span = document.createElement('span');
+    span.style.cssText = 'flex:1;line-height:1.4;';
+    span.textContent = text;
+    bar.appendChild(span);
+    function closeBanner() { if (bar.parentNode) bar.parentNode.removeChild(bar); }
+    if (actionLabel && onAction) {
+      var btn = document.createElement('button');
+      btn.textContent = actionLabel;
+      btn.style.cssText = 'background:#2dd4bf;color:#0b1220;border:none;border-radius:8px;'
+        + 'padding:9px 14px;font-weight:700;font-size:13px;cursor:pointer;min-height:40px;white-space:nowrap;';
+      btn.onclick = function () { onAction(); closeBanner(); };
+      bar.appendChild(btn);
+    }
+    var close = document.createElement('button');
+    close.setAttribute('aria-label', 'Dismiss');
+    close.textContent = '×';
+    close.style.cssText = 'background:transparent;border:none;color:#8aa0b8;font-size:22px;'
+      + 'line-height:1;cursor:pointer;padding:4px 6px;min-height:40px;min-width:40px;';
+    close.onclick = closeBanner;
+    bar.appendChild(close);
+    document.body.appendChild(bar);
+  }
+  window.addEventListener('load', function () {
+    if (isStandalone()) return;
+    var isIOS = /iP(hone|ad|od)/.test(navigator.userAgent);
+    if (isIOS && window.navigator.standalone === false) {
+      showBanner("Add StocksDeepDive to your home screen: tap Share ⬆ then 'Add to Home Screen'.");
+      return;
+    }
+    window.addEventListener('beforeinstallprompt', function (e) {
+      e.preventDefault();
+      showBanner('Install StocksDeepDive as an app on this device.', 'Install app', function () { e.prompt(); });
+    });
+  });
+})();
+"""
+
 PWA_HEAD_TAGS = (
     '<meta name="theme-color" content="#0b1220">\n'
     '<link rel="manifest" href="/manifest.webmanifest">\n'
@@ -52,6 +115,7 @@ PWA_HEAD_TAGS = (
     '<meta name="apple-mobile-web-app-title" content="StocksDeepDive">\n'
     "<script>if('serviceWorker' in navigator){window.addEventListener('load',"
     "function(){navigator.serviceWorker.register('/sw.js').catch(function(){});});}"
+    + _INSTALL_NUDGE_JS +
     "</script>"
 )
 

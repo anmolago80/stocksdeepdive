@@ -103,3 +103,46 @@ self.addEventListener("fetch", (event) => {
     })
   );
 });
+
+// ---- Web Push (Part 3) ----------------------------------------------
+// push_send.py's payload is always `{title, body, url}` JSON - see its
+// module docstring. Falls back to plain generic text if a push ever
+// arrives with no data (shouldn't happen from this site, but a malformed
+// or empty push must never throw and crash the handler).
+self.addEventListener("push", (event) => {
+  let payload = { title: "StocksDeepDive", body: "New update available.", url: "/" };
+  if (event.data) {
+    try {
+      payload = { ...payload, ...event.data.json() };
+    } catch (e) {
+      // Not JSON - fall back to the default copy above rather than fail.
+    }
+  }
+  event.waitUntil(
+    self.registration.showNotification(payload.title, {
+      body: payload.body,
+      icon: "/pwa/icons/icon-192.png",
+      badge: "/pwa/icons/icon-192.png",
+      data: { url: payload.url || "/" },
+    })
+  );
+});
+
+// Focus an already-open tab on this origin if there is one, otherwise
+// open a new one - standard "notification click" pattern.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const targetUrl = (event.notification.data && event.notification.data.url) || "/";
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      for (const client of list) {
+        if (client.url && new URL(client.url).origin === self.location.origin) {
+          client.focus();
+          if ("navigate" in client) client.navigate(targetUrl);
+          return;
+        }
+      }
+      return clients.openWindow(targetUrl);
+    })
+  );
+});

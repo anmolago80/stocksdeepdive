@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 import requests
 
 import follow_store
+import push_send
 
 
 def _cfg():
@@ -159,6 +160,9 @@ def announce_rebuild(added_tickers, updated_tickers, log=print):
         log(f"[announce] couldn't read followers: {e}")
         return summary
 
+    push_configured = push_send.is_configured()
+    summary["push_sent"] = 0
+
     for email, tickers in recipients.items():
         try:
             if not tickers:
@@ -171,4 +175,23 @@ def announce_rebuild(added_tickers, updated_tickers, log=print):
         except Exception as e:
             summary["errors"] += 1
             log(f"[announce] {email}: {e}")
+
+        # Best-effort push alongside the email above - same recipient list,
+        # same tickers, but its own failure path (a bad/expired push
+        # subscription must never affect whether the email above sent, and
+        # vice versa; push_send.send_to_email already prunes dead endpoints
+        # and never raises).
+        if push_configured and tickers:
+            try:
+                title = "New research: " + ", ".join(tickers)
+                link_ticker = tickers[0]
+                result = push_send.send_to_email(
+                    email, title,
+                    "Tap to open the updated research on StocksDeepDive.",
+                    url=f"{site}/research?ticker={link_ticker}&src=research-push",
+                )
+                summary["push_sent"] += result.get("sent", 0)
+            except Exception as e:
+                log(f"[announce] push to {email}: {e}")
+
     return summary

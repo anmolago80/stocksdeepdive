@@ -1996,6 +1996,19 @@ def _render_compounder_admin_panel():
                 return
 
             st.success("Admin key accepted.")
+
+            if paywall_engine.current_user_email():
+                st.caption(
+                    "Push notifications (Part 3): verify your own device is "
+                    "receiving pushes before relying on the announcement flow."
+                )
+                _render_push_test_button(key_suffix="cp_admin")
+            else:
+                st.caption(
+                    "Sign in (regular site sign-in, not this admin key) to "
+                    "test push notifications on your own devices."
+                )
+
             uploaded = st.file_uploader(
                 "Upload the updated SMSF research workbook (.xlsx)",
                 type=["xlsx"], key="cp_admin_upload",
@@ -2084,10 +2097,15 @@ def _render_compounder_admin_panel():
                         _added = _new_tickers - _old_tickers
                         _updated = _new_tickers & _old_tickers
                         _announce_summary = announce_engine.announce_rebuild(_added, _updated)
+                        _push_note = (
+                            f" Also pushed to {_announce_summary.get('push_sent', 0)} device(s)."
+                            if _announce_summary.get("push_sent") else ""
+                        )
                         st.success(
                             f"Announcement email sent to "
                             f"{_announce_summary.get('sent', 0)} follower(s) "
                             f"({_announce_summary.get('errors', 0)} error(s))."
+                            f"{_push_note}"
                         )
                     except Exception as _announce_exc:
                         st.warning(f"Couldn't send the announcement email: {_announce_exc}")
@@ -2168,6 +2186,176 @@ def _render_last_updated(generated_at):
         )
 
 
+_PUSH_CONTROL_JS = r"""
+<div id="sdd-push-wrap" style="font-family:'Segoe UI',system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;font-size:13.5px;">
+  <div id="sdd-push-status" style="color:#8aa0b8;line-height:1.5;"></div>
+  <button id="sdd-push-btn" type="button" style="display:none;margin-top:6px;
+    background:rgba(45,212,191,.07);border:1.5px solid #2dd4bf;color:#2dd4bf;
+    border-radius:8px;padding:8px 14px;font-weight:600;font-size:13px;
+    cursor:pointer;font-family:inherit;min-height:40px;">
+    &#128276; Also notify on this device
+  </button>
+</div>
+<script>
+(function () {
+  var statusEl = document.getElementById('sdd-push-status');
+  var btn = document.getElementById('sdd-push-btn');
+  function setStatus(msg) { statusEl.textContent = msg; }
+
+  function urlBase64ToUint8Array(base64String) {
+    var padding = '='.repeat((4 - base64String.length % 4) % 4);
+    var base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    var raw = atob(base64);
+    var out = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; ++i) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  var isStandalone = window.matchMedia('(display-mode: standalone)').matches
+    || window.navigator.standalone === true;
+  var isIOS = /iP(hone|ad|od)/.test(navigator.userAgent);
+
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    if (isIOS && !isStandalone) {
+      setStatus('On iPhone, install the app first — Share → Add to Home Screen — then enable notifications.');
+    } else {
+      setStatus("Notifications aren't supported in this browser.");
+    }
+    return;
+  }
+
+  navigator.serviceWorker.ready.then(function (reg) {
+    return reg.pushManager.getSubscription().then(function (sub) {
+      btn.style.display = 'inline-block';
+      if (sub) { btn.textContent = '\u{1F514} Notifications on — click to turn off'; }
+
+      btn.onclick = function () {
+        btn.disabled = true;
+        reg.pushManager.getSubscription().then(function (existing) {
+          if (existing) {
+            var endpoint = existing.endpoint;
+            existing.unsubscribe().then(function () {
+              fetch('/push/unsubscribe', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ endpoint: endpoint }),
+              }).finally(function () {
+                btn.textContent = '\u{1F514} Also notify on this device';
+                btn.disabled = false;
+              });
+            });
+            return;
+          }
+          if (Notification.permission === 'denied') {
+            setStatus('Notifications are blocked for this site in your browser settings.');
+            btn.disabled = false;
+            return;
+          }
+          Notification.requestPermission().then(function (perm) {
+            if (perm !== 'granted') { btn.disabled = false; return; }
+            fetch('/push/vapid-public-key').then(function (r) { return r.text(); }).then(function (key) {
+              if (!key) {
+                setStatus("Push notifications aren't set up on the server yet.");
+                btn.disabled = false;
+                return;
+              }
+              return reg.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: urlBase64ToUint8Array(key),
+              }).then(function (newSub) {
+                return fetch('/push/subscribe', {
+                  method: 'POST', credentials: 'include',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(newSub.toJSON()),
+                });
+              }).then(function () {
+                btn.textContent = '\u{1F514} Notifications on — click to turn off';
+                btn.disabled = false;
+              });
+            }).catch(function () {
+              setStatus("Couldn't enable notifications right now.");
+              btn.disabled = false;
+            });
+          });
+        });
+      };
+    });
+  }).catch(function () {
+    setStatus("Notifications aren't available right now.");
+  });
+})();
+</script>
+"""
+
+
+def _render_push_control(key_prefix, ticker):
+    """"Also notify on this device" - Web Push opt-in (Part 3 of the PWA
+    brief), rendered next to the follow toggle for signed-in visitors
+    only (caller checks `email` first). Runs inside
+    streamlit.components.v1.html() - the SAME mechanism this file already
+    uses for _set_admin_cookie/_set_admin_seen_cookie to execute real JS
+    same-origin. That matters here specifically: plain st.markup/
+    st.markdown does NOT execute <script> tags it's given (a well-known
+    React/Streamlit quirk), so without components.html there would be no
+    way to call Notification.requestPermission()/pushManager.subscribe()
+    from a click at all. components.html's iframe is same-origin (srcdoc,
+    sandbox="... allow-same-origin allow-scripts ..."), which is what
+    lets it see the service worker this site registers at scope "/" and
+    share this origin's cookies for the fetch() calls back to
+    /push/subscribe|unsubscribe.
+
+    Deliberately stateless server-side identity: this JS never tells the
+    server who it thinks is signed in. server.py's /push/subscribe and
+    /push/unsubscribe resolve the account purely from the sdd_auth cookie
+    (credentials: 'include' sends it automatically) - this function only
+    decides whether to render the control at all."""
+    import streamlit.components.v1 as _components
+    _components.html(_PUSH_CONTROL_JS, height=60)
+
+
+_PUSH_TEST_JS = """
+<div style="font-family:'Segoe UI',system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;">
+  <button id="sdd-push-test-btn" type="button" style="background:rgba(45,212,191,.07);
+    border:1.5px solid #2dd4bf;color:#2dd4bf;border-radius:8px;padding:8px 14px;
+    font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;min-height:40px;">
+    Send test notification to my devices
+  </button>
+  <div id="sdd-push-test-status" style="color:#8aa0b8;font-size:13px;margin-top:6px;"></div>
+</div>
+<script>
+(function () {
+  var btn = document.getElementById('sdd-push-test-btn');
+  var statusEl = document.getElementById('sdd-push-test-status');
+  btn.onclick = function () {
+    btn.disabled = true;
+    statusEl.textContent = 'Sending...';
+    fetch('/push/send-test', { method: 'POST', credentials: 'include' })
+      .then(function (r) {
+        if (r.status === 401) { statusEl.textContent = 'Not signed in.'; return null; }
+        if (r.status === 503) { statusEl.textContent = 'VAPID keys are not set on the server yet.'; return null; }
+        return r.text();
+      })
+      .then(function (text) { if (text) statusEl.textContent = text; })
+      .catch(function () { statusEl.textContent = "Couldn't reach the server."; })
+      .finally(function () { btn.disabled = false; });
+  };
+})();
+</script>
+"""
+
+
+def _render_push_test_button(key_suffix=""):
+    """Admin-only "send test notification to my devices" (Part 3's own
+    wording) - this function has no admin check of its own because the
+    ONE call site (the admin popover in page_research's Rational
+    Compounder rebuild panel, itself gated behind the admin key) is
+    already admin-only; the /push/send-test endpoint it calls is separately
+    safe to call from anywhere since it only ever targets the CALLER's own
+    signed-in devices (see server.py)."""
+    import streamlit.components.v1 as _components
+    _components.html(_PUSH_TEST_JS, height=80)
+
+
 def _render_follow_control(ticker, key_prefix):
     """"Follow this company" email capture (follow_store.py) - shared by
     page_research (per selected ticker) and page_deep_dive (when the
@@ -2198,6 +2386,7 @@ def _render_follow_control(ticker, key_prefix):
                 except Exception:
                     st.warning("Couldn't save right now - please try again.")
                 st.rerun()
+            _render_push_control(key_prefix, ticker)
             return
 
         st.caption(f"Get an email when {ticker}'s research updates.")

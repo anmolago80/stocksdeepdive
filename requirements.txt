@@ -35,3 +35,8 @@ stripe>=10.0
 fastapi>=0.115
 uvicorn[standard]>=0.30
 httpx>=0.27
+
+# --- Web Push for installed-PWA notifications (Part 3 of the PWA brief).
+# Inert unless VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_CLAIMS_EMAIL
+# are all set on Railway - see push_send.py's module docstring. ---
+pywebpush>=2.0
