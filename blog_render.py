@@ -326,9 +326,31 @@ def _copy_as_text_html(copy_text, dom_id="sdd-copytext"):
   var status = document.getElementById('{e(dom_id)}-status');
   if (!b || !ta) return;
   var reset = b.textContent;
+  // Streamlit's components.v1.html() renders this whole snippet in its
+  // own same-origin (srcdoc) iframe with a FIXED height Python declares
+  // up front - it does not auto-size to content. That fixed height used
+  // to be padded out to fit the rare "clipboard blocked, show the
+  // fallback textarea" case (a much taller box), which left a large
+  // empty gap below the button on every normal page load, spotted live
+  // 2026-09-01 ("why is there a big vertical space here"). Because the
+  // iframe is same-origin, this button's own script can reach out and
+  // resize its own frame element directly - so the declared height only
+  // needs to fit the common case, and this grows/shrinks the real frame
+  // to match actual content on demand. On the static /s/<ticker> page
+  // this same snippet is dropped straight into the page body (not an
+  // iframe at all) - window.frameElement is simply null there, so this
+  // is a safe no-op in that context.
+  function resizeFrame(){{
+    try {{
+      if (window.frameElement) {{
+        window.frameElement.style.height = (document.body.scrollHeight + 6) + 'px';
+      }}
+    }} catch (e) {{}}
+  }}
   function hideTextarea(){{
     ta.style.position = 'absolute'; ta.style.left = '-9999px';
     ta.style.top = '-9999px'; ta.style.width = '1px'; ta.style.height = '1px';
+    resizeFrame();
   }}
   function showTextarea(){{
     ta.style.position = 'static'; ta.style.width = '100%'; ta.style.height = '110px';
@@ -338,7 +360,9 @@ def _copy_as_text_html(copy_text, dom_id="sdd-copytext"):
     ta.style.fontFamily = 'ui-monospace,Menlo,monospace'; ta.style.fontSize = '11.5px';
     ta.focus();
     ta.select();
+    resizeFrame();
   }}
+  resizeFrame();
   b.addEventListener('click', function(){{
     var text = ta.value;
     if (navigator.clipboard && navigator.clipboard.writeText) {{

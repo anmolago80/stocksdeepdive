@@ -2917,10 +2917,20 @@ def _render_copy_as_text_button(dd, value_word):
             return
         copy_text = _dd_copy_text(dd, value_word)
         import streamlit.components.v1 as _components
+        # height was 190 (worst-case room for the button PLUS the ~150px
+        # fallback textarea that only appears if the clipboard API is
+        # blocked) - components.html()'s iframe has a fixed height and
+        # does not auto-size, so on every normal page load (clipboard
+        # works, textarea never shows) that reserved the same big empty
+        # gap below the button visible on every Deep Dive page - spotted
+        # live 2026-09-01. blog_render._copy_as_text_html()'s own script
+        # now resizes its (same-origin) iframe to fit its actual content
+        # on the fly, so this only needs to cover the collapsed/common
+        # case; the JS grows it itself for the rare fallback case.
         _components.html(
             blog_render._copy_as_text_html(
                 copy_text, dom_id=f"sdd-copytext-dd-{ticker}"),
-            height=190,
+            height=50,
         )
     except Exception:
         pass
