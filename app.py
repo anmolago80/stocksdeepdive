@@ -108,6 +108,13 @@ import reverse_dcf_engine
 # closest peers) - no Anthropic API call anywhere in this feature either.
 import peer_context
 
+# Services batch 2, Part 3 (2026-09-01): "Download data" - CSV/Excel
+# export of numbers already on screen. No Anthropic API call anywhere in
+# this feature; no engine touched (data_export_engine.py only reshapes
+# what deep_dive_engine/auto_compounder_engine/reverse_dcf_engine already
+# computed).
+import data_export_engine
+
 # -----------------------------------
 # PAGE SETUP
 # -----------------------------------
@@ -2945,6 +2952,92 @@ def _render_copy_as_text_button(dd, value_word):
         pass
 
 
+def _render_download_data_button(dd):
+    """Services batch 2, Part 3 (2026-09-01): "Download data" - a small
+    popover next to "Copy as text" offering the full Compounder View +
+    Valuation + Scores workbook (.xlsx) or a lighter Valuation+Scores
+    CSV, both built entirely in memory by data_export_engine.py from
+    numbers this page (or its siblings - the reverse-DCF card, the
+    Compounder View section below) already compute the exact same way -
+    no engine touched, no new network call, no Anthropic API call.
+
+    Deliberately self-contained: recomputes its own reverse-DCF result
+    and Compounder View sections rather than reaching into the later
+    Compounder View block's own variables (which don't exist yet at this
+    point in the page), so this stays a pure addition next to the
+    existing "Copy as text" button rather than a restructuring of the
+    page - own row, not sharing a column with that button, to avoid the
+    exact fixed-iframe-height layout trap documented on
+    _render_copy_as_text_button above. Both recomputations are already
+    disk-cached by the engines themselves (dcf_intrinsic_value's own
+    callers, auto_compounder_engine.build_sections()'s 24h/3%-move
+    cache), so opening this popover doesn't mean paying for a second
+    live fetch - it's the same numbers the rest of the page already
+    computed this view, re-read from cache."""
+    try:
+        ticker = dd.get("ticker") or ""
+        if not ticker or dd.get("error"):
+            return
+        with st.popover("\U0001F4E5 Download data", key=f"dl_popover_{ticker}"):
+            st.caption(f"Everything on this page for {ticker}, as a spreadsheet.")
+            subscriber = (
+                not paywall_engine.PAYWALL_ENABLED
+                or (paywall_engine.is_logged_in()
+                    and paywall_engine.is_subscribed(paywall_engine.current_user_email()))
+            )
+            _dl_discount, _dl_perpetual, _dl_growth, _dl_manual_fcf = _dcf_overrides_for(ticker)
+            try:
+                _dl_info = get_ticker_info(ticker)
+                _dl_cf = get_cashflow_df(ticker)
+            except Exception:
+                _dl_info, _dl_cf = None, None
+            try:
+                _dl_reverse_dcf = reverse_dcf_engine.compute(
+                    ticker, dd.get("price"), info=_dl_info, cashflow_df=_dl_cf,
+                    currency=dd.get("currency"),
+                    discount_rate=_dl_discount, perpetual_rate=_dl_perpetual,
+                    growth_rate=_dl_growth, manual_fcf=_dl_manual_fcf,
+                )
+            except Exception:
+                _dl_reverse_dcf = None
+            try:
+                _dl_acv_sections = auto_compounder_engine.build_sections(
+                    ticker, discount_rate=_dl_discount, perpetual_rate=_dl_perpetual,
+                    growth_rate=_dl_growth, manual_fcf=_dl_manual_fcf,
+                )
+            except Exception:
+                _dl_acv_sections = None
+            try:
+                _dl_xlsx = data_export_engine.build_deep_dive_workbook(
+                    ticker, dd, _dl_acv_sections, _dl_reverse_dcf, subscriber=subscriber,
+                )
+                st.download_button(
+                    "Compounder View workbook (.xlsx)", data=_dl_xlsx,
+                    file_name=data_export_engine.deep_dive_filename(ticker, "xlsx"),
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dl_xlsx_{ticker}", use_container_width=True,
+                )
+            except Exception:
+                st.caption("Workbook couldn't be built right now.")
+            try:
+                _dl_csv = data_export_engine.build_deep_dive_csv(ticker, dd, _dl_reverse_dcf)
+                st.download_button(
+                    "Valuation + Scores (.csv)", data=_dl_csv,
+                    file_name=data_export_engine.deep_dive_filename(ticker, "csv"),
+                    mime="text/csv",
+                    key=f"dl_csv_{ticker}", use_container_width=True,
+                )
+            except Exception:
+                st.caption("CSV couldn't be built right now.")
+            if not subscriber:
+                st.caption(
+                    "Fair Value sheet omitted from the workbook - "
+                    "subscribe to include it."
+                )
+    except Exception:
+        pass
+
+
 def _render_push_control(key_prefix, ticker):
     """"Also notify on this device" - Web Push opt-in (Part 3 of the PWA
     brief), rendered next to the follow toggle for signed-in visitors
@@ -5127,6 +5220,11 @@ def page_deep_dive():
         # _render_copy_as_text_button's own docstring. ---
         _render_copy_as_text_button(_dd, _dd_value_word)
 
+        # --- Services batch 2, Part 3: "Download data" - own row (not
+        # sharing a column with the button above), see
+        # _render_download_data_button's own docstring for why. ---
+        _render_download_data_button(_dd)
+
         # --- Price chart: the 6-month history behind every calculation on
         # this page, finally shown - with the 50-day average and the Trade
         # Filter's entry zone drawn on it. ---
@@ -6463,6 +6561,21 @@ def _render_overnight_scan_table(universe_label, overnight):
         )
         st.caption(f"Universe source at scan time: {overnight['source']}")
 
+        # --- Services batch 2, Part 3: "Download table (CSV)" - the
+        # overnight scan's own stored rows, plain (no HTML/formatting),
+        # same convention as the Comparison/Scanner live-results download
+        # button below (_render_scan_results). ---
+        try:
+            _on_csv = data_export_engine.table_to_csv_bytes(pd.DataFrame(overnight["rows"]))
+            st.download_button(
+                "Download table (CSV)", data=_on_csv,
+                file_name=f"StocksDeepDive_{universe_label.replace(' ', '')}_overnight_"
+                          f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.csv",
+                mime="text/csv", key=f"dl_overnight_csv_{universe_label}",
+            )
+        except Exception:
+            pass
+
 
 def _render_screen_import_admin():
     """
@@ -7787,6 +7900,25 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 key_prefix=state_prefix,
             ):
                 return
+
+            # --- Services batch 2, Part 3: "Download table/comparison
+            # (CSV)" - the exact filtered/sorted `results` table above,
+            # minus this function's own internal helper columns (leading
+            # underscore - _mos_num, _flag_type). Placed right after the
+            # paywall gate so a non-subscriber never sees the button for
+            # data they can't see on screen either. ---
+            try:
+                _dl_cols = [c for c in results.columns if not c.startswith("_")]
+                _dl_csv = data_export_engine.table_to_csv_bytes(results[_dl_cols])
+                _dl_label = "Download comparison (CSV)" if state_prefix == "cmp" else "Download table (CSV)"
+                st.download_button(
+                    _dl_label, data=_dl_csv,
+                    file_name=f"StocksDeepDive_{page_label.replace(' ', '')}_"
+                              f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.csv",
+                    mime="text/csv", key=f"dl_results_csv_{state_prefix}",
+                )
+            except Exception:
+                pass
 
             # ---------------- Side-by-side comparison ----------------
             # One row per ticker, the columns you actually asked for. Score
