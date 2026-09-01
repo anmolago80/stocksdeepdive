@@ -276,13 +276,165 @@ def fetch_sp600():
     return _parse_table(html, ["symbol", "ticker"], ["gics sector", "sector"], _normalize_us_ticker, min_rows=400)
 
 
+def _parse_nasdaq100_table(html_text):
+    """Fix 10 (2026-09-01): a resilient parse purpose-built for
+    Wikipedia's Nasdaq-100 page, whose constituents table has changed
+    shape/heading more than once - root cause of "no tickers resolved
+    (Web scrape unavailable)" on all 3 nightly attempts the doc reported.
+    _parse_table() alone (the shared helper every other fetcher uses)
+    matches the first table with a ticker-like column and enough rows -
+    too loose for this specific page, which has other tables (recent
+    changes, sector weighting) that can also have a ticker-like column.
+    Two things tightened here instead:
+
+      1. Table located by HTML id="constituents" FIRST when present -
+         Wikipedia's own most stable identifier for this specific table -
+         before falling back to keyword/shape matching across every
+         table on the page.
+      2. A candidate table's header must contain BOTH a ticker-like
+         column ("ticker"/"symbol") AND a company-name column
+         ("company") - ticker-alone isn't enough to tell the real
+         constituents table apart from an unrelated one nearby.
+
+    Sanity-checked to 90-110 rows either way (the real count sits around
+    100, with occasional constituent changes) - a match outside that
+    band is "wrong table", not "the index shrank to 40 stocks". Returns
+    a ['Ticker','Sector'] frame, or None if nothing on the page matches
+    all of the above."""
+    try:
+        id_tables = pd.read_html(io.StringIO(html_text), attrs={"id": "constituents"})
+    except (ValueError, ImportError):
+        id_tables = []
+    # id-matched table(s) first, then every table on the page as a
+    # fallback pass - so an id="constituents" hit is always tried before
+    # falling back to header-keyword matching.
+    candidates = list(id_tables) + list(_safe_read_html(html_text))
+
+    for table in candidates:
+        cols_low = [str(c).lower() for c in table.columns]
+        has_ticker = any(("ticker" in c or "symbol" in c) for c in cols_low)
+        has_company = any("company" in c for c in cols_low)
+        if not (has_ticker and has_company):
+            continue
+        ticker_col = _find_column(table.columns, ["ticker", "symbol"])
+        if ticker_col is None:
+            continue
+        sector_col = _find_column(table.columns, ["gics sector", "sector"])
+        cols = [ticker_col] + ([sector_col] if sector_col else [])
+        df = table[cols].copy()
+        df.columns = ["Ticker", "Sector"] if sector_col else ["Ticker"]
+        df = df.dropna(subset=["Ticker"])
+        if not (90 <= len(df) <= 110):
+            continue
+        df["Ticker"] = df["Ticker"].apply(_normalize_us_ticker)
+        df["Sector"] = df["Sector"].astype(str).str.strip() if "Sector" in df.columns else None
+        return df[["Ticker", "Sector"]]
+    return None
+
+
+def _safe_read_html(html_text):
+    try:
+        return pd.read_html(io.StringIO(html_text))
+    except Exception:
+        return []
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_nasdaq100():
     try:
         html = _get(NASDAQ100_WIKI_URL)
     except Exception:
         return None
-    return _parse_table(html, ["ticker", "symbol"], ["gics sector", "sector"], _normalize_us_ticker, min_rows=90)
+    return _parse_nasdaq100_table(html)
+
+
+# Fix 10 (2026-09-01) fallback #2: Invesco's own QQQ holdings CSV export -
+# QQQ tracks the Nasdaq-100 essentially 1:1, same mechanism family as the
+# iShares IWM/IWB holdings CSVs already used above for Russell 2000/1000.
+# CAVEAT, stated plainly rather than assumed (same standing constraint as
+# every other URL added without live-network verification this
+# engagement - see the module docstring): this URL could not be fetched
+# and test-parsed against Invesco's real CSV shape from either dev
+# environment used to build this - its first real test is the actual
+# nightly run after this deploys.
+NASDAQ100_INVESCO_CSV_URL = (
+    "https://www.invesco.com/us/financial-products/etfs/holdings/main/holdings/0"
+    "?audienceType=Investor&action=download&ticker=QQQ"
+)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_nasdaq100_invesco():
+    """Fix 10 fallback #2 for Nasdaq 100 - see NASDAQ100_INVESCO_CSV_URL's
+    comment for the live-verification caveat. Because the exact header
+    row position/column names in Invesco's export couldn't be confirmed
+    ahead of time, the header is located defensively - the first line (of
+    the first 30) that looks like a real CSV header with a ticker-like
+    column - rather than assumed via a hardcoded skiprows count the way
+    fetch_russell2000()/fetch_russell1000() do for iShares' (already-
+    confirmed) export shape. Returns None on any failure - no reachable
+    URL, no header found, no ticker column, or a resulting row count
+    outside the same 90-110 sane-count band _parse_nasdaq100_table() uses -
+    so get_universe_pool() falls further back to the static list below."""
+    try:
+        resp = requests.get(NASDAQ100_INVESCO_CSV_URL, headers=_HEADERS, timeout=20)
+        resp.raise_for_status()
+        raw_lines = resp.text.splitlines()
+    except Exception:
+        return None
+
+    header_idx = None
+    for i, line in enumerate(raw_lines[:30]):  # header block is at most a few rows
+        low = line.lower()
+        if ("ticker" in low or "symbol" in low) and "," in line:
+            header_idx = i
+            break
+    if header_idx is None:
+        return None
+
+    try:
+        raw = pd.read_csv(io.StringIO("\n".join(raw_lines[header_idx:])), on_bad_lines="skip")
+    except Exception:
+        return None
+
+    ticker_col = _find_column(raw.columns, ["ticker", "symbol"])
+    if ticker_col is None:
+        return None
+
+    df = raw[[ticker_col]].copy()
+    df.columns = ["Ticker"]
+    df = df.dropna(subset=["Ticker"])
+    _t = df["Ticker"].astype(str).str.strip().str.upper()
+    df = df[~_t.str.contains("CASH|USD|NET ASSETS", na=False) & (_t.str.len() <= 6) & (_t.str.len() > 0)]
+    if not (90 <= len(df) <= 110):
+        return None
+
+    df["Ticker"] = df["Ticker"].apply(_normalize_us_ticker)
+    df["Sector"] = None
+    return df[["Ticker", "Sector"]]
+
+
+# Fix 10 (2026-09-01) fallback #3, last resort if BOTH the Wikipedia
+# scrape and the Invesco CSV are unavailable/unparseable: a static
+# best-effort Nasdaq-100 constituent list committed in the repo, same
+# spirit as _SP500_STATIC_FALLBACK above but a real ~100-ticker list
+# instead of a 10-ticker token one - "a real one is better", per the doc.
+# Same caveat as every static list here: index membership changes over
+# time and this was not live-verified against the current official
+# constituent list - it exists purely so a scan never comes back
+# completely empty, not as an authoritative source.
+_NASDAQ100_STATIC_FALLBACK = [
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "GOOG", "META", "AVGO", "TSLA", "COST",
+    "NFLX", "ADBE", "PEP", "CSCO", "AMD", "TMUS", "INTC", "CMCSA", "TXN", "QCOM",
+    "AMGN", "HON", "INTU", "AMAT", "BKNG", "ISRG", "VRTX", "SBUX", "GILD", "ADI",
+    "MDLZ", "REGN", "LRCX", "PANW", "ADP", "MU", "PYPL", "SNPS", "CDNS", "KLAC",
+    "MELI", "CSX", "MAR", "ORLY", "CTAS", "ABNB", "CRWD", "FTNT", "NXPI", "MNST",
+    "PCAR", "ROP", "WDAY", "PAYX", "ODFL", "DXCM", "KDP", "AEP", "EXC", "XEL",
+    "CHTR", "IDXX", "KHC", "FAST", "EA", "VRSK", "CTSH", "BIIB", "GEHC", "DDOG",
+    "TTD", "TEAM", "ON", "ZS", "MRVL", "ANSS", "GFS", "ILMN", "WBD", "DLTR",
+    "ALGN", "SIRI", "ENPH", "LULU", "JD", "PDD", "ASML", "BKR", "CDW", "CPRT",
+    "CCEP", "TTWO", "MDB", "WBA", "ROST", "ZM", "DASH", "ARM", "SMCI", "GEN",
+]
 
 
 def _r2k_cache_path():
@@ -645,8 +797,26 @@ def get_universe_pool(country, universe):
         return fallback_df, "Web scrape unavailable - static 10-ticker fallback list"
 
     if universe == "Nasdaq 100":
+        # Fix 10 (2026-09-01): three-level fallback chain, resolved the
+        # same "always return SOMETHING" way every other universe here
+        # already does - see fetch_nasdaq100()/fetch_nasdaq100_invesco()/
+        # _NASDAQ100_STATIC_FALLBACK's own comments for what each level
+        # tries and why the prior level failed to resolve on 3
+        # consecutive nightly attempts.
         df = fetch_nasdaq100()
-        return (df, "Wikipedia Nasdaq-100 (live)") if df is not None else (None, "Web scrape unavailable")
+        if df is not None:
+            return df, "Wikipedia Nasdaq-100 (live)"
+        df = fetch_nasdaq100_invesco()
+        if df is not None:
+            return df, "Nasdaq 100 unavailable - Invesco QQQ holdings (live) instead"
+        fallback_df = pd.DataFrame({
+            "Ticker": _NASDAQ100_STATIC_FALLBACK,
+            "Sector": [None] * len(_NASDAQ100_STATIC_FALLBACK),
+        })
+        return fallback_df, (
+            f"Web scrape unavailable - static {len(_NASDAQ100_STATIC_FALLBACK)}-ticker "
+            f"fallback list"
+        )
 
     if universe == "Russell 2000":
         df = fetch_russell2000()
