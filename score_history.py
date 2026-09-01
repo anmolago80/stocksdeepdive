@@ -151,13 +151,23 @@ def latest(ticker):
     return dict(row) if row else None
 
 
-def series(ticker, limit_days=365):
+def series(ticker, limit_days=730):
     """Ascending-by-day list of every stored row for `ticker` within the
     last `limit_days` - the Deep Dive score-history chart's (Services batch
     Part 5) one data source. Each item is {"day","long_score","price",
     "quality","moat","mos_pct","intrinsic_value","valuation_label",
     "moat_state"}. No interpolation - a night the ticker wasn't scanned is
-    simply a gap in the returned list, and the chart's own caption says so."""
+    simply a gap in the returned list, and the chart's own caption says so.
+
+    Default widened from 365 to 730 days (~24 months), 2026-09-01, per
+    Andrew's request - this module never deletes rows (see the module
+    docstring), so the only thing that was ever cutting the chart off at
+    a year was this query window, not the data. Raising it doesn't
+    retroactively create history that was never recorded - a ticker only
+    has as many days on the chart as nights it's actually been scanned
+    since score_history.record() started being called (Services batch
+    Part 1/5, 2026-08-31) - it just means the window stops being the
+    limiting factor once two years of real nightly data exists."""
     if not ticker:
         return []
     cutoff = (datetime.now(timezone.utc) - timedelta(days=limit_days)).strftime("%Y-%m-%d")

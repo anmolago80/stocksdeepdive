@@ -1640,7 +1640,7 @@ def _render_score_history_chart(ticker, score_word="Value Score"):
     at all when fewer than 5 recorded points exist - a 2-3 point "chart"
     reads as noise, not a trend."""
     try:
-        series = score_history.series(ticker, limit_days=365)
+        series = score_history.series(ticker, limit_days=730)  # ~24 months
     except Exception:
         series = []
     series = [s for s in series if s.get("long_score") is not None]
