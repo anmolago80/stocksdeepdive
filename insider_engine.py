@@ -417,8 +417,27 @@ def refresh_sec(ticker, log=print):
         if not doc:
             continue
         link = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accession}/{doc}"
+        # Root-caused live, 2026-08-31 (the same nightly run this new
+        # logging was added to diagnose): SEC's submissions API returns
+        # `primaryDocument` for ownership forms (3/4/5) WITH an
+        # "xslF345X0N/" folder segment baked into the filename (e.g.
+        # "xslF345X06/form4.xml") - that path is SEC's own server-side
+        # XSLT-rendered HTML viewer, not the raw XML. Fetching it (as
+        # `link` above does) returns HTTP 200 with content-type text/html
+        # and a page titled "SEC FORM 4" - not a per-filing quirk, every
+        # single Form 4 fetched this way tonight failed identically ("Form
+        # 4 XML parse failed ... mismatched tag: line 29, column 16"),
+        # confirmed by pulling the actual response snippets from Railway's
+        # logs. The same accession folder also lists the identical
+        # document under its bare filename with no xsl subfolder (verified
+        # against a live EDGAR filing index page) - that is the real raw
+        # XML. `link` (the human-facing SEC viewer URL, stored on the
+        # filing and what a visitor clicks) is left as-is; only the URL
+        # actually fetched for parsing is changed to the bare filename.
+        parse_url = (f"https://www.sec.gov/Archives/edgar/data/"
+                     f"{int(cik)}/{accession}/{doc.rsplit('/', 1)[-1]}")
         time.sleep(0.11)  # stay comfortably under SEC's <=10 req/s guidance
-        parsed = _parse_form4(link, log=log)
+        parsed = _parse_form4(parse_url, log=log)
         insider_store.add_filing(
             ticker, "sec", "Form 4", filed_at=filed,
             person=parsed.get("person"), action=parsed.get("action"),
