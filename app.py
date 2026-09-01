@@ -10,7 +10,7 @@ import hmac
 import difflib
 import concurrent.futures
 import contextlib
-from datetime import datetime, timezone, date as _date
+from datetime import datetime, timezone, date as _date, timedelta
 
 from trends_engine import get_trend_score
 from news_engine import get_news_score, get_yahoo_news_score
@@ -114,6 +114,11 @@ import peer_context
 # what deep_dive_engine/auto_compounder_engine/reverse_dcf_engine already
 # computed).
 import data_export_engine
+
+# Services batch 2, Part 4 (2026-09-01): results calendar. No Anthropic
+# API call anywhere in this feature; no engine touched
+# (calendar_render.py only reshapes results_store's own tables).
+import calendar_render
 
 # -----------------------------------
 # PAGE SETUP
@@ -2135,6 +2140,9 @@ def _render_header(compact, page_label=None):
             ("Rational Compounder Analysis", "nav_research", PG_RESEARCH),
             ("Side-by-side Comparison", "nav_comparison", PG_COMPARISON),
             ("Stock Scanner", "nav_scanner", PG_SCANNER),
+            # Services batch 2, Part 4 (2026-09-01): results calendar -
+            # added right next to Scanner per the spec.
+            ("Results Calendar", "nav_results_calendar", PG_RESULTS_CALENDAR),
             ("My Portfolio", "nav_portfolio", PG_PORTFOLIO),
         ]
         _nav_widths = [len(_label) + 6 for _label, _key, _page in _nav_buttons]
@@ -4291,6 +4299,64 @@ as a fact &mdash; you always know which numbers are computed and which are assum
             "Tickers that reported results in the last 7 days, with a computed "
             "before/after re-analysis - open a ticker's Deep Dive page for the "
             "full comparison and what moved."
+        )
+
+    # ---- reporting this week (Services batch 2, Part 4) ----
+    # Forward-looking sibling of "Reported this week" above (backward-
+    # looking, before/after re-analysis only) - this strip is anything
+    # with a reported OR expected date THIS calendar week, so a visitor
+    # sees what's coming up, not just what already happened. Same "skip
+    # under 2" convention as the block above. Prefers a signed-in
+    # visitor's own tickers (watchlist/portfolio/alerts); falls back to
+    # every watched ticker site-wide for a signed-out visitor, or a
+    # signed-in one with nothing of their own reporting this week - an
+    # empty personal strip would otherwise just look broken.
+    try:
+        _rpw_email = paywall_engine.current_user_email() if paywall_engine.is_logged_in() else None
+        _rpw_mine = _my_calendar_tickers(_rpw_email) if _rpw_email else set()
+        _rpw_mon, _rpw_sun = calendar_render.week_bounds()
+        _rpw_entries = calendar_render.filter_range(
+            calendar_render.build_entries(tickers=_rpw_mine or None), _rpw_mon, _rpw_sun,
+        )
+        # One entry per ticker (a ticker could have both a "reported" and
+        # an "expected" row if earnings_watch's dates span this week
+        # twice, which shouldn't normally happen but isn't assumed away).
+        _rpw_seen, _rpw_rows = set(), []
+        for _re in _rpw_entries:
+            if _re["ticker"] in _rpw_seen:
+                continue
+            _rpw_seen.add(_re["ticker"])
+            _rpw_rows.append(_re)
+    except Exception:
+        _rpw_rows = []
+    if len(_rpw_rows) >= 2:
+        _rpw_html = []
+        for _re in _rpw_rows[:4]:
+            _rtk = _re["ticker"]
+            _rpw_tag = "&#10003; reported" if _re["status"] == "reported" else "~ expected"
+            _rpw_html.append(
+                "<tr>"
+                + _td(f"<a href='/deep-dive?ticker={_rtk}' target='_self' "
+                      "style='color:inherit;text-decoration:underline;'>"
+                      f"<b>{_rtk}</b></a>")
+                + _td(_re["date"])
+                + _td(_rpw_tag)
+                + "</tr>"
+            )
+        st.markdown(
+            "<div class='sdd-kicker' style='margin-top:40px;'>RESULTS CALENDAR</div>"
+            "<div class='sdd-h2'>Reporting this week</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            _sdd_table(["Ticker", "Date", "Status"], _rpw_html),
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Dates from the data provider; confirmed dates marked ✓, "
+            "estimates marked ~. "
+            + ("Your own tickers - " if _rpw_mine else "")
+            + "[Full Results Calendar →](/results-calendar)"
         )
 
     # ---- compounder coverage ----
@@ -7118,6 +7184,114 @@ def page_scanner():
         state_prefix="scan",
         empty_message="Pick a country, universe, and (optionally) a sector above, then click Run Scan.",
     )
+
+
+def _my_calendar_tickers(email):
+    """Watchlist ∪ every portfolio holding ∪ every ticker with an active
+    alert, for one signed-in user - the "My tickers" filter's own
+    definition, per the spec ("signed-in: portfolio + watchlist +
+    alerts"). Empty set if signed out or nothing saved yet."""
+    if not email:
+        return set()
+    out = set(watchlist_store.get_watchlist(email))
+    out.update(h["ticker"] for h in portfolio_store.get_holdings_all(email))
+    out.update(a["ticker"] for a in alert_store.list_for_user(email) if a.get("ticker"))
+    return out
+
+
+def _render_calendar_section(title, grouped, empty_note):
+    st.markdown(f"##### {title}")
+    if not grouped:
+        st.caption(empty_note)
+        return
+    for day, rows in grouped:
+        day_label = datetime.strptime(day, "%Y-%m-%d").strftime("%a %d %b")
+        st.markdown(f"**{day_label}**")
+        for row in rows:
+            _c1, _c2, _c3, _c4 = st.columns([2, 3, 2, 3])
+            with _c1:
+                st.markdown(f"**{row['ticker']}**")
+            with _c2:
+                _uni = f" · {row['universe']}" if row.get("universe") else ""
+                st.caption(f"{row.get('company_name') or row['ticker']}{_uni}")
+            with _c3:
+                if row["status"] == "reported":
+                    st.markdown("✓ reported")
+                    b, a = row.get("before_value_score"), row.get("after_value_score")
+                    if b is not None and a is not None:
+                        st.caption(f"Value Score {b:.1f} → {a:.1f} ({a - b:+.1f})")
+                else:
+                    st.markdown("~ expected")
+            with _c4:
+                st.link_button(
+                    "Deep Dive · Set an alert →", f"/deep-dive?ticker={row['ticker']}",
+                    key=f"cal_{title}_{day}_{row['ticker']}",
+                )
+        st.divider()
+
+
+def page_results_calendar():
+    """Services batch 2, Part 4 (2026-09-01): the interactive twin of the
+    server-rendered /calendar page - see calendar_render.py's own
+    docstring for the shared data functions both draw from (so the two
+    pages can never disagree about what "this week" contains). Adds the
+    two filters a signed-in, interactive page can offer that the plain
+    public /calendar page can't: "My tickers" (needs a signed-in email)
+    and "Universe"."""
+    _render_header(compact=True, page_label="Results Calendar")
+    _bump_page_view("results_calendar")
+    st.markdown("#### Results Calendar")
+    st.caption(
+        "Every stock this site tracks that has reported, or is expected "
+        "to report, this week or next - grouped by day, with the "
+        "before/after Value Score once a report has been re-analysed. "
+        "Dates from the data provider; confirmed dates marked ✓, "
+        "estimates marked ~. Descriptions of calculations, not "
+        "recommendations."
+    )
+
+    _email = paywall_engine.current_user_email() if paywall_engine.is_logged_in() else None
+    _filter_options = ["All"] + (["My tickers"] if _email else []) + ["Universe..."]
+    _fcol1, _fcol2 = st.columns([2, 2])
+    with _fcol1:
+        _filter_choice = st.radio(
+            "Show", _filter_options, horizontal=True, key="cal_filter_choice",
+            label_visibility="collapsed",
+        )
+    _universe_choice = None
+    if _filter_choice == "Universe...":
+        with _fcol2:
+            _all_universes = scanner_engine.get_universes("Australia") + scanner_engine.get_universes("USA")
+            _universe_choice = st.selectbox("Universe", _all_universes, key="cal_universe_choice",
+                                            label_visibility="collapsed")
+    elif _filter_choice == "My tickers" and not _email:
+        st.info("Sign in (top left) to filter to your own tickers.")
+
+    _watch_tickers = None
+    if _filter_choice == "My tickers" and _email:
+        _watch_tickers = _my_calendar_tickers(_email)
+        if not _watch_tickers:
+            st.info("Nothing saved to your watchlist, portfolio, or alerts yet.")
+
+    _entries = calendar_render.build_entries(tickers=_watch_tickers)
+    if _universe_choice:
+        _entries = [e for e in _entries if e.get("universe") == _universe_choice]
+
+    _this_mon, _this_sun = calendar_render.week_bounds()
+    _next_mon, _next_sun = _this_mon + timedelta(days=7), _this_sun + timedelta(days=7)
+    _month_first, _month_last = calendar_render.month_bounds()
+    _later_start = _next_sun + timedelta(days=1)
+
+    _this_week = calendar_render.group_by_day(calendar_render.filter_range(_entries, _this_mon, _this_sun))
+    _next_week = calendar_render.group_by_day(calendar_render.filter_range(_entries, _next_mon, _next_sun))
+    _later_month = (
+        calendar_render.group_by_day(calendar_render.filter_range(_entries, _later_start, _month_last))
+        if _later_start <= _month_last else []
+    )
+
+    _render_calendar_section("This week", _this_week, "Nothing reported or expected this week.")
+    _render_calendar_section("Next week", _next_week, "Nothing expected next week yet.")
+    _render_calendar_section("Later this month", _later_month, "Nothing further expected this month yet.")
 
 
 def page_comparison():
@@ -11817,6 +11991,9 @@ PG_DEEP_DIVE = st.Page(page_deep_dive, title="Deep Dive", url_path="deep-dive")
 PG_COMPARISON = st.Page(page_comparison, title="Comparison", url_path="comparison")
 PG_RESEARCH = st.Page(page_research, title="Rational Compounder Analysis", url_path="research")
 PG_SCANNER = st.Page(page_scanner, title="Stock Scanner", url_path="scanner")
+# Services batch 2, Part 4 (2026-09-01): results calendar.
+PG_RESULTS_CALENDAR = st.Page(page_results_calendar, title="Results Calendar",
+                              url_path="results-calendar")
 # Sign-in-only, private per-user long-term holdings tracker - see
 # page_portfolio()'s own docstring/comment block for the full design.
 PG_PORTFOLIO = st.Page(page_portfolio, title="My Portfolio", url_path="portfolio")
@@ -11834,8 +12011,9 @@ PG_BLOG_ADMIN = st.Page(page_blog_admin, title="Blog admin",
 
 _nav = st.navigation(
     [PG_HOME, PG_DEEP_DIVE, PG_COMPARISON, PG_RESEARCH, PG_SCANNER,
-     PG_PORTFOLIO, PG_METHODOLOGY, PG_ABOUT, PG_MODEL_HISTORY, PG_PRIVACY,
-     PG_HOW_AI_IS_USED, PG_BLOG_ADMIN], position="hidden"
+     PG_RESULTS_CALENDAR, PG_PORTFOLIO, PG_METHODOLOGY, PG_ABOUT,
+     PG_MODEL_HISTORY, PG_PRIVACY, PG_HOW_AI_IS_USED, PG_BLOG_ADMIN],
+    position="hidden",
 )
 _nav.run()
 

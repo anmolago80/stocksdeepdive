@@ -554,6 +554,22 @@ def get_holdings_all(email):
     return [_row_to_dict(r) for r in rows]
 
 
+def all_portfolio_tickers():
+    """Services batch 2, Part 4 (2026-09-01): distinct tickers held in
+    ANY portfolio, across every user - not scoped to one email, unlike
+    every other function in this module (see the module docstring's own
+    "never falls back to everyone's holdings" invariant, which is about
+    HOLDINGS DATA - price/shares/thesis/etc - not this). This is a bare
+    ticker list with no user or holding detail attached, used only to
+    widen the weekly earnings-calendar watch list (scheduler_engine.
+    _run_earnings_refresh) so a ticker anyone holds gets its report
+    dates tracked, even one nobody has ever followed or that fell out of
+    every scanned universe."""
+    with _conn() as conn:
+        rows = conn.execute("SELECT DISTINCT ticker FROM portfolio_holdings").fetchall()
+    return [r[0] for r in rows if r[0]]
+
+
 def get_holding(email, portfolio, ticker):
     if not email or not portfolio or not ticker:
         return None

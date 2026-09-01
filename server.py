@@ -92,6 +92,10 @@ import mcp_server
 import score_history
 import track_record_render
 
+# Services batch 2, Part 4 (2026-09-01): the results calendar's indexable,
+# server-rendered twin - see calendar_render.py's own docstring.
+import calendar_render
+
 try:
     import metrics_store
 except Exception:  # analytics must never be able to stop the site serving
@@ -727,6 +731,11 @@ async def sitemap(request: Request):
     from xml.sax.saxutils import escape as _xml_escape
     extra += (f'\n  <url><loc>{_xml_escape(base)}/track-record</loc>'
               f'<changefreq>daily</changefreq><priority>0.4</priority></url>')
+    # Services batch 2, Part 4: /calendar - same "no Streamlit
+    # equivalent gate, always real HTML" treatment as /track-record just
+    # above.
+    extra += (f'\n  <url><loc>{_xml_escape(base)}/calendar</loc>'
+              f'<changefreq>daily</changefreq><priority>0.4</priority></url>')
     xml = xml.replace("</urlset>", extra + "\n</urlset>\n")
     return Response(xml, media_type="application/xml",
                     headers={"Cache-Control": "public, max-age=60"})
@@ -1003,6 +1012,25 @@ async def track_record(request: Request):
     return _html(
         track_record_render.render_track_record(rows, _base_url(request)),
         cache="public, max-age=1800",
+    )
+
+
+@app.get("/calendar", include_in_schema=False)
+async def results_calendar(request: Request):
+    """Services batch 2, Part 4: indexable, server-rendered twin of the
+    Streamlit /results-calendar page - same "always real HTML, no
+    INDEXABLE_PAGES/_renders_html gate" treatment as /s/* and
+    /track-record just above (this page is public and unauthenticated,
+    same stance those two already take - no "My tickers" filter here)."""
+    _count_view("results_calendar")
+    return _html(
+        calendar_render.render_calendar_page(_base_url(request)),
+        # Short TTL: a fresh nightly results-day pass or a newly-scraped
+        # earnings date should show up here reasonably promptly, same
+        # reasoning as the sitemap route's own 60s cut (see sitemap()'s
+        # own comment) - this page changes far less often than that, so
+        # a few minutes' cache is plenty.
+        cache="public, max-age=300",
     )
 
 

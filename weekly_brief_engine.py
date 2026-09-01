@@ -88,6 +88,7 @@ import requests
 import ai_client
 import ai_gate
 import blog_store
+import calendar_render
 import portfolio_health_engine
 import portfolio_store
 import score_history
@@ -400,9 +401,32 @@ def _draft_brief(email, watchlist_rows, health_changes, posts, site):
 # Email assembly + send.
 # ---------------------------------------------------------------------
 
-def _email_html(email, watchlist_rows, health_changes, posts, site, ai_text):
+def _reporting_this_week_block_html(reporting_tickers, site):
+    """Services batch 2, Part 4 (2026-09-01): "one factual line" -
+    deliberately NOT run through _draft_brief/ai_client at all (per the
+    spec's own "data only, no AI" instruction) - a plain, always-the-
+    same-shape sentence naming this user's own tickers (watchlist ∪
+    portfolio holdings) with a reported-or-expected date this ISO week,
+    same "this week" window calendar_render.tickers_reporting_this_week()
+    computes for the home page's own strip, so the two can never
+    disagree about what "this week" means. Empty string (no block at
+    all) when nothing of this user's is reporting this week."""
+    if not reporting_tickers:
+        return ""
+    links = ", ".join(
+        f'<a href="{site}/deep-dive?ticker={t}" style="color:#0f766e;text-decoration:none;font-weight:bold;">{t}</a>'
+        for t in reporting_tickers
+    )
+    return f"""
+    <tr><td style="padding:14px 28px 4px 28px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1e293b;">
+      <b>Reporting this week:</b> {links}. <a href="{site}/calendar" style="color:#0f766e;">Full results calendar →</a>
+    </td></tr>"""
+
+
+def _email_html(email, watchlist_rows, health_changes, posts, site, ai_text, reporting_tickers=None):
     body_rows = "".join(_watchlist_row_html(r, site) for r in watchlist_rows)
     date_label = datetime.now(timezone.utc).strftime("%d %b %Y")
+    reporting_block = _reporting_this_week_block_html(reporting_tickers, site)
 
     ai_block = ""
     if ai_text:
@@ -447,6 +471,7 @@ def _email_html(email, watchlist_rows, health_changes, posts, site, ai_text):
       <div style="font-size:13px;color:#64748b;padding-top:4px;">As of {date_label}. Click any ticker for its full live Deep Dive.</div>
     </td></tr>
     {ai_block}
+    {reporting_block}
     <tr><td style="padding:14px 28px 4px 28px;">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr>
@@ -518,6 +543,15 @@ def run_weekly_brief(log=print):
             relevant_tickers = set(tickers) | {t for _p, t in holdings}
             posts = _relevant_new_posts(relevant_tickers)
 
+            # Services batch 2, Part 4: "data only, no AI" factual line -
+            # computed independently of _has_material_content/_draft_brief
+            # below, so it appears every week this user has something
+            # reporting even on an otherwise-quiet week with no AI text.
+            try:
+                reporting_tickers = calendar_render.tickers_reporting_this_week(relevant_tickers)
+            except Exception:
+                reporting_tickers = []
+
             ai_text = None
             if ai_client.available() and _has_material_content(watchlist_rows, health_changes, posts):
                 ai_text = _draft_brief(email, watchlist_rows, health_changes, posts, site)
@@ -527,7 +561,10 @@ def run_weekly_brief(log=print):
                 else ("Your StocksDeepDive watchlist - weekly update" if FACTUAL_MODE
                       else "Your StocksDeepDive watchlist - weekly signals")
             )
-            _send(email, subject, _email_html(email, watchlist_rows, health_changes, posts, site, ai_text))
+            _send(email, subject, _email_html(
+                email, watchlist_rows, health_changes, posts, site, ai_text,
+                reporting_tickers=reporting_tickers,
+            ))
             summary["sent"] += 1
             log(f"[weekly_brief] sent to {email} ({len(watchlist_rows)} stocks"
                 f"{', AI brief' if ai_text else ''})")

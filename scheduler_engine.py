@@ -469,13 +469,37 @@ def _run_earnings_refresh(log):
     for every ticker this site has ever scanned or that anyone follows -
     see results_engine.refresh_earnings_calendar()'s own docstring for
     what "refresh" means and why it's capped per run. Deferred imports,
-    same shape as _run_digest/_run_watchdog above."""
+    same shape as _run_digest/_run_watchdog above.
+
+    Services batch 2, Part 4 (2026-09-01): widened to also cover every
+    ticker in anyone's watchlist (watchlist_store), portfolio
+    (portfolio_store.all_portfolio_tickers), or with an active alert
+    (alert_store.tickers_with_active_alerts) - the results calendar
+    (calendar_render.py) is only as complete as this watch list, and
+    those three sources previously fell outside it (only score_history's
+    "ever scanned" set and follow_store's separate "follow this
+    company's research" list were unioned in). score_history.
+    all_tracked_tickers() already covers "every ticker in the daily
+    universes" for free - it's every ticker any nightly universe scan
+    has EVER written a row for, which is every ticker that's a member of
+    a universe this site actually scans nightly, cumulatively - so no
+    separate hardcoded ASX 200/300 + S&P 500 + Nasdaq 100 + Dow 30 + All
+    Tech list is needed here (that would just be a second, driftable
+    copy of scanner_engine.py's own universe list)."""
     try:
         import score_history
         import follow_store
+        import watchlist_store
+        import portfolio_store
+        import alert_store
         import results_engine
-        tickers = sorted(set(score_history.all_tracked_tickers())
-                          | set(follow_store.all_followed_tickers()))
+        tickers = set(score_history.all_tracked_tickers())
+        tickers.update(follow_store.all_followed_tickers())
+        for _email, _wl_tickers in watchlist_store.all_users():
+            tickers.update(_wl_tickers)
+        tickers.update(portfolio_store.all_portfolio_tickers())
+        tickers.update(alert_store.tickers_with_active_alerts())
+        tickers = sorted(t for t in tickers if t)
         if not tickers:
             log("[scheduler] earnings calendar refresh: no tickers to watch yet")
             return
