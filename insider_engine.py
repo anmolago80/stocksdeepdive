@@ -114,6 +114,22 @@ def _match_asx_type(header):
 # ASX: fetch + PDF parse
 # --------------------------------------------------------------------
 
+# Fix (2026-09-01, found while building the AcroForm-value fix above,
+# confirmed against a synthetic form): the ASX template's OWN static
+# field labels sit stacked with nothing but a newline between them
+# ("Name of Director\nDate of change\n...") - the old regex's `[:\n]?`
+# separator happily accepted the NEXT label as if it were the captured
+# value (e.g. person came back as the literal string "Date of change").
+# This guard rejects a capture that's actually one of the form's own
+# other labels, on both the plain-text and (in case a differently-typed
+# PDF exposes it) AcroForm-field-name path.
+_ASX_LABEL_NOISE = re.compile(
+    r"^(?:Date of (?:change|last notice)|Number (?:acquired|disposed)|"
+    r"Value.?Consideration|Nature of (?:change|indirect interest)|"
+    r"Direct or indirect interest|No\.?\s*of securities)", re.IGNORECASE,
+)
+
+
 def _parse_director_notice_text(text):
     """Best-effort field extraction from an Appendix 3X/3Y/3Z's PDF text.
     Deliberately simple regexes against the form's well-known field
@@ -123,7 +139,9 @@ def _parse_director_notice_text(text):
     out = {"person": None, "action": None, "quantity": None, "price": None}
     m = re.search(r"Name of [Dd]irector\s*[:\n]?\s*([A-Z][A-Za-z'\.\-, ]{2,60})", text)
     if m:
-        out["person"] = m.group(1).strip().splitlines()[0][:80]
+        candidate = m.group(1).strip().splitlines()[0][:80]
+        if not _ASX_LABEL_NOISE.match(candidate):
+            out["person"] = candidate
     acq = re.search(r"Number acquired\s*[:\n]?\s*\+?\s*([\d,]+)", text)
     disp = re.search(r"Number disposed\s*[:\n]?\s*\+?\s*([\d,]+)", text)
     acq_n = _num(acq.group(1)) if acq else None
@@ -132,11 +150,27 @@ def _parse_director_notice_text(text):
         out["action"], out["quantity"] = "BUY", acq_n
     elif disp_n:
         out["action"], out["quantity"] = "SELL", disp_n
-    val = re.search(r"Value/?\s*[Cc]onsideration\s*[:\n]?\s*\$?\s*([\d,\.]+)", text)
-    if val and out["quantity"]:
-        total_val = _num(val.group(1))
-        if total_val:
-            out["price"] = round(total_val / out["quantity"], 4)
+    # Value/Consideration commonly states a PER-SHARE price directly
+    # ("$2.70 per share", "12,500 shares at $4.20" - both confirmed
+    # wordings from real lodged Appendix 3Y notices) rather than a bare
+    # total - checked first and preferred, since naively dividing "the
+    # first number after the label" by quantity silently produces
+    # nonsense when that first number is actually the restated share
+    # count and not a dollar total at all (e.g. "12,500 shares at
+    # $4.20": the number right after the label is "12,500", the same as
+    # quantity, giving a garbage $1.00 "price" instead of $4.20).
+    per_share = re.search(
+        r"(?:at|@)\s*\$\s*([\d,\.]+)|\$\s*([\d,\.]+)\s*(?:per\s+share|each)\b",
+        text, re.IGNORECASE,
+    )
+    if per_share:
+        out["price"] = _num(per_share.group(1) or per_share.group(2))
+    else:
+        val = re.search(r"Value/?\s*[Cc]onsideration\s*[:\n]?\s*\$?\s*([\d,\.]+)", text)
+        if val and out["quantity"]:
+            total_val = _num(val.group(1))
+            if total_val:
+                out["price"] = round(total_val / out["quantity"], 4)
     return out
 
 
@@ -154,15 +188,54 @@ def _parse_buyback_notice_text(text):
 
 
 def _extract_pdf_text(content, max_pages=4):
+    """Static page text (the printed template/labels) PLUS, when present,
+    interactive AcroForm field VALUES - the director/company-lodged
+    answers. ASX's Appendix 3X/3Y/3Z/3C/3E notices are commonly lodged as
+    fillable PDF forms, and pypdf's page.extract_text() only reads the
+    static page content stream; it does not include filled-in form-field
+    values (a well-known pypdf/PDF-extraction limitation - see
+    PdfReader.get_fields()). Without this, every "label immediately
+    followed by its value" regex below would see the label (it's part of
+    the static template) but never the typed-in answer, even though the
+    PDF "has text" and extraction technically succeeded - matching
+    exactly what was seen live: Date/Link (sourced from the ASX
+    announcements JSON, not the PDF) always populated, but every
+    PDF-parsed field (person/action/quantity/price) blank on every real
+    filing.
+
+    Field-value lines go FIRST, ahead of the static page text (not
+    appended after it) - confirmed necessary against a synthetic form
+    during this fix: the template's own labels sit stacked with only a
+    newline between them ("Name of Director\\nDate of change\\n..."), so
+    a search over static-text-then-fields could match one label followed
+    by the NEXT label and stop there, never reaching the real answer
+    later in the fields block. Leading with the unambiguous "label:
+    value" lines means re.search's leftmost-match finds the real answer
+    first; the static text still follows for anything with no
+    corresponding form field (or on a flattened/non-interactive PDF,
+    where this loop simply finds no fields and text is just the page
+    text, unchanged from before this fix)."""
     from pypdf import PdfReader
     reader = PdfReader(io.BytesIO(content))
-    text = ""
+    page_text = ""
     for page in reader.pages[:max_pages]:
         try:
-            text += (page.extract_text() or "") + "\n"
+            page_text += (page.extract_text() or "") + "\n"
         except Exception:
             continue
-    return text
+    field_text = ""
+    try:
+        fields = reader.get_fields() or {}
+        for name, field in fields.items():
+            value = getattr(field, "value", None)
+            if value in (None, ""):
+                continue
+            label = getattr(field, "alternate_name", None) or name or ""
+            field_text += f"{label}: {value}\n"
+    except Exception:
+        pass  # a malformed/encrypted AcroForm tree just means this
+        # source is limited to whatever the static page text already gave.
+    return field_text + page_text
 
 
 def _parse_asx_pdf(url, kind, log=print):
@@ -183,8 +256,17 @@ def _parse_asx_pdf(url, kind, log=print):
         else:
             out.update(_parse_buyback_notice_text(text))
         if not any(out.values()):
+            # Fix (2026-09-01, live: OCL.AX and every other ASX filing -
+            # every insider row showed Date/Link but Person/Action/
+            # Quantity/Price all blank): logs a text excerpt now, not
+            # just "didn't match", so the NEXT real failure (if any) is
+            # debuggable from these logs alone - no repeat of needing
+            # live network access this sandbox never had to see what a
+            # real filing's extracted text actually looked like.
             log(f"[insider_engine] ASX PDF text extracted for {url} but no "
-                f"fields matched the expected labels (kind={kind})")
+                f"fields matched the expected labels (kind={kind}) - first "
+                f"500 chars extracted (incl. any AcroForm field values): "
+                f"{text[:500]!r}")
     except Exception as e:
         log(f"[insider_engine] PDF parse failed for {url}: {e}")
     return out
