@@ -291,6 +291,26 @@ def _copy_as_text_html(copy_text, dom_id="sdd-copytext"):
     are per-ticker (a Deep Dive page, a /s/<ticker> snapshot page)."""
     e = html.escape
     return f"""
+<style>
+/* Inlined here (duplicating the .sdd-cite/.sdd-cite-btn rules already in
+   this file's own page-wide <style> block below) because this button
+   isn't always rendered inside a page that has that stylesheet: app.py's
+   Deep Dive page runs this whole snippet through
+   streamlit.components.v1.html(), which puts it in its own isolated
+   srcdoc iframe with NO inherited CSS from the parent Streamlit page or
+   from anywhere else in this file - so without its own <style> tag the
+   button fell back to the browser's unstyled default (a plain white/grey
+   button), the exact "why does this look broken" spotted live on the
+   Deep Dive page, 2026-09-01. On the static /s/<ticker> page (this same
+   HTML dropped straight into snapshot_render.render_snapshot()'s body,
+   which DOES already carry the page-wide stylesheet) this is simply a
+   harmless duplicate of an identical rule - same selector, same values,
+   last one wins, no visual difference. */
+.sdd-cite{{margin:10px 0 22px}}
+.sdd-cite-btn{{background:#121f36;border:1px solid #1f3352;border-radius:8px;
+  color:#8aa0b8;font-size:12.5px;padding:6px 12px;cursor:pointer;font-family:inherit}}
+.sdd-cite-btn:hover{{color:#e6edf5;border-color:#2dd4bf}}
+</style>
 <div class="sdd-cite">
   <button type="button" class="sdd-cite-btn" id="{e(dom_id)}-btn">Copy as text</button>
   <div class="sdd-copytext-status" id="{e(dom_id)}-status"
