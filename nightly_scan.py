@@ -38,6 +38,7 @@ import pandas as pd
 import yfinance as yf
 
 import moat_engine
+import reverse_dcf_engine
 import scan_store
 import score_history
 import scanner_engine
@@ -206,6 +207,28 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
 
     mos = ((intrinsic - current_price) / intrinsic) * 100 if intrinsic > 0 else 0.0
 
+    # Services batch 2, Part 1 (2026-09-01): "What the price implies" -
+    # reverse DCF, computed here so it reaches the snapshot pages/API/MCP
+    # the same way every other snapshot number does (see
+    # snapshot_store._PUBLIC_FIELD_MAP and this function's own return dict
+    # below). Reuses the SAME discount_rate/perpetual_rate/growth_rate/
+    # manual_fcf and info/cashflow_df resolve_intrinsic_value() just used
+    # above, and the same current_price, so the implied/model growth
+    # figures are always internally consistent with Intrinsic Value/MOS on
+    # this exact row - never a second, independently-resolved DCF. Never
+    # raises: reverse_dcf_engine.compute() itself returns ok=False (no
+    # exception) when there's no positive FCF base, which is the normal,
+    # expected outcome for names on the P/E-blend fallback.
+    try:
+        _reverse_dcf = reverse_dcf_engine.compute(
+            ticker, current_price, info=info, cashflow_df=cashflow_df,
+            currency=info.get("currency"),
+            discount_rate=discount_rate, perpetual_rate=perpetual_rate,
+            growth_rate=growth_rate, manual_fcf=manual_fcf,
+        )
+    except Exception:
+        _reverse_dcf = {"ok": False}
+
     # Same NaN-dropped close_series here too - iloc[-6] on the raw
     # window would count a trailing NaN placeholder bar as one of the
     # "6 trading days back" and could also land on a NaN itself.
@@ -310,6 +333,18 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         "Signal": signal,
         "Trend": trend,
         "Trade Setup": trade_signal,
+        # Services batch 2, Part 1: reverse DCF - None/None for any
+        # ticker reverse_dcf_engine couldn't build a positive FCF base
+        # for (same names Intrinsic Value/MOS are already None for, plus
+        # a P/E-blend name, since reverse DCF is a DCF-only calculation).
+        "Implied Growth %": (
+            round(_reverse_dcf["implied_growth"] * 100, 1)
+            if _reverse_dcf.get("ok") and _reverse_dcf.get("implied_growth") is not None else None
+        ),
+        "Model Growth %": (
+            round(_reverse_dcf["model_growth"] * 100, 1)
+            if _reverse_dcf.get("ok") and _reverse_dcf.get("model_growth") is not None else None
+        ),
     }
 
 

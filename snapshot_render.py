@@ -80,6 +80,10 @@ def _stat_cells(pub, moat):
         ("Intrinsic value", _fmt(pub.get("intrinsic_value")), None),
         ("Margin of safety",
          f"{pub['mos_pct']:+.1f}%" if pub.get("mos_pct") is not None else "-", None),
+        ("Implied growth (reverse DCF)",
+         f"{pub['implied_growth_pct']:+.1f}%" if pub.get("implied_growth_pct") is not None else "-",
+         (f"model assumes {pub['model_growth_pct']:+.1f}%"
+          if pub.get("model_growth_pct") is not None else "a described calculation from stated inputs, not a forecast")),
         ("Value Score", _fmt(pub.get("value_score")), None),
         ("Quality", _fmt(pub.get("quality")),
          "estimated (no reported figure)" if pub.get("quality_estimated") else None),
@@ -164,6 +168,11 @@ def _snapshot_copy_text(ticker, pub, moat, generated, universe, lede, base_url,
         lines.append(f"Intrinsic value: {_fmt(pub.get('intrinsic_value'))} {currency}")
     if pub.get("mos_pct") is not None:
         lines.append(f"Margin of safety: {pub['mos_pct']:+.1f}%")
+    if pub.get("implied_growth_pct") is not None:
+        _igl = f"Implied growth (reverse DCF): {pub['implied_growth_pct']:+.1f}%"
+        if pub.get("model_growth_pct") is not None:
+            _igl += f" (model assumes {pub['model_growth_pct']:+.1f}%)"
+        lines.append(_igl)
     if pub.get("valuation_label"):
         lines.append(f"Valuation: {pub['valuation_label']}")
     if pub.get("value_score") is not None:

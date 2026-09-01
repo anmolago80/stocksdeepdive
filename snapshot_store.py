@@ -178,6 +178,13 @@ _PUBLIC_FIELD_MAP = {
     "Quality Default": "quality_estimated",
     "Intrinsic Default": "intrinsic_estimated",
     "Company Name": "company_name",
+    # Services batch 2, Part 1 (2026-09-01): "What the price implies" -
+    # reverse DCF, computed by nightly_scan.analyze_ticker_lite() via
+    # reverse_dcf_engine.compute(). None/None for any ticker with no
+    # positive FCF base (same set Intrinsic Value/MOS are already None
+    # for, plus P/E-blend names) - see nightly_scan.py's own comment.
+    "Implied Growth %": "implied_growth_pct",
+    "Model Growth %": "model_growth_pct",
 }
 
 

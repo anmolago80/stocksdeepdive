@@ -100,6 +100,10 @@ import results_engine
 # "last watchdog brief" caption below) and the settings toggle wiring.
 import portfolio_watchdog_engine
 
+# Services batch 2, Part 1 (2026-09-01): "What the price implies" -
+# reverse DCF. No Anthropic API call anywhere in this feature.
+import reverse_dcf_engine
+
 # -----------------------------------
 # PAGE SETUP
 # -----------------------------------
@@ -4540,6 +4544,188 @@ def _render_explain_popover(dd, metric_key):
                 st.caption(result.get("error") or "Couldn't get an answer right now - please try again.")
 
 
+# ---------------------------------------------------------------------
+# Services batch 2, Part 1 (2026-09-01): "What the price implies" -
+# reverse DCF card on the Deep Dive page. No Anthropic API call anywhere
+# in this feature - reverse_dcf_engine.py does the whole computation from
+# the same inputs fcf_valuation_engine.dcf_intrinsic_value() already
+# resolves for the on-screen Intrinsic Value figure (see that module's
+# own docstring). The ⓘ below reuses _render_explain_popover()'s visual
+# treatment (the small borderless "ⓘ" pill button) but shows a FIXED
+# definition instead of generating one - there is nothing ticker-specific
+# to explain about the methodology itself, so spending an AI call on it
+# would be pure waste.
+# ---------------------------------------------------------------------
+
+_REVERSE_DCF_METHODOLOGY_TEXT = (
+    "**What the price implies (reverse DCF).** The site's normal DCF assumes a growth "
+    "rate and solves for a fair value. This runs the same model in reverse: holding the "
+    "same base free cash flow, discount rate and terminal growth rate that produced the "
+    "Intrinsic Value figure above, it solves numerically for the FCF growth rate that "
+    "would make the model's fair value equal today's price.\n\n"
+    "That figure - Implied growth - describes what the market is currently pricing in, "
+    "shown next to Model growth (the rate the site's own DCF actually assumed). The "
+    "solve is bounded between -30% and +60% a year; a price outside what that range can "
+    "produce is shown as \"≤ -30%\" or \"≥ 60%\" rather than an unbounded number. This is "
+    "a described calculation from stated inputs, not a forecast - it says nothing about "
+    "whether the implied growth rate is realistic, only what it is."
+)
+
+
+def _render_static_explainer(key_suffix, button_label, text):
+    """A small, borderless ⓘ popover showing FIXED text - visually the same
+    treatment as _render_explain_popover() just above (same CSS, same
+    st.popover pattern), but with no AI call and no cache: the content
+    never varies per ticker, so there's nothing to generate."""
+    _wrap_key = f"static_explain_wrap_{key_suffix}"
+    st.markdown(
+        f"""
+        <style>
+        div.st-key-{_wrap_key} button {{
+            border: none !important;
+            background: transparent !important;
+            box-shadow: none !important;
+            padding: 0.05rem 0.4rem !important;
+            min-height: 0 !important;
+            font-size: 0.85rem !important;
+            color: #64748b !important;
+        }}
+        div.st-key-{_wrap_key} button:hover,
+        div.st-key-{_wrap_key} button:focus,
+        div.st-key-{_wrap_key} button:active {{
+            border: none !important;
+            background: transparent !important;
+            box-shadow: none !important;
+            color: #0d9488 !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.container(key=_wrap_key), st.popover(button_label):
+        st.markdown(text)
+
+
+def _reverse_dcf_gauge(implied_pct, model_pct):
+    """Small horizontal gauge (-10...+30%) marking Implied growth and
+    Model growth on the same number line, per the Part 1 spec. Values
+    outside that display band are clamped for the marker position only
+    (same "capped for readability" convention the Margin of Safety gauge
+    above already uses) - the actual number shown in the st.metric tiles
+    is never clamped."""
+    _lo, _hi = -10, 30
+    _implied_clamped = max(_lo, min(implied_pct, _hi))
+    _model_clamped = max(_lo, min(model_pct, _hi))
+    fig = go.Figure()
+    fig.add_shape(
+        type="line", x0=_lo, x1=_hi, y0=0, y1=0,
+        line=dict(color="#334155", width=6), layer="below",
+    )
+    fig.add_shape(
+        type="line", x0=0, x1=0, y0=-0.5, y1=0.5,
+        line=dict(color="#475569", width=1, dash="dot"),
+    )
+    fig.add_trace(go.Scatter(
+        x=[_model_clamped], y=[0], mode="markers",
+        marker=dict(symbol="diamond", size=14, color="#8aa0b8"),
+        name="Model growth",
+        hovertemplate=f"Model growth: {model_pct:.1f}%<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=[_implied_clamped], y=[0], mode="markers",
+        marker=dict(symbol="circle", size=16, color="#2dd4bf"),
+        name="Implied growth",
+        hovertemplate=f"Implied growth: {implied_pct:.1f}%<extra></extra>",
+    ))
+    fig.update_yaxes(visible=False, range=[-1, 1], fixedrange=True)
+    fig.update_xaxes(range=[_lo, _hi], title="Annual FCF growth (%)", zeroline=False)
+    fig.update_layout(
+        height=140, showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="left", x=0),
+        margin=dict(l=10, r=10, t=34, b=34),
+    )
+    return fig
+
+
+def _render_reverse_dcf_card(dd):
+    """"What the price implies" - compact reverse-DCF card, placed below
+    the Intrinsic Value/MOS figures and before the Compounder View (auto)
+    section per the Part 1 spec. Skipped entirely (no card, no warning)
+    when there's no Intrinsic Value to begin with - the Margin of Safety
+    block right above already explains that case - or when the reverse
+    solve itself can't find a positive FCF base (a name on the P/E-blend
+    fallback method). Paywalled the same way the Compounder View (auto)
+    "Fair Value" tab is (same paywall_engine.render_gate mechanism, its
+    own key_prefix so the two gates don't collide on one page)."""
+    # Reverse DCF is a DCF-only concept: a name resolve_intrinsic_value()
+    # had to fall back away from DCF for (intrinsic_source == "pe-blend",
+    # e.g. persistently negative FCF) still has an Intrinsic Value figure
+    # but nothing here to reverse-solve from - checked before the divider
+    # below so a P/E-blend name never shows an empty section.
+    if not dd.get("intrinsic_value") or dd.get("intrinsic_source") != "dcf":
+        return
+    ticker = dd["ticker"]
+
+    st.divider()
+    if not paywall_engine.render_gate(
+        "What the price implies - reverse DCF",
+        teaser=(
+            "The FCF growth rate the market is currently pricing in for this "
+            "stock, alongside the growth rate the model itself assumed."
+        ),
+        key_prefix=f"reverse_dcf_{ticker}",
+    ):
+        return
+
+    _rd_discount, _rd_perpetual, _rd_growth, _rd_manual_fcf = _dcf_overrides_for(ticker)
+    _rd_info = get_ticker_info(ticker)
+    _rd_cf = get_cashflow_df(ticker)
+    try:
+        res = reverse_dcf_engine.compute(
+            ticker, dd["price"], info=_rd_info, cashflow_df=_rd_cf,
+            currency=dd.get("currency"),
+            discount_rate=_rd_discount, perpetual_rate=_rd_perpetual,
+            growth_rate=_rd_growth, manual_fcf=_rd_manual_fcf,
+        )
+    except Exception:
+        return
+    if not res.get("ok"):
+        return
+
+    st.markdown("##### What the price implies")
+    _render_static_explainer(
+        f"reverse_dcf_{ticker}", "ⓘ Methodology", _REVERSE_DCF_METHODOLOGY_TEXT,
+    )
+    st.caption("A described calculation from stated inputs, not a forecast.")
+
+    _implied_pct = res["implied_growth"] * 100
+    _model_pct = res["model_growth"] * 100 if res["model_growth"] is not None else None
+
+    if res["implied_growth_capped"] == "low":
+        _implied_label = f"≤ {_implied_pct:.1f}%"
+    elif res["implied_growth_capped"] == "high":
+        _implied_label = f"≥ {_implied_pct:.1f}%"
+    else:
+        _implied_label = f"{_implied_pct:+.1f}%"
+
+    _rd_m1, _rd_m2 = st.columns(2)
+    _rd_m1.metric("Implied growth", _implied_label)
+    _rd_m2.metric("Model growth", f"{_model_pct:+.1f}%" if _model_pct is not None else "N/A")
+
+    if _model_pct is not None:
+        sdd_plotly_chart(_reverse_dcf_gauge(_implied_pct, _model_pct))
+        if not (-10 <= _implied_pct <= 30) or not (-10 <= _model_pct <= 30):
+            st.caption("Marker capped at -10%/30% for readability.")
+
+    if res.get("sentence"):
+        st.caption(res["sentence"])
+    if res.get("value_default"):
+        st.caption(
+            "Rests on a default/estimated free cash flow input - see the "
+            "note under Intrinsic Value above."
+        )
+
+
 def page_deep_dive():
     _render_header(compact=True, page_label="Deep Dive")
     _dd = st.session_state.get("dd_result")
@@ -5262,6 +5448,13 @@ def page_deep_dive():
                 "(DCF and P/E-blend both unavailable - likely a "
                 "financial or a name with no positive EPS/FCF)."
             )
+
+        # Services batch 2, Part 1 (2026-09-01): "What the price implies"
+        # - below the Intrinsic Value figure, before Compounder View, per
+        # spec. Renders nothing at all (not even its own divider) when
+        # there's no DCF-based Intrinsic Value on this ticker - see
+        # _render_reverse_dcf_card()'s own docstring.
+        _render_reverse_dcf_card(_dd)
 
         if not _factual():
             st.divider()
@@ -10241,6 +10434,22 @@ Deep Dive page whenever they apply.
 
 A stock trading 25%+ below intrinsic value is labelled **UNDERVALUED**; above intrinsic
 value, **EXPENSIVE**; between, **FAIR**.
+
+#### What the price implies (reverse DCF)
+
+Alongside the standard DCF above, the Deep Dive page also runs it in reverse: holding
+the same base free cash flow, discount rate and terminal growth rate that produced the
+Intrinsic Value figure, it solves numerically for the FCF growth rate that would make
+the model's fair value equal today's price. That figure - the implied growth rate -
+describes what the market is currently pricing in, shown alongside the growth rate the
+model itself assumed, so the two can be compared directly.
+
+This is a calculation from stated inputs, not a forecast: it says nothing about whether
+the implied growth rate is realistic, only what it is. The solve is bounded between
+−30% and +60% a year; a price outside what that range can produce is shown as "≤ −30%"
+or "≥ 60%" rather than an unbounded number. Where the base free cash flow rests on an
+estimate, this figure carries the same red-flag note as the Intrinsic Value it's
+derived from.
 
 #### Value vs timing - two separate verdicts
 

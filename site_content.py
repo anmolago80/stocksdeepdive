@@ -122,6 +122,22 @@ Margin of Safety = (intrinsic value − price) ÷ intrinsic value.
 A stock trading 25%+ below intrinsic value is labelled **UNDERVALUED**; above intrinsic
 value, **EXPENSIVE**; between, **FAIR**.
 
+#### What the price implies (reverse DCF)
+
+Alongside the standard DCF above, the Deep Dive page also runs it in reverse: holding
+the same base free cash flow, discount rate and terminal growth rate that produced the
+Intrinsic Value figure, it solves numerically for the FCF growth rate that would make
+the model's fair value equal today's price. That figure - the implied growth rate -
+describes what the market is currently pricing in, shown alongside the growth rate the
+model itself assumed, so the two can be compared directly.
+
+This is a calculation from stated inputs, not a forecast: it says nothing about whether
+the implied growth rate is realistic, only what it is. The solve is bounded between
+−30% and +60% a year; a price outside what that range can produce is shown as "≤ −30%"
+or "≥ 60%" rather than an unbounded number. Where the base free cash flow rests on an
+estimate, this figure carries the same red-flag note as the Intrinsic Value it's
+derived from.
+
 #### Value vs timing - two separate verdicts
 
 The **Investment Signal** answers "good business to own?" The **Trade Setup** answers
