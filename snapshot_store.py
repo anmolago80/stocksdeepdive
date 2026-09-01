@@ -185,6 +185,14 @@ _PUBLIC_FIELD_MAP = {
     # for, plus P/E-blend names) - see nightly_scan.py's own comment.
     "Implied Growth %": "implied_growth_pct",
     "Model Growth %": "model_growth_pct",
+    # Services batch 2, Part 2 (2026-09-01): peer context - percentile
+    # ranks (universe + sector objects, one per metric), computed once
+    # per nightly scan by peer_context.attach_percentiles(). Absent
+    # entirely on a row from a scan saved before this shipped (an old
+    # cached scan file simply has no "Percentiles" key yet) - public_view
+    # already omits any key not present on `row`, so that's a clean
+    # omission, not a crash or a fabricated value.
+    "Percentiles": "percentiles",
 }
 
 

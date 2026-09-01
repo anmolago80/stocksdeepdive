@@ -38,6 +38,7 @@ import pandas as pd
 import yfinance as yf
 
 import moat_engine
+import peer_context
 import reverse_dcf_engine
 import scan_store
 import score_history
@@ -354,8 +355,30 @@ def run_universe_scan(universe, max_tickers=None, log=print):
     be resolved). Goes attention-lite only when the resolved universe is
     bigger than NIGHTLY_LITE_THRESHOLD (a real index like ASX 200/S&P 500
     always will be; a hand-run scan of a small custom list won't)."""
+    # Services batch 2, Part 2 (2026-09-01): calls get_universe_pool()
+    # directly (what resolve_tickers() itself calls internally) instead
+    # of resolve_tickers() - same ticker list, same single fetch per
+    # universe, but this way the Sector column that pool already carries
+    # isn't thrown away. Sector is attached to each row below
+    # (_sector_by_ticker) so peer_context.py can group same-sector
+    # peers/percentiles purely from the saved scan - see that module's
+    # own docstring.
     country = "Australia" if universe in scanner_engine.AUSTRALIA_UNIVERSES else "USA"
-    tickers, source = scanner_engine.resolve_tickers(country, universe, "All")
+    pool_df, source = scanner_engine.get_universe_pool(country, universe)
+    if pool_df is None or pool_df.empty:
+        log(f"[nightly_scan] {universe}: no tickers resolved ({source})")
+        return None
+    tickers = sorted(pool_df["Ticker"].dropna().unique().tolist())
+    # Sanitised to real strings only (or absent -> .get() gives None) -
+    # pool_df["Sector"] can hold pandas NaN for a ticker with no known
+    # sector, and a raw NaN surviving onto a row would be truthy in
+    # Python (unlike None), silently breaking every "if sector:" gate
+    # downstream (peer_context.py, this function's own percentile step).
+    _sector_by_ticker = {}
+    if "Sector" in pool_df.columns:
+        for _tk, _sec in zip(pool_df["Ticker"], pool_df["Sector"]):
+            if isinstance(_sec, str) and _sec.strip():
+                _sector_by_ticker[_tk] = _sec.strip()
     if not tickers:
         log(f"[nightly_scan] {universe}: no tickers resolved ({source})")
         return None
@@ -386,6 +409,12 @@ def run_universe_scan(universe, max_tickers=None, log=print):
                     log(f"[nightly_scan] {t}: skipped, no valid price ({_price!r})")
                 else:
                     _attach_moat(row, t, log=log)
+                    # Services batch 2, Part 2: Sector, straight from the
+                    # constituent pool already fetched above - no extra
+                    # call. None (not "Unknown") for a universe whose
+                    # source doesn't carry sectors at all, same as
+                    # get_universe_pool's own convention.
+                    row["Sector"] = _sector_by_ticker.get(t)
                     rows.append(row)
         except Exception as e:  # one bad ticker never kills the run
             log(f"[nightly_scan] {t}: {e}")
@@ -394,6 +423,16 @@ def run_universe_scan(universe, max_tickers=None, log=print):
         time.sleep(PER_TICKER_SLEEP)
 
     rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
+
+    # Services batch 2, Part 2: percentile ranks (universe + sector),
+    # computed once over this run's whole row population - see
+    # peer_context.attach_percentiles()'s own docstring for why this has
+    # to be a batch step here rather than something analyze_ticker_lite()
+    # can compute per-ticker (it needs every OTHER row's value too).
+    try:
+        peer_context.attach_percentiles(rows)
+    except Exception as e:
+        log(f"[nightly_scan] {universe}: attach_percentiles failed: {e}")
 
     # Audit fix 2.3 / Fix 9 item 3 (2026-09-01): don't let a partially- or
     # badly-failed run silently clobber a complete prior scan (see

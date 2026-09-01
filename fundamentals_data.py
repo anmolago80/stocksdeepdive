@@ -199,6 +199,30 @@ def _read_cache(ticker):
         return None
 
 
+def peek_cached_market_cap(ticker):
+    """Services batch 2, Part 2 (2026-09-01): read-only, NO-FETCH peek at a
+    ticker's market cap from whatever fundamentals bundle already happens
+    to be cached for it on disk - used by peer_context.py, which must
+    never make a live network call (it runs on every Deep Dive view).
+    Unlike get_bundle()/_read_cache(), this ignores the 24h TTL and
+    BUNDLE_VERSION entirely: a slightly-stale market cap is still exactly
+    as useful for "which peer is closest in size", so there's no reason
+    to discard a working cache entry just because the Compounder View's
+    own freshness bar wouldn't accept it for real financial figures.
+    Returns None if this ticker has never had a bundle cached at all, or
+    the cached info has no marketCap - NEVER triggers a fetch of its own."""
+    path = _cache_path(ticker)
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            obj = json.load(f)
+        cap = (obj.get("info") or {}).get("marketCap")
+        return float(cap) if cap else None
+    except Exception:
+        return None
+
+
 def _write_cache(ticker, bundle):
     """Atomic write (tmp file + os.replace) so a crash mid-write never
     leaves a corrupt cache file behind. Best-effort - a write failure just

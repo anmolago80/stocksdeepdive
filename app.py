@@ -104,6 +104,10 @@ import portfolio_watchdog_engine
 # reverse DCF. No Anthropic API call anywhere in this feature.
 import reverse_dcf_engine
 
+# Services batch 2, Part 2 (2026-09-01): peer context (percentile ranks +
+# closest peers) - no Anthropic API call anywhere in this feature either.
+import peer_context
+
 # -----------------------------------
 # PAGE SETUP
 # -----------------------------------
@@ -4726,6 +4730,135 @@ def _render_reverse_dcf_card(dd):
         )
 
 
+# ---------------------------------------------------------------------
+# Services batch 2, Part 2 (2026-09-01): peer context - percentile ranks
+# and closest peers, directly under the score gauges (Value Score,
+# Quality, Psychology, Discovery, Moat) and before Margin of Safety, per
+# spec. Purely a reshape of already-saved overnight scan data
+# (peer_context.py) - no live network call, no engine touched.
+# ---------------------------------------------------------------------
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_peer_context(ticker):
+    """A short-TTL cache around peer_context.compute() - that function
+    itself is already pure local file reads (no network), but re-reading
+    every scan file from disk on every single Deep Dive rerun (which
+    Streamlit does often - any widget interaction reruns the page) is
+    wasted work when the same ticker's peer context can't have changed
+    in the meantime; 30 min matches the overnight-scan cache TTLs used
+    elsewhere on this page (get_ticker_info/get_cashflow_df)."""
+    return peer_context.compute(ticker)
+
+
+def _pct_phrase(p):
+    """92 -> 'top 8%'; 30 -> 'bottom 30%'; None -> None. Per the spec:
+    "top X%" wording when percentile >= 50, "bottom X%" otherwise -
+    factual, no colour judgement beyond the gauges' own existing colours."""
+    if p is None:
+        return None
+    return f"top {100 - p:.0f}%" if p >= 50 else f"bottom {p:.0f}%"
+
+
+_PEER_CHIP_METRICS = [
+    ("Value Score", "value_score"),
+    ("Quality", "quality"),
+    ("Moat", "moat"),
+    ("MOS", "mos"),
+    ("Psychology", "psychology"),
+]
+
+
+def _render_peer_context(dd):
+    """Hidden entirely (no card, no message) for a fund/ETF - checked
+    directly via moat_engine._is_fund() (the same check the Moat Score
+    itself already relies on) rather than left to fall through to
+    peer_context's own "not_scanned" case, since an ETF/fund is never a
+    member of an equity-index scan in the first place and deserves a
+    different (silent) treatment than a genuine "not scanned yet" stock,
+    which instead shows a small clean caption - see the spec's own two
+    separate verify cases for this distinction."""
+    ticker = dd["ticker"]
+    try:
+        info = get_ticker_info(ticker)
+    except Exception:
+        info = {}
+    if moat_engine._is_fund(info):
+        return
+
+    try:
+        res = _cached_peer_context(ticker)
+    except Exception:
+        return
+
+    st.divider()
+    st.markdown("##### Peer context")
+
+    if not res.get("available"):
+        st.caption(
+            f"No peer data yet for {ticker} - not in a scanned overnight "
+            "universe yet."
+        )
+        return
+
+    own_values = res["own_values"]
+    percentiles = res["percentiles"]
+    universe = res["universe"]
+    sector = res.get("sector")
+
+    chip_lines = []
+    for label, key in _PEER_CHIP_METRICS:
+        val = own_values.get(key)
+        u_phrase = _pct_phrase(percentiles[key]["universe"])
+        if val is None or not u_phrase:
+            continue
+        line = f"<b>{html.escape(label)} {val:g}</b> &mdash; {u_phrase} of {html.escape(universe)}"
+        s_phrase = _pct_phrase(percentiles[key]["sector"])
+        if s_phrase and sector:
+            line += f" &middot; {s_phrase} of {html.escape(sector)}"
+        chip_lines.append(line)
+
+    if chip_lines:
+        _chips_html = "".join(
+            f'<div style="display:inline-block;background:#0f1f2e;'
+            f'border:1px solid #1f3352;border-radius:999px;padding:6px 14px;'
+            f'margin:4px 8px 4px 0;font-size:13px;color:#e6edf5;">{c}</div>'
+            for c in chip_lines
+        )
+        st.markdown(_chips_html, unsafe_allow_html=True)
+    else:
+        st.caption("No rankable scores for this ticker yet.")
+
+    peers = res.get("peers") or []
+    if peers:
+        st.caption("Closest peers - same sector, nearest by size.")
+        _peer_df = pd.DataFrame([
+            {
+                "Ticker": p["ticker"],
+                "Price": p.get("price"),
+                "Intrinsic Value": p.get("intrinsic_value"),
+                "MOS %": p.get("mos"),
+                "Value Score": p.get("value_score"),
+                "Quality": p.get("quality"),
+                "Moat": p.get("moat"),
+            }
+            for p in peers
+        ])
+        st.dataframe(_peer_df, hide_index=True, use_container_width=True)
+        for p in peers:
+            _pk1, _pk2, _pk3 = st.columns([2, 1, 1])
+            with _pk1:
+                st.caption(p["ticker"])
+            with _pk2:
+                st.link_button("Deep Dive ↗", f"/deep-dive?ticker={p['ticker']}",
+                                key=f"peer_dd_{ticker}_{p['ticker']}")
+            with _pk3:
+                st.link_button("Compare these →",
+                                f"/comparison?tickers={ticker},{p['ticker']}",
+                                key=f"peer_cmp_{ticker}_{p['ticker']}")
+    elif sector:
+        st.caption(f"No other {sector} peers in {universe} to compare against.")
+
+
 def page_deep_dive():
     _render_header(compact=True, page_label="Deep Dive")
     _dd = st.session_state.get("dd_result")
@@ -5372,6 +5505,10 @@ def page_deep_dive():
                             xaxis_title="Points toward Moat",
                         ),
                     )
+
+        # Services batch 2, Part 2 (2026-09-01): peer context - directly
+        # under the score gauges above, before Margin of Safety, per spec.
+        _render_peer_context(_dd)
 
         # Margin of Safety - moved here (after Discovery Score, before Trade
         # Setup) and redesigned into a gauge (same visual family as the
