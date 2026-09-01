@@ -7252,6 +7252,15 @@ def page_results_calendar():
 
     _email = paywall_engine.current_user_email() if paywall_engine.is_logged_in() else None
     _filter_options = ["All"] + (["My tickers"] if _email else []) + ["Universe..."]
+    # Guard against a previously-picked "My tickers" no longer being a
+    # valid option (the visitor signed out since choosing it, in this
+    # same browser session) - same "fix up BEFORE the widget below is
+    # instantiated" guard page_scanner() already uses for its own
+    # universe/sector selectbox, and for the same reason: Streamlit
+    # raises if a radio/selectbox's session_state value isn't in its
+    # current options.
+    if st.session_state.get("cal_filter_choice") not in _filter_options:
+        st.session_state["cal_filter_choice"] = "All"
     _fcol1, _fcol2 = st.columns([2, 2])
     with _fcol1:
         _filter_choice = st.radio(
@@ -7279,7 +7288,7 @@ def page_results_calendar():
 
     _this_mon, _this_sun = calendar_render.week_bounds()
     _next_mon, _next_sun = _this_mon + timedelta(days=7), _this_sun + timedelta(days=7)
-    _month_first, _month_last = calendar_render.month_bounds()
+    _, _month_last = calendar_render.month_bounds()
     _later_start = _next_sun + timedelta(days=1)
 
     _this_week = calendar_render.group_by_day(calendar_render.filter_range(_entries, _this_mon, _this_sun))
