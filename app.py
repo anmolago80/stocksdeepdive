@@ -5,6 +5,7 @@ import time
 import json
 import html
 import os
+import math
 import hmac
 import difflib
 import concurrent.futures
@@ -4060,10 +4061,20 @@ as a fact &mdash; you always know which numbers are computed and which are assum
     # nightly_scan.py) - zero live fetching here. Renders nothing at all
     # (no empty box) when no stored scan exists yet, per spec.
     _tt5_scan = scan_store.load_scan("ASX 200")
+    _tt5_rows = []
     if _tt5_scan and _tt5_scan.get("rows"):
+        # Fix 9: only rank stocks with a real, finite Price - a scan row
+        # with a broken/NaN Price (see _price_cell's docstring) is never
+        # fit to show on the Home page, no matter how it would otherwise
+        # rank by Long Score.
+        _tt5_candidates = [
+            r for r in _tt5_scan["rows"]
+            if isinstance(r.get("Price"), (int, float)) and math.isfinite(r.get("Price"))
+        ]
         _tt5_rows = sorted(
-            _tt5_scan["rows"], key=lambda r: r.get("Long Score") or 0, reverse=True
+            _tt5_candidates, key=lambda r: r.get("Long Score") or 0, reverse=True
         )[:5]
+    if _tt5_rows:
         _tt5_html = []
         for _tr in _tt5_rows:
             _ttk = _tr.get("Ticker") or "-"
@@ -4075,7 +4086,7 @@ as a fact &mdash; you always know which numbers are computed and which are assum
             _tt5_html.append(
                 "<tr>"
                 + _td(_ttk_cell)
-                + _td(f"{(_tr.get('Price') or 0):,.2f}")
+                + _td(_price_cell(_tr.get("Price")))
                 + _td(_bar_cell(_tr.get("Long Score"),
                                 SIGNAL_THRESHOLDS["WATCHLIST"],
                                 SIGNAL_THRESHOLDS["LONG"]), minw=90)
@@ -5838,6 +5849,31 @@ def _money_cell(value, ref=None, flag=False, fmt="{:,.2f}"):
     return f"<span style='{style}'>{fmt.format(v)}</span>"
 
 
+def _price_cell(value):
+    """A raw Price number, plain-formatted (no green/red coloring - that's
+    _money_cell's job for Intrinsic Value; Price is just the current
+    quote). Fix 9 (2026-09-01): nightly_scan rows can carry a NaN/None
+    Price when the underlying Yahoo data was itself broken for that
+    ticker that night (see nightly_scan.analyze_ticker_lite - a 3-month
+    Close window with no finite value in it). The old call sites did
+    `f"{(value or 0):,.2f}"`, which does NOT catch NaN: `float('nan') or 0`
+    evaluates to `nan` (NaN is truthy in Python), not `0` - so a NaN price
+    rendered as the literal text 'nan' on the Home page's "Tonight's top
+    5" and every Scanner overnight-scan table (both public surfaces).
+    Renders 'N/A' for None/NaN/inf, matching the site-wide convention
+    every other cell helper (_bar_cell, _money_cell, _signed_cell, ...)
+    already uses for a missing/invalid value."""
+    if value is None or value == "N/A" or (isinstance(value, float) and not math.isfinite(value)):
+        return "<span style='color:#8aa0b8;'>N/A</span>"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return f"<span>{value}</span>"
+    if not math.isfinite(v):
+        return "<span style='color:#8aa0b8;'>N/A</span>"
+    return f"{v:,.2f}"
+
+
 def _signed_cell(value, suffix="%"):
     """Signed number coloured by its sign (upside/downside style)."""
     if value is None or value == "N/A" or (isinstance(value, float) and pd.isna(value)):
@@ -5997,7 +6033,7 @@ def _render_overnight_scan_table(universe_label, overnight):
                 "<tr>"
                 + _td(_tk_cell)
                 + _td(_badge_cell(_orow.get("Type", "-"), _TYPE_NEUTRAL))
-                + _td(f"{(_orow.get('Price') or 0):,.2f}")
+                + _td(_price_cell(_orow.get("Price")))
                 + _td(_money_cell(_orow.get("Intrinsic Value"),
                                   ref=_orow.get("Price"),
                                   flag=bool(_orow.get("Intrinsic Default"))))

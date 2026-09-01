@@ -28,8 +28,11 @@ Yahoo Finance etiquette: one ticker at a time with a small sleep - the
 whole point of running overnight is that nobody is waiting.
 """
 
+import math
+import os
 import sys
 import time
+from datetime import datetime, timezone
 
 import pandas as pd
 import yfinance as yf
@@ -39,6 +42,7 @@ import scan_store
 import score_history
 import scanner_engine
 import screen_import_store
+import snapshot_store
 import indicators_engine
 import social_engine
 import trade_filter_engine
@@ -67,7 +71,14 @@ NIGHTLY_LITE_THRESHOLD = 100
 # this, a 100/500-ticker partial run would silently overwrite last night's
 # complete 500-row ranking, "succeed", and not be retried until the next
 # scheduled window because the save looks perfectly fresh.
-SCAN_COMPLETENESS_THRESHOLD = 0.5
+#
+# Fix 9 item 3 (2026-09-01): bumped 0.5 -> 0.6, and the row COUNT this is
+# measured against is now "rows with a real finite price that survived
+# the hard per-row guard in run_universe_scan()", not just "any row
+# analyze_ticker_lite() happened to return" - see run_universe_scan's own
+# comment for why a NaN-price run needs a stricter, not just a
+# same-shaped, safety net.
+SCAN_COMPLETENESS_THRESHOLD = 0.6
 
 # The TradingView-CSV import queue (screen_import_store.py) - a virtual
 # "universe" that isn't a real index, resolved from the import queue
@@ -149,11 +160,33 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     except Exception:
         cashflow_df = pd.DataFrame()
 
+    # Fix 9 (2026-09-01): price from the last VALID bar, not blindly
+    # iloc[-1]. Root cause (confirmed via Railway logs from the 31 Aug
+    # 20:00 UTC run): yfinance's most recent bar can be a still-forming
+    # placeholder with Close = NaN - normally just-today's not-yet-closed
+    # session (see deep_dive_engine.analyze()'s matching comment, which
+    # already carries this exact fix), but for ASX tickers scanned at
+    # 20:00 UTC (06:00 Brisbane, before the ASX open) EVERY ticker's
+    # in-progress session bar was NaN, so every ASX row got a NaN price
+    # and every downstream number computed from it (MOS/fear/greed/
+    # weekly change/Long Score) was garbage - 192/197 ASX 200 rows and
+    # 236/241 ASX 300 rows saved that night. Same fix already proven live
+    # on deep_dive_engine's per-ticker path: drop NaN closes before
+    # indexing, so a bad trailing bar is a missing row, not a poisoned
+    # last row. Mirrors deep_dive_engine.analyze()'s _close_series
+    # handling exactly, so the two paths agree on the same ticker.
     window_3mo = df.tail(63)
-    current_price = float(window_3mo["Close"].iloc[-1])
-    high_price = float(window_3mo["Close"].max())
+    close_series = window_3mo["Close"].dropna()
+    if close_series.empty:
+        # No usable close anywhere in the 3-month window - not just a bad
+        # trailing bar but no real price data at all. Never fabricate a
+        # row from this; the caller (run_universe_scan/run_imported_scan)
+        # already treats a None return as "ticker skipped".
+        return None
+    current_price = float(close_series.iloc[-1])
+    high_price = float(close_series.max())
     fear = ((high_price - current_price) / high_price) * 100 if high_price else 0.0
-    ma50 = window_3mo["Close"].rolling(50).mean().iloc[-1]
+    ma50 = close_series.rolling(50).mean().iloc[-1]
     if pd.isna(ma50) or ma50 == 0:
         ma50 = current_price
     greed = max(((current_price - ma50) / ma50) * 100, 0)
@@ -173,9 +206,12 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
 
     mos = ((intrinsic - current_price) / intrinsic) * 100 if intrinsic > 0 else 0.0
 
-    if len(window_3mo) >= 6 and window_3mo["Close"].iloc[-6] != 0:
-        weekly = ((current_price - window_3mo["Close"].iloc[-6])
-                  / window_3mo["Close"].iloc[-6]) * 100
+    # Same NaN-dropped close_series here too - iloc[-6] on the raw
+    # window would count a trailing NaN placeholder bar as one of the
+    # "6 trading days back" and could also land on a NaN itself.
+    if len(close_series) >= 6 and close_series.iloc[-6] != 0:
+        weekly = ((current_price - close_series.iloc[-6])
+                  / close_series.iloc[-6]) * 100
     else:
         weekly = 0.0
     fomo = max(greed + max(weekly, 0), 0)
@@ -295,12 +331,27 @@ def run_universe_scan(universe, max_tickers=None, log=print):
         f"attention_lite={attention_lite}")
 
     rows = []
+    skipped_no_price = 0
     for i, t in enumerate(tickers):
         try:
             row = analyze_ticker_lite(t, attention_lite=attention_lite)
             if row:
-                _attach_moat(row, t, log=log)
-                rows.append(row)
+                # Fix 9 item 2 (2026-09-01): hard backstop, on top of item
+                # 1's fix inside analyze_ticker_lite() itself - a row can
+                # NEVER reach scan_store/score_history with a non-finite,
+                # zero, or negative price, no matter how it was built.
+                # Should essentially never fire now that
+                # analyze_ticker_lite() itself returns None for a ticker
+                # with no usable close, but this is the actual guarantee
+                # the "never let a NaN reach a public surface" rule needs,
+                # not just "the one known code path that used to break it".
+                _price = row.get("Price")
+                if not (isinstance(_price, (int, float)) and math.isfinite(_price) and _price > 0):
+                    skipped_no_price += 1
+                    log(f"[nightly_scan] {t}: skipped, no valid price ({_price!r})")
+                else:
+                    _attach_moat(row, t, log=log)
+                    rows.append(row)
         except Exception as e:  # one bad ticker never kills the run
             log(f"[nightly_scan] {t}: {e}")
         if i % 25 == 24:
@@ -309,29 +360,39 @@ def run_universe_scan(universe, max_tickers=None, log=print):
 
     rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
 
-    # Audit fix 2.3: don't let a partially-failed run silently clobber a
-    # complete prior scan (see SCAN_COMPLETENESS_THRESHOLD above).
+    # Audit fix 2.3 / Fix 9 item 3 (2026-09-01): don't let a partially- or
+    # badly-failed run silently clobber a complete prior scan (see
+    # SCAN_COMPLETENESS_THRESHOLD above). Tightened from "only if this
+    # run is worse by row count" to "ANY existing prior scan is
+    # protected" - a below-threshold run can still have more raw rows
+    # than a smaller-but-genuinely-good prior scan (that's exactly what
+    # happened the night this fix was written: a NaN-price run "succeeded"
+    # on row count while every one of those rows was garbage), so row
+    # count alone was never a safe test for "is this actually better".
+    # The sole exception is a universe with no prior scan at all yet -
+    # saving a degraded first pass beats leaving it perpetually empty,
+    # and it's clearly flagged as degraded either way.
     completeness = (len(rows) / len(tickers)) if tickers else 0.0
     degraded = completeness < SCAN_COMPLETENESS_THRESHOLD
     if degraded:
         prior = scan_store.load_scan(universe)
         prior_rows = len(prior.get("rows") or []) if prior else 0
-        if prior_rows > len(rows):
-            log(f"[nightly_scan] {universe}: only {len(rows)}/{len(tickers)} tickers "
-                f"succeeded ({completeness:.0%}, below the "
-                f"{SCAN_COMPLETENESS_THRESHOLD:.0%} completeness threshold) and worse than "
-                f"the existing saved scan ({prior_rows} rows) - skipping the save so the "
-                f"prior scan stays live; this universe will be retried on the next "
-                f"scheduler check (age-based staleness check finds nothing new here).")
+        if prior_rows > 0:
+            log(f"[nightly_scan] {universe}: only {len(rows)}/{len(tickers)} valid rows "
+                f"({completeness:.0%}, below the {SCAN_COMPLETENESS_THRESHOLD:.0%} "
+                f"completeness threshold) - keeping previous scan ({prior_rows} rows) rather "
+                f"than overwriting it with a degraded run; this universe stays stale and will "
+                f"be retried on the next scheduler check (age-based staleness check finds "
+                f"nothing new here).")
             return None
-        log(f"[nightly_scan] {universe}: only {len(rows)}/{len(tickers)} tickers succeeded "
-            f"({completeness:.0%}, below threshold) but no better prior scan exists - "
-            f"saving anyway, flagged degraded.")
+        log(f"[nightly_scan] {universe}: only {len(rows)}/{len(tickers)} valid rows "
+            f"({completeness:.0%}, below threshold) but no prior scan exists yet - saving "
+            f"anyway, flagged degraded.")
 
     payload = scan_store.save_scan(universe, rows, source, attention_lite=attention_lite,
                                     degraded=degraded)
-    log(f"[nightly_scan] {universe}: saved {len(rows)} rows"
-        + (" (degraded)" if degraded else ""))
+    log(f"[nightly_scan] {universe}: saved {len(rows)} rows, skipped {skipped_no_price} "
+        f"(no price)" + (" (degraded)" if degraded else ""))
     try:
         score_history.record(rows)
         log(f"[nightly_scan] {universe}: recorded {len(rows)} rows to score_history")
@@ -377,7 +438,14 @@ def run_imported_scan(max_tickers=IMPORTED_NIGHTLY_BATCH, log=print):
         try:
             row = analyze_ticker_lite(t, attention_lite=attention_lite)
             if row:
-                _attach_moat(row, t, log=log)
+                # Fix 9 item 2: same hard price backstop as
+                # run_universe_scan() - see that function's comment.
+                _price = row.get("Price")
+                if not (isinstance(_price, (int, float)) and math.isfinite(_price) and _price > 0):
+                    log(f"[nightly_scan] imported {t}: skipped, no valid price ({_price!r})")
+                    row = None
+                else:
+                    _attach_moat(row, t, log=log)
             screen_import_store.mark_scanned(t, ok=bool(row), row=row)
         except Exception as e:  # one bad ticker never kills the batch
             log(f"[nightly_scan] imported {t}: {e}")
@@ -402,6 +470,122 @@ def run_imported_scan(max_tickers=IMPORTED_NIGHTLY_BATCH, log=print):
     except Exception as e:  # history logging must never fail the scan itself
         log(f"[nightly_scan] imported: score_history.record failed: {e}")
     return payload
+
+
+# -----------------------------------------------------------------
+# Fix 9 (2026-09-01) item 4: one-off cleanup of data ALREADY SAVED before
+# items 1-3 above landed. Not a defence against a future run - the guards
+# above already stop that - this is purely undoing the damage from one
+# specific known-bad night.
+# -----------------------------------------------------------------
+
+# The night of the bad run (Railway logs: 31 Aug 20:00 UTC - 06:00
+# Brisbane, before the ASX open, so every ASX ticker's in-progress
+# session bar was NaN). score_history's `day` column is date-only (no
+# time-of-day), so this is precise enough to scope the delete without
+# needing a ticker->universe mapping that table doesn't have - see
+# score_history.delete_bad_price_rows()'s own docstring.
+FIX9_CLEANUP_DAY = "2026-08-31"
+
+# The two universes confirmed affected (Railway logs + live API): ASX 200
+# saved 197 rows/192 NaN, ASX 300 saved 241 rows/236 NaN. S&P 500 (503
+# rows, scanned the same run) was fine, since 20:00 UTC is after the NYSE
+# close - so this fix is deliberately scoped to just these two, not every
+# universe, matching the doc's own evidence.
+FIX9_CLEANUP_UNIVERSES = ("ASX 200", "ASX 300")
+
+
+def _fix9_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".fix9_cleanup_2026_08_31.done")
+
+
+def cleanup_fix9_nan_data(log=print):
+    """One-off, idempotent, marker-file-guarded boot-time cleanup for Fix
+    9 (2026-09-01) - removes the bad data that was saved by the 31 Aug
+    20:00 UTC run BEFORE analyze_ticker_lite()/run_universe_scan()'s Fix
+    9 guards (items 1-3, above) existed to stop it: root cause was a NaN
+    placeholder Close bar on every ASX ticker (see analyze_ticker_lite()'s
+    own comment) - 192/197 ASX 200 rows and 236/241 ASX 300 rows got a
+    NaN price, and every number computed from it (MOS/fear/greed/weekly
+    change/Long Score) was garbage, all now live on public surfaces
+    (home "Tonight's top 5", the Scanner overnight table, /s/<ticker>,
+    /api/v1/*, score_history's "vs 30 days ago" captions).
+
+    Does three things:
+      1. score_history: deletes every FIX9_CLEANUP_DAY row with a NaN/
+         None price (score_history.delete_bad_price_rows()).
+      2. snapshot_store: deletes every stored snapshot in
+         FIX9_CLEANUP_UNIVERSES whose cached Price is NaN/None - these
+         are what /s/<ticker> and /api/v1/* actually serve, so this is
+         the fix for the public-surface part of the bug.
+      3. scan_store: invalidates (deletes) the saved scan for each
+         universe in FIX9_CLEANUP_UNIVERSES, so the Scanner page stops
+         serving the garbage-ranked table and the scheduler's own
+         staleness check (scan_store.load_scan() returning None, exactly
+         like "no scan ever ran") picks it up for a fresh rescan on its
+         next tick - the nightly attempt counter is per calendar day
+         (scheduler_engine._run_nightly's `state["scan_attempts"]`, keyed
+         by today's date, capped at 3/day) and is unrelated to this
+         cleanup, so a rescan today is allowed regardless of when this
+         runs.
+
+    Guarded by a marker file on the same volume every other persisted
+    file in this app uses (RAILWAY_VOLUME_MOUNT_PATH, falling back to
+    this directory locally), so this only ever actually does its work
+    once. Unlike blog_store.backfill_primary_tickers() (idempotent by
+    construction - it only ever fills an already-blank field, so
+    running it every boot forever is free), THIS cleanup deletes rows -
+    a second run would correctly find nothing left to delete, but it
+    would still pay for a full score_history query plus a full
+    ASX 200 + ASX 300 snapshot scan on every single boot forever, for a
+    fix that's only ever relevant once. The marker avoids that ongoing
+    cost, not a correctness problem.
+
+    Called unconditionally from server.py's lifespan(), wrapped in
+    `with suppress(Exception)` there - never allowed to stop the site
+    serving, same rule as backfill_primary_tickers()."""
+    marker = _fix9_marker_path()
+    if os.path.exists(marker):
+        return
+    removed_history = 0
+    removed_snapshots = 0
+    invalidated = []
+    try:
+        removed_history = score_history.delete_bad_price_rows(FIX9_CLEANUP_DAY)
+    except Exception as e:
+        log(f"[nightly_scan] fix9 cleanup: score_history delete failed: {e}")
+    for universe in FIX9_CLEANUP_UNIVERSES:
+        try:
+            for entry in snapshot_store.all_snapshots(universe=universe):
+                ticker = entry.get("ticker")
+                if not ticker:
+                    continue
+                snap = snapshot_store.get_snapshot(ticker)
+                if not snap:
+                    continue
+                price = (snap.get("data") or {}).get("Price")
+                bad_price = price is None or (
+                    isinstance(price, float) and not math.isfinite(price)
+                )
+                if bad_price:
+                    snapshot_store.delete_snapshot(ticker)
+                    removed_snapshots += 1
+        except Exception as e:
+            log(f"[nightly_scan] fix9 cleanup: {universe} snapshot scan failed: {e}")
+        try:
+            if scan_store.invalidate(universe):
+                invalidated.append(universe)
+        except Exception as e:
+            log(f"[nightly_scan] fix9 cleanup: {universe} scan invalidate failed: {e}")
+    log(f"[nightly_scan] fix9 cleanup: removed {removed_history} score_history row(s) "
+        f"for {FIX9_CLEANUP_DAY}, removed {removed_snapshots} bad snapshot(s), "
+        f"invalidated scans for: {', '.join(invalidated) if invalidated else 'none'}")
+    try:
+        with open(marker, "w") as f:
+            f.write(f"fix9 cleanup ran {datetime.now(timezone.utc).isoformat()}\n")
+    except OSError as e:
+        log(f"[nightly_scan] fix9 cleanup: could not write marker file: {e}")
 
 
 if __name__ == "__main__":

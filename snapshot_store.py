@@ -128,6 +128,22 @@ def snapshot_count():
         return conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
 
 
+def delete_snapshot(ticker):
+    """Permanently removes one ticker's stored snapshot. Fix 9 (2026-09-01):
+    used by nightly_scan.cleanup_fix9_nan_data(), the one-off boot-time
+    cleanup step, to remove ASX 200/ASX 300 snapshots that were saved with
+    a NaN/None Price by the 31 Aug 20:00 UTC run (see that function's
+    docstring for the root cause). Not exposed anywhere else - a
+    snapshot's normal lifecycle is upsert-only (save_snapshot); it's
+    simply overwritten by the next scan, never deleted in ordinary
+    operation."""
+    if not ticker:
+        return
+    ticker = ticker.strip().upper()
+    with _conn() as conn:
+        conn.execute("DELETE FROM snapshots WHERE ticker = ?", (ticker,))
+
+
 # -----------------------------------------------------------------
 # Fix 6, AI fixes round 2 (2026-08-31): a single public field mapping,
 # applied to every public-facing surface that reads a stored snapshot

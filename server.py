@@ -70,6 +70,7 @@ import blog_comments_store
 import blog_render
 import blog_store
 import email_auth
+import nightly_scan
 import push_send
 import push_store
 import site_content
@@ -188,6 +189,13 @@ async def lifespan(app: FastAPI):
     # Never allowed to stop the site serving.
     with suppress(Exception):
         blog_store.backfill_primary_tickers()
+    # Fix 9 (2026-09-01): one-off, marker-file-guarded cleanup of the NaN
+    # ASX 200/ASX 300 data saved by the 31 Aug 20:00 UTC run - see
+    # nightly_scan.cleanup_fix9_nan_data()'s own docstring for the root
+    # cause and what it removes. Same "never allowed to stop the site
+    # serving" rule as backfill_primary_tickers() above.
+    with suppress(Exception):
+        nightly_scan.cleanup_fix9_nan_data()
     _client = httpx.AsyncClient(
         base_url=UPSTREAM, timeout=httpx.Timeout(None, connect=10.0),
         follow_redirects=False, limits=httpx.Limits(max_connections=200),

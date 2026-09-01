@@ -78,3 +78,25 @@ def load_scan(universe):
     if not payload.get("rows"):
         return None
     return payload
+
+
+def invalidate(universe):
+    """Deletes the stored scan for `universe`, if any - the file-based
+    equivalent of "mark this universe's scan stale so the scheduler
+    rescans it on its next tick" (scheduler_engine._universes_needing_scan
+    treats a missing file exactly like one that's aged past its
+    staleness threshold - see load_scan() above). Fix 9 (2026-09-01):
+    used by nightly_scan.cleanup_fix9_nan_data() to invalidate the ASX
+    200/ASX 300 scans saved by the 31 Aug 20:00 UTC run (192/197 and
+    236/241 rows with a NaN price respectively - see that function's
+    docstring for the root cause), so they're rescanned on the next
+    scheduler tick rather than left showing garbage until the normal 72h
+    staleness cutoff. Not exposed anywhere else - a scan is normally only
+    ever replaced by a fresher one via save_scan(), never removed
+    outright. Returns True if a file was actually removed, False if there
+    was nothing to invalidate."""
+    try:
+        os.remove(_path(universe))
+        return True
+    except OSError:
+        return False

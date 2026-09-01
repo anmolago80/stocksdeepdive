@@ -11,9 +11,13 @@ watchlist_store.py, email_auth.py - see watchlist_store.py's module
 docstring for why SQLite over a hand-rolled JSON file (concurrent Streamlit
 sessions/cron jobs writing at once). Callers never touch SQL directly.
 
-Nothing here is ever deleted - a ticker scanned every night for years
-accumulates one very small row per day, and digest/Deep-Dive "days ago"
-lookups depend on that history actually being there to look back at.
+Nothing here is ever deleted in ordinary operation - a ticker scanned
+every night for years accumulates one very small row per day, and
+digest/Deep-Dive "days ago" lookups depend on that history actually being
+there to look back at. The one exception is delete_bad_price_rows()
+below, a Fix 9 (2026-09-01) one-off cleanup helper for rows that were
+never valid data to begin with (a NaN price from a broken scan run) -
+see that function's own docstring.
 """
 
 import os
@@ -204,6 +208,35 @@ def before_date(ticker, target_day):
             (ticker.strip().upper(), target_day),
         ).fetchone()
     return dict(row) if row else None
+
+
+def delete_bad_price_rows(day):
+    """Deletes score_history rows for `day` ('YYYY-MM-DD') whose price is
+    NULL or NaN. Fix 9 (2026-09-01): used by nightly_scan.
+    cleanup_fix9_nan_data(), the one-off boot-time cleanup step, to
+    remove the ~433 garbage points the 31 Aug 20:00 UTC run recorded for
+    every ASX 200/ASX 300 ticker that got a NaN placeholder price that
+    night (see that function's docstring, and nightly_scan.
+    analyze_ticker_lite()'s, for the root cause).
+
+    This table has no universe column, but scoping the delete to "this
+    day AND a NaN/NULL price" already isolates exactly the bad rows on
+    its own: every other universe scanned that same day (S&P 500) got a
+    real price, so nothing but the actual broken rows can match both
+    conditions at once - no universe lookup needed.
+
+    Uses the standard SQLite idiom for "is NaN" - `price != price` -
+    since NaN is the only float value that never equals itself; Python's
+    math.isnan() can't run inside a SQL WHERE clause. Returns the number
+    of rows deleted. Not exposed anywhere else - see the module
+    docstring for why this is a deliberate, narrow exception to "nothing
+    here is ever deleted"."""
+    with _conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM score_history WHERE day = ? AND (price IS NULL OR price != price)",
+            (day,),
+        )
+        return cur.rowcount
 
 
 def all_tracked_tickers():
