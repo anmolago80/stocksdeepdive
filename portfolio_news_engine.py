@@ -50,6 +50,8 @@ from email.utils import parsedate_to_datetime
 import requests
 import yfinance as yf
 
+import asx_announcements
+
 REFETCH_STALE_HOURS = 6
 _UA = {"User-Agent": "StocksDeepDive/1.0 (+https://stocksdeepdive.com)"}
 _TIMEOUT = 10
@@ -293,33 +295,44 @@ def _parse_gdelt_date(s):
 
 
 def _fetch_asx_announcements(ticker, count=80):
+    """Fix 11 (2026-09-01): fetches via the shared asx_announcements.fetch()
+    (insider_engine.py's ASX path uses the exact same module) - the JSON
+    endpoint this used to call directly returns 404 for every ticker; see
+    asx_announcements.py's own docstring for the replacement source.
+    `count` is kept in the signature for call-site compatibility but is
+    no longer used - the replacement endpoint is windowed by `period`
+    (asx_announcements.fetch's own default, "M6" = 6 months) rather than
+    a row-count cap."""
     if not ticker.upper().endswith(".AX"):
         return []
     code = ticker.split(".")[0].upper()
     try:
-        r = requests.get(
-            f"https://www.asx.com.au/asx/1/company/{code}/announcements",
-            params={"count": count, "market_sensitive": "false"},
-            headers=_UA, timeout=_TIMEOUT,
-        )
-        if r.status_code != 200 or not r.text.strip().startswith("{"):
-            return []
-        out = []
-        for a in (r.json() or {}).get("data", []) or []:
-            header = a.get("header") or a.get("title") or ""
-            if not header:
-                continue
-            sens = a.get("market_sensitive")
-            title = f"[ASX] {header}" + (" (price-sensitive)" if sens else "")
-            out.append({
-                "title": title, "description": header, "publisher": f"ASX:{code}",
-                "link": a.get("url", "") or a.get("document_url", ""),
-                "published": _parse_asx_date(a.get("document_date") or a.get("date")),
-                "source": "asx", "domain": "asx.com.au",
-            })
-        return out
+        data = asx_announcements.fetch(code, period="M6")
+    except asx_announcements.AsxFetchError as e:
+        # A detected failure (WAF rejection page, non-200, unrecognized
+        # page shape) must never be silently read as "no ASX news" - so
+        # this is logged, distinctly from a genuine empty result - but
+        # still returns [] like every other feed in this module does on
+        # failure (see the module docstring's "each wrapped so a dead/
+        # slow one returns [] instead of breaking a run").
+        print(f"[portfolio_news_engine] ASX announcements fetch failed for {ticker}: {e}")
+        return []
     except Exception:
         return []
+
+    out = []
+    for a in data:
+        headline = a.get("headline") or ""
+        if not headline:
+            continue
+        title = f"[ASX] {headline}" + (" (price-sensitive)" if a.get("price_sensitive") else "")
+        out.append({
+            "title": title, "description": headline, "publisher": f"ASX:{code}",
+            "link": a.get("pdf_url") or "",
+            "published": _parse_asx_date(a.get("date")),
+            "source": "asx", "domain": "asx.com.au",
+        })
+    return out
 
 
 def _parse_asx_date(s):

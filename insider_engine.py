@@ -8,13 +8,16 @@ source and, where parseable, its own stated numbers.
 
 Two independent sources, chosen by ticker suffix (a ticker never hits
 both):
-  - ASX (".AX" tickers): the same public announcements JSON endpoint
-    portfolio_news_engine.py already uses, filtered to the five notice
-    types Part 2 names (Appendix 3X/3Y/3Z director's-interest notices,
-    3C/3E buy-back notices), then a best-effort PDF text extraction
-    (pypdf) for each - if that extraction can't find the numbers, the
-    filing is still stored with its title/date/link (see insider_store.
-    add_filing's docstring), never dropped.
+  - ASX (".AX" tickers): asx_announcements.py's shared fetch() (Fix 11,
+    2026-09-01 - see that module's own docstring for why: the JSON
+    endpoint this used to call directly returned 404 for every ticker),
+    filtered to the five notice types Part 2 names (Appendix 3X/3Y/3Z
+    director's-interest notices, 3C/3E buy-back notices), then a
+    best-effort PDF text extraction (pypdf) for each - if that
+    extraction can't find the numbers, the filing is still stored with
+    its title/date/link (see insider_store.add_filing's docstring),
+    never dropped. portfolio_news_engine.py's ASX news feed calls the
+    same shared fetch() for its own, separate purpose.
   - Everything else (US-listed tickers): SEC EDGAR's public submissions
     JSON for the issuer's own CIK, filtered to Form 4s, then a best-effort
     XML parse of each filing's primary document for the reporting owner/
@@ -44,6 +47,7 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 
+import asx_announcements
 import insider_store
 
 _UA = {"User-Agent": "StocksDeepDive/1.0 (+https://stocksdeepdive.com)"}
@@ -201,20 +205,26 @@ def _update_asx_buyback_summary(ticker, filed_at, parsed):
 
 
 def refresh_asx(ticker, log=print):
+    """Fix 11 (2026-09-01): fetches via the shared asx_announcements.fetch()
+    (the JSON endpoint this used to call directly is dead - see that
+    module's docstring for the replacement source and its own WAF/failure
+    handling). A detected fetch FAILURE (AsxFetchError - network error,
+    non-200, the ASX WAF rejection page, or an unrecognized page shape)
+    is logged and mark_fetched() is still called (so a broken source
+    doesn't get hammered again before its normal 24h refetch window),
+    but NO filings are touched - the prior stored data is left exactly
+    as-is, never wiped out by a failed fetch. A genuine empty result
+    (data == [], no exception) is the only case that legitimately means
+    "this company has no announcements right now"."""
     if not ticker.upper().endswith(".AX"):
         return
     code = ticker.split(".")[0].upper()
     try:
-        r = requests.get(
-            f"https://www.asx.com.au/asx/1/company/{code}/announcements",
-            params={"count": 100, "market_sensitive": "false"},
-            headers=_UA, timeout=_TIMEOUT,
-        )
-        if r.status_code != 200 or not r.text.strip().startswith("{"):
-            log(f"[insider_engine] {ticker}: ASX announcements fetch failed ({r.status_code})")
-            insider_store.mark_fetched(ticker)
-            return
-        data = (r.json() or {}).get("data", []) or []
+        data = asx_announcements.fetch(code, period="M6")
+    except asx_announcements.AsxFetchError as e:
+        log(f"[insider_engine] {ticker}: ASX announcements fetch failed: {e}")
+        insider_store.mark_fetched(ticker)
+        return
     except Exception as e:
         log(f"[insider_engine] {ticker}: ASX fetch error: {e}")
         return
@@ -222,15 +232,15 @@ def refresh_asx(ticker, log=print):
     buyback_done = False
     matched = 0
     for a in data:
-        header = a.get("header") or a.get("title") or ""
+        header = a.get("headline") or ""
         code_type, kind = _match_asx_type(header)
         if not code_type:
             continue
         matched += 1
-        link = a.get("url") or a.get("document_url") or ""
+        link = a.get("pdf_url") or ""
         if not link:
             continue
-        filed_at = _parse_asx_date(a.get("document_date") or a.get("date"))
+        filed_at = _parse_asx_date(a.get("date"))
         parsed = _parse_asx_pdf(link, kind, log=log)
         insider_store.add_filing(
             ticker, "asx", code_type,
@@ -253,7 +263,7 @@ def refresh_asx(ticker, log=print):
     elif matched == 0:
         log(f"[insider_engine] {ticker}: {len(data)} ASX announcement(s) fetched, "
             f"0 matched the tracked notice types - sample headers: "
-            f"{[(a.get('header') or a.get('title') or '')[:60] for a in data[:5]]}")
+            f"{[(a.get('headline') or '')[:60] for a in data[:5]]}")
     insider_store.mark_fetched(ticker)
 
 
