@@ -3248,6 +3248,33 @@ def _render_insider_panel(ticker):
         pass  # a fetch failure here just means today's data is whatever
         # was already stored - never a page crash over a factual sidebar.
 
+    # Admin-only escape hatch (2026-09-01): the on-demand refresh above is
+    # gated by insider_store.should_refetch(ticker, max_age_hours=24), so
+    # a source-level bug fix (e.g. the SEC Form 4 URL fix, commit 92cdeb9)
+    # is invisible on this ticker until that 24h window clears - and it's
+    # anchored to the LAST FETCH ATTEMPT, not to when the fix shipped, so
+    # a ticker fetched right before a fix deploys can still show stale/
+    # blank data for up to a full day afterwards with no visible sign
+    # anything is wrong (confirmed live on CPRT: 500b2c1 fixed storage on
+    # 31 Aug, 92cdeb9 fixed the actual SEC parse on 1 Sep, but CPRT's own
+    # last fetch was during the prior night's broken run, so neither fix
+    # had ever actually been exercised for CPRT in production). This
+    # button bypasses should_refetch entirely (refresh(ticker, force=True))
+    # so a fix can be verified immediately instead of waiting out the
+    # cache - admin-only (full_view_unlocked, same gate as every other
+    # admin-only control on this page, e.g. _render_position_disclosure's
+    # editor) since it makes a real outbound SEC/ASX request on click.
+    if st.session_state.get("full_view_unlocked"):
+        if st.button("Force refresh insider data now (admin)",
+                     key=f"insider_force_refresh_{ticker}"):
+            with st.spinner(f"Refreshing insider/buyback data for {ticker}..."):
+                try:
+                    insider_engine.refresh(ticker, force=True)
+                    st.success(f"Refreshed {ticker}.")
+                except Exception as e:
+                    st.error(f"Refresh failed: {e}")
+            st.rerun()
+
     st.markdown("##### Insider & capital")
     st.caption(
         "Director/insider transactions and buyback activity, from ASX "
@@ -3279,8 +3306,18 @@ def _render_insider_panel(ticker):
         _date_s = f["filed_at"][:10] if f.get("filed_at") else "-"
         _person = html.escape(f.get("person") or "-")
         _action = f.get("action") or "-"
-        _qty = f"{f['quantity']:,.0f}" if f.get("quantity") else "-"
-        _price = f"{f['price']:,.2f}" if f.get("price") else "-"
+        # Fix (2026-09-01, found while verifying the CPRT force-refresh
+        # above): `if f.get("quantity")`/`if f.get("price")` treat a
+        # genuine 0 as "missing" (0 is falsy in Python) - but a Form 4
+        # coded "A" (grant/award, e.g. RSU vesting) legitimately has
+        # transactionPricePerShare = 0 (no exercise price), confirmed
+        # live on CPRT's own 18 Aug filing. That real $0.00 was rendering
+        # as "-" indistinguishably from a filing that never parsed at
+        # all. `is not None` is the correct "was this actually parsed"
+        # check - None (unparsed/unknown) still renders "-"; a real 0
+        # now renders as 0.
+        _qty = f"{f['quantity']:,.0f}" if f.get("quantity") is not None else "-"
+        _price = f"{f['price']:,.2f}" if f.get("price") is not None else "-"
         _link = f.get("link") or "#"
         _rows_html.append(
             f"<tr><td style='padding:6px 10px;'>{_date_s}</td>"
