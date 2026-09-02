@@ -50,7 +50,6 @@ import requests
 import asx_announcements
 import insider_store
 
-_UA = {"User-Agent": "StocksDeepDive/1.0 (+https://stocksdeepdive.com)"}
 _SEC_UA = {"User-Agent": "StocksDeepDive research contact rationalcompounder@stocksdeepdive.com"}
 _TIMEOUT = 10
 
@@ -65,12 +64,27 @@ REFETCH_STALE_HOURS = 24
 MAX_FORM4_PER_REFRESH = 15
 INSIDER_NIGHTLY_CAP = 60
 
+# Fix (2026-09-02, live production logs): last night's nightly run
+# matched ZERO notices of any tracked type for every ticker checked
+# (ZIM.AX, MXT.AX, GOZ.AX, WPR.AX, MEZ.AX, ...) - confirmed as a real
+# matching bug, not a genuine "no notices" case, from GOZ.AX's own
+# logged sample headline "Appendix 3Y - Deborah Page", which plainly IS
+# a change-of-director's-interest notice yet matched nothing. Real ASX
+# headlines commonly use the SHORT "Appendix 3X/3Y/3Z/3C/3E" form-code
+# naming - this map only ever checked for the long descriptive phrase
+# ("change of director's interest notice"), which apparently isn't what
+# ASX's own site actually puts in the headline text. Each entry now
+# lists every needle that identifies that notice type - the short
+# form-code text (first, since that's what's actually been observed
+# live) plus the original long phrase (kept in case some other
+# lodgement flow still uses it - matching more, never less, is the
+# safe direction here).
 _ASX_TITLE_MAP = (
-    ("initial director's interest notice", "3X", "insider"),
-    ("change of director's interest notice", "3Y", "insider"),
-    ("final director's interest notice", "3Z", "insider"),
-    ("daily share buy-back notice", "3E", "buyback"),
-    ("notification of buy-back", "3C", "buyback"),
+    (("appendix 3x", "initial director's interest notice"), "3X", "insider"),
+    (("appendix 3y", "change of director's interest notice"), "3Y", "insider"),
+    (("appendix 3z", "final director's interest notice"), "3Z", "insider"),
+    (("appendix 3e", "daily share buy-back notice"), "3E", "buyback"),
+    (("appendix 3c", "notification of buy-back"), "3C", "buyback"),
 )
 
 # Populated once per process by _cik_for_ticker() - SEC's own ticker->CIK
@@ -104,8 +118,8 @@ def _parse_asx_date(s):
 
 def _match_asx_type(header):
     h = (header or "").lower()
-    for needle, code, kind in _ASX_TITLE_MAP:
-        if needle in h:
+    for needles, code, kind in _ASX_TITLE_MAP:
+        if any(n in h for n in needles):
             return code, kind
     return None, None
 
@@ -241,10 +255,38 @@ def _extract_pdf_text(content, max_pages=4):
 def _parse_asx_pdf(url, kind, log=print):
     out = {"person": None, "action": None, "quantity": None, "price": None}
     try:
-        r = requests.get(url, headers=_UA, timeout=_TIMEOUT)
+        # Fix (2026-09-02, live: EVERY single ASX PDF fetch in last
+        # night's nightly run - 196/196 - failed with pypdf's "Stream
+        # has ended unexpectedly", confirmed from Railway's own logs.
+        # This request used to send a self-identifying bot User-Agent
+        # (_UA, "StocksDeepDive/1.0 (+https://stocksdeepdive.com)")
+        # while the SAME ASX WAF that protects the announcements-listing
+        # endpoint (asx_announcements.py's own fetch(), already fixed in
+        # Fix 11 to use a realistic Chrome UA - and confirmed WORKING,
+        # since last night's log shows real headline data coming back)
+        # very plausibly also gates this PDF-download endpoint, just
+        # more strictly - a bot UA getting a 200 "Request Rejected" HTML
+        # page instead of a real PDF explains the symptom exactly: a
+        # pypdf parse error, not a clean non-200. Reusing
+        # asx_announcements._HEADERS (the realistic UA already proven
+        # against this exact WAF) instead of inventing a second,
+        # separate header set here.
+        r = requests.get(url, headers=asx_announcements._HEADERS, timeout=_TIMEOUT)
         if r.status_code != 200 or not r.content:
             log(f"[insider_engine] ASX PDF fetch non-200/empty for {url}: "
                 f"status={r.status_code} bytes={len(r.content or b'')}")
+            return out
+        # Detect a WAF rejection page (or any other non-PDF response
+        # served with a 200) BEFORE handing it to pypdf, which otherwise
+        # raises an opaque exception ("Stream has ended unexpectedly")
+        # that gives no hint the actual problem is "this isn't a PDF at
+        # all" - checked the same way asx_announcements.fetch() already
+        # checks its own listing-page response.
+        if not r.content.startswith(b"%PDF"):
+            _peek = r.content[:200]
+            _waf = asx_announcements._WAF_MARKER.encode() in r.content[:4000]
+            log(f"[insider_engine] ASX PDF fetch for {url} did not return a "
+                f"PDF (waf_rejection={_waf}, first bytes={_peek!r})")
             return out
         text = _extract_pdf_text(r.content)
         if not text.strip():

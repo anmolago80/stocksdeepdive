@@ -3398,7 +3398,10 @@ def _render_insider_panel(ticker):
     _net = insider_store.net_insider_value_12m(ticker)
     if _net is not None:
         _ccy = "AUD" if ticker.upper().endswith(".AX") else "USD"
-        _dir_word = "net buying" if _net >= 0 else "net selling"
+        # Fix (2026-09-02, spec item 6): "Net insider" already supplies
+        # "net" - this used to read "Net insider net selling (12m)",
+        # the word doubled.
+        _dir_word = "buying" if _net >= 0 else "selling"
         st.caption(
             f"Net insider {_dir_word} (12m): {_ccy} {abs(_net):,.0f} "
             "(from filings with both quantity and price parsed - an "
@@ -3413,8 +3416,20 @@ def _render_insider_panel(ticker):
     _rows_html = []
     for f in _filings[:25]:
         _date_s = f["filed_at"][:10] if f.get("filed_at") else "-"
-        _person = html.escape(f.get("person") or "-")
-        _action = f.get("action") or "-"
+        # Fix (2026-09-02, spec item 6): a buy-back notice (ASX filing_type
+        # 3C/3E) never names a director - Person is genuinely N/A, not a
+        # parse failure, and Action is known deterministically from the
+        # notice TYPE itself (matched at fetch time in insider_engine.py's
+        # _ASX_TITLE_MAP) rather than depending on whatever the PDF's
+        # parsed "action" field happened to come back as - so this no
+        # longer renders "-" for Action on a 3C/3E row even when the PDF
+        # parse found nothing else.
+        if f.get("filing_type") in ("3C", "3E"):
+            _person = "-"
+            _action = "Buy-back notice"
+        else:
+            _person = html.escape(f.get("person") or "-")
+            _action = f.get("action") or "-"
         # Fix (2026-09-01, found while verifying the CPRT force-refresh
         # above): `if f.get("quantity")`/`if f.get("price")` treat a
         # genuine 0 as "missing" (0 is falsy in Python) - but a Form 4
