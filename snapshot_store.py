@@ -54,10 +54,51 @@ def _conn():
 def save_snapshot(ticker, universe, row, moat=None):
     """UPSERT one ticker's snapshot. `row` is the plain dict
     nightly_scan.analyze_ticker_lite() returns (or an equivalent shape);
-    `moat` is moat_engine's result dict, or None."""
+    `moat` is moat_engine's result dict, or None.
+
+    Fix (2026-09-02, live/nightly merge): MERGES `row` onto whatever's
+    already stored for this ticker, key by key, instead of replacing the
+    stored row outright. Root cause, observed live: app.py's
+    _save_live_snapshot() (the "refresh this ticker's public snapshot
+    from a visitor's own Deep Dive view" hook) builds its row from
+    deep_dive_engine.analyze()'s own fields only - it has no way to
+    compute nightly-only enrichments like peer_context.
+    attach_percentiles()'s "Percentiles" or batch 3's "Dividend TTM"/
+    "Dividend Yield %"/"Payout Ratio %"/"Next Ex-Div Date" (the dividend
+    fields need a fundamentals bundle + payout ratio only the real
+    nightly scan attaches - see nightly_scan._attach_dividend_payout).
+    Saving that necessarily-partial row outright used to null those
+    fields out on /s/<ticker>, the API and MCP the moment anyone viewed
+    the ticker's Deep Dive during the day, until the next nightly scan
+    overwrote the row again. The rule is generic and symmetric: for
+    every key in the new `row`, keep the new value when it's not None,
+    otherwise keep whatever was already stored - so a key the new row
+    doesn't even set (like the dividend fields above, simply absent from
+    a live row) is left completely untouched. A real nightly scan
+    computes every field itself, so every value it saves is non-None
+    (or genuinely None, e.g. no dividend history) and this merge is a
+    no-op on that path - only the live hook's partial row is ever
+    missing keys. `universe` gets the SAME kind of treatment, but only
+    in the "live" direction: a ticker that already has a real scanned
+    universe keeps it instead of being reclassified "live" on every
+    daytime view; a genuinely never-scanned ticker still gets "live".
+    This is deliberately one-way - only ever triggered when THIS call's
+    own `universe` is "live" (the live hook's own marker; a real nightly
+    scan always passes its real universe name) - so a ticker's first
+    real nightly scan still overwrites a previously-live-only "live"
+    label with the real universe, exactly as before this fix."""
     if not ticker or not row:
         return
     ticker = ticker.strip().upper()
+    existing = get_snapshot(ticker)
+    if existing:
+        merged_row = dict(existing.get("data") or {})
+        for key, value in row.items():
+            if value is not None:
+                merged_row[key] = value
+        row = merged_row
+        if universe == "live" and existing.get("universe"):
+            universe = existing["universe"]
     with _conn() as conn:
         conn.execute(
             """INSERT INTO snapshots
