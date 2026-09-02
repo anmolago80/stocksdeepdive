@@ -5029,8 +5029,15 @@ def _render_peer_context(dd):
         st.caption("No rankable scores for this ticker yet.")
 
     peers = res.get("peers") or []
+    # Fix (2026-09-02, spec item 3): peer_context.compute() now falls
+    # back to "same universe, nearest by quality" when this ticker has
+    # no Sector on its scan row (the ASX 300 constituent source often
+    # lacks one - OCL.AX and plenty of others), instead of always
+    # returning zero peers the moment sector was missing. The caption
+    # reflects whichever method actually ran.
+    peer_source = res.get("peer_source", "same sector, nearest by size.")
     if peers:
-        st.caption("Closest peers - same sector, nearest by size.")
+        st.caption(f"Closest peers - {peer_source}")
         _peer_df = pd.DataFrame([
             {
                 "Ticker": p["ticker"],

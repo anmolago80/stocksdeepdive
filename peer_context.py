@@ -124,17 +124,32 @@ def _closest_peers(ticker, own_row, rows, sector):
     from). A candidate peer with no cached cap of its own (in the
     market-cap branch) sorts to the back rather than being dropped, so a
     thin fundamentals cache never shrinks the peer list below what
-    sector membership alone would give."""
-    if not sector:
-        return []
-    candidates = [
-        r for r in rows
-        if r.get("Sector") == sector and (r.get("Ticker") or "").upper() != ticker
-    ]
-    if not candidates:
-        return []
+    sector membership alone would give.
 
-    own_cap = fundamentals_data.peek_cached_market_cap(ticker)
+    Fix (2026-09-02, live: OCL.AX had no Closest peers at all) - the ASX
+    300 constituent source often has no Sector column whatsoever, and
+    this used to short-circuit to an empty list the moment sector was
+    missing, before ever looking at the universe. Falls back to the
+    WHOLE SAME UNIVERSE, ranked by nearest Quality (never market cap,
+    per spec - there's no sector to narrow the candidate pool by here,
+    so cap-distance alone would be a much weaker "closest" signal than
+    it is within a sector), when sector is missing. Returns
+    (peers, source_label) now instead of a bare list, so the caller can
+    show an accurate caption instead of one that always says "same
+    sector" even when this fallback is what actually ran."""
+    if sector:
+        candidates = [
+            r for r in rows
+            if r.get("Sector") == sector and (r.get("Ticker") or "").upper() != ticker
+        ]
+        source_label = "same sector, nearest by size."
+    else:
+        candidates = [r for r in rows if (r.get("Ticker") or "").upper() != ticker]
+        source_label = "same universe, nearest by quality."
+    if not candidates:
+        return [], source_label
+
+    own_cap = fundamentals_data.peek_cached_market_cap(ticker) if sector else None
     if own_cap:
         def _key(r):
             cap = fundamentals_data.peek_cached_market_cap(r.get("Ticker"))
@@ -158,7 +173,7 @@ def _closest_peers(ticker, own_row, rows, sector):
             "quality": r.get("Quality"),
             "moat": r.get("Moat"),
         })
-    return peers
+    return peers, source_label
 
 
 def attach_percentiles(rows):
@@ -223,7 +238,12 @@ def compute(ticker):
              {"ticker", "price", "intrinsic_value", "mos", "value_score",
               "quality", "moat"},
              ...  # up to PEER_TABLE_SIZE
-         ]}
+         ],
+         "peer_source": str,  # "same sector, nearest by size." or, when
+                               # this ticker has no Sector on its scan
+                               # row, "same universe, nearest by
+                               # quality." (Fix 2026-09-02)
+        }
     """
     ticker = (ticker or "").strip().upper()
     if not ticker:
@@ -252,6 +272,7 @@ def compute(ticker):
                        if sector else None),
         }
 
+    peers, peer_source = _closest_peers(ticker, own_row, rows, sector)
     return {
         "available": True,
         "universe": universe,
@@ -263,5 +284,9 @@ def compute(ticker):
         # chip with this, not a fresher live-computed number, so the
         # percentile shown always describes the value shown next to it.
         "own_values": own_values,
-        "peers": _closest_peers(ticker, own_row, rows, sector),
+        "peers": peers,
+        # "same sector, nearest by size." or (Fix 2026-09-02, no-Sector
+        # fallback) "same universe, nearest by quality." - see
+        # _closest_peers' own docstring.
+        "peer_source": peer_source,
     }
