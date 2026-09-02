@@ -5040,7 +5040,11 @@ def _render_peer_context(dd):
         st.caption(f"Closest peers - {peer_source}")
         _peer_df = pd.DataFrame([
             {
-                "Ticker": p["ticker"],
+                # Fix (2026-09-02, spec item 4): the Ticker column holds
+                # this peer's own Deep Dive URL and is rendered as a
+                # LinkColumn below - replaces what used to be a separate
+                # per-row "Deep Dive" button.
+                "Ticker": f"/deep-dive?ticker={p['ticker']}",
                 "Price": p.get("price"),
                 "Intrinsic Value": p.get("intrinsic_value"),
                 "MOS %": p.get("mos"),
@@ -5050,20 +5054,26 @@ def _render_peer_context(dd):
             }
             for p in peers
         ])
-        st.dataframe(_peer_df, hide_index=True, use_container_width=True)
-        for p in peers:
-            _pk1, _pk2, _pk3 = st.columns([2, 1, 1])
-            with _pk1:
-                st.caption(p["ticker"])
-            with _pk2:
-                st.link_button("Deep Dive ↗", f"/deep-dive?ticker={p['ticker']}",
-                                key=f"peer_dd_{ticker}_{p['ticker']}")
-            with _pk3:
-                st.link_button("Compare these →",
-                                f"/comparison?tickers={ticker},{p['ticker']}",
-                                key=f"peer_cmp_{ticker}_{p['ticker']}")
-    elif sector:
-        st.caption(f"No other {sector} peers in {universe} to compare against.")
+        st.dataframe(
+            _peer_df, hide_index=True, use_container_width=True,
+            column_config={
+                "Ticker": st.column_config.LinkColumn(
+                    "Ticker", display_text=r"ticker=(.+)$",
+                    help="Open this peer's Deep Dive",
+                ),
+            },
+        )
+        # Fix (2026-09-02, spec item 4): ONE button comparing this
+        # ticker against every listed peer at once, replacing what used
+        # to be a separate "Compare these ->" button repeated per peer
+        # row.
+        _cmp_tickers = ",".join([ticker] + [p["ticker"] for p in peers])
+        st.link_button(
+            "Compare these →", f"/comparison?tickers={_cmp_tickers}",
+            key=f"peer_cmp_all_{ticker}",
+        )
+    else:
+        st.caption(f"No peers found in {universe} to compare against.")
 
 
 def page_deep_dive():
