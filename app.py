@@ -59,6 +59,7 @@ import compounder_ui
 from compounder_ui import sdd_plotly_chart
 import auto_compounder_engine
 import fundamentals_data
+import checklist_store
 import site_content
 
 # AI-readiness roadmap Phase 3 (AI_ROADMAP_stocksdeepdive.md): the AI
@@ -4785,6 +4786,278 @@ def _render_static_explainer(key_suffix, button_label, text):
         st.markdown(text)
 
 
+# -----------------------------------------------------------------
+# Services batch 3, Part B2: pre-purchase checklist. Thresholds in one
+# place (per the spec) and the fixed default judgement-item list - a
+# saved checklist that predates a threshold or wording change here is
+# unaffected (thresholds are applied fresh on every view, and judgement
+# item TEXT is stored verbatim per checklist - see _render_checklist_panel
+# for how an old checklist folds in any default item it doesn't have yet).
+# -----------------------------------------------------------------
+
+_CHECKLIST_THRESHOLDS = {
+    "moat_min": 70,
+    "quality_min": 70,
+    "interest_coverage_min": 5.0,
+}
+
+_CHECKLIST_DEFAULT_JUDGEMENT_ITEMS = [
+    "I can explain how the business makes money",
+    "I'd be comfortable holding 10 years",
+    "I understand why the seller is selling / why it's cheap",
+    "Management's incentives align with shareholders",
+    "This position won't exceed my sizing rule",
+]
+
+
+def _checklist_metric_value(sections, section_name, label, ticker):
+    """One metric's raw value (or None) out of auto_compounder_engine.
+    build_sections()'s nested {section: {"metrics": [...]}} shape - the
+    same (m.get("values") or {}).get(ticker) extraction already used
+    elsewhere in this file (see _research_note_flatten_sections) rather
+    than a second, independent computation."""
+    sec = (sections or {}).get(section_name) or {}
+    for m in sec.get("metrics") or []:
+        if m.get("label") == label:
+            return (m.get("values") or {}).get(ticker)
+    return None
+
+
+def _checklist_share_count_ok(ticker):
+    """True if the company's own filed diluted (or basic) average share
+    count has NOT risen over the last up-to-3 fiscal years on record;
+    None (no-data) when fewer than two years of the row are available.
+    Reads the same statement row auto_compounder_engine's dual-class
+    market-cap check already uses (_ROW_ALIASES["diluted_average_shares"])
+    via its _series() helper - never a second independent fetch beyond
+    the (already-cached) fundamentals bundle."""
+    try:
+        bundle = fundamentals_data.get_bundle(ticker)
+        if not bundle:
+            return None
+        series = auto_compounder_engine._series(bundle.get("income"), "diluted_average_shares")
+    except Exception:
+        return None
+    pts = [v for _y, v in (series or [])[:4] if v is not None]
+    if len(pts) < 2:
+        return None
+    latest, oldest = pts[0], pts[-1]
+    if not oldest:
+        return None
+    return latest <= oldest * 1.005
+
+
+def _checklist_computed_items(ticker, dd):
+    """The 8 auto-filled, read-only checklist items - each a description
+    of a number the site has already computed elsewhere on THIS SAME page
+    render (deep_dive_engine.analyze()'s own `dd` dict, plus one
+    already-24h-cached auto_compounder_engine.build_sections() call for
+    ROIC/WACC/Interest Coverage, plus insider_store's own 12m roll-up) -
+    never a second/independent recomputation of any score. Returns
+    [{"label", "state", "detail"}, ...] with state one of "pass"/"fail"/
+    "no-data" - see _render_checklist_panel for how each state renders."""
+    items = []
+    th = _CHECKLIST_THRESHOLDS
+
+    moat = dd.get("moat")
+    erosion = dd.get("moat_erosion")
+    if moat is None:
+        items.append({"label": "Moat", "state": "no-data", "detail": "N/A"})
+    else:
+        ok = moat >= th["moat_min"] and erosion != "eroding"
+        erosion_word = f", {erosion}" if erosion and erosion != "none" else ""
+        items.append({"label": "Moat", "state": "pass" if ok else "fail",
+                       "detail": f"{moat:.0f}{erosion_word} (need ≥{th['moat_min']}, not eroding)"})
+
+    quality = dd.get("quality_score")
+    if quality is None:
+        items.append({"label": "Quality", "state": "no-data", "detail": "N/A"})
+    else:
+        ok = quality >= th["quality_min"]
+        items.append({"label": "Quality", "state": "pass" if ok else "fail",
+                       "detail": f"{quality:.0f} (need ≥{th['quality_min']})"})
+
+    try:
+        sections = auto_compounder_engine.build_sections(ticker)
+    except Exception:
+        sections = {}
+
+    roic = _checklist_metric_value(sections, "Cost of Capital", "ROIC (TTM)", ticker)
+    wacc = _checklist_metric_value(sections, "Cost of Capital", "WACC", ticker)
+    if roic is None or wacc is None:
+        items.append({"label": "ROIC vs WACC", "state": "no-data", "detail": "N/A"})
+    else:
+        ok = roic > wacc
+        items.append({"label": "ROIC vs WACC", "state": "pass" if ok else "fail",
+                       "detail": f"ROIC {roic * 100:.1f}% vs WACC {wacc * 100:.1f}%"})
+
+    cov = _checklist_metric_value(sections, "Fundamentals", "Interest Coverage", ticker)
+    if cov is None:
+        items.append({"label": "Interest coverage", "state": "no-data", "detail": "N/A"})
+    else:
+        ok = cov >= th["interest_coverage_min"]
+        items.append({"label": "Interest coverage", "state": "pass" if ok else "fail",
+                       "detail": f"{cov:.1f}× (need ≥{th['interest_coverage_min']:.0f}×)"})
+
+    mos = dd.get("mos")
+    if mos is None:
+        items.append({"label": "Margin of safety", "state": "no-data", "detail": "N/A"})
+    else:
+        ok = mos > 0
+        items.append({"label": "Margin of safety", "state": "pass" if ok else "fail",
+                       "detail": f"{mos:.1f}%"})
+
+    shares_ok = _checklist_share_count_ok(ticker)
+    if shares_ok is None:
+        items.append({"label": "Share count (3y)", "state": "no-data", "detail": "N/A"})
+    else:
+        items.append({"label": "Share count (3y)", "state": "pass" if shares_ok else "fail",
+                       "detail": "not rising" if shares_ok else "rising"})
+
+    # "Core inputs" = the two provenance flags the Deep Dive page's own
+    # captions already surface elsewhere (quality/value default = a
+    # fallback/estimated input was used somewhere in that score).
+    flagged = bool(dd.get("quality_default")) or bool(dd.get("value_default"))
+    items.append({"label": "Core inputs not estimated", "state": "fail" if flagged else "pass",
+                   "detail": ("one or more core inputs are estimated/stale" if flagged
+                              else "all reported, not estimated")})
+
+    try:
+        net = insider_store.net_insider_value_12m(ticker)
+    except Exception:
+        net = None
+    if net is None:
+        items.append({"label": "Insider activity (12m)", "state": "no-data", "detail": "N/A"})
+    else:
+        ok = net >= 0
+        word = "buying" if net > 0 else ("neutral" if net == 0 else "selling")
+        items.append({"label": "Insider activity (12m)", "state": "pass" if ok else "fail",
+                       "detail": f"net {word}"})
+
+    return items
+
+
+def _render_checklist_panel(ticker, dd):
+    """"\U0001F4CB My checklist for {ticker}" (Services batch 3, Part B2) -
+    signed-in only (a plain sign-in caption otherwise), placed near the
+    follow/alert controls per the spec. Two groups: the 8 computed,
+    read-only items above (refreshed fresh every view - never stored),
+    and a private, editable judgement tickbox list plus a thesis/verdict
+    note - the SAME thesis field as the holding's existing thesis when
+    `ticker` is held (through portfolio_store, one source of truth), or
+    the checklist's own verdict_note when it isn't held yet - see
+    checklist_store.py's own docstring and _render_add_holding_expander
+    for how that note is carried across once a holding is later added.
+    Never surfaced anywhere public - checklist_store has no path into
+    snapshot_store/API/MCP."""
+    email = paywall_engine.current_user_email()
+    with st.expander(f"\U0001F4CB My checklist for {ticker}", expanded=False):
+        if not email:
+            st.caption(
+                f"Sign in (top left) to keep a private pre-purchase checklist "
+                f"and thesis note for {ticker}."
+            )
+            return
+
+        st.caption(
+            "Computed items are read-only, refreshed from this page's own "
+            "numbers - descriptions of what's already been calculated, not "
+            "advice. Judgement items and your notes are private to you."
+        )
+
+        st.markdown("**Computed**")
+        _icons = {"pass": "✅", "fail": "❌", "no-data": "➖"}
+        for item in _checklist_computed_items(ticker, dd):
+            st.caption(f"{_icons[item['state']]} {item['label']}: {item['detail']}")
+
+        st.divider()
+        st.markdown("**Judgement**")
+
+        _saved = checklist_store.get_checklist(email, ticker)
+        _sess_key = f"checklist_items_{ticker}"
+        if _sess_key not in st.session_state:
+            if _saved and _saved["items"]:
+                _seed_texts = {it.get("text") for it in _saved["items"] if isinstance(it, dict)}
+                _items = [dict(it) for it in _saved["items"] if isinstance(it, dict)]
+                for _t in _CHECKLIST_DEFAULT_JUDGEMENT_ITEMS:
+                    if _t not in _seed_texts:
+                        _items.append({"text": _t, "checked": False, "custom": False})
+            else:
+                _items = [{"text": t, "checked": False, "custom": False}
+                          for t in _CHECKLIST_DEFAULT_JUDGEMENT_ITEMS]
+            st.session_state[_sess_key] = _items
+
+        _items = st.session_state[_sess_key]
+        for i, it in enumerate(_items):
+            it["checked"] = st.checkbox(
+                it.get("text", ""), value=bool(it.get("checked")),
+                key=f"checklist_chk_{ticker}_{i}",
+            )
+
+        _new_c1, _new_c2 = st.columns([4, 1])
+        with _new_c1:
+            _new_item_text = st.text_input(
+                "Add your own item", key=f"checklist_new_item_{ticker}",
+                placeholder="e.g. Checked the latest annual report",
+            )
+        with _new_c2:
+            st.write("")
+            if st.button("Add", key=f"checklist_add_btn_{ticker}"):
+                if _new_item_text.strip():
+                    _items.append({"text": _new_item_text.strip(), "checked": False, "custom": True})
+                    st.session_state[_sess_key] = _items
+                    st.session_state[f"checklist_new_item_{ticker}"] = ""
+                    st.rerun()
+
+        st.divider()
+        st.markdown("**Thesis / notes**")
+
+        _all_holdings = portfolio_store.get_holdings_all(email)
+        _held = [h for h in _all_holdings if h["ticker"] == ticker.upper()]
+        if _held:
+            _bind = _held[0]
+            if len(_held) > 1:
+                st.caption(
+                    f"You hold {ticker} in more than one portfolio - this note is "
+                    f"the same thesis field as **{_bind['portfolio']}**."
+                )
+            _thesis_val = _bind.get("thesis") or ""
+        else:
+            _bind = None
+            _thesis_val = (_saved or {}).get("verdict_note", "")
+
+        _thesis_text = st.text_area(
+            "Thesis", value=_thesis_val, key=f"checklist_thesis_{ticker}", height=110,
+            placeholder="Why this could be a buy - carried into your holding's thesis "
+                         "automatically if you add it later.",
+        )
+
+        _status_now = (_saved or {}).get("status", "draft")
+        _status = st.selectbox(
+            "Status", list(checklist_store.STATUS_VALUES),
+            index=(list(checklist_store.STATUS_VALUES).index(_status_now)
+                   if _status_now in checklist_store.STATUS_VALUES else 0),
+            format_func=lambda s: "Still researching" if s == "draft" else "Done",
+            key=f"checklist_status_{ticker}",
+        )
+
+        if _saved:
+            st.caption(f"Last updated {_saved['updated_at'][:10]}.")
+
+        if st.button("Save checklist", key=f"checklist_save_{ticker}", type="primary"):
+            _clean_items = [
+                {"text": it.get("text", ""), "checked": bool(it.get("checked")), "custom": bool(it.get("custom"))}
+                for it in _items
+            ]
+            if _bind:
+                portfolio_store.update_thesis(email, _bind["portfolio"], ticker, _thesis_text)
+                checklist_store.save_checklist(email, ticker, _clean_items, verdict_note="", status=_status)
+            else:
+                checklist_store.save_checklist(email, ticker, _clean_items, verdict_note=_thesis_text, status=_status)
+            st.toast("Checklist saved.", icon="✅")
+            st.rerun()
+
+
 def _dividend_streaks(fy_totals, is_au):
     """(years_paid, years_increased) counting back from the most recent
     COMPLETED financial year - the current, still-in-progress FY is
@@ -5467,6 +5740,11 @@ def page_deep_dive():
         # research", this is "tell me when a specific number crosses a
         # line I choose." ---
         _render_alert_control(_dd["ticker"], _dd, key_prefix="alert_dd")
+
+        # --- Services batch 3, Part B2: pre-purchase checklist + thesis
+        # journal. Sits right after the alert control, near the other
+        # follow/alert row, per the spec. ---
+        _render_checklist_panel(_dd["ticker"], _dd)
 
         # --- Fix 4, AI fixes round 1: "Copy as text" - see
         # _render_copy_as_text_button's own docstring. ---
@@ -9761,14 +10039,34 @@ def _render_add_holding_expander(email, portfolio, _holdings):
                             )
                         _baseline = portfolio_health_engine.baseline_snapshot_fields(_snap2 or {"price": _lr["price"]})
                         _today = datetime.now(timezone.utc).date().isoformat()
+
+                        # Services batch 3, Part B3: if a checklist was
+                        # already started for this ticker (before it was
+                        # held) and its verdict_note has research notes in
+                        # it, carry that note across as the new holding's
+                        # thesis rather than losing it - but only when the
+                        # add-holding form's own thesis box was left empty,
+                        # so a thesis the user just typed here always wins.
+                        _carried_thesis = None
+                        if not _add_thesis.strip():
+                            _cl = checklist_store.get_checklist(email, _lr["ticker"])
+                            if _cl and (_cl.get("verdict_note") or "").strip():
+                                _carried_thesis = _cl["verdict_note"]
+
                         portfolio_store.add_holding(
                             email, portfolio, _lr["ticker"], name=_add_name.strip(), kind=_add_kind,
                             currency=_add_currency, shares=_add_shares, buy_price=_add_buy_price,
-                            buy_date=_add_buy_date.isoformat(), thesis=_add_thesis,
+                            buy_date=_add_buy_date.isoformat(), thesis=(_carried_thesis or _add_thesis),
                             baseline=_baseline, baseline_date=_today, source="website",
                         )
                         st.session_state.pop(_lookup_result_key, None)
-                        st.toast(f"Added {_lr['ticker']} to {portfolio} - baseline locked as of today.", icon="✅")
+                        if _carried_thesis:
+                            st.toast(
+                                f"Added {_lr['ticker']} to {portfolio} - carried over your "
+                                "saved checklist notes as its thesis.", icon="✅",
+                            )
+                        else:
+                            st.toast(f"Added {_lr['ticker']} to {portfolio} - baseline locked as of today.", icon="✅")
                         st.rerun()
 
 
@@ -10222,6 +10520,10 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
     _render_portfolio_dividends_received(_rows, _cmap)
 
     st.markdown("##### Holdings table")
+    # Services batch 3, Part B3: one batch lookup for every row's
+    # checklist badge, instead of a query per holding - same convention
+    # as insider_store.net_insider_values_for() elsewhere in this file.
+    _checklists = checklist_store.get_checklists_for_tickers(email, [r["ticker"] for r in _rows])
     _table_rows = []
     _raw_profit, _raw_return_pct = [], []
     for r in _rows:
@@ -10253,6 +10555,21 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
         })
         if _transferred:
             _row["% of balance"] = _pf_cell((r["pct_of_balance"] * 100) if r["pct_of_balance"] is not None else None, "{:.2f}%")
+
+        # Services batch 3, Part B3: "n/m" judgement items ticked (or
+        # "start" for a holding with no checklist saved yet), linking to
+        # this ticker's own Deep Dive checklist expander - same
+        # LinkColumn + URL-fragment display-text trick as the peer table
+        # (see page_deep_dive's peer section) for a badge whose display
+        # text differs from the link's own query param.
+        _cl = _checklists.get(r["ticker"].upper())
+        if _cl and _cl.get("items"):
+            _n_checked = sum(1 for it in _cl["items"] if isinstance(it, dict) and it.get("checked"))
+            _badge = f"{_n_checked}/{len(_cl['items'])}"
+        else:
+            _badge = "start"
+        _row["Checklist"] = f"/deep-dive?ticker={r['ticker']}#pf_checklist={_badge}"
+
         _table_rows.append(_row)
         _raw_profit.append(r["profit_aud"])
         _raw_return_pct.append(_return_pct_val)
@@ -10266,6 +10583,12 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
         .apply(lambda col: _pf_pl_color(_raw_profit), subset=["Profit (AUD)"])
         .apply(lambda col: _pf_pl_color(_raw_return_pct), subset=["Purchased→Current %"]),
         use_container_width=True, hide_index=True,
+        column_config={
+            "Checklist": st.column_config.LinkColumn(
+                "Checklist", display_text=r"pf_checklist=(.+)$",
+                help="Open this ticker's pre-purchase checklist",
+            ),
+        },
     )
 
     _costed = [r for r in _rows if r["cost_aud"] is not None]
