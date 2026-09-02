@@ -4936,6 +4936,19 @@ _PEER_CHIP_METRICS = [
     ("Psychology", "psychology"),
 ]
 
+# peer_context's own metric key -> the matching field on the LIVE
+# deep_dive_engine.analyze() result dict `dd` already holds for this same
+# ticker (see deep_dive_engine.py's own "long_score"/"quality_score"/
+# "moat"/"mos"/"psychology" keys) - used only to detect when the live
+# figure has drifted from last night's scanned one (Fix 2026-09-02).
+_PEER_CHIP_LIVE_FIELD = {
+    "value_score": "long_score",
+    "quality": "quality_score",
+    "moat": "moat",
+    "mos": "mos",
+    "psychology": "psychology",
+}
+
 
 def _render_peer_context(dd):
     """Hidden entirely (no card, no message) for a fund/ETF - checked
@@ -4974,13 +4987,31 @@ def _render_peer_context(dd):
     universe = res["universe"]
     sector = res.get("sector")
 
+    # Fix (2026-09-02, live: OCL.AX chip said Value Score 53.2 while the
+    # gauges on the SAME page said 69.8) - the chip's percentile has to
+    # keep coming from the scan (that's the comparable population every
+    # peer is also measured against; substituting a live number here
+    # would compare this ticker's fresh figure against everyone else's
+    # stale one), but showing the scan's number ALONE, unlabeled, next
+    # to gauges computed live reads as a contradiction on one page.
+    # Caption the block's provenance, and when live and scanned disagree
+    # by more than a rounding difference, show both instead of silently
+    # picking one - the percentile still describes the scanned number,
+    # exactly as before.
+    st.caption("vs last night's overnight scan (attention-lite).")
+
     chip_lines = []
     for label, key in _PEER_CHIP_METRICS:
-        val = own_values.get(key)
+        scanned_val = own_values.get(key)
         u_phrase = _pct_phrase(percentiles[key]["universe"])
-        if val is None or not u_phrase:
+        if scanned_val is None or not u_phrase:
             continue
-        line = f"<b>{html.escape(label)} {val:g}</b> &mdash; {u_phrase} of {html.escape(universe)}"
+        live_val = dd.get(_PEER_CHIP_LIVE_FIELD.get(key))
+        if live_val is not None and abs(live_val - scanned_val) > 2:
+            value_text = f"live {live_val:g} &middot; scanned {scanned_val:g}"
+        else:
+            value_text = f"{scanned_val:g}"
+        line = f"<b>{html.escape(label)} {value_text}</b> &mdash; {u_phrase} of {html.escape(universe)}"
         s_phrase = _pct_phrase(percentiles[key]["sector"])
         if s_phrase and sector:
             line += f" &middot; {s_phrase} of {html.escape(sector)}"
