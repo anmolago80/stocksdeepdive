@@ -4876,7 +4876,15 @@ def _render_reverse_dcf_card(dd):
     _rd_m2.metric("Model growth", f"{_model_pct:+.1f}%" if _model_pct is not None else "N/A")
 
     if _model_pct is not None:
-        sdd_plotly_chart(_reverse_dcf_gauge(_implied_pct, _model_pct))
+        # Fix (2026-09-02, spec item 5): use this card's own plain-
+        # English sentence (below) as the chart's text description
+        # instead of the generic auto-generated one - stays in sync
+        # with what the card itself already says about these same two
+        # numbers, rather than a second, independently-worded summary.
+        sdd_plotly_chart(
+            _reverse_dcf_gauge(_implied_pct, _model_pct),
+            text_description=res.get("sentence"),
+        )
         if not (-10 <= _implied_pct <= 30) or not (-10 <= _model_pct <= 30):
             st.caption("Marker capped at -10%/30% for readability.")
 

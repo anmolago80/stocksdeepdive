@@ -123,6 +123,7 @@ def _chart_text_equivalent(fig):
             if _first_ann:
                 title = re.sub(r"<[^>]+>", "", _first_ann).strip()
         lines = [f"Chart: {title}." if title else "Chart."]
+        _used_marker_desc = False
         for trace in fig.data:
             ttype = getattr(trace, "type", None)
             tname = (getattr(trace, "name", None) or "").strip()
@@ -149,6 +150,33 @@ def _chart_text_equivalent(fig):
                     lines.append(f"Pie shares - {parts}.")
             elif ttype == "scatter":
                 ys = [v for v in (list(getattr(trace, "y", None) or [])) if isinstance(v, (int, float))]
+                mode = getattr(trace, "mode", None) or ""
+                # Fix (2026-09-02, live: the reverse-DCF gauge's text
+                # description read "starts at 0.00, ends at 0.00 ...
+                # over 1 points") - a marker-only trace (no connecting
+                # line) whose Y carries no information at all (every
+                # point pinned to the same Y - the reverse-DCF gauge and
+                # every other horizontal number-line gauge on this site
+                # only vary on X, Y is always 0) used to fall straight
+                # into the line-series template below and describe the
+                # meaningless constant Y instead of the actual reading.
+                # Describe the marker(s) by their X position instead
+                # whenever Y doesn't vary across the trace - a genuine
+                # multi-point time series (e.g. the Portfolio "Buy"
+                # markers overlay, where Y is a real dollar value that
+                # DOES vary per point) is unaffected and still gets the
+                # line-series description below.
+                is_marker_only = "markers" in mode and "lines" not in mode
+                if is_marker_only and ys and len(set(ys)) <= 1:
+                    xs_num = [v for v in (list(getattr(trace, "x", None) or [])) if isinstance(v, (int, float))]
+                    if xs_num:
+                        prefix = f"{tname} marker" if tname else "Marker"
+                        if len(xs_num) == 1:
+                            lines.append(f"{prefix} at {xs_num[0]:,.2f}.")
+                        else:
+                            lines.append(f"{prefix}s at " + ", ".join(f"{v:,.2f}" for v in xs_num) + ".")
+                        _used_marker_desc = True
+                        continue
                 if ys:
                     prefix = f"{tname} line" if tname else "Line"
                     lines.append(
@@ -157,6 +185,13 @@ def _chart_text_equivalent(fig):
                     )
             elif tname:
                 lines.append(f"{tname}: see chart.")
+        if _used_marker_desc:
+            try:
+                _xr = fig.layout.xaxis.range
+                if _xr and len(_xr) == 2:
+                    lines.append(f"Scale: {_xr[0]:,.0f} to {_xr[1]:,.0f}.")
+            except Exception:
+                pass
         return " ".join(lines)
     except Exception:
         return "Chart (text description unavailable)."
@@ -186,7 +221,20 @@ def sdd_plotly_chart(fig, **kwargs):
     stable across reruns yet still unique between two DIFFERENT charts
     that happen to share a title (e.g. a "Long Score" gauge repeated per
     Scanner row) - each gets its own key because its underlying numbers
-    differ."""
+    differ.
+
+    text_description (Fix 2026-09-02, spec item 5, popped before the
+    figure reaches st.plotly_chart - never a real plotly kwarg): an
+    optional caller-supplied sentence used verbatim as the text
+    equivalent instead of the generic auto-generated one. For most
+    charts the generic description is fine (that's the whole point of
+    doing this once here instead of per call site), but a card that
+    already has its own plain-English sentence about the SAME figure -
+    the reverse-DCF card's "At X, the market is pricing in ..." - reads
+    better and stays perfectly in sync with what the card itself says,
+    rather than a second, independently-generated description of the
+    same numbers."""
+    text_description = kwargs.pop("text_description", None)
     config = kwargs.pop("config", None)
     if _is_mobile_request():
         fig.update_layout(dragmode=False)
@@ -207,7 +255,7 @@ def sdd_plotly_chart(fig, **kwargs):
         )
         _key = "sdd_chart_txt_" + hashlib.md5(_sig.encode()).hexdigest()[:16]
         with st.expander("Text description of this chart", expanded=False, key=_key):
-            st.caption(_chart_text_equivalent(fig))
+            st.caption(text_description or _chart_text_equivalent(fig))
     except Exception:
         pass
 
