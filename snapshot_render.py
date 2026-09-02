@@ -152,6 +152,29 @@ def _percentile_line(pub, universe):
     return " &middot; ".join(parts)
 
 
+def _dividend_line(pub):
+    """Compact one-line dividend summary for under the percentile line
+    (Services batch 3, Part A1): "Dividend: 1.2340/share (TTM) - yield
+    3.1% - payout 42%" - the same "dividend_ttm"/"dividend_yield_pct"/
+    "payout_ratio_pct" figures the Deep Dive's own Dividends panel shows
+    (see app.py's _render_dividends_panel), reaching this page purely
+    through the public whitelist (snapshot_store._PUBLIC_FIELD_MAP) - no
+    separate computation here. None (renders nothing) for a ticker with
+    no dividend history at all, same "omit rather than fabricate"
+    convention _percentile_line above uses. Payout ratio is included only
+    when present (a name with no EPS on file simply omits that clause,
+    not "payout n/a")."""
+    ttm = pub.get("dividend_ttm")
+    if ttm is None:
+        return None
+    parts = [f"Dividend: {ttm:g}/share (TTM)"]
+    if pub.get("dividend_yield_pct") is not None:
+        parts.append(f"yield {pub['dividend_yield_pct']:.1f}%")
+    if pub.get("payout_ratio_pct") is not None:
+        parts.append(f"payout {pub['payout_ratio_pct']:.0f}%")
+    return " &middot; ".join(parts)
+
+
 def _score_history_line(ticker, today_score):
     """Server-rendered "Value Score 30 days ago: X -> today Y" text line
     (Services batch Part 5) - reads the same nightly-recorded history the
@@ -296,6 +319,11 @@ def render_snapshot(snap, base_url):
     pct_line = _percentile_line(pub, universe)
     pct_html = f'<p class="sdd-snap-pct">{pct_line}</p>' if pct_line else ""
 
+    # Services batch 3, Part A1: dividend headline numbers, same public
+    # whitelist mechanism as the percentile line right above.
+    div_line = _dividend_line(pub)
+    div_html = f'<p class="sdd-snap-pct">{div_line}</p>' if div_line else ""
+
     display_name = f"{ticker} — {company_name}" if has_name else ticker
     title = (f"{display_name}: intrinsic value, Value Score, Moat | {SITE_NAME}"
               if has_name else f"{ticker} snapshot - computed scores | {SITE_NAME}")
@@ -324,6 +352,7 @@ def render_snapshot(snap, base_url):
   {copy_html}
   <div class="sdd-snap-grid">{cell_html}</div>
   {pct_html}
+  {div_html}
   <p><a href="/deep-dive?ticker={e(ticker)}">Open the interactive Deep Dive for {e(ticker)} &rarr;</a></p>
   <div class="cta">
     <h3>Use this data programmatically</h3>

@@ -217,8 +217,53 @@ def fetch_next_ex_dividend(ticker):
     return d.isoformat() if d >= datetime.now(timezone.utc).date() else None
 
 
+def dividend_ttm_per_share(div_series):
+    """Trailing-365-day per-share total from an already-fetched
+    fetch_dividend_history() series - the bare per-share figure (no
+    shares/currency/buy-date needed), for a public, non-holding-specific
+    reading like the Deep Dive Dividends panel's "TTM dividend/share"
+    (Services batch 3, Part A1). 0.0 (not None) for a real payer with
+    nothing landed in the last 365 days - the caller is expected to have
+    already handled "no dividend history at all" via div_series.empty,
+    same convention dividends_received() below uses for its own
+    trailing_12m_per_share."""
+    if div_series is None or div_series.empty:
+        return 0.0
+    cutoff = pd.Timestamp(datetime.now(timezone.utc).date()) - pd.Timedelta(days=365)
+    trailing = div_series[div_series.index.normalize() >= cutoff]
+    return float(trailing.sum())
+
+
+def dividend_fy_buckets(ticker, div_series=None):
+    """{label: per_share_total} for `ticker`'s dividend history, grouped
+    by financial year - July-June ("FY2026" = Jul 2025-Jun 2026) for an
+    ASX ticker (.AX), plain calendar year for everything else (Services
+    batch 3, Part A1's own AU/US convention). Always chronological
+    (oldest label first), regardless of the input series' own row order.
+    Pass an already-fetched `div_series` (e.g. from fetch_dividend_history)
+    to avoid a second fetch when the caller already has one; fetches it
+    itself otherwise. Empty dict for a ticker with no dividend history."""
+    if div_series is None:
+        div_series = fetch_dividend_history(ticker)
+    if div_series.empty:
+        return {}
+    is_au = ticker.upper().endswith(".AX")
+    buckets = {}
+    for ts, amount in div_series.items():
+        d = ts.date() if hasattr(ts, "date") else ts
+        if is_au:
+            fy_end_year = d.year if d.month <= 6 else d.year + 1
+            label, sort_key = f"FY{fy_end_year}", fy_end_year
+        else:
+            label, sort_key = str(d.year), d.year
+        total, _ = buckets.setdefault(label, [0.0, sort_key])
+        buckets[label][0] = total + float(amount)
+    return {label: total for label, (total, _key) in
+            sorted(buckets.items(), key=lambda kv: kv[1][1])}
+
+
 def dividends_received(ticker, currency, shares, buy_date_iso):
-    """(received_aud, trailing_12m_per_share) for one holding.
+    """(received_aud, trailing_12m_per_share, payments) for one holding.
 
     received_aud = sum of per-share payments with ex-date >= buy_date,
     times shares, AUD-converted at today's live FX (see module docstring)
@@ -230,10 +275,18 @@ def dividends_received(ticker, currency, shares, buy_date_iso):
 
     trailing_12m_per_share = payments in the last 365 days, for
     yield-on-cost (trailing_12m_per_share / buy_price) at the call site.
+
+    payments (Services batch 3, Part A3, additive - existing callers that
+    only unpack the first two values are unaffected by adding a third):
+    [{"date": iso, "per_share": float, "shares": float, "amount": float,
+    "amount_aud": float | None}, ...] since buy_date - one row per
+    recorded payment, `amount`/`amount_aud` already multiplied by
+    `shares` (constant-shares-since-purchase, same assumption
+    received_aud makes) so a caller never has to re-derive them.
     """
     div = fetch_dividend_history(ticker)
     if div.empty:
-        return None, 0.0
+        return None, 0.0, []
 
     try:
         buy_ts = pd.Timestamp(buy_date_iso).normalize()
@@ -249,7 +302,17 @@ def dividends_received(ticker, currency, shares, buy_date_iso):
     trailing = div[div.index.normalize() >= cutoff]
     trailing_12m_per_share = float(trailing.sum())
 
-    return received_aud, trailing_12m_per_share
+    payments = []
+    for ts, per_share in since_buy.items():
+        per_share = float(per_share)
+        amount = per_share * shares
+        payments.append({
+            "date": (ts.date() if hasattr(ts, "date") else ts).isoformat(),
+            "per_share": per_share, "shares": shares, "amount": amount,
+            "amount_aud": (amount * fx) if fx is not None else None,
+        })
+
+    return received_aud, trailing_12m_per_share, payments
 
 
 # ---------------------------------------------------------------------

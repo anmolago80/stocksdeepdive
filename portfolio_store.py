@@ -113,6 +113,17 @@ def _conn():
             PRIMARY KEY (email, portfolio, ticker)
         )"""
     )
+    # Services batch 3, Part A2: per-holding franking percentage (0-100),
+    # NULL = unset. Yahoo has no franking data and there's no reliable
+    # free feed, so this is a private, user-entered setting - never
+    # shown anywhere public, never sent to the API/MCP/snapshots (see
+    # snapshot_store._PUBLIC_FIELD_MAP, which has no entry for it).
+    # Guarded ALTER TABLE, same belt-and-braces pattern this module's own
+    # watchdog_enabled column (below) and positions_store.py already use.
+    try:
+        conn.execute("ALTER TABLE portfolio_holdings ADD COLUMN franking_pct REAL")
+    except sqlite3.OperationalError:
+        pass
     # One row per email that has ever received the one-off desktop-import
     # seed (see seed_desktop_import) - keeps that seed from ever re-firing
     # for that email again, even if every seeded holding is later deleted.
@@ -494,7 +505,7 @@ def list_portfolio_owners():
 def _row_to_dict(row):
     (email, portfolio, ticker, name, kind, currency, shares, buy_price, buy_date,
      thesis, thesis_drivers_json, baseline_json, baseline_date, source,
-     added_at, updated_at) = row
+     added_at, updated_at, franking_pct) = row
     try:
         thesis_drivers = json.loads(thesis_drivers_json) or []
     except (TypeError, ValueError):
@@ -510,13 +521,15 @@ def _row_to_dict(row):
         "thesis_drivers": thesis_drivers, "baseline": baseline,
         "baseline_date": baseline_date, "source": source,
         "added_at": added_at, "updated_at": updated_at,
+        # Services batch 3, Part A2: None = unset (never shown as 0%).
+        "franking_pct": franking_pct,
     }
 
 
 _HOLDING_COLUMNS = (
     "email, portfolio, ticker, name, kind, currency, shares, buy_price, "
     "buy_date, thesis, thesis_drivers_json, baseline_json, "
-    "baseline_date, source, added_at, updated_at"
+    "baseline_date, source, added_at, updated_at, franking_pct"
 )
 
 
@@ -658,6 +671,43 @@ def update_position(email, portfolio, ticker, shares=None, buy_price=None, buy_d
             "updated_at = ? WHERE email = ? AND portfolio = ? AND ticker = ?",
             (shares, buy_price, buy_date, now, email, portfolio, ticker.upper()),
         )
+
+
+def update_franking_pct(email, portfolio, ticker, franking_pct):
+    """Set (or clear, with None) one holding's franking percentage
+    (Services batch 3, Part A2) - private, never touches the locked
+    baseline, same separation-of-concerns as update_thesis()/
+    update_position() above. `franking_pct` is stored exactly as given
+    (0-100, or None to mark it unset again) - no clamping here, the
+    holding-editor UI's own st.number_input(min_value=0, max_value=100)
+    is what actually constrains user entry."""
+    if not email or not portfolio or not ticker:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE portfolio_holdings SET franking_pct = ?, updated_at = ? "
+            "WHERE email = ? AND portfolio = ? AND ticker = ?",
+            (franking_pct, now, email, portfolio, ticker.upper()),
+        )
+
+
+def set_franking_pct_for_all_au(email, portfolio, franking_pct):
+    """Bulk-set franking_pct on every .AX holding in `portfolio` at once
+    (Services batch 3, Part A2's "Set franking % for all AU holdings"
+    convenience line in Portfolio settings) - never touches a non-.AX
+    holding, franking being an AU-imputation-only concept. Returns the
+    number of holdings updated."""
+    if not email or not portfolio:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        cur = conn.execute(
+            "UPDATE portfolio_holdings SET franking_pct = ?, updated_at = ? "
+            "WHERE email = ? AND portfolio = ? AND ticker LIKE '%.AX'",
+            (franking_pct, now, email, portfolio),
+        )
+        return cur.rowcount
 
 
 def remove_holding(email, portfolio, ticker):

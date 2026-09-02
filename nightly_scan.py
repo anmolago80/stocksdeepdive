@@ -37,6 +37,8 @@ from datetime import datetime, timezone
 import pandas as pd
 import yfinance as yf
 
+import auto_compounder_engine
+import fundamentals_data
 import moat_engine
 import peer_context
 import reverse_dcf_engine
@@ -116,6 +118,35 @@ def _attach_moat(row, ticker, log=print):
         log(f"[nightly_scan] {ticker}: moat_engine failed: {e}")
 
 
+def _attach_dividend_payout(row, ticker, log=print):
+    """Adds "Payout Ratio %" to an already-built row dict, in place -
+    Services batch 3, Part A1. Called only from the two REAL nightly scan
+    paths below, same reasoning as _attach_moat right above: needs a full
+    fundamentals bundle (for TTM EPS via auto_compounder_engine._eps_ttm),
+    which the weekly digest email's per-ticker path (analyze_ticker_lite,
+    shared with digest_engine) shouldn't be made to pay for. fundamentals_
+    data.get_bundle() here is the SAME bundle _attach_moat's own
+    moat_engine.compute_moat() call already fetched/cached for this
+    ticker moments ago, so this is cheap on any ticker scanned today by
+    either real path. One bad ticker never kills the row - Payout Ratio
+    is simply left out (None), same "-" rendering convention as every
+    other optional scan field. No-op (leaves the row's "Payout Ratio %"
+    absent) when the row has no TTM dividend at all - dividing by EPS for
+    a non-payer isn't a "0% payout", it's not applicable."""
+    _dps = row.get("Dividend TTM")
+    if not _dps:
+        return
+    try:
+        bundle = fundamentals_data.get_bundle(ticker)
+        if not bundle:
+            return
+        trailing_eps, _flagged = auto_compounder_engine._eps_ttm(bundle, ticker=ticker)
+        if trailing_eps and trailing_eps > 0:
+            row["Payout Ratio %"] = round(_dps / trailing_eps * 100, 1)
+    except Exception as e:
+        log(f"[nightly_scan] {ticker}: dividend payout ratio failed: {e}")
+
+
 def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
                          perpetual_rate=None, growth_rate=None, manual_fcf=None):
     """Core value/quality/psychology scoring for one ticker - the same
@@ -161,6 +192,42 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         cashflow_df = tk.cashflow
     except Exception:
         cashflow_df = pd.DataFrame()
+
+    # Services batch 3, Part A1: dividend headline numbers for the
+    # snapshot/API/MCP surfaces (see snapshot_store._PUBLIC_FIELD_MAP).
+    # Cheap enough to compute for every caller including the weekly
+    # digest email (one extra `tk.dividends` call; exDividendDate comes
+    # from `info`, already fetched above) - unlike Payout Ratio below,
+    # which needs a full fundamentals bundle and is deliberately kept out
+    # of this shared function (see _attach_dividend_payout's docstring).
+    # Same trailing-365-day/next-future-exDividendDate logic as
+    # portfolio_charts_engine.dividend_ttm_per_share()/
+    # fetch_next_ex_dividend() - duplicated rather than imported since
+    # that module is Streamlit-cache-coupled (`@st.cache_data`) and this
+    # function also runs standalone, outside any Streamlit script (see
+    # this module's own docstring).
+    try:
+        _div_hist = tk.dividends
+        if _div_hist is not None and not _div_hist.empty:
+            _div_hist = _div_hist.copy()
+            if _div_hist.index.tz is not None:
+                _div_hist.index = _div_hist.index.tz_localize(None)
+            _cutoff = pd.Timestamp(datetime.now(timezone.utc).date()) - pd.Timedelta(days=365)
+            dividend_ttm = float(_div_hist[_div_hist.index.normalize() >= _cutoff].sum())
+        else:
+            dividend_ttm = None
+    except Exception:
+        dividend_ttm = None
+
+    next_ex_date = None
+    _ex_ts = info.get("exDividendDate")
+    if _ex_ts:
+        try:
+            _ex_d = datetime.fromtimestamp(_ex_ts, tz=timezone.utc).date()
+            if _ex_d >= datetime.now(timezone.utc).date():
+                next_ex_date = _ex_d.isoformat()
+        except Exception:
+            next_ex_date = None
 
     # Fix 9 (2026-09-01): price from the last VALID bar, not blindly
     # iloc[-1]. Root cause (confirmed via Railway logs from the 31 Aug
@@ -346,6 +413,16 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
             round(_reverse_dcf["model_growth"] * 100, 1)
             if _reverse_dcf.get("ok") and _reverse_dcf.get("model_growth") is not None else None
         ),
+        # Services batch 3, Part A1: dividend headline numbers - see this
+        # function's own comment above where dividend_ttm/next_ex_date are
+        # computed. "Payout Ratio %" is added separately, only for the two
+        # real nightly-scan paths, by _attach_dividend_payout() below.
+        "Dividend TTM": round(dividend_ttm, 4) if dividend_ttm else None,
+        "Dividend Yield %": (
+            round(dividend_ttm / current_price * 100, 2)
+            if dividend_ttm and current_price else None
+        ),
+        "Next Ex-Div Date": next_ex_date,
     }
 
 
@@ -409,6 +486,7 @@ def run_universe_scan(universe, max_tickers=None, log=print):
                     log(f"[nightly_scan] {t}: skipped, no valid price ({_price!r})")
                 else:
                     _attach_moat(row, t, log=log)
+                    _attach_dividend_payout(row, t, log=log)
                     # Services batch 2, Part 2: Sector, straight from the
                     # constituent pool already fetched above - no extra
                     # call. None (not "Unknown") for a universe whose
@@ -520,6 +598,7 @@ def run_imported_scan(max_tickers=IMPORTED_NIGHTLY_BATCH, log=print):
                     row = None
                 else:
                     _attach_moat(row, t, log=log)
+                    _attach_dividend_payout(row, t, log=log)
             screen_import_store.mark_scanned(t, ok=bool(row), row=row)
         except Exception as e:  # one bad ticker never kills the batch
             log(f"[nightly_scan] imported {t}: {e}")

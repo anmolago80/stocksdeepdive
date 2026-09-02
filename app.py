@@ -58,6 +58,7 @@ import blog_render
 import compounder_ui
 from compounder_ui import sdd_plotly_chart
 import auto_compounder_engine
+import fundamentals_data
 import site_content
 
 # AI-readiness roadmap Phase 3 (AI_ROADMAP_stocksdeepdive.md): the AI
@@ -4784,6 +4785,110 @@ def _render_static_explainer(key_suffix, button_label, text):
         st.markdown(text)
 
 
+def _dividend_streaks(fy_totals, is_au):
+    """(years_paid, years_increased) counting back from the most recent
+    COMPLETED financial year - the current, still-in-progress FY is
+    dropped from both counts (a partial year reading lower than a full
+    one would otherwise read as a false break in the streak). `fy_totals`
+    is portfolio_charts_engine.dividend_fy_buckets()'s own return value
+    (already chronological, oldest first)."""
+    today = datetime.now(timezone.utc).date()
+    current_label = (f"FY{today.year if today.month <= 6 else today.year + 1}"
+                      if is_au else str(today.year))
+    years_desc = [y for y in reversed(list(fy_totals.keys())) if y != current_label]
+
+    paid = 0
+    for y in years_desc:
+        if fy_totals[y] > 0:
+            paid += 1
+        else:
+            break
+
+    increased = 0
+    for i in range(len(years_desc) - 1):
+        if fy_totals[years_desc[i]] > fy_totals[years_desc[i + 1]]:
+            increased += 1
+        else:
+            break
+
+    return paid, increased
+
+
+def _render_dividends_panel(dd):
+    """"Dividends" panel (Services batch 3, Part A1) - public, Yahoo-data-
+    only, placed directly below Insider & capital on the Deep Dive (see
+    page_deep_dive's own call site). Per-share history by financial year,
+    TTM dividend/share and yield at the current price, payout ratio (TTM
+    DPS / TTM EPS via auto_compounder_engine._eps_ttm - the SAME
+    stale-EPS red flag that function already carries elsewhere), years of
+    consecutive payments/increases (computed here, factual - never a
+    recommendation), and next ex-dividend date. Franking is deliberately
+    absent from this panel: Yahoo has no franking data, and nothing
+    user-entered (see A2's per-holding Franking % - private, portfolio
+    only) may ever reach a public page. The same headline numbers this
+    panel shows are also attached to the nightly scan row (see
+    nightly_scan.py's own "Dividend TTM"/"Dividend Yield %"/"Payout
+    Ratio %"/"Next Ex-Div Date" fields) and whitelisted through to
+    /s/<ticker>, the API and MCP - see snapshot_store._PUBLIC_FIELD_MAP."""
+    ticker = dd["ticker"]
+    st.markdown("##### Dividends")
+    div = portfolio_charts_engine.fetch_dividend_history(ticker)
+    if div.empty:
+        st.caption("No dividends on record.")
+        return
+
+    is_au = ticker.upper().endswith(".AX")
+    fy_totals = portfolio_charts_engine.dividend_fy_buckets(ticker, div)
+    _period_label = "financial year (Jul-Jun)" if is_au else "calendar year"
+
+    fig = go.Figure(go.Bar(
+        x=list(fy_totals.keys()), y=list(fy_totals.values()),
+        marker_color="#2dd4bf",
+        text=[f"{v:.3f}" for v in fy_totals.values()], textposition="outside",
+        cliponaxis=False,
+    ))
+    fig.update_layout(
+        title=f"Dividend per share by {_period_label}",
+        yaxis_title=dd.get("currency") or "", height=280, showlegend=False,
+        margin=dict(t=40, b=10, l=10, r=10),
+    )
+    sdd_plotly_chart(fig)
+
+    ttm_dps = portfolio_charts_engine.dividend_ttm_per_share(div)
+    price = dd.get("price")
+    yield_pct = (ttm_dps / price * 100) if (price and ttm_dps) else None
+
+    payout_pct, payout_flagged = None, False
+    try:
+        bundle = fundamentals_data.get_bundle(ticker)
+        if bundle:
+            trailing_eps, eps_flagged = auto_compounder_engine._eps_ttm(bundle, ticker=ticker)
+            if trailing_eps and trailing_eps > 0:
+                payout_pct = ttm_dps / trailing_eps * 100
+                payout_flagged = bool(eps_flagged)
+    except Exception:
+        pass
+
+    years_paid, years_increased = _dividend_streaks(fy_totals, is_au)
+    next_ex = portfolio_charts_engine.fetch_next_ex_dividend(ticker)
+
+    _c1, _c2, _c3, _c4 = st.columns(4)
+    _c1.metric("TTM dividend/share", f"{ttm_dps:.4f} {dd.get('currency') or ''}")
+    _c2.metric("Yield at current price", f"{yield_pct:.2f}%" if yield_pct is not None else "n/a")
+    _c3.metric(
+        "Payout ratio (TTM)",
+        (f"{payout_pct:.1f}%" + (" *" if payout_flagged else "")) if payout_pct is not None else "n/a",
+    )
+    _c4.metric("Next ex-dividend", next_ex or "n/a")
+    if payout_flagged:
+        st.caption("* Rests on a default/estimated EPS input - see the red-flag rule.")
+    st.caption(
+        f"{years_paid} consecutive {_period_label}(s) of payments, {years_increased} of increases "
+        "(completed years only)."
+    )
+    st.caption("Payment history from the data provider; described calculations, not income advice.")
+
+
 def _reverse_dcf_gauge(implied_pct, model_pct):
     """Small horizontal gauge (-10...+30%) marking Implied growth and
     Model growth on the same number line, per the Part 1 spec. Values
@@ -5913,6 +6018,12 @@ def page_deep_dive():
         # per the Part 2 spec. ---
         st.divider()
         _render_insider_panel(_dd["ticker"])
+
+        # --- Services batch 3, Part A1: dividends & franking - the
+        # public, Yahoo-data-only income panel. Sits directly below
+        # Insider & capital per the spec. ---
+        st.divider()
+        _render_dividends_panel(_dd)
 
         # --- Compounder View (auto): the same six research sections the
         # Rational Compounder Research page shows for its hand-covered
@@ -8906,7 +9017,10 @@ def _render_portfolio_dividends_received(_rows, _cmap):
     for r in _rows:
         if not r.get("buy_date") or not r.get("shares"):
             continue
-        _rec_aud, _trailing_ps = portfolio_charts_engine.dividends_received(
+        # Services batch 3, Part A3: dividends_received() now additionally
+        # returns a per-payment list (a 3rd tuple item) - unused here,
+        # this section only needs the same two totals it always did.
+        _rec_aud, _trailing_ps, _ = portfolio_charts_engine.dividends_received(
             r["ticker"], r.get("currency"), r["shares"], r["buy_date"],
         )
         if _rec_aud is None:
@@ -9247,13 +9361,20 @@ def page_portfolio():
                 for _fut in concurrent.futures.as_completed(_futures):
                     _analyses[_futures[_fut]] = _fut.result()
 
-    _tab_holdings, _tab_overview, _tab_health, _tab_progress, _tab_ask, _tab_alerts = st.tabs(
-        ["💼 Holdings", "📊 Overview & P/L", "🩺 Health & News", "📈 Progress",
+    (_tab_holdings, _tab_income, _tab_overview, _tab_health, _tab_progress,
+     _tab_ask, _tab_alerts) = st.tabs(
+        ["💼 Holdings", "💰 Income", "📊 Overview & P/L", "🩺 Health & News", "📈 Progress",
          "\U0001F4AC Ask", "\U0001F514 My alerts"]
     )
 
     with _tab_holdings:
         _render_portfolio_holdings_tab(email, _active_portfolio, _holdings, _analyses)
+    with _tab_income:
+        # Services batch 3, Part A3/A4: dividends actually received per
+        # holding (with franking, where set) and the FY tax-time report -
+        # its own tab per the spec, since Holdings already has a lot on
+        # it and this is squarely its own concern (income, not P/L).
+        _render_portfolio_income_tab(email, _active_portfolio, _holdings, _analyses)
     with _tab_overview:
         _render_portfolio_overview_tab(email, _active_portfolio, _holdings, _analyses)
     with _tab_health:
@@ -9838,6 +9959,19 @@ def _render_manage_holding(email, portfolio, h):
                 _e_thesis = st.text_area(
                     "Thesis", value=h.get("thesis") or "", height=100, key=f"pf_edit_thesis_{_wkey}",
                 )
+                # Services batch 3, Part A2: franking is an AU-imputation-
+                # only concept - the input only makes sense (and is only
+                # shown) for a .AX holding, matching the "for all AU
+                # holdings" bulk line in Portfolio settings below.
+                _e_franking = None
+                if h["ticker"].upper().endswith(".AX"):
+                    _e_franking = st.number_input(
+                        "Franking %", min_value=0.0, max_value=100.0, step=5.0,
+                        value=float(h.get("franking_pct")) if h.get("franking_pct") is not None else 0.0,
+                        key=f"pf_edit_franking_{_wkey}",
+                        help="From the company's dividend announcements - e.g. 100 for fully "
+                             "franked. Private - never shown publicly or sent to the API/MCP.",
+                    )
                 if st.form_submit_button("Save changes", type="primary"):
                     if _e_shares <= 0 or _e_buy_price <= 0:
                         st.error("Shares and buy price must be greater than zero.")
@@ -9847,6 +9981,8 @@ def _render_manage_holding(email, portfolio, h):
                             buy_date=_e_buy_date.isoformat(),
                         )
                         portfolio_store.update_thesis(email, portfolio, h["ticker"], _e_thesis, thesis_drivers=h.get("thesis_drivers"))
+                        if _e_franking is not None:
+                            portfolio_store.update_franking_pct(email, portfolio, h["ticker"], _e_franking)
                         st.toast(f"Saved changes to {h['ticker']}.", icon="✅")
                         st.rerun()
             st.caption(
@@ -9946,6 +10082,33 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
                 )
                 st.toast("Saved.", icon="✅")
                 st.rerun()
+
+            # Services batch 3, Part A2: bulk convenience for a portfolio
+            # with several .AX holdings that are all, say, fully franked -
+            # sets the SAME franking_pct on every .AX holding in this
+            # portfolio at once, rather than editing each one by hand.
+            # Kept as its own row (own button) for the same reason the AI
+            # watchdog toggle below is separate from the transferred/cash
+            # save - unrelated settings shouldn't ride on the same button.
+            _has_au_holdings = any(r["ticker"].upper().endswith(".AX") for r in _rows)
+            if _has_au_holdings:
+                st.divider()
+                _fk_c1, _fk_c2 = st.columns([3, 1])
+                with _fk_c1:
+                    _bulk_franking = st.number_input(
+                        "Set franking % for all AU holdings", min_value=0.0, max_value=100.0,
+                        step=5.0, value=100.0, key=_pf_key(active_portfolio, "pf_settings_bulk_franking"),
+                        help="Applies to every .AX holding in this portfolio - overwrites "
+                             "any franking % already set on them.",
+                    )
+                with _fk_c2:
+                    st.write("")
+                    if st.button("Apply to all AU", key=_pf_key(active_portfolio, "pf_settings_bulk_franking_btn")):
+                        _n = portfolio_store.set_franking_pct_for_all_au(
+                            email, active_portfolio, _bulk_franking,
+                        )
+                        st.toast(f"Set franking {_bulk_franking:g}% on {_n} AU holding(s).", icon="✅")
+                        st.rerun()
 
             # AI-readiness roadmap Phase 5: kept as its own form/save step,
             # deliberately separate from the transferred/cash fields above
@@ -10120,6 +10283,217 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
                              key=_pf_key(active_portfolio, "pf_manage_ticker"))
         _mh = next(h for h in _holdings if h["ticker"] == _mtk)
         _render_manage_holding(email, active_portfolio, _mh)
+
+
+def _au_fy_label(d):
+    """"FYyyyy" = Jul(yyyy-1)-Jun(yyyy) - the investor's own AU tax year,
+    applied UNIFORMLY to every holding regardless of where it's listed
+    (Services batch 3, Parts A3/A4: this is the owner's own personal
+    income/tax report for ONE filer, not a per-company factual display
+    like A1's Deep Dive Dividends panel - see that function's own
+    docstring, which instead groups each ticker by ITS OWN AU/US listing
+    convention)."""
+    return f"FY{d.year if d.month <= 6 else d.year + 1}"
+
+
+def _current_and_last_au_fy():
+    today = datetime.now(timezone.utc).date()
+    cur = _au_fy_label(today)
+    return cur, f"FY{int(cur[2:]) - 1}"
+
+
+def _recent_au_fy_options(n=6):
+    cur, _ = _current_and_last_au_fy()
+    cur_end_year = int(cur[2:])
+    return [f"FY{y}" for y in range(cur_end_year, cur_end_year - n, -1)]
+
+
+def _bucket_payments_by_au_fy(payments):
+    """{fy_label: total_amount_aud} from a portfolio_charts_engine.
+    dividends_received() payments list - skips a payment whose AUD amount
+    couldn't be computed (missing FX rate), same "leave it out rather
+    than guess" convention every AUD total on this page already uses."""
+    buckets = {}
+    for p in payments:
+        if p.get("amount_aud") is None:
+            continue
+        d = _date.fromisoformat(p["date"])
+        label = _au_fy_label(d)
+        buckets[label] = buckets.get(label, 0.0) + p["amount_aud"]
+    return buckets
+
+
+def _render_portfolio_income_tab(email, active_portfolio, _holdings, _analyses):
+    """"Income" tab (Services batch 3, Parts A3/A4) - dividends actually
+    received on your CURRENT holdings (units x each recorded payment
+    since the buy date, via portfolio_charts_engine.dividends_received's
+    now-extended payments list), with franking credits where a franking %
+    has been entered (A2, private), and a downloadable FY tax-time
+    report. Dividends only, by owner decision - no realised capital
+    gains, no CGT, no sell recording anywhere in this tab."""
+    st.caption(
+        "Dividends actually received on your current holdings, plus franking "
+        "credits where you've entered a franking % (see Edit on a holding, or "
+        "the bulk setting in Portfolio settings on the Holdings tab). Dividends "
+        "only - this site doesn't track realised capital gains or CGT."
+    )
+    if not _holdings:
+        st.info("No holdings yet.")
+        return
+
+    _rows, _totals, _fx_missing, _price_missing = _build_portfolio_rows(_holdings, _analyses)
+    _is_combined = active_portfolio is None
+    _franking_by_key = {(h.get("portfolio"), h["ticker"]): h.get("franking_pct") for h in _holdings}
+    _cur_fy, _last_fy = _current_and_last_au_fy()
+
+    _income_rows = []
+    _all_payments = []  # (date_iso, amount_aud) across every holding, for the monthly chart
+    for r in _rows:
+        if not r.get("buy_date") or not r.get("shares"):
+            continue
+        _rec_aud, _trailing_ps, _payments = portfolio_charts_engine.dividends_received(
+            r["ticker"], r.get("currency"), r["shares"], r["buy_date"],
+        )
+        if _rec_aud is None:
+            continue
+        _franking_pct = _franking_by_key.get((r["portfolio"], r["ticker"]))
+        _fy_buckets = _bucket_payments_by_au_fy(_payments)
+        _franking_credits = (_rec_aud * _franking_pct / 100 * 30 / 70) if _franking_pct else None
+        _income_rows.append({
+            "Ticker": r["ticker"], "Portfolio": r["portfolio"],
+            "Cash this FY (AUD)": _fy_buckets.get(_cur_fy, 0.0),
+            "Cash last FY (AUD)": _fy_buckets.get(_last_fy, 0.0),
+            "Total received (AUD)": _rec_aud, "Franking %": _franking_pct,
+            "Franking credits (AUD)": _franking_credits,
+            "Grossed-up (AUD)": (_rec_aud + _franking_credits) if _franking_credits is not None else None,
+        })
+        for p in _payments:
+            if p.get("amount_aud") is not None:
+                _all_payments.append((p["date"], p["amount_aud"]))
+
+    if not _income_rows:
+        st.caption("No dividend history on file for any current holding yet.")
+        return
+
+    _idf = pd.DataFrame(_income_rows)
+    _total_row = {
+        "Ticker": "TOTAL", "Portfolio": "",
+        "Cash this FY (AUD)": _idf["Cash this FY (AUD)"].sum(),
+        "Cash last FY (AUD)": _idf["Cash last FY (AUD)"].sum(),
+        "Total received (AUD)": _idf["Total received (AUD)"].sum(),
+        "Franking %": None,
+        "Franking credits (AUD)": (_idf["Franking credits (AUD)"].sum()
+                                    if _idf["Franking credits (AUD)"].notna().any() else None),
+        "Grossed-up (AUD)": (_idf["Grossed-up (AUD)"].sum()
+                              if _idf["Grossed-up (AUD)"].notna().any() else None),
+    }
+    _display_df = pd.concat([_idf, pd.DataFrame([_total_row])], ignore_index=True)
+    if not _is_combined:
+        _display_df = _display_df.drop(columns=["Portfolio"])
+    for c in ["Cash this FY (AUD)", "Cash last FY (AUD)", "Total received (AUD)",
+              "Franking credits (AUD)", "Grossed-up (AUD)"]:
+        _display_df[c] = _display_df[c].map(lambda v: f"A${v:,.2f}" if pd.notna(v) else "-")
+    _display_df["Franking %"] = _display_df["Franking %"].map(lambda v: f"{v:g}%" if pd.notna(v) else "-")
+
+    st.markdown(f"##### Dividends by holding ({_cur_fy} and {_last_fy})")
+    st.dataframe(_display_df, hide_index=True, use_container_width=True)
+
+    _month_totals = {}
+    _cutoff = datetime.now(timezone.utc).date() - timedelta(days=365)
+    for date_iso, amount_aud in _all_payments:
+        d = _date.fromisoformat(date_iso)
+        if d < _cutoff:
+            continue
+        label = d.strftime("%Y-%m")
+        _month_totals[label] = _month_totals.get(label, 0.0) + amount_aud
+    if _month_totals:
+        _months_sorted = sorted(_month_totals.keys())
+        st.markdown("##### Income received by month (trailing 12 months)")
+        _fig_month = go.Figure(go.Bar(
+            x=_months_sorted, y=[_month_totals[m] for m in _months_sorted],
+            marker_color="#2dd4bf", text=[f"A${_month_totals[m]:,.0f}" for m in _months_sorted],
+            textposition="outside", cliponaxis=False,
+        ))
+        _fig_month.update_layout(
+            height=280, margin=dict(t=20, b=10, l=10, r=10), showlegend=False,
+            yaxis=dict(tickprefix="A$", separatethousands=True),
+        )
+        sdd_plotly_chart(_fig_month)
+
+    st.caption(
+        "Assumes current units were held for each payment since the buy date; "
+        "franking as you entered it — check your broker statements."
+    )
+
+    # --- Part A4: Tax-time report (dividends only) ---
+    st.divider()
+    _fy_options = _recent_au_fy_options()
+    _default_idx = _fy_options.index(_last_fy) if _last_fy in _fy_options else 0
+    _report_fy = st.selectbox(
+        "Tax year", _fy_options, index=_default_idx,
+        key=_pf_key(active_portfolio, "pf_income_report_fy"),
+        format_func=lambda fy: f"{fy} (Jul {int(fy[2:]) - 1} - Jun {fy[2:]})",
+    )
+    st.markdown(f"##### Tax-time report ({_report_fy})")
+
+    _report_rows = []
+    for r in _rows:
+        if not r.get("buy_date") or not r.get("shares"):
+            continue
+        _rec_aud, _trailing_ps, _payments = portfolio_charts_engine.dividends_received(
+            r["ticker"], r.get("currency"), r["shares"], r["buy_date"],
+        )
+        if _rec_aud is None:
+            continue
+        _franking_pct = _franking_by_key.get((r["portfolio"], r["ticker"]))
+        for p in _payments:
+            if p.get("amount_aud") is None:
+                continue
+            d = _date.fromisoformat(p["date"])
+            if _au_fy_label(d) != _report_fy:
+                continue
+            _fc = (p["amount_aud"] * _franking_pct / 100 * 30 / 70) if _franking_pct else None
+            _report_rows.append({
+                "Ticker": r["ticker"], "Portfolio": r["portfolio"], "Payment date": p["date"],
+                "Cash dividend (AUD)": round(p["amount_aud"], 2), "Franking %": _franking_pct,
+                "Franking credits (AUD)": round(_fc, 2) if _fc is not None else None,
+                "Grossed-up (AUD)": round(p["amount_aud"] + (_fc or 0), 2),
+            })
+
+    if not _report_rows:
+        st.caption(f"No recorded dividend payments in {_report_fy} for your current holdings.")
+        st.caption(
+            "Factual summary of recorded payments and your own franking entries — not tax "
+            "advice; confirm against your broker/registry statements."
+        )
+        return
+
+    _rdf = pd.DataFrame(_report_rows).sort_values(["Ticker", "Payment date"]).reset_index(drop=True)
+    _report_total = {
+        "Ticker": "TOTAL", "Portfolio": "", "Payment date": "",
+        "Cash dividend (AUD)": round(_rdf["Cash dividend (AUD)"].sum(), 2),
+        "Franking %": None,
+        "Franking credits (AUD)": (round(_rdf["Franking credits (AUD)"].sum(), 2)
+                                    if _rdf["Franking credits (AUD)"].notna().any() else None),
+        "Grossed-up (AUD)": round(_rdf["Grossed-up (AUD)"].sum(), 2),
+    }
+    st.dataframe(
+        pd.concat([_rdf, pd.DataFrame([_report_total])], ignore_index=True),
+        hide_index=True, use_container_width=True,
+    )
+
+    _csv_df = pd.DataFrame(_report_rows + [_report_total])
+    st.download_button(
+        "Download CSV",
+        data=_csv_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"StocksDeepDive_income_{_report_fy}_{(active_portfolio or 'all_portfolios').replace(' ', '_')}.csv",
+        mime="text/csv",
+        key=_pf_key(active_portfolio, "pf_income_report_csv"),
+    )
+    st.caption(
+        "Factual summary of recorded payments and your own franking entries — not tax "
+        "advice; confirm against your broker/registry statements."
+    )
 
 
 def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses):

@@ -193,6 +193,20 @@ _PUBLIC_FIELD_MAP = {
     # already omits any key not present on `row`, so that's a clean
     # omission, not a crash or a fabricated value.
     "Percentiles": "percentiles",
+    # Services batch 3, Part A1 (2026-09-02): dividend headline numbers -
+    # "Dividend TTM"/"Dividend Yield %"/"Next Ex-Div Date" are computed
+    # for every scanned ticker inside nightly_scan.analyze_ticker_lite();
+    # "Payout Ratio %" only for the two real nightly-scan paths (needs a
+    # fundamentals bundle - see nightly_scan._attach_dividend_payout's own
+    # docstring). Absent entirely on a ticker with no dividend history at
+    # all, or one scanned before this shipped - public_view already omits
+    # any key not present on `row`, never a fabricated 0. Franking is
+    # deliberately NOT here: Yahoo has no franking data, and the
+    # per-holding Franking % (Part A2) is private, never public.
+    "Dividend TTM": "dividend_ttm",
+    "Dividend Yield %": "dividend_yield_pct",
+    "Payout Ratio %": "payout_ratio_pct",
+    "Next Ex-Div Date": "next_ex_date",
 }
 
 
