@@ -4912,10 +4912,20 @@ def _cached_peer_context(ticker):
 def _pct_phrase(p):
     """92 -> 'top 8%'; 30 -> 'bottom 30%'; None -> None. Per the spec:
     "top X%" wording when percentile >= 50, "bottom X%" otherwise -
-    factual, no colour judgement beyond the gauges' own existing colours."""
+    factual, no colour judgement beyond the gauges' own existing colours.
+
+    Fix (2026-09-02, live: OCL.AX showed "top 0%"): a percentile very
+    close to an extreme (e.g. 99.6) used to round straight to "top 0%",
+    which reads as no standing at all rather than "almost the very
+    best" - the opposite of what it's meant to convey. The displayed
+    number is now clamped to a minimum of 1 either way ("top 1%"/
+    "bottom 1%" at the extremes); this only changes the rounded DISPLAY
+    text, never the underlying percentile value used anywhere else."""
     if p is None:
         return None
-    return f"top {100 - p:.0f}%" if p >= 50 else f"bottom {p:.0f}%"
+    if p >= 50:
+        return f"top {max(1, round(100 - p))}%"
+    return f"bottom {max(1, round(p))}%"
 
 
 _PEER_CHIP_METRICS = [
