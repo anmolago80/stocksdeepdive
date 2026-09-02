@@ -102,6 +102,56 @@ def _stat_cells(pub, moat):
     return cells
 
 
+def _pct_phrase(p):
+    """Local copy of app.py's _pct_phrase (Fix 2026-09-02, live: OCL.AX
+    showed "top 0%" on the Deep Dive page) - clamps the displayed
+    percentile to a minimum of 1 either way so a value very close to an
+    extreme reads "top 1%"/"bottom 1%" rather than "top 0%", which reads
+    as no standing at all. Duplicated rather than imported from app.py:
+    this module is imported by the FastAPI routes app.py itself mounts,
+    so importing app.py here would be circular - see compounder_ui.py's
+    own docstring for this codebase's established convention of small,
+    intentional duplication over a cross-module import in cases like
+    this. Only changes the rounded DISPLAY text, never any stored or
+    returned percentile value."""
+    if p is None:
+        return None
+    if p >= 50:
+        return f"top {max(1, round(100 - p))}%"
+    return f"bottom {max(1, round(p))}%"
+
+
+def _percentile_line(pub, universe):
+    """Compact one-line percentile summary for under the KPI row (spec
+    item 7, polish pass 2026-09-02): "Value Score: top 36% of S&P 500 -
+    Quality: top 29%" - same neutral wording used elsewhere on the site.
+    Percentiles come from pub["percentiles"] (snapshot_store.public_view's
+    "Percentiles" -> "percentiles" mapping), itself written once per
+    nightly scan by peer_context.attach_percentiles() - the SAME
+    universe percentile the Deep Dive page's own Peer context block
+    shows for this ticker, not a separate live recomputation, so the two
+    can never disagree. Uses the "universe" percentile (not "sector") to
+    match the spec's own example, which names the whole universe, not a
+    sector. Value Score's phrase names the universe the page's own
+    kicker line already shows; Quality's doesn't repeat it, matching the
+    spec's example wording exactly. Returns None (renders nothing) when
+    there's no percentile data at all yet - e.g. a snapshot saved before
+    Percentiles started being attached, or a derived universe whose rows
+    were copied from a parent scan (see nightly_scan.py/scheduler_engine.py's
+    own comments on _DERIVED_UNIVERSE_PARENTS) - never a fabricated 0%."""
+    pcts = pub.get("percentiles") or {}
+    vs_phrase = _pct_phrase((pcts.get("value_score") or {}).get("universe"))
+    q_phrase = _pct_phrase((pcts.get("quality") or {}).get("universe"))
+    parts = []
+    if vs_phrase:
+        parts.append(f"Value Score: {vs_phrase}" + (f" of {universe}" if universe else ""))
+    if q_phrase:
+        parts.append(f"Quality: {q_phrase}")
+    if not parts:
+        return None
+    return " &middot; ".join(parts)
+
+
 def _score_history_line(ticker, today_score):
     """Server-rendered "Value Score 30 days ago: X -> today Y" text line
     (Services batch Part 5) - reads the same nightly-recorded history the
@@ -136,6 +186,7 @@ def _grid_css():
 .sdd-snap-table th{color:#8aa0b8;font-weight:600;font-size:13px}
 .sdd-snap-table a{color:#2dd4bf}
 .sdd-hist-line{color:#8aa0b8;font-size:14.5px;margin:-8px 0 18px}
+.sdd-snap-pct{color:#8aa0b8;font-size:13.5px;margin:-20px 0 24px}
 """
 
 
@@ -239,6 +290,12 @@ def render_snapshot(snap, base_url):
     hist_line = _score_history_line(ticker, pub.get("value_score"))
     hist_html = f'<p class="sdd-hist-line">{hist_line}</p>' if hist_line else ""
 
+    # Fix (2026-09-02, spec item 7): percentiles already reach this page's
+    # own JSON payload but were never shown here - see _percentile_line()'s
+    # own docstring.
+    pct_line = _percentile_line(pub, universe)
+    pct_html = f'<p class="sdd-snap-pct">{pct_line}</p>' if pct_line else ""
+
     display_name = f"{ticker} — {company_name}" if has_name else ticker
     title = (f"{display_name}: intrinsic value, Value Score, Moat | {SITE_NAME}"
               if has_name else f"{ticker} snapshot - computed scores | {SITE_NAME}")
@@ -266,6 +323,7 @@ def render_snapshot(snap, base_url):
   {blog_render._copy_citation_html(citation_text)}
   {copy_html}
   <div class="sdd-snap-grid">{cell_html}</div>
+  {pct_html}
   <p><a href="/deep-dive?ticker={e(ticker)}">Open the interactive Deep Dive for {e(ticker)} &rarr;</a></p>
   <div class="cta">
     <h3>Use this data programmatically</h3>
