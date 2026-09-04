@@ -4410,7 +4410,9 @@ as a fact &mdash; you always know which numbers are computed and which are assum
     # its shop window on the app's home page - the latest posts as cards,
     # refreshed automatically whenever a post is published.
     try:
-        _bposts = blog_store.list_posts(limit=3)
+        # limit=4 matches .sdd-covgrid's 4-column desktop grid - with 3 the
+        # fourth cell sat empty (owner request, 4 Sep 2026).
+        _bposts = blog_store.list_posts(limit=4)
     except Exception:
         _bposts = []
     if _bposts:
@@ -4426,7 +4428,7 @@ as a fact &mdash; you always know which numbers are computed and which are assum
                 f"<a class='sdd-cov' style='text-decoration:none;' "
                 f"href='/blog/{html.escape(_bp['slug'])}'>"
                 f"<div style='color:#e6edf5;font-weight:600;font-size:15px;"
-                f"line-height:1.4;'>{html.escape(_bp['title'])}</div>"
+                f"line-height:1.4;'>{html.escape((_bp['title'] or '').replace(chr(96), ''))}</div>"
                 f"<div style='color:#5b7290;font-size:12px;margin:6px 0;'>"
                 f"{_bdate} &middot; {_bmins} min read</div>"
                 f"<div style='color:#8aa0b8;font-size:13px;line-height:1.5;'>"
