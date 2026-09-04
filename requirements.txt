@@ -59,3 +59,11 @@ mcp>=1.9,<2
 # see insider_engine.py's module docstring. Pure-python, no native/system
 # dependency, cheap to install. ---
 pypdf>=3.17
+
+# --- Blog post body rendering (blog_render.md_to_html): the markdown
+# package was imported inside a try/except with an escaped-plain-text
+# fallback, but was never listed here - so on Railway the import failed
+# silently and every post showed literal **bold**/## heading markup
+# instead of formatted HTML (reported live 3 Sep 2026). Pinned <4 to
+# avoid a surprise major-version API change, same discipline as mcp. ---
+markdown>=3.6,<4
