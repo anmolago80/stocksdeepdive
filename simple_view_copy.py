@@ -50,3 +50,61 @@ SECTION_WHY_CAPTIONS = {
         "companies, computed live for this one"
     ),
 }
+
+# Español instruction, Part 1: the Spanish translation of the dict above,
+# same keys (the section/tab label - itself left in English/as the site's
+# own internal section-key, never translated, since it's also used as a
+# lookup key elsewhere) mapped to a translated caption. A caller looks up
+# SECTION_WHY_CAPTIONS_ES.get(label) when lang=="es", falling back to the
+# EN caption above (via SECTION_WHY_CAPTIONS) when a key is missing here -
+# same EN-fallback contract as i18n.t().
+SECTION_WHY_CAPTIONS_ES = {
+    "Fundamentals": (
+        "El cuadro de indicadores base sobre el que se construye todo lo "
+        "demás en esta página."
+    ),
+    "Value vs Book": "En qué se convirtió cada dólar retenido en los libros contables",
+    "Retained Earnings": (
+        "¿Las ganancias que la empresa retuvo realmente la hicieron más valiosa?"
+    ),
+    "Earnings Trends": (
+        "¿La ganancia subyacente realmente está creciendo, o solo lo hace "
+        "el precio de la acción?"
+    ),
+    "Cost of Capital": (
+        "El retorno que la empresa debe superar para que su crecimiento genere valor"
+    ),
+    "Fair Value": (
+        "Cuánto valdría el negocio según cuatro métodos de valoración independientes"
+    ),
+
+    "Value Score": (
+        "Un solo número que combina todo lo de abajo - no es una "
+        "recomendación, es un resumen"
+    ),
+    "Quality": "Qué tan sólido es el negocio subyacente, independientemente del precio",
+    "Psychology": (
+        "Si la multitud que opera esta acción ahora mismo parece temerosa o codiciosa"
+    ),
+    "Discovery": "Solo atención de precio/volumen - no es una señal de calidad",
+    "Moat": (
+        "Qué tan bien están protegidas las ganancias de este negocio frente "
+        "a la competencia"
+    ),
+    "Margin of Safety": (
+        "Cuánto más barato es el precio de hoy respecto a la propia "
+        "estimación del modelo"
+    ),
+    "Trade Setup": (
+        "Una lectura técnica de entrada/stop-loss/objetivo - no un juicio "
+        "de valoración"
+    ),
+    "Insider & capital": (
+        "Qué están haciendo con su propio dinero las personas que dirigen la empresa"
+    ),
+    "Dividends": "Cuánto ha pagado realmente el negocio, y con qué grado de fiabilidad",
+    "Compounder View (auto)": (
+        "Las mismas secciones del cuaderno de investigación usadas para "
+        "empresas cubiertas manualmente, calculadas en vivo para esta"
+    ),
+}

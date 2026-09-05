@@ -35,7 +35,7 @@ import re
 import plotly.graph_objects as go
 import streamlit as st
 
-from simple_view_copy import SECTION_WHY_CAPTIONS
+from simple_view_copy import SECTION_WHY_CAPTIONS, SECTION_WHY_CAPTIONS_ES
 
 # -----------------------------------
 # Colour vocabulary (moved from app.py, verbatim)
@@ -785,7 +785,7 @@ def band_gauge(label, value, fmt, thresholds, flagged=False, comment=None):
 # render_section - the shared per-section renderer both callers use.
 # -----------------------------------
 
-def render_section(sections, ticker, section_label, gate=None):
+def render_section(sections, ticker, section_label, gate=None, lang="en"):
     """
     Renders one COMPUTED section's full content (section-specific charts,
     then the colour-coded band-gauge grid, then the plain "other metrics"
@@ -805,6 +805,10 @@ def render_section(sections, ticker, section_label, gate=None):
         gate from the Deep Dive auto view keeps that consistent instead of
         accidentally giving the paywalled section away for free there).
         Returns without rendering anything if the gate isn't unlocked.
+    lang: "en"/"es" (Español instruction, Part 1) - selects the "why this
+        matters" caption's language (falls back to the EN caption when
+        this section_label has no ES entry yet) and is passed straight
+        through to render_gate() for its own fixed chrome.
     """
     section = (sections or {}).get(section_label)
     if not section:
@@ -814,14 +818,15 @@ def render_section(sections, ticker, section_label, gate=None):
     # Simple view, Part 4: one-line "why this matters" caption, shown in
     # BOTH views regardless of subscription - static template text, see
     # simple_view_copy.py's own module docstring for the full rationale.
-    _why = SECTION_WHY_CAPTIONS.get(section_label)
+    _why = (SECTION_WHY_CAPTIONS_ES.get(section_label) if lang == "es" else None) \
+        or SECTION_WHY_CAPTIONS.get(section_label)
     if _why:
         st.caption(_why)
 
     if gate:
         import paywall_engine
         title, teaser, key_prefix = gate
-        if not paywall_engine.render_gate(title, teaser=teaser, key_prefix=key_prefix):
+        if not paywall_engine.render_gate(title, teaser=teaser, key_prefix=key_prefix, lang=lang):
             return
 
     metrics = section.get("metrics", [])
@@ -1018,7 +1023,7 @@ def render_section(sections, ticker, section_label, gate=None):
             )
 
 
-def render_tabs(sections, ticker, section_order, key_prefix, gates=None):
+def render_tabs(sections, ticker, section_order, key_prefix, gates=None, lang="en"):
     """Renders `st.tabs(section_order)` and calls render_section() in each
     tab - the same navigation mechanism the Research page already uses
     (see page_research()), reused as-is for the Deep Dive auto view so
@@ -1027,9 +1032,11 @@ def render_tabs(sections, ticker, section_order, key_prefix, gates=None):
     gates: optional {section_label: (title, teaser, key_prefix)} - only
         the sections present here are gated; every other section renders
         openly.
+    lang: "en"/"es" (Español instruction, Part 1) - passed straight
+        through to each tab's render_section() call.
     """
     gates = gates or {}
     tabs = st.tabs(section_order, key=key_prefix)
     for label, tab in zip(section_order, tabs):
         with tab:
-            render_section(sections, ticker, label, gate=gates.get(label))
+            render_section(sections, ticker, label, gate=gates.get(label), lang=lang)

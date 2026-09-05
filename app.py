@@ -58,7 +58,23 @@ import blog_store
 import blog_render
 import compounder_ui
 from compounder_ui import sdd_plotly_chart
-from simple_view_copy import SECTION_WHY_CAPTIONS
+from simple_view_copy import SECTION_WHY_CAPTIONS, SECTION_WHY_CAPTIONS_ES
+import i18n
+
+
+def _section_why(label):
+    """Español instruction, Part 1: the lang-aware sibling of a plain
+    SECTION_WHY_CAPTIONS[label] lookup, used at every Deep Dive section
+    header's "why this matters" caption (compounder_ui.render_section()
+    already does the equivalent for the six computed-section tabs). Falls
+    back to the EN caption when st.session_state["lang"] isn't "es" yet
+    (module import time, before _init_lang() has run) or this label has
+    no ES entry."""
+    if st.session_state.get("lang") == "es":
+        _es = SECTION_WHY_CAPTIONS_ES.get(label)
+        if _es:
+            return _es
+    return SECTION_WHY_CAPTIONS[label]
 import auto_compounder_engine
 import fundamentals_data
 import checklist_store
@@ -602,16 +618,107 @@ def _render_view_toggle(key_prefix):
     view_mode immediately (st.rerun(), so the rest of THIS page render
     reflects it) and queues the cookie write for the top of the next run
     (components.html can't deliver its <script> before a rerun cancels
-    it - same constraint _set_admin_cookie's own docstring documents)."""
+    it - same constraint _set_admin_cookie's own docstring documents).
+
+    Español instruction, Part 1: the WIDGET LABELS are translated via
+    i18n.t(), but st.session_state["view_mode"] itself always stays the
+    canonical English "simple"/"full" - that value is read by cookie
+    resolution (_init_view_mode's cookie check) and by every _simple =
+    ... comparison elsewhere on both pages, so it must never become
+    "completo". _en_labels/_lang_labels below are positionally paired
+    (index 0 = simple, index 1 = full) purely so the displayed choice can
+    be mapped back to the canonical value regardless of language."""
+    _lang = st.session_state.get("lang", "en")
+    _en_labels = ["Simple", "Full"]
+    _lang_labels = [i18n.t("toggle.simple", _lang), i18n.t("toggle.full", _lang)]
     _prev = st.session_state.get("view_mode", "full")
+    _prev_label = _lang_labels[0] if _prev == "simple" else _lang_labels[1]
     _choice = st.segmented_control(
-        "View", ["Simple", "Full"], default=_prev.capitalize(),
+        "View", _lang_labels, default=_prev_label,
         key=f"{key_prefix}_view_toggle", label_visibility="collapsed",
     )
-    _new_mode = (_choice or _prev.capitalize()).lower()
+    _new_mode = "simple" if _choice == _lang_labels[0] else "full" if _choice else _prev
     if _new_mode != _prev:
         st.session_state["view_mode"] = _new_mode
         st.session_state["_pending_view_mode_cookie"] = _new_mode
+        st.rerun()
+
+
+# -----------------------------------------------------------------
+# Español instruction, Part 1: a persisted EN/ES language choice, same
+# architecture as the Simple/Full view toggle just above - a cookie,
+# a one-shot _init_lang() resolution, and a compact _render_lang_picker()
+# widget that queues its cookie write for the top of the next run (same
+# "a widget callback can't write a cookie before its own st.rerun()"
+# deferral _set_view_mode_cookie's own docstring documents).
+# st.session_state["lang"] ("en"/"es") is the single source of truth
+# read everywhere else via i18n.t(key, lang, **fmt). Unlike view_mode
+# (which is only initialised on the two pages that use it), _init_lang()
+# is called once, unconditionally, near the top of every script run (see
+# below, next to the other pending-cookie flushes) so every page -
+# including Home - has st.session_state["lang"] available before it
+# renders its header.
+# -----------------------------------------------------------------
+
+_LANG_COOKIE = "sdd_lang"
+
+
+def _set_lang_cookie(lang: str):
+    import streamlit.components.v1 as _components
+    _js = (f"document.cookie='{_LANG_COOKIE}={lang}; "
+           "path=/; max-age=31536000; SameSite=Lax';")
+    _components.html(f"<script>{_js}</script>", height=0)
+
+
+def _init_lang():
+    """Resolves st.session_state["lang"] once per session, before any
+    picker widget is created - same one-shot-guard idiom as
+    _init_view_mode(). Priority, per the instruction's architecture
+    rules: an explicit choice (an existing sdd_lang cookie from a prior
+    visit) > ?lang=es query param (so the owner's Spanish Reddit/blog
+    posts can link straight into Spanish) > the browser's
+    Accept-Language header > English by default. src and lang params
+    coexist - this never touches st.query_params itself."""
+    if "lang" in st.session_state:
+        return
+    _cookie_val = None
+    try:
+        _cookie_val = st.context.cookies.get(_LANG_COOKIE)
+    except Exception:
+        pass
+    _qp_lang = (st.query_params.get("lang") or "").strip().lower()
+    if _cookie_val in ("en", "es"):
+        st.session_state["lang"] = _cookie_val
+    elif _qp_lang in ("en", "es"):
+        st.session_state["lang"] = _qp_lang
+    else:
+        _accept = ""
+        try:
+            _accept = (st.context.headers.get("Accept-Language") or "").lower()
+        except Exception:
+            pass
+        st.session_state["lang"] = "es" if _accept.startswith("es") else "en"
+
+
+def _render_lang_picker(key_prefix):
+    """Compact EN|ES segmented control - mounted as the account bar's
+    third widget slot (paywall_engine's extra_widget3), next to Sign-in/
+    Sign-out, on every page. _init_lang() has already run (called once,
+    unconditionally, near the top of every script run) so
+    st.session_state["lang"] always has a value to default from before
+    this widget is created. A change here updates the shared lang
+    immediately (st.rerun(), so the rest of THIS page render reflects
+    it) and queues the cookie write for the top of the next run, same
+    deferral as _render_view_toggle."""
+    _prev = st.session_state.get("lang", "en")
+    _choice = st.segmented_control(
+        "Language", ["EN", "ES"], default=_prev.upper(),
+        key=f"{key_prefix}_lang_picker", label_visibility="collapsed",
+    )
+    _new_lang = (_choice or _prev.upper()).lower()
+    if _new_lang != _prev:
+        st.session_state["lang"] = _new_lang
+        st.session_state["_pending_lang_cookie"] = _new_lang
         st.rerun()
 
 
@@ -692,6 +799,15 @@ if st.session_state.pop("_pending_admin_seen_cookie", False):
 _pending_view_mode = st.session_state.pop("_pending_view_mode_cookie", None)
 if _pending_view_mode:
     _set_view_mode_cookie(_pending_view_mode)
+
+# Español instruction, Part 1: same pending-flag deferral, plus the
+# one-shot resolution itself - called here, unconditionally, so every
+# page (including Home, which never calls _init_view_mode) has
+# st.session_state["lang"] available before its own header renders.
+_pending_lang = st.session_state.pop("_pending_lang_cookie", None)
+if _pending_lang:
+    _set_lang_cookie(_pending_lang)
+_init_lang()
 
 # Email sign-in plumbing (same pending-flag pattern): flush any cookie
 # write/clear queued by last run's sign-in/sign-out, then restore the
@@ -2020,7 +2136,14 @@ def _featured_card_html(dd, spark_pts, ma_pts, last_pt):
 def _render_footer():
     """Site footer: navigation, contact, and the general-advice disclaimer -
     rendered on every page (called once, after st.navigation runs the page,
-    so no page can accidentally skip it)."""
+    so no page can accidentally skip it).
+
+    Español instruction, Part 1: only the disclaimer paragraph itself is
+    lang-aware here - the footer's own nav links (Home/Blog/About the
+    author/etc.) stay English in this pass, since translating their
+    LABELS while every one of them still points at an English-only page
+    would be misleading; that waits for Part 2's /es/ page twins."""
+    _lang = st.session_state.get("lang", "en")
     st.markdown(
         """
 <div class='sdd-footer'>
@@ -2050,6 +2173,7 @@ def _render_footer():
   <div class='sdd-disclaimer'>{disclaimer}</div>
 </div>
 """.format(disclaimer=(
+            (i18n.FOOTER_DISCLAIMER_FACTUAL_ES if _lang == "es" else None) or (
             "<b>Factual information and calculator outputs only.</b> StocksDeepDive "
             "computes and displays data, model outputs and described calculations "
             "from stated inputs. It does not provide financial product advice, "
@@ -2060,7 +2184,8 @@ def _render_footer():
             "Values shown in red rest on default or estimated inputs. Data via "
             "Yahoo Finance, Google Trends, StockTwits and NewsAPI; figures may be "
             "delayed or revised."
-        ) if _factual() else (
+        )) if _factual() else (
+            (i18n.FOOTER_DISCLAIMER_GENERAL_ES if _lang == "es" else None) or (
             "<b>General information only.</b> StocksDeepDive provides factual "
             "information and general commentary generated from publicly available "
             "data. It does not take your personal objectives, financial situation "
@@ -2070,7 +2195,7 @@ def _render_footer():
             "via Yahoo Finance, Google Trends, StockTwits and NewsAPI; figures may "
             "be delayed or estimated &mdash; estimated values are shown in red "
             "throughout the site."
-        )),
+        ))),
         unsafe_allow_html=True,
     )
 
@@ -2147,6 +2272,7 @@ def _render_watchlist_bulk_import():
 
 def _render_header(compact, page_label=None):
     _capture_first_src()
+    _lang = st.session_state.get("lang", "en")
     _render_tape()
     _render_view_badge()
     # page_label is only passed on the three main service pages (Deep Dive,
@@ -2168,6 +2294,8 @@ def _render_header(compact, page_label=None):
     paywall_engine.render_account_bar(
         extra_widget=feedback_widget,
         extra_widget2=_render_admin_unlock if _show_unlock else None,
+        extra_widget3=lambda: _render_lang_picker(key_prefix=page_label or "header"),
+        lang=_lang,
     )
     st.markdown(
         f"""
@@ -2197,7 +2325,7 @@ def _render_header(compact, page_label=None):
     )
     if not compact:
         st.markdown(
-            '<div class="site-sub">Research any stock in seconds.</div>',
+            f'<div class="site-sub">{html.escape(i18n.t("header.tagline", _lang))}</div>',
             unsafe_allow_html=True,
         )
 
@@ -2212,19 +2340,15 @@ def _render_header(compact, page_label=None):
         with st.form("site_search_form", clear_on_submit=False, border=not compact):
             _search_text = st.text_input(
                 "Ticker search",
-                placeholder="Input your stock ticker (e.g. CSL.AX, or CSL.AX BHP.AX to compare)",
+                placeholder=i18n.t("header.search_placeholder", _lang),
                 label_visibility="collapsed",
                 key="site_search",
             )
             _searched = st.form_submit_button(
-                "Search", use_container_width=True, type="primary"
+                i18n.t("header.search_button", _lang), use_container_width=True, type="primary"
             )
         if not compact:
-            st.caption(
-                "One ticker = Deep Dive. Two or more (comma or space separated) = "
-                "side-by-side Comparison. ASX (e.g. CSL.AX) and US (e.g. AAPL) "
-                "tickers can be mixed freely."
-            )
+            st.caption(i18n.t("header.search_caption", _lang))
 
     # Symmetric 15%/15% outer margins (vs the old [2, 6, 1, 1]'s uneven
     # 20% left / 10% right) so this row is centered under the page the
@@ -2242,13 +2366,13 @@ def _render_header(compact, page_label=None):
     _bsp1, _bmid, _bsp2 = st.columns([3, 14, 3])
     with _bmid:
         _nav_buttons = [
-            ("Rational Compounder Analysis", "nav_research", PG_RESEARCH),
-            ("Side-by-side Comparison", "nav_comparison", PG_COMPARISON),
-            ("Stock Scanner", "nav_scanner", PG_SCANNER),
+            (i18n.t("nav.research", _lang), "nav_research", PG_RESEARCH),
+            (i18n.t("nav.comparison", _lang), "nav_comparison", PG_COMPARISON),
+            (i18n.t("nav.scanner", _lang), "nav_scanner", PG_SCANNER),
             # Services batch 2, Part 4 (2026-09-01): results calendar -
             # added right next to Scanner per the spec.
-            ("Results Calendar", "nav_results_calendar", PG_RESULTS_CALENDAR),
-            ("My Portfolio", "nav_portfolio", PG_PORTFOLIO),
+            (i18n.t("nav.calendar", _lang), "nav_results_calendar", PG_RESULTS_CALENDAR),
+            (i18n.t("nav.portfolio", _lang), "nav_portfolio", PG_PORTFOLIO),
         ]
         _nav_widths = [len(_label) + 6 for _label, _key, _page in _nav_buttons]
         _nav_cols = st.columns(_nav_widths, gap="small")
@@ -3754,7 +3878,7 @@ def _render_insider_panel(ticker):
             st.rerun()
 
     st.markdown("##### Insider & capital")
-    st.caption(SECTION_WHY_CAPTIONS["Insider & capital"])
+    st.caption(_section_why("Insider & capital"))
     st.caption(
         "Director/insider transactions and buyback activity, from ASX "
         "announcements or SEC filings - described calculations from public "
@@ -4108,6 +4232,7 @@ def _render_cp_section(ticker, section_label, data, simple=False):
                 "analysis for every covered company."
             ),
             key_prefix=f"cp_potential_{ticker}",
+            lang=st.session_state.get("lang", "en"),
         ):
             return
         ratings = section.get("hml_ratings", {}).get(ticker, [])
@@ -4172,7 +4297,10 @@ def _render_cp_section(ticker, section_label, data, simple=False):
             "exact inputs behind each one.",
             f"cp_fairvalue_{ticker}",
         )
-    compounder_ui.render_section(data["sections"], ticker, section_label, gate=gate)
+    compounder_ui.render_section(
+        data["sections"], ticker, section_label, gate=gate,
+        lang=st.session_state.get("lang", "en"),
+    )
 
 
 def page_research():
@@ -4450,7 +4578,9 @@ def page_home():
         extra_widget2=(_render_admin_unlock
                        if (_FACTUAL_DEFAULT and _admin_key_env
                            and not st.session_state.get("full_view_unlocked"))
-                       else None)
+                       else None),
+        extra_widget3=lambda: _render_lang_picker(key_prefix="home"),
+        lang=st.session_state.get("lang", "en"),
     )
 
     # top row: logo
@@ -5542,7 +5672,7 @@ def _render_dividends_panel(dd):
     # so its chip is unconditional.
     st.markdown('<div id="sdd-anchor-dividends"></div>', unsafe_allow_html=True)
     st.markdown("##### Dividends")
-    st.caption(SECTION_WHY_CAPTIONS["Dividends"])
+    st.caption(_section_why("Dividends"))
     div = portfolio_charts_engine.fetch_dividend_history(ticker)
     if div.empty:
         st.caption("No dividends on record.")
@@ -5854,6 +5984,47 @@ _SIMPLE_KPI_STATIC_DEFINITIONS = {
     ),
 }
 
+# Español instruction, Part 1: ES sibling of the dict above, same keys.
+# _simple_kpi_definition() below is the lang-aware lookup call sites use
+# instead of indexing either dict directly.
+_SIMPLE_KPI_STATIC_DEFINITIONS_ES = {
+    "margin_of_safety": (
+        "El margen de seguridad compara la estimación del modelo del valor "
+        "razonable con el precio actual. Un número positivo significa que "
+        "el modelo considera que la acción está más barata que esa "
+        "estimación; un número negativo significa que cotiza por encima "
+        "de ella."
+    ),
+    "quality": (
+        "El Puntaje de Calidad (0-100) combina la rentabilidad, el "
+        "crecimiento y la solidez del balance a partir de los propios "
+        "estados financieros de la empresa - qué tan sólido luce el "
+        "negocio subyacente, independientemente del precio."
+    ),
+    "moat": (
+        "El Puntaje de Foso (Moat Score, 0-100) estima qué tan bien están "
+        "protegidas las ganancias del negocio frente a la competencia, "
+        "según el retorno sobre el capital y si ese retorno se mantiene "
+        "en el tiempo."
+    ),
+    "psychology": (
+        "La Psicología mide qué tan lejos está el movimiento reciente del "
+        "precio de la acción respecto a su rango normal - describe el "
+        "comportamiento de la multitud en torno a la acción, no el "
+        "negocio en sí."
+    ),
+}
+
+
+def _simple_kpi_definition(metric_key):
+    """Lang-aware lookup for _SIMPLE_KPI_STATIC_DEFINITIONS, same
+    EN-fallback contract as i18n.t() and _section_why()."""
+    if st.session_state.get("lang") == "es":
+        _es = _SIMPLE_KPI_STATIC_DEFINITIONS_ES.get(metric_key)
+        if _es:
+            return _es
+    return _SIMPLE_KPI_STATIC_DEFINITIONS.get(metric_key, "")
+
 
 def _dd_quality_driver_words(dd):
     """2-4 word driver summary for the Quality KPI card (Simple view,
@@ -5906,7 +6077,7 @@ def _render_dd_simple_kpi_explainer(dd, metric_key, key_suffix):
     else:
         _render_static_explainer(
             f"simple_kpi_{key_suffix}", "ⓘ What this means",
-            _SIMPLE_KPI_STATIC_DEFINITIONS.get(metric_key, ""),
+            _simple_kpi_definition(metric_key),
         )
 
 
@@ -6073,6 +6244,7 @@ def _render_reverse_dcf_card(dd):
             "stock, alongside the growth rate the model itself assumed."
         ),
         key_prefix=f"reverse_dcf_{ticker}",
+        lang=st.session_state.get("lang", "en"),
     ):
         return
 
@@ -6787,7 +6959,7 @@ def page_deep_dive():
             # "X Score: value - LABEL" subheader before their gauge.
             if _factual():
                 st.subheader(f"Value Score: {_dd['long_score']:.1f} - {_dd_value_word}")
-                st.caption(SECTION_WHY_CAPTIONS["Value Score"])
+                st.caption(_section_why("Value Score"))
                 st.caption(
                     "In plain English: one number blending business quality, price "
                     "versus estimated value, crowd psychology, and market attention."
@@ -6806,7 +6978,7 @@ def page_deep_dive():
                 )
             else:
                 st.subheader(f"Long Score: {_dd['long_score']:.1f} - {_dd_signal}")
-                st.caption(SECTION_WHY_CAPTIONS["Value Score"])
+                st.caption(_section_why("Value Score"))
                 st.caption(
                     "In plain English: one number blending business quality, price "
                     "versus estimated value, crowd psychology, and market attention."
@@ -6858,7 +7030,7 @@ def page_deep_dive():
 
         def _dd_quality():
             st.subheader(f"Quality Score: {_dd['quality_score']} - {_dd['quality_label']}")
-            st.caption(SECTION_WHY_CAPTIONS["Quality"])
+            st.caption(_section_why("Quality"))
             st.caption(
                 "In plain English: how strong the underlying business is - "
                 "profitability, balance sheet strength, and growth - judged "
@@ -6898,7 +7070,7 @@ def page_deep_dive():
             # display only, "psychology"/"psychology_sentiment" etc. on dd
             # and every internal reference are untouched.
             st.subheader(f"Crowd mood (Psychology) Score: {_dd['psychology']:+.1f} - {_dd['psychology_sentiment']}")
-            st.caption(SECTION_WHY_CAPTIONS["Psychology"])
+            st.caption(_section_why("Psychology"))
             st.caption(
                 "In plain English: whether the crowd trading this stock right now "
                 "looks fearful, calm, or greedy, read from recent price behaviour."
@@ -6937,7 +7109,7 @@ def page_deep_dive():
             # Simple view, Part 5: first-occurrence label softening -
             # display only, "discovery"/"discovery_label" etc. untouched.
             st.subheader(f"Attention (Discovery) Score: {_dd['discovery']:.1f} - {_dd['discovery_label']}")
-            st.caption(SECTION_WHY_CAPTIONS["Discovery"])
+            st.caption(_section_why("Discovery"))
             st.caption(
                 "In plain English: how much attention this stock is getting right "
                 "now, from search interest, news, and trading volume."
@@ -6983,7 +7155,7 @@ def page_deep_dive():
             st.divider()
             if _dd.get("moat") is None:
                 st.subheader(f"Moat Score: {_dd.get('moat_band_label', 'N/A')}")
-                st.caption(SECTION_WHY_CAPTIONS["Moat"])
+                st.caption(_section_why("Moat"))
                 st.caption(
                     "In plain English: how well this business's profits are "
                     "protected from competitors, based on returns on capital and "
@@ -6998,7 +7170,7 @@ def page_deep_dive():
                     )
             else:
                 st.subheader(f"Moat Score: {_dd['moat']:.1f} - {_dd['moat_band_label']}")
-                st.caption(SECTION_WHY_CAPTIONS["Moat"])
+                st.caption(_section_why("Moat"))
                 st.caption(
                     "In plain English: how well this business's profits are "
                     "protected from competitors, based on returns on capital and "
@@ -7060,7 +7232,7 @@ def page_deep_dive():
             if _dd["intrinsic_value"]:
                 _mos_val = _dd["mos"] if _dd["mos"] is not None else 0.0
                 st.subheader(f"Margin of Safety: {_mos_val:+.1f}% - {_dd['valuation']}")
-                st.caption(SECTION_WHY_CAPTIONS["Margin of Safety"])
+                st.caption(_section_why("Margin of Safety"))
                 st.caption(
                     "In plain English: how much cheaper today's price is than what "
                     "the model estimates the business is worth."
@@ -7122,7 +7294,7 @@ def page_deep_dive():
                 )
             else:
                 st.subheader("Margin of Safety: Price vs Intrinsic Value")
-                st.caption(SECTION_WHY_CAPTIONS["Margin of Safety"])
+                st.caption(_section_why("Margin of Safety"))
                 st.warning(
                     "No intrinsic value could be computed for this ticker "
                     "(DCF and P/E-blend both unavailable - likely a "
@@ -7141,7 +7313,7 @@ def page_deep_dive():
             if not _factual():
                 st.divider()
                 st.subheader(f"Trade Setup: {_dd['trade_setup_score']} - {_dd['trade_setup_signal']}")
-                st.caption(SECTION_WHY_CAPTIONS["Trade Setup"])
+                st.caption(_section_why("Trade Setup"))
                 _render_explain_popover(_dd, "trade_setup")
                 _t_col1, _t_col2 = st.columns(2)
                 with _t_col1:
@@ -7232,7 +7404,7 @@ def page_deep_dive():
             # are all untouched).
             st.subheader(f"\U0001F4DA {_dd['ticker']} Rational Compounder Analysis (Auto)")
             st.caption("The numbers, explained")
-            st.caption(SECTION_WHY_CAPTIONS["Compounder View (auto)"])
+            st.caption(_section_why("Compounder View (auto)"))
             st.caption(
                 f"The Rational Compounder research sections - Fundamentals · "
                 f"Value vs Book · Retained Earnings · Earnings Trends · "
@@ -7281,6 +7453,7 @@ def page_deep_dive():
                 compounder_ui.render_tabs(
                     _acv_sections, _dd["ticker"], _acv_section_order,
                     key_prefix=f"acv_{_dd['ticker']}", gates=_acv_gates,
+                    lang=st.session_state.get("lang", "en"),
                 )
                 _acv_meta = _acv_sections.get("_meta", {}) or {}
                 _acv_years = _acv_meta.get("statement_years")
@@ -7341,6 +7514,7 @@ def page_deep_dive():
                         f"full factor breakdown behind the {_score_word} above."
                     ),
                     key_prefix=f"dd_{_dd['ticker']}",
+                    lang=st.session_state.get("lang", "en"),
                 ):
                     _dd_psychology()
                     _dd_discovery()
@@ -7368,6 +7542,7 @@ def page_deep_dive():
                     f"full factor breakdown behind the {_score_word} above."
                 ),
                 key_prefix=f"dd_{_dd['ticker']}",
+                lang=st.session_state.get("lang", "en"),
             ):
                 return
 
@@ -9562,6 +9737,7 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     "Discovery, and Trade Setup detail for every stock above."
                 ),
                 key_prefix=state_prefix,
+                lang=st.session_state.get("lang", "en"),
             ):
                 return
 

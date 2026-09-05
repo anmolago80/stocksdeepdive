@@ -318,15 +318,22 @@ def _sign_out():
         st.logout()
 
 
-def _render_signin_control(key="account_bar_signin"):
+def _render_signin_control(key="account_bar_signin", lang="en"):
     """The Sign In control. With email sign-in configured it's a popover
     offering "Continue with Google" and an email-code flow; without it,
     the original plain Google button. The popover key CONTAINS the plain
-    button's key, so the existing pill CSS styles both identically."""
+    button's key, so the existing pill CSS styles both identically.
+
+    lang: only the "Sign In" label itself is translated (Español
+    instruction, Part 1) - the popover's own internal copy ("Continue
+    with Google", the email/code flow strings below) stays English in
+    this pass, an explicitly deferred gap (see i18n.py's docstring)."""
+    import i18n
+    _label = i18n.t("account.sign_in", lang)
     if not _email_auth_available():
-        st.button("Sign In", key=key, on_click=st.login)
+        st.button(_label, key=key, on_click=st.login)
         return
-    with st.popover("Sign In", key=f"{key}_pop"):
+    with st.popover(_label, key=f"{key}_pop"):
         if _auth_configured():
             if st.button("Continue with Google", key=f"{key}_google",
                          type="primary", use_container_width=True):
@@ -560,42 +567,50 @@ _PILL_BUTTON_CSS = """
 # -----------------------------------
 
 def _right_widget_columns(left_widths, extra_widget=None, extra_widget2=None,
-                          trailing_width=None, total=12.0):
+                          trailing_width=None, total=12.0, extra_widget3=None):
     """
     Shared column plumbing for the account bar rows: the given left-edge
     widths, then a flexible spacer, then one dedicated column per provided
     extra widget (2.6 for the feedback popover, 1.4 for the compact second
-    widget), then an optional trailing column (Sign out). Each widget gets
-    its OWN column, so two of them can never overlap each other again.
+    widget, 1.0 for the compact third/language-picker widget), then an
+    optional trailing column (Sign out). Each widget gets its OWN column,
+    so none of them can ever overlap each other.
     Returns (left_cols, widget_cols, trailing_col_or_None).
     """
-    _rw = ([2.6] if extra_widget else []) + ([1.4] if extra_widget2 else [])
+    _rw = (([2.6] if extra_widget else []) + ([1.4] if extra_widget2 else [])
+           + ([1.0] if extra_widget3 else []))
     _trail = [trailing_width] if trailing_width else []
     _spacer = max(0.5, total - sum(left_widths) - sum(_rw) - sum(_trail))
     cols = st.columns(left_widths + [_spacer] + _rw + _trail, gap="small")
     _n_left = len(left_widths)
     _widget_cols = []
     _i = _n_left + 1
-    for _w in (extra_widget, extra_widget2):
+    for _w in (extra_widget, extra_widget2, extra_widget3):
         if _w:
             _widget_cols.append((cols[_i], _w))
             _i += 1
     return cols[:_n_left], _widget_cols, (cols[-1] if trailing_width else None)
 
 
-def _render_name_and_signout(name, extra_widget=None, extra_widget2=None):
+def _render_name_and_signout(name, extra_widget=None, extra_widget2=None,
+                             extra_widget3=None, lang="en"):
     """
     Shared layout for "signed in, nothing else to show but Sign out" -
     used both when the paywall is off entirely and when a subscriber
     already has an active subscription, so those two cases render
     identically instead of drifting apart over time.
 
-    extra_widget / extra_widget2: optional zero-arg callables (e.g. the
-        page's feedback button and the RC view unlock) each rendered in
-        their OWN column immediately to the left of Sign out.
+    extra_widget / extra_widget2 / extra_widget3: optional zero-arg
+        callables (e.g. the page's feedback button, the RC view unlock,
+        and the EN/ES language picker) each rendered in their OWN column
+        immediately to the left of Sign out.
+    lang: "en"/"es" - translates just the Sign out label (Español
+        instruction, Part 1).
     """
+    import i18n
     _left, _widgets, _c3 = _right_widget_columns(
-        [1.4], extra_widget, extra_widget2, trailing_width=1.1)
+        [1.4], extra_widget, extra_widget2, trailing_width=1.1,
+        extra_widget3=extra_widget3)
     with _left[0]:
         st.markdown(
             f'<div class="pw-account-name">{html.escape(name or "")}</div>',
@@ -605,11 +620,12 @@ def _render_name_and_signout(name, extra_widget=None, extra_widget2=None):
         with _col:
             _w()
     with _c3:
-        if st.button("Sign out", key="account_bar_signout"):
+        if st.button(i18n.t("account.sign_out", lang), key="account_bar_signout"):
             _sign_out()
 
 
-def render_account_bar(extra_widget=None, extra_widget2=None):
+def render_account_bar(extra_widget=None, extra_widget2=None, extra_widget3=None,
+                       lang="en"):
     """
     Sign In (or the signed-in name + Sign out) shows whenever Google
     sign-in is configured, regardless of PAYWALL_ENABLED - Andrew can start
@@ -618,18 +634,23 @@ def render_account_bar(extra_widget=None, extra_widget2=None):
     Subscribe only ever appears - and only ever calls Stripe - when
     PAYWALL_ENABLED is ALSO true; with it off, this is sign-in chrome only.
 
-    extra_widget / extra_widget2: optional zero-arg callables rendered in
-        the same row as Sign out (or right-aligned on their own when Sign
-        out isn't shown), each in its OWN column - used for the page's
-        feedback button and the RC view unlock.
+    extra_widget / extra_widget2 / extra_widget3: optional zero-arg
+        callables rendered in the same row as Sign out (or right-aligned on
+        their own when Sign out isn't shown), each in its OWN column - used
+        for the page's feedback button, the RC view unlock, and the EN/ES
+        language picker.
+    lang: "en"/"es" - Español instruction, Part 1. Translates the Sign In/
+        Sign out/Subscribe labels in this bar; the email sign-in popover's
+        own internal copy stays English (deferred, see i18n.py).
     """
+    import i18n
     if not _auth_configured() and not _email_auth_available():
         # No sign-in method configured at all - no account bar, but the
         # widgets (if any) still need to render somewhere - same
         # standalone right-aligned row they used to have on their own.
-        if extra_widget or extra_widget2:
+        if extra_widget or extra_widget2 or extra_widget3:
             _left, _widgets, _ = _right_widget_columns(
-                [0.5], extra_widget, extra_widget2)
+                [0.5], extra_widget, extra_widget2, extra_widget3=extra_widget3)
             for _col, _w in _widgets:
                 with _col:
                     _w()
@@ -645,23 +666,23 @@ def render_account_bar(extra_widget=None, extra_widget2=None):
     if not is_logged_in():
         if not PAYWALL_ENABLED:
             _left, _widgets, _ = _right_widget_columns(
-                [1.2], extra_widget, extra_widget2)
+                [1.2], extra_widget, extra_widget2, extra_widget3=extra_widget3)
             with _left[0]:
-                _render_signin_control("account_bar_signin")
+                _render_signin_control("account_bar_signin", lang=lang)
             for _col, _w in _widgets:
                 with _col:
                     _w()
             return
 
         _left, _widgets, _ = _right_widget_columns(
-            [1.2, 1.0], extra_widget, extra_widget2)
+            [1.2, 1.0], extra_widget, extra_widget2, extra_widget3=extra_widget3)
         with _left[0]:
-            _render_signin_control("account_bar_signin")
+            _render_signin_control("account_bar_signin", lang=lang)
         with _left[1]:
             # Not logged in yet, so we don't have an email for Stripe -
             # route through the same sign-in first; once they're back,
             # this becomes the real Subscribe button below.
-            st.button("Subscribe", key="account_bar_subscribe", on_click=st.login)
+            st.button(i18n.t("account.subscribe", lang), key="account_bar_subscribe", on_click=st.login)
         for _col, _w in _widgets:
             with _col:
                 _w()
@@ -671,43 +692,47 @@ def render_account_bar(extra_widget=None, extra_widget2=None):
 
     if not PAYWALL_ENABLED:
         _render_name_and_signout(name, extra_widget=extra_widget,
-                                 extra_widget2=extra_widget2)
+                                 extra_widget2=extra_widget2,
+                                 extra_widget3=extra_widget3, lang=lang)
         return
 
     email = current_user_email()
     if is_subscribed(email):
         _render_name_and_signout(name, extra_widget=extra_widget,
-                                 extra_widget2=extra_widget2)
+                                 extra_widget2=extra_widget2,
+                                 extra_widget3=extra_widget3, lang=lang)
         return
 
     _left, _widgets, _c3 = _right_widget_columns(
-        [1.2, 1.0], extra_widget, extra_widget2, trailing_width=1.1)
+        [1.2, 1.0], extra_widget, extra_widget2, trailing_width=1.1,
+        extra_widget3=extra_widget3)
     with _left[0]:
         st.markdown(
             f'<div class="pw-account-name">{html.escape(name or "")}</div>',
             unsafe_allow_html=True,
         )
     with _left[1]:
+        _subscribe_label = i18n.t("account.subscribe", lang)
         if _stripe_configured():
             checkout_url = create_checkout_url(email)
             if checkout_url:
-                st.link_button("Subscribe", checkout_url, key="account_bar_subscribe")
+                st.link_button(_subscribe_label, checkout_url, key="account_bar_subscribe")
             else:
-                st.button("Subscribe", key="account_bar_subscribe_err", disabled=True)
+                st.button(_subscribe_label, key="account_bar_subscribe_err", disabled=True)
         else:
-            st.button("Subscribe", key="account_bar_subscribe_soon", disabled=True)
+            st.button(_subscribe_label, key="account_bar_subscribe_soon", disabled=True)
     for _col, _w in _widgets:
         with _col:
             _w()
     with _c3:
-        st.button("Sign out", key="account_bar_signout", on_click=st.logout)
+        st.button(i18n.t("account.sign_out", lang), key="account_bar_signout", on_click=st.logout)
 
 
 # -----------------------------------
 # THE GATE - the one function gated pages/sections call.
 # -----------------------------------
 
-def render_gate(feature_label, teaser=None, key_prefix=""):
+def render_gate(feature_label, teaser=None, key_prefix="", lang="en"):
     """
     Call this immediately before rendering a premium section. Returns True
     if the caller should render the real content (paywall off, or a
@@ -721,7 +746,14 @@ def render_gate(feature_label, teaser=None, key_prefix=""):
     key_prefix: unique-ish prefix for Streamlit widget keys, needed when
         render_gate() is called more than once on the same page (e.g. once
         for Company Potential, once for Fair Value on the Research page).
+    lang: "en" (default) or "es" - Español instruction, Part 1. Only this
+        function's OWN fixed chrome (the lock title, Subscribe/Sign-in
+        button labels, the "signed in as" line) is routed through i18n;
+        feature_label/teaser stay whatever the caller passed in, since
+        translating every call site's custom copy is out of scope for
+        this pass (see i18n.py's module docstring for the full list).
     """
+    import i18n
     if not PAYWALL_ENABLED:
         return True
 
@@ -733,22 +765,19 @@ def render_gate(feature_label, teaser=None, key_prefix=""):
     if (not _auth_configured() and not _email_auth_available()) \
             or not _stripe_configured():
         with box:
-            st.info(
-                f"🔒 Subscriptions aren't fully set up yet - {feature_label} will "
-                "unlock here once they are. Check back soon."
-            )
+            st.info(i18n.t("gate.not_configured", lang, feature_label=feature_label))
         return False
 
     if not is_logged_in():
         with box:
-            st.markdown(f"**🔒 Subscribe to unlock {feature_label}**")
+            st.markdown(f"**{i18n.t('gate.locked_title', lang, feature_label=feature_label)}**")
             if teaser:
                 st.caption(teaser)
             if _email_auth_available():
                 _render_signin_control(f"pw_login_{key_prefix}")
             else:
                 st.button(
-                    "Sign in with Google to continue",
+                    i18n.t("gate.google_signin", lang),
                     key=f"pw_login_{key_prefix}",
                     on_click=st.login,
                     type="primary",
@@ -760,23 +789,20 @@ def render_gate(feature_label, teaser=None, key_prefix=""):
         return True
 
     with box:
-        st.markdown(f"**🔒 Subscribe to unlock {feature_label}**")
+        st.markdown(f"**{i18n.t('gate.locked_title', lang, feature_label=feature_label)}**")
         if teaser:
             st.caption(teaser)
         checkout_url = create_checkout_url(email)
         if checkout_url:
             st.link_button(
-                "Subscribe to continue browsing",
+                i18n.t("gate.subscribe_cta", lang),
                 checkout_url,
                 type="primary",
                 key=f"pw_subscribe_{key_prefix}",
             )
         else:
-            st.warning(
-                "Couldn't reach the subscription system just now - please try "
-                "again in a moment."
-            )
-        st.caption(f"Signed in as {email}.")
-        if st.button("Sign out", key=f"pw_logout_{key_prefix}"):
+            st.warning(i18n.t("gate.checkout_error", lang))
+        st.caption(i18n.t("gate.signed_in_as", lang, email=email))
+        if st.button(i18n.t("account.sign_out", lang), key=f"pw_logout_{key_prefix}"):
             _sign_out()
     return False
