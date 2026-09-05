@@ -4068,7 +4068,7 @@ def _render_position_disclosure(ticker):
                 st.rerun()
 
 
-def _render_cp_section(ticker, section_label, data):
+def _render_cp_section(ticker, section_label, data, simple=False):
     """
     Renders one Research-page section (Fundamentals / Value vs Book /
     Retained Earnings / Earnings Trends / Cost of Capital / Fair Value /
@@ -4083,6 +4083,18 @@ def _render_cp_section(ticker, section_label, data):
     SHARED with the Deep Dive page's "Compounder View (auto)" expander via
     compounder_ui.render_section(), so the two can never visually drift
     apart (see compounder_ui.py's docstring).
+
+    simple (Simple view, Part 3): "story first, spreadsheet second".
+    Company Potential is the ONLY one of these seven sections with actual
+    owner-written prose (the "groups"/text_groups below) - the other six
+    are a computed sheet + metrics grid with no summary/verdict field
+    anywhere in the data (confirmed against build_compounder_data.py's
+    output shape). Per the instruction's own explicit fallback ("if a
+    section has no written paragraph, show the table as-is"), those six
+    are rendered identically in both views; only Company Potential
+    reorders here, leading with the written analysis and collapsing the
+    Low/Medium/High ratings grid (the closest thing to a "table" this
+    section has) under "See the numbers ->".
     """
     section = data["sections"][section_label]
 
@@ -4129,10 +4141,22 @@ def _render_cp_section(ticker, section_label, data):
             "and more - shown exactly as researched - plus the full written "
             "analysis, grouped by theme."
         )
-        if ratings or short_checks:
-            _cp_render_hml_ratings(ratings, short_checks)
-        if groups:
+        if simple and groups:
+            # Simple view, Part 3: story first - the owner's written
+            # analysis leads, the ratings grid (the section's one
+            # "spreadsheet"-like piece) collapses underneath it. Same
+            # _cp_render_text_groups/_cp_render_hml_ratings calls as Full
+            # view, just reordered and the ratings wrapped - neither
+            # function is forked.
             _cp_render_text_groups(groups)
+            if ratings or short_checks:
+                with st.expander("See the numbers →"):
+                    _cp_render_hml_ratings(ratings, short_checks)
+        else:
+            if ratings or short_checks:
+                _cp_render_hml_ratings(ratings, short_checks)
+            if groups:
+                _cp_render_text_groups(groups)
         return
 
     # The six computed sections all render through the shared component.
@@ -4382,11 +4406,22 @@ def page_research():
     # card now renders in the row above instead (see pick_col2).
     _render_research_header_card(ticker, data, section_order)
 
+    # Simple view, Part 3: same Simple|Full toggle/persistence as the Deep
+    # Dive (_init_view_mode/_render_view_toggle, Part 1) - reused as-is,
+    # not reinvented. Placed directly under the header card, right before
+    # the section tabs, same "next to the ticker header" convention Part 1
+    # specifies for the Deep Dive's own toggle.
+    _init_view_mode()
+    _cp_simple = st.session_state.get("view_mode") == "simple"
+    _rc_spacer, _rc_toggle_col = st.columns([5, 2])
+    with _rc_toggle_col:
+        _render_view_toggle(key_prefix=f"cp_{ticker}")
+
     _cp_tabs = st.tabs(section_order, default=_cp_default_section)
     for _cp_label, _cp_tab in zip(section_order, _cp_tabs):
         with _cp_tab:
             st.markdown(f"### {ticker} - {_cp_label}")
-            _render_cp_section(ticker, _cp_label, data)
+            _render_cp_section(ticker, _cp_label, data, simple=_cp_simple)
 
 
 def page_home():
