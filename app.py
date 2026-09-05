@@ -6457,7 +6457,12 @@ def page_deep_dive():
                     help=METRIC_HELP["Intrinsic Value"],
                 )
                 _m3.metric(
-                    "MOS",
+                    # Simple view, Part 5: label softening, first
+                    # occurrence only - "MOS" is unabbreviated here (the
+                    # underlying dd["mos"] field/METRIC_HELP key are
+                    # untouched); the plain "MOS" label is fine everywhere
+                    # else it already appears on the page after this.
+                    "Margin of safety (discount to estimated worth)",
                     f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
                     help=METRIC_HELP["MOS"],
                 )
@@ -6477,7 +6482,10 @@ def page_deep_dive():
                     help=METRIC_HELP["Intrinsic Value"],
                 )
                 _m3.metric(
-                    "MOS", f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
+                    # Simple view, Part 5: same first-occurrence label
+                    # softening as the _factual() branch above.
+                    "Margin of safety (discount to estimated worth)",
+                    f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
                     help=METRIC_HELP["MOS"],
                 )
                 _m4.metric("Long Score", f"{_dd['long_score']:.1f}", help=METRIC_HELP["Long Score"])
@@ -6886,7 +6894,10 @@ def page_deep_dive():
 
         def _dd_psychology():
             st.divider()
-            st.subheader(f"Psychology Score: {_dd['psychology']:+.1f} - {_dd['psychology_sentiment']}")
+            # Simple view, Part 5: first-occurrence label softening -
+            # display only, "psychology"/"psychology_sentiment" etc. on dd
+            # and every internal reference are untouched.
+            st.subheader(f"Crowd mood (Psychology) Score: {_dd['psychology']:+.1f} - {_dd['psychology_sentiment']}")
             st.caption(SECTION_WHY_CAPTIONS["Psychology"])
             st.caption(
                 "In plain English: whether the crowd trading this stock right now "
@@ -6923,7 +6934,9 @@ def page_deep_dive():
 
         def _dd_discovery():
             st.divider()
-            st.subheader(f"Discovery Score: {_dd['discovery']:.1f} - {_dd['discovery_label']}")
+            # Simple view, Part 5: first-occurrence label softening -
+            # display only, "discovery"/"discovery_label" etc. untouched.
+            st.subheader(f"Attention (Discovery) Score: {_dd['discovery']:.1f} - {_dd['discovery_label']}")
             st.caption(SECTION_WHY_CAPTIONS["Discovery"])
             st.caption(
                 "In plain English: how much attention this stock is getting right "
@@ -7212,7 +7225,13 @@ def page_deep_dive():
             # Fundamentals tab inside this same tab set).
             st.markdown('<div id="sdd-anchor-financials"></div>', unsafe_allow_html=True)
             st.divider()
+            # Simple view, Part 5: first-occurrence label softening - the
+            # instruction's "Compounder View (auto)" -> "The numbers,
+            # explained" applied as a subtitle on this section's actual
+            # heading (the internal name/anchor id/variable names below
+            # are all untouched).
             st.subheader(f"\U0001F4DA {_dd['ticker']} Rational Compounder Analysis (Auto)")
+            st.caption("The numbers, explained")
             st.caption(SECTION_WHY_CAPTIONS["Compounder View (auto)"])
             st.caption(
                 f"The Rational Compounder research sections - Fundamentals · "
