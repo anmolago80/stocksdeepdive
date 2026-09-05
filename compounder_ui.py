@@ -35,6 +35,8 @@ import re
 import plotly.graph_objects as go
 import streamlit as st
 
+from simple_view_copy import SECTION_WHY_CAPTIONS
+
 # -----------------------------------
 # Colour vocabulary (moved from app.py, verbatim)
 # -----------------------------------
@@ -808,6 +810,13 @@ def render_section(sections, ticker, section_label, gate=None):
     if not section:
         st.warning(f"No data yet for {ticker} in {section_label}.")
         return
+
+    # Simple view, Part 4: one-line "why this matters" caption, shown in
+    # BOTH views regardless of subscription - static template text, see
+    # simple_view_copy.py's own module docstring for the full rationale.
+    _why = SECTION_WHY_CAPTIONS.get(section_label)
+    if _why:
+        st.caption(_why)
 
     if gate:
         import paywall_engine

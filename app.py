@@ -58,6 +58,7 @@ import blog_store
 import blog_render
 import compounder_ui
 from compounder_ui import sdd_plotly_chart
+from simple_view_copy import SECTION_WHY_CAPTIONS
 import auto_compounder_engine
 import fundamentals_data
 import checklist_store
@@ -3753,6 +3754,7 @@ def _render_insider_panel(ticker):
             st.rerun()
 
     st.markdown("##### Insider & capital")
+    st.caption(SECTION_WHY_CAPTIONS["Insider & capital"])
     st.caption(
         "Director/insider transactions and buyback activity, from ASX "
         "announcements or SEC filings - described calculations from public "
@@ -5540,6 +5542,7 @@ def _render_dividends_panel(dd):
     # so its chip is unconditional.
     st.markdown('<div id="sdd-anchor-dividends"></div>', unsafe_allow_html=True)
     st.markdown("##### Dividends")
+    st.caption(SECTION_WHY_CAPTIONS["Dividends"])
     div = portfolio_charts_engine.fetch_dividend_history(ticker)
     if div.empty:
         st.caption("No dividends on record.")
@@ -6776,6 +6779,7 @@ def page_deep_dive():
             # "X Score: value - LABEL" subheader before their gauge.
             if _factual():
                 st.subheader(f"Value Score: {_dd['long_score']:.1f} - {_dd_value_word}")
+                st.caption(SECTION_WHY_CAPTIONS["Value Score"])
                 st.caption(
                     "In plain English: one number blending business quality, price "
                     "versus estimated value, crowd psychology, and market attention."
@@ -6794,6 +6798,7 @@ def page_deep_dive():
                 )
             else:
                 st.subheader(f"Long Score: {_dd['long_score']:.1f} - {_dd_signal}")
+                st.caption(SECTION_WHY_CAPTIONS["Value Score"])
                 st.caption(
                     "In plain English: one number blending business quality, price "
                     "versus estimated value, crowd psychology, and market attention."
@@ -6845,6 +6850,7 @@ def page_deep_dive():
 
         def _dd_quality():
             st.subheader(f"Quality Score: {_dd['quality_score']} - {_dd['quality_label']}")
+            st.caption(SECTION_WHY_CAPTIONS["Quality"])
             st.caption(
                 "In plain English: how strong the underlying business is - "
                 "profitability, balance sheet strength, and growth - judged "
@@ -6881,6 +6887,7 @@ def page_deep_dive():
         def _dd_psychology():
             st.divider()
             st.subheader(f"Psychology Score: {_dd['psychology']:+.1f} - {_dd['psychology_sentiment']}")
+            st.caption(SECTION_WHY_CAPTIONS["Psychology"])
             st.caption(
                 "In plain English: whether the crowd trading this stock right now "
                 "looks fearful, calm, or greedy, read from recent price behaviour."
@@ -6917,6 +6924,7 @@ def page_deep_dive():
         def _dd_discovery():
             st.divider()
             st.subheader(f"Discovery Score: {_dd['discovery']:.1f} - {_dd['discovery_label']}")
+            st.caption(SECTION_WHY_CAPTIONS["Discovery"])
             st.caption(
                 "In plain English: how much attention this stock is getting right "
                 "now, from search interest, news, and trading volume."
@@ -6962,6 +6970,7 @@ def page_deep_dive():
             st.divider()
             if _dd.get("moat") is None:
                 st.subheader(f"Moat Score: {_dd.get('moat_band_label', 'N/A')}")
+                st.caption(SECTION_WHY_CAPTIONS["Moat"])
                 st.caption(
                     "In plain English: how well this business's profits are "
                     "protected from competitors, based on returns on capital and "
@@ -6976,6 +6985,7 @@ def page_deep_dive():
                     )
             else:
                 st.subheader(f"Moat Score: {_dd['moat']:.1f} - {_dd['moat_band_label']}")
+                st.caption(SECTION_WHY_CAPTIONS["Moat"])
                 st.caption(
                     "In plain English: how well this business's profits are "
                     "protected from competitors, based on returns on capital and "
@@ -7037,6 +7047,7 @@ def page_deep_dive():
             if _dd["intrinsic_value"]:
                 _mos_val = _dd["mos"] if _dd["mos"] is not None else 0.0
                 st.subheader(f"Margin of Safety: {_mos_val:+.1f}% - {_dd['valuation']}")
+                st.caption(SECTION_WHY_CAPTIONS["Margin of Safety"])
                 st.caption(
                     "In plain English: how much cheaper today's price is than what "
                     "the model estimates the business is worth."
@@ -7098,6 +7109,7 @@ def page_deep_dive():
                 )
             else:
                 st.subheader("Margin of Safety: Price vs Intrinsic Value")
+                st.caption(SECTION_WHY_CAPTIONS["Margin of Safety"])
                 st.warning(
                     "No intrinsic value could be computed for this ticker "
                     "(DCF and P/E-blend both unavailable - likely a "
@@ -7116,6 +7128,7 @@ def page_deep_dive():
             if not _factual():
                 st.divider()
                 st.subheader(f"Trade Setup: {_dd['trade_setup_score']} - {_dd['trade_setup_signal']}")
+                st.caption(SECTION_WHY_CAPTIONS["Trade Setup"])
                 _render_explain_popover(_dd, "trade_setup")
                 _t_col1, _t_col2 = st.columns(2)
                 with _t_col1:
@@ -7200,6 +7213,7 @@ def page_deep_dive():
             st.markdown('<div id="sdd-anchor-financials"></div>', unsafe_allow_html=True)
             st.divider()
             st.subheader(f"\U0001F4DA {_dd['ticker']} Rational Compounder Analysis (Auto)")
+            st.caption(SECTION_WHY_CAPTIONS["Compounder View (auto)"])
             st.caption(
                 f"The Rational Compounder research sections - Fundamentals · "
                 f"Value vs Book · Retained Earnings · Earnings Trends · "
