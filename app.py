@@ -13169,7 +13169,12 @@ def page_how_ai_is_used():
     pages already use."""
     _content_page_shell("How this site uses AI")
     _bump_page_view("how_ai_is_used")
-    st.markdown(site_content.HOW_AI_IS_USED_MD)
+    # Español instruction, Part 2: this page already single-sources from
+    # site_content.py (unlike page_methodology/page_about/page_privacy,
+    # which each inline their own separate EN copy - out of scope for
+    # this pass, see the Part 2 report), so making it lang-aware here is
+    # a one-line change with no drift risk.
+    st.markdown(site_content.how_ai_is_used_md(lang=st.session_state.get("lang", "en")))
 
 
 # -----------------------------------

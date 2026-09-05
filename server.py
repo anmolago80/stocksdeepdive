@@ -396,7 +396,18 @@ def _renders_html(path) -> bool:
 # title-less JS shell instead of the fast indexed static page.
 # content_page() already gets this right by ignoring the query entirely
 # (its pages never behave differently based on query params).
-_STREAMLIT_ONLY_PARAMS = {"ticker", "tickers", "admin", "code", "state", "app", "src"}
+#
+# Español instruction, Part 2: "lang" joins this set so a bare
+# ?lang=es on a tool-landing path (/deep-dive, /research, etc. - no
+# ticker) still boots the interactive Streamlit app instead of the fast
+# static landing page, which has no language switching of its own. This
+# is exactly what "so the owner's Spanish Reddit posts can link straight
+# in" (Part 1's architecture note) needs: a bare /deep-dive?lang=es link
+# has to reach the app.py page that actually reads ?lang=, not the
+# static shell. content_page()'s own four pages (methodology/about/
+# privacy/how-we-use-ai) are unaffected either way - they're real /es/
+# path twins now, not query-driven, and don't consult this set at all.
+_STREAMLIT_ONLY_PARAMS = {"ticker", "tickers", "admin", "code", "state", "app", "src", "lang"}
 
 
 def _needs_streamlit(request: Request) -> bool:
@@ -917,26 +928,44 @@ async def blog_comment_submit(slug: str, request: Request):
 _FACTUAL = (os.environ.get("FACTUAL_MODE", "true").strip().lower()
             not in ("false", "0", "no", "off"))
 
+# Español instruction, Part 2: title/description gain an "es" sibling
+# next to the existing bare English string (kept unnamed/un-nested so
+# EN behaviour - every existing reader of spec["title"]/spec["description"]
+# doesn't exist outside this module - stays a non-issue; both keys are
+# only ever read through _content_title()/_content_description() below).
 _CONTENT_PAGES = {
     "/methodology": {
         "title": "How the scores work",
+        "title_es": "Cómo funcionan los puntajes",
         "description": ("How StocksDeepDive computes intrinsic value, quality, "
                         "crowd psychology and discovery for any ASX or US "
                         "stock - every input, weight and assumption stated."),
+        "description_es": ("Cómo calcula StocksDeepDive el valor intrínseco, la "
+                        "calidad, la psicología de la multitud y el descubrimiento "
+                        "para cualquier acción de la ASX o de EE. UU. - cada dato, "
+                        "peso y supuesto declarado."),
         "page": "methodology",
     },
     "/about": {
         "title": "About",
+        "title_es": "Acerca de",
         "description": ("StocksDeepDive is built and run by Andres Moreno, a "
                         "private investor in Australia - what the site is, and "
                         "the two principles it was built on."),
+        "description_es": ("StocksDeepDive está creado y administrado por Andrés "
+                        "Moreno, un inversor particular en Australia - qué es el "
+                        "sitio y los dos principios sobre los que se construyó."),
         "page": "about",
     },
     "/privacy": {
         "title": "Privacy policy",
+        "title_es": "Política de privacidad",
         "description": ("What StocksDeepDive collects, what it never does, and "
                         "how to have your data deleted. No ad trackers, no "
                         "third-party analytics, nothing sold."),
+        "description_es": ("Qué recopila StocksDeepDive, qué nunca hace, y cómo "
+                        "solicitar la eliminación de tus datos. Sin rastreadores "
+                        "publicitarios, sin análisis de terceros, nada se vende."),
         "page": "privacy",
     },
     # AI-readiness roadmap Phase 10: "public 'How this site uses AI' page
@@ -945,43 +974,93 @@ _CONTENT_PAGES = {
     # /how-we-use-ai to that env var to serve it as indexable HTML here.
     "/how-we-use-ai": {
         "title": "How this site uses AI",
+        "title_es": "Cómo este sitio usa la IA",
         "description": ("Which StocksDeepDive features use Claude (Anthropic's "
                         "AI model), which numbers are computed instead, and how "
                         "AI-written text is always labelled and gated."),
+        "description_es": ("Qué funciones de StocksDeepDive usan Claude (el "
+                        "modelo de IA de Anthropic), qué números son calculados "
+                        "en cambio, y cómo el texto escrito por IA siempre está "
+                        "etiquetado y controlado."),
         "page": "how_ai_is_used",
     },
 }
 
+# Español instruction, Part 2: one /es/ twin per canonical EN path above,
+# same "page" view-count key (an ES and EN reader of the same page count
+# toward the same total - there's one methodology page, in two
+# languages, not two different pages) - see _content_page_spec() below.
+_ES_CONTENT_PATHS = {f"/es{p}": p for p in _CONTENT_PAGES}
 
-def _content_markdown(path):
-    if path == "/methodology":
-        return site_content.methodology_md(_FACTUAL)
-    if path == "/about":
-        return site_content.about_md(_FACTUAL)
-    if path == "/how-we-use-ai":
-        return site_content.HOW_AI_IS_USED_MD
-    return site_content.PRIVACY_MD
+
+def _content_page_spec(path):
+    """Resolves a requested path to (spec, canonical_en_path, lang).
+    Returns (None, None, None) for anything not a known content page."""
+    if path in _CONTENT_PAGES:
+        return _CONTENT_PAGES[path], path, "en"
+    if path in _ES_CONTENT_PATHS:
+        en_path = _ES_CONTENT_PATHS[path]
+        return _CONTENT_PAGES[en_path], en_path, "es"
+    return None, None, None
+
+
+def _content_title(spec, lang):
+    return spec.get("title_es") if lang == "es" and spec.get("title_es") else spec["title"]
+
+
+def _content_description(spec, lang):
+    return (spec.get("description_es") if lang == "es" and spec.get("description_es")
+            else spec["description"])
+
+
+def _content_markdown(en_path, lang):
+    if en_path == "/methodology":
+        return site_content.methodology_md(_FACTUAL, lang=lang)
+    if en_path == "/about":
+        return site_content.about_md(_FACTUAL, lang=lang)
+    if en_path == "/how-we-use-ai":
+        return site_content.how_ai_is_used_md(lang=lang)
+    return site_content.privacy_md(lang=lang)
 
 
 @app.get("/methodology", include_in_schema=False)
 @app.get("/about", include_in_schema=False)
 @app.get("/privacy", include_in_schema=False)
 @app.get("/how-we-use-ai", include_in_schema=False)
+@app.get("/es/methodology", include_in_schema=False)
+@app.get("/es/about", include_in_schema=False)
+@app.get("/es/privacy", include_in_schema=False)
+@app.get("/es/how-we-use-ai", include_in_schema=False)
 async def content_page(request: Request):
     path = request.url.path.rstrip("/") or "/"
-    spec = _CONTENT_PAGES.get(path)
-    if not spec or not _renders_html(path):
+    spec, en_path, lang = _content_page_spec(path)
+    # The ES gate deliberately reuses the EN path's own _renders_html()
+    # check (INDEXABLE_PAGES is configured per canonical page, not per
+    # language) - an operator who's opted /methodology in gets /es/
+    # methodology indexable too, with no separate env var to remember.
+    if not spec or not _renders_html(en_path):
         return await _proxy(request)
     _count_view(spec["page"])
     note = (site_content.METHODOLOGY_FACTUAL_NOTE
-            if path == "/methodology" and _FACTUAL else None)
+            if en_path == "/methodology" and _FACTUAL and lang == "en" else None)
+    base_url = _base_url(request)
+    # hreflang: both directions of the EN<->ES pair, plus x-default=EN
+    # per the instruction's architecture rule - a crawler (or a browser
+    # respecting Accept-Language) can jump straight to the right one.
+    hreflang_alternates = [
+        ("en", f"{base_url}{en_path}"),
+        ("es", f"{base_url}/es{en_path}"),
+        ("x-default", f"{base_url}{en_path}"),
+    ]
     return _html(blog_render.render_content_page(
-        title=spec["title"],
-        markdown_text=_content_markdown(path),
-        description=spec["description"],
+        title=_content_title(spec, lang),
+        markdown_text=_content_markdown(en_path, lang),
+        description=_content_description(spec, lang),
         path=path,
-        base_url=_base_url(request),
+        base_url=base_url,
         intro_note=note,
+        lang=lang,
+        hreflang_alternates=hreflang_alternates,
     ))
 
 

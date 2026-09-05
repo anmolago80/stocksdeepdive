@@ -733,7 +733,7 @@ footer.site .wrap{max-width:1080px}
 
 
 def _head(title, description, canonical, base_url, image=None,
-          noindex=False, extra_meta="", json_ld=""):
+          noindex=False, extra_meta="", json_ld="", hreflang_alternates=None):
     """The part search engines actually read. Every page gets a unique
     title and description, an explicit canonical (so a URL reached with a
     tracking ?src= parameter still consolidates to one address), and an
@@ -747,7 +747,15 @@ def _head(title, description, canonical, base_url, image=None,
     requested. Mostly inert (crawlers largely ignore canonicals on error
     pages) but not a meaningful value as written, so dropped rather than
     threading the originally-requested path through just to
-    self-reference it."""
+    self-reference it.
+
+    hreflang_alternates (Español instruction, Part 2): optional list of
+    (lang_code, url) pairs - one <link rel="alternate" hreflang="..."> per
+    pair, e.g. [("en", ".../about"), ("es", ".../es/about"),
+    ("x-default", ".../about")]. Only passed by pages that actually have
+    an EN/ES twin (currently the four site_content.py pages); every other
+    page omits it and gets no hreflang tags at all, per the instruction's
+    "translate incrementally" allowance."""
     e = html.escape
     # og:image is emitted only when there is a real image to point at - a
     # card referencing a 404 renders worse on Twitter/LinkedIn than no card
@@ -766,6 +774,10 @@ def _head(title, description, canonical, base_url, image=None,
     ]
     if canonical:
         tags.append(f'<link rel="canonical" href="{e(canonical)}">')
+    for lang_code, alt_url in (hreflang_alternates or []):
+        tags.append(
+            f'<link rel="alternate" hreflang="{e(lang_code)}" href="{e(alt_url)}">'
+        )
     tags += [
         ('<meta name="robots" content="noindex,follow">' if noindex else
          '<meta name="robots" content="index,follow,max-image-preview:large,'
@@ -799,7 +811,30 @@ def _head(title, description, canonical, base_url, image=None,
     return "\n".join(tags)
 
 
-def _header_html():
+def _header_html(lang="en"):
+    """Español instruction, Part 2: lang="es" translates every nav label
+    and, where a real Spanish destination exists, points the link there
+    too - the four site_content.py pages get their /es/ twin, and the
+    interactive tools (Deep Dive/Scanner) get ?lang=es (server.py's
+    _STREAMLIT_ONLY_PARAMS now treats "lang" as forcing the Streamlit
+    app, so this actually opens in Spanish). /research has no query-
+    param scheme decided yet in this pass (Part 3's Rational Compounder
+    content translation isn't built) so it stays a plain English link
+    even in the Spanish header - deliberately, rather than promising a
+    Spanish page that isn't there."""
+    if lang == "es":
+        return """
+<header class="site"><div class="wrap">
+  <a class="brand" href="/">Stocks<span class="accent">DeepDive</span></a>
+  <nav class="site">
+    <a href="/blog">Blog</a>
+    <a href="/research">Rational Compounder</a>
+    <a href="/deep-dive?lang=es">Deep Dive</a>
+    <a href="/scanner?lang=es">Buscador</a>
+    <a href="/es/methodology">Cómo funcionan los puntajes</a>
+  </nav>
+</div></header>
+"""
     return """
 <header class="site"><div class="wrap">
   <a class="brand" href="/">Stocks<span class="accent">DeepDive</span></a>
@@ -814,7 +849,44 @@ def _header_html():
 """
 
 
-def _footer_html():
+def _footer_html(lang="en"):
+    """Español instruction, Part 2: same lang-aware treatment as
+    _header_html() above, plus the standing disclaimer (i18n.DISCLAIMER_ES
+    - see that module's docstring for why it isn't duplicated as an EN
+    dict entry). Blog and Track record have no Spanish version yet
+    (that's Part 3's blog-translation workflow) - their links stay
+    pointed at the English pages even in the Spanish footer, labelled
+    "(en inglés)" rather than silently presenting an English page as if
+    it were the Spanish one."""
+    import i18n
+    disclaimer = i18n.DISCLAIMER_ES if lang == "es" else DISCLAIMER
+    if lang == "es":
+        return f"""
+<footer class="site"><div class="wrap">
+  <div class="f-cols">
+    <div><h5>StocksDeepDive</h5>
+      <a href="/">Inicio</a>
+      <a href="/blog">Blog (en inglés)</a>
+      <a href="/es/about">Acerca del autor</a>
+      <a href="/es/methodology">Cómo funcionan los puntajes</a>
+      <a href="/research">Rational Compounder Research</a>
+      <a href="/track-record">Historial (en inglés)</a>
+    </div>
+    <div><h5>Herramientas</h5>
+      <a href="/deep-dive?lang=es">Deep Dive</a>
+      <a href="/comparison?lang=es">Comparación</a>
+      <a href="/scanner?lang=es">Buscador de acciones</a>
+    </div>
+    <div><h5>Contacto</h5>
+      <a href="mailto:rationalcompounder@stocksdeepdive.com">rationalcompounder@stocksdeepdive.com</a>
+      <a href="/es/privacy">Política de privacidad</a>
+      <a href="/es/how-we-use-ai">Cómo este sitio usa la IA</a>
+      <a href="/blog/feed.xml">RSS feed</a>
+    </div>
+  </div>
+  <div class="disclaimer">{disclaimer}</div>
+</div></footer>
+"""
     return f"""
 <footer class="site"><div class="wrap">
   <div class="f-cols">
@@ -838,14 +910,17 @@ def _footer_html():
       <a href="/blog/feed.xml">RSS feed</a>
     </div>
   </div>
-  <div class="disclaimer">{DISCLAIMER}</div>
+  <div class="disclaimer">{disclaimer}</div>
 </div></footer>
 """
 
 
-def _page(head, body):
-    return (f"<!doctype html>\n<html lang=\"en\">\n<head>\n{head}\n</head>\n"
-            f"<body>\n{_header_html()}\n{body}\n{_footer_html()}\n</body>\n</html>")
+def _page(head, body, lang="en"):
+    """lang="es" (Español instruction, Part 2) sets <html lang="es"> and
+    renders the Spanish header/footer chrome - every existing caller
+    omits it and gets the exact English page as before."""
+    return (f"<!doctype html>\n<html lang=\"{lang}\">\n<head>\n{head}\n</head>\n"
+            f"<body>\n{_header_html(lang)}\n{body}\n{_footer_html(lang)}\n</body>\n</html>")
 
 
 # -----------------------------------
@@ -1764,7 +1839,8 @@ def render_tool_landing(path, base_url, coverage=None):
 
 
 def render_content_page(title, markdown_text, description, path, base_url,
-                        heading=None, intro_note=None):
+                        heading=None, intro_note=None, lang="en",
+                        hreflang_alternates=None):
     """A standing content page (How the scores work / About / Privacy) as
     real HTML.
 
@@ -1773,11 +1849,36 @@ def render_content_page(title, markdown_text, description, path, base_url,
     only substantive indexable pages besides the blog - and 'how the
     scores work' is the page that explains the whole product, so it is the
     one most worth ranking. The prose comes from site_content.py, the same
-    source the app renders, so the two can never drift."""
+    source the app renders, so the two can never drift.
+
+    lang/hreflang_alternates (Español instruction, Part 2): lang picks
+    the CTA box's own copy and is passed through to _page() for
+    <html lang> and the header/footer chrome; hreflang_alternates goes
+    straight to _head(). server.py's content_page() is the only caller
+    that passes either right now - every other _page() caller in this
+    module still defaults to English-only."""
     note = ""
     if intro_note:
         note = (f'<div class="cta" style="margin:0 0 26px">'
                 f'{md_to_html(intro_note)}</div>')
+    if lang == "es":
+        cta = f"""
+  <div class="cta">
+    <h3>Míralo funcionar en una empresa real</h3>
+    <p>Ingresa un ticker en <a href="/deep-dive?lang=es">Deep Dive</a>, compara dos
+    <a href="/comparison?lang=es">lado a lado</a>, o lee la investigación hecha a mano en
+    <a href="/research">Rational Compounder</a>. Lo nuevo se publica en
+    el <a href="/blog">blog</a> (en inglés).</p>
+  </div>"""
+    else:
+        cta = f"""
+  <div class="cta">
+    <h3>See it run on a real company</h3>
+    <p>Put a ticker into <a href="/deep-dive">Stock Deep Dive</a>, line two up
+    <a href="/comparison">side by side</a>, or read the hand-built
+    <a href="/research">Rational Compounder research</a>. New writing lands on
+    the <a href="/blog">blog</a>.</p>
+  </div>"""
     body = f"""
 <main><div class="wrap">
   <article>
@@ -1785,13 +1886,7 @@ def render_content_page(title, markdown_text, description, path, base_url,
     {note}
     {md_to_html(markdown_text)}
   </article>
-  <div class="cta">
-    <h3>See it run on a real company</h3>
-    <p>Put a ticker into <a href="/deep-dive">Stock Deep Dive</a>, line two up
-    <a href="/comparison">side by side</a>, or read the hand-built
-    <a href="/research">Rational Compounder research</a>. New writing lands on
-    the <a href="/blog">blog</a>.</p>
-  </div>
+  {cta}
 </div></main>
 """
     canonical = f"{base_url}{path}"
@@ -1804,11 +1899,17 @@ def render_content_page(title, markdown_text, description, path, base_url,
         "isPartOf": {"@type": "WebSite", "name": SITE_NAME, "url": base_url},
         "author": _person_json_ld(),
         "publisher": _organization_json_ld(base_url),
-        "inLanguage": "en",
+        # Fix, while touching this code (Español instruction, Part 2):
+        # this was a hardcoded "en" regardless of the page actually
+        # rendered - a pre-existing inconsistency with _index_json_ld()
+        # (which has no inLanguage field at all). Now reflects the real
+        # page language; _index_json_ld() itself is untouched in this
+        # pass since the blog index has no ES version yet (Part 3).
+        "inLanguage": lang,
     })
     head = _head(f"{title} | {SITE_NAME}", description, canonical, base_url,
-                 json_ld=json_ld)
-    return _page(head, body)
+                 json_ld=json_ld, hreflang_alternates=hreflang_alternates)
+    return _page(head, body, lang=lang)
 
 
 def render_not_found(base_url, message="That page doesn't exist."):
@@ -1850,6 +1951,17 @@ def render_sitemap(posts, base_url, renders_html=None):
     check as every other app path."""
     rows = []
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Español instruction, Part 2: the four site_content.py pages now have
+    # a real /es/ twin - listed right after their EN row, gated by the
+    # SAME renders_html(path) check (per content_page()'s own "ES reuses
+    # the EN path's INDEXABLE_PAGES gate" decision) so a page that isn't
+    # indexable in English doesn't get an indexable-only-in-Spanish
+    # sitemap entry either. Kept as plain additional <url> entries rather
+    # than xmlns:xhtml sitemap-level hreflang - the in-page <link
+    # hreflang> tags (_head()) already carry that signal; doubling it up
+    # in the sitemap's own XML namespace was judged not worth the added
+    # complexity for four pages.
+    _ES_TWIN_PATHS = {"/methodology", "/about", "/how-we-use-ai", "/privacy"}
     for path, priority, freq in APP_PATHS:
         if renders_html is not None and not renders_html(path):
             continue
@@ -1858,6 +1970,12 @@ def render_sitemap(posts, base_url, renders_html=None):
             f"<changefreq>{freq}</changefreq>"
             f"<priority>{priority}</priority></url>"
         )
+        if path in _ES_TWIN_PATHS:
+            rows.append(
+                f"  <url><loc>{xml_escape(base_url + '/es' + path)}</loc>"
+                f"<changefreq>{freq}</changefreq>"
+                f"<priority>{priority}</priority></url>"
+            )
     blog_mod = (blog_store.last_modified() or "")[:10] or today
     rows.append(
         f"  <url><loc>{xml_escape(base_url)}/blog</loc>"
