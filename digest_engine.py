@@ -29,6 +29,8 @@ import requests
 
 import watchlist_store
 import score_history
+import email_auth
+import i18n
 
 # Mirrors the site's FACTUAL_MODE: when on (the default), the digest shows
 # numbers only - no Signal column, no verdicts - matching what the public
@@ -141,17 +143,27 @@ def _row_html(row, site):
     return _cells + "</tr>"
 
 
-def _email_html(email, rows, site):
+def _email_html(email, rows, site, lang="en"):
+    """lang (Español completion, Part 2): subject + body chrome only -
+    heading/intro/disclaimer/footer route through i18n.t()
+    (email.digest.*). The data table itself (column headers included)
+    stays untranslated - same deferred-table-header policy as the in-app
+    tables in Part 1, since it's numbers plus short column labels, not
+    prose a reader needs translated."""
     body_rows = "".join(_row_html(r, site) for r in rows)
-    date_label = datetime.now(timezone.utc).strftime("%d %b %Y")
+    date_label = i18n.format_date_dmy(datetime.now(timezone.utc), lang)
+    disclaimer = i18n.t(
+        "email.digest.disclaimer_factual" if FACTUAL_MODE
+        else "email.digest.disclaimer_general", lang,
+    )
     return f"""\
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f7fa;">
 <tr><td align="center" style="padding:24px 12px;">
   <table role="presentation" width="620" cellpadding="0" cellspacing="0" border="0" style="background-color:#ffffff;border:1px solid #e2e8f0;">
     <tr><td style="padding:24px 28px 6px 28px;font-family:Arial,Helvetica,sans-serif;">
       <span style="font-size:22px;font-weight:bold;color:#0f172a;">Stocks</span><span style="font-size:22px;font-weight:bold;color:#0d9488;">DeepDive</span>
-      <div style="font-size:15px;color:#334155;padding-top:6px;font-weight:bold;">Your watchlist this week</div>
-      <div style="font-size:13px;color:#64748b;padding-top:4px;">Weekly re-score of the stocks you saved, as of {date_label}. Click any ticker for its full live Deep Dive.</div>
+      <div style="font-size:15px;color:#334155;padding-top:6px;font-weight:bold;">{i18n.t("email.digest.heading", lang)}</div>
+      <div style="font-size:13px;color:#64748b;padding-top:4px;">{i18n.t("email.digest.intro", lang, date=date_label)}</div>
     </td></tr>
     <tr><td style="padding:14px 28px 4px 28px;">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -168,13 +180,8 @@ def _email_html(email, rows, site):
       </table>
     </td></tr>
     <tr><td style="padding:16px 28px 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#94a3b8;line-height:1.6;">
-      {'Factual information and calculator outputs only - this email describes data and model outputs computed from stated inputs; it contains no recommendations to buy, hold or sell any security.'
-       if FACTUAL_MODE else
-       'General information only - not financial advice; scores and signals are model outputs and do not consider your personal circumstances.'}
-      Scored without news/social attention inputs
-      (the weekly digest uses the attention-lite model). You're receiving this because
-      {email} saved a watchlist on StocksDeepDive while signed in. To stop these,
-      remove all stocks from your watchlist on the site.
+      {disclaimer}
+      {i18n.t("email.digest.footer_note", lang, email=email)}
     </td></tr>
   </table>
 </td></tr>
@@ -224,11 +231,15 @@ def run_weekly_digest(log=print):
                 summary["skipped"] += 1
                 continue
             rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
-            _subject = (
-                "Your StocksDeepDive watchlist - weekly update" if FACTUAL_MODE
-                else "Your StocksDeepDive watchlist - weekly signals"
+            # Español completion, Part 2: per-recipient language, same
+            # get_signup_lang(email) pattern announce_engine.py already
+            # uses - never the sender/admin's own session.
+            _lang = email_auth.get_signup_lang(email)
+            _subject = i18n.t(
+                "email.digest.subject_factual" if FACTUAL_MODE
+                else "email.digest.subject_signal", _lang,
             )
-            _send(email, _subject, _email_html(email, rows, site))
+            _send(email, _subject, _email_html(email, rows, site, lang=_lang))
             summary["sent"] += 1
             log(f"[digest] sent to {email} ({len(rows)} stocks)")
         except Exception as e:

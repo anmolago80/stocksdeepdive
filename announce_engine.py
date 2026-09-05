@@ -95,14 +95,16 @@ def _row_html(ticker, added_set, site, lang="en"):
 
 def _email_html(tickers, added, updated, site, lang="en"):
     """lang: "en" (default) or "es" - cleanup round, Part 3/Español Part
-    4. Every piece of copy routes through i18n.t() (email.announce.*);
-    the date stamp's month abbreviation is the one un-translated piece
-    (Python's strftime needs a Spanish locale installed on the server to
-    localize it - a documented, cosmetic gap, see i18n.py's own
+    4. Every piece of copy routes through i18n.t() (email.announce.*).
+    The date stamp's month abbreviation (Español completion, Part 2) now
+    goes through i18n.format_date_dmy() instead of a raw strftime() call -
+    this was the one previously-documented, accepted gap from the
+    cleanup round, now closed with a small manual month-abbreviation map
+    rather than a server locale dependency (see that function's own
     docstring)."""
     added_set = set(added)
     body_rows = "".join(_row_html(t, added_set, site, lang) for t in tickers)
-    date_label = datetime.now(timezone.utc).strftime("%d %b %Y")
+    date_label = i18n.format_date_dmy(datetime.now(timezone.utc), lang)
     return f"""\
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f7fa;">
 <tr><td align="center" style="padding:24px 12px;">

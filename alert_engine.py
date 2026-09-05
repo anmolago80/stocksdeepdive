@@ -40,6 +40,8 @@ import os
 import requests
 
 import alert_store
+import email_auth
+import i18n
 
 AI_FEATURE = None  # this module never calls the Anthropic API - explicit,
 # so a reviewer grepping for ai_gate/ai_client usage across the batch's
@@ -127,27 +129,46 @@ def alert_fires(alert, row, prev):
     return False
 
 
-def condition_text(alert, row):
+def condition_text(alert, row, lang="en"):
     """The factual, non-advisory fragment used in both the notification
     template and the Deep Dive/My-alerts inline "condition met" caption -
-    e.g. "MOS ≥ 40% (now 67.0%)" or "Moat state became eroding"."""
+    e.g. "MOS ≥ 40% (now 67.0%)" or "Moat state became eroding".
+
+    lang (Español completion, Part 2): only affects the label/verb words
+    around the numbers, via the i18n.py "alert.metric.*"/"alert.op.*"/
+    "alert.condition_*" keys - deliberately a SEPARATE lookup from
+    METRIC_LABELS (see this module's own "alert.metric.*" comment in
+    i18n.py), so app.py's Deep Dive alert list (a documented Part 1 gap)
+    is untouched by this. The threshold/current NUMBERS and operator
+    symbols (≥/≤) are unaffected."""
     metric = alert["metric"]
-    label = METRIC_LABELS.get(metric, metric)
+    label = i18n.t(f"alert.metric.{metric}", lang) if f"alert.metric.{metric}" in i18n.EN else METRIC_LABELS.get(metric, metric)
     if metric in alert_store.NUMERIC_METRICS:
         key = alert_store.NUMERIC_METRICS[metric]
         current = _fmt_num(row.get(key))
         op = alert["operator"]
         if op in _OP_SYMBOL:
-            return f"{label} {_OP_SYMBOL[op]} {_fmt_num(alert['threshold'])} (now {current})"
-        verb = "crossed above" if op == "crosses_above" else "crossed below"
-        return f"{label} {verb} {_fmt_num(alert['threshold'])} (now {current})"
-    return f"{label} became {alert['threshold']}"
+            return i18n.t(
+                "alert.condition_numeric", lang, label=label, op=_OP_SYMBOL[op],
+                threshold=_fmt_num(alert["threshold"]), current=current,
+            )
+        verb = i18n.t(
+            "alert.op.crossed_above" if op == "crosses_above" else "alert.op.crossed_below",
+            lang,
+        )
+        return i18n.t(
+            "alert.condition_numeric", lang, label=label, op=verb,
+            threshold=_fmt_num(alert["threshold"]), current=current,
+        )
+    return i18n.t("alert.condition_categorical", lang, label=label, value=alert["threshold"])
 
 
-def hit_message(alert, row):
+def hit_message(alert, row, lang="en"):
     ticker = alert["ticker"]
-    return (f"{ticker} — condition met: {condition_text(alert, row)}. "
-            "Described calculation, not a recommendation. Open the Deep Dive →")
+    return i18n.t(
+        "alert.hit_message", lang, ticker=ticker,
+        condition=condition_text(alert, row, lang=lang),
+    )
 
 
 # --------------------------------------------------------------------
@@ -194,7 +215,14 @@ def check_universe_rows(rows, prev_map, log=print):
                 if not alert_store.cooldown_ok(a):
                     continue
                 alert_store.record_fire(a["id"])
-                alert_store.queue_hit(a["id"], a["email"], ticker, hit_message(a, row))
+                # Español completion, Part 2: the message is baked in at
+                # fire time (queue_hit just stores plain text - no lang
+                # column on the hit itself), so the recipient's own
+                # sign-up language is resolved right here, per-hit, via
+                # the same email_auth.get_signup_lang(email) pattern
+                # announce_engine.py/digest_engine.py already use.
+                _hit_lang = email_auth.get_signup_lang(a["email"])
+                alert_store.queue_hit(a["id"], a["email"], ticker, hit_message(a, row, lang=_hit_lang))
                 fired += 1
             except Exception as e:
                 log(f"[alert_engine] alert #{a.get('id')} ({ticker}) evaluation failed: {e}")
@@ -288,22 +316,24 @@ def _hit_row_html(hit, site):
 """
 
 
-def _email_html(hits, site):
+def _email_html(hits, site, lang="en"):
+    """lang (Español completion, Part 2): the heading/footer chrome only -
+    each hit's own `message` is already lang-baked from fire time (see
+    check_universe_rows)."""
     n = len(hits)
     rows_html = "".join(_hit_row_html(h, site) for h in hits)
+    heading = i18n.t("email.alert.heading_one" if n == 1 else "email.alert.heading_many", lang, n=n)
     return f"""\
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f7fa;">
 <tr><td align="center" style="padding:24px 12px;">
   <table role="presentation" width="620" cellpadding="0" cellspacing="0" border="0" style="background-color:#ffffff;border:1px solid #e2e8f0;">
     <tr><td style="padding:24px 28px 6px 28px;font-family:Arial,Helvetica,sans-serif;">
       <span style="font-size:22px;font-weight:bold;color:#0f172a;">Stocks</span><span style="font-size:22px;font-weight:bold;color:#0d9488;">DeepDive</span>
-      <div style="font-size:15px;color:#334155;padding-top:6px;font-weight:bold;">{n} alert condition{'s' if n != 1 else ''} met tonight</div>
+      <div style="font-size:15px;color:#334155;padding-top:6px;font-weight:bold;">{heading}</div>
     </td></tr>
     {rows_html}
     <tr><td style="padding:16px 28px 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#94a3b8;line-height:1.6;">
-      Each line above describes a calculation you asked StocksDeepDive to watch, computed from
-      this site's own data - not a recommendation to buy, hold or sell any security. Manage or
-      delete your alerts any time from a stock's Deep Dive page or My Portfolio &rarr; My alerts.
+      {i18n.t("email.alert.footer", lang)}
     </td></tr>
   </table>
 </td></tr>
@@ -331,17 +361,21 @@ def send_batched_notifications(log=print):
         all_hit_ids.extend(h["hit_id"] for h in hits)
         sent_anything = False
         n = len(hits)
-        subject = f"{n} alert condition{'s' if n != 1 else ''} met tonight"
+        # Español completion, Part 2: subject/heading/footer/push body in
+        # the recipient's own sign-up language - same get_signup_lang()
+        # pattern as the rest of this batch's email senders.
+        _lang = email_auth.get_signup_lang(email)
+        subject = i18n.t("email.alert.subject_one" if n == 1 else "email.alert.subject_many", _lang, n=n)
         if email_configured:
             try:
-                _send(email, subject, _email_html(hits, site))
+                _send(email, subject, _email_html(hits, site, lang=_lang))
                 sent_anything = True
             except Exception as e:
                 log(f"[alert_engine] email to {email} failed: {e}")
         if push_configured:
             try:
                 push_send.send_to_email(
-                    email, subject, "Tap to see what triggered on StocksDeepDive.",
+                    email, subject, i18n.t("push.alert.body", _lang),
                     url=f"{site}/portfolio",
                 )
                 sent_anything = True

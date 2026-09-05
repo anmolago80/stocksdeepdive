@@ -215,11 +215,11 @@ EN = {
     # Cleanup round, Part 3/Español Part 4: the "new research is up"
     # broadcast email (announce_engine.py) - one representative
     # conversion-pass email flow given an ES variant, selected per
-    # recipient via email_auth.get_signup_lang(). The date stamp itself
-    # (day/month-abbrev/year) is NOT localized - Python's strftime month
-    # abbreviations need a Spanish locale installed on the server, which
-    # this pass doesn't add; a Spanish reader gets e.g. "05 Sep 2026"
-    # rather than "05 sep 2026", a cosmetic gap noted in the report.
+    # recipient via email_auth.get_signup_lang(). The date stamp's month
+    # abbreviation was left un-localized here (a documented, accepted
+    # gap) - closed in Español completion, Part 2 via format_date_dmy()
+    # below, a small manual month-abbreviation map rather than a Spanish
+    # server locale dependency.
     "email.announce.subject": "New research on StocksDeepDive: {tickers}",
     "email.announce.heading": "New research is up",
     "email.announce.intro": (
@@ -444,6 +444,144 @@ EN = {
     "blog.subscribe.js_checking": "Checking...",
     "blog.subscribe.js_network_error": "Couldn't reach the server - please try again.",
     "blog.subscribe.js_wrong_code_fallback": "Wrong code - try again.",
+
+    # Español completion, Part 2: the weekly watchlist digest email
+    # (digest_engine.py) - subject + body chrome only. The data table
+    # itself (ticker/price/IV/MOS/score rows, and its column headers) stays
+    # untranslated, same deferred-table-header policy as the in-app peer/
+    # insider/results-day tables in Part 1 - it's numbers plus a "Ticker"/
+    # "Price"/etc. header row, not prose. Selected per-recipient via
+    # email_auth.get_signup_lang(email), never the sender/admin's own
+    # session - same pattern announce_engine.py already uses.
+    "email.digest.subject_factual": "Your StocksDeepDive watchlist - weekly update",
+    "email.digest.subject_signal": "Your StocksDeepDive watchlist - weekly signals",
+    "email.digest.heading": "Your watchlist this week",
+    "email.digest.intro": (
+        "Weekly re-score of the stocks you saved, as of {date}. Click any "
+        "ticker for its full live Deep Dive."
+    ),
+    "email.digest.disclaimer_factual": (
+        "Factual information and calculator outputs only - this email "
+        "describes data and model outputs computed from stated inputs; it "
+        "contains no recommendations to buy, hold or sell any security."
+    ),
+    "email.digest.disclaimer_general": (
+        "General information only - not financial advice; scores and "
+        "signals are model outputs and do not consider your personal "
+        "circumstances."
+    ),
+    "email.digest.footer_note": (
+        "Scored without news/social attention inputs (the weekly digest "
+        "uses the attention-lite model). You're receiving this because "
+        "{email} saved a watchlist on StocksDeepDive while signed in. To "
+        "stop these, remove all stocks from your watchlist on the site."
+    ),
+
+    # Español completion, Part 2: metric alerts ("condition met" email +
+    # push template, alert_engine.py). These are a NEW, email-only label
+    # lookup ("alert.metric.*") - deliberately separate from alert_engine.
+    # METRIC_LABELS (which app.py's Deep Dive "Your alerts for {ticker}:"
+    # list also reads directly and which Part 1 explicitly left as a
+    # deferred widget-internals gap) so that decision isn't silently
+    # reopened here; this dict only feeds the email/push text.
+    "alert.metric.mos_pct": "MOS",
+    "alert.metric.value_score": "Value Score",
+    "alert.metric.quality": "Quality",
+    "alert.metric.moat": "Moat",
+    "alert.metric.price": "Price",
+    "alert.metric.intrinsic_value": "Intrinsic value",
+    "alert.metric.moat_state": "Moat state",
+    "alert.metric.valuation_label": "Valuation",
+    "alert.op.crossed_above": "crossed above",
+    "alert.op.crossed_below": "crossed below",
+    "alert.condition_numeric": "{label} {op} {threshold} (now {current})",
+    "alert.condition_categorical": "{label} became {value}",
+    "alert.hit_message": (
+        "{ticker} — condition met: {condition}. Described calculation, "
+        "not a recommendation. Open the Deep Dive →"
+    ),
+    "email.alert.subject_one": "{n} alert condition met tonight",
+    "email.alert.subject_many": "{n} alert conditions met tonight",
+    "email.alert.heading_one": "{n} alert condition met tonight",
+    "email.alert.heading_many": "{n} alert conditions met tonight",
+    "email.alert.footer": (
+        "Each line above describes a calculation you asked StocksDeepDive "
+        "to watch, computed from this site's own data - not a "
+        "recommendation to buy, hold or sell any security. Manage or "
+        "delete your alerts any time from a stock's Deep Dive page or My "
+        "Portfolio &rarr; My alerts."
+    ),
+    "push.alert.body": "Tap to see what triggered on StocksDeepDive.",
+
+    # Español completion, Part 2: results-day notification email/push
+    # (results_engine.py). `moved` items are engine-generated text
+    # (results_engine's own "what moved" sentences), stay untranslated -
+    # same as app.py's before/after card in Part 1.
+    "email.results.subject": "{ticker} reported on {date} - before/after",
+    "email.results.reported_on": "reported on {date}",
+    "email.results.no_moves": "No material change computed.",
+    "email.results.vs_line": "Value Score now {vs}.",
+    "email.results.footer": (
+        "A computed before/after comparison from this site's own scoring "
+        "- not a recommendation to buy, hold or sell any security. Full "
+        "before/after on the Deep Dive page above."
+    ),
+    "email.results.push_fallback": "{ticker} reported on {date}.",
+
+    # Español completion, Part 2: portfolio AI watchdog email/push
+    # (portfolio_watchdog_engine.py). The AI-written brief text itself
+    # (result["text"]) is asked to be written in Spanish directly by the
+    # model (see that module's own _SYSTEM_PROMPT addition) rather than
+    # translated after the fact - same one AI call, same ai_gate cost, per
+    # the instruction's "instruct the model to write ... in Spanish" note
+    # for the weekly brief, applied here too for the same reason (an
+    # English AI paragraph next to a translated label/heading would be a
+    # visible, jarring gap). "email.ai_label" is IDENTICAL EN text to
+    # ai_client.ANSWER_LABEL (kept as a separate i18n key rather than
+    # changing that shared constant, since ANSWER_LABEL is also used by
+    # several admin-only English tools in app.py that are out of scope).
+    "email.watchdog.subject": "StocksDeepDive portfolio watchdog: {tickers}",
+    "email.watchdog.heading_one": "Portfolio watchdog - {n} holding changed",
+    "email.watchdog.heading_many": "Portfolio watchdog - {n} holdings changed",
+    "email.watchdog.intro": (
+        "Something material moved since your last brief, as of {date}. "
+        "Click any ticker for its full live Deep Dive."
+    ),
+    "email.watchdog.footer": (
+        "Factual information only - each summary above describes data and "
+        "model outputs computed from stated inputs; it contains no "
+        "recommendations to buy, hold or sell any security, and is "
+        "written by an AI model from your saved thesis and this site's "
+        "own numbers, not by a person. You're receiving this because you "
+        "turned on the AI watchdog for a portfolio on StocksDeepDive - "
+        "turn it off any time in that portfolio's Portfolio settings."
+    ),
+    "email.ai_label": "AI-written summary of the site's data - not advice",
+    "push.watchdog.title": "Portfolio watchdog: {tickers}",
+    "push.watchdog.body": "Tap to see what changed on StocksDeepDive.",
+
+    # Español completion, Part 2: the personalised weekly brief
+    # (weekly_brief_engine.py) - subject/heading/intro/section headings/
+    # footer chrome. The AI-written intro paragraph(s) are requested
+    # directly in Spanish from the model (see _BRIEF_SYSTEM_PROMPT_ES_
+    # SUFFIX in that module) rather than translated after the fact - same
+    # approach as the watchdog brief above, and the one this instruction
+    # explicitly asks for on this email. The watchlist/health data tables
+    # (rows AND column headers) stay untranslated, same deferred policy
+    # as digest_engine.py's identical table just above.
+    "email.brief.subject_ai": "Your StocksDeepDive weekly brief",
+    "email.brief.heading": "Your weekly brief",
+    "email.brief.intro": "As of {date}. Click any ticker for its full live Deep Dive.",
+    "email.brief.reporting_this_week": "Reporting this week:",
+    "email.brief.full_calendar_link": "Full results calendar →",
+    "email.brief.health_heading": "Portfolio health",
+    "email.brief.posts_heading": "New research this week",
+    "email.brief.footer_note": (
+        "Scored without news/social attention inputs (this brief uses "
+        "the attention-lite model). You're receiving this because "
+        "{email} saved a watchlist on StocksDeepDive while signed in. To "
+        "stop these, remove all stocks from your watchlist on the site."
+    ),
 }
 
 ES = {
@@ -798,6 +936,110 @@ ES = {
     "blog.subscribe.js_checking": "Verificando...",
     "blog.subscribe.js_network_error": "No se pudo conectar con el servidor - vuelve a intentarlo.",
     "blog.subscribe.js_wrong_code_fallback": "Código incorrecto - inténtalo de nuevo.",
+
+    "email.digest.subject_factual": "Tu lista de seguimiento en StocksDeepDive - actualización semanal",
+    "email.digest.subject_signal": "Tu lista de seguimiento en StocksDeepDive - señales semanales",
+    "email.digest.heading": "Tu lista de seguimiento esta semana",
+    "email.digest.intro": (
+        "Nueva puntuación semanal de las acciones que guardaste, al {date}. "
+        "Haz clic en cualquier ticker para ver su Deep Dive completo en vivo."
+    ),
+    "email.digest.disclaimer_factual": (
+        "Solo información factual y resultados de la calculadora - este "
+        "correo describe datos y resultados de modelos calculados a partir "
+        "de datos indicados; no contiene recomendaciones de comprar, "
+        "mantener o vender ningún valor."
+    ),
+    "email.digest.disclaimer_general": (
+        "Solo información general - no es asesoría financiera; los "
+        "puntajes y señales son resultados de un modelo y no consideran tu "
+        "situación personal."
+    ),
+    "email.digest.footer_note": (
+        "Calculado sin datos de atención de noticias/redes sociales (la "
+        "actualización semanal usa el modelo attention-lite). Recibes esto "
+        "porque {email} guardó una lista de seguimiento en StocksDeepDive "
+        "estando conectado. Para dejar de recibirlo, elimina todas las "
+        "acciones de tu lista de seguimiento en el sitio."
+    ),
+
+    "alert.metric.mos_pct": "MOS",
+    "alert.metric.value_score": "Puntaje Value",
+    "alert.metric.quality": "Calidad",
+    "alert.metric.moat": "Foso",
+    "alert.metric.price": "Precio",
+    "alert.metric.intrinsic_value": "Valor intrínseco",
+    "alert.metric.moat_state": "Estado del foso",
+    "alert.metric.valuation_label": "Valoración",
+    "alert.op.crossed_above": "cruzó por encima de",
+    "alert.op.crossed_below": "cruzó por debajo de",
+    "alert.condition_numeric": "{label} {op} {threshold} (ahora {current})",
+    "alert.condition_categorical": "{label} pasó a ser {value}",
+    "alert.hit_message": (
+        "{ticker} — condición cumplida: {condition}. Cálculo descrito, no "
+        "una recomendación. Abrir el Deep Dive →"
+    ),
+    "email.alert.subject_one": "{n} condición de alerta cumplida esta noche",
+    "email.alert.subject_many": "{n} condiciones de alerta cumplidas esta noche",
+    "email.alert.heading_one": "{n} condición de alerta cumplida esta noche",
+    "email.alert.heading_many": "{n} condiciones de alerta cumplidas esta noche",
+    "email.alert.footer": (
+        "Cada línea de arriba describe un cálculo que le pediste a "
+        "StocksDeepDive que vigilara, a partir de los propios datos del "
+        "sitio - no es una recomendación de comprar, mantener o vender "
+        "ningún valor. Administra o elimina tus alertas en cualquier "
+        "momento desde la página Deep Dive de una acción o desde Mi "
+        "cartera &rarr; Mis alertas."
+    ),
+    "push.alert.body": "Toca para ver qué se activó en StocksDeepDive.",
+
+    "email.results.subject": "{ticker} reportó el {date} - antes/después",
+    "email.results.reported_on": "reportó el {date}",
+    "email.results.no_moves": "No se calculó ningún cambio material.",
+    "email.results.vs_line": "Puntaje Value ahora {vs}.",
+    "email.results.footer": (
+        "Una comparación calculada de antes/después a partir del propio "
+        "sistema de puntuación del sitio - no es una recomendación de "
+        "comprar, mantener o vender ningún valor. Antes/después completo "
+        "en la página Deep Dive de arriba."
+    ),
+    "email.results.push_fallback": "{ticker} reportó el {date}.",
+
+    "email.watchdog.subject": "Vigilante de cartera de StocksDeepDive: {tickers}",
+    "email.watchdog.heading_one": "Vigilante de cartera - {n} posición cambió",
+    "email.watchdog.heading_many": "Vigilante de cartera - {n} posiciones cambiaron",
+    "email.watchdog.intro": (
+        "Algo material se movió desde tu último resumen, al {date}. Haz "
+        "clic en cualquier ticker para ver su Deep Dive completo en vivo."
+    ),
+    "email.watchdog.footer": (
+        "Solo información factual - cada resumen de arriba describe datos "
+        "y resultados de un modelo calculados a partir de datos "
+        "indicados; no contiene recomendaciones de comprar, mantener o "
+        "vender ningún valor, y está redactado por un modelo de IA a "
+        "partir de tu tesis guardada y los propios datos del sitio, no "
+        "por una persona. Recibes esto porque activaste el vigilante de "
+        "IA para una cartera en StocksDeepDive - puedes desactivarlo en "
+        "cualquier momento en la configuración de esa cartera."
+    ),
+    "email.ai_label": "Redactado por IA a partir de los datos del sitio - no es un consejo",
+    "push.watchdog.title": "Vigilante de cartera: {tickers}",
+    "push.watchdog.body": "Toca para ver qué cambió en StocksDeepDive.",
+
+    "email.brief.subject_ai": "Tu resumen semanal de StocksDeepDive",
+    "email.brief.heading": "Tu resumen semanal",
+    "email.brief.intro": "Al {date}. Haz clic en cualquier ticker para ver su Deep Dive completo en vivo.",
+    "email.brief.reporting_this_week": "Reporta esta semana:",
+    "email.brief.full_calendar_link": "Calendario completo de resultados →",
+    "email.brief.health_heading": "Salud de la cartera",
+    "email.brief.posts_heading": "Nueva investigación esta semana",
+    "email.brief.footer_note": (
+        "Calculado sin datos de atención de noticias/redes sociales (este "
+        "resumen usa el modelo attention-lite). Recibes esto porque "
+        "{email} guardó una lista de seguimiento en StocksDeepDive "
+        "estando conectado. Para dejar de recibirlo, elimina todas las "
+        "acciones de tu lista de seguimiento en el sitio."
+    ),
 }
 
 
@@ -814,6 +1056,38 @@ def t(key, lang="en", **fmt):
     if _s is None:
         _s = EN.get(key, key)
     return _s.format(**fmt) if fmt else _s
+
+
+# -----------------------------------------------------------------
+# Español completion, Part 2: month-name localization for the "%d %b %Y"
+# date stamps the notification emails build (digest_engine.py,
+# weekly_brief_engine.py, portfolio_watchdog_engine.py, announce_engine.py
+# - the last of these previously carried this exact gap as a documented,
+# accepted limitation, see the "email.announce.*" comment above). A small
+# manual map rather than Python's own locale machinery, which would need a
+# Spanish locale installed on the Railway server - a real deployment
+# dependency the instruction's own "no server locale dependency" note
+# rules out.
+# -----------------------------------------------------------------
+
+_MONTH_ABBREV_ES = {
+    "Jan": "ene", "Feb": "feb", "Mar": "mar", "Apr": "abr",
+    "May": "may", "Jun": "jun", "Jul": "jul", "Aug": "ago",
+    "Sep": "sep", "Oct": "oct", "Nov": "nov", "Dec": "dic",
+}
+
+
+def format_date_dmy(dt, lang="en"):
+    """"%d %b %Y" (e.g. "05 Sep 2026") with the month abbreviation
+    translated when lang=="es" (e.g. "05 sep 2026") - day and year are
+    plain digits, unaffected by language. lang="en" (the default, and any
+    other/unknown lang) renders EXACTLY as dt.strftime("%d %b %Y") always
+    has, so every existing English caller is byte-identical."""
+    day = dt.strftime("%d")
+    year = dt.strftime("%Y")
+    mon_en = dt.strftime("%b")
+    mon = _MONTH_ABBREV_ES.get(mon_en, mon_en) if lang == "es" else mon_en
+    return f"{day} {mon} {year}"
 
 
 # -----------------------------------------------------------------

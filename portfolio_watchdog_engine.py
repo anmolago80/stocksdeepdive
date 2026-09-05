@@ -52,6 +52,8 @@ import requests
 
 import ai_client
 import ai_gate
+import email_auth
+import i18n
 import portfolio_health_engine
 import portfolio_news_engine
 import portfolio_store
@@ -173,41 +175,44 @@ def _send(to_email, subject, html_body):
     return True
 
 
-def _brief_html(ticker, link, ai_text):
+def _brief_html(ticker, link, ai_text, lang="en"):
     return f"""
 <tr><td style="padding:14px 28px 4px 28px;font-family:Arial,Helvetica,sans-serif;">
   <div style="font-size:15px;font-weight:bold;color:#0f172a;">
     <a href="{link}" style="color:#0f766e;text-decoration:none;">{ticker}</a>
   </div>
   <div style="font-size:13.5px;color:#334155;line-height:1.6;padding-top:6px;white-space:pre-wrap;">{ai_text}</div>
-  <div style="font-size:11px;color:#94a3b8;padding-top:6px;">{ai_client.ANSWER_LABEL}</div>
+  <div style="font-size:11px;color:#94a3b8;padding-top:6px;">{i18n.t("email.ai_label", lang)}</div>
 </td></tr>
 """
 
 
-def _email_html(briefs, site):
+def _email_html(briefs, site, lang="en"):
+    """lang (Español completion, Part 2): heading/intro/footer/AI-label
+    chrome. Each brief's own AI-written text is requested directly in
+    Spanish from the model when lang=="es" (see _SYSTEM_PROMPT/
+    _build_prompt below) rather than translated after the fact."""
     body_rows = "".join(
-        _brief_html(b["ticker"], f"{site}/deep-dive?ticker={b['ticker']}", b["text"])
+        _brief_html(b["ticker"], f"{site}/deep-dive?ticker={b['ticker']}", b["text"], lang=lang)
         for b in briefs
     )
-    date_label = datetime.now(timezone.utc).strftime("%d %b %Y")
+    date_label = i18n.format_date_dmy(datetime.now(timezone.utc), lang)
     n = len(briefs)
+    heading = i18n.t(
+        "email.watchdog.heading_one" if n == 1 else "email.watchdog.heading_many", lang, n=n,
+    )
     return f"""\
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f7fa;">
 <tr><td align="center" style="padding:24px 12px;">
   <table role="presentation" width="620" cellpadding="0" cellspacing="0" border="0" style="background-color:#ffffff;border:1px solid #e2e8f0;">
     <tr><td style="padding:24px 28px 6px 28px;font-family:Arial,Helvetica,sans-serif;">
       <span style="font-size:22px;font-weight:bold;color:#0f172a;">Stocks</span><span style="font-size:22px;font-weight:bold;color:#0d9488;">DeepDive</span>
-      <div style="font-size:15px;color:#334155;padding-top:6px;font-weight:bold;">Portfolio watchdog - {n} holding{'s' if n != 1 else ''} changed</div>
-      <div style="font-size:13px;color:#64748b;padding-top:4px;">Something material moved since your last brief, as of {date_label}. Click any ticker for its full live Deep Dive.</div>
+      <div style="font-size:15px;color:#334155;padding-top:6px;font-weight:bold;">{heading}</div>
+      <div style="font-size:13px;color:#64748b;padding-top:4px;">{i18n.t("email.watchdog.intro", lang, date=date_label)}</div>
     </td></tr>
     {body_rows}
     <tr><td style="padding:16px 28px 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#94a3b8;line-height:1.6;">
-      Factual information only - each summary above describes data and model outputs computed
-      from stated inputs; it contains no recommendations to buy, hold or sell any security, and
-      is written by an AI model from your saved thesis and this site's own numbers, not by a
-      person. You're receiving this because you turned on the AI watchdog for a portfolio on
-      StocksDeepDive - turn it off any time in that portfolio's Portfolio settings.
+      {i18n.t("email.watchdog.footer", lang)}
     </td></tr>
   </table>
 </td></tr>
@@ -281,6 +286,17 @@ _SYSTEM_PROMPT = (
     "plain language, no bullet points, no headers."
 )
 
+# Español completion, Part 2: appended to _SYSTEM_PROMPT (same one AI
+# call, same ai_gate cost) when the recipient's sign-up language is "es" -
+# same "instruct the model to write in Spanish" approach the instruction
+# asks for on the weekly brief, applied here too so this email's AI
+# paragraph isn't the one English block on an otherwise-Spanish page.
+_SYSTEM_PROMPT_ES_SUFFIX = (
+    " Write your entire response in natural, fluent Spanish (the reader "
+    "is a Spanish speaker) - still 3-5 sentences, plain language, no "
+    "bullet points, no headers."
+)
+
 
 def _build_prompt(ticker, h, analysis, prev_overall):
     health = analysis["health"]
@@ -326,6 +342,11 @@ def run_nightly_watchdog(log=print):
 
     for email, portfolio in owners:
         try:
+            # Español completion, Part 2: resolved once per user (a
+            # first-touch-only column - see email_auth.get_signup_lang's
+            # own docstring), reused for every holding's AI prompt and
+            # for the combined email/push below.
+            _lang = email_auth.get_signup_lang(email)
             holdings = portfolio_store.get_holdings(email, portfolio)
             briefs = []
             for h in holdings:
@@ -361,7 +382,8 @@ def run_nightly_watchdog(log=print):
                         f"({gate_msg}) - stopping this user's run")
                     break
 
-                result = ai_client.ask(_SYSTEM_PROMPT,
+                _system_prompt = _SYSTEM_PROMPT + (_SYSTEM_PROMPT_ES_SUFFIX if _lang == "es" else "")
+                result = ai_client.ask(_system_prompt,
                                        _build_prompt(ticker, h, analysis, prev_overall))
                 if result["input_tokens"] or result["output_tokens"]:
                     try:
@@ -384,11 +406,11 @@ def run_nightly_watchdog(log=print):
                 continue
 
             sent_anything = False
+            _tickers_joined = ", ".join(b["ticker"] for b in briefs)
             if email_configured:
                 try:
-                    subject = ("StocksDeepDive portfolio watchdog: "
-                               + ", ".join(b["ticker"] for b in briefs))
-                    _send(email, subject, _email_html(briefs, site))
+                    subject = i18n.t("email.watchdog.subject", _lang, tickers=_tickers_joined)
+                    _send(email, subject, _email_html(briefs, site, lang=_lang))
                     sent_anything = True
                 except Exception as e:
                     summary["errors"] += 1
@@ -399,9 +421,9 @@ def run_nightly_watchdog(log=print):
             # email above sent, and vice versa.
             if push_configured:
                 try:
-                    title = "Portfolio watchdog: " + ", ".join(b["ticker"] for b in briefs)
+                    title = i18n.t("push.watchdog.title", _lang, tickers=_tickers_joined)
                     push_send.send_to_email(
-                        email, title, "Tap to see what changed on StocksDeepDive.",
+                        email, title, i18n.t("push.watchdog.body", _lang),
                         url=f"{site}/portfolio",
                     )
                     sent_anything = True

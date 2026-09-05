@@ -70,6 +70,8 @@ import pandas as pd
 import requests
 
 import results_store
+import email_auth
+import i18n
 
 AI_FEATURE = None  # this module never calls the Anthropic API - see the
 # module docstring; explicit for the same reason alert_engine.py's own
@@ -477,13 +479,18 @@ def _audience(ticker):
     return sorted(emails)
 
 
-def _event_email_html(ticker, report_date, after, moved, site):
+def _event_email_html(ticker, report_date, after, moved, site, lang="en"):
+    """lang (Español completion, Part 2): heading/vs-line/footer chrome
+    only - each `moved` item's own text is results_engine's own
+    engine-generated "what moved" sentence, stays untranslated (same as
+    app.py's before/after card in Part 1)."""
     link = f"{site}/deep-dive?ticker={ticker}"
     moved_html = "".join(
         f"<div style='padding:3px 0;'>&bull; {m['text']}</div>" for m in moved
-    ) or "<div style='padding:3px 0;color:#94a3b8;'>No material change computed.</div>"
+    ) or f"<div style='padding:3px 0;color:#94a3b8;'>{i18n.t('email.results.no_moves', lang)}</div>"
     vs = after.get("value_score")
-    vs_line = f"Value Score now {vs:.1f}." if vs is not None else ""
+    vs_line = i18n.t("email.results.vs_line", lang, vs=f"{vs:.1f}") if vs is not None else ""
+    reported_on = i18n.t("email.results.reported_on", lang, date=report_date)
     return f"""\
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f7fa;">
 <tr><td align="center" style="padding:24px 12px;">
@@ -491,7 +498,7 @@ def _event_email_html(ticker, report_date, after, moved, site):
     <tr><td style="padding:24px 28px 6px 28px;font-family:Arial,Helvetica,sans-serif;">
       <span style="font-size:22px;font-weight:bold;color:#0f172a;">Stocks</span><span style="font-size:22px;font-weight:bold;color:#0d9488;">DeepDive</span>
       <div style="font-size:15px;color:#334155;padding-top:6px;font-weight:bold;">
-        <a href="{link}" style="color:#0f766e;text-decoration:none;">{ticker}</a> reported on {report_date}
+        <a href="{link}" style="color:#0f766e;text-decoration:none;">{ticker}</a> {reported_on}
       </div>
       <div style="font-size:13px;color:#334155;padding-top:2px;">{vs_line}</div>
     </td></tr>
@@ -499,8 +506,7 @@ def _event_email_html(ticker, report_date, after, moved, site):
       {moved_html}
     </td></tr>
     <tr><td style="padding:16px 28px 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#94a3b8;line-height:1.6;">
-      A computed before/after comparison from this site's own scoring - not a recommendation
-      to buy, hold or sell any security. Full before/after on the Deep Dive page above.
+      {i18n.t("email.results.footer", lang)}
     </td></tr>
   </table>
 </td></tr>
@@ -515,16 +521,23 @@ def _notify_results_event(ticker, report_date, after, moved, log=print):
     if not emails:
         return 0
     c = _cfg()
-    subject = f"{ticker} reported on {report_date} - before/after"
-    push_body = moved[0]["text"] if moved else f"{ticker} reported on {report_date}."
     email_configured = is_configured()
     push_configured = push_send.is_configured()
-    body_html = _event_email_html(ticker, report_date, after, moved, c["site"])
     sent = 0
     for email in emails:
+        # Español completion, Part 2: per-recipient language, same
+        # get_signup_lang(email) pattern as the rest of this batch's
+        # senders - the subject/body/push text are all built per
+        # recipient now instead of once and reused.
+        _lang = email_auth.get_signup_lang(email)
+        subject = i18n.t("email.results.subject", _lang, ticker=ticker, date=report_date)
+        push_body = moved[0]["text"] if moved else i18n.t(
+            "email.results.push_fallback", _lang, ticker=ticker, date=report_date,
+        )
         ok = False
         if email_configured:
             try:
+                body_html = _event_email_html(ticker, report_date, after, moved, c["site"], lang=_lang)
                 _send(email, subject, body_html)
                 ok = True
             except Exception as e:

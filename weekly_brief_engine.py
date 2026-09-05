@@ -89,6 +89,8 @@ import ai_client
 import ai_gate
 import blog_store
 import calendar_render
+import email_auth
+import i18n
 import portfolio_health_engine
 import portfolio_store
 import score_history
@@ -331,6 +333,16 @@ mention it - never say a section is empty either, just omit it entirely.
 End with one short sentence pointing the reader to the full numbers
 further down the email."""
 
+# Español completion, Part 2: appended to _BRIEF_SYSTEM_PROMPT (same one
+# AI call, same ai_gate cost) when the recipient's sign-up language is
+# "es" - exactly what the instruction asks for on this email specifically
+# ("instruct the model to write the brief in Spanish").
+_BRIEF_SYSTEM_PROMPT_ES_SUFFIX = (
+    "\n\nWrite your entire response in natural, fluent Spanish (the "
+    "reader is a Spanish speaker) - still 2-4 short paragraphs, plain "
+    "prose, no headings, no bullet lists."
+)
+
 
 def _brief_user_message(watchlist_rows, health_changes, posts, site):
     parts = []
@@ -366,11 +378,15 @@ def _has_material_content(watchlist_rows, health_changes, posts):
     return False
 
 
-def _draft_brief(email, watchlist_rows, health_changes, posts, site):
+def _draft_brief(email, watchlist_rows, health_changes, posts, site, lang="en"):
     """Sonnet-drafted intro paragraph(s), or None if there's nothing
     material to write about, the gate denies this recipient, or the call
     itself fails - every case falls back to the plain table with no AI
-    text, never a failed/skipped send."""
+    text, never a failed/skipped send.
+
+    lang (Español completion, Part 2): appends _BRIEF_SYSTEM_PROMPT_ES_
+    SUFFIX when "es" - same one call, same gate/cost, just asked to
+    answer in Spanish."""
     user_message = _brief_user_message(watchlist_rows, health_changes, posts, site)
     if not user_message.strip():
         return None
@@ -380,8 +396,9 @@ def _draft_brief(email, watchlist_rows, health_changes, posts, site):
         allowed = False
     if not allowed:
         return None
+    system_prompt = _BRIEF_SYSTEM_PROMPT + (_BRIEF_SYSTEM_PROMPT_ES_SUFFIX if lang == "es" else "")
     result = ai_client.ask(
-        _BRIEF_SYSTEM_PROMPT,
+        system_prompt,
         f"Draft this week's brief from the facts below.\n\n{user_message}",
         model=ai_client.MODEL_SONNET, max_tokens=600,
     )
@@ -401,7 +418,7 @@ def _draft_brief(email, watchlist_rows, health_changes, posts, site):
 # Email assembly + send.
 # ---------------------------------------------------------------------
 
-def _reporting_this_week_block_html(reporting_tickers, site):
+def _reporting_this_week_block_html(reporting_tickers, site, lang="en"):
     """Services batch 2, Part 4 (2026-09-01): "one factual line" -
     deliberately NOT run through _draft_brief/ai_client at all (per the
     spec's own "data only, no AI" instruction) - a plain, always-the-
@@ -419,14 +436,20 @@ def _reporting_this_week_block_html(reporting_tickers, site):
     )
     return f"""
     <tr><td style="padding:14px 28px 4px 28px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1e293b;">
-      <b>Reporting this week:</b> {links}. <a href="{site}/calendar" style="color:#0f766e;">Full results calendar →</a>
+      <b>{i18n.t("email.brief.reporting_this_week", lang)}</b> {links}. <a href="{site}/calendar" style="color:#0f766e;">{i18n.t("email.brief.full_calendar_link", lang)}</a>
     </td></tr>"""
 
 
-def _email_html(email, watchlist_rows, health_changes, posts, site, ai_text, reporting_tickers=None):
+def _email_html(email, watchlist_rows, health_changes, posts, site, ai_text, reporting_tickers=None, lang="en"):
+    """lang (Español completion, Part 2): heading/intro/section-heading/
+    footer/AI-label chrome. `ai_text` itself is already in Spanish when
+    lang=="es" (requested directly from the model - see _draft_brief).
+    The watchlist/health data tables (rows and column headers) stay
+    untranslated, same deferred policy as digest_engine.py's identical
+    table in Part 1/2."""
     body_rows = "".join(_watchlist_row_html(r, site) for r in watchlist_rows)
-    date_label = datetime.now(timezone.utc).strftime("%d %b %Y")
-    reporting_block = _reporting_this_week_block_html(reporting_tickers, site)
+    date_label = i18n.format_date_dmy(datetime.now(timezone.utc), lang)
+    reporting_block = _reporting_this_week_block_html(reporting_tickers, site, lang=lang)
 
     ai_block = ""
     if ai_text:
@@ -436,7 +459,7 @@ def _email_html(email, watchlist_rows, health_changes, posts, site, ai_text, rep
         )
         ai_block = f"""
     <tr><td style="padding:4px 28px 14px 28px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1e293b;line-height:1.55;background-color:#f0fdfa;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;">
-      <div style="font-size:11px;font-weight:bold;color:#0d9488;text-transform:uppercase;letter-spacing:0.5px;padding:12px 0 8px 0;">{ai_client.ANSWER_LABEL}</div>
+      <div style="font-size:11px;font-weight:bold;color:#0d9488;text-transform:uppercase;letter-spacing:0.5px;padding:12px 0 8px 0;">{i18n.t("email.ai_label", lang)}</div>
       {ai_paragraphs}
     </td></tr>"""
 
@@ -444,7 +467,7 @@ def _email_html(email, watchlist_rows, health_changes, posts, site, ai_text, rep
     if health_changes:
         health_rows = "".join(_health_row_html(h) for h in health_changes)
         health_block = f"""
-    <tr><td style="padding:16px 28px 4px 28px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;color:#0f172a;">Portfolio health</td></tr>
+    <tr><td style="padding:16px 28px 4px 28px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;color:#0f172a;">{i18n.t("email.brief.health_heading", lang)}</td></tr>
     <tr><td style="padding:0 28px 4px 28px;">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr><th align="left" style="{_TH}">Holding</th><th align="right" style="{_TH}">Health score</th><th align="right" style="{_TH}">Vs 7 days ago</th></tr>
@@ -456,7 +479,7 @@ def _email_html(email, watchlist_rows, health_changes, posts, site, ai_text, rep
     if posts:
         posts_html = "".join(_post_line_html(p, site) for p in posts)
         posts_block = f"""
-    <tr><td style="padding:16px 28px 4px 28px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;color:#0f172a;">New research this week</td></tr>
+    <tr><td style="padding:16px 28px 4px 28px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;color:#0f172a;">{i18n.t("email.brief.posts_heading", lang)}</td></tr>
     <tr><td style="padding:0 28px 4px 28px;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
       {posts_html}
     </td></tr>"""
@@ -467,8 +490,8 @@ def _email_html(email, watchlist_rows, health_changes, posts, site, ai_text, rep
   <table role="presentation" width="620" cellpadding="0" cellspacing="0" border="0" style="background-color:#ffffff;border:1px solid #e2e8f0;">
     <tr><td style="padding:24px 28px 6px 28px;font-family:Arial,Helvetica,sans-serif;">
       <span style="font-size:22px;font-weight:bold;color:#0f172a;">Stocks</span><span style="font-size:22px;font-weight:bold;color:#0d9488;">DeepDive</span>
-      <div style="font-size:15px;color:#334155;padding-top:6px;font-weight:bold;">Your weekly brief</div>
-      <div style="font-size:13px;color:#64748b;padding-top:4px;">As of {date_label}. Click any ticker for its full live Deep Dive.</div>
+      <div style="font-size:15px;color:#334155;padding-top:6px;font-weight:bold;">{i18n.t("email.brief.heading", lang)}</div>
+      <div style="font-size:13px;color:#64748b;padding-top:4px;">{i18n.t("email.brief.intro", lang, date=date_label)}</div>
     </td></tr>
     {ai_block}
     {reporting_block}
@@ -489,13 +512,8 @@ def _email_html(email, watchlist_rows, health_changes, posts, site, ai_text, rep
     {health_block}
     {posts_block}
     <tr><td style="padding:16px 28px 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#94a3b8;line-height:1.6;">
-      {'Factual information and calculator outputs only - this email describes data and model outputs computed from stated inputs; it contains no recommendations to buy, hold or sell any security.'
-       if FACTUAL_MODE else
-       'General information only - not financial advice; scores and signals are model outputs and do not consider your personal circumstances.'}
-      Scored without news/social attention inputs
-      (this brief uses the attention-lite model). You're receiving this because
-      {email} saved a watchlist on StocksDeepDive while signed in. To stop these,
-      remove all stocks from your watchlist on the site.
+      {i18n.t("email.digest.disclaimer_factual" if FACTUAL_MODE else "email.digest.disclaimer_general", lang)}
+      {i18n.t("email.brief.footer_note", lang, email=email)}
     </td></tr>
   </table>
 </td></tr>
@@ -533,6 +551,11 @@ def run_weekly_brief(log=print):
 
     for email, tickers in all_users:
         try:
+            # Español completion, Part 2: per-recipient language, same
+            # get_signup_lang(email) pattern as this batch's other
+            # senders - drives both the AI system prompt and the
+            # surrounding chrome/subject.
+            _lang = email_auth.get_signup_lang(email)
             watchlist_rows = _watchlist_rows(tickers, ticker_cache)
             if not watchlist_rows:
                 summary["skipped"] += 1
@@ -554,16 +577,18 @@ def run_weekly_brief(log=print):
 
             ai_text = None
             if ai_client.available() and _has_material_content(watchlist_rows, health_changes, posts):
-                ai_text = _draft_brief(email, watchlist_rows, health_changes, posts, site)
+                ai_text = _draft_brief(email, watchlist_rows, health_changes, posts, site, lang=_lang)
 
             subject = (
-                "Your StocksDeepDive weekly brief" if ai_text
-                else ("Your StocksDeepDive watchlist - weekly update" if FACTUAL_MODE
-                      else "Your StocksDeepDive watchlist - weekly signals")
+                i18n.t("email.brief.subject_ai", _lang) if ai_text
+                else i18n.t(
+                    "email.digest.subject_factual" if FACTUAL_MODE else "email.digest.subject_signal",
+                    _lang,
+                )
             )
             _send(email, subject, _email_html(
                 email, watchlist_rows, health_changes, posts, site, ai_text,
-                reporting_tickers=reporting_tickers,
+                reporting_tickers=reporting_tickers, lang=_lang,
             ))
             summary["sent"] += 1
             log(f"[weekly_brief] sent to {email} ({len(watchlist_rows)} stocks"
