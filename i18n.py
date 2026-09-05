@@ -21,15 +21,19 @@ DISCLAIMER_ES / FOOTER_DISCLAIMER_FACTUAL_ES / FOOTER_DISCLAIMER_GENERAL_ES
 below and their call sites in blog_render.py / app.py.
 
 Coverage in this pass (Part 1) - see the deployment report for the full
-per-page breakdown: header nav labels, search box, Simple/Full toggle,
-the new EN/ES picker itself, the account-bar Sign In/Sign out/Subscribe
-labels, paywall_engine.render_gate()'s fixed chrome (not each call site's
-own feature_label/teaser text), and both standing disclaimers. Explicitly
+per-page breakdown: header nav labels, search box, the EN/ES picker
+itself, the account-bar Sign In/Sign out/Subscribe labels,
+paywall_engine.render_gate()'s fixed chrome (not each call site's own
+feature_label/teaser text), and both standing disclaimers. Explicitly
 NOT yet covered (falls back to English via t()'s EN default, or is simply
 not yet lang-aware at all): the email sign-in popover's internal copy,
 Scanner/Comparison/Portfolio page-specific chrome, alert/email-hook/
 follow-control detail text, ai_gate quota messages, and per-gate-call-site
 feature_label/teaser strings.
+
+Cleanup round: the "toggle.simple"/"toggle.full" keys (for the Simple|
+Full view toggle) were removed here when that feature was removed from
+the site - see claude_instruction_cleanup_round.md, Part 1.
 """
 
 EN = {
@@ -49,9 +53,6 @@ EN = {
         "side-by-side Comparison. ASX (e.g. CSL.AX) and US (e.g. AAPL) "
         "tickers can be mixed freely."
     ),
-
-    "toggle.simple": "Simple",
-    "toggle.full": "Full",
 
     "lang.en": "EN",
     "lang.es": "ES",
@@ -93,9 +94,6 @@ ES = {
         "tickers de la ASX (p. ej., CSL.AX) y de EE. UU. (p. ej., AAPL) se "
         "pueden combinar libremente."
     ),
-
-    "toggle.simple": "Simple",
-    "toggle.full": "Completo",
 
     "lang.en": "EN",
     "lang.es": "ES",

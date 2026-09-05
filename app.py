@@ -565,96 +565,15 @@ def _set_admin_seen_cookie():
 
 
 # -----------------------------------------------------------------
-# Simple view, Part 1: a "Simple | Full" reading-level toggle for the
-# Deep Dive and Research pages. Persistence reuses the exact same plain
-# (unsigned, non-auth) document.cookie write pattern as sdd_fullview/
-# sdd_admin_seen above - including the same "buttons can't write a
-# cookie themselves, they leave a pending flag" deferral, since a widget
-# callback here also reruns immediately - rather than inventing a new
-# persistence layer. `st.session_state["view_mode"]` ("simple"/"full")
-# is the single source of truth read everywhere else on both pages.
-# -----------------------------------------------------------------
-
-_VIEW_MODE_COOKIE = "sdd_view_mode"
-
-
-def _set_view_mode_cookie(mode: str):
-    import streamlit.components.v1 as _components
-    _js = (f"document.cookie='{_VIEW_MODE_COOKIE}={mode}; "
-           "path=/; max-age=31536000; SameSite=Lax';")
-    _components.html(f"<script>{_js}</script>", height=0)
-
-
-def _init_view_mode():
-    """Resolves st.session_state["view_mode"] once per session, before
-    the toggle widget is created - same one-shot-guard idiom as the
-    cp_ticker/dd ticker query-param defaults (only ever set this key
-    here when it doesn't already exist, so this never fights a visitor's
-    own later click). Priority: an existing sdd_view_mode cookie (a
-    prior visit's remembered choice) > Simple by default when the
-    session arrived via a Reddit-tagged src (reuses the conversion
-    pass's persisted first_src) > Full otherwise."""
-    if "view_mode" in st.session_state:
-        return
-    _cookie_val = None
-    try:
-        _cookie_val = st.context.cookies.get(_VIEW_MODE_COOKIE)
-    except Exception:
-        pass
-    if _cookie_val in ("simple", "full"):
-        st.session_state["view_mode"] = _cookie_val
-    elif (st.session_state.get("first_src") or "").strip().lower().startswith("reddit"):
-        st.session_state["view_mode"] = "simple"
-    else:
-        st.session_state["view_mode"] = "full"
-
-
-def _render_view_toggle(key_prefix):
-    """Compact Simple|Full segmented control - shared by the Deep Dive
-    and Research pages. _init_view_mode() must already have run (both
-    call sites do this at the top of their own page function) so
-    st.session_state["view_mode"] always has a value to default from
-    before this widget is created. A change here updates the shared
-    view_mode immediately (st.rerun(), so the rest of THIS page render
-    reflects it) and queues the cookie write for the top of the next run
-    (components.html can't deliver its <script> before a rerun cancels
-    it - same constraint _set_admin_cookie's own docstring documents).
-
-    Español instruction, Part 1: the WIDGET LABELS are translated via
-    i18n.t(), but st.session_state["view_mode"] itself always stays the
-    canonical English "simple"/"full" - that value is read by cookie
-    resolution (_init_view_mode's cookie check) and by every _simple =
-    ... comparison elsewhere on both pages, so it must never become
-    "completo". _en_labels/_lang_labels below are positionally paired
-    (index 0 = simple, index 1 = full) purely so the displayed choice can
-    be mapped back to the canonical value regardless of language."""
-    _lang = st.session_state.get("lang", "en")
-    _en_labels = ["Simple", "Full"]
-    _lang_labels = [i18n.t("toggle.simple", _lang), i18n.t("toggle.full", _lang)]
-    _prev = st.session_state.get("view_mode", "full")
-    _prev_label = _lang_labels[0] if _prev == "simple" else _lang_labels[1]
-    _choice = st.segmented_control(
-        "View", _lang_labels, default=_prev_label,
-        key=f"{key_prefix}_view_toggle", label_visibility="collapsed",
-    )
-    _new_mode = "simple" if _choice == _lang_labels[0] else "full" if _choice else _prev
-    if _new_mode != _prev:
-        st.session_state["view_mode"] = _new_mode
-        st.session_state["_pending_view_mode_cookie"] = _new_mode
-        st.rerun()
-
-
-# -----------------------------------------------------------------
-# Español instruction, Part 1: a persisted EN/ES language choice, same
-# architecture as the Simple/Full view toggle just above - a cookie,
-# a one-shot _init_lang() resolution, and a compact _render_lang_picker()
-# widget that queues its cookie write for the top of the next run (same
-# "a widget callback can't write a cookie before its own st.rerun()"
-# deferral _set_view_mode_cookie's own docstring documents).
+# Español instruction, Part 1: a persisted EN/ES language choice - a
+# cookie, a one-shot _init_lang() resolution, and a compact
+# _render_lang_picker() widget that queues its cookie write for the top
+# of the next run, since a widget callback can't write a cookie before
+# its own st.rerun() cancels delivery of the <script> tag (same
+# constraint _set_admin_cookie's own docstring documents).
 # st.session_state["lang"] ("en"/"es") is the single source of truth
-# read everywhere else via i18n.t(key, lang, **fmt). Unlike view_mode
-# (which is only initialised on the two pages that use it), _init_lang()
-# is called once, unconditionally, near the top of every script run (see
+# read everywhere else via i18n.t(key, lang, **fmt). _init_lang() is
+# called once, unconditionally, near the top of every script run (see
 # below, next to the other pending-cookie flushes) so every page -
 # including Home - has st.session_state["lang"] available before it
 # renders its header.
@@ -672,8 +591,9 @@ def _set_lang_cookie(lang: str):
 
 def _init_lang():
     """Resolves st.session_state["lang"] once per session, before any
-    picker widget is created - same one-shot-guard idiom as
-    _init_view_mode(). Priority, per the instruction's architecture
+    picker widget is created - a one-shot-guard idiom (only ever sets
+    this key when it doesn't already exist, so it never fights a
+    visitor's own later click). Priority, per the instruction's architecture
     rules: an explicit choice (an existing sdd_lang cookie from a prior
     visit) > ?lang=es query param (so the owner's Spanish Reddit/blog
     posts can link straight into Spanish) > the browser's
@@ -708,8 +628,9 @@ def _render_lang_picker(key_prefix):
     st.session_state["lang"] always has a value to default from before
     this widget is created. A change here updates the shared lang
     immediately (st.rerun(), so the rest of THIS page render reflects
-    it) and queues the cookie write for the top of the next run, same
-    deferral as _render_view_toggle."""
+    it) and queues the cookie write for the top of the next run, since a
+    widget callback can't write a cookie before its own st.rerun()
+    cancels delivery of the <script> tag."""
     _prev = st.session_state.get("lang", "en")
     _choice = st.segmented_control(
         "Language", ["EN", "ES"], default=_prev.upper(),
@@ -793,16 +714,9 @@ if st.session_state.pop("_pending_admin_cookie_clear", False):
 if st.session_state.pop("_pending_admin_seen_cookie", False):
     _set_admin_seen_cookie()
 
-# Simple view, Part 1: same pending-flag deferral pattern as the admin
-# cookie just above - the toggle's own callback can't write the cookie
-# itself (its st.rerun() would cancel delivery).
-_pending_view_mode = st.session_state.pop("_pending_view_mode_cookie", None)
-if _pending_view_mode:
-    _set_view_mode_cookie(_pending_view_mode)
-
-# Español instruction, Part 1: same pending-flag deferral, plus the
-# one-shot resolution itself - called here, unconditionally, so every
-# page (including Home, which never calls _init_view_mode) has
+# Español instruction, Part 1: same pending-flag deferral pattern as the
+# admin cookie just above, plus the one-shot resolution itself - called
+# here, unconditionally, so every page (including Home) has
 # st.session_state["lang"] available before its own header renders.
 _pending_lang = st.session_state.pop("_pending_lang_cookie", None)
 if _pending_lang:
@@ -4194,7 +4108,7 @@ def _render_position_disclosure(ticker):
                 st.rerun()
 
 
-def _render_cp_section(ticker, section_label, data, simple=False):
+def _render_cp_section(ticker, section_label, data):
     """
     Renders one Research-page section (Fundamentals / Value vs Book /
     Retained Earnings / Earnings Trends / Cost of Capital / Fair Value /
@@ -4209,18 +4123,6 @@ def _render_cp_section(ticker, section_label, data, simple=False):
     SHARED with the Deep Dive page's "Compounder View (auto)" expander via
     compounder_ui.render_section(), so the two can never visually drift
     apart (see compounder_ui.py's docstring).
-
-    simple (Simple view, Part 3): "story first, spreadsheet second".
-    Company Potential is the ONLY one of these seven sections with actual
-    owner-written prose (the "groups"/text_groups below) - the other six
-    are a computed sheet + metrics grid with no summary/verdict field
-    anywhere in the data (confirmed against build_compounder_data.py's
-    output shape). Per the instruction's own explicit fallback ("if a
-    section has no written paragraph, show the table as-is"), those six
-    are rendered identically in both views; only Company Potential
-    reorders here, leading with the written analysis and collapsing the
-    Low/Medium/High ratings grid (the closest thing to a "table" this
-    section has) under "See the numbers ->".
     """
     section = data["sections"][section_label]
 
@@ -4268,22 +4170,10 @@ def _render_cp_section(ticker, section_label, data, simple=False):
             "and more - shown exactly as researched - plus the full written "
             "analysis, grouped by theme."
         )
-        if simple and groups:
-            # Simple view, Part 3: story first - the owner's written
-            # analysis leads, the ratings grid (the section's one
-            # "spreadsheet"-like piece) collapses underneath it. Same
-            # _cp_render_text_groups/_cp_render_hml_ratings calls as Full
-            # view, just reordered and the ratings wrapped - neither
-            # function is forked.
+        if ratings or short_checks:
+            _cp_render_hml_ratings(ratings, short_checks)
+        if groups:
             _cp_render_text_groups(groups)
-            if ratings or short_checks:
-                with st.expander("See the numbers →"):
-                    _cp_render_hml_ratings(ratings, short_checks)
-        else:
-            if ratings or short_checks:
-                _cp_render_hml_ratings(ratings, short_checks)
-            if groups:
-                _cp_render_text_groups(groups)
         return
 
     # The six computed sections all render through the shared component.
@@ -4536,22 +4426,11 @@ def page_research():
     # card now renders in the row above instead (see pick_col2).
     _render_research_header_card(ticker, data, section_order)
 
-    # Simple view, Part 3: same Simple|Full toggle/persistence as the Deep
-    # Dive (_init_view_mode/_render_view_toggle, Part 1) - reused as-is,
-    # not reinvented. Placed directly under the header card, right before
-    # the section tabs, same "next to the ticker header" convention Part 1
-    # specifies for the Deep Dive's own toggle.
-    _init_view_mode()
-    _cp_simple = st.session_state.get("view_mode") == "simple"
-    _rc_spacer, _rc_toggle_col = st.columns([5, 2])
-    with _rc_toggle_col:
-        _render_view_toggle(key_prefix=f"cp_{ticker}")
-
     _cp_tabs = st.tabs(section_order, default=_cp_default_section)
     for _cp_label, _cp_tab in zip(section_order, _cp_tabs):
         with _cp_tab:
             st.markdown(f"### {ticker} - {_cp_label}")
-            _render_cp_section(ticker, _cp_label, data, simple=_cp_simple)
+            _render_cp_section(ticker, _cp_label, data)
 
 
 def page_home():
@@ -5835,32 +5714,6 @@ def _dd_verdict_sentence(dd):
     return sentence
 
 
-def _dd_verdict_sentence_simple(dd):
-    """Simple-view verdict sentence (Simple view, Part 2.1) - the exact
-    same computed values as _dd_verdict_sentence (dd["mos"], the reverse-
-    DCF implied/model growth pair), just spelled out in plainer wording
-    ("28% cheaper than our estimate" rather than "+28% margin of
-    safety"). Returns None under the exact same condition
-    _dd_verdict_sentence does, so Simple view never shows the KPI row
-    below with no matching sentence above it."""
-    if not dd.get("intrinsic_value") or dd.get("mos") is None:
-        return None
-    mos = dd["mos"]
-    if mos >= 0:
-        sentence = f"The model thinks this is {mos:.0f}% cheaper than our estimate of what it's worth"
-    else:
-        sentence = f"The model thinks this is {abs(mos):.0f}% above our estimate of what it's worth"
-    implied_pct, model_pct = _dd_reverse_dcf_growth(dd)
-    if implied_pct is not None and model_pct is not None:
-        sentence += (
-            f" — the price only makes sense if growth comes in around "
-            f"{implied_pct:+.0f}% a year; the model itself assumes {model_pct:+.0f}%."
-        )
-    else:
-        sentence += "."
-    return sentence
-
-
 def _render_dd_verdict_and_chips(dd):
     """Renders directly under the ticker header, above the score gauges:
     one server-computed verdict sentence (see _dd_verdict_sentence), then
@@ -5871,35 +5724,15 @@ def _render_dd_verdict_and_chips(dd):
     each target section carries its own `<div id="...">` marker - see
     e.g. _render_reverse_dcf_card's own "Conversion pass, Part 1" comment
     for the anchor list). Total added height is a couple of lines of
-    text plus one wrapping chip row - nowhere near the ~90px budget.
-
-    Simple view, Part 1: the Simple|Full toggle renders in a narrow
-    column on this SAME row (per the instruction's own "must not fight
-    for space" requirement) rather than as a separate call site, since
-    this is already the one place both pages render "the row under the
-    ticker header." Simple view (Part 2.1) also swaps in the plainer
-    verdict wording and a slightly larger heading, and skips the anchor
-    chip row entirely - its jump targets sit inside the new Simple-view
-    expanders below, where a plain anchor link can't auto-open them, so
-    keeping the chips would just be broken navigation in that mode."""
-    _init_view_mode()
-    _simple = st.session_state.get("view_mode") == "simple"
-    _vcol, _tcol = st.columns([5, 2])
-    with _vcol:
-        sentence = _dd_verdict_sentence_simple(dd) if _simple else _dd_verdict_sentence(dd)
-        if sentence:
-            _heading = "####" if _simple else "#####"
-            st.markdown(f"{_heading} {html.escape(sentence)}")
-            if dd.get("quality_default") or dd.get("value_default"):
-                st.caption(
-                    "Rests on a default/estimated input where a reported figure "
-                    "wasn't available - see the notes below."
-                )
-    with _tcol:
-        _render_view_toggle(key_prefix=f"dd_{dd['ticker']}")
-
-    if _simple:
-        return
+    text plus one wrapping chip row - nowhere near the ~90px budget."""
+    sentence = _dd_verdict_sentence(dd)
+    if sentence:
+        st.markdown(f"##### {html.escape(sentence)}")
+        if dd.get("quality_default") or dd.get("value_default"):
+            st.caption(
+                "Rests on a default/estimated input where a reported figure "
+                "wasn't available - see the notes below."
+            )
 
     ticker = dd["ticker"]
     chips = []
@@ -5931,288 +5764,6 @@ def _render_dd_verdict_and_chips(dd):
         for label, anchor in chips
     )
     st.markdown(f'<div style="line-height:2.4">{chips_html}</div>', unsafe_allow_html=True)
-
-
-# -----------------------------------------------------------------
-# Simple view, Part 2: the Deep Dive's plain-English reading level.
-# Every sentence/word below is built by a deterministic template from
-# values already computed on `dd` (or one extra, already-cached call to
-# auto_compounder_engine.build_sections() the Compounder View section
-# further down this same page also makes) - no Anthropic API call, no
-# invented numbers. Owner-reviewable: the two word-choice tables below
-# (_MOAT_STATE_SIMPLE_WORDS, _PSYCH_MOOD_SIMPLE_WORDS) and the quality-
-# driver thresholds in _dd_quality_driver_words() are the only "judgment
-# calls" in this file the owner should sanity-check - everything else is
-# a straight number substitution.
-# -----------------------------------------------------------------
-
-_MOAT_STATE_SIMPLE_WORDS = {
-    "none": "no erosion signs",
-    "watch": "erosion watch",
-    "eroding": "actively eroding",
-}
-
-_PSYCH_MOOD_SIMPLE_WORDS = {
-    "FEARFUL": "Fearful",
-    "CALM": "Neutral",
-    "NEUTRAL": "Neutral",
-    "GREEDY": "Greedy",
-    "OVERHEATED": "Greedy",
-}
-
-_SIMPLE_KPI_STATIC_DEFINITIONS = {
-    "margin_of_safety": (
-        "Margin of safety compares the model's estimate of fair value to "
-        "today's price. A positive number means the model thinks the stock "
-        "is cheaper than that estimate; a negative number means it's "
-        "trading above it."
-    ),
-    "quality": (
-        "Quality Score (0-100) blends profitability, growth and balance-"
-        "sheet strength from the company's own financial statements - how "
-        "solid the underlying business looks, independent of price."
-    ),
-    "moat": (
-        "Moat Score (0-100) estimates how well the business's profits are "
-        "protected from competition, based on returns on capital and "
-        "whether that return is holding up over time."
-    ),
-    "psychology": (
-        "Psychology reads how far the stock's recent price action sits "
-        "from its own normal range - it describes crowd behaviour around "
-        "the stock, not the business itself."
-    ),
-}
-
-# Español instruction, Part 1: ES sibling of the dict above, same keys.
-# _simple_kpi_definition() below is the lang-aware lookup call sites use
-# instead of indexing either dict directly.
-_SIMPLE_KPI_STATIC_DEFINITIONS_ES = {
-    "margin_of_safety": (
-        "El margen de seguridad compara la estimación del modelo del valor "
-        "razonable con el precio actual. Un número positivo significa que "
-        "el modelo considera que la acción está más barata que esa "
-        "estimación; un número negativo significa que cotiza por encima "
-        "de ella."
-    ),
-    "quality": (
-        "El Puntaje de Calidad (0-100) combina la rentabilidad, el "
-        "crecimiento y la solidez del balance a partir de los propios "
-        "estados financieros de la empresa - qué tan sólido luce el "
-        "negocio subyacente, independientemente del precio."
-    ),
-    "moat": (
-        "El Puntaje de Foso (Moat Score, 0-100) estima qué tan bien están "
-        "protegidas las ganancias del negocio frente a la competencia, "
-        "según el retorno sobre el capital y si ese retorno se mantiene "
-        "en el tiempo."
-    ),
-    "psychology": (
-        "La Psicología mide qué tan lejos está el movimiento reciente del "
-        "precio de la acción respecto a su rango normal - describe el "
-        "comportamiento de la multitud en torno a la acción, no el "
-        "negocio en sí."
-    ),
-}
-
-
-def _simple_kpi_definition(metric_key):
-    """Lang-aware lookup for _SIMPLE_KPI_STATIC_DEFINITIONS, same
-    EN-fallback contract as i18n.t() and _section_why()."""
-    if st.session_state.get("lang") == "es":
-        _es = _SIMPLE_KPI_STATIC_DEFINITIONS_ES.get(metric_key)
-        if _es:
-            return _es
-    return _SIMPLE_KPI_STATIC_DEFINITIONS.get(metric_key, "")
-
-
-def _dd_quality_driver_words(dd):
-    """2-4 word driver summary for the Quality KPI card (Simple view,
-    Part 2.2) - deterministic thresholds over dd["quality_components"]'s
-    already-computed, already-weighted point contributions (see
-    deep_dive_engine._quality_breakdown() for how each term is scaled -
-    ROIC/ROE/margin terms are already weighted percentages-of-100,
-    Debt Penalty is 0 to -15). No new computation, no AI. Falls back to
-    a neutral phrase when quality_src=="manual" leaves quality_components
-    empty (deep_dive_engine.analyze())."""
-    comps = dd.get("quality_components") or {}
-    if not comps:
-        return "limited data available"
-    debt_penalty = comps.get("Debt Penalty", 0) or 0
-    profitability = (
-        (comps.get("ROIC", 0) or 0) + (comps.get("ROE", 0) or 0)
-        + (comps.get("Profit Margin", 0) or 0)
-    )
-    fcf = comps.get("Free Cash Flow", 0) or 0
-
-    words = []
-    if profitability >= 6:
-        words.append("strong returns")
-    elif profitability <= -3:
-        words.append("thin margins")
-
-    if debt_penalty <= -7.5:
-        words.append("high debt")
-    elif debt_penalty >= -1:
-        words.append("low debt")
-
-    if len(words) < 2 and fcf > 0:
-        words.append("cash generative")
-    elif len(words) < 2 and fcf < 0:
-        words.append("cash burning")
-
-    return ", ".join(words[:2]) if words else "middling fundamentals"
-
-
-def _render_dd_simple_kpi_explainer(dd, metric_key, key_suffix):
-    """ⓘ on each Simple-view KPI card (Simple view, Part 2.2) - wired to
-    the site's EXISTING "explain this number" feature
-    (_render_explain_popover, already used next to each of these same
-    gauges further down the page): signed-in visitors get that AI
-    popover; signed-out get _render_static_explainer's fixed-text
-    sibling instead (same visual treatment, no AI call) - matching the
-    instruction's own "signed-out = static definition"."""
-    if paywall_engine.current_user_email():
-        _render_explain_popover(dd, metric_key)
-    else:
-        _render_static_explainer(
-            f"simple_kpi_{key_suffix}", "ⓘ What this means",
-            _simple_kpi_definition(metric_key),
-        )
-
-
-def _render_dd_simple_kpis(dd):
-    """Four plain KPI cards (Simple view, Part 2.2) - template text from
-    already-computed dd values, each with an ⓘ (see
-    _render_dd_simple_kpi_explainer). A card is omitted (not shown with
-    an N/A) when its underlying number isn't available, same "missing
-    number is omitted, never guessed" convention as the rest of this
-    page."""
-    ticker = dd["ticker"]
-    cards = []
-
-    if dd.get("intrinsic_value") and dd.get("mos") is not None:
-        mos = dd["mos"]
-        value = (f"{mos:.0f}% cheaper" if mos >= 0
-                  else f"{abs(mos):.0f}% above our estimate")
-        cards.append(("What we think it's worth vs the price", value, "margin_of_safety"))
-
-    if dd.get("quality_score") is not None:
-        driver = _dd_quality_driver_words(dd)
-        cards.append(("Business quality", f"{dd['quality_score']:.0f}/100 — {driver}", "quality"))
-
-    if dd.get("moat") is not None:
-        state_word = _MOAT_STATE_SIMPLE_WORDS.get(dd.get("moat_erosion"), "")
-        value = f"{dd['moat']:.0f}/100" + (f" — {state_word}" if state_word else "")
-        cards.append(("How protected the business is", value, "moat"))
-
-    if dd.get("psychology_sentiment"):
-        mood = _PSYCH_MOOD_SIMPLE_WORDS.get(dd["psychology_sentiment"], "Neutral")
-        off_high = (f" — {dd['fear']:.0f}% off its recent high"
-                     if dd.get("fear") is not None else "")
-        cards.append(("Crowd mood right now", f"{mood}{off_high}", "psychology"))
-
-    if not cards:
-        return
-    cols = st.columns(len(cards))
-    for col, (title, value, metric_key) in zip(cols, cards):
-        with col:
-            with st.container(border=True):
-                st.caption(title)
-                st.markdown(f"**{value}**")
-                _render_dd_simple_kpi_explainer(dd, metric_key, f"{metric_key}_{ticker}")
-
-
-def _render_dd_simple_stories(dd, quality_and_moat_fn, valuation_fn):
-    """The three Simple-view "story" sections (Simple view, Part 2.3) -
-    2-3 template sentences with the real numbers bolded, each ending in
-    a "See the numbers →" expander that renders the EXISTING full
-    section(s) inside it via the closures page_deep_dive() passes in
-    (quality_and_moat_fn, valuation_fn) - same render code Full view
-    calls directly, not a second copy of it. "What could go wrong?"
-    has no existing render function to wrap (there's no unified "red
-    flags" section on this page today - see this function's own red-
-    flags list below) other than the results-day card and Insider panel,
-    both called directly here since they're already self-contained
-    top-level functions."""
-    ticker = dd["ticker"]
-
-    st.markdown("#### Is the business any good?")
-    _sentences = [f"Quality scores **{dd['quality_score']:.0f}/100** ({dd['quality_label'].lower()})."]
-    try:
-        _sections = auto_compounder_engine.build_sections(ticker)
-        _roic = _checklist_metric_value(_sections, "Cost of Capital", "ROIC (TTM)", ticker)
-        _wacc = _checklist_metric_value(_sections, "Cost of Capital", "WACC", ticker)
-    except Exception:
-        _roic = _wacc = None
-    if _roic is not None and _wacc is not None:
-        _cmp = "above" if _roic > _wacc else "below"
-        _sentences.append(
-            f"It earns **{_roic * 100:.1f}c** of profit per dollar invested, "
-            f"{_cmp} the **{_wacc * 100:.1f}c** it needs to cover its cost of capital."
-        )
-    if dd.get("moat") is not None:
-        _erosion_word = _MOAT_STATE_SIMPLE_WORDS.get(dd.get("moat_erosion"), "")
-        _sentences.append(
-            f"Moat score is **{dd['moat']:.0f}/100** ({dd['moat_band_label'].lower()})"
-            + (f" — {_erosion_word}." if _erosion_word else ".")
-        )
-    for s in _sentences:
-        st.markdown(s)
-    with st.expander("See the numbers →"):
-        quality_and_moat_fn()
-
-    st.markdown("#### What is it worth?")
-    _sentences2 = []
-    if dd.get("intrinsic_value"):
-        _sentences2.append(
-            f"The model's estimate of fair value is **{dd['intrinsic_value']:,.2f} "
-            f"{dd['currency']}**, against today's price of **{dd['price']:,.2f} "
-            f"{dd['currency']}**."
-        )
-    _implied, _model = _dd_reverse_dcf_growth(dd)
-    if _implied is not None and _model is not None:
-        _sentences2.append(
-            f"The price only makes sense if growth comes in around "
-            f"**{_implied:+.0f}%** a year — that's the bet the market is making. "
-            f"The model itself assumes **{_model:+.0f}%**."
-        )
-    if not _sentences2:
-        _sentences2.append("No intrinsic value could be computed for this ticker.")
-    for s in _sentences2:
-        st.markdown(s)
-    with st.expander("See the numbers →"):
-        valuation_fn()
-
-    st.markdown("#### What could go wrong?")
-    _flags = []
-    if dd.get("quality_default"):
-        _flags.append("Quality rests on a default/estimated input, not a reported figure.")
-    if dd.get("value_default"):
-        _flags.append("Intrinsic value rests on a default/estimated input.")
-    for _mf in (dd.get("moat_flags") or []):
-        _flags.append(f"Moat: {_mf}")
-    try:
-        _net_insider = insider_store.net_insider_value_12m(ticker)
-    except Exception:
-        _net_insider = None
-    if _net_insider is not None:
-        _dir_word = "buying" if _net_insider >= 0 else "selling"
-        _flags.append(
-            f"Net insider {_dir_word} over the last 12 months: "
-            f"{dd.get('currency', '')} {abs(_net_insider):,.0f}."
-        )
-    if _flags:
-        for f in _flags:
-            st.markdown(f"- {f}")
-    else:
-        st.markdown("No red flags surfaced by the model's own checks right now.")
-    with st.expander("See the numbers →"):
-        try:
-            _render_results_day_card(ticker)
-        except Exception:
-            pass
-        _render_insider_panel(ticker)
 
 
 def _render_reverse_dcf_card(dd):
@@ -6585,16 +6136,7 @@ def page_deep_dive():
         _render_data_as_of(_dd["ticker"])
         _render_recent_results_banner(_dd["ticker"])
         _render_score_history_caption(_dd["ticker"], _dd.get("long_score"))
-        # Simple view, Part 2.3: in Simple view the results-day card moves
-        # into the "What could go wrong?" story's own expander instead of
-        # rendering up here - see _render_dd_simple_stories. _init_view_mode
-        # runs inside _render_dd_verdict_and_chips below, but this check
-        # happens first, so call it here too (idempotent - see its own
-        # one-shot guard) rather than relying on call order.
-        _init_view_mode()
-        _simple = st.session_state.get("view_mode") == "simple"
-        if not _simple:
-            _render_results_day_card(_dd["ticker"])
+        _render_results_day_card(_dd["ticker"])
 
         # --- Conversion pass, Part 1: verdict line + anchor chips. ---
         _render_dd_verdict_and_chips(_dd)
@@ -6607,61 +6149,54 @@ def page_deep_dive():
         # --- Conversion pass, Part 2: moment-tied email hook (signed-out only). ---
         _render_conversion_email_hook(_dd["ticker"])
 
-        # Simple view, Part 2.2: the dense metrics row + DCF-provenance
-        # captions are Full-view-only clutter - Simple view gets the four
-        # plain KPI cards instead (_render_dd_simple_kpis). Nothing below
-        # in this block is changed for Full view.
-        if _simple:
-            _render_dd_simple_kpis(_dd)
+        if _factual():
+            _m1, _m2, _m3, _m4 = st.columns(4)
+            _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
+            _m2.metric(
+                "Intrinsic Value",
+                # Audit fix 5.4: Price (right next to this tile) shows
+                # "123.45 AUD"; this used to show just "123.45" - the same
+                # currency, ambiguous with no unit, right beside a metric
+                # that does show one, and genuinely confusing given the
+                # page separately explains a currency-conversion note for
+                # cross-currency names nearby.
+                f"{_dd['intrinsic_value']:,.2f} {_dd['currency']}" if _dd["intrinsic_value"] else "N/A",
+                help=METRIC_HELP["Intrinsic Value"],
+            )
+            _m3.metric(
+                # Simple view, Part 5: label softening, first
+                # occurrence only - "MOS" is unabbreviated here (the
+                # underlying dd["mos"] field/METRIC_HELP key are
+                # untouched); the plain "MOS" label is fine everywhere
+                # else it already appears on the page after this.
+                "Margin of safety (discount to estimated worth)",
+                f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
+                help=METRIC_HELP["MOS"],
+            )
+            _m4.metric("Value Score", f"{_dd['long_score']:.1f}", help=METRIC_HELP["Value Score"])
         else:
-            if _factual():
-                _m1, _m2, _m3, _m4 = st.columns(4)
-                _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
-                _m2.metric(
-                    "Intrinsic Value",
-                    # Audit fix 5.4: Price (right next to this tile) shows
-                    # "123.45 AUD"; this used to show just "123.45" - the same
-                    # currency, ambiguous with no unit, right beside a metric
-                    # that does show one, and genuinely confusing given the
-                    # page separately explains a currency-conversion note for
-                    # cross-currency names nearby.
-                    f"{_dd['intrinsic_value']:,.2f} {_dd['currency']}" if _dd["intrinsic_value"] else "N/A",
-                    help=METRIC_HELP["Intrinsic Value"],
-                )
-                _m3.metric(
-                    # Simple view, Part 5: label softening, first
-                    # occurrence only - "MOS" is unabbreviated here (the
-                    # underlying dd["mos"] field/METRIC_HELP key are
-                    # untouched); the plain "MOS" label is fine everywhere
-                    # else it already appears on the page after this.
-                    "Margin of safety (discount to estimated worth)",
-                    f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
-                    help=METRIC_HELP["MOS"],
-                )
-                _m4.metric("Value Score", f"{_dd['long_score']:.1f}", help=METRIC_HELP["Value Score"])
-            else:
-                _m1, _m2, _m3, _m4, _m5 = st.columns(5)
-                _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
-                _m2.metric(
-                    "Intrinsic Value",
-                    # Audit fix 5.4: Price (right next to this tile) shows
-                    # "123.45 AUD"; this used to show just "123.45" - the same
-                    # currency, ambiguous with no unit, right beside a metric
-                    # that does show one, and genuinely confusing given the
-                    # page separately explains a currency-conversion note for
-                    # cross-currency names nearby.
-                    f"{_dd['intrinsic_value']:,.2f} {_dd['currency']}" if _dd["intrinsic_value"] else "N/A",
-                    help=METRIC_HELP["Intrinsic Value"],
-                )
-                _m3.metric(
-                    # Simple view, Part 5: same first-occurrence label
-                    # softening as the _factual() branch above.
-                    "Margin of safety (discount to estimated worth)",
-                    f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
-                    help=METRIC_HELP["MOS"],
-                )
-                _m4.metric("Long Score", f"{_dd['long_score']:.1f}", help=METRIC_HELP["Long Score"])
-                _m5.metric("Signal", _dd_signal, help=METRIC_HELP["Signal"])
+            _m1, _m2, _m3, _m4, _m5 = st.columns(5)
+            _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
+            _m2.metric(
+                "Intrinsic Value",
+                # Audit fix 5.4: Price (right next to this tile) shows
+                # "123.45 AUD"; this used to show just "123.45" - the same
+                # currency, ambiguous with no unit, right beside a metric
+                # that does show one, and genuinely confusing given the
+                # page separately explains a currency-conversion note for
+                # cross-currency names nearby.
+                f"{_dd['intrinsic_value']:,.2f} {_dd['currency']}" if _dd["intrinsic_value"] else "N/A",
+                help=METRIC_HELP["Intrinsic Value"],
+            )
+            _m3.metric(
+                # Simple view, Part 5: same first-occurrence label
+                # softening as the _factual() branch above.
+                "Margin of safety (discount to estimated worth)",
+                f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
+                help=METRIC_HELP["MOS"],
+            )
+            _m4.metric("Long Score", f"{_dd['long_score']:.1f}", help=METRIC_HELP["Long Score"])
+            _m5.metric("Signal", _dd_signal, help=METRIC_HELP["Signal"])
 
             # Task 10: flag it on screen whenever the DCF's base cash flow used
             # the 3-year median instead of the latest reporting year, because
@@ -6848,16 +6383,11 @@ def page_deep_dive():
                 )
                 sdd_plotly_chart(fig_px)
 
-        # Simple view, Part 2.3-2.5: Quality/Psychology/Discovery/Moat/
-        # Margin-of-Safety(+reverse-DCF)/Trade-Setup/Compounder-View, plus
-        # the free headline/thesis/score-history block above them, are
-        # each wrapped in a local nested closure here (verbatim original
-        # code, just indented one level deeper) so Full view can call them
-        # at their original position (unchanged) while Simple view reuses
-        # the SAME closures inside its own KPI/story/"All the detail"
-        # layout - one source of render code, never forked, per the
-        # instruction's Part 1 note ("Simple wraps existing render
-        # functions behind expanders, it does not fork them").
+        # Quality/Psychology/Discovery/Moat/Margin-of-Safety(+reverse-DCF)/
+        # Trade-Setup/Compounder-View, plus the free headline/thesis/
+        # score-history block above them, are each wrapped in a local
+        # nested closure here so they can be called in sequence below,
+        # each behind the same paywall gate.
         _acv_sections = None  # set by _dd_compounder_view() via nonlocal
         _score_word = "Value Score" if _factual() else "Long Score"
 
@@ -7486,97 +7016,52 @@ def page_deep_dive():
                         st.switch_page(PG_RESEARCH)
 
 
-        if _simple:
-            # Simple view, Part 2.2-2.4: KPIs + the three story sections,
-            # each ending in a "See the numbers -> " expander that opens
-            # the SAME closures Full view calls directly below - per the
-            # instruction's own Verify note, these expanders open the real
-            # full sections even signed-out (the site's main paywall gate
-            # only re-applies inside "All the detail" below; valuation's
-            # own reverse-DCF gate, called inside _dd_valuation(), is
-            # untouched and still enforced exactly as in Full view).
-            _render_dd_simple_stories(
-                _dd,
-                quality_and_moat_fn=lambda: (_dd_quality(), _dd_moat()),
-                valuation_fn=_dd_valuation,
-            )
+        _dd_headline_and_score()
 
-            with st.expander("All the detail \u2192"):
-                # The headline/thesis/score-history block is free content
-                # in Full view today (rendered before the site's main
-                # paywall gate) - it stays free here too, just relocated
-                # per the instruction's Part 2.5 list ("score history").
-                _dd_headline_and_score()
-                if paywall_engine.render_gate(
-                    "the full Deep Dive breakdown",
-                    teaser=(
-                        "Quality, Psychology, Discovery, and Trade Setup scores - the "
-                        f"full factor breakdown behind the {_score_word} above."
-                    ),
-                    key_prefix=f"dd_{_dd['ticker']}",
-                    lang=st.session_state.get("lang", "en"),
-                ):
-                    _dd_psychology()
-                    _dd_discovery()
-                    _render_peer_context(_dd)
-                    _dd_trade_setup()
-                    st.divider()
-                    _render_dividends_panel(_dd)
-                    _dd_compounder_view()
-                # else: render_gate() already drew the subscribe/sign-in
-                # box in its place - nothing more to render here.
+        st.divider()
 
-            st.caption(
-                "Ask anything in plain words \u2014 answered only from this page's numbers."
-            )
+        if not paywall_engine.render_gate(
+            "the full Deep Dive breakdown",
+            teaser=(
+                "Quality, Psychology, Discovery, and Trade Setup scores - the "
+                f"full factor breakdown behind the {_score_word} above."
+            ),
+            key_prefix=f"dd_{_dd['ticker']}",
+            lang=st.session_state.get("lang", "en"),
+        ):
+            return
 
-        else:
-            _dd_headline_and_score()
+        _dd_quality()
 
-            st.divider()
+        _dd_psychology()
 
-            if not paywall_engine.render_gate(
-                "the full Deep Dive breakdown",
-                teaser=(
-                    "Quality, Psychology, Discovery, and Trade Setup scores - the "
-                    f"full factor breakdown behind the {_score_word} above."
-                ),
-                key_prefix=f"dd_{_dd['ticker']}",
-                lang=st.session_state.get("lang", "en"),
-            ):
-                return
+        _dd_discovery()
 
-            _dd_quality()
+        _dd_moat()
 
-            _dd_psychology()
+        # Services batch 2, Part 2 (2026-09-01): peer context - directly
+        # under the score gauges above, before Margin of Safety, per spec.
+        _render_peer_context(_dd)
 
-            _dd_discovery()
+        _dd_valuation()
 
-            _dd_moat()
+        _dd_trade_setup()
 
-            # Services batch 2, Part 2 (2026-09-01): peer context - directly
-            # under the score gauges above, before Margin of Safety, per spec.
-            _render_peer_context(_dd)
+        # --- Services batch, Part 2: insider & capital - director/insider
+        # filings and buyback status, straight from ASX announcements/SEC
+        # EDGAR. Sits after every score gauge (this is fundamentals-
+        # adjacent context, not another score) and before Compounder View
+        # per the Part 2 spec. ---
+        st.divider()
+        _render_insider_panel(_dd["ticker"])
 
-            _dd_valuation()
+        # --- Services batch 3, Part A1: dividends & franking - the
+        # public, Yahoo-data-only income panel. Sits directly below
+        # Insider & capital per the spec. ---
+        st.divider()
+        _render_dividends_panel(_dd)
 
-            _dd_trade_setup()
-
-            # --- Services batch, Part 2: insider & capital - director/insider
-            # filings and buyback status, straight from ASX announcements/SEC
-            # EDGAR. Sits after every score gauge (this is fundamentals-
-            # adjacent context, not another score) and before Compounder View
-            # per the Part 2 spec. ---
-            st.divider()
-            _render_insider_panel(_dd["ticker"])
-
-            # --- Services batch 3, Part A1: dividends & franking - the
-            # public, Yahoo-data-only income panel. Sits directly below
-            # Insider & capital per the spec. ---
-            st.divider()
-            _render_dividends_panel(_dd)
-
-            _dd_compounder_view()
+        _dd_compounder_view()
 
         # AI-readiness roadmap Phase 3: the Ask box, last thing on the
         # page - only ever shown once a real (non-error) analysis is on
