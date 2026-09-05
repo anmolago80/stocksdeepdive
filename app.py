@@ -1803,27 +1803,42 @@ def _render_score_history_chart(ticker, score_word="Value Score"):
     if len(series) < 5:
         return
 
+    # Cleanup round, Español completion Part 1: chart title, overlay
+    # checkboxes, legend names, and caption routed through i18n.t()
+    # (dd.history.*/dd.legend.*). `score_word` arrives as the literal
+    # English "Value Score"/"Long Score" (see the two call sites) - the
+    # SAME mapping the KPI tile/gate teaser already use translates it for
+    # display, while the untranslated value is still what's passed to
+    # Plotly's own `name=` (never shown to a visitor, only used for the
+    # legend labeling below, which is built separately).
+    _lang = st.session_state.get("lang", "en")
+    _score_word_disp = (
+        i18n.t("dd.kpi.value_score", _lang) if score_word == "Value Score"
+        else i18n.t("dd.kpi.long_score", _lang)
+    )
     dates = [s["day"] for s in series]
-    st.markdown(f"#### \U0001F4C8 {score_word} over time")
+    st.markdown(f"#### \U0001F4C8 {i18n.t('dd.history.title', _lang, score_word=_score_word_disp)}")
     _shc1, _shc2 = st.columns(2)
     with _shc1:
-        _show_quality = st.checkbox("Show Quality", key=f"sh_quality_{ticker}")
+        _show_quality = st.checkbox(i18n.t("dd.history.show_quality", _lang), key=f"sh_quality_{ticker}")
     with _shc2:
-        _show_moat = st.checkbox("Show Moat", key=f"sh_moat_{ticker}")
+        _show_moat = st.checkbox(i18n.t("dd.history.show_moat", _lang), key=f"sh_moat_{ticker}")
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=dates, y=[s["long_score"] for s in series], mode="lines", name=score_word,
+        x=dates, y=[s["long_score"] for s in series], mode="lines", name=_score_word_disp,
         line=dict(color="#2dd4bf", width=2), connectgaps=False,
     ))
     if _show_quality:
         fig.add_trace(go.Scatter(
-            x=dates, y=[s.get("quality") for s in series], mode="lines", name="Quality",
+            x=dates, y=[s.get("quality") for s in series], mode="lines",
+            name=i18n.t("dd.legend.quality", _lang),
             line=dict(color="#60a5fa", width=2, dash="dot"), connectgaps=False,
         ))
     if _show_moat:
         fig.add_trace(go.Scatter(
-            x=dates, y=[s.get("moat") for s in series], mode="lines", name="Moat",
+            x=dates, y=[s.get("moat") for s in series], mode="lines",
+            name=i18n.t("dd.legend.moat", _lang),
             line=dict(color="#f0a34e", width=2, dash="dash"), connectgaps=False,
         ))
     fig.update_layout(
@@ -1841,11 +1856,11 @@ def _render_score_history_chart(ticker, score_word="Value Score"):
         fig_mos = go.Figure()
         fig_mos.add_trace(go.Scatter(
             x=[s["day"] for s in mos_series], y=[s["mos_pct"] for s in mos_series],
-            mode="lines", name="MOS", line=dict(color="#a78bfa", width=2),
+            mode="lines", name=i18n.t("dd.legend.mos", _lang), line=dict(color="#a78bfa", width=2),
             fill="tozeroy", fillcolor="rgba(167,139,250,0.10)", connectgaps=False,
         ))
         fig_mos.update_layout(
-            title="MOS over time", margin=dict(t=36, b=10, l=10, r=10), height=200,
+            title=i18n.t("dd.history.mos_title", _lang), margin=dict(t=36, b=10, l=10, r=10), height=200,
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color="#c7d2e0"), hovermode="x unified", showlegend=False,
             xaxis=dict(showgrid=False),
@@ -1853,7 +1868,7 @@ def _render_score_history_chart(ticker, score_word="Value Score"):
         )
         sdd_plotly_chart(fig_mos)
 
-    st.caption("Computed nightly; gaps = days the stock wasn't scanned.")
+    st.caption(i18n.t("dd.history.caption", _lang))
 
 
 def _render_results_day_card(ticker):
@@ -1888,21 +1903,23 @@ def _render_results_day_card(ticker):
         )
     if not rows_html:
         return
+    # Español completion, Part 1: heading/warning/"What moved:"/footer
+    # caption routed through i18n.t() (dd.results.*); the table headers
+    # (Metric/Before/After/Change) stay untranslated - same deferred-table-
+    # header policy as the peer/insider tables - and each item's own text
+    # under "what_moved" is engine-generated (results_engine.py), not
+    # static UI chrome.
+    _rd_card_lang = st.session_state.get("lang", "en")
     with st.container(border=True):
-        st.markdown(f"#### \U0001F4CA Reported on {event['report_date']} - before/after")
+        st.markdown(f"#### \U0001F4CA {i18n.t('dd.results.heading', _rd_card_lang, date=event['report_date'])}")
         if event.get("stale"):
-            st.warning(
-                "The \"after\" figures below may still rest on a statement Yahoo "
-                "hasn't fully ingested yet - re-checked automatically a few days "
-                "after the report; if these look unchanged from \"before\", check "
-                "back in a few days."
-            )
+            st.warning(i18n.t("dd.results.stale_warning", _rd_card_lang))
         st.markdown(
             _sdd_table(["Metric", "Before", "After", "Change"], rows_html),
             unsafe_allow_html=True,
         )
         if event.get("what_moved"):
-            st.caption("What moved:")
+            st.caption(i18n.t("dd.results.what_moved", _rd_card_lang))
             # unsafe_allow_html (not plain st.markdown per-bullet): a plain
             # markdown pass treats "$500.0K ... $620.0K" as LaTeX inline
             # math (Streamlit's $...$ convention) and mangles the dollar
@@ -1915,10 +1932,7 @@ def _render_results_day_card(ticker):
                 ),
                 unsafe_allow_html=True,
             )
-        st.caption(
-            "A computed before/after comparison from this site's own scoring - "
-            "described calculation, not a recommendation."
-        )
+        st.caption(i18n.t("dd.results.footer_caption", _rd_card_lang))
 
 
 @st.cache_data(ttl=21600, show_spinner=False)
@@ -3094,9 +3108,14 @@ def _render_copy_as_text_button(dd, value_word):
         # now resizes its (same-origin) iframe to fit its actual content
         # on the fly, so this only needs to cover the collapsed/common
         # case; the JS grows it itself for the rare fallback case.
+        # Español completion, Part 1: only the button LABEL is translated
+        # (dd.copytext.button_label) - the copied text itself stays
+        # English, since it's data meant for sharing elsewhere, not UI
+        # chrome (per the instruction's own explicit note).
         _components.html(
             blog_render._copy_as_text_html(
-                copy_text, dom_id=f"sdd-copytext-dd-{ticker}"),
+                copy_text, dom_id=f"sdd-copytext-dd-{ticker}",
+                label=i18n.t("dd.copytext.button_label", st.session_state.get("lang", "en"))),
             height=50,
         )
     except Exception:
@@ -3206,8 +3225,9 @@ def _render_download_data_button(dd):
         ticker = dd.get("ticker") or ""
         if not ticker or dd.get("error"):
             return
-        with st.popover("\U0001F4E5 Download data", key=f"dl_popover_{ticker}"):
-            st.caption(f"Everything on this page for {ticker}, as a spreadsheet.")
+        _dl_lang = st.session_state.get("lang", "en")
+        with st.popover(i18n.t("dd.download.popover", _dl_lang), key=f"dl_popover_{ticker}"):
+            st.caption(i18n.t("dd.download.caption", _dl_lang, ticker=ticker))
             subscriber = (
                 not paywall_engine.PAYWALL_ENABLED
                 or (paywall_engine.is_logged_in()
@@ -3240,28 +3260,25 @@ def _render_download_data_button(dd):
                     ticker, dd, _dl_acv_sections, _dl_reverse_dcf, subscriber=subscriber,
                 )
                 st.download_button(
-                    "Compounder View workbook (.xlsx)", data=_dl_xlsx,
+                    i18n.t("dd.download.xlsx_button", _dl_lang), data=_dl_xlsx,
                     file_name=data_export_engine.deep_dive_filename(ticker, "xlsx"),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=f"dl_xlsx_{ticker}", use_container_width=True,
                 )
             except Exception:
-                st.caption("Workbook couldn't be built right now.")
+                st.caption(i18n.t("dd.download.xlsx_failed", _dl_lang))
             try:
                 _dl_csv = data_export_engine.build_deep_dive_csv(ticker, dd, _dl_reverse_dcf)
                 st.download_button(
-                    "Valuation + Scores (.csv)", data=_dl_csv,
+                    i18n.t("dd.download.csv_button", _dl_lang), data=_dl_csv,
                     file_name=data_export_engine.deep_dive_filename(ticker, "csv"),
                     mime="text/csv",
                     key=f"dl_csv_{ticker}", use_container_width=True,
                 )
             except Exception:
-                st.caption("CSV couldn't be built right now.")
+                st.caption(i18n.t("dd.download.csv_failed", _dl_lang))
             if not subscriber:
-                st.caption(
-                    "Fair Value sheet omitted from the workbook - "
-                    "subscribe to include it."
-                )
+                st.caption(i18n.t("dd.download.fair_value_omitted", _dl_lang))
     except Exception:
         pass
 
@@ -3348,13 +3365,20 @@ def _render_follow_control(ticker, key_prefix):
     same way, and the follow is recorded the instant that succeeds. This
     gives double opt-in for free (the code email) and creates an account
     in one step. key_prefix keeps widget keys unique per call site
-    (e.g. "follow_research" vs "follow_dd")."""
+    (e.g. "follow_research" vs "follow_dd").
+
+    Español completion, Part 1b: this control's own copy is routed
+    through i18n.t() (follow.*/signin.*/email_auth.*) - it duplicates
+    paywall_engine._render_signin_control's email/code flow strings
+    verbatim, so translating one without the other would have left two
+    near-identical boxes on the same page in different languages."""
+    _fc_lang = st.session_state.get("lang", "en")
     _email = paywall_engine.current_user_email()
     with st.container(border=True, key=f"{key_prefix}_box_{ticker}"):
         if _email:
             _following = follow_store.is_following(_email, ticker)
-            _label = ("\U0001F514 Following — click to stop" if _following
-                       else "\U0001F514 Email me when research updates")
+            _label = (i18n.t("follow.following_label", _fc_lang) if _following
+                       else i18n.t("follow.notify_label", _fc_lang))
             if st.button(_label, key=f"{key_prefix}_toggle_{ticker}"):
                 try:
                     if _following:
@@ -3362,12 +3386,12 @@ def _render_follow_control(ticker, key_prefix):
                     else:
                         follow_store.follow(_email, ticker)
                 except Exception:
-                    st.warning("Couldn't save right now - please try again.")
+                    st.warning(i18n.t("follow.save_failed", _fc_lang))
                 st.rerun()
             _render_push_control(key_prefix, ticker)
             return
 
-        st.caption(f"Get an email when {ticker}'s research updates.")
+        st.caption(i18n.t("follow.caption", _fc_lang, ticker=ticker))
         # Audit fix 5.5: _sent_flag/_sent_to/_pending_ticker used to be
         # keyed ONLY by key_prefix (page-level), not by ticker - sign up
         # for ticker A, get emailed a code, switch the dropdown to ticker
@@ -3386,8 +3410,8 @@ def _render_follow_control(ticker, key_prefix):
             _c1, _c2 = st.columns([3, 2])
             with _c1:
                 _em_in = st.text_input(
-                    "Email address", key=f"{key_prefix}_email_{ticker}",
-                    placeholder="you@example.com", label_visibility="collapsed",
+                    i18n.t("signin.email_label", _fc_lang), key=f"{key_prefix}_email_{ticker}",
+                    placeholder=i18n.t("signin.email_placeholder", _fc_lang), label_visibility="collapsed",
                 )
             with _c2:
                 # Short label - this button now often renders in a narrow
@@ -3395,11 +3419,11 @@ def _render_follow_control(ticker, key_prefix):
                 # where the old full-length "Get research updates by
                 # email" overflowed past the box border.
                 if st.button(
-                    "Notify me",
+                    i18n.t("follow.notify_button", _fc_lang),
                     key=f"{key_prefix}_submit_{ticker}", use_container_width=True,
                 ):
                     if email_auth.valid_email(_em_in):
-                        _ok, _msg = email_auth.send_code(_em_in)
+                        _ok, _msg = email_auth.send_code(_em_in, lang=_fc_lang)
                         if _ok:
                             st.session_state[_sent_flag] = True
                             st.session_state[f"{key_prefix}_sent_to_{ticker}"] = _em_in.strip().lower()
@@ -3407,18 +3431,18 @@ def _render_follow_control(ticker, key_prefix):
                         else:
                             st.error(_msg)
                     else:
-                        st.error("That doesn't look like a valid email address.")
+                        st.error(i18n.t("email_auth.invalid_email", _fc_lang))
         else:
             _sent_to = st.session_state.get(f"{key_prefix}_sent_to_{ticker}", "")
-            st.caption(f"Enter the 6-digit code sent to {_sent_to} for {ticker}.")
+            st.caption(i18n.t("follow.enter_code_prompt", _fc_lang, email=_sent_to, ticker=ticker))
             _code = st.text_input(
-                "6-digit code", key=f"{key_prefix}_code_{ticker}",
-                max_chars=6, placeholder="123456",
+                i18n.t("signin.code_label", _fc_lang), key=f"{key_prefix}_code_{ticker}",
+                max_chars=6, placeholder=i18n.t("signin.code_placeholder", _fc_lang),
             )
             _cv, _cr = st.columns(2)
             with _cv:
                 if st.button(
-                    "Verify", key=f"{key_prefix}_verify_{ticker}",
+                    i18n.t("signin.verify_button", _fc_lang), key=f"{key_prefix}_verify_{ticker}",
                     type="primary", use_container_width=True,
                 ):
                     _tok, _msg = email_auth.verify_code(
@@ -3451,10 +3475,10 @@ def _render_follow_control(ticker, key_prefix):
                         st.error(_msg)
             with _cr:
                 if st.button(
-                    "Resend code", key=f"{key_prefix}_resend_{ticker}",
+                    i18n.t("signin.resend_button", _fc_lang), key=f"{key_prefix}_resend_{ticker}",
                     use_container_width=True,
                 ):
-                    _ok, _msg = email_auth.send_code(_sent_to)
+                    _ok, _msg = email_auth.send_code(_sent_to, lang=_fc_lang)
                     (st.success if _ok else st.error)(_msg)
 
 
@@ -3521,7 +3545,7 @@ def _render_conversion_email_hook(ticker, key_prefix="dd_hook"):
                     key=f"{key_prefix}_submit_{ticker}", use_container_width=True,
                 ):
                     if email_auth.valid_email(_em_in):
-                        _ok, _msg = email_auth.send_code(_em_in)
+                        _ok, _msg = email_auth.send_code(_em_in, lang=_lang)
                         if _ok:
                             st.session_state[_sent_flag] = True
                             st.session_state[f"{key_prefix}_sent_to_{ticker}"] = _em_in.strip().lower()
@@ -3572,7 +3596,7 @@ def _render_conversion_email_hook(ticker, key_prefix="dd_hook"):
                     i18n.t("hook.resend", _lang), key=f"{key_prefix}_resend_{ticker}",
                     use_container_width=True,
                 ):
-                    _ok, _msg = email_auth.send_code(_sent_to)
+                    _ok, _msg = email_auth.send_code(_sent_to, lang=_lang)
                     (st.success if _ok else st.error)(_msg)
 
 
@@ -3709,12 +3733,14 @@ def _render_alert_control(ticker, dd, key_prefix="alert_dd"):
     descriptive by construction - it can only ever say a stated number
     crossed a stated line, never "buy" or "sell"."""
     email = paywall_engine.current_user_email()
-    with st.expander(f"\U0001F514 Alert me when {ticker}...", expanded=False):
+    # Español completion, Part 1: expander title + sign-in caption routed
+    # through i18n.t() (dd.alert.*); the threshold-setting widget internals
+    # below (metric/operator/value selects, existing-alert rows) are
+    # explicitly deferred - see the Part 1 report's documented exceptions.
+    _alert_lang = st.session_state.get("lang", "en")
+    with st.expander(i18n.t("dd.alert.expander", _alert_lang, ticker=ticker), expanded=False):
         if not email:
-            st.caption(
-                f"Sign in (top left) to get an email or push notification when "
-                f"{ticker}'s own computed numbers cross a line you choose."
-            )
+            st.caption(i18n.t("dd.alert.signin_prompt", _alert_lang, ticker=ticker))
             return
 
         _existing = alert_store.list_for_ticker(email, ticker)
@@ -3825,7 +3851,7 @@ def _render_insider_panel(ticker):
                     st.error(f"Refresh failed: {e}")
             st.rerun()
 
-    st.markdown("##### Insider & capital")
+    st.markdown(f"##### {i18n.t('dd.heading.insider', st.session_state.get('lang', 'en'))}")
     st.caption(_section_why("Insider & capital"))
     st.caption(
         "Director/insider transactions and buyback activity, from ASX "
@@ -5439,12 +5465,13 @@ def _render_checklist_panel(ticker, dd):
     Never surfaced anywhere public - checklist_store has no path into
     snapshot_store/API/MCP."""
     email = paywall_engine.current_user_email()
-    with st.expander(f"\U0001F4CB My checklist for {ticker}", expanded=False):
+    # Español completion, Part 1: expander title + sign-in caption routed
+    # through i18n.t() (dd.checklist.*); the tickbox list items and thesis
+    # note below are explicitly deferred - see the Part 1 report.
+    _cl_lang = st.session_state.get("lang", "en")
+    with st.expander(i18n.t("dd.checklist.expander", _cl_lang, ticker=ticker), expanded=False):
         if not email:
-            st.caption(
-                f"Sign in (top left) to keep a private pre-purchase checklist "
-                f"and thesis note for {ticker}."
-            )
+            st.caption(i18n.t("dd.checklist.signin_prompt", _cl_lang, ticker=ticker))
             return
 
         st.caption(
@@ -5596,7 +5623,7 @@ def _render_dividends_panel(dd):
     # panel always renders (a "No dividends on record" line at minimum),
     # so its chip is unconditional.
     st.markdown('<div id="sdd-anchor-dividends"></div>', unsafe_allow_html=True)
-    st.markdown("##### Dividends")
+    st.markdown(f"##### {i18n.t('dd.heading.dividends', st.session_state.get('lang', 'en'))}")
     st.caption(_section_why("Dividends"))
     div = portfolio_charts_engine.fetch_dividend_history(ticker)
     if div.empty:
@@ -5875,11 +5902,18 @@ def _render_reverse_dcf_card(dd):
     if not res.get("ok"):
         return
 
-    st.markdown("##### What the price implies")
+    # Español completion, Part 1: heading/captions/metric labels routed
+    # through i18n.t() (dd.rdcf.*). The methodology popover body
+    # (_REVERSE_DCF_METHODOLOGY_TEXT) and res["sentence"] (an engine-
+    # generated sentence built by reverse_dcf_engine.compute(), not
+    # static UI chrome) are explicitly out of scope - see the Part 1
+    # report's documented-exceptions list.
+    _rdcf_lang = st.session_state.get("lang", "en")
+    st.markdown(f"##### {i18n.t('dd.rdcf.heading', _rdcf_lang)}")
     _render_static_explainer(
         f"reverse_dcf_{ticker}", "ⓘ Methodology", _REVERSE_DCF_METHODOLOGY_TEXT,
     )
-    st.caption("A described calculation from stated inputs, not a forecast.")
+    st.caption(i18n.t("dd.rdcf.forecast_caption", _rdcf_lang))
 
     _implied_pct = res["implied_growth"] * 100
     _model_pct = res["model_growth"] * 100 if res["model_growth"] is not None else None
@@ -5892,8 +5926,8 @@ def _render_reverse_dcf_card(dd):
         _implied_label = f"{_implied_pct:+.1f}%"
 
     _rd_m1, _rd_m2 = st.columns(2)
-    _rd_m1.metric("Implied growth", _implied_label)
-    _rd_m2.metric("Model growth", f"{_model_pct:+.1f}%" if _model_pct is not None else "N/A")
+    _rd_m1.metric(i18n.t("dd.rdcf.implied_growth", _rdcf_lang), _implied_label)
+    _rd_m2.metric(i18n.t("dd.rdcf.model_growth", _rdcf_lang), f"{_model_pct:+.1f}%" if _model_pct is not None else "N/A")
 
     if _model_pct is not None:
         # Fix (2026-09-02, spec item 5): use this card's own plain-
@@ -5906,15 +5940,12 @@ def _render_reverse_dcf_card(dd):
             text_description=res.get("sentence"),
         )
         if not (-10 <= _implied_pct <= 30) or not (-10 <= _model_pct <= 30):
-            st.caption("Marker capped at -10%/30% for readability.")
+            st.caption(i18n.t("dd.rdcf.marker_capped", _rdcf_lang))
 
     if res.get("sentence"):
         st.caption(res["sentence"])
     if res.get("value_default"):
-        st.caption(
-            "Rests on a default/estimated free cash flow input - see the "
-            "note under Intrinsic Value above."
-        )
+        st.caption(i18n.t("dd.rdcf.default_note", _rdcf_lang))
 
 
 # ---------------------------------------------------------------------
@@ -5937,7 +5968,7 @@ def _cached_peer_context(ticker):
     return peer_context.compute(ticker)
 
 
-def _pct_phrase(p):
+def _pct_phrase(p, lang="en"):
     """92 -> 'top 8%'; 30 -> 'bottom 30%'; None -> None. Per the spec:
     "top X%" wording when percentile >= 50, "bottom X%" otherwise -
     factual, no colour judgement beyond the gauges' own existing colours.
@@ -5948,12 +5979,16 @@ def _pct_phrase(p):
     best" - the opposite of what it's meant to convey. The displayed
     number is now clamped to a minimum of 1 either way ("top 1%"/
     "bottom 1%" at the extremes); this only changes the rounded DISPLAY
-    text, never the underlying percentile value used anywhere else."""
+    text, never the underlying percentile value used anywhere else.
+
+    Español completion, Part 1: `lang` picks the dd.peer.pct_top/
+    pct_bottom template (ES: "entre el X% mejor"/"entre el X% más
+    bajo") - the number itself is unaffected."""
     if p is None:
         return None
     if p >= 50:
-        return f"top {max(1, round(100 - p))}%"
-    return f"bottom {max(1, round(p))}%"
+        return i18n.t("dd.peer.pct_top", lang, pct=max(1, round(100 - p)))
+    return i18n.t("dd.peer.pct_bottom", lang, pct=max(1, round(p)))
 
 
 _PEER_CHIP_METRICS = [
@@ -6001,15 +6036,17 @@ def _render_peer_context(dd):
         return
 
     # Conversion pass, Part 1: anchor for the top-of-page chip row.
+    # Español completion, Part 1: headings/captions/button routed through
+    # i18n.t() (dd.peer.*); the st.dataframe column headers below
+    # ("Ticker"/"Price"/"Intrinsic Value"/etc.) are explicitly deferred -
+    # see the Part 1 report's documented-exceptions list.
+    _peer_lang = st.session_state.get("lang", "en")
     st.markdown('<div id="sdd-anchor-peers"></div>', unsafe_allow_html=True)
     st.divider()
-    st.markdown("##### Peer context")
+    st.markdown(f"##### {i18n.t('dd.peer.heading', _peer_lang)}")
 
     if not res.get("available"):
-        st.caption(
-            f"No peer data yet for {ticker} - not in a scanned overnight "
-            "universe yet."
-        )
+        st.caption(i18n.t("dd.peer.no_data", _peer_lang, ticker=ticker))
         return
 
     own_values = res["own_values"]
@@ -6028,12 +6065,13 @@ def _render_peer_context(dd):
     # by more than a rounding difference, show both instead of silently
     # picking one - the percentile still describes the scanned number,
     # exactly as before.
-    st.caption("vs last night's overnight scan (attention-lite).")
+    st.caption(i18n.t("dd.peer.provenance", _peer_lang))
 
+    _peer_of = i18n.t("dd.peer.of", _peer_lang)
     chip_lines = []
     for label, key in _PEER_CHIP_METRICS:
         scanned_val = own_values.get(key)
-        u_phrase = _pct_phrase(percentiles[key]["universe"])
+        u_phrase = _pct_phrase(percentiles[key]["universe"], _peer_lang)
         if scanned_val is None or not u_phrase:
             continue
         live_val = dd.get(_PEER_CHIP_LIVE_FIELD.get(key))
@@ -6041,10 +6079,10 @@ def _render_peer_context(dd):
             value_text = f"live {live_val:g} &middot; scanned {scanned_val:g}"
         else:
             value_text = f"{scanned_val:g}"
-        line = f"<b>{html.escape(label)} {value_text}</b> &mdash; {u_phrase} of {html.escape(universe)}"
-        s_phrase = _pct_phrase(percentiles[key]["sector"])
+        line = f"<b>{html.escape(label)} {value_text}</b> &mdash; {u_phrase} {_peer_of} {html.escape(universe)}"
+        s_phrase = _pct_phrase(percentiles[key]["sector"], _peer_lang)
         if s_phrase and sector:
-            line += f" &middot; {s_phrase} of {html.escape(sector)}"
+            line += f" &middot; {s_phrase} {_peer_of} {html.escape(sector)}"
         chip_lines.append(line)
 
     if chip_lines:
@@ -6056,7 +6094,7 @@ def _render_peer_context(dd):
         )
         st.markdown(_chips_html, unsafe_allow_html=True)
     else:
-        st.caption("No rankable scores for this ticker yet.")
+        st.caption(i18n.t("dd.peer.no_rankable", _peer_lang))
 
     peers = res.get("peers") or []
     # Fix (2026-09-02, spec item 3): peer_context.compute() now falls
@@ -6067,7 +6105,7 @@ def _render_peer_context(dd):
     # reflects whichever method actually ran.
     peer_source = res.get("peer_source", "same sector, nearest by size.")
     if peers:
-        st.caption(f"Closest peers - {peer_source}")
+        st.caption(i18n.t("dd.peer.closest_peers", _peer_lang, source=peer_source))
         _peer_df = pd.DataFrame([
             {
                 # Fix (2026-09-02, spec item 4): the Ticker column holds
@@ -6099,11 +6137,11 @@ def _render_peer_context(dd):
         # row.
         _cmp_tickers = ",".join([ticker] + [p["ticker"] for p in peers])
         st.link_button(
-            "Compare these →", f"/comparison?tickers={_cmp_tickers}",
+            i18n.t("dd.peer.compare_button", _peer_lang), f"/comparison?tickers={_cmp_tickers}",
             key=f"peer_cmp_all_{ticker}",
         )
     else:
-        st.caption(f"No peers found in {universe} to compare against.")
+        st.caption(i18n.t("dd.peer.no_peers", _peer_lang, universe=universe))
 
 
 def page_deep_dive():
@@ -6445,10 +6483,11 @@ def page_deep_dive():
         if _px_hist is not None and not _px_hist.empty:
             _px_closes = _px_hist["Close"].dropna()
             if len(_px_closes) >= 2:
+                _px_lang = st.session_state.get("lang", "en")
                 fig_px = go.Figure()
                 fig_px.add_trace(go.Scatter(
                     x=_px_closes.index, y=_px_closes.values, mode="lines",
-                    name="Price", line=dict(color="#2dd4bf", width=2),
+                    name=i18n.t("dd.price.legend_price", _px_lang), line=dict(color="#2dd4bf", width=2),
                 ))
                 _px_ma50 = _px_closes.rolling(50).mean()
                 fig_px.add_trace(go.Scatter(
@@ -6459,11 +6498,14 @@ def page_deep_dive():
                     fig_px.add_hline(
                         y=_dd["trade_setup_entry"], line_dash="dot",
                         line_color="#fbbf24",
-                        annotation_text=f"Entry zone {_dd['trade_setup_entry']:,.2f}",
+                        annotation_text=i18n.t(
+                            "dd.price.entry_zone", _px_lang,
+                            value=f"{_dd['trade_setup_entry']:,.2f}",
+                        ),
                         annotation_position="bottom left", annotation_font_size=11,
                     )
                 fig_px.update_layout(
-                    title="Last 6 months", height=300,
+                    title=i18n.t("dd.price.title", _px_lang), height=300,
                     margin=dict(l=10, r=10, t=40, b=10),
                     legend=dict(orientation="h", y=1.14),
                     yaxis_title=_dd["currency"],
@@ -6577,10 +6619,7 @@ def page_deep_dive():
             if _factual():
                 st.subheader(f"Value Score: {_dd['long_score']:.1f} - {_dd_value_word}")
                 st.caption(_section_why("Value Score"))
-                st.caption(
-                    "In plain English: one number blending business quality, price "
-                    "versus estimated value, crowd psychology, and market attention."
-                )
+                st.caption(i18n.t("dd.plain.value_score", st.session_state.get("lang", "en")))
                 _render_explain_popover(_dd, "value_score")
                 sdd_plotly_chart(
                     _dd_gauge(
@@ -6597,10 +6636,7 @@ def page_deep_dive():
             else:
                 st.subheader(f"Long Score: {_dd['long_score']:.1f} - {_dd_signal}")
                 st.caption(_section_why("Value Score"))
-                st.caption(
-                    "In plain English: one number blending business quality, price "
-                    "versus estimated value, crowd psychology, and market attention."
-                )
+                st.caption(i18n.t("dd.plain.value_score", st.session_state.get("lang", "en")))
                 _render_explain_popover(_dd, "value_score")
                 sdd_plotly_chart(
                     _dd_gauge(
@@ -6635,11 +6671,16 @@ def page_deep_dive():
                 )
 
             _score_word = "Value Score" if _factual() else "Long Score"
+            _sh_lang = st.session_state.get("lang", "en")
+            _sh_score_word = (
+                i18n.t("dd.kpi.value_score", _sh_lang) if _score_word == "Value Score"
+                else i18n.t("dd.kpi.long_score", _sh_lang)
+            )
             sdd_plotly_chart(
                 _dd_contrib_chart(
                     _dd["contributions"],
-                    f"What's driving the {_score_word} (points contributed by each factor)",
-                    xaxis_title=f"Points toward {_score_word}",
+                    i18n.t("dd.chart.driving_score", _sh_lang, score_word=_sh_score_word),
+                    xaxis_title=i18n.t("dd.chart.points_score", _sh_lang, score_word=_sh_score_word),
                     height=280,
                 ),
             )
@@ -6650,11 +6691,7 @@ def page_deep_dive():
         def _dd_quality():
             st.subheader(f"Quality Score: {_dd['quality_score']} - {_dd['quality_label']}")
             st.caption(_section_why("Quality"))
-            st.caption(
-                "In plain English: how strong the underlying business is - "
-                "profitability, balance sheet strength, and growth - judged "
-                "from its own financial statements."
-            )
+            st.caption(i18n.t("dd.plain.quality", st.session_state.get("lang", "en")))
             _render_explain_popover(_dd, "quality")
             _q_col1, _q_col2 = st.columns(2)
             with _q_col1:
@@ -6671,8 +6708,8 @@ def page_deep_dive():
                     sdd_plotly_chart(
                         _dd_contrib_chart(
                             _dd["quality_components"],
-                            "What's driving Quality (weighted terms)",
-                            xaxis_title="Points toward Quality",
+                            i18n.t("dd.chart.driving_quality", st.session_state.get("lang", "en")),
+                            xaxis_title=i18n.t("dd.chart.points_quality", st.session_state.get("lang", "en")),
                         ),
                     )
                 else:
@@ -6691,10 +6728,7 @@ def page_deep_dive():
             # and every internal reference are untouched.
             st.subheader(f"Crowd mood (Psychology) Score: {_dd['psychology']:+.1f} - {_dd['psychology_sentiment']}")
             st.caption(_section_why("Psychology"))
-            st.caption(
-                "In plain English: whether the crowd trading this stock right now "
-                "looks fearful, calm, or greedy, read from recent price behaviour."
-            )
+            st.caption(i18n.t("dd.plain.psychology", st.session_state.get("lang", "en")))
             _render_explain_popover(_dd, "psychology")
             if _dd.get("ma50_defaulted"):
                 st.warning(
@@ -6719,8 +6753,8 @@ def page_deep_dive():
                 sdd_plotly_chart(
                     _dd_contrib_chart(
                         _dd["psychology_contributions"],
-                        "What's driving Psychology (Fear - Greed - FOMO)",
-                        xaxis_title="Points toward Psychology",
+                        i18n.t("dd.chart.driving_psychology", st.session_state.get("lang", "en")),
+                        xaxis_title=i18n.t("dd.chart.points_psychology", st.session_state.get("lang", "en")),
                     ),
                 )
 
@@ -6731,10 +6765,7 @@ def page_deep_dive():
             # display only, "discovery"/"discovery_label" etc. untouched.
             st.subheader(f"Attention (Discovery) Score: {_dd['discovery']:.1f} - {_dd['discovery_label']}")
             st.caption(_section_why("Discovery"))
-            st.caption(
-                "In plain English: how much attention this stock is getting right "
-                "now, from search interest, news, and trading volume."
-            )
+            st.caption(i18n.t("dd.plain.discovery", st.session_state.get("lang", "en")))
             _render_explain_popover(_dd, "discovery")
             if _dd.get("trend_score_failed"):
                 st.warning(
@@ -6758,8 +6789,8 @@ def page_deep_dive():
                 sdd_plotly_chart(
                     _dd_contrib_chart(
                         _dd["discovery_contributions"],
-                        "What's driving Discovery (attention & momentum)",
-                        xaxis_title="Points toward Discovery",
+                        i18n.t("dd.chart.driving_discovery", st.session_state.get("lang", "en")),
+                        xaxis_title=i18n.t("dd.chart.points_discovery", st.session_state.get("lang", "en")),
                     ),
                 )
 
@@ -6778,11 +6809,7 @@ def page_deep_dive():
             if _dd.get("moat") is None:
                 st.subheader(f"Moat Score: {_dd.get('moat_band_label', 'N/A')}")
                 st.caption(_section_why("Moat"))
-                st.caption(
-                    "In plain English: how well this business's profits are "
-                    "protected from competitors, based on returns on capital and "
-                    "margin durability."
-                )
+                st.caption(i18n.t("dd.plain.moat", st.session_state.get("lang", "en")))
                 if _dd.get("moat_mode") == "na" and _dd.get("moat_flags"):
                     st.caption(_dd["moat_flags"][0])
                 else:
@@ -6793,11 +6820,7 @@ def page_deep_dive():
             else:
                 st.subheader(f"Moat Score: {_dd['moat']:.1f} - {_dd['moat_band_label']}")
                 st.caption(_section_why("Moat"))
-                st.caption(
-                    "In plain English: how well this business's profits are "
-                    "protected from competitors, based on returns on capital and "
-                    "margin durability."
-                )
+                st.caption(i18n.t("dd.plain.moat", st.session_state.get("lang", "en")))
                 _render_explain_popover(_dd, "moat")
                 if _dd.get("moat_erosion") == "eroding":
                     st.error(
@@ -6839,8 +6862,8 @@ def page_deep_dive():
                         sdd_plotly_chart(
                             _dd_contrib_chart(
                                 _dd["moat_contributions"],
-                                "What's driving Moat (durability of the return)",
-                                xaxis_title="Points toward Moat",
+                                i18n.t("dd.chart.driving_moat", st.session_state.get("lang", "en")),
+                                xaxis_title=i18n.t("dd.chart.points_moat", st.session_state.get("lang", "en")),
                             ),
                         )
 
@@ -6856,10 +6879,7 @@ def page_deep_dive():
                 _mos_val = _dd["mos"] if _dd["mos"] is not None else 0.0
                 st.subheader(f"Margin of Safety: {_mos_val:+.1f}% - {_dd['valuation']}")
                 st.caption(_section_why("Margin of Safety"))
-                st.caption(
-                    "In plain English: how much cheaper today's price is than what "
-                    "the model estimates the business is worth."
-                )
+                st.caption(i18n.t("dd.plain.mos", st.session_state.get("lang", "en")))
                 _render_explain_popover(_dd, "margin_of_safety")
                 _mos_gauge_val = max(-50, min(_mos_val, 100))
                 _mos_col1, _mos_col2 = st.columns(2)
@@ -6952,8 +6972,8 @@ def page_deep_dive():
                     sdd_plotly_chart(
                         _dd_gate_chart(
                             _dd["trade_setup_contributions"],
-                            "What's driving the Trade Setup Score",
-                            xaxis_title="Points toward Setup Score",
+                            i18n.t("dd.chart.driving_trade_setup", st.session_state.get("lang", "en")),
+                            xaxis_title=i18n.t("dd.chart.points_trade_setup", st.session_state.get("lang", "en")),
                         ),
                     )
 
@@ -9345,14 +9365,19 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     "arithmetic."
                 )
 
+            # Español completion, Part 1: feature_label/teaser routed
+            # through i18n.t() (gate.results_full_label/gate.results_teaser).
+            # `page_label` itself ("Scanner"/"Comparison") stays untranslated,
+            # same precedent as "Trade Setup" - it's also the literal value
+            # passed to _render_header(page_label=...) at many other call
+            # sites, so translating it here alone would just as easily read
+            # as inconsistent.
+            _scan_gate_lang = st.session_state.get("lang", "en")
             if not paywall_engine.render_gate(
-                f"the full {page_label} results",
-                teaser=(
-                    "Valuation (Intrinsic Value, MOS), Quality, Psychology, "
-                    "Discovery, and Trade Setup detail for every stock above."
-                ),
+                i18n.t("gate.results_full_label", _scan_gate_lang, page_label=page_label),
+                teaser=i18n.t("gate.results_teaser", _scan_gate_lang),
                 key_prefix=state_prefix,
-                lang=st.session_state.get("lang", "en"),
+                lang=_scan_gate_lang,
             ):
                 return
 

@@ -55,10 +55,16 @@ score NAMES themselves as they appear inside chart titles and axis
 labels (contribution charts, score-history chart) - only the top-of-
 page KPI tile labels for these are translated; the Scanner/Comparison
 page's own render_gate call (page_label is "Scanner"/"Comparison") -
-same "not yet lang-aware" bucket as the rest of those two pages; and
-the email sign-in popover's own internal copy (_render_signin_control)
-and the plain-string messages returned by email_auth.send_code/
-verify_code - both already flagged as explicit gaps above.
+same "not yet lang-aware" bucket as the rest of those two pages.
+
+Español completion, Part 1b: the email sign-in popover's own internal
+copy (paywall_engine._render_signin_control) and the plain-string
+messages returned by email_auth.send_code()/verify_code() - both
+previously flagged as explicit gaps above - are now covered via the
+"signin.*"/"email_auth.*" key families. The Scanner/Comparison
+render_gate() call's own feature_label/teaser is now covered too, via
+"gate.results_full_label"/"gate.results_teaser" (page_label itself
+stays untranslated - see that call site's own comment).
 """
 
 EN = {
@@ -233,6 +239,211 @@ EN = {
         "page above and click \"Following - click to stop\" (or unfollow "
         "while signed in) on the site."
     ),
+
+    # ---------------------------------------------------------------
+    # Español completion instruction, Part 1: remaining on-page Deep
+    # Dive coverage flagged by the cleanup round's own Part 3 report.
+    # Deliberately still NOT covered (documented, same convention as
+    # every prior gap list): the reverse-DCF/Compounder-View methodology
+    # popover bodies (multi-paragraph, a separate large translation body
+    # of their own), data-table column headers (peer table, insider
+    # filings table, results-day before/after table - risk of breaking
+    # column_config references for low visible payoff), the alert
+    # control's threshold-setting widgets, the checklist's tickbox list
+    # items, and engine-computed status words (unchanged rule).
+    # ---------------------------------------------------------------
+    "dd.plain.value_score": (
+        "In plain English: one number blending business quality, price "
+        "versus estimated value, crowd psychology, and market attention."
+    ),
+    "dd.plain.quality": (
+        "In plain English: how strong the underlying business is - "
+        "profitability, balance sheet strength, and growth - judged "
+        "from its own financial statements."
+    ),
+    "dd.plain.psychology": (
+        "In plain English: whether the crowd trading this stock right "
+        "now looks fearful, calm, or greedy, read from recent price "
+        "behaviour."
+    ),
+    "dd.plain.discovery": (
+        "In plain English: how much attention this stock is getting "
+        "right now, from search interest, news, and trading volume."
+    ),
+    "dd.plain.moat": (
+        "In plain English: how well this business's profits are "
+        "protected from competitors, based on returns on capital and "
+        "margin durability."
+    ),
+    "dd.plain.mos": (
+        "In plain English: how much cheaper today's price is than what "
+        "the model estimates the business is worth."
+    ),
+
+    "dd.chart.driving_score": "What's driving the {score_word} (points contributed by each factor)",
+    "dd.chart.points_score": "Points toward {score_word}",
+    "dd.chart.driving_quality": "What's driving Quality (weighted terms)",
+    "dd.chart.points_quality": "Points toward Quality",
+    "dd.chart.driving_psychology": "What's driving Psychology (Fear - Greed - FOMO)",
+    "dd.chart.points_psychology": "Points toward Psychology",
+    "dd.chart.driving_discovery": "What's driving Discovery (attention & momentum)",
+    "dd.chart.points_discovery": "Points toward Discovery",
+    "dd.chart.driving_moat": "What's driving Moat (durability of the return)",
+    "dd.chart.points_moat": "Points toward Moat",
+    "dd.chart.driving_trade_setup": "What's driving the Trade Setup Score",
+    "dd.chart.points_trade_setup": "Points toward Setup Score",
+
+    "dd.history.title": "{score_word} over time",
+    "dd.history.show_quality": "Show Quality",
+    "dd.history.show_moat": "Show Moat",
+    "dd.history.mos_title": "MOS over time",
+    "dd.history.caption": "Computed nightly; gaps = days the stock wasn't scanned.",
+
+    "dd.price.title": "Last 6 months",
+    "dd.price.legend_price": "Price",
+    "dd.price.entry_zone": "Entry zone {value}",
+
+    "dd.rdcf.heading": "What the price implies",
+    "dd.rdcf.forecast_caption": "A described calculation from stated inputs, not a forecast.",
+    "dd.rdcf.implied_growth": "Implied growth",
+    "dd.rdcf.model_growth": "Model growth",
+    "dd.rdcf.marker_capped": "Marker capped at -10%/30% for readability.",
+    "dd.rdcf.default_note": (
+        "Rests on a default/estimated free cash flow input - see the "
+        "note under Intrinsic Value above."
+    ),
+
+    "dd.peer.heading": "Peer context",
+    "dd.peer.no_data": "No peer data yet for {ticker} - not in a scanned overnight universe yet.",
+    "dd.peer.provenance": "vs last night's overnight scan (attention-lite).",
+    "dd.peer.no_rankable": "No rankable scores for this ticker yet.",
+    "dd.peer.closest_peers": "Closest peers - {source}",
+    "dd.peer.compare_button": "Compare these →",
+    "dd.peer.no_peers": "No peers found in {universe} to compare against.",
+    "dd.peer.pct_top": "top {pct}%",
+    "dd.peer.pct_bottom": "bottom {pct}%",
+    "dd.peer.of": "of",
+
+    "dd.heading.dividends": "Dividends",
+    "dd.heading.insider": "Insider & capital",
+
+    "dd.alert.expander": "\U0001F514 Alert me when {ticker}...",
+    "dd.alert.signin_prompt": (
+        "Sign in (top left) to get an email or push notification when "
+        "{ticker}'s own computed numbers cross a line you choose."
+    ),
+
+    "dd.checklist.expander": "\U0001F4CB My checklist for {ticker}",
+    "dd.checklist.signin_prompt": (
+        "Sign in (top left) to keep a private pre-purchase checklist and "
+        "thesis note for {ticker}."
+    ),
+
+    "dd.download.popover": "\U0001F4E5 Download data",
+    "dd.download.caption": "Everything on this page for {ticker}, as a spreadsheet.",
+    "dd.download.xlsx_button": "Compounder View workbook (.xlsx)",
+    "dd.download.csv_button": "Valuation + Scores (.csv)",
+    "dd.download.xlsx_failed": "Workbook couldn't be built right now.",
+    "dd.download.csv_failed": "CSV couldn't be built right now.",
+    "dd.download.fair_value_omitted": (
+        "Fair Value sheet omitted from the workbook - subscribe to "
+        "include it."
+    ),
+
+    "dd.copytext.button_label": "Copy as text",
+
+    "gate.results_full_label": "the full {page_label} results",
+    "gate.results_teaser": (
+        "Valuation (Intrinsic Value, MOS), Quality, Psychology, "
+        "Discovery, and Trade Setup detail for every stock above."
+    ),
+
+    "dd.legend.quality": "Quality",
+    "dd.legend.moat": "Moat",
+    "dd.legend.mos": "MOS",
+
+    "dd.results.heading": "Reported on {date} - before/after",
+    "dd.results.stale_warning": (
+        "The \"after\" figures below may still rest on a statement Yahoo "
+        "hasn't fully ingested yet - re-checked automatically a few days "
+        "after the report; if these look unchanged from \"before\", check "
+        "back in a few days."
+    ),
+    "dd.results.what_moved": "What moved:",
+    "dd.results.footer_caption": (
+        "A computed before/after comparison from this site's own scoring - "
+        "described calculation, not a recommendation."
+    ),
+
+    # Español completion, Part 1b: the email sign-in popover's own internal
+    # copy (paywall_engine._render_signin_control - previously a documented
+    # gap) and the plain-string messages email_auth.send_code()/
+    # verify_code() return (also previously a documented gap). Placeholders
+    # ({email}) are pre-formatted values passed through **fmt, same
+    # discipline as the rest of this file.
+    "signin.google_button": "Continue with Google",
+    "signin.or_divider": "or",
+    "signin.email_label": "Email address",
+    "signin.email_placeholder": "you@example.com",
+    "signin.website_honeypot_label": "Website",
+    "signin.send_code_button": "Email me a sign-in code",
+    "signin.code_label": "6-digit code",
+    "signin.code_placeholder": "123456",
+    "signin.verify_button": "Verify",
+    "signin.resend_button": "Resend code",
+
+    "email_auth.invalid_email": "That doesn't look like a valid email address.",
+    "email_auth.not_configured": "Email sign-in isn't available right now - try Google.",
+    "email_auth.too_many_ip": (
+        "Too many codes requested from this connection today - please try "
+        "again tomorrow."
+    ),
+    "email_auth.too_many_today": (
+        "Too many codes requested today - please try again tomorrow."
+    ),
+    "email_auth.send_failed": "Couldn't send the email right now - please try again.",
+    "email_auth.code_sent": "Code sent to {email} - check your inbox (and spam folder).",
+    "email_auth.enter_code": "Enter the 6-digit code from the email.",
+    "email_auth.no_code": "No code on record - request a new one.",
+    "email_auth.too_many_attempts": "Too many wrong attempts - request a new code.",
+    "email_auth.code_expired": "That code has expired - request a new one.",
+    "email_auth.wrong_code": "Wrong code - check the email and try again.",
+    "email_auth.signed_in": "Signed in.",
+
+    # Español completion, Part 1b (found while wiring the sign-in popover):
+    # _render_follow_control's own inline email/code flow duplicates that
+    # same flow's strings verbatim (shared by page_research and
+    # page_deep_dive) - translated here for consistency rather than left
+    # as a second, English-only copy sitting right next to the now-
+    # translated one. Reuses signin.*/email_auth.invalid_email for the
+    # strings that are identical; these are just the ones unique to it.
+    "follow.notify_button": "Notify me",
+    "follow.caption": "Get an email when {ticker}'s research updates.",
+    "follow.enter_code_prompt": "Enter the 6-digit code sent to {email} for {ticker}.",
+    "follow.following_label": "🔔 Following — click to stop",
+    "follow.notify_label": "🔔 Email me when research updates",
+    "follow.save_failed": "Couldn't save right now - please try again.",
+
+    # Español completion, Part 1b (found while covering blog): the blog
+    # post's end-of-article subscribe box (blog_render._blog_subscribe_
+    # html) had no lang parameter at all - a Spanish blog post showed an
+    # English subscribe box. Now driven by the POST's own lang (post_lang
+    # in render_post()), a separate concept from the rest of the site's
+    # ?lang=es query-param toggle - see blog_render.py's own "Español
+    # instruction, Part 3" comment on post_lang.
+    "blog.subscribe.already_heading": "You're on the list.",
+    "blog.subscribe.already_body": "You'll get the next research note by email.",
+    "blog.subscribe.heading": "Get the next research note by email &mdash; free.",
+    "blog.subscribe.email_placeholder": "you@example.com",
+    "blog.subscribe.subscribe_button": "Subscribe",
+    "blog.subscribe.code_placeholder": "123456",
+    "blog.subscribe.verify_button": "Verify",
+    "blog.subscribe.done": "Done &mdash; you're on the list.",
+    "blog.subscribe.js_invalid_email": "That doesn't look like a valid email address.",
+    "blog.subscribe.js_sending": "Sending...",
+    "blog.subscribe.js_checking": "Checking...",
+    "blog.subscribe.js_network_error": "Couldn't reach the server - please try again.",
+    "blog.subscribe.js_wrong_code_fallback": "Wrong code - try again.",
 }
 
 ES = {
@@ -398,6 +609,195 @@ ES = {
         "dejar de seguir\" (o deja de seguir mientras tienes sesión "
         "iniciada) en el sitio."
     ),
+
+    "dd.plain.value_score": (
+        "En términos simples: un número que combina la calidad del "
+        "negocio, el precio frente al valor estimado, la psicología de "
+        "la multitud y la atención del mercado."
+    ),
+    "dd.plain.quality": (
+        "En términos simples: qué tan sólido es el negocio subyacente - "
+        "rentabilidad, solidez del balance y crecimiento - a partir de "
+        "sus propios estados financieros."
+    ),
+    "dd.plain.psychology": (
+        "En términos simples: si la multitud que opera esta acción "
+        "ahora mismo se ve temerosa, tranquila o codiciosa, leído a "
+        "partir del comportamiento reciente del precio."
+    ),
+    "dd.plain.discovery": (
+        "En términos simples: cuánta atención está recibiendo esta "
+        "acción ahora mismo, a partir del interés de búsqueda, las "
+        "noticias y el volumen de operaciones."
+    ),
+    "dd.plain.moat": (
+        "En términos simples: qué tan bien protegidas están las "
+        "ganancias de este negocio frente a la competencia, según el "
+        "retorno sobre el capital y la durabilidad del margen."
+    ),
+    "dd.plain.mos": (
+        "En términos simples: cuánto más barato es el precio de hoy "
+        "que lo que el modelo estima que vale el negocio."
+    ),
+
+    "dd.chart.driving_score": "Qué impulsa el {score_word} (puntos aportados por cada factor)",
+    "dd.chart.points_score": "Puntos hacia el {score_word}",
+    "dd.chart.driving_quality": "Qué impulsa la Calidad (términos ponderados)",
+    "dd.chart.points_quality": "Puntos hacia Calidad",
+    "dd.chart.driving_psychology": "Qué impulsa la Psicología (Miedo - Codicia - FOMO)",
+    "dd.chart.points_psychology": "Puntos hacia Psicología",
+    "dd.chart.driving_discovery": "Qué impulsa el Descubrimiento (atención y momentum)",
+    "dd.chart.points_discovery": "Puntos hacia Descubrimiento",
+    "dd.chart.driving_moat": "Qué impulsa el Foso (durabilidad del retorno)",
+    "dd.chart.points_moat": "Puntos hacia el Foso",
+    "dd.chart.driving_trade_setup": "Qué impulsa el puntaje de Trade Setup",
+    "dd.chart.points_trade_setup": "Puntos hacia el puntaje de Trade Setup",
+
+    "dd.history.title": "{score_word} en el tiempo",
+    "dd.history.show_quality": "Mostrar Calidad",
+    "dd.history.show_moat": "Mostrar Foso",
+    "dd.history.mos_title": "Margen de seguridad en el tiempo",
+    "dd.history.caption": "Calculado cada noche; los huecos son días en que la acción no fue escaneada.",
+
+    "dd.price.title": "Últimos 6 meses",
+    "dd.price.legend_price": "Precio",
+    "dd.price.entry_zone": "Zona de entrada {value}",
+
+    "dd.rdcf.heading": "Lo que implica el precio",
+    "dd.rdcf.forecast_caption": "Un cálculo descrito a partir de datos indicados, no un pronóstico.",
+    "dd.rdcf.implied_growth": "Crecimiento implícito",
+    "dd.rdcf.model_growth": "Crecimiento del modelo",
+    "dd.rdcf.marker_capped": "Marcador limitado a -10%/30% para mayor claridad.",
+    "dd.rdcf.default_note": (
+        "Se basa en un flujo de caja libre predeterminado o estimado - "
+        "consulta la nota bajo Valor intrínseco más arriba."
+    ),
+
+    "dd.peer.heading": "Comparación con pares",
+    "dd.peer.no_data": "Aún no hay datos de pares para {ticker} - todavía no está en un universo escaneado durante la noche.",
+    "dd.peer.provenance": "frente al escaneo nocturno de anoche (atención simplificada).",
+    "dd.peer.no_rankable": "Aún no hay puntajes clasificables para este ticker.",
+    "dd.peer.closest_peers": "Pares más cercanos - {source}",
+    "dd.peer.compare_button": "Comparar estos →",
+    "dd.peer.no_peers": "No se encontraron pares en {universe} para comparar.",
+    "dd.peer.pct_top": "entre el {pct}% mejor",
+    "dd.peer.pct_bottom": "entre el {pct}% más bajo",
+    "dd.peer.of": "de",
+
+    "dd.heading.dividends": "Dividendos",
+    "dd.heading.insider": "Movimientos de insiders y capital",
+
+    "dd.alert.expander": "\U0001F514 Avisarme cuando {ticker}...",
+    "dd.alert.signin_prompt": (
+        "Inicia sesión (arriba a la izquierda) para recibir un correo o "
+        "una notificación push cuando los propios números calculados de "
+        "{ticker} crucen una línea que elijas."
+    ),
+
+    "dd.checklist.expander": "\U0001F4CB Mi lista de verificación para {ticker}",
+    "dd.checklist.signin_prompt": (
+        "Inicia sesión (arriba a la izquierda) para llevar una lista de "
+        "verificación privada previa a la compra y una nota de tesis "
+        "para {ticker}."
+    ),
+
+    "dd.download.popover": "\U0001F4E5 Descargar datos",
+    "dd.download.caption": "Todo lo de esta página para {ticker}, como una hoja de cálculo.",
+    "dd.download.xlsx_button": "Libro de Compounder View (.xlsx)",
+    "dd.download.csv_button": "Valoración + Puntajes (.csv)",
+    "dd.download.xlsx_failed": "No se pudo generar el libro en este momento.",
+    "dd.download.csv_failed": "No se pudo generar el CSV en este momento.",
+    "dd.download.fair_value_omitted": (
+        "Hoja de Fair Value omitida del libro - suscríbete para incluirla."
+    ),
+
+    "dd.copytext.button_label": "Copiar como texto",
+
+    "gate.results_full_label": "los resultados completos de {page_label}",
+    "gate.results_teaser": (
+        "Valoración (Valor intrínseco, MOS), Calidad, Psicología, "
+        "Descubrimiento y detalle de Trade Setup para cada acción de "
+        "arriba."
+    ),
+
+    "dd.legend.quality": "Calidad",
+    "dd.legend.moat": "Foso",
+    "dd.legend.mos": "MOS",
+
+    "dd.results.heading": "Reportado el {date} - antes/después",
+    "dd.results.stale_warning": (
+        "Las cifras \"después\" de abajo podrían aún basarse en un informe "
+        "que Yahoo no ha terminado de procesar - se revisa automáticamente "
+        "unos días después del informe; si estas cifras no cambiaron "
+        "respecto a \"antes\", vuelve a comprobar en unos días."
+    ),
+    "dd.results.what_moved": "Qué cambió:",
+    "dd.results.footer_caption": (
+        "Una comparación calculada de antes/después a partir del propio "
+        "sistema de puntuación del sitio - un cálculo descrito, no una "
+        "recomendación."
+    ),
+
+    "signin.google_button": "Continuar con Google",
+    "signin.or_divider": "o",
+    "signin.email_label": "Correo electrónico",
+    "signin.email_placeholder": "tucorreo@ejemplo.com",
+    "signin.website_honeypot_label": "Sitio web",
+    "signin.send_code_button": "Enviarme un código de acceso",
+    "signin.code_label": "Código de 6 dígitos",
+    "signin.code_placeholder": "123456",
+    "signin.verify_button": "Verificar",
+    "signin.resend_button": "Reenviar código",
+
+    "email_auth.invalid_email": "Esa dirección de correo no parece válida.",
+    "email_auth.not_configured": (
+        "El inicio de sesión por correo no está disponible en este momento "
+        "- prueba con Google."
+    ),
+    "email_auth.too_many_ip": (
+        "Se solicitaron demasiados códigos desde esta conexión hoy - "
+        "vuelve a intentarlo mañana."
+    ),
+    "email_auth.too_many_today": (
+        "Se solicitaron demasiados códigos hoy - vuelve a intentarlo "
+        "mañana."
+    ),
+    "email_auth.send_failed": (
+        "No se pudo enviar el correo en este momento - vuelve a intentarlo."
+    ),
+    "email_auth.code_sent": (
+        "Código enviado a {email} - revisa tu bandeja de entrada (y la "
+        "carpeta de spam)."
+    ),
+    "email_auth.enter_code": "Ingresa el código de 6 dígitos del correo.",
+    "email_auth.no_code": "No hay ningún código registrado - solicita uno nuevo.",
+    "email_auth.too_many_attempts": (
+        "Demasiados intentos fallidos - solicita un código nuevo."
+    ),
+    "email_auth.code_expired": "Ese código expiró - solicita uno nuevo.",
+    "email_auth.wrong_code": "Código incorrecto - revisa el correo e inténtalo de nuevo.",
+    "email_auth.signed_in": "Sesión iniciada.",
+
+    "follow.notify_button": "Avisarme",
+    "follow.caption": "Recibe un correo cuando se actualice el análisis de {ticker}.",
+    "follow.enter_code_prompt": "Ingresa el código de 6 dígitos enviado a {email} para {ticker}.",
+    "follow.following_label": "🔔 Siguiendo — clic para dejar de seguir",
+    "follow.notify_label": "🔔 Avisarme cuando se actualice el análisis",
+    "follow.save_failed": "No se pudo guardar en este momento - vuelve a intentarlo.",
+
+    "blog.subscribe.already_heading": "Ya estás en la lista.",
+    "blog.subscribe.already_body": "Recibirás la próxima nota de investigación por correo.",
+    "blog.subscribe.heading": "Recibe la próxima nota de investigación por correo - gratis.",
+    "blog.subscribe.email_placeholder": "tucorreo@ejemplo.com",
+    "blog.subscribe.subscribe_button": "Suscribirse",
+    "blog.subscribe.code_placeholder": "123456",
+    "blog.subscribe.verify_button": "Verificar",
+    "blog.subscribe.done": "Listo - ya estás en la lista.",
+    "blog.subscribe.js_invalid_email": "Esa dirección de correo no parece válida.",
+    "blog.subscribe.js_sending": "Enviando...",
+    "blog.subscribe.js_checking": "Verificando...",
+    "blog.subscribe.js_network_error": "No se pudo conectar con el servidor - vuelve a intentarlo.",
+    "blog.subscribe.js_wrong_code_fallback": "Código incorrecto - inténtalo de nuevo.",
 }
 
 

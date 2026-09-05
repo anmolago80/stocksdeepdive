@@ -324,10 +324,11 @@ def _render_signin_control(key="account_bar_signin", lang="en"):
     the original plain Google button. The popover key CONTAINS the plain
     button's key, so the existing pill CSS styles both identically.
 
-    lang: only the "Sign In" label itself is translated (Español
-    instruction, Part 1) - the popover's own internal copy ("Continue
-    with Google", the email/code flow strings below) stays English in
-    this pass, an explicitly deferred gap (see i18n.py's docstring)."""
+    lang: the "Sign In" label AND the popover's own internal copy
+    ("Continue with Google", the email/code flow strings, and the
+    messages email_auth.send_code()/verify_code() return) are all
+    translated (Español completion, Part 1b - previously a documented
+    gap, see i18n.py's docstring)."""
     import i18n
     _label = i18n.t("account.sign_in", lang)
     if not _email_auth_available():
@@ -335,17 +336,17 @@ def _render_signin_control(key="account_bar_signin", lang="en"):
         return
     with st.popover(_label, key=f"{key}_pop"):
         if _auth_configured():
-            if st.button("Continue with Google", key=f"{key}_google",
+            if st.button(i18n.t("signin.google_button", lang), key=f"{key}_google",
                          type="primary", use_container_width=True):
                 st.login()
             st.markdown(
-                "<div style='text-align:center;color:#5b7290;font-size:12px;"
-                "margin:2px 0 6px;'>&mdash; or &mdash;</div>",
+                f"<div style='text-align:center;color:#5b7290;font-size:12px;"
+                f"margin:2px 0 6px;'>&mdash; {i18n.t('signin.or_divider', lang)} &mdash;</div>",
                 unsafe_allow_html=True,
             )
         _em_input = st.text_input(
-            "Email address", key=f"{key}_email",
-            placeholder="you@example.com",
+            i18n.t("signin.email_label", lang), key=f"{key}_email",
+            placeholder=i18n.t("signin.email_placeholder", lang),
         )
         # Honeypot: a field real visitors never see or fill in (label
         # collapsed, styled off-screen below), but a scripted bot filling
@@ -358,17 +359,17 @@ def _render_signin_control(key="account_bar_signin", lang="en"):
             "overflow:hidden;' aria-hidden='true'>",
             unsafe_allow_html=True,
         )
-        _hp = st.text_input("Website", key=f"{key}_hp", label_visibility="collapsed")
+        _hp = st.text_input(i18n.t("signin.website_honeypot_label", lang), key=f"{key}_hp", label_visibility="collapsed")
         st.markdown("</div>", unsafe_allow_html=True)
         if not st.session_state.get(f"{key}_code_sent"):
-            if st.button("Email me a sign-in code", key=f"{key}_send",
+            if st.button(i18n.t("signin.send_code_button", lang), key=f"{key}_send",
                          use_container_width=True):
                 if _hp:
                     st.session_state[f"{key}_code_sent"] = True
                     st.session_state[f"{key}_sent_to"] = _em_input.strip().lower()
-                    st.success(f"Code sent to {_em_input.strip()} - check your inbox (and spam folder).")
+                    st.success(i18n.t("email_auth.code_sent", lang, email=_em_input.strip()))
                 else:
-                    _ok, _msg = email_auth.send_code(_em_input, client_ip=_client_ip())
+                    _ok, _msg = email_auth.send_code(_em_input, client_ip=_client_ip(), lang=lang)
                     if _ok:
                         st.session_state[f"{key}_code_sent"] = True
                         st.session_state[f"{key}_sent_to"] = _em_input.strip().lower()
@@ -378,12 +379,12 @@ def _render_signin_control(key="account_bar_signin", lang="en"):
         if st.session_state.get(f"{key}_code_sent"):
             _sent_to = st.session_state.get(f"{key}_sent_to", "")
             _code = st.text_input(
-                "6-digit code", key=f"{key}_code", max_chars=6,
-                placeholder="123456",
+                i18n.t("signin.code_label", lang), key=f"{key}_code", max_chars=6,
+                placeholder=i18n.t("signin.code_placeholder", lang),
             )
             _cv, _cr = st.columns(2)
             with _cv:
-                if st.button("Verify", key=f"{key}_verify", type="primary",
+                if st.button(i18n.t("signin.verify_button", lang), key=f"{key}_verify", type="primary",
                              use_container_width=True):
                     _tok, _msg = email_auth.verify_code(
                         _sent_to, _code, src=st.session_state.get("first_src"),
@@ -401,9 +402,9 @@ def _render_signin_control(key="account_bar_signin", lang="en"):
                     else:
                         st.error(_msg)
             with _cr:
-                if st.button("Resend code", key=f"{key}_resend",
+                if st.button(i18n.t("signin.resend_button", lang), key=f"{key}_resend",
                              use_container_width=True):
-                    _ok, _msg = email_auth.send_code(_sent_to, client_ip=_client_ip())
+                    _ok, _msg = email_auth.send_code(_sent_to, client_ip=_client_ip(), lang=lang)
                     (st.success if _ok else st.error)(_msg)
 
 

@@ -492,7 +492,7 @@ def _ticker_snapshot_strip_html(ticker, base_url):
 """
 
 
-def _blog_subscribe_html(signed_in_email=None, src=None):
+def _blog_subscribe_html(signed_in_email=None, src=None, lang="en"):
     """End-of-post "get the next research note by email" box (conversion
     pass, Part 3). Same underlying mechanism as app.py's
     _render_follow_control/_render_conversion_email_hook (send a code,
@@ -512,7 +512,14 @@ def _blog_subscribe_html(signed_in_email=None, src=None):
     general list is wrong on its face - so signed-in shows "You're on the
     list" only when already subscribed, and renders nothing at all
     otherwise (never re-shows the ask box to a visitor who's already
-    signed in some other way, matching this batch's Deep Dive hook)."""
+    signed in some other way, matching this batch's Deep Dive hook).
+
+    lang (Español completion, Part 1b): follows the POST's own language
+    (post_lang in render_post()) - previously this box had no lang
+    parameter at all and rendered English on a Spanish post. `lang` is
+    also sent to the two endpoints below so the server-side send-code/
+    verify-code messages come back in the same language."""
+    import i18n
     if signed_in_email:
         try:
             subscribed = follow_store.is_following(signed_in_email, follow_store.ALL_TICKERS)
@@ -521,36 +528,41 @@ def _blog_subscribe_html(signed_in_email=None, src=None):
         if not subscribed:
             return ""
         return (
-            '<div class="cta" id="sdd-subscribe"><h3>You\'re on the list.</h3>'
-            "<p>You'll get the next research note by email.</p></div>"
+            f'<div class="cta" id="sdd-subscribe"><h3>{i18n.t("blog.subscribe.already_heading", lang)}</h3>'
+            f'<p>{i18n.t("blog.subscribe.already_body", lang)}</p></div>'
         )
 
     src_json = json.dumps(src or "")
+    lang_json = json.dumps(lang or "en")
+    _t = {k: json.dumps(i18n.t(f"blog.subscribe.{k}", lang)) for k in (
+        "js_invalid_email", "js_sending", "js_checking",
+        "js_network_error", "js_wrong_code_fallback",
+    )}
     return f"""
 <div class="cta" id="sdd-subscribe">
-  <h3>Get the next research note by email &mdash; free.</h3>
+  <h3>{i18n.t("blog.subscribe.heading", lang)}</h3>
   <div id="sdd-sub-ask">
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
-      <input type="email" id="sdd-sub-email" placeholder="you@example.com"
+      <input type="email" id="sdd-sub-email" placeholder="{i18n.t('blog.subscribe.email_placeholder', lang)}"
         style="flex:1 1 220px;background:#0b1220;color:#e6edf5;border:1px solid #1f3352;
         border-radius:8px;padding:10px 12px;font-size:15px;font-family:inherit">
       <button type="button" id="sdd-sub-btn" class="sdd-cite-btn"
-        style="padding:10px 20px;font-size:14px">Subscribe</button>
+        style="padding:10px 20px;font-size:14px">{i18n.t("blog.subscribe.subscribe_button", lang)}</button>
     </div>
     <div id="sdd-sub-status" style="color:#8aa0b8;font-size:12.5px;margin-top:8px"></div>
   </div>
   <div id="sdd-sub-code" style="display:none;margin-top:10px">
     <div style="display:flex;gap:10px;flex-wrap:wrap">
-      <input type="text" id="sdd-sub-code-input" maxlength="6" placeholder="123456"
+      <input type="text" id="sdd-sub-code-input" maxlength="6" placeholder="{i18n.t('blog.subscribe.code_placeholder', lang)}"
         style="flex:1 1 140px;background:#0b1220;color:#e6edf5;border:1px solid #1f3352;
         border-radius:8px;padding:10px 12px;font-size:15px;font-family:inherit">
       <button type="button" id="sdd-sub-verify-btn" class="sdd-cite-btn"
-        style="padding:10px 20px;font-size:14px">Verify</button>
+        style="padding:10px 20px;font-size:14px">{i18n.t("blog.subscribe.verify_button", lang)}</button>
     </div>
     <div id="sdd-sub-code-status" style="color:#8aa0b8;font-size:12.5px;margin-top:8px"></div>
   </div>
   <div id="sdd-sub-done" style="display:none;color:#2dd4bf;margin-top:10px;font-size:15px">
-    Done &mdash; you're on the list.
+    {i18n.t("blog.subscribe.done", lang)}
   </div>
 </div>
 <script>
@@ -563,18 +575,19 @@ def _blog_subscribe_html(signed_in_email=None, src=None):
   var codeInput = document.getElementById('sdd-sub-code-input');
   var codeStatus = document.getElementById('sdd-sub-code-status');
   var src = {src_json};
+  var lang = {lang_json};
   var sentTo = '';
 
   document.getElementById('sdd-sub-btn').addEventListener('click', function(){{
     var email = (emailInput.value || '').trim();
     if (!email || email.indexOf('@') === -1) {{
-      status.textContent = "That doesn't look like a valid email address.";
+      status.textContent = {_t["js_invalid_email"]};
       return;
     }}
-    status.textContent = 'Sending...';
+    status.textContent = {_t["js_sending"]};
     fetch('/blog/subscribe/send-code', {{
       method: 'POST', headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{email: email}})
+      body: JSON.stringify({{email: email, lang: lang}})
     }}).then(function(r){{ return r.json(); }}).then(function(data){{
       status.textContent = data.message || '';
       if (data.ok) {{
@@ -583,16 +596,16 @@ def _blog_subscribe_html(signed_in_email=None, src=None):
         codeBox.style.display = 'block';
       }}
     }}).catch(function(){{
-      status.textContent = "Couldn't reach the server - please try again.";
+      status.textContent = {_t["js_network_error"]};
     }});
   }});
 
   document.getElementById('sdd-sub-verify-btn').addEventListener('click', function(){{
     var code = (codeInput.value || '').trim();
-    codeStatus.textContent = 'Checking...';
+    codeStatus.textContent = {_t["js_checking"]};
     fetch('/blog/subscribe/verify-code', {{
       method: 'POST', headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{email: sentTo, code: code, src: src}})
+      body: JSON.stringify({{email: sentTo, code: code, src: src, lang: lang}})
     }}).then(function(r){{ return r.json(); }}).then(function(data){{
       if (data.ok && data.token) {{
         fetch('/_auth/set-cookie', {{
@@ -603,10 +616,10 @@ def _blog_subscribe_html(signed_in_email=None, src=None):
           doneBox.style.display = 'block';
         }});
       }} else {{
-        codeStatus.textContent = data.message || 'Wrong code - try again.';
+        codeStatus.textContent = data.message || {_t["js_wrong_code_fallback"]};
       }}
     }}).catch(function(){{
-      codeStatus.textContent = "Couldn't reach the server - please try again.";
+      codeStatus.textContent = {_t["js_network_error"]};
     }});
   }});
 }})();
@@ -1374,7 +1387,7 @@ def render_post(post, base_url, prev_post=None, next_post=None,
     if not is_draft:
         if primary_ticker:
             snapshot_strip_html = _ticker_snapshot_strip_html(primary_ticker, base_url)
-        subscribe_html = _blog_subscribe_html(signed_in_email=signed_in_email, src=src)
+        subscribe_html = _blog_subscribe_html(signed_in_email=signed_in_email, src=src, lang=post_lang)
 
     citation_html = ""
     if not is_draft:

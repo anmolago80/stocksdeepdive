@@ -865,7 +865,12 @@ async def blog_subscribe_send_code(request: Request):
     except Exception:
         body = {}
     email = str(body.get("email") or "").strip()
-    ok, msg = email_auth.send_code(email, client_ip=_client_ip(request))
+    # Español completion, Part 1b: `lang` (the blog post's own language -
+    # see blog_render._blog_subscribe_html's docstring) picks the
+    # returned message's template; defaults to "en" for any older client
+    # script that doesn't send it.
+    lang = str(body.get("lang") or "en").strip().lower()
+    ok, msg = email_auth.send_code(email, client_ip=_client_ip(request), lang=lang)
     return {"ok": ok, "message": msg}
 
 
@@ -887,7 +892,8 @@ async def blog_subscribe_verify_code(request: Request):
     email = str(body.get("email") or "").strip().lower()
     code = str(body.get("code") or "").strip()
     src = body.get("src") or None
-    tok, msg = email_auth.verify_code(email, code, src=src)
+    lang = str(body.get("lang") or "en").strip().lower()
+    tok, msg = email_auth.verify_code(email, code, src=src, lang=lang)
     if not tok:
         return {"ok": False, "message": msg}
     try:

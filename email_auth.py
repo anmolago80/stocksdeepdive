@@ -214,25 +214,32 @@ def _record_ip_send(conn, ip, today):
     )
 
 
-def send_code(email, client_ip=None):
+def send_code(email, client_ip=None, lang="en"):
     """Email a fresh 6-digit code. Returns (ok, user_message).
 
     `client_ip` (the caller's best guess at the visitor's IP - see
     paywall_engine._client_ip()) is optional and the per-IP check is
     skipped (fails open) when it's None/empty, e.g. if Streamlit's
     X-Forwarded-For header is ever unavailable - a missed rate-limit check
-    is far better than blocking every real sign-in."""
+    is far better than blocking every real sign-in.
+
+    `lang` (Español completion, Part 1b): picks the returned user_message's
+    template via i18n.t() (email_auth.*) - callers pass
+    st.session_state.get("lang"); this module still never imports
+    streamlit itself. Defaults to "en" so every existing caller that
+    doesn't pass it keeps its current (English) behaviour."""
+    import i18n
     email = (email or "").strip().lower()
     if not valid_email(email):
-        return False, "That doesn't look like a valid email address."
+        return False, i18n.t("email_auth.invalid_email", lang)
     if not is_configured():
-        return False, "Email sign-in isn't available right now - try Google."
+        return False, i18n.t("email_auth.not_configured", lang)
 
     today = _now().strftime("%Y-%m-%d")
     client_ip = (client_ip or "").strip() or None
     with _conn() as conn:
         if client_ip and _ip_sends_today(conn, client_ip, today) >= MAX_SENDS_PER_IP_PER_DAY:
-            return False, "Too many codes requested from this connection today - please try again tomorrow."
+            return False, i18n.t("email_auth.too_many_ip", lang)
 
         row = conn.execute(
             "SELECT sends_today, last_send_date FROM auth_codes WHERE email = ?",
@@ -240,7 +247,7 @@ def send_code(email, client_ip=None):
         ).fetchone()
         sends_today = row[0] if row and row[1] == today else 0
         if sends_today >= MAX_SENDS_PER_DAY:
-            return False, "Too many codes requested today - please try again tomorrow."
+            return False, i18n.t("email_auth.too_many_today", lang)
 
         code = f"{secrets.randbelow(1_000_000):06d}"
         expires = _iso(_now() + timedelta(minutes=CODE_TTL_MINUTES))
@@ -261,8 +268,8 @@ def send_code(email, client_ip=None):
     try:
         _send_email(email, code)
     except Exception:
-        return False, "Couldn't send the email right now - please try again."
-    return True, f"Code sent to {email} - check your inbox (and spam folder)."
+        return False, i18n.t("email_auth.send_failed", lang)
+    return True, i18n.t("email_auth.code_sent", lang, email=email)
 
 
 def verify_code(email, code, src=None, lang=None):
@@ -276,29 +283,35 @@ def verify_code(email, code, src=None, lang=None):
     `lang` (cleanup round, Part 3/Español Part 4): same "first sign-in
     only" treatment as `src` - callers pass st.session_state.get("lang"),
     recorded on record_signup()'s upsert below so future broadcast emails
-    can address this account in its sign-up language."""
+    can address this account in its sign-up language. Español completion,
+    Part 1b: this same `lang` now ALSO picks the returned user_message's
+    template via i18n.t() (email_auth.*) - defaults to None/falls back to
+    "en" in that lookup, so an existing caller that doesn't pass it keeps
+    its current (English) behaviour."""
+    import i18n
+    _msg_lang = lang or "en"
     email = (email or "").strip().lower()
     code = (code or "").strip()
     if not valid_email(email) or not code:
-        return None, "Enter the 6-digit code from the email."
+        return None, i18n.t("email_auth.enter_code", _msg_lang)
     with _conn() as conn:
         row = conn.execute(
             "SELECT code_hash, expires_at, attempts FROM auth_codes WHERE email = ?",
             (email,),
         ).fetchone()
         if not row:
-            return None, "No code on record - request a new one."
+            return None, i18n.t("email_auth.no_code", _msg_lang)
         code_hash, expires_at, attempts = row
         if attempts >= MAX_ATTEMPTS:
-            return None, "Too many wrong attempts - request a new code."
+            return None, i18n.t("email_auth.too_many_attempts", _msg_lang)
         if _iso(_now()) > expires_at:
-            return None, "That code has expired - request a new one."
+            return None, i18n.t("email_auth.code_expired", _msg_lang)
         if _hash(f"{email}:{code}") != code_hash:
             conn.execute(
                 "UPDATE auth_codes SET attempts = attempts + 1 WHERE email = ?",
                 (email,),
             )
-            return None, "Wrong code - check the email and try again."
+            return None, i18n.t("email_auth.wrong_code", _msg_lang)
         # Success: consume the code, mint a session.
         conn.execute("DELETE FROM auth_codes WHERE email = ?", (email,))
         token = secrets.token_hex(32)
@@ -309,7 +322,7 @@ def verify_code(email, code, src=None, lang=None):
             (_hash(token), email, now, now),
         )
     record_signup(email, "email", src=src, lang=lang)
-    return token, "Signed in."
+    return token, i18n.t("email_auth.signed_in", _msg_lang)
 
 
 def session_email(token):
