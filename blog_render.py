@@ -866,11 +866,14 @@ def _footer_html(lang="en"):
     """Español instruction, Part 2: same lang-aware treatment as
     _header_html() above, plus the standing disclaimer (i18n.DISCLAIMER_ES
     - see that module's docstring for why it isn't duplicated as an EN
-    dict entry). Blog and Track record have no Spanish version yet
-    (that's Part 3's blog-translation workflow) - their links stay
-    pointed at the English pages even in the Spanish footer, labelled
-    "(en inglés)" rather than silently presenting an English page as if
-    it were the Spanish one."""
+    dict entry). The blog has no Spanish version yet (that's a separate,
+    per-post translation workflow, not this instruction's scope) - its
+    link stays pointed at the English page even in the Spanish footer,
+    labelled "(en inglés)" rather than silently presenting an English
+    page as if it were the Spanish one. Track record got its own /es/
+    twin in Español completion, Part 3 (track_record_render.py), so its
+    footer link now points there with a plain translated label like
+    every other Spanish link in this footer."""
     import i18n
     disclaimer = i18n.DISCLAIMER_ES if lang == "es" else DISCLAIMER
     if lang == "es":
@@ -883,7 +886,7 @@ def _footer_html(lang="en"):
       <a href="/es/about">Acerca del autor</a>
       <a href="/es/methodology">Cómo funcionan los puntajes</a>
       <a href="/research">Rational Compounder Research</a>
-      <a href="/track-record">Historial (en inglés)</a>
+      <a href="/es/track-record">Historial</a>
     </div>
     <div><h5>Herramientas</h5>
       <a href="/deep-dive?lang=es">Deep Dive</a>
@@ -2033,7 +2036,28 @@ def render_content_page(title, markdown_text, description, path, base_url,
     return _page(head, body, lang=lang)
 
 
-def render_not_found(base_url, message="That page doesn't exist."):
+def render_not_found(base_url, message="That page doesn't exist.", lang="en"):
+    """lang (Español completion, Part 3): this generic 404 currently has
+    only one caller (server.py's /blog/{slug} unknown-slug case), and the
+    blog itself has no per-post Spanish routing scheme yet (/es/blog is a
+    reordered listing of the SAME posts, not a translated one - see
+    blog_index()'s own docstring) - so there is no live /es/ route that
+    reaches this function with lang="es" today. The parameter exists so
+    this page is ready the moment one does, without a second signature
+    change later; lang="en" (the default) is byte-identical to before."""
+    if lang == "es":
+        body = f"""
+<main><div class="wrap">
+  <div class="kicker">404</div>
+  <h1>No encontrado</h1>
+  <p class="lede">{html.escape(message)}</p>
+  <p><a href="/blog">Volver al blog</a> &nbsp;&middot;&nbsp;
+     <a href="/">Ir a StocksDeepDive</a></p>
+</div></main>
+"""
+        head = _head("No encontrado | " + SITE_NAME, "Esta página no existe.",
+                     None, base_url, noindex=True)
+        return _page(head, body, lang=lang)
     body = f"""
 <main><div class="wrap">
   <div class="kicker">404</div>

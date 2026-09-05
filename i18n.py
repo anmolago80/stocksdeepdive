@@ -1090,6 +1090,36 @@ def format_date_dmy(dt, lang="en"):
     return f"{day} {mon} {year}"
 
 
+# Español completion, Part 3: calendar_render.py's day-group labels use
+# "%a %d %b" (weekday + month, no year) - a pattern format_date_dmy above
+# doesn't cover. Same "small manual map, no server locale dependency"
+# approach, kept as a separate map/function rather than widening
+# format_date_dmy's own signature, so every existing caller of that
+# function (the notification emails) is untouched.
+_WEEKDAY_ABBREV_ES = {
+    "Mon": "lun", "Tue": "mar", "Wed": "mié", "Thu": "jue",
+    "Fri": "vie", "Sat": "sáb", "Sun": "dom",
+}
+
+
+def format_date_a_d_b(dt, lang="en"):
+    """"%a %d %b" (e.g. "Mon 05 Sep") with the weekday AND month
+    abbreviations translated when lang=="es" (e.g. "lun 05 sep") - the day
+    number is a plain digit either way. lang="en" (the default, and any
+    other/unknown lang) renders EXACTLY as dt.strftime("%a %d %b") always
+    has, so the existing English /calendar page (and the Streamlit results
+    calendar, which shares this same helper) stays byte-identical."""
+    wd_en = dt.strftime("%a")
+    day = dt.strftime("%d")
+    mon_en = dt.strftime("%b")
+    if lang == "es":
+        wd = _WEEKDAY_ABBREV_ES.get(wd_en, wd_en)
+        mon = _MONTH_ABBREV_ES.get(mon_en, mon_en)
+    else:
+        wd, mon = wd_en, mon_en
+    return f"{wd} {day} {mon}"
+
+
 # -----------------------------------------------------------------
 # Standing disclaimers - ES translations only (see module docstring for
 # why the EN text isn't duplicated up here). Translated carefully, term

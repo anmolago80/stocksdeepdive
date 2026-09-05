@@ -35,6 +35,7 @@ import html
 from datetime import datetime, timezone, timedelta, date as _date
 
 import blog_render
+import i18n
 import results_store
 import snapshot_store
 
@@ -181,10 +182,15 @@ _CSS = """
 """
 
 
-def _entry_row_html(row):
+def _entry_row_html(row, lang="en"):
     e = html.escape
     ticker = row["ticker"]
-    tag = "✓ reported" if row["status"] == "reported" else "~ expected"
+    if lang == "es":
+        tag = "✓ reportado" if row["status"] == "reported" else "~ previsto"
+        vs_word = "Puntaje Value"
+    else:
+        tag = "✓ reported" if row["status"] == "reported" else "~ expected"
+        vs_word = "Value Score"
     tag_cls = "reported" if row["status"] == "reported" else "expected"
     delta_html = ""
     if row["status"] == "reported" and row.get("has_event"):
@@ -192,7 +198,7 @@ def _entry_row_html(row):
         if b is not None and a is not None:
             delta = a - b
             delta_html = (
-                f'<span class="sdd-cal-delta">Value Score {b:.1f} → {a:.1f} '
+                f'<span class="sdd-cal-delta">{vs_word} {b:.1f} → {a:.1f} '
                 f'({delta:+.1f})</span>'
             )
     universe_html = f'<span class="sdd-cal-delta">{e(row["universe"])}</span>' if row.get("universe") else ""
@@ -207,23 +213,37 @@ def _entry_row_html(row):
     )
 
 
-def _section_html(title, grouped, empty_note):
+def _section_html(title, grouped, empty_note, lang="en"):
     if not grouped:
         return f'<div class="sdd-cal-section"><h3>{html.escape(title)}</h3><div class="sdd-cal-empty">{html.escape(empty_note)}</div></div>'
     days = []
     for day, rows in grouped:
-        day_label = datetime.strptime(day, "%Y-%m-%d").strftime("%a %d %b")
-        rows_html = "".join(_entry_row_html(r) for r in rows)
+        day_label = i18n.format_date_a_d_b(datetime.strptime(day, "%Y-%m-%d"), lang)
+        rows_html = "".join(_entry_row_html(r, lang) for r in rows)
         days.append(f'<div class="sdd-cal-day"><h4>{html.escape(day_label)}</h4>{rows_html}</div>')
     return f'<div class="sdd-cal-section"><h3>{html.escape(title)}</h3>{"".join(days)}</div>'
 
 
-def render_calendar_page(base_url, generated_at=None, anchor=None):
+def render_calendar_page(base_url, generated_at=None, anchor=None, lang="en",
+                          hreflang_alternates=None):
     """The full /calendar page: this week, next week, then a flat list
     of the rest of the current month - built fresh from
     build_entries(None) (every watched ticker; no "My tickers" filter -
     this page is public and unauthenticated, same stance /s/ and
-    /track-record already take)."""
+    /track-record already take).
+
+    lang/hreflang_alternates (Español completion, Part 3): same pattern
+    as blog_render.render_content_page - lang="es" swaps the page's own
+    copy (heading, ledes, section titles/empty notes, entry tags and the
+    "Value Score" word) for hand-written Spanish inline, matching that
+    function's own established style for this kind of standalone page,
+    rather than routing through new i18n.py dict keys. Ticker symbols,
+    company names, universes and the before/after score NUMBERS
+    themselves are untranslated data, unaffected by lang either way.
+    lang="en" (the default) renders EXACTLY as before - every existing
+    caller (the /calendar route with no lang, and the Streamlit results-
+    calendar page via _section_html/_entry_row_html directly) is
+    byte-identical."""
     canonical = f"{base_url}/calendar"
     entries = build_entries(None)
 
@@ -239,36 +259,79 @@ def render_calendar_page(base_url, generated_at=None, anchor=None):
         if later_start <= month_last else []
     )
 
-    body_sections = (
-        _section_html("This week", this_week, "Nothing reported or expected this week.")
-        + _section_html("Next week", next_week, "Nothing expected next week yet.")
-        + _section_html("Later this month", later_this_month,
-                         "Nothing further expected this month yet.")
-    )
+    if lang == "es":
+        heading = "Calendario de resultados"
+        lede1 = (
+            "Cada acción que este sitio sigue y que ya reportó, o se "
+            "espera que reporte, esta semana o la próxima — agrupadas "
+            "por día, con el Puntaje Value antes/después una vez que un "
+            "informe fue reanalizado."
+        )
+        lede2_html = (
+            'Las fechas provienen del proveedor de datos; las fechas '
+            'confirmadas están marcadas con ✓, las estimadas con ~. '
+            'Descripciones de cálculos, no recomendaciones — mira '
+            '<a href="/es/methodology">cómo funcionan los puntajes</a>.'
+        )
+        sec_this_week = _section_html("Esta semana", this_week,
+                                       "Nada reportado ni previsto esta semana.", lang)
+        sec_next_week = _section_html("Próxima semana", next_week,
+                                       "Nada previsto para la próxima semana todavía.", lang)
+        sec_later = _section_html("Más adelante este mes", later_this_month,
+                                   "Nada más previsto este mes todavía.", lang)
+        description = (
+            f"Calendario de resultados de {SITE_NAME} — qué acciones "
+            "seguidas ya reportaron o se espera que reporten esta semana "
+            "y la próxima, con el Puntaje Value antes/después cuando "
+            "está disponible."
+        )
+        page_title = f"Calendario de resultados | {SITE_NAME}"
+        json_name = f"{SITE_NAME} calendario de resultados"
+    else:
+        heading = "Results calendar"
+        # Original literal line breaks preserved exactly (not just the
+        # words) so the EN page stays byte-identical to before this
+        # function grew a lang parameter.
+        lede1 = (
+            "Every stock this site tracks that has reported, or is\n"
+            "  expected to report, this week or next - grouped by day, with the\n"
+            "  before/after Value Score once a report has been re-analysed."
+        )
+        lede2_html = (
+            'Dates from the\n'
+            '  data provider; confirmed dates marked ✓, estimates marked ~.\n'
+            '  Descriptions of calculations, not recommendations - see\n'
+            '  <a href="/methodology">how the scores work</a>.'
+        )
+        sec_this_week = _section_html("This week", this_week,
+                                       "Nothing reported or expected this week.", lang)
+        sec_next_week = _section_html("Next week", next_week,
+                                       "Nothing expected next week yet.", lang)
+        sec_later = _section_html("Later this month", later_this_month,
+                                   "Nothing further expected this month yet.", lang)
+        description = (
+            f"{SITE_NAME}'s results calendar - which tracked stocks have "
+            "reported or are expected to report this week and next, with "
+            "before/after Value Score once available."
+        )
+        page_title = f"Results calendar | {SITE_NAME}"
+        json_name = f"{SITE_NAME} results calendar"
+
+    body_sections = sec_this_week + sec_next_week + sec_later
 
     body = f"""
 <main><div class="wrap">
   <div class="kicker">StocksDeepDive</div>
-  <h1>Results calendar</h1>
-  <p class="lede">Every stock this site tracks that has reported, or is
-  expected to report, this week or next - grouped by day, with the
-  before/after Value Score once a report has been re-analysed.</p>
-  <p class="lede" style="font-size:13px;color:#8aa0b8;">Dates from the
-  data provider; confirmed dates marked ✓, estimates marked ~.
-  Descriptions of calculations, not recommendations - see
-  <a href="/methodology">how the scores work</a>.</p>
+  <h1>{heading}</h1>
+  <p class="lede">{lede1}</p>
+  <p class="lede" style="font-size:13px;color:#8aa0b8;">{lede2_html}</p>
   {body_sections}
 </div></main>
 """
-    description = (
-        f"{SITE_NAME}'s results calendar - which tracked stocks have "
-        "reported or are expected to report this week and next, with "
-        "before/after Value Score once available."
-    )
-    json_ld = blog_render._json_ld({
+    _dataset = {
         "@context": "https://schema.org",
         "@type": "Dataset",
-        "name": f"{SITE_NAME} results calendar",
+        "name": json_name,
         "description": description,
         "url": canonical,
         "creator": blog_render._organization_json_ld(base_url),
@@ -276,9 +339,17 @@ def render_calendar_page(base_url, generated_at=None, anchor=None):
         "license": "https://stocksdeepdive.com/methodology",
         "isAccessibleForFree": True,
         "dateModified": generated_at or "",
-    })
+    }
+    if lang == "es":
+        # Only added for the ES twin - the original EN JSON-LD never had
+        # an inLanguage field, and adding one unconditionally would break
+        # this page's byte-identical EN output (unlike render_content_page,
+        # whose EN JSON-LD already carried a hardcoded "en" value here).
+        _dataset["inLanguage"] = lang
+    json_ld = blog_render._json_ld(_dataset)
     head = blog_render._head(
-        f"Results calendar | {SITE_NAME}", description, canonical, base_url,
+        page_title, description, canonical, base_url,
         extra_meta=f"<style>{_CSS}</style>", json_ld=json_ld,
+        hreflang_alternates=hreflang_alternates,
     )
-    return blog_render._page(head, body)
+    return blog_render._page(head, body, lang=lang)

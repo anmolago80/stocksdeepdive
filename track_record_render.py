@@ -66,8 +66,19 @@ _CSS = """
 """
 
 
-def render_track_record(rows, base_url, generated_at=None):
-    """rows: score_history.tracked_summary() output."""
+def render_track_record(rows, base_url, generated_at=None, lang="en",
+                         hreflang_alternates=None):
+    """rows: score_history.tracked_summary() output.
+
+    lang/hreflang_alternates (Español completion, Part 3): same pattern
+    as calendar_render.render_calendar_page/blog_render.render_content_
+    page - lang="es" swaps this page's own chrome (heading, lede, the
+    "What this is, and isn't" CTA, table headers, empty-state text) for
+    hand-written Spanish inline. Ticker symbols, dates, scores and prices
+    are untranslated data either way - the instruction's own "chrome/
+    labels only" scope for this page. lang="en" (the default) renders
+    EXACTLY as before - the one existing caller (the /track-record route
+    with no lang) is byte-identical."""
     e = html.escape
     canonical = f"{base_url}/track-record"
 
@@ -93,62 +104,125 @@ def render_track_record(rows, base_url, generated_at=None):
             "</tr>"
         )
 
-    if trs:
-        table = (
-            '<div class="sdd-tr-wrap"><table class="sdd-tr-table"><thead><tr>'
-            "<th>Ticker</th><th>First recorded</th><th>Score then</th>"
-            "<th>Price then</th><th>Latest recorded</th><th>Score now</th>"
-            "<th>Price now</th><th>Price change</th>"
-            "</tr></thead><tbody>" + "".join(trs) + "</tbody></table></div>"
+    if lang == "es":
+        if trs:
+            table = (
+                '<div class="sdd-tr-wrap"><table class="sdd-tr-table"><thead><tr>'
+                "<th>Ticker</th><th>Primer registro</th><th>Puntaje entonces</th>"
+                "<th>Precio entonces</th><th>Último registro</th><th>Puntaje ahora</th>"
+                "<th>Precio ahora</th><th>Cambio de precio</th>"
+                "</tr></thead><tbody>" + "".join(trs) + "</tbody></table></div>"
+            )
+        else:
+            table = (
+                '<div class="empty">Todavía no hay suficiente historial registrado - '
+                f"una acción necesita aparecer en el escaneo nocturno durante al menos "
+                f"{MIN_DAYS} días antes de aparecer aquí.</div>"
+            )
+        citation_text = (
+            f'{SITE_NAME}, "Historial" (datos registrados por el escaneo nocturno). '
+            f"{canonical}"
         )
+        heading = "Historial"
+        lede = (
+            f"El primer y el más reciente Puntaje Value y precio que el "
+            f"escaneo nocturno ha registrado para cada acción que ha "
+            f"seguido durante al menos {MIN_DAYS} días - con fecha, y "
+            "nunca reescrito después de los hechos."
+        )
+        cta_heading = "Qué es esto, y qué no es"
+        cta_body = (
+            f'Cada fila a continuación es exactamente lo que el motor de '
+            f'{SITE_NAME} calculó en la fecha indicada, y el precio de '
+            'cierre registrado ese día - nada aquí se reconstruye ni se '
+            'reformula con retrospectiva. <b>Esto no es un registro de '
+            'decisiones de compra/venta, una afirmación sobre el '
+            'rendimiento de una inversión, ni una afirmación de que un '
+            'Puntaje Value pasado o futuro sea exacto.</b> El Puntaje '
+            'Value es un cálculo ponderado a partir de datos declarados, '
+            'no una recomendación - ver <a href="/es/methodology">cómo '
+            'funcionan los puntajes</a>. Que el precio de una acción haya '
+            'cambiado desde que se registró por primera vez no dice nada '
+            'sobre si el puntaje de ese momento era "correcto"; se '
+            'muestra solo porque es el único hecho sobre "lo que '
+            'realmente ocurrió después" que puede afirmarse sin '
+            'interpretación alguna.'
+        )
+        description = (
+            "Un registro fechado, en pasado, del Puntaje Value y el "
+            f"precio que {SITE_NAME} registró para cada acción seguida, "
+            "primera y más recientemente - no una afirmación sobre la "
+            "exactitud de una recomendación ni sobre el rendimiento de "
+            "una inversión."
+        )
+        page_title = f"Historial | {SITE_NAME}"
+        json_name = f"{SITE_NAME} historial"
     else:
-        table = (
-            '<div class="empty">Nothing has enough recorded history yet - '
-            f"a ticker needs to appear in the nightly scan for at least "
-            f"{MIN_DAYS} days before it shows up here.</div>"
+        if trs:
+            table = (
+                '<div class="sdd-tr-wrap"><table class="sdd-tr-table"><thead><tr>'
+                "<th>Ticker</th><th>First recorded</th><th>Score then</th>"
+                "<th>Price then</th><th>Latest recorded</th><th>Score now</th>"
+                "<th>Price now</th><th>Price change</th>"
+                "</tr></thead><tbody>" + "".join(trs) + "</tbody></table></div>"
+            )
+        else:
+            table = (
+                '<div class="empty">Nothing has enough recorded history yet - '
+                f"a ticker needs to appear in the nightly scan for at least "
+                f"{MIN_DAYS} days before it shows up here.</div>"
+            )
+        citation_text = (
+            f'{SITE_NAME}, "Track record" (data as recorded by the nightly scan). '
+            f"{canonical}"
         )
-
-    citation_text = (
-        f'{SITE_NAME}, "Track record" (data as recorded by the nightly scan). '
-        f"{canonical}"
-    )
+        heading = "Track record"
+        lede = (
+            f"The first and most recent Long Score and price the\n"
+            f"  nightly scan has recorded for every stock it has tracked for at least\n"
+            f"  {MIN_DAYS} days - dated, and never rewritten after the fact."
+        )
+        cta_heading = "What this is, and isn't"
+        cta_body = (
+            f'Every row below is exactly what {SITE_NAME}\'s engine computed on the\n'
+            '    date shown, and the closing price recorded that day - nothing here is\n'
+            '    reconstructed or restated with hindsight. <b>This is not a record of\n'
+            '    buy/sell calls, a claim about investment performance, or a claim that\n'
+            '    any past or future Long Score is accurate.</b> Long Score is a\n'
+            '    weighted calculation from stated inputs, not a recommendation - see\n'
+            '    <a href="/methodology">how the scores work</a>. A stock\'s price moving\n'
+            '    since it was first recorded says nothing about whether the score at\n'
+            '    the time was "right"; it is shown only because it is the one fact\n'
+            '    about "what actually happened afterwards" that can be stated without\n'
+            '    any interpretation at all.'
+        )
+        description = (
+            "A dated, past-tense record of the Long Score and price "
+            f"{SITE_NAME} recorded for each tracked stock, first and most "
+            "recently - not a claim about recommendation accuracy or "
+            "investment performance."
+        )
+        page_title = f"Track record | {SITE_NAME}"
+        json_name = f"{SITE_NAME} track record"
 
     body = f"""
 <main><div class="wrap">
   <div class="kicker">StocksDeepDive</div>
-  <h1>Track record</h1>
-  <p class="lede">The first and most recent Long Score and price the
-  nightly scan has recorded for every stock it has tracked for at least
-  {MIN_DAYS} days - dated, and never rewritten after the fact.</p>
+  <h1>{heading}</h1>
+  <p class="lede">{lede}</p>
   <div class="cta">
-    <h3>What this is, and isn't</h3>
-    <p>Every row below is exactly what {SITE_NAME}'s engine computed on the
-    date shown, and the closing price recorded that day - nothing here is
-    reconstructed or restated with hindsight. <b>This is not a record of
-    buy/sell calls, a claim about investment performance, or a claim that
-    any past or future Long Score is accurate.</b> Long Score is a
-    weighted calculation from stated inputs, not a recommendation - see
-    <a href="/methodology">how the scores work</a>. A stock's price moving
-    since it was first recorded says nothing about whether the score at
-    the time was "right"; it is shown only because it is the one fact
-    about "what actually happened afterwards" that can be stated without
-    any interpretation at all.</p>
+    <h3>{cta_heading}</h3>
+    <p>{cta_body}</p>
   </div>
   {blog_render._copy_citation_html(citation_text)}
   {table}
 </div></main>
 """
 
-    description = (
-        "A dated, past-tense record of the Long Score and price "
-        f"{SITE_NAME} recorded for each tracked stock, first and most "
-        "recently - not a claim about recommendation accuracy or "
-        "investment performance."
-    )
-    json_ld = blog_render._json_ld({
+    _dataset = {
         "@context": "https://schema.org",
         "@type": "Dataset",
-        "name": f"{SITE_NAME} track record",
+        "name": json_name,
         "description": description,
         "url": canonical,
         "creator": blog_render._organization_json_ld(base_url),
@@ -157,9 +231,15 @@ def render_track_record(rows, base_url, generated_at=None):
         "isAccessibleForFree": True,
         "dateModified": generated_at or "",
         "variableMeasured": ["Long Score", "Price"],
-    })
+    }
+    if lang == "es":
+        # Only added for the ES twin, same "don't touch the original EN
+        # JSON-LD shape" reasoning as calendar_render.py's own guard.
+        _dataset["inLanguage"] = lang
+    json_ld = blog_render._json_ld(_dataset)
     head = blog_render._head(
-        f"Track record | {SITE_NAME}", description, canonical, base_url,
+        page_title, description, canonical, base_url,
         extra_meta=f"<style>{_CSS}</style>", json_ld=json_ld,
+        hreflang_alternates=hreflang_alternates,
     )
-    return blog_render._page(head, body)
+    return blog_render._page(head, body, lang=lang)

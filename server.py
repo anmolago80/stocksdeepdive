@@ -699,18 +699,32 @@ def _snapshot_sitemap_urls(base_url):
     """<url> entries for every /s/<ticker> snapshot page, spliced into the
     existing sitemap XML below rather than changing blog_render.py's
     render_sitemap() signature - keeps that function (and every other
-    caller of it) exactly as it was. AI-readiness roadmap Phase 1."""
+    caller of it) exactly as it was. AI-readiness roadmap Phase 1.
+
+    Español completion, Part 3: each EN row now has an /es/s/... twin
+    right after it, same "plain additional <url> entries, no sitemap-
+    level hreflang" choice render_sitemap() already made for the four
+    site_content.py pages - see that function's own comment."""
     from xml.sax.saxutils import escape as xml_escape
     rows = snapshot_store.all_snapshots()
     urls = [
         f"  <url><loc>{xml_escape(base_url)}/s/</loc>"
-        f"<changefreq>daily</changefreq><priority>0.6</priority></url>"
+        f"<changefreq>daily</changefreq><priority>0.6</priority></url>",
+        f"  <url><loc>{xml_escape(base_url)}/es/s/</loc>"
+        f"<changefreq>daily</changefreq><priority>0.6</priority></url>",
     ]
     for r in rows:
         lastmod = (r.get("generated_at") or "")[:10]
+        ticker = xml_escape(r["ticker"])
+        lastmod_tag = f"<lastmod>{lastmod}</lastmod>" if lastmod else ""
         urls.append(
-            f"  <url><loc>{xml_escape(base_url)}/s/{xml_escape(r['ticker'])}</loc>"
-            + (f"<lastmod>{lastmod}</lastmod>" if lastmod else "")
+            f"  <url><loc>{xml_escape(base_url)}/s/{ticker}</loc>"
+            + lastmod_tag
+            + "<changefreq>daily</changefreq><priority>0.5</priority></url>"
+        )
+        urls.append(
+            f"  <url><loc>{xml_escape(base_url)}/es/s/{ticker}</loc>"
+            + lastmod_tag
             + "<changefreq>daily</changefreq><priority>0.5</priority></url>"
         )
     return urls
@@ -748,6 +762,25 @@ async def sitemap(request: Request):
     # above.
     extra += (f'\n  <url><loc>{_xml_escape(base)}/calendar</loc>'
               f'<changefreq>daily</changefreq><priority>0.4</priority></url>')
+    # Español completion, Part 3: /es/ twins for the two pages just above,
+    # same "plain additional <url> entry, no sitemap-level hreflang"
+    # choice as render_sitemap()'s own four content-page twins.
+    extra += (f'\n  <url><loc>{_xml_escape(base)}/es/track-record</loc>'
+              f'<changefreq>daily</changefreq><priority>0.4</priority></url>')
+    extra += (f'\n  <url><loc>{_xml_escape(base)}/es/calendar</loc>'
+              f'<changefreq>daily</changefreq><priority>0.4</priority></url>')
+    # /api and /ai (both EN) were never in APP_PATHS/the sitemap at all -
+    # a pre-existing gap, not introduced here. Fixed while touching this
+    # code so the new /es/api and /es/ai twins don't appear in the
+    # sitemap with no EN counterpart, which would read as backwards.
+    extra += (f'\n  <url><loc>{_xml_escape(base)}/api</loc>'
+              f'<changefreq>monthly</changefreq><priority>0.3</priority></url>')
+    extra += (f'\n  <url><loc>{_xml_escape(base)}/es/api</loc>'
+              f'<changefreq>monthly</changefreq><priority>0.3</priority></url>')
+    extra += (f'\n  <url><loc>{_xml_escape(base)}/ai</loc>'
+              f'<changefreq>monthly</changefreq><priority>0.3</priority></url>')
+    extra += (f'\n  <url><loc>{_xml_escape(base)}/es/ai</loc>'
+              f'<changefreq>monthly</changefreq><priority>0.3</priority></url>')
     xml = xml.replace("</urlset>", extra + "\n</urlset>\n")
     return Response(xml, media_type="application/xml",
                     headers={"Cache-Control": "public, max-age=60"})
@@ -1124,27 +1157,51 @@ _TICKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,14}$")
 
 
 @app.get("/s/", include_in_schema=False)
+@app.get("/es/s/", include_in_schema=False)
 async def snapshot_index(request: Request):
+    """/es/s/ (Español completion, Part 3): same inline lang-twin scheme
+    as /es/calendar and /es/track-record above."""
+    base_url = _base_url(request)
+    path = request.url.path.rstrip("/") or "/"
+    lang = "es" if path == "/es/s" else "en"
     _count_view("snapshot_index")
     rows = snapshot_store.all_snapshots()
-    return _html(snapshot_render.render_index(rows, _base_url(request)),
-                cache="public, max-age=900")
+    hreflang_alternates = [
+        ("en", f"{base_url}/s/"),
+        ("es", f"{base_url}/es/s/"),
+        ("x-default", f"{base_url}/s/"),
+    ]
+    return _html(snapshot_render.render_index(
+        rows, base_url, lang=lang, hreflang_alternates=hreflang_alternates),
+        cache="public, max-age=900")
 
 
 @app.get("/s/{ticker}", include_in_schema=False)
+@app.get("/es/s/{ticker}", include_in_schema=False)
 async def snapshot_page(ticker: str, request: Request):
+    """/es/s/<ticker> (Español completion, Part 3): same inline lang-twin
+    scheme - chrome/labels translate, the underlying scored data is the
+    same snapshot either way."""
     ticker = ticker.strip().upper()
     base = _base_url(request)
+    path = request.url.path.rstrip("/") or "/"
+    lang = "es" if path.startswith("/es/s/") else "en"
+    hreflang_alternates = [
+        ("en", f"{base}/s/{ticker}"),
+        ("es", f"{base}/es/s/{ticker}"),
+        ("x-default", f"{base}/s/{ticker}"),
+    ]
     if not _TICKER_RE.match(ticker):
-        return _html(snapshot_render.render_snapshot_not_found(base, ticker),
+        return _html(snapshot_render.render_snapshot_not_found(base, ticker, lang=lang),
                     status=404, cache="no-store")
     snap = snapshot_store.get_snapshot(ticker)
     if not snap:
-        return _html(snapshot_render.render_snapshot_not_found(base, ticker),
+        return _html(snapshot_render.render_snapshot_not_found(base, ticker, lang=lang),
                     status=404, cache="no-store")
     _count_view("snapshot", ticker=ticker)
-    return _html(snapshot_render.render_snapshot(snap, base),
-                cache="public, max-age=1800")
+    return _html(snapshot_render.render_snapshot(
+        snap, base, lang=lang, hreflang_alternates=hreflang_alternates),
+        cache="public, max-age=1800")
 
 
 # -----------------------------------
@@ -1156,25 +1213,52 @@ async def snapshot_page(ticker: str, request: Request):
 # -----------------------------------
 
 @app.get("/track-record", include_in_schema=False)
+@app.get("/es/track-record", include_in_schema=False)
 async def track_record(request: Request):
+    """/es/track-record (Español completion, Part 3): same inline lang-
+    twin scheme as /es/calendar just below."""
+    base_url = _base_url(request)
+    path = request.url.path.rstrip("/") or "/"
+    lang = "es" if path == "/es/track-record" else "en"
     _count_view("track_record")
     rows = score_history.tracked_summary()
+    hreflang_alternates = [
+        ("en", f"{base_url}/track-record"),
+        ("es", f"{base_url}/es/track-record"),
+        ("x-default", f"{base_url}/track-record"),
+    ]
     return _html(
-        track_record_render.render_track_record(rows, _base_url(request)),
+        track_record_render.render_track_record(
+            rows, base_url, lang=lang, hreflang_alternates=hreflang_alternates),
         cache="public, max-age=1800",
     )
 
 
 @app.get("/calendar", include_in_schema=False)
+@app.get("/es/calendar", include_in_schema=False)
 async def results_calendar(request: Request):
     """Services batch 2, Part 4: indexable, server-rendered twin of the
     Streamlit /results-calendar page - same "always real HTML, no
     INDEXABLE_PAGES/_renders_html gate" treatment as /s/* and
     /track-record just above (this page is public and unauthenticated,
-    same stance those two already take - no "My tickers" filter here)."""
+    same stance those two already take - no "My tickers" filter here).
+
+    /es/calendar (Español completion, Part 3): same lang-twin scheme as
+    _content_page_spec()'s pages above, just resolved inline (a single
+    page has no need for that dict-keyed machinery) - hreflang covers
+    both directions plus x-default=EN."""
+    base_url = _base_url(request)
+    path = request.url.path.rstrip("/") or "/"
+    lang = "es" if path == "/es/calendar" else "en"
     _count_view("results_calendar")
+    hreflang_alternates = [
+        ("en", f"{base_url}/calendar"),
+        ("es", f"{base_url}/es/calendar"),
+        ("x-default", f"{base_url}/calendar"),
+    ]
     return _html(
-        calendar_render.render_calendar_page(_base_url(request)),
+        calendar_render.render_calendar_page(
+            base_url, lang=lang, hreflang_alternates=hreflang_alternates),
         # Short TTL: a fresh nightly results-day pass or a newly-scraped
         # earnings date should show up here reasonably promptly, same
         # reasoning as the sitemap route's own 60s cut (see sitemap()'s
@@ -1191,14 +1275,38 @@ _API_DOCS_DESC = (
     "GET only, rate-limited, attribution requested.")
 
 
+_API_DOCS_INTRO_ES = (
+    "Esta página está en inglés porque documenta una API técnica de solo "
+    "lectura; StocksDeepDive también existe en español - mira "
+    "[Deep Dive](/deep-dive?lang=es) o [cómo funcionan los puntajes]"
+    "(/es/methodology)."
+)
+
+
 @app.get("/api", include_in_schema=False)
+@app.get("/es/api", include_in_schema=False)
 async def api_docs(request: Request):
     """Human-readable docs for /api/v1/* (interactive Swagger UI lives at
     /api/v1/docs, generated straight from api_v1.py). A plain prose page
     here - example requests, the universe slugs, the attribution ask -
     is what makes the API discoverable and citable by both people and
-    the AI systems the roadmap is aimed at."""
+    the AI systems the roadmap is aimed at.
+
+    /es/api (Español completion, Part 3): the instruction's own scope for
+    this page is lighter than the content-translation pages above - "one
+    Spanish intro line, full docs stay English" - so /es/api reuses this
+    exact function and the same English markdown_text, just adding one
+    Spanish sentence via render_content_page's existing intro_note
+    parameter (already used for the methodology page's factual note) and
+    lang="es"/hreflang so the page's own <html lang> and header/footer
+    chrome switch too. The technical prose itself (endpoints, rate
+    limits, terms) is intentionally NOT translated - a JSON API's field
+    names and example requests are the same regardless of the reader's
+    language, and mistranslating a code sample would be worse than
+    leaving it in English."""
     base = _base_url(request)
+    path = request.url.path.rstrip("/") or "/"
+    lang = "es" if path == "/es/api" else "en"
     universes = ", ".join(f"<code>{s}</code>" for s in
                           sorted(api_v1._SLUG_TO_UNIVERSE))
     # Fix 8c, AI fixes round 2 (2026-08-31): "the API/MCP docs and
@@ -1264,6 +1372,22 @@ stocksdeepdive.com. Nothing in this API is financial advice - see the
 disclaimer in every response. No user data (portfolios, watchlists, emails)
 is ever served here or ever will be.
 """
+    if lang == "es":
+        return _html(blog_render.render_content_page(
+            title=_API_DOCS_TITLE,
+            markdown_text=markdown_text,
+            description=_API_DOCS_DESC,
+            path="/es/api",
+            base_url=base,
+            heading="API",
+            intro_note=_API_DOCS_INTRO_ES,
+            lang="es",
+            hreflang_alternates=[
+                ("en", f"{base}/api"),
+                ("es", f"{base}/es/api"),
+                ("x-default", f"{base}/api"),
+            ],
+        ), cache="public, max-age=1800")
     return _html(blog_render.render_content_page(
         title=_API_DOCS_TITLE,
         markdown_text=markdown_text,
@@ -1293,14 +1417,28 @@ _AI_DOCS_DESC = (
     "scores. No API key, no auth, Streamable HTTP at /mcp.")
 
 
+_AI_DOCS_INTRO_ES = (
+    "Esta página está en inglés porque documenta un servidor MCP técnico "
+    "de solo lectura; StocksDeepDive también existe en español - mira "
+    "[Deep Dive](/deep-dive?lang=es) o [la API en español](/es/api)."
+)
+
+
 @app.get("/ai", include_in_schema=False)
+@app.get("/es/ai", include_in_schema=False)
 async def ai_docs(request: Request):
     """Human-readable docs for the MCP server mounted at /mcp (see
     mcp_server.py). Linked from /api's "Using this in an AI assistant"
     section - deliberately not from the main nav or footer, since this
     page is aimed at assistants and the people configuring MCP clients,
-    not casual visitors."""
+    not casual visitors.
+
+    /es/ai (Español completion, Part 3): same "one Spanish intro line,
+    full docs stay English" treatment as /es/api just above - see that
+    route's own docstring for why the technical body isn't translated."""
     base = _base_url(request)
+    path = request.url.path.rstrip("/") or "/"
+    lang = "es" if path == "/es/ai" else "en"
     markdown_text = f"""
 StocksDeepDive runs an [MCP](https://modelcontextprotocol.io) (Model Context
 Protocol) server - the same read-only, public stock-score data as
@@ -1353,6 +1491,22 @@ stocksdeepdive.com. Nothing served here is financial advice - see the
 disclaimer in every tool result. No user data (portfolios, watchlists,
 emails) is ever served here or ever will be.
 """
+    if lang == "es":
+        return _html(blog_render.render_content_page(
+            title=_AI_DOCS_TITLE,
+            markdown_text=markdown_text,
+            description=_AI_DOCS_DESC,
+            path="/es/ai",
+            base_url=base,
+            heading="AI / MCP",
+            intro_note=_AI_DOCS_INTRO_ES,
+            lang="es",
+            hreflang_alternates=[
+                ("en", f"{base}/ai"),
+                ("es", f"{base}/es/ai"),
+                ("x-default", f"{base}/ai"),
+            ],
+        ), cache="public, max-age=1800")
     return _html(blog_render.render_content_page(
         title=_AI_DOCS_TITLE,
         markdown_text=markdown_text,
