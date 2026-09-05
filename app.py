@@ -3422,7 +3422,8 @@ def _render_follow_control(ticker, key_prefix):
                     type="primary", use_container_width=True,
                 ):
                     _tok, _msg = email_auth.verify_code(
-                        _sent_to, _code, src=st.session_state.get("first_src")
+                        _sent_to, _code, src=st.session_state.get("first_src"),
+                        lang=st.session_state.get("lang"),
                     )
                     if _tok:
                         # Same state paywall_engine._render_signin_control
@@ -3478,10 +3479,18 @@ def _render_conversion_email_hook(ticker, key_prefix="dd_hook"):
     a successful verify (by then the visitor IS signed in, so the normal
     gate would otherwise hide it). Otherwise: return immediately for any
     already-signed-in visitor - no toggle UI, this box never shows for
-    them at all."""
+    them at all.
+
+    Cleanup round, Part 3: this box's own wording (everything except the
+    plain-string success/error messages returned by email_auth.send_code/
+    verify_code, an already-documented gap - see i18n.py's docstring) is
+    routed through i18n.t() (hook.*), reading st.session_state["lang"]
+    directly rather than taking a parameter - same convention
+    _render_dd_verdict_and_chips uses, so callers don't all need updating."""
+    _lang = st.session_state.get("lang", "en")
     _done_flag = f"{key_prefix}_done_{ticker}"
     if st.session_state.get(_done_flag):
-        st.success(f"Done — you'll get {ticker}'s report analysis. You're signed in.")
+        st.success(i18n.t("hook.done", _lang, ticker=ticker))
         return
     if paywall_engine.current_user_email():
         return
@@ -3494,24 +3503,21 @@ def _render_conversion_email_hook(ticker, key_prefix="dd_hook"):
 
     with st.container(border=True, key=f"{key_prefix}_box_{ticker}"):
         if _next_date:
-            st.markdown(
-                f"**{ticker} reports on {_next_date}.** Get the before/after "
-                f"analysis by email when it does:"
-            )
+            st.markdown(i18n.t("hook.next_report", _lang, ticker=ticker, date=_next_date))
         else:
-            st.caption(f"Get notified when {ticker}'s numbers change:")
+            st.caption(i18n.t("hook.generic", _lang, ticker=ticker))
 
         _sent_flag = f"{key_prefix}_code_sent_{ticker}"
         if not st.session_state.get(_sent_flag):
             _c1, _c2 = st.columns([3, 2])
             with _c1:
                 _em_in = st.text_input(
-                    "Email address", key=f"{key_prefix}_email_{ticker}",
-                    placeholder="you@example.com", label_visibility="collapsed",
+                    i18n.t("hook.email_label", _lang), key=f"{key_prefix}_email_{ticker}",
+                    placeholder=i18n.t("hook.email_placeholder", _lang), label_visibility="collapsed",
                 )
             with _c2:
                 if st.button(
-                    "Notify me",
+                    i18n.t("hook.notify_me", _lang),
                     key=f"{key_prefix}_submit_{ticker}", use_container_width=True,
                 ):
                     if email_auth.valid_email(_em_in):
@@ -3523,22 +3529,23 @@ def _render_conversion_email_hook(ticker, key_prefix="dd_hook"):
                         else:
                             st.error(_msg)
                     else:
-                        st.error("That doesn't look like a valid email address.")
+                        st.error(i18n.t("hook.invalid_email", _lang))
         else:
             _sent_to = st.session_state.get(f"{key_prefix}_sent_to_{ticker}", "")
-            st.caption(f"Enter the 6-digit code sent to {_sent_to}.")
+            st.caption(i18n.t("hook.enter_code", _lang, email=_sent_to))
             _code = st.text_input(
-                "6-digit code", key=f"{key_prefix}_code_{ticker}",
+                i18n.t("hook.code_label", _lang), key=f"{key_prefix}_code_{ticker}",
                 max_chars=6, placeholder="123456",
             )
             _cv, _cr = st.columns(2)
             with _cv:
                 if st.button(
-                    "Verify", key=f"{key_prefix}_verify_{ticker}",
+                    i18n.t("hook.verify", _lang), key=f"{key_prefix}_verify_{ticker}",
                     type="primary", use_container_width=True,
                 ):
                     _tok, _msg = email_auth.verify_code(
-                        _sent_to, _code, src=st.session_state.get("first_src")
+                        _sent_to, _code, src=st.session_state.get("first_src"),
+                        lang=_lang,
                     )
                     if _tok:
                         # Same state paywall_engine._render_signin_control
@@ -3562,7 +3569,7 @@ def _render_conversion_email_hook(ticker, key_prefix="dd_hook"):
                         st.error(_msg)
             with _cr:
                 if st.button(
-                    "Resend code", key=f"{key_prefix}_resend_{ticker}",
+                    i18n.t("hook.resend", _lang), key=f"{key_prefix}_resend_{ticker}",
                     use_container_width=True,
                 ):
                     _ok, _msg = email_auth.send_code(_sent_to)
@@ -3639,7 +3646,8 @@ def _render_research_conversion_hook(ticker, key_prefix="research_hook"):
                     type="primary", use_container_width=True,
                 ):
                     _tok, _msg = email_auth.verify_code(
-                        _sent_to, _code, src=st.session_state.get("first_src")
+                        _sent_to, _code, src=st.session_state.get("first_src"),
+                        lang=st.session_state.get("lang"),
                     )
                     if _tok:
                         st.session_state["email_user"] = _sent_to
@@ -4153,14 +4161,15 @@ def _render_cp_section(ticker, section_label, data):
     section = data["sections"][section_label]
 
     if section_label == "Company Potential":
+        # Cleanup round, Part 3: feature_label/teaser routed through
+        # i18n.t() (gate.rc_potential_*) - previously a documented gap,
+        # see render_gate's own docstring.
+        _cp_gate_lang = st.session_state.get("lang", "en")
         if not paywall_engine.render_gate(
-            "Company Potential - your own research notes",
-            teaser=(
-                "The author's Low/Medium/High ratings and full written "
-                "analysis for every covered company."
-            ),
+            i18n.t("gate.rc_potential_label", _cp_gate_lang),
+            teaser=i18n.t("gate.rc_potential_teaser", _cp_gate_lang),
             key_prefix=f"cp_potential_{ticker}",
-            lang=st.session_state.get("lang", "en"),
+            lang=_cp_gate_lang,
         ):
             return
         ratings = section.get("hml_ratings", {}).get(ticker, [])
@@ -5725,29 +5734,36 @@ def _dd_reverse_dcf_growth(dd):
     return implied_pct, model_pct
 
 
-def _dd_verdict_sentence(dd):
+def _dd_verdict_sentence(dd, lang="en"):
     """"Model estimate {IV} vs price {P} ({MOS:+.0f}% margin of safety) -
     the market is pricing in {implied}% growth; the model assumes
     {model}%." Drops the second clause when reverse DCF is unavailable;
     returns None entirely when there's no intrinsic value/MOS to compare
     against (a P/E-blend name, or one where no model could be computed),
     matching every other red-flag/no-data convention on this page - a
-    missing number is omitted, never guessed."""
+    missing number is omitted, never guessed.
+
+    Cleanup round, Part 3: routed through i18n.t() (dd.verdict.*) - the
+    numbers themselves are formatted first (same f-string formatting as
+    before, currency codes and signed percentages untouched) and handed
+    to t() as **fmt, so ES only changes the surrounding words, never the
+    numbers."""
     if not dd.get("intrinsic_value") or dd.get("mos") is None:
         return None
     currency = dd.get("currency") or ""
-    sentence = (
-        f"Model estimate {dd['intrinsic_value']:,.2f} {currency} vs price "
-        f"{dd['price']:,.2f} {currency} ({dd['mos']:+.0f}% margin of safety)"
+    sentence = i18n.t(
+        "dd.verdict.base", lang,
+        iv=f"{dd['intrinsic_value']:,.2f}", ccy=currency,
+        price=f"{dd['price']:,.2f}", mos=f"{dd['mos']:+.0f}%",
     ).replace("  ", " ").strip()
     implied_pct, model_pct = _dd_reverse_dcf_growth(dd)
     if implied_pct is not None and model_pct is not None:
-        sentence += (
-            f" — the market is pricing in {implied_pct:+.0f}% growth; "
-            f"the model assumes {model_pct:+.0f}%."
+        sentence += i18n.t(
+            "dd.verdict.growth_suffix", lang,
+            implied=f"{implied_pct:+.0f}%", model=f"{model_pct:+.0f}%",
         )
     else:
-        sentence += "."
+        sentence += i18n.t("dd.verdict.plain_suffix", lang)
     return sentence
 
 
@@ -5761,35 +5777,42 @@ def _render_dd_verdict_and_chips(dd):
     each target section carries its own `<div id="...">` marker - see
     e.g. _render_reverse_dcf_card's own "Conversion pass, Part 1" comment
     for the anchor list). Total added height is a couple of lines of
-    text plus one wrapping chip row - nowhere near the ~90px budget."""
-    sentence = _dd_verdict_sentence(dd)
+    text plus one wrapping chip row - nowhere near the ~90px budget.
+
+    Cleanup round, Part 3: the sentence, its default/estimated-input
+    caption, and every chip label are routed through i18n.t() (dd.verdict.*/
+    dd.chip.*) - reads st.session_state["lang"] directly (same pattern
+    every other lang-aware call site on this page uses) rather than
+    taking a parameter, since this function's own signature is otherwise
+    unchanged from the pre-Español conversion pass and several other call
+    sites still call it with just (dd)."""
+    _lang = st.session_state.get("lang", "en")
+    sentence = _dd_verdict_sentence(dd, _lang)
     if sentence:
         st.markdown(f"##### {html.escape(sentence)}")
         if dd.get("quality_default") or dd.get("value_default"):
-            st.caption(
-                "Rests on a default/estimated input where a reported figure "
-                "wasn't available - see the notes below."
-            )
+            st.caption(i18n.t("dd.verdict.default_note", _lang))
 
     ticker = dd["ticker"]
     chips = []
     if dd.get("intrinsic_value") and dd.get("intrinsic_source") == "dcf":
-        chips.append(("Reverse DCF", "sdd-anchor-reverse-dcf"))
+        chips.append((i18n.t("dd.chip.reverse_dcf", _lang), "sdd-anchor-reverse-dcf"))
     chips.append((
-        f"Moat {dd['moat']:.0f}" if dd.get("moat") is not None else "Moat",
+        i18n.t("dd.chip.moat_scored", _lang, score=f"{dd['moat']:.0f}")
+        if dd.get("moat") is not None else i18n.t("dd.chip.moat", _lang),
         "sdd-anchor-moat",
     ))
     if ai_client.available():
-        chips.append(("Ask AI", "sdd-anchor-ask"))
-    chips.append(("Insider filings", "sdd-anchor-insider"))
-    chips.append(("Dividends", "sdd-anchor-dividends"))
-    chips.append(("10-yr financials", "sdd-anchor-financials"))
+        chips.append((i18n.t("dd.chip.ask_ai", _lang), "sdd-anchor-ask"))
+    chips.append((i18n.t("dd.chip.insider", _lang), "sdd-anchor-insider"))
+    chips.append((i18n.t("dd.chip.dividends", _lang), "sdd-anchor-dividends"))
+    chips.append((i18n.t("dd.chip.financials", _lang), "sdd-anchor-financials"))
     try:
         _peer_info = get_ticker_info(ticker)
     except Exception:
         _peer_info = {}
     if not moat_engine._is_fund(_peer_info):
-        chips.append(("Peers", "sdd-anchor-peers"))
+        chips.append((i18n.t("dd.chip.peers", _lang), "sdd-anchor-peers"))
 
     if not chips:
         return
@@ -5825,14 +5848,15 @@ def _render_reverse_dcf_card(dd):
     # Conversion pass, Part 1: anchor for the top-of-page chip row.
     st.markdown('<div id="sdd-anchor-reverse-dcf"></div>', unsafe_allow_html=True)
     st.divider()
+    # Cleanup round, Part 3: feature_label/teaser routed through i18n.t()
+    # (gate.dd_reverse_dcf_*) - previously a documented gap, see
+    # render_gate's own docstring.
+    _rdcf_gate_lang = st.session_state.get("lang", "en")
     if not paywall_engine.render_gate(
-        "What the price implies - reverse DCF",
-        teaser=(
-            "The FCF growth rate the market is currently pricing in for this "
-            "stock, alongside the growth rate the model itself assumed."
-        ),
+        i18n.t("gate.dd_reverse_dcf_label", _rdcf_gate_lang),
+        teaser=i18n.t("gate.dd_reverse_dcf_teaser", _rdcf_gate_lang),
         key_prefix=f"reverse_dcf_{ticker}",
-        lang=st.session_state.get("lang", "en"),
+        lang=_rdcf_gate_lang,
     ):
         return
 
@@ -6207,11 +6231,17 @@ def page_deep_dive():
         # --- Conversion pass, Part 2: moment-tied email hook (signed-out only). ---
         _render_conversion_email_hook(_dd["ticker"])
 
+        # Cleanup round, Part 3: tile LABELS are routed through i18n.t()
+        # (dd.kpi.*) - the METRIC_HELP[...] lookups below still use the
+        # original literal English strings as dict keys (that dict's own
+        # keys are internal, never displayed) and are intentionally
+        # untouched.
+        _dd_lang = st.session_state.get("lang", "en")
         if _factual():
             _m1, _m2, _m3, _m4 = st.columns(4)
-            _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
+            _m1.metric(i18n.t("dd.kpi.price", _dd_lang), f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
             _m2.metric(
-                "Intrinsic Value",
+                i18n.t("dd.kpi.intrinsic_value", _dd_lang),
                 # Audit fix 5.4: Price (right next to this tile) shows
                 # "123.45 AUD"; this used to show just "123.45" - the same
                 # currency, ambiguous with no unit, right beside a metric
@@ -6227,16 +6257,16 @@ def page_deep_dive():
                 # underlying dd["mos"] field/METRIC_HELP key are
                 # untouched); the plain "MOS" label is fine everywhere
                 # else it already appears on the page after this.
-                "Margin of safety (discount to estimated worth)",
+                i18n.t("dd.kpi.mos_label", _dd_lang),
                 f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
                 help=METRIC_HELP["MOS"],
             )
-            _m4.metric("Value Score", f"{_dd['long_score']:.1f}", help=METRIC_HELP["Value Score"])
+            _m4.metric(i18n.t("dd.kpi.value_score", _dd_lang), f"{_dd['long_score']:.1f}", help=METRIC_HELP["Value Score"])
         else:
             _m1, _m2, _m3, _m4, _m5 = st.columns(5)
-            _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
+            _m1.metric(i18n.t("dd.kpi.price", _dd_lang), f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
             _m2.metric(
-                "Intrinsic Value",
+                i18n.t("dd.kpi.intrinsic_value", _dd_lang),
                 # Audit fix 5.4: Price (right next to this tile) shows
                 # "123.45 AUD"; this used to show just "123.45" - the same
                 # currency, ambiguous with no unit, right beside a metric
@@ -6249,12 +6279,12 @@ def page_deep_dive():
             _m3.metric(
                 # Simple view, Part 5: same first-occurrence label
                 # softening as the _factual() branch above.
-                "Margin of safety (discount to estimated worth)",
+                i18n.t("dd.kpi.mos_label", _dd_lang),
                 f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
                 help=METRIC_HELP["MOS"],
             )
-            _m4.metric("Long Score", f"{_dd['long_score']:.1f}", help=METRIC_HELP["Long Score"])
-            _m5.metric("Signal", _dd_signal, help=METRIC_HELP["Signal"])
+            _m4.metric(i18n.t("dd.kpi.long_score", _dd_lang), f"{_dd['long_score']:.1f}", help=METRIC_HELP["Long Score"])
+            _m5.metric(i18n.t("dd.kpi.signal", _dd_lang), _dd_signal, help=METRIC_HELP["Signal"])
 
             # Task 10: flag it on screen whenever the DCF's base cash flow used
             # the 3-year median instead of the latest reporting year, because
@@ -6554,7 +6584,8 @@ def page_deep_dive():
                 _render_explain_popover(_dd, "value_score")
                 sdd_plotly_chart(
                     _dd_gauge(
-                        _dd["long_score"], "Value Score",
+                        _dd["long_score"],
+                        i18n.t("dd.gauge.value_score", st.session_state.get("lang", "en")),
                         [
                             (0, SIGNAL_THRESHOLDS["WATCHLIST"], "#43222e"),
                             (SIGNAL_THRESHOLDS["WATCHLIST"], SIGNAL_THRESHOLDS["LONG"], "#43371c"),
@@ -6573,7 +6604,8 @@ def page_deep_dive():
                 _render_explain_popover(_dd, "value_score")
                 sdd_plotly_chart(
                     _dd_gauge(
-                        _dd["long_score"], f"Long Score - {_dd_signal}",
+                        _dd["long_score"],
+                        i18n.t("dd.gauge.long_score", st.session_state.get("lang", "en"), label=_dd_signal),
                         [
                             (0, SIGNAL_THRESHOLDS["WATCHLIST"], "#43222e"),
                             (SIGNAL_THRESHOLDS["WATCHLIST"], SIGNAL_THRESHOLDS["LONG"], "#43371c"),
@@ -6628,7 +6660,8 @@ def page_deep_dive():
             with _q_col1:
                 sdd_plotly_chart(
                     _dd_gauge(
-                        _dd["quality_score"], f"Quality - {_dd['quality_label']}",
+                        _dd["quality_score"],
+                        i18n.t("dd.gauge.quality", st.session_state.get("lang", "en"), label=_dd["quality_label"]),
                         [(0, 40, "#43222e"), (40, 60, "#43371c"),
                          (60, 80, "#1e3d34"), (80, 100, "#27584a")],
                     ),
@@ -6676,7 +6709,8 @@ def page_deep_dive():
             with _p_col1:
                 sdd_plotly_chart(
                     _dd_gauge(
-                        _dd["psychology_gauge"], f"Psychology - {_dd['psychology_sentiment']}",
+                        _dd["psychology_gauge"],
+                        i18n.t("dd.gauge.psychology", st.session_state.get("lang", "en"), label=_dd["psychology_sentiment"]),
                         [(0, 30, "#43222e"), (30, 45, "#43371c"), (45, 55, "#1f3352"),
                          (55, 70, "#1e3d34"), (70, 100, "#27584a")],
                     ),
@@ -6714,7 +6748,8 @@ def page_deep_dive():
             with _dv_col1:
                 sdd_plotly_chart(
                     _dd_gauge(
-                        _dd["discovery_gauge"], f"Discovery - {_dd['discovery_label']}",
+                        _dd["discovery_gauge"],
+                        i18n.t("dd.gauge.discovery", st.session_state.get("lang", "en"), label=_dd["discovery_label"]),
                         [(0, 25, "#43222e"), (25, 50, "#43371c"),
                          (50, 75, "#1e3d34"), (75, 100, "#27584a")],
                     ),
@@ -6794,7 +6829,8 @@ def page_deep_dive():
                 with _moat_col1:
                     sdd_plotly_chart(
                         _dd_gauge(
-                            _dd["moat_gauge"], f"Moat - {_dd['moat_band_label']}",
+                            _dd["moat_gauge"],
+                            i18n.t("dd.gauge.moat", st.session_state.get("lang", "en"), label=_dd["moat_band_label"]),
                             [(0, 40, "#43222e"), (40, 70, "#43371c"), (70, 100, "#27584a")],
                         ),
                     )
@@ -6830,7 +6866,8 @@ def page_deep_dive():
                 with _mos_col1:
                     sdd_plotly_chart(
                         _dd_gauge(
-                            _mos_gauge_val, f"Margin of Safety - {_dd['valuation']}",
+                            _mos_gauge_val,
+                            i18n.t("dd.gauge.mos", st.session_state.get("lang", "en"), label=_dd["valuation"]),
                             # Audit fix 5.6: the underlying label logic
                             # genuinely is 3-bucket (UNDERVALUED/FAIR/EXPENSIVE
                             # - see the caption right below), but the gauge
@@ -6906,7 +6943,8 @@ def page_deep_dive():
                 with _t_col1:
                     sdd_plotly_chart(
                         _dd_gauge(
-                            _dd["trade_setup_score"], f"Trade Setup - {_dd['trade_setup_signal']}",
+                            _dd["trade_setup_score"],
+                            i18n.t("dd.gauge.trade_setup", st.session_state.get("lang", "en"), label=_dd["trade_setup_signal"]),
                             [(0, 45, "#43222e"), (45, 65, "#43371c"), (65, 100, "#27584a")],
                         ),
                     )
@@ -7077,14 +7115,26 @@ def page_deep_dive():
 
         st.divider()
 
+        # Cleanup round, Part 3: feature_label/teaser routed through
+        # i18n.t() (gate.dd_full_breakdown_*) - previously a documented
+        # gap, see render_gate's own docstring. {_score_word} inside the
+        # teaser is itself translated via the same dd.kpi.value_score/
+        # dd.kpi.long_score keys the top KPI tile uses, so the two agree
+        # on the same page rather than mixing an English score name into
+        # an otherwise-Spanish sentence.
+        _dd_gate_lang = st.session_state.get("lang", "en")
+        _dd_gate_score_word = (
+            i18n.t("dd.kpi.value_score", _dd_gate_lang) if _score_word == "Value Score"
+            else i18n.t("dd.kpi.long_score", _dd_gate_lang)
+        )
         if not paywall_engine.render_gate(
-            "the full Deep Dive breakdown",
-            teaser=(
-                "Quality, Psychology, Discovery, and Trade Setup scores - the "
-                f"full factor breakdown behind the {_score_word} above."
+            i18n.t("gate.dd_full_breakdown_label", _dd_gate_lang),
+            teaser=i18n.t(
+                "gate.dd_full_breakdown_teaser", _dd_gate_lang,
+                score_word=_dd_gate_score_word,
             ),
             key_prefix=f"dd_{_dd['ticker']}",
-            lang=st.session_state.get("lang", "en"),
+            lang=_dd_gate_lang,
         ):
             return
 
@@ -7347,7 +7397,13 @@ def _render_deep_dive_ask_box(dd, acv_sections=None):
         if not _q.strip():
             st.warning("Type a question first.")
         else:
-            _allowed, _msg, _tier = ai_gate.check(email, "deep_dive_ask")
+            # Cleanup round, Part 3: pass lang through so the Ask AI
+            # quota/sign-in message on a ?lang=es Deep Dive shows in
+            # Spanish (ai_gate.check's other call sites are a documented
+            # remaining gap - see that function's own docstring).
+            _allowed, _msg, _tier = ai_gate.check(
+                email, "deep_dive_ask", lang=st.session_state.get("lang", "en"),
+            )
             if not _allowed:
                 st.warning(_msg)
             else:

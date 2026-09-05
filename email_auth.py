@@ -25,6 +25,18 @@ the raw per-email rows for the admin-only "Show email list" view - still
 gated behind the same ADMIN_REFRESH_KEY / full-view unlock as everything
 else in that popover, never shown to a public visitor.
 
+SIGN-UP LANGUAGE (cleanup round, Part 3/Español Part 4): `signups` gained
+an additive `lang` column ("en"/"es"/NULL for a pre-existing row), set
+once at first sign-up from st.session_state["lang"] and never overwritten
+by a later sign-in - same "stored once, first-touch only" convention as
+`src` right above. get_signup_lang(email) is the read side, meant for a
+broadcast email sender (e.g. announce_engine.announce_rebuild) to pick a
+per-recipient template variant. A NULL/missing row (any account that
+signed up before this column existed, or a Google sign-in - Google's own
+flow doesn't currently pass a lang through render_gate the way the email
+flow does) reads back as "en", the same default the rest of the site
+uses when lang is unknown.
+
 ABUSE LIMITS: max 5 code emails per address per day, codes expire after
 15 minutes, and 5 wrong attempts burn the code. Since 2026-08-28 there's
 also a per-IP daily cap (MAX_SENDS_PER_IP_PER_DAY) - the per-address limit
@@ -104,15 +116,20 @@ def _conn():
             first_seen TEXT NOT NULL,
             last_seen TEXT NOT NULL,
             signin_count INTEGER NOT NULL DEFAULT 1,
-            src TEXT
+            src TEXT,
+            lang TEXT
         )"""
     )
-    # ALTER TABLE guarded by try/except so a DB created before the `src`
-    # column existed still works (CREATE TABLE above only applies to a
-    # brand-new file) - belt and braces per the CREATE TABLE already
-    # having the column too.
+    # ALTER TABLE guarded by try/except so a DB created before the `src`/
+    # `lang` columns existed still works (CREATE TABLE above only applies
+    # to a brand-new file) - belt and braces per the CREATE TABLE already
+    # having the columns too.
     try:
         conn.execute("ALTER TABLE signups ADD COLUMN src TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE signups ADD COLUMN lang TEXT")
     except sqlite3.OperationalError:
         pass
     return conn
@@ -248,13 +265,18 @@ def send_code(email, client_ip=None):
     return True, f"Code sent to {email} - check your inbox (and spam folder)."
 
 
-def verify_code(email, code, src=None):
+def verify_code(email, code, src=None, lang=None):
     """Check a code. Returns (session_token, user_message) - token is None
     on failure. On success the code is consumed and a session created.
     `src` (the caller's first_src, e.g. an article slug) is recorded on the
     sign-up row when this is a first sign-in - callers pass
     st.session_state.get("first_src"); this module itself never imports
-    streamlit."""
+    streamlit.
+
+    `lang` (cleanup round, Part 3/Español Part 4): same "first sign-in
+    only" treatment as `src` - callers pass st.session_state.get("lang"),
+    recorded on record_signup()'s upsert below so future broadcast emails
+    can address this account in its sign-up language."""
     email = (email or "").strip().lower()
     code = (code or "").strip()
     if not valid_email(email) or not code:
@@ -286,7 +308,7 @@ def verify_code(email, code, src=None):
             "VALUES (?, ?, ?, ?)",
             (_hash(token), email, now, now),
         )
-    record_signup(email, "email", src=src)
+    record_signup(email, "email", src=src, lang=lang)
     return token, "Signed in."
 
 
@@ -341,25 +363,54 @@ def cleanup():
         conn.execute("DELETE FROM auth_ip_sends WHERE day < ?", (ip_sends_cutoff,))
 
 
-def record_signup(email, method, src=None):
+def record_signup(email, method, src=None, lang=None):
     """Upsert the sign-up registry (kept for aggregate counts only). `src`
     is the visitor's first_src (e.g. an article slug) if one was captured
     this session - stored once at first sign-up and never overwritten by a
-    later sign-in, so it reflects what actually brought them here."""
+    later sign-in, so it reflects what actually brought them here.
+
+    `lang` (cleanup round, Part 3/Español Part 4): same "stored once at
+    first sign-up, never overwritten" treatment as `src` - a visitor who
+    signed up reading the Spanish site stays a Spanish-language recipient
+    even if they later browse the English site signed in. See
+    get_signup_lang() for the read side."""
     email = (email or "").strip().lower()
     if not email:
         return
     now = _iso(_now())
     src = (src or "").strip() or None
+    lang = (lang or "").strip().lower() or None
+    if lang not in ("en", "es"):
+        lang = None
     with _conn() as conn:
         conn.execute(
-            """INSERT INTO signups (email, method, first_seen, last_seen, signin_count, src)
-               VALUES (?, ?, ?, ?, 1, ?)
+            """INSERT INTO signups (email, method, first_seen, last_seen, signin_count, src, lang)
+               VALUES (?, ?, ?, ?, 1, ?, ?)
                ON CONFLICT(email) DO UPDATE SET
                  last_seen = excluded.last_seen,
                  signin_count = signin_count + 1""",
-            (email, method, now, now, src),
+            (email, method, now, now, src, lang),
         )
+
+
+def get_signup_lang(email):
+    """This account's sign-up language ("en"/"es"), for a broadcast email
+    sender to pick a per-recipient template variant - see the module
+    docstring's "SIGN-UP LANGUAGE" section. Defaults to "en" for an
+    unknown email, a pre-existing row from before this column existed, or
+    a Google sign-in (render_gate's Google button doesn't currently pass
+    lang through the way the email flow's verify_code() call does - a
+    documented remaining gap, same bucket as i18n.py's own gap list)."""
+    email = (email or "").strip().lower()
+    if not email:
+        return "en"
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT lang FROM signups WHERE email = ?", (email,),
+        ).fetchone()
+    if row and row[0] in ("en", "es"):
+        return row[0]
+    return "en"
 
 
 def signup_stats():

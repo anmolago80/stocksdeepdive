@@ -48,6 +48,7 @@ import os
 
 import ai_settings_store
 import ai_usage_store
+import i18n
 import paywall_engine
 
 
@@ -90,7 +91,7 @@ def tier_for(email):
     return "free"
 
 
-def check(email, feature):
+def check(email, feature, lang="en"):
     """(allowed: bool, message: str, tier: str|None).
 
     `message` is always a short, user-facing sentence - safe to show
@@ -99,52 +100,58 @@ def check(email, feature):
     `feature` is a short slug (e.g. "deep_dive_ask", "portfolio_ask")
     logged for the admin panel's per-feature breakdown - it does not
     create a separate quota pool; every feature shares one pool per the
-    roadmap's plain "N questions/day" wording."""
+    roadmap's plain "N questions/day" wording.
+
+    lang: "en" (default) or "es" - cleanup round, Part 3. Routes every
+    message through i18n.t() (aigate.*) instead of a literal f-string.
+    Purely additive and opt-in: every existing call site that doesn't
+    pass lang keeps getting the exact same English text as before (see
+    i18n.py's own docstring for which of this module's callers currently
+    DO pass lang through - as of this pass, only the Deep Dive's own
+    "Ask AI" call site does; the others are a documented remaining gap,
+    same as the render_gate() call sites Part 3 didn't reach)."""
     tier = tier_for(email)
     if tier is None:
-        return False, "Sign in to ask a question.", None
+        return False, i18n.t("aigate.sign_in", lang), None
     if tier == "owner":
         return True, "", tier
 
     try:
         settings = ai_settings_store.get_settings()
     except Exception:
-        return False, "AI features are temporarily unavailable - please try again shortly.", tier
+        return False, i18n.t("aigate.temp_unavailable", lang), tier
 
     try:
         spend = ai_usage_store.spend_this_month()
     except Exception:
-        return False, "AI features are temporarily unavailable - please try again shortly.", tier
+        return False, i18n.t("aigate.temp_unavailable", lang), tier
     if spend >= settings["monthly_spend_cap_usd"]:
-        return False, "AI features have reached this month's usage cap - back next month.", tier
+        return False, i18n.t("aigate.monthly_cap", lang), tier
 
     try:
         today = ai_usage_store.questions_today(email)
     except Exception:
-        return False, "AI features are temporarily unavailable - please try again shortly.", tier
+        return False, i18n.t("aigate.temp_unavailable", lang), tier
 
     if tier == "plus":
         try:
             this_month = ai_usage_store.questions_this_month(email)
         except Exception:
-            return False, "AI features are temporarily unavailable - please try again shortly.", tier
+            return False, i18n.t("aigate.temp_unavailable", lang), tier
         if this_month >= settings["plus_monthly_limit"]:
-            return False, (
-                f"You've used all {settings['plus_monthly_limit']} questions "
-                "included this month - resets on the 1st."
+            return False, i18n.t(
+                "aigate.plus_monthly_limit", lang, limit=settings["plus_monthly_limit"],
             ), tier
         if today >= settings["plus_daily_limit"]:
-            return False, (
-                f"You've reached today's limit of {settings['plus_daily_limit']} "
-                "questions - back tomorrow."
+            return False, i18n.t(
+                "aigate.plus_daily_limit", lang, limit=settings["plus_daily_limit"],
             ), tier
         return True, "", tier
 
     # free
     if today >= settings["free_daily_limit"]:
-        return False, (
-            f"You've used your {settings['free_daily_limit']} free questions "
-            "today - come back tomorrow, or subscribe for 300/month."
+        return False, i18n.t(
+            "aigate.free_daily_limit", lang, limit=settings["free_daily_limit"],
         ), tier
     return True, "", tier
 

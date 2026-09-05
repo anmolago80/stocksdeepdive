@@ -32,7 +32,9 @@ from datetime import datetime, timezone
 
 import requests
 
+import email_auth
 import follow_store
+import i18n
 import push_send
 
 
@@ -77,9 +79,10 @@ _TD = "padding:9px 10px;font-family:Arial,Helvetica,sans-serif;font-size:14px;co
 _TH = "padding:9px 10px;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#64748b;border-bottom:2px solid #cbd5e1;text-transform:uppercase;letter-spacing:0.5px;"
 
 
-def _row_html(ticker, added_set, site):
-    tag = "Added" if ticker in added_set else "Updated"
-    tag_color = "#15803d" if tag == "Added" else "#0d9488"
+def _row_html(ticker, added_set, site, lang="en"):
+    is_added = ticker in added_set
+    tag = i18n.t("email.announce.tag_added" if is_added else "email.announce.tag_updated", lang)
+    tag_color = "#15803d" if is_added else "#0d9488"
     link = f"{site}/research?ticker={ticker}&src=research-email"
     return (
         "<tr>"
@@ -90,9 +93,15 @@ def _row_html(ticker, added_set, site):
     )
 
 
-def _email_html(tickers, added, updated, site):
+def _email_html(tickers, added, updated, site, lang="en"):
+    """lang: "en" (default) or "es" - cleanup round, Part 3/Español Part
+    4. Every piece of copy routes through i18n.t() (email.announce.*);
+    the date stamp's month abbreviation is the one un-translated piece
+    (Python's strftime needs a Spanish locale installed on the server to
+    localize it - a documented, cosmetic gap, see i18n.py's own
+    docstring)."""
     added_set = set(added)
-    body_rows = "".join(_row_html(t, added_set, site) for t in tickers)
+    body_rows = "".join(_row_html(t, added_set, site, lang) for t in tickers)
     date_label = datetime.now(timezone.utc).strftime("%d %b %Y")
     return f"""\
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f7fa;">
@@ -100,24 +109,20 @@ def _email_html(tickers, added, updated, site):
   <table role="presentation" width="580" cellpadding="0" cellspacing="0" border="0" style="background-color:#ffffff;border:1px solid #e2e8f0;">
     <tr><td style="padding:24px 28px 6px 28px;font-family:Arial,Helvetica,sans-serif;">
       <span style="font-size:22px;font-weight:bold;color:#0f172a;">Stocks</span><span style="font-size:22px;font-weight:bold;color:#0d9488;">DeepDive</span>
-      <div style="font-size:15px;color:#334155;padding-top:6px;font-weight:bold;">New research is up</div>
-      <div style="font-size:13px;color:#64748b;padding-top:4px;">The Rational Compounder research workbook was rebuilt on {date_label}. Click any ticker below for its live research page.</div>
+      <div style="font-size:15px;color:#334155;padding-top:6px;font-weight:bold;">{i18n.t("email.announce.heading", lang)}</div>
+      <div style="font-size:13px;color:#64748b;padding-top:4px;">{i18n.t("email.announce.intro", lang, date=date_label)}</div>
     </td></tr>
     <tr><td style="padding:14px 28px 4px 28px;">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr>
-          <th align="left" style="{_TH}">Ticker</th>
-          <th align="left" style="{_TH}">What changed</th>
+          <th align="left" style="{_TH}">{i18n.t("email.announce.th_ticker", lang)}</th>
+          <th align="left" style="{_TH}">{i18n.t("email.announce.th_change", lang)}</th>
         </tr>
         {body_rows}
       </table>
     </td></tr>
     <tr><td style="padding:16px 28px 24px 28px;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#94a3b8;line-height:1.6;">
-      Factual information only - this email links to data and calculator outputs computed from stated
-      inputs; it contains no recommendations to buy, hold or sell any security. You're receiving this
-      because you asked to be emailed when this research updates. To stop, reply STOP, or open any
-      research page above and click "Following - click to stop" (or unfollow while signed in) on the
-      site.
+      {i18n.t("email.announce.footer", lang)}
     </td></tr>
   </table>
 </td></tr>
@@ -168,8 +173,15 @@ def announce_rebuild(added_tickers, updated_tickers, log=print):
             if not tickers:
                 summary["skipped"] += 1
                 continue
-            subject = f"New research on StocksDeepDive: {', '.join(tickers)}"
-            _send(email, subject, _email_html(tickers, added, updated, site))
+            # Cleanup round, Part 3/Español Part 4: each recipient gets
+            # the email in their OWN sign-up language, not the site's
+            # current default - see email_auth.get_signup_lang's own
+            # docstring for what a missing/pre-existing row falls back to.
+            _lang = email_auth.get_signup_lang(email)
+            subject = i18n.t(
+                "email.announce.subject", _lang, tickers=", ".join(tickers),
+            )
+            _send(email, subject, _email_html(tickers, added, updated, site, lang=_lang))
             summary["sent"] += 1
             log(f"[announce] sent to {email} ({len(tickers)} tickers)")
         except Exception as e:

@@ -386,7 +386,8 @@ def _render_signin_control(key="account_bar_signin", lang="en"):
                 if st.button("Verify", key=f"{key}_verify", type="primary",
                              use_container_width=True):
                     _tok, _msg = email_auth.verify_code(
-                        _sent_to, _code, src=st.session_state.get("first_src")
+                        _sent_to, _code, src=st.session_state.get("first_src"),
+                        lang=lang,
                     )
                     if _tok:
                         st.session_state["email_user"] = _sent_to
@@ -786,7 +787,15 @@ def render_gate(feature_label, teaser=None, key_prefix="", lang="en"):
             if teaser:
                 st.caption(teaser)
             if _email_auth_available():
-                _render_signin_control(f"pw_login_{key_prefix}")
+                # Cleanup round, Part 3 bug fix: this call used to drop
+                # `lang` entirely, so the "Sign In" trigger button inside
+                # the gate always showed its English label even on a
+                # `?lang=es` page where every OTHER label right next to
+                # it (the locked-title heading above, the Subscribe/
+                # sign-out labels elsewhere in this same function) was
+                # already Spanish - _render_signin_control's own EN
+                # default made this easy to miss since nothing errored.
+                _render_signin_control(f"pw_login_{key_prefix}", lang=lang)
             else:
                 st.button(
                     i18n.t("gate.google_signin", lang),
