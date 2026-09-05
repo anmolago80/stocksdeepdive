@@ -3430,6 +3430,103 @@ def _render_conversion_email_hook(ticker, key_prefix="dd_hook"):
                     (st.success if _ok else st.error)(_msg)
 
 
+def _render_research_conversion_hook(ticker, key_prefix="research_hook"):
+    """Signed-out replacement for the Research page's pick_col3 slot
+    (conversion pass, Part 7b) - the exact same row _render_follow_
+    control already occupies, wording adapted to this page's "research
+    gets added to over time" framing rather than Deep Dive's report-date
+    framing (_render_conversion_email_hook, Part 2). Caller (page_
+    research) only invokes this for a SIGNED-OUT visitor - a signed-in
+    visitor keeps seeing the existing _render_follow_control toggle in
+    this exact slot, completely untouched. That's a deliberate swap, not
+    an addition: this page's follow control already sits right at the
+    top (unlike the Deep Dive's, further down the page), so stacking a
+    second near-identical box in the same narrow column would look
+    redundant - see this function's call site for the same note.
+
+    Subscribes to follow_store.ALL_TICKERS (the general research-updates
+    list - the same sentinel and the same "research-updates
+    subscription" wording Part 3's blog box uses), not this one ticker -
+    the instruction's own text names this explicitly, distinct from the
+    Deep Dive hook's per-ticker follow (Part 2, tied to that ticker's own
+    report date). Worth the owner's attention: this does change what a
+    signed-out submission in this slot does today (previously a per-
+    ticker follow via _render_follow_control) - flagged in the final
+    report."""
+    with st.container(border=True, key=f"{key_prefix}_box_{ticker}"):
+        _done_flag = f"{key_prefix}_done_{ticker}"
+        if st.session_state.get(_done_flag):
+            st.success("Done — you'll get new research by email. You're signed in.")
+            return
+
+        st.markdown(
+            f"**New research on {ticker} is added as it's written.** "
+            f"Get updates by email:"
+        )
+        _sent_flag = f"{key_prefix}_code_sent_{ticker}"
+        if not st.session_state.get(_sent_flag):
+            _c1, _c2 = st.columns([3, 2])
+            with _c1:
+                _em_in = st.text_input(
+                    "Email address", key=f"{key_prefix}_email_{ticker}",
+                    placeholder="you@example.com", label_visibility="collapsed",
+                )
+            with _c2:
+                if st.button(
+                    "Notify me",
+                    key=f"{key_prefix}_submit_{ticker}", use_container_width=True,
+                ):
+                    if email_auth.valid_email(_em_in):
+                        _ok, _msg = email_auth.send_code(_em_in)
+                        if _ok:
+                            st.session_state[_sent_flag] = True
+                            st.session_state[f"{key_prefix}_sent_to_{ticker}"] = _em_in.strip().lower()
+                            st.success(_msg)
+                        else:
+                            st.error(_msg)
+                    else:
+                        st.error("That doesn't look like a valid email address.")
+        else:
+            _sent_to = st.session_state.get(f"{key_prefix}_sent_to_{ticker}", "")
+            st.caption(f"Enter the 6-digit code sent to {_sent_to}.")
+            _code = st.text_input(
+                "6-digit code", key=f"{key_prefix}_code_{ticker}",
+                max_chars=6, placeholder="123456",
+            )
+            _cv, _cr = st.columns(2)
+            with _cv:
+                if st.button(
+                    "Verify", key=f"{key_prefix}_verify_{ticker}",
+                    type="primary", use_container_width=True,
+                ):
+                    _tok, _msg = email_auth.verify_code(
+                        _sent_to, _code, src=st.session_state.get("first_src")
+                    )
+                    if _tok:
+                        st.session_state["email_user"] = _sent_to
+                        st.session_state["email_auth_token"] = _tok
+                        st.session_state.pop("email_signed_out", None)
+                        st.session_state["_pending_auth_cookie"] = _tok
+                        st.session_state["_signup_recorded"] = True
+                        try:
+                            follow_store.follow(_sent_to, follow_store.ALL_TICKERS)
+                        except Exception:
+                            pass
+                        st.session_state.pop(_sent_flag, None)
+                        st.session_state.pop(f"{key_prefix}_sent_to_{ticker}", None)
+                        st.session_state[_done_flag] = True
+                        st.rerun()
+                    else:
+                        st.error(_msg)
+            with _cr:
+                if st.button(
+                    "Resend code", key=f"{key_prefix}_resend_{ticker}",
+                    use_container_width=True,
+                ):
+                    _ok, _msg = email_auth.send_code(_sent_to)
+                    (st.success if _ok else st.error)(_msg)
+
+
 # Services batch, Part 1: metric alerts. Options shown in the "Alert me
 # when..." control below - label order matches alert_store.NUMERIC_METRICS/
 # CATEGORICAL_METRICS declaration order (numeric metrics first, the two
@@ -4160,7 +4257,17 @@ def page_research():
         with pick_col3:
             # "Follow this company" email capture (Task 2) - per selected
             # ticker, open to signed-in and anonymous visitors alike.
-            _render_follow_control(ticker, key_prefix="follow_research")
+            # Conversion pass, Part 7b: a SIGNED-OUT visitor sees the
+            # moment-tied hook (adapted wording, subscribes to the
+            # general research-updates list) in this exact slot instead
+            # - a deliberate swap, not an addition next to it, since this
+            # page's follow control already sits right at the top and a
+            # second near-identical box here would look redundant. A
+            # signed-in visitor's toggle is completely untouched.
+            if paywall_engine.current_user_email():
+                _render_follow_control(ticker, key_prefix="follow_research")
+            else:
+                _render_research_conversion_hook(ticker, key_prefix="follow_research")
 
     # Keep the address bar shareable for the ticker, the same pattern
     # page_deep_dive uses for its ?ticker= - "section" is seeded once from
@@ -4170,6 +4277,11 @@ def page_research():
 
     _bump_page_view("research", ticker=ticker)
 
+    # --- Conversion pass, Part 7c: Reddit-arrival byline (reuses Part 5's
+    # shared helper - same wording/handle as the Deep Dive and blog). ---
+    if blog_render.reddit_byline_visible(st.session_state.get("first_src")):
+        st.markdown(blog_render.reddit_byline_html(ticker=ticker), unsafe_allow_html=True)
+
     # Author position disclosure strip (positions_store.py) - directly
     # after the stock/section picker and before any section content, so
     # it's visible no matter which section is selected. Shown identically
@@ -4177,6 +4289,19 @@ def page_research():
     # position (admin)" expander inside it only renders when
     # full_view_unlocked is True.
     _render_position_disclosure(ticker)
+
+    # --- Conversion pass, Part 7a: admin "Copy link for sharing" - same
+    # placement convention as _render_position_disclosure's own "Edit
+    # position (admin)" control, right after it. Copies the URL that
+    # reopens this exact research view. ---
+    _render_copy_link_button(
+        url_builder=lambda label, _t=ticker, _s=_cp_default_section: (
+            f"{SITE_ORIGIN}/research?ticker={_urlquote(_t)}"
+            f"&section={_urlquote(_s)}&src={label}"
+        ),
+        key_prefix=f"copylink_rc_{ticker}",
+        default_label=_reddit_default_label(ticker, prefix="reddit-rc"),
+    )
 
     # Per-company header card (Task 5): ticker/industry/section-count/
     # last-updated. The link-button that used to sit at the bottom of this
