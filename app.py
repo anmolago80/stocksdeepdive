@@ -547,6 +547,73 @@ def _set_admin_seen_cookie():
     _components.html(f"<script>{_js}</script>", height=0)
 
 
+# -----------------------------------------------------------------
+# Simple view, Part 1: a "Simple | Full" reading-level toggle for the
+# Deep Dive and Research pages. Persistence reuses the exact same plain
+# (unsigned, non-auth) document.cookie write pattern as sdd_fullview/
+# sdd_admin_seen above - including the same "buttons can't write a
+# cookie themselves, they leave a pending flag" deferral, since a widget
+# callback here also reruns immediately - rather than inventing a new
+# persistence layer. `st.session_state["view_mode"]` ("simple"/"full")
+# is the single source of truth read everywhere else on both pages.
+# -----------------------------------------------------------------
+
+_VIEW_MODE_COOKIE = "sdd_view_mode"
+
+
+def _set_view_mode_cookie(mode: str):
+    import streamlit.components.v1 as _components
+    _js = (f"document.cookie='{_VIEW_MODE_COOKIE}={mode}; "
+           "path=/; max-age=31536000; SameSite=Lax';")
+    _components.html(f"<script>{_js}</script>", height=0)
+
+
+def _init_view_mode():
+    """Resolves st.session_state["view_mode"] once per session, before
+    the toggle widget is created - same one-shot-guard idiom as the
+    cp_ticker/dd ticker query-param defaults (only ever set this key
+    here when it doesn't already exist, so this never fights a visitor's
+    own later click). Priority: an existing sdd_view_mode cookie (a
+    prior visit's remembered choice) > Simple by default when the
+    session arrived via a Reddit-tagged src (reuses the conversion
+    pass's persisted first_src) > Full otherwise."""
+    if "view_mode" in st.session_state:
+        return
+    _cookie_val = None
+    try:
+        _cookie_val = st.context.cookies.get(_VIEW_MODE_COOKIE)
+    except Exception:
+        pass
+    if _cookie_val in ("simple", "full"):
+        st.session_state["view_mode"] = _cookie_val
+    elif (st.session_state.get("first_src") or "").strip().lower().startswith("reddit"):
+        st.session_state["view_mode"] = "simple"
+    else:
+        st.session_state["view_mode"] = "full"
+
+
+def _render_view_toggle(key_prefix):
+    """Compact Simple|Full segmented control - shared by the Deep Dive
+    and Research pages. _init_view_mode() must already have run (both
+    call sites do this at the top of their own page function) so
+    st.session_state["view_mode"] always has a value to default from
+    before this widget is created. A change here updates the shared
+    view_mode immediately (st.rerun(), so the rest of THIS page render
+    reflects it) and queues the cookie write for the top of the next run
+    (components.html can't deliver its <script> before a rerun cancels
+    it - same constraint _set_admin_cookie's own docstring documents)."""
+    _prev = st.session_state.get("view_mode", "full")
+    _choice = st.segmented_control(
+        "View", ["Simple", "Full"], default=_prev.capitalize(),
+        key=f"{key_prefix}_view_toggle", label_visibility="collapsed",
+    )
+    _new_mode = (_choice or _prev.capitalize()).lower()
+    if _new_mode != _prev:
+        st.session_state["view_mode"] = _new_mode
+        st.session_state["_pending_view_mode_cookie"] = _new_mode
+        st.rerun()
+
+
 def _admin_ever_seen() -> bool:
     """True once this browser has engaged the admin/full-view flow in any
     way - supplied ?admin= (this run), is or has been unlocked this
@@ -617,6 +684,13 @@ if st.session_state.pop("_pending_admin_cookie_clear", False):
     _set_admin_cookie(clear=True)
 if st.session_state.pop("_pending_admin_seen_cookie", False):
     _set_admin_seen_cookie()
+
+# Simple view, Part 1: same pending-flag deferral pattern as the admin
+# cookie just above - the toggle's own callback can't write the cookie
+# itself (its st.rerun() would cancel delivery).
+_pending_view_mode = st.session_state.pop("_pending_view_mode_cookie", None)
+if _pending_view_mode:
+    _set_view_mode_cookie(_pending_view_mode)
 
 # Email sign-in plumbing (same pending-flag pattern): flush any cookie
 # write/clear queued by last run's sign-in/sign-out, then restore the
@@ -5593,6 +5667,32 @@ def _dd_verdict_sentence(dd):
     return sentence
 
 
+def _dd_verdict_sentence_simple(dd):
+    """Simple-view verdict sentence (Simple view, Part 2.1) - the exact
+    same computed values as _dd_verdict_sentence (dd["mos"], the reverse-
+    DCF implied/model growth pair), just spelled out in plainer wording
+    ("28% cheaper than our estimate" rather than "+28% margin of
+    safety"). Returns None under the exact same condition
+    _dd_verdict_sentence does, so Simple view never shows the KPI row
+    below with no matching sentence above it."""
+    if not dd.get("intrinsic_value") or dd.get("mos") is None:
+        return None
+    mos = dd["mos"]
+    if mos >= 0:
+        sentence = f"The model thinks this is {mos:.0f}% cheaper than our estimate of what it's worth"
+    else:
+        sentence = f"The model thinks this is {abs(mos):.0f}% above our estimate of what it's worth"
+    implied_pct, model_pct = _dd_reverse_dcf_growth(dd)
+    if implied_pct is not None and model_pct is not None:
+        sentence += (
+            f" — the price only makes sense if growth comes in around "
+            f"{implied_pct:+.0f}% a year; the model itself assumes {model_pct:+.0f}%."
+        )
+    else:
+        sentence += "."
+    return sentence
+
+
 def _render_dd_verdict_and_chips(dd):
     """Renders directly under the ticker header, above the score gauges:
     one server-computed verdict sentence (see _dd_verdict_sentence), then
@@ -5603,15 +5703,35 @@ def _render_dd_verdict_and_chips(dd):
     each target section carries its own `<div id="...">` marker - see
     e.g. _render_reverse_dcf_card's own "Conversion pass, Part 1" comment
     for the anchor list). Total added height is a couple of lines of
-    text plus one wrapping chip row - nowhere near the ~90px budget."""
-    sentence = _dd_verdict_sentence(dd)
-    if sentence:
-        st.markdown(f"##### {html.escape(sentence)}")
-        if dd.get("quality_default") or dd.get("value_default"):
-            st.caption(
-                "Rests on a default/estimated input where a reported figure "
-                "wasn't available - see the notes below."
-            )
+    text plus one wrapping chip row - nowhere near the ~90px budget.
+
+    Simple view, Part 1: the Simple|Full toggle renders in a narrow
+    column on this SAME row (per the instruction's own "must not fight
+    for space" requirement) rather than as a separate call site, since
+    this is already the one place both pages render "the row under the
+    ticker header." Simple view (Part 2.1) also swaps in the plainer
+    verdict wording and a slightly larger heading, and skips the anchor
+    chip row entirely - its jump targets sit inside the new Simple-view
+    expanders below, where a plain anchor link can't auto-open them, so
+    keeping the chips would just be broken navigation in that mode."""
+    _init_view_mode()
+    _simple = st.session_state.get("view_mode") == "simple"
+    _vcol, _tcol = st.columns([5, 2])
+    with _vcol:
+        sentence = _dd_verdict_sentence_simple(dd) if _simple else _dd_verdict_sentence(dd)
+        if sentence:
+            _heading = "####" if _simple else "#####"
+            st.markdown(f"{_heading} {html.escape(sentence)}")
+            if dd.get("quality_default") or dd.get("value_default"):
+                st.caption(
+                    "Rests on a default/estimated input where a reported figure "
+                    "wasn't available - see the notes below."
+                )
+    with _tcol:
+        _render_view_toggle(key_prefix=f"dd_{dd['ticker']}")
+
+    if _simple:
+        return
 
     ticker = dd["ticker"]
     chips = []
@@ -5643,6 +5763,247 @@ def _render_dd_verdict_and_chips(dd):
         for label, anchor in chips
     )
     st.markdown(f'<div style="line-height:2.4">{chips_html}</div>', unsafe_allow_html=True)
+
+
+# -----------------------------------------------------------------
+# Simple view, Part 2: the Deep Dive's plain-English reading level.
+# Every sentence/word below is built by a deterministic template from
+# values already computed on `dd` (or one extra, already-cached call to
+# auto_compounder_engine.build_sections() the Compounder View section
+# further down this same page also makes) - no Anthropic API call, no
+# invented numbers. Owner-reviewable: the two word-choice tables below
+# (_MOAT_STATE_SIMPLE_WORDS, _PSYCH_MOOD_SIMPLE_WORDS) and the quality-
+# driver thresholds in _dd_quality_driver_words() are the only "judgment
+# calls" in this file the owner should sanity-check - everything else is
+# a straight number substitution.
+# -----------------------------------------------------------------
+
+_MOAT_STATE_SIMPLE_WORDS = {
+    "none": "no erosion signs",
+    "watch": "erosion watch",
+    "eroding": "actively eroding",
+}
+
+_PSYCH_MOOD_SIMPLE_WORDS = {
+    "FEARFUL": "Fearful",
+    "CALM": "Neutral",
+    "NEUTRAL": "Neutral",
+    "GREEDY": "Greedy",
+    "OVERHEATED": "Greedy",
+}
+
+_SIMPLE_KPI_STATIC_DEFINITIONS = {
+    "margin_of_safety": (
+        "Margin of safety compares the model's estimate of fair value to "
+        "today's price. A positive number means the model thinks the stock "
+        "is cheaper than that estimate; a negative number means it's "
+        "trading above it."
+    ),
+    "quality": (
+        "Quality Score (0-100) blends profitability, growth and balance-"
+        "sheet strength from the company's own financial statements - how "
+        "solid the underlying business looks, independent of price."
+    ),
+    "moat": (
+        "Moat Score (0-100) estimates how well the business's profits are "
+        "protected from competition, based on returns on capital and "
+        "whether that return is holding up over time."
+    ),
+    "psychology": (
+        "Psychology reads how far the stock's recent price action sits "
+        "from its own normal range - it describes crowd behaviour around "
+        "the stock, not the business itself."
+    ),
+}
+
+
+def _dd_quality_driver_words(dd):
+    """2-4 word driver summary for the Quality KPI card (Simple view,
+    Part 2.2) - deterministic thresholds over dd["quality_components"]'s
+    already-computed, already-weighted point contributions (see
+    deep_dive_engine._quality_breakdown() for how each term is scaled -
+    ROIC/ROE/margin terms are already weighted percentages-of-100,
+    Debt Penalty is 0 to -15). No new computation, no AI. Falls back to
+    a neutral phrase when quality_src=="manual" leaves quality_components
+    empty (deep_dive_engine.analyze())."""
+    comps = dd.get("quality_components") or {}
+    if not comps:
+        return "limited data available"
+    debt_penalty = comps.get("Debt Penalty", 0) or 0
+    profitability = (
+        (comps.get("ROIC", 0) or 0) + (comps.get("ROE", 0) or 0)
+        + (comps.get("Profit Margin", 0) or 0)
+    )
+    fcf = comps.get("Free Cash Flow", 0) or 0
+
+    words = []
+    if profitability >= 6:
+        words.append("strong returns")
+    elif profitability <= -3:
+        words.append("thin margins")
+
+    if debt_penalty <= -7.5:
+        words.append("high debt")
+    elif debt_penalty >= -1:
+        words.append("low debt")
+
+    if len(words) < 2 and fcf > 0:
+        words.append("cash generative")
+    elif len(words) < 2 and fcf < 0:
+        words.append("cash burning")
+
+    return ", ".join(words[:2]) if words else "middling fundamentals"
+
+
+def _render_dd_simple_kpi_explainer(dd, metric_key, key_suffix):
+    """ⓘ on each Simple-view KPI card (Simple view, Part 2.2) - wired to
+    the site's EXISTING "explain this number" feature
+    (_render_explain_popover, already used next to each of these same
+    gauges further down the page): signed-in visitors get that AI
+    popover; signed-out get _render_static_explainer's fixed-text
+    sibling instead (same visual treatment, no AI call) - matching the
+    instruction's own "signed-out = static definition"."""
+    if paywall_engine.current_user_email():
+        _render_explain_popover(dd, metric_key)
+    else:
+        _render_static_explainer(
+            f"simple_kpi_{key_suffix}", "ⓘ What this means",
+            _SIMPLE_KPI_STATIC_DEFINITIONS.get(metric_key, ""),
+        )
+
+
+def _render_dd_simple_kpis(dd):
+    """Four plain KPI cards (Simple view, Part 2.2) - template text from
+    already-computed dd values, each with an ⓘ (see
+    _render_dd_simple_kpi_explainer). A card is omitted (not shown with
+    an N/A) when its underlying number isn't available, same "missing
+    number is omitted, never guessed" convention as the rest of this
+    page."""
+    ticker = dd["ticker"]
+    cards = []
+
+    if dd.get("intrinsic_value") and dd.get("mos") is not None:
+        mos = dd["mos"]
+        value = (f"{mos:.0f}% cheaper" if mos >= 0
+                  else f"{abs(mos):.0f}% above our estimate")
+        cards.append(("What we think it's worth vs the price", value, "margin_of_safety"))
+
+    if dd.get("quality_score") is not None:
+        driver = _dd_quality_driver_words(dd)
+        cards.append(("Business quality", f"{dd['quality_score']:.0f}/100 — {driver}", "quality"))
+
+    if dd.get("moat") is not None:
+        state_word = _MOAT_STATE_SIMPLE_WORDS.get(dd.get("moat_erosion"), "")
+        value = f"{dd['moat']:.0f}/100" + (f" — {state_word}" if state_word else "")
+        cards.append(("How protected the business is", value, "moat"))
+
+    if dd.get("psychology_sentiment"):
+        mood = _PSYCH_MOOD_SIMPLE_WORDS.get(dd["psychology_sentiment"], "Neutral")
+        off_high = (f" — {dd['fear']:.0f}% off its recent high"
+                     if dd.get("fear") is not None else "")
+        cards.append(("Crowd mood right now", f"{mood}{off_high}", "psychology"))
+
+    if not cards:
+        return
+    cols = st.columns(len(cards))
+    for col, (title, value, metric_key) in zip(cols, cards):
+        with col:
+            with st.container(border=True):
+                st.caption(title)
+                st.markdown(f"**{value}**")
+                _render_dd_simple_kpi_explainer(dd, metric_key, f"{metric_key}_{ticker}")
+
+
+def _render_dd_simple_stories(dd, quality_and_moat_fn, valuation_fn):
+    """The three Simple-view "story" sections (Simple view, Part 2.3) -
+    2-3 template sentences with the real numbers bolded, each ending in
+    a "See the numbers →" expander that renders the EXISTING full
+    section(s) inside it via the closures page_deep_dive() passes in
+    (quality_and_moat_fn, valuation_fn) - same render code Full view
+    calls directly, not a second copy of it. "What could go wrong?"
+    has no existing render function to wrap (there's no unified "red
+    flags" section on this page today - see this function's own red-
+    flags list below) other than the results-day card and Insider panel,
+    both called directly here since they're already self-contained
+    top-level functions."""
+    ticker = dd["ticker"]
+
+    st.markdown("#### Is the business any good?")
+    _sentences = [f"Quality scores **{dd['quality_score']:.0f}/100** ({dd['quality_label'].lower()})."]
+    try:
+        _sections = auto_compounder_engine.build_sections(ticker)
+        _roic = _checklist_metric_value(_sections, "Cost of Capital", "ROIC (TTM)", ticker)
+        _wacc = _checklist_metric_value(_sections, "Cost of Capital", "WACC", ticker)
+    except Exception:
+        _roic = _wacc = None
+    if _roic is not None and _wacc is not None:
+        _cmp = "above" if _roic > _wacc else "below"
+        _sentences.append(
+            f"It earns **{_roic * 100:.1f}c** of profit per dollar invested, "
+            f"{_cmp} the **{_wacc * 100:.1f}c** it needs to cover its cost of capital."
+        )
+    if dd.get("moat") is not None:
+        _erosion_word = _MOAT_STATE_SIMPLE_WORDS.get(dd.get("moat_erosion"), "")
+        _sentences.append(
+            f"Moat score is **{dd['moat']:.0f}/100** ({dd['moat_band_label'].lower()})"
+            + (f" — {_erosion_word}." if _erosion_word else ".")
+        )
+    for s in _sentences:
+        st.markdown(s)
+    with st.expander("See the numbers →"):
+        quality_and_moat_fn()
+
+    st.markdown("#### What is it worth?")
+    _sentences2 = []
+    if dd.get("intrinsic_value"):
+        _sentences2.append(
+            f"The model's estimate of fair value is **{dd['intrinsic_value']:,.2f} "
+            f"{dd['currency']}**, against today's price of **{dd['price']:,.2f} "
+            f"{dd['currency']}**."
+        )
+    _implied, _model = _dd_reverse_dcf_growth(dd)
+    if _implied is not None and _model is not None:
+        _sentences2.append(
+            f"The price only makes sense if growth comes in around "
+            f"**{_implied:+.0f}%** a year — that's the bet the market is making. "
+            f"The model itself assumes **{_model:+.0f}%**."
+        )
+    if not _sentences2:
+        _sentences2.append("No intrinsic value could be computed for this ticker.")
+    for s in _sentences2:
+        st.markdown(s)
+    with st.expander("See the numbers →"):
+        valuation_fn()
+
+    st.markdown("#### What could go wrong?")
+    _flags = []
+    if dd.get("quality_default"):
+        _flags.append("Quality rests on a default/estimated input, not a reported figure.")
+    if dd.get("value_default"):
+        _flags.append("Intrinsic value rests on a default/estimated input.")
+    for _mf in (dd.get("moat_flags") or []):
+        _flags.append(f"Moat: {_mf}")
+    try:
+        _net_insider = insider_store.net_insider_value_12m(ticker)
+    except Exception:
+        _net_insider = None
+    if _net_insider is not None:
+        _dir_word = "buying" if _net_insider >= 0 else "selling"
+        _flags.append(
+            f"Net insider {_dir_word} over the last 12 months: "
+            f"{dd.get('currency', '')} {abs(_net_insider):,.0f}."
+        )
+    if _flags:
+        for f in _flags:
+            st.markdown(f"- {f}")
+    else:
+        st.markdown("No red flags surfaced by the model's own checks right now.")
+    with st.expander("See the numbers →"):
+        try:
+            _render_results_day_card(ticker)
+        except Exception:
+            pass
+        _render_insider_panel(ticker)
 
 
 def _render_reverse_dcf_card(dd):
@@ -6014,7 +6375,16 @@ def page_deep_dive():
         _render_data_as_of(_dd["ticker"])
         _render_recent_results_banner(_dd["ticker"])
         _render_score_history_caption(_dd["ticker"], _dd.get("long_score"))
-        _render_results_day_card(_dd["ticker"])
+        # Simple view, Part 2.3: in Simple view the results-day card moves
+        # into the "What could go wrong?" story's own expander instead of
+        # rendering up here - see _render_dd_simple_stories. _init_view_mode
+        # runs inside _render_dd_verdict_and_chips below, but this check
+        # happens first, so call it here too (idempotent - see its own
+        # one-shot guard) rather than relying on call order.
+        _init_view_mode()
+        _simple = st.session_state.get("view_mode") == "simple"
+        if not _simple:
+            _render_results_day_card(_dd["ticker"])
 
         # --- Conversion pass, Part 1: verdict line + anchor chips. ---
         _render_dd_verdict_and_chips(_dd)
@@ -6027,99 +6397,106 @@ def page_deep_dive():
         # --- Conversion pass, Part 2: moment-tied email hook (signed-out only). ---
         _render_conversion_email_hook(_dd["ticker"])
 
-        if _factual():
-            _m1, _m2, _m3, _m4 = st.columns(4)
-            _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
-            _m2.metric(
-                "Intrinsic Value",
-                # Audit fix 5.4: Price (right next to this tile) shows
-                # "123.45 AUD"; this used to show just "123.45" - the same
-                # currency, ambiguous with no unit, right beside a metric
-                # that does show one, and genuinely confusing given the
-                # page separately explains a currency-conversion note for
-                # cross-currency names nearby.
-                f"{_dd['intrinsic_value']:,.2f} {_dd['currency']}" if _dd["intrinsic_value"] else "N/A",
-                help=METRIC_HELP["Intrinsic Value"],
-            )
-            _m3.metric(
-                "MOS",
-                f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
-                help=METRIC_HELP["MOS"],
-            )
-            _m4.metric("Value Score", f"{_dd['long_score']:.1f}", help=METRIC_HELP["Value Score"])
+        # Simple view, Part 2.2: the dense metrics row + DCF-provenance
+        # captions are Full-view-only clutter - Simple view gets the four
+        # plain KPI cards instead (_render_dd_simple_kpis). Nothing below
+        # in this block is changed for Full view.
+        if _simple:
+            _render_dd_simple_kpis(_dd)
         else:
-            _m1, _m2, _m3, _m4, _m5 = st.columns(5)
-            _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
-            _m2.metric(
-                "Intrinsic Value",
-                # Audit fix 5.4: Price (right next to this tile) shows
-                # "123.45 AUD"; this used to show just "123.45" - the same
-                # currency, ambiguous with no unit, right beside a metric
-                # that does show one, and genuinely confusing given the
-                # page separately explains a currency-conversion note for
-                # cross-currency names nearby.
-                f"{_dd['intrinsic_value']:,.2f} {_dd['currency']}" if _dd["intrinsic_value"] else "N/A",
-                help=METRIC_HELP["Intrinsic Value"],
-            )
-            _m3.metric(
-                "MOS", f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
-                help=METRIC_HELP["MOS"],
-            )
-            _m4.metric("Long Score", f"{_dd['long_score']:.1f}", help=METRIC_HELP["Long Score"])
-            _m5.metric("Signal", _dd_signal, help=METRIC_HELP["Signal"])
-
-        # Task 10: flag it on screen whenever the DCF's base cash flow used
-        # the 3-year median instead of the latest reporting year, because
-        # that latest year was an outlier (see fcf_valuation_engine.
-        # FCF_OUTLIER_THRESHOLD) - purely descriptive of the calculation,
-        # not a signal.
-        if _dd.get("dcf_base_normalized"):
-            st.caption(
-                "Note: the DCF's base cash flow used the median of the "
-                f"last 3 years ({_dd.get('dcf_base_used')}) instead of the "
-                f"latest reported year ({_dd.get('dcf_base_raw')}), which "
-                "deviated by more than 40% - a smoothing step so one "
-                "outlier reporting year can't dominate the valuation."
-            )
-
-        # DCF fixes: floored discount rate + FX currency conversion - same
-        # provenance-flag pattern as the outlier-base caption above. Neither
-        # is a signal; both are purely descriptive of what the calculation
-        # actually did.
-        if _dd.get("dcf_discount_floored"):
-            st.caption(
-                "Discount rate floored at 7.5% (low measured beta - see "
-                "Methodology)."
-            )
-        # Audit fix 1.4: a manually-typed discount/perpetual-rate override
-        # that fell outside the defensible band got silently clamped back
-        # into it - same provenance-flag pattern as the caption above, just
-        # for the manual-input path instead of the auto/CAPM one.
-        if _dd.get("dcf_discount_manual_clamped"):
-            st.caption(
-                "Manual discount rate override was outside the 7.5%-15% "
-                "band and was clamped to it."
-            )
-        if _dd.get("dcf_perpetual_manual_clamped"):
-            st.caption(
-                "Manual perpetual growth rate override was outside the "
-                "defensible range and was clamped to it."
-            )
-        if _dd.get("dcf_fx_converted"):
-            _fx_rate_val = _dd.get("dcf_fx_rate_used")
-            _fx_rate_txt = f"{_fx_rate_val:.2f}" if _fx_rate_val is not None else "N/A"
-            if _dd.get("dcf_fx_fallback"):
-                st.markdown(
-                    "<div style='font-size:13px;color:#8aa0b8;margin:2px 0 8px;'>"
-                    f"Cash flows converted {_dd['dcf_fx_converted']} at "
-                    f"<span style='color:#fb7185;font-weight:600;'>{_fx_rate_txt}"
-                    "</span> (fallback rate - live FX unavailable).</div>",
-                    unsafe_allow_html=True,
+            if _factual():
+                _m1, _m2, _m3, _m4 = st.columns(4)
+                _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
+                _m2.metric(
+                    "Intrinsic Value",
+                    # Audit fix 5.4: Price (right next to this tile) shows
+                    # "123.45 AUD"; this used to show just "123.45" - the same
+                    # currency, ambiguous with no unit, right beside a metric
+                    # that does show one, and genuinely confusing given the
+                    # page separately explains a currency-conversion note for
+                    # cross-currency names nearby.
+                    f"{_dd['intrinsic_value']:,.2f} {_dd['currency']}" if _dd["intrinsic_value"] else "N/A",
+                    help=METRIC_HELP["Intrinsic Value"],
                 )
+                _m3.metric(
+                    "MOS",
+                    f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
+                    help=METRIC_HELP["MOS"],
+                )
+                _m4.metric("Value Score", f"{_dd['long_score']:.1f}", help=METRIC_HELP["Value Score"])
             else:
-                st.caption(
-                    f"Cash flows converted {_dd['dcf_fx_converted']} at {_fx_rate_txt}."
+                _m1, _m2, _m3, _m4, _m5 = st.columns(5)
+                _m1.metric("Price", f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
+                _m2.metric(
+                    "Intrinsic Value",
+                    # Audit fix 5.4: Price (right next to this tile) shows
+                    # "123.45 AUD"; this used to show just "123.45" - the same
+                    # currency, ambiguous with no unit, right beside a metric
+                    # that does show one, and genuinely confusing given the
+                    # page separately explains a currency-conversion note for
+                    # cross-currency names nearby.
+                    f"{_dd['intrinsic_value']:,.2f} {_dd['currency']}" if _dd["intrinsic_value"] else "N/A",
+                    help=METRIC_HELP["Intrinsic Value"],
                 )
+                _m3.metric(
+                    "MOS", f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
+                    help=METRIC_HELP["MOS"],
+                )
+                _m4.metric("Long Score", f"{_dd['long_score']:.1f}", help=METRIC_HELP["Long Score"])
+                _m5.metric("Signal", _dd_signal, help=METRIC_HELP["Signal"])
+
+            # Task 10: flag it on screen whenever the DCF's base cash flow used
+            # the 3-year median instead of the latest reporting year, because
+            # that latest year was an outlier (see fcf_valuation_engine.
+            # FCF_OUTLIER_THRESHOLD) - purely descriptive of the calculation,
+            # not a signal.
+            if _dd.get("dcf_base_normalized"):
+                st.caption(
+                    "Note: the DCF's base cash flow used the median of the "
+                    f"last 3 years ({_dd.get('dcf_base_used')}) instead of the "
+                    f"latest reported year ({_dd.get('dcf_base_raw')}), which "
+                    "deviated by more than 40% - a smoothing step so one "
+                    "outlier reporting year can't dominate the valuation."
+                )
+
+            # DCF fixes: floored discount rate + FX currency conversion - same
+            # provenance-flag pattern as the outlier-base caption above. Neither
+            # is a signal; both are purely descriptive of what the calculation
+            # actually did.
+            if _dd.get("dcf_discount_floored"):
+                st.caption(
+                    "Discount rate floored at 7.5% (low measured beta - see "
+                    "Methodology)."
+                )
+            # Audit fix 1.4: a manually-typed discount/perpetual-rate override
+            # that fell outside the defensible band got silently clamped back
+            # into it - same provenance-flag pattern as the caption above, just
+            # for the manual-input path instead of the auto/CAPM one.
+            if _dd.get("dcf_discount_manual_clamped"):
+                st.caption(
+                    "Manual discount rate override was outside the 7.5%-15% "
+                    "band and was clamped to it."
+                )
+            if _dd.get("dcf_perpetual_manual_clamped"):
+                st.caption(
+                    "Manual perpetual growth rate override was outside the "
+                    "defensible range and was clamped to it."
+                )
+            if _dd.get("dcf_fx_converted"):
+                _fx_rate_val = _dd.get("dcf_fx_rate_used")
+                _fx_rate_txt = f"{_fx_rate_val:.2f}" if _fx_rate_val is not None else "N/A"
+                if _dd.get("dcf_fx_fallback"):
+                    st.markdown(
+                        "<div style='font-size:13px;color:#8aa0b8;margin:2px 0 8px;'>"
+                        f"Cash flows converted {_dd['dcf_fx_converted']} at "
+                        f"<span style='color:#fb7185;font-weight:600;'>{_fx_rate_txt}"
+                        "</span> (fallback rate - live FX unavailable).</div>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.caption(
+                        f"Cash flows converted {_dd['dcf_fx_converted']} at {_fx_rate_txt}."
+                    )
 
         # --- Research cross-link (Task 5): when this ticker has hand-built
         # Rational Compounder coverage, point straight at it. st.switch_page
@@ -6253,620 +6630,710 @@ def page_deep_dive():
                 )
                 sdd_plotly_chart(fig_px)
 
-        # --- Plain-English verdict: the same thesis engine Comparison
-        # uses, so every Deep Dive opens with sentences, not just gauges. ---
-        try:
-            _dd_thesis = generate_thesis(
-                ticker=_dd["ticker"],
-                stock_type=_dd.get("stock_type") or "GENERAL",
-                quality_score=_dd["quality_score"],
-                margin_of_safety=_dd["mos"] if _dd["mos"] is not None else 0,
-                psychology_score=_dd["psychology"],
-                discovery_score=_dd["discovery"],
-                long_score=_dd["long_score"],
-                holding_period=get_holding_period(_dd.get("stock_type") or "GENERAL"),
-            )
-        except Exception:
-            _dd_thesis = None
-        if _factual():
-            # "What the model shows": neutral statements about inputs and
-            # outputs - no buy/wait framing, no holding-period suggestion.
-            with st.expander("What the model shows", expanded=True):
-                # P4.2: one synthesized sentence up front for a first-time
-                # visitor who won't read every bullet below - built only
-                # from values already computed above, so it can never say
-                # anything the rest of the page doesn't already show.
-                # Follows the same red-flag convention as everywhere else:
-                # when no intrinsic value exists, the valuation clause says
-                # so plainly rather than guessing.
-                _dd_val_clause = {
-                    "UNDERVALUED": "trading below the model's estimated value",
-                    "FAIR": "trading close to the model's estimated value",
-                    "EXPENSIVE": "trading above the model's estimated value",
-                    "N/A": "with no computable intrinsic value to compare against",
-                }.get(_dd["valuation"], "with an unclear valuation")
-                st.markdown(
-                    f"**In one line:** {_dd['ticker']}'s Value Score is "
-                    f"{_dd['long_score']:.1f} ({_dd_value_word.lower()}) - "
-                    f"{_dd_val_clause}, with {_dd['quality_label'].lower()} "
-                    f"quality, a {_dd['psychology_sentiment'].lower()} crowd, "
-                    f"and {_dd['discovery_label'].lower()} attention."
-                )
-                _obs = []
-                if _dd.get("intrinsic_value") and _dd.get("mos") is not None:
-                    _obs.append(
-                        f"The intrinsic value ({_dd['intrinsic_value']:,.2f} "
-                        f"{_dd['currency']}) is {_dd['mos']:+.1f}% relative to the "
-                        "current price (MOS), using the stated inputs shown on "
-                        "this page."
-                    )
-                elif not _dd.get("intrinsic_value"):
-                    _obs.append(
-                        "No intrinsic value could be computed for this ticker "
-                        "(no positive EPS/FCF for the DCF or P/E-based models)."
-                    )
-                _obs.append(
-                    f"The quality calculation totals {_dd['quality_score']}/100 "
-                    "from reported fundamentals - the term-by-term breakdown "
-                    "is charted below."
-                )
-                _obs.append(
-                    f"Psychology: {_dd['fear']:.1f}% below its 3-month "
-                    f"high; greed/FOMO terms total {(_dd['greed'] + _dd['fomo']):.1f} "
-                    "(see the psychology chart)."
-                )
-                _obs.append(
-                    f"Discovery score: {_dd['discovery']:.1f} from price "
-                    "activity, volume, search interest, news and social volume."
-                )
-                for _o in _obs:
-                    st.markdown(f"- {_o}")
-                st.caption(
-                    "Statements describe model inputs and outputs only. Nothing "
-                    "on this page is a recommendation to buy, hold or sell any "
-                    "security."
-                )
-        elif _dd_thesis:
-            with st.expander(
-                "The plain-English case - why buy, why wait, the risks",
-                expanded=True,
-            ):
-                _th1, _th2, _th3 = st.columns(3)
-                for _col, _label, _points in (
-                    (_th1, "Why buy", _dd_thesis["why_buy"]),
-                    (_th2, "Why wait", _dd_thesis["why_wait"]),
-                    (_th3, "Risks", _dd_thesis["risks"]),
-                ):
-                    with _col:
-                        st.markdown(f"**{_label}**")
-                        for _pt in (_points or ["Nothing flagged."]):
-                            st.markdown(f"- {_pt}")
-                st.caption(f"Suggested holding period: {_dd_thesis['holding_period']}")
-
-        # Value Score gauge stacked on top of Price vs Intrinsic Value
-        # (previously side-by-side columns - moved to a single vertical
-        # stack per request). Heading added to match the Quality/Discovery/
-        # Psychology sections below, each of which leads with a
-        # "X Score: value - LABEL" subheader before their gauge.
-        if _factual():
-            st.subheader(f"Value Score: {_dd['long_score']:.1f} - {_dd_value_word}")
-            st.caption(
-                "In plain English: one number blending business quality, price "
-                "versus estimated value, crowd psychology, and market attention."
-            )
-            _render_explain_popover(_dd, "value_score")
-            sdd_plotly_chart(
-                _dd_gauge(
-                    _dd["long_score"], "Value Score",
-                    [
-                        (0, SIGNAL_THRESHOLDS["WATCHLIST"], "#43222e"),
-                        (SIGNAL_THRESHOLDS["WATCHLIST"], SIGNAL_THRESHOLDS["LONG"], "#43371c"),
-                        (SIGNAL_THRESHOLDS["LONG"], SIGNAL_THRESHOLDS["STRONG_LONG"], "#1e3d34"),
-                        (SIGNAL_THRESHOLDS["STRONG_LONG"], 100, "#27584a"),
-                    ],
-                ),
-            )
-        else:
-            st.subheader(f"Long Score: {_dd['long_score']:.1f} - {_dd_signal}")
-            st.caption(
-                "In plain English: one number blending business quality, price "
-                "versus estimated value, crowd psychology, and market attention."
-            )
-            _render_explain_popover(_dd, "value_score")
-            sdd_plotly_chart(
-                _dd_gauge(
-                    _dd["long_score"], f"Long Score - {_dd_signal}",
-                    [
-                        (0, SIGNAL_THRESHOLDS["WATCHLIST"], "#43222e"),
-                        (SIGNAL_THRESHOLDS["WATCHLIST"], SIGNAL_THRESHOLDS["LONG"], "#43371c"),
-                        (SIGNAL_THRESHOLDS["LONG"], SIGNAL_THRESHOLDS["STRONG_LONG"], "#1e3d34"),
-                        (SIGNAL_THRESHOLDS["STRONG_LONG"], 100, "#27584a"),
-                    ],
-                ),
-            )
-        if _factual():
-            st.caption(
-                (
-                    "Value Score is a weighted calculation: quality 25%, moat "
-                    "15%, MOS 30%, psychology 15%, discovery 15% (moat "
-                    "reweighted into the others where no Moat Score exists). "
-                    "It is a description of data, not a recommendation."
-                    if moat_engine.MOAT_IN_VALUE_SCORE else
-                    "Value Score is a weighted calculation: quality 35%, "
-                    "MOS 25%, psychology 20%, discovery 20%. It is a "
-                    "description of data, not a recommendation."
-                )
-            )
-        else:
-            st.caption(
-                "Long Score, 0-100: business quality + margin of safety weighted, "
-                f"nudged by psychology and attention. Above {SIGNAL_THRESHOLDS['LONG']} "
-                f"= LONG territory, above {SIGNAL_THRESHOLDS['STRONG_LONG']} = STRONG LONG."
-            )
-
+        # Simple view, Part 2.3-2.5: Quality/Psychology/Discovery/Moat/
+        # Margin-of-Safety(+reverse-DCF)/Trade-Setup/Compounder-View, plus
+        # the free headline/thesis/score-history block above them, are
+        # each wrapped in a local nested closure here (verbatim original
+        # code, just indented one level deeper) so Full view can call them
+        # at their original position (unchanged) while Simple view reuses
+        # the SAME closures inside its own KPI/story/"All the detail"
+        # layout - one source of render code, never forked, per the
+        # instruction's Part 1 note ("Simple wraps existing render
+        # functions behind expanders, it does not fork them").
+        _acv_sections = None  # set by _dd_compounder_view() via nonlocal
         _score_word = "Value Score" if _factual() else "Long Score"
-        sdd_plotly_chart(
-            _dd_contrib_chart(
-                _dd["contributions"],
-                f"What's driving the {_score_word} (points contributed by each factor)",
-                xaxis_title=f"Points toward {_score_word}",
-                height=280,
-            ),
-        )
 
-        _render_score_history_chart(_dd["ticker"], _score_word)
-
-        st.divider()
-
-        if not paywall_engine.render_gate(
-            "the full Deep Dive breakdown",
-            teaser=(
-                "Quality, Psychology, Discovery, and Trade Setup scores - the "
-                f"full factor breakdown behind the {_score_word} above."
-            ),
-            key_prefix=f"dd_{_dd['ticker']}",
-        ):
-            return
-
-        st.subheader(f"Quality Score: {_dd['quality_score']} - {_dd['quality_label']}")
-        st.caption(
-            "In plain English: how strong the underlying business is - "
-            "profitability, balance sheet strength, and growth - judged "
-            "from its own financial statements."
-        )
-        _render_explain_popover(_dd, "quality")
-        _q_col1, _q_col2 = st.columns(2)
-        with _q_col1:
-            sdd_plotly_chart(
-                _dd_gauge(
-                    _dd["quality_score"], f"Quality - {_dd['quality_label']}",
-                    [(0, 40, "#43222e"), (40, 60, "#43371c"),
-                     (60, 80, "#1e3d34"), (80, 100, "#27584a")],
-                ),
-            )
-        with _q_col2:
-            if _dd["quality_components"]:
-                sdd_plotly_chart(
-                    _dd_contrib_chart(
-                        _dd["quality_components"],
-                        "What's driving Quality (weighted terms)",
-                        xaxis_title="Points toward Quality",
-                    ),
+        def _dd_headline_and_score():
+            # --- Plain-English verdict: the same thesis engine Comparison
+            # uses, so every Deep Dive opens with sentences, not just gauges. ---
+            try:
+                _dd_thesis = generate_thesis(
+                    ticker=_dd["ticker"],
+                    stock_type=_dd.get("stock_type") or "GENERAL",
+                    quality_score=_dd["quality_score"],
+                    margin_of_safety=_dd["mos"] if _dd["mos"] is not None else 0,
+                    psychology_score=_dd["psychology"],
+                    discovery_score=_dd["discovery"],
+                    long_score=_dd["long_score"],
+                    holding_period=get_holding_period(_dd.get("stock_type") or "GENERAL"),
                 )
-            else:
-                st.info(
-                    "Quality Score is a manual override for this ticker - "
-                    "no fundamentals breakdown to chart."
-                )
-        if _dd["quality_default"]:
-            st.caption("No fundamentals data available - this is the base/default Quality Score.")
+            except Exception:
+                _dd_thesis = None
+            if _factual():
+                # "What the model shows": neutral statements about inputs and
+                # outputs - no buy/wait framing, no holding-period suggestion.
+                with st.expander("What the model shows", expanded=True):
+                    # P4.2: one synthesized sentence up front for a first-time
+                    # visitor who won't read every bullet below - built only
+                    # from values already computed above, so it can never say
+                    # anything the rest of the page doesn't already show.
+                    # Follows the same red-flag convention as everywhere else:
+                    # when no intrinsic value exists, the valuation clause says
+                    # so plainly rather than guessing.
+                    _dd_val_clause = {
+                        "UNDERVALUED": "trading below the model's estimated value",
+                        "FAIR": "trading close to the model's estimated value",
+                        "EXPENSIVE": "trading above the model's estimated value",
+                        "N/A": "with no computable intrinsic value to compare against",
+                    }.get(_dd["valuation"], "with an unclear valuation")
+                    st.markdown(
+                        f"**In one line:** {_dd['ticker']}'s Value Score is "
+                        f"{_dd['long_score']:.1f} ({_dd_value_word.lower()}) - "
+                        f"{_dd_val_clause}, with {_dd['quality_label'].lower()} "
+                        f"quality, a {_dd['psychology_sentiment'].lower()} crowd, "
+                        f"and {_dd['discovery_label'].lower()} attention."
+                    )
+                    _obs = []
+                    if _dd.get("intrinsic_value") and _dd.get("mos") is not None:
+                        _obs.append(
+                            f"The intrinsic value ({_dd['intrinsic_value']:,.2f} "
+                            f"{_dd['currency']}) is {_dd['mos']:+.1f}% relative to the "
+                            "current price (MOS), using the stated inputs shown on "
+                            "this page."
+                        )
+                    elif not _dd.get("intrinsic_value"):
+                        _obs.append(
+                            "No intrinsic value could be computed for this ticker "
+                            "(no positive EPS/FCF for the DCF or P/E-based models)."
+                        )
+                    _obs.append(
+                        f"The quality calculation totals {_dd['quality_score']}/100 "
+                        "from reported fundamentals - the term-by-term breakdown "
+                        "is charted below."
+                    )
+                    _obs.append(
+                        f"Psychology: {_dd['fear']:.1f}% below its 3-month "
+                        f"high; greed/FOMO terms total {(_dd['greed'] + _dd['fomo']):.1f} "
+                        "(see the psychology chart)."
+                    )
+                    _obs.append(
+                        f"Discovery score: {_dd['discovery']:.1f} from price "
+                        "activity, volume, search interest, news and social volume."
+                    )
+                    for _o in _obs:
+                        st.markdown(f"- {_o}")
+                    st.caption(
+                        "Statements describe model inputs and outputs only. Nothing "
+                        "on this page is a recommendation to buy, hold or sell any "
+                        "security."
+                    )
+            elif _dd_thesis:
+                with st.expander(
+                    "The plain-English case - why buy, why wait, the risks",
+                    expanded=True,
+                ):
+                    _th1, _th2, _th3 = st.columns(3)
+                    for _col, _label, _points in (
+                        (_th1, "Why buy", _dd_thesis["why_buy"]),
+                        (_th2, "Why wait", _dd_thesis["why_wait"]),
+                        (_th3, "Risks", _dd_thesis["risks"]),
+                    ):
+                        with _col:
+                            st.markdown(f"**{_label}**")
+                            for _pt in (_points or ["Nothing flagged."]):
+                                st.markdown(f"- {_pt}")
+                    st.caption(f"Suggested holding period: {_dd_thesis['holding_period']}")
 
-        st.divider()
-        st.subheader(f"Psychology Score: {_dd['psychology']:+.1f} - {_dd['psychology_sentiment']}")
-        st.caption(
-            "In plain English: whether the crowd trading this stock right now "
-            "looks fearful, calm, or greedy, read from recent price behaviour."
-        )
-        _render_explain_popover(_dd, "psychology")
-        if _dd.get("ma50_defaulted"):
-            st.warning(
-                f"MA50 couldn't be computed (fewer than 50 trading days available in "
-                f"the pulled history) - Greed defaulted to 0 as a result. This is a "
-                f"placeholder, not a real reading of price vs. the 50-day average; "
-                f"treat Greed/Psychology for this stock with caution."
-            )
-        else:
-            st.caption(f"MA50: {_dd['currency']} {_dd['ma50']:,.2f}")
-        _p_col1, _p_col2 = st.columns(2)
-        with _p_col1:
-            sdd_plotly_chart(
-                _dd_gauge(
-                    _dd["psychology_gauge"], f"Psychology - {_dd['psychology_sentiment']}",
-                    [(0, 30, "#43222e"), (30, 45, "#43371c"), (45, 55, "#1f3352"),
-                     (55, 70, "#1e3d34"), (70, 100, "#27584a")],
-                ),
-            )
-        with _p_col2:
-            sdd_plotly_chart(
-                _dd_contrib_chart(
-                    _dd["psychology_contributions"],
-                    "What's driving Psychology (Fear - Greed - FOMO)",
-                    xaxis_title="Points toward Psychology",
-                ),
-            )
-
-        st.divider()
-        st.subheader(f"Discovery Score: {_dd['discovery']:.1f} - {_dd['discovery_label']}")
-        st.caption(
-            "In plain English: how much attention this stock is getting right "
-            "now, from search interest, news, and trading volume."
-        )
-        _render_explain_popover(_dd, "discovery")
-        if _dd.get("trend_score_failed"):
-            st.warning(
-                "Trend Score's fetch failed on this load (Google Trends and/or "
-                "NewsAPI didn't respond) and silently fell back to 0 - Discovery "
-                "may be understated as a result. This isn't a confirmed 'no "
-                "attention' reading; refreshing in a few minutes may pick up a "
-                "different, higher number."
-            )
-        _dv_col1, _dv_col2 = st.columns(2)
-        with _dv_col1:
-            sdd_plotly_chart(
-                _dd_gauge(
-                    _dd["discovery_gauge"], f"Discovery - {_dd['discovery_label']}",
-                    [(0, 25, "#43222e"), (25, 50, "#43371c"),
-                     (50, 75, "#1e3d34"), (75, 100, "#27584a")],
-                ),
-            )
-        with _dv_col2:
-            sdd_plotly_chart(
-                _dd_contrib_chart(
-                    _dd["discovery_contributions"],
-                    "What's driving Discovery (attention & momentum)",
-                    xaxis_title="Points toward Discovery",
-                ),
-            )
-
-        # Moat Score (Phase 1 - display only, NOT part of Value Score -
-        # see moat_engine.py's own module docstring). Same gauge +
-        # "what's driving" chart pattern as Quality/Psychology/Discovery
-        # above, reusing the same _dd_gauge/_dd_contrib_chart helpers -
-        # no new chart style invented for this.
-        # Conversion pass, Part 1: anchor for the top-of-page chip row -
-        # a zero-height marker, not a visible element, so it can't ever
-        # shift this section's own layout.
-        st.markdown('<div id="sdd-anchor-moat"></div>', unsafe_allow_html=True)
-        st.divider()
-        if _dd.get("moat") is None:
-            st.subheader(f"Moat Score: {_dd.get('moat_band_label', 'N/A')}")
-            st.caption(
-                "In plain English: how well this business's profits are "
-                "protected from competitors, based on returns on capital and "
-                "margin durability."
-            )
-            if _dd.get("moat_mode") == "na" and _dd.get("moat_flags"):
-                st.caption(_dd["moat_flags"][0])
-            else:
+            # Value Score gauge stacked on top of Price vs Intrinsic Value
+            # (previously side-by-side columns - moved to a single vertical
+            # stack per request). Heading added to match the Quality/Discovery/
+            # Psychology sections below, each of which leads with a
+            # "X Score: value - LABEL" subheader before their gauge.
+            if _factual():
+                st.subheader(f"Value Score: {_dd['long_score']:.1f} - {_dd_value_word}")
                 st.caption(
-                    "Not enough statement history to compute a Moat Score for this "
-                    "ticker yet."
+                    "In plain English: one number blending business quality, price "
+                    "versus estimated value, crowd psychology, and market attention."
                 )
-        else:
-            st.subheader(f"Moat Score: {_dd['moat']:.1f} - {_dd['moat_band_label']}")
-            st.caption(
-                "In plain English: how well this business's profits are "
-                "protected from competitors, based on returns on capital and "
-                "margin durability."
-            )
-            _render_explain_popover(_dd, "moat")
-            if _dd.get("moat_erosion") == "eroding":
-                st.error(
-                    "Moat watch: ROIC and operating margin both sit meaningfully "
-                    "below their preceding multi-year average, across the two most "
-                    "recent periods - the score above is capped at 50 as a result."
-                )
-            elif _dd.get("moat_erosion") == "watch":
-                st.warning(
-                    "Moat watch: the latest period's ROIC and operating margin sit "
-                    "below the preceding multi-year average."
-                )
-            if _dd.get("moat_mode") == "financials":
-                st.caption(
-                    "Financials mode: ROE and cost of equity used in place of ROIC "
-                    "and WACC (ROIC is not meaningful for a bank/insurer's balance "
-                    "sheet)."
-                )
-            st.caption(
-                f"{_dd.get('moat_years', 0)} year(s) of statement data used. "
-                + (
-                    "Folded into the Value Score above at a 15% weight - see "
-                    "Methodology."
-                    if moat_engine.MOAT_IN_VALUE_SCORE else
-                    "Not currently part of the Value Score - see Methodology."
-                )
-            )
-            _moat_col1, _moat_col2 = st.columns(2)
-            with _moat_col1:
+                _render_explain_popover(_dd, "value_score")
                 sdd_plotly_chart(
                     _dd_gauge(
-                        _dd["moat_gauge"], f"Moat - {_dd['moat_band_label']}",
-                        [(0, 40, "#43222e"), (40, 70, "#43371c"), (70, 100, "#27584a")],
+                        _dd["long_score"], "Value Score",
+                        [
+                            (0, SIGNAL_THRESHOLDS["WATCHLIST"], "#43222e"),
+                            (SIGNAL_THRESHOLDS["WATCHLIST"], SIGNAL_THRESHOLDS["LONG"], "#43371c"),
+                            (SIGNAL_THRESHOLDS["LONG"], SIGNAL_THRESHOLDS["STRONG_LONG"], "#1e3d34"),
+                            (SIGNAL_THRESHOLDS["STRONG_LONG"], 100, "#27584a"),
+                        ],
                     ),
                 )
-            with _moat_col2:
-                if _dd.get("moat_contributions"):
+            else:
+                st.subheader(f"Long Score: {_dd['long_score']:.1f} - {_dd_signal}")
+                st.caption(
+                    "In plain English: one number blending business quality, price "
+                    "versus estimated value, crowd psychology, and market attention."
+                )
+                _render_explain_popover(_dd, "value_score")
+                sdd_plotly_chart(
+                    _dd_gauge(
+                        _dd["long_score"], f"Long Score - {_dd_signal}",
+                        [
+                            (0, SIGNAL_THRESHOLDS["WATCHLIST"], "#43222e"),
+                            (SIGNAL_THRESHOLDS["WATCHLIST"], SIGNAL_THRESHOLDS["LONG"], "#43371c"),
+                            (SIGNAL_THRESHOLDS["LONG"], SIGNAL_THRESHOLDS["STRONG_LONG"], "#1e3d34"),
+                            (SIGNAL_THRESHOLDS["STRONG_LONG"], 100, "#27584a"),
+                        ],
+                    ),
+                )
+            if _factual():
+                st.caption(
+                    (
+                        "Value Score is a weighted calculation: quality 25%, moat "
+                        "15%, MOS 30%, psychology 15%, discovery 15% (moat "
+                        "reweighted into the others where no Moat Score exists). "
+                        "It is a description of data, not a recommendation."
+                        if moat_engine.MOAT_IN_VALUE_SCORE else
+                        "Value Score is a weighted calculation: quality 35%, "
+                        "MOS 25%, psychology 20%, discovery 20%. It is a "
+                        "description of data, not a recommendation."
+                    )
+                )
+            else:
+                st.caption(
+                    "Long Score, 0-100: business quality + margin of safety weighted, "
+                    f"nudged by psychology and attention. Above {SIGNAL_THRESHOLDS['LONG']} "
+                    f"= LONG territory, above {SIGNAL_THRESHOLDS['STRONG_LONG']} = STRONG LONG."
+                )
+
+            _score_word = "Value Score" if _factual() else "Long Score"
+            sdd_plotly_chart(
+                _dd_contrib_chart(
+                    _dd["contributions"],
+                    f"What's driving the {_score_word} (points contributed by each factor)",
+                    xaxis_title=f"Points toward {_score_word}",
+                    height=280,
+                ),
+            )
+
+            _render_score_history_chart(_dd["ticker"], _score_word)
+
+
+        def _dd_quality():
+            st.subheader(f"Quality Score: {_dd['quality_score']} - {_dd['quality_label']}")
+            st.caption(
+                "In plain English: how strong the underlying business is - "
+                "profitability, balance sheet strength, and growth - judged "
+                "from its own financial statements."
+            )
+            _render_explain_popover(_dd, "quality")
+            _q_col1, _q_col2 = st.columns(2)
+            with _q_col1:
+                sdd_plotly_chart(
+                    _dd_gauge(
+                        _dd["quality_score"], f"Quality - {_dd['quality_label']}",
+                        [(0, 40, "#43222e"), (40, 60, "#43371c"),
+                         (60, 80, "#1e3d34"), (80, 100, "#27584a")],
+                    ),
+                )
+            with _q_col2:
+                if _dd["quality_components"]:
                     sdd_plotly_chart(
                         _dd_contrib_chart(
-                            _dd["moat_contributions"],
-                            "What's driving Moat (durability of the return)",
-                            xaxis_title="Points toward Moat",
+                            _dd["quality_components"],
+                            "What's driving Quality (weighted terms)",
+                            xaxis_title="Points toward Quality",
+                        ),
+                    )
+                else:
+                    st.info(
+                        "Quality Score is a manual override for this ticker - "
+                        "no fundamentals breakdown to chart."
+                    )
+            if _dd["quality_default"]:
+                st.caption("No fundamentals data available - this is the base/default Quality Score.")
+
+
+        def _dd_psychology():
+            st.divider()
+            st.subheader(f"Psychology Score: {_dd['psychology']:+.1f} - {_dd['psychology_sentiment']}")
+            st.caption(
+                "In plain English: whether the crowd trading this stock right now "
+                "looks fearful, calm, or greedy, read from recent price behaviour."
+            )
+            _render_explain_popover(_dd, "psychology")
+            if _dd.get("ma50_defaulted"):
+                st.warning(
+                    f"MA50 couldn't be computed (fewer than 50 trading days available in "
+                    f"the pulled history) - Greed defaulted to 0 as a result. This is a "
+                    f"placeholder, not a real reading of price vs. the 50-day average; "
+                    f"treat Greed/Psychology for this stock with caution."
+                )
+            else:
+                st.caption(f"MA50: {_dd['currency']} {_dd['ma50']:,.2f}")
+            _p_col1, _p_col2 = st.columns(2)
+            with _p_col1:
+                sdd_plotly_chart(
+                    _dd_gauge(
+                        _dd["psychology_gauge"], f"Psychology - {_dd['psychology_sentiment']}",
+                        [(0, 30, "#43222e"), (30, 45, "#43371c"), (45, 55, "#1f3352"),
+                         (55, 70, "#1e3d34"), (70, 100, "#27584a")],
+                    ),
+                )
+            with _p_col2:
+                sdd_plotly_chart(
+                    _dd_contrib_chart(
+                        _dd["psychology_contributions"],
+                        "What's driving Psychology (Fear - Greed - FOMO)",
+                        xaxis_title="Points toward Psychology",
+                    ),
+                )
+
+
+        def _dd_discovery():
+            st.divider()
+            st.subheader(f"Discovery Score: {_dd['discovery']:.1f} - {_dd['discovery_label']}")
+            st.caption(
+                "In plain English: how much attention this stock is getting right "
+                "now, from search interest, news, and trading volume."
+            )
+            _render_explain_popover(_dd, "discovery")
+            if _dd.get("trend_score_failed"):
+                st.warning(
+                    "Trend Score's fetch failed on this load (Google Trends and/or "
+                    "NewsAPI didn't respond) and silently fell back to 0 - Discovery "
+                    "may be understated as a result. This isn't a confirmed 'no "
+                    "attention' reading; refreshing in a few minutes may pick up a "
+                    "different, higher number."
+                )
+            _dv_col1, _dv_col2 = st.columns(2)
+            with _dv_col1:
+                sdd_plotly_chart(
+                    _dd_gauge(
+                        _dd["discovery_gauge"], f"Discovery - {_dd['discovery_label']}",
+                        [(0, 25, "#43222e"), (25, 50, "#43371c"),
+                         (50, 75, "#1e3d34"), (75, 100, "#27584a")],
+                    ),
+                )
+            with _dv_col2:
+                sdd_plotly_chart(
+                    _dd_contrib_chart(
+                        _dd["discovery_contributions"],
+                        "What's driving Discovery (attention & momentum)",
+                        xaxis_title="Points toward Discovery",
+                    ),
+                )
+
+
+        def _dd_moat():
+            # Moat Score (Phase 1 - display only, NOT part of Value Score -
+            # see moat_engine.py's own module docstring). Same gauge +
+            # "what's driving" chart pattern as Quality/Psychology/Discovery
+            # above, reusing the same _dd_gauge/_dd_contrib_chart helpers -
+            # no new chart style invented for this.
+            # Conversion pass, Part 1: anchor for the top-of-page chip row -
+            # a zero-height marker, not a visible element, so it can't ever
+            # shift this section's own layout.
+            st.markdown('<div id="sdd-anchor-moat"></div>', unsafe_allow_html=True)
+            st.divider()
+            if _dd.get("moat") is None:
+                st.subheader(f"Moat Score: {_dd.get('moat_band_label', 'N/A')}")
+                st.caption(
+                    "In plain English: how well this business's profits are "
+                    "protected from competitors, based on returns on capital and "
+                    "margin durability."
+                )
+                if _dd.get("moat_mode") == "na" and _dd.get("moat_flags"):
+                    st.caption(_dd["moat_flags"][0])
+                else:
+                    st.caption(
+                        "Not enough statement history to compute a Moat Score for this "
+                        "ticker yet."
+                    )
+            else:
+                st.subheader(f"Moat Score: {_dd['moat']:.1f} - {_dd['moat_band_label']}")
+                st.caption(
+                    "In plain English: how well this business's profits are "
+                    "protected from competitors, based on returns on capital and "
+                    "margin durability."
+                )
+                _render_explain_popover(_dd, "moat")
+                if _dd.get("moat_erosion") == "eroding":
+                    st.error(
+                        "Moat watch: ROIC and operating margin both sit meaningfully "
+                        "below their preceding multi-year average, across the two most "
+                        "recent periods - the score above is capped at 50 as a result."
+                    )
+                elif _dd.get("moat_erosion") == "watch":
+                    st.warning(
+                        "Moat watch: the latest period's ROIC and operating margin sit "
+                        "below the preceding multi-year average."
+                    )
+                if _dd.get("moat_mode") == "financials":
+                    st.caption(
+                        "Financials mode: ROE and cost of equity used in place of ROIC "
+                        "and WACC (ROIC is not meaningful for a bank/insurer's balance "
+                        "sheet)."
+                    )
+                st.caption(
+                    f"{_dd.get('moat_years', 0)} year(s) of statement data used. "
+                    + (
+                        "Folded into the Value Score above at a 15% weight - see "
+                        "Methodology."
+                        if moat_engine.MOAT_IN_VALUE_SCORE else
+                        "Not currently part of the Value Score - see Methodology."
+                    )
+                )
+                _moat_col1, _moat_col2 = st.columns(2)
+                with _moat_col1:
+                    sdd_plotly_chart(
+                        _dd_gauge(
+                            _dd["moat_gauge"], f"Moat - {_dd['moat_band_label']}",
+                            [(0, 40, "#43222e"), (40, 70, "#43371c"), (70, 100, "#27584a")],
+                        ),
+                    )
+                with _moat_col2:
+                    if _dd.get("moat_contributions"):
+                        sdd_plotly_chart(
+                            _dd_contrib_chart(
+                                _dd["moat_contributions"],
+                                "What's driving Moat (durability of the return)",
+                                xaxis_title="Points toward Moat",
+                            ),
+                        )
+
+
+        def _dd_valuation():
+            # Margin of Safety - moved here (after Discovery Score, before Trade
+            # Setup) and redesigned into a gauge (same visual family as the
+            # Quality/Psychology/Discovery dials above) paired with the actual
+            # Price vs Intrinsic Value bar chart, same gauge+chart column layout
+            # as those three sections use.
+            st.divider()
+            if _dd["intrinsic_value"]:
+                _mos_val = _dd["mos"] if _dd["mos"] is not None else 0.0
+                st.subheader(f"Margin of Safety: {_mos_val:+.1f}% - {_dd['valuation']}")
+                st.caption(
+                    "In plain English: how much cheaper today's price is than what "
+                    "the model estimates the business is worth."
+                )
+                _render_explain_popover(_dd, "margin_of_safety")
+                _mos_gauge_val = max(-50, min(_mos_val, 100))
+                _mos_col1, _mos_col2 = st.columns(2)
+                with _mos_col1:
+                    sdd_plotly_chart(
+                        _dd_gauge(
+                            _mos_gauge_val, f"Margin of Safety - {_dd['valuation']}",
+                            # Audit fix 5.6: the underlying label logic
+                            # genuinely is 3-bucket (UNDERVALUED/FAIR/EXPENSIVE
+                            # - see the caption right below), but the gauge
+                            # used to draw the >=25% zone as two slightly
+                            # different green shades (25-50, 50-100), which
+                            # the caption doesn't describe as two separate
+                            # things. One shade for the whole >=25% zone now
+                            # matches the caption exactly - cosmetic only, the
+                            # 25% threshold and the UNDERVALUED/FAIR/EXPENSIVE
+                            # labels themselves are unchanged.
+                            [(-50, 0, "#43222e"), (0, 25, "#43371c"),
+                             (25, 100, "#1e3d34")],
+                            axis_range=(-50, 100),
+                        ),
+                    )
+                    if _mos_val != _mos_gauge_val:
+                        st.caption("Dial capped at -50%/100% for readability.")
+                with _mos_col2:
+                    _iv_color = "#34d399" if _dd["intrinsic_value"] > _dd["price"] else "#fb7185"
+                    fig_val = go.Figure(go.Bar(
+                        x=[_dd["price"], _dd["intrinsic_value"]],
+                        y=["Current Price", "Intrinsic Value (Base Case)"],
+                        orientation="h",
+                        marker_color=["#8aa0b8", _iv_color],
+                        text=[f"{_dd['price']:,.2f}", f"{_dd['intrinsic_value']:,.2f}"],
+                        textposition="outside",
+                        cliponaxis=False,
+                    ))
+                    # The longer bar's outside label was getting clipped at the
+                    # right edge (its value sits right at Plotly's auto-ranged
+                    # axis max, with no room left to draw the text past it) -
+                    # cliponaxis=False stops the axis boundary from cutting the
+                    # text off, and padding the range ~18% past the larger of
+                    # the two values gives it room to actually sit outside the
+                    # bar instead of overlapping it.
+                    _mos_bar_max = max(_dd["price"], _dd["intrinsic_value"])
+                    fig_val.update_layout(
+                        title="Price vs Intrinsic Value (the numbers behind the gauge)",
+                        showlegend=False, height=260,
+                        margin=dict(l=10, r=45, t=40, b=10),
+                        xaxis_title=_dd["currency"],
+                        xaxis=dict(range=[0, _mos_bar_max * 1.18]),
+                    )
+                    sdd_plotly_chart(fig_val)
+                st.caption(
+                    "Green (25%+) = UNDERVALUED. Amber (0-25%) = FAIR. "
+                    "Red (below 0%) = EXPENSIVE - trading above intrinsic value."
+                )
+            else:
+                st.subheader("Margin of Safety: Price vs Intrinsic Value")
+                st.warning(
+                    "No intrinsic value could be computed for this ticker "
+                    "(DCF and P/E-blend both unavailable - likely a "
+                    "financial or a name with no positive EPS/FCF)."
+                )
+
+            # Services batch 2, Part 1 (2026-09-01): "What the price implies"
+            # - below the Intrinsic Value figure, before Compounder View, per
+            # spec. Renders nothing at all (not even its own divider) when
+            # there's no DCF-based Intrinsic Value on this ticker - see
+            # _render_reverse_dcf_card()'s own docstring.
+            _render_reverse_dcf_card(_dd)
+
+
+        def _dd_trade_setup():
+            if not _factual():
+                st.divider()
+                st.subheader(f"Trade Setup: {_dd['trade_setup_score']} - {_dd['trade_setup_signal']}")
+                _render_explain_popover(_dd, "trade_setup")
+                _t_col1, _t_col2 = st.columns(2)
+                with _t_col1:
+                    sdd_plotly_chart(
+                        _dd_gauge(
+                            _dd["trade_setup_score"], f"Trade Setup - {_dd['trade_setup_signal']}",
+                            [(0, 45, "#43222e"), (45, 65, "#43371c"), (65, 100, "#27584a")],
+                        ),
+                    )
+                with _t_col2:
+                    sdd_plotly_chart(
+                        _dd_gate_chart(
+                            _dd["trade_setup_contributions"],
+                            "What's driving the Trade Setup Score",
+                            xaxis_title="Points toward Setup Score",
                         ),
                     )
 
-        # Services batch 2, Part 2 (2026-09-01): peer context - directly
-        # under the score gauges above, before Margin of Safety, per spec.
-        _render_peer_context(_dd)
+                _tt_x = [_dd["trade_setup_stop"], _dd["trade_setup_entry"], _dd["trade_setup_target1"]]
+                _tt_y = ["Stop Loss", "Entry Zone", "Target 1"]
+                _tt_colors = ["#fb7185", "#8aa0b8", "#1e3d34"]
+                if _dd["trade_setup_target2"] is not None:
+                    _tt_x.append(_dd["trade_setup_target2"])
+                    _tt_y.append("Target 2")
+                    _tt_colors.append("#3f8a6e")
+                if _dd["trade_setup_target3"] is not None:
+                    _tt_x.append(_dd["trade_setup_target3"])
+                    _tt_y.append("Target 3 (breakout)")
+                    _tt_colors.append("#34d399")
 
-        # Margin of Safety - moved here (after Discovery Score, before Trade
-        # Setup) and redesigned into a gauge (same visual family as the
-        # Quality/Psychology/Discovery dials above) paired with the actual
-        # Price vs Intrinsic Value bar chart, same gauge+chart column layout
-        # as those three sections use.
-        st.divider()
-        if _dd["intrinsic_value"]:
-            _mos_val = _dd["mos"] if _dd["mos"] is not None else 0.0
-            st.subheader(f"Margin of Safety: {_mos_val:+.1f}% - {_dd['valuation']}")
-            st.caption(
-                "In plain English: how much cheaper today's price is than what "
-                "the model estimates the business is worth."
-            )
-            _render_explain_popover(_dd, "margin_of_safety")
-            _mos_gauge_val = max(-50, min(_mos_val, 100))
-            _mos_col1, _mos_col2 = st.columns(2)
-            with _mos_col1:
-                sdd_plotly_chart(
-                    _dd_gauge(
-                        _mos_gauge_val, f"Margin of Safety - {_dd['valuation']}",
-                        # Audit fix 5.6: the underlying label logic
-                        # genuinely is 3-bucket (UNDERVALUED/FAIR/EXPENSIVE
-                        # - see the caption right below), but the gauge
-                        # used to draw the >=25% zone as two slightly
-                        # different green shades (25-50, 50-100), which
-                        # the caption doesn't describe as two separate
-                        # things. One shade for the whole >=25% zone now
-                        # matches the caption exactly - cosmetic only, the
-                        # 25% threshold and the UNDERVALUED/FAIR/EXPENSIVE
-                        # labels themselves are unchanged.
-                        [(-50, 0, "#43222e"), (0, 25, "#43371c"),
-                         (25, 100, "#1e3d34")],
-                        axis_range=(-50, 100),
-                    ),
-                )
-                if _mos_val != _mos_gauge_val:
-                    st.caption("Dial capped at -50%/100% for readability.")
-            with _mos_col2:
-                _iv_color = "#34d399" if _dd["intrinsic_value"] > _dd["price"] else "#fb7185"
-                fig_val = go.Figure(go.Bar(
-                    x=[_dd["price"], _dd["intrinsic_value"]],
-                    y=["Current Price", "Intrinsic Value (Base Case)"],
-                    orientation="h",
-                    marker_color=["#8aa0b8", _iv_color],
-                    text=[f"{_dd['price']:,.2f}", f"{_dd['intrinsic_value']:,.2f}"],
+                fig_trade = go.Figure(go.Bar(
+                    x=_tt_x, y=_tt_y, orientation="h",
+                    marker_color=_tt_colors,
+                    text=[f"{v:,.2f}" for v in _tt_x],
                     textposition="outside",
                     cliponaxis=False,
                 ))
-                # The longer bar's outside label was getting clipped at the
-                # right edge (its value sits right at Plotly's auto-ranged
-                # axis max, with no room left to draw the text past it) -
-                # cliponaxis=False stops the axis boundary from cutting the
-                # text off, and padding the range ~18% past the larger of
-                # the two values gives it room to actually sit outside the
-                # bar instead of overlapping it.
-                _mos_bar_max = max(_dd["price"], _dd["intrinsic_value"])
-                fig_val.update_layout(
-                    title="Price vs Intrinsic Value (the numbers behind the gauge)",
-                    showlegend=False, height=260,
+                # Same fix as the Margin of Safety chart above: the longest bar's
+                # outside label sat right at Plotly's auto-ranged axis max and
+                # got clipped - cliponaxis=False plus ~18% range padding past
+                # the largest value gives it room to render.
+                _tt_max = max(v for v in _tt_x if v is not None)
+                fig_trade.update_layout(
+                    title="Trade Setup - Entry / Stop Loss / Targets",
+                    xaxis_title=_dd["currency"], showlegend=False, height=300,
                     margin=dict(l=10, r=45, t=40, b=10),
-                    xaxis_title=_dd["currency"],
-                    xaxis=dict(range=[0, _mos_bar_max * 1.18]),
+                    xaxis=dict(range=[0, _tt_max * 1.18]),
                 )
-                sdd_plotly_chart(fig_val)
-            st.caption(
-                "Green (25%+) = UNDERVALUED. Amber (0-25%) = FAIR. "
-                "Red (below 0%) = EXPENSIVE - trading above intrinsic value."
-            )
-        else:
-            st.subheader("Margin of Safety: Price vs Intrinsic Value")
-            st.warning(
-                "No intrinsic value could be computed for this ticker "
-                "(DCF and P/E-blend both unavailable - likely a "
-                "financial or a name with no positive EPS/FCF)."
-            )
+                sdd_plotly_chart(fig_trade)
 
-        # Services batch 2, Part 1 (2026-09-01): "What the price implies"
-        # - below the Intrinsic Value figure, before Compounder View, per
-        # spec. Renders nothing at all (not even its own divider) when
-        # there's no DCF-based Intrinsic Value on this ticker - see
-        # _render_reverse_dcf_card()'s own docstring.
-        _render_reverse_dcf_card(_dd)
+                _tt_rr = f"RR1 {_dd['trade_setup_rr1']}"
+                if _dd["trade_setup_rr2"] is not None:
+                    _tt_rr += f", RR2 {_dd['trade_setup_rr2']}"
+                if _dd["trade_setup_rr3"] is not None:
+                    _tt_rr += f", RR3 {_dd['trade_setup_rr3']}"
+                st.caption(
+                    f"Current price {_dd['trade_setup_current_price']:,.2f} {_dd['currency']} vs "
+                    f"Entry Zone {_dd['trade_setup_entry']:,.2f} {_dd['currency']} - "
+                    + ("currently inside the entry zone." if _dd["trade_setup_near_entry"]
+                       else "not yet inside the entry zone, price hasn't pulled back enough.")
+                    + f" Risk {_dd['trade_setup_risk']:,.2f} {_dd['currency']} per share - {_tt_rr} "
+                      "(risk/reward is measured from today's price, not the discounted "
+                      "entry zone above - the same convention the Trade Filter table uses)."
+                )
 
-        if not _factual():
+
+        def _dd_compounder_view():
+            nonlocal _acv_sections
+            # --- Compounder View (auto): the same six research sections the
+            # Rational Compounder Research page shows for its hand-covered
+            # tickers, computed live here for WHATEVER ticker was just looked
+            # up (auto_compounder_engine.py), rendered through the exact same
+            # compounder_ui.render_section() the Research page itself uses -
+            # one shared component, so the two views can never visually drift
+            # apart. Collapsed by default so it never competes with the score
+            # gauges above; cached 24h, so a second open of the same ticker is
+            # instant. "Company Potential" (hand-written judgment) has no
+            # live-data equivalent and is intentionally not part of this. ---
+            # Conversion pass, Part 1: anchor for the top-of-page chip row
+            # (the chip is labelled "10-yr financials" - this is the
+            # Fundamentals tab inside this same tab set).
+            st.markdown('<div id="sdd-anchor-financials"></div>', unsafe_allow_html=True)
             st.divider()
-            st.subheader(f"Trade Setup: {_dd['trade_setup_score']} - {_dd['trade_setup_signal']}")
-            _render_explain_popover(_dd, "trade_setup")
-            _t_col1, _t_col2 = st.columns(2)
-            with _t_col1:
-                sdd_plotly_chart(
-                    _dd_gauge(
-                        _dd["trade_setup_score"], f"Trade Setup - {_dd['trade_setup_signal']}",
-                        [(0, 45, "#43222e"), (45, 65, "#43371c"), (65, 100, "#27584a")],
-                    ),
-                )
-            with _t_col2:
-                sdd_plotly_chart(
-                    _dd_gate_chart(
-                        _dd["trade_setup_contributions"],
-                        "What's driving the Trade Setup Score",
-                        xaxis_title="Points toward Setup Score",
-                    ),
-                )
-
-            _tt_x = [_dd["trade_setup_stop"], _dd["trade_setup_entry"], _dd["trade_setup_target1"]]
-            _tt_y = ["Stop Loss", "Entry Zone", "Target 1"]
-            _tt_colors = ["#fb7185", "#8aa0b8", "#1e3d34"]
-            if _dd["trade_setup_target2"] is not None:
-                _tt_x.append(_dd["trade_setup_target2"])
-                _tt_y.append("Target 2")
-                _tt_colors.append("#3f8a6e")
-            if _dd["trade_setup_target3"] is not None:
-                _tt_x.append(_dd["trade_setup_target3"])
-                _tt_y.append("Target 3 (breakout)")
-                _tt_colors.append("#34d399")
-
-            fig_trade = go.Figure(go.Bar(
-                x=_tt_x, y=_tt_y, orientation="h",
-                marker_color=_tt_colors,
-                text=[f"{v:,.2f}" for v in _tt_x],
-                textposition="outside",
-                cliponaxis=False,
-            ))
-            # Same fix as the Margin of Safety chart above: the longest bar's
-            # outside label sat right at Plotly's auto-ranged axis max and
-            # got clipped - cliponaxis=False plus ~18% range padding past
-            # the largest value gives it room to render.
-            _tt_max = max(v for v in _tt_x if v is not None)
-            fig_trade.update_layout(
-                title="Trade Setup - Entry / Stop Loss / Targets",
-                xaxis_title=_dd["currency"], showlegend=False, height=300,
-                margin=dict(l=10, r=45, t=40, b=10),
-                xaxis=dict(range=[0, _tt_max * 1.18]),
-            )
-            sdd_plotly_chart(fig_trade)
-
-            _tt_rr = f"RR1 {_dd['trade_setup_rr1']}"
-            if _dd["trade_setup_rr2"] is not None:
-                _tt_rr += f", RR2 {_dd['trade_setup_rr2']}"
-            if _dd["trade_setup_rr3"] is not None:
-                _tt_rr += f", RR3 {_dd['trade_setup_rr3']}"
+            st.subheader(f"\U0001F4DA {_dd['ticker']} Rational Compounder Analysis (Auto)")
             st.caption(
-                f"Current price {_dd['trade_setup_current_price']:,.2f} {_dd['currency']} vs "
-                f"Entry Zone {_dd['trade_setup_entry']:,.2f} {_dd['currency']} - "
-                + ("currently inside the entry zone." if _dd["trade_setup_near_entry"]
-                   else "not yet inside the entry zone, price hasn't pulled back enough.")
-                + f" Risk {_dd['trade_setup_risk']:,.2f} {_dd['currency']} per share - {_tt_rr} "
-                  "(risk/reward is measured from today's price, not the discounted "
-                  "entry zone above - the same convention the Trade Filter table uses)."
+                f"The Rational Compounder research sections - Fundamentals · "
+                f"Value vs Book · Retained Earnings · Earnings Trends · "
+                f"Cost of Capital · Fair Value - computed live for "
+                f"{_dd['ticker']}."
             )
-
-        # --- Services batch, Part 2: insider & capital - director/insider
-        # filings and buyback status, straight from ASX announcements/SEC
-        # EDGAR. Sits after every score gauge (this is fundamentals-
-        # adjacent context, not another score) and before Compounder View
-        # per the Part 2 spec. ---
-        st.divider()
-        _render_insider_panel(_dd["ticker"])
-
-        # --- Services batch 3, Part A1: dividends & franking - the
-        # public, Yahoo-data-only income panel. Sits directly below
-        # Insider & capital per the spec. ---
-        st.divider()
-        _render_dividends_panel(_dd)
-
-        # --- Compounder View (auto): the same six research sections the
-        # Rational Compounder Research page shows for its hand-covered
-        # tickers, computed live here for WHATEVER ticker was just looked
-        # up (auto_compounder_engine.py), rendered through the exact same
-        # compounder_ui.render_section() the Research page itself uses -
-        # one shared component, so the two views can never visually drift
-        # apart. Collapsed by default so it never competes with the score
-        # gauges above; cached 24h, so a second open of the same ticker is
-        # instant. "Company Potential" (hand-written judgment) has no
-        # live-data equivalent and is intentionally not part of this. ---
-        # Conversion pass, Part 1: anchor for the top-of-page chip row
-        # (the chip is labelled "10-yr financials" - this is the
-        # Fundamentals tab inside this same tab set).
-        st.markdown('<div id="sdd-anchor-financials"></div>', unsafe_allow_html=True)
-        st.divider()
-        st.subheader(f"\U0001F4DA {_dd['ticker']} Rational Compounder Analysis (Auto)")
-        st.caption(
-            f"The Rational Compounder research sections - Fundamentals · "
-            f"Value vs Book · Retained Earnings · Earnings Trends · "
-            f"Cost of Capital · Fair Value - computed live for "
-            f"{_dd['ticker']}."
-        )
-        with st.status(
-            f"Computing live research sections for {_dd['ticker']}...",
-            expanded=False,
-        ) as _acv_status:
-            _acv_discount, _acv_perpetual, _acv_growth, _acv_manual_fcf = _dcf_overrides_for(_dd["ticker"])
-            _acv_sections = auto_compounder_engine.build_sections(
-                _dd["ticker"],
-                discount_rate=_acv_discount,
-                perpetual_rate=_acv_perpetual,
-                growth_rate=_acv_growth,
-                manual_fcf=_acv_manual_fcf,
-            )
-            _acv_status.update(
-                label=f"Live research sections for {_dd['ticker']}",
-                state="complete" if _acv_sections else "error",
-            )
-        if not _acv_sections:
-            st.warning(
-                f"Couldn't compute the auto Compounder View for "
-                f"{_dd['ticker']} right now - the underlying data "
-                "source may be unavailable."
-            )
-        else:
-            _acv_section_order = [
-                "Fundamentals", "Value vs Book", "Retained Earnings",
-                "Earnings Trends", "Cost of Capital", "Fair Value",
-            ]
-            # Fair Value stays paywalled here too, same gate text/
-            # convention as the Research page's own Fair Value section -
-            # otherwise the paywall would be trivially bypassed by
-            # opening this section on any ticker instead.
-            _acv_gates = {
-                "Fair Value": (
-                    "Fair Value - full valuation methods breakdown",
-                    "Four independent valuation methods side by side, "
-                    "with the exact inputs behind each one.",
-                    f"cp_fairvalue_auto_{_dd['ticker']}",
-                ),
-            }
-            compounder_ui.render_tabs(
-                _acv_sections, _dd["ticker"], _acv_section_order,
-                key_prefix=f"acv_{_dd['ticker']}", gates=_acv_gates,
-            )
-            _acv_meta = _acv_sections.get("_meta", {}) or {}
-            _acv_years = _acv_meta.get("statement_years")
-            if _acv_years:
-                _acv_years_note = f"{_acv_years} year(s) of statements"
-                if _acv_years < 8:
-                    _acv_years_note += (
-                        " (adding an EODHD_API_KEY unlocks full "
-                        "10-year statement depth)"
-                    )
+            with st.status(
+                f"Computing live research sections for {_dd['ticker']}...",
+                expanded=False,
+            ) as _acv_status:
+                _acv_discount, _acv_perpetual, _acv_growth, _acv_manual_fcf = _dcf_overrides_for(_dd["ticker"])
+                _acv_sections = auto_compounder_engine.build_sections(
+                    _dd["ticker"],
+                    discount_rate=_acv_discount,
+                    perpetual_rate=_acv_perpetual,
+                    growth_rate=_acv_growth,
+                    manual_fcf=_acv_manual_fcf,
+                )
+                _acv_status.update(
+                    label=f"Live research sections for {_dd['ticker']}",
+                    state="complete" if _acv_sections else "error",
+                )
+            if not _acv_sections:
+                st.warning(
+                    f"Couldn't compute the auto Compounder View for "
+                    f"{_dd['ticker']} right now - the underlying data "
+                    "source may be unavailable."
+                )
             else:
-                _acv_years_note = "statement depth unavailable"
-            st.caption(
-                "Every value computed live from reported data - "
-                "estimates shown in red - thresholds are the author's "
-                f"own (see Methodology) - statement history: "
-                f"{_acv_years_note} - descriptions of calculations, "
-                "not recommendations."
+                _acv_section_order = [
+                    "Fundamentals", "Value vs Book", "Retained Earnings",
+                    "Earnings Trends", "Cost of Capital", "Fair Value",
+                ]
+                # Fair Value stays paywalled here too, same gate text/
+                # convention as the Research page's own Fair Value section -
+                # otherwise the paywall would be trivially bypassed by
+                # opening this section on any ticker instead.
+                _acv_gates = {
+                    "Fair Value": (
+                        "Fair Value - full valuation methods breakdown",
+                        "Four independent valuation methods side by side, "
+                        "with the exact inputs behind each one.",
+                        f"cp_fairvalue_auto_{_dd['ticker']}",
+                    ),
+                }
+                compounder_ui.render_tabs(
+                    _acv_sections, _dd["ticker"], _acv_section_order,
+                    key_prefix=f"acv_{_dd['ticker']}", gates=_acv_gates,
+                )
+                _acv_meta = _acv_sections.get("_meta", {}) or {}
+                _acv_years = _acv_meta.get("statement_years")
+                if _acv_years:
+                    _acv_years_note = f"{_acv_years} year(s) of statements"
+                    if _acv_years < 8:
+                        _acv_years_note += (
+                            " (adding an EODHD_API_KEY unlocks full "
+                            "10-year statement depth)"
+                        )
+                else:
+                    _acv_years_note = "statement depth unavailable"
+                st.caption(
+                    "Every value computed live from reported data - "
+                    "estimates shown in red - thresholds are the author's "
+                    f"own (see Methodology) - statement history: "
+                    f"{_acv_years_note} - descriptions of calculations, "
+                    "not recommendations."
+                )
+                # Same hand-built-research cross-link as above, offered a
+                # second time down here since a visitor who opened this
+                # section may not have scrolled back up to see it.
+                if _dd_has_research:
+                    if st.button(
+                        "\U0001F4D6 Hand-built research exists for this "
+                        "company - open Rational Compounder Analysis →",
+                        key=f"acv_research_xlink_{_dd['ticker']}",
+                    ):
+                        st.session_state["research_jump_ticker"] = _dd["ticker"]
+                        st.switch_page(PG_RESEARCH)
+
+
+        if _simple:
+            # Simple view, Part 2.2-2.4: KPIs + the three story sections,
+            # each ending in a "See the numbers -> " expander that opens
+            # the SAME closures Full view calls directly below - per the
+            # instruction's own Verify note, these expanders open the real
+            # full sections even signed-out (the site's main paywall gate
+            # only re-applies inside "All the detail" below; valuation's
+            # own reverse-DCF gate, called inside _dd_valuation(), is
+            # untouched and still enforced exactly as in Full view).
+            _render_dd_simple_stories(
+                _dd,
+                quality_and_moat_fn=lambda: (_dd_quality(), _dd_moat()),
+                valuation_fn=_dd_valuation,
             )
-            # Same hand-built-research cross-link as above, offered a
-            # second time down here since a visitor who opened this
-            # section may not have scrolled back up to see it.
-            if _dd_has_research:
-                if st.button(
-                    "\U0001F4D6 Hand-built research exists for this "
-                    "company - open Rational Compounder Analysis →",
-                    key=f"acv_research_xlink_{_dd['ticker']}",
+
+            with st.expander("All the detail \u2192"):
+                # The headline/thesis/score-history block is free content
+                # in Full view today (rendered before the site's main
+                # paywall gate) - it stays free here too, just relocated
+                # per the instruction's Part 2.5 list ("score history").
+                _dd_headline_and_score()
+                if paywall_engine.render_gate(
+                    "the full Deep Dive breakdown",
+                    teaser=(
+                        "Quality, Psychology, Discovery, and Trade Setup scores - the "
+                        f"full factor breakdown behind the {_score_word} above."
+                    ),
+                    key_prefix=f"dd_{_dd['ticker']}",
                 ):
-                    st.session_state["research_jump_ticker"] = _dd["ticker"]
-                    st.switch_page(PG_RESEARCH)
+                    _dd_psychology()
+                    _dd_discovery()
+                    _render_peer_context(_dd)
+                    _dd_trade_setup()
+                    st.divider()
+                    _render_dividends_panel(_dd)
+                    _dd_compounder_view()
+                # else: render_gate() already drew the subscribe/sign-in
+                # box in its place - nothing more to render here.
+
+            st.caption(
+                "Ask anything in plain words \u2014 answered only from this page's numbers."
+            )
+
+        else:
+            _dd_headline_and_score()
+
+            st.divider()
+
+            if not paywall_engine.render_gate(
+                "the full Deep Dive breakdown",
+                teaser=(
+                    "Quality, Psychology, Discovery, and Trade Setup scores - the "
+                    f"full factor breakdown behind the {_score_word} above."
+                ),
+                key_prefix=f"dd_{_dd['ticker']}",
+            ):
+                return
+
+            _dd_quality()
+
+            _dd_psychology()
+
+            _dd_discovery()
+
+            _dd_moat()
+
+            # Services batch 2, Part 2 (2026-09-01): peer context - directly
+            # under the score gauges above, before Margin of Safety, per spec.
+            _render_peer_context(_dd)
+
+            _dd_valuation()
+
+            _dd_trade_setup()
+
+            # --- Services batch, Part 2: insider & capital - director/insider
+            # filings and buyback status, straight from ASX announcements/SEC
+            # EDGAR. Sits after every score gauge (this is fundamentals-
+            # adjacent context, not another score) and before Compounder View
+            # per the Part 2 spec. ---
+            st.divider()
+            _render_insider_panel(_dd["ticker"])
+
+            # --- Services batch 3, Part A1: dividends & franking - the
+            # public, Yahoo-data-only income panel. Sits directly below
+            # Insider & capital per the spec. ---
+            st.divider()
+            _render_dividends_panel(_dd)
+
+            _dd_compounder_view()
 
         # AI-readiness roadmap Phase 3: the Ask box, last thing on the
         # page - only ever shown once a real (non-error) analysis is on
