@@ -406,14 +406,30 @@ def list_signups(limit=1000):
     ]
 
 
-def signup_counts_by_src():
+def signup_counts_by_src(days=None):
     """AGGREGATE sign-up counts grouped by first_src, e.g. {'article-1': 4}
     - used by the admin Stats popover to line up against
     metrics_store.stats()['by_src']. Rows with no recorded src are
-    excluded. No identities leave this module."""
+    excluded. No identities leave this module.
+
+    `days=None` (default, unchanged from before) is all-time, matching
+    every existing caller. Conversion pass Part 4: passing a number (e.g.
+    30) restricts to signups.first_seen within that many days - same
+    _iso(_now() - timedelta(...)) cutoff pattern as signup_stats() above -
+    so the admin Stats popover can show a genuine 30-day window alongside
+    the all-time one instead of conflating the two."""
     with _conn() as conn:
-        rows = conn.execute(
-            """SELECT src, COUNT(*) FROM signups
-               WHERE src IS NOT NULL AND src != '' GROUP BY src"""
-        ).fetchall()
+        if days is None:
+            rows = conn.execute(
+                """SELECT src, COUNT(*) FROM signups
+                   WHERE src IS NOT NULL AND src != '' GROUP BY src"""
+            ).fetchall()
+        else:
+            cutoff = _iso(_now() - timedelta(days=days))
+            rows = conn.execute(
+                """SELECT src, COUNT(*) FROM signups
+                   WHERE src IS NOT NULL AND src != '' AND first_seen >= ?
+                   GROUP BY src""",
+                (cutoff,),
+            ).fetchall()
     return {src: count for src, count in rows}

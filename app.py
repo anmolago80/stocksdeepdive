@@ -842,6 +842,33 @@ def _render_view_badge():
                 except Exception:
                     st.caption("No page-view data yet.")
 
+                # Conversion pass, Part 4: a clearly-labeled sign-ups-by-src
+                # block with two GENUINE windows (30d and all time), next to
+                # (not replacing) the "Top src (30d) - views / sign-ups"
+                # line above - that one already existed but joined a 30-day
+                # views figure against an ALL-TIME sign-ups figure, which
+                # reads like a matched 30-day comparison and isn't one.
+                # Ranked by all-time volume rather than limited to the top
+                # 5 srcs by page views, so a src with no view-tracking
+                # overlap (e.g. a Reddit "src=reddit-abc" label that never
+                # got a matching page-view row) still shows up here.
+                st.markdown("---")
+                st.markdown("### Sign-ups by src (30d / all time)")
+                try:
+                    _src_30d = email_auth.signup_counts_by_src(days=30)
+                    _src_all = email_auth.signup_counts_by_src()
+                    _all_srcs = sorted(_src_all, key=lambda s: _src_all[s], reverse=True)
+                    if _all_srcs:
+                        for _src in _all_srcs[:10]:
+                            st.markdown(
+                                f"- {_src}: **{_src_30d.get(_src, 0)}** / "
+                                f"**{_src_all[_src]}**"
+                            )
+                    else:
+                        st.caption("No sign-ups with a recorded src yet.")
+                except Exception:
+                    st.caption("No sign-up-by-src data yet.")
+
                 # Audit fix 2.10: surfaces the background scheduler
                 # thread's heartbeat so a dead thread (nightly scans/
                 # weekly digest silently stopped) is visible somewhere
