@@ -11,6 +11,7 @@ import difflib
 import concurrent.futures
 import contextlib
 from datetime import datetime, timezone, date as _date, timedelta
+from urllib.parse import quote as _urlquote
 
 from trends_engine import get_trend_score
 from news_engine import get_news_score, get_yahoo_news_score
@@ -2987,6 +2988,57 @@ def _render_copy_as_text_button(dd, value_word):
         )
     except Exception:
         pass
+
+
+SITE_ORIGIN = "https://stocksdeepdive.com"
+
+
+def _reddit_default_label(ticker, prefix="reddit"):
+    """"reddit-{ticker lowercase, no exchange suffix}" - the default share
+    label conversion pass Parts 6/7a's "Copy link for sharing" buttons
+    prefill (still editable before copying). Same ticker.split(".")[0]
+    exchange-suffix strip already used elsewhere in this file (e.g. the
+    ticker-search keyword fallback) - CSL.AX -> "csl", AAPL -> "aapl"."""
+    bare = (ticker or "").split(".")[0].strip().lower()
+    return f"{prefix}-{bare}" if bare else prefix
+
+
+def _render_copy_link_button(url_builder, key_prefix, default_label,
+                              title="\U0001F517 Copy link for sharing"):
+    """Admin-only "Copy link for sharing" (conversion pass, Parts 6 and
+    7a) - gated on full_view_unlocked, the same session flag every other
+    admin-only control on this site uses (there's no separate admin-email
+    concept - see _render_admin_unlock's own docstring). `url_builder(label)`
+    returns the full shareable URL for a given label string; callers
+    supply this rather than a fixed URL since the Deep Dive and Research
+    pages (Part 7a) build different query strings.
+
+    Reuses blog_render._copy_as_text_html()'s exact click/clipboard/
+    fallback-textarea mechanism (now taking an optional `label` override,
+    added for this) rather than a second copy of that JS - same approach
+    _render_copy_as_text_button above already takes for the "Copy as
+    text" button. The label is editable before copying (prefilled from
+    default_label); intended flow is: open the page, tweak the label if
+    wanted, click, paste into Reddit."""
+    if not st.session_state.get("full_view_unlocked"):
+        return
+    with st.expander(title, expanded=False):
+        _label_in = st.text_input(
+            "Label (appended as ?src=)", value=default_label,
+            key=f"{key_prefix}_label",
+        )
+        _label = (_label_in or "").strip() or default_label
+        _url = url_builder(_urlquote(_label, safe=""))
+        st.caption(_url)
+        try:
+            import streamlit.components.v1 as _components
+            _components.html(
+                blog_render._copy_as_text_html(
+                    _url, dom_id=f"sdd-copylink-{key_prefix}", label="Copy link"),
+                height=50,
+            )
+        except Exception:
+            pass
 
 
 def _render_download_data_button(dd):
@@ -6034,6 +6086,15 @@ def page_deep_dive():
         # sharing a column with the button above), see
         # _render_download_data_button's own docstring for why. ---
         _render_download_data_button(_dd)
+
+        # --- Conversion pass, Part 6: admin "Copy link for sharing". ---
+        _render_copy_link_button(
+            url_builder=lambda label, _t=_dd["ticker"]: (
+                f"{SITE_ORIGIN}/deep-dive?ticker={_urlquote(_t)}&src={label}"
+            ),
+            key_prefix=f"copylink_dd_{_dd['ticker']}",
+            default_label=_reddit_default_label(_dd["ticker"]),
+        )
 
         # --- Price chart: the 6-month history behind every calculation on
         # this page, finally shown - with the 50-day average and the Trade

@@ -305,7 +305,7 @@ def _copy_citation_html(citation_text):
 """
 
 
-def _copy_as_text_html(copy_text, dom_id="sdd-copytext"):
+def _copy_as_text_html(copy_text, dom_id="sdd-copytext", label="Copy as text"):
     """Fix 4, AI fixes round 1 (2026-08-31): "Copy as text" button - same
     click-to-clipboard shape as _copy_citation_html() right above (a
     plain button + a small vanilla-JS IIFE, no framework), but this one
@@ -331,7 +331,15 @@ def _copy_as_text_html(copy_text, dom_id="sdd-copytext"):
     dom_id lets a page render this more than once (e.g. a future page
     with two copy buttons) without id collisions; every caller today
     passes a ticker-qualified id already since the callers themselves
-    are per-ticker (a Deep Dive page, a /s/<ticker> snapshot page)."""
+    are per-ticker (a Deep Dive page, a /s/<ticker> snapshot page).
+
+    label (conversion pass, Part 6) overrides the button's own text -
+    default "Copy as text" is unchanged for this function's two existing
+    callers (app.py's _render_copy_as_text_button and blog_render's own
+    citation-adjacent usage), so the admin "Copy link for sharing"
+    button (Parts 6/7a) can pass label="Copy link" and reuse this exact
+    click/clipboard/fallback-textarea mechanism instead of a second copy
+    of it."""
     e = html.escape
     return f"""
 <style>
@@ -355,7 +363,7 @@ def _copy_as_text_html(copy_text, dom_id="sdd-copytext"):
 .sdd-cite-btn:hover{{color:#e6edf5;border-color:#2dd4bf}}
 </style>
 <div class="sdd-cite">
-  <button type="button" class="sdd-cite-btn" id="{e(dom_id)}-btn">Copy as text</button>
+  <button type="button" class="sdd-cite-btn" id="{e(dom_id)}-btn">{e(label)}</button>
   <div class="sdd-copytext-status" id="{e(dom_id)}-status"
     style="color:#8aa0b8;font-size:12.5px;margin-top:6px"></div>
   <textarea id="{e(dom_id)}-src" readonly
