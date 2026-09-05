@@ -3353,6 +3353,10 @@ def _render_insider_panel(ticker):
     on-demand here; the nightly job (insider_engine.refresh_universe,
     wired from scheduler_engine.py) keeps most scanned tickers already
     fresh, so this on-demand path is the exception, not the common case."""
+    # Conversion pass, Part 1: anchor for the top-of-page chip row - this
+    # panel always renders something for any ticker (a filings table or a
+    # "nothing on record" caption), so its chip is unconditional.
+    st.markdown('<div id="sdd-anchor-insider"></div>', unsafe_allow_html=True)
     try:
         insider_engine.refresh(ticker)
     except Exception:
@@ -5106,6 +5110,10 @@ def _render_dividends_panel(dd):
     Ratio %"/"Next Ex-Div Date" fields) and whitelisted through to
     /s/<ticker>, the API and MCP - see snapshot_store._PUBLIC_FIELD_MAP."""
     ticker = dd["ticker"]
+    # Conversion pass, Part 1: anchor for the top-of-page chip row - this
+    # panel always renders (a "No dividends on record" line at minimum),
+    # so its chip is unconditional.
+    st.markdown('<div id="sdd-anchor-dividends"></div>', unsafe_allow_html=True)
     st.markdown("##### Dividends")
     div = portfolio_charts_engine.fetch_dividend_history(ticker)
     if div.empty:
@@ -5205,6 +5213,122 @@ def _reverse_dcf_gauge(implied_pct, model_pct):
     return fig
 
 
+# -----------------------------------------------------------------
+# Conversion pass, Part 1 (2026-09-05): verdict line + anchor chips at the
+# top of the Deep Dive. Context: the owner's Reddit research posts drive
+# thousands of visits that land straight on this page, read everything
+# for free, and leave - this is the "ask at the moment of interest" the
+# rest of the page never made. Every number here is already computed by
+# deep_dive_engine.analyze() (the same `dd` the rest of this page uses)
+# or by reverse_dcf_engine.compute() (the SAME function, same inputs,
+# _render_reverse_dcf_card below also calls - a second call here is a
+# cache hit over get_ticker_info/get_cashflow_df, not a second fetch).
+# -----------------------------------------------------------------
+
+def _dd_reverse_dcf_growth(dd):
+    """(implied_growth_pct, model_growth_pct) for the verdict line's
+    second clause, or (None, None) when reverse DCF isn't available for
+    this ticker (no positive-FCF DCF intrinsic value) - same early-return
+    condition _render_reverse_dcf_card uses, so the verdict line's growth
+    clause and that card either both show or both stay silent."""
+    if not dd.get("intrinsic_value") or dd.get("intrinsic_source") != "dcf":
+        return None, None
+    ticker = dd["ticker"]
+    try:
+        _rd_discount, _rd_perpetual, _rd_growth, _rd_manual_fcf = _dcf_overrides_for(ticker)
+        res = reverse_dcf_engine.compute(
+            ticker, dd["price"], info=get_ticker_info(ticker),
+            cashflow_df=get_cashflow_df(ticker), currency=dd.get("currency"),
+            discount_rate=_rd_discount, perpetual_rate=_rd_perpetual,
+            growth_rate=_rd_growth, manual_fcf=_rd_manual_fcf,
+        )
+    except Exception:
+        return None, None
+    if not res.get("ok"):
+        return None, None
+    implied_pct = res["implied_growth"] * 100
+    model_pct = res["model_growth"] * 100 if res["model_growth"] is not None else None
+    return implied_pct, model_pct
+
+
+def _dd_verdict_sentence(dd):
+    """"Model estimate {IV} vs price {P} ({MOS:+.0f}% margin of safety) -
+    the market is pricing in {implied}% growth; the model assumes
+    {model}%." Drops the second clause when reverse DCF is unavailable;
+    returns None entirely when there's no intrinsic value/MOS to compare
+    against (a P/E-blend name, or one where no model could be computed),
+    matching every other red-flag/no-data convention on this page - a
+    missing number is omitted, never guessed."""
+    if not dd.get("intrinsic_value") or dd.get("mos") is None:
+        return None
+    currency = dd.get("currency") or ""
+    sentence = (
+        f"Model estimate {dd['intrinsic_value']:,.2f} {currency} vs price "
+        f"{dd['price']:,.2f} {currency} ({dd['mos']:+.0f}% margin of safety)"
+    ).replace("  ", " ").strip()
+    implied_pct, model_pct = _dd_reverse_dcf_growth(dd)
+    if implied_pct is not None and model_pct is not None:
+        sentence += (
+            f" — the market is pricing in {implied_pct:+.0f}% growth; "
+            f"the model assumes {model_pct:+.0f}%."
+        )
+    else:
+        sentence += "."
+    return sentence
+
+
+def _render_dd_verdict_and_chips(dd):
+    """Renders directly under the ticker header, above the score gauges:
+    one server-computed verdict sentence (see _dd_verdict_sentence), then
+    a row of anchor chips that jump to whichever sections actually render
+    for this ticker (a plain HTML `<a href="#id">` - Streamlit's own
+    markdown output lives in the top-level document, not a sandboxed
+    iframe, so a native browser anchor jump needs no JavaScript at all;
+    each target section carries its own `<div id="...">` marker - see
+    e.g. _render_reverse_dcf_card's own "Conversion pass, Part 1" comment
+    for the anchor list). Total added height is a couple of lines of
+    text plus one wrapping chip row - nowhere near the ~90px budget."""
+    sentence = _dd_verdict_sentence(dd)
+    if sentence:
+        st.markdown(f"##### {html.escape(sentence)}")
+        if dd.get("quality_default") or dd.get("value_default"):
+            st.caption(
+                "Rests on a default/estimated input where a reported figure "
+                "wasn't available - see the notes below."
+            )
+
+    ticker = dd["ticker"]
+    chips = []
+    if dd.get("intrinsic_value") and dd.get("intrinsic_source") == "dcf":
+        chips.append(("Reverse DCF", "sdd-anchor-reverse-dcf"))
+    chips.append((
+        f"Moat {dd['moat']:.0f}" if dd.get("moat") is not None else "Moat",
+        "sdd-anchor-moat",
+    ))
+    if ai_client.available():
+        chips.append(("Ask AI", "sdd-anchor-ask"))
+    chips.append(("Insider filings", "sdd-anchor-insider"))
+    chips.append(("Dividends", "sdd-anchor-dividends"))
+    chips.append(("10-yr financials", "sdd-anchor-financials"))
+    try:
+        _peer_info = get_ticker_info(ticker)
+    except Exception:
+        _peer_info = {}
+    if not moat_engine._is_fund(_peer_info):
+        chips.append(("Peers", "sdd-anchor-peers"))
+
+    if not chips:
+        return
+    chips_html = "".join(
+        f'<a href="#{anchor}" style="display:inline-block;background:#121f36;'
+        f'border:1px solid #1f3352;border-radius:999px;padding:5px 12px;'
+        f'margin:3px 6px 3px 0;font-size:12.5px;color:#8aa0b8;'
+        f'text-decoration:none;">{html.escape(label)}</a>'
+        for label, anchor in chips
+    )
+    st.markdown(f'<div style="line-height:2.4">{chips_html}</div>', unsafe_allow_html=True)
+
+
 def _render_reverse_dcf_card(dd):
     """"What the price implies" - compact reverse-DCF card, placed below
     the Intrinsic Value/MOS figures and before the Compounder View (auto)
@@ -5224,6 +5348,8 @@ def _render_reverse_dcf_card(dd):
         return
     ticker = dd["ticker"]
 
+    # Conversion pass, Part 1: anchor for the top-of-page chip row.
+    st.markdown('<div id="sdd-anchor-reverse-dcf"></div>', unsafe_allow_html=True)
     st.divider()
     if not paywall_engine.render_gate(
         "What the price implies - reverse DCF",
@@ -5375,6 +5501,8 @@ def _render_peer_context(dd):
     except Exception:
         return
 
+    # Conversion pass, Part 1: anchor for the top-of-page chip row.
+    st.markdown('<div id="sdd-anchor-peers"></div>', unsafe_allow_html=True)
     st.divider()
     st.markdown("##### Peer context")
 
@@ -5571,6 +5699,9 @@ def page_deep_dive():
         _render_recent_results_banner(_dd["ticker"])
         _render_score_history_caption(_dd["ticker"], _dd.get("long_score"))
         _render_results_day_card(_dd["ticker"])
+
+        # --- Conversion pass, Part 1: verdict line + anchor chips. ---
+        _render_dd_verdict_and_chips(_dd)
 
         if _factual():
             _m1, _m2, _m3, _m4 = st.columns(4)
@@ -6069,6 +6200,10 @@ def page_deep_dive():
         # "what's driving" chart pattern as Quality/Psychology/Discovery
         # above, reusing the same _dd_gauge/_dd_contrib_chart helpers -
         # no new chart style invented for this.
+        # Conversion pass, Part 1: anchor for the top-of-page chip row -
+        # a zero-height marker, not a visible element, so it can't ever
+        # shift this section's own layout.
+        st.markdown('<div id="sdd-anchor-moat"></div>', unsafe_allow_html=True)
         st.divider()
         if _dd.get("moat") is None:
             st.subheader(f"Moat Score: {_dd.get('moat_band_label', 'N/A')}")
@@ -6315,6 +6450,10 @@ def page_deep_dive():
         # gauges above; cached 24h, so a second open of the same ticker is
         # instant. "Company Potential" (hand-written judgment) has no
         # live-data equivalent and is intentionally not part of this. ---
+        # Conversion pass, Part 1: anchor for the top-of-page chip row
+        # (the chip is labelled "10-yr financials" - this is the
+        # Fundamentals tab inside this same tab set).
+        st.markdown('<div id="sdd-anchor-financials"></div>', unsafe_allow_html=True)
         st.divider()
         st.subheader(f"\U0001F4DA {_dd['ticker']} Rational Compounder Analysis (Auto)")
         st.caption(
@@ -6583,6 +6722,8 @@ def _render_deep_dive_ask_box(dd, acv_sections=None):
         # completely invisible (dormant-by-default, same convention as
         # paywall_engine when Google sign-in isn't configured) rather
         # than showing an empty-looking header on every Deep Dive page.
+    # Conversion pass, Part 1: anchor for the top-of-page chip row.
+    st.markdown('<div id="sdd-anchor-ask"></div>', unsafe_allow_html=True)
     st.divider()
     st.subheader(f"\U0001F4AC Ask about {dd['ticker']}")
     st.caption(
