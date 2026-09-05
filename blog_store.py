@@ -98,6 +98,26 @@ def _conn():
         )
     except sqlite3.OperationalError:
         pass
+    # Español instruction, Part 3: same additive-column guard, two more
+    # columns. lang: which language THIS post is written in - defaults
+    # to 'en' so every pre-existing post (written before this column
+    # existed) is correctly treated as English without a backfill step.
+    # translation_of: the id of the post this one is a translation of,
+    # NULL for an original - itself doubles as the "was this machine-
+    # translated" flag (see blog_translate.py's module docstring), so no
+    # separate boolean column is needed.
+    try:
+        conn.execute(
+            "ALTER TABLE blog_posts ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'"
+        )
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute(
+            "ALTER TABLE blog_posts ADD COLUMN translation_of INTEGER"
+        )
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
         """CREATE TABLE IF NOT EXISTS blog_redirects (
             old_slug TEXT PRIMARY KEY,
@@ -210,14 +230,26 @@ def get_post_by_id(post_id):
     return dict(row) if row else None
 
 
-def list_posts(include_drafts=False, limit=None, tag=None):
+def list_posts(include_drafts=False, limit=None, tag=None, lang=None):
     """Newest first. Published posts order by published_at; drafts (which
     have no published_at) sort to the top for the admin, where they are the
-    things still needing attention."""
+    things still needing attention.
+
+    lang (Español instruction, Part 3): optional 'en'/'es' filter - every
+    existing call site omits it and is unaffected (every pre-existing
+    post defaults to lang='en' per the ALTER TABLE guard above, so an
+    omitted filter still returns the full, un-filtered list exactly as
+    before)."""
     sql = "SELECT * FROM blog_posts"
+    where = []
     params = []
     if not include_drafts:
-        sql += " WHERE status = 'published'"
+        where.append("status = 'published'")
+    if lang:
+        where.append("lang = ?")
+        params.append(lang)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY COALESCE(published_at, updated_at) DESC"
     if limit:
         sql += " LIMIT ?"
@@ -261,6 +293,26 @@ def last_modified(include_drafts=False):
         return conn.execute(sql).fetchone()[0]
 
 
+def get_translation_sibling(post):
+    """Español instruction, Part 3: the other half of a post's EN/ES pair,
+    or None. A translation (translation_of set) looks up its source by
+    id; a source post looks up whichever post (if any) has
+    translation_of == this post's id - the blog-admin "Translate"
+    action only ever creates one translation per post, so at most one
+    match is expected in practice."""
+    if not post:
+        return None
+    if post.get("translation_of"):
+        return get_post_by_id(post["translation_of"])
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM blog_posts WHERE translation_of = ? LIMIT 1",
+            (post["id"],),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def posts_for_ticker(ticker, include_drafts=False):
     """Published posts (newest first) whose primary_ticker matches, for the
     Deep Dive -> blog backlink (P3.3): "N research note(s) written on this
@@ -287,7 +339,8 @@ def posts_for_ticker(ticker, include_drafts=False):
 
 def create_post(title, slug=None, summary="", body_md="", tags="", author="",
                 hero_file=None, hero_alt="", status=STATUS_DRAFT,
-                published_at=None, primary_ticker=""):
+                published_at=None, primary_ticker="", lang="en",
+                translation_of=None):
     slug = unique_slug(slug or title)
     now = _now()
     if status == STATUS_PUBLISHED and not published_at:
@@ -297,22 +350,28 @@ def create_post(title, slug=None, summary="", body_md="", tags="", author="",
             """INSERT INTO blog_posts
                  (slug, title, summary, body_md, hero_file, hero_alt, tags,
                   author, status, published_at, created_at, updated_at,
-                  primary_ticker)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  primary_ticker, lang, translation_of)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (slug, title.strip(), summary.strip(), body_md, hero_file,
              (hero_alt or "").strip(), _clean_tags(tags), author.strip(),
-             status, published_at, now, now, (primary_ticker or "").strip().upper()),
+             status, published_at, now, now, (primary_ticker or "").strip().upper(),
+             (lang or "en").strip().lower(), translation_of),
         )
         return cur.lastrowid
 
 
 def update_post(post_id, title=None, slug=None, summary=None, body_md=None,
                 tags=None, author=None, hero_file=..., hero_alt=None,
-                status=None, published_at=..., primary_ticker=None):
+                status=None, published_at=..., primary_ticker=None,
+                lang=None):
     """Partial update - only the fields passed are touched. hero_file and
     published_at use Ellipsis rather than None as their "not supplied"
     marker, because None is a meaningful value for both (remove the image /
-    unpublish)."""
+    unpublish). lang (Español instruction, Part 3): 'en'/'es', only
+    touched when explicitly passed - translation_of is deliberately NOT
+    editable here (it's set once, at creation, by the blog-admin
+    Translate action; editing it after the fact would repoint a
+    published cross-link at a different post)."""
     existing = get_post_by_id(post_id)
     if not existing:
         return None
@@ -338,6 +397,8 @@ def update_post(post_id, title=None, slug=None, summary=None, body_md=None,
         fields["tags"] = _clean_tags(tags)
     if author is not None:
         fields["author"] = author.strip()
+    if lang is not None:
+        fields["lang"] = lang.strip().lower()
     if hero_file is not Ellipsis:
         fields["hero_file"] = hero_file
     if hero_alt is not None:

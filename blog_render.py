@@ -1022,21 +1022,48 @@ INDEX_DESC = ("Research notes, valuation walk-throughs and method explainers "
               "are actually calculated.")
 
 
+INDEX_TITLE_ES = f"Blog - notas de investigación sobre value investing | {SITE_NAME}"
+INDEX_DESC_ES = ("Notas de investigación, análisis de valoración y explicaciones "
+                 "de método de StocksDeepDive - cómo se calculan realmente los "
+                 "números detrás del veredicto de cada acción.")
+
+
 def render_index(posts, base_url, page_title=None, description=None,
-                 tag=None, noindex=False):
+                 tag=None, noindex=False, lang="en"):
+    """lang="es" (Español instruction, Part 3) shows the SAME set of posts -
+    the ES blog index is one list, not a filtered one, since we never hide
+    an EN post just because it has no Spanish translation yet - but sorted
+    with ES-language posts first, and every EN post gets an "(in English)"
+    label. lang="en" (the default) renders byte-identical to before this
+    param existed."""
     e = html.escape
-    canonical = f"{base_url}/blog" + (f"?tag={tag}" if tag else "")
-    title = page_title or INDEX_TITLE
-    desc = description or INDEX_DESC
+    is_es = (lang == "es")
+    base_path = "/es/blog" if is_es else "/blog"
+    canonical = f"{base_url}{base_path}" + (f"?tag={tag}" if tag else "")
+    title = page_title or (INDEX_TITLE_ES if is_es else INDEX_TITLE)
+    desc = description or (INDEX_DESC_ES if is_es else INDEX_DESC)
+
+    if is_es:
+        # Stable sort: ES posts first, EN posts after, each group keeping
+        # its existing (already-chronological) relative order.
+        ordered = sorted(posts, key=lambda p: 0 if (p.get("lang") or "en") == "es" else 1)
+    else:
+        ordered = posts
 
     cards = []
-    for p in posts:
+    for p in ordered:
         meta_bits = []
         if p.get("published_at"):
             meta_bits.append(_human_date(p["published_at"]))
         meta_bits.append(f"{reading_time(p.get('body_md'))} min read")
         if p.get("status") != blog_store.STATUS_PUBLISHED:
             meta_bits.append("DRAFT")
+        if is_es and (p.get("lang") or "en") != "es":
+            meta_bits.append("en inglés")
+        # Each post lives at one address - /blog/{slug} - regardless of
+        # which index (EN or ES) links to it; posts are separate rows per
+        # language (see blog_store.py's translation_of), not one page
+        # rendered twice like the static content pages are.
         cards.append(f"""
   <a class="card" href="/blog/{e(p['slug'])}">
     <h2>{e(p['title'])}</h2>
@@ -1045,20 +1072,46 @@ def render_index(posts, base_url, page_title=None, description=None,
   </a>""")
 
     if not cards:
-        cards.append('<div class="empty">No posts published yet - '
-                     'the first one is on its way.</div>')
+        cards.append(
+            '<div class="empty">Todavía no hay publicaciones - la primera '
+            'está en camino.</div>' if is_es else
+            '<div class="empty">No posts published yet - '
+            'the first one is on its way.</div>')
 
     tag_links = ""
     all_tags = blog_store.all_tags()
     if all_tags:
-        links = ['<a class="tag" href="/blog">All</a>'] + [
-            f'<a class="tag" href="/blog?tag={e(t)}">{e(t)} ({n})</a>'
+        _all_label = "Todo" if is_es else "All"
+        links = [f'<a class="tag" href="{base_path}">{_all_label}</a>'] + [
+            f'<a class="tag" href="{base_path}?tag={e(t)}">{e(t)} ({n})</a>'
             for t, n in all_tags[:12]
         ]
         tag_links = f'<div class="tags" style="margin:0 0 26px">{"".join(links)}</div>'
 
-    heading = f"Posts tagged “{e(tag)}”" if tag else "Blog"
-    body = f"""
+    if is_es:
+        heading = f"Publicaciones etiquetadas “{e(tag)}”" if tag else "Blog"
+        body = f"""
+<main><div class="wrap">
+  <div class="kicker">StocksDeepDive</div>
+  <h1>{heading}</h1>
+  <p class="lede">Notas de investigación y análisis de valoración - el
+  razonamiento detrás de los números que calcula el sitio, explicado en
+  detalle. Las publicaciones marcadas “en inglés” aún no tienen traducción
+  al español.</p>
+  {tag_links}
+  {''.join(cards)}
+  <div class="cta">
+    <h3>Comprueba los números tú mismo</h3>
+    <p>Cada cifra que se menciona aquí viene del mismo motor que puedes usar
+    con cualquier ticker &mdash; <a href="/deep-dive?lang=es">Stock Deep
+    Dive</a>, <a href="/comparison?lang=es">Comparación</a> o el
+    <a href="/scanner?lang=es">Escáner de acciones</a>.</p>
+  </div>
+</div></main>
+"""
+    else:
+        heading = f"Posts tagged “{e(tag)}”" if tag else "Blog"
+        body = f"""
 <main><div class="wrap">
   <div class="kicker">StocksDeepDive</div>
   <h1>{heading}</h1>
@@ -1075,9 +1128,17 @@ def render_index(posts, base_url, page_title=None, description=None,
   </div>
 </div></main>
 """
+    # The two indexes are genuine twins of each other (same posts, just
+    # reordered/labeled) - not gated on tag pages, since a tag filter on
+    # one side has the same filter available on the other.
+    hreflang_alternates = [
+        ("en", f"{base_url}/blog" + (f"?tag={tag}" if tag else "")),
+        ("es", f"{base_url}/es/blog" + (f"?tag={tag}" if tag else "")),
+    ]
     head = _head(title, desc, canonical, base_url, noindex=noindex,
-                 json_ld=_index_json_ld(posts, base_url))
-    return _page(head, body)
+                 json_ld=_index_json_ld(posts, base_url),
+                 hreflang_alternates=hreflang_alternates)
+    return _page(head, body, lang=lang)
 
 
 # -----------------------------------
@@ -1233,6 +1294,37 @@ def render_post(post, base_url, prev_post=None, next_post=None,
                         'not published. It is hidden from the blog index, the '
                         'sitemap and the feed, and is marked noindex.</p></div>')
 
+    # Español instruction, Part 3: this post's own language (an EN/ES
+    # PAIR of posts, not a query-param toggle like the rest of the
+    # site - see blog_store.py's schema note) and its translation
+    # sibling, if any.
+    post_lang = (post.get("lang") or "en").strip().lower()
+    sibling = blog_store.get_translation_sibling(post)
+    sibling_published = bool(sibling and sibling.get("status") == blog_store.STATUS_PUBLISHED)
+
+    translation_banner = ""
+    if post.get("translation_of") and sibling:
+        _src_url = post_url(base_url, sibling["slug"])
+        translation_banner = (
+            '<div class="cta" style="margin:0 0 26px">'
+            + ("Traducción automática del original en inglés &mdash; "
+               if post_lang == "es" else
+               "Automated translation of the original in Spanish &mdash; ")
+            + f'<a href="{e(_src_url)}">'
+            + ("ver original</a>" if post_lang == "es" else "see original</a>")
+            + "</div>"
+        )
+
+    cross_link_html = ""
+    if sibling_published and not is_draft:
+        _sib_url = post_url(base_url, sibling["slug"])
+        _label = ("Leer en español" if sibling.get("lang") == "es"
+                  else "Read in English")
+        cross_link_html = (
+            f'<div class="meta" style="margin:0 0 14px">'
+            f'<a href="{e(_sib_url)}">{_label} &rarr;</a></div>'
+        )
+
     # P3.1: ticker mentions in the body link straight to that stock's Deep
     # Dive - see _autolink_tickers()'s own docstring for exactly what does
     # and doesn't get linked.
@@ -1304,9 +1396,11 @@ def render_post(post, base_url, prev_post=None, next_post=None,
 <main><div class="wrap">
   <article>
     {draft_banner}
+    {translation_banner}
     <div class="kicker"><a href="/blog" style="color:#2dd4bf">Blog</a></div>
     <h1>{e(post['title'])}</h1>
     <div class="meta">{e(' · '.join(meta_bits))}</div>
+    {cross_link_html}
     {citation_html}
     {reddit_byline}
     {hero}
@@ -1320,6 +1414,19 @@ def render_post(post, base_url, prev_post=None, next_post=None,
   {comments_html}
 </div></main>
 """
+    # Español instruction, Part 3: only a real published EN/ES pair gets
+    # hreflang tags - same "only pages with a real twin" rule Part 2 used
+    # for the static content pages. A draft or an unpublished/missing
+    # sibling means this post is still effectively single-language.
+    hreflang_alternates = None
+    if sibling_published:
+        _en_post = post if post_lang == "en" else sibling
+        _es_post = sibling if post_lang == "en" else post
+        hreflang_alternates = [
+            ("en", post_url(base_url, _en_post["slug"])),
+            ("es", post_url(base_url, _es_post["slug"])),
+        ]
+
     head = _head(
         title=f"{post['title']} | {SITE_NAME}",
         description=desc,
@@ -1335,8 +1442,9 @@ def render_post(post, base_url, prev_post=None, next_post=None,
             f'content="{html.escape(_iso_date(post.get("updated_at")))}">'
         ),
         json_ld=_post_json_ld(post, base_url),
+        hreflang_alternates=hreflang_alternates,
     )
-    return _page(head, body)
+    return _page(head, body, lang=post_lang)
 
 
 _HOME_CSS = """
@@ -1979,6 +2087,15 @@ def render_sitemap(posts, base_url, renders_html=None):
     blog_mod = (blog_store.last_modified() or "")[:10] or today
     rows.append(
         f"  <url><loc>{xml_escape(base_url)}/blog</loc>"
+        f"<lastmod>{blog_mod}</lastmod>"
+        f"<changefreq>weekly</changefreq><priority>0.9</priority></url>"
+    )
+    # Español instruction, Part 3: /es/blog is a real, always-indexable
+    # twin of /blog (same posts, reordered/labelled - see
+    # blog_render.render_index()), so it's listed unconditionally just
+    # like the EN row above rather than gated by renders_html().
+    rows.append(
+        f"  <url><loc>{xml_escape(base_url)}/es/blog</loc>"
         f"<lastmod>{blog_mod}</lastmod>"
         f"<changefreq>weekly</changefreq><priority>0.9</priority></url>"
     )

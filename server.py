@@ -766,17 +766,25 @@ async def feed(request: Request):
 
 
 @app.get("/blog", include_in_schema=False)
+@app.get("/es/blog", include_in_schema=False)
 async def blog_index(request: Request):
+    # Español instruction, Part 3: /es/blog is the SAME set of posts as
+    # /blog, just reordered (ES first) and with EN posts labelled "en
+    # inglés" - never a filtered subset, per the instruction's explicit
+    # "never hidden" rule. See blog_render.render_index()'s own docstring.
+    lang = "es" if request.url.path == "/es/blog" else "en"
     tag = (request.query_params.get("tag") or "").strip().lower() or None
     _count_view("blog")
     posts = blog_store.list_posts(tag=tag)
     html_out = blog_render.render_index(
         posts, _base_url(request), tag=tag,
-        page_title=(f"Posts tagged “{tag}” | StocksDeepDive"
+        page_title=((f"Publicaciones etiquetadas “{tag}” | StocksDeepDive" if lang == "es"
+                     else f"Posts tagged “{tag}” | StocksDeepDive")
                     if tag else None),
         # Tag pages are thin, near-duplicate listings of the main index -
         # crawled for their links, kept out of the index itself.
         noindex=bool(tag),
+        lang=lang,
     )
     return _html(html_out)
 
@@ -784,6 +792,11 @@ async def blog_index(request: Request):
 @app.get("/blog/", include_in_schema=False)
 async def blog_index_slash():
     return RedirectResponse("/blog", status_code=301)
+
+
+@app.get("/es/blog/", include_in_schema=False)
+async def blog_index_es_slash():
+    return RedirectResponse("/es/blog", status_code=301)
 
 
 @app.get("/blog/media/{name}", include_in_schema=False)

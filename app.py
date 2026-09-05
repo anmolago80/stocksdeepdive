@@ -7733,6 +7733,20 @@ _DD_ASK_SYSTEM_PROMPT = (
 )
 
 
+# Español instruction, Part 3: appended to an Ask-AI system prompt when
+# lang=="es" so the MODEL'S ANSWER comes back in Spanish - the grounding
+# data given to the model (Deep Dive / portfolio numbers) stays English
+# either way, only the response language changes.
+_SPANISH_ANSWER_INSTRUCTION = (
+    "\n\nResponde únicamente en español, sin importar el idioma de los "
+    "datos anteriores."
+)
+
+
+def _ask_system_prompt(base_prompt, lang):
+    return base_prompt + (_SPANISH_ANSWER_INSTRUCTION if lang == "es" else "")
+
+
 def _render_ask_quota_caption(email, feature):
     """Small 'N questions left today' transparency line under an Ask
     box - purely informational (ai_gate.check() is the only function
@@ -7796,8 +7810,11 @@ def _render_deep_dive_ask_box(dd, acv_sections=None):
                 st.warning(_msg)
             else:
                 with st.spinner("Thinking..."):
-                    _system = _DD_ASK_SYSTEM_PROMPT.format(
-                        context=_dd_ask_context(dd, acv_sections=acv_sections))
+                    _system = _ask_system_prompt(
+                        _DD_ASK_SYSTEM_PROMPT.format(
+                            context=_dd_ask_context(dd, acv_sections=acv_sections)),
+                        st.session_state.get("lang", "en"),
+                    )
                     _result = ai_client.ask(_system, _q.strip())
                 if _result["input_tokens"] or _result["output_tokens"]:
                     try:
@@ -11085,8 +11102,11 @@ def _render_portfolio_ask_tab(email, _active_portfolio, _holdings, _analyses):
                 st.warning(_msg)
             else:
                 with st.spinner("Thinking..."):
-                    _system = _PF_ASK_SYSTEM_PROMPT.format(
-                        context=_portfolio_ask_context(_holdings, _analyses))
+                    _system = _ask_system_prompt(
+                        _PF_ASK_SYSTEM_PROMPT.format(
+                            context=_portfolio_ask_context(_holdings, _analyses)),
+                        st.session_state.get("lang", "en"),
+                    )
                     _result = ai_client.ask(_system, _q.strip())
                 if _result["input_tokens"] or _result["output_tokens"]:
                     try:
@@ -13228,6 +13248,15 @@ def _blog_load_form(post):
         "Published" if (post or {}).get("status") == blog_store.STATUS_PUBLISHED
         else "Draft"
     )
+    # Español instruction, Part 3: language is a fixed choice, not a text
+    # field, so it isn't in _BLOG_FIELDS above. A brand-new post ("+ New
+    # post", post=None) defaults to English - the owner flips it to
+    # Español only when writing one natively in Spanish; a translation's
+    # language is set programmatically by _render_blog_translator() below
+    # and simply reflected here when that post is later reselected.
+    st.session_state["blog_f_lang"] = (
+        "Español" if (post or {}).get("lang") == "es" else "English"
+    )
     st.session_state["blog_loaded_id"] = (post or {}).get("id")
 
 
@@ -13446,6 +13475,147 @@ def _draft_research_note(ticker, email):
     if not _result["ok"]:
         return {"ok": False, "error": _result["error"]}
     return {"ok": True, "text": _result["text"]}
+
+
+# ---------------------------------------------------------------------
+# Español instruction, Part 3: blog post translation. "Translate to
+# Spanish/English ->" in the blog-admin editor - Haiku (via the same
+# ai_client/ai_gate plumbing as the research-note drafter above, logged/
+# capped as owner/admin usage) translates title/summary/body preserving
+# markdown, and the result is saved as a DRAFT paired post
+# (translation_of = the source post's id) - never auto-published. The
+# owner reviews it like any other draft and publishes it themselves.
+# ---------------------------------------------------------------------
+
+_BLOG_TRANSLATE_SYSTEM_PROMPT = """You are translating a blog post for StocksDeepDive, a stock \
+analysis website, between English and Spanish. Translate faithfully - do not summarise, \
+shorten, add opinions, or invent numbers. Preserve ALL Markdown formatting exactly \
+(headings, bold, links, tables, code) and never translate a Markdown link's URL, only its \
+visible text. Keep ticker symbols, company names, and the site's own feature names \
+(Deep Dive, Rational Compounder, Value Score, Moat Score, Margin of Safety) unchanged. \
+Target language: {target_lang_name}.
+
+Respond in EXACTLY this format, with no other text before or after:
+
+---TITLE---
+<translated title>
+---SUMMARY---
+<translated summary>
+---BODY---
+<translated body, full markdown>
+"""
+
+
+def _parse_blog_translation(text):
+    """Splits the fixed ---TITLE---/---SUMMARY---/---BODY--- format above.
+    Returns None on anything that doesn't match - the caller shows an
+    error and creates nothing rather than guessing at a malformed
+    response."""
+    try:
+        _, rest = text.split("---TITLE---", 1)
+        title_part, rest = rest.split("---SUMMARY---", 1)
+        summary_part, body_part = rest.split("---BODY---", 1)
+    except ValueError:
+        return None
+    title = title_part.strip()
+    summary = summary_part.strip()
+    body = body_part.strip()
+    if not title or not body:
+        return None
+    return {"title": title, "summary": summary, "body_md": body}
+
+
+def _translate_blog_post(post, target_lang, email):
+    """target_lang: 'en' or 'es'. Returns {"ok", "fields"|"error"} -
+    fields is {"title","summary","body_md"} ready for blog_store.create_post.
+    Never raises."""
+    target_name = "Spanish" if target_lang == "es" else "English"
+    system = _BLOG_TRANSLATE_SYSTEM_PROMPT.format(target_lang_name=target_name)
+    user_message = (
+        f"TITLE:\n{post.get('title', '')}\n\n"
+        f"SUMMARY:\n{post.get('summary', '')}\n\n"
+        f"BODY:\n{post.get('body_md', '')}"
+    )
+    result = ai_client.ask(system, user_message, model=ai_client.MODEL_HAIKU, max_tokens=4000)
+    if result["input_tokens"] or result["output_tokens"]:
+        try:
+            ai_gate.record(email, "blog_translate", result["model"],
+                           result["input_tokens"], result["output_tokens"],
+                           result["cost_usd"])
+        except Exception:
+            pass
+    if not result["ok"]:
+        return {"ok": False, "error": result["error"]}
+    fields = _parse_blog_translation(result["text"])
+    if not fields:
+        return {"ok": False, "error": "The AI's response didn't come back in the expected "
+                                       "format - nothing was created. Try again."}
+    return {"ok": True, "fields": fields}
+
+
+def _render_blog_translator(selected):
+    """The "Translate to Spanish/English ->" panel - shown only for an
+    already-saved post (a brand-new, unsaved post has nothing to
+    translate yet). Hidden entirely once a sibling translation already
+    exists, replaced by a link to it instead - translating twice would
+    create two competing drafts with no way to tell which one is
+    current."""
+    if not ai_client.available() or not selected:
+        return
+    sibling = blog_store.get_translation_sibling(selected)
+    source_lang = selected.get("lang") or "en"
+    target_lang = "en" if source_lang == "es" else "es"
+    target_name = "English" if target_lang == "en" else "Spanish"
+    with st.expander(f"\U0001F310 Translate to {target_name} →"):
+        if sibling:
+            st.caption(
+                f"This post already has a {('Spanish' if sibling.get('lang') == 'es' else 'English')} "
+                f"{'draft' if sibling.get('status') != blog_store.STATUS_PUBLISHED else 'published version'} "
+                "- open it from the Post dropdown above rather than translating again."
+            )
+            if st.button("Jump to it", key=f"blog_translate_jump_{selected['id']}"):
+                st.session_state["_blog_pending"] = {"blog_select": sibling["id"]}
+                st.rerun()
+            return
+        st.caption(
+            f"Translates the title, meta description and full body to {target_name} "
+            "with Haiku, preserving Markdown - saved as a new DRAFT paired to this "
+            "post, labelled as a machine translation. Review it fully and rewrite "
+            "anything that doesn't sound right before publishing; it is never "
+            "auto-published."
+        )
+        if st.button(f"Translate to {target_name}", key=f"blog_translate_btn_{selected['id']}"):
+            _email = ai_gate.owner_email()
+            _allowed, _msg, _tier = ai_gate.check(_email, "blog_translate")
+            if not _allowed:
+                st.warning(_msg)
+            else:
+                with st.spinner(f"Translating to {target_name}..."):
+                    _translated = _translate_blog_post(selected, target_lang, _email)
+                if not _translated["ok"]:
+                    st.error(_translated["error"])
+                else:
+                    _fields = _translated["fields"]
+                    _new_id = blog_store.create_post(
+                        title=_fields["title"],
+                        summary=_fields["summary"],
+                        body_md=_fields["body_md"],
+                        tags=selected.get("tags") or "",
+                        author=selected.get("author") or "",
+                        primary_ticker=selected.get("primary_ticker") or "",
+                        status=blog_store.STATUS_DRAFT,
+                        lang=target_lang,
+                        translation_of=selected["id"],
+                    )
+                    st.session_state["_blog_pending"] = {"blog_select": _new_id}
+                    st.session_state["_blog_saved_msg"] = (
+                        f"{target_name} draft created - {ai_client.ANSWER_LABEL}. "
+                        "Review it, then publish when ready."
+                    )
+                    st.rerun()
+        st.caption("Owner AI usage - unlimited, exempt from the spend cap "
+                   "(logged for the admin spend meter only, via the AI "
+                   "settings panel next to Stats).")
 
 
 def _render_research_note_drafter():
@@ -13708,6 +13878,15 @@ def page_blog_admin():
                       placeholder="Why margin of safety is the whole game")
         _title = st.session_state.get("blog_f_title", "")
 
+        # Español instruction, Part 3: which language THIS post is
+        # written in - defaults to English (see _blog_load_form above).
+        # A translation created by the Translate panel below gets its
+        # lang set programmatically and this control just reflects it
+        # when the post is reselected; nothing stops the owner writing a
+        # post natively in Spanish and picking "Español" here directly.
+        st.radio("Language", ["English", "Español"], key="blog_f_lang",
+                 horizontal=True)
+
         # The slug is the URL and therefore the most permanent thing about
         # a post: suggested from the title, but never silently rewritten
         # once a post exists, because changing it changes a public address.
@@ -13724,6 +13903,7 @@ def page_blog_admin():
                 st.rerun()
 
         _render_research_note_drafter()
+        _render_blog_translator(selected)
 
         st.text_area(
             "Meta description", key="blog_f_summary", height=90,
@@ -13821,6 +14001,8 @@ def page_blog_admin():
                 elif _remove_hero:
                     _hero_name = None
 
+                _lang_v = "es" if st.session_state.get("blog_f_lang") == "Español" else "en"
+
                 if selected_id:
                     _slug = blog_store.update_post(
                         selected_id,
@@ -13835,6 +14017,7 @@ def page_blog_admin():
                         hero_alt=st.session_state.get("blog_f_hero_alt") or "",
                         status=_status,
                         primary_ticker=st.session_state.get("blog_f_primary_ticker") or "",
+                        lang=_lang_v,
                     )
                     _new_id = selected_id
                 else:
@@ -13850,6 +14033,7 @@ def page_blog_admin():
                         hero_alt=st.session_state.get("blog_f_hero_alt") or "",
                         status=_status,
                         primary_ticker=st.session_state.get("blog_f_primary_ticker") or "",
+                        lang=_lang_v,
                     )
                     _slug = blog_store.get_post_by_id(_new_id)["slug"]
 
