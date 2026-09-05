@@ -46,6 +46,47 @@ SITE_NAME = "StocksDeepDive"
 AUTHOR_NAME = "Andres Moreno"
 DEFAULT_AUTHOR = AUTHOR_NAME
 
+# Conversion pass, Part 5: the Reddit handle to display on the byline
+# shown to visitors arriving with a Reddit-tagged src (see
+# reddit_byline_visible/reddit_byline_html below). Confirmed with the
+# owner per the instruction's own request to confirm this is the right
+# handle to display.
+REDDIT_HANDLE = "u/anmolago1"
+
+
+def reddit_byline_visible(src):
+    """True when `src` (st.session_state["first_src"] on the app side,
+    the ?src= query param on a server-rendered blog page) is tagged for
+    Reddit traffic - the same "reddit..." prefix convention the Part 6/7
+    admin "Copy link for sharing" button writes (reddit-{ticker},
+    reddit-rc, reddit-rc-{ticker}), so a share link built by that button
+    is exactly what turns this on."""
+    return bool((src or "").strip().lower().startswith("reddit"))
+
+
+def reddit_byline_html(ticker=None):
+    """One small "Built by the author of ... on Reddit" line, linking to
+    /about - shared by the Deep Dive, the Research page and blog posts
+    (conversion pass, Parts 5 and 7c) so the wording/handle can never
+    drift between the three call sites. `ticker` is the ticker actually
+    in view on the CALLING page (a Deep Dive's own ticker, a Research
+    page's selected ticker, or a blog post's primary_ticker) - not
+    reparsed out of the src string, since the sharing label's own
+    convention (lowercase, no exchange suffix) can't always be reversed
+    back to an exact exchange-qualified ticker, and the caller already
+    knows its own ticker directly. Generic wording when there's no
+    ticker in view (a bare "reddit"/"reddit-rc" src, or a post/page with
+    no specific ticker)."""
+    e = html.escape
+    text = (f"Built by the author of the {e(ticker)} analysis on Reddit"
+            if ticker else "Built by the author of this analysis on Reddit")
+    return (
+        '<div style="margin:6px 0 4px">'
+        '<a href="/about" style="color:#8aa0b8;font-size:13px;'
+        f'text-decoration:none">{text} &middot; {REDDIT_HANDLE}</a></div>'
+    )
+
+
 # -----------------------------------
 # PWA (Part 1c): the same tag block is injected in two places -
 # _head() below, for every page THIS module renders, and server.py's
@@ -1168,6 +1209,14 @@ def render_post(post, base_url, prev_post=None, next_post=None,
             f", {cite_date}" if cite_date else "") + f". {url}"
         citation_html = _copy_citation_html(citation_text)
 
+    # Conversion pass, Part 5: Reddit-arrival byline - same helper the
+    # Deep Dive and Research page use (app.py), so wording/handle can
+    # never drift between the three surfaces.
+    reddit_byline = (
+        reddit_byline_html(ticker=primary_ticker or None)
+        if not is_draft and reddit_byline_visible(src) else ""
+    )
+
     body = f"""
 <main><div class="wrap">
   <article>
@@ -1176,6 +1225,7 @@ def render_post(post, base_url, prev_post=None, next_post=None,
     <h1>{e(post['title'])}</h1>
     <div class="meta">{e(' · '.join(meta_bits))}</div>
     {citation_html}
+    {reddit_byline}
     {hero}
     {body_html}
     {tags}

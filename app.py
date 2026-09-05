@@ -5841,6 +5841,12 @@ def page_deep_dive():
 
         # --- Conversion pass, Part 1: verdict line + anchor chips. ---
         _render_dd_verdict_and_chips(_dd)
+        # --- Conversion pass, Part 5: Reddit-arrival byline. ---
+        if blog_render.reddit_byline_visible(st.session_state.get("first_src")):
+            st.markdown(
+                blog_render.reddit_byline_html(ticker=_dd["ticker"]),
+                unsafe_allow_html=True,
+            )
         # --- Conversion pass, Part 2: moment-tied email hook (signed-out only). ---
         _render_conversion_email_hook(_dd["ticker"])
 
