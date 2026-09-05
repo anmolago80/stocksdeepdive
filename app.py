@@ -3239,6 +3239,118 @@ def _render_follow_control(ticker, key_prefix):
                     (st.success if _ok else st.error)(_msg)
 
 
+def _render_conversion_email_hook(ticker, key_prefix="dd_hook"):
+    """Moment-tied email capture for SIGNED-OUT Deep Dive visitors only
+    (conversion pass, Part 2) - under the verdict line/chips
+    (_render_dd_verdict_and_chips). Reuses the exact email-code sign-in
+    mechanic as _render_follow_control (send code, verify inline) so
+    there's no parallel auth path, but with wording tied to this
+    ticker's own next-report date (results_store.get_earnings_watch)
+    instead of the generic "research updates" caption, and rolled into
+    ONE action: verifying the code both creates the account
+    (email_auth.verify_code already records the sign-up) and follows
+    this ticker (follow_store.follow) - which is all it takes to also be
+    in this ticker's results/alert audience, since results_engine's
+    audience for a ticker already unions follow_store.followers_of()
+    with alert_store's active alerts for that ticker. No separate
+    "results watch" table/signup step exists or is needed.
+
+    Checks its own "just completed" flag BEFORE the signed-in gate, so
+    the one-line success state still renders on the rerun that follows
+    a successful verify (by then the visitor IS signed in, so the normal
+    gate would otherwise hide it). Otherwise: return immediately for any
+    already-signed-in visitor - no toggle UI, this box never shows for
+    them at all."""
+    _done_flag = f"{key_prefix}_done_{ticker}"
+    if st.session_state.get(_done_flag):
+        st.success(f"Done — you'll get {ticker}'s report analysis. You're signed in.")
+        return
+    if paywall_engine.current_user_email():
+        return
+
+    try:
+        _watch = results_store.get_earnings_watch(ticker)
+    except Exception:
+        _watch = None
+    _next_date = _watch.get("next_report_date") if _watch else None
+
+    with st.container(border=True, key=f"{key_prefix}_box_{ticker}"):
+        if _next_date:
+            st.markdown(
+                f"**{ticker} reports on {_next_date}.** Get the before/after "
+                f"analysis by email when it does:"
+            )
+        else:
+            st.caption(f"Get notified when {ticker}'s numbers change:")
+
+        _sent_flag = f"{key_prefix}_code_sent_{ticker}"
+        if not st.session_state.get(_sent_flag):
+            _c1, _c2 = st.columns([3, 2])
+            with _c1:
+                _em_in = st.text_input(
+                    "Email address", key=f"{key_prefix}_email_{ticker}",
+                    placeholder="you@example.com", label_visibility="collapsed",
+                )
+            with _c2:
+                if st.button(
+                    "Notify me",
+                    key=f"{key_prefix}_submit_{ticker}", use_container_width=True,
+                ):
+                    if email_auth.valid_email(_em_in):
+                        _ok, _msg = email_auth.send_code(_em_in)
+                        if _ok:
+                            st.session_state[_sent_flag] = True
+                            st.session_state[f"{key_prefix}_sent_to_{ticker}"] = _em_in.strip().lower()
+                            st.success(_msg)
+                        else:
+                            st.error(_msg)
+                    else:
+                        st.error("That doesn't look like a valid email address.")
+        else:
+            _sent_to = st.session_state.get(f"{key_prefix}_sent_to_{ticker}", "")
+            st.caption(f"Enter the 6-digit code sent to {_sent_to}.")
+            _code = st.text_input(
+                "6-digit code", key=f"{key_prefix}_code_{ticker}",
+                max_chars=6, placeholder="123456",
+            )
+            _cv, _cr = st.columns(2)
+            with _cv:
+                if st.button(
+                    "Verify", key=f"{key_prefix}_verify_{ticker}",
+                    type="primary", use_container_width=True,
+                ):
+                    _tok, _msg = email_auth.verify_code(
+                        _sent_to, _code, src=st.session_state.get("first_src")
+                    )
+                    if _tok:
+                        # Same state paywall_engine._render_signin_control
+                        # sets on success - signed in exactly as they
+                        # would be via the regular Sign In popover.
+                        st.session_state["email_user"] = _sent_to
+                        st.session_state["email_auth_token"] = _tok
+                        st.session_state.pop("email_signed_out", None)
+                        st.session_state["_pending_auth_cookie"] = _tok
+                        # verify_code already recorded the sign-up.
+                        st.session_state["_signup_recorded"] = True
+                        try:
+                            follow_store.follow(_sent_to, ticker)
+                        except Exception:
+                            pass
+                        st.session_state.pop(_sent_flag, None)
+                        st.session_state.pop(f"{key_prefix}_sent_to_{ticker}", None)
+                        st.session_state[_done_flag] = True
+                        st.rerun()
+                    else:
+                        st.error(_msg)
+            with _cr:
+                if st.button(
+                    "Resend code", key=f"{key_prefix}_resend_{ticker}",
+                    use_container_width=True,
+                ):
+                    _ok, _msg = email_auth.send_code(_sent_to)
+                    (st.success if _ok else st.error)(_msg)
+
+
 # Services batch, Part 1: metric alerts. Options shown in the "Alert me
 # when..." control below - label order matches alert_store.NUMERIC_METRICS/
 # CATEGORICAL_METRICS declaration order (numeric metrics first, the two
@@ -5702,6 +5814,8 @@ def page_deep_dive():
 
         # --- Conversion pass, Part 1: verdict line + anchor chips. ---
         _render_dd_verdict_and_chips(_dd)
+        # --- Conversion pass, Part 2: moment-tied email hook (signed-out only). ---
+        _render_conversion_email_hook(_dd["ticker"])
 
         if _factual():
             _m1, _m2, _m3, _m4 = st.columns(4)
