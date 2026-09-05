@@ -572,13 +572,25 @@ def _right_widget_columns(left_widths, extra_widget=None, extra_widget2=None,
     Shared column plumbing for the account bar rows: the given left-edge
     widths, then a flexible spacer, then one dedicated column per provided
     extra widget (2.6 for the feedback popover, 1.4 for the compact second
-    widget, 1.0 for the compact third/language-picker widget), then an
+    widget, 2.6 for the compact third/language-picker widget), then an
     optional trailing column (Sign out). Each widget gets its OWN column,
     so none of them can ever overlap each other.
+
+    The language picker (extra_widget3) is a two-option st.segmented_control
+    ("EN"/"ES"). It used to be 1.0, which isn't enough room for both pills
+    plus their border/padding - Streamlit's own narrow-column behaviour then
+    wraps "ES" onto its own line UNDERNEATH "EN" rather than shrinking it,
+    and that wrapped second line visually collided with the Sign out column
+    right next to it. Screenshot-tested at a spread of realistic page
+    widths (700-1200px) with a throwaway repro script: 1.0 and 1.8 both
+    still wrapped at several of those widths; 2.6 (matching the feedback
+    popover's own width) was the smallest value that kept both pills on one
+    line across the whole range, and it only comes at the spacer's expense
+    since `total` stays 12.0.
     Returns (left_cols, widget_cols, trailing_col_or_None).
     """
     _rw = (([2.6] if extra_widget else []) + ([1.4] if extra_widget2 else [])
-           + ([1.0] if extra_widget3 else []))
+           + ([2.6] if extra_widget3 else []))
     _trail = [trailing_width] if trailing_width else []
     _spacer = max(0.5, total - sum(left_widths) - sum(_rw) - sum(_trail))
     cols = st.columns(left_widths + [_spacer] + _rw + _trail, gap="small")

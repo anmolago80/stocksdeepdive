@@ -368,10 +368,18 @@ def _cp_share_price_growth_chart(ticker, share_price_growth):
     ))
     if values:
         _avg = sum(values) / len(values)
+        # annotation_position="top right" (not "top left"): the leftmost
+        # bar is whichever year comes first once reversed into chronological
+        # order, and when its growth is close to the average (as it often
+        # is) a left-anchored label sits right on top of that bar's own
+        # "+N.N%" outside-text, e.g. "Average +22.2%" printing over
+        # "+24.2%". The rightmost years are far more often the ones near
+        # zero/negative, so anchoring right keeps the average label clear
+        # of the bar labels in practice.
         fig.add_hline(
             y=_avg, line_dash="dash", line_color="#e6edf5", line_width=1.5,
             annotation_text=f"Average {_avg * 100:+.1f}%",
-            annotation_position="top left",
+            annotation_position="top right",
             annotation_font=dict(size=12, color="#e6edf5"),
         )
     fig.update_layout(
