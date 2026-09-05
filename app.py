@@ -3116,38 +3116,64 @@ def _reddit_default_label(ticker, prefix="reddit"):
     return f"{prefix}-{bare}" if bare else prefix
 
 
-def _render_copy_link_button(url_builder, key_prefix, default_label,
-                              title="\U0001F517 Copy link for sharing"):
-    """Admin-only "Copy link for sharing" (conversion pass, Parts 6 and
-    7a) - gated on full_view_unlocked, the same session flag every other
-    admin-only control on this site uses (there's no separate admin-email
-    concept - see _render_admin_unlock's own docstring). `url_builder(label)`
-    returns the full shareable URL for a given label string; callers
-    supply this rather than a fixed URL since the Deep Dive and Research
-    pages (Part 7a) build different query strings.
+def _render_copy_link_control(url_builder, key_prefix, ticker,
+                               label_prefix="reddit",
+                               title="\U0001F517 Copy link for sharing"):
+    """Admin-only "Copy link for sharing" - cleanup round, Part 2. Replaces
+    the earlier _render_copy_link_button (conversion pass, Parts 6/7a):
+    that version gated correctly on full_view_unlocked, but rendered
+    inside a *collapsed* st.expander buried well down the page (Deep
+    Dive: after Watchlist/Follow, the alert control, the checklist panel,
+    "Copy as text" and "Download data"; Research: an expander among the
+    position-disclosure/admin controls) - exactly why the owner couldn't
+    find it on a live CPRT check (see the cleanup-round instruction's own
+    Part 2 diagnosis ask). This version is an always-visible st.popover
+    button - same pattern _render_download_data_button already uses on
+    this page for "Download data" - placed by the caller in a slim
+    always-visible column right next to the verdict line / the old
+    Simple-toggle's spot, so the control itself is never hidden; only the
+    label/language inputs collapse into the popover body, exactly how
+    "Download data" already behaves.
+
+    `url_builder(label, lang)` returns the full shareable URL for a given
+    label string and language code ("en"/"es") - callers append &lang=es
+    themselves when lang=="es", since the query-string shape differs
+    between the Deep Dive and Research pages. `label_prefix` picks the
+    default-label family: "reddit" -> reddit-{ticker}/reddit-es-{ticker}
+    (Deep Dive), "reddit-rc" -> reddit-rc-{ticker}/reddit-rc-es-{ticker}
+    (Research). The label text_input is keyed per-language so switching
+    the radio doesn't carry over a stale manually-typed label from the
+    other language.
 
     Reuses blog_render._copy_as_text_html()'s exact click/clipboard/
-    fallback-textarea mechanism (now taking an optional `label` override,
-    added for this) rather than a second copy of that JS - same approach
-    _render_copy_as_text_button above already takes for the "Copy as
-    text" button. The label is editable before copying (prefilled from
-    default_label); intended flow is: open the page, tweak the label if
-    wanted, click, paste into Reddit."""
+    fallback-textarea mechanism, same as the original button and as
+    "Copy as text" above - per the instruction's explicit "same clipboard
+    mechanism + fallback textarea" requirement."""
     if not st.session_state.get("full_view_unlocked"):
         return
-    with st.expander(title, expanded=False):
-        _label_in = st.text_input(
-            "Label (appended as ?src=)", value=default_label,
-            key=f"{key_prefix}_label",
+    with st.popover(title, key=f"{key_prefix}_popover"):
+        _lang_pick = st.radio(
+            "Language", ["English", "Español"], horizontal=True,
+            key=f"{key_prefix}_lang",
         )
-        _label = (_label_in or "").strip() or default_label
-        _url = url_builder(_urlquote(_label, safe=""))
+        _lang = "es" if _lang_pick == "Español" else "en"
+        _default_label = _reddit_default_label(
+            ticker,
+            prefix=f"{label_prefix}-es" if _lang == "es" else label_prefix,
+        )
+        _label_in = st.text_input(
+            "Label (appended as ?src=)", value=_default_label,
+            key=f"{key_prefix}_label_{_lang}",
+        )
+        _label = (_label_in or "").strip() or _default_label
+        _url = url_builder(_urlquote(_label, safe=""), _lang)
         st.caption(_url)
         try:
             import streamlit.components.v1 as _components
             _components.html(
                 blog_render._copy_as_text_html(
-                    _url, dom_id=f"sdd-copylink-{key_prefix}", label="Copy link"),
+                    _url, dom_id=f"sdd-copylink-{key_prefix}-{_lang}",
+                    label="Copy link"),
                 height=50,
             )
         except Exception:
@@ -4411,15 +4437,26 @@ def page_research():
     # --- Conversion pass, Part 7a: admin "Copy link for sharing" - same
     # placement convention as _render_position_disclosure's own "Edit
     # position (admin)" control, right after it. Copies the URL that
-    # reopens this exact research view. ---
-    _render_copy_link_button(
-        url_builder=lambda label, _t=ticker, _s=_cp_default_section: (
-            f"{SITE_ORIGIN}/research?ticker={_urlquote(_t)}"
-            f"&section={_urlquote(_s)}&src={label}"
-        ),
-        key_prefix=f"copylink_rc_{ticker}",
-        default_label=_reddit_default_label(ticker, prefix="reddit-rc"),
-    )
+    # reopens this exact research view. Cleanup round, Part 2: moved from
+    # a collapsed st.expander to an always-visible popover, in a slim
+    # admin-only column occupying the old Simple|Full toggle's spot (that
+    # toggle's own st.columns([5, 2]) split lived right here before Part
+    # 1 removed it) - see _render_copy_link_control's own docstring.
+    # Signed-out/non-admin visitors get no extra row at all, so the
+    # public page stays byte-identical to what Part 1 verified. ---
+    if st.session_state.get("full_view_unlocked"):
+        _rc_share_spacer, _rc_share_col = st.columns([5, 2])
+        with _rc_share_col:
+            _render_copy_link_control(
+                url_builder=lambda label, lang, _t=ticker, _s=_cp_default_section: (
+                    f"{SITE_ORIGIN}/research?ticker={_urlquote(_t)}"
+                    f"&section={_urlquote(_s)}&src={label}"
+                    + ("&lang=es" if lang == "es" else "")
+                ),
+                key_prefix=f"copylink_rc_{ticker}",
+                ticker=ticker,
+                label_prefix="reddit-rc",
+            )
 
     # Per-company header card (Task 5): ticker/industry/section-count/
     # last-updated. The link-button that used to sit at the bottom of this
@@ -6138,8 +6175,29 @@ def page_deep_dive():
         _render_score_history_caption(_dd["ticker"], _dd.get("long_score"))
         _render_results_day_card(_dd["ticker"])
 
-        # --- Conversion pass, Part 1: verdict line + anchor chips. ---
-        _render_dd_verdict_and_chips(_dd)
+        # --- Conversion pass, Part 1: verdict line + anchor chips.
+        # Cleanup round, Part 2: the admin-only "Copy link for sharing"
+        # control now sits directly beside it, in a slim always-visible
+        # column - see _render_copy_link_control's own docstring for why
+        # this replaces the old buried expander. Signed-out/non-admin
+        # visitors get the original single-column call, unchanged, so the
+        # public view stays byte-identical to what Part 1 (Simple-view
+        # removal) verified. ---
+        if st.session_state.get("full_view_unlocked"):
+            _vcol, _tcol = st.columns([5, 2])
+            with _vcol:
+                _render_dd_verdict_and_chips(_dd)
+            with _tcol:
+                _render_copy_link_control(
+                    url_builder=lambda label, lang, _t=_dd["ticker"]: (
+                        f"{SITE_ORIGIN}/deep-dive?ticker={_urlquote(_t)}"
+                        f"&src={label}" + ("&lang=es" if lang == "es" else "")
+                    ),
+                    key_prefix=f"copylink_dd_{_dd['ticker']}",
+                    ticker=_dd["ticker"],
+                )
+        else:
+            _render_dd_verdict_and_chips(_dd)
         # --- Conversion pass, Part 5: Reddit-arrival byline. ---
         if blog_render.reddit_byline_visible(st.session_state.get("first_src")):
             st.markdown(
@@ -6342,14 +6400,13 @@ def page_deep_dive():
         # _render_download_data_button's own docstring for why. ---
         _render_download_data_button(_dd)
 
-        # --- Conversion pass, Part 6: admin "Copy link for sharing". ---
-        _render_copy_link_button(
-            url_builder=lambda label, _t=_dd["ticker"]: (
-                f"{SITE_ORIGIN}/deep-dive?ticker={_urlquote(_t)}&src={label}"
-            ),
-            key_prefix=f"copylink_dd_{_dd['ticker']}",
-            default_label=_reddit_default_label(_dd["ticker"]),
-        )
+        # --- Conversion pass, Part 6: admin "Copy link for sharing" used
+        # to render here (a buried, collapsed expander below Watchlist/
+        # Follow, the alert control, the checklist panel, "Copy as text"
+        # and "Download data"). Cleanup round, Part 2 moved it to an
+        # always-visible popover next to the verdict line instead - see
+        # _render_copy_link_control's call above, right after
+        # _render_results_day_card. ---
 
         # --- Price chart: the 6-month history behind every calculation on
         # this page, finally shown - with the 50-day average and the Trade
