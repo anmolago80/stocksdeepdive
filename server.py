@@ -70,6 +70,7 @@ import blog_comments_store
 import blog_render
 import blog_store
 import email_auth
+import follow_store
 import nightly_scan
 import push_send
 import push_store
@@ -811,14 +812,65 @@ async def blog_post(slug: str, request: Request):
     comments = blog_comments_store.approved_for(slug)
     comment_status = request.query_params.get("comment")
     comment_msg = request.query_params.get("msg")
+    signed_in_email = _signed_in_email(request)
     html_out = blog_render.render_post(
         post, base, prev_post=older, next_post=newer, comments=comments,
         comment_status=comment_status, comment_msg=comment_msg,
+        signed_in_email=signed_in_email,
+        src=request.query_params.get("src"),
     )
     # A page carrying a one-time "thanks"/error banner from a just-submitted
-    # comment must never be cached and handed to the next visitor.
-    cache = "no-store" if comment_status else "public, max-age=300"
+    # comment must never be cached and handed to the next visitor. Also
+    # never cached for a signed-in visitor - the Part 3 subscribe box's
+    # "You're on the list"/hidden state is visitor-specific, same reasoning
+    # as the comment banner just above.
+    cache = ("no-store" if (comment_status or signed_in_email)
+             else "public, max-age=300")
     return _html(html_out, cache=cache)
+
+
+@app.post("/blog/subscribe/send-code", include_in_schema=False)
+async def blog_subscribe_send_code(request: Request):
+    """Step 1 of the Part 3 end-of-post subscribe box's own email-code
+    flow (blog_render._blog_subscribe_html) - same _same_origin CSRF gate
+    as the comment form and the /_auth/* cookie endpoints just above."""
+    if not _same_origin(request):
+        return Response(status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    email = str(body.get("email") or "").strip()
+    ok, msg = email_auth.send_code(email, client_ip=_client_ip(request))
+    return {"ok": ok, "message": msg}
+
+
+@app.post("/blog/subscribe/verify-code", include_in_schema=False)
+async def blog_subscribe_verify_code(request: Request):
+    """Step 2: on a correct code, creates the account (email_auth.verify_
+    code already records the sign-up) and follows follow_store.ALL_TICKERS
+    - the general research-updates list, same sentinel announce_engine
+    already treats that way - not one specific ticker. Hands the new
+    session token back to the page's own JS, which then posts it to the
+    existing /_auth/set-cookie endpoint to complete sign-in in the
+    browser."""
+    if not _same_origin(request):
+        return Response(status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    email = str(body.get("email") or "").strip().lower()
+    code = str(body.get("code") or "").strip()
+    src = body.get("src") or None
+    tok, msg = email_auth.verify_code(email, code, src=src)
+    if not tok:
+        return {"ok": False, "message": msg}
+    try:
+        follow_store.follow(email, follow_store.ALL_TICKERS)
+    except Exception:
+        pass
+    return {"ok": True, "message": msg, "token": tok}
 
 
 @app.post("/blog/{slug}/comments", include_in_schema=False)

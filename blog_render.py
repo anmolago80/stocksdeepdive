@@ -28,6 +28,8 @@ from email.utils import format_datetime as _rfc2822
 from xml.sax.saxutils import escape as xml_escape
 
 import blog_store
+import follow_store
+import snapshot_store
 
 SITE_NAME = "StocksDeepDive"
 
@@ -381,6 +383,182 @@ def _copy_as_text_html(copy_text, dom_id="sdd-copytext"):
         + "below is selected, copy it manually.";
       showTextarea();
     }}
+  }});
+}})();
+</script>
+"""
+
+
+def _ticker_snapshot_strip_html(ticker, base_url):
+    """Compact live-numbers strip above the Part 3 subscribe box (conversion
+    pass), shown only on a post with a primary_ticker - Price / IV / MOS /
+    Value Score / Moat, read straight off the SAME snapshot_store row every
+    other public surface (the /s/<ticker> page, api_v1.py, mcp_server.py)
+    already reads via snapshot_store.public_view() (see that function's own
+    docstring for the internal->public field mapping), so this can never
+    disagree with them - no separate computation. Omitted entirely (empty
+    string) when no snapshot has ever been saved for this ticker, same
+    "never fabricate a number" rule as every other public snapshot surface."""
+    try:
+        snap = snapshot_store.get_snapshot(ticker)
+    except Exception:
+        snap = None
+    if not snap:
+        return ""
+    e = html.escape
+
+    def _fmt(v, suffix=""):
+        if v is None:
+            return "-"
+        return f"{v:g}{suffix}" if isinstance(v, float) else f"{v}{suffix}"
+
+    pub = snapshot_store.public_view(snap.get("data") or {})
+    moat = snap.get("moat") or {}
+    cells = [
+        ("Price", _fmt(pub.get("price"))),
+        ("IV", _fmt(pub.get("intrinsic_value"))),
+        ("MOS", f"{pub['mos_pct']:+.1f}%" if pub.get("mos_pct") is not None else "-"),
+        ("Value Score", _fmt(pub.get("value_score"))),
+        ("Moat", _fmt(moat.get("score")) if moat.get("score") is not None else "n/a"),
+    ]
+    cells_html = "".join(
+        '<div style="text-align:center">'
+        f'<div style="color:#8aa0b8;font-size:11px;text-transform:uppercase;'
+        f'letter-spacing:.4px">{e(label)}</div>'
+        f'<div style="color:#e6edf5;font-size:16px;font-weight:700;margin-top:2px">'
+        f'{e(str(value))}</div></div>'
+        for label, value in cells
+    )
+    return f"""
+<a href="/deep-dive?ticker={e(ticker)}" style="text-decoration:none;color:inherit;
+  display:block;margin:0 0 14px">
+  <div style="background:#121f36;border:1px solid #1f3352;border-radius:10px;
+    padding:14px 18px;display:flex;gap:22px;flex-wrap:wrap;justify-content:space-between;
+    align-items:center">
+    {cells_html}
+    <div style="color:#2dd4bf;font-size:13px;white-space:nowrap">See {e(ticker)}&rsquo;s
+      Deep Dive &rarr;</div>
+  </div>
+</a>
+"""
+
+
+def _blog_subscribe_html(signed_in_email=None, src=None):
+    """End-of-post "get the next research note by email" box (conversion
+    pass, Part 3). Same underlying mechanism as app.py's
+    _render_follow_control/_render_conversion_email_hook (send a code,
+    verify inline, one action creates the account) - but this page has no
+    Streamlit runtime, so the flow is two small same-origin fetch() calls
+    against the new /blog/subscribe/send-code and /blog/subscribe/verify-
+    code endpoints in server.py (same _same_origin CSRF gate as the
+    comment form and the existing /_auth/* cookie endpoints), and a
+    successful verify follows follow_store.ALL_TICKERS ("*") - the same
+    sentinel announce_engine already treats as "every research update",
+    not one ticker - rather than a specific ticker. The verify response
+    hands back a session token, which this script then posts straight to
+    the EXISTING /_auth/set-cookie endpoint to complete sign-in in the
+    browser, exactly like the rest of the site's cookie flow.
+
+    Hidden entirely for a signed-in visitor already subscribed to the
+    general list is wrong on its face - so signed-in shows "You're on the
+    list" only when already subscribed, and renders nothing at all
+    otherwise (never re-shows the ask box to a visitor who's already
+    signed in some other way, matching this batch's Deep Dive hook)."""
+    if signed_in_email:
+        try:
+            subscribed = follow_store.is_following(signed_in_email, follow_store.ALL_TICKERS)
+        except Exception:
+            subscribed = False
+        if not subscribed:
+            return ""
+        return (
+            '<div class="cta" id="sdd-subscribe"><h3>You\'re on the list.</h3>'
+            "<p>You'll get the next research note by email.</p></div>"
+        )
+
+    src_json = json.dumps(src or "")
+    return f"""
+<div class="cta" id="sdd-subscribe">
+  <h3>Get the next research note by email &mdash; free.</h3>
+  <div id="sdd-sub-ask">
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      <input type="email" id="sdd-sub-email" placeholder="you@example.com"
+        style="flex:1 1 220px;background:#0b1220;color:#e6edf5;border:1px solid #1f3352;
+        border-radius:8px;padding:10px 12px;font-size:15px;font-family:inherit">
+      <button type="button" id="sdd-sub-btn" class="sdd-cite-btn"
+        style="padding:10px 20px;font-size:14px">Subscribe</button>
+    </div>
+    <div id="sdd-sub-status" style="color:#8aa0b8;font-size:12.5px;margin-top:8px"></div>
+  </div>
+  <div id="sdd-sub-code" style="display:none;margin-top:10px">
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <input type="text" id="sdd-sub-code-input" maxlength="6" placeholder="123456"
+        style="flex:1 1 140px;background:#0b1220;color:#e6edf5;border:1px solid #1f3352;
+        border-radius:8px;padding:10px 12px;font-size:15px;font-family:inherit">
+      <button type="button" id="sdd-sub-verify-btn" class="sdd-cite-btn"
+        style="padding:10px 20px;font-size:14px">Verify</button>
+    </div>
+    <div id="sdd-sub-code-status" style="color:#8aa0b8;font-size:12.5px;margin-top:8px"></div>
+  </div>
+  <div id="sdd-sub-done" style="display:none;color:#2dd4bf;margin-top:10px;font-size:15px">
+    Done &mdash; you're on the list.
+  </div>
+</div>
+<script>
+(function(){{
+  var askBox = document.getElementById('sdd-sub-ask');
+  var codeBox = document.getElementById('sdd-sub-code');
+  var doneBox = document.getElementById('sdd-sub-done');
+  var emailInput = document.getElementById('sdd-sub-email');
+  var status = document.getElementById('sdd-sub-status');
+  var codeInput = document.getElementById('sdd-sub-code-input');
+  var codeStatus = document.getElementById('sdd-sub-code-status');
+  var src = {src_json};
+  var sentTo = '';
+
+  document.getElementById('sdd-sub-btn').addEventListener('click', function(){{
+    var email = (emailInput.value || '').trim();
+    if (!email || email.indexOf('@') === -1) {{
+      status.textContent = "That doesn't look like a valid email address.";
+      return;
+    }}
+    status.textContent = 'Sending...';
+    fetch('/blog/subscribe/send-code', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{email: email}})
+    }}).then(function(r){{ return r.json(); }}).then(function(data){{
+      status.textContent = data.message || '';
+      if (data.ok) {{
+        sentTo = email;
+        askBox.style.display = 'none';
+        codeBox.style.display = 'block';
+      }}
+    }}).catch(function(){{
+      status.textContent = "Couldn't reach the server - please try again.";
+    }});
+  }});
+
+  document.getElementById('sdd-sub-verify-btn').addEventListener('click', function(){{
+    var code = (codeInput.value || '').trim();
+    codeStatus.textContent = 'Checking...';
+    fetch('/blog/subscribe/verify-code', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{email: sentTo, code: code, src: src}})
+    }}).then(function(r){{ return r.json(); }}).then(function(data){{
+      if (data.ok && data.token) {{
+        fetch('/_auth/set-cookie', {{
+          method: 'POST', headers: {{'Content-Type': 'application/json'}},
+          body: JSON.stringify({{tok: data.token}})
+        }}).catch(function(){{}}).then(function(){{
+          codeBox.style.display = 'none';
+          doneBox.style.display = 'block';
+        }});
+      }} else {{
+        codeStatus.textContent = data.message || 'Wrong code - try again.';
+      }}
+    }}).catch(function(){{
+      codeStatus.textContent = "Couldn't reach the server - please try again.";
+    }});
   }});
 }})();
 </script>
@@ -883,7 +1061,8 @@ def _comments_section_html(slug, comments, comment_status=None, comment_msg=None
 
 
 def render_post(post, base_url, prev_post=None, next_post=None,
-                comments=None, comment_status=None, comment_msg=None):
+                comments=None, comment_status=None, comment_msg=None,
+                signed_in_email=None, src=None):
     e = html.escape
     url = post_url(base_url, post["slug"])
     desc = post_description(post)
@@ -970,6 +1149,17 @@ def render_post(post, base_url, prev_post=None, next_post=None,
         if not is_draft else ""
     )
 
+    # Conversion pass, Part 3: ticker snapshot strip + subscribe box,
+    # after the body/CTA, before the prev/next nav and comments. Neither
+    # renders on a draft preview - same gate as citation_html/comments_html
+    # just above, since a draft isn't a real, indexed, shareable post yet.
+    snapshot_strip_html = ""
+    subscribe_html = ""
+    if not is_draft:
+        if primary_ticker:
+            snapshot_strip_html = _ticker_snapshot_strip_html(primary_ticker, base_url)
+        subscribe_html = _blog_subscribe_html(signed_in_email=signed_in_email, src=src)
+
     citation_html = ""
     if not is_draft:
         author_name = post.get("author") or AUTHOR_NAME
@@ -991,6 +1181,8 @@ def render_post(post, base_url, prev_post=None, next_post=None,
     {tags}
   </article>
   {cta_html}
+  {snapshot_strip_html}
+  {subscribe_html}
   {nav_html}
   {comments_html}
 </div></main>
