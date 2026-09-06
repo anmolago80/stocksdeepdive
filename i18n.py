@@ -1529,19 +1529,23 @@ EN = {
     # selling holding A to buy candidate B, once the real toll of selling
     # (CGT + brokerage) is accounted for. See switch_analyzer_engine.py
     # for every formula behind these strings.
-    "portfolio.tab_switch": "\U0001F504 Switch Analyzer",
+    # Fix #3b (owner, from live screenshots): renamed from "Switch
+    # Analyzer" to "Value Opportunity" everywhere the public sees it -
+    # internal key/module names ("portfolio.switch.*", switch_analyzer_
+    # engine.py) intentionally stay as-is (no data migration for a label).
+    "portfolio.tab_switch": "\U0001F504 Value Opportunity",
     "portfolio.switch.combined_view_note": (
-        "Pick one portfolio above (not \"All portfolios\") to use the Switch Analyzer - "
+        "Pick one portfolio above (not \"All portfolios\") to use Value Opportunity - "
         "it needs a single portfolio's own tax rate/brokerage settings and cost bases."
     ),
-    "portfolio.switch.empty": "Add a holding with a live price to use the Switch Analyzer.",
+    "portfolio.switch.empty": "Add a holding with a live price to use Value Opportunity.",
     "portfolio.switch.intro_caption": (
         "A factual opportunity-cost calculator, never a recommendation: selling a holding "
         "to buy something else costs real money first (capital-gains tax + brokerage on "
         "both trades) - this shows what the new position would need to out-earn every "
         "year just to make up for that cost, based on this site's own fair-value estimates."
     ),
-    "portfolio.switch.settings_title": "Switch Analyzer settings",
+    "portfolio.switch.settings_title": "Value Opportunity settings",
     "portfolio.switch.settings_caption": (
         "Your marginal tax rate and flat brokerage fee per trade, for this portfolio only. "
         "Used only for the calculations on this tab - never shared, never sent to the API/MCP."
@@ -1561,7 +1565,15 @@ EN = {
     ),
     "portfolio.switch.pair_title": "Pick a pair",
     "portfolio.switch.from_label": "Sell (a holding you're considering selling)",
-    "portfolio.switch.to_label": "Buy instead (candidate ticker, Yahoo format e.g. CSL.AX)",
+    # Fix #3b, 2nd addendum ("easy input"): the free-text Yahoo-format
+    # ticker BOX is replaced by a searchable ticker+company-name dropdown
+    # (_switch_universe_options()/the "sw_to_select" widget, with a
+    # pasted exact ticker still accepted via accept_new_options) - only
+    # the INPUT WIDGET changes; the live-price lookup pipeline below it
+    # (fetch_snapshot/lookup_btn/lookup_not_found) is unchanged, so those
+    # keys are still in active use.
+    "portfolio.switch.to_label": "New opportunity",
+    "portfolio.switch.to_placeholder": "Search by ticker or company name…",
     "portfolio.switch.lookup_btn": "Look up",
     "portfolio.switch.lookup_not_found": (
         "Couldn't find price data for {ticker} - double-check the ticker (Yahoo format, "
@@ -1592,6 +1604,15 @@ EN = {
     # rules for this batch rule out; flagged in this part's own report.
     "portfolio.switch.col_quality": "Quality",
     "portfolio.switch.col_correlation": "Correlation to rest of portfolio",
+    # Fix #3b: the side-by-side card is now a colour-coded HTML table
+    # (green = the stronger reading of each row) rather than a bare
+    # st.dataframe grid - this is its own caption explaining the colour
+    # convention, matching the mock's own caption line.
+    "portfolio.switch.side_by_side_caption": (
+        "Green marks the stronger reading of the pair on each row (lower is stronger for "
+        "correlation - it means less overlap with the rest of the portfolio). This cuts both "
+        "ways - it's just as useful for showing a switch is a bad idea as a good one."
+    ),
     "portfolio.switch.bridge_title": "The switching toll",
     "portfolio.switch.bridge_caption": (
         "Selling {ticker} triggers this before a dollar of it can be redeployed into the new "
@@ -1619,6 +1640,14 @@ EN = {
     "portfolio.switch.bridge_tile_net_label": "NET, on the model's numbers",
     "portfolio.switch.bridge_tile_net_hurdle_passes": "the switch clears its own hurdle",
     "portfolio.switch.bridge_tile_net_hurdle_fails": "the switch falls short of its own hurdle",
+    # Fix #3b, item 4 ("never open on an error state"): when a chosen
+    # ticker has no fair value at all (not even the 🤖 fallback - e.g. an
+    # ETF like GOLD.AX), the tile row still renders (with "-" placeholders)
+    # instead of vanishing, plus this one plain-English line.
+    "portfolio.switch.bridge_tile_no_iv_note": (
+        "{ticker} has no fair-value estimate yet, even from the nightly model - showing the "
+        "switch toll only."
+    ),
     "portfolio.switch.bridge_returns_source_title": "Where the two implied returns come from:",
     "portfolio.switch.bridge_returns_source_line": (
         "{ticker}: price {price} → fair value {iv} = {multiple}× over {years}y → {pct}%/yr"
@@ -1655,6 +1684,18 @@ EN = {
         "Not enough fair-value data on one or both tickers to compare expected returns - only "
         "the toll (above) can be shown for this pair."
     ),
+    # Fix #3b, item 2: the verdict is now a full styled card with a bold
+    # ONE-LINE lead sentence (verdict_lead_*) above the existing detail
+    # sentence (verdict_passes/verdict_fails, unchanged), plus a muted
+    # disclaimer line at the bottom - matching the mock's "■ The bottom
+    # line of these numbers" card structure.
+    "portfolio.switch.verdict_lead_passes": "This switch clears its own hurdle by ≈{margin}%/yr.",
+    "portfolio.switch.verdict_lead_fails": "This switch falls short of its own hurdle by ≈{margin}%/yr.",
+    "portfolio.switch.verdict_disclaimer": (
+        "A description of the comparison above - not a recommendation to buy, sell, or hold. "
+        "Change the inputs and this recomputes. \U0001F4DA = hand-built research fair value · "
+        "\U0001F916 = nightly model estimate (fallback)."
+    ),
     "portfolio.switch.flip_title": "When would this flip?",
     "portfolio.switch.flip_body": (
         "Holding today's estimated ≈{spread}%/yr return edge steady each year, the switch "
@@ -1689,6 +1730,33 @@ EN = {
     "portfolio.switch.trim_blended_return": "Blended implied return after the trim: ≈{pct}%/yr",
     "portfolio.switch.trim_sim_title": "Simulated 1-year range after the trim",
     "portfolio.switch.trim_sim_unavailable": "Not enough shared price history to simulate this trim yet.",
+    # Fix #3b, 2nd addendum ("easy input"): quick-pick chips under the
+    # searchable dropdown - one tap fills the "New opportunity" side.
+    "portfolio.switch.quickpick_research_label": "\U0001F4DA Your research",
+    "portfolio.switch.quickpick_scorers_label": "\U0001F319 Last night's top Value Scorers",
+    # Addendum to Fix #3b: the three Plotly charts, one per card - dark
+    # theme (paper/plot background transparent, same #c7d2e0 font colour
+    # every other chart on the site already uses), plain-word axis
+    # labels, EN/ES via these keys. Titles/labels only; the figures
+    # themselves are built in _switch_bridge_bars_fig/_switch_crossover_
+    # fig/_switch_trim_curve_fig (app.py), all three recomputing on
+    # every input/horizon/trim change like the rest of the tab.
+    "portfolio.switch.chart_bridge_title": "The verdict's arithmetic, at a glance",
+    "portfolio.switch.chart_bridge_xaxis": "Implied return, per year",
+    "portfolio.switch.chart_bridge_row_candidate": "{ticker} (the candidate)",
+    "portfolio.switch.chart_bridge_row_incumbent": "{ticker} (what you hold)",
+    "portfolio.switch.chart_bridge_row_toll": "The toll",
+    "portfolio.switch.chart_bridge_row_net": "NET",
+    "portfolio.switch.chart_crossover_xaxis": "{ticker}'s share price",
+    "portfolio.switch.chart_crossover_yaxis": "Net return, per year (after the toll)",
+    "portfolio.switch.chart_crossover_flip_label": "flips at ≈{price}",
+    "portfolio.switch.chart_crossover_today_label": "today's price",
+    "portfolio.switch.chart_crossover_legend": "Net %/yr if {ticker} traded here",
+    "portfolio.switch.chart_trim_title": "Blended return as you trim",
+    "portfolio.switch.chart_trim_xaxis": "Fraction sold, %",
+    "portfolio.switch.chart_trim_yaxis": "Blended implied return, %/yr",
+    "portfolio.switch.chart_trim_keep_label": "keep everything",
+    "portfolio.switch.chart_trim_full_label": "sell 100%",
 
     # Next-batch instruction, Part 4: Rational Compounder page - company
     # shelf + verdict-first opener. Only the NEW opener strings this pass
@@ -3080,12 +3148,12 @@ ES = {
     "portfolio.stress.window.ai_rally_2023_24": "Repunte de la IA 2023-24",
     "portfolio.stress.na": "—",
 
-    "portfolio.tab_switch": "\U0001F504 Analizador de cambio",
+    "portfolio.tab_switch": "\U0001F504 Oportunidad de valor",
     "portfolio.switch.combined_view_note": (
-        "Elige una cartera arriba (no \"Todas las carteras\") para usar el Analizador de "
-        "cambio - necesita la tasa de impuesto/comisión de una sola cartera y sus bases de coste."
+        "Elige una cartera arriba (no \"Todas las carteras\") para usar Oportunidad de "
+        "valor - necesita la tasa de impuesto/comisión de una sola cartera y sus bases de coste."
     ),
-    "portfolio.switch.empty": "Añade una posición con precio en vivo para usar el Analizador de cambio.",
+    "portfolio.switch.empty": "Añade una posición con precio en vivo para usar Oportunidad de valor.",
     "portfolio.switch.intro_caption": (
         "Una calculadora factual de coste de oportunidad, nunca una recomendación: vender una "
         "posición para comprar otra cuesta dinero real primero (impuesto sobre ganancias de "
@@ -3093,7 +3161,7 @@ ES = {
         "más la nueva posición cada año solo para compensar ese coste, según las propias "
         "estimaciones de valor razonable de este sitio."
     ),
-    "portfolio.switch.settings_title": "Ajustes del Analizador de cambio",
+    "portfolio.switch.settings_title": "Ajustes de Oportunidad de valor",
     "portfolio.switch.settings_caption": (
         "Tu tasa de impuesto marginal y comisión fija por operación, solo para esta cartera. "
         "Se usan únicamente en los cálculos de esta pestaña - nunca se comparten ni se envían a la API/MCP."
@@ -3109,7 +3177,8 @@ ES = {
     ),
     "portfolio.switch.pair_title": "Elige un par",
     "portfolio.switch.from_label": "Vender (una posición que estás considerando vender)",
-    "portfolio.switch.to_label": "Comprar en su lugar (ticker candidato, formato Yahoo p. ej. CSL.AX)",
+    "portfolio.switch.to_label": "Nueva oportunidad",
+    "portfolio.switch.to_placeholder": "Busca por ticker o nombre de la empresa…",
     "portfolio.switch.lookup_btn": "Buscar",
     "portfolio.switch.lookup_not_found": (
         "No se encontraron datos de precio para {ticker} - revisa el ticker (formato Yahoo, "
@@ -3132,6 +3201,12 @@ ES = {
     "portfolio.switch.col_expected_return": "Rendimiento implícito en {years} años",
     "portfolio.switch.col_quality": "Calidad",
     "portfolio.switch.col_correlation": "Correlación con el resto de la cartera",
+    "portfolio.switch.side_by_side_caption": (
+        "El verde marca la lectura más fuerte del par en cada fila (para la correlación, más "
+        "bajo es más fuerte - significa menos solapamiento con el resto de la cartera). Esto "
+        "funciona en ambos sentidos - es igual de útil para mostrar que un cambio es mala idea "
+        "que buena."
+    ),
     "portfolio.switch.bridge_title": "El peaje del cambio",
     "portfolio.switch.bridge_caption": (
         "Vender {ticker} genera esto antes de que un solo dólar pueda reinvertirse en la nueva posición."
@@ -3158,6 +3233,10 @@ ES = {
     "portfolio.switch.bridge_tile_net_label": "NETO, según los números del modelo",
     "portfolio.switch.bridge_tile_net_hurdle_passes": "el cambio supera su propio umbral",
     "portfolio.switch.bridge_tile_net_hurdle_fails": "el cambio no alcanza su propio umbral",
+    "portfolio.switch.bridge_tile_no_iv_note": (
+        "{ticker} todavía no tiene una estimación de valor razonable, ni siquiera del modelo "
+        "nocturno - se muestra solo el peaje del cambio."
+    ),
     "portfolio.switch.bridge_returns_source_title": "De dónde salen los dos rendimientos implícitos:",
     "portfolio.switch.bridge_returns_source_line": (
         "{ticker}: precio {price} → valor razonable {iv} = {multiple}× en {years} años → {pct}%/año"
@@ -3186,6 +3265,13 @@ ES = {
     "portfolio.switch.verdict_no_iv": (
         "No hay suficientes datos de valor razonable en uno de los dos tickers (o en ambos) "
         "para comparar rendimientos esperados - solo se puede mostrar el peaje (arriba) para este par."
+    ),
+    "portfolio.switch.verdict_lead_passes": "Este cambio supera su propio umbral por ≈{margin}%/año.",
+    "portfolio.switch.verdict_lead_fails": "Este cambio no alcanza su propio umbral por ≈{margin}%/año.",
+    "portfolio.switch.verdict_disclaimer": (
+        "Una descripción de la comparación de arriba - no es una recomendación de comprar, "
+        "vender o mantener. Cambia los datos y esto se recalcula. \U0001F4DA = valor razonable "
+        "de investigación hecha a mano · \U0001F916 = estimación del modelo nocturno (respaldo)."
     ),
     "portfolio.switch.flip_title": "¿Cuándo cambiaría esto?",
     "portfolio.switch.flip_body": (
@@ -3223,6 +3309,24 @@ ES = {
     "portfolio.switch.trim_blended_return": "Rendimiento implícito combinado tras el recorte: ≈{pct}%/año",
     "portfolio.switch.trim_sim_title": "Rango simulado a 1 año tras el recorte",
     "portfolio.switch.trim_sim_unavailable": "Aún no hay suficiente historial de precios compartido para simular este recorte.",
+    "portfolio.switch.quickpick_research_label": "\U0001F4DA Tu investigación",
+    "portfolio.switch.quickpick_scorers_label": "\U0001F319 Los mejores Value Scorers de anoche",
+    "portfolio.switch.chart_bridge_title": "La aritmética del veredicto, de un vistazo",
+    "portfolio.switch.chart_bridge_xaxis": "Rendimiento implícito, por año",
+    "portfolio.switch.chart_bridge_row_candidate": "{ticker} (el candidato)",
+    "portfolio.switch.chart_bridge_row_incumbent": "{ticker} (lo que tienes)",
+    "portfolio.switch.chart_bridge_row_toll": "El peaje",
+    "portfolio.switch.chart_bridge_row_net": "NETO",
+    "portfolio.switch.chart_crossover_xaxis": "Precio de la acción de {ticker}",
+    "portfolio.switch.chart_crossover_yaxis": "Rendimiento neto, por año (tras el peaje)",
+    "portfolio.switch.chart_crossover_flip_label": "cambia en ≈{price}",
+    "portfolio.switch.chart_crossover_today_label": "precio de hoy",
+    "portfolio.switch.chart_crossover_legend": "Neto %/año si {ticker} cotizara aquí",
+    "portfolio.switch.chart_trim_title": "Rendimiento combinado al recortar",
+    "portfolio.switch.chart_trim_xaxis": "Fracción vendida, %",
+    "portfolio.switch.chart_trim_yaxis": "Rendimiento implícito combinado, %/año",
+    "portfolio.switch.chart_trim_keep_label": "conservar todo",
+    "portfolio.switch.chart_trim_full_label": "vender el 100%",
 
     "research.kicker": "INVESTIGACIÓN RATIONAL COMPOUNDER",
     "research.not_ready": (

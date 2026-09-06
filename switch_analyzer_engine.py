@@ -204,6 +204,34 @@ def break_even_years(sale_value, proceeds_after_toll, return_spread):
     return math.log(ratio) / math.log(1.0 + return_spread)
 
 
+def price_flip_for_incumbent(fair_value, target_return, years):
+    """Addendum to Fix #3b ("Value Opportunity gets graphs"): inverse of
+    expected_rerating_return() - the incumbent's OWN share price P at
+    which its own implied return, expected_rerating_return(P, fair_value,
+    years), would equal `target_return` exactly. The crossover chart/box
+    calls this with target_return = (the candidate's implied return -
+    today's annualised toll), so the returned P is "the price at which
+    net = candidate_return - incumbent_return(P) - toll would hit zero" -
+    the same "when would this flip" question the tab's own flip_title
+    copy already asks, just solved for a hypothetical PRICE instead of a
+    hypothetical holding PERIOD (see break_even_years above for that
+    other inversion of the same family of formula).
+
+    Derivation: expected_rerating_return(P, FV, N) = (FV/P)**(1/N) - 1
+    = target_return  =>  FV/P = (1+target_return)**N  =>
+    P = FV / (1+target_return)**N.
+
+    None if fair_value isn't positive, years isn't positive, or
+    (1 + target_return) isn't positive (a target_return at or below
+    -100%/yr has no real solution - never guessed)."""
+    if not fair_value or fair_value <= 0 or not years or years <= 0:
+        return None
+    base = 1.0 + (target_return if target_return is not None else 0.0)
+    if base <= 0:
+        return None
+    return fair_value / (base ** years)
+
+
 def verdict(return_spread, toll_rate):
     """{"passes": bool, "margin_pct": float} or None if either input is
     missing. margin_pct is signed: positive = clears the toll by that

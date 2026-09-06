@@ -1865,6 +1865,29 @@ st.markdown(
       }
       .sdd-mnav-sheet .sdd-more-panel { margin: 0 auto; }
     }
+
+    /* Fix #3b (Value Opportunity tab): the toll/bridge card gets the
+       approved mock's own teal border+gradient, and the trim card a
+       rounded-corner nudge - via a scoped CSS hook on each card's own
+       st.container(key=...), the same pattern already used site-wide
+       for scoped container styling (see pw_account_name_box/
+       site_nav_row above). A real st.container (not pure HTML) is
+       needed for both, since each now holds real widgets (the horizon
+       radio/trim slider, and the new Plotly charts). Targets
+       stLayoutWrapper, not stVerticalBlockBorderWrapper - the research
+       shelf's own fix #5 CSS (just above _render_research_shelf)
+       already migrated to stLayoutWrapper because Streamlit renamed the
+       testid; a regression test (_svc_test_shelf_fix5.py, not
+       committed) specifically checks stVerticalBlockBorderWrapper never
+       reappears anywhere on the page, which is what caught this. */
+    div[class*="st-key-sw_bridge_card"] div[data-testid="stLayoutWrapper"] {
+        border: 1.5px solid #2dd4bf !important;
+        background: linear-gradient(160deg, #0e1930, #14243f) !important;
+        border-radius: 12px !important;
+    }
+    div[class*="st-key-sw_trim_card"] div[data-testid="stLayoutWrapper"] {
+        border-radius: 12px !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -14223,35 +14246,327 @@ def _switch_correlation_vs_rest(candidate_ticker, exclude_hkey, _holdings, _anal
         return None
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def _switch_universe_options():
+    """Fix #3b, 2nd addendum ("easy input"): the searchable "New
+    opportunity" picker's option list - ticker + company name, straight
+    from the nightly scan's own snapshot cache (snapshot_store.
+    all_public_rows(), the SAME local-SQLite source _home_top5_by_
+    country() already reads for "Tonight's top 5"), so this is a local
+    DB read, never a new per-pageview network call. Returns a list of
+    (ticker, "TICKER — Company Name") tuples sorted by ticker; a ticker
+    with no cached company name yet still gets an entry (label falls
+    back to the bare ticker rather than being dropped)."""
+    try:
+        rows = snapshot_store.all_public_rows()
+    except Exception:
+        rows = []
+    out, seen = [], set()
+    for r in rows:
+        t = (r.get("ticker") or "").strip().upper()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        name = (r.get("company_name") or "").strip()
+        out.append((t, f"{t} — {name}" if name else t))
+    out.sort(key=lambda pair: pair[0])
+    return out
+
+
+def _switch_research_tickers_with_iv():
+    """Sorted list of tickers that have a hand-built research DCF fair
+    value (compounder_data.json's own "Fair Value" section - the exact
+    source _switch_get_iv() reads first, before the 🤖 auto fallback) -
+    the "📚 hand-built-research companies" pool for both the fix #3b
+    default pair (item 4) and the 2nd addendum's quick-pick chips."""
+    try:
+        _data = _load_compounder_data()
+        _methods = ((_data or {}).get("sections", {}).get("Fair Value", {})
+                    .get("valuation_methods", {}))
+        return sorted(t for t, m in _methods.items() if (m or {}).get("dcf") is not None)
+    except Exception:
+        return []
+
+
+def _switch_research_quickpicks(exclude_ticker=None, limit=8):
+    """Fix #3b, 2nd addendum: quick-pick chips for the 📚 hand-built
+    research companies - a chip tap always lands on a pair with real
+    fair-value data on both sides. `exclude_ticker` (the current "sell"
+    side) is dropped so a chip never offers to switch a holding into
+    itself. Up to `limit` (ticker, label) tuples, alphabetical - a fixed,
+    predictable order rather than reshuffling on every rerun."""
+    exclude_ticker = (exclude_ticker or "").strip().upper()
+    _label_map = dict(_switch_universe_options())
+    out = []
+    for t in _switch_research_tickers_with_iv():
+        if t == exclude_ticker:
+            continue
+        out.append((t, _label_map.get(t, t)))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _switch_top_scorer_quickpicks(exclude_ticker=None, limit=8):
+    """Fix #3b, 2nd addendum: quick-pick chips for "last night's top
+    Value Scorers" - the same snapshot_store.all_public_rows() source
+    and ETF-exclusion rule _home_top5_by_country() already uses, sorted
+    by Value Score descending across BOTH countries combined (this tab
+    isn't AU/US-split like the home page's own top-5 tables). No new
+    network call - the same local SQLite read the universe picker above
+    already does."""
+    try:
+        rows = snapshot_store.all_public_rows()
+    except Exception:
+        rows = []
+    exclude_ticker = (exclude_ticker or "").strip().upper()
+    _pool = []
+    for r in rows:
+        price = r.get("price")
+        if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+            continue
+        if r.get("value_score") is None:
+            continue
+        if "ETF" in (r.get("company_name") or "").upper():
+            continue
+        t = (r.get("ticker") or "").strip().upper()
+        if not t or t == exclude_ticker:
+            continue
+        _pool.append(r)
+    _pool.sort(key=lambda r: r.get("value_score") or 0, reverse=True)
+    out = []
+    for r in _pool[:limit]:
+        t = r["ticker"].strip().upper()
+        name = (r.get("company_name") or "").strip()
+        out.append((t, f"{t} — {name}" if name else t))
+    return out
+
+
+def _switch_default_pair(_priced_rows):
+    """Fix #3b, item 4 ("never open on an error state"): a sensible
+    default (from_key, to_ticker) pair for a portfolio's very FIRST
+    visit to this tab, so the full card layout renders immediately
+    instead of landing on a blank "type a ticker" state. Picks the
+    largest priced holding that has its own fair-value estimate
+    (falling back to the largest priced holding at all if none do),
+    then a 📚 hand-built research ticker that isn't that same holding -
+    so both sides of the very first pair shown have real numbers.
+    Returns (from_key, to_ticker); to_ticker is None if no research
+    candidate is available (caller falls back to no default)."""
+    _with_iv = [r for r in _priced_rows if _switch_get_iv(r["ticker"])[0] is not None]
+    _pool = _with_iv or list(_priced_rows)
+    if not _pool:
+        return None, None
+    _default_row = max(_pool, key=lambda r: r["value_aud"] or 0)
+    _from_key = (_default_row["portfolio"], _default_row["ticker"])
+    _to_ticker = next(
+        (t for t in _switch_research_tickers_with_iv() if t != _default_row["ticker"]), None,
+    )
+    return _from_key, _to_ticker
+
+
+def _switch_readings_table_html(rows, from_ticker, to_ticker):
+    """Fix #3b, item 2: the side-by-side card as a colour-coded HTML
+    table (green = the stronger reading of the pair, matching the
+    approved mock's own convention) instead of a bare st.dataframe grid.
+    `rows` is a list of {"label", "a", "b", "winner"} dicts - `winner`
+    ("a"/"b"/None) is pre-computed by the caller since "higher/lower is
+    better" differs per metric (correlation is lower-is-better,
+    everything else here is higher-is-better)."""
+    _td = "padding:6px 8px;border-bottom:1px solid #16233d;font-size:12.5px"
+    _tr_html = []
+    for r in rows:
+        _a_style = f"{_td};color:#34d399;font-weight:700" if r["winner"] == "a" else f"{_td};color:#e6edf5"
+        _b_style = f"{_td};color:#34d399;font-weight:700" if r["winner"] == "b" else f"{_td};color:#e6edf5"
+        _tr_html.append(
+            f"<tr><td style='{_td};color:#8aa0b8'>{html.escape(r['label'])}</td>"
+            f"<td style='{_a_style}'>{r['a']}</td>"
+            f"<td style='{_b_style}'>{r['b']}</td></tr>"
+        )
+    _th = "text-align:left;color:#8aa0b8;font-size:11px;padding:6px 8px;border-bottom:1px solid #1f3352"
+    return (
+        "<table style='width:100%;border-collapse:collapse'>"
+        f"<tr><th style='{_th}'></th><th style='{_th}'>{html.escape(from_ticker)}</th>"
+        f"<th style='{_th}'>{html.escape(to_ticker)}</th></tr>"
+        + "".join(_tr_html) + "</table>"
+    )
+
+
+def _switch_bridge_bars_fig(ret_b, ret_a, toll_z, net, to_ticker, from_ticker, lang):
+    """Addendum to Fix #3b ("Value Opportunity gets graphs"), chart 1:
+    three horizontal bars (candidate/incumbent implied return, the toll)
+    plus a fourth signed NET bar - "one glance = the verdict's
+    arithmetic", per the addendum's own words. Recomputed on every
+    input/horizon change since the caller passes in the already-live
+    _ret_a/_ret_b/_z/net values, same as the tile row above it."""
+    _labels = [
+        i18n.t("portfolio.switch.chart_bridge_row_candidate", lang, ticker=to_ticker),
+        i18n.t("portfolio.switch.chart_bridge_row_incumbent", lang, ticker=from_ticker),
+        i18n.t("portfolio.switch.chart_bridge_row_toll", lang),
+        i18n.t("portfolio.switch.chart_bridge_row_net", lang),
+    ]
+    _values = [ret_b * 100, ret_a * 100, toll_z * 100, net * 100]
+    _colors = [
+        "#34d399" if ret_b >= 0 else "#fb7185",
+        "#34d399" if ret_a >= 0 else "#fb7185",
+        "#fbbf24",
+        "#34d399" if net >= 0 else "#fb7185",
+    ]
+    fig = go.Figure(go.Bar(
+        x=_values, y=_labels, orientation="h", marker_color=_colors,
+        text=[f"{v:+.1f}%" for v in _values], textposition="outside", cliponaxis=False,
+    ))
+    _pad = max(abs(v) for v in _values) * 1.35 or 1.0
+    fig.update_layout(
+        title=i18n.t("portfolio.switch.chart_bridge_title", lang),
+        xaxis_title=i18n.t("portfolio.switch.chart_bridge_xaxis", lang),
+        showlegend=False, height=260, margin=dict(l=10, r=50, t=40, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2e0"),
+        xaxis=dict(range=[-_pad, _pad], zeroline=True, zerolinecolor="rgba(138,160,184,0.35)", showgrid=False),
+        yaxis=dict(showgrid=False),
+    )
+    return fig
+
+
+def _switch_crossover_fig(iv_a, ret_b, toll_z, price_a_today, years, from_ticker, lang):
+    """Addendum to Fix #3b, chart 2: net %/yr (y) vs the incumbent's
+    hypothetical share price (x), holding its own fair value, the
+    candidate's own implied return, and the toll all fixed at today's
+    other numbers - the same "holding the other numbers still" framing
+    the ⏳ box's own copy already uses. Only the incumbent's OWN implied
+    return moves as its assumed price does, via the exact same
+    expected_rerating_return() formula the verdict itself uses; the
+    flip price comes from switch_analyzer_engine.price_flip_for_
+    incumbent() (this addendum's one new pure formula). Returns
+    (figure, flip_price) - (None, None) if there isn't a valid fair
+    value/price to sweep."""
+    if not price_a_today or price_a_today <= 0 or not iv_a or iv_a <= 0:
+        return None, None
+    _lo, _hi = price_a_today * 0.4, price_a_today * 1.8
+    _xs = [_lo + (_hi - _lo) * i / 80 for i in range(81)]
+    _nets = []
+    for _p in _xs:
+        _ret_a_p = switch_analyzer_engine.expected_rerating_return(_p, iv_a, years)
+        _nets.append((ret_b - _ret_a_p - toll_z) * 100 if _ret_a_p is not None else None)
+    _flip_price = switch_analyzer_engine.price_flip_for_incumbent(iv_a, ret_b - toll_z, years)
+    _ret_a_today = switch_analyzer_engine.expected_rerating_return(price_a_today, iv_a, years)
+    _today_net = (ret_b - _ret_a_today - toll_z) * 100 if _ret_a_today is not None else None
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=_xs, y=_nets, mode="lines", line=dict(color="#2dd4bf", width=2.5),
+        name=i18n.t("portfolio.switch.chart_crossover_legend", lang, ticker=from_ticker),
+    ))
+    fig.add_hline(y=0, line_dash="dot", line_color="rgba(138,160,184,0.5)")
+    if _today_net is not None:
+        fig.add_trace(go.Scatter(
+            x=[price_a_today], y=[_today_net], mode="markers+text",
+            marker=dict(color="#fbbf24", size=11, symbol="circle"),
+            text=[i18n.t("portfolio.switch.chart_crossover_today_label", lang)],
+            textposition="top center", textfont=dict(size=11, color="#fbbf24"), showlegend=False,
+        ))
+    if _flip_price is not None and _lo <= _flip_price <= _hi:
+        fig.add_vline(
+            x=_flip_price, line_dash="dash", line_color="#e6edf5",
+            annotation_text=i18n.t(
+                "portfolio.switch.chart_crossover_flip_label", lang, price=f"{_flip_price:,.2f}",
+            ),
+            annotation_position="top", annotation_font_size=11, annotation_font_color="#e6edf5",
+        )
+    fig.update_layout(
+        title=i18n.t("portfolio.switch.flip_title", lang),
+        xaxis_title=i18n.t("portfolio.switch.chart_crossover_xaxis", lang, ticker=from_ticker),
+        yaxis_title=i18n.t("portfolio.switch.chart_crossover_yaxis", lang),
+        showlegend=False, height=280, margin=dict(l=10, r=10, t=40, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2e0"),
+        xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="rgba(138,160,184,0.15)"),
+    )
+    return fig, _flip_price
+
+
+def _switch_trim_curve_fig(ret_a, ret_b, current_trim, lang):
+    """Addendum to Fix #3b, chart 3: blended implied return (y) vs
+    fraction of the incumbent sold (x, 0-100%) - a straight line by
+    construction (blended_expected_return() is a linear interpolation),
+    with the slider's current position marked and the keep/100%
+    endpoints labelled, per the addendum's own spec."""
+    _xs = [i / 20 for i in range(21)]  # 0%, 5%, ... 100%
+    _ys = [switch_analyzer_engine.blended_expected_return(ret_a, ret_b, x) * 100 for x in _xs]
+    _current_blend = switch_analyzer_engine.blended_expected_return(ret_a, ret_b, current_trim) * 100
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=[x * 100 for x in _xs], y=_ys, mode="lines", line=dict(color="#a78bfa", width=2.5), showlegend=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=[current_trim * 100], y=[_current_blend], mode="markers", marker=dict(color="#e6edf5", size=11),
+        showlegend=False,
+    ))
+    fig.add_annotation(x=0, y=_ys[0], text=i18n.t("portfolio.switch.chart_trim_keep_label", lang),
+                        showarrow=False, yshift=16, font=dict(size=11, color="#8aa0b8"))
+    fig.add_annotation(x=100, y=_ys[-1], text=i18n.t("portfolio.switch.chart_trim_full_label", lang),
+                        showarrow=False, yshift=16, font=dict(size=11, color="#8aa0b8"))
+    fig.update_layout(
+        title=i18n.t("portfolio.switch.chart_trim_title", lang),
+        xaxis_title=i18n.t("portfolio.switch.chart_trim_xaxis", lang),
+        yaxis_title=i18n.t("portfolio.switch.chart_trim_yaxis", lang),
+        showlegend=False, height=260, margin=dict(l=10, r=10, t=40, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2e0"),
+        xaxis=dict(showgrid=False, ticksuffix="%"), yaxis=dict(showgrid=True, gridcolor="rgba(138,160,184,0.15)"),
+    )
+    return fig
+
+
 def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses):
-    """Owner review round fix #3 (rebuilt from Part 17's original wizard):
+    """Owner review round fix #3, fix #3b, and fix #3b's two addenda -
     everything visible on one screen, top to bottom exactly as the
     approved switch_analyzer_mock.html lays it out - pair pickers +
-    settings line up top -> the red "bottom line" verdict box -> flag
+    settings line up top -> the red "bottom line" verdict CARD -> flag
     chip strip -> side-by-side readings card + toll/bridge card
-    side-by-side -> trim-slider card. No "Look up" gate button: the
-    candidate ticker resolves automatically as soon as it's typed
-    (cached per-ticker in session_state so an unchanged ticker doesn't
-    re-fetch on every rerun), same as every other input here recomputing
-    live. The maths is untouched - every switch_analyzer_engine.* call
-    below is identical to the pre-rebuild version; this function only
-    changes what order things render in and how the inputs are collected.
+    side-by-side (each now with its own Plotly chart) -> trim-slider
+    card (also with its own chart). Renamed to "Value Opportunity"
+    everywhere the public sees it (i18n's portfolio.tab_switch) - this
+    function/module name and the "portfolio.switch.*" key prefix
+    intentionally stay as-is, per the rename instruction's own words.
+
+    Fix #3b's own three complaints ("still looks wrong... make it user
+    friendly") are addressed by: (1) styled HTML/CSS cards instead of
+    bare st.info/st.dataframe blocks - see _switch_readings_table_html()
+    for the side-by-side card, and the sw_bridge_card/sw_trim_card
+    st.container(key=...) + scoped CSS hook (this site's established
+    pattern - see pw_account_name_box/site_nav_row from the header/nav
+    fixes) for the bridge and trim cards' teal border+gradient; (2) the
+    candidate ticker box is now a searchable dropdown (2nd addendum,
+    _switch_universe_options()) with quick-pick chips, replacing the
+    free-text Yahoo-format box - only the INPUT WIDGET changed, the
+    live-price lookup pipeline below it is untouched; (3) a sensible
+    DEFAULT pair (_switch_default_pair()) so a first-ever visit renders
+    the full layout immediately instead of a blank "type a ticker"
+    state, and the bridge tiles now render with "-" placeholders (never
+    just vanishing) plus a plain-English note when one side has no fair
+    value at all, even from the 🤖 fallback.
+
+    The 1st addendum ("gets graphs") adds three Plotly charts, one per
+    card - _switch_bridge_bars_fig/_switch_crossover_fig/_switch_trim_
+    curve_fig (all three defined just above this function) - each
+    recomputing on every input/horizon/trim change, EN/ES via i18n.
+
+    The maths itself is untouched from the original Part 17 build: every
+    switch_analyzer_engine.* call below is either identical to the
+    pre-rebuild version or (price_flip_for_incumbent, this addendum's
+    one new pure formula) a new, separately-testable addition to that
+    same pure-logic module - never a change to an existing formula.
     Needs a single named portfolio (not the combined "All portfolios"
     view - see combined_view_note) with at least one holding that has a
     live price.
 
-    Two small additions beyond a pure reshuffle, both presentation-only
-    (no engine changes): the side-by-side card gains Quality (already
-    fetched via portfolio_health_engine.fetch_snapshot()/_analyses - no
-    new network call) and correlation-to-rest-of-portfolio (already
-    computed for the flag strip, now also shown as a plain reading) for
-    BOTH tickers, matching the mock. Moat is deliberately left out - see
-    the col_quality/col_correlation i18n comment for why. The flag strip
-    also gains the mock's third, non-warning chip ("Held > 12 months -
-    CGT discount already applies") using switch_analyzer_engine.
-    toll_without_discount() - the same function twelve_month_chip's own
-    counterfactual already calls, just used in the other direction
-    exactly as that function's own docstring anticipates."""
+    Two small additions from fix #3 itself, kept as-is: the side-by-side
+    card's Quality (already fetched via portfolio_health_engine.
+    fetch_snapshot()/_analyses - no new network call) and correlation-
+    to-rest-of-portfolio (already computed for the flag strip). Moat is
+    deliberately left out - see the col_quality/col_correlation i18n
+    comment for why. The flag strip also keeps fix #3's third,
+    non-warning chip ("Held > 12 months - CGT discount already
+    applies")."""
     _lang = st.session_state.get("lang", "en")
     _sw = lambda key, **fmt: i18n.t(f"portfolio.switch.{key}", _lang, **fmt)
 
@@ -14275,18 +14590,41 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
         st.session_state[_settings_open_key] = not _settings_ready
 
     # --- Pair pickers + settings, one row (fix #3: no wizard, nothing
-    # gated behind a button) ---------------------------------------------
+    # gated behind a button). Fix #3b, item 4: seed sensible session-
+    # state DEFAULTS the first time this portfolio ever opens this tab,
+    # BEFORE the widgets below are instantiated, so the full card layout
+    # renders on arrival instead of a blank "type a ticker" state.
+    # Fix #3b, 2nd addendum: the free-text Yahoo-format box is now a
+    # searchable ticker+company-name dropdown over the nightly snapshot
+    # universe (accept_new_options=True still takes a pasted exact
+    # ticker, uppercased below, same as the old box did). -----------------
     _labels = _hlabels(_holdings)
     _from_options = [_hkey(h) for h in _holdings if _hkey(h) in {(r["portfolio"], r["ticker"]) for r in _priced_rows}]
-    _pp1, _pp2, _pp3 = st.columns([1.3, 1.5, 1.1])
+    _universe_options = _switch_universe_options()
+    _label_to_ticker = {lbl: tk for tk, lbl in _universe_options}
+    _ticker_to_label = dict(_universe_options)
+
+    _from_select_key = _pf_key(_active_portfolio, "sw_from_select")
+    _to_select_key = _pf_key(_active_portfolio, "sw_to_select")
+    if _from_select_key not in st.session_state and _to_select_key not in st.session_state:
+        _default_from_key, _default_to_ticker = _switch_default_pair(_priced_rows)
+        if _default_from_key is not None and _default_from_key in _from_options:
+            st.session_state[_from_select_key] = _default_from_key
+        if _default_to_ticker:
+            st.session_state[_to_select_key] = _ticker_to_label.get(_default_to_ticker, _default_to_ticker)
+
+    _pp1, _pp2, _pp3 = st.columns([1.5, 1.3, 1.1])
     with _pp1:
-        _to_ticker_in = st.text_input(
-            _sw("to_label"), key=_pf_key(_active_portfolio, "sw_to_ticker"),
-        ).strip().upper()
+        _to_picked = st.selectbox(
+            _sw("to_label"), [lbl for _, lbl in _universe_options], index=None,
+            placeholder=_sw("to_placeholder"), accept_new_options=True, filter_mode="fuzzy",
+            key=_to_select_key,
+        )
+        _to_ticker_in = _label_to_ticker.get(_to_picked, _to_picked or "").strip().upper()
     with _pp2:
         _from_key = st.selectbox(
             _sw("from_label"), _from_options, format_func=lambda k: _labels.get(k, k[1]),
-            key=_pf_key(_active_portfolio, "sw_from_select"),
+            key=_from_select_key,
         )
     with _pp3:
         st.write("")  # vertical alignment with the two inputs' labels
@@ -14295,6 +14633,44 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
         if st.button("✎ " + _sw("settings_title"), key=_pf_key(_active_portfolio, "sw_settings_toggle"),
                      use_container_width=True):
             st.session_state[_settings_open_key] = not st.session_state[_settings_open_key]
+
+    # --- Quick-pick chips (2nd addendum): one tap fills the "New
+    # opportunity" side - 📚 hand-built research companies, then last
+    # night's top Value Scorers, both excluding whatever's already
+    # picked as the "sell" side. st.pills always reports its CURRENT
+    # selection rather than firing a one-shot click event, so a pick is
+    # applied by seeding the dropdown's own session-state key and
+    # immediately clearing+rerunning - otherwise the same pill would
+    # keep "firing" on every later, unrelated rerun. ---------------------
+    _qp_from_ticker = _from_key[1] if _from_key else None
+    _qp_research = _switch_research_quickpicks(exclude_ticker=_qp_from_ticker)
+    _qp_scorers = _switch_top_scorer_quickpicks(exclude_ticker=_qp_from_ticker)
+    if _qp_research or _qp_scorers:
+        _qp1, _qp2 = st.columns(2)
+        if _qp_research:
+            with _qp1:
+                _qp_research_key = _pf_key(_active_portfolio, "sw_qp_research")
+                _qp_research_map = dict(_qp_research)
+                _qp_pick = st.pills(
+                    _sw("quickpick_research_label"), [t for t, _ in _qp_research],
+                    format_func=lambda t: _qp_research_map.get(t, t), key=_qp_research_key,
+                )
+                if _qp_pick:
+                    st.session_state[_to_select_key] = _ticker_to_label.get(_qp_pick, _qp_pick)
+                    st.session_state[_qp_research_key] = None
+                    st.rerun()
+        if _qp_scorers:
+            with _qp2:
+                _qp_scorers_key = _pf_key(_active_portfolio, "sw_qp_scorers")
+                _qp_scorers_map = dict(_qp_scorers)
+                _qp_pick2 = st.pills(
+                    _sw("quickpick_scorers_label"), [t for t, _ in _qp_scorers],
+                    format_func=lambda t: _qp_scorers_map.get(t, t), key=_qp_scorers_key,
+                )
+                if _qp_pick2:
+                    st.session_state[_to_select_key] = _ticker_to_label.get(_qp_pick2, _qp_pick2)
+                    st.session_state[_qp_scorers_key] = None
+                    st.rerun()
 
     if st.session_state[_settings_open_key]:
         with st.container(border=True):
@@ -14373,6 +14749,7 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
     _iv_a, _source_a = _switch_get_iv(_from_ticker)
     _iv_b, _source_b = _switch_get_iv(_to_ticker)
     _source_label = {"hand_built": _sw("source_hand_built"), "auto": _sw("source_auto")}
+    _source_badge = {"hand_built": "📚", "auto": "🤖"}
     _ret_a = switch_analyzer_engine.expected_rerating_return(_price_a, _iv_a, _years)
     _ret_b = switch_analyzer_engine.expected_rerating_return(_price_b, _iv_b, _years)
 
@@ -14391,21 +14768,34 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
     _spread = (_ret_b - _ret_a) if (_ret_a is not None and _ret_b is not None) else None
     _v = switch_analyzer_engine.verdict(_spread, _z) if (_spread is not None and _z is not None) else None
 
-    # --- The bottom line (first thing under the pickers, per the mock) --
-    st.markdown(f"##### {_sw('verdict_title')}")
-    _verdict_html_open = ("<div style='border-left:4px solid #fb7185; "
-                           "background:rgba(251,113,133,.06); border-radius:6px; "
-                           "padding:12px 16px; margin:6px 0; font-size:1.02rem;'>")
+    # --- The bottom line, now a full styled card (fix #3b item 2: was a
+    # bare left-border box under a separate "##### Verdict" heading) -
+    # bold ONE-LINE lead sentence + the existing detail sentence + a
+    # muted disclaimer, matching the mock's "■ The bottom line of these
+    # numbers" card structure. --------------------------------------------
     if _v is None:
-        st.markdown(_verdict_html_open + _sw("verdict_no_iv") + "</div>", unsafe_allow_html=True)
+        _verdict_body = html.escape(_sw("verdict_no_iv"))
     else:
         _vkey = "verdict_passes" if _v["passes"] else "verdict_fails"
-        _vtext = _sw(
+        _lead_key = "verdict_lead_passes" if _v["passes"] else "verdict_lead_fails"
+        _margin_str = f"{abs(_v['margin_pct']) * 100:.1f}"
+        _lead = _sw(_lead_key, margin=_margin_str)
+        _detail = _sw(
             _vkey, to_ticker=_to_ticker, from_ticker=_from_ticker,
             spread=f"{_spread * 100:.1f}", years=_years, toll=f"{_z * 100:.2f}",
-            margin=f"{abs(_v['margin_pct']) * 100:.1f}",
+            margin=_margin_str,
         )
-        st.markdown(_verdict_html_open + _vtext + "</div>", unsafe_allow_html=True)
+        _verdict_body = f"<b>{html.escape(_lead)}</b> {html.escape(_detail)}"
+    st.markdown(
+        "<div style='border:1.5px solid #fb7185;"
+        "background:linear-gradient(160deg,#1a0f16,#16121f);border-radius:12px;"
+        "padding:13px 16px;margin-bottom:14px'>"
+        f"<h4 style='margin:0 0 8px;font-size:13.5px;color:#fb7185'>■ {html.escape(_sw('verdict_title'))}</h4>"
+        f"<div style='font-size:1.02rem;line-height:1.65;color:#e6edf5'>{_verdict_body}</div>"
+        f"<div style='color:#5b7290;font-size:11px;margin-top:8px'>{html.escape(_sw('verdict_disclaimer'))}</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
     # --- Flags, as an inline chip strip rather than stacked warning boxes
     _total_portfolio_value = _totals.get("value_aud") or 0.0
@@ -14485,89 +14875,148 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
     _g1, _g2 = st.columns([1, 1.1])
     _q_a = (_analyses.get(_from_key, {}).get("snapshot") or {}).get("quality_score")
     _q_b = _to.get("quality_score")
+    def _sbs_winner(a, b, higher_is_better=True):
+        """None (no winner shown) if either side is missing or they tie;
+        otherwise which side ("a"/"b") reads as the stronger side for
+        this metric - correlation is the one lower-is-better row."""
+        if a is None or b is None or a == b:
+            return None
+        if higher_is_better:
+            return "a" if a > b else "b"
+        return "a" if a < b else "b"
+
+    _upside_a = ((_iv_a - _price_a) / _price_a * 100) if (_iv_a is not None and _price_a) else None
+    _upside_b = ((_iv_b - _price_b) / _price_b * 100) if (_iv_b is not None and _price_b) else None
+
     with _g1:
         with st.container(border=True):
             st.markdown(f"**{_sw('side_by_side_title')}**")
-            # Metrics as ROWS, the two tickers as columns (matching the
-            # mock's own card layout - and, unlike the pre-rebuild
-            # ticker-per-row/metric-per-column orientation, this keeps
-            # every row readable without a horizontal scrollbar now that
-            # Quality/Correlation add two more metrics to the card).
-            def _sbs_row(_label, _a, _b):
-                return {"": _label, _from_ticker: _a, _to_ticker: _b}
+            # Fix #3b, item 2: a colour-coded HTML table (green = the
+            # stronger reading, matching the mock) instead of a bare
+            # st.dataframe grid - and the Fair value row now carries the
+            # 📚/🤖 source badge inline, per the mock's own "19.28 📚"
+            # convention (the separate Source row below it is kept too,
+            # for the fuller "hand-built research" wording it alone
+            # gives - a deliberate two-rows-instead-of-one-merged-row
+            # deviation from the mock's single "Price / Intrinsic value"
+            # row, flagged in this fix's own report).
             _sbs_rows = [
-                _sbs_row(_sw("col_price"),
-                         f"{_price_a:,.2f}" if _price_a is not None else "n/a",
-                         f"{_price_b:,.2f}" if _price_b is not None else "n/a"),
-                _sbs_row(_sw("col_fair_value"),
-                         f"{_iv_a:,.2f}" if _iv_a is not None else "n/a",
-                         f"{_iv_b:,.2f}" if _iv_b is not None else "n/a"),
-                _sbs_row(_sw("col_source"), _source_label.get(_source_a, "n/a"), _source_label.get(_source_b, "n/a")),
-                _sbs_row(_sw("col_upside"),
-                         (f"{((_iv_a - _price_a) / _price_a) * 100:.1f}%" if (_iv_a is not None and _price_a) else "n/a"),
-                         (f"{((_iv_b - _price_b) / _price_b) * 100:.1f}%" if (_iv_b is not None and _price_b) else "n/a")),
-                _sbs_row(_sw("col_expected_return", years=_years),
-                         (f"{_ret_a * 100:.1f}%" if _ret_a is not None else "n/a"),
-                         (f"{_ret_b * 100:.1f}%" if _ret_b is not None else "n/a")),
-                _sbs_row(_sw("col_quality"), f"{_q_a:.0f}" if _q_a is not None else "n/a",
-                         f"{_q_b:.0f}" if _q_b is not None else "n/a"),
-                _sbs_row(_sw("col_correlation"), f"{_corr_a:.2f}" if _corr_a is not None else "n/a",
-                         f"{_corr_b:.2f}" if _corr_b is not None else "n/a"),
+                {"label": _sw("col_price"),
+                 "a": f"{_price_a:,.2f}" if _price_a is not None else "n/a",
+                 "b": f"{_price_b:,.2f}" if _price_b is not None else "n/a", "winner": None},
+                {"label": _sw("col_fair_value"),
+                 "a": (f"{_iv_a:,.2f} {_source_badge.get(_source_a, '')}".strip() if _iv_a is not None else "n/a"),
+                 "b": (f"{_iv_b:,.2f} {_source_badge.get(_source_b, '')}".strip() if _iv_b is not None else "n/a"),
+                 "winner": None},
+                {"label": _sw("col_source"),
+                 "a": _source_label.get(_source_a, "n/a"), "b": _source_label.get(_source_b, "n/a"), "winner": None},
+                {"label": _sw("col_upside"),
+                 "a": (f"{_upside_a:+.1f}%" if _upside_a is not None else "n/a"),
+                 "b": (f"{_upside_b:+.1f}%" if _upside_b is not None else "n/a"),
+                 "winner": _sbs_winner(_upside_a, _upside_b)},
+                {"label": _sw("col_expected_return", years=_years),
+                 "a": (f"{_ret_a * 100:+.1f}%" if _ret_a is not None else "n/a"),
+                 "b": (f"{_ret_b * 100:+.1f}%" if _ret_b is not None else "n/a"),
+                 "winner": _sbs_winner(_ret_a, _ret_b)},
+                {"label": _sw("col_quality"),
+                 "a": f"{_q_a:.0f}" if _q_a is not None else "n/a",
+                 "b": f"{_q_b:.0f}" if _q_b is not None else "n/a",
+                 "winner": _sbs_winner(_q_a, _q_b)},
+                {"label": _sw("col_correlation"),
+                 "a": f"{_corr_a:.2f}" if _corr_a is not None else "n/a",
+                 "b": f"{_corr_b:.2f}" if _corr_b is not None else "n/a",
+                 "winner": _sbs_winner(_corr_a, _corr_b, higher_is_better=False)},
             ]
-            st.dataframe(_sbs_rows, hide_index=True, use_container_width=True)
+            st.markdown(
+                _switch_readings_table_html(_sbs_rows, _from_ticker, _to_ticker), unsafe_allow_html=True,
+            )
+            st.caption(_sw("side_by_side_caption"))
+
+    _net = _v["margin_pct"] if _v is not None else None
 
     with _g2:
-        with st.container(border=True):
+        # Fix #3b, item 2: the toll/bridge card gets the mock's own teal
+        # border+gradient via a scoped CSS hook on this container's key
+        # (the same st.container(key=...) + CSS pattern already used
+        # site-wide for scoped styling - see pw_account_name_box/
+        # site_nav_row from the header/nav fixes) - it needs a real
+        # st.container (not pure HTML) because it holds real widgets
+        # (the horizon radio, the two new Plotly charts below).
+        with st.container(key="sw_bridge_card", border=True):
             st.markdown(f"**{_sw('bridge_title')}**")
 
-            # NET tiles (implied return B − implied return A − toll = NET),
-            # matching the mock's own tile row - all three inputs are
-            # already computed above (_ret_a/_ret_b/_z), this is display
-            # only. Skipped (falls back to the derivation table alone)
-            # when either implied return is unavailable, same condition
-            # the verdict box above already uses.
-            if _ret_a is not None and _ret_b is not None and _z is not None:
-                _net = _v["margin_pct"] if _v is not None else None
-                _net_color = "#34d399" if (_net is not None and _net >= 0) else "#fb7185"
-                _tile = lambda caption, value, color, flex="1", bg="rgba(255,255,255,.03)", border="rgba(255,255,255,.12)": (
-                    f"<div style='flex:{flex};min-width:110px;background:{bg};border:1px solid {border};"
-                    f"border-radius:9px;padding:8px 10px'><div style='color:#8aa0b8;font-size:10.5px'>{caption}</div>"
-                    f"<div style='font-family:ui-monospace,Menlo,monospace;font-weight:700;font-size:17px;"
-                    f"color:{color}'>{value}</div></div>"
-                )
-                _tiles_html = (
-                    "<div style='display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;margin:2px 0 12px'>"
-                    + _tile(_sw("bridge_tile_caption", ticker=_to_ticker, iv=f"{_iv_b:,.2f}", years=_years),
-                            f"{_ret_b * 100:+.1f}%/yr", "#34d399" if _ret_b >= 0 else "#fb7185")
-                    + "<div style='align-self:center;color:#5b7290;font-weight:800'>&minus;</div>"
-                    + _tile(_sw("bridge_tile_caption", ticker=_from_ticker, iv=f"{_iv_a:,.2f}", years=_years),
-                            f"{_ret_a * 100:+.1f}%/yr", "#34d399" if _ret_a >= 0 else "#fb7185")
-                    + "<div style='align-self:center;color:#5b7290;font-weight:800'>&minus;</div>"
-                    + _tile(_sw("bridge_tile_toll_caption", years=_years), f"{_z * 100:.1f}%/yr", "#fbbf24")
-                    + "<div style='align-self:center;color:#5b7290;font-weight:800'>=</div>"
-                    + (_tile(_sw("bridge_tile_net_label"), f"{_net * 100:+.1f}%/yr", _net_color, flex="1.2",
-                              bg="rgba(251,113,133,.06)" if _net_color == "#fb7185" else "rgba(52,211,153,.06)",
-                              border=_net_color) if _net is not None else "")
-                    + "</div>"
-                )
-                st.markdown(_tiles_html, unsafe_allow_html=True)
-                if _net is not None:
-                    st.caption(_sw("bridge_tile_net_hurdle_passes" if _net >= 0 else "bridge_tile_net_hurdle_fails"))
+            # NET tiles (implied return B − implied return A − toll =
+            # NET), matching the mock's own tile row. Fix #3b, item 4:
+            # ALWAYS rendered now (was previously skipped entirely
+            # whenever either implied return was missing) - "-"
+            # placeholders plus a plain-English note instead of the tile
+            # row just vanishing, so a candidate with no fair value at
+            # all (e.g. an ETF) still shows the full card layout.
+            _net_color = "#34d399" if (_net is not None and _net >= 0) else "#fb7185"
+            _tile = lambda caption, value, color, flex="1", bg="rgba(255,255,255,.03)", border="rgba(255,255,255,.12)": (
+                f"<div style='flex:{flex};min-width:110px;background:{bg};border:1px solid {border};"
+                f"border-radius:9px;padding:8px 10px'><div style='color:#8aa0b8;font-size:10.5px'>{caption}</div>"
+                f"<div style='font-family:ui-monospace,Menlo,monospace;font-weight:700;font-size:17px;"
+                f"color:{color}'>{value}</div></div>"
+            )
+            _val_b = f"{_ret_b * 100:+.1f}%/yr" if _ret_b is not None else "—"
+            _val_a = f"{_ret_a * 100:+.1f}%/yr" if _ret_a is not None else "—"
+            _val_z = f"{_z * 100:.1f}%/yr" if _z is not None else "—"
+            _val_net = f"{_net * 100:+.1f}%/yr" if _net is not None else "—"
+            _color_b = "#8aa0b8" if _ret_b is None else ("#34d399" if _ret_b >= 0 else "#fb7185")
+            _color_a = "#8aa0b8" if _ret_a is None else ("#34d399" if _ret_a >= 0 else "#fb7185")
+            _tiles_html = (
+                "<div style='display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;margin:2px 0 12px'>"
+                + _tile(_sw("bridge_tile_caption", ticker=_to_ticker,
+                            iv=(f"{_iv_b:,.2f}" if _iv_b is not None else "n/a"), years=_years), _val_b, _color_b)
+                + "<div style='align-self:center;color:#5b7290;font-weight:800'>&minus;</div>"
+                + _tile(_sw("bridge_tile_caption", ticker=_from_ticker,
+                            iv=(f"{_iv_a:,.2f}" if _iv_a is not None else "n/a"), years=_years), _val_a, _color_a)
+                + "<div style='align-self:center;color:#5b7290;font-weight:800'>&minus;</div>"
+                + _tile(_sw("bridge_tile_toll_caption", years=_years), _val_z, "#fbbf24" if _z is not None else "#8aa0b8")
+                + "<div style='align-self:center;color:#5b7290;font-weight:800'>=</div>"
+                + _tile(_sw("bridge_tile_net_label"), _val_net, _net_color if _net is not None else "#8aa0b8",
+                        flex="1.2",
+                        bg=("rgba(251,113,133,.06)" if (_net is not None and _net_color == "#fb7185")
+                            else ("rgba(52,211,153,.06)" if _net is not None else "rgba(255,255,255,.03)")),
+                        border=(_net_color if _net is not None else "rgba(255,255,255,.12)"))
+                + "</div>"
+            )
+            st.markdown(_tiles_html, unsafe_allow_html=True)
+            if _net is not None:
+                st.caption(_sw("bridge_tile_net_hurdle_passes" if _net >= 0 else "bridge_tile_net_hurdle_fails"))
+            elif _ret_a is None or _ret_b is None:
+                st.caption(_sw("bridge_tile_no_iv_note", ticker=(_to_ticker if _ret_b is None else _from_ticker)))
+
+            # Addendum to Fix #3b, chart 1 ("bridge bars"): only
+            # plottable once all three of ret_a/ret_b/z (and therefore
+            # net) are real numbers - same gating the tile colouring
+            # above already implies.
+            if _ret_a is not None and _ret_b is not None and _z is not None and _net is not None:
+                sdd_plotly_chart(_switch_bridge_bars_fig(_ret_b, _ret_a, _z, _net, _to_ticker, _from_ticker, _lang))
 
             st.caption(_sw("bridge_caption", ticker=_from_ticker))
-            _bridge_rows = [
-                {"": _sw("bridge_value"), " ": f"A${_from_row['value_aud']:,.0f}"},
-                {"": _sw("bridge_cost_base"), " ": f"A${_from_row['cost_aud']:,.0f}"},
-                {"": _sw("bridge_gain"), " ": f"A${_toll['gain']:,.0f}"},
-                {"": (_sw("bridge_discount_applied") if _toll["discount_applied"] else _sw("bridge_discount_not_applied")), " ": ""},
-                {"": _sw("bridge_taxable_gain"), " ": f"A${_toll['taxable_gain']:,.0f}"},
-                {"": _sw("bridge_tax", rate=f"{_tax_rate * 100:.0f}"), " ": f"A${_toll['tax']:,.0f}"},
-                {"": _sw("bridge_brokerage", each=f"A${_brokerage:,.0f}"), " ": f"A${_toll['brokerage_total']:,.0f}"},
-                {"": _sw("bridge_proceeds"), " ": f"A${_toll['proceeds_after_toll']:,.0f}"},
+            # Fix #3b, item 2: the derivation is now a narrative list of
+            # label/value lines (matching the mock's own ".steps" text
+            # block) instead of a bare st.dataframe grid - same rows,
+            # same order, same numbers, just not rendered as a table.
+            _bridge_line = lambda label, value: (
+                "<div style='display:flex;justify-content:space-between;gap:10px;"
+                "padding:3px 0;font-size:12.5px;border-bottom:1px solid #16233d'>"
+                f"<span style='color:#8aa0b8'>{html.escape(label)}</span>"
+                f"<span style='color:#e6edf5;font-family:ui-monospace,Menlo,monospace'>{html.escape(value)}</span></div>"
+            )
+            _bridge_pairs = [
+                (_sw("bridge_value"), f"A${_from_row['value_aud']:,.0f}"),
+                (_sw("bridge_cost_base"), f"A${_from_row['cost_aud']:,.0f}"),
+                (_sw("bridge_gain"), f"A${_toll['gain']:,.0f}"),
+                ((_sw("bridge_discount_applied") if _toll["discount_applied"] else _sw("bridge_discount_not_applied")), ""),
+                (_sw("bridge_taxable_gain"), f"A${_toll['taxable_gain']:,.0f}"),
+                (_sw("bridge_tax", rate=f"{_tax_rate * 100:.0f}"), f"A${_toll['tax']:,.0f}"),
+                (_sw("bridge_brokerage", each=f"A${_brokerage:,.0f}"), f"A${_toll['brokerage_total']:,.0f}"),
+                (_sw("bridge_proceeds"), f"A${_toll['proceeds_after_toll']:,.0f}"),
             ]
-            st.dataframe(_bridge_rows, hide_index=True, use_container_width=True, column_config={
-                "": st.column_config.Column(""), " ": st.column_config.Column(""),
-            })
+            st.markdown("".join(_bridge_line(l, v) for l, v in _bridge_pairs), unsafe_allow_html=True)
             if _toll["toll_pct_of_value"] is not None:
                 st.caption(_sw("bridge_toll_pct", pct=f"{_toll['toll_pct_of_value'] * 100:.1f}"))
             with st.expander(_sw("bridge_formula_title"), expanded=False):
@@ -14609,9 +15058,26 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
                     + _sw("flip_title") + "</b> " + _flip_body + "</div>",
                     unsafe_allow_html=True,
                 )
+                # Addendum to Fix #3b, chart 2 ("crossover chart"): placed
+                # right after the ⏳ box it illustrates, per the addendum's
+                # own "in/next to the ⏳ box" placement instruction. Both
+                # describe a flip - the existing box over a hypothetical
+                # HOLDING PERIOD, this chart over a hypothetical PRICE
+                # (the mock's own "...if OCL.AX trades above ≈$13.90..."
+                # copy is the price framing) - complementary, not a
+                # replacement, so the box's own text/maths is untouched.
+                _crossover_fig, _flip_price = _switch_crossover_fig(
+                    _iv_a, _ret_b, _z, _price_a, _years, _from_ticker, _lang,
+                )
+                if _crossover_fig is not None:
+                    sdd_plotly_chart(_crossover_fig)
 
-    # --- Trim instead of switching fully, own card at the bottom --------
-    with st.container(border=True):
+    # --- Trim instead of switching fully, own card at the bottom - fix
+    # #3b's own st.container(key=...) + CSS-hook pattern again, for the
+    # rounded corners (the mock's plain card border is already the
+    # st.container(border=True) default, only the radius needed a nudge)
+    # and because this card also now holds a Plotly chart. ---------------
+    with st.container(key="sw_trim_card", border=True):
         st.markdown(f"##### {_sw('trim_title')}")
         st.caption(_sw("trim_caption", from_ticker=_from_ticker, to_ticker=_to_ticker))
         _trim = st.slider(
@@ -14629,7 +15095,18 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
         if _ret_a is not None and _ret_b is not None:
             _blend = switch_analyzer_engine.blended_expected_return(_ret_a, _ret_b, _trim)
             if _blend is not None:
-                st.caption(_sw("trim_blended_return", pct=f"{_blend * 100:.1f}"))
+                # Fix #3b: mock's trim table bolds this exact row
+                # ("<td><b>Implied return on this money...</b></td>") -
+                # this card uses a live caption instead of the mock's
+                # static 3-column table (pre-existing st.slider design,
+                # out of scope to restructure here), but the "bold
+                # blended row" instruction still applies to it.
+                st.caption(f"**{_sw('trim_blended_return', pct=f'{_blend * 100:.1f}')}**")
+                # Addendum to Fix #3b, chart 3 ("trim curve"): only
+                # plottable under the same both-sides-have-a-return
+                # gating the blended-return caption right above it
+                # already uses.
+                sdd_plotly_chart(_switch_trim_curve_fig(_ret_a, _ret_b, _trim, _lang))
 
         st.markdown(f"**{_sw('trim_sim_title')}**")
         # Full-portfolio weights (this named portfolio only - tickers are
