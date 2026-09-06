@@ -5156,8 +5156,30 @@ def _render_research_shelf(data, tickers, section_order, lang="en"):
     st.markdown(
         """
         <style>
-        div.st-key-rc_shelf_grid div[data-testid="stVerticalBlockBorderWrapper"] {
+        /* Owner review round fix #5: equal-height shelf cards. The
+        column itself already stretches to the row's tallest card (a
+        plain flexbox default), but the bordered card box inside it
+        only grew to fit ITS OWN content, leaving shorter cards with a
+        gap under the border and their "View research" button sitting
+        at a different height per card. (The original rule here
+        targeted stVerticalBlockBorderWrapper - a testid a newer
+        Streamlit renamed to stLayoutWrapper; updated to match.)
+        Stretching the border box to the full column height, then
+        making its content a flex column with the button pinned to the
+        bottom via margin-top:auto, makes every card in a row the same
+        height with its button bottom-aligned regardless of blurb
+        length. */
+        div.st-key-rc_shelf_grid div[data-testid="stLayoutWrapper"] {
             height: 100%;
+        }
+        div.st-key-rc_shelf_grid div[data-testid="stLayoutWrapper"] > div[data-testid="stVerticalBlock"] {
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+        div.st-key-rc_shelf_grid div[data-testid="stLayoutWrapper"] > div[data-testid="stVerticalBlock"]
+            > div[data-testid="stElementContainer"]:last-child {
+            margin-top: auto;
         }
         </style>
         """,
