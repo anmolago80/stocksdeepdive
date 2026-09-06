@@ -1693,8 +1693,9 @@ def _render_example_chips(key_prefix):
     visitor who doesn't know ticker formats yet. st.pills gives compact
     horizontal chips; the "done" flag stops a still-selected pill from
     re-dispatching on every rerun of the same page."""
+    _chips_lang = st.session_state.get("lang", "en")
     _sel = st.pills(
-        "Try one:", [label for label, _ in _EXAMPLE_CHIPS],
+        i18n.t("chips.try_one", _chips_lang), [label for label, _ in _EXAMPLE_CHIPS],
         selection_mode="single", key=f"{key_prefix}_chips",
     )
     _done_key = f"{key_prefix}_chips_done"
@@ -1713,9 +1714,11 @@ def _render_suggestion_chips(key_prefix, suggestions):
     if not suggestions:
         return
     labels = [label for label, _ in suggestions]
-    st.caption("Did you mean:")
+    _sugg_lang = st.session_state.get("lang", "en")
+    _dym = i18n.t("chips.did_you_mean", _sugg_lang)
+    st.caption(_dym)
     _sel = st.pills(
-        "Did you mean:", labels, selection_mode="single",
+        _dym, labels, selection_mode="single",
         key=f"{key_prefix}_chips", label_visibility="collapsed",
     )
     _done_key = f"{key_prefix}_chips_done"
@@ -1736,7 +1739,11 @@ def _render_data_as_of(ticker):
         _hist = get_price_history(ticker)
         if _hist is not None and not _hist.empty:
             _last_dt = _hist.index[-1]
-            st.caption(f"Data as of {_last_dt.strftime('%d %b %Y')} (latest available daily close).")
+            _daoflang = st.session_state.get("lang", "en")
+            st.caption(i18n.t(
+                "dd.data_as_of", _daoflang,
+                date=i18n.format_date_dmy(_last_dt, _daoflang),
+            ))
     except Exception:
         pass
 
@@ -4672,6 +4679,11 @@ def page_home():
     _feat_ticker = _FEATURED_ROTATION[
         datetime.now(timezone.utc).timetuple().tm_yday % len(_FEATURED_ROTATION)
     ]
+    # Next-batch instruction, Part 1: the home page's own ES coverage -
+    # every literal string below runs through i18n.t(_home_lang, ...)
+    # instead of being hardcoded, with the EN dict value set to the exact
+    # text that rendered before this pass (so lang=="en" is byte-identical).
+    _home_lang = st.session_state.get("lang", "en")
 
     _tape_box = st.container()
     _render_view_badge()
@@ -4698,21 +4710,17 @@ def page_home():
     with hero_l:
         if _factual():
             st.markdown(
-                """
-<div class='sdd-h1'>The <em>data and models</em> behind a valuation judgment.</div>
-<div class='sdd-sub'>Live intrinsic values, quality calculations, psychology and discovery
-readings &mdash; computed for any ASX or US stock, with <b>every input stated and every
-estimate flagged</b>. The judgment stays yours.</div>
+                f"""
+<div class='sdd-h1'>{i18n.t('home.hero.title_factual', _home_lang)}</div>
+<div class='sdd-sub'>{i18n.t('home.hero.sub_factual', _home_lang)}</div>
 """,
                 unsafe_allow_html=True,
             )
         else:
             st.markdown(
-                """
-<div class='sdd-h1'>Know what a stock is <em>worth</em> &mdash; and whether now is a sane entry.</div>
-<div class='sdd-sub'>One score that combines <b>value, quality, crowd psychology and market
-attention</b> &mdash; computed live for any ASX or US stock. No noise, no hidden assumptions:
-every estimated number is flagged.</div>
+                f"""
+<div class='sdd-h1'>{i18n.t('home.hero.title_signal', _home_lang)}</div>
+<div class='sdd-sub'>{i18n.t('home.hero.sub_signal', _home_lang)}</div>
 """,
                 unsafe_allow_html=True,
             )
@@ -4720,16 +4728,19 @@ every estimated number is flagged.</div>
             _sc1, _sc2 = st.columns([4, 1])
             with _sc1:
                 _home_text = st.text_input(
-                    "Ticker search",
-                    placeholder="CSL.AX  ·  or two tickers to compare: CSL.AX BHP.AX",
+                    i18n.t("home.hero.search_aria", _home_lang),
+                    placeholder=i18n.t("home.hero.search_placeholder", _home_lang),
                     label_visibility="collapsed", key="home_search",
                 )
             with _sc2:
-                _home_go = st.form_submit_button("Analyze", use_container_width=True, type="primary")
+                _home_go = st.form_submit_button(
+                    i18n.t("home.hero.analyze_button", _home_lang),
+                    use_container_width=True, type="primary",
+                )
         _render_example_chips("home")
         st.markdown(
-            "<div style='color:#5b7290;font-size:12.5px;margin-top:6px;'>One ticker = full Deep "
-            "Dive &middot; Two or more = side-by-side Comparison &middot; ASX + US mixed freely</div>",
+            "<div style='color:#5b7290;font-size:12.5px;margin-top:6px;'>"
+            f"{i18n.t('home.hero.search_hint', _home_lang)}</div>",
             unsafe_allow_html=True,
         )
         if _home_go:
@@ -4751,39 +4762,33 @@ every estimated number is flagged.</div>
     _mood_box = hero_l.container()
 
     # ---- feature cards ----
+    _tk = lambda key: i18n.t(f"home.toolkit.{key}", _home_lang)
     if _factual():
         st.markdown(
-            """
-<div class='sdd-kicker'>THE TOOLKIT</div>
-<div class='sdd-h2'>Five ways in. One consistent model.</div>
-<div class='sdd-secsub'>Every tool runs the same engine &mdash; the same DCF model, the same
-quality calculation, the same psychology read &mdash; so the numbers always agree with
-each other.</div>
+            f"""
+<div class='sdd-kicker'>{_tk('kicker')}</div>
+<div class='sdd-h2'>{_tk('h2')}</div>
+<div class='sdd-secsub'>{_tk('secsub_factual')}</div>
 <div class='sdd-cards5'>
   <a class='sdd-feat' href='/deep-dive' target='_self'>
-    <div class='ic'>&#128269;</div><h3>Stock Deep Dive</h3>
-    <p>The full picture for one ticker: intrinsic value vs today's price, what drives the
-    Value Score, and psychology and discovery readings &mdash; every input stated.</p>
+    <div class='ic'>&#128269;</div><h3>{_tk('card1_title')}</h3>
+    <p>{_tk('card1_desc_factual')}</p>
   </a>
   <a class='sdd-feat' href='/comparison' target='_self'>
-    <div class='ic'>&#9878;&#65039;</div><h3>Side-by-side Comparison</h3>
-    <p>Two or more tickers lined up on identical calculations &mdash; intrinsic value, quality
-    calculation, psychology &mdash; as colour-coded data bars.</p>
+    <div class='ic'>&#9878;&#65039;</div><h3>{_tk('card2_title')}</h3>
+    <p>{_tk('card2_desc_factual')}</p>
   </a>
   <a class='sdd-feat' href='/scanner' target='_self'>
-    <div class='ic'>&#128225;</div><h3>Stock Scanner</h3>
-    <p>A whole index &mdash; ASX 200, S&amp;P 500 and more &mdash; as one sortable data table,
-    computed nightly, with an optional sector filter. Sorting is arithmetic.</p>
+    <div class='ic'>&#128225;</div><h3>{_tk('card3_title')}</h3>
+    <p>{_tk('card3_desc_factual')}</p>
   </a>
   <a class='sdd-feat' href='/research' target='_self'>
-    <div class='ic'>&#128218;</div><h3>Rational Compounder Research</h3>
-    <p>Hand-built research on selected compounders &mdash; a decade of reported earnings, four
-    fair-value models, and documented company histories.</p>
+    <div class='ic'>&#128218;</div><h3>{_tk('card4_title')}</h3>
+    <p>{_tk('card4_desc_factual')}</p>
   </a>
   <a class='sdd-feat' href='/portfolio' target='_self'>
-    <div class='ic'>&#128188;</div><h3>My Portfolio</h3>
-    <p>Track what you actually own against the price and fundamentals on the day you bought
-    &mdash; private to your signed-in account, sign-in required.</p>
+    <div class='ic'>&#128188;</div><h3>{_tk('card5_title')}</h3>
+    <p>{_tk('card5_desc_factual')}</p>
   </a>
 </div>
 """,
@@ -4791,36 +4796,30 @@ each other.</div>
         )
     else:
         st.markdown(
-            """
-<div class='sdd-kicker'>THE TOOLKIT</div>
-<div class='sdd-h2'>Five ways in. One consistent model.</div>
-<div class='sdd-secsub'>Every tool runs the same engine &mdash; the same DCF, the same quality
-tests, the same psychology read &mdash; so the numbers always agree with each other.</div>
+            f"""
+<div class='sdd-kicker'>{_tk('kicker')}</div>
+<div class='sdd-h2'>{_tk('h2')}</div>
+<div class='sdd-secsub'>{_tk('secsub_signal')}</div>
 <div class='sdd-cards5'>
   <a class='sdd-feat' href='/deep-dive' target='_self'>
-    <div class='ic'>&#128269;</div><h3>Stock Deep Dive</h3>
-    <p>The full picture for one ticker: intrinsic value vs price, what drives the Long Score,
-    crowd psychology, and a technical entry zone with stop &amp; targets.</p>
+    <div class='ic'>&#128269;</div><h3>{_tk('card1_title')}</h3>
+    <p>{_tk('card1_desc_signal')}</p>
   </a>
   <a class='sdd-feat' href='/comparison' target='_self'>
-    <div class='ic'>&#9878;&#65039;</div><h3>Side-by-side Comparison</h3>
-    <p>Two or more tickers lined up on identical criteria &mdash; valuation, quality, sentiment,
-    trend, trade setup &mdash; as colour-coded bars and verdict pills.</p>
+    <div class='ic'>&#9878;&#65039;</div><h3>{_tk('card2_title')}</h3>
+    <p>{_tk('card2_desc_signal')}</p>
   </a>
   <a class='sdd-feat' href='/scanner' target='_self'>
-    <div class='ic'>&#128225;</div><h3>Stock Scanner</h3>
-    <p>Rank a whole index &mdash; ASX 200, S&amp;P 500 and more &mdash; by Long Score, with an
-    optional sector filter. Find what to look at, not just check what you already own.</p>
+    <div class='ic'>&#128225;</div><h3>{_tk('card3_title')}</h3>
+    <p>{_tk('card3_desc_signal')}</p>
   </a>
   <a class='sdd-feat' href='/research' target='_self'>
-    <div class='ic'>&#128218;</div><h3>Rational Compounder Research</h3>
-    <p>Hand-built, Buffett/Munger-style research on selected compounders &mdash; a decade of
-    earnings, four fair-value methods, and written judgment on every business.</p>
+    <div class='ic'>&#128218;</div><h3>{_tk('card4_title')}</h3>
+    <p>{_tk('card4_desc_signal')}</p>
   </a>
   <a class='sdd-feat' href='/portfolio' target='_self'>
-    <div class='ic'>&#128188;</div><h3>My Portfolio</h3>
-    <p>Add what you actually own and lock in the day-you-bought baseline &mdash; private to
-    your signed-in account only, sign-in required.</p>
+    <div class='ic'>&#128188;</div><h3>{_tk('card5_title')}</h3>
+    <p>{_tk('card5_desc_signal')}</p>
   </a>
 </div>
 """,
@@ -4834,49 +4833,38 @@ tests, the same psychology read &mdash; so the numbers always agree with each ot
     _render_nl_screen_box("home")
 
     # ---- how it works ----
+    _hiw = lambda key: i18n.t(f"home.hiw.{key}", _home_lang)
     if _factual():
         st.markdown(
-            """
-<div class='sdd-kicker' style='margin-top:40px;'>HOW IT WORKS</div>
-<div class='sdd-h2'>Search. Compute. Inspect.</div>
+            f"""
+<div class='sdd-kicker' style='margin-top:40px;'>{_hiw('kicker')}</div>
+<div class='sdd-h2'>{_hiw('h2_factual')}</div>
 <div class='sdd-steps'>
-  <div class='sdd-step'><div class='n'>01</div><h4>Type any ticker</h4>
-    <p>ASX (CSL.AX) or US (AAPL). Live data is pulled on the spot &mdash; prices, cash flows,
-    news, search trends, social chatter.</p></div>
-  <div class='sdd-step'><div class='n'>02</div><h4>Get one transparent calculation</h4>
-    <p>The Value Score blends the quality calculation, MOS (the gap between price and
-    intrinsic value), psychology and discovery &mdash; the same arithmetic every time,
-    with every input shown.</p></div>
-  <div class='sdd-step'><div class='n'>03</div><h4>See value AND psychology</h4>
-    <p>Two separate calculations, never blurred: what the model computes from the business's
-    own cash flows, and what the crowd has been doing to the price &mdash; both stated as
-    numbers, side by side.</p></div>
+  <div class='sdd-step'><div class='n'>01</div><h4>{_hiw('step1_title')}</h4>
+    <p>{_hiw('step1_desc')}</p></div>
+  <div class='sdd-step'><div class='n'>02</div><h4>{_hiw('step2_title_factual')}</h4>
+    <p>{_hiw('step2_desc_factual')}</p></div>
+  <div class='sdd-step'><div class='n'>03</div><h4>{_hiw('step3_title_factual')}</h4>
+    <p>{_hiw('step3_desc_factual')}</p></div>
 </div>
-<div class='sdd-honesty'><b>The red-flag rule:</b> whenever a number rests on a default or
-average because real data wasn't available, it's shown in red. An estimate is never dressed up
-as a fact &mdash; you always know which numbers are computed and which are assumed.</div>
+<div class='sdd-honesty'>{_hiw('honesty')}</div>
 """,
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
-            """
-<div class='sdd-kicker' style='margin-top:40px;'>HOW IT WORKS</div>
-<div class='sdd-h2'>Search. Score. Decide.</div>
+            f"""
+<div class='sdd-kicker' style='margin-top:40px;'>{_hiw('kicker')}</div>
+<div class='sdd-h2'>{_hiw('h2_signal')}</div>
 <div class='sdd-steps'>
-  <div class='sdd-step'><div class='n'>01</div><h4>Type any ticker</h4>
-    <p>ASX (CSL.AX) or US (AAPL). Live data is pulled on the spot &mdash; prices, cash flows,
-    news, search trends, social chatter.</p></div>
-  <div class='sdd-step'><div class='n'>02</div><h4>Get one honest score</h4>
-    <p>The Long Score blends business quality, margin of safety, crowd psychology and market
-    attention &mdash; the same value-investing maths every time, with every input shown.</p></div>
-  <div class='sdd-step'><div class='n'>03</div><h4>See value AND timing</h4>
-    <p>Two separate verdicts, never blurred: is this a good business to <em>own</em>, and is
-    right now a sane <em>entry</em>? A great company can still be a bad buy today.</p></div>
+  <div class='sdd-step'><div class='n'>01</div><h4>{_hiw('step1_title')}</h4>
+    <p>{_hiw('step1_desc')}</p></div>
+  <div class='sdd-step'><div class='n'>02</div><h4>{_hiw('step2_title_signal')}</h4>
+    <p>{_hiw('step2_desc_signal')}</p></div>
+  <div class='sdd-step'><div class='n'>03</div><h4>{_hiw('step3_title_signal')}</h4>
+    <p>{_hiw('step3_desc_signal')}</p></div>
 </div>
-<div class='sdd-honesty'><b>The red-flag rule:</b> whenever a number rests on a default or
-average because real data wasn't available, it's shown in red. An estimate is never dressed up
-as a fact &mdash; you always know which numbers are computed and which are assumed.</div>
+<div class='sdd-honesty'>{_hiw('honesty')}</div>
 """,
             unsafe_allow_html=True,
         )
@@ -4954,7 +4942,10 @@ as a fact &mdash; you always know which numbers are computed and which are assum
                     )
                 st.markdown(
                     _sdd_table(
-                        ["Ticker", "Price", "Value Score", "Valuation",
+                        [i18n.t("home.top5.col_ticker", _tt5_lang),
+                         i18n.t("home.top5.col_price", _tt5_lang),
+                         i18n.t("home.top5.col_value_score", _tt5_lang),
+                         i18n.t("home.top5.col_valuation", _tt5_lang),
                          i18n.t("home.top5.col_universe", _tt5_lang)],
                         _tt5_html,
                     ),
@@ -5000,19 +4991,22 @@ as a fact &mdash; you always know which numbers are computed and which are assum
                 + "</tr>"
             )
         st.markdown(
-            "<div class='sdd-kicker' style='margin-top:40px;'>RESULTS DAY</div>"
-            "<div class='sdd-h2'>Reported this week</div>",
+            f"<div class='sdd-kicker' style='margin-top:40px;'>"
+            f"{i18n.t('home.results_day.kicker', _home_lang)}</div>"
+            f"<div class='sdd-h2'>{i18n.t('home.results_day.h2', _home_lang)}</div>",
             unsafe_allow_html=True,
         )
         st.markdown(
-            _sdd_table(["Ticker", "Reported", "Value Score now", "vs before"], _rtw_html),
+            _sdd_table(
+                [i18n.t("home.results_day.col_ticker", _home_lang),
+                 i18n.t("home.results_day.col_reported", _home_lang),
+                 i18n.t("home.results_day.col_value_now", _home_lang),
+                 i18n.t("home.results_day.col_vs_before", _home_lang)],
+                _rtw_html,
+            ),
             unsafe_allow_html=True,
         )
-        st.caption(
-            "Tickers that reported results in the last 7 days, with a computed "
-            "before/after re-analysis - open a ticker's Deep Dive page for the "
-            "full comparison and what moved."
-        )
+        st.caption(i18n.t("home.results_day.caption", _home_lang))
 
     # ---- reporting this week (Services batch 2, Part 4) ----
     # Forward-looking sibling of "Reported this week" above (backward-
@@ -5046,7 +5040,11 @@ as a fact &mdash; you always know which numbers are computed and which are assum
         _rpw_html = []
         for _re in _rpw_rows[:4]:
             _rtk = _re["ticker"]
-            _rpw_tag = "&#10003; reported" if _re["status"] == "reported" else "~ expected"
+            _rpw_tag = (
+                i18n.t("home.results_calendar.status_reported", _home_lang)
+                if _re["status"] == "reported"
+                else i18n.t("home.results_calendar.status_expected", _home_lang)
+            )
             _rpw_html.append(
                 "<tr>"
                 + _td(f"<a href='/deep-dive?ticker={_rtk}' target='_self' "
@@ -5057,19 +5055,24 @@ as a fact &mdash; you always know which numbers are computed and which are assum
                 + "</tr>"
             )
         st.markdown(
-            "<div class='sdd-kicker' style='margin-top:40px;'>RESULTS CALENDAR</div>"
-            "<div class='sdd-h2'>Reporting this week</div>",
+            f"<div class='sdd-kicker' style='margin-top:40px;'>"
+            f"{i18n.t('home.results_calendar.kicker', _home_lang)}</div>"
+            f"<div class='sdd-h2'>{i18n.t('home.results_calendar.h2', _home_lang)}</div>",
             unsafe_allow_html=True,
         )
         st.markdown(
-            _sdd_table(["Ticker", "Date", "Status"], _rpw_html),
+            _sdd_table(
+                [i18n.t("home.results_calendar.col_ticker", _home_lang),
+                 i18n.t("home.results_calendar.col_date", _home_lang),
+                 i18n.t("home.results_calendar.col_status", _home_lang)],
+                _rpw_html,
+            ),
             unsafe_allow_html=True,
         )
         st.caption(
-            "Dates from the data provider; confirmed dates marked ✓, "
-            "estimates marked ~. "
-            + ("Your own tickers - " if _rpw_mine else "")
-            + "[Full Results Calendar →](/results-calendar)"
+            i18n.t("home.results_calendar.caption", _home_lang)
+            + (i18n.t("home.results_calendar.caption_mine", _home_lang) if _rpw_mine else "")
+            + i18n.t("home.results_calendar.caption_link", _home_lang)
         )
 
     # ---- compounder coverage ----
@@ -5083,20 +5086,23 @@ as a fact &mdash; you always know which numbers are computed and which are assum
             _cov_cards.append(
                 f"<div class='sdd-cov'><div class='tkr'>{html.escape(_t)}</div>"
                 f"<div class='ind'>{_ind}</div>"
-                f"<div class='row'><span>Research sections</span><b>{max(_nsec, 1)}</b></div>"
-                f"<div class='row'><span>Written verdict</span><b style='color:#34d399;'>&#10003;</b></div></div>"
+                f"<div class='row'><span>{i18n.t('home.compounder.sections_label', _home_lang)}"
+                f"</span><b>{max(_nsec, 1)}</b></div>"
+                f"<div class='row'><span>{i18n.t('home.compounder.verdict_label', _home_lang)}"
+                f"</span><b style='color:#34d399;'>&#10003;</b></div></div>"
             )
         _cov_cards.append(
             "<a class='sdd-cov sdd-cov-req' href='/research' target='_self'>"
             "<div style='font-size:22px;color:#2dd4bf;'>&#65291;</div>"
-            "Which stock should be researched next?<br>"
-            "<span style='color:#2dd4bf;font-weight:600;'>Tell us via Feedback &rarr;</span></a>"
+            f"{i18n.t('home.compounder.request_title', _home_lang)}<br>"
+            f"<span style='color:#2dd4bf;font-weight:600;'>"
+            f"{i18n.t('home.compounder.request_cta', _home_lang)}</span></a>"
         )
         st.markdown(
-            "<div class='sdd-kicker' style='margin-top:40px;'>RATIONAL COMPOUNDER RESEARCH</div>"
-            "<div class='sdd-h2'>Covered in depth today</div>"
-            "<div class='sdd-secsub'>New companies are added as the research completes &mdash; "
-            "each one takes weeks, not minutes.</div>"
+            f"<div class='sdd-kicker' style='margin-top:40px;'>"
+            f"{i18n.t('home.compounder.kicker', _home_lang)}</div>"
+            f"<div class='sdd-h2'>{i18n.t('home.compounder.h2', _home_lang)}</div>"
+            f"<div class='sdd-secsub'>{i18n.t('home.compounder.secsub', _home_lang)}</div>"
             f"<div class='sdd-covgrid'>{''.join(_cov_cards)}</div>",
             unsafe_allow_html=True,
         )
@@ -5126,32 +5132,36 @@ as a fact &mdash; you always know which numbers are computed and which are assum
                 f"<div style='color:#e6edf5;font-weight:600;font-size:15px;"
                 f"line-height:1.4;'>{html.escape((_bp['title'] or '').replace(chr(96), ''))}</div>"
                 f"<div style='color:#5b7290;font-size:12px;margin:6px 0;'>"
-                f"{_bdate} &middot; {_bmins} min read</div>"
+                f"{_bdate} &middot; {_bmins} {i18n.t('home.blog.min_read', _home_lang)}</div>"
                 f"<div style='color:#8aa0b8;font-size:13px;line-height:1.5;'>"
                 f"{_bsum}</div></a>"
             )
         st.markdown(
-            "<div class='sdd-kicker' style='margin-top:40px;'>FROM THE BLOG</div>"
-            "<div class='sdd-h2'>Latest research notes</div>"
-            "<div class='sdd-secsub'>The reasoning behind the numbers, written "
-            "out in full &mdash; <a href='/blog' style='color:#2dd4bf;'>all "
-            "posts &rarr;</a></div>"
+            f"<div class='sdd-kicker' style='margin-top:40px;'>"
+            f"{i18n.t('home.blog.kicker', _home_lang)}</div>"
+            f"<div class='sdd-h2'>{i18n.t('home.blog.h2', _home_lang)}</div>"
+            f"<div class='sdd-secsub'>{i18n.t('home.blog.secsub', _home_lang)}"
+            f"<a href='/blog' style='color:#2dd4bf;'>{i18n.t('home.blog.all_posts', _home_lang)}"
+            f"</a></div>"
             f"<div class='sdd-covgrid'>{''.join(_post_cards)}</div>",
             unsafe_allow_html=True,
         )
 
     # ---- CTA band ----
     st.markdown(
-        """
+        f"""
 <div class='sdd-cta'>
   <div>
-    <div class='sdd-h2' style='margin:0 0 6px;'>Everything is free.</div>
-    <div style='color:#8aa0b8;font-size:14.5px;max-width:560px;line-height:1.5;'>Sign in (top
-    left) to build a watchlist across every ticker you check and get the weekly
-    {digest_word} digest.</div>
+    <div class='sdd-h2' style='margin:0 0 6px;'>{i18n.t('home.cta.title', _home_lang)}</div>
+    <div style='color:#8aa0b8;font-size:14.5px;max-width:560px;line-height:1.5;'>{
+        i18n.t('home.cta.desc', _home_lang, digest_word=i18n.t(
+            'home.cta.digest_watchlist' if _factual() else 'home.cta.digest_signal',
+            _home_lang,
+        ))
+    }</div>
   </div>
 </div>
-""".format(digest_word="watchlist" if _factual() else "signal"),
+""",
         unsafe_allow_html=True,
     )
 
@@ -5186,51 +5196,53 @@ as a fact &mdash; you always know which numbers are computed and which are assum
                 _featured_card_html(_feat, _spark_pts, _ma_pts, _last_pt),
                 unsafe_allow_html=True,
             )
-            if st.button(f"Open the full {_feat['ticker']} Deep Dive →", key="feat_open",
-                         use_container_width=True):
+            if st.button(
+                i18n.t("home.featured.open_deep_dive", _home_lang, ticker=_feat["ticker"]),
+                key="feat_open", use_container_width=True,
+            ):
                 _dispatch_search(_feat["ticker"])
         else:
+            _wyg = lambda key: i18n.t(f"home.what_you_get.{key}", _home_lang)
             st.markdown(
-                """
+                f"""
 <div class='sdd-card'>
-  <div class='sdd-card-tag'><span>WHAT YOU GET</span></div>
+  <div class='sdd-card-tag'><span>{_wyg('tag')}</span></div>
   <div style='font-size:15px;line-height:1.7;color:#8aa0b8;'>
-    Every search answers three questions:<br><br>
-    <b style='color:#e6edf5;'>{q1}</b> A live DCF with a per-stock discount rate,
-    {a1}.<br><br>
-    <b style='color:#e6edf5;'>Is it a good business?</b> A 0&ndash;100 Quality Score from
-    profitability and balance-sheet tests.<br><br>
-    <b style='color:#e6edf5;'>{q3}</b> {a3}
+    {_wyg('intro')}<br><br>
+    <b style='color:#e6edf5;'>{_wyg('q1_factual') if _factual() else _wyg('q1_signal')}</b>
+    {_wyg('dcf_lead')}
+    {_wyg('a1_factual') if _factual() else _wyg('a1_signal')}.<br><br>
+    <b style='color:#e6edf5;'>{_wyg('q2')}</b> {_wyg('a2')}<br><br>
+    <b style='color:#e6edf5;'>{_wyg('q3_factual') if _factual() else _wyg('q3_signal')}</b>
+    {_wyg('a3_factual') if _factual() else _wyg('a3_signal')}
   </div>
 </div>
-""".format(
-                    q1=("What is the intrinsic value?" if _factual()
-                        else "What is it worth?"),
-                    a1=("shown next to today's price with the MOS stated "
-                        "as a percentage" if _factual()
-                        else "plus margin of safety vs today's price"),
-                    q3=("What is the crowd doing?" if _factual()
-                        else "Is now a sane entry?"),
-                    a3=("Psychology and discovery readings - distance from "
-                        "recent highs, volume, search and news attention - "
-                        "stated as numbers." if _factual()
-                        else "Crowd psychology and a technical entry zone "
-                             "&mdash; kept separate from the ownership question."),
-                ),
+""",
                 unsafe_allow_html=True,
             )
 
     with _mood_box:
         _tiles = []
+        _mood_label_keys = {
+            "Hopeful": "home.mood.hopeful",
+            "Neutral": "home.mood.neutral",
+            "Anxious": "home.mood.anxious",
+        }
         for _mood, _k in ((_home["mood_au"], "AU"), (_home["mood_us"], "US")):
             try:
                 if _mood and _mood.get("label") and _mood["label"] != "Unknown":
                     _mc = {"Hopeful": "#34d399", "Neutral": "#8aa0b8",
                            "Anxious": "#fbbf24"}.get(_mood["label"], "#8aa0b8")
+                    _mood_key = _mood_label_keys.get(_mood["label"])
+                    _mood_disp = (
+                        i18n.t(_mood_key, _home_lang).upper() if _mood_key
+                        else _mood["label"].upper()
+                    )
                     _tiles.append(
-                        f"<div class='sdd-tile'><div class='k'>{_k} MARKET MOOD</div>"
-                        f"<div class='v' style='color:{_mc};'>{_mood['label'].upper()}</div>"
-                        f"<div class='d'>live news-tone reading</div></div>"
+                        f"<div class='sdd-tile'><div class='k'>"
+                        f"{i18n.t('home.mood.market_mood', _home_lang, country=_k)}</div>"
+                        f"<div class='v' style='color:{_mc};'>{_mood_disp}</div>"
+                        f"<div class='d'>{i18n.t('home.mood.live_reading', _home_lang)}</div></div>"
                     )
             except Exception:
                 pass
@@ -5239,7 +5251,8 @@ as a fact &mdash; you always know which numbers are computed and which are assum
             _tiles.append(
                 f"<div class='sdd-tile'><div class='k'>{html.escape(_lbl)}</div>"
                 f"<div class='v'>{_last:,.1f}</div>"
-                f"<div class='d' style='color:{_cc};'>{_chg:+.2f}% today</div></div>"
+                f"<div class='d' style='color:{_cc};'>{_chg:+.2f}% "
+                f"{i18n.t('home.mood.today', _home_lang)}</div></div>"
             )
         if _tiles:
             st.markdown(
@@ -8716,28 +8729,23 @@ def _render_nl_screen_box(location):
     so this never duplicates the actual Anthropic call/gate logic)."""
     if not ai_client.available():
         return
+    _nl_lang = st.session_state.get("lang", "en")
     _signed_in = paywall_engine.is_logged_in()
     with st.container(border=True):
-        st.markdown("**\U0001F50E Describe what you're looking for**")
-        st.caption(
-            "Plain English, e.g. “cheap ASX tech stocks” or “US "
-            "small caps in healthcare” - translated into the Scanner's "
-            "own country/universe/sector filters, which are always shown "
-            "before results run so you can see (and change) exactly what "
-            "was applied."
-        )
+        st.markdown(f"**{i18n.t('nl.title', _nl_lang)}**")
+        st.caption(i18n.t("nl.caption", _nl_lang))
         if not _signed_in:
-            st.info("Sign in (top left) to try natural-language screening.")
+            st.info(i18n.t("nl.signin_prompt", _nl_lang))
             return
         _key = f"nl_screen_{location}"
         _q = st.text_input(
-            "Describe a screen", key=f"{_key}_q",
-            placeholder="e.g. cheap quality compounders in Australian mining",
+            i18n.t("nl.input_aria", _nl_lang), key=f"{_key}_q",
+            placeholder=i18n.t("nl.input_placeholder", _nl_lang),
             label_visibility="collapsed",
         )
-        if st.button("Screen", key=f"{_key}_btn"):
+        if st.button(i18n.t("nl.button", _nl_lang), key=f"{_key}_btn"):
             if not _q.strip():
-                st.warning("Type what you're looking for first.")
+                st.warning(i18n.t("nl.warn_empty", _nl_lang))
             elif location == "home":
                 st.session_state["nl_screen_pending_query"] = _q.strip()
                 st.switch_page(PG_SCANNER)
@@ -8747,7 +8755,7 @@ def _render_nl_screen_box(location):
                 if not _allowed:
                     st.warning(_msg)
                 else:
-                    with st.spinner("Reading your request..."):
+                    with st.spinner(i18n.t("nl.reading", _nl_lang)):
                         _parsed = _nl_parse_screen_query(_q.strip(), email)
                     if not _parsed["ok"]:
                         st.error(_parsed["error"])
@@ -8773,7 +8781,7 @@ def _consume_pending_nl_screen_query():
     if not _allowed:
         st.warning(_msg)
         return
-    with st.spinner("Reading your request..."):
+    with st.spinner(i18n.t("nl.reading", st.session_state.get("lang", "en"))):
         _parsed = _nl_parse_screen_query(_pending, email)
     if not _parsed["ok"]:
         st.error(_parsed["error"])
@@ -8785,6 +8793,7 @@ def page_scanner():
     _render_header(compact=True, page_label="Scanner")
     _bump_page_view("scanner")
     _consume_pending_nl_screen_query()
+    _scan_lang = st.session_state.get("lang", "en")
 
     # Defaults for a first-ever visit (no prior session_state at all):
     # Australia + ASX 200 - picked so the very first script run has a
@@ -8819,20 +8828,15 @@ def page_scanner():
         _render_overnight_scan_table(_top_universe, _overnight_top)
 
     with st.expander(
-        "Change country / universe / sector", expanded=not bool(_overnight_top)
+        i18n.t("scanner.change_expander", _scan_lang), expanded=not bool(_overnight_top)
     ):
-        st.write(
-            "Tick one or more countries, then pick a single universe to scan - "
-            "each universe below is scanned entirely on its own (ASX 200 and "
-            "ASX 300 are never blended together, and neither are any of the "
-            "USA universes)."
-        )
+        st.write(i18n.t("scanner.change_instruction", _scan_lang))
 
         _col_au, _col_us = st.columns(2)
         with _col_au:
-            _want_au = st.checkbox("Australia", key="scanner_country_au")
+            _want_au = st.checkbox(i18n.t("scanner.country_au", _scan_lang), key="scanner_country_au")
         with _col_us:
-            _want_us = st.checkbox("USA", key="scanner_country_us")
+            _want_us = st.checkbox(i18n.t("scanner.country_us", _scan_lang), key="scanner_country_us")
 
         if _want_au:
             _render_country_mood_line("Australia")
@@ -8846,7 +8850,7 @@ def page_scanner():
             _universe_options += scanner_engine.get_universes("USA")
 
         if not _universe_options:
-            st.info("Tick at least one country above to pick a universe to scan.")
+            st.info(i18n.t("scanner.pick_country_info", _scan_lang))
             return
 
         # Guard against a previously-picked universe/sector no longer being a
@@ -8857,7 +8861,9 @@ def page_scanner():
         if st.session_state.get("scanner_universe") not in _universe_options:
             st.session_state["scanner_universe"] = _universe_options[0]
 
-        universe = st.selectbox("Universe", _universe_options, key="scanner_universe")
+        universe = st.selectbox(
+            i18n.t("scanner.universe_label", _scan_lang), _universe_options, key="scanner_universe"
+        )
         universe_country = (
             "Australia" if universe in scanner_engine.get_universes("Australia") else "USA"
         )
@@ -8893,11 +8899,11 @@ def page_scanner():
 
         st.caption(f"Universe source: {_pool_source}")
 
-    if st.button("Run Scan", type="primary", key="run_scanner"):
-        with st.spinner("Resolving universe..."):
+    if st.button(i18n.t("scanner.run_scan_button", _scan_lang), type="primary", key="run_scanner"):
+        with st.spinner(i18n.t("scanner.resolving_spinner", _scan_lang)):
             _tickers, _source = scanner_engine.resolve_tickers(universe_country, universe, sector)
         if not _tickers:
-            st.warning("No stocks matched this universe/sector - try a different selection.")
+            st.warning(i18n.t("scanner.no_stocks_warning", _scan_lang))
         else:
             st.session_state["scan_stocks"] = _tickers
             st.session_state["scan_universe_source"] = f"{universe} - {_source}"
@@ -8911,7 +8917,7 @@ def page_scanner():
     _render_scan_results(
         page_label="Scanner",
         state_prefix="scan",
-        empty_message="Pick a country, universe, and (optionally) a sector above, then click Run Scan.",
+        empty_message=i18n.t("scanner.empty_message", _scan_lang),
     )
 
 
@@ -9069,7 +9075,7 @@ def page_comparison():
     _render_scan_results(
         page_label="Comparison",
         state_prefix="cmp",
-        empty_message="Search two or more tickers above to run a Comparison.",
+        empty_message=i18n.t("comparison.empty_message", st.session_state.get("lang", "en")),
     )
 
 
@@ -10859,15 +10865,12 @@ def _render_portfolio_switcher(email):
 def page_portfolio():
     _render_header(compact=True, page_label="Portfolio")
     _bump_page_view("portfolio")
+    _pf_lang = st.session_state.get("lang", "en")
 
-    st.markdown("#### My Portfolio")
+    st.markdown(f"#### {i18n.t('portfolio.title', _pf_lang)}")
 
     if not paywall_engine.is_logged_in():
-        st.info(
-            "Sign in (top left) to track your long-term holdings here. "
-            "This is private to your account - nobody else, including "
-            "other signed-in visitors, can see it."
-        )
+        st.info(i18n.t("portfolio.signin_prompt", _pf_lang))
         return
 
     email = paywall_engine.current_user_email()
@@ -10887,7 +10890,7 @@ def page_portfolio():
 
     _analyses = {}
     if _holdings:
-        with st.spinner("Scoring your holdings..."):
+        with st.spinner(i18n.t("portfolio.scoring_spinner", _pf_lang)):
             # Each holding's analysis is dominated by network I/O (yfinance
             # price/history/cashflow, News Intelligence feeds for non-ETFs)
             # with no shared mutable state between holdings (each opens its
@@ -10906,8 +10909,10 @@ def page_portfolio():
 
     (_tab_holdings, _tab_income, _tab_overview, _tab_health, _tab_progress,
      _tab_ask, _tab_alerts) = st.tabs(
-        ["💼 Holdings", "💰 Income", "📊 Overview & P/L", "🩺 Health & News", "📈 Progress",
-         "\U0001F4AC Ask", "\U0001F514 My alerts"]
+        [i18n.t("portfolio.tab_holdings", _pf_lang), i18n.t("portfolio.tab_income", _pf_lang),
+         i18n.t("portfolio.tab_overview", _pf_lang), i18n.t("portfolio.tab_health", _pf_lang),
+         i18n.t("portfolio.tab_progress", _pf_lang), i18n.t("portfolio.tab_ask", _pf_lang),
+         i18n.t("portfolio.tab_alerts", _pf_lang)]
     )
 
     with _tab_holdings:

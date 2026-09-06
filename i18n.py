@@ -609,6 +609,10 @@ EN = {
     "home.top5.heading": "Tonight's top 5 — {country}",
     "home.top5.country_au": "Australia",
     "home.top5.country_us": "USA",
+    "home.top5.col_ticker": "Ticker",
+    "home.top5.col_price": "Price",
+    "home.top5.col_value_score": "Value Score",
+    "home.top5.col_valuation": "Valuation",
     "home.top5.col_universe": "Universe",
     "home.top5.caption": (
         "From the latest overnight scans across all covered universes "
@@ -617,6 +621,269 @@ EN = {
     ),
     "home.top5.no_scan": "No overnight scan yet for {country}.",
     "home.top5.as_of": "as of {day}",
+
+    # Next-batch instruction, Part 1: full home-page ES coverage - the
+    # hero, toolkit cards, "how it works" steps, results-day/calendar
+    # strips, compounder-coverage section, blog section, CTA band, and the
+    # natural-language screening teaser (shared with Scanner). Every EN
+    # value below is the exact string that rendered before this pass, so
+    # lang=="en" stays byte-identical; only the ES dict adds a translation.
+    "home.hero.title_factual": "The <em>data and models</em> behind a valuation judgment.",
+    "home.hero.sub_factual": (
+        "Live intrinsic values, quality calculations, psychology and discovery "
+        "readings &mdash; computed for any ASX or US stock, with <b>every input "
+        "stated and every estimate flagged</b>. The judgment stays yours."
+    ),
+    "home.hero.title_signal": "Know what a stock is <em>worth</em> &mdash; and whether now is a sane entry.",
+    "home.hero.sub_signal": (
+        "One score that combines <b>value, quality, crowd psychology and market "
+        "attention</b> &mdash; computed live for any ASX or US stock. No noise, "
+        "no hidden assumptions: every estimated number is flagged."
+    ),
+    "home.hero.search_aria": "Ticker search",
+    "home.hero.search_placeholder": "CSL.AX  ·  or two tickers to compare: CSL.AX BHP.AX",
+    "home.hero.analyze_button": "Analyze",
+    "home.hero.search_hint": (
+        "One ticker = full Deep Dive &middot; Two or more = side-by-side "
+        "Comparison &middot; ASX + US mixed freely"
+    ),
+
+    "home.toolkit.kicker": "THE TOOLKIT",
+    "home.toolkit.h2": "Five ways in. One consistent model.",
+    "home.toolkit.secsub_factual": (
+        "Every tool runs the same engine &mdash; the same DCF model, the same "
+        "quality calculation, the same psychology read &mdash; so the numbers "
+        "always agree with each other."
+    ),
+    "home.toolkit.secsub_signal": (
+        "Every tool runs the same engine &mdash; the same DCF, the same quality "
+        "tests, the same psychology read &mdash; so the numbers always agree "
+        "with each other."
+    ),
+    "home.toolkit.card1_title": "Stock Deep Dive",
+    "home.toolkit.card1_desc_factual": (
+        "The full picture for one ticker: intrinsic value vs today's price, "
+        "what drives the Value Score, and psychology and discovery readings "
+        "&mdash; every input stated."
+    ),
+    "home.toolkit.card1_desc_signal": (
+        "The full picture for one ticker: intrinsic value vs price, what "
+        "drives the Long Score, crowd psychology, and a technical entry zone "
+        "with stop &amp; targets."
+    ),
+    "home.toolkit.card2_title": "Side-by-side Comparison",
+    "home.toolkit.card2_desc_factual": (
+        "Two or more tickers lined up on identical calculations &mdash; "
+        "intrinsic value, quality calculation, psychology &mdash; as "
+        "colour-coded data bars."
+    ),
+    "home.toolkit.card2_desc_signal": (
+        "Two or more tickers lined up on identical criteria &mdash; "
+        "valuation, quality, sentiment, trend, trade setup &mdash; as "
+        "colour-coded bars and verdict pills."
+    ),
+    "home.toolkit.card3_title": "Stock Scanner",
+    "home.toolkit.card3_desc_factual": (
+        "A whole index &mdash; ASX 200, S&amp;P 500 and more &mdash; as one "
+        "sortable data table, computed nightly, with an optional sector "
+        "filter. Sorting is arithmetic."
+    ),
+    "home.toolkit.card3_desc_signal": (
+        "Rank a whole index &mdash; ASX 200, S&amp;P 500 and more &mdash; by "
+        "Long Score, with an optional sector filter. Find what to look at, "
+        "not just check what you already own."
+    ),
+    "home.toolkit.card4_title": "Rational Compounder Research",
+    "home.toolkit.card4_desc_factual": (
+        "Hand-built research on selected compounders &mdash; a decade of "
+        "reported earnings, four fair-value models, and documented company "
+        "histories."
+    ),
+    "home.toolkit.card4_desc_signal": (
+        "Hand-built, Buffett/Munger-style research on selected compounders "
+        "&mdash; a decade of earnings, four fair-value methods, and written "
+        "judgment on every business."
+    ),
+    "home.toolkit.card5_title": "My Portfolio",
+    "home.toolkit.card5_desc_factual": (
+        "Track what you actually own against the price and fundamentals on "
+        "the day you bought &mdash; private to your signed-in account, "
+        "sign-in required."
+    ),
+    "home.toolkit.card5_desc_signal": (
+        "Add what you actually own and lock in the day-you-bought baseline "
+        "&mdash; private to your signed-in account only, sign-in required."
+    ),
+
+    "home.hiw.kicker": "HOW IT WORKS",
+    "home.hiw.h2_factual": "Search. Compute. Inspect.",
+    "home.hiw.h2_signal": "Search. Score. Decide.",
+    "home.hiw.step1_title": "Type any ticker",
+    "home.hiw.step1_desc": (
+        "ASX (CSL.AX) or US (AAPL). Live data is pulled on the spot &mdash; "
+        "prices, cash flows, news, search trends, social chatter."
+    ),
+    "home.hiw.step2_title_factual": "Get one transparent calculation",
+    "home.hiw.step2_desc_factual": (
+        "The Value Score blends the quality calculation, MOS (the gap "
+        "between price and intrinsic value), psychology and discovery "
+        "&mdash; the same arithmetic every time, with every input shown."
+    ),
+    "home.hiw.step2_title_signal": "Get one honest score",
+    "home.hiw.step2_desc_signal": (
+        "The Long Score blends business quality, margin of safety, crowd "
+        "psychology and market attention &mdash; the same value-investing "
+        "maths every time, with every input shown."
+    ),
+    "home.hiw.step3_title_factual": "See value AND psychology",
+    "home.hiw.step3_desc_factual": (
+        "Two separate calculations, never blurred: what the model computes "
+        "from the business's own cash flows, and what the crowd has been "
+        "doing to the price &mdash; both stated as numbers, side by side."
+    ),
+    "home.hiw.step3_title_signal": "See value AND timing",
+    "home.hiw.step3_desc_signal": (
+        "Two separate verdicts, never blurred: is this a good business to "
+        "<em>own</em>, and is right now a sane <em>entry</em>? A great "
+        "company can still be a bad buy today."
+    ),
+    "home.hiw.honesty": (
+        "<b>The red-flag rule:</b> whenever a number rests on a default or "
+        "average because real data wasn't available, it's shown in red. An "
+        "estimate is never dressed up as a fact &mdash; you always know "
+        "which numbers are computed and which are assumed."
+    ),
+
+    "home.results_day.kicker": "RESULTS DAY",
+    "home.results_day.h2": "Reported this week",
+    "home.results_day.col_ticker": "Ticker",
+    "home.results_day.col_reported": "Reported",
+    "home.results_day.col_value_now": "Value Score now",
+    "home.results_day.col_vs_before": "vs before",
+    "home.results_day.caption": (
+        "Tickers that reported results in the last 7 days, with a computed "
+        "before/after re-analysis - open a ticker's Deep Dive page for the "
+        "full comparison and what moved."
+    ),
+
+    "home.results_calendar.kicker": "RESULTS CALENDAR",
+    "home.results_calendar.h2": "Reporting this week",
+    "home.results_calendar.col_ticker": "Ticker",
+    "home.results_calendar.col_date": "Date",
+    "home.results_calendar.col_status": "Status",
+    "home.results_calendar.status_reported": "&#10003; reported",
+    "home.results_calendar.status_expected": "~ expected",
+    "home.results_calendar.caption": (
+        "Dates from the data provider; confirmed dates marked ✓, estimates "
+        "marked ~. "
+    ),
+    "home.results_calendar.caption_mine": "Your own tickers - ",
+    "home.results_calendar.caption_link": "[Full Results Calendar →](/results-calendar)",
+
+    "home.compounder.kicker": "RATIONAL COMPOUNDER RESEARCH",
+    "home.compounder.h2": "Covered in depth today",
+    "home.compounder.secsub": (
+        "New companies are added as the research completes &mdash; each one "
+        "takes weeks, not minutes."
+    ),
+    "home.compounder.sections_label": "Research sections",
+    "home.compounder.verdict_label": "Written verdict",
+    "home.compounder.request_title": "Which stock should be researched next?",
+    "home.compounder.request_cta": "Tell us via Feedback &rarr;",
+
+    "home.blog.kicker": "FROM THE BLOG",
+    "home.blog.h2": "Latest research notes",
+    "home.blog.secsub": "The reasoning behind the numbers, written out in full &mdash; ",
+    "home.blog.all_posts": "all posts &rarr;",
+    "home.blog.min_read": "min read",
+
+    "home.cta.title": "Everything is free.",
+    "home.cta.desc": (
+        "Sign in (top left) to build a watchlist across every ticker you "
+        "check and get the weekly {digest_word} digest."
+    ),
+    "home.cta.digest_watchlist": "watchlist",
+    "home.cta.digest_signal": "signal",
+
+    "home.what_you_get.tag": "WHAT YOU GET",
+    "home.what_you_get.intro": "Every search answers three questions:",
+    "home.what_you_get.q1_factual": "What is the intrinsic value?",
+    "home.what_you_get.a1_factual": "shown next to today's price with the MOS stated as a percentage",
+    "home.what_you_get.q1_signal": "What is it worth?",
+    "home.what_you_get.a1_signal": "plus margin of safety vs today's price",
+    "home.what_you_get.dcf_lead": "A live DCF with a per-stock discount rate,",
+    "home.what_you_get.q2": "Is it a good business?",
+    "home.what_you_get.a2": "A 0&ndash;100 Quality Score from profitability and balance-sheet tests.",
+    "home.what_you_get.q3_factual": "What is the crowd doing?",
+    "home.what_you_get.a3_factual": (
+        "Psychology and discovery readings - distance from recent highs, "
+        "volume, search and news attention - stated as numbers."
+    ),
+    "home.what_you_get.q3_signal": "Is now a sane entry?",
+    "home.what_you_get.a3_signal": (
+        "Crowd psychology and a technical entry zone &mdash; kept separate "
+        "from the ownership question."
+    ),
+    "home.featured.open_deep_dive": "Open the full {ticker} Deep Dive →",
+
+    "home.mood.market_mood": "{country} MARKET MOOD",
+    "home.mood.live_reading": "live news-tone reading",
+    "home.mood.hopeful": "Hopeful",
+    "home.mood.neutral": "Neutral",
+    "home.mood.anxious": "Anxious",
+    "home.mood.today": "today",
+
+    "chips.try_one": "Try one:",
+    "chips.did_you_mean": "Did you mean:",
+
+    "nl.title": "\U0001F50E Describe what you're looking for",
+    "nl.caption": (
+        "Plain English, e.g. “cheap ASX tech stocks” or “US "
+        "small caps in healthcare” - translated into the Scanner's own "
+        "country/universe/sector filters, which are always shown before "
+        "results run so you can see (and change) exactly what was applied."
+    ),
+    "nl.signin_prompt": "Sign in (top left) to try natural-language screening.",
+    "nl.input_aria": "Describe a screen",
+    "nl.input_placeholder": "e.g. cheap quality compounders in Australian mining",
+    "nl.button": "Screen",
+    "nl.warn_empty": "Type what you're looking for first.",
+    "nl.reading": "Reading your request...",
+
+    "dd.data_as_of": "Data as of {date} (latest available daily close).",
+
+    "scanner.change_expander": "Change country / universe / sector",
+    "scanner.change_instruction": (
+        "Tick one or more countries, then pick a single universe to scan - "
+        "each universe below is scanned entirely on its own (ASX 200 and "
+        "ASX 300 are never blended together, and neither are any of the "
+        "USA universes)."
+    ),
+    "scanner.country_au": "Australia",
+    "scanner.country_us": "USA",
+    "scanner.universe_label": "Universe",
+    "scanner.pick_country_info": "Tick at least one country above to pick a universe to scan.",
+    "scanner.run_scan_button": "Run Scan",
+    "scanner.resolving_spinner": "Resolving universe...",
+    "scanner.no_stocks_warning": "No stocks matched this universe/sector - try a different selection.",
+    "scanner.empty_message": "Pick a country, universe, and (optionally) a sector above, then click Run Scan.",
+
+    "comparison.empty_message": "Search two or more tickers above to run a Comparison.",
+
+    "portfolio.title": "My Portfolio",
+    "portfolio.signin_prompt": (
+        "Sign in (top left) to track your long-term holdings here. This is "
+        "private to your account - nobody else, including other signed-in "
+        "visitors, can see it."
+    ),
+    "portfolio.scoring_spinner": "Scoring your holdings...",
+    "portfolio.tab_holdings": "\U0001F4BC Holdings",
+    "portfolio.tab_income": "\U0001F4B0 Income",
+    "portfolio.tab_overview": "\U0001F4CA Overview & P/L",
+    "portfolio.tab_health": "\U0001FA7A Health & News",
+    "portfolio.tab_progress": "\U0001F4C8 Progress",
+    "portfolio.tab_ask": "\U0001F4AC Ask",
+    "portfolio.tab_alerts": "\U0001F514 My alerts",
 }
 
 ES = {
@@ -1085,6 +1352,10 @@ ES = {
     "home.top5.heading": "El top 5 de esta noche — {country}",
     "home.top5.country_au": "Australia",
     "home.top5.country_us": "EE. UU.",
+    "home.top5.col_ticker": "Ticker",
+    "home.top5.col_price": "Precio",
+    "home.top5.col_value_score": "Value Score",
+    "home.top5.col_valuation": "Valoración",
     "home.top5.col_universe": "Universo",
     "home.top5.caption": (
         "De los escaneos nocturnos más recientes en todos los universos "
@@ -1097,6 +1368,277 @@ ES = {
     # otherwise double up with the sentence's.
     "home.top5.no_scan": "No hay un escaneo nocturno reciente para {country} todavía.",
     "home.top5.as_of": "al {day}",
+
+    # Next-batch instruction, Part 1: ES translations matching the EN keys
+    # added above, term for term against the live EN copy.
+    "home.hero.title_factual": "Los <em>datos y modelos</em> detrás de un juicio de valoración.",
+    "home.hero.sub_factual": (
+        "Valores intrínsecos en vivo, cálculos de calidad, y lecturas de "
+        "psicología y descubrimiento &mdash; calculados para cualquier "
+        "acción de la ASX o EE. UU., con <b>cada dato declarado y cada "
+        "estimación señalada</b>. El juicio sigue siendo tuyo."
+    ),
+    "home.hero.title_signal": "Descubre cuánto <em>vale</em> una acción &mdash; y si ahora es un momento sensato para entrar.",
+    "home.hero.sub_signal": (
+        "Un puntaje que combina <b>valor, calidad, psicología de la "
+        "multitud y atención del mercado</b> &mdash; calculado en vivo "
+        "para cualquier acción de la ASX o EE. UU. Sin ruido ni supuestos "
+        "ocultos: cada número estimado está señalado."
+    ),
+    "home.hero.search_aria": "Buscar ticker",
+    "home.hero.search_placeholder": "CSL.AX  ·  o dos tickers para comparar: CSL.AX BHP.AX",
+    "home.hero.analyze_button": "Analizar",
+    "home.hero.search_hint": (
+        "Un ticker = Deep Dive completo &middot; Dos o más = comparación "
+        "en paralelo &middot; ASX + EE. UU. mezclados libremente"
+    ),
+
+    "home.toolkit.kicker": "EL KIT DE HERRAMIENTAS",
+    "home.toolkit.h2": "Cinco formas de empezar. Un solo modelo consistente.",
+    "home.toolkit.secsub_factual": (
+        "Cada herramienta usa el mismo motor &mdash; el mismo modelo DCF, "
+        "el mismo cálculo de calidad, la misma lectura de psicología "
+        "&mdash; así que los números siempre concuerdan entre sí."
+    ),
+    "home.toolkit.secsub_signal": (
+        "Cada herramienta usa el mismo motor &mdash; el mismo DCF, las "
+        "mismas pruebas de calidad, la misma lectura de psicología "
+        "&mdash; así que los números siempre concuerdan entre sí."
+    ),
+    "home.toolkit.card1_title": "Deep Dive de la acción",
+    "home.toolkit.card1_desc_factual": (
+        "El panorama completo de un ticker: valor intrínseco frente al "
+        "precio de hoy, qué impulsa el Value Score, y lecturas de "
+        "psicología y descubrimiento &mdash; cada dato declarado."
+    ),
+    "home.toolkit.card1_desc_signal": (
+        "El panorama completo de un ticker: valor intrínseco frente al "
+        "precio, qué impulsa el Long Score, la psicología de la multitud "
+        "y una zona de entrada técnica con stop y objetivos."
+    ),
+    "home.toolkit.card2_title": "Comparación en paralelo",
+    "home.toolkit.card2_desc_factual": (
+        "Dos o más tickers alineados sobre cálculos idénticos &mdash; "
+        "valor intrínseco, cálculo de calidad, psicología &mdash; como "
+        "barras de datos con código de color."
+    ),
+    "home.toolkit.card2_desc_signal": (
+        "Dos o más tickers alineados sobre criterios idénticos &mdash; "
+        "valoración, calidad, sentimiento, tendencia, entrada &mdash; "
+        "como barras con código de color y etiquetas de veredicto."
+    ),
+    "home.toolkit.card3_title": "Escáner de acciones",
+    "home.toolkit.card3_desc_factual": (
+        "Un índice completo &mdash; ASX 200, S&amp;P 500 y más &mdash; "
+        "como una tabla de datos ordenable, calculada cada noche, con un "
+        "filtro de sector opcional. Ordenar es puramente aritmético."
+    ),
+    "home.toolkit.card3_desc_signal": (
+        "Clasifica un índice completo &mdash; ASX 200, S&amp;P 500 y más "
+        "&mdash; por Long Score, con un filtro de sector opcional. "
+        "Encuentra qué mirar, no solo revisa lo que ya tienes."
+    ),
+    "home.toolkit.card4_title": "Investigación Rational Compounder",
+    "home.toolkit.card4_desc_factual": (
+        "Investigación hecha a mano sobre compounders seleccionados "
+        "&mdash; una década de resultados reportados, cuatro modelos de "
+        "valor razonable, e historias de empresas documentadas."
+    ),
+    "home.toolkit.card4_desc_signal": (
+        "Investigación hecha a mano, al estilo Buffett/Munger, sobre "
+        "compounders seleccionados &mdash; una década de resultados, "
+        "cuatro métodos de valor razonable, y un juicio escrito sobre "
+        "cada negocio."
+    ),
+    "home.toolkit.card5_title": "Mi cartera",
+    "home.toolkit.card5_desc_factual": (
+        "Sigue lo que realmente posees frente al precio y los "
+        "fundamentos del día en que compraste &mdash; privado para tu "
+        "cuenta conectada, requiere inicio de sesión."
+    ),
+    "home.toolkit.card5_desc_signal": (
+        "Agrega lo que realmente posees y fija la base del día de compra "
+        "&mdash; privado solo para tu cuenta conectada, requiere inicio "
+        "de sesión."
+    ),
+
+    "home.hiw.kicker": "CÓMO FUNCIONA",
+    "home.hiw.h2_factual": "Busca. Calcula. Inspecciona.",
+    "home.hiw.h2_signal": "Busca. Puntúa. Decide.",
+    "home.hiw.step1_title": "Escribe cualquier ticker",
+    "home.hiw.step1_desc": (
+        "ASX (CSL.AX) o EE. UU. (AAPL). Los datos en vivo se obtienen al "
+        "instante &mdash; precios, flujos de caja, noticias, tendencias "
+        "de búsqueda, conversación social."
+    ),
+    "home.hiw.step2_title_factual": "Obtén un cálculo transparente",
+    "home.hiw.step2_desc_factual": (
+        "El Value Score combina el cálculo de calidad, el MOS (la "
+        "diferencia entre precio y valor intrínseco), psicología y "
+        "descubrimiento &mdash; la misma aritmética cada vez, con cada "
+        "dato mostrado."
+    ),
+    "home.hiw.step2_title_signal": "Obtén un puntaje honesto",
+    "home.hiw.step2_desc_signal": (
+        "El Long Score combina la calidad del negocio, el margen de "
+        "seguridad, la psicología de la multitud y la atención del "
+        "mercado &mdash; las mismas matemáticas de value investing cada "
+        "vez, con cada dato mostrado."
+    ),
+    "home.hiw.step3_title_factual": "Ve el valor Y la psicología",
+    "home.hiw.step3_desc_factual": (
+        "Dos cálculos separados, nunca mezclados: lo que el modelo "
+        "calcula a partir de los propios flujos de caja del negocio, y lo "
+        "que la multitud ha estado haciendo con el precio &mdash; ambos "
+        "expresados como números, uno junto al otro."
+    ),
+    "home.hiw.step3_title_signal": "Ve el valor Y el momento de entrada",
+    "home.hiw.step3_desc_signal": (
+        "Dos veredictos separados, nunca mezclados: ¿es este un buen "
+        "negocio para <em>poseer</em>, y es ahora mismo una <em>entrada</em> "
+        "sensata? Una gran empresa todavía puede ser una mala compra hoy."
+    ),
+    "home.hiw.honesty": (
+        "<b>La regla de la bandera roja:</b> cuando un número se apoya en "
+        "un valor por defecto o un promedio porque no había datos reales "
+        "disponibles, se muestra en rojo. Una estimación nunca se "
+        "presenta como un hecho &mdash; siempre sabes qué números están "
+        "calculados y cuáles son supuestos."
+    ),
+
+    "home.results_day.kicker": "DÍA DE RESULTADOS",
+    "home.results_day.h2": "Reportado esta semana",
+    "home.results_day.col_ticker": "Ticker",
+    "home.results_day.col_reported": "Reportado",
+    "home.results_day.col_value_now": "Value Score ahora",
+    "home.results_day.col_vs_before": "vs antes",
+    "home.results_day.caption": (
+        "Tickers que reportaron resultados en los últimos 7 días, con un "
+        "reanálisis antes/después calculado - abre la página Deep Dive de "
+        "un ticker para la comparación completa y qué cambió."
+    ),
+
+    "home.results_calendar.kicker": "CALENDARIO DE RESULTADOS",
+    "home.results_calendar.h2": "Reporta esta semana",
+    "home.results_calendar.col_ticker": "Ticker",
+    "home.results_calendar.col_date": "Fecha",
+    "home.results_calendar.col_status": "Estado",
+    "home.results_calendar.status_reported": "&#10003; reportado",
+    "home.results_calendar.status_expected": "~ esperado",
+    "home.results_calendar.caption": (
+        "Fechas del proveedor de datos; las fechas confirmadas se marcan "
+        "✓, las estimadas ~. "
+    ),
+    "home.results_calendar.caption_mine": "Tus propios tickers - ",
+    "home.results_calendar.caption_link": "[Calendario completo de resultados →](/results-calendar)",
+
+    "home.compounder.kicker": "INVESTIGACIÓN RATIONAL COMPOUNDER",
+    "home.compounder.h2": "Cubierto en profundidad hoy",
+    "home.compounder.secsub": (
+        "Se agregan nuevas empresas a medida que se completa la "
+        "investigación &mdash; cada una toma semanas, no minutos."
+    ),
+    "home.compounder.sections_label": "Secciones de investigación",
+    "home.compounder.verdict_label": "Veredicto escrito",
+    "home.compounder.request_title": "¿Qué acción debería investigarse a continuación?",
+    "home.compounder.request_cta": "Dínoslo con Feedback &rarr;",
+
+    "home.blog.kicker": "DEL BLOG",
+    "home.blog.h2": "Últimas notas de investigación",
+    "home.blog.secsub": "El razonamiento detrás de los números, explicado en detalle &mdash; ",
+    "home.blog.all_posts": "todas las publicaciones &rarr;",
+    "home.blog.min_read": "min de lectura",
+
+    "home.cta.title": "Todo es gratis.",
+    "home.cta.desc": (
+        "Inicia sesión (arriba a la izquierda) para armar una lista de "
+        "seguimiento de cada ticker que revises y recibir el resumen "
+        "semanal de {digest_word}."
+    ),
+    "home.cta.digest_watchlist": "lista de seguimiento",
+    "home.cta.digest_signal": "señales",
+
+    "home.what_you_get.tag": "LO QUE OBTIENES",
+    "home.what_you_get.intro": "Cada búsqueda responde tres preguntas:",
+    "home.what_you_get.q1_factual": "¿Cuál es el valor intrínseco?",
+    "home.what_you_get.a1_factual": "mostrado junto al precio de hoy con el MOS indicado como porcentaje",
+    "home.what_you_get.q1_signal": "¿Cuánto vale?",
+    "home.what_you_get.a1_signal": "más el margen de seguridad frente al precio de hoy",
+    "home.what_you_get.dcf_lead": "Un DCF en vivo con una tasa de descuento por acción,",
+    "home.what_you_get.q2": "¿Es un buen negocio?",
+    "home.what_you_get.a2": "Un Quality Score de 0 a 100 a partir de pruebas de rentabilidad y balance.",
+    "home.what_you_get.q3_factual": "¿Qué está haciendo la multitud?",
+    "home.what_you_get.a3_factual": (
+        "Lecturas de psicología y descubrimiento - distancia a máximos "
+        "recientes, volumen, atención de búsqueda y noticias - "
+        "expresadas como números."
+    ),
+    "home.what_you_get.q3_signal": "¿Es ahora una entrada sensata?",
+    "home.what_you_get.a3_signal": (
+        "Psicología de la multitud y una zona de entrada técnica &mdash; "
+        "mantenidas separadas de la pregunta de propiedad."
+    ),
+    "home.featured.open_deep_dive": "Abrir el Deep Dive completo de {ticker} →",
+
+    "home.mood.market_mood": "ÁNIMO DE MERCADO {country}",
+    "home.mood.live_reading": "lectura en vivo del tono de las noticias",
+    "home.mood.hopeful": "Esperanzado",
+    "home.mood.neutral": "Neutral",
+    "home.mood.anxious": "Ansioso",
+    "home.mood.today": "hoy",
+
+    "chips.try_one": "Prueba uno:",
+    "chips.did_you_mean": "¿Quisiste decir:",
+
+    "nl.title": "\U0001F50E Describe lo que buscas",
+    "nl.caption": (
+        "En lenguaje sencillo, p. ej. “acciones tecnológicas baratas de "
+        "la ASX” o “small caps de EE. UU. en salud” - traducido a los "
+        "propios filtros de país/universo/sector del Escáner, que "
+        "siempre se muestran antes de ejecutar los resultados para que "
+        "veas (y cambies) exactamente lo que se aplicó."
+    ),
+    "nl.signin_prompt": "Inicia sesión (arriba a la izquierda) para probar el filtrado en lenguaje natural.",
+    "nl.input_aria": "Describe un filtro",
+    "nl.input_placeholder": "p. ej. compounders de calidad baratos en minería australiana",
+    "nl.button": "Filtrar",
+    "nl.warn_empty": "Escribe primero lo que buscas.",
+    "nl.reading": "Leyendo tu solicitud...",
+
+    "dd.data_as_of": "Datos al {date} (último cierre diario disponible).",
+
+    "scanner.change_expander": "Cambiar país / universo / sector",
+    "scanner.change_instruction": (
+        "Marca uno o más países, luego elige un único universo para "
+        "escanear - cada universo se escanea de forma totalmente "
+        "independiente (ASX 200 y ASX 300 nunca se combinan, y tampoco "
+        "ninguno de los universos de EE. UU.)."
+    ),
+    "scanner.country_au": "Australia",
+    "scanner.country_us": "EE. UU.",
+    "scanner.universe_label": "Universo",
+    "scanner.pick_country_info": "Marca al menos un país arriba para elegir un universo que escanear.",
+    "scanner.run_scan_button": "Ejecutar escaneo",
+    "scanner.resolving_spinner": "Resolviendo universo...",
+    "scanner.no_stocks_warning": "Ninguna acción coincidió con este universo/sector - prueba otra selección.",
+    "scanner.empty_message": "Elige un país, universo y (opcionalmente) un sector arriba, luego haz clic en Ejecutar escaneo.",
+
+    "comparison.empty_message": "Busca dos o más tickers arriba para ejecutar una Comparación.",
+
+    "portfolio.title": "Mi cartera",
+    "portfolio.signin_prompt": (
+        "Inicia sesión (arriba a la izquierda) para seguir aquí tus "
+        "posiciones de largo plazo. Esto es privado para tu cuenta - "
+        "nadie más, incluidos otros visitantes conectados, puede verlo."
+    ),
+    "portfolio.scoring_spinner": "Puntuando tus posiciones...",
+    "portfolio.tab_holdings": "\U0001F4BC Posiciones",
+    "portfolio.tab_income": "\U0001F4B0 Ingresos",
+    "portfolio.tab_overview": "\U0001F4CA Resumen y P/L",
+    "portfolio.tab_health": "\U0001FA7A Salud y noticias",
+    "portfolio.tab_progress": "\U0001F4C8 Progreso",
+    "portfolio.tab_ask": "\U0001F4AC Preguntar",
+    "portfolio.tab_alerts": "\U0001F514 Mis alertas",
 }
 
 
