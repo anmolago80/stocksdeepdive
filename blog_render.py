@@ -1054,7 +1054,7 @@ document.addEventListener('click', function(ev){
     <a href="/scanner?lang=es">Buscador</a>
     <a href="/comparison?lang=es">Comparar</a>
     <a href="/portfolio?lang=es">Cartera</a>
-    <a href="/tools?lang=es" class="{_nav_tools_class.strip()}">&#129520; Herramientas</a>
+    <a href="/tools?lang=es" class="{_nav_tools_class.strip()}">&#128176; Herramientas de dinero</a>
     <a href="/es/blog">Blog</a>
     <details class="nav-more">
       <summary>Más <span class="nav-more-chev">&#9662;</span></summary>
@@ -1093,7 +1093,7 @@ document.addEventListener('click', function(ev){
     <a href="/scanner">Scanner</a>
     <a href="/comparison">Compare</a>
     <a href="/portfolio">Portfolio</a>
-    <a href="/tools" class="{_nav_tools_class.strip()}">&#129520; Tools</a>
+    <a href="/tools" class="{_nav_tools_class.strip()}">&#128176; Money Tools</a>
     <a href="/blog">Blog</a>
     <details class="nav-more">
       <summary>More <span class="nav-more-chev">&#9662;</span></summary>

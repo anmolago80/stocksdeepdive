@@ -5990,7 +5990,7 @@ def page_home():
   </a>
   <a class='sdd-feat' href='/tools' target='_self'>
     <span class='sdd-feat-badge'>{_free_signin_badge}</span>
-    <div class='ic'>&#129520;</div><h3>{_tl('tools_title')}</h3>
+    <div class='ic'>&#128176;</div><h3>{_tl('tools_title')}</h3>
     <p>{_tl('tools_desc')}</p>{_tools_stat_html}
     <span class='sdd-feat-arrow'>&#8594;</span>
   </a>
@@ -18545,7 +18545,7 @@ PG_RESULTS_CALENDAR = st.Page(page_results_calendar, title="Results Calendar",
 PG_PORTFOLIO = st.Page(page_portfolio, title="My Portfolio", url_path="portfolio")
 # Mega-batch Part 18: the 🧰 Tools hub - its own primary-row nav tab,
 # between Portfolio and Blog (owner's "seventh-tab" choice).
-PG_TOOLS = st.Page(page_tools, title="Tools", url_path="tools")
+PG_TOOLS = st.Page(page_tools, title="Money Tools", url_path="tools")
 PG_METHODOLOGY = st.Page(page_methodology, title="How the scores work", url_path="methodology")
 PG_ABOUT = st.Page(page_about, title="About", url_path="about")
 PG_MODEL_HISTORY = st.Page(page_model_history, title="Model history", url_path="model-history")

@@ -86,7 +86,7 @@ EN = {
     # Blog - short label per the spec ("so the row doesn't crowd"). Never
     # also listed in the More panel (that stays Calendar/Track record/
     # Methodology/About only, per the 3rd Amendment to Part 5).
-    "nav.tools": "\U0001F9F0 Tools",
+    "nav.tools": "\U0001F4B0 Money Tools",
     "nav.blog": "Blog",
     "nav.more": "More",
     "nav.methodology": "Methodology",
@@ -786,7 +786,7 @@ EN = {
     # Amendment to Part 18 (6 Sep) - "FREE" alone would overclaim, so
     # this tile (and the home banner) get their own "FREE · SIGN IN"
     # badge rather than reusing home.tiles.free_badge.
-    "home.tiles.tools_title": "Tools",
+    "home.tiles.tools_title": "Money Tools",
     "home.tiles.tools_desc": (
         "Free calculators &mdash; starting with the Budget Planner: your "
         "family budget in a minute, then what those savings become "
@@ -817,7 +817,7 @@ EN = {
     # first (and today, only) registered tool. Sign-in required for all
     # of Tools per the Amendment to Part 18 (6 Sep) - tools.signin_prompt
     # is the amendment's own verbatim copy.
-    "tools.page_title": "\U0001F9F0 Tools",
+    "tools.page_title": "\U0001F4B0 Money Tools",
     "tools.page_subtitle": "Free calculators, sign in to use.",
     "tools.signin_prompt": "Free with an account &mdash; sign in to build your plan.",
     "tools.registry_stat": "{count} tool &middot; more coming",
@@ -1695,7 +1695,7 @@ ES = {
     "nav.scanner": "Buscador",
     "nav.calendar": "Calendario de resultados",
     "nav.portfolio": "Cartera",
-    "nav.tools": "\U0001F9F0 Herramientas",
+    "nav.tools": "\U0001F4B0 Herramientas de dinero",
     "nav.blog": "Blog",
     "nav.more": "Más",
     "nav.methodology": "Metodología",
@@ -2307,7 +2307,7 @@ ES = {
         "prueba de estrés, vigilante con IA."
     ),
     "home.tiles.portfolio_stat": "{count} herramientas incluidas",
-    "home.tiles.tools_title": "Herramientas",
+    "home.tiles.tools_title": "Herramientas de dinero",
     "home.tiles.tools_desc": (
         "Calculadoras gratuitas &mdash; empezando por el Planificador de "
         "presupuesto: tu presupuesto familiar en un minuto, y luego en "
@@ -2330,7 +2330,7 @@ ES = {
     "home.banner.headline_empty": "Escribe ingresos/gastos para ver la cifra a 10 años.",
     "home.banner.build_plan_button": "Crear mi plan completo &rarr;",
 
-    "tools.page_title": "\U0001F9F0 Herramientas",
+    "tools.page_title": "\U0001F4B0 Herramientas de dinero",
     "tools.page_subtitle": "Calculadoras gratuitas, inicia sesión para usarlas.",
     "tools.signin_prompt": "Gratis con una cuenta &mdash; inicia sesión para crear tu plan.",
     "tools.registry_stat": "{count} herramienta &middot; más próximamente",
