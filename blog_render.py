@@ -72,6 +72,24 @@ _FLAG_ES_SVG = ('<svg class="flag" viewBox="0 0 32 22" aria-hidden="true" '
                 'focusable="false"><rect width="32" height="22" fill="#AA151B"/>'
                 '<rect y="5.5" width="32" height="11" fill="#F1BF00"/></svg>')
 
+# Part 21 (owner-approved mock, small): the bordered bio card at the top
+# of /about and /es/about - owner-supplied, hardcoded per the
+# instruction's own words ("owner-supplied - hardcode this value as the
+# constant"). Never change this without the owner asking.
+ABOUT_LINKEDIN_URL = "https://www.linkedin.com/in/andreslarabridge/"
+
+# Optional round photo beside the bio - a static/ file path constant; the
+# shipped default is empty (no photo supplied yet), which means the bio
+# card renders with NO photo/circle at all, never a broken image or a
+# placeholder silhouette. Set to e.g. "/static/andres-moreno.jpg" (drop
+# the file in this module's static/ dir) whenever the owner supplies one.
+ABOUT_PHOTO_PATH = ""
+
+# A small, decorative (aria-hidden) LinkedIn glyph - plain vector path
+# data, not a fetched brand asset - beside the name line. The actual link
+# text/destination lives on the surrounding <a>'s href and aria-label.
+_LINKEDIN_ICON_SVG = '<svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" aria-hidden="true" focusable="false"><path d="M0 1.146C0 .513.526 0 1.175 0h13.65C15.474 0 16 .513 16 1.146v13.708c0 .633-.526 1.146-1.175 1.146H1.175C.526 16 0 15.487 0 14.854V1.146zm4.943 12.248V6.169H2.542v7.225h2.401zm-1.2-8.212c.837 0 1.358-.554 1.358-1.248-.015-.709-.52-1.248-1.342-1.248-.822 0-1.359.54-1.359 1.248 0 .694.521 1.248 1.327 1.248h.016zm4.908 8.212V9.359c0-.216.016-.432.08-.586.173-.431.568-.878 1.232-.878.869 0 1.216.662 1.216 1.634v3.865h2.401V9.25c0-2.22-1.184-3.252-2.764-3.252-1.274 0-1.845.7-2.165 1.193v.025h-.016l.016-.025V6.169h-2.4c.03.678 0 7.225 0 7.225h2.4z"/></svg>'
+
 # Conversion pass, Part 5: the Reddit handle to display on the byline
 # shown to visitors arriving with a Reddit-tagged src (see
 # reddit_byline_visible/reddit_byline_html below). Confirmed with the
@@ -771,6 +789,27 @@ hr{border:0;border-top:1px solid #1f3352;margin:34px 0}
   border-radius:10px;padding:18px 22px;margin:40px 0 10px}
 .cta h3{margin:0 0 6px;font-size:18px}
 .cta p{margin:0;color:#b9c9dc;font-size:15px}
+/* Part 21 (owner-approved mock): the /about bio card - a bordered card
+   (all four sides, not the .cta box's left-accent-only treatment, so a
+   reader never mistakes the two) sitting above the page's own untouched
+   <h1>/prose. */
+.sdd-bio-card{background:#121f36;border:1px solid rgba(45,212,191,.35);
+  border-radius:14px;padding:24px 26px;margin:0 0 34px}
+.sdd-bio-top{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.sdd-bio-photo{width:76px;height:76px;border-radius:50%;object-fit:cover;
+  flex-shrink:0;border:2px solid rgba(45,212,191,.35)}
+.sdd-bio-name{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+  color:#e6edf5;font-weight:800;font-size:19px}
+.sdd-bio-linkedin{color:#8aa0b8;display:inline-flex;align-items:center;
+  line-height:0}
+.sdd-bio-linkedin:hover{color:#2dd4bf}
+.sdd-bio-role{color:#8aa0b8;font-size:14.5px;margin-top:4px}
+.sdd-bio-card p{margin:18px 0 0;color:#cddaea;font-size:16px;line-height:1.65}
+.sdd-bio-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+.sdd-bio-chip{background:#0b1220;border:1px solid #1f3352;border-radius:999px;
+  padding:5px 13px;font-size:12.5px;color:#8aa0b8}
+.sdd-bio-draft{background:#0b1220;border:1px solid #1f3352;border-left:3px solid #f59e0b;
+  border-radius:8px;padding:10px 14px;margin-top:18px;font-size:13.5px;color:#b9c9dc}
 footer.site{border-top:1px solid #1f3352;margin-top:56px;padding:26px 0 34px;
   color:#8aa0b8;font-size:13px}
 footer.site .wrap{max-width:1080px}
@@ -1192,8 +1231,22 @@ def _json_ld(obj):
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
-def _person_json_ld(name=None):
-    return {"@type": "Person", "name": name or AUTHOR_NAME}
+def _person_json_ld(name=None, honorific_suffix=None, same_as=None, job_title=None):
+    """honorific_suffix/same_as/job_title (Part 21): the /about page's
+    only extra facts about the SAME real Person every other JSON-LD graph
+    on the site already names via AUTHOR_NAME - optional and additive, so
+    every existing caller (blog post author bylines, the Organization's
+    founder, every other content page) keeps emitting the exact same
+    bare {"@type": "Person", "name": ...} it always has. same_as is only
+    ever passed as ABOUT_LINKEDIN_URL, and only from the /about page."""
+    out = {"@type": "Person", "name": name or AUTHOR_NAME}
+    if honorific_suffix:
+        out["honorificSuffix"] = honorific_suffix
+    if job_title:
+        out["jobTitle"] = job_title
+    if same_as:
+        out["sameAs"] = same_as
+    return out
 
 
 def _organization_json_ld(base_url):
@@ -2212,6 +2265,100 @@ def render_tool_landing(path, base_url, coverage=None):
     return _page(head, body, path=path).replace("<body>", '<body class="home">', 1)
 
 
+_ABOUT_PATHS = {"/about", "/es/about"}
+
+
+def _about_bio_card_html(lang):
+    """Part 21 (owner-approved mock, small): the bordered bio card at the
+    very TOP of /about and /es/about - render_content_page() below
+    prepends this ahead of the page's own existing <h1>/prose, which
+    stays completely untouched after it (byte-identical, per the
+    instruction's own acceptance test).
+
+    Cold-visitor trust-building: a named, credentialled, real engineer
+    runs this valuation site, not an anonymous model. Deliberately
+    excludes every employer/client name from the owner's CV - "leads a
+    bridges engineering team in Brisbane" is the agreed-on wording that
+    covers 24 years of bridge work across 4 continents without naming
+    who any of it was for.
+
+    lang="es" swaps in a machine-translation draft of the role line,
+    both paragraphs and the chips, and adds the same
+    "Traduccion automatica ... ver original" style banner already used
+    for translated blog posts (see _page_body's translation_banner) -
+    the owner reviews this draft before the label comes off, per the
+    site's own translation rules. The two English paragraphs below are
+    the owner-approved wording, used verbatim."""
+    photo_html = ""
+    if ABOUT_PHOTO_PATH:
+        photo_html = (f'<img src="{html.escape(ABOUT_PHOTO_PATH)}" class="sdd-bio-photo" '
+                      f'alt="Andres Moreno">')
+    linkedin_html = (f'<a class="sdd-bio-linkedin" href="{html.escape(ABOUT_LINKEDIN_URL)}" '
+                      f'target="_blank" rel="noopener" '
+                      f'aria-label="Andres Moreno on LinkedIn">{_LINKEDIN_ICON_SVG}</a>')
+    chips_en = ["CPEng Chartered &mdash; Engineers Australia",
+                "RPEQ Registered Professional Engineer QLD",
+                "NER National Engineering Register",
+                "24 yrs engineering &middot; 4 continents"]
+    chips_es = ["CPEng Acreditado &mdash; Engineers Australia",
+                "RPEQ Ingeniero Profesional Registrado (QLD)",
+                "NER Registro Nacional de Ingeniería",
+                "24 años de ingeniería &middot; 4 continentes"]
+    if lang == "es":
+        name_line = "Andrés Moreno, BEng, MEng"
+        role_line = ("Ingeniero acreditado (Chartered) &middot; inversor particular "
+                     "&middot; Brisbane, Australia")
+        p1 = ("He pasado <strong>24 años como ingeniero civil y estructural</strong> "
+              "diseñando y verificando puentes en Europa, Asia, EE. UU. y Australia "
+              "— hoy dirijo un equipo de ingeniería de puentes en Brisbane. La "
+              "ingeniería de puentes es una disciplina donde los números tienen que "
+              "ser correctos: cada carga se calcula a partir de datos declarados, cada "
+              "suposición queda por escrito, y alguien independiente revisa el trabajo "
+              "antes de que nadie cruce por él.")
+        p2 = ("<strong>Este sitio aplica esa misma disciplina a las acciones.</strong> "
+              "Durante años ejecuté estos modelos de forma privada para mi propia "
+              "cartera y mi fondo de pensión autogestionado — un motor de DCF, "
+              "pruebas de calidad, un cuaderno de trabajo que interroga a una empresa "
+              "durante semanas. StocksDeepDive es ese motor abierto al público: cada "
+              "dato declarado, cada estimación marcada en rojo, y el juicio siempre "
+              "en tus manos.")
+        chips = chips_es
+        draft_banner = ('<div class="sdd-bio-draft">Traducción automática del '
+                        'original en inglés &mdash; <a href="/about">ver original</a>'
+                        '</div>')
+    else:
+        name_line = "Andres Moreno, BEng, MEng"
+        role_line = "Chartered engineer &middot; private investor &middot; Brisbane, Australia"
+        p1 = ("I&rsquo;ve spent <strong>24 years as a civil &amp; structural engineer</strong> "
+              "designing and verifying bridges across Europe, Asia, the USA and Australia "
+              "&mdash; today I lead a bridges engineering team in Brisbane. Bridge "
+              "engineering is a discipline where the numbers have to be right: every load "
+              "is calculated from stated inputs, every assumption is written down, and "
+              "someone independent checks the work before anyone drives over it.")
+        p2 = ("<strong>This site applies that same discipline to stocks.</strong> For "
+              "years I ran these models privately for my own portfolio and self-managed "
+              "super fund &mdash; a DCF engine, quality tests, a workbook that interrogates "
+              "one company for weeks. StocksDeepDive is that engine opened to the public: "
+              "every input stated, every estimate flagged in red, and the judgment always "
+              "left with you.")
+        chips = chips_en
+        draft_banner = ""
+    chips_html = "".join(f'<span class="sdd-bio-chip">{c}</span>' for c in chips)
+    return f"""<div class="sdd-bio-card">
+      <div class="sdd-bio-top">
+        {photo_html}
+        <div>
+          <div class="sdd-bio-name">{name_line}{linkedin_html}</div>
+          <div class="sdd-bio-role">{role_line}</div>
+        </div>
+      </div>
+      {draft_banner}
+      <p>{p1}</p>
+      <p>{p2}</p>
+      <div class="sdd-bio-chips">{chips_html}</div>
+    </div>"""
+
+
 def render_content_page(title, markdown_text, description, path, base_url,
                         heading=None, intro_note=None, lang="en",
                         hreflang_alternates=None):
@@ -2253,9 +2400,15 @@ def render_content_page(title, markdown_text, description, path, base_url,
     <a href="/research">Rational Compounder research</a>. New writing lands on
     the <a href="/blog">blog</a>.</p>
   </div>"""
+    # Part 21: the bio card is a pure PREPEND, only on /about and its ES
+    # twin - the h1 and everything from {note} down is untouched, for
+    # every page including these two, satisfying the instruction's own
+    # "everything currently on the page stays below it, byte-identical".
+    bio_card = _about_bio_card_html(lang) if path in _ABOUT_PATHS else ""
     body = f"""
 <main><div class="wrap">
   <article>
+    {bio_card}
     <h1>{html.escape(heading or title)}</h1>
     {note}
     {md_to_html(markdown_text)}
@@ -2264,6 +2417,16 @@ def render_content_page(title, markdown_text, description, path, base_url,
 </div></main>
 """
     canonical = f"{base_url}{path}"
+    # Part 21: the /about page's Person gets its credentials and LinkedIn
+    # sameAs added to the SAME shared _person_json_ld() every other page's
+    # author field already uses - see that function's own docstring for
+    # why this is additive/optional rather than a change to its default
+    # output (every other page keeps emitting the bare Person it always has).
+    author_json_ld = (
+        _person_json_ld(honorific_suffix="BEng, MEng", same_as=ABOUT_LINKEDIN_URL,
+                         job_title="Chartered engineer")
+        if path in _ABOUT_PATHS else _person_json_ld()
+    )
     json_ld = _json_ld({
         "@context": "https://schema.org",
         "@type": "WebPage",
@@ -2271,7 +2434,7 @@ def render_content_page(title, markdown_text, description, path, base_url,
         "description": description,
         "url": canonical,
         "isPartOf": {"@type": "WebSite", "name": SITE_NAME, "url": base_url},
-        "author": _person_json_ld(),
+        "author": author_json_ld,
         "publisher": _organization_json_ld(base_url),
         # Fix, while touching this code (Español instruction, Part 2):
         # this was a hardcoded "en" regardless of the page actually
