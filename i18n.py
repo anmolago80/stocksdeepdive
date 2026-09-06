@@ -331,6 +331,17 @@ EN = {
     "dd.heading.dividends": "Dividends",
     "dd.heading.insider": "Insider & capital",
 
+    # Deep Dive first-screen instruction, Part 3: the compact popover
+    # triggers in the new Watchlist/Alerts/Checklist action row under the
+    # header - fixed, ticker-free labels (the ticker context that used to
+    # live in the old expander/button labels now sits as the first line
+    # inside each popover instead - see dd.alert.expander/dd.checklist.
+    # expander just below, both still used, just no longer as the outer
+    # trigger text).
+    "dd.actions.watchlist_button": "☆ Watchlist",
+    "dd.actions.alerts_button": "\U0001F514 Alerts",
+    "dd.actions.checklist_button": "\U0001F4CB Checklist",
+
     "dd.alert.expander": "\U0001F514 Alert me when {ticker}...",
     "dd.alert.signin_prompt": (
         "Sign in (top left) to get an email or push notification when "
@@ -849,6 +860,10 @@ ES = {
 
     "dd.heading.dividends": "Dividendos",
     "dd.heading.insider": "Movimientos de insiders y capital",
+
+    "dd.actions.watchlist_button": "☆ Seguimiento",
+    "dd.actions.alerts_button": "\U0001F514 Alertas",
+    "dd.actions.checklist_button": "\U0001F4CB Lista de verificación",
 
     "dd.alert.expander": "\U0001F514 Avisarme cuando {ticker}...",
     "dd.alert.signin_prompt": (

@@ -3742,14 +3742,26 @@ def _render_alert_control(ticker, dd, key_prefix="alert_dd"):
     evaluated nightly by alert_engine.py and delivered by email/push,
     batched with any other alerts that fired the same night. Purely
     descriptive by construction - it can only ever say a stated number
-    crossed a stated line, never "buy" or "sell"."""
+    crossed a stated line, never "buy" or "sell".
+
+    Deep Dive first-screen instruction, Part 3: the trigger is now a
+    compact st.popover ("dd.actions.alerts_button", a fixed "\U0001F514
+    Alerts" - no ticker in the trigger itself, unlike the old expander
+    title) rather than a full-width st.expander, called from the new
+    compact action row beside Watchlist/Checklist near the header. The
+    original expander title (dd.alert.expander, "Alert me when {ticker}...")
+    is kept as the first line INSIDE the popover instead of being dropped,
+    so the ticker context the old wider trigger used to carry isn't lost -
+    everything else below is byte-identical to the pre-Part-3 expander
+    body, per the brief's own "no functional change" instruction."""
     email = paywall_engine.current_user_email()
     # Español completion, Part 1: expander title + sign-in caption routed
     # through i18n.t() (dd.alert.*); the threshold-setting widget internals
     # below (metric/operator/value selects, existing-alert rows) are
     # explicitly deferred - see the Part 1 report's documented exceptions.
     _alert_lang = st.session_state.get("lang", "en")
-    with st.expander(i18n.t("dd.alert.expander", _alert_lang, ticker=ticker), expanded=False):
+    with st.popover(i18n.t("dd.actions.alerts_button", _alert_lang), key=f"{key_prefix}_popover_{ticker}"):
+        st.caption(i18n.t("dd.alert.expander", _alert_lang, ticker=ticker))
         if not email:
             st.caption(i18n.t("dd.alert.signin_prompt", _alert_lang, ticker=ticker))
             return
@@ -5569,13 +5581,20 @@ def _render_checklist_panel(ticker, dd):
     checklist_store.py's own docstring and _render_add_holding_expander
     for how that note is carried across once a holding is later added.
     Never surfaced anywhere public - checklist_store has no path into
-    snapshot_store/API/MCP."""
+    snapshot_store/API/MCP.
+
+    Deep Dive first-screen instruction, Part 3: same st.expander -> st.
+    popover swap as _render_alert_control - a compact "\U0001F4CB
+    Checklist" trigger (dd.actions.checklist_button) in the new action
+    row near the header, with the old expander title kept as the first
+    line inside the popover body so the {ticker} context survives."""
     email = paywall_engine.current_user_email()
     # Español completion, Part 1: expander title + sign-in caption routed
     # through i18n.t() (dd.checklist.*); the tickbox list items and thesis
     # note below are explicitly deferred - see the Part 1 report.
     _cl_lang = st.session_state.get("lang", "en")
-    with st.expander(i18n.t("dd.checklist.expander", _cl_lang, ticker=ticker), expanded=False):
+    with st.popover(i18n.t("dd.actions.checklist_button", _cl_lang), key=f"checklist_popover_{ticker}"):
+        st.caption(i18n.t("dd.checklist.expander", _cl_lang, ticker=ticker))
         if not email:
             st.caption(i18n.t("dd.checklist.signin_prompt", _cl_lang, ticker=ticker))
             return
@@ -6410,6 +6429,58 @@ def _render_peer_context(dd):
         st.caption(i18n.t("dd.peer.no_peers", _peer_lang, universe=universe))
 
 
+def _render_dd_action_row(dd):
+    """Deep Dive first-screen instruction, Part 3: "Watchlist / Alerts /
+    Checklist, up beside the name" - replaces the three oversized
+    full-width elements (the plain "☆ Add to my watchlist" button, the
+    "\U0001F514 Alert me when {ticker}..." expander, the "\U0001F4CB My
+    checklist for {ticker}" expander) with one compact row of three small
+    st.popover triggers, placed directly under the ticker header (same
+    st.popover mechanism the header's own feedback control and "Copy link
+    for sharing"/"Download data" already use on this page). No functional
+    change: each popover holds exactly the UI its expander/button held
+    before - _render_alert_control and _render_checklist_panel are called
+    completely unchanged (they've simply been converted internally from
+    st.expander to st.popover, see their own docstrings), and the
+    Watchlist popover below is the exact same toggle-button-or-sign-in-
+    caption logic that used to sit inline, just wrapped one level deeper.
+
+    st.columns(3) is the same "same line on desktop, stacks on narrow
+    screens" mechanism already used elsewhere on this page (e.g. the
+    Watchlist/Follow row this replaces) - Streamlit collapses columns to
+    a single stack below its own mobile breakpoint, verified at 390x844
+    during this instruction's own verify pass."""
+    ticker = dd["ticker"]
+    _act_lang = st.session_state.get("lang", "en")
+    _wl_pop_col, _alert_pop_col, _cl_pop_col = st.columns(3, gap="small")
+    with _wl_pop_col:
+        with st.popover(i18n.t("dd.actions.watchlist_button", _act_lang), key=f"wl_popover_{ticker}"):
+            _wl_email = paywall_engine.current_user_email()
+            if _wl_email:
+                _in_wl = watchlist_store.contains(_wl_email, ticker)
+                _wl_label = ("★ Remove from my watchlist" if _in_wl
+                             else "☆ Add to my watchlist")
+                if st.button(_wl_label, key=f"wl_{ticker}"):
+                    try:
+                        if _in_wl:
+                            watchlist_store.remove(_wl_email, ticker)
+                        else:
+                            watchlist_store.add(_wl_email, ticker)
+                    except Exception:
+                        st.warning("Couldn't save right now - please try again.")
+                    st.rerun()
+            else:
+                st.caption(
+                    f"Sign in (top left) to add {ticker} to your "
+                    "watchlist and hear about it in the weekly "
+                    + ("watchlist digest." if _factual() else "signal digest.")
+                )
+    with _alert_pop_col:
+        _render_alert_control(ticker, dd, key_prefix="alert_dd")
+    with _cl_pop_col:
+        _render_checklist_panel(ticker, dd)
+
+
 def page_deep_dive():
     _render_header(compact=True, page_label="Deep Dive")
     _dd = st.session_state.get("dd_result")
@@ -6498,6 +6569,7 @@ def page_deep_dive():
             _dd_value_word = "WEAK"
 
         st.subheader(f"{_dd['ticker']} - {_dd['name']}")
+        _render_dd_action_row(_dd)
         _render_data_as_of(_dd["ticker"])
         _render_recent_results_banner(_dd["ticker"])
         _render_score_history_caption(_dd["ticker"], _dd.get("long_score"))
@@ -6701,48 +6773,16 @@ def page_deep_dive():
                 unsafe_allow_html=True,
             )
 
-        # --- Watchlist (signed-in users): the sign-in carrot, and the
-        # audience the weekly digest goes to. Follow (Task 2) sits in the
-        # column next to it when this ticker has hand-built research
-        # coverage - a lighter commitment than the watchlist, open to
-        # anonymous visitors too. ---
-        _wl_col, _follow_col = st.columns(2)
-        with _wl_col:
-            _wl_email = paywall_engine.current_user_email()
-            if _wl_email:
-                _in_wl = watchlist_store.contains(_wl_email, _dd["ticker"])
-                _wl_label = ("\u2605 Remove from my watchlist" if _in_wl
-                             else "\u2606 Add to my watchlist")
-                if st.button(_wl_label, key=f"wl_{_dd['ticker']}"):
-                    try:
-                        if _in_wl:
-                            watchlist_store.remove(_wl_email, _dd["ticker"])
-                        else:
-                            watchlist_store.add(_wl_email, _dd["ticker"])
-                    except Exception:
-                        st.warning("Couldn't save right now - please try again.")
-                    st.rerun()
-            else:
-                st.caption(
-                    f"Sign in (top left) to add {_dd['ticker']} to your "
-                    "watchlist and hear about it in the weekly "
-                    + ("watchlist digest." if _factual() else "signal digest.")
-                )
+        # --- Follow (Task 2): a lighter commitment than the watchlist,
+        # open to anonymous visitors too - shown when this ticker has
+        # hand-built research coverage. Deep Dive first-screen instruction,
+        # Part 3: Watchlist/Alerts/Checklist moved into the compact popover
+        # row right under the header (_render_dd_action_row, called just
+        # after st.subheader above) - Follow wasn't part of that brief, so
+        # it keeps its own spot here, no longer needing the two-column
+        # split it used to share with the Watchlist button. ---
         if _dd_has_research:
-            with _follow_col:
-                _render_follow_control(_dd["ticker"], key_prefix="follow_dd")
-
-        # --- Services batch, Part 1: metric alerts. Sits directly under
-        # the watchlist/follow row - a lighter-weight sibling to both:
-        # watchlist is "keep this on my list", follow is "email me new
-        # research", this is "tell me when a specific number crosses a
-        # line I choose." ---
-        _render_alert_control(_dd["ticker"], _dd, key_prefix="alert_dd")
-
-        # --- Services batch 3, Part B2: pre-purchase checklist + thesis
-        # journal. Sits right after the alert control, near the other
-        # follow/alert row, per the spec. ---
-        _render_checklist_panel(_dd["ticker"], _dd)
+            _render_follow_control(_dd["ticker"], key_prefix="follow_dd")
 
         # --- Fix 4, AI fixes round 1: "Copy as text" - see
         # _render_copy_as_text_button's own docstring. ---
