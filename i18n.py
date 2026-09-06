@@ -82,6 +82,11 @@ EN = {
     # never read elsewhere) - grepped to confirm before changing.
     "nav.calendar": "Results Calendar",
     "nav.portfolio": "Portfolio",
+    # Part 18: Tools gets its own primary-row tab, between Portfolio and
+    # Blog - short label per the spec ("so the row doesn't crowd"). Never
+    # also listed in the More panel (that stays Calendar/Track record/
+    # Methodology/About only, per the 3rd Amendment to Part 5).
+    "nav.tools": "\U0001F9F0 Tools",
     "nav.blog": "Blog",
     "nav.more": "More",
     "nav.methodology": "Methodology",
@@ -670,9 +675,9 @@ EN = {
     ),
 
     "home.toolkit.kicker": "THE TOOLKIT",
-    # Second amendment to Part 5 (6 Sep): Deep Dive joins the toolkit row
-    # as its own (first) tile, so "Four ways in" became five.
-    "home.toolkit.h2": "Five ways in. One consistent model.",
+    # Part 18 (6 Sep): Tools joins the toolkit row as a sixth tile, so
+    # "Five ways in" (Second amendment to Part 5) became six.
+    "home.toolkit.h2": "Six ways in. One consistent model.",
     "home.toolkit.secsub_factual": (
         "Every tool runs the same engine &mdash; the same DCF model, the same "
         "quality calculation, the same psychology read &mdash; so the numbers "
@@ -776,6 +781,98 @@ EN = {
         "test, AI watchdog."
     ),
     "home.tiles.portfolio_stat": "{count} tools inside",
+    # Part 18: Tools joins the toolkit row as a sixth tile, after My
+    # Portfolio. Sign-in required for all of Tools per the owner's
+    # Amendment to Part 18 (6 Sep) - "FREE" alone would overclaim, so
+    # this tile (and the home banner) get their own "FREE · SIGN IN"
+    # badge rather than reusing home.tiles.free_badge.
+    "home.tiles.tools_title": "Tools",
+    "home.tiles.tools_desc": (
+        "Free calculators &mdash; starting with the Budget Planner: your "
+        "family budget in a minute, then what those savings become "
+        "invested in an index fund."
+    ),
+    "home.tiles.tools_stat": "{count} tool &middot; more coming",
+    "home.tiles.free_signin_badge": "FREE &middot; SIGN IN",
+    "home.banner.new_badge": "NEW &middot; FREE &middot; SIGN IN",
+
+    # Part 18: home banner promoting the Budget Planner specifically,
+    # between the hero/mood area and the toolkit row. The mini teaser
+    # (money in/out) computes the SAME 10y headline the full tool page
+    # would for the same two numbers - see app.py's
+    # _render_tools_home_banner docstring for the shared-maths note.
+    "home.banner.tools_title": "\U0001F4B8 What's your monthly budget worth in 10 years?",
+    "home.banner.tools_pitch": (
+        "Type your family budget in a minute and see savings $/mo and "
+        "$/yr &mdash; then what those savings would become if invested "
+        "in a plain index fund instead of left in the bank."
+    ),
+    "home.banner.money_in_label": "Money in / month",
+    "home.banner.money_out_label": "Money out / month",
+    "home.banner.headline_10y": "In 10 years, {index} history &#8776; {amount}",
+    "home.banner.headline_empty": "Type money in/out to see the 10-year figure.",
+    "home.banner.build_plan_button": "Build my full plan &rarr;",
+
+    # Part 18: the 🧰 Tools hub page itself and the Budget Planner, its
+    # first (and today, only) registered tool. Sign-in required for all
+    # of Tools per the Amendment to Part 18 (6 Sep) - tools.signin_prompt
+    # is the amendment's own verbatim copy.
+    "tools.page_title": "\U0001F9F0 Tools",
+    "tools.page_subtitle": "Free calculators, sign in to use.",
+    "tools.signin_prompt": "Free with an account &mdash; sign in to build your plan.",
+    "tools.registry_stat": "{count} tool &middot; more coming",
+
+    "tools.budget.title": "Budget Planner",
+    "tools.budget.subtitle": (
+        "Type a family budget in a minute, see savings $/mo and $/yr, "
+        "then what those savings would have become invested in a plain "
+        "index fund &mdash; plus what each expense category costs in "
+        "forgone compounding. Educational, never advice."
+    ),
+    "tools.budget.money_in": "Money in / month",
+    "tools.budget.categories_kicker": "Money out &mdash; skip whatever doesn't apply",
+    "tools.budget.cat.mortgage": "Mortgage / rent",
+    "tools.budget.cat.transport": "Transport (car, petrol, fares)",
+    "tools.budget.cat.food": "Food &amp; groceries",
+    "tools.budget.cat.utilities": "Utilities (power, water, internet, phone)",
+    "tools.budget.cat.insurance": "Insurances",
+    "tools.budget.cat.health": "Health",
+    "tools.budget.cat.education": "School / childcare",
+    "tools.budget.cat.subscriptions": "Subscriptions",
+    "tools.budget.cat.fun": "Fun, eating out, hobbies",
+    "tools.budget.cat.other": "Everything else",
+    "tools.budget.results_kicker": "Live results",
+    "tools.budget.results_in": "Money in",
+    "tools.budget.results_out": "Money out",
+    "tools.budget.results_savings_month": "Savings $/mo",
+    "tools.budget.results_savings_year": "Savings $/yr",
+    "tools.budget.results_rate": "Savings rate",
+    "tools.budget.compounding_note": (
+        "Every line shows what that spending would compound to if "
+        "invested instead &mdash; not to say stop living, but to price "
+        "the trade."
+    ),
+    "tools.budget.category_stat": "{years}y invested &#8776; {amount}",
+    "tools.budget.projection_title": "\U0001F4C8 If those savings were invested&hellip;",
+    "tools.budget.index_us": "\U0001F1FA\U0001F1F8 S&amp;P 500",
+    "tools.budget.index_au": "\U0001F1E6\U0001F1FA ASX 200",
+    "tools.budget.years_label": "Years",
+    "tools.budget.figure_cautious_label": "Cautious &middot; 6%/yr",
+    "tools.budget.figure_historical_label": "{index} history &middot; {rate}/yr",
+    "tools.budget.figure_deposits_label": "Deposits alone &middot; no growth",
+    "tools.budget.assumption_note": (
+        "At the {index}'s &#126;{rate}/yr historical average total "
+        "return (dividends reinvested), before tax and fund fees. "
+        "History, not a prediction."
+    ),
+    "tools.budget.disclaimer": (
+        "A described calculation from historical index returns &mdash; "
+        "markets fall too; the past average is not a prediction or "
+        "advice. Educational only."
+    ),
+    "tools.budget.saved_note": "Saved automatically to your account.",
+    "tools.budget.chart_invested": "Invested",
+    "tools.budget.chart_saved": "Just saved",
 
     "home.hiw.kicker": "HOW IT WORKS",
     "home.hiw.h2_factual": "Search. Compute. Inspect.",
@@ -1358,6 +1455,7 @@ ES = {
     "nav.scanner": "Buscador",
     "nav.calendar": "Calendario de resultados",
     "nav.portfolio": "Cartera",
+    "nav.tools": "\U0001F9F0 Herramientas",
     "nav.blog": "Blog",
     "nav.more": "Más",
     "nav.methodology": "Metodología",
@@ -1869,7 +1967,7 @@ ES = {
     ),
 
     "home.toolkit.kicker": "EL KIT DE HERRAMIENTAS",
-    "home.toolkit.h2": "Cinco formas de empezar. Un solo modelo consistente.",
+    "home.toolkit.h2": "Seis formas de empezar. Un solo modelo consistente.",
     "home.toolkit.secsub_factual": (
         "Cada herramienta usa el mismo motor &mdash; el mismo modelo DCF, "
         "el mismo cálculo de calidad, la misma lectura de psicología "
@@ -1969,6 +2067,86 @@ ES = {
         "prueba de estrés, vigilante con IA."
     ),
     "home.tiles.portfolio_stat": "{count} herramientas incluidas",
+    "home.tiles.tools_title": "Herramientas",
+    "home.tiles.tools_desc": (
+        "Calculadoras gratuitas &mdash; empezando por el Planificador de "
+        "presupuesto: tu presupuesto familiar en un minuto, y luego en "
+        "qué se convertirían esos ahorros invertidos en un fondo índice."
+    ),
+    "home.tiles.tools_stat": "{count} herramienta &middot; más próximamente",
+    "home.tiles.free_signin_badge": "GRATIS &middot; INICIA SESIÓN",
+    "home.banner.new_badge": "NUEVO &middot; GRATIS &middot; INICIA SESIÓN",
+
+    "home.banner.tools_title": "\U0001F4B8 ¿Cuánto valdría tu presupuesto mensual en 10 años?",
+    "home.banner.tools_pitch": (
+        "Escribe tu presupuesto familiar en un minuto y ve el ahorro "
+        "$/mes y $/año &mdash; y luego en qué se convertiría ese ahorro "
+        "si se invirtiera en un fondo índice en lugar de quedarse en el "
+        "banco."
+    ),
+    "home.banner.money_in_label": "Ingresos / mes",
+    "home.banner.money_out_label": "Gastos / mes",
+    "home.banner.headline_10y": "En 10 años, historial de {index} &#8776; {amount}",
+    "home.banner.headline_empty": "Escribe ingresos/gastos para ver la cifra a 10 años.",
+    "home.banner.build_plan_button": "Crear mi plan completo &rarr;",
+
+    "tools.page_title": "\U0001F9F0 Herramientas",
+    "tools.page_subtitle": "Calculadoras gratuitas, inicia sesión para usarlas.",
+    "tools.signin_prompt": "Gratis con una cuenta &mdash; inicia sesión para crear tu plan.",
+    "tools.registry_stat": "{count} herramienta &middot; más próximamente",
+
+    "tools.budget.title": "Planificador de presupuesto",
+    "tools.budget.subtitle": (
+        "Escribe un presupuesto familiar en un minuto, ve el ahorro "
+        "$/mes y $/año, y luego en qué se habría convertido ese ahorro "
+        "invertido en un fondo índice &mdash; además de lo que cuesta "
+        "cada categoría de gasto en interés compuesto perdido. "
+        "Educativo, nunca un consejo."
+    ),
+    "tools.budget.money_in": "Ingresos / mes",
+    "tools.budget.categories_kicker": "Gastos &mdash; omite lo que no aplique",
+    "tools.budget.cat.mortgage": "Hipoteca / alquiler",
+    "tools.budget.cat.transport": "Transporte (auto, combustible, pasajes)",
+    "tools.budget.cat.food": "Comida y supermercado",
+    "tools.budget.cat.utilities": "Servicios (luz, agua, internet, teléfono)",
+    "tools.budget.cat.insurance": "Seguros",
+    "tools.budget.cat.health": "Salud",
+    "tools.budget.cat.education": "Colegio / cuidado infantil",
+    "tools.budget.cat.subscriptions": "Suscripciones",
+    "tools.budget.cat.fun": "Ocio, salidas, pasatiempos",
+    "tools.budget.cat.other": "Todo lo demás",
+    "tools.budget.results_kicker": "Resultados en vivo",
+    "tools.budget.results_in": "Ingresos",
+    "tools.budget.results_out": "Gastos",
+    "tools.budget.results_savings_month": "Ahorro $/mes",
+    "tools.budget.results_savings_year": "Ahorro $/año",
+    "tools.budget.results_rate": "Tasa de ahorro",
+    "tools.budget.compounding_note": (
+        "Cada línea muestra en qué se convertiría ese gasto si se "
+        "invirtiera en su lugar &mdash; no para decir que dejes de "
+        "vivir, sino para poner precio a la decisión."
+    ),
+    "tools.budget.category_stat": "{years} años invertido &#8776; {amount}",
+    "tools.budget.projection_title": "\U0001F4C8 Si esos ahorros se invirtieran&hellip;",
+    "tools.budget.index_us": "\U0001F1FA\U0001F1F8 S&amp;P 500",
+    "tools.budget.index_au": "\U0001F1E6\U0001F1FA ASX 200",
+    "tools.budget.years_label": "Años",
+    "tools.budget.figure_cautious_label": "Cauteloso &middot; 6%/año",
+    "tools.budget.figure_historical_label": "Historial de {index} &middot; {rate}/año",
+    "tools.budget.figure_deposits_label": "Solo depósitos &middot; sin crecimiento",
+    "tools.budget.assumption_note": (
+        "Al promedio histórico de retorno total del {index} de "
+        "&#126;{rate}/año (dividendos reinvertidos), antes de impuestos "
+        "y comisiones del fondo. Es historial, no una predicción."
+    ),
+    "tools.budget.disclaimer": (
+        "Un cálculo descrito a partir de retornos históricos de índices "
+        "&mdash; los mercados también caen; el promedio pasado no es una "
+        "predicción ni un consejo. Solo educativo."
+    ),
+    "tools.budget.saved_note": "Guardado automáticamente en tu cuenta.",
+    "tools.budget.chart_invested": "Invertido",
+    "tools.budget.chart_saved": "Solo ahorrado",
 
     "home.hiw.kicker": "CÓMO FUNCIONA",
     "home.hiw.h2_factual": "Busca. Calcula. Inspecciona.",

@@ -65,6 +65,8 @@ from compounder_ui import sdd_plotly_chart
 from simple_view_copy import SECTION_WHY_CAPTIONS, SECTION_WHY_CAPTIONS_ES
 import stress_etf_help_copy
 import switch_analyzer_engine
+import budget_planner_engine
+import tools_store
 import i18n
 
 
@@ -504,6 +506,13 @@ _FACTUAL_DEFAULT = (os.environ.get("FACTUAL_MODE", "true").strip().lower()
 
 _admin_qp = (st.query_params.get("admin") or "").strip()
 _admin_key_env = os.environ.get("ADMIN_REFRESH_KEY", "").strip()
+
+# Mega-batch Part 18: the small amber "NEW" dot beside the 🧰 Tools nav
+# tab, for the launch period only - flip to False (and update the
+# matching NAV_TOOLS_NEW_BADGE constant in blog_render.py for the static
+# pages) once Tools is no longer new. See _render_app_nav_items for the
+# app-side CSS this gates.
+NAV_TOOLS_NEW_BADGE_ENABLED = True
 
 # Audit fix (3.1): a process-wide (not per-session - Streamlit reruns a
 # fresh session per browser tab, so a per-session counter would let an
@@ -1489,6 +1498,11 @@ st.markdown(
        duplicating those rules, so the 2-per-row/1-per-row wrap behaviour
        stays identical between the two. */
     .sdd-tiles5 { display:grid; grid-template-columns:repeat(5,1fr); gap:14px; margin-top:22px; }
+    /* Part 18: Tools joins the toolkit row as a sixth tile - same
+       card/gap/margin rules again, one more column, included alongside
+       .sdd-tiles4/5 in both responsive breakpoints below for the same
+       reason those two are already paired there. */
+    .sdd-tiles6 { display:grid; grid-template-columns:repeat(6,1fr); gap:14px; margin-top:22px; }
     .sdd-feat { background:#121f36; border:1px solid #1f3352; border-radius:14px; padding:18px 20px;
       text-decoration:none !important; display:block; position:relative;
       transition:border-color .15s, transform .15s, box-shadow .15s; }
@@ -1506,6 +1520,26 @@ st.markdown(
     .sdd-feat:hover .sdd-feat-arrow { color:#2dd4bf; transform:translateX(3px); }
     .sdd-feat h3 { font-size:16px; margin:12px 0 8px; color:#e6edf5; }
     .sdd-feat p { color:#8aa0b8; font-size:13.3px; line-height:1.55; margin:0; }
+    /* Part 18: the home banner promoting the Budget Planner, between the
+       hero/mood area and the toolkit row. Pitch text on the left (plain
+       markdown, no card); the live teaser (real Streamlit number_inputs,
+       so it's rendered by the caller, not this CSS) sits inside a
+       teal-bordered card on the right via st.container(border=True) -
+       [class*="st-key-tools_banner_teaser"] below re-skins that generic
+       Streamlit border to match the site's own card look instead of
+       leaving the default grey outline. */
+    .sdd-tools-banner-badge { display:inline-block; font-size:9.5px; font-weight:800;
+      letter-spacing:.6px; color:#f59e0b; background:rgba(245,158,11,.12);
+      border:1px solid rgba(245,158,11,.35); border-radius:999px; padding:2px 8px;
+      margin-bottom:10px; }
+    .sdd-tools-banner-title { font-size:22px; font-weight:800; color:#e6edf5; line-height:1.3; }
+    .sdd-tools-banner-pitch { color:#8aa0b8; font-size:14px; line-height:1.55; margin-top:8px; max-width:480px; }
+    [class*="st-key-tools_banner_teaser"] {
+        border-color: #1f3352 !important; background: #121f36 !important;
+        border-radius: 14px !important;
+    }
+    .sdd-tools-banner-headline { font-family:ui-monospace,Menlo,monospace; font-size:15px;
+      color:#2dd4bf; margin:8px 0; }
     .sdd-steps { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:22px; }
     .sdd-step { border-left:2px solid #14b8a6; padding:2px 0 2px 16px; }
     .sdd-step .n { font-family:ui-monospace,Menlo,monospace; color:#2dd4bf; font-size:12px; }
@@ -1567,7 +1601,7 @@ st.markdown(
       margin-top:6px; text-decoration:none !important; }
     .sdd-calempty { color:#5b7290; font-size:12px; padding:4px 2px; }
     @media (max-width:900px) {
-      .sdd-tiles4, .sdd-tiles5, .sdd-covgrid { grid-template-columns:1fr 1fr; }
+      .sdd-tiles4, .sdd-tiles5, .sdd-tiles6, .sdd-covgrid { grid-template-columns:1fr 1fr; }
       .sdd-steps { grid-template-columns:1fr; }
       .sdd-strip { grid-template-columns:1fr 1fr; }
       .sdd-h1 { font-size:30px; }
@@ -1599,7 +1633,7 @@ st.markdown(
          width, still a squeeze at phone width (each card down to
          roughly half the already-narrow viewport). One more column at
          this breakpoint. */
-      .sdd-tiles4, .sdd-tiles5, .sdd-covgrid, .sdd-strip { grid-template-columns:1fr; }
+      .sdd-tiles4, .sdd-tiles5, .sdd-tiles6, .sdd-covgrid, .sdd-strip { grid-template-columns:1fr; }
       /* Part 7 week board: five day columns stack as day sections at
          phone width, same "1 column" treatment as the cards above. */
       .sdd-calboard { grid-template-columns:1fr; }
@@ -2475,12 +2509,42 @@ def _render_app_nav_items(lang, current=None, key_prefix="nav", layout="row"):
     richer treatment is specifically the collapsed "More" dropdown's own
     affordance for showing what's behind it, not needed once everything
     is already laid out as one flat list)."""
+    if NAV_TOOLS_NEW_BADGE_ENABLED:
+        # Small amber "NEW" dot beside the Tools tab for the launch
+        # period - one constant to flip when it's time to retire it, no
+        # markup change needed (::after on the button's own keyed
+        # wrapper). [class*="st-key-nav"][class*="_tools"] matches every
+        # layout/key_prefix combo this function is called with
+        # ("nav_home_tools", "nav_uc_tools", "nav_tools" from _render_
+        # header's compact branch) without also matching an unrelated
+        # key that happens to contain "tools" elsewhere on the site.
+        st.markdown(
+            """<style>
+            [class*="st-key-nav"][class*="_tools"] { position: relative; }
+            [class*="st-key-nav"][class*="_tools"]::after {
+                content: ''; position: absolute; top: 4px; right: 2px;
+                width: 6px; height: 6px; border-radius: 50%;
+                background: #f59e0b; pointer-events: none;
+            }
+            </style>""",
+            unsafe_allow_html=True,
+        )
     _primary_items = [
         ("deep_dive", i18n.t("nav.deep_dive", lang), PG_DEEP_DIVE),
         ("research", i18n.t("nav.research", lang), PG_RESEARCH),
         ("scanner", i18n.t("nav.scanner", lang), PG_SCANNER),
         ("comparison", i18n.t("nav.comparison", lang), PG_COMPARISON),
         ("portfolio", i18n.t("nav.portfolio", lang), PG_PORTFOLIO),
+        # Mega-batch Part 18: Tools gets its own primary-row tab (the
+        # owner's "seventh-tab" choice) - last in _primary_items so it
+        # lands right before the Blog anchor below, i.e. "between
+        # Portfolio and Blog" exactly as the spec asks. It does NOT also
+        # appear in the "More" panel (that stays Calendar/Track record/
+        # Methodology/About only). The small amber "NEW" dot for the
+        # launch period is CSS only (see NAV_TOOLS_NEW_BADGE_ENABLED
+        # below) - remove by flipping that one constant, no markup to
+        # touch here.
+        ("tools", i18n.t("nav.tools", lang), PG_TOOLS),
     ]
     # 3rd Amendment to Part 5: order is Results Calendar, Track record,
     # Methodology, About (the amendment's own verbatim order - was
@@ -5765,8 +5829,14 @@ def page_home():
     # of waiting on hero_r's height.
     _mood_box = hero_l.container()
 
+    # ---- Part 18 home banner (placement B1): between the hero/mood area
+    # and the toolkit row, promoting the Budget Planner specifically. ----
+    st.divider()
+    _render_tools_home_banner(_home_lang)
+    st.divider()
+
     # ---- feature tiles (Part 5, Option C; Deep Dive added back in by the
-    # Second amendment to Part 5) ----
+    # Second amendment to Part 5; Tools added as a sixth by Part 18) ----
     # Five tiles - Deep Dive first (originally dropped since it's reached
     # from the hero search box above, but the owner's amendment put it
     # back as its own tile), then the original four - each pairing fixed
@@ -5801,13 +5871,24 @@ def page_home():
     _portfolio_stat_html = (
         f"<div class='sdd-feat-stat'>{_tl('portfolio_stat', count=len(_PORTFOLIO_TAB_I18N_KEYS))}</div>"
     )
+    _tools_stat_html = (
+        f"<div class='sdd-feat-stat'>{_tl('tools_stat', count=_tools_registry_count())}</div>"
+    )
+    # Not html.escape()'d (unlike _free_badge above) - this i18n value
+    # deliberately carries an &middot; entity for the separator dot, and
+    # escaping it a second time would double-escape the "&" into
+    # "&amp;middot;", rendering as the literal text "&middot;" instead of
+    # "·" (confirmed via a live Playwright render). Trusted, developer-
+    # authored copy, not user input, same as every other HTML fragment
+    # this file interpolates directly.
+    _free_signin_badge = _tl("free_signin_badge")
 
     st.markdown(
         f"""
 <div class='sdd-kicker'>{_tk('kicker')}</div>
 <div class='sdd-h2'>{_tk('h2')}</div>
 <div class='sdd-secsub'>{_secsub}</div>
-<div class='sdd-tiles5'>
+<div class='sdd-tiles6'>
   <a class='sdd-feat' href='/deep-dive' target='_self'>
     <span class='sdd-feat-badge'>{_free_badge}</span>
     <div class='ic'>&#128300;</div><h3>{_tl('deepdive_title')}</h3>
@@ -5835,6 +5916,12 @@ def page_home():
   <a class='sdd-feat' href='/portfolio' target='_self'>
     <div class='ic'>&#128188;</div><h3>{_tl('portfolio_title')}</h3>
     <p>{_tl('portfolio_desc')}</p>{_portfolio_stat_html}
+    <span class='sdd-feat-arrow'>&#8594;</span>
+  </a>
+  <a class='sdd-feat' href='/tools' target='_self'>
+    <span class='sdd-feat-badge'>{_free_signin_badge}</span>
+    <div class='ic'>&#129520;</div><h3>{_tl('tools_title')}</h3>
+    <p>{_tl('tools_desc')}</p>{_tools_stat_html}
     <span class='sdd-feat-arrow'>&#8594;</span>
   </a>
 </div>
@@ -16134,6 +16221,265 @@ own stocks analysed here.*
     #     st.markdown(f"> {_quote}\n>\n> {_attribution}")
 
 
+# --------------------------------------------------------------------------- #
+# Mega-batch Part 18: 🧰 Tools hub - a free public tools hub (per the owner's
+# same-day Amendment, "free" now means "free with an account": every tool
+# behind this page requires sign-in, but nothing here ever touches Stripe/
+# is_subscribed() - that gating belongs to whichever FUTURE tool needs it
+# per its own spec, e.g. Part 19's bill-check trial/cap).
+#
+# REGISTRY, not a rebuild: each tool is one render function plus one entry
+# here (id/icon/title key/render callable) - the spec's own words for how
+# tool #2 (and #3) should be added later. page_tools() below just gates
+# sign-in once and then loops the registry; nothing about the hub's own
+# structure has to change to add another card. Every entry keeps its
+# private data in tools_store.py (also designed the same way, see that
+# module's own docstring).
+# --------------------------------------------------------------------------- #
+TOOLS_REGISTRY = [
+    {"id": "budget_planner", "icon": "\U0001F4B0",
+     "title_key": "tools.budget.title", "render": "_render_budget_planner_tool"},
+]
+
+
+def _tools_registry_count():
+    """The live "{count} tool(s) · more coming" stat shared by the home
+    banner, the toolkit tile, and the hub page itself - one source of
+    truth so a future tool #2 updates every one of those the moment its
+    registry entry is added, with no separate stat to remember to bump."""
+    return len(TOOLS_REGISTRY)
+
+
+def _render_tools_home_banner(lang):
+    """Mega-batch Part 18, placement B1: the home banner between the
+    hero/mood area and the toolkit row, promoting the Budget Planner
+    specifically. The right-hand mini teaser computes the SAME 10y
+    S&P-500-history headline the full tool page's projection panel
+    would for the same two numbers (both call
+    budget_planner_engine.future_value_of_savings() directly - see that
+    function's own docstring for the worked-example verification), so
+    the banner can never show a number the full page would disagree
+    with. Nothing here is persisted (tools_store only ever saves the
+    signed-in Budget Planner page's own inputs) - this is marketing, not
+    the tool itself, per the Amendment to Part 18's own framing."""
+    _bh = lambda key, **kw: i18n.t(f"home.banner.{key}", lang, **kw)
+    _bcol_l, _bcol_r = st.columns([3, 2], gap="large")
+    with _bcol_l:
+        st.markdown(
+            f"""
+<div class='sdd-tools-banner-badge'>{_bh('new_badge')}</div>
+<div class='sdd-tools-banner-title'>{_bh('tools_title')}</div>
+<div class='sdd-tools-banner-pitch'>{_bh('tools_pitch')}</div>
+""",
+            unsafe_allow_html=True,
+        )
+    with _bcol_r:
+        with st.container(border=True, key="tools_banner_teaser"):
+            _tc1, _tc2 = st.columns(2)
+            with _tc1:
+                _teaser_in = st.number_input(
+                    _bh("money_in_label"), min_value=0.0, step=100.0, format="%.0f",
+                    key="home_banner_money_in",
+                )
+            with _tc2:
+                _teaser_out = st.number_input(
+                    _bh("money_out_label"), min_value=0.0, step=100.0, format="%.0f",
+                    key="home_banner_money_out",
+                )
+            _teaser_yearly = (_teaser_in - _teaser_out) * 12
+            if _teaser_yearly > 0:
+                _teaser_fv = budget_planner_engine.future_value_of_savings(
+                    _teaser_yearly, budget_planner_engine.INDEX_HISTORICAL_RETURNS["sp500"],
+                    budget_planner_engine.DEFAULT_PROJECTION_YEARS,
+                )
+                st.markdown(
+                    f"<div class='sdd-tools-banner-headline'>"
+                    f"{_bh('headline_10y', index=i18n.t('tools.budget.index_us', lang), amount=f'${_teaser_fv:,.0f}')}"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption(_bh("headline_empty"))
+            if st.button(_bh("build_plan_button"), use_container_width=True,
+                         type="primary", key="tools_banner_cta"):
+                st.switch_page(PG_TOOLS)
+
+
+def _budget_plan_projection_panel(_bl, yearly_savings, key_prefix):
+    """The shared "📈 If those savings were invested…" panel - used by
+    both the full Budget Planner page and (in miniature, headline-number
+    only) the home banner teaser, so the two are provably computing the
+    SAME thing for the same two inputs rather than two independent
+    implementations that could quietly drift apart.
+
+    _bl: the i18n.t(f"tools.budget.{key}", lang, **kw) closure the caller
+    already built (mirrors _tl/_tk elsewhere in this file).
+    Returns the chosen country's historical-rate FV at the chosen years,
+    for the home banner's headline reuse - the full page ignores the
+    return value and renders the whole panel itself."""
+    _country_key = f"{key_prefix}_country"
+    _years_key = f"{key_prefix}_years"
+    if _country_key not in st.session_state:
+        st.session_state[_country_key] = "sp500"
+    if _years_key not in st.session_state:
+        st.session_state[_years_key] = budget_planner_engine.DEFAULT_PROJECTION_YEARS
+
+    st.markdown(f"##### {_bl('projection_title')}")
+    _pc1, _pc2 = st.columns([1, 1])
+    with _pc1:
+        _country = st.radio(
+            "Index", ["sp500", "asx200"],
+            format_func=lambda c: _bl("index_us") if c == "sp500" else _bl("index_au"),
+            horizontal=True, label_visibility="collapsed", key=_country_key,
+        )
+    with _pc2:
+        _years = st.number_input(
+            _bl("years_label"),
+            min_value=budget_planner_engine.MIN_PROJECTION_YEARS,
+            max_value=budget_planner_engine.MAX_PROJECTION_YEARS,
+            step=1, key=_years_key, label_visibility="collapsed",
+        )
+    _rate = budget_planner_engine.INDEX_HISTORICAL_RETURNS[_country]
+    _index_label = _bl("index_us") if _country == "sp500" else _bl("index_au")
+
+    _fv_cautious = budget_planner_engine.future_value_of_savings(
+        yearly_savings, budget_planner_engine.CAUTIOUS_RATE, _years)
+    _fv_hist = budget_planner_engine.future_value_of_savings(yearly_savings, _rate, _years)
+    _fv_deposits = budget_planner_engine.deposits_only(yearly_savings, _years)
+
+    _m1, _m2, _m3 = st.columns(3)
+    with _m1:
+        st.metric(_bl("figure_cautious_label"),
+                  f"${_fv_cautious:,.0f}" if _fv_cautious is not None else "—")
+    with _m2:
+        st.metric(_bl("figure_historical_label", index=_index_label, rate=f"{_rate * 100:.0f}%"),
+                  f"${_fv_hist:,.0f}" if _fv_hist is not None else "—")
+    with _m3:
+        st.metric(_bl("figure_deposits_label"),
+                  f"${_fv_deposits:,.0f}" if _fv_deposits is not None else "—")
+
+    st.caption(_bl("assumption_note", index=_index_label, rate=f"{_rate * 100:.0f}"))
+
+    if yearly_savings and yearly_savings > 0:
+        _xs, _inv, _sav = budget_planner_engine.projection_series(yearly_savings, _rate, _years)
+        _fig = go.Figure()
+        _fig.add_trace(go.Scatter(
+            x=_xs, y=_inv, mode="lines", name=_bl("chart_invested"),
+            line=dict(color="#2dd4bf", width=2.5),
+        ))
+        _fig.add_trace(go.Scatter(
+            x=_xs, y=_sav, mode="lines", name=_bl("chart_saved"),
+            line=dict(color="#5b7290", width=2, dash="dot"),
+        ))
+        _fig.update_layout(
+            height=280, margin=dict(l=10, r=10, t=10, b=10),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#8aa0b8"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+            xaxis=dict(gridcolor="#1f3352", title=_bl("years_label")),
+            yaxis=dict(gridcolor="#1f3352", tickprefix="$", tickformat=",.0f"),
+        )
+        sdd_plotly_chart(_fig, key=f"{key_prefix}_chart")
+
+    st.caption(_bl("disclaimer"))
+    return _fv_hist
+
+
+def _render_budget_planner_tool(email):
+    """Mega-batch Part 18, tool #1: the Budget Planner. Public design
+    called for a "sign in to save" fallback; the same-day Amendment to
+    Part 18 requires sign-in for the WHOLE Tools hub, so by the time this
+    function runs page_tools() has already confirmed `email` is real -
+    saving is therefore always automatic (no signed-out branch needed
+    here at all, per the amendment's own "drop the separate 'Sign in to
+    save' state")."""
+    _lang = st.session_state.get("lang", "en")
+    _bl = lambda key, **kw: i18n.t(f"tools.budget.{key}", _lang, **kw)
+
+    st.markdown(f"### {_bl('title')}")
+    st.caption(_bl("subtitle"))
+
+    _saved = tools_store.get_budget_plan(email) or {}
+    _saved_categories = _saved.get("categories") or {}
+
+    if "tools_budget_money_in" not in st.session_state:
+        st.session_state["tools_budget_money_in"] = float(_saved.get("money_in") or 0.0)
+    money_in = st.number_input(
+        _bl("money_in"), min_value=0.0, step=100.0, format="%.0f",
+        key="tools_budget_money_in",
+    )
+
+    st.markdown(f"**{_bl('categories_kicker')}**")
+    _cat_cols = st.columns(2)
+    category_values = {}
+    for _i, _cat in enumerate(budget_planner_engine.CATEGORIES):
+        _cid = _cat["id"]
+        _skey = f"tools_budget_cat_{_cid}"
+        if _skey not in st.session_state:
+            st.session_state[_skey] = float(_saved_categories.get(_cid) or 0.0)
+        with _cat_cols[_i % 2]:
+            _val = st.number_input(
+                f"{_cat['icon']} {_bl(f'cat.{_cid}')}",
+                min_value=0.0, step=25.0, format="%.0f", key=_skey,
+            )
+            category_values[_cid] = _val if _val > 0 else None
+            _cat_fv = budget_planner_engine.category_compounding(
+                _val, budget_planner_engine.INDEX_HISTORICAL_RETURNS["sp500"],
+                budget_planner_engine.DEFAULT_PROJECTION_YEARS,
+            )
+            if _cat_fv is not None:
+                st.caption(_bl(
+                    "category_stat",
+                    years=budget_planner_engine.DEFAULT_PROJECTION_YEARS,
+                    amount=f"${_cat_fv:,.0f}",
+                ))
+    st.caption(_bl("compounding_note"))
+
+    _summary = budget_planner_engine.savings_summary(money_in, category_values)
+
+    st.markdown(f"**{_bl('results_kicker')}**")
+    _r1, _r2, _r3, _r4, _r5 = st.columns(5)
+    with _r1:
+        st.metric(_bl("results_in"), f"${_summary['money_in']:,.0f}")
+    with _r2:
+        st.metric(_bl("results_out"), f"${_summary['money_out']:,.0f}")
+    with _r3:
+        st.metric(_bl("results_savings_month"), f"${_summary['savings_month']:,.0f}")
+    with _r4:
+        st.metric(_bl("results_savings_year"), f"${_summary['savings_year']:,.0f}")
+    with _r5:
+        _descriptor = budget_planner_engine.savings_rate_descriptor(_summary["savings_rate"])
+        st.metric(_bl("results_rate"), _descriptor or "—")
+
+    with st.container(border=True):
+        _budget_fv_hist = _budget_plan_projection_panel(
+            _bl, _summary["savings_year"], key_prefix="tools_budget",
+        )
+
+    st.caption(_bl("saved_note"))
+    tools_store.save_budget_plan(
+        email, money_in,
+        {k: v for k, v in category_values.items() if v is not None},
+        country=st.session_state.get("tools_budget_country"),
+        years=st.session_state.get("tools_budget_years"),
+    )
+
+
+def page_tools():
+    _lang = st.session_state.get("lang", "en")
+    _content_page_shell(i18n.t("tools.page_title", _lang), current="tools")
+    _bump_page_view("tools")
+    st.caption(i18n.t("tools.page_subtitle", _lang))
+
+    if not paywall_engine.is_logged_in():
+        st.info(i18n.t("tools.signin_prompt", _lang))
+        return
+
+    email = paywall_engine.current_user_email()
+    for _tool in TOOLS_REGISTRY:
+        globals()[_tool["render"]](email)
+
+
 def page_model_history():
     """Task 9: a changelog of when the Rational Compounder research
     workbook has been rebuilt - reuses the exact same archive listing
@@ -17264,6 +17610,9 @@ PG_RESULTS_CALENDAR = st.Page(page_results_calendar, title="Results Calendar",
 # Sign-in-only, private per-user long-term holdings tracker - see
 # page_portfolio()'s own docstring/comment block for the full design.
 PG_PORTFOLIO = st.Page(page_portfolio, title="My Portfolio", url_path="portfolio")
+# Mega-batch Part 18: the 🧰 Tools hub - its own primary-row nav tab,
+# between Portfolio and Blog (owner's "seventh-tab" choice).
+PG_TOOLS = st.Page(page_tools, title="Tools", url_path="tools")
 PG_METHODOLOGY = st.Page(page_methodology, title="How the scores work", url_path="methodology")
 PG_ABOUT = st.Page(page_about, title="About", url_path="about")
 PG_MODEL_HISTORY = st.Page(page_model_history, title="Model history", url_path="model-history")
@@ -17278,7 +17627,7 @@ PG_BLOG_ADMIN = st.Page(page_blog_admin, title="Blog admin",
 
 _nav = st.navigation(
     [PG_HOME, PG_DEEP_DIVE, PG_COMPARISON, PG_RESEARCH, PG_SCANNER,
-     PG_RESULTS_CALENDAR, PG_PORTFOLIO, PG_METHODOLOGY, PG_ABOUT,
+     PG_RESULTS_CALENDAR, PG_PORTFOLIO, PG_TOOLS, PG_METHODOLOGY, PG_ABOUT,
      PG_MODEL_HISTORY, PG_PRIVACY, PG_HOW_AI_IS_USED, PG_BLOG_ADMIN],
     position="hidden",
 )
