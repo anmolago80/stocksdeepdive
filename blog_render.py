@@ -46,6 +46,12 @@ SITE_NAME = "StocksDeepDive"
 AUTHOR_NAME = "Andres Moreno"
 DEFAULT_AUTHOR = AUTHOR_NAME
 
+# Mega-batch Part 18: the small amber "NEW" dot beside the 🧰 Tools nav
+# tab, for the launch period only - matches app.py's own
+# NAV_TOOLS_NEW_BADGE_ENABLED constant; flip both together when Tools is
+# no longer new.
+NAV_TOOLS_NEW_BADGE_ENABLED = True
+
 # Conversion pass, Part 5: the Reddit handle to display on the byline
 # shown to visitors arriving with a Reddit-tagged src (see
 # reddit_byline_visible/reddit_byline_html below). Confirmed with the
@@ -657,6 +663,13 @@ header.site .wrap{max-width:1080px;display:flex;align-items:center;gap:26px;flex
 nav.site{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-left:auto}
 nav.site a{color:#8aa0b8;font-size:14px}
 nav.site a:hover{color:#e6edf5;text-decoration:none}
+/* Part 18: small amber "NEW" dot beside the Tools tab, matching
+   app.py's own CSS-only ::after dot (same launch-period-only intent -
+   NAV_TOOLS_NEW_BADGE_ENABLED above gates whether this class is even
+   emitted in the markup). */
+nav.site a.nav-tools-new{position:relative}
+nav.site a.nav-tools-new::after{content:'';position:absolute;top:-1px;right:-7px;
+  width:6px;height:6px;border-radius:50%;background:#f59e0b}
 /* Part 5 (site-wide slim nav): the "More" dropdown is a bare
    <details>/<summary> - no JS framework ships in this module, and
    <details> needs none. summary's marker/outline reset + a small
@@ -871,7 +884,8 @@ def _head(title, description, canonical, base_url, image=None,
 # query param is present). "/" is included too: render_home() has no
 # lang param of its own (always English SEO copy), so its Spanish
 # version is likewise only reachable by forcing the Streamlit app.
-_TOOL_LANG_PARAM_PATHS = {"/", "/deep-dive", "/comparison", "/scanner", "/research", "/portfolio"}
+_TOOL_LANG_PARAM_PATHS = {"/", "/deep-dive", "/comparison", "/scanner", "/research", "/portfolio",
+                          "/tools"}
 
 
 def _lang_toggle_links(path):
@@ -914,10 +928,11 @@ def _header_html(lang="en", path=None, lang_urls=None):
     function (see this module's _page() docstring). Item set/order
     matches _render_app_nav_items() in app.py exactly (that function's
     own docstring has the full rationale): Deep Dive, Research, Scanner,
-    Compare, Portfolio, Blog, then a "More" dropdown holding, per the 3rd
-    Amendment to Part 5's own verbatim order, Results Calendar, Track
-    record, Methodology and About, then the EN|ES toggle and a plain Sign
-    in link.
+    Compare, Portfolio, Tools (Part 18 - own tab, own launch-period "NEW"
+    dot, never in the More panel), Blog, then a "More" dropdown holding,
+    per the 3rd Amendment to Part 5's own verbatim order, Results
+    Calendar, Track record, Methodology and About, then the EN|ES toggle
+    and a plain Sign in link.
 
     The "More" dropdown is a bare <details>/<summary> element (styled in
     _CSS below) rather than a JS-built one - this module ships no JS
@@ -949,6 +964,11 @@ def _header_html(lang="en", path=None, lang_urls=None):
     lang_urls, when given, overrides the derived pair outright - see
     _page()'s own docstring (render_post's real per-post sibling)."""
     _en_url, _es_url = lang_urls if lang_urls else _lang_toggle_links(path)
+    # Part 18: Tools gets its own nav tab between Portfolio and Blog here
+    # too - "same tab on the static blog/snapshot page navs so the nav
+    # stays identical site-wide" (matches app.py's _render_app_nav_items,
+    # last entry in _primary_items so it lands right before Blog there).
+    _nav_tools_class = " nav-tools-new" if NAV_TOOLS_NEW_BADGE_ENABLED else ""
     # 3rd Amendment to Part 5: click-outside-closes for the <details>
     # dropdown - a plain <details>/<summary> only toggles on clicking its
     # own summary, so a click anywhere else on the page needs this one
@@ -974,6 +994,7 @@ document.addEventListener('click', function(ev){
     <a href="/scanner?lang=es">Buscador</a>
     <a href="/comparison?lang=es">Comparar</a>
     <a href="/portfolio?lang=es">Cartera</a>
+    <a href="/tools?lang=es" class="{_nav_tools_class.strip()}">&#129520; Herramientas</a>
     <a href="/es/blog">Blog</a>
     <details class="nav-more">
       <summary>Más <span class="nav-more-chev">&#9662;</span></summary>
@@ -1012,6 +1033,7 @@ document.addEventListener('click', function(ev){
     <a href="/scanner">Scanner</a>
     <a href="/comparison">Compare</a>
     <a href="/portfolio">Portfolio</a>
+    <a href="/tools" class="{_nav_tools_class.strip()}">&#129520; Tools</a>
     <a href="/blog">Blog</a>
     <details class="nav-more">
       <summary>More <span class="nav-more-chev">&#9662;</span></summary>
