@@ -56,9 +56,9 @@ def generate_thesis(
         )
 
     if long_score >= 80:
-        why_buy.append("Overall Long Score qualifies this as a STRONG LONG candidate.")
+        why_buy.append("Overall Value Score qualifies this as a STRONG LONG candidate.")
     elif long_score < 40:
-        risks.append("Overall Long Score is weak - treat as AVOID until conditions improve.")
+        risks.append("Overall Value Score is weak - treat as AVOID until conditions improve.")
 
     if not why_buy:
         why_buy.append("No strong bullish signals present right now.")

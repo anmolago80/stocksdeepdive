@@ -178,7 +178,7 @@ def render_track_record(rows, base_url, generated_at=None, lang="en",
         )
         heading = "Track record"
         lede = (
-            f"The first and most recent Long Score and price the\n"
+            f"The first and most recent Value Score and price the\n"
             f"  nightly scan has recorded for every stock it has tracked for at least\n"
             f"  {MIN_DAYS} days - dated, and never rewritten after the fact."
         )
@@ -188,7 +188,7 @@ def render_track_record(rows, base_url, generated_at=None, lang="en",
             '    date shown, and the closing price recorded that day - nothing here is\n'
             '    reconstructed or restated with hindsight. <b>This is not a record of\n'
             '    buy/sell calls, a claim about investment performance, or a claim that\n'
-            '    any past or future Long Score is accurate.</b> Long Score is a\n'
+            '    any past or future Value Score is accurate.</b> Value Score is a\n'
             '    weighted calculation from stated inputs, not a recommendation - see\n'
             '    <a href="/methodology">how the scores work</a>. A stock\'s price moving\n'
             '    since it was first recorded says nothing about whether the score at\n'
@@ -197,7 +197,7 @@ def render_track_record(rows, base_url, generated_at=None, lang="en",
             '    any interpretation at all.'
         )
         description = (
-            "A dated, past-tense record of the Long Score and price "
+            "A dated, past-tense record of the Value Score and price "
             f"{SITE_NAME} recorded for each tracked stock, first and most "
             "recently - not a claim about recommendation accuracy or "
             "investment performance."
@@ -230,7 +230,7 @@ def render_track_record(rows, base_url, generated_at=None, lang="en",
         "license": "https://stocksdeepdive.com/methodology",
         "isAccessibleForFree": True,
         "dateModified": generated_at or "",
-        "variableMeasured": ["Long Score", "Price"],
+        "variableMeasured": ["Value Score", "Price"],
     }
     if lang == "es":
         # Only added for the ES twin, same "don't touch the original EN

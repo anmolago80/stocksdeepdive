@@ -895,7 +895,11 @@ EN = {
 
     "dd.data_as_of": "Data as of {date} (latest available daily close).",
 
-    "scanner.change_expander": "Change country / universe / sector",
+    # Part 6 (Scanner opener): "+{n} more universes & sector filter" -
+    # {n} is 16 minus the 6 pill shortcuts in _SCANNER_PILL_UNIVERSES
+    # (app.py), computed at render time so this stays right if a universe
+    # is ever added/removed from scanner_engine's own lists.
+    "scanner.change_expander": "+{n} more universes & sector filter",
     "scanner.change_instruction": (
         "Tick one or more countries, then pick a single universe to scan - "
         "each universe below is scanned entirely on its own (ASX 200 and "
@@ -910,8 +914,33 @@ EN = {
     "scanner.resolving_spinner": "Resolving universe...",
     "scanner.no_stocks_warning": "No stocks matched this universe/sector - try a different selection.",
     "scanner.empty_message": "Pick a country, universe, and (optionally) a sector above, then click Run Scan.",
+    "scanner.pills_label": "Popular universes",
+    "scanner.sort_by_label": "Sort by",
+    "scanner.sort_mos": "MOS",
+    "scanner.sort_quality": "Quality",
+    "scanner.sort_moat": "Moat",
+    "scanner.sort_price": "Price",
+    "scanner.rank_col": "#",
+    "scanner.scan_of": "scan of {when}",
 
     "comparison.empty_message": "Search two or more tickers above to run a Comparison.",
+    # Part 6 (Comparison opener): the new [ticker] VS [ticker] input row +
+    # popular-pair chips, and the head-to-head table shown for paying
+    # visitors above the existing full comparison table.
+    "comparison.add_third": "+ add third",
+    "comparison.compare_button": "Compare",
+    "comparison.need_two_warning": "Enter at least two tickers to compare.",
+    "comparison.popular_pairs_label": "Popular comparisons",
+    "comparison.h2h_heading": "Head-to-head",
+    "comparison.h2h_metric_col": "Metric",
+    "comparison.h2h_price_model": "Price &rarr; Model estimate",
+    "comparison.h2h_quality_moat": "Quality / Moat",
+    "comparison.h2h_roic_wacc": "ROIC vs WACC",
+    "comparison.h2h_caption": (
+        "A described comparison of stated calculations, not a "
+        "recommendation - the greener figure on each line is simply the "
+        "higher number, nothing more."
+    ),
 
     "portfolio.title": "My Portfolio",
     "portfolio.signin_prompt": (
@@ -1872,7 +1901,7 @@ ES = {
 
     "dd.data_as_of": "Datos al {date} (último cierre diario disponible).",
 
-    "scanner.change_expander": "Cambiar país / universo / sector",
+    "scanner.change_expander": "+{n} universos más y filtro de sector",
     "scanner.change_instruction": (
         "Marca uno o más países, luego elige un único universo para "
         "escanear - cada universo se escanea de forma totalmente "
@@ -1887,8 +1916,30 @@ ES = {
     "scanner.resolving_spinner": "Resolviendo universo...",
     "scanner.no_stocks_warning": "Ninguna acción coincidió con este universo/sector - prueba otra selección.",
     "scanner.empty_message": "Elige un país, universo y (opcionalmente) un sector arriba, luego haz clic en Ejecutar escaneo.",
+    "scanner.pills_label": "Universos populares",
+    "scanner.sort_by_label": "Ordenar por",
+    "scanner.sort_mos": "MOS",
+    "scanner.sort_quality": "Calidad",
+    "scanner.sort_moat": "Foso",
+    "scanner.sort_price": "Precio",
+    "scanner.rank_col": "#",
+    "scanner.scan_of": "escaneo del {when}",
 
     "comparison.empty_message": "Busca dos o más tickers arriba para ejecutar una Comparación.",
+    "comparison.add_third": "+ añadir un tercero",
+    "comparison.compare_button": "Comparar",
+    "comparison.need_two_warning": "Ingresa al menos dos tickers para comparar.",
+    "comparison.popular_pairs_label": "Comparaciones populares",
+    "comparison.h2h_heading": "Cara a cara",
+    "comparison.h2h_metric_col": "Métrica",
+    "comparison.h2h_price_model": "Precio &rarr; Estimación del modelo",
+    "comparison.h2h_quality_moat": "Calidad / Foso",
+    "comparison.h2h_roic_wacc": "ROIC vs WACC",
+    "comparison.h2h_caption": (
+        "Una comparación descrita de cálculos declarados, no una "
+        "recomendación - la cifra en verde en cada línea es simplemente "
+        "el número más alto, nada más."
+    ),
 
     "portfolio.title": "Mi cartera",
     "portfolio.signin_prompt": (

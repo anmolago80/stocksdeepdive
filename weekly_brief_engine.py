@@ -349,9 +349,10 @@ def _brief_user_message(watchlist_rows, health_changes, posts, site):
     wl_material = [r for r in watchlist_rows
                    if r.get("delta") is not None and abs(r["delta"]) >= _WATCHLIST_MOVE_THRESHOLD]
     if wl_material:
-        lines = [f"- {r['Ticker']}: Long Score {r.get('Long Score')}, {r['delta']:+.1f} vs 7 days ago"
+        _score_label = "Value Score" if FACTUAL_MODE else "Long Score"
+        lines = [f"- {r['Ticker']}: {_score_label} {r.get('Long Score')}, {r['delta']:+.1f} vs 7 days ago"
                  for r in wl_material]
-        parts.append("WATCHLIST MOVES (Long Score, vs 7 days ago):\n" + "\n".join(lines))
+        parts.append(f"WATCHLIST MOVES ({_score_label}, vs 7 days ago):\n" + "\n".join(lines))
 
     hc_material = [h for h in health_changes if abs(h["delta"]) >= _HEALTH_MOVE_THRESHOLD]
     if hc_material:

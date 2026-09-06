@@ -8691,130 +8691,179 @@ def _render_overnight_scan_table(universe_label, overnight):
     unchanged (behaviour-for-behaviour) so the "Imported screen" cohort
     (see _render_screen_import_admin()) can show the exact same table
     instead of a second hand-maintained copy. `overnight` is a
-    scan_store.load_scan(...) payload; `universe_label` only decorates the
-    expander heading text.
+    scan_store.load_scan(...) payload; `universe_label` decorates the
+    heading text.
+
+    Mega-batch Part 6 (Scanner opener, "results-first"): this used to be
+    wrapped in its own st.expander (heading = one long sentence) - a
+    first-time visitor had to already see it expanded-by-default to get
+    "zero interaction". Now it's a plain, always-visible section (title +
+    a short "scan of <date> <time>" line, with a ⓘ popover holding the
+    same "pre-computed / attention-lite" methodology paragraph that used
+    to be a st.caption right inside the expander) so the table is
+    unambiguously the first thing on the page, no expand click implied
+    either way. Also adds the "rank, ... sortable" half of that same
+    spec item: a Sort-by pills row (defaulting to Value Score, matching
+    the rows' own pre-sorted order) and a leading rank column - a true
+    click-a-column-header sort isn't available here (st.markdown doesn't
+    execute <script>, so a plain HTML table can't do that without a much
+    heavier components.html() rewrite - see _render_app_nav_items's own
+    "st.link_button always opens a new tab" style note elsewhere in this
+    file for the same kind of Streamlit-constraint tradeoff), so this
+    reuses the site's own st.pills idiom (already used for the ticker
+    example chips) as the "sortable" control instead.
 
     Each Ticker cell now links straight to that stock's Deep Dive (which
     carries the auto Compounder View) - it didn't before this was
     extracted; added here since the imported-screen row is otherwise a
     dead end (no sector/universe browse path back to it elsewhere), and
     every existing universe gets the same convenience for free."""
-    with st.expander(
-        f"Overnight {universe_label} scan - {len(overnight['rows'])} stocks "
-        f"ranked by Long Score, computed {overnight['generated_at_label']}",
-        expanded=st.session_state.get("scan_stocks") is None,
-    ):
-        if overnight.get("attention_lite", True):
-            st.caption(
-                "Pre-computed while nobody was waiting. Attention-lite "
-                "(price/volume only - no news/trends/social inputs), same "
-                "rule as live scans this size. Estimated/default values "
-                "carry their own flag columns. Run a live scan below for "
-                "current prices."
-            )
-        else:
-            st.caption(
-                "Pre-computed while nobody was waiting. Full attention "
-                "(price/volume plus news/trends/social inputs) - this batch "
-                "was small enough to get the same signals as a live scan or "
-                "Deep Dive. Estimated/default values carry their own flag "
-                "columns. Run a live scan below for current prices."
-            )
-        # Services batch, Part 2: one batched query for every ticker in
-        # this table's "Insider net 12m" column - see _insider_cell's own
-        # docstring for why this must be computed once, not per row.
-        _on_insider_map = insider_store.net_insider_values_for(
-            [r.get("Ticker") for r in overnight["rows"] if r.get("Ticker")]
-        )
-        _on_rows_html = []
-        for _orow in overnight["rows"]:
-            _tk = _orow.get("Ticker") or "-"
-            _tk_cell = (
-                f"<a href='/deep-dive?ticker={_tk}' target='_self' "
-                "style='color:inherit;text-decoration:underline;'><b>"
-                f"{_tk}</b></a>" if _tk != "-" else "<b>-</b>"
-            )
-            _row_html = (
-                "<tr>"
-                + _td(_tk_cell)
-                + _td(_badge_cell(_orow.get("Type", "-"), _TYPE_NEUTRAL))
-                + _td(_price_cell(_orow.get("Price")))
-                + _td(_money_cell(_orow.get("Intrinsic Value"),
-                                  ref=_orow.get("Price"),
-                                  flag=bool(_orow.get("Intrinsic Default"))))
-                + _td(_bar_cell(_orow.get("MOS %"), 0, 25, "%",
-                                flag=bool(_orow.get("Intrinsic Default"))), minw=90)
-                + _td(_bar_cell(_orow.get("Long Score"),
-                                SIGNAL_THRESHOLDS["WATCHLIST"],
-                                SIGNAL_THRESHOLDS["LONG"]), minw=90)
-                + _td(_bar_cell(_orow.get("Quality"), 40, 80,
-                                flag=bool(_orow.get("Quality Default"))), minw=90)
-                + _td(_bar_cell(_orow.get("Psychology"), -5, 20), minw=90)
-                + _td(_bar_cell(_orow.get("Discovery (lite)"), 25, 50), minw=90)
-                # Moat Score (Phase 1, display-only - see moat_engine.py):
-                # stored-value-only here, same as every other column on
-                # this table - nightly_scan.py's _attach_moat() is what
-                # actually computes and stores it. Bands green>70/
-                # amber 40-70/red<=40 fall straight out of _bar_cell's
-                # own (low, high) semantics with low=40, high=70.
-                # Flagged (red-bold number) whenever the erosion overlay
-                # fired, on top of the colour band.
-                + _td(_bar_cell(_orow.get("Moat"), 40, 70,
-                                flag=_orow.get("Moat Erosion") in ("watch", "eroding")), minw=90)
-                + _td(_insider_cell(_tk, _on_insider_map.get(_tk.strip().upper()) if _tk != "-" else None),
-                      minw=90)
-            )
-            if _factual():
-                _row_html += (
-                    _td(_badge_cell(_orow.get("Valuation", "-")))
-                    + _td(_badge_cell(_orow.get("Trend", "-")))
-                )
-            else:
-                _row_html += (
-                    _td(_badge_cell(_orow.get("Valuation", "-")))
-                    + _td(_badge_cell(_orow.get("Signal", "-")))
-                    + _td(_badge_cell(_orow.get("Trend", "-")))
-                    + _td(_badge_cell(_orow.get("Trade Setup", "-")))
-                )
-            _on_rows_html.append(_row_html + "</tr>")
-        if _factual():
-            _on_headers = ["Ticker", "Type", "Price", "Intrinsic Value",
-                           "MOS", "Value Score", "Quality", "Psychology",
-                           "Discovery", "Moat", "Insider net 12m", "Valuation", "Trend"]
-        else:
-            _on_headers = ["Ticker", "Type", "Price", "Intrinsic Value",
-                           "MOS", "Long Score", "Quality", "Psychology",
-                           "Discovery", "Moat", "Insider net 12m", "Valuation", "Signal",
-                           "Trend", "Trade Setup"]
-        st.markdown(
-            _sdd_table(_on_headers, _on_rows_html, max_height=480),
-            unsafe_allow_html=True,
-        )
-        if _factual():
-            st.caption(
-                "Sorted by Value Score - a described calculation (see "
-                "Methodology). Sorting is arithmetic, not a recommendation."
-            )
-        st.caption(
-            "Red values = computed from a default/average because real "
-            "data wasn't available (the site-wide red-flag rule)."
-        )
-        st.caption(f"Universe source at scan time: {overnight['source']}")
+    _on_lang = st.session_state.get("lang", "en")
+    _score_label = "Value Score" if _factual() else "Long Score"
+    _on_n = len(overnight["rows"])
 
-        # --- Services batch 2, Part 3: "Download table (CSV)" - the
-        # overnight scan's own stored rows, plain (no HTML/formatting),
-        # same convention as the Comparison/Scanner live-results download
-        # button below (_render_scan_results). ---
-        try:
-            _on_csv = data_export_engine.table_to_csv_bytes(pd.DataFrame(overnight["rows"]))
-            st.download_button(
-                "Download table (CSV)", data=_on_csv,
-                file_name=f"StocksDeepDive_{universe_label.replace(' ', '')}_overnight_"
-                          f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.csv",
-                mime="text/csv", key=f"dl_overnight_csv_{universe_label}",
+    _title_col, _info_col = st.columns([12, 1], vertical_alignment="top")
+    with _title_col:
+        st.markdown(f"#### {universe_label} &middot; {_on_n} stocks")
+        st.caption(i18n.t("scanner.scan_of", _on_lang, when=overnight["generated_at_label"]))
+    with _info_col:
+        _methodology_text = (
+            "Pre-computed while nobody was waiting. Attention-lite "
+            "(price/volume only - no news/trends/social inputs), same "
+            "rule as live scans this size. Estimated/default values "
+            "carry their own flag columns. Run a live scan below for "
+            "current prices."
+            if overnight.get("attention_lite", True) else
+            "Pre-computed while nobody was waiting. Full attention "
+            "(price/volume plus news/trends/social inputs) - this batch "
+            "was small enough to get the same signals as a live scan or "
+            "Deep Dive. Estimated/default values carry their own flag "
+            "columns. Run a live scan below for current prices."
+        )
+        _render_static_explainer(f"overnight_{universe_label}", "ⓘ", _methodology_text)
+
+    # Sort-by pills ("sortable" - see this function's own docstring for
+    # why a real click-to-sort column header isn't available here). The
+    # underlying dict key is always "Long Score" regardless of _factual()
+    # - display-only rename, same rule as everywhere else on this page.
+    _sort_cols = [
+        (_score_label, "Long Score"),
+        (i18n.t("scanner.sort_mos", _on_lang), "MOS %"),
+        (i18n.t("scanner.sort_quality", _on_lang), "Quality"),
+        (i18n.t("scanner.sort_moat", _on_lang), "Moat"),
+        (i18n.t("scanner.sort_price", _on_lang), "Price"),
+    ]
+    _sort_key_by_label = dict(_sort_cols)
+    _sel_sort = st.pills(
+        i18n.t("scanner.sort_by_label", _on_lang), [lbl for lbl, _ in _sort_cols],
+        selection_mode="single", default=_score_label,
+        key=f"overnight_sort_{universe_label}",
+    )
+    _sort_col = _sort_key_by_label.get(_sel_sort, "Long Score")
+    _on_rows = sorted(
+        overnight["rows"],
+        key=lambda r: r.get(_sort_col) if isinstance(r.get(_sort_col), (int, float)) else float("-inf"),
+        reverse=True,
+    )
+
+    # Services batch, Part 2: one batched query for every ticker in
+    # this table's "Insider net 12m" column - see _insider_cell's own
+    # docstring for why this must be computed once, not per row.
+    _on_insider_map = insider_store.net_insider_values_for(
+        [r.get("Ticker") for r in _on_rows if r.get("Ticker")]
+    )
+    _on_rows_html = []
+    for _on_rank, _orow in enumerate(_on_rows, start=1):
+        _tk = _orow.get("Ticker") or "-"
+        _tk_cell = (
+            f"<a href='/deep-dive?ticker={_tk}' target='_self' "
+            "style='color:inherit;text-decoration:underline;'><b>"
+            f"{_tk}</b></a>" if _tk != "-" else "<b>-</b>"
+        )
+        _row_html = (
+            "<tr>"
+            + _td(f"<span style='color:#5b7290;'>{_on_rank}</span>")
+            + _td(_tk_cell)
+            + _td(_badge_cell(_orow.get("Type", "-"), _TYPE_NEUTRAL))
+            + _td(_price_cell(_orow.get("Price")))
+            + _td(_money_cell(_orow.get("Intrinsic Value"),
+                              ref=_orow.get("Price"),
+                              flag=bool(_orow.get("Intrinsic Default"))))
+            + _td(_bar_cell(_orow.get("MOS %"), 0, 25, "%",
+                            flag=bool(_orow.get("Intrinsic Default"))), minw=90)
+            + _td(_bar_cell(_orow.get("Long Score"),
+                            SIGNAL_THRESHOLDS["WATCHLIST"],
+                            SIGNAL_THRESHOLDS["LONG"]), minw=90)
+            + _td(_bar_cell(_orow.get("Quality"), 40, 80,
+                            flag=bool(_orow.get("Quality Default"))), minw=90)
+            + _td(_bar_cell(_orow.get("Psychology"), -5, 20), minw=90)
+            + _td(_bar_cell(_orow.get("Discovery (lite)"), 25, 50), minw=90)
+            # Moat Score (Phase 1, display-only - see moat_engine.py):
+            # stored-value-only here, same as every other column on
+            # this table - nightly_scan.py's _attach_moat() is what
+            # actually computes and stores it. Bands green>70/
+            # amber 40-70/red<=40 fall straight out of _bar_cell's
+            # own (low, high) semantics with low=40, high=70.
+            # Flagged (red-bold number) whenever the erosion overlay
+            # fired, on top of the colour band.
+            + _td(_bar_cell(_orow.get("Moat"), 40, 70,
+                            flag=_orow.get("Moat Erosion") in ("watch", "eroding")), minw=90)
+            + _td(_insider_cell(_tk, _on_insider_map.get(_tk.strip().upper()) if _tk != "-" else None),
+                  minw=90)
+        )
+        if _factual():
+            _row_html += (
+                _td(_badge_cell(_orow.get("Valuation", "-")))
+                + _td(_badge_cell(_orow.get("Trend", "-")))
             )
-        except Exception:
-            pass
+        else:
+            _row_html += (
+                _td(_badge_cell(_orow.get("Valuation", "-")))
+                + _td(_badge_cell(_orow.get("Signal", "-")))
+                + _td(_badge_cell(_orow.get("Trend", "-")))
+                + _td(_badge_cell(_orow.get("Trade Setup", "-")))
+            )
+        _on_rows_html.append(_row_html + "</tr>")
+    _on_rank_header = i18n.t("scanner.rank_col", _on_lang)
+    if _factual():
+        _on_headers = [_on_rank_header, "Ticker", "Type", "Price", "Intrinsic Value",
+                       "MOS", "Value Score", "Quality", "Psychology",
+                       "Discovery", "Moat", "Insider net 12m", "Valuation", "Trend"]
+    else:
+        _on_headers = [_on_rank_header, "Ticker", "Type", "Price", "Intrinsic Value",
+                       "MOS", "Long Score", "Quality", "Psychology",
+                       "Discovery", "Moat", "Insider net 12m", "Valuation", "Signal",
+                       "Trend", "Trade Setup"]
+    st.markdown(
+        _sdd_table(_on_headers, _on_rows_html, max_height=480),
+        unsafe_allow_html=True,
+    )
+    if _factual():
+        st.caption(
+            "Sorted by Value Score - a described calculation (see "
+            "Methodology). Sorting is arithmetic, not a recommendation."
+        )
+    st.caption(
+        "Red values = computed from a default/average because real "
+        "data wasn't available (the site-wide red-flag rule)."
+    )
+    st.caption(f"Universe source at scan time: {overnight['source']}")
+
+    # --- Services batch 2, Part 3: "Download table (CSV)" - the
+    # overnight scan's own stored rows (in the table's current sort
+    # order, Part 6), plain (no HTML/formatting), same convention as the
+    # Comparison/Scanner live-results download button below
+    # (_render_scan_results). ---
+    try:
+        _on_csv = data_export_engine.table_to_csv_bytes(pd.DataFrame(_on_rows))
+        st.download_button(
+            "Download table (CSV)", data=_on_csv,
+            file_name=f"StocksDeepDive_{universe_label.replace(' ', '')}_overnight_"
+                      f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.csv",
+            mime="text/csv", key=f"dl_overnight_csv_{universe_label}",
+        )
+    except Exception:
+        pass
 
 
 def _render_screen_import_admin():
@@ -9221,6 +9270,48 @@ def _consume_pending_nl_screen_query():
         _apply_nl_screen_result(_parsed)
 
 
+_SCANNER_PILL_UNIVERSES = [
+    ("🇦🇺 ASX 200", "Australia", "ASX 200"),
+    ("🇦🇺 ASX 300", "Australia", "ASX 300"),
+    ("🇦🇺 ASX 100", "Australia", "ASX 100"),
+    ("🇺🇸 S&P 500", "USA", "S&P 500"),
+    ("🇺🇸 Nasdaq 100", "USA", "Nasdaq 100"),
+    ("🇺🇸 Dow Jones 30", "USA", "Dow Jones 30"),
+]
+
+
+def _render_scanner_universe_pills(lang):
+    """Mega-batch Part 6 (Scanner opener): a visible, one-click row for
+    the 6 most-scanned universes (3 AU + 3 US, flag-grouped), so the
+    common case never needs the "+N more" expander below at all. Those
+    6 plus scanner_engine's other 10 universes are exactly the site's
+    "16 universes" home-tile stat (_home_scanner_stat, app.py) - N is
+    derived from that same live count so it self-corrects if a universe
+    is ever added.
+
+    This is a fast path onto the SAME session_state keys
+    (scanner_country_au/us, scanner_universe) the "+N more" expander's
+    own AU/US checkboxes and universe selectbox read/write below - fixed
+    up here BEFORE those widgets are instantiated (same "fix up first"
+    guard already used for their own selectbox/session_state mismatch
+    handling further down), so picking a pill here and then opening the
+    expander always shows the two in agreement, never a stale mismatch."""
+    _current = st.session_state.get("scanner_universe")
+    _label_by_universe = {u: lbl for lbl, _, u in _SCANNER_PILL_UNIVERSES}
+    _universe_by_label = {lbl: (c, u) for lbl, c, u in _SCANNER_PILL_UNIVERSES}
+    _sel = st.pills(
+        i18n.t("scanner.pills_label", lang),
+        [lbl for lbl, _, _ in _SCANNER_PILL_UNIVERSES],
+        selection_mode="single", default=_label_by_universe.get(_current),
+        key="scanner_universe_pill",
+    )
+    if _sel and _label_by_universe.get(_current) != _sel:
+        _country, _uni = _universe_by_label[_sel]
+        st.session_state["scanner_country_au"] = (_country == "Australia")
+        st.session_state["scanner_country_us"] = (_country == "USA")
+        st.session_state["scanner_universe"] = _uni
+
+
 def page_scanner():
     _render_header(compact=True, page_label="Scanner", current="scanner")
     _bump_page_view("scanner")
@@ -9235,6 +9326,28 @@ def page_scanner():
     st.session_state.setdefault("scanner_country_us", False)
     st.session_state.setdefault("scanner_universe", "ASX 200")
 
+    # ---- Universe pills (Part 6): one click among the 6 most common
+    # universes, always visible - runs BEFORE the instant-results read
+    # below so a click this rerun already shows in the same run's table.
+    _render_scanner_universe_pills(_scan_lang)
+
+    # ---- Instant results: rendered FIRST, above every picker AND above
+    # the NL-screening box (Part 6 - "results-first... the overnight
+    # table is the first screen"), using whichever universe is currently
+    # selected in session_state (ASX 200 on a first visit). This is the
+    # fix for "the site makes visitors ask for value instead of showing
+    # it" - a first-time visitor sees a ranked table with zero
+    # interaction. The picker below can change the universe; Streamlit
+    # reruns top-to-bottom on any widget change, so this table simply
+    # re-reads session_state and shows the new universe's overnight scan
+    # on the next run - "universe switch keeps working exactly as now."
+    _top_universe = st.session_state.get("scanner_universe", "ASX 200")
+    _overnight_top = scan_store.load_scan(_top_universe)
+    if _overnight_top:
+        _render_overnight_scan_table(_top_universe, _overnight_top)
+
+    # ---- NL-screening box: now BELOW the results table (Part 6), so it
+    # never delays a first-time visitor's first ranked table. ----
     _render_nl_screen_box("scanner")
     _nl_last = st.session_state.get("nl_screen_last_result")
     if _nl_last:
@@ -9245,22 +9358,15 @@ def page_scanner():
             "country/universe/sector filters you could set by hand."
         )
 
-    # ---- Instant results: rendered FIRST, above every picker, using
-    # whichever universe is currently selected in session_state (ASX 200
-    # on a first visit). This is the fix for "the site makes visitors ask
-    # for value instead of showing it" - a first-time visitor sees a
-    # ranked table with zero interaction. The picker below can change the
-    # universe; Streamlit reruns top-to-bottom on any widget change, so
-    # this table simply re-reads session_state and shows the new
-    # universe's overnight scan on the next run - "universe switch keeps
-    # working exactly as now."
-    _top_universe = st.session_state.get("scanner_universe", "ASX 200")
-    _overnight_top = scan_store.load_scan(_top_universe)
-    if _overnight_top:
-        _render_overnight_scan_table(_top_universe, _overnight_top)
-
+    # "+N more universes & sector filter" (Part 6): the pill row above
+    # covers 6 of scanner_engine's 16 total universes; everything else -
+    # the other 10, plus the sector filter - lives in this expander,
+    # unchanged mechanism from before this batch.
+    _n_more = (len(scanner_engine.AUSTRALIA_UNIVERSES) + len(scanner_engine.USA_UNIVERSES)
+               - len(_SCANNER_PILL_UNIVERSES))
     with st.expander(
-        i18n.t("scanner.change_expander", _scan_lang), expanded=not bool(_overnight_top)
+        i18n.t("scanner.change_expander", _scan_lang, n=_n_more),
+        expanded=not bool(_overnight_top)
     ):
         st.write(i18n.t("scanner.change_instruction", _scan_lang))
 
@@ -9470,9 +9576,80 @@ def page_results_calendar():
     _render_calendar_section("Later this month", _later_month, "Nothing further expected this month yet.")
 
 
+# Mega-batch Part 6 (Comparison opener): the popular-pair chips, and the
+# rotating default pair used to keep the page "never empty on load" when
+# nothing else (a URL share, a prior search this session) has picked a
+# comparison yet.
+_COMPARISON_POPULAR_PAIRS = [
+    ("CPRT", "FICO"),
+    ("CSL.AX", "RMD.AX"),
+    ("BHP.AX", "RIO.AX"),
+    ("AAPL", "MSFT"),
+]
+
+
+def _render_comparison_input_row(lang):
+    """Mega-batch Part 6: "[ticker] VS [ticker] [+ add third] [Compare]"
+    on top of the Comparison page, plus a row of popular-pair chips below
+    it. Both feed the exact same _dispatch_search()/cmp_stocks session-
+    state mechanism every other entry point on the site already uses (the
+    header's own search box, the home page chips, a shared URL) - this is
+    just a Comparison-specific opener, not a second/parallel comparison
+    engine, so a comparison started here behaves identically to one
+    started anywhere else on the site."""
+    st.session_state.setdefault("cmp_input_third", False)
+    _c1, _cvs, _c2, _c3, _cbtn = st.columns([3, 1, 3, 3, 2], vertical_alignment="bottom")
+    with _c1:
+        _t1 = st.text_input("Ticker 1", key="cmp_input_a", placeholder="CPRT",
+                             label_visibility="collapsed")
+    with _cvs:
+        st.markdown(
+            "<div style='text-align:center;padding-bottom:8px;color:#5b7290;"
+            "font-weight:700;'>VS</div>",
+            unsafe_allow_html=True,
+        )
+    with _c2:
+        _t2 = st.text_input("Ticker 2", key="cmp_input_b", placeholder="FICO",
+                             label_visibility="collapsed")
+    _t3 = ""
+    with _c3:
+        if st.session_state["cmp_input_third"]:
+            _t3 = st.text_input("Ticker 3", key="cmp_input_c", placeholder="MSFT",
+                                 label_visibility="collapsed")
+        elif st.button(i18n.t("comparison.add_third", lang), key="cmp_add_third_btn",
+                       use_container_width=True):
+            st.session_state["cmp_input_third"] = True
+            st.rerun()
+    with _cbtn:
+        _go = st.button(
+            i18n.t("comparison.compare_button", lang), type="primary",
+            key="cmp_compare_btn", use_container_width=True,
+        )
+    if _go:
+        _typed = " ".join(t.strip() for t in (_t1, _t2, _t3) if t and t.strip())
+        if len(_typed.split()) < 2:
+            st.warning(i18n.t("comparison.need_two_warning", lang))
+        else:
+            _dispatch_search(_typed)
+
+    _pair_labels = [f"{a} vs {b}" for a, b in _COMPARISON_POPULAR_PAIRS]
+    _sel = st.pills(
+        i18n.t("comparison.popular_pairs_label", lang), _pair_labels,
+        selection_mode="single", key="cmp_popular_pair_chip",
+    )
+    _done_key = "cmp_popular_pair_chip_done"
+    if not _sel:
+        st.session_state.pop(_done_key, None)
+    elif st.session_state.get(_done_key) != _sel:
+        st.session_state[_done_key] = _sel
+        _pair_a, _pair_b = _sel.split(" vs ")
+        _dispatch_search(f"{_pair_a} {_pair_b}")
+
+
 def page_comparison():
     _render_header(compact=True, page_label="Comparison", current="comparison")
     _bump_page_view("comparison")
+    _cmp_lang = st.session_state.get("lang", "en")
 
     if not _factual():
         _render_screen_import_admin()
@@ -9501,13 +9678,33 @@ def page_comparison():
                 "USA" if (len(_qp_parsed) - _qp_au) > _qp_au else "Australia"
             )
             st.session_state["cmp_fresh"] = True
+
+    # Mega-batch Part 6: "never empty on load" - a rotating sensible
+    # default (deterministic from the date, same rotation idiom as the
+    # home page's own _FEATURED_ROTATION) fills cmp_stocks the FIRST time
+    # this session hits Comparison with nothing else (no URL share) to
+    # show yet. Never overrides a real search: once cmp_stocks holds
+    # anything (a user's own tickers, even ones that fail to resolve),
+    # this never fires again for the rest of the session.
+    if not st.session_state.get("cmp_stocks") and not _qp_tickers:
+        _cmp_day_idx = datetime.now(timezone.utc).timetuple().tm_yday % len(_COMPARISON_POPULAR_PAIRS)
+        _def_a, _def_b = _COMPARISON_POPULAR_PAIRS[_cmp_day_idx]
+        st.session_state["cmp_stocks"] = [_def_a, _def_b]
+        st.session_state["cmp_universe_source"] = f"Suggested comparison ({_def_a} vs {_def_b})"
+        st.session_state["cmp_scan_country"] = (
+            "Australia" if _def_a.endswith(".AX") or _def_b.endswith(".AX") else "USA"
+        )
+        st.session_state["cmp_fresh"] = True
+
     if st.session_state.get("cmp_stocks"):
         st.query_params["tickers"] = ",".join(st.session_state["cmp_stocks"])
+
+    _render_comparison_input_row(_cmp_lang)
 
     _render_scan_results(
         page_label="Comparison",
         state_prefix="cmp",
-        empty_message=i18n.t("comparison.empty_message", st.session_state.get("lang", "en")),
+        empty_message=i18n.t("comparison.empty_message", _cmp_lang),
     )
 
 
@@ -10275,6 +10472,129 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 )
             except Exception:
                 pass
+
+            # ---------------- Head-to-head (Comparison only) ----------------
+            # Mega-batch Part 6: a compact "the numbers, side by side" table
+            # ABOVE the existing full gauge-by-gauge Side-by-side comparison
+            # below (which stays exactly as it is) - same already-computed
+            # `results` DataFrame, no second scan/compute for anything
+            # already in it. Paid-tier only (past the paywall gate above),
+            # matching every other table on this page below that point -
+            # this is new DETAIL, not part of the free Ticker/Price/Score
+            # preview further up, so it doesn't touch that gate's economics.
+            if state_prefix == "cmp":
+                _h2h_lang = _scan_gate_lang
+                _h2h_score_label = "Value Score" if _factual() else "Long Score"
+                _h2h_tickers = list(results["Ticker"])
+
+                def _h2h_best(nums, disps):
+                    """Bold-green every cell tied for the highest reading in
+                    the row - 'stronger reading', described factually, never
+                    a buy/sell verdict (see comparison.h2h_caption)."""
+                    _valid = [n for n in nums if n is not None]
+                    _best = max(_valid) if _valid else None
+                    return [
+                        f"<span style='color:#34d399;font-weight:700;'>{d}</span>"
+                        if (n is not None and _best is not None and n == _best) else d
+                        for n, d in zip(nums, disps)
+                    ]
+
+                st.subheader(i18n.t("comparison.h2h_heading", _h2h_lang))
+
+                _h2h_rows_html = []
+
+                # Price -> Model estimate: informational only, no winner -
+                # a higher intrinsic estimate isn't "better", just different.
+                _price_disps = []
+                for _, r in results.iterrows():
+                    _iv = r["Intrinsic Value"]
+                    _iv_disp = f"{_iv:,.2f}" if isinstance(_iv, (int, float)) else "N/A"
+                    _price_disps.append(f"{r['Price']:,.2f} &rarr; {_iv_disp}")
+                _h2h_rows_html.append(
+                    "<tr>" + _td(f"<b>{i18n.t('comparison.h2h_price_model', _h2h_lang)}</b>")
+                    + "".join(_td(d) for d in _price_disps) + "</tr>"
+                )
+
+                # MOS - higher margin of safety wins.
+                _mos_nums = [r["MOS"] if isinstance(r["MOS"], (int, float)) else None
+                             for _, r in results.iterrows()]
+                _mos_disps = [f"{n:.1f}%" if n is not None else "N/A" for n in _mos_nums]
+                _h2h_rows_html.append(
+                    "<tr>" + _td("<b>MOS</b>")
+                    + "".join(_td(d) for d in _h2h_best(_mos_nums, _mos_disps)) + "</tr>"
+                )
+
+                # Value Score (+ Valuation pill) - higher score wins.
+                _score_nums = [r["Long Score"] for _, r in results.iterrows()]
+                _score_disps = [
+                    f"{r['Long Score']:.1f} {_badge_cell(r['Valuation'])}"
+                    for _, r in results.iterrows()
+                ]
+                _h2h_rows_html.append(
+                    "<tr>" + _td(f"<b>{_h2h_score_label}</b>")
+                    + "".join(_td(d) for d in _h2h_best(_score_nums, _score_disps)) + "</tr>"
+                )
+
+                # Quality / Moat, combined - higher reading wins. Moat stays
+                # the stored-nightly-value-only convention used everywhere
+                # else on this page (never computed live here either).
+                _qm_nums, _qm_disps = [], []
+                for _, r in results.iterrows():
+                    _q = r["Quality"]
+                    _m = r.get("Moat")
+                    # Moat is None (not "N/A") for a missing reading in the
+                    # source data, but a pandas column mixing None with
+                    # floats silently upgrades the None to NaN - and
+                    # isinstance(nan, float) is True, so a plain isinstance
+                    # check alone would print "M nan" and poison the sum
+                    # below. pd.notna() catches that; a real "N/A" string
+                    # elsewhere in this table fails isinstance and is
+                    # already handled correctly without it.
+                    _m_ok = isinstance(_m, (int, float)) and pd.notna(_m)
+                    _qm_nums.append((_q or 0) + (_m if _m_ok else 0))
+                    _qm_disps.append(
+                        f"Q {_q:.0f} / M {_m:.0f}" if _m_ok
+                        else f"Q {_q:.0f} / M N/A"
+                    )
+                _h2h_rows_html.append(
+                    "<tr>" + _td(f"<b>{i18n.t('comparison.h2h_quality_moat', _h2h_lang)}</b>")
+                    + "".join(_td(d) for d in _h2h_best(_qm_nums, _qm_disps)) + "</tr>"
+                )
+
+                # ROIC vs WACC - only for a small, live-computed comparison
+                # (_live_moat_ok, same threshold this function already gates
+                # live per-ticker fundamentals compute behind, further up) -
+                # larger spread wins. Reuses _checklist_metric_value/
+                # build_sections exactly as the Deep Dive checklist panel
+                # does - never a second/independent computation.
+                if _live_moat_ok:
+                    _rw_nums, _rw_disps = [], []
+                    for _tk in _h2h_tickers:
+                        try:
+                            _rw_sections = auto_compounder_engine.build_sections(_tk)
+                        except Exception:
+                            _rw_sections = {}
+                        _roic = _checklist_metric_value(_rw_sections, "Cost of Capital", "ROIC (TTM)", _tk)
+                        _wacc = _checklist_metric_value(_rw_sections, "Cost of Capital", "WACC", _tk)
+                        if _roic is None or _wacc is None:
+                            _rw_nums.append(None)
+                            _rw_disps.append("N/A")
+                        else:
+                            _rw_nums.append(_roic - _wacc)
+                            _rw_disps.append(f"{_roic * 100:.1f}% vs {_wacc * 100:.1f}%")
+                    _h2h_rows_html.append(
+                        "<tr>" + _td(f"<b>{i18n.t('comparison.h2h_roic_wacc', _h2h_lang)}</b>")
+                        + "".join(_td(d) for d in _h2h_best(_rw_nums, _rw_disps)) + "</tr>"
+                    )
+
+                st.markdown(
+                    _sdd_table(
+                        [i18n.t("comparison.h2h_metric_col", _h2h_lang)] + _h2h_tickers,
+                        _h2h_rows_html,
+                    ),
+                    unsafe_allow_html=True,
+                )
+                st.caption(i18n.t("comparison.h2h_caption", _h2h_lang))
 
             # ---------------- Side-by-side comparison ----------------
             # One row per ticker, the columns you actually asked for. Score
