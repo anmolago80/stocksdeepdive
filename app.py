@@ -51,6 +51,7 @@ import portfolio_store
 import portfolio_health_engine
 import portfolio_charts_engine
 import portfolio_news_engine
+import etf_insights
 import name_directory
 import score_history
 import blog_comments_store
@@ -10908,11 +10909,11 @@ def page_portfolio():
                     _analyses[_futures[_fut]] = _fut.result()
 
     (_tab_holdings, _tab_income, _tab_overview, _tab_health, _tab_progress,
-     _tab_ask, _tab_alerts) = st.tabs(
+     _tab_etfs, _tab_ask, _tab_alerts) = st.tabs(
         [i18n.t("portfolio.tab_holdings", _pf_lang), i18n.t("portfolio.tab_income", _pf_lang),
          i18n.t("portfolio.tab_overview", _pf_lang), i18n.t("portfolio.tab_health", _pf_lang),
-         i18n.t("portfolio.tab_progress", _pf_lang), i18n.t("portfolio.tab_ask", _pf_lang),
-         i18n.t("portfolio.tab_alerts", _pf_lang)]
+         i18n.t("portfolio.tab_progress", _pf_lang), i18n.t("portfolio.tab_etfs", _pf_lang),
+         i18n.t("portfolio.tab_ask", _pf_lang), i18n.t("portfolio.tab_alerts", _pf_lang)]
     )
 
     with _tab_holdings:
@@ -10929,6 +10930,12 @@ def page_portfolio():
         _render_portfolio_health_news_tab(email, _active_portfolio, _holdings, _analyses)
     with _tab_progress:
         _render_portfolio_progress_tab(_active_portfolio, _holdings, _analyses)
+    with _tab_etfs:
+        # Next-batch instruction, Part 2: renders only when the active
+        # portfolio holds >=1 ETF (see _render_portfolio_etfs_tab's own
+        # gating), zero new per-holding network calls (reuses each
+        # holding's already-fetched 2y price history).
+        _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses)
     with _tab_ask:
         # AI-readiness roadmap Phase 3: private to this account - never
         # shown to, or answerable about, anyone else's holdings. See
@@ -11088,6 +11095,310 @@ def _fmt_pct1(v):
     return f"{v * 100:.1f}%" if v is not None else "n/a"
 
 
+# -----------------------------------------------------------------
+# Next-batch instruction, Part 2 - "My ETFs" tab.
+# -----------------------------------------------------------------
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _etf_benchmark_history(ticker):
+    """Cached ~2y price history for a benchmark index (^GSPC / ^AXJO).
+
+    The correlation figures on the My ETFs tab need >=24 overlapping
+    months to mean anything (etf_insights.correlation_vs's own
+    min_months) - more than the site's general-purpose
+    get_price_history() 6-month window keeps, so this fetches the
+    benchmark separately, over the same ~2y span as a holding's own
+    snapshot history (portfolio_health_engine.fetch_snapshot), and
+    caches it 30 minutes like every other yfinance call on the site
+    (get_price_history, get_cashflow_df, etc). Fetched at most once per
+    ticker per half hour regardless of how many ETF holdings or
+    visitors need it - no new per-pageview network fetch."""
+    try:
+        return yf.Ticker(ticker).history(period="2y")
+    except Exception:
+        return pd.DataFrame()
+
+
+def _etf_sleeve_rows(_holdings, _analyses):
+    """Part 2a/2b - one row per ETF holding in `_holdings`, built from
+    data already fetched for the Holdings tab (_build_portfolio_rows)
+    plus each ETF's own price history already sitting in its snapshot
+    (portfolio_health_engine.fetch_snapshot's 2y `history`) - zero new
+    per-holding network calls. Only the two benchmark indices are
+    fetched (and only once each, cached 30 min total across the whole
+    portfolio), never per-ETF.
+
+    Returns (etf_rows, sleeve_totals, direct_values_aud):
+      etf_rows - one dict per ETF holding: ticker, label, name,
+        value_aud, pct_now (share of WHOLE portfolio), pct_of_sleeve
+        (share of the ETF-only sleeve, filled in after the loop), mer,
+        category, family, issuer_url, sector_weights, top_holdings,
+        return_pa + return_pa_label ("5y"/"3y"/"1y" - whichever window
+        had enough history), yield_ttm, corr_sp500, corr_asx200,
+        top_exposure_line.
+      sleeve_totals - {"value_aud", "blended_mer", "blended_return_pa",
+        "blended_corr_sp500", "blended_corr_asx200"}, each a
+        value-weighted average across the ETFs that have that field.
+      direct_values_aud - {ticker: value_aud} summed across every
+        NON-ETF holding, for the overlap panel (etf_insights.
+        compute_overlap's own `direct_holdings` argument shape).
+    """
+    _rows, _totals, _fx_missing, _price_missing = _build_portfolio_rows(_holdings, _analyses)
+    _by_key = {(r["portfolio"], r["ticker"]): r for r in _rows}
+
+    _has_etf = any((h.get("kind") or "STOCK").upper() == "ETF" for h in _holdings)
+    _sp500_hist = _etf_benchmark_history("^GSPC") if _has_etf else pd.DataFrame()
+    _asx_hist = _etf_benchmark_history("^AXJO") if _has_etf else pd.DataFrame()
+
+    etf_rows = []
+    direct_values = {}
+
+    for h in _holdings:
+        _k = _hkey(h)
+        _r = _by_key.get(_k)
+        if _r is None:
+            continue
+        _is_etf = (h.get("kind") or "STOCK").upper() == "ETF"
+        if not _is_etf:
+            if _r["value_aud"] is not None:
+                direct_values[h["ticker"]] = direct_values.get(h["ticker"], 0.0) + _r["value_aud"]
+            continue
+
+        _snap = (_analyses.get(_k, {}) or {}).get("snapshot") or {}
+        _hist = _snap.get("history")
+        _facts = etf_insights.get_fund_facts(h["ticker"])
+
+        _ret_pa, _ret_label = None, None
+        for _yrs, _lbl in ((5, "5y"), (3, "3y"), (1, "1y")):
+            _v = etf_insights.total_return_pa(_hist, _yrs)
+            if _v is not None:
+                _ret_pa, _ret_label = _v, _lbl
+                break
+
+        _top_holdings = _facts.get("top_holdings") or []
+        _top_line = None
+        if _top_holdings:
+            _top1 = _top_holdings[0]
+            _top_line = (f"{_top1['symbol']} {_top1['weight']:.1f}%"
+                         if _top1.get("weight") is not None else _top1["symbol"])
+
+        etf_rows.append({
+            "ticker": h["ticker"], "label": _r["label"], "name": h.get("name") or h["ticker"],
+            "value_aud": _r["value_aud"], "pct_now": _r["pct_now"], "pct_of_sleeve": None,
+            "mer": _facts.get("mer"), "category": _facts.get("category"),
+            "family": _facts.get("family"),
+            "issuer_url": etf_insights.issuer_link(h["ticker"], _facts.get("family")),
+            "sector_weights": _facts.get("sector_weights"), "top_holdings": _top_holdings,
+            "return_pa": _ret_pa, "return_pa_label": _ret_label,
+            "yield_ttm": etf_insights.ttm_distribution_yield(_hist),
+            "corr_sp500": etf_insights.correlation_vs(_hist, _sp500_hist),
+            "corr_asx200": etf_insights.correlation_vs(_hist, _asx_hist),
+            "top_exposure_line": _top_line,
+        })
+
+    _sleeve_value = sum(r["value_aud"] for r in etf_rows if r["value_aud"] is not None)
+    for r in etf_rows:
+        r["pct_of_sleeve"] = (r["value_aud"] / _sleeve_value) if (r["value_aud"] is not None and _sleeve_value) else None
+
+    def _wavg(key):
+        _num, _den = 0.0, 0.0
+        for r in etf_rows:
+            if r[key] is not None and r["value_aud"] is not None:
+                _num += r[key] * r["value_aud"]
+                _den += r["value_aud"]
+        return (_num / _den) if _den else None
+
+    sleeve_totals = {
+        "value_aud": _sleeve_value or None,
+        "blended_mer": _wavg("mer"),
+        "blended_return_pa": _wavg("return_pa"),
+        "blended_corr_sp500": _wavg("corr_sp500"),
+        "blended_corr_asx200": _wavg("corr_asx200"),
+    }
+    return etf_rows, sleeve_totals, direct_values
+
+
+def _etf_portfolio_ask_summary(_holdings, _analyses):
+    """Part 2c - compact plain-text ETF-sleeve summary appended to the
+    portfolio Ask box's private grounding context (never cached or
+    persisted, exactly like _portfolio_ask_context itself). Empty
+    string when the portfolio holds no ETFs, so it adds nothing to the
+    prompt for a portfolio without any."""
+    _etf_rows, _sleeve_totals, _direct_values = _etf_sleeve_rows(_holdings, _analyses)
+    if not _etf_rows:
+        return ""
+    _etf_holdings_for_overlap = {
+        r["ticker"]: (r["value_aud"] or 0.0, r["top_holdings"]) for r in _etf_rows
+    }
+    _overlap = etf_insights.compute_overlap(_direct_values, _etf_holdings_for_overlap)
+    _mer_bit = (f", blended MER {_sleeve_totals['blended_mer']:.2f}%"
+                if _sleeve_totals["blended_mer"] is not None else "")
+    lines = [
+        "",
+        f"ETF sleeve: {_fmt_aud(_sleeve_totals['value_aud'])} across {len(_etf_rows)} fund(s){_mer_bit}",
+    ]
+    for r in _etf_rows:
+        _mer_txt = f"{r['mer']:.2f}%" if r["mer"] is not None else "n/a"
+        _ret_txt = (f"{r['return_pa']:.1f}% p.a. ({r['return_pa_label']})"
+                    if r["return_pa"] is not None else "n/a")
+        lines.append(f"- {r['ticker']}: {_fmt_aud(r['value_aud'])}, MER {_mer_txt}, return {_ret_txt}")
+    if _overlap["matches"]:
+        lines.append(
+            f"Overlap: {len(_overlap['matches'])} direct holding(s) also appear in an ETF's top-10 "
+            "(see the My ETFs tab for details)."
+        )
+    return "\n".join(lines)
+
+
+def _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses):
+    """Part 2b - the "My ETFs" tab: table -> cards -> overlap -> what-if,
+    per the spec's own ordering. Renders only when the active portfolio
+    holds >=1 ETF holding (kind == "ETF"); otherwise a single line."""
+    _lang = st.session_state.get("lang", "en")
+    _etf = lambda key, **fmt: i18n.t(f"portfolio.etfs.{key}", _lang, **fmt)
+
+    if not any((h.get("kind") or "STOCK").upper() == "ETF" for h in _holdings):
+        st.caption(_etf("empty"))
+        return
+
+    _etf_rows, _sleeve_totals, _direct_values = _etf_sleeve_rows(_holdings, _analyses)
+    _na = _etf("na")
+
+    # --- 1. Summary table -------------------------------------------------
+    st.markdown(f"##### {_etf('summary_title')}")
+    _table_rows = []
+    for r in sorted(_etf_rows, key=lambda r: r["value_aud"] or 0, reverse=True):
+        _table_rows.append({
+            _etf("col_ticker"): f"/deep-dive?ticker={r['ticker']}",
+            _etf("col_allocation"): (r["pct_of_sleeve"] * 100.0) if r["pct_of_sleeve"] is not None else None,
+            _etf("col_value"): _fmt_aud(r["value_aud"]),
+            _etf("col_mer"): f"{r['mer']:.2f}%" if r["mer"] is not None else _na,
+            _etf("col_return"): (f"{r['return_pa']:.1f}% ({r['return_pa_label']})"
+                                  if r["return_pa"] is not None else _na),
+            _etf("col_yield"): f"{r['yield_ttm']:.2f}%" if r["yield_ttm"] is not None else _na,
+            _etf("col_corr_sp500"): f"{r['corr_sp500']:.2f}" if r["corr_sp500"] is not None else _na,
+            _etf("col_corr_asx200"): f"{r['corr_asx200']:.2f}" if r["corr_asx200"] is not None else _na,
+            _etf("col_top_exposure"): r["top_exposure_line"] or _na,
+        })
+    st.dataframe(
+        pd.DataFrame(_table_rows), hide_index=True, use_container_width=True,
+        column_config={
+            _etf("col_ticker"): st.column_config.LinkColumn(
+                _etf("col_ticker"), display_text=r"ticker=(.+)$",
+                help="Open this fund's Deep Dive",
+            ),
+            _etf("col_allocation"): st.column_config.ProgressColumn(
+                _etf("col_allocation"), min_value=0.0, max_value=100.0, format="%.0f%%",
+            ),
+        },
+    )
+    _tot_ret = (f"{_sleeve_totals['blended_return_pa']:.1f}%"
+                if _sleeve_totals["blended_return_pa"] is not None else _na)
+    _tot_mer = (f"{_sleeve_totals['blended_mer']:.2f}%"
+                if _sleeve_totals["blended_mer"] is not None else _na)
+    _tot_corr_sp = (f"{_sleeve_totals['blended_corr_sp500']:.2f}"
+                    if _sleeve_totals["blended_corr_sp500"] is not None else _na)
+    _tot_corr_asx = (f"{_sleeve_totals['blended_corr_asx200']:.2f}"
+                     if _sleeve_totals["blended_corr_asx200"] is not None else _na)
+    _blended = _etf("blended_label")
+    st.caption(
+        f"**{_etf('totals_label')}**: {_fmt_aud(_sleeve_totals['value_aud'])} · "
+        f"{_blended} {_etf('col_mer')} {_tot_mer} · {_blended} {_etf('col_return')} {_tot_ret} · "
+        f"{_blended} {_etf('col_corr_sp500')} {_tot_corr_sp} · "
+        f"{_blended} {_etf('col_corr_asx200')} {_tot_corr_asx}"
+    )
+    st.caption(_etf("caption_return"))
+
+    # --- 2. Per-ETF cards ---------------------------------------------------
+    st.markdown(f"##### {_etf('cards_title')}")
+    for r in _etf_rows:
+        with st.container(border=True):
+            _c1, _c2 = st.columns([3, 2])
+            with _c1:
+                st.markdown(f"**{r['ticker']}** — {r['name']}")
+                _cat = r["category"] or _na
+                st.caption(f"{_etf('category_label')}: {_cat}")
+                st.markdown(
+                    f"[{_etf('issuer_link_label')}]({r['issuer_url']})  ·  "
+                    f"[{_etf('deep_dive_label')}](/deep-dive?ticker={r['ticker']})"
+                )
+                _mer_str = f"{r['mer']:.2f}%" if r["mer"] is not None else _na
+                _yield_str = f"{r['yield_ttm']:.2f}%" if r["yield_ttm"] is not None else _na
+                st.caption(f"{_etf('col_mer')} {_mer_str} · {_etf('col_yield')} {_yield_str}")
+                if r["top_holdings"]:
+                    st.markdown(f"**{_etf('top10_title')}**")
+                    _chip_html = "".join(
+                        f'<a href="/deep-dive?ticker={th["symbol"]}" style="text-decoration:none;">'
+                        f'<span style="display:inline-block;border:1px solid #1f3352;border-radius:999px;'
+                        f'padding:4px 10px;margin:3px 6px 3px 0;font-size:12.5px;color:#e6edf5;">'
+                        f'{th["symbol"]}'
+                        + (f" {th['weight']:.1f}%" if th.get("weight") is not None else "")
+                        + '</span></a>'
+                        for th in r["top_holdings"]
+                    )
+                    st.markdown(_chip_html, unsafe_allow_html=True)
+                    st.markdown(f"[{_etf('full_list_link')}]({r['issuer_url']})")
+                else:
+                    st.caption(_etf("no_top_holdings"))
+            with _c2:
+                if r["sector_weights"]:
+                    _labels = [etf_insights.sector_label(k) for k in r["sector_weights"]]
+                    _values = list(r["sector_weights"].values())
+                    _fig = _phe_pie(_labels, _values, _etf("sector_chart_title"))
+                    if _fig is not None:
+                        sdd_plotly_chart(_fig, key=f"etf_sector_pie_{_active_portfolio or 'all'}_{r['ticker']}")
+                else:
+                    st.caption(_etf("no_sector_data"))
+
+    # --- 3. Overlap panel -----------------------------------------------
+    st.markdown(f"##### {_etf('overlap_title')}")
+    _etf_holdings_for_overlap = {
+        r["ticker"]: (r["value_aud"] or 0.0, r["top_holdings"]) for r in _etf_rows
+    }
+    _overlap = etf_insights.compute_overlap(_direct_values, _etf_holdings_for_overlap)
+    if _overlap["matches"]:
+        for m in sorted(_overlap["matches"], key=lambda m: m["combined_value"], reverse=True):
+            st.markdown("- " + _etf(
+                "overlap_match", underlying=m["underlying"], direct=f"{m['direct_value']:,.0f}",
+                etf=m["etf"], weight=f"{m['weight_pct']:.1f}", indirect=f"{m['indirect_value']:,.0f}",
+                combined=f"{m['combined_value']:,.0f}",
+            ))
+    else:
+        st.caption(_etf("overlap_none"))
+    if _overlap["top5"]:
+        st.markdown(f"**{_etf('top5_title')}**")
+        for t in _overlap["top5"]:
+            st.markdown(f"- {t['underlying']}: {_fmt_aud(t['combined_value'])}")
+    st.caption(_etf("overlap_caption"))
+
+    # --- 4. What-if projector --------------------------------------------
+    with st.expander(_etf("whatif_title"), expanded=False):
+        _default_rate = _sleeve_totals["blended_return_pa"]
+        if _default_rate is None:
+            st.caption(_etf("whatif_no_rate"))
+            _default_rate = 7.0
+        _wc1, _wc2 = st.columns(2)
+        with _wc1:
+            _years = st.number_input(
+                _etf("whatif_horizon_label"), min_value=1, max_value=50, value=15, step=1,
+                key=f"etf_whatif_years_{_active_portfolio or 'all'}",
+            )
+        with _wc2:
+            _rate = st.number_input(
+                _etf("whatif_rate_label"), min_value=-50.0, max_value=50.0,
+                value=round(float(_default_rate), 1), step=0.5,
+                key=f"etf_whatif_rate_{_active_portfolio or 'all'}",
+            )
+        _sleeve_val = _sleeve_totals["value_aud"] or 0.0
+        _result = etf_insights.what_if_projection(_sleeve_val, _years, _rate)
+        if _result is not None:
+            st.markdown(_etf(
+                "whatif_result", rate=f"{_rate:.1f}", years=_years,
+                value=f"{_sleeve_val:,.0f}", result=f"{_result:,.0f}",
+            ))
+        st.caption(_etf("whatif_caption"))
+
+
 def _portfolio_ask_context(_holdings, _analyses):
     """Compact plain-text summary of THIS visitor's OWN holdings for the
     Ask box's system prompt - built fresh on every call from data
@@ -11120,6 +11431,15 @@ def _portfolio_ask_context(_holdings, _analyses):
         )
     if _price_missing:
         lines.append(f"(Live price unavailable right now for: {', '.join(_price_missing)})")
+    try:
+        _etf_summary = _etf_portfolio_ask_summary(_holdings, _analyses)
+    except Exception:
+        # Grounding-context extension must never break the whole Ask
+        # box if an ETF's data is unusually shaped - the rest of the
+        # context above is still useful on its own.
+        _etf_summary = ""
+    if _etf_summary:
+        lines.append(_etf_summary)
     return "\n".join(lines)
 
 

@@ -882,8 +882,73 @@ EN = {
     "portfolio.tab_overview": "\U0001F4CA Overview & P/L",
     "portfolio.tab_health": "\U0001FA7A Health & News",
     "portfolio.tab_progress": "\U0001F4C8 Progress",
+    "portfolio.tab_etfs": "\U0001F9FA My ETFs",
     "portfolio.tab_ask": "\U0001F4AC Ask",
     "portfolio.tab_alerts": "\U0001F514 My alerts",
+
+    "portfolio.etfs.empty": "No ETFs in this portfolio.",
+    "portfolio.etfs.summary_title": "ETF sleeve summary",
+    "portfolio.etfs.col_ticker": "Ticker",
+    "portfolio.etfs.col_allocation": "Allocation",
+    "portfolio.etfs.col_value": "Value",
+    "portfolio.etfs.col_mer": "MER",
+    "portfolio.etfs.col_return": "Return p.a.",
+    "portfolio.etfs.col_yield": "Yield (TTM)",
+    "portfolio.etfs.col_corr_sp500": "Corr. vs S&P 500",
+    "portfolio.etfs.col_corr_asx200": "Corr. vs ASX 200",
+    "portfolio.etfs.col_top_exposure": "Top exposure",
+    "portfolio.etfs.totals_label": "Sleeve total",
+    "portfolio.etfs.blended_label": "Blended",
+    "portfolio.etfs.caption_return": (
+        "* Historical total return from price + distributions, net of the "
+        "fund's internal fee - a described calculation from past data, "
+        "not a projection."
+    ),
+    "portfolio.etfs.cards_title": "Fund details",
+    "portfolio.etfs.sector_chart_title": "Sector weights",
+    "portfolio.etfs.top10_title": "Top 10 holdings",
+    "portfolio.etfs.full_list_link": "Full list at issuer →",
+    "portfolio.etfs.issuer_link_label": "Issuer page ↗",
+    "portfolio.etfs.deep_dive_label": "Deep Dive ↗",
+    "portfolio.etfs.category_label": "Category",
+    "portfolio.etfs.no_sector_data": "Sector weightings unavailable for this fund.",
+    "portfolio.etfs.no_top_holdings": "Top holdings unavailable for this fund.",
+    "portfolio.etfs.overlap_title": "Overlap with your direct holdings",
+    "portfolio.etfs.overlap_match": (
+        # Note: "A$" is written "A\\$" (backslash-escaped) rather than
+        # plain "A$" - three literal "$" in one st.markdown() string
+        # otherwise gets parsed as two paired LaTeX math delimiters by
+        # Streamlit's markdown-it + remark-math pipeline (the same bug
+        # documented at this file's _escape_for_markdown() call site in
+        # app.py - unsafe_allow_html does NOT suppress it, only a
+        # backslash escape does).
+        "⚠ {underlying} - held directly (A\\${direct}) and via {etf} "
+        "({weight}% weight, ≈A\\${indirect}) - combined ≈A\\${combined}"
+    ),
+    "portfolio.etfs.overlap_none": (
+        "No overlap found between your direct holdings and your ETFs' "
+        "published top-10s."
+    ),
+    "portfolio.etfs.top5_title": "Top 5 combined exposures",
+    "portfolio.etfs.overlap_caption": (
+        "Computed from each fund's published top-10 - approximate; a "
+        "described calculation, not a recommendation."
+    ),
+    "portfolio.etfs.whatif_title": "What-if projector",
+    "portfolio.etfs.whatif_horizon_label": "Years",
+    "portfolio.etfs.whatif_rate_label": "Assumed annual return %",
+    "portfolio.etfs.whatif_result": (
+        # Same "\\$" escaping as overlap_match above - two literal "$"
+        # in one markdown string otherwise renders as LaTeX math.
+        "At {rate}% p.a. for {years} years, your current A\\${value} ETF "
+        "sleeve would become approximately A\\${result}."
+    ),
+    "portfolio.etfs.whatif_no_rate": (
+        "Not enough historical return data to suggest a starting rate - "
+        "set one yourself."
+    ),
+    "portfolio.etfs.whatif_caption": "A what-if calculation at the rate you set - not a forecast.",
+    "portfolio.etfs.na": "—",
 }
 
 ES = {
@@ -1637,8 +1702,67 @@ ES = {
     "portfolio.tab_overview": "\U0001F4CA Resumen y P/L",
     "portfolio.tab_health": "\U0001FA7A Salud y noticias",
     "portfolio.tab_progress": "\U0001F4C8 Progreso",
+    "portfolio.tab_etfs": "\U0001F9FA Mis ETFs",
     "portfolio.tab_ask": "\U0001F4AC Preguntar",
     "portfolio.tab_alerts": "\U0001F514 Mis alertas",
+
+    "portfolio.etfs.empty": "No hay ETFs en esta cartera.",
+    "portfolio.etfs.summary_title": "Resumen del bloque de ETFs",
+    "portfolio.etfs.col_ticker": "Ticker",
+    "portfolio.etfs.col_allocation": "Asignación",
+    "portfolio.etfs.col_value": "Valor",
+    "portfolio.etfs.col_mer": "Comisión (MER)",
+    "portfolio.etfs.col_return": "Rentabilidad anual",
+    "portfolio.etfs.col_yield": "Rendimiento (TTM)",
+    "portfolio.etfs.col_corr_sp500": "Correl. vs S&P 500",
+    "portfolio.etfs.col_corr_asx200": "Correl. vs ASX 200",
+    "portfolio.etfs.col_top_exposure": "Mayor exposición",
+    "portfolio.etfs.totals_label": "Total del bloque",
+    "portfolio.etfs.blended_label": "Ponderado",
+    "portfolio.etfs.caption_return": (
+        "* Rentabilidad total histórica a partir del precio + "
+        "distribuciones, neta de la comisión interna del fondo - un "
+        "cálculo descrito a partir de datos pasados, no una proyección."
+    ),
+    "portfolio.etfs.cards_title": "Detalle de los fondos",
+    "portfolio.etfs.sector_chart_title": "Ponderación por sector",
+    "portfolio.etfs.top10_title": "Las 10 principales posiciones",
+    "portfolio.etfs.full_list_link": "Lista completa en el emisor →",
+    "portfolio.etfs.issuer_link_label": "Página del emisor ↗",
+    "portfolio.etfs.deep_dive_label": "Deep Dive ↗",
+    "portfolio.etfs.category_label": "Categoría",
+    "portfolio.etfs.no_sector_data": "Ponderación por sector no disponible para este fondo.",
+    "portfolio.etfs.no_top_holdings": "Principales posiciones no disponibles para este fondo.",
+    "portfolio.etfs.overlap_title": "Solapamiento con tus posiciones directas",
+    "portfolio.etfs.overlap_match": (
+        # Same "\\$" escaping as the EN template - see its comment.
+        "⚠ {underlying} - en posición directa (A\\${direct}) y a través de "
+        "{etf} (ponderación {weight}%, ≈A\\${indirect}) - combinado ≈A\\${combined}"
+    ),
+    "portfolio.etfs.overlap_none": (
+        "No se encontró solapamiento entre tus posiciones directas y las "
+        "10 principales publicadas de tus ETFs."
+    ),
+    "portfolio.etfs.top5_title": "Las 5 mayores exposiciones combinadas",
+    "portfolio.etfs.overlap_caption": (
+        "Calculado a partir de las 10 principales posiciones publicadas "
+        "de cada fondo - aproximado; un cálculo descrito, no una "
+        "recomendación."
+    ),
+    "portfolio.etfs.whatif_title": "Proyector \"qué pasaría si\"",
+    "portfolio.etfs.whatif_horizon_label": "Años",
+    "portfolio.etfs.whatif_rate_label": "Rentabilidad anual asumida %",
+    "portfolio.etfs.whatif_result": (
+        # Same "\\$" escaping as the EN template - see its comment.
+        "Al {rate}% anual durante {years} años, tu bloque de ETFs actual "
+        "de A\\${value} pasaría a ser aproximadamente A\\${result}."
+    ),
+    "portfolio.etfs.whatif_no_rate": (
+        "No hay suficientes datos históricos de rentabilidad para sugerir "
+        "una tasa de partida - fija una tú mismo."
+    ),
+    "portfolio.etfs.whatif_caption": "Un cálculo \"qué pasaría si\" a la tasa que fijes - no es una previsión.",
+    "portfolio.etfs.na": "—",
 }
 
 
