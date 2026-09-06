@@ -5455,13 +5455,67 @@ def _render_research_shelf(data, tickers, section_order, lang="en"):
                         # verdict/thesis paragraph would still stretch the
                         # WHOLE row to match it, since the row-stretch CSS
                         # above sizes every card to the tallest one.
+                        #
+                        # Addendum to Fix #5 (owner): the cut-off text must
+                        # be readable IN PLACE - a per-card "... more"/"less"
+                        # toggle (session-state keyed by ticker) swaps the
+                        # clamp on/off for THIS card only, no navigation and
+                        # no reflow of the other cards' own (still-clamped)
+                        # text. A CSS attribute selector (not a plain class
+                        # selector) is used for the button-as-link styling
+                        # because a ticker like "CSL.AX" contains a ".",
+                        # which isn't a valid bare CSS class-name character -
+                        # same reasoning as the sw_bridge_card/sw_trim_card
+                        # hooks added for fix #3b elsewhere in this file.
+                        # Streamlit itself sanitizes "." to "-" when it turns
+                        # a widget/container `key=` into its "st-key-..."
+                        # CSS class (confirmed by inspecting the rendered
+                        # DOM - key="rc_more_CSL.AX" becomes class
+                        # "st-key-rc_more_CSL-AX"), so the CSS selector below
+                        # must sanitize the ticker the same way or it never
+                        # matches. Every shelf ticker's only non-alphanumeric
+                        # character is this "." (see _rc_company_name/the
+                        # snapshot store - plain exchange-suffixed tickers),
+                        # so a plain dot replacement is sufficient here.
+                        _shelf_expand_key = f"rc_shelf_expanded_{t}"
+                        _shelf_expanded = st.session_state.get(_shelf_expand_key, False)
+                        _clamp_css = (
+                            "" if _shelf_expanded else
+                            "display:-webkit-box;-webkit-line-clamp:5;"
+                            "-webkit-box-orient:vertical;overflow:hidden;"
+                        )
                         st.markdown(
                             f"<div style='color:#c3d1e0;font-size:13.5px;line-height:1.55;"
-                            f"min-height:58px;display:-webkit-box;-webkit-line-clamp:5;"
-                            f"-webkit-box-orient:vertical;overflow:hidden;'>"
+                            f"min-height:58px;{_clamp_css}'>"
                             f"{_md_safe(_shelf_card_line)}</div>",
                             unsafe_allow_html=True,
                         )
+                        _t_css = t.replace(".", "-")
+                        st.markdown(
+                            f"""
+                            <style>
+                            div[class*="st-key-rc_more_{_t_css}"] button {{
+                                background: none !important; border: none !important;
+                                padding: 0 !important; color: #2dd4bf !important;
+                                font-size: 12px !important; font-weight: 600 !important;
+                                min-height: 0 !important; height: auto !important;
+                                box-shadow: none !important; text-decoration: none !important;
+                            }}
+                            div[class*="st-key-rc_more_{_t_css}"] button:hover {{
+                                color: #5eead4 !important; text-decoration: underline !important;
+                            }}
+                            div[class*="st-key-rc_more_{_t_css}"] {{ margin: -4px 0 6px; }}
+                            </style>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                        with st.container(key=f"rc_more_{t}"):
+                            _shelf_toggle_label = i18n.t(
+                                "research.card_less" if _shelf_expanded else "research.card_more", lang,
+                            )
+                            if st.button(_shelf_toggle_label, key=f"rc_more_btn_{t}"):
+                                st.session_state[_shelf_expand_key] = not _shelf_expanded
+                                st.rerun()
                         section_count = _rc_section_count(t, data, section_order)
                         has_verdict = _rc_verdict_text(t, data) is not None
                         # Post-batch polish (verifier finding, 6 Sep): a
