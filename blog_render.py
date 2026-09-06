@@ -654,9 +654,33 @@ header.site{border-bottom:1px solid #1f3352;padding:16px 0;
 header.site .wrap{max-width:1080px;display:flex;align-items:center;gap:26px;flex-wrap:wrap}
 .brand{font-size:21px;font-weight:800;color:#e6edf5;text-decoration:none}
 .brand .accent{color:#2dd4bf}
-nav.site{display:flex;gap:20px;flex-wrap:wrap;margin-left:auto}
+nav.site{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-left:auto}
 nav.site a{color:#8aa0b8;font-size:14px}
 nav.site a:hover{color:#e6edf5;text-decoration:none}
+/* Part 5 (site-wide slim nav): the "☰ More" dropdown is a bare
+   <details>/<summary> - no JS framework ships in this module, and
+   <details> needs none. summary's marker/outline reset + a small
+   floating panel is the whole "component". */
+nav.site details.nav-more{position:relative}
+nav.site details.nav-more summary{color:#8aa0b8;font-size:14px;cursor:pointer;
+  list-style:none}
+nav.site details.nav-more summary::-webkit-details-marker{display:none}
+nav.site details.nav-more summary:hover{color:#e6edf5}
+nav.site details.nav-more[open] summary{color:#e6edf5}
+nav.site .nav-more-panel{position:absolute;top:calc(100% + 10px);right:0;
+  background:#121f36;border:1px solid #1f3352;border-radius:10px;
+  padding:8px;display:flex;flex-direction:column;gap:2px;min-width:160px;
+  box-shadow:0 12px 28px rgba(0,0,0,.35);z-index:20}
+nav.site .nav-more-panel a{padding:7px 10px;border-radius:6px;white-space:nowrap}
+nav.site .nav-more-panel a:hover{background:rgba(45,212,191,.08);
+  color:#e6edf5;text-decoration:none}
+nav.site .nav-lang{color:#5b7290;font-size:13px;display:flex;align-items:center;gap:6px}
+nav.site .nav-lang a{color:#8aa0b8}
+nav.site .nav-lang a.active{color:#2dd4bf;font-weight:700}
+nav.site .nav-lang a:hover{color:#e6edf5}
+nav.site a.nav-signin{color:#2dd4bf;font-weight:600;border:1.5px solid #2dd4bf;
+  border-radius:8px;padding:5px 12px;font-size:13.5px}
+nav.site a.nav-signin:hover{background:#2dd4bf;color:#0b1220;text-decoration:none}
 main{padding:34px 0 10px}
 h1{font-size:40px;line-height:1.2;font-weight:800;margin:0 0 14px;letter-spacing:-.5px}
 h2{font-size:26px;line-height:1.3;font-weight:700;margin:38px 0 12px}
@@ -824,39 +848,132 @@ def _head(title, description, canonical, base_url, image=None,
     return "\n".join(tags)
 
 
-def _header_html(lang="en"):
-    """Español instruction, Part 2: lang="es" translates every nav label
-    and, where a real Spanish destination exists, points the link there
-    too - the four site_content.py pages get their /es/ twin, and the
-    interactive tools (Deep Dive/Scanner) get ?lang=es (server.py's
-    _STREAMLIT_ONLY_PARAMS now treats "lang" as forcing the Streamlit
-    app, so this actually opens in Spanish). /research has no query-
-    param scheme decided yet in this pass (Part 3's Rational Compounder
-    content translation isn't built) so it stays a plain English link
-    even in the Spanish header - deliberately, rather than promising a
-    Spanish page that isn't there."""
+# Mega-batch Part 5 (site-wide slim nav): the Streamlit tool pages that
+# have no /es/-prefixed twin route at all - their Spanish version is the
+# live Streamlit app itself in lang=es session state (server.py's
+# _STREAMLIT_ONLY_PARAMS forces the catch-all proxy whenever a "lang"
+# query param is present). "/" is included too: render_home() has no
+# lang param of its own (always English SEO copy), so its Spanish
+# version is likewise only reachable by forcing the Streamlit app.
+_TOOL_LANG_PARAM_PATHS = {"/", "/deep-dive", "/comparison", "/scanner", "/research", "/portfolio"}
+
+
+def _lang_toggle_links(path):
+    """Mega-batch Part 5 (site-wide slim nav): the header's new EN|ES
+    toggle needs the CURRENT page's own sibling in the other language,
+    not a generic site-wide link - a visitor reading /about in English
+    who taps "ES" should land on /es/about, not be bounced to the Spanish
+    home page. Rather than inventing a fourth translation scheme, this
+    reuses the three that already exist on the site:
+
+      1. A Streamlit tool page (_TOOL_LANG_PARAM_PATHS above) - Spanish
+         is the same URL plus ?lang=es, which forces the live Streamlit
+         app into its lang=es session state.
+      2. A real /es/<path> twin (the site_content.py pages - about,
+         methodology, privacy, how-we-use-ai - plus /api, /ai, /blog,
+         /calendar, /track-record) - Spanish is literally "/es" + path.
+      3. Already on an /es/... path - English is just that path with the
+         "/es" prefix removed.
+
+    Returns (en_url, es_url). path=None (a caller with no real per-page
+    sibling to offer - render_home, render_not_found, a blog post
+    without a published translation) falls back to "/" / "/?lang=es",
+    which at least always points somewhere real."""
+    if not path:
+        return "/", "/?lang=es"
+    if path == "/es" or path.startswith("/es/"):
+        _en = path[3:] or "/"
+        return _en, path
+    if path in _TOOL_LANG_PARAM_PATHS:
+        return path, f"{path}?lang=es"
+    return path, f"/es{path}"
+
+
+def _header_html(lang="en", path=None, lang_urls=None):
+    """Mega-batch Part 5 (site-wide slim nav, Option B): the ONE nav
+    every server-rendered page on the site shares - home, blog, the
+    static content pages (methodology/about/privacy/how-we-use-ai), the
+    four tool-landing SEO pages, track-record and calendar - since every
+    one of them is glued together through _page() calling this same
+    function (see this module's _page() docstring). Item set/order
+    matches _render_app_nav_items() in app.py exactly (that function's
+    own docstring has the full rationale): Deep Dive, Research, Scanner,
+    Compare, Portfolio, Blog, then a "☰ More" dropdown holding Calendar,
+    Methodology, About and Track record, then the EN|ES toggle and a
+    plain Sign in link.
+
+    The "☰ More" dropdown is a bare <details>/<summary> element (styled
+    in _CSS below) rather than a JS-built one - this module ships no JS
+    framework for a real dropdown component, and <details> needs none.
+
+    Sign in (mega-batch Part 5 scope decision): a server-rendered page
+    has no visibility into the Streamlit app's own session/login state
+    (they're different processes), so this is always a plain link to
+    /portfolio - the sign-in prompt itself lives there - rather than a
+    dynamic Sign in/out toggle. A user who is in fact already signed in
+    just lands straight on their portfolio, which is a fine outcome
+    either way.
+
+    lang="es" translates every label and, per _lang_toggle_links(),
+    points Deep Dive/Scanner/Research/Compare/Portfolio at their
+    Streamlit ?lang=es forcing param (Research now included - Part 4 of
+    this same batch shipped its full Spanish translation, so the old
+    "no Spanish research content yet" caveat this function used to carry
+    no longer applies) and Methodology at its real /es/methodology twin.
+
+    lang_urls, when given, overrides the derived pair outright - see
+    _page()'s own docstring (render_post's real per-post sibling)."""
+    _en_url, _es_url = lang_urls if lang_urls else _lang_toggle_links(path)
     if lang == "es":
-        return """
+        return f"""
 <header class="site"><div class="wrap">
   <a class="brand" href="/">Stocks<span class="accent">DeepDive</span></a>
   <nav class="site">
-    <a href="/blog">Blog</a>
-    <a href="/research">Rational Compounder</a>
     <a href="/deep-dive?lang=es">Deep Dive</a>
+    <a href="/research?lang=es">Investigación</a>
     <a href="/scanner?lang=es">Buscador</a>
-    <a href="/es/methodology">Cómo funcionan los puntajes</a>
+    <a href="/comparison?lang=es">Comparar</a>
+    <a href="/portfolio?lang=es">Cartera</a>
+    <a href="/es/blog">Blog</a>
+    <details class="nav-more">
+      <summary>☰ Más</summary>
+      <div class="nav-more-panel">
+        <a href="/es/calendar">Calendario</a>
+        <a href="/es/methodology">Metodología</a>
+        <a href="/es/about">Acerca de</a>
+        <a href="/es/track-record">Historial</a>
+      </div>
+    </details>
+    <span class="nav-lang">
+      <a href="{html.escape(_en_url)}">EN</a>&#124;<a href="{html.escape(_es_url)}" class="active">ES</a>
+    </span>
+    <a href="/portfolio?lang=es" class="nav-signin">Iniciar sesión</a>
   </nav>
 </div></header>
 """
-    return """
+    return f"""
 <header class="site"><div class="wrap">
   <a class="brand" href="/">Stocks<span class="accent">DeepDive</span></a>
   <nav class="site">
-    <a href="/blog">Blog</a>
-    <a href="/research">Rational Compounder</a>
     <a href="/deep-dive">Deep Dive</a>
+    <a href="/research">Research</a>
     <a href="/scanner">Scanner</a>
-    <a href="/methodology">How the scores work</a>
+    <a href="/comparison">Compare</a>
+    <a href="/portfolio">Portfolio</a>
+    <a href="/blog">Blog</a>
+    <details class="nav-more">
+      <summary>☰ More</summary>
+      <div class="nav-more-panel">
+        <a href="/calendar">Calendar</a>
+        <a href="/methodology">Methodology</a>
+        <a href="/about">About</a>
+        <a href="/track-record">Track record</a>
+      </div>
+    </details>
+    <span class="nav-lang">
+      <a href="{html.escape(_en_url)}" class="active">EN</a>&#124;<a href="{html.escape(_es_url)}">ES</a>
+    </span>
+    <a href="/portfolio" class="nav-signin">Sign in</a>
   </nav>
 </div></header>
 """
@@ -931,12 +1048,28 @@ def _footer_html(lang="en"):
 """
 
 
-def _page(head, body, lang="en"):
+def _page(head, body, lang="en", path=None, lang_urls=None):
     """lang="es" (Español instruction, Part 2) sets <html lang="es"> and
     renders the Spanish header/footer chrome - every existing caller
-    omits it and gets the exact English page as before."""
+    omits it and gets the exact English page as before.
+
+    path (mega-batch Part 5, site-wide slim nav): this page's own path
+    (no query string, e.g. "/about" or "/es/about"), passed through to
+    _header_html() so its EN|ES toggle can link to the RIGHT sibling page
+    instead of a generic site-wide default - see _lang_toggle_links()'s
+    own docstring for the exact per-path rules. Optional and omitted by
+    several existing callers (render_home/render_not_found have no real
+    ES sibling at all) - the toggle falls back to "/" / "/?lang=es" when
+    path is None, same as before this parameter existed.
+
+    lang_urls: an explicit (en_url, es_url) pair, used instead of
+    deriving one from `path` - render_post's own EN/ES sibling pair
+    (already computed there for hreflang, and not a shape
+    _lang_toggle_links() can derive - a post's Spanish twin lives at its
+    own unrelated slug, not at "/es" + this post's path) is the one
+    caller that needs this."""
     return (f"<!doctype html>\n<html lang=\"{lang}\">\n<head>\n{head}\n</head>\n"
-            f"<body>\n{_header_html(lang)}\n{body}\n{_footer_html(lang)}\n</body>\n</html>")
+            f"<body>\n{_header_html(lang, path, lang_urls)}\n{body}\n{_footer_html(lang)}\n</body>\n</html>")
 
 
 # -----------------------------------
@@ -1154,7 +1287,7 @@ def render_index(posts, base_url, page_title=None, description=None,
     head = _head(title, desc, canonical, base_url, noindex=noindex,
                  json_ld=_index_json_ld(posts, base_url),
                  hreflang_alternates=hreflang_alternates)
-    return _page(head, body, lang=lang)
+    return _page(head, body, lang=lang, path=("/es/blog" if lang == "es" else "/blog"))
 
 
 # -----------------------------------
@@ -1460,7 +1593,17 @@ def render_post(post, base_url, prev_post=None, next_post=None,
         json_ld=_post_json_ld(post, base_url),
         hreflang_alternates=hreflang_alternates,
     )
-    return _page(head, body, lang=post_lang)
+    # Part 5's EN|ES header toggle: a real per-post sibling pair when one
+    # is published (same pair hreflang_alternates above already carries),
+    # else a sane fallback to that language's blog index - a post with no
+    # translation has no per-post Spanish URL to send the toggle to.
+    _post_lang_urls = (
+        (post_url(base_url, _en_post["slug"]), post_url(base_url, _es_post["slug"]))
+        if sibling_published else None
+    )
+    return _page(head, body, lang=post_lang,
+                 path=("/es/blog" if post_lang == "es" else "/blog"),
+                 lang_urls=_post_lang_urls)
 
 
 _HOME_CSS = """
@@ -1715,7 +1858,7 @@ document.getElementById('tickerform').addEventListener('submit', function (ev) {
         description, base_url + "/", base_url, json_ld=json_ld,
         extra_meta=f"<style>{_HOME_CSS}</style>",
     )
-    return _page(head, body).replace("<body>", '<body class="home">', 1)
+    return _page(head, body, path="/").replace("<body>", '<body class="home">', 1)
 
 
 # -----------------------------------
@@ -1959,7 +2102,7 @@ def render_tool_landing(path, base_url, coverage=None):
     head = _head(f"{spec['title']} | {SITE_NAME}", spec["description"],
                  canonical, base_url, json_ld=json_ld,
                  extra_meta=f"<style>{_HOME_CSS}</style>")
-    return _page(head, body).replace("<body>", '<body class="home">', 1)
+    return _page(head, body, path=path).replace("<body>", '<body class="home">', 1)
 
 
 def render_content_page(title, markdown_text, description, path, base_url,
@@ -2033,7 +2176,7 @@ def render_content_page(title, markdown_text, description, path, base_url,
     })
     head = _head(f"{title} | {SITE_NAME}", description, canonical, base_url,
                  json_ld=json_ld, hreflang_alternates=hreflang_alternates)
-    return _page(head, body, lang=lang)
+    return _page(head, body, lang=lang, path=path)
 
 
 def render_not_found(base_url, message="That page doesn't exist.", lang="en"):

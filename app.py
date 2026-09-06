@@ -1176,21 +1176,59 @@ st.markdown(
         border-color: #2dd4bf !important;
     }
     /* Nav buttons: keep the (nowrap) label horizontally centred even when
-       it's as wide as the button - otherwise long labels like "Rational
-       Compounder Analysis" hug the right edge. */
-    [class*="st-key-nav_research"] button,
-    [class*="st-key-nav_comparison"] button,
-    [class*="st-key-nav_scanner"] button {
+       it's as wide as the button - otherwise a label hugs the right edge.
+       Matches by the "nav_" key prefix every _render_app_nav_items() nav
+       button uses (row layout, stack layout, and the "More" popover's own
+       buttons alike), rather than naming each item, so it keeps applying
+       automatically as nav items are added/renamed. */
+    [class*="st-key-nav_"] button {
         display: flex !important;
         justify-content: center !important;
         padding-left: 0.5rem !important;
         padding-right: 0.5rem !important;
     }
-    [class*="st-key-nav_research"] button p,
-    [class*="st-key-nav_comparison"] button p,
-    [class*="st-key-nav_scanner"] button p {
+    [class*="st-key-nav_"] button p {
         text-align: center !important;
     }
+    /* Part 5 (site-wide slim nav): the "☰ More" popover's own trigger
+       button, and the Blog/Track record same-tab anchor pills
+       (_render_app_nav_items - Blog and Track record have no Streamlit
+       st.Page, see that function's own docstring, so they're plain <a>
+       tags rather than st.button) - both styled to match the ordinary
+       .stButton pill above so the whole nav row reads as one consistent
+       set of controls. */
+    [class*="st-key-nav_more_pop"] button,
+    [class*="st-key-nav_uc_more_pop"] button {
+        border-radius: 10px !important;
+        border: 1.5px solid #2dd4bf !important;
+        color: #2dd4bf !important;
+        background-color: rgba(45, 212, 191, 0.07) !important;
+        font-weight: 600 !important;
+        padding: 0.55rem 1.1rem !important;
+        transition: all 0.15s ease !important;
+    }
+    [class*="st-key-nav_more_pop"] button:hover,
+    [class*="st-key-nav_uc_more_pop"] button:hover {
+        background-color: #2dd4bf !important;
+        color: #ffffff !important;
+        border-color: #2dd4bf !important;
+    }
+    .sdd-navpill {
+        display: flex; align-items: center; justify-content: center;
+        width: 100%; box-sizing: border-box; height: 100%;
+        border-radius: 10px; border: 1.5px solid #2dd4bf;
+        color: #2dd4bf !important; background-color: rgba(45, 212, 191, 0.07);
+        font-weight: 600; font-size: 14px; white-space: nowrap;
+        padding: 0.55rem 1.1rem; text-decoration: none !important;
+        transition: all 0.15s ease; box-sizing: border-box;
+    }
+    .sdd-navpill:hover {
+        background-color: #2dd4bf; color: #ffffff !important;
+        border-color: #2dd4bf;
+    }
+    /* layout="stack" (ultra_compact's own "☰" popover): pills read as a
+       vertical list there, not squeezed into one row's worth of width. */
+    div[data-testid="stPopover"] .sdd-navpill { margin-bottom: 0.5rem; }
     .stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"],
     .stButton > button[kind="primaryFormSubmit"], .stFormSubmitButton > button[kind="primaryFormSubmit"] {
         background-color: #2dd4bf !important;
@@ -1343,12 +1381,25 @@ st.markdown(
       color:#2dd4bf; margin-top:34px; }
     .sdd-h2 { font-size:25px; letter-spacing:-.3px; margin:8px 0 6px; font-weight:700; color:#e6edf5; }
     .sdd-secsub { color:#8aa0b8; font-size:14.5px; max-width:640px; line-height:1.5; }
-    .sdd-cards5 { display:grid; grid-template-columns:repeat(5,1fr); gap:14px; margin-top:22px; }
+    /* Part 5 (home tiles, Option C): renamed from the old 5-card
+       .sdd-cards5 grid (Deep Dive dropped - reached from the hero search
+       box instead - leaving 4: Research/Scanner/Compare/Portfolio). */
+    .sdd-tiles4 { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-top:22px; }
     .sdd-feat { background:#121f36; border:1px solid #1f3352; border-radius:14px; padding:18px 20px;
-      text-decoration:none !important; display:block; transition:border-color .15s; }
-    .sdd-feat:hover { border-color:#14b8a6; }
+      text-decoration:none !important; display:block; position:relative;
+      transition:border-color .15s, transform .15s, box-shadow .15s; }
+    .sdd-feat:hover { border-color:#14b8a6; transform:translateY(-3px);
+      box-shadow:0 10px 24px rgba(0,0,0,.28); }
     .sdd-feat .ic { width:38px; height:38px; border-radius:9px; background:rgba(45,212,191,.1);
       border:1px solid rgba(45,212,191,.25); display:flex; align-items:center; justify-content:center; font-size:18px; }
+    .sdd-feat-badge { position:absolute; top:14px; right:16px; font-size:9.5px; font-weight:800;
+      letter-spacing:.6px; color:#2dd4bf; background:rgba(45,212,191,.12);
+      border:1px solid rgba(45,212,191,.35); border-radius:999px; padding:2px 8px; }
+    .sdd-feat-stat { margin-top:12px; padding-top:10px; border-top:1px solid #1f3352;
+      font-size:11.5px; font-family:ui-monospace,Menlo,monospace; color:#8aa0b8; }
+    .sdd-feat-arrow { position:absolute; bottom:18px; right:20px; color:#5b7290; font-size:15px;
+      transition:transform .15s, color .15s; }
+    .sdd-feat:hover .sdd-feat-arrow { color:#2dd4bf; transform:translateX(3px); }
     .sdd-feat h3 { font-size:16px; margin:12px 0 8px; color:#e6edf5; }
     .sdd-feat p { color:#8aa0b8; font-size:13.3px; line-height:1.55; margin:0; }
     .sdd-steps { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:22px; }
@@ -1380,7 +1431,7 @@ st.markdown(
     .sdd-disclaimer { border-top:1px solid #1f3352; padding-top:14px; max-width:900px; }
     .sdd-disclaimer b { color:#8aa0b8; }
     @media (max-width:900px) {
-      .sdd-cards5, .sdd-covgrid { grid-template-columns:1fr 1fr; }
+      .sdd-tiles4, .sdd-covgrid { grid-template-columns:1fr 1fr; }
       .sdd-steps { grid-template-columns:1fr; }
       .sdd-strip { grid-template-columns:1fr 1fr; }
       .sdd-h1 { font-size:30px; }
@@ -1406,12 +1457,12 @@ st.markdown(
         max-width: 100vw;
       }
       body { overscroll-behavior-x: none; }
-      /* The existing @media(900px) rule above only takes .sdd-cards5 /
+      /* The existing @media(900px) rule above only takes .sdd-tiles4 /
          .sdd-covgrid / .sdd-strip down to 2 columns - fine at tablet
          width, still a squeeze at phone width (each card down to
          roughly half the already-narrow viewport). One more column at
          this breakpoint. */
-      .sdd-cards5, .sdd-covgrid, .sdd-strip { grid-template-columns:1fr; }
+      .sdd-tiles4, .sdd-covgrid, .sdd-strip { grid-template-columns:1fr; }
       /* st.columns() does NOT auto-stack at this width in this Streamlit
          version (verified: stHorizontalBlock stays flex-direction:row down
          to 390px) - every ratio-based column layout on the site (the
@@ -2219,7 +2270,106 @@ def _render_watchlist_bulk_import():
                     st.rerun()
 
 
-def _render_header(compact, page_label=None, ultra_compact=False):
+def _render_app_nav_items(lang, current=None, key_prefix="nav", layout="row"):
+    """Mega-batch Part 5 (site-wide slim nav, Option B): the ONE nav-item
+    list shared by every Streamlit-rendered nav surface - _render_header's
+    ultra_compact popover, its compact inline row, and page_home()'s own
+    nav row. (blog_render._header_html carries the separate,
+    server-rendered twin of this same nav for pages FastAPI renders
+    directly - see that function's own docstring.)
+
+    Item set/order per the spec: Deep Dive, Research, Scanner, Compare,
+    Portfolio in the primary row; Blog next to them; Calendar demoted out
+    of the primary row into a "More" popover alongside Methodology and
+    About; Track record also in "More". Blog and Track record have no
+    Streamlit st.Page at all (see the PG_* registry below) - FastAPI/
+    blog_render.py serves both directly - so they render as same-tab raw
+    `<a target="_self">` anchors styled to match st.button via the
+    .sdd-navpill CSS class, exactly the existing cross-stack navigation
+    convention the home page's sdd-feat cards already use, rather than
+    st.switch_page (not applicable - no st.Page object exists for them)
+    or st.link_button (rejected: it always opens a new tab with no target
+    override, which would be the one inconsistent link in this whole row).
+
+    current: which item (if any) is the page currently being viewed, as
+    one of "deep_dive"/"research"/"scanner"/"comparison"/"portfolio"/
+    "calendar"/"methodology"/"about" - that item's button renders
+    type="primary" (solid-filled) instead of the default outlined pill, so
+    the active page is visually highlighted. None on pages that aren't
+    themselves a nav item (Home).
+
+    layout="row": the normal inline row (used in _render_header's compact
+    branch and by page_home()) - Deep Dive..Portfolio and Blog as
+    same-width-as-label columns, then one "☰ More" st.popover column
+    holding Calendar/Methodology/About/Track record.
+
+    layout="stack": a flat vertical list of EVERY item, Deep Dive through
+    Track record, with no nested "More" popover. Used only inside
+    _render_header's ultra_compact branch, where the whole nav is already
+    tucked into that branch's own single "☰" popover - Streamlit doesn't
+    support (and it would be confusing UX regardless) nesting a second
+    popover inside a popover, so "stack" flattens rather than nests."""
+    _primary_items = [
+        ("deep_dive", i18n.t("nav.deep_dive", lang), PG_DEEP_DIVE),
+        ("research", i18n.t("nav.research", lang), PG_RESEARCH),
+        ("scanner", i18n.t("nav.scanner", lang), PG_SCANNER),
+        ("comparison", i18n.t("nav.comparison", lang), PG_COMPARISON),
+        ("portfolio", i18n.t("nav.portfolio", lang), PG_PORTFOLIO),
+    ]
+    _more_items = [
+        ("calendar", i18n.t("nav.calendar", lang), PG_RESULTS_CALENDAR),
+        ("methodology", i18n.t("nav.methodology", lang), PG_METHODOLOGY),
+        ("about", i18n.t("nav.about", lang), PG_ABOUT),
+    ]
+
+    def _page_button(_id, _label, _page):
+        # Signed-in-only items (Portfolio) still navigate unconditionally -
+        # the destination page itself shows the sign-in prompt when nobody
+        # is logged in, so this button never needs to check auth state
+        # first (same rule the old inline nav row already followed).
+        if st.button(
+            _label, use_container_width=True, key=f"{key_prefix}_{_id}",
+            type="primary" if current == _id else "secondary",
+        ):
+            st.switch_page(_page)
+
+    def _anchor_pill(_label, _href):
+        st.markdown(
+            f'<a href="{_href}" target="_self" class="sdd-navpill">'
+            f'{html.escape(_label)}</a>',
+            unsafe_allow_html=True,
+        )
+
+    if layout == "stack":
+        for _id, _label, _page in _primary_items:
+            _page_button(_id, _label, _page)
+        _anchor_pill(i18n.t("nav.blog", lang), "/blog")
+        for _id, _label, _page in _more_items:
+            _page_button(_id, _label, _page)
+        _anchor_pill(i18n.t("nav.track_record", lang), "/track-record")
+        return
+
+    _blog_label = i18n.t("nav.blog", lang)
+    _more_label = f"☰ {i18n.t('nav.more', lang)}"
+    _widths = (
+        [len(_label) + 6 for _, _label, _ in _primary_items]
+        + [len(_blog_label) + 6, len(_more_label) + 8]
+    )
+    _cols = st.columns(_widths, gap="small")
+    for _col, (_id, _label, _page) in zip(_cols, _primary_items):
+        with _col:
+            _page_button(_id, _label, _page)
+    with _cols[len(_primary_items)]:
+        _anchor_pill(_blog_label, "/blog")
+    with _cols[-1]:
+        with st.popover(_more_label, use_container_width=True,
+                         key=f"{key_prefix}_more_pop"):
+            for _id, _label, _page in _more_items:
+                _page_button(_id, _label, _page)
+            _anchor_pill(i18n.t("nav.track_record", lang), "/track-record")
+
+
+def _render_header(compact, page_label=None, ultra_compact=False, current=None):
     _capture_first_src()
     _lang = st.session_state.get("lang", "en")
     _render_tape()
@@ -2298,16 +2448,7 @@ def _render_header(compact, page_label=None, ultra_compact=False):
                     )
         with _uc_nav_col:
             with st.popover("☰", key="dd_hero_nav_popover"):
-                _uc_nav_buttons = [
-                    (i18n.t("nav.research", _lang), "nav_research_uc", PG_RESEARCH),
-                    (i18n.t("nav.comparison", _lang), "nav_comparison_uc", PG_COMPARISON),
-                    (i18n.t("nav.scanner", _lang), "nav_scanner_uc", PG_SCANNER),
-                    (i18n.t("nav.calendar", _lang), "nav_results_calendar_uc", PG_RESULTS_CALENDAR),
-                    (i18n.t("nav.portfolio", _lang), "nav_portfolio_uc", PG_PORTFOLIO),
-                ]
-                for _uc_label, _uc_key, _uc_page in _uc_nav_buttons:
-                    if st.button(_uc_label, use_container_width=True, key=_uc_key):
-                        st.switch_page(_uc_page)
+                _render_app_nav_items(_lang, current=current, key_prefix="nav_uc", layout="stack")
         if _searched:
             _dispatch_search(_search_text)
         return
@@ -2378,26 +2519,9 @@ def _render_header(compact, page_label=None, ultra_compact=False):
     # centers its label inside that box by default, so a column sized
     # close to the label's own width is what makes the pill look tightly
     # fitted and centered.
-    _bsp1, _bmid, _bsp2 = st.columns([3, 14, 3])
+    _bsp1, _bmid, _bsp2 = st.columns([2, 16, 2])
     with _bmid:
-        _nav_buttons = [
-            (i18n.t("nav.research", _lang), "nav_research", PG_RESEARCH),
-            (i18n.t("nav.comparison", _lang), "nav_comparison", PG_COMPARISON),
-            (i18n.t("nav.scanner", _lang), "nav_scanner", PG_SCANNER),
-            # Services batch 2, Part 4 (2026-09-01): results calendar -
-            # added right next to Scanner per the spec.
-            (i18n.t("nav.calendar", _lang), "nav_results_calendar", PG_RESULTS_CALENDAR),
-            (i18n.t("nav.portfolio", _lang), "nav_portfolio", PG_PORTFOLIO),
-        ]
-        _nav_widths = [len(_label) + 6 for _label, _key, _page in _nav_buttons]
-        _nav_cols = st.columns(_nav_widths, gap="small")
-        for _col, (_label, _key, _page) in zip(_nav_cols, _nav_buttons):
-            with _col:
-                # Signed-in-only for My Portfolio - page_portfolio() itself
-                # shows the sign-in prompt when nobody's logged in, so this
-                # button never needs to check auth state before navigating.
-                if st.button(_label, use_container_width=True, key=_key):
-                    st.switch_page(_page)
+        _render_app_nav_items(_lang, current=current, key_prefix="nav", layout="row")
 
     if _searched:
         _dispatch_search(_search_text)
@@ -4751,7 +4875,7 @@ def _render_cp_section(ticker, section_label, data):
 
 
 def page_research():
-    _render_header(compact=True, page_label="Rational Compounder Analysis")
+    _render_header(compact=True, page_label="Rational Compounder Analysis", current="research")
 
     # Article-arrival welcome banner: shown only to visitors who arrived
     # via a src= link (an article) and haven't dismissed it yet this
@@ -4922,6 +5046,50 @@ def _home_top5_by_country():
     return by_country
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def _home_research_stat():
+    """Part 5 home tile (Option C): live "{count} companies · latest:
+    {ticker}" stat for the Hand-built Research tile. Source: the same
+    compounder_data.json _load_compounder_data() already parses for the
+    Research page - {ticker: {"industry", "ceo", "row"}, ...}, "row"
+    being that ticker's row number in the source Excel sheet (see
+    build_compounder_data.py). There's no true chronological field in
+    this schema (no "date added"), so the ticker with the highest "row"
+    is the best available proxy for "most recently added" - rows are
+    only ever appended to, never renumbered, as new companies are typed
+    into the sheet. Returns None if compounder_data.json isn't present
+    yet (fresh volume, nothing built) - caller falls back to no stat
+    line rather than a broken one."""
+    data = _load_compounder_data()
+    tickers = (data or {}).get("tickers") or {}
+    if not tickers:
+        return None
+    latest = max(tickers.items(), key=lambda kv: (kv[1] or {}).get("row") or 0)[0]
+    return {"count": len(tickers), "latest": latest}
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _home_scanner_stat():
+    """Part 5 home tile (Option C): live "{count} stocks · {universes}
+    universes" stat for the Stock Scanner tile. Universe count is a
+    static sum of scanner_engine's own AUSTRALIA_UNIVERSES/USA_UNIVERSES
+    constants (8 + 8 = 16, matching the mock's own "16 universes" number
+    exactly - zero computation, so it self-updates if a universe is ever
+    added/removed from those lists). Stock count is the number of
+    distinct tickers snapshot_store has ever scanned - the same local,
+    already-cached source _home_top5_by_country() reads, so this adds no
+    new network call - rounded DOWN to the nearest 100 with a "+" suffix
+    so the displayed number doesn't need touching for ordinary day-to-day
+    scan churn (e.g. an actual 2,147 displays as "2,100+")."""
+    _n_universes = len(scanner_engine.AUSTRALIA_UNIVERSES) + len(scanner_engine.USA_UNIVERSES)
+    try:
+        _n_stocks = len(snapshot_store.all_public_rows())
+    except Exception:
+        _n_stocks = 0
+    _rounded = (_n_stocks // 100) * 100
+    return {"count": f"{_rounded:,}+" if _rounded else "0", "universes": _n_universes}
+
+
 def page_home():
     # page_home renders its own header (view badge + account bar) instead
     # of calling _render_header, so the src capture + view-count bump that
@@ -4956,15 +5124,20 @@ def page_home():
         lang=st.session_state.get("lang", "en"),
     )
 
-    # top row: logo
-    st.markdown(
-        """
+    # top row: logo + site-wide nav (Part 5, Option B) - Home isn't itself
+    # a nav item, so current=None highlights nothing here.
+    _navrow_logo_col, _navrow_nav_col = st.columns([2, 8], vertical_alignment="center")
+    with _navrow_logo_col:
+        st.markdown(
+            """
 <div class='sdd-navrow'>
   <span class='sdd-logo'>Stocks<span class='accent'>DeepDive</span></span>
 </div>
 """,
-        unsafe_allow_html=True,
-    )
+            unsafe_allow_html=True,
+        )
+    with _navrow_nav_col:
+        _render_app_nav_items(_home_lang, current=None, key_prefix="nav_home", layout="row")
 
     hero_l, hero_r = st.columns([11, 10], gap="large")
     with hero_l:
@@ -5021,70 +5194,69 @@ def page_home():
     # of waiting on hero_r's height.
     _mood_box = hero_l.container()
 
-    # ---- feature cards ----
+    # ---- feature tiles (Part 5, Option C) ----
+    # Four tiles - Deep Dive dropped (it's reached from the hero search box
+    # above, not a separate tile) - each pairing fixed copy with a LIVE
+    # stat line computed from local data (_home_research_stat/
+    # _home_scanner_stat/len(_PORTFOLIO_TAB_I18N_KEYS) - no new network
+    # call, same rule every stat source in this file already follows).
+    # Compare has no stat per the spec (a comparison isn't a fixed
+    # inventory the way "N companies" or "N stocks" is).
     _tk = lambda key: i18n.t(f"home.toolkit.{key}", _home_lang)
-    if _factual():
-        st.markdown(
-            f"""
+    _tl = lambda key, **kw: i18n.t(f"home.tiles.{key}", _home_lang, **kw)
+    _secsub = _tk("secsub_factual") if _factual() else _tk("secsub_signal")
+    _free_badge = html.escape(_tl("free_badge"))
+
+    _research_stat = _home_research_stat()
+    _research_stat_html = (
+        f"<div class='sdd-feat-stat'>{_tl('research_stat', count=_research_stat['count'], latest=html.escape(_research_stat['latest']))}</div>"
+        if _research_stat else ""
+    )
+    _scanner_stat = _home_scanner_stat()
+    _scanner_stat_html = (
+        f"<div class='sdd-feat-stat'>{_tl('scanner_stat', count=_scanner_stat['count'], universes=_scanner_stat['universes'])}</div>"
+        if _scanner_stat else ""
+    )
+    _portfolio_stat_html = (
+        f"<div class='sdd-feat-stat'>{_tl('portfolio_stat', count=len(_PORTFOLIO_TAB_I18N_KEYS))}</div>"
+    )
+
+    st.markdown(
+        f"""
 <div class='sdd-kicker'>{_tk('kicker')}</div>
 <div class='sdd-h2'>{_tk('h2')}</div>
-<div class='sdd-secsub'>{_tk('secsub_factual')}</div>
-<div class='sdd-cards5'>
-  <a class='sdd-feat' href='/deep-dive' target='_self'>
-    <div class='ic'>&#128269;</div><h3>{_tk('card1_title')}</h3>
-    <p>{_tk('card1_desc_factual')}</p>
-  </a>
-  <a class='sdd-feat' href='/comparison' target='_self'>
-    <div class='ic'>&#9878;&#65039;</div><h3>{_tk('card2_title')}</h3>
-    <p>{_tk('card2_desc_factual')}</p>
+<div class='sdd-secsub'>{_secsub}</div>
+<div class='sdd-tiles4'>
+  <a class='sdd-feat' href='/research' target='_self'>
+    <span class='sdd-feat-badge'>{_free_badge}</span>
+    <div class='ic'>&#128218;</div><h3>{_tl('research_title')}</h3>
+    <p>{_tl('research_desc')}</p>
+    {_research_stat_html}
+    <span class='sdd-feat-arrow'>&#8594;</span>
   </a>
   <a class='sdd-feat' href='/scanner' target='_self'>
-    <div class='ic'>&#128225;</div><h3>{_tk('card3_title')}</h3>
-    <p>{_tk('card3_desc_factual')}</p>
+    <span class='sdd-feat-badge'>{_free_badge}</span>
+    <div class='ic'>&#128225;</div><h3>{_tl('scanner_title')}</h3>
+    <p>{_tl('scanner_desc')}</p>
+    {_scanner_stat_html}
+    <span class='sdd-feat-arrow'>&#8594;</span>
   </a>
-  <a class='sdd-feat' href='/research' target='_self'>
-    <div class='ic'>&#128218;</div><h3>{_tk('card4_title')}</h3>
-    <p>{_tk('card4_desc_factual')}</p>
+  <a class='sdd-feat' href='/comparison' target='_self'>
+    <span class='sdd-feat-badge'>{_free_badge}</span>
+    <div class='ic'>&#9878;&#65039;</div><h3>{_tl('compare_title')}</h3>
+    <p>{_tl('compare_desc')}</p>
+    <span class='sdd-feat-arrow'>&#8594;</span>
   </a>
   <a class='sdd-feat' href='/portfolio' target='_self'>
-    <div class='ic'>&#128188;</div><h3>{_tk('card5_title')}</h3>
-    <p>{_tk('card5_desc_factual')}</p>
+    <div class='ic'>&#128188;</div><h3>{_tl('portfolio_title')}</h3>
+    <p>{_tl('portfolio_desc')}</p>
+    {_portfolio_stat_html}
+    <span class='sdd-feat-arrow'>&#8594;</span>
   </a>
 </div>
 """,
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            f"""
-<div class='sdd-kicker'>{_tk('kicker')}</div>
-<div class='sdd-h2'>{_tk('h2')}</div>
-<div class='sdd-secsub'>{_tk('secsub_signal')}</div>
-<div class='sdd-cards5'>
-  <a class='sdd-feat' href='/deep-dive' target='_self'>
-    <div class='ic'>&#128269;</div><h3>{_tk('card1_title')}</h3>
-    <p>{_tk('card1_desc_signal')}</p>
-  </a>
-  <a class='sdd-feat' href='/comparison' target='_self'>
-    <div class='ic'>&#9878;&#65039;</div><h3>{_tk('card2_title')}</h3>
-    <p>{_tk('card2_desc_signal')}</p>
-  </a>
-  <a class='sdd-feat' href='/scanner' target='_self'>
-    <div class='ic'>&#128225;</div><h3>{_tk('card3_title')}</h3>
-    <p>{_tk('card3_desc_signal')}</p>
-  </a>
-  <a class='sdd-feat' href='/research' target='_self'>
-    <div class='ic'>&#128218;</div><h3>{_tk('card4_title')}</h3>
-    <p>{_tk('card4_desc_signal')}</p>
-  </a>
-  <a class='sdd-feat' href='/portfolio' target='_self'>
-    <div class='ic'>&#128188;</div><h3>{_tk('card5_title')}</h3>
-    <p>{_tk('card5_desc_signal')}</p>
-  </a>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
+        unsafe_allow_html=True,
+    )
 
     # AI-readiness roadmap Phase 6: natural-language screening teaser -
     # a new, self-contained section (nothing above/below it changed) that
@@ -6864,7 +7036,7 @@ def page_deep_dive():
         (st.query_params.get("ticker") or "").strip()
         or st.session_state.get("dd_result")
     )
-    _render_header(compact=True, page_label="Deep Dive", ultra_compact=_dd_ticker_landing)
+    _render_header(compact=True, page_label="Deep Dive", ultra_compact=_dd_ticker_landing, current="deep_dive")
     _dd = st.session_state.get("dd_result")
 
     # Shareable URLs: /deep-dive?ticker=CSL.AX runs the analysis directly,
@@ -9050,7 +9222,7 @@ def _consume_pending_nl_screen_query():
 
 
 def page_scanner():
-    _render_header(compact=True, page_label="Scanner")
+    _render_header(compact=True, page_label="Scanner", current="scanner")
     _bump_page_view("scanner")
     _consume_pending_nl_screen_query()
     _scan_lang = st.session_state.get("lang", "en")
@@ -9233,7 +9405,7 @@ def page_results_calendar():
     two filters a signed-in, interactive page can offer that the plain
     public /calendar page can't: "My tickers" (needs a signed-in email)
     and "Universe"."""
-    _render_header(compact=True, page_label="Results Calendar")
+    _render_header(compact=True, page_label="Results Calendar", current="calendar")
     _bump_page_view("results_calendar")
     st.markdown("#### Results Calendar")
     st.caption(
@@ -9299,7 +9471,7 @@ def page_results_calendar():
 
 
 def page_comparison():
-    _render_header(compact=True, page_label="Comparison")
+    _render_header(compact=True, page_label="Comparison", current="comparison")
     _bump_page_view("comparison")
 
     if not _factual():
@@ -11122,8 +11294,22 @@ def _render_portfolio_switcher(email):
     return _active
 
 
+# Part 5 (home tiles, Option C): single source of truth for "how many tools
+# does the Portfolio page have" - the mega-batch mock's own home-tile copy
+# said "8 tools inside", but the page has grown two tabs since that mock
+# was drawn (ETFs and Stress Test, Parts 2-3 of this same batch), so it's
+# now 9. Deriving both the st.tabs() call below AND the home tile's live
+# stat from len() of this one list means the displayed count can never go
+# stale like that again, no matter how many more tabs get added later.
+_PORTFOLIO_TAB_I18N_KEYS = [
+    "portfolio.tab_holdings", "portfolio.tab_income", "portfolio.tab_overview",
+    "portfolio.tab_health", "portfolio.tab_progress", "portfolio.tab_etfs",
+    "portfolio.tab_stress", "portfolio.tab_ask", "portfolio.tab_alerts",
+]
+
+
 def page_portfolio():
-    _render_header(compact=True, page_label="Portfolio")
+    _render_header(compact=True, page_label="Portfolio", current="portfolio")
     _bump_page_view("portfolio")
     _pf_lang = st.session_state.get("lang", "en")
 
@@ -11169,11 +11355,7 @@ def page_portfolio():
 
     (_tab_holdings, _tab_income, _tab_overview, _tab_health, _tab_progress,
      _tab_etfs, _tab_stress, _tab_ask, _tab_alerts) = st.tabs(
-        [i18n.t("portfolio.tab_holdings", _pf_lang), i18n.t("portfolio.tab_income", _pf_lang),
-         i18n.t("portfolio.tab_overview", _pf_lang), i18n.t("portfolio.tab_health", _pf_lang),
-         i18n.t("portfolio.tab_progress", _pf_lang), i18n.t("portfolio.tab_etfs", _pf_lang),
-         i18n.t("portfolio.tab_stress", _pf_lang),
-         i18n.t("portfolio.tab_ask", _pf_lang), i18n.t("portfolio.tab_alerts", _pf_lang)]
+        [i18n.t(_k, _pf_lang) for _k in _PORTFOLIO_TAB_I18N_KEYS]
     )
 
     with _tab_holdings:
@@ -13814,8 +13996,8 @@ def _render_portfolio_progress_tab(active_portfolio, _holdings, _analyses):
     st.dataframe(pd.DataFrame(_detail_rows), use_container_width=True, hide_index=True)
 
 
-def _content_page_shell(title):
-    _render_header(compact=True)
+def _content_page_shell(title, current=None):
+    _render_header(compact=True, current=current)
     st.markdown(f"## {title}")
 
 
@@ -13850,7 +14032,7 @@ def _methodology_factual_swaps(moat_blended):
 
 
 def page_methodology():
-    _content_page_shell("How the scores work")
+    _content_page_shell("How the scores work", current="methodology")
     _bump_page_view("methodology")
     if _factual():
         st.info(
@@ -14047,7 +14229,7 @@ starting point for your own judgment, not a substitute for it.
 
 
 def page_about():
-    _content_page_shell("About")
+    _content_page_shell("About", current="about")
     _bump_page_view("about")
     if _factual():
         st.markdown(

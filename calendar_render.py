@@ -352,4 +352,7 @@ def render_calendar_page(base_url, generated_at=None, anchor=None, lang="en",
         extra_meta=f"<style>{_CSS}</style>", json_ld=json_ld,
         hreflang_alternates=hreflang_alternates,
     )
-    return blog_render._page(head, body, lang=lang)
+    return blog_render._page(
+        head, body, lang=lang,
+        path=("/es/calendar" if lang == "es" else "/calendar"),
+    )

@@ -68,11 +68,21 @@ stays untranslated - see that call site's own comment).
 """
 
 EN = {
-    "nav.research": "Rational Compounder Analysis",
-    "nav.comparison": "Side-by-side Comparison",
-    "nav.scanner": "Stock Scanner",
-    "nav.calendar": "Results Calendar",
-    "nav.portfolio": "My Portfolio",
+    # Part 5 (site-wide slim nav): shortened for the persistent nav row -
+    # these keys are used ONLY in the nav row/popover (_render_app_nav_items,
+    # app.py), never elsewhere, so shortening them in place is safe. Full
+    # descriptive names live on each page's own header/section instead.
+    "nav.deep_dive": "Deep Dive",
+    "nav.research": "Research",
+    "nav.comparison": "Compare",
+    "nav.scanner": "Scanner",
+    "nav.calendar": "Calendar",
+    "nav.portfolio": "Portfolio",
+    "nav.blog": "Blog",
+    "nav.more": "More",
+    "nav.methodology": "Methodology",
+    "nav.about": "About",
+    "nav.track_record": "Track record",
 
     "header.tagline": "Research any stock in seconds.",
     "header.search_placeholder": (
@@ -649,7 +659,7 @@ EN = {
     ),
 
     "home.toolkit.kicker": "THE TOOLKIT",
-    "home.toolkit.h2": "Five ways in. One consistent model.",
+    "home.toolkit.h2": "Four ways in. One consistent model.",
     "home.toolkit.secsub_factual": (
         "Every tool runs the same engine &mdash; the same DCF model, the same "
         "quality calculation, the same psychology read &mdash; so the numbers "
@@ -714,6 +724,39 @@ EN = {
         "Add what you actually own and lock in the day-you-bought baseline "
         "&mdash; private to your signed-in account only, sign-in required."
     ),
+
+    # Part 5 (home tiles, Option C): the 4-tile grid that replaces the old
+    # 5-card sdd-cards5 row above (Deep Dive dropped - it's reached from the
+    # hero search box instead). Each tile pairs this fixed copy with a
+    # LIVE stat line computed from local data at render time (see
+    # _home_research_stat / _home_scanner_stat / _home_portfolio_tab_count
+    # in app.py) - {count}/{latest}/{universes} are .format() kwargs, never
+    # hardcoded here, so a stat can never go stale the way the old "8 tools
+    # inside" mock number already had (Portfolio has grown to 9 tabs).
+    "home.tiles.free_badge": "FREE",
+    "home.tiles.research_title": "Hand-built Research",
+    "home.tiles.research_desc": (
+        "One company at a time, weeks each &mdash; thesis, valuation and "
+        "verdict written out in full."
+    ),
+    "home.tiles.research_stat": "{count} companies &middot; latest: {latest}",
+    "home.tiles.scanner_title": "Stock Scanner",
+    "home.tiles.scanner_desc": (
+        "Every stock scored nightly on value, quality and moat &mdash; "
+        "sortable, filterable, exportable."
+    ),
+    "home.tiles.scanner_stat": "{count} stocks &middot; {universes} universes",
+    "home.tiles.compare_title": "Compare",
+    "home.tiles.compare_desc": (
+        "Two or more tickers lined up on identical calculations &mdash; "
+        "valuation, quality, moat &mdash; as colour-coded data."
+    ),
+    "home.tiles.portfolio_title": "My Portfolio",
+    "home.tiles.portfolio_desc": (
+        "Your holdings health-checked nightly &mdash; income, ETFs, stress "
+        "test, AI watchdog."
+    ),
+    "home.tiles.portfolio_stat": "{count} tools inside",
 
     "home.hiw.kicker": "HOW IT WORKS",
     "home.hiw.h2_factual": "Search. Compute. Inspect.",
@@ -1074,11 +1117,19 @@ EN = {
 }
 
 ES = {
-    "nav.research": "Análisis Rational Compounder",
-    "nav.comparison": "Comparación en paralelo",
-    "nav.scanner": "Buscador de acciones",
-    "nav.calendar": "Calendario de resultados",
-    "nav.portfolio": "Mi cartera",
+    # Part 5 (site-wide slim nav): shortened to match the EN nav row - see
+    # the matching comment in the EN dict above.
+    "nav.deep_dive": "Deep Dive",
+    "nav.research": "Investigación",
+    "nav.comparison": "Comparar",
+    "nav.scanner": "Buscador",
+    "nav.calendar": "Calendario",
+    "nav.portfolio": "Cartera",
+    "nav.blog": "Blog",
+    "nav.more": "Más",
+    "nav.methodology": "Metodología",
+    "nav.about": "Acerca de",
+    "nav.track_record": "Historial",
 
     "header.tagline": "Analiza cualquier acción en segundos.",
     "header.search_placeholder": (
@@ -1581,7 +1632,7 @@ ES = {
     ),
 
     "home.toolkit.kicker": "EL KIT DE HERRAMIENTAS",
-    "home.toolkit.h2": "Cinco formas de empezar. Un solo modelo consistente.",
+    "home.toolkit.h2": "Cuatro formas de empezar. Un solo modelo consistente.",
     "home.toolkit.secsub_factual": (
         "Cada herramienta usa el mismo motor &mdash; el mismo modelo DCF, "
         "el mismo cálculo de calidad, la misma lectura de psicología "
@@ -1648,6 +1699,33 @@ ES = {
         "&mdash; privado solo para tu cuenta conectada, requiere inicio "
         "de sesión."
     ),
+
+    # Part 5 (home tiles, Option C) - Spanish counterparts, see the EN
+    # dict's matching comment for what fills {count}/{latest}/{universes}.
+    "home.tiles.free_badge": "GRATIS",
+    "home.tiles.research_title": "Investigación hecha a mano",
+    "home.tiles.research_desc": (
+        "Una empresa a la vez, semanas de trabajo cada una &mdash; tesis, "
+        "valoración y veredicto escritos en su totalidad."
+    ),
+    "home.tiles.research_stat": "{count} empresas &middot; última: {latest}",
+    "home.tiles.scanner_title": "Buscador de acciones",
+    "home.tiles.scanner_desc": (
+        "Cada acción puntuada cada noche en valor, calidad y foso "
+        "&mdash; ordenable, filtrable, exportable."
+    ),
+    "home.tiles.scanner_stat": "{count} acciones &middot; {universes} universos",
+    "home.tiles.compare_title": "Comparar",
+    "home.tiles.compare_desc": (
+        "Dos o más tickers alineados sobre cálculos idénticos &mdash; "
+        "valoración, calidad, foso &mdash; como datos con código de color."
+    ),
+    "home.tiles.portfolio_title": "Mi cartera",
+    "home.tiles.portfolio_desc": (
+        "Tus posiciones revisadas cada noche &mdash; ingresos, ETFs, "
+        "prueba de estrés, vigilante con IA."
+    ),
+    "home.tiles.portfolio_stat": "{count} herramientas incluidas",
 
     "home.hiw.kicker": "CÓMO FUNCIONA",
     "home.hiw.h2_factual": "Busca. Calcula. Inspecciona.",
