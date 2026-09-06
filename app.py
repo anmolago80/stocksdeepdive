@@ -5222,9 +5222,18 @@ def _render_research_shelf(data, tickers, section_order, lang="en"):
                             )
                         else:
                             _shelf_card_line = _rc_card_blurb(t, data)
+                        # Fix #5's own spec pairs the bottom-alignment above
+                        # with clamping the blurb itself to ~4-5 lines
+                        # (full text lives on the detail page) - without
+                        # this, one company with an unusually long
+                        # verdict/thesis paragraph would still stretch the
+                        # WHOLE row to match it, since the row-stretch CSS
+                        # above sizes every card to the tallest one.
                         st.markdown(
                             f"<div style='color:#c3d1e0;font-size:13.5px;line-height:1.55;"
-                            f"min-height:58px;'>{_md_safe(_shelf_card_line)}</div>",
+                            f"min-height:58px;display:-webkit-box;-webkit-line-clamp:5;"
+                            f"-webkit-box-orient:vertical;overflow:hidden;'>"
+                            f"{_md_safe(_shelf_card_line)}</div>",
                             unsafe_allow_html=True,
                         )
                         section_count = _rc_section_count(t, data, section_order)
