@@ -768,7 +768,13 @@ nav.site a.nav-signin:hover{background:#2dd4bf;color:#0b1220;text-decoration:non
   nav.site>a:not(.nav-signin){display:none}
   nav.site>details.nav-more{display:none}
   nav.site{gap:10px}
-  body{padding-bottom:78px}
+  /* Fix #8b: same reasoning as app.py's own block-container padding -
+     the bar's padding-bottom:env(safe-area-inset-bottom) two lines down
+     needs matching room here too, or the last bit of page content ends
+     up under the bar on notched iPhones. This page already had
+     viewport-fit=cover (see _header_html above), so env() was already
+     live here - this was a real, if small, latent gap. */
+  body{padding-bottom:calc(78px + env(safe-area-inset-bottom))}
   .sdd-mnav-bottom{position:fixed;left:0;right:0;bottom:0;z-index:9999;
     display:flex;background:#0e1930;border-top:1px solid #1f3352;
     padding-bottom:env(safe-area-inset-bottom)}

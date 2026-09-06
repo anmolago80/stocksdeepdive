@@ -1811,9 +1811,17 @@ st.markdown(
         width: auto !important; flex: 0 1 auto !important; min-width: 0 !important;
       }
       /* Room at the bottom of every page for the fixed bar so it never
-         covers the last bit of real content. */
+         covers the last bit of real content. Fix #8b: now that
+         viewport-fit=cover is actually applied (see
+         _render_mobile_bottom_nav's own docstring), env(safe-area-
+         inset-bottom) below stops being silently 0 on iOS and the bar
+         itself grows by that amount (its own padding-bottom already
+         used env() before this fix, it just did nothing without
+         viewport-fit=cover) - this padding has to grow by the same
+         amount or the last bit of content ends up back under the bar
+         on notched iPhones. */
       div[data-testid="stAppViewContainer"] .block-container {
-        padding-bottom: 78px !important;
+        padding-bottom: calc(78px + env(safe-area-inset-bottom)) !important;
       }
       .sdd-mnav-bottom {
         position: fixed; left: 0; right: 0; bottom: 0; z-index: 9999;
@@ -2857,7 +2865,48 @@ def _render_mobile_bottom_nav(lang, current=None):
     inside the sheet instead (e.g. Research) leaves all 5 bar icons
     neutral, same as desktop leaving every primary tab un-highlighted
     when you're on a "More" page today.
+
+    Fix #8b (owner, real-iPhone photo): the bar rendered with a large
+    dark gap below it on an actual iPhone - a bar-height-plus above the
+    true bottom edge. Diagnosed in the instruction's own order before
+    changing anything: (a) ruled out empirically - a live Playwright
+    check (iPhone viewport) walked every ancestor from this <nav> up to
+    <body> and found no transform/filter/perspective/contain/will-change
+    anywhere, so position:fixed's containing block really is the
+    viewport, not some Streamlit wrapper; (b) ruled out for OUR OWN CSS -
+    nothing here or in Streamlit's own bundled stylesheet places this bar
+    (or an ancestor) via 100vh; (c) ruled out too - no Streamlit-native
+    fixed footer/toolbar competes for the same bottom edge (checked every
+    fixed/sticky element on the page). What's actually missing:
+    Streamlit's own default viewport meta tag
+    (width=device-width, initial-scale=1, shrink-to-fit=no - see
+    streamlit/static/index.html) never sets viewport-fit=cover, which
+    Streamlit's Python API has no config knob for. Without it, iOS
+    treats env(safe-area-inset-bottom) as 0 AND keeps fixed-bottom
+    elements clear of its own dynamic toolbar/home-indicator chrome by
+    reserving space above it instead of letting the page draw under that
+    chrome itself - Apple's own documented cause of exactly this "fixed
+    footer floats above the true bottom with a gap" symptom, and
+    viewport-fit=cover + env() is Apple's own documented fix (already
+    applied correctly on the static blog/snapshot pages - see
+    blog_render.py's _header_html - this bar is the one place it was
+    missing). Streamlit's Python API can't set this meta tag directly,
+    so it's patched onto the real page (not this sandboxed iframe) the
+    same way _PUSH_CONTROL_JS below reaches window.parent - idempotent
+    (checked before appending) since this runs again on every rerun.
     """
+    import streamlit.components.v1 as _components
+    _components.html(
+        "<script>(function(){"
+        "var h=window;"
+        "try{if(window.parent&&window.parent!==window&&window.parent.document){h=window.parent;}}catch(e){}"
+        "var m=h.document.querySelector('meta[name=\"viewport\"]');"
+        "if(m&&m.getAttribute('content').indexOf('viewport-fit=cover')===-1){"
+        "m.setAttribute('content',m.getAttribute('content')+', viewport-fit=cover');"
+        "}"
+        "})();</script>",
+        height=0,
+    )
     _bar_items = [
         ("deep_dive", "\U0001F52C", i18n.t("nav.deep_dive", lang), "/deep-dive"),
         ("scanner", "\U0001F50E", i18n.t("nav.scanner", lang), "/scanner"),
