@@ -166,12 +166,33 @@ def set_research_status(ticker, status, terminated_reason=""):
     """UPSERT the status for one ticker. status must be 'in_progress' or
     'terminated'; terminated_reason is only meaningful (and only shown)
     for 'terminated', but is stored either way so switching back to
-    Terminated later doesn't lose a previously-typed reason."""
+    Terminated later doesn't lose a previously-typed reason.
+
+    Owner-review-round fix #1 hardening: a BLANK incoming reason never
+    clobbers an existing non-blank one. Before this, calling this with
+    terminated_reason="" (e.g. the admin "Save status" button clicked
+    while the reason box happened to be empty - a plausible Streamlit
+    widget-rerun timing slip, or simply re-saving the status radio
+    without re-typing the reason) would silently overwrite a reason the
+    owner had carefully typed in on an earlier save, with no
+    confirmation and no way to tell afterward that anything was lost.
+    Saving a genuinely blank reason still works the FIRST time (nothing
+    to lose yet); once a real reason is on file, only a non-blank
+    incoming value can replace it - matching set_blurb()'s own existing
+    "never silently lose owner-typed text" convention elsewhere in this
+    file, just applied at the write path rather than at boot-seed time."""
     if not ticker or status not in ("in_progress", "terminated"):
         return
     ticker = ticker.strip().upper()
     terminated_reason = (terminated_reason or "").strip()
     with _conn() as conn:
+        if not terminated_reason:
+            existing = conn.execute(
+                "SELECT terminated_reason FROM research_status WHERE ticker = ?",
+                (ticker,),
+            ).fetchone()
+            if existing and (existing[0] or "").strip():
+                terminated_reason = existing[0]
         conn.execute(
             """INSERT INTO research_status (ticker, status, terminated_reason, updated_at)
                VALUES (?, ?, ?, ?)
