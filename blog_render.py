@@ -657,23 +657,39 @@ header.site .wrap{max-width:1080px;display:flex;align-items:center;gap:26px;flex
 nav.site{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-left:auto}
 nav.site a{color:#8aa0b8;font-size:14px}
 nav.site a:hover{color:#e6edf5;text-decoration:none}
-/* Part 5 (site-wide slim nav): the "☰ More" dropdown is a bare
+/* Part 5 (site-wide slim nav): the "More" dropdown is a bare
    <details>/<summary> - no JS framework ships in this module, and
    <details> needs none. summary's marker/outline reset + a small
-   floating panel is the whole "component". */
+   floating panel is the whole "component".
+   3rd Amendment to Part 5: the panel itself is now the SAME
+   .sdd-more-panel/.sdd-more-item component app.py's st.popover version
+   renders (identical class names/copy - see that module's
+   _render_app_nav_items docstring) - "dark card, teal border, shadow,
+   ~330px", each item an icon + name + one-line description rather than
+   the old bare link list. .nav-more-panel here keeps only the
+   ABSOLUTE POSITIONING half of the old rule (top/right/z-index); the
+   dark-card/border/shadow/width visuals now live in .sdd-more-panel
+   itself, shared verbatim with app.py's <style> block. */
 nav.site details.nav-more{position:relative}
 nav.site details.nav-more summary{color:#8aa0b8;font-size:14px;cursor:pointer;
-  list-style:none}
+  list-style:none;display:flex;align-items:center;gap:4px}
 nav.site details.nav-more summary::-webkit-details-marker{display:none}
 nav.site details.nav-more summary:hover{color:#e6edf5}
 nav.site details.nav-more[open] summary{color:#e6edf5}
-nav.site .nav-more-panel{position:absolute;top:calc(100% + 10px);right:0;
-  background:#121f36;border:1px solid #1f3352;border-radius:10px;
-  padding:8px;display:flex;flex-direction:column;gap:2px;min-width:160px;
-  box-shadow:0 12px 28px rgba(0,0,0,.35);z-index:20}
-nav.site .nav-more-panel a{padding:7px 10px;border-radius:6px;white-space:nowrap}
-nav.site .nav-more-panel a:hover{background:rgba(45,212,191,.08);
-  color:#e6edf5;text-decoration:none}
+nav.site details.nav-more .nav-more-chev{font-size:10px;transition:transform .15s ease}
+nav.site details.nav-more[open] .nav-more-chev{transform:rotate(180deg)}
+nav.site .nav-more-panel{position:absolute;top:calc(100% + 10px);right:0;z-index:20}
+.sdd-more-panel{width:330px;max-width:calc(100vw - 40px);box-sizing:border-box;
+  background:#121f36;border:1px solid rgba(45,212,191,.35);border-radius:12px;
+  box-shadow:0 16px 40px rgba(0,0,0,.45);padding:8px;display:flex;
+  flex-direction:column;gap:2px}
+.sdd-more-item{display:flex;align-items:flex-start;gap:12px;padding:10px 12px;
+  border-radius:8px;text-decoration:none !important;transition:background .15s ease}
+.sdd-more-item:hover{background:rgba(45,212,191,.08);color:#e6edf5;text-decoration:none}
+.sdd-more-ic{font-size:18px;line-height:1.3;flex-shrink:0;width:22px;text-align:center}
+.sdd-more-txt{display:flex;flex-direction:column;gap:2px;min-width:0}
+.sdd-more-name{color:#e6edf5;font-weight:600;font-size:13.5px}
+.sdd-more-desc{color:#8aa0b8;font-size:12px;line-height:1.4;white-space:normal}
 nav.site .nav-lang{color:#5b7290;font-size:13px;display:flex;align-items:center;gap:6px}
 nav.site .nav-lang a{color:#8aa0b8}
 nav.site .nav-lang a.active{color:#2dd4bf;font-weight:700}
@@ -898,13 +914,22 @@ def _header_html(lang="en", path=None, lang_urls=None):
     function (see this module's _page() docstring). Item set/order
     matches _render_app_nav_items() in app.py exactly (that function's
     own docstring has the full rationale): Deep Dive, Research, Scanner,
-    Compare, Portfolio, Blog, then a "☰ More" dropdown holding Calendar,
-    Methodology, About and Track record, then the EN|ES toggle and a
-    plain Sign in link.
+    Compare, Portfolio, Blog, then a "More" dropdown holding, per the 3rd
+    Amendment to Part 5's own verbatim order, Results Calendar, Track
+    record, Methodology and About, then the EN|ES toggle and a plain Sign
+    in link.
 
-    The "☰ More" dropdown is a bare <details>/<summary> element (styled
-    in _CSS below) rather than a JS-built one - this module ships no JS
+    The "More" dropdown is a bare <details>/<summary> element (styled in
+    _CSS below) rather than a JS-built one - this module ships no JS
     framework for a real dropdown component, and <details> needs none.
+    Its panel is the SAME .sdd-more-panel/.sdd-more-item component
+    app.py's st.popover version renders (3rd Amendment to Part 5): each
+    item an icon + bold name + one-line grey description, not a bare
+    link list. Click-again-closes is <details>'s own native toggle
+    behaviour; click-outside-closes is the one small vanilla-JS listener
+    appended right after </header> below (_nav_more_close_script) -
+    still no framework, just a document click listener that closes any
+    open .nav-more whose bounds don't contain the click.
 
     Sign in (mega-batch Part 5 scope decision): a server-rendered page
     has no visibility into the Streamlit app's own session/login state
@@ -924,6 +949,21 @@ def _header_html(lang="en", path=None, lang_urls=None):
     lang_urls, when given, overrides the derived pair outright - see
     _page()'s own docstring (render_post's real per-post sibling)."""
     _en_url, _es_url = lang_urls if lang_urls else _lang_toggle_links(path)
+    # 3rd Amendment to Part 5: click-outside-closes for the <details>
+    # dropdown - a plain <details>/<summary> only toggles on clicking its
+    # own summary, so a click anywhere else on the page needs this one
+    # small vanilla-JS listener to close it back up. Order matches the
+    # amendment's own spec verbatim: Results Calendar, Track record,
+    # Methodology, About.
+    _nav_more_close_script = """
+<script>
+document.addEventListener('click', function(ev){
+  document.querySelectorAll('nav.site details.nav-more[open]').forEach(function(d){
+    if(!d.contains(ev.target)) d.open = false;
+  });
+});
+</script>
+"""
     if lang == "es":
         return f"""
 <header class="site"><div class="wrap">
@@ -936,13 +976,25 @@ def _header_html(lang="en", path=None, lang_urls=None):
     <a href="/portfolio?lang=es">Cartera</a>
     <a href="/es/blog">Blog</a>
     <details class="nav-more">
-      <summary>☰ Más</summary>
-      <div class="nav-more-panel">
-        <a href="/es/calendar">Calendario</a>
-        <a href="/es/methodology">Metodología</a>
-        <a href="/es/about">Acerca de</a>
-        <a href="/es/track-record">Historial</a>
-      </div>
+      <summary>Más <span class="nav-more-chev">&#9662;</span></summary>
+      <div class="nav-more-panel"><div class="sdd-more-panel">
+        <a class="sdd-more-item" href="/es/calendar">
+          <span class="sdd-more-ic">&#128197;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Calendario de resultados</span>
+          <span class="sdd-more-desc">Quién presenta resultados esta semana, con los movimientos de puntuación antes/después.</span></span></a>
+        <a class="sdd-more-item" href="/es/track-record">
+          <span class="sdd-more-ic">&#128200;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Historial</span>
+          <span class="sdd-more-desc">Recibos fechados: qué calculó el sitio para cada acción, y cuándo.</span></span></a>
+        <a class="sdd-more-item" href="/es/methodology">
+          <span class="sdd-more-ic">&#129966;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Metodología</span>
+          <span class="sdd-more-desc">Cómo se calcula cada puntuación y estimación, dato por dato.</span></span></a>
+        <a class="sdd-more-item" href="/es/about">
+          <span class="sdd-more-ic">&#128100;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Acerca de</span>
+          <span class="sdd-more-desc">Quién construye esto y por qué es gratis.</span></span></a>
+      </div></div>
     </details>
     <span class="nav-lang">
       <a href="{html.escape(_en_url)}">EN</a>&#124;<a href="{html.escape(_es_url)}" class="active">ES</a>
@@ -950,7 +1002,7 @@ def _header_html(lang="en", path=None, lang_urls=None):
     <a href="/portfolio?lang=es" class="nav-signin">Iniciar sesión</a>
   </nav>
 </div></header>
-"""
+{_nav_more_close_script}"""
     return f"""
 <header class="site"><div class="wrap">
   <a class="brand" href="/">Stocks<span class="accent">DeepDive</span></a>
@@ -962,13 +1014,25 @@ def _header_html(lang="en", path=None, lang_urls=None):
     <a href="/portfolio">Portfolio</a>
     <a href="/blog">Blog</a>
     <details class="nav-more">
-      <summary>☰ More</summary>
-      <div class="nav-more-panel">
-        <a href="/calendar">Calendar</a>
-        <a href="/methodology">Methodology</a>
-        <a href="/about">About</a>
-        <a href="/track-record">Track record</a>
-      </div>
+      <summary>More <span class="nav-more-chev">&#9662;</span></summary>
+      <div class="nav-more-panel"><div class="sdd-more-panel">
+        <a class="sdd-more-item" href="/calendar">
+          <span class="sdd-more-ic">&#128197;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Results Calendar</span>
+          <span class="sdd-more-desc">Who reports this week, with before/after score moves.</span></span></a>
+        <a class="sdd-more-item" href="/track-record">
+          <span class="sdd-more-ic">&#128200;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Track record</span>
+          <span class="sdd-more-desc">Dated receipts: what the site computed for each stock, and when.</span></span></a>
+        <a class="sdd-more-item" href="/methodology">
+          <span class="sdd-more-ic">&#129966;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Methodology</span>
+          <span class="sdd-more-desc">How every score and estimate is calculated, input by input.</span></span></a>
+        <a class="sdd-more-item" href="/about">
+          <span class="sdd-more-ic">&#128100;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">About</span>
+          <span class="sdd-more-desc">Who builds this and why it's free.</span></span></a>
+      </div></div>
     </details>
     <span class="nav-lang">
       <a href="{html.escape(_en_url)}" class="active">EN</a>&#124;<a href="{html.escape(_es_url)}">ES</a>
@@ -976,7 +1040,7 @@ def _header_html(lang="en", path=None, lang_urls=None):
     <a href="/portfolio" class="nav-signin">Sign in</a>
   </nav>
 </div></header>
-"""
+{_nav_more_close_script}"""
 
 
 def _footer_html(lang="en"):

@@ -1261,6 +1261,45 @@ st.markdown(
     /* layout="stack" (ultra_compact's own "☰" popover): pills read as a
        vertical list there, not squeezed into one row's worth of width. */
     div[data-testid="stPopover"] .sdd-navpill { margin-bottom: 0.5rem; }
+    /* 3rd Amendment to Part 5: the "More" dropdown panel (Results
+       Calendar / Track record / Methodology / About, each as icon + name
+       + one-line description) - "dark card, teal border, shadow,
+       ~330px". Streamlit's st.popover wraps our markdown in its own
+       stPopoverBody, which portals to a sibling of <body> rather than
+       being a DOM descendant of the "nav_more_pop"-keyed wrapper, so it
+       can't be reached by [class*="st-key-..."] the way every other
+       nav override on this page is scoped - and restyling
+       stPopoverBody by its bare data-testid would hit every OTHER
+       popover on the site too (RC view, admin panels, Explain/Alert/
+       Watchlist/Checklist popovers...). :has() scopes the override to
+       only the one popover body that actually contains our own
+       .sdd-more-panel marker div, leaving every other popover's own
+       styling untouched. */
+    div[data-testid="stPopoverBody"]:has(.sdd-more-panel) {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        min-width: 0 !important;
+        width: auto !important;
+    }
+    .sdd-more-panel {
+        width: 330px; max-width: calc(100vw - 40px); box-sizing: border-box;
+        background: #121f36; border: 1px solid rgba(45, 212, 191, .35);
+        border-radius: 12px; box-shadow: 0 16px 40px rgba(0, 0, 0, .45);
+        padding: 8px; display: flex; flex-direction: column; gap: 2px;
+    }
+    .sdd-more-item {
+        display: flex; align-items: flex-start; gap: 12px;
+        padding: 10px 12px; border-radius: 8px;
+        text-decoration: none !important; transition: background 0.15s ease;
+    }
+    .sdd-more-item:hover { background: rgba(45, 212, 191, .08); }
+    .sdd-more-item-active .sdd-more-name { color: #2dd4bf !important; }
+    .sdd-more-ic { font-size: 18px; line-height: 1.3; flex-shrink: 0; width: 22px; text-align: center; }
+    .sdd-more-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .sdd-more-name { color: #e6edf5; font-weight: 600; font-size: 13.5px; }
+    .sdd-more-desc { color: #8aa0b8; font-size: 12px; line-height: 1.4; }
     .stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"],
     .stButton > button[kind="primaryFormSubmit"], .stFormSubmitButton > button[kind="primaryFormSubmit"] {
         background-color: #2dd4bf !important;
@@ -2412,15 +2451,30 @@ def _render_app_nav_items(lang, current=None, key_prefix="nav", layout="row"):
 
     layout="row": the normal inline row (used in _render_header's compact
     branch and by page_home()) - Deep Dive..Portfolio and Blog as
-    same-width-as-label columns, then one "☰ More" st.popover column
-    holding Calendar/Methodology/About/Track record.
+    same-width-as-label columns, then one "More" st.popover column (3rd
+    Amendment to Part 5: a flat nav-styled trigger - Streamlit's own
+    st.popover already renders its own chevron affordance next to the
+    label, confirmed via a live screenshot, so the label carries no manual
+    "▾" of its own) opening a dark/teal-bordered dropdown panel that lists
+    Results Calendar / Track record / Methodology / About each as an
+    icon + name + one-line description (see _more_items below and the
+    .sdd-more-panel/.sdd-more-item CSS a few hundred lines up) - the exact
+    same component (same class names, same copy) blog_render._header_html
+    renders as a <details>/<summary> twin for the server-rendered pages,
+    per the amendment's own "same component on the app pages AND the
+    static blog/snapshot pages" requirement.
 
     layout="stack": a flat vertical list of EVERY item, Deep Dive through
     Track record, with no nested "More" popover. Used only inside
     _render_header's ultra_compact branch, where the whole nav is already
     tucked into that branch's own single "☰" popover - Streamlit doesn't
     support (and it would be confusing UX regardless) nesting a second
-    popover inside a popover, so "stack" flattens rather than nests."""
+    popover inside a popover, so "stack" flattens rather than nests (the
+    four _more_items render as the same plain flat-text anchor pills as
+    Blog above them, not the icon+description card treatment - that
+    richer treatment is specifically the collapsed "More" dropdown's own
+    affordance for showing what's behind it, not needed once everything
+    is already laid out as one flat list)."""
     _primary_items = [
         ("deep_dive", i18n.t("nav.deep_dive", lang), PG_DEEP_DIVE),
         ("research", i18n.t("nav.research", lang), PG_RESEARCH),
@@ -2428,10 +2482,27 @@ def _render_app_nav_items(lang, current=None, key_prefix="nav", layout="row"):
         ("comparison", i18n.t("nav.comparison", lang), PG_COMPARISON),
         ("portfolio", i18n.t("nav.portfolio", lang), PG_PORTFOLIO),
     ]
+    # 3rd Amendment to Part 5: order is Results Calendar, Track record,
+    # Methodology, About (the amendment's own verbatim order - was
+    # Calendar/Methodology/About with Track record tacked on separately).
+    # All four are now plain same-tab anchors rather than a mix of
+    # st.button+anchor: Calendar/Methodology/About DO have real st.Page
+    # objects (PG_RESULTS_CALENDAR/PG_METHODOLOGY/PG_ABOUT), but a
+    # Streamlit multi-page app serves each Page at a real, directly-
+    # linkable URL (url_path= below) - a plain target="_self" anchor to
+    # that same path loads the identical page a st.switch_page() click
+    # would, so all four items can share one rendering path (and, more
+    # importantly, one identical markup shape with blog_render.py's static
+    # twin) instead of Track record alone being the odd one out anchor.
     _more_items = [
-        ("calendar", i18n.t("nav.calendar", lang), PG_RESULTS_CALENDAR),
-        ("methodology", i18n.t("nav.methodology", lang), PG_METHODOLOGY),
-        ("about", i18n.t("nav.about", lang), PG_ABOUT),
+        ("calendar", "\U0001F4C5", i18n.t("nav.calendar", lang),
+         i18n.t("nav.more_calendar_desc", lang), "/results-calendar"),
+        ("track_record", "\U0001F4C8", i18n.t("nav.track_record", lang),
+         i18n.t("nav.more_track_record_desc", lang), "/track-record"),
+        ("methodology", "\U0001F9EE", i18n.t("nav.methodology", lang),
+         i18n.t("nav.more_methodology_desc", lang), "/methodology"),
+        ("about", "\U0001F464", i18n.t("nav.about", lang),
+         i18n.t("nav.more_about_desc", lang), "/about"),
     ]
 
     def _page_button(_id, _label, _page):
@@ -2452,17 +2523,41 @@ def _render_app_nav_items(lang, current=None, key_prefix="nav", layout="row"):
             unsafe_allow_html=True,
         )
 
+    def _more_panel_html():
+        # The shared "component" - identical class names/markup shape to
+        # blog_render._header_html's <details> twin, per the 3rd
+        # Amendment to Part 5's "same component on the app pages AND the
+        # static blog/snapshot pages so the nav stays identical site-wide."
+        # Preserves the pre-amendment "current page highlighted inside the
+        # popover" behaviour (Calendar/Methodology/About all pass
+        # current=<their id> into _render_header today) via a plain CSS
+        # class rather than st.button's type="primary", since these are
+        # anchors now, not buttons.
+        _items_html = "".join(
+            f'<a class="sdd-more-item{" sdd-more-item-active" if _id == current else ""}" '
+            f'href="{_href}" target="_self">'
+            f'<span class="sdd-more-ic">{_icon}</span>'
+            f'<span class="sdd-more-txt">'
+            f'<span class="sdd-more-name">{html.escape(_title)}</span>'
+            f'<span class="sdd-more-desc">{html.escape(_desc)}</span>'
+            f'</span></a>'
+            for _id, _icon, _title, _desc, _href in _more_items
+        )
+        st.markdown(
+            f'<div class="sdd-more-panel">{_items_html}</div>',
+            unsafe_allow_html=True,
+        )
+
     if layout == "stack":
         for _id, _label, _page in _primary_items:
             _page_button(_id, _label, _page)
         _anchor_pill(i18n.t("nav.blog", lang), "/blog")
-        for _id, _label, _page in _more_items:
-            _page_button(_id, _label, _page)
-        _anchor_pill(i18n.t("nav.track_record", lang), "/track-record")
+        for _id, _icon, _title, _desc, _href in _more_items:
+            _anchor_pill(_title, _href)
         return
 
     _blog_label = i18n.t("nav.blog", lang)
-    _more_label = f"☰ {i18n.t('nav.more', lang)}"
+    _more_label = i18n.t("nav.more", lang)
     _widths = (
         [len(_label) + 6 for _, _label, _ in _primary_items]
         + [len(_blog_label) + 6, len(_more_label) + 8]
@@ -2476,9 +2571,7 @@ def _render_app_nav_items(lang, current=None, key_prefix="nav", layout="row"):
     with _cols[-1]:
         with st.popover(_more_label, use_container_width=True,
                          key=f"{key_prefix}_more_pop"):
-            for _id, _label, _page in _more_items:
-                _page_button(_id, _label, _page)
-            _anchor_pill(i18n.t("nav.track_record", lang), "/track-record")
+            _more_panel_html()
 
 
 def _render_header(compact, page_label=None, ultra_compact=False, current=None):

@@ -76,13 +76,24 @@ EN = {
     "nav.research": "Research",
     "nav.comparison": "Compare",
     "nav.scanner": "Scanner",
-    "nav.calendar": "Calendar",
+    # 3rd Amendment to Part 5: "Calendar" -> "Results Calendar" (the
+    # amendment's own verbatim item name, "\U0001F4C5 Results Calendar").
+    # Safe to rename in place per this block's own comment above (nav-only,
+    # never read elsewhere) - grepped to confirm before changing.
+    "nav.calendar": "Results Calendar",
     "nav.portfolio": "Portfolio",
     "nav.blog": "Blog",
     "nav.more": "More",
     "nav.methodology": "Methodology",
     "nav.about": "About",
     "nav.track_record": "Track record",
+    # 3rd Amendment to Part 5: one-line descriptions for the "More ▾"
+    # dropdown's four icon+name+description items - same nav-only scope as
+    # every other key in this block.
+    "nav.more_calendar_desc": "Who reports this week, with before/after score moves.",
+    "nav.more_track_record_desc": "Dated receipts: what the site computed for each stock, and when.",
+    "nav.more_methodology_desc": "How every score and estimate is calculated, input by input.",
+    "nav.more_about_desc": "Who builds this and why it's free.",
 
     "header.tagline": "Research any stock in seconds.",
     "header.search_placeholder": (
@@ -1345,13 +1356,17 @@ ES = {
     "nav.research": "Investigación",
     "nav.comparison": "Comparar",
     "nav.scanner": "Buscador",
-    "nav.calendar": "Calendario",
+    "nav.calendar": "Calendario de resultados",
     "nav.portfolio": "Cartera",
     "nav.blog": "Blog",
     "nav.more": "Más",
     "nav.methodology": "Metodología",
     "nav.about": "Acerca de",
     "nav.track_record": "Historial",
+    "nav.more_calendar_desc": "Quién presenta resultados esta semana, con los movimientos de puntuación antes/después.",
+    "nav.more_track_record_desc": "Recibos fechados: qué calculó el sitio para cada acción, y cuándo.",
+    "nav.more_methodology_desc": "Cómo se calcula cada puntuación y estimación, dato por dato.",
+    "nav.more_about_desc": "Quién construye esto y por qué es gratis.",
 
     "header.tagline": "Analiza cualquier acción en segundos.",
     "header.search_placeholder": (
