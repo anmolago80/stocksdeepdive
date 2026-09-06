@@ -4505,6 +4505,67 @@ def page_research():
             _render_cp_section(ticker, _cp_label, data)
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def _home_top5_by_country():
+    """Home page "Tonight's top 5" data (top5_au_us instruction): top 5
+    tickers by Value Score for Australia and for the USA, each drawn from
+    EVERY universe of that country the app has ever scanned - not just
+    one named universe like the old ASX-200-only table.
+
+    Source: snapshot_store.all_public_rows() - already one row per
+    ticker (that table's PRIMARY KEY is `ticker`), so a stock scanned
+    under several universes at once (e.g. BHP in ASX 20/50/100/200/300)
+    is never duplicated: whichever scan wrote to it most recently is the
+    one row that exists, and its `universe` field is simply whatever
+    that scan called itself ("latest scan wins" - the instruction's own
+    documented fallback attribution rule, used here because this store
+    keeps no per-ticker history of which universes it has EVER belonged
+    to - only score_history.py has a time series, and that's Value
+    Score/price, not universe membership - so the "smallest containing
+    universe" alternative the instruction offers isn't cheaply available
+    and isn't attempted).
+
+    Country split: the ticker's own ".AX" suffix, exactly as the
+    instruction specifies (and the same test app.py already uses
+    elsewhere, e.g. the results-calendar/dividend currency checks).
+
+    Eligibility: finite Price > 0, Value Score present, and not an
+    ETF/fund - detected by "ETF" in the cached company name, the same
+    name-based fallback moat_engine._is_fund() already falls back to
+    when a fund's quoteType isn't to hand. That's a deliberate choice,
+    not an oversight: snapshot rows never stored quoteType in the first
+    place (nightly_scan.analyze_ticker_lite doesn't compute it), and
+    fetching it now would be exactly the new per-ticker network call
+    this instruction rules out - so this reuses the one signal already
+    sitting in stored data instead of adding a computation.
+
+    No network call at all - snapshot_store is local SQLite, refreshed
+    only by the nightly scan - so this is safe to compute on every page
+    view; cached anyway (same 30-minute TTL every other st.cache_data
+    lookup in this file uses) since it still means a full-table read and
+    JSON parse of every stored snapshot.
+
+    Returns {"AU": [...], "US": [...]}, each a list of up to 5
+    public_view-shaped dicts (+ "ticker"/"universe"/"generated_at"),
+    sorted by value_score descending."""
+    rows = snapshot_store.all_public_rows()
+    by_country = {"AU": [], "US": []}
+    for r in rows:
+        price = r.get("price")
+        if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+            continue
+        if r.get("value_score") is None:
+            continue
+        if "ETF" in (r.get("company_name") or "").upper():
+            continue
+        country = "AU" if (r.get("ticker") or "").upper().endswith(".AX") else "US"
+        by_country[country].append(r)
+    for country, country_rows in by_country.items():
+        country_rows.sort(key=lambda r: r.get("value_score") or 0, reverse=True)
+        by_country[country] = country_rows[:5]
+    return by_country
+
+
 def page_home():
     # page_home renders its own header (view badge + account bar) instead
     # of calling _render_header, so the src capture + view-count bump that
@@ -4732,56 +4793,90 @@ as a fact &mdash; you always know which numbers are computed and which are assum
         )
 
     # ---- tonight's top 5 (P1.1: show value instantly, zero clicks) ----
-    # Same store the Scanner page reads (scan_store, written nightly by
-    # nightly_scan.py) - zero live fetching here. Renders nothing at all
-    # (no empty box) when no stored scan exists yet, per spec.
-    _tt5_scan = scan_store.load_scan("ASX 200")
-    _tt5_rows = []
-    if _tt5_scan and _tt5_scan.get("rows"):
-        # Fix 9: only rank stocks with a real, finite Price - a scan row
-        # with a broken/NaN Price (see _price_cell's docstring) is never
-        # fit to show on the Home page, no matter how it would otherwise
-        # rank by Long Score.
-        _tt5_candidates = [
-            r for r in _tt5_scan["rows"]
-            if isinstance(r.get("Price"), (int, float)) and math.isfinite(r.get("Price"))
-        ]
-        _tt5_rows = sorted(
-            _tt5_candidates, key=lambda r: r.get("Long Score") or 0, reverse=True
-        )[:5]
-    if _tt5_rows:
-        _tt5_html = []
-        for _tr in _tt5_rows:
-            _ttk = _tr.get("Ticker") or "-"
-            _ttk_cell = (
-                f"<a href='/deep-dive?ticker={_ttk}' target='_self' "
-                "style='color:inherit;text-decoration:underline;'><b>"
-                f"{_ttk}</b></a>" if _ttk != "-" else "<b>-</b>"
-            )
-            _tt5_html.append(
-                "<tr>"
-                + _td(_ttk_cell)
-                + _td(_price_cell(_tr.get("Price")))
-                + _td(_bar_cell(_tr.get("Long Score"),
-                                SIGNAL_THRESHOLDS["WATCHLIST"],
-                                SIGNAL_THRESHOLDS["LONG"]), minw=90)
-                + _td(_badge_cell(_tr.get("Valuation", "-")))
-                + "</tr>"
-            )
+    # top5_au_us instruction: two tables, Australia and USA, each drawn
+    # from EVERY universe of that country via snapshot_store (deduped by
+    # ticker for free - see _home_top5_by_country()'s own docstring),
+    # replacing the old single ASX-200-only table. Renders nothing at all
+    # (no empty box) only when BOTH countries have zero eligible rows; a
+    # scan gap in just one country still shows that table's own "no scan
+    # yet" state rather than hiding the other, healthy country too.
+    _tt5_lang = st.session_state.get("lang", "en")
+    _tt5_by_country = _home_top5_by_country()
+    if _tt5_by_country["AU"] or _tt5_by_country["US"]:
         st.markdown(
-            "<div class='sdd-kicker' style='margin-top:40px;'>TONIGHT'S TOP 5</div>"
-            "<div class='sdd-h2'>Tonight's top 5 &mdash; ASX 200 by Value Score</div>",
+            f"<div class='sdd-kicker' style='margin-top:40px;'>"
+            f"{i18n.t('home.top5.kicker', _tt5_lang)}</div>",
             unsafe_allow_html=True,
         )
-        st.markdown(
-            _sdd_table(["Ticker", "Price", "Value Score", "Valuation"], _tt5_html),
-            unsafe_allow_html=True,
-        )
+        _tt5_col_au, _tt5_col_us = st.columns(2, gap="large")
+        _tt5_now = datetime.now(timezone.utc)
+        for _tt5_col, _tt5_code, _tt5_country_key in (
+            (_tt5_col_au, "AU", "home.top5.country_au"),
+            (_tt5_col_us, "US", "home.top5.country_us"),
+        ):
+            with _tt5_col:
+                _tt5_country_name = i18n.t(_tt5_country_key, _tt5_lang)
+                st.markdown(
+                    "<div class='sdd-h2' style='font-size:20px;'>"
+                    f"{i18n.t('home.top5.heading', _tt5_lang, country=_tt5_country_name)}"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+                _tt5_rows = _tt5_by_country[_tt5_code]
+                if not _tt5_rows:
+                    st.caption(i18n.t("home.top5.no_scan", _tt5_lang, country=_tt5_country_name))
+                    continue
+                _tt5_html = []
+                for _tr in _tt5_rows:
+                    _ttk = _tr.get("ticker") or "-"
+                    _ttk_cell = (
+                        f"<a href='/deep-dive?ticker={_ttk}' target='_self' "
+                        "style='color:inherit;text-decoration:underline;'><b>"
+                        f"{_ttk}</b></a>" if _ttk != "-" else "<b>-</b>"
+                    )
+                    # Per-row "as of Tue" note (spec: only when the stored
+                    # snapshot is more than 24h old - a weekly-cadence
+                    # universe's row can legitimately be up to ~6 days
+                    # stale, which is fine and disclosed here rather than
+                    # cluttering the common case of a fresh nightly row.
+                    _tt5_stale_html = ""
+                    try:
+                        _tt5_gen_dt = datetime.fromisoformat(_tr.get("generated_at") or "")
+                        if _tt5_gen_dt.tzinfo is None:
+                            _tt5_gen_dt = _tt5_gen_dt.replace(tzinfo=timezone.utc)
+                        if (_tt5_now - _tt5_gen_dt).total_seconds() / 3600.0 > 24:
+                            _tt5_day = i18n.format_weekday_abbrev(_tt5_gen_dt, _tt5_lang)
+                            _tt5_stale_html = (
+                                "<div style='font-size:10.5px;color:#5b7290;margin-top:2px;'>"
+                                f"{i18n.t('home.top5.as_of', _tt5_lang, day=_tt5_day)}</div>"
+                            )
+                    except (TypeError, ValueError):
+                        pass
+                    _tt5_html.append(
+                        "<tr>"
+                        + _td(_ttk_cell)
+                        + _td(_price_cell(_tr.get("price")))
+                        + _td(_bar_cell(_tr.get("value_score"),
+                                        SIGNAL_THRESHOLDS["WATCHLIST"],
+                                        SIGNAL_THRESHOLDS["LONG"]), minw=90)
+                        + _td(_badge_cell(_tr.get("valuation_label", "-")))
+                        + _td(_badge_cell(_tr.get("universe") or "-") + _tt5_stale_html)
+                        + "</tr>"
+                    )
+                st.markdown(
+                    _sdd_table(
+                        ["Ticker", "Price", "Value Score", "Valuation",
+                         i18n.t("home.top5.col_universe", _tt5_lang)],
+                        _tt5_html,
+                    ),
+                    unsafe_allow_html=True,
+                )
         st.caption(
-            "From last night's overnight scan - a sort result from described "
-            "calculations, not a recommendation. Full table in the "
-            "<a href='/scanner' target='_self' style='color:inherit;'>"
-            "Stock Scanner &rarr;</a>",
+            i18n.t(
+                "home.top5.caption", _tt5_lang,
+                link=(f"<a href='/scanner' target='_self' style='color:inherit;'>"
+                      f"{i18n.t('nav.scanner', _tt5_lang)} &rarr;</a>"),
+            ),
             unsafe_allow_html=True,
         )
 

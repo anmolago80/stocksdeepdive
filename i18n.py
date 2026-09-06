@@ -582,6 +582,26 @@ EN = {
         "{email} saved a watchlist on StocksDeepDive while signed in. To "
         "stop these, remove all stocks from your watchlist on the site."
     ),
+
+    # top5_au_us instruction: the home page "Tonight's top 5" strip,
+    # replacing the old single ASX-200-only table with one per country,
+    # each drawn from every universe of that country (snapshot_store,
+    # deduped by ticker - see snapshot_store.all_public_rows()'s own
+    # docstring for why that dedup is free with this table's schema).
+    # {country} is itself localized via home.top5.country_au/country_us
+    # below, not hardcoded into this template.
+    "home.top5.kicker": "TONIGHT'S TOP 5",
+    "home.top5.heading": "Tonight's top 5 — {country}",
+    "home.top5.country_au": "Australia",
+    "home.top5.country_us": "USA",
+    "home.top5.col_universe": "Universe",
+    "home.top5.caption": (
+        "From the latest overnight scans across all covered universes "
+        "(nightly + weekly) — a sort result from described calculations, "
+        "not a recommendation. Full tables in the {link}"
+    ),
+    "home.top5.no_scan": "No overnight scan yet for {country}.",
+    "home.top5.as_of": "as of {day}",
 }
 
 ES = {
@@ -1040,6 +1060,23 @@ ES = {
         "estando conectado. Para dejar de recibirlo, elimina todas las "
         "acciones de tu lista de seguimiento en el sitio."
     ),
+
+    "home.top5.kicker": "TOP 5 DE ESTA NOCHE",
+    "home.top5.heading": "El top 5 de esta noche — {country}",
+    "home.top5.country_au": "Australia",
+    "home.top5.country_us": "EE. UU.",
+    "home.top5.col_universe": "Universo",
+    "home.top5.caption": (
+        "De los escaneos nocturnos más recientes en todos los universos "
+        "cubiertos (diarios + semanales) — un resultado de ordenamiento a "
+        "partir de cálculos descritos, no una recomendación. Tablas "
+        "completas en el {link}"
+    ),
+    # Note: deliberately ends in "todavía." rather than "{country}." -
+    # {country} can resolve to "EE. UU.", whose own trailing period would
+    # otherwise double up with the sentence's.
+    "home.top5.no_scan": "No hay un escaneo nocturno reciente para {country} todavía.",
+    "home.top5.as_of": "al {day}",
 }
 
 
@@ -1118,6 +1155,17 @@ def format_date_a_d_b(dt, lang="en"):
     else:
         wd, mon = wd_en, mon_en
     return f"{wd} {day} {mon}"
+
+
+def format_weekday_abbrev(dt, lang="en"):
+    """Bare "%a" weekday abbreviation (e.g. "Tue"/"mar"), translated for
+    lang=="es" via the same _WEEKDAY_ABBREV_ES map format_date_a_d_b uses.
+    Added for the home page's per-row "as of {day}" stale-snapshot note
+    (top5_au_us instruction), which needs just the weekday, not the full
+    "%a %d %b" day-group label. lang="en" (the default) is exactly
+    dt.strftime("%a")."""
+    wd_en = dt.strftime("%a")
+    return _WEEKDAY_ABBREV_ES.get(wd_en, wd_en) if lang == "es" else wd_en
 
 
 # -----------------------------------------------------------------

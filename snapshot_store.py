@@ -169,6 +169,47 @@ def snapshot_count():
         return conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
 
 
+def all_public_rows():
+    """One row per ticker (already deduped - `ticker` is this table's
+    primary key, so a stock scanned under several universes, e.g. BHP in
+    ASX 20/50/100/200/300, only ever has ONE stored row: whichever scan
+    wrote to it most recently, per save_snapshot()'s own upsert), shaped
+    through public_view() so callers get the same neutral field names
+    (price/value_score/valuation_label/company_name/...) as every other
+    public surface.
+
+    Built for the home page's "Tonight's top 5" tables (top5_au_us
+    instruction): a single SELECT + one json.loads pass per row, instead
+    of all_snapshots() + one get_snapshot() round-trip per ticker - the
+    difference between one query and N for a page that reads across
+    every scanned universe at once. Still SQLite-cheap even at a few
+    thousand rows; callers doing this on every page view should wrap it
+    in their own st.cache_data (app.py's home page does).
+
+    Returns [{"ticker":, "universe":, "generated_at":, **public_view
+    fields}, ...], ticker order. No universe filter (unlike
+    all_snapshots()) - every consumer of this so far wants the whole
+    table at once."""
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT ticker, universe, data_json, generated_at FROM snapshots "
+            "ORDER BY ticker"
+        ).fetchall()
+    out = []
+    for r in rows:
+        try:
+            data = json.loads(r["data_json"])
+        except (TypeError, ValueError):
+            data = {}
+        pub = public_view(data)
+        pub["ticker"] = r["ticker"]
+        pub["universe"] = r["universe"]
+        pub["generated_at"] = r["generated_at"]
+        out.append(pub)
+    return out
+
+
 def delete_snapshot(ticker):
     """Permanently removes one ticker's stored snapshot. Fix 9 (2026-09-01):
     used by nightly_scan.cleanup_fix9_nan_data(), the one-off boot-time
