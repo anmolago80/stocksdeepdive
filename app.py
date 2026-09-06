@@ -64,6 +64,7 @@ import compounder_ui
 from compounder_ui import sdd_plotly_chart
 from simple_view_copy import SECTION_WHY_CAPTIONS, SECTION_WHY_CAPTIONS_ES
 import stress_etf_help_copy
+import switch_analyzer_engine
 import i18n
 
 
@@ -12161,15 +12162,16 @@ def _render_portfolio_switcher(email):
 
 # Part 5 (home tiles, Option C): single source of truth for "how many tools
 # does the Portfolio page have" - the mega-batch mock's own home-tile copy
-# said "8 tools inside", but the page has grown two tabs since that mock
-# was drawn (ETFs and Stress Test, Parts 2-3 of this same batch), so it's
-# now 9. Deriving both the st.tabs() call below AND the home tile's live
-# stat from len() of this one list means the displayed count can never go
-# stale like that again, no matter how many more tabs get added later.
+# said "8 tools inside", but the page has grown since that mock was drawn
+# (ETFs and Stress Test, Parts 2-3 of this same batch; Switch Analyzer,
+# Part 17), so it's now 10. Deriving both the st.tabs() call below AND the
+# home tile's live stat from len() of this one list means the displayed
+# count can never go stale like that again, no matter how many more tabs
+# get added later.
 _PORTFOLIO_TAB_I18N_KEYS = [
     "portfolio.tab_holdings", "portfolio.tab_income", "portfolio.tab_overview",
     "portfolio.tab_health", "portfolio.tab_progress", "portfolio.tab_etfs",
-    "portfolio.tab_stress", "portfolio.tab_ask", "portfolio.tab_alerts",
+    "portfolio.tab_stress", "portfolio.tab_switch", "portfolio.tab_ask", "portfolio.tab_alerts",
 ]
 
 
@@ -12219,7 +12221,7 @@ def page_portfolio():
                     _analyses[_futures[_fut]] = _fut.result()
 
     (_tab_holdings, _tab_income, _tab_overview, _tab_health, _tab_progress,
-     _tab_etfs, _tab_stress, _tab_ask, _tab_alerts) = st.tabs(
+     _tab_etfs, _tab_stress, _tab_switch, _tab_ask, _tab_alerts) = st.tabs(
         [i18n.t(_k, _pf_lang) for _k in _PORTFOLIO_TAB_I18N_KEYS]
     )
 
@@ -12249,6 +12251,14 @@ def page_portfolio():
         # weights, never modifies the real portfolio - both hard rules
         # enforced in the rebalance sandbox below.
         _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses)
+    with _tab_switch:
+        # Mega-batch Part 17: opportunity-cost of switching one holding
+        # for a candidate ticker, once the real toll of selling (CGT +
+        # brokerage) is priced in. Runs after Part 14 (the stress engine's
+        # split-adjustment fix) since it reuses stress_engine's history/
+        # correlation machinery for its flags and trim simulation. Never
+        # modifies the real portfolio, never suggests a switch.
+        _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
     with _tab_ask:
         # AI-readiness roadmap Phase 3: private to this account - never
         # shown to, or answerable about, anyone else's holdings. See
@@ -13475,6 +13485,405 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
             st.caption(_st_("no_data"))
         st.caption(_st_("monte_carlo_caption"))
     st.caption(_st_("footer_caption"))
+
+
+# -----------------------------------------------------------------
+# Mega-batch Part 17 - "Switch Analyzer" tab: opportunity-cost of selling
+# holding A to buy candidate B, once the real toll of selling (CGT +
+# brokerage) is accounted for. Every number-crunching formula lives in
+# switch_analyzer_engine.py (pure, no Streamlit/network deps, unit
+# tested against the mega-batch's own worked example); everything here
+# is just sourcing real inputs for those formulas and rendering them.
+# Signed-in only (page_portfolio()'s own gate above already enforces
+# this for the whole page). Never suggests a switch - see the verdict
+# strings in i18n.py (portfolio.switch.verdict_*), which report the
+# model's own numbers as a fact, never an instruction.
+# -----------------------------------------------------------------
+
+def _switch_get_iv(ticker):
+    """(fair_value, source) for `ticker`'s Fair Value "DCF" method (the
+    same "Buffet Share Price" model build_compounder_data.py traces
+    through Andrew's own workbook - see VALUATION_METHOD_COLS there),
+    hand-built research first, falling back to auto_compounder_engine's
+    nightly-computed equivalent of the SAME model for any ticker not in
+    the hand-built workbook. (None, None) if neither has a value.
+
+    This is deliberately NOT resolver_engine.resolve_intrinsic_value()
+    (the site-wide nightly-scan model behind Long Score/signals and the
+    Portfolio Health tab's own "intrinsic_value") - Part 17's spec asks
+    specifically for the Research/Compounder-View Fair Value model with
+    its 📚/🤖 hand-built-vs-auto provenance, which is a different model
+    living in compounder_data.json / auto_compounder_engine.py."""
+    ticker = (ticker or "").strip().upper()
+    if not ticker:
+        return None, None
+    try:
+        _data = _load_compounder_data()
+        _hb = ((_data or {}).get("sections", {}).get("Fair Value", {})
+               .get("valuation_methods", {}).get(ticker, {}))
+        if _hb.get("dcf") is not None:
+            return _hb["dcf"], "hand_built"
+    except Exception:
+        pass
+    try:
+        _auto_sections = auto_compounder_engine.build_sections(ticker)
+        _auto = ((_auto_sections or {}).get("Fair Value", {})
+                 .get("valuation_methods", {}).get(ticker, {}))
+        if _auto.get("dcf") is not None:
+            return _auto["dcf"], "auto"
+    except Exception:
+        pass
+    return None, None
+
+
+def _switch_data_staleness(ticker):
+    """(is_stale, detail) for the flag strip - piggybacks on
+    fundamentals_data's own already-computed cache-quality signals
+    (meta.flags / meta.fetched_at age vs its own 24h TTL) rather than
+    inventing a second, independent staleness check. Never raises;
+    (False, "") on any lookup failure (treated as "nothing to flag",
+    not as a false positive)."""
+    ticker = (ticker or "").strip().upper()
+    if not ticker:
+        return False, ""
+    try:
+        bundle = fundamentals_data.get_bundle(ticker)
+    except Exception:
+        return False, ""
+    if not bundle:
+        return True, "no fundamentals data available at all"
+    meta = bundle.get("meta") or {}
+    flags = meta.get("flags") or []
+    _bad = [f for f in flags if f in (
+        "info_unavailable", "price_history_unavailable", "eodhd_unavailable", "no_statements",
+    )]
+    if _bad:
+        return True, "data fetch issue(s): " + ", ".join(_bad)
+    fetched_at = meta.get("fetched_at")
+    if fetched_at:
+        try:
+            age = (datetime.now(timezone.utc)
+                   - datetime.fromisoformat(fetched_at).replace(tzinfo=timezone.utc)).total_seconds()
+            if age > fundamentals_data._CACHE_TTL_SECONDS * 2:
+                return True, f"cached data is {age / 3600:.0f}h old"
+        except Exception:
+            pass
+    return False, ""
+
+
+def _switch_correlation_vs_rest(candidate_ticker, exclude_hkey, _holdings, _analyses):
+    """Correlation of `candidate_ticker`'s daily returns against the rest
+    of the portfolio's own combined return series (every current holding
+    EXCEPT the one being switched out of, `exclude_hkey`) - reuses
+    stress_engine.build_combined_series() (the same portfolio-total-
+    return-index builder the Stress Test tab's own beta/drawdown figures
+    are built from) plus etf_insights.correlation_vs() (the same
+    24-month-floor correlation the My ETFs tab already uses), rather
+    than a third, independent correlation calculation. None if there
+    isn't enough shared history to say anything (never a guessed
+    number)."""
+    _rest = [h for h in (_holdings or []) if _hkey(h) != exclude_hkey]
+    if not _rest:
+        return None
+    weights, _total = _stress_weights_and_value(_rest, _analyses)
+    if not weights:
+        return None
+    _tickers = tuple(sorted(set(weights.keys()) | {candidate_ticker}))
+    histories = _stress_history_bundle(_tickers)
+    histories, _faulty = _stress_apply_guard(histories, _rest + [{"ticker": candidate_ticker, "kind": "STOCK"}])
+    _cand_hist = histories.get(candidate_ticker)
+    if _cand_hist is None or _cand_hist.empty:
+        return None
+    _rest_weights = {t: w for t, w in weights.items() if t != candidate_ticker}
+    _series, _used, _dropped = stress_engine.build_combined_series(_rest_weights, histories)
+    if _series is None or _series.empty:
+        return None
+    try:
+        _rest_hist_df = pd.DataFrame({"Close": _series})
+        return etf_insights.correlation_vs(_cand_hist, _rest_hist_df)
+    except Exception:
+        return None
+
+
+def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses):
+    """Part 17 - the "Switch Analyzer" tab: pair picker -> settings ->
+    side-by-side -> switching-toll bridge -> verdict -> flags -> "when
+    would this flip" -> trim-instead-of-switch sandbox. Needs a single
+    named portfolio (not the combined "All portfolios" view - see
+    combined_view_note) with at least one holding that has a live
+    price."""
+    _lang = st.session_state.get("lang", "en")
+    _sw = lambda key, **fmt: i18n.t(f"portfolio.switch.{key}", _lang, **fmt)
+
+    if not _active_portfolio:
+        st.caption(_sw("combined_view_note"))
+        return
+
+    _rows, _totals, _fx_missing, _price_missing = _build_portfolio_rows(_holdings, _analyses)
+    _priced_rows = [r for r in _rows if r["value_aud"] is not None and r["cost_aud"] is not None]
+    if not _priced_rows:
+        st.caption(_sw("empty"))
+        return
+
+    st.caption(_sw("intro_caption"))
+
+    # --- Settings (tax rate / brokerage), persisted per portfolio ------
+    _settings = portfolio_store.get_switch_settings(email, _active_portfolio)
+    with st.expander(_sw("settings_title"), expanded=(_settings["tax_rate"] is None or _settings["brokerage"] is None)):
+        st.caption(_sw("settings_caption"))
+        _sc1, _sc2 = st.columns(2)
+        with _sc1:
+            _tax_pct_in = st.number_input(
+                _sw("settings_tax_rate"), min_value=0.0, max_value=100.0, step=0.5,
+                value=float((_settings["tax_rate"] or 0.0) * 100),
+                key=_pf_key(_active_portfolio, "sw_tax_rate"),
+            )
+        with _sc2:
+            _brokerage_in = st.number_input(
+                _sw("settings_brokerage"), min_value=0.0, step=1.0,
+                value=float(_settings["brokerage"] or 0.0),
+                key=_pf_key(_active_portfolio, "sw_brokerage"),
+            )
+        if st.button(_sw("settings_save"), key=_pf_key(_active_portfolio, "sw_settings_save")):
+            portfolio_store.set_switch_settings(
+                email, _active_portfolio, tax_rate=_tax_pct_in / 100.0, brokerage=_brokerage_in,
+            )
+            st.success(_sw("settings_saved"))
+            st.rerun()
+
+    _tax_rate = _settings["tax_rate"]
+    _brokerage = _settings["brokerage"]
+    if _tax_rate is None or _brokerage is None:
+        st.info(_sw("settings_missing"))
+        return
+
+    # --- Pair picker -----------------------------------------------------
+    st.markdown(f"##### {_sw('pair_title')}")
+    _labels = _hlabels(_holdings)
+    _from_options = [_hkey(h) for h in _holdings if _hkey(h) in {(r["portfolio"], r["ticker"]) for r in _priced_rows}]
+    _pc1, _pc2 = st.columns(2)
+    with _pc1:
+        _from_key = st.selectbox(
+            _sw("from_label"), _from_options, format_func=lambda k: _labels.get(k, k[1]),
+            key=_pf_key(_active_portfolio, "sw_from_select"),
+        )
+    with _pc2:
+        _to_ticker_in = st.text_input(
+            _sw("to_label"), key=_pf_key(_active_portfolio, "sw_to_ticker"),
+        ).strip().upper()
+        _lookup_clicked = st.button(_sw("lookup_btn"), key=_pf_key(_active_portfolio, "sw_lookup_btn"))
+
+    if not _from_key:
+        return
+    _from_row = next((r for r in _priced_rows if (r["portfolio"], r["ticker"]) == _from_key), None)
+    if _from_row is None:
+        return
+
+    _lookup_key = _pf_key(_active_portfolio, "sw_lookup_result")
+    if _lookup_clicked:
+        if not _to_ticker_in:
+            st.error(_sw("lookup_not_found", ticker=""))
+            st.session_state.pop(_lookup_key, None)
+        else:
+            with st.spinner(f"{_sw('lookup_btn')}..."):
+                try:
+                    _snap_b = portfolio_health_engine.fetch_snapshot(_to_ticker_in)
+                except Exception:
+                    _snap_b = None
+            if not _snap_b or _snap_b.get("price") is None:
+                st.error(_sw("lookup_not_found", ticker=_to_ticker_in))
+                st.session_state.pop(_lookup_key, None)
+            else:
+                st.session_state[_lookup_key] = {
+                    "ticker": _to_ticker_in, "price": _snap_b.get("price"),
+                    "name": _snap_b.get("name") or _to_ticker_in,
+                }
+
+    _to = st.session_state.get(_lookup_key)
+    if not _to or _to.get("ticker") != _to_ticker_in:
+        return
+
+    _years = st.number_input(
+        _sw("years_label"), min_value=1, max_value=10, value=5, step=1,
+        key=_pf_key(_active_portfolio, "sw_years"),
+    )
+
+    _from_ticker = _from_row["ticker"]
+    _to_ticker = _to["ticker"]
+    _price_a, _price_b = _from_row["current_price"], _to["price"]
+    _iv_a, _source_a = _switch_get_iv(_from_ticker)
+    _iv_b, _source_b = _switch_get_iv(_to_ticker)
+    _source_label = {"hand_built": _sw("source_hand_built"), "auto": _sw("source_auto")}
+
+    # --- Side by side ------------------------------------------------
+    st.markdown(f"##### {_sw('side_by_side_title')}")
+    _ret_a = switch_analyzer_engine.expected_rerating_return(_price_a, _iv_a, _years)
+    _ret_b = switch_analyzer_engine.expected_rerating_return(_price_b, _iv_b, _years)
+    _sbs_rows = []
+    for _tk, _price, _iv, _src, _ret in (
+        (_from_ticker, _price_a, _iv_a, _source_a, _ret_a),
+        (_to_ticker, _price_b, _iv_b, _source_b, _ret_b),
+    ):
+        _sbs_rows.append({
+            _sw("col_position"): _tk,
+            _sw("col_price"): f"{_price:,.2f}" if _price is not None else "n/a",
+            _sw("col_fair_value"): f"{_iv:,.2f}" if _iv is not None else "n/a",
+            _sw("col_source"): _source_label.get(_src, "n/a"),
+            _sw("col_upside"): (f"{((_iv - _price) / _price) * 100:.1f}%"
+                                  if (_iv is not None and _price) else "n/a"),
+            _sw("col_expected_return", years=_years): (f"{_ret * 100:.1f}%" if _ret is not None else "n/a"),
+        })
+    st.dataframe(_sbs_rows, hide_index=True, use_container_width=True)
+
+    # --- The switching toll (bridge) ----------------------------------
+    st.markdown(f"##### {_sw('bridge_title')}")
+    st.caption(_sw("bridge_caption", ticker=_from_ticker))
+    _held_days = None
+    if _from_row.get("buy_date"):
+        try:
+            _held_days = (datetime.now(timezone.utc).date() - _date.fromisoformat(_from_row["buy_date"])).days
+        except Exception:
+            _held_days = None
+    _toll = switch_analyzer_engine.compute_toll(
+        _from_row["value_aud"], _from_row["cost_aud"], _tax_rate, _brokerage, held_days=_held_days,
+    )
+    if _toll is None:
+        return
+    _bridge_rows = [
+        {"": _sw("bridge_value"), " ": f"A${_from_row['value_aud']:,.0f}"},
+        {"": _sw("bridge_cost_base"), " ": f"A${_from_row['cost_aud']:,.0f}"},
+        {"": _sw("bridge_gain"), " ": f"A${_toll['gain']:,.0f}"},
+        {"": (_sw("bridge_discount_applied") if _toll["discount_applied"] else _sw("bridge_discount_not_applied")), " ": ""},
+        {"": _sw("bridge_taxable_gain"), " ": f"A${_toll['taxable_gain']:,.0f}"},
+        {"": _sw("bridge_tax", rate=f"{_tax_rate * 100:.0f}"), " ": f"A${_toll['tax']:,.0f}"},
+        {"": _sw("bridge_brokerage", each=f"A${_brokerage:,.0f}"), " ": f"A${_toll['brokerage_total']:,.0f}"},
+        {"": _sw("bridge_proceeds"), " ": f"A${_toll['proceeds_after_toll']:,.0f}"},
+    ]
+    st.dataframe(_bridge_rows, hide_index=True, use_container_width=True, column_config={
+        "": st.column_config.Column(""), " ": st.column_config.Column(""),
+    })
+    if _toll["toll_pct_of_value"] is not None:
+        st.caption(_sw("bridge_toll_pct", pct=f"{_toll['toll_pct_of_value'] * 100:.1f}"))
+
+    _cf = switch_analyzer_engine.cgt_twelve_month_counterfactual(
+        _from_row["value_aud"], _from_row["cost_aud"], _tax_rate, _brokerage, _held_days,
+    )
+    if _cf:
+        st.caption(_sw(
+            "twelve_month_chip", tax_now=f"{_cf['tax_now']:,.0f}", tax_later=f"{_cf['tax_after_12mo']:,.0f}",
+            days=_cf["days_remaining"], extra=f"{_cf['extra_tax_now']:,.0f}",
+        ))
+
+    _z = switch_analyzer_engine.annualised_toll_rate(_from_row["value_aud"], _toll["proceeds_after_toll"], _years)
+    with st.expander(_sw("bridge_formula_title"), expanded=False):
+        st.caption(_sw("bridge_formula", years=_years))
+    if _z is not None:
+        st.markdown(f"**{_sw('bridge_z_line', pct=f'{_z * 100:.2f}', years=_years)}**")
+
+    # --- Flags -----------------------------------------------------------
+    # Candidate B's resulting share of the portfolio after a FULL switch:
+    # whatever B is already worth (0 if not currently held) plus the
+    # toll's own proceeds_after_toll (what actually lands in B), over the
+    # portfolio's current total value - a plain "how concentrated would
+    # this leave me" check, not a recommendation.
+    _total_portfolio_value = _totals.get("value_aud") or 0.0
+    _existing_b_value = next((r["value_aud"] for r in _rows if r["ticker"] == _to_ticker and r["value_aud"]), 0.0)
+    _resulting_pct = (
+        (_existing_b_value + _toll["proceeds_after_toll"]) / _total_portfolio_value * 100
+        if _total_portfolio_value else None
+    )
+    _corr = _switch_correlation_vs_rest(_to_ticker, _from_key, _holdings, _analyses)
+    _stale_a, _detail_a = _switch_data_staleness(_from_ticker)
+    _stale_b, _detail_b = _switch_data_staleness(_to_ticker)
+    _status_a, _reason_a = card_blurb_store.get_research_status(_from_ticker)
+    _status_b, _reason_b = card_blurb_store.get_research_status(_to_ticker)
+
+    _flags = []
+    if switch_analyzer_engine.concentration_flag(_resulting_pct):
+        _flags.append(_sw("flag_concentration", ticker=_to_ticker, pct=f"{_resulting_pct:.0f}",
+                           threshold=f"{switch_analyzer_engine.CONCENTRATION_FLAG_PCT:.0f}"))
+    if switch_analyzer_engine.high_correlation_flag(_corr):
+        _flags.append(_sw("flag_correlation", ticker=_to_ticker, corr=f"{_corr:.2f}"))
+    if _stale_a:
+        _flags.append(_sw("flag_stale_a", ticker=_from_ticker, detail=_detail_a))
+    if _stale_b:
+        _flags.append(_sw("flag_stale_b", ticker=_to_ticker, detail=_detail_b))
+    for _tk, _status, _reason in ((_from_ticker, _status_a, _reason_a), (_to_ticker, _status_b, _reason_b)):
+        if _status == "terminated":
+            _flags.append(_sw("flag_terminated", ticker=_tk, reason=(f" ({_reason})" if _reason else "")))
+    if _flags:
+        st.markdown(f"**{_sw('flags_title')}**")
+        for _f in _flags:
+            st.warning(_f)
+
+    # --- Verdict (always red-bordered - this is fundamentally a cost/tax
+    # box, whichever way the comparison falls) ---------------------------
+    st.markdown(f"##### {_sw('verdict_title')}")
+    _verdict_html_open = "<div style='border-left:4px solid #fb7185; background:rgba(251,113,133,.06); border-radius:6px; padding:10px 14px; margin:6px 0;'>"
+    if _ret_a is None or _ret_b is None or _z is None:
+        st.markdown(_verdict_html_open + _sw("verdict_no_iv") + "</div>", unsafe_allow_html=True)
+    else:
+        _spread = _ret_b - _ret_a
+        _v = switch_analyzer_engine.verdict(_spread, _z)
+        _vkey = "verdict_passes" if _v["passes"] else "verdict_fails"
+        _vtext = _sw(
+            _vkey, to_ticker=_to_ticker, from_ticker=_from_ticker,
+            spread=f"{_spread * 100:.1f}", years=_years, toll=f"{_z * 100:.2f}",
+            margin=f"{abs(_v['margin_pct']) * 100:.1f}",
+        )
+        st.markdown(_verdict_html_open + _vtext + "</div>", unsafe_allow_html=True)
+
+        # --- When would this flip? --------------------------------------
+        st.markdown(f"**{_sw('flip_title')}**")
+        _flip = switch_analyzer_engine.break_even_years(_from_row["value_aud"], _toll["proceeds_after_toll"], _spread)
+        if _flip is not None:
+            st.caption(_sw("flip_body", spread=f"{_spread * 100:.1f}", n=f"{_flip:.1f}"))
+        else:
+            st.caption(_sw("flip_never"))
+
+    # --- Trim instead of switching fully ---------------------------------
+    st.markdown(f"##### {_sw('trim_title')}")
+    st.caption(_sw("trim_caption", from_ticker=_from_ticker, to_ticker=_to_ticker))
+    _trim = st.slider(
+        _sw("trim_slider", ticker=_from_ticker), min_value=0, max_value=100, value=50, step=5,
+        key=_pf_key(_active_portfolio, "sw_trim_slider"),
+    ) / 100.0
+    _trim_toll = switch_analyzer_engine.trimmed_toll(
+        _from_row["value_aud"], _from_row["cost_aud"], _tax_rate, _brokerage, _trim, held_days=_held_days,
+    )
+    if _trim_toll:
+        st.caption(_sw(
+            "trim_toll_line", toll=f"{_trim_toll['toll_total']:,.0f}",
+            pct=f"{(_trim_toll['toll_pct_of_value'] or 0) * 100:.1f}",
+        ))
+    if _ret_a is not None and _ret_b is not None:
+        _blend = switch_analyzer_engine.blended_expected_return(_ret_a, _ret_b, _trim)
+        if _blend is not None:
+            st.caption(_sw("trim_blended_return", pct=f"{_blend * 100:.1f}"))
+
+    st.markdown(f"**{_sw('trim_sim_title')}**")
+    # Full-portfolio weights (this named portfolio only - tickers are
+    # unique within one portfolio, see portfolio_holdings' own PK), with
+    # `_from_ticker`'s value reduced by the trimmed-out amount and that
+    # same amount added onto `_to_ticker` (0 if not currently held).
+    _sim_weights = dict(_stress_weights_and_value(_holdings, _analyses)[0])
+    _moved_value = _from_row["value_aud"] * _trim
+    _sim_weights[_from_ticker] = max(_from_row["value_aud"] - _moved_value, 0.0)
+    _sim_weights[_to_ticker] = _sim_weights.get(_to_ticker, 0.0) + _moved_value
+    _sim_total = sum(_sim_weights.values())
+    _sim_tickers = tuple(sorted(_sim_weights.keys()))
+    _sim_histories = _stress_history_bundle(_sim_tickers)
+    _sim_histories, _sim_faulty = _stress_apply_guard(
+        _sim_histories, list(_holdings) + [{"ticker": _to_ticker, "kind": "STOCK"}],
+    )
+    try:
+        _mc_trim = stress_engine.monte_carlo(_sim_weights, _sim_histories, _sim_total, seed=42)
+    except Exception:
+        _mc_trim = None
+    if _mc_trim:
+        st.markdown(_stress_mc_band_html(_mc_trim), unsafe_allow_html=True)
+    else:
+        st.caption(_sw("trim_sim_unavailable"))
 
 
 def _stress_portfolio_ask_summary(_holdings, _analyses):

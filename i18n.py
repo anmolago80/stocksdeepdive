@@ -1150,6 +1150,135 @@ EN = {
     "portfolio.stress.window.ai_rally_2023_24": "2023-24 AI rally",
     "portfolio.stress.na": "—",
 
+    # Mega-batch Part 17: "Switch Analyzer" tab - opportunity-cost of
+    # selling holding A to buy candidate B, once the real toll of selling
+    # (CGT + brokerage) is accounted for. See switch_analyzer_engine.py
+    # for every formula behind these strings.
+    "portfolio.tab_switch": "\U0001F504 Switch Analyzer",
+    "portfolio.switch.combined_view_note": (
+        "Pick one portfolio above (not \"All portfolios\") to use the Switch Analyzer - "
+        "it needs a single portfolio's own tax rate/brokerage settings and cost bases."
+    ),
+    "portfolio.switch.empty": "Add a holding with a live price to use the Switch Analyzer.",
+    "portfolio.switch.intro_caption": (
+        "A factual opportunity-cost calculator, never a recommendation: selling a holding "
+        "to buy something else costs real money first (capital-gains tax + brokerage on "
+        "both trades) - this shows what the new position would need to out-earn every "
+        "year just to make up for that cost, based on this site's own fair-value estimates."
+    ),
+    "portfolio.switch.settings_title": "Switch Analyzer settings",
+    "portfolio.switch.settings_caption": (
+        "Your marginal tax rate and flat brokerage fee per trade, for this portfolio only. "
+        "Used only for the calculations on this tab - never shared, never sent to the API/MCP."
+    ),
+    "portfolio.switch.settings_tax_rate": "Marginal tax rate (%)",
+    "portfolio.switch.settings_brokerage": "Brokerage per trade (A$)",
+    "portfolio.switch.settings_save": "Save settings",
+    "portfolio.switch.settings_saved": "Settings saved.",
+    "portfolio.switch.settings_missing": (
+        "Enter and save your tax rate and brokerage above before running an analysis - "
+        "this tool never guesses either one."
+    ),
+    "portfolio.switch.pair_title": "Pick a pair",
+    "portfolio.switch.from_label": "Sell (a holding you're considering selling)",
+    "portfolio.switch.to_label": "Buy instead (candidate ticker, Yahoo format e.g. CSL.AX)",
+    "portfolio.switch.lookup_btn": "Look up",
+    "portfolio.switch.lookup_not_found": (
+        "Couldn't find price data for {ticker} - double-check the ticker (Yahoo format, "
+        "e.g. CSL.AX for ASX, AAPL for Nasdaq)."
+    ),
+    "portfolio.switch.years_label": "Holding period to analyse (years)",
+    "portfolio.switch.iv_unavailable": (
+        "No fair-value estimate is available for {ticker} yet, so the expected-return side "
+        "of this analysis can't be computed - the toll (bridge) figures below still stand on "
+        "their own."
+    ),
+    "portfolio.switch.source_hand_built": "\U0001F4DA hand-built research",
+    "portfolio.switch.source_auto": "\U0001F916 nightly model estimate",
+    "portfolio.switch.side_by_side_title": "Side by side",
+    "portfolio.switch.col_position": "Position",
+    "portfolio.switch.col_price": "Price",
+    "portfolio.switch.col_fair_value": "Fair value",
+    "portfolio.switch.col_source": "Source",
+    "portfolio.switch.col_upside": "Upside to fair value",
+    "portfolio.switch.col_expected_return": "Implied return over {years}y",
+    "portfolio.switch.bridge_title": "The switching toll",
+    "portfolio.switch.bridge_caption": (
+        "Selling {ticker} triggers this before a dollar of it can be redeployed into the new "
+        "position."
+    ),
+    "portfolio.switch.bridge_value": "Sale value (V)",
+    "portfolio.switch.bridge_cost_base": "Cost base (C)",
+    "portfolio.switch.bridge_gain": "Capital gain",
+    "portfolio.switch.bridge_discount_applied": "12-month CGT discount applied (50% of gain taxable)",
+    "portfolio.switch.bridge_discount_not_applied": "No 12-month CGT discount (held under 12 months, full gain taxable)",
+    "portfolio.switch.bridge_taxable_gain": "Taxable gain",
+    "portfolio.switch.bridge_tax": "Tax ({rate}%)",
+    "portfolio.switch.bridge_brokerage": "Brokerage (sell + buy, {each} each)",
+    "portfolio.switch.bridge_proceeds": "Proceeds after toll (P)",
+    "portfolio.switch.bridge_toll_pct": "Toll = {pct}% of the position's value",
+    "portfolio.switch.bridge_formula_title": "How the annualised toll (Z) is worked out",
+    "portfolio.switch.bridge_formula": (
+        "Z = (V ÷ P) ^ (1/N) − 1, where N is the {years}-year holding period above. "
+        "This is the constant annual return the new position must out-earn the old one by, "
+        "over N years, just to close the gap the toll opened up."
+    ),
+    "portfolio.switch.bridge_z_line": "Annualised toll (Z): {pct}%/yr over {years} years",
+    "portfolio.switch.twelve_month_chip": (
+        "Selling now forgoes the 12-month CGT discount: tax would be A\\${tax_now} now vs "
+        "A\\${tax_later} after {days} more day(s) (assuming the same sale value) - a "
+        "difference of A\\${extra}."
+    ),
+    "portfolio.switch.verdict_title": "Verdict",
+    "portfolio.switch.verdict_passes": (
+        "Based on this model's own fair-value estimates, {to_ticker} is estimated to out-earn "
+        "{from_ticker} by ≈{spread}%/yr over {years} years - clearing the {toll}%/yr "
+        "switching toll by ≈{margin}%/yr."
+    ),
+    "portfolio.switch.verdict_fails": (
+        "Based on this model's own fair-value estimates, {to_ticker} is estimated to out-earn "
+        "{from_ticker} by ≈{spread}%/yr over {years} years - short of the {toll}%/yr "
+        "switching toll by ≈{margin}%/yr."
+    ),
+    "portfolio.switch.verdict_no_iv": (
+        "Not enough fair-value data on one or both tickers to compare expected returns - only "
+        "the toll (above) can be shown for this pair."
+    ),
+    "portfolio.switch.flip_title": "When would this flip?",
+    "portfolio.switch.flip_body": (
+        "Holding today's estimated ≈{spread}%/yr return edge steady each year, the switch "
+        "would break even at N≈{n} years (N* = ln(V÷P) ÷ ln(1+spread))."
+    ),
+    "portfolio.switch.flip_never": (
+        "With today's estimated return edge at or below zero, a longer holding period alone "
+        "never makes this switch break even - the edge itself would need to turn positive first."
+    ),
+    "portfolio.switch.flags_title": "Things worth checking before reading the verdict",
+    "portfolio.switch.flag_concentration": (
+        "Buying the full position would make {ticker} ≈{pct}% of the portfolio's value - "
+        "above the {threshold}% level this tab flags as concentrated."
+    ),
+    "portfolio.switch.flag_correlation": (
+        "{ticker}'s price history is highly correlated ({corr}) with the rest of the "
+        "portfolio - it may add less diversification than it appears to."
+    ),
+    "portfolio.switch.flag_stale_a": "{ticker}'s data may be stale - {detail}.",
+    "portfolio.switch.flag_stale_b": "{ticker}'s data may be stale - {detail}.",
+    "portfolio.switch.flag_terminated": (
+        "Research on {ticker} was terminated{reason} - see the Research page before treating "
+        "its fair value as current."
+    ),
+    "portfolio.switch.trim_title": "Or trim instead of switching fully",
+    "portfolio.switch.trim_caption": (
+        "Move only part of the {from_ticker} position into {to_ticker} rather than all of it - "
+        "brokerage is a flat fee either way, so a small trim pays proportionally more of it."
+    ),
+    "portfolio.switch.trim_slider": "Fraction of {ticker} to move",
+    "portfolio.switch.trim_toll_line": "Toll on this trim: A\\${toll} ({pct}% of the trimmed amount)",
+    "portfolio.switch.trim_blended_return": "Blended implied return after the trim: ≈{pct}%/yr",
+    "portfolio.switch.trim_sim_title": "Simulated 1-year range after the trim",
+    "portfolio.switch.trim_sim_unavailable": "Not enough shared price history to simulate this trim yet.",
+
     # Next-batch instruction, Part 4: Rational Compounder page - company
     # shelf + verdict-first opener. Only the NEW opener strings this pass
     # introduces are covered here - the seven section names themselves
@@ -2196,6 +2325,133 @@ ES = {
     "portfolio.stress.window.covid_recovery": "Recuperación post-COVID",
     "portfolio.stress.window.ai_rally_2023_24": "Repunte de la IA 2023-24",
     "portfolio.stress.na": "—",
+
+    "portfolio.tab_switch": "\U0001F504 Analizador de cambio",
+    "portfolio.switch.combined_view_note": (
+        "Elige una cartera arriba (no \"Todas las carteras\") para usar el Analizador de "
+        "cambio - necesita la tasa de impuesto/comisión de una sola cartera y sus bases de coste."
+    ),
+    "portfolio.switch.empty": "Añade una posición con precio en vivo para usar el Analizador de cambio.",
+    "portfolio.switch.intro_caption": (
+        "Una calculadora factual de coste de oportunidad, nunca una recomendación: vender una "
+        "posición para comprar otra cuesta dinero real primero (impuesto sobre ganancias de "
+        "capital + comisión en ambas operaciones) - esto muestra cuánto tendría que rendir de "
+        "más la nueva posición cada año solo para compensar ese coste, según las propias "
+        "estimaciones de valor razonable de este sitio."
+    ),
+    "portfolio.switch.settings_title": "Ajustes del Analizador de cambio",
+    "portfolio.switch.settings_caption": (
+        "Tu tasa de impuesto marginal y comisión fija por operación, solo para esta cartera. "
+        "Se usan únicamente en los cálculos de esta pestaña - nunca se comparten ni se envían a la API/MCP."
+    ),
+    "portfolio.switch.settings_tax_rate": "Tasa de impuesto marginal (%)",
+    "portfolio.switch.settings_brokerage": "Comisión por operación (A$)",
+    "portfolio.switch.settings_save": "Guardar ajustes",
+    "portfolio.switch.settings_saved": "Ajustes guardados.",
+    "portfolio.switch.settings_missing": (
+        "Introduce y guarda tu tasa de impuesto y comisión arriba antes de ejecutar un análisis "
+        "- esta herramienta nunca los adivina."
+    ),
+    "portfolio.switch.pair_title": "Elige un par",
+    "portfolio.switch.from_label": "Vender (una posición que estás considerando vender)",
+    "portfolio.switch.to_label": "Comprar en su lugar (ticker candidato, formato Yahoo p. ej. CSL.AX)",
+    "portfolio.switch.lookup_btn": "Buscar",
+    "portfolio.switch.lookup_not_found": (
+        "No se encontraron datos de precio para {ticker} - revisa el ticker (formato Yahoo, "
+        "p. ej. CSL.AX para ASX, AAPL para Nasdaq)."
+    ),
+    "portfolio.switch.years_label": "Periodo a analizar (años)",
+    "portfolio.switch.iv_unavailable": (
+        "Aún no hay una estimación de valor razonable para {ticker}, así que la parte de "
+        "rendimiento esperado de este análisis no se puede calcular - las cifras del peaje "
+        "(abajo) siguen siendo válidas por sí solas."
+    ),
+    "portfolio.switch.source_hand_built": "\U0001F4DA investigación hecha a mano",
+    "portfolio.switch.source_auto": "\U0001F916 estimación del modelo nocturno",
+    "portfolio.switch.side_by_side_title": "Comparación",
+    "portfolio.switch.col_position": "Posición",
+    "portfolio.switch.col_price": "Precio",
+    "portfolio.switch.col_fair_value": "Valor razonable",
+    "portfolio.switch.col_source": "Fuente",
+    "portfolio.switch.col_upside": "Potencial hasta el valor razonable",
+    "portfolio.switch.col_expected_return": "Rendimiento implícito en {years} años",
+    "portfolio.switch.bridge_title": "El peaje del cambio",
+    "portfolio.switch.bridge_caption": (
+        "Vender {ticker} genera esto antes de que un solo dólar pueda reinvertirse en la nueva posición."
+    ),
+    "portfolio.switch.bridge_value": "Valor de venta (V)",
+    "portfolio.switch.bridge_cost_base": "Base de coste (C)",
+    "portfolio.switch.bridge_gain": "Ganancia de capital",
+    "portfolio.switch.bridge_discount_applied": "Se aplica el descuento de 12 meses (50% de la ganancia es imponible)",
+    "portfolio.switch.bridge_discount_not_applied": "Sin descuento de 12 meses (mantenida menos de 12 meses, ganancia imponible completa)",
+    "portfolio.switch.bridge_taxable_gain": "Ganancia imponible",
+    "portfolio.switch.bridge_tax": "Impuesto ({rate}%)",
+    "portfolio.switch.bridge_brokerage": "Comisión (venta + compra, {each} cada una)",
+    "portfolio.switch.bridge_proceeds": "Producto neto tras el peaje (P)",
+    "portfolio.switch.bridge_toll_pct": "El peaje es el {pct}% del valor de la posición",
+    "portfolio.switch.bridge_formula_title": "Cómo se calcula el peaje anualizado (Z)",
+    "portfolio.switch.bridge_formula": (
+        "Z = (V ÷ P) ^ (1/N) − 1, donde N es el periodo de {years} años de arriba. "
+        "Es el rendimiento anual constante que la nueva posición debe superar a la anterior, "
+        "durante N años, solo para cerrar la brecha que abrió el peaje."
+    ),
+    "portfolio.switch.bridge_z_line": "Peaje anualizado (Z): {pct}%/año durante {years} años",
+    "portfolio.switch.twelve_month_chip": (
+        "Vender ahora renuncia al descuento de 12 meses: el impuesto sería A\\${tax_now} ahora "
+        "frente a A\\${tax_later} dentro de {days} día(s) más (suponiendo el mismo valor de venta) "
+        "- una diferencia de A\\${extra}."
+    ),
+    "portfolio.switch.verdict_title": "Veredicto",
+    "portfolio.switch.verdict_passes": (
+        "Según las propias estimaciones de valor razonable de este modelo, se estima que "
+        "{to_ticker} supera a {from_ticker} en ≈{spread}%/año durante {years} años - superando "
+        "el peaje de {toll}%/año por ≈{margin}%/año."
+    ),
+    "portfolio.switch.verdict_fails": (
+        "Según las propias estimaciones de valor razonable de este modelo, se estima que "
+        "{to_ticker} supera a {from_ticker} en ≈{spread}%/año durante {years} años - por debajo "
+        "del peaje de {toll}%/año por ≈{margin}%/año."
+    ),
+    "portfolio.switch.verdict_no_iv": (
+        "No hay suficientes datos de valor razonable en uno de los dos tickers (o en ambos) "
+        "para comparar rendimientos esperados - solo se puede mostrar el peaje (arriba) para este par."
+    ),
+    "portfolio.switch.flip_title": "¿Cuándo cambiaría esto?",
+    "portfolio.switch.flip_body": (
+        "Manteniendo constante la ventaja de rendimiento estimada de hoy de ≈{spread}%/año, "
+        "el cambio alcanzaría el punto de equilibrio en N≈{n} años (N* = ln(V÷P) ÷ ln(1+ventaja))."
+    ),
+    "portfolio.switch.flip_never": (
+        "Con la ventaja de rendimiento estimada de hoy en cero o por debajo, un periodo de "
+        "tenencia más largo por sí solo nunca hace que este cambio alcance el punto de "
+        "equilibrio - la ventaja misma tendría que volverse positiva primero."
+    ),
+    "portfolio.switch.flags_title": "Cosas que vale la pena revisar antes de leer el veredicto",
+    "portfolio.switch.flag_concentration": (
+        "Comprar toda la posición haría que {ticker} fuera ≈{pct}% del valor de la cartera - "
+        "por encima del nivel del {threshold}% que esta pestaña marca como concentrado."
+    ),
+    "portfolio.switch.flag_correlation": (
+        "El historial de precios de {ticker} está muy correlacionado ({corr}) con el resto de "
+        "la cartera - puede aportar menos diversificación de lo que parece."
+    ),
+    "portfolio.switch.flag_stale_a": "Los datos de {ticker} podrían estar desactualizados - {detail}.",
+    "portfolio.switch.flag_stale_b": "Los datos de {ticker} podrían estar desactualizados - {detail}.",
+    "portfolio.switch.flag_terminated": (
+        "La investigación de {ticker} se terminó{reason} - consulta la página de Investigación "
+        "antes de tratar su valor razonable como vigente."
+    ),
+    "portfolio.switch.trim_title": "O recorta en lugar de cambiar del todo",
+    "portfolio.switch.trim_caption": (
+        "Mueve solo parte de la posición de {from_ticker} hacia {to_ticker} en lugar de toda - "
+        "la comisión es una tarifa fija en cualquier caso, así que un recorte pequeño paga "
+        "proporcionalmente más de ella."
+    ),
+    "portfolio.switch.trim_slider": "Fracción de {ticker} a mover",
+    "portfolio.switch.trim_toll_line": "Peaje de este recorte: A\\${toll} ({pct}% del monto recortado)",
+    "portfolio.switch.trim_blended_return": "Rendimiento implícito combinado tras el recorte: ≈{pct}%/año",
+    "portfolio.switch.trim_sim_title": "Rango simulado a 1 año tras el recorte",
+    "portfolio.switch.trim_sim_unavailable": "Aún no hay suficiente historial de precios compartido para simular este recorte.",
 
     "research.kicker": "INVESTIGACIÓN RATIONAL COMPOUNDER",
     "research.not_ready": (

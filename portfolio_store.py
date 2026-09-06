@@ -177,6 +177,21 @@ def _conn():
         )
     except sqlite3.OperationalError:
         pass
+    # Mega-batch Part 17: the Switch Analyzer's own per-portfolio inputs -
+    # the marginal tax rate and flat per-trade brokerage fee it needs to
+    # compute a real switching toll (see switch_analyzer_engine.py). Both
+    # NULL until the user fills in "Switch Analyzer settings" once - a
+    # missing value means "not set yet", never a guessed default rate,
+    # same missing-row convention every other column in this table uses.
+    # Guarded ALTER TABLE, same pattern as watchdog_enabled just above.
+    try:
+        conn.execute("ALTER TABLE portfolio_settings ADD COLUMN switch_tax_rate REAL")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE portfolio_settings ADD COLUMN switch_brokerage REAL")
+    except sqlite3.OperationalError:
+        pass
     _migrate_legacy_schema(conn)
     return conn
 
@@ -479,6 +494,43 @@ def set_watchdog_enabled(email, portfolio, enabled):
             "VALUES (?, ?, ?, ?) ON CONFLICT(email, portfolio) DO UPDATE SET "
             "watchdog_enabled = excluded.watchdog_enabled, updated_at = excluded.updated_at",
             (email, portfolio, 1 if enabled else 0, now),
+        )
+
+
+def get_switch_settings(email, portfolio):
+    """{'tax_rate': float|None, 'brokerage': float|None} for the Switch
+    Analyzer tab (Part 17) - both None (never a guessed default) for any
+    portfolio that hasn't had "Switch Analyzer settings" filled in yet,
+    same missing-row convention get_settings() above uses for
+    total_transferred/cash_held."""
+    if not email or not portfolio:
+        return {"tax_rate": None, "brokerage": None}
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT switch_tax_rate, switch_brokerage FROM portfolio_settings "
+            "WHERE email = ? AND portfolio = ?",
+            (email, portfolio),
+        ).fetchone()
+    if not row:
+        return {"tax_rate": None, "brokerage": None}
+    return {"tax_rate": row[0], "brokerage": row[1]}
+
+
+def set_switch_settings(email, portfolio, tax_rate=None, brokerage=None):
+    """Kept separate from set_settings()/set_watchdog_enabled() above -
+    same separation-of-concerns precedent - so saving the Switch
+    Analyzer's tax rate/brokerage can never clobber total_transferred/
+    cash_held/watchdog_enabled, and vice versa."""
+    if not email or not portfolio:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO portfolio_settings (email, portfolio, switch_tax_rate, switch_brokerage, updated_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(email, portfolio) DO UPDATE SET "
+            "switch_tax_rate = excluded.switch_tax_rate, switch_brokerage = excluded.switch_brokerage, "
+            "updated_at = excluded.updated_at",
+            (email, portfolio, tax_rate, brokerage, now),
         )
 
 
