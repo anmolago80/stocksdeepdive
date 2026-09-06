@@ -66,7 +66,299 @@ def _conn():
             updated_at TEXT NOT NULL
         )"""
     )
+    # Part 19 (Utilities bill check): the trial/cap counter - ONE row per
+    # email, lifetime. trial_used flips 0->1 the first time a check is
+    # ever recorded and never resets. month_key/month_count track the
+    # SEPARATE 10-checks-per-calendar-month cap that only ever applies to
+    # an active subscriber (is_subscribed()) - a signed-in-but-unsub'd
+    # visitor who has already used their trial is blocked outright
+    # (see can_check() below), so month_count only ever increments for
+    # subscribers.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS bill_check_usage (
+            email TEXT NOT NULL PRIMARY KEY,
+            trial_used INTEGER NOT NULL DEFAULT 0,
+            month_key TEXT,
+            month_count INTEGER NOT NULL DEFAULT 0
+        )"""
+    )
+    # One saved bill check per (email, fuel, postcode) - a rescan of the
+    # SAME fuel+postcode UPDATES this row (spec: "Rescanning the same
+    # fuel+postcode updates the row and keeps the prior reading as
+    # history"), a different fuel or postcode is a separate row/card on
+    # the dashboard. extra_json carries whatever fields don't have their
+    # own column (retailer/plan_name text, benchmark-specific numbers) -
+    # a few hundred bytes per check per the spec's own storage note.
+    # NEVER a column or key here for the image itself - it is never
+    # written to disk at all (see bill_check_engine.py's own docstring).
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS bill_checks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL,
+            fuel TEXT NOT NULL,
+            postcode TEXT,
+            status TEXT NOT NULL,
+            annual_cost REAL,
+            cheapest_annual_cost REAL,
+            switchable_saving REAL,
+            extra_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(email, fuel, postcode)
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS bill_check_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bill_id INTEGER NOT NULL,
+            plan_name TEXT,
+            annual_cost REAL,
+            recorded_at TEXT NOT NULL
+        )"""
+    )
+    # Admin-editable "typical deal" benchmark figures for the manual-
+    # entry-only rows (internet/mobile - spec's own wording) - a plain
+    # key -> typical annual cost table, owner-maintained via the Tools
+    # admin panel rather than hardcoded in bill_check_engine.py, so the
+    # owner can update a stale figure without a redeploy.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS typical_deal_rates (
+            service_key TEXT NOT NULL PRIMARY KEY,
+            typical_annual_cost REAL NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
     return conn
+
+
+# -----------------------------------------------------------------
+# Part 19: trial/cap gating. Deliberately mirrors is_subscribed()'s own
+# fail-CLOSED philosophy (paywall_engine.py's module docstring) - any
+# read error here must deny a check, never silently allow one, since
+# every allowed check costs real Anthropic/AI spend.
+# -----------------------------------------------------------------
+
+BILL_CHECK_MONTHLY_CAP = 10
+
+
+def bill_check_usage_status(email):
+    """{"trial_used": bool, "month_count": int, "month_cap": int} for the
+    "7 of 10 checks left this month" UI caption - informational only,
+    never the allow/deny decision itself (can_check() below owns that,
+    same split as ai_gate.check() vs ai_gate.remaining())."""
+    if not email:
+        return {"trial_used": False, "month_count": 0, "month_cap": BILL_CHECK_MONTHLY_CAP}
+    now_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT trial_used, month_key, month_count FROM bill_check_usage WHERE email = ?",
+            (email,),
+        ).fetchone()
+    if not row:
+        return {"trial_used": False, "month_count": 0, "month_cap": BILL_CHECK_MONTHLY_CAP}
+    trial_used, month_key, month_count = row
+    if month_key != now_month:
+        month_count = 0
+    return {"trial_used": bool(trial_used), "month_count": month_count,
+            "month_cap": BILL_CHECK_MONTHLY_CAP}
+
+
+def can_check(email, paywall_enabled, is_subscribed):
+    """(allowed: bool, reason: str). reason is one of "trial" (this
+    check consumes the free lifetime trial), "subscribed" (within the
+    monthly cap), "trial_used_paywall_off" (owner's own fail-closed
+    rule: "while PAYWALL_ENABLED is off, past-trial visitors see a
+    blocked card - protecting AI spend"), "needs_subscription", or
+    "monthly_cap_reached". Takes paywall_enabled/is_subscribed as
+    plain bool ARGUMENTS rather than importing paywall_engine directly -
+    keeps this module's only external dependency the stdlib, matching
+    every other *_store.py in this codebase, and makes the gating logic
+    trivially unit-testable without Streamlit or Stripe in the loop."""
+    if not email:
+        return False, "not_signed_in"
+    status = bill_check_usage_status(email)
+    if not status["trial_used"]:
+        return True, "trial"
+    if not paywall_enabled:
+        return False, "trial_used_paywall_off"
+    if not is_subscribed:
+        return False, "needs_subscription"
+    if status["month_count"] >= status["month_cap"]:
+        return False, "monthly_cap_reached"
+    return True, "subscribed"
+
+
+def record_check_usage(email):
+    """Call ONLY after a check the caller's can_check() already allowed
+    actually ran (mirrors ai_gate.record()'s own "only after real work
+    happened" convention). Flips trial_used on the very first call for
+    an email; every call after that increments month_count, resetting
+    it to 1 (not 0) on a new calendar month rather than 0 then needing a
+    second increment."""
+    if not email:
+        return
+    now_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT trial_used, month_key, month_count FROM bill_check_usage WHERE email = ?",
+            (email,),
+        ).fetchone()
+        if not row:
+            conn.execute(
+                "INSERT INTO bill_check_usage (email, trial_used, month_key, month_count) "
+                "VALUES (?, 0, ?, 0)", (email, now_month),
+            )
+            row = (0, now_month, 0)
+        trial_used, month_key, month_count = row
+        if not trial_used:
+            conn.execute(
+                "UPDATE bill_check_usage SET trial_used = 1 WHERE email = ?", (email,),
+            )
+            return
+        new_count = (month_count + 1) if month_key == now_month else 1
+        conn.execute(
+            "UPDATE bill_check_usage SET month_key = ?, month_count = ? WHERE email = ?",
+            (now_month, new_count, email),
+        )
+
+
+# -----------------------------------------------------------------
+# Part 19: saved bill checks + rescan history. Storage note (spec):
+# "extracted fields + comparison results only ... a few hundred bytes
+# per check" and "No images, ever" - enforced by construction here
+# simply by there being no column any caller could put image bytes into.
+# -----------------------------------------------------------------
+
+def list_bill_checks(email):
+    """Every saved check for this email, most-recent-saving first (the
+    dashboard's own sort is by biggest saving, done by the caller - this
+    is just the raw rows)."""
+    if not email:
+        return []
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, fuel, postcode, status, annual_cost, cheapest_annual_cost, "
+            "switchable_saving, extra_json, created_at, updated_at FROM bill_checks "
+            "WHERE email = ? ORDER BY updated_at DESC",
+            (email,),
+        ).fetchall()
+    out = []
+    for r in rows:
+        try:
+            extra = json.loads(r[7]) if r[7] else {}
+        except (TypeError, ValueError):
+            extra = {}
+        out.append({
+            "id": r[0], "fuel": r[1], "postcode": r[2], "status": r[3],
+            "annual_cost": r[4], "cheapest_annual_cost": r[5],
+            "switchable_saving": r[6], "extra": extra,
+            "created_at": r[8], "updated_at": r[9],
+        })
+    return out
+
+
+def save_bill_check(email, fuel, postcode, status, annual_cost,
+                    cheapest_annual_cost, switchable_saving, extra):
+    """Upserts on (email, fuel, postcode) - a rescan of the same
+    fuel+postcode updates the row and, per the spec, appends the PRIOR
+    reading to bill_check_history first (so "was $1,393 last yr" has
+    something to read from) rather than silently discarding it. extra:
+    plain dict of whatever non-columned fields this fuel/status needs
+    (retailer, plan_name, rank/total_count, benchmark typical figures,
+    etc.) - json-serialised as-is, caller owns its shape."""
+    if not email:
+        return None
+    now = datetime.now(timezone.utc).isoformat()
+    extra_json = json.dumps(extra or {})
+    with _conn() as conn:
+        existing = conn.execute(
+            "SELECT id, annual_cost, extra_json FROM bill_checks "
+            "WHERE email = ? AND fuel = ? AND postcode IS ?",
+            (email, fuel, postcode),
+        ).fetchone()
+        if existing:
+            bill_id, prev_annual_cost, prev_extra_json = existing
+            try:
+                prev_plan_name = (json.loads(prev_extra_json) if prev_extra_json else {}).get("plan_name")
+            except (TypeError, ValueError):
+                prev_plan_name = None
+            conn.execute(
+                "INSERT INTO bill_check_history (bill_id, plan_name, annual_cost, recorded_at) "
+                "VALUES (?, ?, ?, ?)",
+                (bill_id, prev_plan_name, prev_annual_cost, now),
+            )
+            conn.execute(
+                "UPDATE bill_checks SET status = ?, annual_cost = ?, "
+                "cheapest_annual_cost = ?, switchable_saving = ?, extra_json = ?, "
+                "updated_at = ? WHERE id = ?",
+                (status, annual_cost, cheapest_annual_cost, switchable_saving,
+                 extra_json, now, bill_id),
+            )
+            return bill_id
+        cur = conn.execute(
+            "INSERT INTO bill_checks (email, fuel, postcode, status, annual_cost, "
+            "cheapest_annual_cost, switchable_saving, extra_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (email, fuel, postcode, status, annual_cost, cheapest_annual_cost,
+             switchable_saving, extra_json, now, now),
+        )
+        return cur.lastrowid
+
+
+def get_bill_check_history(bill_id):
+    """[{"plan_name", "annual_cost", "recorded_at"}, ...] oldest first,
+    for the small per-row history table the spec asks for."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT plan_name, annual_cost, recorded_at FROM bill_check_history "
+            "WHERE bill_id = ? ORDER BY recorded_at ASC",
+            (bill_id,),
+        ).fetchall()
+    return [{"plan_name": r[0], "annual_cost": r[1], "recorded_at": r[2]} for r in rows]
+
+
+def delete_bill_check(email, bill_id):
+    """Lets a signed-in visitor remove one saved check (not in the
+    original mock, but a reasonable, low-risk affordance for private
+    per-user data with no downstream reference to a row's id anywhere
+    else) - scoped to `email` so one visitor can never delete another's
+    row even if an id were guessed."""
+    if not email or not bill_id:
+        return
+    with _conn() as conn:
+        conn.execute("DELETE FROM bill_check_history WHERE bill_id = ? AND bill_id IN "
+                     "(SELECT id FROM bill_checks WHERE id = ? AND email = ?)",
+                     (bill_id, bill_id, email))
+        conn.execute("DELETE FROM bill_checks WHERE id = ? AND email = ?", (bill_id, email))
+
+
+# -----------------------------------------------------------------
+# Part 19: admin-editable "typical deal" benchmark table (internet/
+# mobile manual-entry rows). Owner-maintained via the Tools admin panel.
+# -----------------------------------------------------------------
+
+def get_typical_deal_rates():
+    """{service_key: typical_annual_cost} for every configured row -
+    empty dict (not an error) if none have ever been set, so a caller
+    can safely .get(key) with its own fallback default."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT service_key, typical_annual_cost FROM typical_deal_rates",
+        ).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def set_typical_deal_rate(service_key, typical_annual_cost):
+    if not service_key:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO typical_deal_rates (service_key, typical_annual_cost, updated_at) "
+            "VALUES (?, ?, ?) ON CONFLICT(service_key) DO UPDATE SET "
+            "typical_annual_cost = excluded.typical_annual_cost, updated_at = excluded.updated_at",
+            (service_key, typical_annual_cost, now),
+        )
 
 
 def get_debt_recycling_scenario(email):

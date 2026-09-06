@@ -67,6 +67,7 @@ import stress_etf_help_copy
 import switch_analyzer_engine
 import budget_planner_engine
 import debt_recycling_engine
+import bill_check_engine
 import tools_store
 import i18n
 
@@ -16296,6 +16297,8 @@ own stocks analysed here.*
 TOOLS_REGISTRY = [
     {"id": "budget_planner", "icon": "\U0001F4B0",
      "title_key": "tools.budget.title", "render": "_render_budget_planner_tool"},
+    {"id": "utilities", "icon": "⚡",
+     "title_key": "tools.utilities.title", "render": "_render_utilities_tool"},
     {"id": "debt_recycling", "icon": "\U0001F4B0",
      "title_key": "tools.debt_recycling.title", "render": "_render_debt_recycling_tool"},
 ]
@@ -16910,6 +16913,465 @@ def _render_debt_recycling_tool(email):
         st.success(_dl("save_confirm"))
 
 
+# --------------------------------------------------------------------------- #
+# Mega-batch Part 19: ⚡ Utilities bill check (Tools tool #2).
+#
+# Access model (spec's own rules - see i18n.py's tools.utilities.* keys
+# for every message below): tools_store.can_check() is THE gate on
+# whether a NEW comparison (scan or manual) may run at all - reopening
+# an already-saved bill's own detail view never calls it. The site-wide
+# ai_gate.check()/record() (non-negotiable for every Anthropic call in
+# this codebase, per ai_gate.py's own docstring) sits BEHIND that, as an
+# extra safety net purely on the AI-extraction path - manual entry never
+# touches ai_gate at all since it makes no AI call.
+# --------------------------------------------------------------------------- #
+
+def _utilities_status(email):
+    is_sub = False
+    if paywall_engine.PAYWALL_ENABLED:
+        try:
+            is_sub = paywall_engine.is_subscribed(email)
+        except Exception:
+            is_sub = False
+    allowed, reason = tools_store.can_check(email, paywall_engine.PAYWALL_ENABLED, is_sub)
+    usage = tools_store.bill_check_usage_status(email)
+    return allowed, reason, usage
+
+
+def _utilities_blocked_message(_ul, reason, usage):
+    if reason == "trial_used_paywall_off":
+        return _ul("blocked_trial_used_paywall_off")
+    if reason == "needs_subscription":
+        return _ul("blocked_needs_subscription", cap=usage["month_cap"])
+    if reason == "monthly_cap_reached":
+        return _ul("blocked_monthly_cap", cap=usage["month_cap"])
+    return None
+
+
+def _utilities_run_extraction(email, _lang, uploaded_files):
+    """Runs the Haiku-then-Sonnet-retry extraction (spec: "Use MODEL_
+    HAIKU; one retry with MODEL_SONNET only if required fields are
+    missing/low-confidence"). ai_gate.check() is called ONCE for the
+    whole bill-check event (a retry is still one logical "question"
+    against the daily/monthly AI quota - see bill_check_engine.py's own
+    docstring for why); ai_gate.record() is called once per REAL
+    Anthropic call, so a retry's extra cost still counts fully toward
+    the site-wide spend cap. The uploaded file bytes are read into
+    base64 IN MEMORY ONLY here and never written to disk - `uploaded_
+    files` (Streamlit's own UploadedFile objects) are discarded by the
+    caller the moment this function returns, per bill_check_engine.py's
+    module docstring."""
+    import base64
+    ok_gate, gate_msg, _tier = ai_gate.check(email, "bill_check", lang=_lang)
+    if not ok_gate:
+        return None, gate_msg
+
+    image_blocks = []
+    for f in uploaded_files[:3]:
+        media_type = f.type or "image/jpeg"
+        image_blocks.append({"media_type": media_type,
+                             "data_b64": base64.b64encode(f.getvalue()).decode("ascii")})
+    message = bill_check_engine.build_extraction_message(image_blocks)
+
+    resp = ai_client.ask(bill_check_engine.EXTRACTION_SYSTEM_PROMPT, message,
+                         model=ai_client.MODEL_HAIKU, max_tokens=600)
+    if resp["input_tokens"] or resp["output_tokens"]:
+        try:
+            ai_gate.record(email, "bill_check", resp["model"], resp["input_tokens"],
+                           resp["output_tokens"], resp["cost_usd"])
+        except Exception:
+            pass
+    extracted = bill_check_engine.parse_extraction_response(resp["text"]) if resp["ok"] else {}
+
+    if bill_check_engine.needs_retry(extracted):
+        resp2 = ai_client.ask(bill_check_engine.EXTRACTION_SYSTEM_PROMPT, message,
+                              model=ai_client.MODEL_SONNET, max_tokens=600)
+        if resp2["input_tokens"] or resp2["output_tokens"]:
+            try:
+                ai_gate.record(email, "bill_check", resp2["model"], resp2["input_tokens"],
+                               resp2["output_tokens"], resp2["cost_usd"])
+            except Exception:
+                pass
+        if resp2["ok"]:
+            retry_fields = bill_check_engine.parse_extraction_response(resp2["text"])
+            if retry_fields:
+                extracted = retry_fields
+
+    if not extracted:
+        return None, None  # caller shows extraction_failed and falls back to manual fields
+    return extracted, None
+
+
+def _utilities_compare(_ul, fields, household_size, typical_deal_rates):
+    """fields: sanitized extraction OR manual-entry dict (same shape
+    either way - see bill_check_engine.ALLOWED_EXTRACTED_FIELDS).
+    Returns a result dict ready for both display and tools_store.
+    save_bill_check()'s columns/extra blob, or None if `fuel` is
+    missing entirely (nothing to compare)."""
+    fuel = (fields.get("fuel") or "").lower()
+    if not fuel:
+        return None
+    prof = bill_check_engine.annualised_profile_from_bill(fields)
+    postcode = fields.get("postcode")
+    result = {"fuel": fuel, "postcode": postcode, "fields": fields, "profile": prof}
+
+    if fuel in ("electricity", "gas") and fields.get("state", "").upper() not in (
+            "CA", "TX", "NY", "FL", "IL", "WA", "MA", "AZ") and postcode:
+        # AU path - postcode present and not a recognised US state code.
+        candidates = bill_check_engine.fetch_candidate_plans(postcode, fuel)
+        if not candidates:
+            result["status"] = "unavailable"
+            result["note"] = _ul("aer_unavailable")
+            return result
+        ranked = bill_check_engine.rank_electricity_plans(
+            prof["annual_cost"], prof["annual_usage_kwh"], candidates,
+            annual_controlled_load_kwh=prof["annual_controlled_load_kwh"])
+        result["ranked"] = ranked
+        result["status"] = "cheapest" if ranked["switchable_saving"] == 0 else "switch"
+        result["annual_cost"] = prof["annual_cost"]
+        result["cheapest_annual_cost"] = ranked["cheapest"]["annual_cost"] if ranked["cheapest"] else None
+        result["switchable_saving"] = ranked["switchable_saving"]
+        return result
+
+    if fuel == "water":
+        wb = bill_check_engine.water_benchmark(prof["annual_cost"], household_size,
+                                               state=fields.get("state"), country="au")
+        result["status"] = "benchmark"
+        result["annual_cost"] = prof["annual_cost"]
+        result["switchable_saving"] = None
+        result["benchmark"] = wb
+        return result
+
+    if fuel in ("electricity", "gas"):
+        # US benchmark path - effective rate from the bill's own numbers.
+        eff_rate = None
+        if fuel == "electricity" and fields.get("unit_rate_general_c_kwh") is not None:
+            eff_rate = fields["unit_rate_general_c_kwh"]
+        ub = bill_check_engine.us_benchmark(eff_rate, fields.get("state"), fuel)
+        result["status"] = "benchmark"
+        result["annual_cost"] = prof["annual_cost"]
+        result["switchable_saving"] = None
+        result["benchmark"] = ub
+        return result
+
+    # "other" (internet/mobile/etc.) - admin-editable typical-deal table.
+    typical = typical_deal_rates.get(fields.get("service_key", "other"))
+    mb = bill_check_engine.manual_typical_benchmark(prof["annual_cost"], typical)
+    result["status"] = "benchmark"
+    result["annual_cost"] = prof["annual_cost"]
+    result["switchable_saving"] = None
+    result["benchmark"] = mb
+    return result
+
+
+def _utilities_render_result(_ul, _lang, result, key_prefix):
+    """Renders one comparison result - the AU ranking, or a benchmark
+    card - shared between the fresh single-bill flow and a saved bill's
+    detail view."""
+    fuel = result["fuel"]
+    status = result.get("status")
+
+    if status == "unavailable":
+        st.warning(result.get("note") or _ul("aer_unavailable"))
+        return
+    if status in ("switch", "cheapest"):
+        ranked = result["ranked"]
+        st.markdown(f"**{_ul('result_title')}**")
+        st.markdown(_ul("rank_line", rank=ranked["user_rank"], total=ranked["total_count"]))
+        if status == "cheapest":
+            st.success(_ul("you_are_cheapest"))
+        else:
+            cheapest = ranked["cheapest"]
+            st.markdown(_ul("cheapest_plan_line", retailer=cheapest["retailer"],
+                            plan_name=cheapest["plan_name"], amount=f"{cheapest['annual_cost']:,.0f}"))
+            m1, m2 = st.columns(2)
+            with m1:
+                st.metric(_ul("potential_saving"), f"${ranked['switchable_saving']:,.0f}/yr")
+            with m2:
+                st.metric(_ul("your_bill_label"), f"${result['annual_cost']:,.0f}/yr")
+            if any(r.get("is_time_of_use_blended") for r in ranked["ranked"]):
+                st.caption(_ul("tou_blended_note"))
+            st.caption(_ul("conditional_discount_note"))
+            if result["fields"].get("solar_export_kwh"):
+                st.caption(_ul("solar_note"))
+        st.markdown(f"[{_ul('confirm_link')}](https://www.energymadeeasy.gov.au)")
+        return
+
+    # Benchmark card (water / US / manual typical-deal).
+    bmk = result.get("benchmark", {})
+    if fuel == "water":
+        st.markdown(f"**{_ul('benchmark_water_title')}**")
+        st.caption(_ul("benchmark_water_note"))
+        gap = bmk.get("gap")
+    elif fuel in ("electricity", "gas"):
+        st.markdown(f"**{_ul('benchmark_us_title')}**")
+        st.caption(_ul("benchmark_us_note"))
+        gap_pct = bmk.get("gap_pct")
+        gap = None
+        if gap_pct is not None and result["profile"]["annual_cost"] is not None:
+            gap = result["profile"]["annual_cost"] * (gap_pct / 100.0)
+    else:
+        st.markdown(f"**{_ul('benchmark_manual_title')}**")
+        st.caption(_ul("benchmark_manual_note"))
+        gap = bmk.get("gap")
+
+    st.markdown(f"{_ul('badge_benchmark')}")
+    if gap is None:
+        st.caption("—")
+    elif gap > 0:
+        st.markdown(_ul("gap_more", amount=f"{gap:,.0f}"))
+    else:
+        st.markdown(_ul("gap_less", amount=f"{abs(gap):,.0f}"))
+    if fuel in ("electricity", "gas") and result.get("status") == "benchmark":
+        st.markdown(f"[{_ul('state_comparator_link')}](https://www.eia.gov)")
+
+
+def _render_utilities_new_check(email, _ul, _lang, allowed, reason, usage, typical_deal_rates):
+    if not allowed:
+        msg = _utilities_blocked_message(_ul, reason, usage)
+        st.info(msg)
+        if reason == "needs_subscription":
+            checkout_url = paywall_engine.create_checkout_url(email)
+            if checkout_url:
+                st.link_button(_ul("subscribe_button"), checkout_url)
+        return
+
+    if usage["trial_used"]:
+        st.caption(_ul("checks_left_month", used=usage["month_cap"] - usage["month_count"],
+                       cap=usage["month_cap"]))
+    else:
+        st.caption(_ul("trial_note"))
+
+    mode = st.radio("input_mode", [_ul("input_mode_upload"), _ul("input_mode_manual")],
+                    horizontal=True, label_visibility="collapsed", key="tools_util_input_mode")
+
+    fields = {}
+    if mode == _ul("input_mode_upload"):
+        uploaded = st.file_uploader(_ul("upload_label"), type=["png", "jpg", "jpeg", "pdf"],
+                                    accept_multiple_files=True, key="tools_util_uploader")
+        st.caption(_ul("upload_privacy_note"))
+        if uploaded and st.button(_ul("upload_button"), type="primary", key="tools_util_extract_btn"):
+            with st.spinner(_ul("extracting_spinner")):
+                extracted, gate_error = _utilities_run_extraction(email, _lang, uploaded)
+            # `uploaded` (Streamlit's in-memory UploadedFile objects) is a
+            # local variable that goes out of scope at the end of this
+            # render - never written to disk anywhere in this call chain,
+            # per bill_check_engine.py's own privacy rule.
+            if gate_error:
+                st.error(gate_error)
+            elif not extracted:
+                st.warning(_ul("extraction_failed"))
+            else:
+                st.session_state["tools_util_review_fields"] = extracted
+        fields = st.session_state.get("tools_util_review_fields", {})
+        if fields:
+            st.markdown(f"**{_ul('review_title')}**")
+
+    fuel_options = ["electricity", "gas", "water", "other"]
+    fuel_labels = {"electricity": _ul("fuel_electricity"), "gas": _ul("fuel_gas"),
+                  "water": _ul("fuel_water"), "other": _ul("fuel_other")}
+    fuel = st.selectbox(_ul("fuel_label"), fuel_options,
+                        index=fuel_options.index(fields.get("fuel")) if fields.get("fuel") in fuel_options else 0,
+                        format_func=lambda f: fuel_labels[f], key="tools_util_fuel")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        postcode = st.text_input(_ul("postcode_label"), value=fields.get("postcode", ""), key="tools_util_postcode")
+        billing_days = st.number_input(_ul("billing_days_label"), min_value=1, max_value=100,
+                                       value=int(fields.get("billing_period_days") or 30),
+                                       key="tools_util_days")
+        total_amount = st.number_input(_ul("total_amount_label"), min_value=0.0, step=1.0,
+                                       value=float(fields.get("total_amount") or 0.0),
+                                       key="tools_util_total")
+    with c2:
+        state = st.text_input(_ul("state_label"), value=fields.get("state", ""), key="tools_util_state")
+        if fuel in ("electricity",):
+            usage_kwh = st.number_input(_ul("usage_label"), min_value=0.0, step=1.0,
+                                        value=float(fields.get("usage_kwh") or 0.0),
+                                        key="tools_util_usage")
+            controlled = st.number_input(_ul("controlled_load_label"), min_value=0.0, step=1.0,
+                                         value=float(fields.get("controlled_load_kwh") or 0.0),
+                                         key="tools_util_controlled")
+        else:
+            usage_kwh, controlled = fields.get("usage_kwh"), fields.get("controlled_load_kwh")
+        if fuel == "water":
+            household_size = st.number_input(_ul("household_size_label"), min_value=1, max_value=12,
+                                             value=3, key="tools_util_household")
+        else:
+            household_size = 3
+        service_key = None
+        if fuel == "other":
+            _service_options = ["internet_au", "mobile_au", "internet_us", "mobile_us"]
+            _service_labels = {"internet_au": "Internet (AU)", "mobile_au": "Mobile (AU)",
+                               "internet_us": "Internet (US)", "mobile_us": "Mobile (US)"}
+            service_key = st.selectbox("Service", _service_options,
+                                       format_func=lambda k: _service_labels[k],
+                                       key="tools_util_service_key")
+
+    manual_fields = dict(fields)
+    manual_fields.update({
+        "fuel": fuel, "postcode": postcode.strip() or None,
+        "billing_period_days": billing_days, "total_amount": total_amount or None,
+        "state": state.strip() or None,
+    })
+    if fuel == "electricity":
+        manual_fields["usage_kwh"] = usage_kwh or None
+        manual_fields["controlled_load_kwh"] = controlled or None
+    if fuel == "other" and service_key:
+        manual_fields["service_key"] = service_key
+    manual_fields = bill_check_engine.sanitize_extracted_fields(manual_fields) or manual_fields
+
+    if st.button(_ul("compare_button"), type="primary", key="tools_util_compare_btn"):
+        result = _utilities_compare(_ul, manual_fields, household_size, typical_deal_rates)
+        if result:
+            # A fail-closed "unavailable" outcome (e.g. the AER fetch
+            # returned nothing) delivered nothing of value to the
+            # visitor - it must never burn their free trial or a
+            # subscriber's monthly cap slot for an infrastructure gap
+            # that isn't their fault.
+            if result.get("status") != "unavailable":
+                tools_store.record_check_usage(email)
+            st.session_state["tools_util_last_result"] = result
+
+    result = st.session_state.get("tools_util_last_result")
+    if result:
+        with st.container(border=True):
+            _utilities_render_result(_ul, _lang, result, "tools_util_result")
+            if result.get("status") == "unavailable":
+                st.caption(_ul("disclaimer"))
+                return
+            if result.get("annual_cost"):
+                _budget_plan_projection_panel(
+                    lambda k, **kw: i18n.t(f"tools.budget.{k}", _lang, **kw)
+                    if k != "projection_title" else _ul("projection_intro"),
+                    max(result.get("switchable_saving") or 0.0, 0.0), "tools_util_proj",
+                )
+            if st.button(_ul("save_button"), key="tools_util_save_btn"):
+                _ranked = result.get("ranked") or {}
+                _cheapest = _ranked.get("cheapest") or {}
+                extra = {
+                    "retailer": result["fields"].get("retailer"),
+                    "plan_name": result["fields"].get("plan_name"),
+                    "user_rank": _ranked.get("user_rank"),
+                    "total_count": _ranked.get("total_count"),
+                    "cheapest_retailer": _cheapest.get("retailer"),
+                    "cheapest_plan_name": _cheapest.get("plan_name"),
+                    "is_time_of_use_blended": any(
+                        r.get("is_time_of_use_blended") for r in _ranked.get("ranked", [])),
+                    "solar_export_kwh": result["fields"].get("solar_export_kwh"),
+                    "benchmark": result.get("benchmark"),
+                }
+                tools_store.save_bill_check(
+                    email, result["fuel"], result.get("postcode"), result["status"],
+                    result.get("annual_cost"), result.get("cheapest_annual_cost"),
+                    result.get("switchable_saving"), extra,
+                )
+                st.success(_ul("save_confirm"))
+                st.session_state.pop("tools_util_last_result", None)
+                st.session_state.pop("tools_util_review_fields", None)
+                st.rerun()
+    st.caption(_ul("disclaimer"))
+
+
+def _render_utilities_dashboard(email, _ul, _lang, saved, typical_deal_rates):
+    agg_rows = [{"annual_cost": b["annual_cost"], "switchable_saving": b["switchable_saving"],
+                "status": b["status"]} for b in saved]
+    agg = bill_check_engine.dashboard_aggregate(agg_rows)
+    st.markdown(f"### {_ul('dashboard_title')}")
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric(_ul("dashboard_card_total"), f"${agg['total_annual_cost']:,.0f}")
+    with m2:
+        st.metric(_ul("dashboard_card_saving"), f"${agg['total_switchable_saving']:,.0f}")
+    with m3:
+        st.metric(_ul("dashboard_card_cheapest"),
+                 _ul("dashboard_card_cheapest_value", cheapest=agg["cheapest_count"],
+                     comparable=agg["comparable_count"]))
+    with m4:
+        _proj = budget_planner_engine.future_value_of_savings(
+            agg["total_switchable_saving"], budget_planner_engine.CAUTIOUS_RATE,
+            budget_planner_engine.DEFAULT_PROJECTION_YEARS)
+        st.metric(_ul("dashboard_card_projection"), f"${_proj:,.0f}" if _proj else "—")
+
+    badge_map = {"switch": _ul("badge_switch"), "cheapest": _ul("badge_cheapest"),
+                "benchmark": _ul("badge_benchmark")}
+    for b in sorted(saved, key=lambda r: -(r["switchable_saving"] or 0.0)):
+        with st.container(border=True):
+            rc1, rc2, rc3 = st.columns([2, 1, 1])
+            with rc1:
+                extra = b.get("extra", {})
+                st.markdown(f"**{extra.get('plan_name') or b['fuel'].title()}** &mdash; {extra.get('retailer', '')}")
+                st.caption(badge_map.get(b["status"], ""))
+            with rc2:
+                st.write(f"${b['annual_cost']:,.0f}/yr" if b["annual_cost"] else "—")
+            with rc3:
+                if b["switchable_saving"]:
+                    st.write(_ul("dashboard_row_saving", amount=f"{b['switchable_saving']:,.0f}"))
+                hist = tools_store.get_bill_check_history(b["id"])
+                if hist:
+                    st.caption(_ul("dashboard_row_was", amount=f"{hist[-1]['annual_cost']:,.0f}"))
+            if st.button("→", key=f"tools_util_open_{b['id']}"):
+                st.session_state["tools_util_view"] = "detail"
+                st.session_state["tools_util_detail_id"] = b["id"]
+                st.rerun()
+
+    if st.button(_ul("dashboard_add_button"), type="primary", key="tools_util_add_btn"):
+        st.session_state["tools_util_view"] = "new"
+        st.rerun()
+
+
+def _render_utilities_tool(email):
+    _lang = st.session_state.get("lang", "en")
+    _ul = lambda key, **kw: i18n.t(f"tools.utilities.{key}", _lang, **kw)
+    typical_deal_rates = tools_store.get_typical_deal_rates()
+
+    st.markdown(f"### {_ul('title')}")
+    st.caption(_ul("subtitle"))
+
+    saved = tools_store.list_bill_checks(email)
+    view = st.session_state.get("tools_util_view")
+
+    if view == "detail" and st.session_state.get("tools_util_detail_id"):
+        bill = next((b for b in saved if b["id"] == st.session_state["tools_util_detail_id"]), None)
+        if bill:
+            if st.button(_ul("back_to_dashboard"), key="tools_util_back_btn"):
+                st.session_state["tools_util_view"] = None
+                st.rerun()
+            extra = bill.get("extra", {})
+            result = {"fuel": bill["fuel"], "postcode": bill["postcode"], "status": bill["status"],
+                     "annual_cost": bill["annual_cost"], "switchable_saving": bill["switchable_saving"],
+                     "fields": {"retailer": extra.get("retailer"), "plan_name": extra.get("plan_name"),
+                                "solar_export_kwh": extra.get("solar_export_kwh")},
+                     "profile": {"annual_cost": bill["annual_cost"]},
+                     "ranked": {"user_rank": extra.get("user_rank", 1),
+                                "total_count": extra.get("total_count", 1),
+                                "cheapest": {"retailer": extra.get("cheapest_retailer", ""),
+                                             "plan_name": extra.get("cheapest_plan_name", ""),
+                                             "annual_cost": bill.get("cheapest_annual_cost")},
+                                "switchable_saving": bill["switchable_saving"] or 0.0,
+                                "ranked": [{"is_time_of_use_blended": extra.get("is_time_of_use_blended")}]
+                                          if extra.get("is_time_of_use_blended") else []},
+                     "benchmark": extra.get("benchmark") or {}}
+            with st.container(border=True):
+                _utilities_render_result(_ul, _lang, result, f"tools_util_detail_{bill['id']}")
+            hist = tools_store.get_bill_check_history(bill["id"])
+            if hist:
+                st.markdown(f"**{_ul('history_title')}**")
+                st.table([{"plan": h["plan_name"], "$/yr": f"${h['annual_cost']:,.0f}" if h["annual_cost"] else "—",
+                          "date": h["recorded_at"][:10]} for h in hist])
+            if st.button(_ul("rescan_button"), key="tools_util_rescan_btn"):
+                st.session_state["tools_util_view"] = "new"
+                st.rerun()
+            return
+
+    if view == "new" or (view is None and len(saved) <= 1):
+        allowed, reason, usage = _utilities_status(email)
+        _render_utilities_new_check(email, _ul, _lang, allowed, reason, usage, typical_deal_rates)
+        return
+
+    _render_utilities_dashboard(email, _ul, _lang, saved, typical_deal_rates)
+
+
 def page_tools():
     _lang = st.session_state.get("lang", "en")
     _content_page_shell(i18n.t("tools.page_title", _lang), current="tools")
@@ -16923,6 +17385,20 @@ def page_tools():
     email = paywall_engine.current_user_email()
     for _tool in TOOLS_REGISTRY:
         globals()[_tool["render"]](email)
+
+    if ai_gate.is_owner(email):
+        _ul = lambda key, **kw: i18n.t(f"tools.utilities.{key}", _lang, **kw)
+        with st.expander(_ul("admin_typical_deals_title"), expanded=False):
+            st.caption(_ul("admin_typical_deals_note"))
+            rates = tools_store.get_typical_deal_rates()
+            for _key, _label in (("internet_au", "Internet (AU)"), ("mobile_au", "Mobile (AU)"),
+                                 ("internet_us", "Internet (US)"), ("mobile_us", "Mobile (US)")):
+                _val = st.number_input(_label, min_value=0.0, step=10.0,
+                                       value=float(rates.get(_key, 0.0)),
+                                       key=f"tools_util_admin_typical_{_key}")
+                if st.button(f"Save {_label}", key=f"tools_util_admin_typical_save_{_key}"):
+                    tools_store.set_typical_deal_rate(_key, _val)
+                    st.success("Saved.")
 
 
 def page_model_history():

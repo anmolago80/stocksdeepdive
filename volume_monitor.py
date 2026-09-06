@@ -24,7 +24,7 @@ all be quietly broken for days before anyone notices. This module adds:
           snapshots()'s own source (the Research page's rebuild-history
           picker) - pruning the OLDEST files first means the picker just
           shows a shorter list, never a broken one.
-       b) four TTL-based caches, each pruned once a row/file is older
+       b) five TTL-based caches, each pruned once a row/file is older
           than STALE_MULTIPLIER times ITS OWN normal TTL (a cache is
           disposable by design once genuinely long-expired - nothing
           still treats a row/file that old as valid data, since every
@@ -34,6 +34,7 @@ all be quietly broken for days before anyone notices. This module adds:
             - fundamentals_data's per-ticker bundle cache (file)
             - stress_engine's long-history + result caches (SQLite)
             - etf_insights' fund-facts cache (SQLite)
+            - bill_check_engine's AER/CDR plan cache (SQLite, Part 19)
 
 PRUNE_NEVER (checked explicitly - see each function's own docstring for
 why it was excluded): the live account/portfolio/watchlist/alert/
@@ -404,6 +405,22 @@ def _prune_etf_insights_cache(log=print):
     return n
 
 
+def _prune_bill_check_aer_cache(log=print):
+    """Part 19's AER/CDR plan-list-and-detail cache (bill_check_engine.
+    aer_plan_cache) - same 24h TTL/created_at-column shape as stress_
+    engine's and etf_insights' caches above, so it reuses the same
+    generic _prune_sqlite_table() rather than a fifth bespoke pruner."""
+    try:
+        import bill_check_engine as bce
+    except Exception as e:
+        log(f"[volume_monitor] could not import bill_check_engine: {e}")
+        return 0
+    n = _prune_sqlite_table(bce.DB_PATH, "aer_plan_cache", bce.CACHE_TTL_HOURS, log=log)
+    if n:
+        log(f"[volume_monitor] pruned {n} stale bill_check_engine AER plan-cache row(s)")
+    return n
+
+
 def run_retention_pruning(log=print):
     """Runs every pruning category and returns {"category": count_pruned}
     for the report/admin panel. Each category is independently wrapped
@@ -415,6 +432,7 @@ def run_retention_pruning(log=print):
         "fundamentals_cache": _prune_fundamentals_cache(log=log),
         "stress_engine_cache": _prune_stress_engine_caches(log=log),
         "etf_insights_cache": _prune_etf_insights_cache(log=log),
+        "bill_check_aer_cache": _prune_bill_check_aer_cache(log=log),
     }
 
 
