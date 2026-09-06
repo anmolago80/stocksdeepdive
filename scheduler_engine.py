@@ -32,6 +32,13 @@ A tiny in-process scheduler for the background jobs this site needs:
                                  see BACKUP_UTC_HOUR below - so it's
                                  backing up a night's data that's
                                  already fully settled, not racing it.)
+  7. NIGHTLY volume monitor    -> volume_monitor.run_nightly_check()
+                                 (Mega-batch Part 16 - checks the
+                                 Volume's used/total bytes, monthly
+                                 email alert at >=80% used, then runs
+                                 bounded retention pruning. Its own hour
+                                 (VOLUME_CHECK_UTC_HOUR), its own lock -
+                                 see that constant's own docstring.)
 
 WHY IN-PROCESS, NOT A SEPARATE RAILWAY CRON SERVICE: Railway volumes
 attach to exactly ONE service, and the web app needs the volume (for the
@@ -115,6 +122,12 @@ CONFIG (Railway environment variables, all optional):
                            hour (22), so the backup captures a night
                            that's already fully done, not a half-
                            finished one.
+  VOLUME_CHECK_UTC_HOUR  - default 23 (Mega-batch Part 16) - same hour
+                           as the backup (its own separate job lock, so
+                           the two don't collide); a disk-usage check +
+                           retention prune doesn't need to run before or
+                           after the backup specifically, just once
+                           nightly after the day's writes have settled.
 """
 
 import json
@@ -228,6 +241,7 @@ def _cfg():
         "earnings_refresh_weekday": int(os.environ.get("EARNINGS_REFRESH_UTC_WEEKDAY", "2")),
         "earnings_refresh_hour": int(os.environ.get("EARNINGS_REFRESH_UTC_HOUR", "19")),
         "backup_hour": int(os.environ.get("BACKUP_UTC_HOUR", "23")),
+        "volume_check_hour": int(os.environ.get("VOLUME_CHECK_UTC_HOUR", "23")),
     }
 
 
@@ -536,6 +550,18 @@ def _run_backup(log):
         log(f"[scheduler] db backup failed: {e}")
 
 
+def _run_volume_check(log):
+    """Mega-batch Part 16: the nightly Volume usage check + retention
+    prune. Same shape as _run_backup above - import deferred,
+    volume_monitor.run_nightly_check() is itself already fully guarded
+    internally, this is one more outer safety net."""
+    try:
+        import volume_monitor
+        volume_monitor.run_nightly_check(log=log)
+    except Exception as e:
+        log(f"[scheduler] volume monitor failed: {e}")
+
+
 def _universes_needing_scan(cfg):
     """Universes whose SAVED scan is missing or stale - the source of
     truth is the result file, not a 'ran today' marker, so a deploy/
@@ -676,6 +702,25 @@ def _loop(log):
                             _release_job_lock("backup")
                     else:
                         log("[scheduler] DB backup skipped - another process "
+                            "already holds the lock")
+
+                # Mega-batch Part 16: nightly Volume usage check +
+                # retention prune - same one-calendar-day-per-run guard,
+                # its own hour/lock so it never collides with the backup
+                # job above even though they default to the same hour.
+                if (now.hour >= cfg["volume_check_hour"]
+                        and state.get("last_volume_check_date") != today):
+                    state = _load_state()
+                    state["last_volume_check_date"] = today
+                    _save_state(state)
+                    if _acquire_job_lock("volume_check"):
+                        try:
+                            log("[scheduler] starting volume usage check + retention prune")
+                            _run_volume_check(log)
+                        finally:
+                            _release_job_lock("volume_check")
+                    else:
+                        log("[scheduler] volume check skipped - another process "
                             "already holds the lock")
 
                 # Services batch, Part 4: earnings-calendar refresh -

@@ -3265,6 +3265,72 @@ def _render_compounder_admin_panel():
                     else:
                         st.error(_bk_msg)
 
+            # Mega-batch Part 16: Volume usage gauge - deliberately NOT
+            # tucked inside its own expander (unlike the panels above),
+            # since the instruction asks for "a one-line gauge" the
+            # owner sees at a glance in this same admin popover; the
+            # finer detail (breakdown, last-prune counts, manual prune)
+            # lives in the "Volume & retention" expander right under it.
+            # import deferred - same reasoning as db_backup_engine above.
+            import volume_monitor
+            _vol = volume_monitor.admin_summary()
+            if _vol["usage"]:
+                _vol_pct = _vol["usage"]["pct_used"]
+                _vol_used_mb = _vol["usage"]["used_bytes"] / (1024 * 1024)
+                _vol_total_mb = _vol["usage"]["total_bytes"] / (1024 * 1024)
+                _vol_line = f"Volume: {_vol_used_mb:,.0f} MB of {_vol_total_mb:,.0f} MB · {_vol_pct:.0f}%"
+                if _vol["is_critical"]:
+                    st.error(
+                        f"⚠ {_vol_line} - CRITICAL: at this level these features can start "
+                        "failing: " + "; ".join(_vol["write_dependent_features"]) + "."
+                    )
+                elif _vol["is_warning"]:
+                    st.warning(f"⚠ {_vol_line} - approaching capacity.")
+                else:
+                    st.caption(f"✓ {_vol_line}")
+            else:
+                st.caption("Volume: usage unavailable right now.")
+
+            with st.expander("Volume & retention", expanded=False):
+                if _vol.get("last_prune_date"):
+                    _counts = _vol.get("last_prune_counts") or {}
+                    _total_pruned = sum(_counts.values()) if _counts else 0
+                    st.caption(
+                        f"Last retention prune: {_vol['last_prune_date']} - "
+                        f"{_total_pruned} item(s) removed "
+                        f"({', '.join(f'{k}: {v}' for k, v in _counts.items()) or 'nothing stale'})."
+                    )
+                else:
+                    st.caption("No retention prune has run yet.")
+                st.caption(
+                    "Nightly: checks the Volume's used/total bytes (one email alert per "
+                    "month once usage crosses 80%), then prunes the research-data archive "
+                    "to the most recent 24 rebuilds and clears cache rows/files (Compounder "
+                    "View sections, fundamentals bundles, stress test and ETF caches) once "
+                    "they're well past their own normal expiry. Never touches accounts, "
+                    "portfolios, watchlists, alerts, checklists, score history or snapshots."
+                )
+                if st.button("Show usage breakdown", key="cp_admin_volume_breakdown"):
+                    _breakdown = volume_monitor.usage_breakdown()
+                    if _breakdown:
+                        st.dataframe(
+                            pd.DataFrame([
+                                {"Item": b["name"], "Size (MB)": round(b["bytes"] / (1024 * 1024), 1)}
+                                for b in _breakdown
+                            ]),
+                            hide_index=True, use_container_width=True,
+                        )
+                    else:
+                        st.caption("Nothing to show.")
+                if st.button("Run retention prune now", key="cp_admin_volume_prune_now"):
+                    with st.spinner("Pruning..."):
+                        _prune_counts = volume_monitor.run_retention_pruning_and_record()
+                    _prune_total = sum(_prune_counts.values())
+                    st.success(
+                        f"Pruned {_prune_total} item(s): "
+                        + ", ".join(f"{k}: {v}" for k, v in _prune_counts.items())
+                    )
+
 
 def _render_last_updated(generated_at):
     """'Last updated on ...' badge, top-right, above the Stock/Section
