@@ -962,7 +962,7 @@ def _render_view_badge():
         _b1, _bs, _ba, _bw, _b2 = st.columns([7.1, 1.6, 1.4, 1, 1])
         with _bw:
             if st.button("Write blog", key="admin_write_blog",
-                         use_container_width=True):
+                         width='stretch'):
                 st.switch_page(PG_BLOG_ADMIN)
         with _b1:
             st.markdown(
@@ -995,7 +995,7 @@ def _render_view_badge():
                         _signup_rows = []
                     if _signup_rows:
                         _signup_df = pd.DataFrame(_signup_rows)
-                        st.dataframe(_signup_df, use_container_width=True, hide_index=True)
+                        st.dataframe(_signup_df, width='stretch', hide_index=True)
                         st.download_button(
                             "Download as CSV",
                             _signup_df.to_csv(index=False).encode("utf-8"),
@@ -2769,7 +2769,7 @@ def _render_app_nav_items(lang, current=None, key_prefix="nav", layout="row"):
         # is logged in, so this button never needs to check auth state
         # first (same rule the old inline nav row already followed).
         if st.button(
-            _label, use_container_width=True, key=f"{key_prefix}_{_id}",
+            _label, width='stretch', key=f"{key_prefix}_{_id}",
             type="primary" if current == _id else "secondary",
         ):
             st.switch_page(_page)
@@ -2827,7 +2827,7 @@ def _render_app_nav_items(lang, current=None, key_prefix="nav", layout="row"):
     with _cols[len(_primary_items)]:
         _anchor_pill(_blog_label, "/blog")
     with _cols[-1]:
-        with st.popover(_more_label, use_container_width=True,
+        with st.popover(_more_label, width='stretch',
                          key=f"{key_prefix}_more_pop"):
             _more_panel_html()
 
@@ -2993,7 +2993,7 @@ def _render_header(compact, page_label=None, ultra_compact=False, current=None):
                 with _uc_btn_col:
                     _searched = st.form_submit_button(
                         i18n.t("header.search_button", _lang),
-                        use_container_width=True, type="primary",
+                        width='stretch', type="primary",
                     )
         with _uc_nav_col:
             with st.container(key="uc_nav_popover_col"):
@@ -3056,7 +3056,7 @@ def _render_header(compact, page_label=None, ultra_compact=False, current=None):
                 key="site_search",
             )
             _searched = st.form_submit_button(
-                i18n.t("header.search_button", _lang), use_container_width=True, type="primary"
+                i18n.t("header.search_button", _lang), width='stretch', type="primary"
             )
         if not compact:
             st.caption(i18n.t("header.search_caption", _lang))
@@ -3070,7 +3070,7 @@ def _render_header(compact, page_label=None, ultra_compact=False, current=None):
     # allowance) rather than equal-width columns sized to fit the longest
     # label - that's what made "Stock Scanner" and "My Portfolio" render
     # as oversized boxes around short text. Streamlit still stretches
-    # each button to fill its column (use_container_width=True) and
+    # each button to fill its column (width='stretch') and
     # centers its label inside that box by default, so a column sized
     # close to the label's own width is what makes the pill look tightly
     # fitted and centered.
@@ -3811,7 +3811,7 @@ def _render_compounder_admin_panel():
                                 {"Item": b["name"], "Size (MB)": round(b["bytes"] / (1024 * 1024), 1)}
                                 for b in _breakdown
                             ]),
-                            hide_index=True, use_container_width=True,
+                            hide_index=True, width='stretch',
                         )
                     else:
                         st.caption("Nothing to show.")
@@ -4258,7 +4258,7 @@ def _render_download_data_button(dd):
                     i18n.t("dd.download.xlsx_button", _dl_lang), data=_dl_xlsx,
                     file_name=data_export_engine.deep_dive_filename(ticker, "xlsx"),
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"dl_xlsx_{ticker}", use_container_width=True,
+                    key=f"dl_xlsx_{ticker}", width='stretch',
                 )
             except Exception:
                 st.caption(i18n.t("dd.download.xlsx_failed", _dl_lang))
@@ -4268,7 +4268,7 @@ def _render_download_data_button(dd):
                     i18n.t("dd.download.csv_button", _dl_lang), data=_dl_csv,
                     file_name=data_export_engine.deep_dive_filename(ticker, "csv"),
                     mime="text/csv",
-                    key=f"dl_csv_{ticker}", use_container_width=True,
+                    key=f"dl_csv_{ticker}", width='stretch',
                 )
             except Exception:
                 st.caption(i18n.t("dd.download.csv_failed", _dl_lang))
@@ -4415,7 +4415,7 @@ def _render_follow_control(ticker, key_prefix):
                 # email" overflowed past the box border.
                 if st.button(
                     i18n.t("follow.notify_button", _fc_lang),
-                    key=f"{key_prefix}_submit_{ticker}", use_container_width=True,
+                    key=f"{key_prefix}_submit_{ticker}", width='stretch',
                 ):
                     if email_auth.valid_email(_em_in):
                         _ok, _msg = email_auth.send_code(_em_in, lang=_fc_lang)
@@ -4438,7 +4438,7 @@ def _render_follow_control(ticker, key_prefix):
             with _cv:
                 if st.button(
                     i18n.t("signin.verify_button", _fc_lang), key=f"{key_prefix}_verify_{ticker}",
-                    type="primary", use_container_width=True,
+                    type="primary", width='stretch',
                 ):
                     _tok, _msg = email_auth.verify_code(
                         _sent_to, _code, src=st.session_state.get("first_src"),
@@ -4471,7 +4471,7 @@ def _render_follow_control(ticker, key_prefix):
             with _cr:
                 if st.button(
                     i18n.t("signin.resend_button", _fc_lang), key=f"{key_prefix}_resend_{ticker}",
-                    use_container_width=True,
+                    width='stretch',
                 ):
                     _ok, _msg = email_auth.send_code(_sent_to, lang=_fc_lang)
                     (st.success if _ok else st.error)(_msg)
@@ -4537,7 +4537,7 @@ def _render_conversion_email_hook(ticker, key_prefix="dd_hook"):
             with _c2:
                 if st.button(
                     i18n.t("hook.notify_me", _lang),
-                    key=f"{key_prefix}_submit_{ticker}", use_container_width=True,
+                    key=f"{key_prefix}_submit_{ticker}", width='stretch',
                 ):
                     if email_auth.valid_email(_em_in):
                         _ok, _msg = email_auth.send_code(_em_in, lang=_lang)
@@ -4560,7 +4560,7 @@ def _render_conversion_email_hook(ticker, key_prefix="dd_hook"):
             with _cv:
                 if st.button(
                     i18n.t("hook.verify", _lang), key=f"{key_prefix}_verify_{ticker}",
-                    type="primary", use_container_width=True,
+                    type="primary", width='stretch',
                 ):
                     _tok, _msg = email_auth.verify_code(
                         _sent_to, _code, src=st.session_state.get("first_src"),
@@ -4589,7 +4589,7 @@ def _render_conversion_email_hook(ticker, key_prefix="dd_hook"):
             with _cr:
                 if st.button(
                     i18n.t("hook.resend", _lang), key=f"{key_prefix}_resend_{ticker}",
-                    use_container_width=True,
+                    width='stretch',
                 ):
                     _ok, _msg = email_auth.send_code(_sent_to, lang=_lang)
                     (st.success if _ok else st.error)(_msg)
@@ -4639,7 +4639,7 @@ def _render_research_conversion_hook(ticker, key_prefix="research_hook"):
             with _c2:
                 if st.button(
                     "Notify me",
-                    key=f"{key_prefix}_submit_{ticker}", use_container_width=True,
+                    key=f"{key_prefix}_submit_{ticker}", width='stretch',
                 ):
                     if email_auth.valid_email(_em_in):
                         _ok, _msg = email_auth.send_code(_em_in)
@@ -4662,7 +4662,7 @@ def _render_research_conversion_hook(ticker, key_prefix="research_hook"):
             with _cv:
                 if st.button(
                     "Verify", key=f"{key_prefix}_verify_{ticker}",
-                    type="primary", use_container_width=True,
+                    type="primary", width='stretch',
                 ):
                     _tok, _msg = email_auth.verify_code(
                         _sent_to, _code, src=st.session_state.get("first_src"),
@@ -4687,7 +4687,7 @@ def _render_research_conversion_hook(ticker, key_prefix="research_hook"):
             with _cr:
                 if st.button(
                     "Resend code", key=f"{key_prefix}_resend_{ticker}",
-                    use_container_width=True,
+                    width='stretch',
                 ):
                     _ok, _msg = email_auth.send_code(_sent_to)
                     (st.success if _ok else st.error)(_msg)
@@ -5544,7 +5544,7 @@ def _render_research_shelf(data, tickers, section_order, lang="en"):
                             f"{html.escape(dot_label)} · {html.escape(updated_line)}</div>",
                             unsafe_allow_html=True,
                         )
-                        if st.button(i18n.t("research.card_cta", lang), key=f"rc_card_cta_{t}", use_container_width=True):
+                        if st.button(i18n.t("research.card_cta", lang), key=f"rc_card_cta_{t}", width='stretch'):
                             st.query_params["ticker"] = t
                             st.rerun()
 
@@ -6190,7 +6190,7 @@ def page_home():
             with _sc2:
                 _home_go = st.form_submit_button(
                     i18n.t("home.hero.analyze_button", _home_lang),
-                    use_container_width=True, type="primary",
+                    width='stretch', type="primary",
                 )
         _render_example_chips("home")
         st.markdown(
@@ -6700,7 +6700,7 @@ def page_home():
                 st.caption(i18n.t("home.featured.rule_us", _home_lang))
             if st.button(
                 i18n.t("home.featured.open_deep_dive", _home_lang, ticker=_feat["ticker"]),
-                key="feat_open", use_container_width=True,
+                key="feat_open", width='stretch',
             ):
                 _dispatch_search(_feat["ticker"])
         else:
@@ -7989,7 +7989,7 @@ def _render_peer_context(dd):
             for p in peers
         ])
         st.dataframe(
-            _peer_df, hide_index=True, use_container_width=True,
+            _peer_df, hide_index=True, width='stretch',
             column_config={
                 "Ticker": st.column_config.LinkColumn(
                     "Ticker", display_text=r"ticker=(.+)$",
@@ -10817,13 +10817,13 @@ def _render_comparison_input_row(lang):
             _t3 = st.text_input("Ticker 3", key="cmp_input_c", placeholder="MSFT",
                                  label_visibility="collapsed")
         elif st.button(i18n.t("comparison.add_third", lang), key="cmp_add_third_btn",
-                       use_container_width=True):
+                       width='stretch'):
             st.session_state["cmp_input_third"] = True
             st.rerun()
     with _cbtn:
         _go = st.button(
             i18n.t("comparison.compare_button", lang), type="primary",
-            key="cmp_compare_btn", use_container_width=True,
+            key="cmp_compare_btn", width='stretch',
         )
     if _go:
         _typed = " ".join(t.strip() for t in (_t1, _t2, _t3) if t and t.strip())
@@ -13273,7 +13273,7 @@ def _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses):
         _etf("col_corr_asx200"): stress_etf_help_copy.etf_column_help("corr_asx200", _lang),
     }
     st.dataframe(
-        pd.DataFrame(_table_rows), hide_index=True, use_container_width=True,
+        pd.DataFrame(_table_rows), hide_index=True, width='stretch',
         column_config={
             _etf("col_ticker"): st.column_config.LinkColumn(
                 _etf("col_ticker"), display_text=r"ticker=(.+)$",
@@ -13743,7 +13743,7 @@ def _info_popover_trigger(body_text):
     ('tables not rendered as dataframes get a superscript ⓘ beside the
     header wired to the same text'), reused here for the same purpose on
     a plain section title or a plain-columns sandbox row."""
-    with st.popover("ⓘ", use_container_width=False):
+    with st.popover("ⓘ", width='content'):
         st.caption(body_text)
 
 
@@ -13800,7 +13800,7 @@ def _render_stress_scenario_table(scenarios, _st_, is_crisis, lang="en"):
             _worst_help = ("La posición que MENOS subió durante este repunte." if lang == "es"
                            else "The holding that rose the LEAST during this rally.")
         st.dataframe(
-            pd.DataFrame(rows), hide_index=True, use_container_width=True,
+            pd.DataFrame(rows), hide_index=True, width='stretch',
             column_config={
                 _st_("col_window"): st.column_config.Column(
                     _st_("col_window"), help=stress_etf_help_copy.scenario_method(lang),
@@ -13882,7 +13882,7 @@ def _render_stress_per_holding_table(result, _st_, lang="en"):
         _col_help[scenario_labels[k]] = stress_etf_help_copy.scenario_column_help(k, lang)
 
     st.dataframe(
-        pd.DataFrame(rows), hide_index=True, use_container_width=True,
+        pd.DataFrame(rows), hide_index=True, width='stretch',
         column_config={
             _st_("col_ticker"): st.column_config.LinkColumn(
                 _st_("col_ticker"), display_text=r"ticker=(.+)$", help=_col_help[_st_("col_ticker")],
@@ -13973,7 +13973,7 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
             _st_("col_whatif"): fmt(wi_v),
             _st_("col_delta"): (f"{delta:+.2f}" if delta is not None else _na),
         })
-    st.dataframe(pd.DataFrame(table_rows), hide_index=True, use_container_width=True)
+    st.dataframe(pd.DataFrame(table_rows), hide_index=True, width='stretch')
 
     # Mega-batch Part 13: 1-yr 5th-95th percentile simulated range, set
     # visually apart from the five historical-replay metrics above (a
@@ -14140,7 +14140,7 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
             _st_("col_move_pct"): f"{g['move_pct']:+.1f}%",
             _st_("col_move_value"): _fmt_aud(g["move_value_aud"]),
         } for g in result.get("shock_grid", [])]
-        st.dataframe(pd.DataFrame(_grid_rows), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(_grid_rows), hide_index=True, width='stretch')
         st.caption(_st_("shock_grid_caption"))
     else:
         st.caption(_st_("no_data"))
@@ -14685,7 +14685,7 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
         if _settings_ready:
             st.caption(_sw("settings_summary", tax=f"{_tax_rate * 100:.0f}", brokerage=f"{_brokerage:,.0f}"))
         if st.button("✎ " + _sw("settings_title"), key=_pf_key(_active_portfolio, "sw_settings_toggle"),
-                     use_container_width=True):
+                     width='stretch'):
             st.session_state[_settings_open_key] = not st.session_state[_settings_open_key]
 
     # --- Quick-pick chips (2nd addendum): one tap fills the "New
@@ -14745,7 +14745,7 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
             with _sc3:
                 st.write("")
                 if st.button(_sw("settings_save"), key=_pf_key(_active_portfolio, "sw_settings_save"),
-                             use_container_width=True):
+                             width='stretch'):
                     portfolio_store.set_switch_settings(
                         email, _active_portfolio, tax_rate=_tax_pct_in / 100.0, brokerage=_brokerage_in,
                     )
@@ -15573,7 +15573,7 @@ def _render_broker_import_expander(email, portfolio):
                             "Action": (f"Merge into existing {_existing['shares']:,.4f}-share position"
                                        if _existing else "New holding"),
                         })
-                    st.dataframe(_preview_rows, hide_index=True, use_container_width=True)
+                    st.dataframe(_preview_rows, hide_index=True, width='stretch')
 
                     if st.button("Confirm import", key=_pf_key(portfolio, "pf_import_confirm"), type="primary"):
                         _added, _merged, _unknown = [], [], []
@@ -16003,7 +16003,7 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
         _tdf.style
         .apply(lambda col: _pf_pl_color(_raw_profit), subset=["Profit (AUD)"])
         .apply(lambda col: _pf_pl_color(_raw_return_pct), subset=["Purchased→Current %"]),
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
         column_config={
             "Checklist": st.column_config.LinkColumn(
                 "Checklist", display_text=r"pf_checklist=(.+)$",
@@ -16140,7 +16140,7 @@ def _render_portfolio_income_tab(email, active_portfolio, _holdings, _analyses):
     _display_df["Franking %"] = _display_df["Franking %"].map(lambda v: f"{v:g}%" if pd.notna(v) else "-")
 
     st.markdown(f"##### Dividends by holding ({_cur_fy} and {_last_fy})")
-    st.dataframe(_display_df, hide_index=True, use_container_width=True)
+    st.dataframe(_display_df, hide_index=True, width='stretch')
 
     _month_totals = {}
     _cutoff = datetime.now(timezone.utc).date() - timedelta(days=365)
@@ -16223,7 +16223,7 @@ def _render_portfolio_income_tab(email, active_portfolio, _holdings, _analyses):
     }
     st.dataframe(
         pd.concat([_rdf, pd.DataFrame([_report_total])], ignore_index=True),
-        hide_index=True, use_container_width=True,
+        hide_index=True, width='stretch',
     )
 
     _csv_df = pd.DataFrame(_report_rows + [_report_total])
@@ -16400,7 +16400,7 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
         .apply(lambda col: _pf_moat_color(_raw_moat, _moat_flagged), subset=["Moat"])
         .apply(lambda col: _pf_weight_drift_color(_raw_drift), subset=["Weight drift"])
         .map(lambda v: "color:#d03b3b;font-weight:700" if v == "Review" else "", subset=["Thesis"]),
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
         column_config={
             "Health trend": st.column_config.ImageColumn(
                 "Health trend", help="Last up to 8 recorded Health runs - green if holding steady or up, red if declining.",
@@ -16436,7 +16436,7 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
         _prog_df.style
         .apply(lambda col: [(f"color: {portfolio_health_engine.score_color(v)}; font-weight:700" if v is not None else "")
                              for v in _raw_progress], subset=["Progress"]),
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
     )
 
 
@@ -16531,7 +16531,7 @@ def _render_portfolio_health_scoring_expander():
                  "Weight": [f"{portfolio_health_engine.BASE_WEIGHTS[k]*100:.0f}%"
                             for k in portfolio_health_engine.COMPONENT_ORDER]}
             ),
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
 
         st.markdown("**Score bands**")
@@ -16557,7 +16557,7 @@ def _render_portfolio_health_scoring_expander():
             with st.expander(label):
                 st.dataframe(
                     pd.DataFrame({unit: [b[0] for b in band], "Score": [b[1] for b in band]}),
-                    use_container_width=True, hide_index=True,
+                    width='stretch', hide_index=True,
                 )
 
         st.caption(
@@ -16590,7 +16590,7 @@ def _render_portfolio_health_scoring_expander():
                  "What it means": desc, "Effect": effect}
                 for name, key, desc, effect in portfolio_news_engine.SEVERITY_DEFS
             ]),
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
         st.code(
             "Thesis component = 0.65 x fundamentals average + 0.35 x News Risk Score\n"
@@ -16651,7 +16651,7 @@ def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analy
         _df.style
         .apply(lambda col: [(f"color: {portfolio_health_engine.score_color(v)}; font-weight:700" if v is not None else "")
                              for v in _raw_health_summary], subset=["Health"]),
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
     )
 
     st.markdown("##### Holding detail")
@@ -16845,7 +16845,7 @@ def _render_portfolio_progress_tab(active_portfolio, _holdings, _analyses):
                  "Weight": [f"{portfolio_health_engine.PROGRESS_WEIGHTS[k]*100:.0f}%"
                             for k in portfolio_health_engine.PROGRESS_ORDER]}
             ),
-            use_container_width=True, hide_index=True,
+            width='stretch', hide_index=True,
         )
         st.code(
             "rel = (current - baseline) / abs(baseline)     # clamped to [-1, +1]\n"
@@ -16887,7 +16887,7 @@ def _render_portfolio_progress_tab(active_portfolio, _holdings, _analyses):
         _df.style
         .apply(lambda col: [(f"color: {portfolio_health_engine.score_color(v)}; font-weight:700" if v is not None else "")
                              for v in _raw_progress_summary], subset=["Progress"]),
-        use_container_width=True, hide_index=True,
+        width='stretch', hide_index=True,
     )
 
     st.markdown("##### Holding detail")
@@ -16919,7 +16919,7 @@ def _render_portfolio_progress_tab(active_portfolio, _holdings, _analyses):
             "Current": c.get("current"),
             "At baseline": c.get("baseline"),
         })
-    st.dataframe(pd.DataFrame(_detail_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(_detail_rows), width='stretch', hide_index=True)
 
 
 def _content_page_shell(title, current=None):
@@ -17341,7 +17341,7 @@ def _render_tools_home_banner(lang):
                 )
             else:
                 st.caption(_bh("headline_empty"))
-            if st.button(_bh("build_plan_button"), use_container_width=True,
+            if st.button(_bh("build_plan_button"), width='stretch',
                          type="primary", key="tools_banner_cta"):
                 # Owner review round fix #2: land straight on the Budget
                 # Planner tab, not whichever tab happened to be last
@@ -17623,13 +17623,13 @@ def _render_debt_recycling_tool(email):
             _pick1, _pick2 = st.columns(2)
             with _pick1:
                 if st.button(_dl("pick_index_sp500"), key=f"tools_dr_pick_sp500_{n}",
-                            use_container_width=True):
+                            width='stretch'):
                     st.session_state[f"tools_dr_inv{n}_income"] = 0.0
                     st.session_state[f"tools_dr_inv{n}_growth"] = round(
                         budget_planner_engine.INDEX_HISTORICAL_RETURNS["sp500"] * 100, 1)
             with _pick2:
                 if st.button(_dl("pick_index_asx200"), key=f"tools_dr_pick_asx200_{n}",
-                            use_container_width=True):
+                            width='stretch'):
                     st.session_state[f"tools_dr_inv{n}_income"] = 0.0
                     st.session_state[f"tools_dr_inv{n}_growth"] = round(
                         budget_planner_engine.INDEX_HISTORICAL_RETURNS["asx200"] * 100, 1)
@@ -17726,7 +17726,7 @@ def _render_debt_recycling_tool(email):
             _dl("split_col_bad_decade"): f"${_r['bad_decade_gain']:,.0f}",
             _dl("split_col_floor"): f"{_r['guaranteed_floor_pct']}%",
         } for _r in _split_rows],
-        hide_index=True, use_container_width=True,
+        hide_index=True, width='stretch',
     )
 
     # ---- E. Visuals (2x2), verdict LAST ----
@@ -19244,7 +19244,7 @@ def page_blog_admin():
         )
     with _new_col:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        if st.button("Reload", use_container_width=True, key="blog_reload"):
+        if st.button("Reload", width='stretch', key="blog_reload"):
             st.session_state.pop("blog_loaded_id", None)
             st.rerun()
 
@@ -19296,7 +19296,7 @@ def page_blog_admin():
                           placeholder="why-margin-of-safety-is-the-whole-game")
         with _btn_col:
             st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-            if st.button("From title", use_container_width=True,
+            if st.button("From title", width='stretch',
                          key="blog_slug_from_title"):
                 st.session_state["_blog_pending"] = {
                     "blog_f_slug": blog_store.slugify(_title)}
@@ -19362,14 +19362,14 @@ def page_blog_admin():
         st.markdown("")
         _b1, _b2, _b3 = st.columns([1.2, 1, 1])
         with _b1:
-            _save = st.button("Save", type="primary", use_container_width=True,
+            _save = st.button("Save", type="primary", width='stretch',
                               key="blog_save")
         with _b2:
-            _save_view = st.button("Save & view", use_container_width=True,
+            _save_view = st.button("Save & view", width='stretch',
                                    key="blog_save_view")
         with _b3:
             if selected:
-                _delete = st.button("Delete", use_container_width=True,
+                _delete = st.button("Delete", width='stretch',
                                     key="blog_delete")
             else:
                 _delete = False

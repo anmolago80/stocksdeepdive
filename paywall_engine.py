@@ -337,7 +337,7 @@ def _render_signin_control(key="account_bar_signin", lang="en"):
     with st.popover(_label, key=f"{key}_pop"):
         if _auth_configured():
             if st.button(i18n.t("signin.google_button", lang), key=f"{key}_google",
-                         type="primary", use_container_width=True):
+                         type="primary", width='stretch'):
                 st.login()
             st.markdown(
                 f"<div style='text-align:center;color:#5b7290;font-size:12px;"
@@ -363,7 +363,7 @@ def _render_signin_control(key="account_bar_signin", lang="en"):
         st.markdown("</div>", unsafe_allow_html=True)
         if not st.session_state.get(f"{key}_code_sent"):
             if st.button(i18n.t("signin.send_code_button", lang), key=f"{key}_send",
-                         use_container_width=True):
+                         width='stretch'):
                 if _hp:
                     st.session_state[f"{key}_code_sent"] = True
                     st.session_state[f"{key}_sent_to"] = _em_input.strip().lower()
@@ -385,7 +385,7 @@ def _render_signin_control(key="account_bar_signin", lang="en"):
             _cv, _cr = st.columns(2)
             with _cv:
                 if st.button(i18n.t("signin.verify_button", lang), key=f"{key}_verify", type="primary",
-                             use_container_width=True):
+                             width='stretch'):
                     _tok, _msg = email_auth.verify_code(
                         _sent_to, _code, src=st.session_state.get("first_src"),
                         lang=lang,
@@ -403,7 +403,7 @@ def _render_signin_control(key="account_bar_signin", lang="en"):
                         st.error(_msg)
             with _cr:
                 if st.button(i18n.t("signin.resend_button", lang), key=f"{key}_resend",
-                             use_container_width=True):
+                             width='stretch'):
                     _ok, _msg = email_auth.send_code(_sent_to, client_ip=_client_ip(), lang=lang)
                     (st.success if _ok else st.error)(_msg)
 

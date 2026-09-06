@@ -242,11 +242,11 @@ def sdd_plotly_chart(fig, **kwargs):
         fig.update_layout(dragmode=False)
         merged = {"displayModeBar": False, "scrollZoom": False, "doubleClick": False, "responsive": True}
         merged.update(config or {})
-        result = st.plotly_chart(fig, use_container_width=True, config=merged, **kwargs)
+        result = st.plotly_chart(fig, width='stretch', config=merged, **kwargs)
     elif config is not None:
-        result = st.plotly_chart(fig, use_container_width=True, config=config, **kwargs)
+        result = st.plotly_chart(fig, width='stretch', config=config, **kwargs)
     else:
-        result = st.plotly_chart(fig, use_container_width=True, **kwargs)
+        result = st.plotly_chart(fig, width='stretch', **kwargs)
 
     try:
         _anns = [getattr(a, "text", None) for a in (fig.layout.annotations or ())]
