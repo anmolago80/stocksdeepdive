@@ -1068,7 +1068,7 @@ document.addEventListener('click', function(ev){
           <span class="sdd-more-txt"><span class="sdd-more-name">Historial</span>
           <span class="sdd-more-desc">Recibos fechados: qué calculó el sitio para cada acción, y cuándo.</span></span></a>
         <a class="sdd-more-item" href="/es/methodology">
-          <span class="sdd-more-ic">&#129966;</span>
+          <span class="sdd-more-ic">&#129518;</span>
           <span class="sdd-more-txt"><span class="sdd-more-name">Metodología</span>
           <span class="sdd-more-desc">Cómo se calcula cada puntuación y estimación, dato por dato.</span></span></a>
         <a class="sdd-more-item" href="/es/about">
@@ -1107,7 +1107,7 @@ document.addEventListener('click', function(ev){
           <span class="sdd-more-txt"><span class="sdd-more-name">Track record</span>
           <span class="sdd-more-desc">Dated receipts: what the site computed for each stock, and when.</span></span></a>
         <a class="sdd-more-item" href="/methodology">
-          <span class="sdd-more-ic">&#129966;</span>
+          <span class="sdd-more-ic">&#129518;</span>
           <span class="sdd-more-txt"><span class="sdd-more-name">Methodology</span>
           <span class="sdd-more-desc">How every score and estimate is calculated, input by input.</span></span></a>
         <a class="sdd-more-item" href="/about">

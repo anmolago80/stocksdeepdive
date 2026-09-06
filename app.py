@@ -5207,10 +5207,22 @@ def _render_research_shelf(data, tickers, section_order, lang="en"):
                         )
                         section_count = _rc_section_count(t, data, section_order)
                         has_verdict = _rc_verdict_text(t, data) is not None
+                        # Post-batch polish (verifier finding, 6 Sep): a
+                        # terminated ticker must never ALSO claim "research
+                        # in progress" right below the ⛔ badge - that's a
+                        # direct self-contradiction on the same card. The
+                        # verdict/no-verdict wording is for active research
+                        # only; terminated gets its own key ("stopped"),
+                        # checked FIRST so it always wins regardless of
+                        # whether a verdict happens to exist on file.
+                        if _shelf_status == "terminated":
+                            _sections_key = "research.card_sections_terminated"
+                        elif has_verdict:
+                            _sections_key = "research.card_sections_verdict"
+                        else:
+                            _sections_key = "research.card_sections_no_verdict"
                         sections_line = i18n.t(
-                            "research.card_sections_verdict" if has_verdict
-                            else "research.card_sections_no_verdict",
-                            lang, count=section_count, total=len(section_order),
+                            _sections_key, lang, count=section_count, total=len(section_order),
                         )
                         dot_color, dot_label = _rc_position_dot(t, lang)
                         updated_line = i18n.t("research.card_updated", lang, date=_rc_snapshot_date_label(data))
