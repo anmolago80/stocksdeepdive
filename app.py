@@ -1615,15 +1615,26 @@ def _fetch_with_budget(jobs, budget_seconds):
     return out
 
 
+# Mega-batch Part 8: AU/US balance sweep - the individual-stock tail end
+# of the tape had two AU tickers back to back (CSL.AX, BHP.AX) before
+# the single US one (AAPL), reading as "AU first, US as an afterthought".
+# Interleaved instead - same four tickers, just reordered.
 _TAPE_TICKERS = [
     ("ASX 200", "^AXJO"), ("S&P 500", "^GSPC"), ("NASDAQ", "^IXIC"),
-    ("AUD/USD", "AUDUSD=X"), ("CSL.AX", "CSL.AX"), ("BHP.AX", "BHP.AX"),
-    ("AAPL", "AAPL"), ("RMD.AX", "RMD.AX"),
+    ("AUD/USD", "AUDUSD=X"), ("CSL.AX", "CSL.AX"), ("AAPL", "AAPL"),
+    ("BHP.AX", "BHP.AX"), ("RMD.AX", "RMD.AX"),
 ]
 
+# Mega-batch Part 8: AU/US balance sweep - the old list leaned 3 AU
+# singles (CSL.AX/BHP.AX/RMD.AX) to 1 US single (AAPL), plus only an
+# AU-AU comparison chip. Now 2 AU + 2 US singles, interleaved, plus one
+# AU-AU and one US-US comparison chip - exactly the mix the mega-batch
+# instruction's own Part 8 example lists (CSL.AX, CPRT, BHP.AX, AAPL,
+# CSL.AX vs BHP.AX, CPRT vs FICO).
 _EXAMPLE_CHIPS = [
-    ("CSL.AX", "CSL.AX"), ("AAPL", "AAPL"), ("BHP.AX", "BHP.AX"),
-    ("RMD.AX", "RMD.AX"), ("CSL.AX vs BHP.AX", "CSL.AX BHP.AX"),
+    ("CSL.AX", "CSL.AX"), ("CPRT", "CPRT"), ("BHP.AX", "BHP.AX"),
+    ("AAPL", "AAPL"), ("CSL.AX vs BHP.AX", "CSL.AX BHP.AX"),
+    ("CPRT vs FICO", "CPRT FICO"),
 ]
 
 _FEATURED_ROTATION = ["CSL.AX", "AAPL", "BHP.AX", "RMD.AX", "MSFT", "WES.AX", "GOOGL"]
@@ -5083,6 +5094,77 @@ def _home_top5_by_country():
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
+def _home_featured_top10_by_country():
+    """Mega-batch Part 8: top 10 (not 5) tickers by Value Score per
+    country, for the featured-analysis picker below - same source and
+    eligibility rule as _home_top5_by_country (snapshot_store.all_
+    public_rows(), ETF/fund names excluded, finite price>0, Value Score
+    present), kept as its OWN cached function rather than generalising
+    that one with an N parameter: _home_top5_by_country backs the
+    "Tonight's top 5" tables the mega-batch instruction explicitly says
+    not to touch, so it stays untouched and this is a separate read of
+    the same underlying local data (no new network call either way).
+    Returns {"AU": [ticker, ...], "US": [ticker, ...]}, ticker symbols
+    only, sorted by Value Score descending, up to 10 each."""
+    rows = snapshot_store.all_public_rows()
+    by_country = {"AU": [], "US": []}
+    for r in rows:
+        price = r.get("price")
+        if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
+            continue
+        if r.get("value_score") is None:
+            continue
+        if "ETF" in (r.get("company_name") or "").upper():
+            continue
+        country = "AU" if (r.get("ticker") or "").upper().endswith(".AX") else "US"
+        by_country[country].append(r)
+    out = {}
+    for country, country_rows in by_country.items():
+        country_rows.sort(key=lambda r: r.get("value_score") or 0, reverse=True)
+        out[country] = [r["ticker"] for r in country_rows[:10] if r.get("ticker")]
+    return out
+
+
+def _home_featured_pick():
+    """Mega-batch Part 8: the featured-analysis card's ticker picker -
+    alternates country daily and rotates through that country's own
+    top-10 Value Scorers turn by turn, so the card doesn't pin the same
+    #1 name every time it's that country's turn.
+
+    Deterministic from an absolute day count (not day-of-year, which
+    would glitch at every Dec31->Jan1 boundary since day-of-year parity
+    doesn't reliably flip there) - same "stable all day, cache-
+    friendly" property _featured_analysis(ticker, day_key) already
+    relies on; only the picker changes; the actual Deep Dive compute
+    below is untouched. The turn index increments by exactly 1 every
+    time it's that country's turn again (every 2 days), so the pick
+    works through the whole top-10 list over about three weeks rather
+    than needing a separate "featured in the last 7 days" history store
+    - simpler, and it achieves the same "don't pin the same name" goal.
+
+    Returns (ticker, country) - country is None only when there is no
+    scanned data for EITHER country yet (a brand new/empty volume),
+    in which case the old fixed _FEATURED_ROTATION is the fallback."""
+    today = datetime.now(timezone.utc).date()
+    days_since_epoch = (today - _date(2020, 1, 1)).days
+    country = "AU" if days_since_epoch % 2 == 0 else "US"
+    turn_index = days_since_epoch // 2
+
+    top10_by_country = _home_featured_top10_by_country()
+    top10 = top10_by_country.get(country) or []
+    if not top10:
+        other = "US" if country == "AU" else "AU"
+        top10 = top10_by_country.get(other) or []
+        if top10:
+            country = other
+    if not top10:
+        fixed = _FEATURED_ROTATION[today.timetuple().tm_yday % len(_FEATURED_ROTATION)]
+        return fixed, None
+
+    return top10[turn_index % len(top10)], country
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
 def _home_research_stat():
     """Part 5 home tile (Option C): live "{count} companies · latest:
     {ticker}" stat for the Hand-built Research tile. Source: the same
@@ -5140,9 +5222,11 @@ def page_home():
     # concurrent, hard-budgeted fetch. A cold cache or a slow upstream
     # source delays those three boxes only - never the page.
     _day_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    _feat_ticker = _FEATURED_ROTATION[
-        datetime.now(timezone.utc).timetuple().tm_yday % len(_FEATURED_ROTATION)
-    ]
+    # Mega-batch Part 8: AU/USA daily-alternating featured pick (see
+    # _home_featured_pick's own docstring) - replaces the old fixed-list
+    # rotation as the picker; _featured_analysis(ticker, day_key) itself
+    # (the actual Deep Dive compute + 6h cache) is unchanged.
+    _feat_ticker, _feat_country = _home_featured_pick()
     # Next-batch instruction, Part 1: the home page's own ES coverage -
     # every literal string below runs through i18n.t(_home_lang, ...)
     # instead of being hardcoded, with the EN dict value set to the exact
@@ -5664,6 +5748,15 @@ def page_home():
                 _featured_card_html(_feat, _spark_pts, _ma_pts, _last_pt),
                 unsafe_allow_html=True,
             )
+            # Mega-batch Part 8: state the AU/US alternation factually -
+            # only shown when the pick actually came from a real scan
+            # (_feat_country set); the empty-volume fixed-rotation
+            # fallback has no country claim to make, so it stays silent
+            # rather than guessing.
+            if _feat_country == "AU":
+                st.caption(i18n.t("home.featured.rule_au", _home_lang))
+            elif _feat_country == "US":
+                st.caption(i18n.t("home.featured.rule_us", _home_lang))
             if st.button(
                 i18n.t("home.featured.open_deep_dive", _home_lang, ticker=_feat["ticker"]),
                 key="feat_open", use_container_width=True,

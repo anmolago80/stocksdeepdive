@@ -86,7 +86,7 @@ EN = {
 
     "header.tagline": "Research any stock in seconds.",
     "header.search_placeholder": (
-        "Input your stock ticker (e.g. CSL.AX, or CSL.AX BHP.AX to compare)"
+        "Input your stock ticker (e.g. CSL.AX or AAPL, or CSL.AX BHP.AX to compare)"
     ),
     "header.search_button": "Search",
     "header.search_caption": (
@@ -651,7 +651,7 @@ EN = {
         "no hidden assumptions: every estimated number is flagged."
     ),
     "home.hero.search_aria": "Ticker search",
-    "home.hero.search_placeholder": "CSL.AX  ·  or two tickers to compare: CSL.AX BHP.AX",
+    "home.hero.search_placeholder": "CSL.AX or AAPL  ·  or two tickers to compare: CSL.AX BHP.AX",
     "home.hero.analyze_button": "Analyze",
     "home.hero.search_hint": (
         "One ticker = full Deep Dive &middot; Two or more = side-by-side "
@@ -868,6 +868,8 @@ EN = {
         "from the ownership question."
     ),
     "home.featured.open_deep_dive": "Open the full {ticker} Deep Dive →",
+    "home.featured.rule_au": "Today's feature: the highest Value Score in last night's Australian scans.",
+    "home.featured.rule_us": "Today's feature: the highest Value Score in last night's US scans.",
 
     "home.mood.market_mood": "{country} MARKET MOOD",
     "home.mood.live_reading": "live news-tone reading",
@@ -1188,7 +1190,7 @@ ES = {
 
     "header.tagline": "Analiza cualquier acción en segundos.",
     "header.search_placeholder": (
-        "Ingresa el ticker de la acción (p. ej., CSL.AX, o CSL.AX "
+        "Ingresa el ticker de la acción (p. ej., CSL.AX o AAPL, o CSL.AX "
         "BHP.AX para comparar)"
     ),
     "header.search_button": "Buscar",
@@ -1679,7 +1681,7 @@ ES = {
         "ocultos: cada número estimado está señalado."
     ),
     "home.hero.search_aria": "Buscar ticker",
-    "home.hero.search_placeholder": "CSL.AX  ·  o dos tickers para comparar: CSL.AX BHP.AX",
+    "home.hero.search_placeholder": "CSL.AX o AAPL  ·  o dos tickers para comparar: CSL.AX BHP.AX",
     "home.hero.analyze_button": "Analizar",
     "home.hero.search_hint": (
         "Un ticker = Deep Dive completo &middot; Dos o más = comparación "
@@ -1899,6 +1901,8 @@ ES = {
         "mantenidas separadas de la pregunta de propiedad."
     ),
     "home.featured.open_deep_dive": "Abrir el Deep Dive completo de {ticker} →",
+    "home.featured.rule_au": "La selección de hoy: el Puntaje Value más alto en los escaneos australianos de anoche.",
+    "home.featured.rule_us": "La selección de hoy: el Puntaje Value más alto en los escaneos estadounidenses de anoche.",
 
     "home.mood.market_mood": "ÁNIMO DE MERCADO {country}",
     "home.mood.live_reading": "lectura en vivo del tono de las noticias",
