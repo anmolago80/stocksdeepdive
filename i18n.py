@@ -92,6 +92,11 @@ EN = {
     "nav.methodology": "Methodology",
     "nav.about": "About",
     "nav.track_record": "Track record",
+    # Owner review round fix #8: the mobile bottom bar's own icon-above-
+    # label items need a bare "Tools" (the icon is drawn separately above
+    # it) - nav.tools above already bakes the money-bag emoji into the
+    # same string, which would double up with the bar's own icon glyph.
+    "nav.mobile_tools_label": "Tools",
     # 3rd Amendment to Part 5: one-line descriptions for the "More ▾"
     # dropdown's four icon+name+description items - same nav-only scope as
     # every other key in this block.
@@ -99,6 +104,14 @@ EN = {
     "nav.more_track_record_desc": "Dated receipts: what the site computed for each stock, and when.",
     "nav.more_methodology_desc": "How every score and estimate is calculated, input by input.",
     "nav.more_about_desc": "Who builds this and why it's free.",
+    # Owner review round fix #8: the mobile bottom bar's "More" sheet also
+    # holds Research/Compare/Blog (desktop keeps those as their own primary
+    # tabs, but the bottom bar only has room for 5 icons) - same short
+    # icon+name+description card as the four items above, so these three
+    # need the same one-line-description treatment.
+    "nav.more_research_desc": "One company at a time, the full thesis and verdict written out.",
+    "nav.more_comparison_desc": "Two or more tickers, lined up on identical calculations.",
+    "nav.more_blog_desc": "Write-ups on individual stocks and how the models work.",
 
     "header.tagline": "Research any stock in seconds.",
     "header.search_placeholder": (
@@ -1744,10 +1757,14 @@ ES = {
     "nav.methodology": "Metodología",
     "nav.about": "Acerca de",
     "nav.track_record": "Historial",
+    "nav.mobile_tools_label": "Herramientas",
     "nav.more_calendar_desc": "Quién presenta resultados esta semana, con los movimientos de puntuación antes/después.",
     "nav.more_track_record_desc": "Recibos fechados: qué calculó el sitio para cada acción, y cuándo.",
     "nav.more_methodology_desc": "Cómo se calcula cada puntuación y estimación, dato por dato.",
     "nav.more_about_desc": "Quién construye esto y por qué es gratis.",
+    "nav.more_research_desc": "Una empresa a la vez, con la tesis y el veredicto completos.",
+    "nav.more_comparison_desc": "Dos o más acciones, alineadas sobre los mismos cálculos.",
+    "nav.more_blog_desc": "Artículos sobre acciones concretas y cómo funcionan los modelos.",
 
     "header.tagline": "Analiza cualquier acción en segundos.",
     "header.search_placeholder": (

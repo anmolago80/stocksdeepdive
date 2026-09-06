@@ -749,6 +749,49 @@ nav.site .nav-lang .flag{width:16px;height:11px;border-radius:2px;flex-shrink:0;
 nav.site a.nav-signin{color:#2dd4bf;font-weight:600;border:1.5px solid #2dd4bf;
   border-radius:8px;padding:5px 12px;font-size:13.5px}
 nav.site a.nav-signin:hover{background:#2dd4bf;color:#0b1220;text-decoration:none}
+/* Hidden by default (desktop) - only the @media block below (<=768px)
+   flips this to display:flex. Without an unconditional rule here, a
+   bare <nav> falls back to the browser's default display:block outside
+   the media query instead of actually disappearing. */
+.sdd-mnav-bottom{display:none}
+/* Owner review round fix #8: mobile app-style bottom icon bar ("Option
+   C" in mocks/mobile_nav_options_mock.html) - the SAME component
+   app.py's _render_mobile_bottom_nav() renders for the Streamlit pages
+   (identical class names, so a viewer landing on a blog post from a
+   Deep Dive link, or the other way round, sees an unbroken nav). Hidden
+   above 768px; nav.site (the desktop link row) hides below it instead. */
+@media(max-width:768px){
+  /* Top row per the mock: logo + EN/ES toggle + Sign in, one line - the
+     primary link row (Deep Dive..Blog) and the "More" dropdown fold into
+     the bottom bar instead, but nav-lang/nav-signin (already the last
+     two children of nav.site) stay, right next to the logo. */
+  nav.site>a:not(.nav-signin){display:none}
+  nav.site>details.nav-more{display:none}
+  nav.site{gap:10px}
+  body{padding-bottom:78px}
+  .sdd-mnav-bottom{position:fixed;left:0;right:0;bottom:0;z-index:9999;
+    display:flex;background:#0e1930;border-top:1px solid #1f3352;
+    padding-bottom:env(safe-area-inset-bottom)}
+  .sdd-mnav-item,.sdd-mnav-more>summary{flex:1;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:2px;padding:7px 0 8px;
+    font-size:9.5px;color:#8aa0b8 !important;text-decoration:none !important;
+    cursor:pointer;list-style:none;user-select:none;position:relative;z-index:2}
+  .sdd-mnav-item::-webkit-details-marker,
+  .sdd-mnav-more>summary::-webkit-details-marker{display:none}
+  .sdd-mnav-item .ic,.sdd-mnav-more>summary .ic{font-size:17px;line-height:1}
+  .sdd-mnav-item.on,.sdd-mnav-more[open]>summary{color:#2dd4bf !important}
+  .sdd-mnav-more{flex:1}
+  .sdd-mnav-dot{position:relative}
+  .sdd-mnav-dot::after{content:'';position:absolute;top:1px;right:calc(50% - 15px);
+    width:6px;height:6px;border-radius:50%;background:#f59e0b}
+  .sdd-mnav-sheet{position:fixed;left:0;right:0;bottom:0;z-index:1;
+    background:#0b1220cc;backdrop-filter:blur(2px);
+    padding:14px 14px calc(76px + env(safe-area-inset-bottom));
+    max-height:75vh;overflow-y:auto}
+  .sdd-mnav-sheet .sdd-mnav-sheet-title{font-size:11px;letter-spacing:1px;
+    color:#5b7290;text-transform:uppercase;margin:2px 2px 8px}
+  .sdd-mnav-sheet .sdd-more-panel{margin:0 auto}
+}
 main{padding:34px 0 10px}
 h1{font-size:40px;line-height:1.2;font-weight:800;margin:0 0 14px;letter-spacing:-.5px}
 h2{font-size:26px;line-height:1.3;font-weight:700;margin:38px 0 12px}
@@ -1029,6 +1072,11 @@ def _header_html(lang="en", path=None, lang_urls=None):
     # stays identical site-wide" (matches app.py's _render_app_nav_items,
     # last entry in _primary_items so it lands right before Blog there).
     _nav_tools_class = " nav-tools-new" if NAV_TOOLS_NEW_BADGE_ENABLED else ""
+    # Owner review round fix #8: same launch-period dot, drawn with the
+    # mobile bottom bar's own .sdd-mnav-dot marker (positioned for an
+    # icon-above-label item, unlike nav-tools-new's ::after which is
+    # tuned for a flat inline text link).
+    _mnav_dot_class = " sdd-mnav-dot" if NAV_TOOLS_NEW_BADGE_ENABLED else ""
     # 3rd Amendment to Part 5: click-outside-closes for the <details>
     # dropdown - a plain <details>/<summary> only toggles on clicking its
     # own summary, so a click anywhere else on the page needs this one
@@ -1083,6 +1131,48 @@ document.addEventListener('click', function(ev){
     <a href="/portfolio?lang=es" class="nav-signin">Iniciar sesión</a>
   </nav>
 </div></header>
+<nav class="sdd-mnav-bottom">
+  <a class="sdd-mnav-item" href="/deep-dive?lang=es"><span class="ic">&#128300;</span>Deep Dive</a>
+  <a class="sdd-mnav-item" href="/scanner?lang=es"><span class="ic">&#128270;</span>Buscador</a>
+  <a class="sdd-mnav-item" href="/portfolio?lang=es"><span class="ic">&#128188;</span>Cartera</a>
+  <a class="sdd-mnav-item{_mnav_dot_class}" href="/tools?lang=es"><span class="ic">&#128176;</span>Herramientas</a>
+  <details class="sdd-mnav-more">
+    <summary><span class="ic">&#9776;</span>Más</summary>
+    <div class="sdd-mnav-sheet">
+      <div class="sdd-mnav-sheet-title">Más</div>
+      <div class="sdd-more-panel">
+        <a class="sdd-more-item" href="/research?lang=es">
+          <span class="sdd-more-ic">&#128218;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Investigación</span>
+          <span class="sdd-more-desc">Una empresa a la vez, con la tesis y el veredicto completos.</span></span></a>
+        <a class="sdd-more-item" href="/comparison?lang=es">
+          <span class="sdd-more-ic">&#9878;&#65039;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Comparar</span>
+          <span class="sdd-more-desc">Dos o más acciones, alineadas sobre los mismos cálculos.</span></span></a>
+        <a class="sdd-more-item" href="/es/blog">
+          <span class="sdd-more-ic">&#9997;&#65039;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Blog</span>
+          <span class="sdd-more-desc">Artículos sobre acciones concretas y cómo funcionan los modelos.</span></span></a>
+        <a class="sdd-more-item" href="/es/calendar">
+          <span class="sdd-more-ic">&#128197;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Calendario de resultados</span>
+          <span class="sdd-more-desc">Quién presenta resultados esta semana, con los movimientos de puntuación antes/después.</span></span></a>
+        <a class="sdd-more-item" href="/es/track-record">
+          <span class="sdd-more-ic">&#128200;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Historial</span>
+          <span class="sdd-more-desc">Recibos fechados: qué calculó el sitio para cada acción, y cuándo.</span></span></a>
+        <a class="sdd-more-item" href="/es/methodology">
+          <span class="sdd-more-ic">&#129518;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Metodología</span>
+          <span class="sdd-more-desc">Cómo se calcula cada puntuación y estimación, dato por dato.</span></span></a>
+        <a class="sdd-more-item" href="/es/about">
+          <span class="sdd-more-ic">&#128100;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Acerca de</span>
+          <span class="sdd-more-desc">Quién construye esto y por qué es gratis.</span></span></a>
+      </div>
+    </div>
+  </details>
+</nav>
 {_nav_more_close_script}"""
     return f"""
 <header class="site"><div class="wrap">
@@ -1122,6 +1212,48 @@ document.addEventListener('click', function(ev){
     <a href="/portfolio" class="nav-signin">Sign in</a>
   </nav>
 </div></header>
+<nav class="sdd-mnav-bottom">
+  <a class="sdd-mnav-item" href="/deep-dive"><span class="ic">&#128300;</span>Deep Dive</a>
+  <a class="sdd-mnav-item" href="/scanner"><span class="ic">&#128270;</span>Scanner</a>
+  <a class="sdd-mnav-item" href="/portfolio"><span class="ic">&#128188;</span>Portfolio</a>
+  <a class="sdd-mnav-item{_mnav_dot_class}" href="/tools"><span class="ic">&#128176;</span>Tools</a>
+  <details class="sdd-mnav-more">
+    <summary><span class="ic">&#9776;</span>More</summary>
+    <div class="sdd-mnav-sheet">
+      <div class="sdd-mnav-sheet-title">More</div>
+      <div class="sdd-more-panel">
+        <a class="sdd-more-item" href="/research">
+          <span class="sdd-more-ic">&#128218;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Research</span>
+          <span class="sdd-more-desc">One company at a time, the full thesis and verdict written out.</span></span></a>
+        <a class="sdd-more-item" href="/comparison">
+          <span class="sdd-more-ic">&#9878;&#65039;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Compare</span>
+          <span class="sdd-more-desc">Two or more tickers, lined up on identical calculations.</span></span></a>
+        <a class="sdd-more-item" href="/blog">
+          <span class="sdd-more-ic">&#9997;&#65039;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Blog</span>
+          <span class="sdd-more-desc">Write-ups on individual stocks and how the models work.</span></span></a>
+        <a class="sdd-more-item" href="/calendar">
+          <span class="sdd-more-ic">&#128197;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Results Calendar</span>
+          <span class="sdd-more-desc">Who reports this week, with before/after score moves.</span></span></a>
+        <a class="sdd-more-item" href="/track-record">
+          <span class="sdd-more-ic">&#128200;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Track record</span>
+          <span class="sdd-more-desc">Dated receipts: what the site computed for each stock, and when.</span></span></a>
+        <a class="sdd-more-item" href="/methodology">
+          <span class="sdd-more-ic">&#129518;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">Methodology</span>
+          <span class="sdd-more-desc">How every score and estimate is calculated, input by input.</span></span></a>
+        <a class="sdd-more-item" href="/about">
+          <span class="sdd-more-ic">&#128100;</span>
+          <span class="sdd-more-txt"><span class="sdd-more-name">About</span>
+          <span class="sdd-more-desc">Who builds this and why it's free.</span></span></a>
+      </div>
+    </div>
+  </details>
+</nav>
 {_nav_more_close_script}"""
 
 

@@ -1752,6 +1752,119 @@ st.markdown(
         padding-top: calc(2.5rem + env(safe-area-inset-top)) !important;
       }
     }
+    /* Hidden by default (desktop) - only the @media block below
+       (<=768px) flips this to display:flex. Without an unconditional
+       rule out here, a bare <nav> falls back to the browser's default
+       display:block outside the media query instead of disappearing. */
+    .sdd-mnav-bottom { display: none; }
+    /* Owner review round fix #8: mobile app-style bottom icon bar
+       ("Option C" in mocks/mobile_nav_options_mock.html). Everything in
+       this block is scoped to <=768px (the instruction's own breakpoint -
+       independent of, and a bit wider than, the existing 640px used
+       above for unrelated column-stacking fixes, so a tablet-width page
+       between 641-768px gets the new nav treatment without also
+       triggering those other 640px rules) - desktop is untouched. The
+       eight-item nav row (Deep Dive..Blog + More, rendered via
+       _render_app_nav_items(layout="row") and wrapped in
+       st.container(key="site_nav_row") for exactly this selector) is
+       hidden rather than removed, since Python has no visibility into
+       the browser's viewport width - a fixed bottom bar (built with
+       plain st.markdown HTML, not st.components.v1.html - the latter
+       sandboxes content in an iframe, where "position:fixed" only
+       pins to the IFRAME's own box, not the real browser viewport;
+       st.markdown's HTML lands directly in the main page DOM, where
+       fixed positioning behaves normally) replaces it. */
+    @media (max-width: 768px) {
+      div[class*="st-key-site_nav_row"] { display: none !important; }
+      /* ultra_compact's own "☰" popover (ticker Deep Dive's compact
+         header) becomes redundant with the bottom bar's own "☰ More"
+         sheet on mobile - two different hamburger triggers with
+         overlapping content would be confusing, so this one hides too. */
+      div[class*="st-key-uc_nav_popover_col"] { display: none !important; }
+      /* Home renders its own logo+nav row (not through _render_header) -
+         hide just the nav column and let the logo column fill the row,
+         scoped to this one row only (not a global column rule) so no
+         other two-column layout site-wide is affected. */
+      div[class*="st-key-home_navrow"] div[data-testid="stColumn"]:last-child {
+        display: none !important;
+      }
+      div[class*="st-key-home_navrow"] div[data-testid="stColumn"]:first-child {
+        width: 100% !important; flex: 1 1 100% !important;
+      }
+      /* Top row per the mock: logo + EN/ES toggle + Sign in/out, one
+         line - paywall_engine.render_account_bar()'s own st.columns()
+         row would otherwise still stack (the pre-existing <=640px rule a
+         little above this block forces every st.columns() row to 100%-
+         wide stacked columns, which is right for most of the site's
+         wide layouts but wrong for this compact identity strip). :has()
+         targets specifically the row containing the account name/Sign
+         in/Sign out - a plain selector would touch every column row on
+         the page - and wins over that earlier rule on specificity alone
+         (one extra pseudo-class), regardless of source order, so this
+         works whether the viewport is under 640px or between 641-768px. */
+      div[data-testid="stHorizontalBlock"]:has(.pw-account-name),
+      div[data-testid="stHorizontalBlock"]:has([class*="st-key-account_bar_signin"]) {
+        flex-wrap: nowrap !important;
+      }
+      div[data-testid="stHorizontalBlock"]:has(.pw-account-name) > div[data-testid="stColumn"],
+      div[data-testid="stHorizontalBlock"]:has([class*="st-key-account_bar_signin"]) > div[data-testid="stColumn"] {
+        width: auto !important; flex: 0 1 auto !important; min-width: 0 !important;
+      }
+      /* Room at the bottom of every page for the fixed bar so it never
+         covers the last bit of real content. */
+      div[data-testid="stAppViewContainer"] .block-container {
+        padding-bottom: 78px !important;
+      }
+      .sdd-mnav-bottom {
+        position: fixed; left: 0; right: 0; bottom: 0; z-index: 9999;
+        display: flex; background: #0e1930; border-top: 1px solid #1f3352;
+        padding-bottom: env(safe-area-inset-bottom);
+      }
+      .sdd-mnav-item, .sdd-mnav-more > summary {
+        flex: 1; display: flex; flex-direction: column; align-items: center;
+        justify-content: center; gap: 2px; padding: 7px 0 8px;
+        font-size: 9.5px; color: #8aa0b8 !important; text-decoration: none !important;
+        cursor: pointer; list-style: none; user-select: none;
+        /* The sheet below is a DOM descendant of this same <nav> (nested
+           inside the <details>, so <details>'s native no-JS open/close
+           toggle can reveal it) rather than a true sibling - which means
+           its z-index is only compared against nav's OTHER children,
+           not against the page at large. Promoting the bar's own icons
+           into their own stacking context with a higher z-index than the
+           sheet's (below) keeps them visible on top of it instead of
+           being dimmed under the sheet's translucent backdrop when open. */
+        position: relative; z-index: 2;
+      }
+      .sdd-mnav-item::-webkit-details-marker,
+      .sdd-mnav-more > summary::-webkit-details-marker { display: none; }
+      .sdd-mnav-item .ic, .sdd-mnav-more > summary .ic {
+        font-size: 17px; line-height: 1;
+      }
+      .sdd-mnav-item.on, .sdd-mnav-more[open] > summary { color: #2dd4bf !important; }
+      .sdd-mnav-more { flex: 1; }
+      .sdd-mnav-dot { position: relative; }
+      .sdd-mnav-dot::after {
+        content: ''; position: absolute; top: 1px; right: calc(50% - 15px);
+        width: 6px; height: 6px; border-radius: 50%; background: #f59e0b;
+      }
+      /* The More sheet: same .sdd-more-panel/.sdd-more-item card component
+         the desktop "More" popover already uses (icon + bold name + grey
+         one-line description) - pinned above the bottom bar instead of
+         floating below a trigger. Holds Research/Compare/Blog (desktop's
+         own primary tabs - the bar only has 5 slots) plus the same four
+         More pages desktop already tucks away. */
+      .sdd-mnav-sheet {
+        position: fixed; left: 0; right: 0; bottom: 0; z-index: 1;
+        background: #0b1220cc; backdrop-filter: blur(2px);
+        padding: 14px 14px calc(76px + env(safe-area-inset-bottom));
+        max-height: 75vh; overflow-y: auto;
+      }
+      .sdd-mnav-sheet .sdd-mnav-sheet-title {
+        font-size: 11px; letter-spacing: 1px; color: #5b7290;
+        text-transform: uppercase; margin: 2px 2px 8px;
+      }
+      .sdd-mnav-sheet .sdd-more-panel { margin: 0 auto; }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -2696,6 +2809,92 @@ def _render_app_nav_items(lang, current=None, key_prefix="nav", layout="row"):
             _more_panel_html()
 
 
+def _render_mobile_bottom_nav(lang, current=None):
+    """Owner review round fix #8: the mobile-only (<=768px, see the
+    @media block in the site-wide <style> a few hundred lines up) fixed
+    bottom icon bar, owner-approved "Option C" in
+    mocks/mobile_nav_options_mock.html. Invisible (display:none, the
+    default until the media query flips it to display:flex) on desktop,
+    so it's safe to call this unconditionally on every page alongside the
+    existing nav row - no Python-side viewport detection needed.
+
+    Five thumb targets: Deep Dive / Scanner / Portfolio / Tools (keeps
+    the amber "NEW" launch-period dot) / a "More" <details> whose sheet
+    holds everything else - Research, Compare and Blog (desktop's own
+    primary tabs; the bar only has 5 slots) plus the same four pages
+    desktop's own "More" popover tucks away (Results Calendar, Track
+    record, Methodology, About). Same <details>/<summary> no-JS toggle
+    blog_render.py's static-page nav already uses for its own "More"
+    dropdown (see that module's _header_html docstring) - consistent
+    pattern, and it means the sheet opens/closes with zero Streamlit
+    reruns (no state round-trip, no flicker).
+
+    current: same id space as _render_app_nav_items - the active item (if
+    one of the 5 bar slots) renders teal; a page whose current item lives
+    inside the sheet instead (e.g. Research) leaves all 5 bar icons
+    neutral, same as desktop leaving every primary tab un-highlighted
+    when you're on a "More" page today.
+    """
+    _bar_items = [
+        ("deep_dive", "\U0001F52C", i18n.t("nav.deep_dive", lang), "/deep-dive"),
+        ("scanner", "\U0001F50E", i18n.t("nav.scanner", lang), "/scanner"),
+        ("portfolio", "\U0001F4BC", i18n.t("nav.portfolio", lang), "/portfolio"),
+        ("tools", "\U0001F4B0", i18n.t("nav.mobile_tools_label", lang), "/tools"),
+    ]
+    _bar_html = "".join(
+        f'<a class="sdd-mnav-item{" on" if _id == current else ""}'
+        f'{" sdd-mnav-dot" if _id == "tools" and NAV_TOOLS_NEW_BADGE_ENABLED else ""}" '
+        f'href="{_href}" target="_self">'
+        f'<span class="ic">{_icon}</span>{html.escape(_label)}</a>'
+        for _id, _icon, _label, _href in _bar_items
+    )
+    # Sheet contents: Research/Compare/Blog first (desktop's own primary
+    # tabs, in the same order _primary_items lists them), then the same
+    # four More-page entries desktop's own popover shows, same order.
+    _sheet_items = [
+        ("research", "\U0001F4DA", i18n.t("nav.research", lang),
+         i18n.t("nav.more_research_desc", lang), "/research"),
+        ("comparison", "⚖️", i18n.t("nav.comparison", lang),
+         i18n.t("nav.more_comparison_desc", lang), "/comparison"),
+        ("blog", "✍️", i18n.t("nav.blog", lang),
+         i18n.t("nav.more_blog_desc", lang), "/blog"),
+        ("calendar", "\U0001F4C5", i18n.t("nav.calendar", lang),
+         i18n.t("nav.more_calendar_desc", lang), "/results-calendar"),
+        ("track_record", "\U0001F4C8", i18n.t("nav.track_record", lang),
+         i18n.t("nav.more_track_record_desc", lang), "/track-record"),
+        ("methodology", "\U0001F9EE", i18n.t("nav.methodology", lang),
+         i18n.t("nav.more_methodology_desc", lang), "/methodology"),
+        ("about", "\U0001F464", i18n.t("nav.about", lang),
+         i18n.t("nav.more_about_desc", lang), "/about"),
+    ]
+    _sheet_items_html = "".join(
+        f'<a class="sdd-more-item{" sdd-more-item-active" if _id == current else ""}" '
+        f'href="{_href}" target="_self">'
+        f'<span class="sdd-more-ic">{_icon}</span>'
+        f'<span class="sdd-more-txt">'
+        f'<span class="sdd-more-name">{html.escape(_title)}</span>'
+        f'<span class="sdd-more-desc">{html.escape(_desc)}</span>'
+        f'</span></a>'
+        for _id, _icon, _title, _desc, _href in _sheet_items
+    )
+    _more_label = i18n.t("nav.more", lang)
+    st.markdown(
+        f"""
+<nav class="sdd-mnav-bottom">
+  {_bar_html}
+  <details class="sdd-mnav-more">
+    <summary><span class="ic">☰</span>{html.escape(_more_label)}</summary>
+    <div class="sdd-mnav-sheet">
+      <div class="sdd-mnav-sheet-title">{html.escape(_more_label)}</div>
+      <div class="sdd-more-panel">{_sheet_items_html}</div>
+    </div>
+  </details>
+</nav>
+""",
+        unsafe_allow_html=True,
+    )
+
+
 def _render_header(compact, page_label=None, ultra_compact=False, current=None):
     _capture_first_src()
     _lang = st.session_state.get("lang", "en")
@@ -2774,8 +2973,10 @@ def _render_header(compact, page_label=None, ultra_compact=False, current=None):
                         use_container_width=True, type="primary",
                     )
         with _uc_nav_col:
-            with st.popover("☰", key="dd_hero_nav_popover"):
-                _render_app_nav_items(_lang, current=current, key_prefix="nav_uc", layout="stack")
+            with st.container(key="uc_nav_popover_col"):
+                with st.popover("☰", key="dd_hero_nav_popover"):
+                    _render_app_nav_items(_lang, current=current, key_prefix="nav_uc", layout="stack")
+        _render_mobile_bottom_nav(_lang, current=current)
         if _searched:
             _dispatch_search(_search_text)
         return
@@ -2850,9 +3051,11 @@ def _render_header(compact, page_label=None, ultra_compact=False, current=None):
     # centers its label inside that box by default, so a column sized
     # close to the label's own width is what makes the pill look tightly
     # fitted and centered.
-    _bsp1, _bmid, _bsp2 = st.columns([2, 16, 2])
-    with _bmid:
-        _render_app_nav_items(_lang, current=current, key_prefix="nav", layout="row")
+    with st.container(key="site_nav_row"):
+        _bsp1, _bmid, _bsp2 = st.columns([2, 16, 2])
+        with _bmid:
+            _render_app_nav_items(_lang, current=current, key_prefix="nav", layout="row")
+    _render_mobile_bottom_nav(_lang, current=current)
 
     if _searched:
         _dispatch_search(_search_text)
@@ -5861,19 +6064,25 @@ def page_home():
     )
 
     # top row: logo + site-wide nav (Part 5, Option B) - Home isn't itself
-    # a nav item, so current=None highlights nothing here.
-    _navrow_logo_col, _navrow_nav_col = st.columns([2, 8], vertical_alignment="center")
-    with _navrow_logo_col:
-        st.markdown(
-            """
+    # a nav item, so current=None highlights nothing here. Owner review
+    # round fix #8: wrapped in its own container key so the mobile
+    # @media block can hide just the nav column (keeping the logo) and
+    # widen the logo column to fill the row - see the "home_navrow"
+    # selectors a few hundred lines up in the site-wide <style> block.
+    with st.container(key="home_navrow"):
+        _navrow_logo_col, _navrow_nav_col = st.columns([2, 8], vertical_alignment="center")
+        with _navrow_logo_col:
+            st.markdown(
+                """
 <div class='sdd-navrow'>
   <span class='sdd-logo'>Stocks<span class='accent'>DeepDive</span></span>
 </div>
 """,
-            unsafe_allow_html=True,
-        )
-    with _navrow_nav_col:
-        _render_app_nav_items(_home_lang, current=None, key_prefix="nav_home", layout="row")
+                unsafe_allow_html=True,
+            )
+        with _navrow_nav_col:
+            _render_app_nav_items(_home_lang, current=None, key_prefix="nav_home", layout="row")
+    _render_mobile_bottom_nav(_home_lang, current=None)
 
     hero_l, hero_r = st.columns([11, 10], gap="large")
     with hero_l:
