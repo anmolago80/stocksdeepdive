@@ -1184,6 +1184,15 @@ EN = {
     "research.key_number_margin_of_safety": "Margin of safety",
     "research.key_number_roic": "ROIC",
     "research.key_number_roic_vs_wacc": "ROIC vs WACC",
+    # Mega-batch Part 12: research status per company (in progress /
+    # terminated) - a distinct badge + the owner's own stated reason, so
+    # a deliberately-stopped writeup (risks found, not worth finalising)
+    # never gets misread as merely "not started yet" via the generic
+    # in-progress fallback.
+    "research.terminated_badge": "⛔ Research terminated",
+    "research.terminated_fallback_reason": (
+        "Research stopped — see the sections for what was completed."
+    ),
 }
 
 ES = {
@@ -2213,6 +2222,11 @@ ES = {
     "research.key_number_margin_of_safety": "Margen de seguridad",
     "research.key_number_roic": "ROIC",
     "research.key_number_roic_vs_wacc": "ROIC vs WACC",
+    # Mega-batch Part 12
+    "research.terminated_badge": "⛔ Investigación terminada",
+    "research.terminated_fallback_reason": (
+        "Investigación detenida — ver las secciones para lo que se completó."
+    ),
 }
 
 

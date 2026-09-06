@@ -3179,6 +3179,48 @@ def _render_compounder_admin_panel():
                                 )
                                 st.rerun()
 
+                        # Mega-batch Part 12: research status (In progress /
+                        # Terminated) for this ticker, right in this same
+                        # Card blurbs area per the instruction. Kept OUTSIDE
+                        # the st.form above (a form only reruns on submit,
+                        # so the reason box couldn't show/hide instantly as
+                        # the radio changes) - the owner's own words only,
+                        # never invented, matching every other admin text
+                        # field on this page.
+                        _rs_has_verdict = _rc_has_full_verdict(_blurb_ticker, _cp_data_for_blurbs)
+                        if _rs_has_verdict:
+                            st.caption(
+                                "Research status: Complete (full written verdict on file - no status needed)."
+                            )
+                        else:
+                            _rs_status, _rs_reason = card_blurb_store.get_research_status(_blurb_ticker)
+                            _rs_choice = st.radio(
+                                "Research status",
+                                options=["In progress", "Terminated"],
+                                index=1 if _rs_status == "terminated" else 0,
+                                key=f"cp_status_radio_{_blurb_ticker}",
+                                horizontal=True,
+                            )
+                            _rs_new_status = "terminated" if _rs_choice == "Terminated" else "in_progress"
+                            _rs_reason_input = _rs_reason
+                            if _rs_new_status == "terminated":
+                                _rs_reason_input = st.text_input(
+                                    "Terminated reason (your own words - shown on the shelf card)",
+                                    value=_rs_reason,
+                                    key=f"cp_status_reason_{_blurb_ticker}",
+                                )
+                                if not _rs_reason_input.strip():
+                                    st.caption(
+                                        ":orange[No reason saved yet - the card will show a generic "
+                                        "'research stopped' line until you fill this in.]"
+                                    )
+                            if st.button("Save status", key=f"cp_status_save_{_blurb_ticker}"):
+                                card_blurb_store.set_research_status(
+                                    _blurb_ticker, _rs_new_status, _rs_reason_input
+                                )
+                                st.rerun()
+                        st.divider()
+
             # Mega-batch Part 10: off-site DB backup status + manual
             # trigger, in the same admin-only popover as everything
             # else here. import deferred - this module (requests,
@@ -4613,6 +4655,46 @@ def _rc_card_blurb(ticker, data):
     return saved if saved else _rc_default_card_blurb(ticker, data)
 
 
+def _rc_has_full_verdict(ticker, data):
+    """True only when the author has written an actual CLOSING verdict -
+    the "Investment Recommendation" item specifically - not just the
+    "Why Is This a Good Investment?" thesis prose that _rc_verdict_text()
+    also accepts as a display fallback.
+
+    Mega-batch Part 12 needs this narrower check: a company can have real
+    thesis prose on file from research that was ultimately abandoned
+    before ever reaching a recommendation - exactly AUB.AX's case (a
+    1000+ character "Why Is This a Good Investment?" write-up exists, but
+    no Investment Recommendation was ever written, because the owner
+    stopped after finding risks). Treating that partial prose as "a full
+    written verdict" would silently make the Terminated status uneditable/
+    inert for precisely the tickers the instruction was written for."""
+    groups = data["sections"].get("Company Potential", {}).get("text_groups", {}).get(ticker, [])
+    ic_group = next((g for g in groups if g.get("title") == "The Investment Case"), None)
+    if not ic_group:
+        return False
+    for item in ic_group.get("items", []):
+        if item.get("label") == "Investment Recommendation" and (item.get("text") or "").strip():
+            return True
+    return False
+
+
+def _rc_research_status(ticker, data):
+    """('complete', '') | ('in_progress', '') | ('terminated', reason).
+
+    Mega-batch Part 12: "companies with a full written verdict need no
+    status - treat as complete automatically" - a full written verdict
+    (see _rc_has_full_verdict - the closing recommendation, not partial
+    thesis prose) always wins over any saved status, so a ticker the
+    owner had marked Terminated correctly stops showing the badge the
+    moment a real recommendation is published for it. Otherwise defers to
+    the saved research_status row (default: in_progress, which is also
+    what the pre-existing shelf-card fallback wording already assumes)."""
+    if _rc_has_full_verdict(ticker, data):
+        return "complete", ""
+    return card_blurb_store.get_research_status(ticker)
+
+
 def _rc_company_name(ticker):
     """Company display name for the shelf/header - read from the nightly
     scan's own snapshot cache (snapshot_store, local SQLite, refreshed only
@@ -4764,9 +4846,29 @@ def _render_research_shelf(data, tickers, section_order, lang="en"):
                             f"<div style='color:#8aa0b8;font-size:12.5px;margin:1px 0 8px;'>{html.escape(industry)}</div>",
                             unsafe_allow_html=True,
                         )
+                        # Mega-batch Part 12: terminated → a distinct badge
+                        # + the owner's own reason as the card line (never
+                        # the generic "research in progress" fallback,
+                        # which was actively misrepresenting these
+                        # tickers - the instruction's own words); anything
+                        # else keeps the pre-existing wording unchanged.
+                        _shelf_status, _shelf_reason = _rc_research_status(t, data)
+                        if _shelf_status == "terminated":
+                            st.markdown(
+                                f"<div style='display:inline-block;background:rgba(239,68,68,.12);"
+                                f"border:1px solid #ef4444;color:#ef4444;font-size:11px;font-weight:700;"
+                                f"border-radius:6px;padding:2px 8px;margin-bottom:6px;'>"
+                                f"{html.escape(i18n.t('research.terminated_badge', lang))}</div>",
+                                unsafe_allow_html=True,
+                            )
+                            _shelf_card_line = _shelf_reason or i18n.t(
+                                "research.terminated_fallback_reason", lang
+                            )
+                        else:
+                            _shelf_card_line = _rc_card_blurb(t, data)
                         st.markdown(
                             f"<div style='color:#c3d1e0;font-size:13.5px;line-height:1.55;"
-                            f"min-height:58px;'>{_md_safe(_rc_card_blurb(t, data))}</div>",
+                            f"min-height:58px;'>{_md_safe(_shelf_card_line)}</div>",
                             unsafe_allow_html=True,
                         )
                         section_count = _rc_section_count(t, data, section_order)
@@ -4814,6 +4916,24 @@ def _render_research_detail(ticker, data, section_order, lang="en"):
         lang,
     )
 
+    # Mega-batch Part 12: same "⛔ Research terminated" status line the
+    # shelf card shows, repeated here under the title - "State 2 header:
+    # same status line under the title" (the instruction's own words).
+    # In-progress/complete tickers render nothing extra, unchanged.
+    _rs_status, _rs_reason = _rc_research_status(ticker, data)
+    _status_line_html = ""
+    if _rs_status == "terminated":
+        _status_line_html = (
+            f"<div style='margin-top:6px;'>"
+            f"<span style='display:inline-block;background:rgba(239,68,68,.12);"
+            f"border:1px solid #ef4444;color:#ef4444;font-size:11px;font-weight:700;"
+            f"border-radius:6px;padding:2px 8px;'>"
+            f"{html.escape(i18n.t('research.terminated_badge', lang))}</span>"
+            f"<span style='color:#8aa0b8;font-size:12.5px;margin-left:8px;'>"
+            f"{html.escape(_rs_reason or i18n.t('research.terminated_fallback_reason', lang))}</span>"
+            f"</div>"
+        )
+
     with st.container(key=f"cp_header_card_{ticker}"):
         st.markdown(
             f"""
@@ -4823,6 +4943,7 @@ def _render_research_detail(ticker, data, section_order, lang="en"):
                   <div style='font-family:ui-monospace,Menlo,monospace; font-size:26px; font-weight:800; color:#e6edf5;'>
                     {html.escape(ticker)}{(' — ' + html.escape(name)) if name else ''}
                   </div>
+                  {_status_line_html}
                 </div>
                 <div>
                   <div style='font-size:10.5px; color:#5b7290; letter-spacing:.6px;'>SECTIONS COVERED</div>
