@@ -16376,6 +16376,14 @@ def _render_tools_home_banner(lang):
                 st.caption(_bh("headline_empty"))
             if st.button(_bh("build_plan_button"), use_container_width=True,
                          type="primary", key="tools_banner_cta"):
+                # Owner review round fix #2: land straight on the Budget
+                # Planner tab, not whichever tab happened to be last
+                # opened. st.switch_page() clears query params, so the
+                # target travels via session_state instead - the same
+                # hand-off convention as the Deep Dive -> Research
+                # cross-link (research_jump_ticker) - and page_tools()
+                # checks/clears this before falling back to ?tool=.
+                st.session_state["tools_jump_tool"] = "budget_planner"
                 st.switch_page(PG_TOOLS)
 
 
@@ -17384,7 +17392,47 @@ def _render_utilities_tool(email):
     _render_utilities_dashboard(email, _ul, _lang, saved, typical_deal_rates)
 
 
+def _render_utilities_admin_typical_deals(_lang):
+    """Owner-only "Typical deal rates" editor for the Utilities tool's
+    manual/"other" benchmark path (internet/mobile). Extracted out of
+    page_tools() (Owner review round fix #2) so it renders inside the
+    Utilities TAB specifically rather than unconditionally below every
+    tool - it's Utilities-only admin content, not hub-wide."""
+    _ul = lambda key, **kw: i18n.t(f"tools.utilities.{key}", _lang, **kw)
+    with st.expander(_ul("admin_typical_deals_title"), expanded=False):
+        st.caption(_ul("admin_typical_deals_note"))
+        rates = tools_store.get_typical_deal_rates()
+        for _key, _label in (("internet_au", "Internet (AU)"), ("mobile_au", "Mobile (AU)"),
+                             ("internet_us", "Internet (US)"), ("mobile_us", "Mobile (US)")):
+            _val = st.number_input(_label, min_value=0.0, step=10.0,
+                                   value=float(rates.get(_key, 0.0)),
+                                   key=f"tools_util_admin_typical_{_key}")
+            if st.button(f"Save {_label}", key=f"tools_util_admin_typical_save_{_key}"):
+                tools_store.set_typical_deal_rate(_key, _val)
+                st.success("Saved.")
+
+
 def page_tools():
+    """Owner review round fix #2: the hub renders its tools as TABS (one
+    tool visible at a time) instead of one long stacked page - the
+    registry still drives it (TOOLS_REGISTRY: id/icon/title_key/render),
+    so adding tool #4 later is still just one more entry, nothing about
+    this function's own structure changes.
+
+    Deep-linkable via ?tool=<id> - same convention page_research() already
+    uses for ?section= (st.tabs(..., default=...) picks the initial tab;
+    Streamlit has no callback for which tab the visitor switches to
+    afterward, so - exactly like ?section= - the query param reflects the
+    tab that was opened, not necessarily whichever one is on screen right
+    now if the visitor has since clicked to another tab client-side).
+
+    A page switch (e.g. the home banner's "Build my full plan" button)
+    can't rely on ?tool= surviving the jump - st.switch_page() clears
+    query params on navigation (see the Deep Dive -> Research cross-link
+    a few thousand lines up for the same note) - so the same
+    session_state hand-off convention is used instead:
+    st.session_state["tools_jump_tool"] is checked FIRST, with priority
+    over the query param, then cleared so it only fires once."""
     _lang = st.session_state.get("lang", "en")
     _content_page_shell(i18n.t("tools.page_title", _lang), current="tools")
     _bump_page_view("tools")
@@ -17395,22 +17443,24 @@ def page_tools():
         return
 
     email = paywall_engine.current_user_email()
-    for _tool in TOOLS_REGISTRY:
-        globals()[_tool["render"]](email)
 
-    if ai_gate.is_owner(email):
-        _ul = lambda key, **kw: i18n.t(f"tools.utilities.{key}", _lang, **kw)
-        with st.expander(_ul("admin_typical_deals_title"), expanded=False):
-            st.caption(_ul("admin_typical_deals_note"))
-            rates = tools_store.get_typical_deal_rates()
-            for _key, _label in (("internet_au", "Internet (AU)"), ("mobile_au", "Mobile (AU)"),
-                                 ("internet_us", "Internet (US)"), ("mobile_us", "Mobile (US)")):
-                _val = st.number_input(_label, min_value=0.0, step=10.0,
-                                       value=float(rates.get(_key, 0.0)),
-                                       key=f"tools_util_admin_typical_{_key}")
-                if st.button(f"Save {_label}", key=f"tools_util_admin_typical_save_{_key}"):
-                    tools_store.set_typical_deal_rate(_key, _val)
-                    st.success("Saved.")
+    _tool_ids = [t["id"] for t in TOOLS_REGISTRY]
+    _tab_labels = []
+    for _t in TOOLS_REGISTRY:
+        _title = i18n.t(_t["title_key"], _lang)
+        _tab_labels.append(_title if _title.strip().startswith(_t["icon"]) else f"{_t['icon']} {_title}")
+
+    _jump_target = st.session_state.pop("tools_jump_tool", None)
+    _target = (_jump_target or st.query_params.get("tool") or "").strip().lower()
+    _default_idx = _tool_ids.index(_target) if _target in _tool_ids else 0
+
+    _tool_tabs = st.tabs(_tab_labels, default=_tab_labels[_default_idx])
+    st.query_params["tool"] = _tool_ids[_default_idx]
+    for _tool, _tab in zip(TOOLS_REGISTRY, _tool_tabs):
+        with _tab:
+            globals()[_tool["render"]](email)
+            if _tool["id"] == "utilities" and ai_gate.is_owner(email):
+                _render_utilities_admin_typical_deals(_lang)
 
 
 def page_model_history():
