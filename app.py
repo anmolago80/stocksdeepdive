@@ -1430,11 +1430,44 @@ st.markdown(
     .sdd-f-cols a:hover { color:#e6edf5 !important; }
     .sdd-disclaimer { border-top:1px solid #1f3352; padding-top:14px; max-width:900px; }
     .sdd-disclaimer b { color:#8aa0b8; }
+    /* Mega-batch Part 7: Results Calendar week board - one card grid per
+       weekday (Mon-Fri), same "raw HTML + CSS grid" convention as
+       .sdd-covgrid above rather than st.columns() (which does not
+       auto-stack on mobile - see the 640px block further down). */
+    .sdd-calboard { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin:14px 0 8px; }
+    .sdd-calday { background:#0d1830; border:1px solid #1f3352; border-radius:12px;
+      padding:10px; min-height:64px; }
+    .sdd-calday.today { border-color:#2dd4bf; background:rgba(45,212,191,.06); }
+    .sdd-calday h5 { margin:0 0 8px; font-size:11.5px; color:#8aa0b8; font-weight:700;
+      text-transform:uppercase; letter-spacing:.4px; }
+    .sdd-calday.today h5 { color:#2dd4bf; }
+    .sdd-calday .today-badge { font-size:9.5px; font-weight:800; letter-spacing:.4px;
+      color:#2dd4bf; background:rgba(45,212,191,.12); border:1px solid rgba(45,212,191,.35);
+      border-radius:999px; padding:1px 7px; margin-left:6px; text-transform:none; }
+    .sdd-calcard { background:#121f36; border:1px solid #1f3352; border-radius:10px;
+      padding:8px 10px; margin-bottom:8px; }
+    .sdd-calcard:last-child { margin-bottom:0; }
+    .sdd-calcard a.tkr { font-family:ui-monospace,Menlo,monospace; font-weight:700;
+      color:#e6edf5 !important; text-decoration:none !important; font-size:13.5px; }
+    .sdd-calcard .name { color:#8aa0b8; font-size:11px; margin-top:2px;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .sdd-calcard .tag { font-size:10px; padding:1px 7px; border-radius:999px;
+      border:1px solid #334155; color:#94a3b8; margin-left:6px; white-space:nowrap; }
+    .sdd-calcard .tag.reported { color:#34d399; border-color:#134e3a; }
+    .sdd-calcard .tag.expected { color:#facc15; border-color:#4a3f13; }
+    .sdd-calcard .delta { font-size:11.5px; margin-top:6px; font-family:ui-monospace,Menlo,monospace; }
+    .sdd-calcard .delta.up { color:#34d399; }
+    .sdd-calcard .delta.down { color:#fb7185; }
+    .sdd-calcard .pending { font-size:11px; color:#5b7290; margin-top:6px; font-style:italic; }
+    .sdd-calcard .ddlink { display:block; font-size:10.5px; color:#2dd4bf !important;
+      margin-top:6px; text-decoration:none !important; }
+    .sdd-calempty { color:#5b7290; font-size:12px; padding:4px 2px; }
     @media (max-width:900px) {
       .sdd-tiles4, .sdd-covgrid { grid-template-columns:1fr 1fr; }
       .sdd-steps { grid-template-columns:1fr; }
       .sdd-strip { grid-template-columns:1fr 1fr; }
       .sdd-h1 { font-size:30px; }
+      .sdd-calboard { grid-template-columns:repeat(3,1fr); }
     }
     /* ---------------- Mobile fit-and-legibility pass (PWA brief Part 4) ----------------
        iPhone-width (<=640px) fixes only - no redesign, same components, same colours.
@@ -1463,6 +1496,9 @@ st.markdown(
          roughly half the already-narrow viewport). One more column at
          this breakpoint. */
       .sdd-tiles4, .sdd-covgrid, .sdd-strip { grid-template-columns:1fr; }
+      /* Part 7 week board: five day columns stack as day sections at
+         phone width, same "1 column" treatment as the cards above. */
+      .sdd-calboard { grid-template-columns:1fr; }
       /* st.columns() does NOT auto-stack at this width in this Streamlit
          version (verified: stHorizontalBlock stays flex-direction:row down
          to 390px) - every ratio-based column layout on the site (the
@@ -9472,7 +9508,103 @@ def _my_calendar_tickers(email):
     return out
 
 
-def _render_calendar_section(title, grouped, empty_note):
+def _cal_card_html(row, lang, score_label):
+    """One report card's inner HTML for the week board (Mega-batch Part
+    7) - ticker links to its Deep Dive, and the body line is exactly one
+    of: the before/after Value Score move (green/red, only once a
+    re-analysis has actually run - see calendar_render.build_entries's
+    has_event), "re-analysis pending" (reported but not yet re-scored),
+    or "before/after coming" (not reported yet). Never a fourth state -
+    every row from build_entries is exactly one of these three."""
+    e = html.escape
+    ticker = row["ticker"]
+    name = row.get("company_name") or ticker
+    tag_cls = "reported" if row["status"] == "reported" else "expected"
+    tag_txt = (
+        i18n.t("calendar.status_reported", lang) if row["status"] == "reported"
+        else i18n.t("calendar.status_expected", lang)
+    )
+    b, a = row.get("before_value_score"), row.get("after_value_score")
+    if row["status"] == "reported" and row.get("has_event") and b is not None and a is not None:
+        delta = a - b
+        cls = "up" if delta >= 0 else "down"
+        body_html = f'<div class="delta {cls}">{e(score_label)} {b:.1f} &rarr; {a:.1f} ({delta:+.1f})</div>'
+    elif row["status"] == "reported":
+        body_html = f'<div class="pending">{i18n.t("calendar.pending_reanalysis", lang)}</div>'
+    else:
+        body_html = f'<div class="pending">{i18n.t("calendar.pending_before_after", lang)}</div>'
+    _link = f"/deep-dive?ticker={e(ticker)}"
+    return (
+        '<div class="sdd-calcard">'
+        f'<a class="tkr" href="{_link}" target="_self">{e(ticker)}</a>'
+        f'<span class="tag {tag_cls}">{tag_txt}</span>'
+        f'<div class="name">{e(name)}</div>'
+        f'{body_html}'
+        f'<a class="ddlink" href="{_link}" target="_self">{i18n.t("calendar.deep_dive_link", lang)}</a>'
+        '</div>'
+    )
+
+
+_CAL_WEEKDAY_NAMES = {
+    "en": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    "es": ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"],
+}
+
+
+def _render_calendar_week_board(monday, entries, lang, score_label):
+    """The Mon-Fri board itself (Mega-batch Part 7) - one card grid per
+    weekday via raw HTML (.sdd-calboard, defined in the shared site
+    <style> block so it gets the same mobile-stacking treatment as
+    .sdd-covgrid), today's column highlighted. A report landing on a
+    Saturday or Sunday of this ISO week is never silently dropped - it's
+    rare (most reporting is weekday-only) but shown as a one-line note
+    under the board instead of inventing a 6th/7th column the mock never
+    asked for."""
+    today = datetime.now(timezone.utc).date()
+    by_date = {}
+    for row in entries:
+        by_date.setdefault(row["date"], []).append(row)
+    for rows in by_date.values():
+        rows.sort(key=lambda r: r["ticker"])
+
+    names = _CAL_WEEKDAY_NAMES.get(lang, _CAL_WEEKDAY_NAMES["en"])
+    day_cols = []
+    weekend_rows = []
+    for i in range(7):
+        d = monday + timedelta(days=i)
+        rows = by_date.get(d.isoformat(), [])
+        if i >= 5:
+            weekend_rows.extend((d, r) for r in rows)
+            continue
+        is_today = d == today
+        badge = (
+            f'<span class="today-badge">{i18n.t("calendar.today_badge", lang)}</span>'
+            if is_today else ""
+        )
+        day_label = f"{names[i]} {d.day}"
+        cards_html = (
+            "".join(_cal_card_html(r, lang, score_label) for r in rows)
+            if rows else '<div class="sdd-calempty">&mdash;</div>'
+        )
+        day_cols.append(
+            f'<div class="sdd-calday{" today" if is_today else ""}">'
+            f'<h5>{html.escape(day_label)}{badge}</h5>{cards_html}</div>'
+        )
+
+    st.markdown(f'<div class="sdd-calboard">{"".join(day_cols)}</div>', unsafe_allow_html=True)
+
+    if weekend_rows:
+        bits = [
+            f"{r['ticker']} ({d.strftime('%a')})"
+            for d, r in sorted(weekend_rows, key=lambda x: (x[0], x[1]["ticker"]))
+        ]
+        st.caption(f"{i18n.t('calendar.weekend_note', lang)} " + ", ".join(bits))
+
+
+def _render_calendar_section(title, grouped, empty_note, lang="en", score_label="Value Score"):
+    """The plain list further down the page (Later this month) - kept as
+    a list rather than a second week board, per the mock's own "later-
+    this-month list below" wording."""
     st.markdown(f"##### {title}")
     if not grouped:
         st.caption(empty_note)
@@ -9488,72 +9620,95 @@ def _render_calendar_section(title, grouped, empty_note):
                 _uni = f" · {row['universe']}" if row.get("universe") else ""
                 st.caption(f"{row.get('company_name') or row['ticker']}{_uni}")
             with _c3:
+                b, a = row.get("before_value_score"), row.get("after_value_score")
                 if row["status"] == "reported":
-                    st.markdown("✓ reported")
-                    b, a = row.get("before_value_score"), row.get("after_value_score")
-                    if b is not None and a is not None:
-                        st.caption(f"Value Score {b:.1f} → {a:.1f} ({a - b:+.1f})")
+                    st.markdown(i18n.t("calendar.status_reported", lang))
+                    if row.get("has_event") and b is not None and a is not None:
+                        st.caption(f"{score_label} {b:.1f} → {a:.1f} ({a - b:+.1f})")
+                    else:
+                        st.caption(i18n.t("calendar.pending_reanalysis", lang))
                 else:
-                    st.markdown("~ expected")
+                    st.markdown(i18n.t("calendar.status_expected", lang))
+                    st.caption(i18n.t("calendar.pending_before_after", lang))
             with _c4:
                 st.link_button(
-                    "Deep Dive · Set an alert →", f"/deep-dive?ticker={row['ticker']}",
+                    f"{i18n.t('calendar.deep_dive_link', lang)} · Set an alert",
+                    f"/deep-dive?ticker={row['ticker']}",
                     key=f"cal_{title}_{day}_{row['ticker']}",
                 )
         st.divider()
 
 
 def page_results_calendar():
-    """Services batch 2, Part 4 (2026-09-01): the interactive twin of the
-    server-rendered /calendar page - see calendar_render.py's own
-    docstring for the shared data functions both draw from (so the two
-    pages can never disagree about what "this week" contains). Adds the
-    two filters a signed-in, interactive page can offer that the plain
-    public /calendar page can't: "My tickers" (needs a signed-in email)
-    and "Universe"."""
+    """Services batch 2, Part 4 (2026-09-01), reopened for Mega-batch
+    Part 7 (the week board): the interactive twin of the server-rendered
+    /calendar page - see calendar_render.py's own docstring for the
+    shared data functions both draw from (so the two pages can never
+    disagree about what "this week" contains). Adds the two filters a
+    signed-in, interactive page can offer that the plain public /calendar
+    page can't: "My tickers" (needs a signed-in email) and "Universe".
+
+    Part 7 replaces the old flat "This week"/"Next week" row lists with
+    a Mon-Fri card board for whichever of the two weeks is toggled on
+    (_render_calendar_week_board) - "Later this month" stays a list
+    below it, and the filters + week toggle become one compact row of
+    st.pills instead of a radio plus a caption paragraph."""
     _render_header(compact=True, page_label="Results Calendar", current="calendar")
     _bump_page_view("results_calendar")
-    st.markdown("#### Results Calendar")
-    st.caption(
-        "Every stock this site tracks that has reported, or is expected "
-        "to report, this week or next - grouped by day, with the "
-        "before/after Value Score once a report has been re-analysed. "
-        "Dates from the data provider; confirmed dates marked ✓, "
-        "estimates marked ~. Descriptions of calculations, not "
-        "recommendations."
-    )
+    _cal_lang = st.session_state.get("lang", "en")
+    _cal_score_label = "Value Score" if _factual() else "Long Score"
+
+    _title_col, _info_col = st.columns([12, 1], vertical_alignment="top")
+    with _title_col:
+        st.markdown("#### Results Calendar")
+        st.caption(i18n.t("calendar.subtitle", _cal_lang))
+    with _info_col:
+        _render_static_explainer("cal_methodology", "ⓘ", i18n.t("calendar.methodology", _cal_lang))
 
     _email = paywall_engine.current_user_email() if paywall_engine.is_logged_in() else None
-    _filter_options = ["All"] + (["My tickers"] if _email else []) + ["Universe..."]
-    # Guard against a previously-picked "My tickers" no longer being a
-    # valid option (the visitor signed out since choosing it, in this
-    # same browser session) - same "fix up BEFORE the widget below is
-    # instantiated" guard page_scanner() already uses for its own
-    # universe/sector selectbox, and for the same reason: Streamlit
-    # raises if a radio/selectbox's session_state value isn't in its
-    # current options.
+    _filter_options = (
+        [i18n.t("calendar.filter_all", _cal_lang)]
+        + ([i18n.t("calendar.filter_my_tickers", _cal_lang)] if _email else [])
+        + [i18n.t("calendar.filter_universe", _cal_lang)]
+    )
+    # Same "fix up session_state BEFORE the widget below is instantiated"
+    # guard used everywhere else on this site a pills/radio/selectbox's
+    # option list can change under it (e.g. signing out loses "My
+    # tickers", or the language toggle changes every option's label).
     if st.session_state.get("cal_filter_choice") not in _filter_options:
-        st.session_state["cal_filter_choice"] = "All"
-    _fcol1, _fcol2 = st.columns([2, 2])
-    with _fcol1:
-        _filter_choice = st.radio(
-            "Show", _filter_options, horizontal=True, key="cal_filter_choice",
+        st.session_state["cal_filter_choice"] = _filter_options[0]
+
+    _week_options = [i18n.t("calendar.week_this", _cal_lang), i18n.t("calendar.week_next", _cal_lang)]
+    if st.session_state.get("cal_week_choice") not in _week_options:
+        st.session_state["cal_week_choice"] = _week_options[0]
+
+    _filter_choice = st.pills(
+        "Show", _filter_options, selection_mode="single",
+        key="cal_filter_choice", label_visibility="collapsed",
+    ) or _filter_options[0]
+
+    _universe_choice = None
+    if _filter_choice == i18n.t("calendar.filter_universe", _cal_lang):
+        _all_universes = scanner_engine.get_universes("Australia") + scanner_engine.get_universes("USA")
+        if st.session_state.get("cal_universe_choice") not in _all_universes:
+            st.session_state.pop("cal_universe_choice", None)
+        _universe_choice = st.selectbox(
+            "Universe", _all_universes, key="cal_universe_choice",
             label_visibility="collapsed",
         )
-    _universe_choice = None
-    if _filter_choice == "Universe...":
-        with _fcol2:
-            _all_universes = scanner_engine.get_universes("Australia") + scanner_engine.get_universes("USA")
-            _universe_choice = st.selectbox("Universe", _all_universes, key="cal_universe_choice",
-                                            label_visibility="collapsed")
-    elif _filter_choice == "My tickers" and not _email:
-        st.info("Sign in (top left) to filter to your own tickers.")
+    elif _filter_choice == i18n.t("calendar.filter_my_tickers", _cal_lang) and not _email:
+        st.info(i18n.t("calendar.filter_sign_in", _cal_lang))
 
     _watch_tickers = None
-    if _filter_choice == "My tickers" and _email:
+    if _filter_choice == i18n.t("calendar.filter_my_tickers", _cal_lang) and _email:
         _watch_tickers = _my_calendar_tickers(_email)
         if not _watch_tickers:
-            st.info("Nothing saved to your watchlist, portfolio, or alerts yet.")
+            st.info(i18n.t("calendar.filter_empty_my_tickers", _cal_lang))
+
+    _week_choice = st.pills(
+        "Week", _week_options, selection_mode="single",
+        key="cal_week_choice", label_visibility="collapsed",
+    ) or _week_options[0]
 
     _entries = calendar_render.build_entries(tickers=_watch_tickers)
     if _universe_choice:
@@ -9564,16 +9719,27 @@ def page_results_calendar():
     _, _month_last = calendar_render.month_bounds()
     _later_start = _next_sun + timedelta(days=1)
 
-    _this_week = calendar_render.group_by_day(calendar_render.filter_range(_entries, _this_mon, _this_sun))
-    _next_week = calendar_render.group_by_day(calendar_render.filter_range(_entries, _next_mon, _next_sun))
+    _board_mon = _next_mon if _week_choice == i18n.t("calendar.week_next", _cal_lang) else _this_mon
+    _board_sun = _board_mon + timedelta(days=6)
+    _board_entries = calendar_render.filter_range(_entries, _board_mon, _board_sun)
+    _board_empty_note = (
+        i18n.t("calendar.empty_next_week", _cal_lang)
+        if _week_choice == i18n.t("calendar.week_next", _cal_lang)
+        else i18n.t("calendar.empty_week", _cal_lang)
+    )
+    if _board_entries:
+        _render_calendar_week_board(_board_mon, _board_entries, _cal_lang, _cal_score_label)
+    else:
+        st.caption(_board_empty_note)
+
     _later_month = (
         calendar_render.group_by_day(calendar_render.filter_range(_entries, _later_start, _month_last))
         if _later_start <= _month_last else []
     )
-
-    _render_calendar_section("This week", _this_week, "Nothing reported or expected this week.")
-    _render_calendar_section("Next week", _next_week, "Nothing expected next week yet.")
-    _render_calendar_section("Later this month", _later_month, "Nothing further expected this month yet.")
+    _render_calendar_section(
+        i18n.t("calendar.later_heading", _cal_lang), _later_month,
+        i18n.t("calendar.empty_later", _cal_lang), _cal_lang, _cal_score_label,
+    )
 
 
 # Mega-batch Part 6 (Comparison opener): the popular-pair chips, and the

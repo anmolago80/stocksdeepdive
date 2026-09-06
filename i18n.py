@@ -942,6 +942,32 @@ EN = {
         "higher number, nothing more."
     ),
 
+    # Mega-batch Part 7: Results Calendar week board.
+    "calendar.subtitle": "Every report this week, at a glance.",
+    "calendar.methodology": (
+        "Dates from the data provider; confirmed dates marked ✓, "
+        "estimates marked ~. Descriptions of calculations, not "
+        "recommendations."
+    ),
+    "calendar.filter_all": "All",
+    "calendar.filter_my_tickers": "My tickers",
+    "calendar.filter_universe": "Universe...",
+    "calendar.filter_sign_in": "Sign in (top left) to filter to your own tickers.",
+    "calendar.filter_empty_my_tickers": "Nothing saved to your watchlist, portfolio, or alerts yet.",
+    "calendar.week_this": "This week",
+    "calendar.week_next": "Next week",
+    "calendar.today_badge": "Today",
+    "calendar.status_reported": "✓ reported",
+    "calendar.status_expected": "~ expected",
+    "calendar.pending_reanalysis": "re-analysis pending",
+    "calendar.pending_before_after": "before/after coming",
+    "calendar.later_heading": "Later this month",
+    "calendar.empty_week": "Nothing reported or expected this week.",
+    "calendar.empty_next_week": "Nothing expected next week yet.",
+    "calendar.empty_later": "Nothing further expected this month yet.",
+    "calendar.deep_dive_link": "Deep Dive →",
+    "calendar.weekend_note": "Also reporting this weekend:",
+
     "portfolio.title": "My Portfolio",
     "portfolio.signin_prompt": (
         "Sign in (top left) to track your long-term holdings here. This is "
@@ -1940,6 +1966,32 @@ ES = {
         "recomendación - la cifra en verde en cada línea es simplemente "
         "el número más alto, nada más."
     ),
+
+    # Mega-batch Part 7: tablero semanal del Calendario de resultados.
+    "calendar.subtitle": "Todos los informes de esta semana, de un vistazo.",
+    "calendar.methodology": (
+        "Fechas según el proveedor de datos; las fechas confirmadas se "
+        "marcan con ✓, las estimadas con ~. Descripciones de cálculos, "
+        "no recomendaciones."
+    ),
+    "calendar.filter_all": "Todos",
+    "calendar.filter_my_tickers": "Mis tickers",
+    "calendar.filter_universe": "Universo...",
+    "calendar.filter_sign_in": "Inicia sesión (arriba a la izquierda) para filtrar por tus propios tickers.",
+    "calendar.filter_empty_my_tickers": "Todavía no has guardado nada en tu watchlist, cartera o alertas.",
+    "calendar.week_this": "Esta semana",
+    "calendar.week_next": "Próxima semana",
+    "calendar.today_badge": "Hoy",
+    "calendar.status_reported": "✓ reportado",
+    "calendar.status_expected": "~ previsto",
+    "calendar.pending_reanalysis": "reanálisis pendiente",
+    "calendar.pending_before_after": "antes/después próximamente",
+    "calendar.later_heading": "Más adelante este mes",
+    "calendar.empty_week": "Nada reportado ni previsto esta semana.",
+    "calendar.empty_next_week": "Nada previsto para la próxima semana todavía.",
+    "calendar.empty_later": "Nada más previsto este mes todavía.",
+    "calendar.deep_dive_link": "Análisis a fondo →",
+    "calendar.weekend_note": "También reportando este fin de semana:",
 
     "portfolio.title": "Mi cartera",
     "portfolio.signin_prompt": (

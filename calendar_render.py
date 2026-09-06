@@ -192,15 +192,24 @@ def _entry_row_html(row, lang="en"):
         tag = "✓ reported" if row["status"] == "reported" else "~ expected"
         vs_word = "Value Score"
     tag_cls = "reported" if row["status"] == "reported" else "expected"
-    delta_html = ""
-    if row["status"] == "reported" and row.get("has_event"):
-        b, a = row.get("before_value_score"), row.get("after_value_score")
-        if b is not None and a is not None:
-            delta = a - b
-            delta_html = (
-                f'<span class="sdd-cal-delta">{vs_word} {b:.1f} → {a:.1f} '
-                f'({delta:+.1f})</span>'
-            )
+    b, a = row.get("before_value_score"), row.get("after_value_score")
+    if row["status"] == "reported" and row.get("has_event") and b is not None and a is not None:
+        delta = a - b
+        delta_html = (
+            f'<span class="sdd-cal-delta">{vs_word} {b:.1f} → {a:.1f} '
+            f'({delta:+.1f})</span>'
+        )
+    elif row["status"] == "reported":
+        # Mega-batch Part 7: same "re-analysis pending" wording the
+        # interactive week board now uses (app.py's _cal_card_html) -
+        # this static twin previously left the cell blank instead of
+        # saying anything, which read as "no re-analysis exists" rather
+        # than "not yet".
+        pending_txt = "reanálisis pendiente" if lang == "es" else "re-analysis pending"
+        delta_html = f'<span class="sdd-cal-delta">{pending_txt}</span>'
+    else:
+        pending_txt = "antes/después próximamente" if lang == "es" else "before/after coming"
+        delta_html = f'<span class="sdd-cal-delta">{pending_txt}</span>'
     universe_html = f'<span class="sdd-cal-delta">{e(row["universe"])}</span>' if row.get("universe") else ""
     return (
         '<div class="sdd-cal-row">'
@@ -261,12 +270,12 @@ def render_calendar_page(base_url, generated_at=None, anchor=None, lang="en",
 
     if lang == "es":
         heading = "Calendario de resultados"
-        lede1 = (
-            "Cada acción que este sitio sigue y que ya reportó, o se "
-            "espera que reporte, esta semana o la próxima — agrupadas "
-            "por día, con el Puntaje Value antes/después una vez que un "
-            "informe fue reanalizado."
-        )
+        # Mega-batch Part 7: shortened to match the interactive page's
+        # new one-line subtitle (calendar.subtitle in i18n.py) - the
+        # fuller methodology explanation moved to lede2 below (this
+        # static page has no ⓘ popover to hide it behind, so it stays
+        # visible rather than disappearing).
+        lede1 = "Todos los informes de esta semana, de un vistazo."
         lede2_html = (
             'Las fechas provienen del proveedor de datos; las fechas '
             'confirmadas están marcadas con ✓, las estimadas con ~. '
@@ -289,14 +298,14 @@ def render_calendar_page(base_url, generated_at=None, anchor=None, lang="en",
         json_name = f"{SITE_NAME} calendario de resultados"
     else:
         heading = "Results calendar"
-        # Original literal line breaks preserved exactly (not just the
-        # words) so the EN page stays byte-identical to before this
-        # function grew a lang parameter.
-        lede1 = (
-            "Every stock this site tracks that has reported, or is\n"
-            "  expected to report, this week or next - grouped by day, with the\n"
-            "  before/after Value Score once a report has been re-analysed."
-        )
+        # Mega-batch Part 7: shortened to the interactive page's new
+        # one-line subtitle (calendar.subtitle in i18n.py). This is a
+        # deliberate, reviewed content change - the EN page is no longer
+        # byte-identical to the pre-Part-7 version (the note above this
+        # function's Español addition claimed that guarantee for THAT
+        # change only; wording changes are expected to land here too as
+        # the page evolves, same as any other page on the site).
+        lede1 = "Every report this week, at a glance."
         lede2_html = (
             'Dates from the\n'
             '  data provider; confirmed dates marked ✓, estimates marked ~.\n'
