@@ -53,6 +53,7 @@ import portfolio_charts_engine
 import portfolio_news_engine
 import etf_insights
 import stress_engine
+import card_blurb_store
 import name_directory
 import score_history
 import blog_comments_store
@@ -2915,6 +2916,44 @@ def _render_compounder_admin_panel():
                         ),
                     )
 
+            # Next-batch instruction, Part 4: per-company "card_blurb" -
+            # the one-line verdict shown on the Rational Compounder page's
+            # new company shelf. Text area per covered ticker, pre-filled
+            # with the derived draft (see _rc_default_card_blurb - built
+            # from the company's OWN existing written verdict text, never
+            # invented) so there's always something sensible to review/
+            # edit rather than a blank box. Saving an EMPTIED box reverts
+            # to that draft (card_blurb_store.set_blurb deletes the row on
+            # a blank save) rather than showing nothing.
+            _cp_data_for_blurbs = _load_compounder_data()
+            if _cp_data_for_blurbs and _cp_data_for_blurbs.get("tickers"):
+                with st.expander("Card blurbs (company shelf verdicts)", expanded=False):
+                    st.caption(
+                        "Shown on the Research page's company shelf. Pre-filled from "
+                        "each company's own written verdict (Investment Recommendation, "
+                        "or the 'Why Is This a Good Investment?' write-up) - edit down to "
+                        "one clean sentence, or leave as-is. Never invents a view you "
+                        "haven't written; an emptied box just reverts to this same draft."
+                    )
+                    for _blurb_ticker in sorted(_cp_data_for_blurbs["tickers"].keys()):
+                        _saved_blurb = card_blurb_store.get_blurb(_blurb_ticker)
+                        _draft_blurb = _rc_default_card_blurb(_blurb_ticker, _cp_data_for_blurbs)
+                        with st.form(key=f"cp_blurb_form_{_blurb_ticker}"):
+                            st.text_area(
+                                _blurb_ticker,
+                                value=_saved_blurb if _saved_blurb is not None else _draft_blurb,
+                                key=f"cp_blurb_input_{_blurb_ticker}",
+                                height=80,
+                            )
+                            if not _saved_blurb:
+                                st.caption(":orange[Showing the auto-drafted verdict - not yet saved.]")
+                            if st.form_submit_button("Save", key=f"cp_blurb_save_{_blurb_ticker}"):
+                                card_blurb_store.set_blurb(
+                                    _blurb_ticker,
+                                    st.session_state[f"cp_blurb_input_{_blurb_ticker}"],
+                                )
+                                st.rerun()
+
 
 def _render_last_updated(generated_at):
     """'Last updated on ...' badge, top-right, above the Stock/Section
@@ -4025,56 +4064,11 @@ def _render_insider_panel(ticker):
     )
 
 
-def _render_research_header_card(ticker, data, section_order):
-    """Per-company header card (Task 5): styled like the site's `.sdd-card`
-    divs (dark #121f36 background, #1f3352 border, rounded) - ticker large,
-    industry, how many of the page's sections actually have data for this
-    company, and when the underlying workbook snapshot was last rebuilt.
-    The "Open the live Deep Dive" link-button used to live at the bottom of
-    this card - it now renders in the Stock/Deep Dive/Follow row above,
-    next to the Stock picker, so this card is just the info strip."""
-    industry = (data["tickers"].get(ticker, {}) or {}).get("industry") or "—"
-    section_count = sum(
-        1 for _s in section_order
-        if any(
-            (m.get("values") or {}).get(ticker) is not None
-            for m in data["sections"].get(_s, {}).get("metrics", [])
-        )
-    )
-    last_updated_label = "—"
-    _generated_at = data.get("generated_at")
-    if _generated_at:
-        try:
-            _dt = datetime.fromisoformat(_generated_at)
-            if _dt.tzinfo is None:
-                _dt = _dt.replace(tzinfo=timezone.utc)
-            last_updated_label = _dt.astimezone(timezone.utc).strftime("%d %b %Y")
-        except (TypeError, ValueError):
-            pass
-    with st.container(key=f"cp_header_card_{ticker}"):
-        st.markdown(
-            f"""
-            <div class='sdd-card' style='margin-bottom:12px;'>
-              <div style='display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:14px;'>
-                <div>
-                  <div style='font-family:ui-monospace,Menlo,monospace; font-size:26px; font-weight:800; color:#e6edf5;'>{html.escape(ticker)}</div>
-                  <div style='color:#8aa0b8; font-size:13px; margin-top:2px;'>{html.escape(industry)}</div>
-                </div>
-                <div style='display:flex; gap:24px;'>
-                  <div>
-                    <div style='font-size:10.5px; color:#5b7290; letter-spacing:.6px;'>SECTIONS COVERED</div>
-                    <div style='font-family:ui-monospace,Menlo,monospace; font-size:16px; color:#e6edf5; margin-top:2px;'>{section_count} / {len(section_order)}</div>
-                  </div>
-                  <div>
-                    <div style='font-size:10.5px; color:#5b7290; letter-spacing:.6px;'>DATA LAST UPDATED</div>
-                    <div style='font-family:ui-monospace,Menlo,monospace; font-size:16px; color:#e6edf5; margin-top:2px;'>{last_updated_label}</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+# _render_research_header_card retired in Part 4 (Rational Compounder
+# opener redesign): its ticker/industry/sections-covered/last-updated card
+# is superseded by _render_research_detail()'s own inline header (adds the
+# company name, drops the now-redundant "last updated" tile since the
+# workbook date already appears in the caption line right below it).
 
 
 # Badge copy per author-position status (positions_store.py) - a missing row
@@ -4266,6 +4260,410 @@ def _render_position_disclosure(ticker):
                 st.rerun()
 
 
+# -----------------------------------------------------------------
+# Next-batch instruction, Part 4: Rational Compounder page - company shelf
+# + verdict-first opener. Everything below builds the OPENER only (State 1
+# "no ticker selected" shelf, State 2 "ticker selected" verdict-first
+# header) - every section's own content still renders via the pre-existing
+# _render_cp_section()/compounder_ui.render_section() exactly as before.
+# -----------------------------------------------------------------
+
+def _rc_metric_value(data, section, key, ticker):
+    """One (value, format) pair for a single workbook cell, or (None, None)
+    if that section/key/ticker combination has no data - the "only fields
+    that exist; omit gracefully" rule the key-numbers strip and the shelf
+    cards both lean on."""
+    for m in data["sections"].get(section, {}).get("metrics", []):
+        if m.get("key") == key:
+            return (m.get("values") or {}).get(ticker), m.get("format")
+    return None, None
+
+
+def _rc_section_count(ticker, data, section_order):
+    """How many of the page's sections actually have data for this
+    ticker - identical computation to _render_research_header_card's own
+    inline version (kept as one shared helper so the two can't drift), now
+    also used by the shelf cards' "N/7 sections" line."""
+    return sum(
+        1 for _s in section_order
+        if any(
+            (m.get("values") or {}).get(ticker) is not None
+            for m in data["sections"].get(_s, {}).get("metrics", [])
+        )
+    )
+
+
+def _rc_verdict_text(ticker, data):
+    """The author's own written verdict, sourced VERBATIM from Company
+    Potential's "The Investment Case" text group - never rewritten, per
+    the instruction's own explicit rule ("display, don't rewrite").
+    Prefers "Investment Recommendation" (the closing buy/hold/pass call);
+    falls back to "Why Is This a Good Investment?" (the thesis write-up)
+    when no Investment Recommendation item exists yet; returns None when
+    neither does (a company whose Company Potential coverage is still only
+    partial - e.g. Ratings filled in but the write-up not yet)."""
+    groups = data["sections"].get("Company Potential", {}).get("text_groups", {}).get(ticker, [])
+    ic_group = next((g for g in groups if g.get("title") == "The Investment Case"), None)
+    if not ic_group:
+        return None
+    by_label = {it.get("label"): (it.get("text") or "").strip() for it in ic_group.get("items", [])}
+    for label in ("Investment Recommendation", "Why Is This a Good Investment?"):
+        text = by_label.get(label)
+        if text:
+            return text
+    return None
+
+
+def _rc_default_card_blurb(ticker, data):
+    """Draft shelf-card blurb built from the company's own existing written
+    verdict text (never invented) - the instruction's pre-fill: "PRE-FILL a
+    draft for each from the existing written verdicts... never invent a
+    view the author hasn't written; if no verdict text exists, fall back
+    to the sector + 'research in progress'." Trimmed to roughly one
+    sentence for card-sized display; the trim only shortens, it never
+    paraphrases."""
+    text = _rc_verdict_text(ticker, data)
+    if text:
+        snippet = text.strip()
+        cut = snippet.find(". ")
+        if 0 < cut < 220:
+            snippet = snippet[: cut + 1]
+        elif len(snippet) > 220:
+            snippet = snippet[:217].rsplit(" ", 1)[0] + "…"
+        return snippet
+    industry = (data["tickers"].get(ticker, {}) or {}).get("industry")
+    return f"{industry} — research in progress." if industry else "Research in progress."
+
+
+def _rc_card_blurb(ticker, data):
+    """The blurb actually shown on a shelf card: the admin-saved override
+    (card_blurb_store) if one has been saved, else the derived draft above.
+    The draft is real quoted/trimmed author text (or a sector fallback),
+    never a fabricated opinion, so showing it before the admin has
+    explicitly saved an override is safe under the "never invent" rule."""
+    saved = card_blurb_store.get_blurb(ticker)
+    return saved if saved else _rc_default_card_blurb(ticker, data)
+
+
+def _rc_company_name(ticker):
+    """Company display name for the shelf/header - read from the nightly
+    scan's own snapshot cache (snapshot_store, local SQLite, refreshed only
+    by the nightly scan), never a live yfinance lookup: calling
+    get_ticker_info() here for every covered company on every shelf view
+    would be exactly the new per-pageview network fetch the shared rules
+    for this instruction batch rule out. Returns None (caller shows the
+    ticker alone) when this company hasn't been through a nightly scan
+    yet - a graceful omission, not a guess."""
+    try:
+        snap = snapshot_store.get_snapshot(ticker)
+        if not snap:
+            return None
+        return snapshot_store.public_view(snap.get("data") or {}).get("company_name")
+    except Exception:
+        return None
+
+
+def _rc_position_dot(ticker, lang="en"):
+    """Binary held/not-held dot for the shelf card - "same data as today's
+    expander" (positions_store.py) but collapsed to the two states the
+    instruction's mock actually shows here: green Held, grey No position
+    (both 'never' and 'closed' read as grey "No position" at this
+    card-sized glance; the full three-state disclosure with exact wording
+    still lives on the detail page, unchanged)."""
+    pos = positions_store.get_position(ticker)
+    held = (pos or {}).get("status") == "holds"
+    color = "#2dd4bf" if held else "#5b7290"
+    label = i18n.t("research.card_position_held" if held else "research.card_position_none", lang)
+    return color, label
+
+
+def _rc_key_numbers(ticker, data, lang="en"):
+    """Up to 3 factual headline numbers for the verdict-first header: share
+    price, the workbook's Buffett-style margin-of-safety factor, and ROIC
+    vs WACC - each independently omitted when its workbook cell is blank
+    for this ticker, per the instruction's own "only fields that exist;
+    omit gracefully" rule.
+
+    The mock's fourth item, "author's base case", is deliberately left out:
+    there is no structured "base case" cell anywhere in the workbook
+    schema (checked every section's metrics) - the closest things are the
+    free-text paragraphs in Company Potential, which aren't safe to mine
+    for a single number without risking misquoting the author. Flagged in
+    the shipping report for Andrew's own call on whether to add one.
+    """
+    out = []
+    price, price_fmt = _rc_metric_value(data, "Value vs Book", "F", ticker)
+    if price is not None:
+        out.append((i18n.t("research.key_number_price", lang),
+                     compounder_ui._cp_format(price, price_fmt or "cur")))
+
+    fos, fos_fmt = _rc_metric_value(data, "Fair Value", "Q", ticker)
+    if fos is not None:
+        out.append((i18n.t("research.key_number_margin_of_safety", lang),
+                     compounder_ui._cp_format(fos, fos_fmt or "x")))
+
+    roic, roic_fmt = _rc_metric_value(data, "Cost of Capital", "Y", ticker)
+    if roic is None:
+        roic, roic_fmt = _rc_metric_value(data, "Fundamentals", "BF", ticker)
+    wacc, wacc_fmt = _rc_metric_value(data, "Cost of Capital", "AF", ticker)
+    if roic is not None and wacc is not None:
+        out.append((i18n.t("research.key_number_roic_vs_wacc", lang),
+                     f"{compounder_ui._cp_format(roic, roic_fmt or 'pct')} vs "
+                     f"{compounder_ui._cp_format(wacc, wacc_fmt or 'pct')}"))
+    elif roic is not None:
+        out.append((i18n.t("research.key_number_roic", lang),
+                     compounder_ui._cp_format(roic, roic_fmt or "pct")))
+    return out
+
+
+def _rc_snapshot_date_label(data):
+    generated_at = data.get("generated_at")
+    if not generated_at:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(generated_at)
+    except (TypeError, ValueError):
+        return "—"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%d %b %Y")
+
+
+def _render_research_shelf(data, tickers, section_order, lang="en"):
+    """State 1 (no ticker selected): kicker, title, one positioning
+    sentence, one housekeeping caption (snapshot date + "want a stock
+    prioritised?"), a small options popover holding the archived-snapshot
+    picker and the rebuild-history link (functionality kept, prominence
+    removed - the instruction's own words), then the company shelf: one
+    card per covered company."""
+    st.markdown(
+        f"<div style='font-size:12px;letter-spacing:1.2px;color:#5b7290;"
+        f"font-weight:700;margin-bottom:4px;'>{html.escape(i18n.t('research.kicker', lang))}</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(f"## {i18n.t('research.shelf_title', lang)}")
+    st.caption(i18n.t("research.shelf_positioning", lang))
+
+    hk_col, opt_col = st.columns([7, 1])
+    with hk_col:
+        st.caption(
+            i18n.t("research.housekeeping_snapshot", lang, date=_rc_snapshot_date_label(data))
+            + " · " + i18n.t("research.housekeeping_prioritise", lang)
+        )
+    with opt_col:
+        with st.popover("⚙"):
+            _snapshots = build_compounder_data.list_archived_snapshots()
+            if _snapshots:
+                _snap_labels = ["Current (latest rebuild)"] + [
+                    f"Archived - {s['label']}" for s in _snapshots
+                ]
+                _cp_snapshot_jump_path = st.session_state.pop("cp_snapshot_jump", None)
+                if _cp_snapshot_jump_path:
+                    for _i, _s in enumerate(_snapshots):
+                        if _s["path"] == _cp_snapshot_jump_path:
+                            st.session_state["cp_snapshot_pick"] = _snap_labels[_i + 1]
+                            break
+                st.selectbox("Data snapshot", _snap_labels, key="cp_snapshot_pick")
+            else:
+                st.caption("No archived snapshots yet.")
+            if st.button("See the model's rebuild history →", key="research_to_model_history_shelf"):
+                st.switch_page(PG_MODEL_HISTORY)
+
+    st.markdown(
+        """
+        <style>
+        div.st-key-rc_shelf_grid div[data-testid="stVerticalBlockBorderWrapper"] {
+            height: 100%;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.container(key="rc_shelf_grid"):
+        cols_per_row = 3
+        rows = [tickers[i:i + cols_per_row] for i in range(0, len(tickers), cols_per_row)]
+        for row_tickers in rows:
+            cols = st.columns(cols_per_row)
+            for col, t in zip(cols, row_tickers):
+                with col:
+                    with st.container(border=True, key=f"rc_card_{t}"):
+                        industry = (data["tickers"].get(t, {}) or {}).get("industry") or "—"
+                        name = _rc_company_name(t)
+                        header_line = f"{t} — {name}" if name else t
+                        st.markdown(
+                            f"<div style='font-family:ui-monospace,Menlo,monospace;"
+                            f"font-size:17px;font-weight:800;color:#e6edf5;'>{html.escape(header_line)}</div>"
+                            f"<div style='color:#8aa0b8;font-size:12.5px;margin:1px 0 8px;'>{html.escape(industry)}</div>",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            f"<div style='color:#c3d1e0;font-size:13.5px;line-height:1.55;"
+                            f"min-height:58px;'>{_md_safe(_rc_card_blurb(t, data))}</div>",
+                            unsafe_allow_html=True,
+                        )
+                        section_count = _rc_section_count(t, data, section_order)
+                        has_verdict = _rc_verdict_text(t, data) is not None
+                        sections_line = i18n.t(
+                            "research.card_sections_verdict" if has_verdict
+                            else "research.card_sections_no_verdict",
+                            lang, count=section_count, total=len(section_order),
+                        )
+                        dot_color, dot_label = _rc_position_dot(t, lang)
+                        updated_line = i18n.t("research.card_updated", lang, date=_rc_snapshot_date_label(data))
+                        st.markdown(
+                            f"<div style='font-size:12px;color:#8aa0b8;margin-bottom:2px;'>{html.escape(sections_line)}</div>"
+                            f"<div style='display:flex;align-items:center;gap:6px;font-size:12px;color:#8aa0b8;margin-bottom:8px;'>"
+                            f"<span style='display:inline-block;width:8px;height:8px;border-radius:50%;background:{dot_color};'></span>"
+                            f"{html.escape(dot_label)} · {html.escape(updated_line)}</div>",
+                            unsafe_allow_html=True,
+                        )
+                        if st.button(i18n.t("research.card_cta", lang), key=f"rc_card_cta_{t}", use_container_width=True):
+                            st.query_params["ticker"] = t
+                            st.rerun()
+
+
+def _render_research_detail(ticker, data, section_order, lang="en"):
+    """State 2 (ticker selected): back link, verdict-first header (name +
+    sections pill + one caption), the author's own verdict as a highlighted
+    block, up to 3 key numbers, the seven sections as chips (rendered via
+    the existing st.tabs(), with a 🔒 folded directly into a gated
+    section's own label - same tab mechanism as before, so the ?section=
+    deep-link and default-tab behaviour are unchanged), the compact
+    email-follow hook, then the selected section's content exactly as
+    today via _render_cp_section()."""
+    if st.button(i18n.t("research.back_to_shelf", lang), key=f"rc_back_{ticker}"):
+        st.query_params.pop("ticker", None)
+        st.rerun()
+
+    name = _rc_company_name(ticker)
+    section_count = _rc_section_count(ticker, data, section_order)
+    pos = positions_store.get_position(ticker)
+    pos_status = (pos or {}).get("status")
+    if pos_status not in ("holds", "never", "closed"):
+        pos_status = "never"
+    pos_word = i18n.t(
+        "research.card_position_held" if pos_status == "holds" else "research.card_position_none",
+        lang,
+    )
+
+    with st.container(key=f"cp_header_card_{ticker}"):
+        st.markdown(
+            f"""
+            <div class='sdd-card' style='margin-bottom:8px;'>
+              <div style='display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:14px;'>
+                <div>
+                  <div style='font-family:ui-monospace,Menlo,monospace; font-size:26px; font-weight:800; color:#e6edf5;'>
+                    {html.escape(ticker)}{(' — ' + html.escape(name)) if name else ''}
+                  </div>
+                </div>
+                <div>
+                  <div style='font-size:10.5px; color:#5b7290; letter-spacing:.6px;'>SECTIONS COVERED</div>
+                  <div style='font-family:ui-monospace,Menlo,monospace; font-size:16px; color:#e6edf5; margin-top:2px;'>{section_count} / {len(section_order)}</div>
+                </div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    cap_col, xlink_col = st.columns([4, 2])
+    with cap_col:
+        st.caption(
+            f"{pos_word} · " + i18n.t("research.state2_caption", lang, date=_rc_snapshot_date_label(data))
+        )
+    with xlink_col:
+        if st.button(i18n.t("research.deep_dive_xlink", lang), key=f"rc_dd_xlink_{ticker}"):
+            with st.spinner(f"Loading Deep Dive for {ticker}..."):
+                _dd_discount, _dd_perpetual, _dd_growth, _dd_manual_fcf = _dcf_overrides_for(ticker)
+                st.session_state["dd_result"] = deep_dive_engine.analyze(
+                    ticker, get_price_history, get_ticker_info, get_cashflow_df,
+                    news_api_key=news_api_key, live_data=live_data, enable_social=enable_social,
+                    discount_rate=_dd_discount, perpetual_rate=_dd_perpetual,
+                    growth_rate=_dd_growth, manual_fcf=_dd_manual_fcf,
+                )
+            st.switch_page(PG_DEEP_DIVE)
+
+    _render_position_disclosure(ticker)
+
+    if st.session_state.get("full_view_unlocked"):
+        _rc_share_spacer, _rc_share_col = st.columns([5, 2])
+        with _rc_share_col:
+            _render_copy_link_control(
+                url_builder=lambda label, lang, _t=ticker: (
+                    f"{SITE_ORIGIN}/research?ticker={_urlquote(_t)}&src={label}"
+                    + ("&lang=es" if lang == "es" else "")
+                ),
+                key_prefix=f"copylink_rc_{ticker}",
+                ticker=ticker,
+                label_prefix="reddit-rc",
+            )
+
+    verdict_text = _rc_verdict_text(ticker, data)
+    st.markdown(
+        f"<div class='sdd-card' style='border-left:4px solid #2dd4bf; margin:10px 0 14px;'>"
+        f"<div style='font-size:11px;letter-spacing:1px;color:#5b7290;font-weight:700;margin-bottom:6px;'>"
+        f"{html.escape(i18n.t('research.verdict_label', lang))}</div>"
+        + (
+            f"<div style='color:#dbe6f2;font-size:15px;line-height:1.7;'>{_md_safe(verdict_text)}</div>"
+            if verdict_text else
+            f"<div style='color:#8aa0b8;font-size:14px;'>{html.escape(i18n.t('research.no_verdict_text', lang))}</div>"
+        )
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    key_numbers = _rc_key_numbers(ticker, data, lang)
+    if key_numbers:
+        kn_cols = st.columns(len(key_numbers))
+        for kn_col, (kn_label, kn_value) in zip(kn_cols, key_numbers):
+            with kn_col:
+                st.markdown(
+                    f"<div style='font-size:10.5px; color:#5b7290; letter-spacing:.6px;'>{html.escape(kn_label.upper())}</div>"
+                    f"<div style='font-family:ui-monospace,Menlo,monospace; font-size:19px; color:#e6edf5; margin-top:2px;'>{html.escape(kn_value)}</div>",
+                    unsafe_allow_html=True,
+                )
+
+    # The mock's own order is key numbers -> chips -> email hook -> section
+    # content, but st.tabs() makes that last step technically impossible:
+    # a tab's content is anchored to the tabs widget itself (via `with
+    # tab:`), so anything rendered "after st.tabs() but before the content
+    # loop" in script order actually lands AFTER the whole tabs widget
+    # (bar + active panel), not between the bar and the panel - confirmed
+    # by rendering it that way first and finding the follow-hook's own
+    # text physically after the tab content in the page. The email hook
+    # sits just above the chips instead - same compact box, no lost
+    # functionality, right under the key numbers.
+    if paywall_engine.current_user_email():
+        _render_follow_control(ticker, key_prefix="follow_research")
+    else:
+        _render_research_conversion_hook(ticker, key_prefix="follow_research")
+
+    _cp_gated = {"Fair Value", "Company Potential"}
+    _cp_tab_labels = [
+        (f"🔒 {s}" if s in _cp_gated and paywall_engine.PAYWALL_ENABLED
+         and not paywall_engine.is_subscribed(paywall_engine.current_user_email())
+         else s)
+        for s in section_order
+    ]
+    # Same ?section= deep-link convention page_research() always used - the
+    # label passed to st.tabs()'s `default` has to be the (possibly 🔒-
+    # prefixed) tab label actually in _cp_tab_labels, not the bare section
+    # name, so the lookup below maps back through section_order's index.
+    _cp_default_idx = 0
+    _qp_section = (st.query_params.get("section") or "").strip().lower()
+    if _qp_section:
+        for _i, _s in enumerate(section_order):
+            if _s.lower() == _qp_section:
+                _cp_default_idx = _i
+                break
+    _cp_tabs = st.tabs(_cp_tab_labels, default=_cp_tab_labels[_cp_default_idx])
+    st.query_params["section"] = section_order[_cp_default_idx]
+    for _cp_label, _cp_tab_label, _cp_tab in zip(section_order, _cp_tab_labels, _cp_tabs):
+        with _cp_tab:
+            st.markdown(f"### {ticker} - {_cp_label}")
+            _render_cp_section(ticker, _cp_label, data)
+
+
 def _render_cp_section(ticker, section_label, data):
     """
     Renders one Research-page section (Fundamentals / Value vs Book /
@@ -4379,31 +4777,27 @@ def page_research():
     _render_compounder_admin_panel()
 
     data = _load_compounder_data()
+    _rc_lang = st.session_state.get("lang", "en")
 
     # Data snapshot picker: the author starts a fresh research workbook
     # every 6-10 months; every rebuild archives the previous dataset with
-    # its timestamp, and any of them can be viewed here. Only shown when
-    # archives exist.
+    # its timestamp, and any of them can be viewed here. Next-batch
+    # instruction, Part 4: the WIDGET itself now lives behind the shelf's
+    # "⚙" options popover (_render_research_shelf) - functionality kept,
+    # prominence removed, per the instruction's own words. Reading its
+    # session-state key here (rather than instantiating the selectbox)
+    # still resolves the override correctly even on a State 2 run where
+    # the popover widget isn't drawn this time - a Streamlit widget's
+    # value in session_state persists whether or not it's re-instantiated
+    # on a given run. The Model History page's "View" buttons still land
+    # on "cp_snapshot_jump" (consumed inside the popover itself, one-shot).
     _snapshots = build_compounder_data.list_archived_snapshots()
     if _snapshots:
         _snap_labels = ["Current (latest rebuild)"] + [
             f"Archived - {s['label']}" for s in _snapshots
         ]
-        # Task 9: the Model History page's "View" buttons land here with a
-        # specific archive path pre-selected - written to the selectbox's
-        # own session-state key BEFORE the widget is created (the one safe
-        # time to do so), same pattern research_jump_ticker uses below for
-        # "cp_ticker".
-        _cp_snapshot_jump_path = st.session_state.pop("cp_snapshot_jump", None)
-        if _cp_snapshot_jump_path:
-            for _i, _s in enumerate(_snapshots):
-                if _s["path"] == _cp_snapshot_jump_path:
-                    st.session_state["cp_snapshot_pick"] = _snap_labels[_i + 1]
-                    break
-        _snap_pick = st.selectbox(
-            "Data snapshot", _snap_labels, key="cp_snapshot_pick",
-        )
-        if _snap_pick != "Current (latest rebuild)":
+        _snap_pick = st.session_state.get("cp_snapshot_pick", "Current (latest rebuild)")
+        if _snap_pick in _snap_labels and _snap_pick != "Current (latest rebuild)":
             _snap = _snapshots[_snap_labels.index(_snap_pick) - 1]
             _snap_data = build_compounder_data.load_snapshot(_snap["path"])
             if _snap_data:
@@ -4428,129 +4822,34 @@ def page_research():
     ]
     section_order = [s for s in section_order if s in data["sections"]]
 
-    # This data is a snapshot from whenever the workbook was last uploaded
-    # and rebuilt, not live -- shown once here (above the Stock/Section
-    # pickers, not inside the per-section branches below) so it's visible
-    # no matter which section you pick, not just one of them.
-    _render_last_updated(data.get("generated_at"))
-
-    st.caption(
-        "Hand-built research, not a screen: every chart, threshold and "
-        "colour band on this page comes straight from the author's own "
-        "research workbook. Pick a stock, then a section."
-    )
-
-    # Task 9: link out to the Model History page - a changelog of when this
-    # workbook has been rebuilt, not shown inline here since it applies to
-    # every archive at once, not just the ones surfaced by the snapshot
-    # picker above.
-    if st.button("See the model's rebuild history →", key="research_to_model_history"):
-        st.switch_page(PG_MODEL_HISTORY)
-
-    st.caption(
-        f"{len(data['tickers'])} companies covered in depth today - new "
-        "names are added as each one's research completes. Want a stock "
-        "prioritised? Say so via the Feedback button above."
-    )
-
     tickers = sorted(data["tickers"].keys())
 
-    def _ticker_label(t):
-        industry = data["tickers"][t].get("industry")
-        return f"{t} - {industry}" if industry else t
-
-    # Deep Dive -> Research cross-link (Task 5): page_deep_dive stores the
-    # ticker here instead of setting st.query_params["ticker"] before
-    # st.switch_page, because st.switch_page CLEARS all non-embed query
-    # params on navigation by default (confirmed against the installed
-    # streamlit version's own switch_page() docstring/source) - a query
-    # param set right before switch_page never actually reaches this page.
-    # Popped (one-shot, then cleared) and takes PRIORITY over both the
-    # query param below and any ticker already picked earlier this session,
-    # since clicking that cross-link is an explicit request to jump to this
-    # exact company - written to the "cp_ticker" widget key BEFORE the
-    # selectbox below is created, which is the one time it's safe to poke a
-    # widget's session-state key directly.
+    # Next-batch instruction, Part 4: which state to show. Priority order -
+    # (1) the Deep Dive -> Research cross-link (research_jump_ticker,
+    # one-shot session key - st.switch_page clears query params, so this
+    # is the only way that jump survives the navigation; see its own
+    # long-standing comment at the button that sets it, page_deep_dive());
+    # written straight into st.query_params so it also becomes this page's
+    # own shareable URL from here on. (2) a ?ticker= already in the URL -
+    # "arriving with ?ticker= in the URL... shared links skip the shelf",
+    # exactly the instruction's own words. (3) otherwise None -> shelf
+    # (menu navigation always lands here, since switch_page cleared any
+    # previous ?ticker=).
     _cp_jump_ticker = (st.session_state.pop("research_jump_ticker", None) or "").strip().upper()
+    _qp_ticker = (st.query_params.get("ticker") or "").strip().upper()
     if _cp_jump_ticker and _cp_jump_ticker in tickers:
-        st.session_state["cp_ticker"] = _cp_jump_ticker
+        ticker = _cp_jump_ticker
+        st.query_params["ticker"] = ticker
+    elif _qp_ticker and _qp_ticker in tickers:
+        ticker = _qp_ticker
+    else:
+        ticker = None
 
-    # Shareable deep links: /research?ticker=CSL.AX&section=Fair+Value opens
-    # straight on that company/section - the same idea as page_deep_dive's
-    # ?ticker= (see its "dd_qp_tried" one-shot guard). The index is computed
-    # BEFORE the selectbox exists (never poke a widget's session-state key
-    # after creation) and only from the query param when the widget's own
-    # session-state key isn't set yet - once "cp_ticker"/"cp_section" exist
-    # (after the first render, or the user's own pick), Streamlit uses that
-    # stored value regardless of `index`, which is the one-shot guard here:
-    # a bad/stale query param can't fight the user's later picks.
-    _cp_ticker_index = 0
-    if "cp_ticker" not in st.session_state:
-        _qp_ticker = (st.query_params.get("ticker") or "").strip().upper()
-        if _qp_ticker in tickers:
-            _cp_ticker_index = tickers.index(_qp_ticker)
-    # Section is now a row of clickable tabs (was a dropdown) - the default
-    # tab still honours ?section= the same way the dropdown's `index` did,
-    # but note the address bar can no longer live-sync to whichever tab is
-    # currently open: st.tabs() doesn't report which tab is active back to
-    # Python (only which one to open BY DEFAULT), so unlike the ticker
-    # picker below, a link shared mid-session will reopen on the tab the
-    # page first loaded on, not necessarily the one being looked at when
-    # the link was copied.
-    _cp_default_section = section_order[0]
-    _qp_section = (st.query_params.get("section") or "").strip().lower()
-    if _qp_section:
-        for _s in section_order:
-            if _s.lower() == _qp_section:
-                _cp_default_section = _s
-                break
-
-    # Narrow column sized just enough for the Stock dropdown, followed by a
-    # wide empty spacer column -- keeps it compact and bunched on the left
-    # instead of stretching to half the page. The Stock picker, the Deep
-    # Dive link-button, and the email-follow box all sit on this one row
-    # now (previously the button lived at the bottom of the header card
-    # and the follow box was its own full-width section below).
-    st.markdown(
-        """
-        <style>
-        div.st-key-cp_pick_row div[data-testid="stSelectbox"] {
-            max-width: 260px;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    with st.container(key="cp_pick_row"):
-        # "Open the live Deep Dive" link-button (previously the middle
-        # column here) was dropped per Andrew's request - just Stock and
-        # the email-follow box now.
-        pick_col1, pick_col3 = st.columns([1.3, 1.75])
-        with pick_col1:
-            ticker = st.selectbox(
-                "Stock", tickers, format_func=_ticker_label, key="cp_ticker",
-                index=_cp_ticker_index,
-            )
-        with pick_col3:
-            # "Follow this company" email capture (Task 2) - per selected
-            # ticker, open to signed-in and anonymous visitors alike.
-            # Conversion pass, Part 7b: a SIGNED-OUT visitor sees the
-            # moment-tied hook (adapted wording, subscribes to the
-            # general research-updates list) in this exact slot instead
-            # - a deliberate swap, not an addition next to it, since this
-            # page's follow control already sits right at the top and a
-            # second near-identical box here would look redundant. A
-            # signed-in visitor's toggle is completely untouched.
-            if paywall_engine.current_user_email():
-                _render_follow_control(ticker, key_prefix="follow_research")
-            else:
-                _render_research_conversion_hook(ticker, key_prefix="follow_research")
-
-    # Keep the address bar shareable for the ticker, the same pattern
-    # page_deep_dive uses for its ?ticker= - "section" is seeded once from
-    # the tab default above and not kept live (see note above).
-    st.query_params["ticker"] = ticker
-    st.query_params["section"] = _cp_default_section
+    if ticker is None:
+        st.query_params.pop("ticker", None)
+        _render_research_shelf(data, tickers, section_order, _rc_lang)
+        _bump_page_view("research")
+        return
 
     _bump_page_view("research", ticker=ticker)
 
@@ -4559,48 +4858,7 @@ def page_research():
     if blog_render.reddit_byline_visible(st.session_state.get("first_src")):
         st.markdown(blog_render.reddit_byline_html(ticker=ticker), unsafe_allow_html=True)
 
-    # Author position disclosure strip (positions_store.py) - directly
-    # after the stock/section picker and before any section content, so
-    # it's visible no matter which section is selected. Shown identically
-    # in the public factual view and the admin full view; the "Edit
-    # position (admin)" expander inside it only renders when
-    # full_view_unlocked is True.
-    _render_position_disclosure(ticker)
-
-    # --- Conversion pass, Part 7a: admin "Copy link for sharing" - same
-    # placement convention as _render_position_disclosure's own "Edit
-    # position (admin)" control, right after it. Copies the URL that
-    # reopens this exact research view. Cleanup round, Part 2: moved from
-    # a collapsed st.expander to an always-visible popover, in a slim
-    # admin-only column occupying the old Simple|Full toggle's spot (that
-    # toggle's own st.columns([5, 2]) split lived right here before Part
-    # 1 removed it) - see _render_copy_link_control's own docstring.
-    # Signed-out/non-admin visitors get no extra row at all, so the
-    # public page stays byte-identical to what Part 1 verified. ---
-    if st.session_state.get("full_view_unlocked"):
-        _rc_share_spacer, _rc_share_col = st.columns([5, 2])
-        with _rc_share_col:
-            _render_copy_link_control(
-                url_builder=lambda label, lang, _t=ticker, _s=_cp_default_section: (
-                    f"{SITE_ORIGIN}/research?ticker={_urlquote(_t)}"
-                    f"&section={_urlquote(_s)}&src={label}"
-                    + ("&lang=es" if lang == "es" else "")
-                ),
-                key_prefix=f"copylink_rc_{ticker}",
-                ticker=ticker,
-                label_prefix="reddit-rc",
-            )
-
-    # Per-company header card (Task 5): ticker/industry/section-count/
-    # last-updated. The link-button that used to sit at the bottom of this
-    # card now renders in the row above instead (see pick_col2).
-    _render_research_header_card(ticker, data, section_order)
-
-    _cp_tabs = st.tabs(section_order, default=_cp_default_section)
-    for _cp_label, _cp_tab in zip(section_order, _cp_tabs):
-        with _cp_tab:
-            st.markdown(f"### {ticker} - {_cp_label}")
-            _render_cp_section(ticker, _cp_label, data)
+    _render_research_detail(ticker, data, section_order, _rc_lang)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)

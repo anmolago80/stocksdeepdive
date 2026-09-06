@@ -1037,6 +1037,40 @@ EN = {
     "portfolio.stress.window.covid_recovery": "COVID recovery",
     "portfolio.stress.window.ai_rally_2023_24": "2023-24 AI rally",
     "portfolio.stress.na": "—",
+
+    # Next-batch instruction, Part 4: Rational Compounder page - company
+    # shelf + verdict-first opener. Only the NEW opener strings this pass
+    # introduces are covered here - the seven section names themselves
+    # (Fundamentals, Value vs Book, ...) and everything each section
+    # renders below were never i18n'd before this pass either and stay
+    # out of scope, same as Part 1's own documented boundary.
+    "research.kicker": "RATIONAL COMPOUNDER RESEARCH",
+    "research.shelf_title": "Hand-built research, one company at a time",
+    "research.shelf_positioning": (
+        "Every company below has a full, hand-written valuation and thesis "
+        "behind it - not a screen, not a score: real analysis, updated as "
+        "the underlying business changes."
+    ),
+    "research.housekeeping_snapshot": "Data snapshot: current ({date})",
+    "research.housekeeping_prioritise": (
+        "Want a stock prioritised? Say so via the Feedback button above."
+    ),
+    "research.rebuild_history_link": "See the model's rebuild history →",
+    "research.card_sections_verdict": "{count}/{total} sections · written verdict ✓",
+    "research.card_sections_no_verdict": "{count}/{total} sections · research in progress",
+    "research.card_updated": "Updated {date}",
+    "research.card_position_held": "Held",
+    "research.card_position_none": "No position",
+    "research.card_cta": "View research →",
+    "research.back_to_shelf": "← All companies",
+    "research.state2_caption": "Workbook: {date}",
+    "research.deep_dive_xlink": "Open the automated Deep Dive →",
+    "research.verdict_label": "The author's verdict",
+    "research.no_verdict_text": "Written verdict not yet published for this company.",
+    "research.key_number_price": "Price",
+    "research.key_number_margin_of_safety": "Margin of safety",
+    "research.key_number_roic": "ROIC",
+    "research.key_number_roic_vs_wacc": "ROIC vs WACC",
 }
 
 ES = {
@@ -1941,6 +1975,35 @@ ES = {
     "portfolio.stress.window.covid_recovery": "Recuperación post-COVID",
     "portfolio.stress.window.ai_rally_2023_24": "Repunte de la IA 2023-24",
     "portfolio.stress.na": "—",
+
+    "research.kicker": "INVESTIGACIÓN RATIONAL COMPOUNDER",
+    "research.shelf_title": "Investigación hecha a mano, una empresa a la vez",
+    "research.shelf_positioning": (
+        "Cada empresa de abajo tiene una valoración y una tesis completas, "
+        "escritas a mano - no es un filtro ni una puntuación: análisis real, "
+        "actualizado a medida que cambia el negocio subyacente."
+    ),
+    "research.housekeeping_snapshot": "Datos de: actual ({date})",
+    "research.housekeeping_prioritise": (
+        "¿Quieres que priorice una acción? Dilo con el botón de Comentarios "
+        "de arriba."
+    ),
+    "research.rebuild_history_link": "Ver el historial de actualizaciones del modelo →",
+    "research.card_sections_verdict": "{count}/{total} secciones · veredicto escrito ✓",
+    "research.card_sections_no_verdict": "{count}/{total} secciones · investigación en curso",
+    "research.card_updated": "Actualizado el {date}",
+    "research.card_position_held": "En cartera",
+    "research.card_position_none": "Sin posición",
+    "research.card_cta": "Ver investigación →",
+    "research.back_to_shelf": "← Todas las empresas",
+    "research.state2_caption": "Libro de trabajo: {date}",
+    "research.deep_dive_xlink": "Abrir el Deep Dive automático →",
+    "research.verdict_label": "El veredicto del autor",
+    "research.no_verdict_text": "Todavía no hay un veredicto escrito para esta empresa.",
+    "research.key_number_price": "Precio",
+    "research.key_number_margin_of_safety": "Margen de seguridad",
+    "research.key_number_roic": "ROIC",
+    "research.key_number_roic_vs_wacc": "ROIC vs WACC",
 }
 
 
