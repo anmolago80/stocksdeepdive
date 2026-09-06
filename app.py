@@ -66,6 +66,7 @@ from simple_view_copy import SECTION_WHY_CAPTIONS, SECTION_WHY_CAPTIONS_ES
 import stress_etf_help_copy
 import switch_analyzer_engine
 import budget_planner_engine
+import debt_recycling_engine
 import tools_store
 import i18n
 
@@ -16295,6 +16296,8 @@ own stocks analysed here.*
 TOOLS_REGISTRY = [
     {"id": "budget_planner", "icon": "\U0001F4B0",
      "title_key": "tools.budget.title", "render": "_render_budget_planner_tool"},
+    {"id": "debt_recycling", "icon": "\U0001F4B0",
+     "title_key": "tools.debt_recycling.title", "render": "_render_debt_recycling_tool"},
 ]
 
 
@@ -16519,6 +16522,392 @@ def _render_budget_planner_tool(email):
         country=st.session_state.get("tools_budget_country"),
         years=st.session_state.get("tools_budget_years"),
     )
+
+
+def _dr_scenario_name(scenario_id, country, us_baseline, dl):
+    """A's own name depends on country/baseline; C's depends on country
+    (spec: US label is literally "Borrow to invest"); B/D are the same
+    everywhere."""
+    if scenario_id == "A":
+        if country == "us" and us_baseline == "hys":
+            return dl("scenario_a_name_hys")
+        if country == "us":
+            return dl("scenario_a_name_mortgage_extra")
+        return dl("scenario_a_name_offset")
+    if scenario_id == "B":
+        return dl("scenario_b_name")
+    if scenario_id == "C":
+        return dl("scenario_c_name_us") if country == "us" else dl("scenario_c_name_au")
+    return dl("scenario_d_name")
+
+
+def _dr_scenario_badges(scenario_id, dl):
+    if scenario_id == "A":
+        return [dl("badge_guaranteed")]
+    if scenario_id == "B":
+        return [dl("badge_market_risk")]
+    if scenario_id == "C":
+        return [dl("badge_market_risk"), dl("badge_debt")]
+    return [dl("badge_double_risk"), dl("badge_debt")]
+
+
+def _render_debt_recycling_tool(email):
+    """Mega-batch Part 20, tool #3: Cash vs Offset vs Borrow. Sign-in
+    required for the whole of Tools already (Part 18's own amendment), so
+    - unlike Budget Planner, which auto-saves - this tool's own spec asks
+    for the OPPOSITE default: "nothing saved unless ... the user saves
+    the scenario" (an explicit button below, not a background write on
+    every keystroke). See debt_recycling_engine.py's module docstring for
+    every formula this UI only ever calls, never reimplements."""
+    _lang = st.session_state.get("lang", "en")
+    _dl = lambda key, **kw: i18n.t(f"tools.debt_recycling.{key}", _lang, **kw)
+
+    st.markdown(f"### \U0001F4B0 {_dl('title')}")
+    st.caption(_dl("subtitle"))
+
+    _saved = tools_store.get_debt_recycling_scenario(email) or {}
+    _saved_inputs = _saved.get("inputs") or {}
+
+    def _seed(key, default):
+        if key not in st.session_state:
+            st.session_state[key] = _saved_inputs.get(key, default)
+
+    _seed("tools_dr_country", "au")
+    country = st.radio(
+        "Country", ["au", "us"],
+        format_func=lambda c: _dl(f"country_{c}"),
+        horizontal=True, label_visibility="collapsed", key="tools_dr_country",
+    )
+
+    with st.container(border=True):
+        st.markdown(f"**{_dl('inputs_kicker')}**")
+        _i1, _i2 = st.columns(2)
+        with _i1:
+            _seed("tools_dr_cash", 20000.0)
+            cash = st.number_input(_dl("cash_label"), min_value=0.0, step=1000.0,
+                                   format="%.0f", key="tools_dr_cash")
+            _seed("tools_dr_mortgage_rate", 6.0)
+            mortgage_rate_pct = st.number_input(_dl("mortgage_rate_label"), min_value=0.0,
+                                                max_value=20.0, step=0.1, format="%.2f",
+                                                key="tools_dr_mortgage_rate")
+            _seed("tools_dr_loan_rate", 7.0)
+            loan_rate_pct = st.number_input(_dl("loan_rate_label"), min_value=0.0,
+                                            max_value=20.0, step=0.1, format="%.2f",
+                                            key="tools_dr_loan_rate")
+            _seed("tools_dr_tax_rate", 37.0)
+            tax_rate_pct = st.number_input(_dl("tax_rate_label"), min_value=0.0,
+                                           max_value=60.0, step=0.5, format="%.1f",
+                                           key="tools_dr_tax_rate")
+            if country == "au":
+                st.caption(_dl("tax_rate_medicare_note"))
+        with _i2:
+            _seed("tools_dr_horizon", debt_recycling_engine.DEFAULT_HORIZON_YEARS)
+            horizon = st.number_input(
+                _dl("horizon_label"),
+                min_value=debt_recycling_engine.MIN_HORIZON_YEARS,
+                max_value=debt_recycling_engine.MAX_HORIZON_YEARS,
+                step=1, key="tools_dr_horizon",
+            )
+            us_baseline = "mortgage_extra"
+            hys_rate_pct = 0.0
+            _seed("tools_dr_ltcg_rate", 15.0)
+            ltcg_rate_pct = 15.0
+            if country == "us":
+                _seed("tools_dr_us_baseline", "mortgage_extra")
+                us_baseline = st.radio(
+                    _dl("us_baseline_label"), ["mortgage_extra", "hys"],
+                    format_func=lambda b: _dl(f"us_baseline_{b}"),
+                    key="tools_dr_us_baseline",
+                )
+                if us_baseline == "hys":
+                    _seed("tools_dr_hys_rate", 4.5)
+                    hys_rate_pct = st.number_input(_dl("hys_rate_label"), min_value=0.0,
+                                                   max_value=15.0, step=0.1, format="%.2f",
+                                                   key="tools_dr_hys_rate")
+                ltcg_rate_pct = st.number_input(_dl("ltcg_rate_label"), min_value=0.0,
+                                                max_value=50.0, step=0.5, format="%.1f",
+                                                key="tools_dr_ltcg_rate")
+
+        def _investment_inputs(n, kicker_key):
+            st.markdown(f"**{_dl(kicker_key)}**")
+            _pick1, _pick2 = st.columns(2)
+            with _pick1:
+                if st.button(_dl("pick_index_sp500"), key=f"tools_dr_pick_sp500_{n}",
+                            use_container_width=True):
+                    st.session_state[f"tools_dr_inv{n}_income"] = 0.0
+                    st.session_state[f"tools_dr_inv{n}_growth"] = round(
+                        budget_planner_engine.INDEX_HISTORICAL_RETURNS["sp500"] * 100, 1)
+            with _pick2:
+                if st.button(_dl("pick_index_asx200"), key=f"tools_dr_pick_asx200_{n}",
+                            use_container_width=True):
+                    st.session_state[f"tools_dr_inv{n}_income"] = 0.0
+                    st.session_state[f"tools_dr_inv{n}_growth"] = round(
+                        budget_planner_engine.INDEX_HISTORICAL_RETURNS["asx200"] * 100, 1)
+            st.caption(_dl("pick_index_caption"))
+            _c1, _c2, _c3 = st.columns(3)
+            with _c1:
+                _seed(f"tools_dr_inv{n}_income", 3.0)
+                income_pct = st.number_input(_dl("income_pct_label"), min_value=0.0,
+                                             max_value=30.0, step=0.1, format="%.1f",
+                                             key=f"tools_dr_inv{n}_income")
+            with _c2:
+                _seed(f"tools_dr_inv{n}_growth", 5.0)
+                growth_pct = st.number_input(_dl("growth_pct_label"), min_value=-20.0,
+                                             max_value=30.0, step=0.1, format="%.1f",
+                                             key=f"tools_dr_inv{n}_growth")
+            franked_pct = 0.0
+            with _c3:
+                if country == "au":
+                    _seed(f"tools_dr_inv{n}_franked", 50.0)
+                    franked_pct = st.number_input(_dl("franked_pct_label"), min_value=0.0,
+                                                  max_value=100.0, step=5.0, format="%.0f",
+                                                  key=f"tools_dr_inv{n}_franked")
+            return income_pct, growth_pct, franked_pct
+
+        inv1_income_pct, inv1_growth_pct, inv1_franked_pct = _investment_inputs(1, "inv1_kicker")
+        inv2_income_pct, inv2_growth_pct, inv2_franked_pct = _investment_inputs(2, "inv2_kicker")
+
+    # ---- Run the engine ----
+    _engine_kwargs = dict(
+        cash=cash, mortgage_rate=mortgage_rate_pct / 100, loan_rate=loan_rate_pct / 100,
+        tax_rate=tax_rate_pct / 100, horizon=horizon,
+        inv1_income_rate=inv1_income_pct / 100, inv1_growth_rate=inv1_growth_pct / 100,
+        inv2_income_rate=inv2_income_pct / 100, inv2_growth_rate=inv2_growth_pct / 100,
+        country=country, inv1_franked_pct=inv1_franked_pct / 100,
+        inv2_franked_pct=inv2_franked_pct / 100, ltcg_rate=ltcg_rate_pct / 100,
+        us_baseline=us_baseline, hys_rate=hys_rate_pct / 100,
+    )
+    res = debt_recycling_engine.run_scenarios(**_engine_kwargs)
+    _scenario_order = ("A", "B", "C", "D")
+    _winner = max(_scenario_order, key=lambda k: res[k]["headline"])
+
+    # ---- B. Four scenario cards ----
+    _cols = st.columns(4)
+    for _sid, _col in zip(_scenario_order, _cols):
+        with _col:
+            with st.container(border=True):
+                if _sid == _winner:
+                    st.markdown(f"<span style='color:#f59e0b;font-weight:700;"
+                               f"font-size:12.5px'>{_dl('winner_pill')}</span>",
+                               unsafe_allow_html=True)
+                st.markdown(f"**{_dr_scenario_name(_sid, country, us_baseline, _dl)}**")
+                st.caption(" &middot; ".join(_dr_scenario_badges(_sid, _dl)))
+                st.metric(_dl("headline_label", years=horizon),
+                         f"${res[_sid]['headline']:,.0f}")
+                if _sid == "A":
+                    st.caption(_dl("baseline_caption"))
+                for _comp_key, _comp_val in res[_sid]["components"].items():
+                    st.caption(f"{_dl('comp_' + _comp_key)}: ${_comp_val:,.0f}")
+
+    # ---- C. Two hurdles ----
+    st.markdown(f"**{_dl('hurdles_kicker')}**")
+    _h1, _h2 = st.columns(2)
+    with _h1:
+        st.metric(_dl("hurdle1_label"), f"{res['hurdles']['cash_leaving_offset'] * 100:.1f}%")
+    with _h2:
+        if country == "us" and us_baseline == "hys":
+            st.metric(_dl("hurdle_us_hys_label"), f"{res['hurdles']['us_hys_baseline'] * 100:.1f}%")
+        else:
+            st.metric(_dl("hurdle2_label"), f"{res['hurdles']['borrowed_money'] * 100:.1f}%")
+    st.caption(_dl("hurdle_note"))
+
+    # ---- D. Split slider ----
+    st.markdown(f"#### {_dl('split_title')}")
+    st.caption(_dl("split_caption"))
+    _seed("tools_dr_split_pct", 50)
+    split_pct = st.slider("Split", 0, 100, key="tools_dr_split_pct", label_visibility="collapsed")
+    _seed("tools_dr_pessimistic_rate", debt_recycling_engine.DEFAULT_PESSIMISTIC_RATE * 100)
+    pessimistic_rate_pct = st.number_input(
+        _dl("pessimistic_rate_label"), min_value=-20.0, max_value=20.0, step=0.5,
+        format="%.1f", key="tools_dr_pessimistic_rate",
+    )
+    _split_rows = debt_recycling_engine.split_slider_rows(
+        cash=cash, mortgage_rate=mortgage_rate_pct / 100, loan_rate=loan_rate_pct / 100,
+        tax_rate=tax_rate_pct / 100, horizon=horizon,
+        inv1_income_rate=inv1_income_pct / 100, inv1_growth_rate=inv1_growth_pct / 100,
+        country=country, inv1_franked_pct=inv1_franked_pct / 100, ltcg_rate=ltcg_rate_pct / 100,
+        pessimistic_rate=pessimistic_rate_pct / 100, us_baseline=us_baseline,
+        hys_rate=hys_rate_pct / 100, extra_split_pct=split_pct,
+    )
+    st.dataframe(
+        [{
+            _dl("split_col_split"): f"{_r['split_pct']}%",
+            _dl("split_col_expected"): f"${_r['expected_gain']:,.0f}",
+            _dl("split_col_bad_decade"): f"${_r['bad_decade_gain']:,.0f}",
+            _dl("split_col_floor"): f"{_r['guaranteed_floor_pct']}%",
+        } for _r in _split_rows],
+        hide_index=True, use_container_width=True,
+    )
+
+    # ---- E. Visuals (2x2), verdict LAST ----
+    st.markdown(f"#### {_dl('visuals_kicker')}")
+
+    st.markdown(f"##### {_dl('race_chart_title')}")
+    st.caption(_dl("race_chart_caption"))
+    _race_pessimistic = st.checkbox(_dl("race_chart_pessimistic_toggle"), key="tools_dr_race_pessimistic")
+    if _race_pessimistic:
+        _race_inv1_income, _race_inv1_growth = debt_recycling_engine.scale_to_total_return(
+            inv1_income_pct / 100, inv1_growth_pct / 100, pessimistic_rate_pct / 100)
+        _race_inv2_income, _race_inv2_growth = debt_recycling_engine.scale_to_total_return(
+            inv2_income_pct / 100, inv2_growth_pct / 100, pessimistic_rate_pct / 100)
+        _race_res = debt_recycling_engine.run_scenarios(
+            **{**_engine_kwargs, "inv1_income_rate": _race_inv1_income,
+              "inv1_growth_rate": _race_inv1_growth, "inv2_income_rate": _race_inv2_income,
+              "inv2_growth_rate": _race_inv2_growth})
+    else:
+        _race_res = res
+    _race_fig = go.Figure()
+    _race_colors = {"A": "#2dd4bf", "B": "#60a5fa", "C": "#f59e0b", "D": "#f87171"}
+    for _sid in _scenario_order:
+        _race_fig.add_trace(go.Scatter(
+            x=list(range(horizon + 1)), y=_race_res[_sid]["series"], mode="lines",
+            name=_dr_scenario_name(_sid, country, us_baseline, _dl),
+            line=dict(color=_race_colors[_sid], width=2.5),
+        ))
+    _race_fig.update_layout(
+        height=320, margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#8aa0b8"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        xaxis=dict(gridcolor="#1f3352", title=_dl("horizon_label")),
+        yaxis=dict(gridcolor="#1f3352", tickprefix="$", tickformat=",.0f"),
+    )
+    sdd_plotly_chart(_race_fig, key="tools_dr_race_chart")
+
+    st.markdown(f"##### {_dl('ranking_chart_title')}")
+    st.caption(_dl("ranking_chart_caption"))
+    _rank_fig = go.Figure(go.Bar(
+        x=[_dr_scenario_name(_sid, country, us_baseline, _dl) for _sid in _scenario_order],
+        y=[res[_sid]["headline"] - res["A"]["headline"] for _sid in _scenario_order],
+        marker_color=[_race_colors[_sid] for _sid in _scenario_order],
+    ))
+    _rank_fig.update_layout(
+        height=260, margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#8aa0b8"),
+        yaxis=dict(gridcolor="#1f3352", tickprefix="$", tickformat=",.0f",
+                  zerolinecolor="#5b7290"),
+        xaxis=dict(gridcolor="#1f3352"),
+    )
+    sdd_plotly_chart(_rank_fig, key="tools_dr_ranking_chart")
+
+    st.markdown(f"##### {_dl('breakeven_chart_title')}")
+    st.caption(_dl("breakeven_chart_caption"))
+    _assumed_total_return = inv1_income_pct / 100 + inv1_growth_pct / 100
+    _sweep_max = max(0.20, _assumed_total_return * 1.5, res["hurdles"]["cash_leaving_offset"] * 1.3)
+    _sweep_xs = [i / 200.0 * _sweep_max for i in range(201)]
+    _be_b, _be_c, _be_d = [], [], []
+    for _x in _sweep_xs:
+        _sx_income, _sx_growth = debt_recycling_engine.scale_to_total_return(
+            inv1_income_pct / 100, inv1_growth_pct / 100, _x)
+        _sx_income2, _sx_growth2 = debt_recycling_engine.scale_to_total_return(
+            inv2_income_pct / 100, inv2_growth_pct / 100, _x)
+        _sx_res = debt_recycling_engine.run_scenarios(
+            **{**_engine_kwargs, "inv1_income_rate": _sx_income, "inv1_growth_rate": _sx_growth,
+              "inv2_income_rate": _sx_income2, "inv2_growth_rate": _sx_growth2})
+        _be_b.append(_sx_res["B"]["headline"])
+        _be_c.append(_sx_res["C"]["headline"])
+        _be_d.append(_sx_res["D"]["headline"])
+    _be_fig = go.Figure()
+    _be_fig.add_trace(go.Scatter(x=[x * 100 for x in _sweep_xs], y=[res["A"]["headline"]] * len(_sweep_xs),
+                                 mode="lines", name=_dr_scenario_name("A", country, us_baseline, _dl),
+                                 line=dict(color=_race_colors["A"], width=2, dash="dash")))
+    _be_fig.add_trace(go.Scatter(x=[x * 100 for x in _sweep_xs], y=_be_b, mode="lines",
+                                 name=_dr_scenario_name("B", country, us_baseline, _dl),
+                                 line=dict(color=_race_colors["B"], width=2.5)))
+    _be_fig.add_trace(go.Scatter(x=[x * 100 for x in _sweep_xs], y=_be_c, mode="lines",
+                                 name=_dr_scenario_name("C", country, us_baseline, _dl),
+                                 line=dict(color=_race_colors["C"], width=2.5)))
+    _be_fig.add_trace(go.Scatter(x=[x * 100 for x in _sweep_xs], y=_be_d, mode="lines",
+                                 name=_dr_scenario_name("D", country, us_baseline, _dl),
+                                 line=dict(color=_race_colors["D"], width=2.5)))
+    _be_fig.add_vline(x=_assumed_total_return * 100, line_dash="dot", line_color="#e6edf5")
+    _be_fig.update_layout(
+        height=320, margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#8aa0b8"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        xaxis=dict(gridcolor="#1f3352", title="Investment 1 total return %", ticksuffix="%"),
+        yaxis=dict(gridcolor="#1f3352", tickprefix="$", tickformat=",.0f"),
+    )
+    sdd_plotly_chart(_be_fig, key="tools_dr_breakeven_chart")
+
+    st.markdown(f"##### {_dl('waterfall_chart_title')}")
+    st.caption(_dl("waterfall_chart_caption"))
+    _wf_scenario = st.selectbox(
+        _dl("waterfall_scenario_label"), ["B", "C", "D"],
+        format_func=lambda s: _dr_scenario_name(s, country, us_baseline, _dl),
+        key="tools_dr_wf_scenario",
+    )
+    _wf = debt_recycling_engine.waterfall_components(
+        _wf_scenario, cash=cash, mortgage_rate=mortgage_rate_pct / 100,
+        loan_rate=loan_rate_pct / 100, tax_rate=tax_rate_pct / 100, horizon=horizon,
+        inv1_income_rate=inv1_income_pct / 100, inv1_growth_rate=inv1_growth_pct / 100,
+        inv2_income_rate=inv2_income_pct / 100 if _wf_scenario == "D" else None,
+        inv2_growth_rate=inv2_growth_pct / 100 if _wf_scenario == "D" else None,
+        country=country, inv1_franked_pct=inv1_franked_pct / 100,
+        inv2_franked_pct=inv2_franked_pct / 100, ltcg_rate=ltcg_rate_pct / 100,
+    )
+    _wf_fig = go.Figure(go.Waterfall(
+        x=[_dl("waterfall_gross"), _dl("waterfall_tax"), _dl("waterfall_loan_interest"),
+          _dl("waterfall_deduction"), _dl("waterfall_net")],
+        measure=["absolute", "relative", "relative", "relative", "total"],
+        y=[_wf["gross_return"], _wf["tax"], _wf["loan_interest"], _wf["deduction"], _wf["net"]],
+        connector=dict(line=dict(color="#1f3352")),
+        increasing=dict(marker=dict(color="#2dd4bf")),
+        decreasing=dict(marker=dict(color="#f87171")),
+        totals=dict(marker=dict(color="#60a5fa")),
+    ))
+    _wf_fig.update_layout(
+        height=320, margin=dict(l=10, r=10, t=10, b=10), showlegend=False,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#8aa0b8"),
+        yaxis=dict(gridcolor="#1f3352", tickprefix="$", tickformat=",.0f"),
+        xaxis=dict(gridcolor="#1f3352"),
+    )
+    sdd_plotly_chart(_wf_fig, key="tools_dr_waterfall_chart")
+
+    # ---- Bottom-line box, LAST ----
+    st.markdown(f"### {_dl('bottomline_title')}")
+    with st.container(border=True):
+        _second_best = sorted(
+            (res[s]["headline"] for s in _scenario_order if s != _winner), reverse=True,
+        )[0]
+        _margin = res[_winner]["headline"] - _second_best
+        st.markdown(_dl(
+            "bottomline_leader",
+            leader=_dr_scenario_name(_winner, country, us_baseline, _dl),
+            years=horizon, margin=f"{_margin:,.0f}",
+        ))
+        st.markdown(_dl(
+            "bottomline_hurdle",
+            rate=f"{_assumed_total_return * 100:.1f}",
+            hurdle=f"{res['hurdles']['cash_leaving_offset'] * 100:.1f}",
+        ))
+        _thin = abs(_margin) < 0.1 * max(abs(res[s]["headline"]) for s in _scenario_order)
+        st.caption(_dl("bottomline_margin_thin" if _thin else "bottomline_margin_wide"))
+        st.caption(_dl("bottomline_flip"))
+        _chips = [
+            _dl("risk_chip_assumptions"), _dl("risk_chip_leverage"),
+            _dl("risk_chip_purpose_rules_us") if country == "us" else _dl("risk_chip_purpose_rules_au"),
+            _dl("risk_chip_not_advice"),
+        ]
+        for _chip in _chips:
+            st.caption(f"⚠ {_chip}")
+
+    with st.expander(_dl("simplifications_kicker")):
+        st.caption(_dl("simplifications_us") if country == "us" else _dl("simplifications_au"))
+
+    if st.button(_dl("save_button"), key="tools_dr_save_btn"):
+        tools_store.save_debt_recycling_scenario(email, {
+            "country": country, "cash": cash, "mortgage_rate": mortgage_rate_pct,
+            "loan_rate": loan_rate_pct, "tax_rate": tax_rate_pct, "horizon": horizon,
+            "us_baseline": us_baseline, "hys_rate": hys_rate_pct, "ltcg_rate": ltcg_rate_pct,
+            "inv1_income": inv1_income_pct, "inv1_growth": inv1_growth_pct,
+            "inv1_franked": inv1_franked_pct, "inv2_income": inv2_income_pct,
+            "inv2_growth": inv2_growth_pct, "inv2_franked": inv2_franked_pct,
+        })
+        st.success(_dl("save_confirm"))
 
 
 def page_tools():

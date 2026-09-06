@@ -874,6 +874,158 @@ EN = {
     "tools.budget.chart_invested": "Invested",
     "tools.budget.chart_saved": "Just saved",
 
+    # Mega-batch Part 20: tool #2 in the Tools registry, "Cash vs Offset
+    # vs Borrow" - the debt-recycling decision tool. See
+    # debt_recycling_engine.py's own module docstring for the maths this
+    # UI text describes.
+    "tools.debt_recycling.title": "Cash vs Offset vs Borrow",
+    "tools.debt_recycling.subtitle": (
+        "You have cash and a mortgage. Leave it in the offset, invest it, "
+        "borrow to invest, or both? Described calculations only — "
+        "never a recommendation."
+    ),
+    "tools.debt_recycling.country_au": "\U0001F1E6\U0001F1FA Australia",
+    "tools.debt_recycling.country_us": "\U0001F1FA\U0001F1F8 United States",
+    "tools.debt_recycling.inputs_kicker": "Your numbers",
+    "tools.debt_recycling.cash_label": "Cash available",
+    "tools.debt_recycling.mortgage_rate_label": "Mortgage rate",
+    "tools.debt_recycling.loan_rate_label": "Investment loan rate",
+    "tools.debt_recycling.tax_rate_label": "Marginal tax rate",
+    "tools.debt_recycling.tax_rate_medicare_note": (
+        "Include the Medicare levy in this figure — e.g. 32.5% + 2% "
+        "Medicare = 34.5%."
+    ),
+    "tools.debt_recycling.horizon_label": "Horizon (years)",
+    "tools.debt_recycling.inv1_kicker": "Investment 1",
+    "tools.debt_recycling.inv2_kicker": "Investment 2 (Scenario D only)",
+    "tools.debt_recycling.income_pct_label": "Income return (yield)",
+    "tools.debt_recycling.growth_pct_label": "Growth return (capital)",
+    "tools.debt_recycling.franked_pct_label": "% of income fully franked",
+    "tools.debt_recycling.ltcg_rate_label": "Long-term capital-gains rate",
+    "tools.debt_recycling.us_baseline_label": "If cash isn't invested or borrowed against, it goes to:",
+    "tools.debt_recycling.us_baseline_mortgage_extra": "Extra mortgage principal (tax-free)",
+    "tools.debt_recycling.us_baseline_hys": "High-yield savings (taxable)",
+    "tools.debt_recycling.hys_rate_label": "High-yield savings rate",
+    "tools.debt_recycling.pick_index_caption": (
+        "Not sure what to type? Pick a historical index average instead of guessing."
+    ),
+    "tools.debt_recycling.pick_index_sp500": "\U0001F1FA\U0001F1F8 S&amp;P 500 history (10%/yr)",
+    "tools.debt_recycling.pick_index_asx200": "\U0001F1E6\U0001F1FA ASX 200 history (9%/yr)",
+    "tools.debt_recycling.pick_index_apply_inv1": "Use for Investment 1",
+    "tools.debt_recycling.pick_index_apply_inv2": "Use for Investment 2",
+
+    "tools.debt_recycling.scenario_a_name_offset": "Leave it in the offset",
+    "tools.debt_recycling.scenario_a_name_mortgage_extra": "Extra mortgage payments",
+    "tools.debt_recycling.scenario_a_name_hys": "High-yield savings",
+    "tools.debt_recycling.scenario_b_name": "Invest the cash directly",
+    "tools.debt_recycling.scenario_c_name_au": "Debt recycle",
+    "tools.debt_recycling.scenario_c_name_us": "Borrow to invest",
+    "tools.debt_recycling.scenario_d_name": "Borrow AND invest the cash too",
+    "tools.debt_recycling.badge_guaranteed": "GUARANTEED",
+    "tools.debt_recycling.badge_market_risk": "MARKET RISK",
+    "tools.debt_recycling.badge_debt": "DEBT",
+    "tools.debt_recycling.badge_double_risk": "DOUBLE RISK",
+    "tools.debt_recycling.headline_label": "After-tax gain over {years}y",
+    "tools.debt_recycling.winner_pill": "\U0001F3C6 Best on these numbers",
+    "tools.debt_recycling.baseline_caption": "The baseline every option must beat.",
+    "tools.debt_recycling.comp_tax_free_return": "Interest avoided (tax-free)",
+    "tools.debt_recycling.comp_taxable_return": "After-tax return",
+    "tools.debt_recycling.comp_investment_after_tax": "Investment, after tax",
+    "tools.debt_recycling.comp_investment1_after_tax": "Investment 1, after tax",
+    "tools.debt_recycling.comp_investment2_after_tax": "Investment 2, after tax",
+    "tools.debt_recycling.comp_mortgage_interest_forgone": "Mortgage interest forgone (informational)",
+    "tools.debt_recycling.comp_offset_benefit": "Offset benefit (cash never leaves)",
+    "tools.debt_recycling.comp_loan_interest_after_tax": "Loan interest, after deduction",
+    "tools.debt_recycling.comp_net_vs_offset": "Net vs. leaving it in the offset",
+
+    "tools.debt_recycling.hurdles_kicker": "Two hurdles, shown as numbers",
+    "tools.debt_recycling.hurdle1_label": "Pre-tax return needed to beat the offset",
+    "tools.debt_recycling.hurdle2_label": "After-tax return needed to beat the loan",
+    "tools.debt_recycling.hurdle_us_hys_label": "After-tax return needed to beat the savings rate",
+    "tools.debt_recycling.hurdle_note": (
+        "Simple, slightly conservative headline figures — a real, franked/"
+        "discounted position usually beats these by a little, never by less."
+    ),
+
+    "tools.debt_recycling.split_title": "\U0001F3DA️ Or split it — how much stays guarding the mortgage?",
+    "tools.debt_recycling.split_caption": (
+        "The slider is a risk dial, not an optimiser — it prices caution "
+        "instead of guessing it. Above the hurdle, more invested means more "
+        "expected gain; there's no magic middle."
+    ),
+    "tools.debt_recycling.split_col_split": "Split",
+    "tools.debt_recycling.split_col_expected": "Expected gain",
+    "tools.debt_recycling.split_col_bad_decade": "Bad-decade gain",
+    "tools.debt_recycling.split_col_floor": "Guaranteed floor",
+    "tools.debt_recycling.pessimistic_rate_label": "Bad-decade rate (both income & growth)",
+
+    "tools.debt_recycling.visuals_kicker": "See it play out",
+    "tools.debt_recycling.race_chart_title": "\U0001F3C1 Race chart",
+    "tools.debt_recycling.race_chart_caption": "All four scenarios' after-tax position, year by year.",
+    "tools.debt_recycling.race_chart_pessimistic_toggle": "Re-run at the bad-decade rate",
+    "tools.debt_recycling.ranking_chart_title": "\U0001F3C6 Ranking",
+    "tools.debt_recycling.ranking_chart_caption": "Net gain vs. leaving it in the offset, on today's numbers.",
+    "tools.debt_recycling.breakeven_chart_title": "⚖️ Break-even crossings",
+    "tools.debt_recycling.breakeven_chart_caption": (
+        "Outcome vs. assumed return — where B/C/D's curves cross A's flat "
+        "guaranteed line, marked at your own assumed return."
+    ),
+    "tools.debt_recycling.waterfall_chart_title": "\U0001F4A7 Waterfall",
+    "tools.debt_recycling.waterfall_chart_caption": "Gross return − tax − loan interest + deduction = net.",
+    "tools.debt_recycling.waterfall_scenario_label": "Scenario",
+    "tools.debt_recycling.waterfall_gross": "Gross return",
+    "tools.debt_recycling.waterfall_tax": "Tax",
+    "tools.debt_recycling.waterfall_loan_interest": "Loan interest",
+    "tools.debt_recycling.waterfall_deduction": "Deduction",
+    "tools.debt_recycling.waterfall_net": "Net",
+
+    "tools.debt_recycling.bottomline_title": "The bottom line",
+    "tools.debt_recycling.bottomline_leader": (
+        "On these numbers, **{leader}** comes out ahead over {years} years, "
+        "by ${margin} after tax."
+    ),
+    "tools.debt_recycling.bottomline_hurdle": (
+        "A {rate}% investment return “beats the mortgage” in "
+        "isolation, but still needs to clear {hurdle}% pre-tax to make "
+        "leaving the offset worthwhile once tax is counted."
+    ),
+    "tools.debt_recycling.bottomline_margin_thin": (
+        "That margin is thin next to the extra risk being carried — a "
+        "small miss on the assumed return could flip the ranking."
+    ),
+    "tools.debt_recycling.bottomline_margin_wide": (
+        "That margin is wide enough to survive a real miss on the assumed "
+        "return, though the risk is still real, not zero."
+    ),
+    "tools.debt_recycling.bottomline_flip": (
+        "Flips if: the investment underperforms the assumed return, the "
+        "mortgage or loan rate rises, or the position needs to be sold "
+        "earlier than the horizon assumed here."
+    ),
+    "tools.debt_recycling.risk_chip_assumptions": "Assumes today's rates hold — the offset is contractual, the investment return is not",
+    "tools.debt_recycling.risk_chip_leverage": "C and D use leverage — D holds two positions at once",
+    "tools.debt_recycling.risk_chip_purpose_rules_au": "AU loan-splitting and purpose rules apply — get this structured correctly from day one",
+    "tools.debt_recycling.risk_chip_purpose_rules_us": "US HELOC/margin rules differ from a standard mortgage — check your lender's terms",
+    "tools.debt_recycling.risk_chip_not_advice": "Not a recommendation and not personal tax advice — confirm the structure with your accountant before doing anything",
+
+    "tools.debt_recycling.simplifications_kicker": "ⓘ Simplifications used here",
+    "tools.debt_recycling.simplifications_au": (
+        "Franking assumes a 30% company tax rate. The 50% CGT discount is "
+        "applied to every horizon here (all are 5y+). Loan interest is fully "
+        "deductible, uncapped. The two hurdle figures use a single blended-"
+        "tax approximation, not your exact income/growth/franking mix."
+    ),
+    "tools.debt_recycling.simplifications_us": (
+        "No franking. Growth is taxed at your own long-term capital-gains "
+        "rate, no discount. Loan interest is deductible only up to that "
+        "year's own investment income, with no carry-forward of any unused "
+        "amount. The two hurdle figures use a single blended-tax "
+        "approximation, not your exact income/growth mix."
+    ),
+    "tools.debt_recycling.save_button": "Save this scenario",
+    "tools.debt_recycling.saved_note": "Saved to your account — come back any time to pick up where you left off.",
+    "tools.debt_recycling.save_confirm": "Scenario saved.",
+
     "home.hiw.kicker": "HOW IT WORKS",
     "home.hiw.h2_factual": "Search. Compute. Inspect.",
     "home.hiw.h2_signal": "Search. Score. Decide.",
@@ -2147,6 +2299,159 @@ ES = {
     "tools.budget.saved_note": "Guardado automáticamente en tu cuenta.",
     "tools.budget.chart_invested": "Invertido",
     "tools.budget.chart_saved": "Solo ahorrado",
+
+    "tools.debt_recycling.title": "Efectivo vs. Offset vs. Endeudarse",
+    "tools.debt_recycling.subtitle": (
+        "Tienes efectivo y una hipoteca. ¿Lo dejas en la cuenta offset, lo "
+        "inviertes, pides un préstamo para invertir, o ambas cosas? Solo "
+        "cálculos descritos — nunca una recomendación."
+    ),
+    "tools.debt_recycling.country_au": "\U0001F1E6\U0001F1FA Australia",
+    "tools.debt_recycling.country_us": "\U0001F1FA\U0001F1F8 Estados Unidos",
+    "tools.debt_recycling.inputs_kicker": "Tus números",
+    "tools.debt_recycling.cash_label": "Efectivo disponible",
+    "tools.debt_recycling.mortgage_rate_label": "Tasa de la hipoteca",
+    "tools.debt_recycling.loan_rate_label": "Tasa del préstamo de inversión",
+    "tools.debt_recycling.tax_rate_label": "Tasa marginal de impuestos",
+    "tools.debt_recycling.tax_rate_medicare_note": (
+        "Incluye el Medicare levy en esta cifra — p. ej. 32,5% + 2% "
+        "Medicare = 34,5%."
+    ),
+    "tools.debt_recycling.horizon_label": "Horizonte (años)",
+    "tools.debt_recycling.inv1_kicker": "Inversión 1",
+    "tools.debt_recycling.inv2_kicker": "Inversión 2 (solo Escenario D)",
+    "tools.debt_recycling.income_pct_label": "Retorno por ingresos (rendimiento)",
+    "tools.debt_recycling.growth_pct_label": "Retorno por crecimiento (capital)",
+    "tools.debt_recycling.franked_pct_label": "% del ingreso totalmente franqueado",
+    "tools.debt_recycling.ltcg_rate_label": "Tasa de ganancias de capital a largo plazo",
+    "tools.debt_recycling.us_baseline_label": "Si el efectivo no se invierte ni se pide prestado contra él, va a:",
+    "tools.debt_recycling.us_baseline_mortgage_extra": "Pago extra al principal de la hipoteca (libre de impuestos)",
+    "tools.debt_recycling.us_baseline_hys": "Cuenta de ahorro de alto rendimiento (gravable)",
+    "tools.debt_recycling.hys_rate_label": "Tasa de la cuenta de ahorro de alto rendimiento",
+    "tools.debt_recycling.pick_index_caption": (
+        "¿No sabes qué escribir? Elige el promedio histórico de un índice en lugar de adivinar."
+    ),
+    "tools.debt_recycling.pick_index_sp500": "\U0001F1FA\U0001F1F8 Historial del S&amp;P 500 (10%/año)",
+    "tools.debt_recycling.pick_index_asx200": "\U0001F1E6\U0001F1FA Historial del ASX 200 (9%/año)",
+    "tools.debt_recycling.pick_index_apply_inv1": "Usar para Inversión 1",
+    "tools.debt_recycling.pick_index_apply_inv2": "Usar para Inversión 2",
+
+    "tools.debt_recycling.scenario_a_name_offset": "Dejarlo en la cuenta offset",
+    "tools.debt_recycling.scenario_a_name_mortgage_extra": "Pagos extra a la hipoteca",
+    "tools.debt_recycling.scenario_a_name_hys": "Cuenta de ahorro de alto rendimiento",
+    "tools.debt_recycling.scenario_b_name": "Invertir el efectivo directamente",
+    "tools.debt_recycling.scenario_c_name_au": "Reciclaje de deuda (debt recycling)",
+    "tools.debt_recycling.scenario_c_name_us": "Pedir prestado para invertir",
+    "tools.debt_recycling.scenario_d_name": "Pedir prestado E invertir el efectivo también",
+    "tools.debt_recycling.badge_guaranteed": "GARANTIZADO",
+    "tools.debt_recycling.badge_market_risk": "RIESGO DE MERCADO",
+    "tools.debt_recycling.badge_debt": "DEUDA",
+    "tools.debt_recycling.badge_double_risk": "RIESGO DOBLE",
+    "tools.debt_recycling.headline_label": "Ganancia después de impuestos en {years} años",
+    "tools.debt_recycling.winner_pill": "\U0001F3C6 Mejor con estos números",
+    "tools.debt_recycling.baseline_caption": "La base que toda opción debe superar.",
+    "tools.debt_recycling.comp_tax_free_return": "Interés evitado (libre de impuestos)",
+    "tools.debt_recycling.comp_taxable_return": "Retorno después de impuestos",
+    "tools.debt_recycling.comp_investment_after_tax": "Inversión, después de impuestos",
+    "tools.debt_recycling.comp_investment1_after_tax": "Inversión 1, después de impuestos",
+    "tools.debt_recycling.comp_investment2_after_tax": "Inversión 2, después de impuestos",
+    "tools.debt_recycling.comp_mortgage_interest_forgone": "Interés hipotecario perdido (informativo)",
+    "tools.debt_recycling.comp_offset_benefit": "Beneficio del offset (el efectivo nunca sale)",
+    "tools.debt_recycling.comp_loan_interest_after_tax": "Interés del préstamo, después de la deducción",
+    "tools.debt_recycling.comp_net_vs_offset": "Neto vs. dejarlo en el offset",
+
+    "tools.debt_recycling.hurdles_kicker": "Dos umbrales, mostrados como números",
+    "tools.debt_recycling.hurdle1_label": "Retorno antes de impuestos necesario para superar el offset",
+    "tools.debt_recycling.hurdle2_label": "Retorno después de impuestos necesario para superar el préstamo",
+    "tools.debt_recycling.hurdle_us_hys_label": "Retorno después de impuestos necesario para superar la cuenta de ahorro",
+    "tools.debt_recycling.hurdle_note": (
+        "Cifras simples y algo conservadoras — una posición real con "
+        "franqueo/descuento suele superarlas un poco, nunca quedar por debajo."
+    ),
+
+    "tools.debt_recycling.split_title": "\U0001F3DA️ O divídelo — ¿cuánto se queda protegiendo la hipoteca?",
+    "tools.debt_recycling.split_caption": (
+        "El control deslizante es un dial de riesgo, no un optimizador — "
+        "fija la cautela en lugar de adivinarla. Por encima del umbral, "
+        "invertir más significa más ganancia esperada; no hay un punto "
+        "medio mágico."
+    ),
+    "tools.debt_recycling.split_col_split": "División",
+    "tools.debt_recycling.split_col_expected": "Ganancia esperada",
+    "tools.debt_recycling.split_col_bad_decade": "Ganancia en década mala",
+    "tools.debt_recycling.split_col_floor": "Piso garantizado",
+    "tools.debt_recycling.pessimistic_rate_label": "Tasa de década mala (ingresos y crecimiento)",
+
+    "tools.debt_recycling.visuals_kicker": "Míralo en acción",
+    "tools.debt_recycling.race_chart_title": "\U0001F3C1 Gráfico de carrera",
+    "tools.debt_recycling.race_chart_caption": "La posición después de impuestos de los cuatro escenarios, año a año.",
+    "tools.debt_recycling.race_chart_pessimistic_toggle": "Recalcular con la tasa de década mala",
+    "tools.debt_recycling.ranking_chart_title": "\U0001F3C6 Clasificación",
+    "tools.debt_recycling.ranking_chart_caption": "Ganancia neta vs. dejarlo en el offset, con los números de hoy.",
+    "tools.debt_recycling.breakeven_chart_title": "⚖️ Puntos de equilibrio",
+    "tools.debt_recycling.breakeven_chart_caption": (
+        "Resultado vs. retorno asumido — dónde las curvas de B/C/D cruzan "
+        "la línea plana garantizada de A, marcado en tu propio retorno asumido."
+    ),
+    "tools.debt_recycling.waterfall_chart_title": "\U0001F4A7 Cascada",
+    "tools.debt_recycling.waterfall_chart_caption": "Retorno bruto − impuesto − interés del préstamo + deducción = neto.",
+    "tools.debt_recycling.waterfall_scenario_label": "Escenario",
+    "tools.debt_recycling.waterfall_gross": "Retorno bruto",
+    "tools.debt_recycling.waterfall_tax": "Impuesto",
+    "tools.debt_recycling.waterfall_loan_interest": "Interés del préstamo",
+    "tools.debt_recycling.waterfall_deduction": "Deducción",
+    "tools.debt_recycling.waterfall_net": "Neto",
+
+    "tools.debt_recycling.bottomline_title": "La conclusión",
+    "tools.debt_recycling.bottomline_leader": (
+        "Con estos números, **{leader}** queda por delante durante {years} "
+        "años, por ${margin} después de impuestos."
+    ),
+    "tools.debt_recycling.bottomline_hurdle": (
+        "Un retorno de inversión del {rate}% “supera a la hipoteca” "
+        "de forma aislada, pero aún necesita superar el {hurdle}% antes de "
+        "impuestos para que dejar el offset valga la pena una vez contado "
+        "el impuesto."
+    ),
+    "tools.debt_recycling.bottomline_margin_thin": (
+        "Ese margen es estrecho frente al riesgo adicional que se asume — "
+        "un pequeño error en el retorno asumido podría invertir la clasificación."
+    ),
+    "tools.debt_recycling.bottomline_margin_wide": (
+        "Ese margen es lo bastante amplio para resistir un error real en "
+        "el retorno asumido, aunque el riesgo sigue siendo real, no cero."
+    ),
+    "tools.debt_recycling.bottomline_flip": (
+        "Se revierte si: la inversión rinde menos que el retorno asumido, "
+        "sube la tasa de la hipoteca o del préstamo, o hay que vender la "
+        "posición antes del horizonte asumido aquí."
+    ),
+    "tools.debt_recycling.risk_chip_assumptions": "Asume que las tasas de hoy se mantienen — el offset es contractual, el retorno de la inversión no",
+    "tools.debt_recycling.risk_chip_leverage": "C y D usan apalancamiento — D mantiene dos posiciones a la vez",
+    "tools.debt_recycling.risk_chip_purpose_rules_au": "Aplican las reglas australianas de división y propósito del préstamo — estructura esto correctamente desde el primer día",
+    "tools.debt_recycling.risk_chip_purpose_rules_us": "Las reglas de HELOC/margen en EE. UU. difieren de una hipoteca estándar — consulta los términos de tu prestamista",
+    "tools.debt_recycling.risk_chip_not_advice": "No es una recomendación ni asesoramiento fiscal personal — confirma la estructura con tu contador antes de hacer nada",
+
+    "tools.debt_recycling.simplifications_kicker": "ⓘ Simplificaciones usadas aquí",
+    "tools.debt_recycling.simplifications_au": (
+        "El franqueo asume una tasa de impuesto corporativo del 30%. El "
+        "descuento del 50% en las ganancias de capital se aplica a todos "
+        "los horizontes aquí (todos son de 5 años o más). El interés del "
+        "préstamo es totalmente deducible, sin límite. Las dos cifras de "
+        "umbral usan una aproximación de impuesto combinado única, no tu "
+        "mezcla exacta de ingresos/crecimiento/franqueo."
+    ),
+    "tools.debt_recycling.simplifications_us": (
+        "Sin franqueo. El crecimiento se grava con tu propia tasa de "
+        "ganancias de capital a largo plazo, sin descuento. El interés del "
+        "préstamo es deducible solo hasta el ingreso de inversión de ese "
+        "mismo año, sin arrastre de ningún monto no usado. Las dos cifras "
+        "de umbral usan una aproximación de impuesto combinado única, no "
+        "tu mezcla exacta de ingresos/crecimiento."
+    ),
+    "tools.debt_recycling.save_button": "Guardar este escenario",
+    "tools.debt_recycling.saved_note": "Guardado en tu cuenta — vuelve cuando quieras para continuar donde lo dejaste.",
+    "tools.debt_recycling.save_confirm": "Escenario guardado.",
 
     "home.hiw.kicker": "CÓMO FUNCIONA",
     "home.hiw.h2_factual": "Busca. Calcula. Inspecciona.",

@@ -53,7 +53,58 @@ def _conn():
             updated_at TEXT NOT NULL
         )"""
     )
+    # Part 20 (Cash vs Offset vs Borrow): UNLIKE budget_plans above, this
+    # is never auto-saved - the spec's own words are "nothing saved
+    # unless signed in and the user saves the scenario". inputs_json
+    # holds the whole input card verbatim (cash/rates/splits/country/
+    # etc.) so reloading a saved scenario reproduces its exact scenario
+    # cards/charts, not just a subset of fields.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS debt_recycling_scenarios (
+            email TEXT NOT NULL PRIMARY KEY,
+            inputs_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
     return conn
+
+
+def get_debt_recycling_scenario(email):
+    """{"inputs": {...}} or None if this email has never saved a
+    scenario. inputs is exactly the dict save_debt_recycling_scenario()
+    was last called with - the caller (app.py) owns its own shape."""
+    if not email:
+        return None
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT inputs_json FROM debt_recycling_scenarios WHERE email = ?",
+            (email,),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        inputs = json.loads(row[0]) if row[0] else {}
+    except (TypeError, ValueError):
+        inputs = {}
+    return {"inputs": inputs}
+
+
+def save_debt_recycling_scenario(email, inputs):
+    """Upserts the ONE scenario this email is allowed, same one-per-user
+    contract as save_budget_plan(). Only ever called from an explicit
+    "Save this scenario" button click (app.py) - never from a plain page
+    render, per the spec's own privacy rule for this tool."""
+    if not email:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    inputs_json = json.dumps(inputs or {})
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO debt_recycling_scenarios (email, inputs_json, updated_at) "
+            "VALUES (?, ?, ?) ON CONFLICT(email) DO UPDATE SET "
+            "inputs_json = excluded.inputs_json, updated_at = excluded.updated_at",
+            (email, inputs_json, now),
+        )
 
 
 def get_budget_plan(email):
