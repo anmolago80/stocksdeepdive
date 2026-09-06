@@ -63,6 +63,7 @@ import blog_render
 import compounder_ui
 from compounder_ui import sdd_plotly_chart
 from simple_view_copy import SECTION_WHY_CAPTIONS, SECTION_WHY_CAPTIONS_ES
+import stress_etf_help_copy
 import i18n
 
 
@@ -12526,18 +12527,44 @@ def _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses):
             _etf("col_corr_asx200"): f"{r['corr_asx200']:.2f}" if r["corr_asx200"] is not None else _na,
             _etf("col_top_exposure"): r["top_exposure_line"] or _na,
         })
+    # Mega-batch Part 15: per-column help, desktop via column_config
+    # (hover) and a mobile-fallback expander underneath using the SAME
+    # dict entries, so the two surfaces can't drift apart.
+    _etf_col_help = {
+        _etf("col_ticker"): "Open this fund's Deep Dive",
+        _etf("col_allocation"): (
+            "Su parte del bloque de ETFs (no de toda la cartera)." if _lang == "es"
+            else "Its share of the ETF sleeve (not the whole portfolio)."
+        ),
+        _etf("col_mer"): stress_etf_help_copy.etf_column_help("mer", _lang),
+        _etf("col_return"): stress_etf_help_copy.etf_column_help("return", _lang),
+        _etf("col_yield"): stress_etf_help_copy.etf_column_help("yield", _lang),
+        _etf("col_corr_sp500"): stress_etf_help_copy.etf_column_help("corr_sp500", _lang),
+        _etf("col_corr_asx200"): stress_etf_help_copy.etf_column_help("corr_asx200", _lang),
+    }
     st.dataframe(
         pd.DataFrame(_table_rows), hide_index=True, use_container_width=True,
         column_config={
             _etf("col_ticker"): st.column_config.LinkColumn(
                 _etf("col_ticker"), display_text=r"ticker=(.+)$",
-                help="Open this fund's Deep Dive",
+                help=_etf_col_help[_etf("col_ticker")],
             ),
             _etf("col_allocation"): st.column_config.ProgressColumn(
                 _etf("col_allocation"), min_value=0.0, max_value=100.0, format="%.0f%%",
+                help=_etf_col_help[_etf("col_allocation")],
+            ),
+            _etf("col_mer"): st.column_config.Column(_etf("col_mer"), help=_etf_col_help[_etf("col_mer")]),
+            _etf("col_return"): st.column_config.Column(_etf("col_return"), help=_etf_col_help[_etf("col_return")]),
+            _etf("col_yield"): st.column_config.Column(_etf("col_yield"), help=_etf_col_help[_etf("col_yield")]),
+            _etf("col_corr_sp500"): st.column_config.Column(
+                _etf("col_corr_sp500"), help=_etf_col_help[_etf("col_corr_sp500")],
+            ),
+            _etf("col_corr_asx200"): st.column_config.Column(
+                _etf("col_corr_asx200"), help=_etf_col_help[_etf("col_corr_asx200")],
             ),
         },
     )
+    _mobile_column_help_expander(list(_etf_col_help.items()), lang=_lang)
     _tot_ret = (f"{_sleeve_totals['blended_return_pa']:.1f}%"
                 if _sleeve_totals["blended_return_pa"] is not None else _na)
     _tot_mer = (f"{_sleeve_totals['blended_mer']:.2f}%"
@@ -12557,6 +12584,7 @@ def _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses):
 
     # --- 2. Per-ETF cards ---------------------------------------------------
     st.markdown(f"##### {_etf('cards_title')}")
+    st.caption(stress_etf_help_copy.etf_section_caption("cards", _lang))
     for r in _etf_rows:
         with st.container(border=True):
             _c1, _c2 = st.columns([3, 2])
@@ -12598,6 +12626,7 @@ def _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses):
 
     # --- 3. Overlap panel -----------------------------------------------
     st.markdown(f"##### {_etf('overlap_title')}")
+    st.caption(stress_etf_help_copy.etf_section_caption("overlap", _lang))
     _etf_holdings_for_overlap = {
         r["ticker"]: (r["value_aud"] or 0.0, r["top_holdings"]) for r in _etf_rows
     }
@@ -12619,6 +12648,7 @@ def _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses):
 
     # --- 4. What-if projector --------------------------------------------
     with st.expander(_etf("whatif_title"), expanded=False):
+        st.caption(stress_etf_help_copy.etf_section_caption("projector", _lang))
         _default_rate = _sleeve_totals["blended_return_pa"]
         if _default_rate is None:
             st.caption(_etf("whatif_no_rate"))
@@ -12850,23 +12880,132 @@ def _stress_area_chart(pairs, title, line_color, fill_color):
     return fig
 
 
+def _stress_mc_band_html(mc):
+    """Horizontal 5th/median/95th-percentile band for the Monte Carlo
+    section - the 6 Sep amendment's own words: "the band with the 5th/95th
+    markers labelled in % and A$, the median tick". A plain HTML/CSS strip
+    (no chart library needed for three ticks) using the same red/green
+    convention as the drawdown/run-up mini charts just above it on this
+    tab (#fb7185 downside, #22c55e upside), with a teal fill (#2dd4bf,
+    the site's own accent) between the two percentile marks.
+
+    mc["p50_pct"]/["p50_value_aud"] may be absent on a result computed
+    and cached before this amendment (stress_engine.monte_carlo() now
+    always returns them, but a still-live cached blob from just before
+    this change wouldn't have them) - the median tick is simply omitted
+    in that case rather than erroring, per the site's "only fields that
+    exist; omit gracefully" rule."""
+    p5, p95 = mc["p5_pct"], mc["p95_pct"]
+    p50 = mc.get("p50_pct")
+    lo, hi = min(p5, -5.0) - 10.0, max(p95, 5.0) + 10.0
+    span = (hi - lo) or 1.0
+
+    def _pos(v):
+        return max(3.0, min(97.0, (v - lo) / span * 100.0))
+
+    p5_pos, p95_pos = _pos(p5), _pos(p95)
+    p5_val, p95_val = mc.get("p5_value_aud"), mc.get("p95_value_aud")
+
+    def _tick(pos, pct, value, color, align_bottom):
+        _v_line = f"A${value:,.0f}" if value is not None else ""
+        _label_pos = "bottom:16px;" if align_bottom else "top:16px;"
+        return (
+            f"<div style='position:absolute;left:{pos:.1f}%;top:0;bottom:0;width:2px;"
+            f"background:{color};'></div>"
+            f"<div style='position:absolute;left:{pos:.1f}%;{_label_pos}"
+            f"transform:translateX(-50%);text-align:center;white-space:nowrap;'>"
+            f"<div style='font-size:12px;font-weight:700;color:{color};'>{pct:+.1f}%</div>"
+            f"<div style='font-size:10px;color:#8aa0b8;'>{_v_line}</div>"
+            f"</div>"
+        )
+
+    marks_html = _tick(p5_pos, p5, p5_val, "#fb7185", align_bottom=False)
+    marks_html += _tick(p95_pos, p95, p95_val, "#22c55e", align_bottom=True)
+
+    median_html = ""
+    if p50 is not None:
+        p50_pos = _pos(p50)
+        p50_val = mc.get("p50_value_aud")
+        _v_line = f"A${p50_val:,.0f}" if p50_val is not None else ""
+        median_html = (
+            f"<div style='position:absolute;left:{p50_pos:.1f}%;top:-3px;bottom:-3px;width:2px;"
+            f"background:#e6edf5;'></div>"
+            f"<div style='position:absolute;left:{p50_pos:.1f}%;top:50%;transform:translate(-50%,-50%);"
+            f"background:#0d1420;padding:0 4px;white-space:nowrap;'>"
+            f"<span style='font-size:9.5px;color:#e6edf5;font-weight:700;'>median {p50:+.1f}%</span>"
+            f"<span style='font-size:9px;color:#8aa0b8;'> · {_v_line}</span>"
+            f"</div>"
+        )
+
+    return (
+        f"<div style='position:relative;height:10px;margin:34px 12px 30px;'>"
+        f"<div style='position:absolute;left:0;right:0;top:0;bottom:0;border-radius:6px;"
+        f"background:linear-gradient(90deg, rgba(251,113,133,.10), rgba(230,237,245,.08), "
+        f"rgba(34,197,94,.10));'></div>"
+        f"<div style='position:absolute;left:{p5_pos:.1f}%;right:{100 - p95_pos:.1f}%;top:0;bottom:0;"
+        f"background:rgba(45,212,191,.20);border-radius:6px;'></div>"
+        f"{marks_html}{median_html}"
+        f"</div>"
+    )
+
+
+def _mobile_column_help_expander(items, lang="en"):
+    """Part 15's mobile/touch fallback for a dataframe's
+    column_config(help=...) tooltips (no hover on a touch device): a
+    collapsed expander directly under the table listing the same help
+    text as a compact list, fed from the exact same dict as the desktop
+    tooltips so the two surfaces can never drift apart. `items` is a
+    list of (column_label, help_text) pairs, in the table's own column
+    order; entries with no help text are skipped."""
+    _title = "ⓘ Qué significa cada columna" if lang == "es" else "ⓘ What each column means"
+    _items = [(lbl, txt) for lbl, txt in items if txt]
+    if not _items:
+        return
+    with st.expander(_title, expanded=False):
+        for col_label, help_text in _items:
+            st.caption(f"**{col_label}** — {help_text}")
+
+
+def _info_popover_trigger(body_text):
+    """Superscript-ⓘ affordance for explanatory text attached to
+    something that isn't a dataframe column header - Part 15's own rule
+    ('tables not rendered as dataframes get a superscript ⓘ beside the
+    header wired to the same text'), reused here for the same purpose on
+    a plain section title or a plain-columns sandbox row."""
+    with st.popover("ⓘ", use_container_width=False):
+        st.caption(body_text)
+
+
 def _stress_window_label(key, _st_):
     return _st_(f"window.{key}")
 
 
-def _render_stress_scenario_table(scenarios, _st_, is_crisis):
+def _render_stress_scenario_table(scenarios, _st_, is_crisis, lang="en"):
     title_key = "crisis_table_title" if is_crisis else "rally_table_title"
+    section_key = "crisis_table" if is_crisis else "rally_table"
     best_col_key = "col_best_defender" if is_crisis else "col_biggest_engine"
     worst_col_key = "col_worst_hit" if is_crisis else "col_drag"
     st.markdown(f"##### {_st_(title_key)}")
+    # Mega-batch Part 15: section caption + column help. The exact date
+    # range for each scenario (the instruction's own "add each scenario's
+    # exact date range to its own header help") is put directly into the
+    # Window cell text here - unlike the per-holding table below (where
+    # each scenario really is its own column), a scenario table has ONE
+    # "Window" column whose different ROWS are different scenarios, so a
+    # single column-level tooltip can't carry a different date range per
+    # row - the date belongs on the value itself, which also means it's
+    # visible on mobile without needing to open anything.
+    st.caption(stress_etf_help_copy.stress_section_caption(section_key, lang))
     rows = []
     any_estimated = False
     for s in scenarios:
         if s["move_pct"] is None:
             continue
         best, worst = s.get("best"), s.get("worst")
+        _window_label = _stress_window_label(s["key"], _st_)
+        _dates = stress_etf_help_copy.SCENARIO_DATE_RANGES.get(s["key"], "")
         rows.append({
-            _st_("col_window"): _stress_window_label(s["key"], _st_),
+            _st_("col_window"): f"{_window_label} ({_dates})" if _dates else _window_label,
             _st_("col_move_pct"): f"{s['move_pct']:+.1f}%",
             _st_("col_move_value"): _fmt_aud(s["move_value_aud"]),
             _st_(best_col_key): f"{best['ticker']} ({best['move_pct']:+.1f}%)" if best else "—",
@@ -12874,15 +13013,50 @@ def _render_stress_scenario_table(scenarios, _st_, is_crisis):
         })
         any_estimated = any_estimated or any(r["estimated"] for r in s["rows"])
     if rows:
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        _move_help = (
+            "La rentabilidad de la cartera actual durante exactamente esta ventana."
+            if lang == "es" else
+            "The current portfolio's return over exactly this window."
+        )
+        if is_crisis:
+            _best_help = ("La posición que MENOS cayó durante esta crisis." if lang == "es"
+                          else "The holding that fell the LEAST during this crisis.")
+            _worst_help = ("La posición que MÁS cayó durante esta crisis." if lang == "es"
+                           else "The holding that fell the MOST during this crisis.")
+        else:
+            _best_help = ("La posición que MÁS subió durante este repunte." if lang == "es"
+                          else "The holding that rose the MOST during this rally.")
+            _worst_help = ("La posición que MENOS subió durante este repunte." if lang == "es"
+                           else "The holding that rose the LEAST during this rally.")
+        st.dataframe(
+            pd.DataFrame(rows), hide_index=True, use_container_width=True,
+            column_config={
+                _st_("col_window"): st.column_config.Column(
+                    _st_("col_window"), help=stress_etf_help_copy.scenario_method(lang),
+                ),
+                _st_("col_move_pct"): st.column_config.Column(_st_("col_move_pct"), help=_move_help),
+                _st_(best_col_key): st.column_config.Column(_st_(best_col_key), help=_best_help),
+                _st_(worst_col_key): st.column_config.Column(_st_(worst_col_key), help=_worst_help),
+            },
+        )
         if any_estimated:
             st.caption(_st_("estimated_flag"))
+        _mobile_column_help_expander(
+            [
+                (_st_("col_window"), stress_etf_help_copy.scenario_method(lang)),
+                (_st_("col_move_pct"), _move_help),
+                (_st_(best_col_key), _best_help),
+                (_st_(worst_col_key), _worst_help),
+            ],
+            lang=lang,
+        )
     else:
         st.caption(_st_("no_data"))
 
 
-def _render_stress_per_holding_table(result, _st_):
+def _render_stress_per_holding_table(result, _st_, lang="en"):
     st.markdown(f"##### {_st_('per_holding_table_title')}")
+    st.caption(stress_etf_help_copy.stress_section_caption("per_holding_table", lang))
     per_holding = result.get("per_holding") or []
     if not per_holding:
         st.caption(_st_("no_data"))
@@ -12917,20 +13091,54 @@ def _render_stress_per_holding_table(result, _st_):
                 mark = " ◆" if sc["estimated"] else ""
                 row[scenario_labels[k]] = f"{sc['move_pct']:+.1f}%{mark}"
         rows.append(row)
+    # Mega-batch Part 15: per-column help - Beta gets the trimmed
+    # tooltip (the full formula + boundaries lives once in the top "How
+    # this tab works" expander), Worst drawdown/Best 12m get their own
+    # short notes, and every scenario column gets its exact date range
+    # (this table really does have one column per scenario, unlike the
+    # two scenario tables above where scenarios are rows).
+    _col_help = {
+        _st_("col_ticker"): "Open this holding's Deep Dive",
+        _st_("col_weight"): (
+            "Su parte del valor actual de la cartera." if lang == "es"
+            else "Its share of the portfolio's current value."
+        ),
+        _st_("col_beta"): stress_etf_help_copy.stress_column_help("beta", lang),
+        _st_("col_worst_drawdown"): stress_etf_help_copy.stress_column_help("worst_drawdown", lang),
+        _st_("col_best_12m"): stress_etf_help_copy.stress_column_help("best_12m", lang),
+    }
+    for k in scenario_keys:
+        _col_help[scenario_labels[k]] = stress_etf_help_copy.scenario_column_help(k, lang)
+
     st.dataframe(
         pd.DataFrame(rows), hide_index=True, use_container_width=True,
         column_config={
             _st_("col_ticker"): st.column_config.LinkColumn(
-                _st_("col_ticker"), display_text=r"ticker=(.+)$", help="Open this holding's Deep Dive",
+                _st_("col_ticker"), display_text=r"ticker=(.+)$", help=_col_help[_st_("col_ticker")],
             ),
-            _st_("col_weight"): st.column_config.NumberColumn(_st_("col_weight"), format="%.1f%%"),
+            _st_("col_weight"): st.column_config.NumberColumn(
+                _st_("col_weight"), format="%.1f%%", help=_col_help[_st_("col_weight")],
+            ),
+            _st_("col_beta"): st.column_config.Column(_st_("col_beta"), help=_col_help[_st_("col_beta")]),
+            _st_("col_worst_drawdown"): st.column_config.Column(
+                _st_("col_worst_drawdown"), help=_col_help[_st_("col_worst_drawdown")],
+            ),
+            _st_("col_best_12m"): st.column_config.Column(
+                _st_("col_best_12m"), help=_col_help[_st_("col_best_12m")],
+            ),
+            **{
+                scenario_labels[k]: st.column_config.Column(scenario_labels[k], help=_col_help[scenario_labels[k]])
+                for k in scenario_keys
+            },
         },
     )
+    _mobile_column_help_expander(list(_col_help.items()), lang=lang)
 
 
 def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, index_histories,
-                                       total_value_aud, current_result, _st_):
+                                       total_value_aud, current_result, _st_, lang="en"):
     st.markdown(f"##### {_st_('rebalance_title')}")
+    st.caption(stress_etf_help_copy.stress_section_caption("sandbox", lang))
     st.caption(_st_("rebalance_never_suggests"))
     st.caption(_st_("rebalance_never_modifies"))
 
@@ -13017,7 +13225,7 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
     def _fmt_mc_range(mc):
         return f"{mc['p5_pct']:+.1f}% to {mc['p95_pct']:+.1f}%" if mc else _na
 
-    _mc_cols = st.columns([2, 1, 1, 1])
+    _mc_cols = st.columns([2, 1, 1, 1, 0.4])
     with _mc_cols[0]:
         st.caption(f"*{_st_('metric_mc_range')}*")
     with _mc_cols[1]:
@@ -13026,6 +13234,12 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
         st.caption(f"*{_fmt_mc_range(_mc_whatif)}*")
     with _mc_cols[3]:
         st.caption("*—*")
+    with _mc_cols[4]:
+        # Mega-batch Part 15: "Monte Carlo (the expander and the Part-13
+        # sandbox row): include the one-paragraph method as its help
+        # text" - this row isn't a dataframe column, so it gets the same
+        # superscript-ⓘ affordance a non-dataframe table gets elsewhere.
+        _info_popover_trigger(stress_etf_help_copy.monte_carlo_method(lang))
 
 
 def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
@@ -13044,6 +13258,28 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
         return
 
     st.caption(_st_("intro_caption"))
+
+    # Mega-batch Part 15: the tab's own "what is this and what is it
+    # telling me" primer - a collapsed top expander per the instruction,
+    # holding the replay-concept overview PLUS the three fuller
+    # paragraphs (Beta formula, scenario method, Monte Carlo method) that
+    # every column tooltip below deliberately keeps short and points back
+    # to. One shared dict (stress_etf_help_copy.py) feeds this expander,
+    # every section caption, and every column tooltip/mobile-fallback
+    # list on this tab, so the texts can never drift apart.
+    with st.expander(
+        "ⓘ Cómo funciona esta pestaña" if _lang == "es" else "ⓘ How this tab works",
+        expanded=False,
+    ):
+        st.markdown(stress_etf_help_copy.stress_overview(_lang))
+        st.markdown(f"**{_st_('col_beta')}**")
+        st.caption(stress_etf_help_copy.beta_full_note(_lang))
+        st.markdown(
+            "**" + ("Escenarios (crisis y repuntes)" if _lang == "es" else "Scenarios (crises and rallies)") + "**"
+        )
+        st.caption(stress_etf_help_copy.scenario_method(_lang))
+        st.markdown(f"**{_st_('monte_carlo_title')}**")
+        st.caption(stress_etf_help_copy.monte_carlo_method(_lang))
 
     tickers = tuple(sorted(weights.keys()))
     with st.spinner(_st_("loading_spinner")):
@@ -13067,6 +13303,7 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
             pass
 
     # --- 1. Headline cards -------------------------------------------
+    st.caption(stress_etf_help_copy.stress_section_caption("headline_cards", _lang))
     _c1, _c2 = st.columns(2)
     dd, best12 = result.get("max_drawdown"), result.get("best_12m")
     with _c1:
@@ -13100,6 +13337,7 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
         st.caption(_st_("replayed_return_line", years=10, pct=f"{result['replayed_10y_pct']:.1f}"))
 
     # --- 2. Drawdown / run-up mini charts ------------------------------
+    st.caption(stress_etf_help_copy.stress_section_caption("drawdown_runup", _lang))
     _cc1, _cc2 = st.columns(2)
     with _cc1:
         _fig = _stress_area_chart(result["drawdown_series"], _st_("drawdown_chart_title"),
@@ -13117,11 +13355,12 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
             st.caption(f"+{best12['pct']:.1f}%")
 
     # --- 3. Crisis / rally replay tables --------------------------------
-    _render_stress_scenario_table(result.get("crises", []), _st_, is_crisis=True)
-    _render_stress_scenario_table(result.get("rallies", []), _st_, is_crisis=False)
+    _render_stress_scenario_table(result.get("crises", []), _st_, is_crisis=True, lang=_lang)
+    _render_stress_scenario_table(result.get("rallies", []), _st_, is_crisis=False, lang=_lang)
 
     # --- 4. Shock grid ---------------------------------------------------
     st.markdown(f"##### {_st_('shock_grid_title')}")
+    st.caption(stress_etf_help_copy.stress_section_caption("shock_grid", _lang))
     _pbeta = result.get("portfolio_beta")
     if _pbeta is not None:
         st.caption(_st_("shock_grid_beta_line", beta=f"{_pbeta:.2f}"))
@@ -13138,10 +13377,11 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
     # --- 5. Rebalance sandbox --------------------------------------------
     _render_stress_rebalance_sandbox(
         _active_portfolio, weights, histories, index_histories, total_value_aud, result, _st_,
+        lang=_lang,
     )
 
     # --- 6. Per-holding detail --------------------------------------------
-    _render_stress_per_holding_table(result, _st_)
+    _render_stress_per_holding_table(result, _st_, lang=_lang)
 
     # --- 7. Monte Carlo -----------------------------------------------
     # Mega-batch amendment (6 Sep, applied retroactively to this Part 3
@@ -13149,9 +13389,18 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
     # was a collapsed st.expander(expanded=False); now an always-open
     # bordered box, same content, still last on the tab.
     with st.container(border=True):
-        st.markdown(f"##### {_st_('monte_carlo_title')}")
+        _mc_title_col, _mc_info_col = st.columns([6, 0.4])
+        with _mc_title_col:
+            st.markdown(f"##### {_st_('monte_carlo_title')}")
+        with _mc_info_col:
+            # Mega-batch Part 15: the one-paragraph method as this
+            # section's help text (its fuller version also lives in the
+            # top "How this tab works" expander).
+            _info_popover_trigger(stress_etf_help_copy.monte_carlo_method(_lang))
+        st.caption(stress_etf_help_copy.stress_section_caption("monte_carlo", _lang))
         mc = result.get("monte_carlo")
         if mc:
+            st.markdown(_stress_mc_band_html(mc), unsafe_allow_html=True)
             st.markdown(_st_(
                 "monte_carlo_band_line", p5=f"{mc['p5_pct']:.1f}", p95=f"{mc['p95_pct']:.1f}",
                 p5_value=f"{mc['p5_value_aud']:,.0f}", p95_value=f"{mc['p95_value_aud']:,.0f}",

@@ -686,11 +686,19 @@ def monte_carlo(weights, histories, total_value_aud, n_paths=5000, horizon_month
     holding_growth = np.prod(1.0 + draws, axis=1)  # (n_paths, n_tickers)
     port_growth = holding_growth @ w_vec            # (n_paths,)
     port_return_pct = (port_growth - 1.0) * 100.0
-    p5, p95 = np.percentile(port_return_pct, [5, 95])
+    # Amendment (6 Sep) to Parts 3/13/15: the always-open Monte Carlo
+    # section needs "the median tick" alongside the 5th/95th markers -
+    # p50 added here (purely additive - existing p5/p95/value keys are
+    # unchanged) so a result cached before this change still has
+    # everything the caller needs; only the median tick is new, and the
+    # renderer treats it as optional (falls back to p5/p95-only) for any
+    # such pre-existing cached blob.
+    p5, p50, p95 = np.percentile(port_return_pct, [5, 50, 95])
     return {
-        "p5_pct": float(p5), "p95_pct": float(p95),
+        "p5_pct": float(p5), "p95_pct": float(p95), "p50_pct": float(p50),
         "p5_value_aud": (float(p5) / 100.0) * total_value_aud if total_value_aud else None,
         "p95_value_aud": (float(p95) / 100.0) * total_value_aud if total_value_aud else None,
+        "p50_value_aud": (float(p50) / 100.0) * total_value_aud if total_value_aud else None,
         "n_holdings_used": len(tickers),
     }
 
