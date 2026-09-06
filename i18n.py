@@ -1486,6 +1486,13 @@ EN = {
     "portfolio.stress.monte_carlo_band_line": (
         "5th-95th percentile: {p5}% to {p95}% (A\\${p5_value} to A\\${p95_value})"
     ),
+    "portfolio.stress.monte_carlo_p5_sublabel": "5th pct - 1 year in 20 worse",
+    "portfolio.stress.monte_carlo_p95_sublabel": "95th pct - 1 year in 20 better",
+    "portfolio.stress.monte_carlo_median_label": "median {pct}%",
+    "portfolio.stress.monte_carlo_hist_caption": (
+        "Where the 5,000 simulated years landed - most cluster near the middle, "
+        "the marked edges cut off the extreme 5% on each side."
+    ),
     "portfolio.stress.monte_carlo_caption": (
         "5,000 simulated paths from historical volatility and correlations. "
         "Based on the past behaving like the future - which it may not. Not "
@@ -3028,6 +3035,13 @@ ES = {
     "portfolio.stress.monte_carlo_title": "Monte Carlo (banda a 1 año)",
     "portfolio.stress.monte_carlo_band_line": (
         "Percentil 5-95: {p5}% a {p95}% (A\\${p5_value} a A\\${p95_value})"
+    ),
+    "portfolio.stress.monte_carlo_p5_sublabel": "percentil 5 - 1 año de cada 20, peor",
+    "portfolio.stress.monte_carlo_p95_sublabel": "percentil 95 - 1 año de cada 20, mejor",
+    "portfolio.stress.monte_carlo_median_label": "mediana {pct}%",
+    "portfolio.stress.monte_carlo_hist_caption": (
+        "Dónde cayeron los 5.000 años simulados - la mayoría se agrupa cerca del centro, "
+        "los bordes marcados recortan el 5% extremo de cada lado."
     ),
     "portfolio.stress.monte_carlo_caption": (
         "5.000 trayectorias simuladas a partir de la volatilidad y "

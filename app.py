@@ -13290,21 +13290,25 @@ def _stress_area_chart(pairs, title, line_color, fill_color):
     return fig
 
 
-def _stress_mc_band_html(mc):
+def _stress_mc_band_html(mc, lang="en", compact=False):
     """Horizontal 5th/median/95th-percentile band for the Monte Carlo
-    section - the 6 Sep amendment's own words: "the band with the 5th/95th
-    markers labelled in % and A$, the median tick". A plain HTML/CSS strip
-    (no chart library needed for three ticks) using the same red/green
-    convention as the drawdown/run-up mini charts just above it on this
-    tab (#fb7185 downside, #22c55e upside), with a teal fill (#2dd4bf,
-    the site's own accent) between the two percentile marks.
+    section, rebuilt (owner review round fix #4) to match the approved
+    montecarlo_mock.html: a taller band carrying its own fixed
+    worse-to-better heat gradient (not a highlight overlay - the mock's
+    gradient is decorative background, independent of where the data
+    marks land), the 5th/95th marks labelled below with pct + A$ + a
+    plain-language sub-caption, and the median tick above. `compact`
+    (used for the smaller embed inside the Switch Analyzer's trim card,
+    where there's no room for sub-captions or a histogram) keeps the
+    gradient/marks but drops the descriptive sub-lines; the caller adds
+    the histogram itself (see _stress_mc_histogram_html) since that's a
+    separate block, not part of this string.
 
     mc["p50_pct"]/["p50_value_aud"] may be absent on a result computed
-    and cached before this amendment (stress_engine.monte_carlo() now
-    always returns them, but a still-live cached blob from just before
-    this change wouldn't have them) - the median tick is simply omitted
-    in that case rather than erroring, per the site's "only fields that
-    exist; omit gracefully" rule."""
+    and cached before the original 6 Sep amendment - the median tick is
+    simply omitted in that case rather than erroring, per the site's
+    "only fields that exist; omit gracefully" rule."""
+    _st_ = lambda key, **fmt: i18n.t(f"portfolio.stress.{key}", lang, **fmt)
     p5, p95 = mc["p5_pct"], mc["p95_pct"]
     p50 = mc.get("p50_pct")
     lo, hi = min(p5, -5.0) - 10.0, max(p95, 5.0) + 10.0
@@ -13316,46 +13320,83 @@ def _stress_mc_band_html(mc):
     p5_pos, p95_pos = _pos(p5), _pos(p95)
     p5_val, p95_val = mc.get("p5_value_aud"), mc.get("p95_value_aud")
 
-    def _tick(pos, pct, value, color, align_bottom):
+    def _tick(pos, pct, value, color, sublabel):
         _v_line = f"A${value:,.0f}" if value is not None else ""
-        _label_pos = "bottom:16px;" if align_bottom else "top:16px;"
+        _sub_html = f"<div style='font-size:9px;color:#5b7290;margin-top:1px'>{sublabel}</div>" if sublabel else ""
         return (
-            f"<div style='position:absolute;left:{pos:.1f}%;top:0;bottom:0;width:2px;"
-            f"background:{color};'></div>"
-            f"<div style='position:absolute;left:{pos:.1f}%;{_label_pos}"
+            f"<div style='position:absolute;left:{pos:.1f}%;top:-6px;bottom:-6px;width:2.5px;"
+            f"background:{color};border-radius:2px'></div>"
+            f"<div style='position:absolute;left:{pos:.1f}%;top:calc(100% + 8px);"
             f"transform:translateX(-50%);text-align:center;white-space:nowrap;'>"
             f"<div style='font-size:12px;font-weight:700;color:{color};'>{pct:+.1f}%</div>"
-            f"<div style='font-size:10px;color:#8aa0b8;'>{_v_line}</div>"
+            f"<div style='font-size:10px;color:#8aa0b8;'>{_v_line}</div>{_sub_html}"
             f"</div>"
         )
 
-    marks_html = _tick(p5_pos, p5, p5_val, "#fb7185", align_bottom=False)
-    marks_html += _tick(p95_pos, p95, p95_val, "#22c55e", align_bottom=True)
+    marks_html = _tick(p5_pos, p5, p5_val, "#fb7185", None if compact else _st_("monte_carlo_p5_sublabel"))
+    marks_html += _tick(p95_pos, p95, p95_val, "#34d399", None if compact else _st_("monte_carlo_p95_sublabel"))
 
     median_html = ""
     if p50 is not None:
         p50_pos = _pos(p50)
-        p50_val = mc.get("p50_value_aud")
-        _v_line = f"A${p50_val:,.0f}" if p50_val is not None else ""
         median_html = (
-            f"<div style='position:absolute;left:{p50_pos:.1f}%;top:-3px;bottom:-3px;width:2px;"
-            f"background:#e6edf5;'></div>"
-            f"<div style='position:absolute;left:{p50_pos:.1f}%;top:50%;transform:translate(-50%,-50%);"
-            f"background:#0d1420;padding:0 4px;white-space:nowrap;'>"
-            f"<span style='font-size:9.5px;color:#e6edf5;font-weight:700;'>median {p50:+.1f}%</span>"
-            f"<span style='font-size:9px;color:#8aa0b8;'> · {_v_line}</span>"
-            f"</div>"
+            f"<div style='position:absolute;left:{p50_pos:.1f}%;top:-6px;bottom:-6px;width:2px;"
+            f"background:#e6edf5;border-radius:2px'></div>"
+            f"<div style='position:absolute;left:{p50_pos:.1f}%;bottom:calc(100% + 6px);"
+            f"transform:translateX(-50%);white-space:nowrap;font-size:11px;color:#c7d2e0;font-weight:600'>"
+            f"{_st_('monte_carlo_median_label', pct=f'{p50:+.1f}')}</div>"
         )
 
+    _band_margin = "26px 8px 46px" if compact else "28px 8px 52px"
     return (
-        f"<div style='position:relative;height:10px;margin:34px 12px 30px;'>"
-        f"<div style='position:absolute;left:0;right:0;top:0;bottom:0;border-radius:6px;"
-        f"background:linear-gradient(90deg, rgba(251,113,133,.10), rgba(230,237,245,.08), "
-        f"rgba(34,197,94,.10));'></div>"
-        f"<div style='position:absolute;left:{p5_pos:.1f}%;right:{100 - p95_pos:.1f}%;top:0;bottom:0;"
-        f"background:rgba(45,212,191,.20);border-radius:6px;'></div>"
+        f"<div style='position:relative;height:34px;margin:{_band_margin};'>"
+        f"<div style='position:absolute;left:0;right:0;top:0;bottom:0;border-radius:9px;"
+        f"background:linear-gradient(90deg,#7f1d1d 0%,#fb7185 12%,#3b2338 24%,#1a2740 38%,"
+        f"#1a2740 55%,#134e4a 70%,#34d399 88%,#065f46 100%);'></div>"
         f"{marks_html}{median_html}"
         f"</div>"
+    )
+
+
+def _stress_mc_histogram_html(mc):
+    """Mini histogram under the Monte Carlo band ("where the 5,000
+    simulated years landed"), from stress_engine.monte_carlo()'s
+    hist_counts/hist_bin_edges (see that function's own fix #4
+    docstring note - purely a binning of the SAME simulated-return array
+    the p5/p50/p95 percentiles already came from, no new simulation).
+    Bars below p5 or above p95 get the mock's tail colours; the tallest
+    (most-populated) bars get its brighter "mid" colour; everything else
+    is the plain bar colour - all three are the SAME red/grey/green
+    reasoning used for the band and the drawdown mini-charts elsewhere
+    on this tab, just applied per-bar instead of per-mark. Returns ""
+    (renders nothing) if `mc` predates this addition and has no
+    hist_counts, so an old cached result just shows the band alone."""
+    counts = mc.get("hist_counts")
+    edges = mc.get("hist_bin_edges")
+    if not counts or not edges or len(edges) != len(counts) + 1:
+        return ""
+    p5, p95 = mc["p5_pct"], mc["p95_pct"]
+    max_count = max(counts) or 1
+    _mid_threshold = max_count * 0.6
+    bars = []
+    for i, c in enumerate(counts):
+        _lo, _hi = edges[i], edges[i + 1]
+        if _hi <= p5:
+            color = "#7f1d1d"
+        elif _lo >= p95:
+            color = "#065f46"
+        elif c >= _mid_threshold:
+            color = "#2a3b5c"
+        else:
+            color = "#1f3352"
+        height = max(4.0, c / max_count * 100.0)
+        bars.append(
+            f"<div style='flex:1;height:{height:.0f}%;background:{color};"
+            f"border-radius:2px 2px 0 0'></div>"
+        )
+    return (
+        "<div style='display:flex;align-items:flex-end;gap:2px;height:44px;margin:2px 8px 0'>"
+        + "".join(bars) + "</div>"
     )
 
 
@@ -13810,11 +13851,11 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
         st.caption(stress_etf_help_copy.stress_section_caption("monte_carlo", _lang))
         mc = result.get("monte_carlo")
         if mc:
-            st.markdown(_stress_mc_band_html(mc), unsafe_allow_html=True)
-            st.markdown(_st_(
-                "monte_carlo_band_line", p5=f"{mc['p5_pct']:.1f}", p95=f"{mc['p95_pct']:.1f}",
-                p5_value=f"{mc['p5_value_aud']:,.0f}", p95_value=f"{mc['p95_value_aud']:,.0f}",
-            ))
+            st.markdown(_stress_mc_band_html(mc, lang=_lang), unsafe_allow_html=True)
+            _hist_html = _stress_mc_histogram_html(mc)
+            if _hist_html:
+                st.markdown(_hist_html, unsafe_allow_html=True)
+                st.caption(_st_("monte_carlo_hist_caption"))
         else:
             st.caption(_st_("no_data"))
         st.caption(_st_("monte_carlo_caption"))
@@ -14367,7 +14408,7 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
         except Exception:
             _mc_trim = None
         if _mc_trim:
-            st.markdown(_stress_mc_band_html(_mc_trim), unsafe_allow_html=True)
+            st.markdown(_stress_mc_band_html(_mc_trim, lang=_lang, compact=True), unsafe_allow_html=True)
         else:
             st.caption(_sw("trim_sim_unavailable"))
 

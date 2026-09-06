@@ -694,12 +694,22 @@ def monte_carlo(weights, histories, total_value_aud, n_paths=5000, horizon_month
     # renderer treats it as optional (falls back to p5/p95-only) for any
     # such pre-existing cached blob.
     p5, p50, p95 = np.percentile(port_return_pct, [5, 50, 95])
+    # Owner review round fix #4 (6 Sep): the approved montecarlo_mock.html
+    # shows a mini histogram of "where the 5,000 simulated years landed"
+    # under the band. Purely additive, same pattern as the p50 addition
+    # just above - bins the SAME port_return_pct array this function
+    # already produced (no new simulation, no new randomness), so a
+    # result cached before this change simply lacks "hist_counts" and
+    # the renderer falls back to no histogram for that cached blob.
+    _hist_counts, _hist_edges = np.histogram(port_return_pct, bins=15)
     return {
         "p5_pct": float(p5), "p95_pct": float(p95), "p50_pct": float(p50),
         "p5_value_aud": (float(p5) / 100.0) * total_value_aud if total_value_aud else None,
         "p95_value_aud": (float(p95) / 100.0) * total_value_aud if total_value_aud else None,
         "p50_value_aud": (float(p50) / 100.0) * total_value_aud if total_value_aud else None,
         "n_holdings_used": len(tickers),
+        "hist_counts": [int(c) for c in _hist_counts],
+        "hist_bin_edges": [float(e) for e in _hist_edges],
     }
 
 
