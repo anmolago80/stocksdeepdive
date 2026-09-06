@@ -56,24 +56,28 @@ def _cp_data_dir():
 
 
 def _cp_seed_from_repo_if_missing(filename):
-    """The very first time a volume is attached, it's empty -- copy the
-    git-tracked copy of `filename` (living next to this script) over as a
-    starting point so the site doesn't show blank data (or lose the
-    corrections cache) until the next rebuild. No-op once the volume has
-    its own copy, and a no-op entirely when there's no volume (data dir ==
-    script dir already)."""
-    data_dir = _cp_data_dir()
-    repo_path = os.path.join(os.path.dirname(__file__), filename)
-    volume_path = os.path.join(data_dir, filename)
-    if volume_path == repo_path:
-        return
-    if os.path.exists(volume_path) or not os.path.exists(repo_path):
-        return
-    try:
-        with open(repo_path, "rb") as src, open(volume_path, "wb") as dst:
-            dst.write(src.read())
-    except OSError:
-        pass
+    """Mega-batch Part 9: neutralised - deliberately a no-op now.
+
+    This used to copy a git-tracked seed copy of `filename` (living next
+    to this script) onto a freshly-attached, empty volume, so the site
+    didn't show blank data until the first rebuild. Owner decision: that
+    seed was frozen mid-August and pre-dates real workbook corrections,
+    so an empty volume seeding from it was WORSE than showing nothing -
+    it silently presented stale numbers as current. The seed files
+    themselves (compounder_data.json, company_potential_corrections.json)
+    are deleted from the repo as part of this same change; every reader
+    of either file (_load_compounder_data() below, auto_compounder_
+    engine._reference_lookup(), blog_render._covered_tickers(),
+    blog_store._covered_ticker_symbols(), server.py's _coverage()) already
+    treats a missing file as "no data yet" and degrades to an empty/None
+    result rather than crashing - see each of their own docstrings.
+
+    Kept as a callable (rather than deleted outright) purely so every
+    existing call site keeps working unchanged; it now does nothing at
+    all. The admin rebuild/upload flow is completely unaffected - a
+    rebuild writes a fresh file to the volume regardless of whether this
+    function ever ran."""
+    return
 
 # Ticker column per sheet, and which rows currently hold real (non-error)
 # stock data. Rows are 4, 5, 6, ... - extend this list as Andrew finishes

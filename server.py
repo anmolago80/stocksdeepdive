@@ -613,9 +613,21 @@ def _coverage():
     the homepage, read from the same compounder_data.json the app uses.
     Read per request rather than cached at import so an admin rebuild of
     the file shows up without a restart; the file is small and the
-    homepage is not hot enough for that to matter."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "compounder_data.json")
+    homepage is not hot enough for that to matter.
+
+    Mega-batch Part 9: now reads via build_compounder_data._cp_data_dir()
+    (the attached Railway Volume when one exists) instead of this file's
+    own script directory. Before Part 9 removed the repo-tracked seed
+    copy, reading the script directory "worked" only because that seed
+    file sat there forever, permanently stale, regardless of any admin
+    rebuild (rebuilds write to the volume, never back into the repo
+    checkout) - so this function would have silently gone blank after
+    the very first live rebuild on a volume-backed deploy. Matches every
+    other reader of this file in the codebase (app.py's own
+    _load_compounder_data(), blog_render._covered_tickers(),
+    blog_store._covered_ticker_symbols())."""
+    import build_compounder_data
+    path = os.path.join(build_compounder_data._cp_data_dir(), "compounder_data.json")
     try:
         import json
         with open(path, encoding="utf-8") as fh:

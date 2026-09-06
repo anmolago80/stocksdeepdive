@@ -1145,6 +1145,13 @@ EN = {
     # renders below were never i18n'd before this pass either and stay
     # out of scope, same as Part 1's own documented boundary.
     "research.kicker": "RATIONAL COMPOUNDER RESEARCH",
+    # Mega-batch Part 9: shown instead of the shelf/detail view whenever
+    # compounder_data.json hasn't been (re)built yet on this volume - a
+    # brand new/empty volume now that the stale repo seed is gone, or the
+    # short window right after an admin wipes it. Never a traceback.
+    "research.not_ready": (
+        "The hand-built research data is being rebuilt - back shortly."
+    ),
     "research.shelf_title": "Hand-built research, one company at a time",
     "research.shelf_positioning": (
         "Every company below has a full, hand-written valuation and thesis "
@@ -2162,6 +2169,10 @@ ES = {
     "portfolio.stress.na": "—",
 
     "research.kicker": "INVESTIGACIÓN RATIONAL COMPOUNDER",
+    "research.not_ready": (
+        "Los datos de investigación hecha a mano se están reconstruyendo "
+        "- vuelve en breve."
+    ),
     "research.shelf_title": "Investigación hecha a mano, una empresa a la vez",
     "research.shelf_positioning": (
         "Cada empresa de abajo tiene una valoración y una tesis completas, "

@@ -4980,10 +4980,11 @@ def page_research():
                 )
 
     if not data or not data.get("tickers"):
-        st.info(
-            "Rational Compounder Analysis - the research data is being "
-            "prepared. Check back shortly."
-        )
+        # Mega-batch Part 9: routed through i18n (EN+ES) - this is the
+        # page's own graceful-absence notice, now reachable on a genuinely
+        # fresh/wiped volume too, not just the brief window mid-rebuild,
+        # since the stale repo seed no longer papers over an empty volume.
+        st.info(i18n.t("research.not_ready", _rc_lang))
         _bump_page_view("research")
         return
 
