@@ -52,6 +52,26 @@ DEFAULT_AUTHOR = AUTHOR_NAME
 # no longer new.
 NAV_TOOLS_NEW_BADGE_ENABLED = True
 
+# Amendment to Part 5 / i18n (owner, 6 Sep): tiny inline SVG flags beside
+# the EN|ES nav toggle - NOT emoji flags, since Windows browsers don't
+# render country-flag emoji (a visitor there would just see "GB ES"
+# letters instead of a flag). ~16x11px, simplified (a plain three-stripe
+# Spanish flag; a simplified Union Jack - solid navy with a white+red
+# cross, not the exact counter-changed diagonal construction of the real
+# flag, which is illegible at this size anyway), inlined as literal SVG
+# markup rather than an external file/request. Decorative only
+# (aria-hidden) - the EN/ES text stays for accessibility and clarity, and
+# nothing about how the language itself resolves changes.
+_FLAG_GB_SVG = ('<svg class="flag" viewBox="0 0 32 22" aria-hidden="true" '
+                'focusable="false"><rect width="32" height="22" fill="#012169"/>'
+                '<path d="M0 0 L32 22 M32 0 L0 22" stroke="#FFFFFF" stroke-width="4.4"/>'
+                '<path d="M0 0 L32 22 M32 0 L0 22" stroke="#C8102E" stroke-width="1.8"/>'
+                '<path d="M16 0 V22 M0 11 H32" stroke="#FFFFFF" stroke-width="7.3"/>'
+                '<path d="M16 0 V22 M0 11 H32" stroke="#C8102E" stroke-width="4.4"/></svg>')
+_FLAG_ES_SVG = ('<svg class="flag" viewBox="0 0 32 22" aria-hidden="true" '
+                'focusable="false"><rect width="32" height="22" fill="#AA151B"/>'
+                '<rect y="5.5" width="32" height="11" fill="#F1BF00"/></svg>')
+
 # Conversion pass, Part 5: the Reddit handle to display on the byline
 # shown to visitors arriving with a Reddit-tagged src (see
 # reddit_byline_visible/reddit_byline_html below). Confirmed with the
@@ -704,9 +724,10 @@ nav.site .nav-more-panel{position:absolute;top:calc(100% + 10px);right:0;z-index
 .sdd-more-name{color:#e6edf5;font-weight:600;font-size:13.5px}
 .sdd-more-desc{color:#8aa0b8;font-size:12px;line-height:1.4;white-space:normal}
 nav.site .nav-lang{color:#5b7290;font-size:13px;display:flex;align-items:center;gap:6px}
-nav.site .nav-lang a{color:#8aa0b8}
+nav.site .nav-lang a{color:#8aa0b8;display:inline-flex;align-items:center;gap:4px}
 nav.site .nav-lang a.active{color:#2dd4bf;font-weight:700}
 nav.site .nav-lang a:hover{color:#e6edf5}
+nav.site .nav-lang .flag{width:16px;height:11px;border-radius:2px;flex-shrink:0;display:block}
 nav.site a.nav-signin{color:#2dd4bf;font-weight:600;border:1.5px solid #2dd4bf;
   border-radius:8px;padding:5px 12px;font-size:13.5px}
 nav.site a.nav-signin:hover{background:#2dd4bf;color:#0b1220;text-decoration:none}
@@ -1018,7 +1039,7 @@ document.addEventListener('click', function(ev){
       </div></div>
     </details>
     <span class="nav-lang">
-      <a href="{html.escape(_en_url)}">EN</a>&#124;<a href="{html.escape(_es_url)}" class="active">ES</a>
+      <a href="{html.escape(_en_url)}">{_FLAG_GB_SVG}EN</a>&#124;<a href="{html.escape(_es_url)}" class="active">{_FLAG_ES_SVG}ES</a>
     </span>
     <a href="/portfolio?lang=es" class="nav-signin">Iniciar sesión</a>
   </nav>
@@ -1057,7 +1078,7 @@ document.addEventListener('click', function(ev){
       </div></div>
     </details>
     <span class="nav-lang">
-      <a href="{html.escape(_en_url)}" class="active">EN</a>&#124;<a href="{html.escape(_es_url)}">ES</a>
+      <a href="{html.escape(_en_url)}" class="active">{_FLAG_GB_SVG}EN</a>&#124;<a href="{html.escape(_es_url)}">{_FLAG_ES_SVG}ES</a>
     </span>
     <a href="/portfolio" class="nav-signin">Sign in</a>
   </nav>

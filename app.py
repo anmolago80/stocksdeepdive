@@ -514,6 +514,35 @@ _admin_key_env = os.environ.get("ADMIN_REFRESH_KEY", "").strip()
 # app-side CSS this gates.
 NAV_TOOLS_NEW_BADGE_ENABLED = True
 
+# Amendment to Part 5 / i18n (owner, 6 Sep): tiny flags beside the EN|ES
+# language toggle - NOT emoji flags (Windows browsers don't render
+# country-flag emoji; a visitor there would see "GB ES" letters instead
+# of a flag). st.segmented_control's own options are plain text with no
+# HTML/markdown support, so the flags can't be inlined into the widget's
+# label the way blog_render.py's static-page anchors can - instead these
+# are the SAME two ~16x11px simplified SVGs (a plain three-stripe Spanish
+# flag; a simplified Union Jack - solid navy with a white+red cross, not
+# the real flag's exact counter-changed diagonals, illegible at this size
+# anyway) base64-encoded and painted on as a decorative CSS
+# background-image ::before on each segmented-control button, scoped by
+# key substring so it applies to every _render_lang_picker() instance
+# across the site (key_prefix varies per page) without touching any
+# other segmented_control elsewhere. No behaviour change to language
+# resolution - purely decorative, same visual as the static pages.
+_FLAG_GB_DATA_URI = (
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAyMiI+"
+    "PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjIyIiBmaWxsPSIjMDEyMTY5Ii8+PHBhdGggZD0iTTAgMCBMMzIgMjIgTTMyIDAgTDAgMjIi"
+    "IHN0cm9rZT0iI0ZGRkZGRiIgc3Ryb2tlLXdpZHRoPSI0LjQiLz48cGF0aCBkPSJNMCAwIEwzMiAyMiBNMzIgMCBMMCAyMiIgc3Ryb2tl"
+    "PSIjQzgxMDJFIiBzdHJva2Utd2lkdGg9IjEuOCIvPjxwYXRoIGQ9Ik0xNiAwIFYyMiBNMCAxMSBIMzIiIHN0cm9rZT0iI0ZGRkZGRiIg"
+    "c3Ryb2tlLXdpZHRoPSI3LjMiLz48cGF0aCBkPSJNMTYgMCBWMjIgTTAgMTEgSDMyIiBzdHJva2U9IiNDODEwMkUiIHN0cm9rZS13aWR0"
+    "aD0iNC40Ii8+PC9zdmc+"
+)
+_FLAG_ES_DATA_URI = (
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAyMiI+"
+    "PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjIyIiBmaWxsPSIjQUExNTFCIi8+PHJlY3QgeT0iNS41IiB3aWR0aD0iMzIiIGhlaWdodD0i"
+    "MTEiIGZpbGw9IiNGMUJGMDAiLz48L3N2Zz4="
+)
+
 # Audit fix (3.1): a process-wide (not per-session - Streamlit reruns a
 # fresh session per browser tab, so a per-session counter would let an
 # attacker just open a new tab per guess) failed-attempt lockout for the
@@ -662,6 +691,33 @@ def _render_lang_picker(key_prefix):
     widget callback can't write a cookie before its own st.rerun()
     cancels delivery of the <script> tag."""
     _prev = st.session_state.get("lang", "en")
+    # Amendment to Part 5 / i18n (owner, 6 Sep): tiny flags beside EN/ES -
+    # see the _FLAG_*_DATA_URI constants' own comment for why this is CSS
+    # rather than markup (segmented_control options are plain text) and
+    # why it's scoped by key SUBSTRING ("_lang_picker") rather than one
+    # exact key - key_prefix differs per page (page_label/"header"/"home")
+    # so this one rule has to match every instance of this widget site-wide.
+    st.markdown(
+        f"""<style>
+        [class*="st-key-"][class*="_lang_picker"] div[role="radiogroup"] button:nth-of-type(1) span[data-has-shortcut] {{
+            display: inline-flex; align-items: center; gap: 5px;
+        }}
+        [class*="st-key-"][class*="_lang_picker"] div[role="radiogroup"] button:nth-of-type(1) span[data-has-shortcut]::before {{
+            content: ''; width: 16px; height: 11px; flex-shrink: 0; border-radius: 2px;
+            background-image: url("{_FLAG_GB_DATA_URI}");
+            background-size: contain; background-repeat: no-repeat;
+        }}
+        [class*="st-key-"][class*="_lang_picker"] div[role="radiogroup"] button:nth-of-type(2) span[data-has-shortcut] {{
+            display: inline-flex; align-items: center; gap: 5px;
+        }}
+        [class*="st-key-"][class*="_lang_picker"] div[role="radiogroup"] button:nth-of-type(2) span[data-has-shortcut]::before {{
+            content: ''; width: 16px; height: 11px; flex-shrink: 0; border-radius: 2px;
+            background-image: url("{_FLAG_ES_DATA_URI}");
+            background-size: contain; background-repeat: no-repeat;
+        }}
+        </style>""",
+        unsafe_allow_html=True,
+    )
     _choice = st.segmented_control(
         "Language", ["EN", "ES"], default=_prev.upper(),
         key=f"{key_prefix}_lang_picker", label_visibility="collapsed",
