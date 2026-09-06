@@ -12449,6 +12449,45 @@ def _stress_index_histories():
             "^AXJO": stress_engine.get_long_history("^AXJO")}
 
 
+def _stress_apply_guard(histories, holdings):
+    """Part 14 sanity guard, applied on top of _stress_history_bundle's
+    own cached fetch: each holding's OWN price history is checked
+    (stress_engine.sanity_checked_history) for an unrepaired-split-
+    sized single-day move before it's allowed anywhere near a
+    drawdown/beta/Monte-Carlo computation. Deliberately NOT folded
+    into _stress_history_bundle itself (which stays a pure cached
+    fetch) - this is a fast, un-cached re-check every render (a
+    pandas pct_change + max, cheap) so a holding whose bad data gets
+    manually repaired upstream (or a fresh get_long_history() refetch
+    clears it) is picked up on the very next render rather than
+    waiting out a stale verdict. The one potentially-slow path (an
+    actual split-repair attempt, which makes one direct yfinance call)
+    only ever runs for a ticker that just failed the cheap check, so
+    the common/healthy case pays nothing extra.
+
+    Returns (checked_histories, faulty_tickers) - a faulty ticker is
+    dropped from `histories` entirely, which is enough on its own to
+    make every stress_engine function downstream treat it exactly like
+    "no history available" (dropped from the replay, weight
+    renormalized across the rest - see build_combined_series/
+    scenario_replay/monte_carlo's own docstrings) rather than ever
+    computing from a corrupted series."""
+    kind_by_ticker = {}
+    for h in (holdings or []):
+        t = (h.get("ticker") or "").strip().upper()
+        if t:
+            kind_by_ticker[t] = (h.get("kind") or "STOCK").upper()
+    checked, faulty = {}, []
+    for t, hist in (histories or {}).items():
+        is_fund = kind_by_ticker.get(t, "STOCK") == "ETF"
+        ok_hist, was_faulty = stress_engine.sanity_checked_history(t, hist, is_fund)
+        if was_faulty:
+            faulty.append(t)
+        else:
+            checked[t] = ok_hist
+    return checked, sorted(faulty)
+
+
 def _stress_weights_and_value(_holdings, _analyses):
     """{ticker: value_aud} for every holding with a live value (one
     with an unavailable price is simply excluded - stress_engine's own
@@ -12474,7 +12513,7 @@ def _stress_series_to_pairs(series):
             for d, v in series.items()]
 
 
-def _stress_compute_full(weights, histories, index_histories, total_value_aud):
+def _stress_compute_full(weights, histories, index_histories, total_value_aud, faulty_tickers=None):
     """The full, JSON-safe Part 3 computation for the portfolio's
     CURRENT weights - the caller is responsible for caching this (see
     stress_engine.get_cached_result/set_cached_result) since this
@@ -12483,7 +12522,14 @@ def _stress_compute_full(weights, histories, index_histories, total_value_aud):
     _stress_whatif_metrics) - it only recomputes the handful of
     weight-dependent aggregates, reusing the SAME already-fetched
     `histories`/`index_histories`, which is what keeps each weight
-    interaction fast."""
+    interaction fast.
+
+    `faulty_tickers` (Part 14): tickers _stress_apply_guard already
+    dropped from `histories` for a detected data fault - passed
+    through untouched into the result purely so the render layer can
+    show its own visible note (histories.get(t) being absent already
+    makes every number below correctly exclude these tickers; this
+    list is only for display)."""
     betas = {}
     for t in weights:
         idx_t = stress_engine.home_index_for(t)
@@ -12528,7 +12574,7 @@ def _stress_compute_full(weights, histories, index_histories, total_value_aud):
         per_holding.append(row)
 
     return {
-        "used": used, "dropped": dropped,
+        "used": used, "dropped": dropped, "faulty_tickers": list(faulty_tickers or []),
         "max_drawdown": ({**dd, "peak_date": _stress_dt(dd["peak_date"]),
                            "trough_date": _stress_dt(dd["trough_date"]),
                            "recovered_date": _stress_dt(dd["recovered_date"])} if dd else None),
@@ -12624,18 +12670,28 @@ def _render_stress_per_holding_table(result, _st_):
         st.caption(_st_("no_data"))
         return
     _na = _st_("na")
+    # Part 14: a ticker _stress_apply_guard excluded for a detected
+    # data fault gets its own distinct marker in every cell (instead of
+    # reading identically to an ordinary "no data available yet" N/A)
+    # so the exclusion is actually visible, per the spec.
+    _faulty = set(result.get("faulty_tickers") or [])
+    _fault_cell = _st_("data_fault_cell")
     scenario_keys = [w[0] for w in stress_engine.CRISES + stress_engine.RALLIES]
     scenario_labels = {k: _stress_window_label(k, _st_) for k in scenario_keys}
     rows = []
     for h in sorted(per_holding, key=lambda r: r["weight_pct"] or 0, reverse=True):
+        is_faulty = h["ticker"] in _faulty
         row = {
             _st_("col_ticker"): f"/deep-dive?ticker={h['ticker']}",
             _st_("col_weight"): h["weight_pct"],
-            _st_("col_beta"): f"{h['beta']:.2f}" if h["beta"] is not None else _na,
-            _st_("col_worst_drawdown"): f"{h['worst_drawdown_pct']:.1f}%" if h["worst_drawdown_pct"] is not None else _na,
-            _st_("col_best_12m"): f"{h['best_12m_pct']:.1f}%" if h["best_12m_pct"] is not None else _na,
+            _st_("col_beta"): _fault_cell if is_faulty else (f"{h['beta']:.2f}" if h["beta"] is not None else _na),
+            _st_("col_worst_drawdown"): _fault_cell if is_faulty else (f"{h['worst_drawdown_pct']:.1f}%" if h["worst_drawdown_pct"] is not None else _na),
+            _st_("col_best_12m"): _fault_cell if is_faulty else (f"{h['best_12m_pct']:.1f}%" if h["best_12m_pct"] is not None else _na),
         }
         for k in scenario_keys:
+            if is_faulty:
+                row[scenario_labels[k]] = _fault_cell
+                continue
             sc = h["scenarios"].get(k)
             if sc is None:
                 row[scenario_labels[k]] = _na
@@ -12743,11 +12799,18 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
     with st.spinner(_st_("loading_spinner")):
         histories = _stress_history_bundle(tickers)
         index_histories = _stress_index_histories()
+        # Part 14: sanity-guard every holding's own history before any
+        # of it reaches a drawdown/beta/Monte-Carlo computation - see
+        # _stress_apply_guard's own docstring.
+        histories, _faulty_tickers = _stress_apply_guard(histories, _holdings)
+
+    if _faulty_tickers:
+        st.warning(_st_("data_fault_note", tickers=", ".join(_faulty_tickers)))
 
     _cache_key = stress_engine.cache_key(_holdings)
     result = stress_engine.get_cached_result(_cache_key)
     if result is None:
-        result = _stress_compute_full(weights, histories, index_histories, total_value_aud)
+        result = _stress_compute_full(weights, histories, index_histories, total_value_aud, _faulty_tickers)
         try:
             stress_engine.set_cached_result(_cache_key, result)
         except Exception:
@@ -12856,10 +12919,13 @@ def _stress_portfolio_ask_summary(_holdings, _analyses):
     tickers = tuple(sorted(weights.keys()))
     histories = _stress_history_bundle(tickers)
     index_histories = _stress_index_histories()
+    # Part 14: same sanity guard as the rendered tab - this summary
+    # must never quote a number built from a data-fault-excluded ticker.
+    histories, _faulty_tickers = _stress_apply_guard(histories, _holdings)
     _cache_key = stress_engine.cache_key(_holdings)
     result = stress_engine.get_cached_result(_cache_key)
     if result is None:
-        result = _stress_compute_full(weights, histories, index_histories, total_value_aud)
+        result = _stress_compute_full(weights, histories, index_histories, total_value_aud, _faulty_tickers)
         try:
             stress_engine.set_cached_result(_cache_key, result)
         except Exception:

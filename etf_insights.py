@@ -29,16 +29,28 @@ purpose:
     call.
 
   - Computed RETURNS/YIELD/CORRELATION are derived entirely from price
-    history the site already fetches for every holding (get_price_
-    history()/portfolio_health_engine's own 2y history, both
-    @st.cache_data-backed) - never a second network call. Total return
-    is price appreciation plus reinvested distributions; since a fund's
-    published NAV/close price already has its own expense ratio baked
-    in every trading day, a total-return figure computed from that
-    price series is automatically "net of the fund's internal fee"
-    without this module ever needing to know the fee to compute it -
-    the MER shown alongside it is a separate, independently-sourced
-    fact for context, not an input to the return calculation.
+    history the site already fetches (stress_engine.get_long_history(),
+    @st.cache_data/volume-backed) - never a second network call. Since
+    a fund's published NAV/close price already has its own expense
+    ratio baked in every trading day, a total-return figure computed
+    from that price series is automatically "net of the fund's
+    internal fee" without this module ever needing to know the fee to
+    compute it - the MER shown alongside it is a separate,
+    independently-sourced fact for context, not an input to the return
+    calculation.
+
+    MEGA-BATCH PART 14 (2026-09-06): total_return_pa() used to add the
+    window's raw per-share Dividends on top of the price growth to get
+    "total return" - correct back when the underlying Close was a bare
+    (non-split-adjusted) price. stress_engine.get_long_history() now
+    fetches with auto_adjust=True, so Close is ALREADY a total-return
+    series (Yahoo's own back-adjustment folds reinvested distributions
+    into the price) - total_return_pa() now uses plain price growth on
+    that Close and no longer adds Dividends on top, which would double-
+    count every distribution. ttm_distribution_yield() below is
+    unaffected - it correctly wants the RAW per-share amount (not a
+    total-return figure) for a yield calc, and yfinance's Dividends
+    column stays raw regardless of auto_adjust.
 
 IMPORTANT - this module was written and unit-tested against fixture
 data shaped exactly like yfinance 1.6.0's real FundsData return types
@@ -273,11 +285,15 @@ def _monthly_returns(hist):
 
 
 def total_return_pa(hist, years):
-    """Annualised total return (price + distributions) over the last
-    `years` years of `hist` (a Close+Dividends price-history DataFrame).
-    None if there isn't at least ~80% of that window's worth of data
-    (a fund listed 2 years ago can't report a 5y return - the caller
-    falls back to a shorter window and labels it, per the spec)."""
+    """Annualised total return over the last `years` years of `hist`
+    (a Close+Dividends price-history DataFrame from stress_engine.
+    get_long_history() - Close is fetched with auto_adjust=True, so it
+    is ALREADY a total-return series; see this module's docstring's
+    Part 14 note for why no per-share Dividends are added here any
+    more). None if there isn't at least ~80% of that window's worth of
+    data (a fund listed 2 years ago can't report a 5y return - the
+    caller falls back to a shorter window and labels it, per the
+    spec)."""
     if hist is None or hist.empty or "Close" not in hist:
         return None
     closes = hist["Close"].dropna()
@@ -295,11 +311,7 @@ def total_return_pa(hist, years):
     end_price = float(window.iloc[-1])
     if start_price <= 0:
         return None
-    divs = 0.0
-    if "Dividends" in hist.columns:
-        div_window = hist["Dividends"][(hist.index >= window.index[0]) & (hist.index <= window.index[-1])]
-        divs = float(div_window.sum())
-    total_growth = (end_price + divs) / start_price
+    total_growth = end_price / start_price
     if total_growth <= 0:
         return None
     actual_years = span_days / 365.25

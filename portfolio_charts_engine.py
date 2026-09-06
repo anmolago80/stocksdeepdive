@@ -46,9 +46,21 @@ def fetch_history_from(ticker, start_date_iso):
     routinely older than 2y. A ticker listed after start_date_iso just
     returns whatever Yahoo has from its own listing date onward; callers
     reindex/ffill onto a shared date axis and treat anything still
-    missing as "not owned yet" rather than an error."""
+    missing as "not owned yet" rather than an error.
+
+    MEGA-BATCH PART 14 (2026-09-06): auto_adjust=True is now passed
+    EXPLICITLY (previously relied on the yfinance default). Without a
+    split-adjusted Close, this chart's V(t) = today's (post-split)
+    share count x that day's (pre-split, un-adjusted) historical price
+    would over-state every date before a holding's split by the split
+    ratio - the same class of fault stress_engine.py's own docstring
+    describes for IVV.AX's Dec 2022 15-for-1 split. This function adds
+    no dividends on top of Close (it's a pure value/price chart, not a
+    total-return figure), so auto_adjust's dividend-folding has no
+    double-counting implication here - only the split-adjustment half
+    of it matters for this particular use."""
     try:
-        h = yf.Ticker(ticker).history(start=start_date_iso)
+        h = yf.Ticker(ticker).history(start=start_date_iso, auto_adjust=True)
     except Exception:
         return pd.DataFrame()
     if h is None or h.empty:

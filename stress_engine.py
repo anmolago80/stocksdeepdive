@@ -44,6 +44,51 @@ Every function here takes already-fetched data (a DataFrame, a dict of
 DataFrames, or plain numbers) and returns plain floats/dicts - never
 raises, and returns None/"-"-friendly values on insufficient data
 rather than crashing a render.
+
+MEGA-BATCH PART 14 (urgent data fix, 2026-09-06): the owner found
+IVV.AX showing an impossible worst drawdown of -93.9% and beta 0.43.
+Root cause - get_long_history() fetched yfinance's raw, NOT split-
+adjusted, Close series (no explicit auto_adjust argument was ever
+passed, leaving it to whatever the installed yfinance version's
+default happened to be). iShares split IVV.AX 15-for-1 in Dec 2022;
+an unadjusted Close series shows that as a fake ~-93% single-day
+crash (1 - 1/15), which then poisoned every downstream number built
+from it: max drawdown, best-12m, the monthly-return covariance (hence
+every beta), the portfolio headline figures, and the Monte Carlo
+inputs. CSL.AX's implausible -68% 15y drawdown was the same fault.
+
+Fix, two layers:
+  1. get_long_history() now passes auto_adjust=True EXPLICITLY (never
+     relying on the library default again). yfinance's auto_adjust
+     replaces Close with Yahoo's own split-and-dividend-back-adjusted
+     "Adj Close" - so day-over-day pct-change on Close is now already
+     a full TOTAL-RETURN figure (price return + reinvested
+     distributions baked in via the adjustment ratio), not a bare
+     price return. The separate "Dividends" column yfinance returns
+     is the RAW per-share amount on its ex-date - untouched by
+     auto_adjust - so daily_returns()/_window_return_from_hist() no
+     longer add it on top of the price change (that would now double-
+     count every distribution); it's kept in the cache purely because
+     etf_insights.ttm_distribution_yield still needs the raw per-share
+     figure for its (correctly RAW, not total-return) yield calc.
+  2. sanity_checked_history() below is the second line of defence:
+     Yahoo's own back-adjustment isn't guaranteed complete for every
+     ASX-listed instrument's corporate-action history, so after the
+     auto_adjust fetch every holding's OWN price history is still
+     checked for a leftover split-sized single-day move; if found, a
+     direct one-off yf.Ticker(ticker).splits lookup is used to repair
+     it by hand, and if that still doesn't clear the anomaly the
+     ticker's history is treated as unusable and excluded from every
+     replay that would otherwise be built from it - see that
+     function's own docstring.
+
+The whole stress_long_history/stress_result_cache tables were also
+renamed (both now end in _v2 - see DB_PATH/_conn() below) rather than
+patched in place: every previously-cached price series and assembled
+result was potentially built from the old, unadjusted convention, and
+a plain schema/table-version bump is the simplest way to guarantee
+nothing stale is ever read again, without needing a one-off migration
+script that has to run exactly once in production.
 """
 
 import hashlib
@@ -73,18 +118,28 @@ LONG_HISTORY_TTL_HOURS = 24  # see module docstring - "nightly-ish"
 RESULT_TTL_HOURS = 24        # the assembled stress-test result itself
 
 
+_LONG_HISTORY_TABLE = "stress_long_history_v2"
+_RESULT_CACHE_TABLE = "stress_result_cache_v2"
+
+
 def _conn():
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
+    # Part 14: _v2 table names (was stress_long_history/stress_result_cache)
+    # - see module docstring's "two layers" note. The old tables are left
+    # in place untouched (harmless, tiny) rather than dropped; they are
+    # simply never read again, which is all "invalidate the cache" needs
+    # to mean here - every ticker/result recomputes fresh under the new
+    # auto_adjust=True + sanity-guard convention on its next request.
     conn.execute(
-        """CREATE TABLE IF NOT EXISTS stress_long_history (
+        f"""CREATE TABLE IF NOT EXISTS {_LONG_HISTORY_TABLE} (
             ticker TEXT PRIMARY KEY,
             data_json TEXT NOT NULL,
             created_at TEXT NOT NULL
         )"""
     )
     conn.execute(
-        """CREATE TABLE IF NOT EXISTS stress_result_cache (
+        f"""CREATE TABLE IF NOT EXISTS {_RESULT_CACHE_TABLE} (
             cache_key TEXT PRIMARY KEY,
             data_json TEXT NOT NULL,
             created_at TEXT NOT NULL
@@ -113,7 +168,7 @@ def _hist_from_json(d):
 def _cache_get_history(ticker):
     with _conn() as conn:
         row = conn.execute(
-            "SELECT data_json, created_at FROM stress_long_history WHERE ticker = ?",
+            f"SELECT data_json, created_at FROM {_LONG_HISTORY_TABLE} WHERE ticker = ?",
             (ticker,),
         ).fetchone()
     if row is None:
@@ -130,7 +185,7 @@ def _cache_get_history(ticker):
 def _cache_set_history(ticker, hist):
     with _conn() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO stress_long_history (ticker, data_json, created_at) VALUES (?, ?, ?)",
+            f"INSERT OR REPLACE INTO {_LONG_HISTORY_TABLE} (ticker, data_json, created_at) VALUES (?, ?, ?)",
             (ticker, json.dumps(_hist_to_json(hist)), datetime.now(timezone.utc).isoformat()),
         )
 
@@ -141,7 +196,14 @@ def get_long_history(ticker, force_refresh=False):
     docstring for why this is a separate fetch from the site's 2y
     portfolio snapshot. Never raises; an empty DataFrame means no data
     is available (a delisted ticker, or this environment's own no-
-    network-access constraint - see module docstring)."""
+    network-access constraint - see module docstring).
+
+    Part 14: auto_adjust=True is now passed EXPLICITLY (previously
+    relied on the yfinance default, which is how an unadjusted-for-
+    splits Close series slipped through) - see module docstring's
+    "two layers" note. The returned "Close" is Yahoo's own split-and-
+    dividend-back-adjusted price; "Dividends" stays the raw per-share
+    amount, untouched by that adjustment."""
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return pd.DataFrame()
@@ -150,7 +212,7 @@ def get_long_history(ticker, force_refresh=False):
         if cached is not None:
             return cached
     try:
-        hist = yf.Ticker(ticker).history(period="max")
+        hist = yf.Ticker(ticker).history(period="max", auto_adjust=True)
         if hist is None or hist.empty:
             hist = pd.DataFrame()
         else:
@@ -191,19 +253,108 @@ def home_index_for(ticker):
 
 
 # -----------------------------------------------------------------
+# Part 14 sanity guard: a split-sized single-day move that survived
+# get_long_history()'s auto_adjust=True fetch (Yahoo's own back-
+# adjustment isn't guaranteed complete for every ASX-listed
+# instrument's corporate-action history - the IVV.AX finding that
+# prompted this whole part). A fund/ETF tracking a diversified index
+# essentially never gaps this hard even in a real crash, so it gets a
+# tighter bar than a single stock, which can legitimately gap on
+# binary news (a takeover, a trial result, a delisting).
+# -----------------------------------------------------------------
+
+SPLIT_ANOMALY_THRESHOLD_FUND = 0.40
+SPLIT_ANOMALY_THRESHOLD_STOCK = 0.60
+
+
+def _detect_anomalous_move(hist, threshold):
+    """True if `hist`'s Close has any single-day move beyond
+    `threshold` in absolute value - the guard's trigger condition."""
+    if hist is None or hist.empty or "Close" not in hist.columns or len(hist) < 2:
+        return False
+    close = hist["Close"].astype(float)
+    ret = close.pct_change().dropna()
+    if ret.empty:
+        return False
+    return bool((ret.abs() > threshold).any())
+
+
+def _attempt_split_repair(ticker, hist):
+    """Fetches `ticker`'s own split-event log directly (a small, one-
+    off, uncached call - only ever reached once _detect_anomalous_move
+    has already found a problem, so this never runs on the healthy
+    path) and, for every split it lists, retroactively divides every
+    Close price strictly before that split's ex-date by the split
+    ratio - exactly what auto_adjust=True is already supposed to have
+    done, redone by hand as a second line of defence for whichever
+    listings Yahoo's own back-adjustment doesn't fully cover. Returns
+    a (possibly) repaired copy of `hist`; never raises - a failed
+    lookup or an empty split log just returns `hist` unchanged, and
+    the caller's own re-check after this call is what actually decides
+    whether the ticker ends up usable."""
+    try:
+        splits = yf.Ticker(ticker).splits
+    except Exception:
+        return hist
+    if splits is None or len(splits) == 0:
+        return hist
+    repaired = hist.copy()
+    idx = repaired.index
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_localize(None)
+        repaired.index = idx
+    for split_date, ratio in splits.items():
+        try:
+            ratio = float(ratio)
+        except (TypeError, ValueError):
+            continue
+        if not ratio or ratio == 1.0:
+            continue
+        sd = pd.Timestamp(split_date)
+        if sd.tzinfo is not None:
+            sd = sd.tz_localize(None)
+        before = repaired.index < sd
+        repaired.loc[before, "Close"] = repaired.loc[before, "Close"] / ratio
+    return repaired
+
+
+def sanity_checked_history(ticker, hist, is_fund):
+    """Part 14's sanity guard. `hist` (already fetched with
+    auto_adjust=True) is checked for a single-day move beyond
+    SPLIT_ANOMALY_THRESHOLD_FUND (funds/ETFs) or _STOCK (everything
+    else). A clean series is returned unchanged. An anomalous one goes
+    through _attempt_split_repair and is re-checked; if that clears
+    it, the repaired series is returned; if it doesn't, this ticker's
+    history is treated as unusable - (None, True) is returned - rather
+    than ever feeding a corrupted series into a drawdown/beta/Monte-
+    Carlo computation. Returns (checked_hist_or_None, was_faulty)."""
+    threshold = SPLIT_ANOMALY_THRESHOLD_FUND if is_fund else SPLIT_ANOMALY_THRESHOLD_STOCK
+    if not _detect_anomalous_move(hist, threshold):
+        return hist, False
+    repaired = _attempt_split_repair(ticker, hist)
+    if not _detect_anomalous_move(repaired, threshold):
+        return repaired, False
+    return None, True
+
+
+# -----------------------------------------------------------------
 # Returns, beta, drawdown - all from a Close+Dividends DataFrame.
 # -----------------------------------------------------------------
 
 def daily_returns(hist):
-    """Simple daily total-return series (price change + that day's per-
-    share distribution, divided by the prior close). None if `hist` has
-    under 2 rows."""
+    """Simple daily total-return series - plain pct-change on `hist`'s
+    Close. None if `hist` has under 2 rows.
+
+    Part 14: `hist`'s Close now comes from get_long_history()'s
+    auto_adjust=True fetch, which is ALREADY a total-return series
+    (Yahoo's own back-adjustment folds reinvested distributions into
+    the price) - so no per-share Dividends are added here any more
+    (doing so on top of an adjusted Close would double-count every
+    distribution). See module docstring."""
     if hist is None or hist.empty or "Close" not in hist.columns or len(hist) < 2:
         return None
     close = hist["Close"].astype(float)
-    divs = hist["Dividends"].astype(float) if "Dividends" in hist.columns else pd.Series(0.0, index=hist.index)
-    prev_close = close.shift(1)
-    ret = (close - prev_close + divs) / prev_close
+    ret = close.pct_change()
     return ret.dropna()
 
 
@@ -388,7 +539,11 @@ def _window_return_from_hist(hist, start, end):
     """Actual total return of one holding's OWN history within
     [start, end], or None if it has under 2 data points inside the
     window (i.e. it wasn't trading / has no cached history there - the
-    caller proxies in that case)."""
+    caller proxies in that case).
+
+    Part 14: plain price growth on `hist`'s (auto_adjust=True) Close -
+    no per-share Dividends added on top; see daily_returns()'s
+    docstring for why that would now double-count distributions."""
     if hist is None or hist.empty or "Close" not in hist.columns:
         return None
     window = hist[(hist.index >= start) & (hist.index <= end)]
@@ -398,8 +553,7 @@ def _window_return_from_hist(hist, start, end):
     if start_price <= 0:
         return None
     end_price = float(window["Close"].iloc[-1])
-    divs = float(window["Dividends"].sum()) if "Dividends" in window.columns else 0.0
-    return (end_price + divs) / start_price - 1.0
+    return end_price / start_price - 1.0
 
 
 def scenario_replay(weights, histories, index_histories, betas, window, total_value_aud):
@@ -567,7 +721,7 @@ def cache_key(holdings):
 def get_cached_result(key):
     with _conn() as conn:
         row = conn.execute(
-            "SELECT data_json, created_at FROM stress_result_cache WHERE cache_key = ?",
+            f"SELECT data_json, created_at FROM {_RESULT_CACHE_TABLE} WHERE cache_key = ?",
             (key,),
         ).fetchone()
     if row is None:
@@ -584,6 +738,6 @@ def get_cached_result(key):
 def set_cached_result(key, data):
     with _conn() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO stress_result_cache (cache_key, data_json, created_at) VALUES (?, ?, ?)",
+            f"INSERT OR REPLACE INTO {_RESULT_CACHE_TABLE} (cache_key, data_json, created_at) VALUES (?, ?, ?)",
             (key, json.dumps(data), datetime.now(timezone.utc).isoformat()),
         )

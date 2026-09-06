@@ -1082,6 +1082,12 @@ EN = {
     "portfolio.stress.col_biggest_engine": "Biggest engine",
     "portfolio.stress.col_drag": "Biggest drag",
     "portfolio.stress.estimated_flag": "◆ estimated (proxied via sector/index × beta)",
+    "portfolio.stress.data_fault_note": (
+        "⚠ {tickers}: a split-adjustment data fault was detected in this "
+        "ticker's price history - it's excluded from every number on this "
+        "tab so it can't skew the portfolio figures."
+    ),
+    "portfolio.stress.data_fault_cell": "⚠ data fault — excluded",
     "portfolio.stress.shock_grid_title": "Shock grid",
     "portfolio.stress.shock_grid_beta_line": "Portfolio beta (vs a blended S&P 500 / ASX 200 index): {beta}",
     "portfolio.stress.shock_grid_caption": (
@@ -2110,6 +2116,13 @@ ES = {
     "portfolio.stress.col_biggest_engine": "Mayor motor",
     "portfolio.stress.col_drag": "Mayor lastre",
     "portfolio.stress.estimated_flag": "◆ estimado (aproximado vía sector/índice × beta)",
+    "portfolio.stress.data_fault_note": (
+        "⚠ {tickers}: se detectó un fallo de datos de ajuste por split en "
+        "el historial de precios de este valor - se excluye de todos los "
+        "números de esta pestaña para que no distorsione las cifras de la "
+        "cartera."
+    ),
+    "portfolio.stress.data_fault_cell": "⚠ fallo de datos — excluido",
     "portfolio.stress.shock_grid_title": "Cuadrícula de choques",
     "portfolio.stress.shock_grid_beta_line": "Beta de la cartera (vs. un índice combinado S&P 500 / ASX 200): {beta}",
     "portfolio.stress.shock_grid_caption": (
