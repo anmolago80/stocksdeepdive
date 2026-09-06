@@ -3125,6 +3125,49 @@ def _render_compounder_admin_panel():
                                 )
                                 st.rerun()
 
+            # Mega-batch Part 10: off-site DB backup status + manual
+            # trigger, in the same admin-only popover as everything
+            # else here. import deferred - this module (requests,
+            # sqlite3, gzip) has no reason to load on every ordinary
+            # pageview, only when an admin actually opens this panel.
+            with st.expander("Database backup", expanded=False):
+                import db_backup_engine
+                _bk_status = db_backup_engine.last_backup_status()
+                if _bk_status["last_success_date"]:
+                    _bk_days = _bk_status["days_since_success"]
+                    _bk_line = (
+                        f"Last backup sent: {_bk_status['last_success_date']} "
+                        f"({_bk_days} day{'s' if _bk_days != 1 else ''} ago)"
+                    )
+                    if _bk_status["is_stale"]:
+                        st.warning(f"⚠ {_bk_line} - no successful backup in "
+                                   f"{db_backup_engine.STALE_WARNING_DAYS}+ days.")
+                    else:
+                        st.success(f"✓ {_bk_line}")
+                else:
+                    st.warning("⚠ No successful backup has ever been sent.")
+                if _bk_status.get("last_failure_date"):
+                    st.caption(
+                        f"Most recent failure: {_bk_status['last_failure_date']} - "
+                        f"{_bk_status['last_failure_message']}"
+                    )
+                st.caption(
+                    "Nightly, after the scan window: a consistent, gzipped copy of "
+                    "the database is emailed to the owner's own inbox via Mailgun - "
+                    "never a third-party storage service. A full copy every night "
+                    "unless it grows past the size Mailgun accepts, in which case a "
+                    "full copy goes out weekly and a critical-tables-only copy "
+                    "every other night (accounts/portfolios/watchlists/alerts/"
+                    "checklists/usage)."
+                )
+                if st.button("Backup now", key="cp_admin_backup_now"):
+                    with st.spinner("Building and sending backup..."):
+                        _bk_ok, _bk_msg = db_backup_engine.run_backup_now()
+                    if _bk_ok:
+                        st.success(_bk_msg)
+                    else:
+                        st.error(_bk_msg)
+
 
 def _render_last_updated(generated_at):
     """'Last updated on ...' badge, top-right, above the Stock/Section

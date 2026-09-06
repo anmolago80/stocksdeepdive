@@ -23,6 +23,15 @@ A tiny in-process scheduler for the background jobs this site needs:
                                  night as part of _run_nightly() below,
                                  same as the alert checks; cheap even on
                                  nights nothing reported.)
+  6. NIGHTLY off-site DB backup -> db_backup_engine.run_nightly_backup()
+                                 (Mega-batch Part 10 - a consistent,
+                                 gzipped copy of stocksdeepdive.db
+                                 emailed to the owner via the existing
+                                 Mailgun path. Scheduled after both the
+                                 nightly scan AND the watchdog hour -
+                                 see BACKUP_UTC_HOUR below - so it's
+                                 backing up a night's data that's
+                                 already fully settled, not racing it.)
 
 WHY IN-PROCESS, NOT A SEPARATE RAILWAY CRON SERVICE: Railway volumes
 attach to exactly ONE service, and the web app needs the volume (for the
@@ -101,6 +110,11 @@ CONFIG (Railway environment variables, all optional):
                            hour, so a ticker whose earnings date changed
                            this week is picked up before that night's
                            results-day check runs).
+  BACKUP_UTC_HOUR        - default 23 (Mega-batch Part 10) - after both
+                           the nightly scan hour (20) and the watchdog
+                           hour (22), so the backup captures a night
+                           that's already fully done, not a half-
+                           finished one.
 """
 
 import json
@@ -213,6 +227,7 @@ def _cfg():
         "watchdog_hour": int(os.environ.get("WATCHDOG_UTC_HOUR", "22")),
         "earnings_refresh_weekday": int(os.environ.get("EARNINGS_REFRESH_UTC_WEEKDAY", "2")),
         "earnings_refresh_hour": int(os.environ.get("EARNINGS_REFRESH_UTC_HOUR", "19")),
+        "backup_hour": int(os.environ.get("BACKUP_UTC_HOUR", "23")),
     }
 
 
@@ -508,6 +523,19 @@ def _run_earnings_refresh(log):
         log(f"[scheduler] earnings calendar refresh failed: {e}")
 
 
+def _run_backup(log):
+    """Mega-batch Part 10: the nightly off-site DB backup. Same shape
+    as _run_digest/_run_watchdog above - import deferred, whole run
+    wrapped so a failure here logs (and, via db_backup_engine's own
+    once-per-failure-streak rule, emails the owner once) rather than
+    ever taking the scheduler thread down or repeating every night."""
+    try:
+        import db_backup_engine
+        db_backup_engine.run_nightly_backup(log=log)
+    except Exception as e:
+        log(f"[scheduler] db backup failed: {e}")
+
+
 def _universes_needing_scan(cfg):
     """Universes whose SAVED scan is missing or stale - the source of
     truth is the result file, not a 'ran today' marker, so a deploy/
@@ -629,6 +657,25 @@ def _loop(log):
                             _release_job_lock("watchdog")
                     else:
                         log("[scheduler] portfolio watchdog skipped - another process "
+                            "already holds the lock")
+
+                # Mega-batch Part 10: nightly off-site DB backup - same
+                # one-calendar-day-per-run guard as the watchdog above,
+                # deliberately its own hour (after both the scan and
+                # watchdog hours - see BACKUP_UTC_HOUR's own docstring).
+                if (now.hour >= cfg["backup_hour"]
+                        and state.get("last_backup_date") != today):
+                    state = _load_state()
+                    state["last_backup_date"] = today
+                    _save_state(state)
+                    if _acquire_job_lock("backup"):
+                        try:
+                            log("[scheduler] starting off-site DB backup")
+                            _run_backup(log)
+                        finally:
+                            _release_job_lock("backup")
+                    else:
+                        log("[scheduler] DB backup skipped - another process "
                             "already holds the lock")
 
                 # Services batch, Part 4: earnings-calendar refresh -
