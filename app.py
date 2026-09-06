@@ -13940,12 +13940,34 @@ def _switch_correlation_vs_rest(candidate_ticker, exclude_hkey, _holdings, _anal
 
 
 def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses):
-    """Part 17 - the "Switch Analyzer" tab: pair picker -> settings ->
-    side-by-side -> switching-toll bridge -> verdict -> flags -> "when
-    would this flip" -> trim-instead-of-switch sandbox. Needs a single
-    named portfolio (not the combined "All portfolios" view - see
-    combined_view_note) with at least one holding that has a live
-    price."""
+    """Owner review round fix #3 (rebuilt from Part 17's original wizard):
+    everything visible on one screen, top to bottom exactly as the
+    approved switch_analyzer_mock.html lays it out - pair pickers +
+    settings line up top -> the red "bottom line" verdict box -> flag
+    chip strip -> side-by-side readings card + toll/bridge card
+    side-by-side -> trim-slider card. No "Look up" gate button: the
+    candidate ticker resolves automatically as soon as it's typed
+    (cached per-ticker in session_state so an unchanged ticker doesn't
+    re-fetch on every rerun), same as every other input here recomputing
+    live. The maths is untouched - every switch_analyzer_engine.* call
+    below is identical to the pre-rebuild version; this function only
+    changes what order things render in and how the inputs are collected.
+    Needs a single named portfolio (not the combined "All portfolios"
+    view - see combined_view_note) with at least one holding that has a
+    live price.
+
+    Two small additions beyond a pure reshuffle, both presentation-only
+    (no engine changes): the side-by-side card gains Quality (already
+    fetched via portfolio_health_engine.fetch_snapshot()/_analyses - no
+    new network call) and correlation-to-rest-of-portfolio (already
+    computed for the flag strip, now also shown as a plain reading) for
+    BOTH tickers, matching the mock. Moat is deliberately left out - see
+    the col_quality/col_correlation i18n comment for why. The flag strip
+    also gains the mock's third, non-warning chip ("Held > 12 months -
+    CGT discount already applies") using switch_analyzer_engine.
+    toll_without_discount() - the same function twelve_month_chip's own
+    counterfactual already calls, just used in the other direction
+    exactly as that function's own docstring anticipates."""
     _lang = st.session_state.get("lang", "en")
     _sw = lambda key, **fmt: i18n.t(f"portfolio.switch.{key}", _lang, **fmt)
 
@@ -13961,86 +13983,105 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
 
     st.caption(_sw("intro_caption"))
 
-    # --- Settings (tax rate / brokerage), persisted per portfolio ------
     _settings = portfolio_store.get_switch_settings(email, _active_portfolio)
-    with st.expander(_sw("settings_title"), expanded=(_settings["tax_rate"] is None or _settings["brokerage"] is None)):
-        st.caption(_sw("settings_caption"))
-        _sc1, _sc2 = st.columns(2)
-        with _sc1:
-            _tax_pct_in = st.number_input(
-                _sw("settings_tax_rate"), min_value=0.0, max_value=100.0, step=0.5,
-                value=float((_settings["tax_rate"] or 0.0) * 100),
-                key=_pf_key(_active_portfolio, "sw_tax_rate"),
-            )
-        with _sc2:
-            _brokerage_in = st.number_input(
-                _sw("settings_brokerage"), min_value=0.0, step=1.0,
-                value=float(_settings["brokerage"] or 0.0),
-                key=_pf_key(_active_portfolio, "sw_brokerage"),
-            )
-        if st.button(_sw("settings_save"), key=_pf_key(_active_portfolio, "sw_settings_save")):
-            portfolio_store.set_switch_settings(
-                email, _active_portfolio, tax_rate=_tax_pct_in / 100.0, brokerage=_brokerage_in,
-            )
-            st.success(_sw("settings_saved"))
-            st.rerun()
+    _tax_rate, _brokerage = _settings["tax_rate"], _settings["brokerage"]
+    _settings_ready = _tax_rate is not None and _brokerage is not None
+    _settings_open_key = _pf_key(_active_portfolio, "sw_settings_open")
+    if _settings_open_key not in st.session_state:
+        st.session_state[_settings_open_key] = not _settings_ready
 
-    _tax_rate = _settings["tax_rate"]
-    _brokerage = _settings["brokerage"]
-    if _tax_rate is None or _brokerage is None:
-        st.info(_sw("settings_missing"))
-        return
-
-    # --- Pair picker -----------------------------------------------------
-    st.markdown(f"##### {_sw('pair_title')}")
+    # --- Pair pickers + settings, one row (fix #3: no wizard, nothing
+    # gated behind a button) ---------------------------------------------
     _labels = _hlabels(_holdings)
     _from_options = [_hkey(h) for h in _holdings if _hkey(h) in {(r["portfolio"], r["ticker"]) for r in _priced_rows}]
-    _pc1, _pc2 = st.columns(2)
-    with _pc1:
+    _pp1, _pp2, _pp3 = st.columns([1.3, 1.5, 1.1])
+    with _pp1:
+        _to_ticker_in = st.text_input(
+            _sw("to_label"), key=_pf_key(_active_portfolio, "sw_to_ticker"),
+        ).strip().upper()
+    with _pp2:
         _from_key = st.selectbox(
             _sw("from_label"), _from_options, format_func=lambda k: _labels.get(k, k[1]),
             key=_pf_key(_active_portfolio, "sw_from_select"),
         )
-    with _pc2:
-        _to_ticker_in = st.text_input(
-            _sw("to_label"), key=_pf_key(_active_portfolio, "sw_to_ticker"),
-        ).strip().upper()
-        _lookup_clicked = st.button(_sw("lookup_btn"), key=_pf_key(_active_portfolio, "sw_lookup_btn"))
+    with _pp3:
+        st.write("")  # vertical alignment with the two inputs' labels
+        if _settings_ready:
+            st.caption(_sw("settings_summary", tax=f"{_tax_rate * 100:.0f}", brokerage=f"{_brokerage:,.0f}"))
+        if st.button("✎ " + _sw("settings_title"), key=_pf_key(_active_portfolio, "sw_settings_toggle"),
+                     use_container_width=True):
+            st.session_state[_settings_open_key] = not st.session_state[_settings_open_key]
 
+    if st.session_state[_settings_open_key]:
+        with st.container(border=True):
+            st.caption(_sw("settings_caption"))
+            _sc1, _sc2, _sc3 = st.columns([1, 1, 0.7])
+            with _sc1:
+                _tax_pct_in = st.number_input(
+                    _sw("settings_tax_rate"), min_value=0.0, max_value=100.0, step=0.5,
+                    value=float((_tax_rate or 0.0) * 100),
+                    key=_pf_key(_active_portfolio, "sw_tax_rate"),
+                )
+            with _sc2:
+                _brokerage_in = st.number_input(
+                    _sw("settings_brokerage"), min_value=0.0, step=1.0,
+                    value=float(_brokerage or 0.0),
+                    key=_pf_key(_active_portfolio, "sw_brokerage"),
+                )
+            with _sc3:
+                st.write("")
+                if st.button(_sw("settings_save"), key=_pf_key(_active_portfolio, "sw_settings_save"),
+                             use_container_width=True):
+                    portfolio_store.set_switch_settings(
+                        email, _active_portfolio, tax_rate=_tax_pct_in / 100.0, brokerage=_brokerage_in,
+                    )
+                    st.session_state[_settings_open_key] = False
+                    st.success(_sw("settings_saved"))
+                    st.rerun()
+
+    if not _settings_ready:
+        st.info(_sw("settings_missing"))
+        return
     if not _from_key:
         return
     _from_row = next((r for r in _priced_rows if (r["portfolio"], r["ticker"]) == _from_key), None)
     if _from_row is None:
         return
 
+    # --- Candidate lookup, automatic (no "Look up" button - recomputes
+    # on any input change like every other tab). Cached per-ticker in
+    # session_state so retyping the SAME ticker on a later rerun (e.g.
+    # the settings toggle above) doesn't re-fetch. ------------------------
     _lookup_key = _pf_key(_active_portfolio, "sw_lookup_result")
-    if _lookup_clicked:
-        if not _to_ticker_in:
-            st.error(_sw("lookup_not_found", ticker=""))
-            st.session_state.pop(_lookup_key, None)
-        else:
-            with st.spinner(f"{_sw('lookup_btn')}..."):
-                try:
-                    _snap_b = portfolio_health_engine.fetch_snapshot(_to_ticker_in)
-                except Exception:
-                    _snap_b = None
-            if not _snap_b or _snap_b.get("price") is None:
-                st.error(_sw("lookup_not_found", ticker=_to_ticker_in))
-                st.session_state.pop(_lookup_key, None)
-            else:
-                st.session_state[_lookup_key] = {
-                    "ticker": _to_ticker_in, "price": _snap_b.get("price"),
-                    "name": _snap_b.get("name") or _to_ticker_in,
-                }
-
     _to = st.session_state.get(_lookup_key)
-    if not _to or _to.get("ticker") != _to_ticker_in:
+    if not _to_ticker_in:
+        st.session_state.pop(_lookup_key, None)
         return
+    if not _to or _to.get("ticker") != _to_ticker_in:
+        with st.spinner(f"{_sw('lookup_btn')}..."):
+            try:
+                _snap_b = portfolio_health_engine.fetch_snapshot(_to_ticker_in)
+            except Exception:
+                _snap_b = None
+        if not _snap_b or _snap_b.get("price") is None:
+            st.error(_sw("lookup_not_found", ticker=_to_ticker_in))
+            st.session_state.pop(_lookup_key, None)
+            return
+        _to = {
+            "ticker": _to_ticker_in, "price": _snap_b.get("price"),
+            "name": _snap_b.get("name") or _to_ticker_in,
+            "quality_score": _snap_b.get("quality_score"),
+        }
+        st.session_state[_lookup_key] = _to
 
-    _years = st.number_input(
-        _sw("years_label"), min_value=1, max_value=10, value=5, step=1,
-        key=_pf_key(_active_portfolio, "sw_years"),
-    )
+    # Horizon: read before the widget below so the bottom-line box (which
+    # renders first, per the mock) can use it - Streamlit already updates
+    # session_state for a widget's key before the script re-runs from the
+    # top, so this sees a just-changed selection immediately; the actual
+    # st.radio() renders further down, inside the toll card, matching the
+    # mock's own placement of the horizon pills.
+    _years_key = _pf_key(_active_portfolio, "sw_years")
+    _years = st.session_state.get(_years_key, 5)
 
     _from_ticker = _from_row["ticker"]
     _to_ticker = _to["ticker"]
@@ -14048,30 +14089,9 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
     _iv_a, _source_a = _switch_get_iv(_from_ticker)
     _iv_b, _source_b = _switch_get_iv(_to_ticker)
     _source_label = {"hand_built": _sw("source_hand_built"), "auto": _sw("source_auto")}
-
-    # --- Side by side ------------------------------------------------
-    st.markdown(f"##### {_sw('side_by_side_title')}")
     _ret_a = switch_analyzer_engine.expected_rerating_return(_price_a, _iv_a, _years)
     _ret_b = switch_analyzer_engine.expected_rerating_return(_price_b, _iv_b, _years)
-    _sbs_rows = []
-    for _tk, _price, _iv, _src, _ret in (
-        (_from_ticker, _price_a, _iv_a, _source_a, _ret_a),
-        (_to_ticker, _price_b, _iv_b, _source_b, _ret_b),
-    ):
-        _sbs_rows.append({
-            _sw("col_position"): _tk,
-            _sw("col_price"): f"{_price:,.2f}" if _price is not None else "n/a",
-            _sw("col_fair_value"): f"{_iv:,.2f}" if _iv is not None else "n/a",
-            _sw("col_source"): _source_label.get(_src, "n/a"),
-            _sw("col_upside"): (f"{((_iv - _price) / _price) * 100:.1f}%"
-                                  if (_iv is not None and _price) else "n/a"),
-            _sw("col_expected_return", years=_years): (f"{_ret * 100:.1f}%" if _ret is not None else "n/a"),
-        })
-    st.dataframe(_sbs_rows, hide_index=True, use_container_width=True)
 
-    # --- The switching toll (bridge) ----------------------------------
-    st.markdown(f"##### {_sw('bridge_title')}")
-    st.caption(_sw("bridge_caption", ticker=_from_ticker))
     _held_days = None
     if _from_row.get("buy_date"):
         try:
@@ -14083,82 +14103,18 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
     )
     if _toll is None:
         return
-    _bridge_rows = [
-        {"": _sw("bridge_value"), " ": f"A${_from_row['value_aud']:,.0f}"},
-        {"": _sw("bridge_cost_base"), " ": f"A${_from_row['cost_aud']:,.0f}"},
-        {"": _sw("bridge_gain"), " ": f"A${_toll['gain']:,.0f}"},
-        {"": (_sw("bridge_discount_applied") if _toll["discount_applied"] else _sw("bridge_discount_not_applied")), " ": ""},
-        {"": _sw("bridge_taxable_gain"), " ": f"A${_toll['taxable_gain']:,.0f}"},
-        {"": _sw("bridge_tax", rate=f"{_tax_rate * 100:.0f}"), " ": f"A${_toll['tax']:,.0f}"},
-        {"": _sw("bridge_brokerage", each=f"A${_brokerage:,.0f}"), " ": f"A${_toll['brokerage_total']:,.0f}"},
-        {"": _sw("bridge_proceeds"), " ": f"A${_toll['proceeds_after_toll']:,.0f}"},
-    ]
-    st.dataframe(_bridge_rows, hide_index=True, use_container_width=True, column_config={
-        "": st.column_config.Column(""), " ": st.column_config.Column(""),
-    })
-    if _toll["toll_pct_of_value"] is not None:
-        st.caption(_sw("bridge_toll_pct", pct=f"{_toll['toll_pct_of_value'] * 100:.1f}"))
-
-    _cf = switch_analyzer_engine.cgt_twelve_month_counterfactual(
-        _from_row["value_aud"], _from_row["cost_aud"], _tax_rate, _brokerage, _held_days,
-    )
-    if _cf:
-        st.caption(_sw(
-            "twelve_month_chip", tax_now=f"{_cf['tax_now']:,.0f}", tax_later=f"{_cf['tax_after_12mo']:,.0f}",
-            days=_cf["days_remaining"], extra=f"{_cf['extra_tax_now']:,.0f}",
-        ))
-
     _z = switch_analyzer_engine.annualised_toll_rate(_from_row["value_aud"], _toll["proceeds_after_toll"], _years)
-    with st.expander(_sw("bridge_formula_title"), expanded=False):
-        st.caption(_sw("bridge_formula", years=_years))
-    if _z is not None:
-        st.markdown(f"**{_sw('bridge_z_line', pct=f'{_z * 100:.2f}', years=_years)}**")
+    _spread = (_ret_b - _ret_a) if (_ret_a is not None and _ret_b is not None) else None
+    _v = switch_analyzer_engine.verdict(_spread, _z) if (_spread is not None and _z is not None) else None
 
-    # --- Flags -----------------------------------------------------------
-    # Candidate B's resulting share of the portfolio after a FULL switch:
-    # whatever B is already worth (0 if not currently held) plus the
-    # toll's own proceeds_after_toll (what actually lands in B), over the
-    # portfolio's current total value - a plain "how concentrated would
-    # this leave me" check, not a recommendation.
-    _total_portfolio_value = _totals.get("value_aud") or 0.0
-    _existing_b_value = next((r["value_aud"] for r in _rows if r["ticker"] == _to_ticker and r["value_aud"]), 0.0)
-    _resulting_pct = (
-        (_existing_b_value + _toll["proceeds_after_toll"]) / _total_portfolio_value * 100
-        if _total_portfolio_value else None
-    )
-    _corr = _switch_correlation_vs_rest(_to_ticker, _from_key, _holdings, _analyses)
-    _stale_a, _detail_a = _switch_data_staleness(_from_ticker)
-    _stale_b, _detail_b = _switch_data_staleness(_to_ticker)
-    _status_a, _reason_a = card_blurb_store.get_research_status(_from_ticker)
-    _status_b, _reason_b = card_blurb_store.get_research_status(_to_ticker)
-
-    _flags = []
-    if switch_analyzer_engine.concentration_flag(_resulting_pct):
-        _flags.append(_sw("flag_concentration", ticker=_to_ticker, pct=f"{_resulting_pct:.0f}",
-                           threshold=f"{switch_analyzer_engine.CONCENTRATION_FLAG_PCT:.0f}"))
-    if switch_analyzer_engine.high_correlation_flag(_corr):
-        _flags.append(_sw("flag_correlation", ticker=_to_ticker, corr=f"{_corr:.2f}"))
-    if _stale_a:
-        _flags.append(_sw("flag_stale_a", ticker=_from_ticker, detail=_detail_a))
-    if _stale_b:
-        _flags.append(_sw("flag_stale_b", ticker=_to_ticker, detail=_detail_b))
-    for _tk, _status, _reason in ((_from_ticker, _status_a, _reason_a), (_to_ticker, _status_b, _reason_b)):
-        if _status == "terminated":
-            _flags.append(_sw("flag_terminated", ticker=_tk, reason=(f" ({_reason})" if _reason else "")))
-    if _flags:
-        st.markdown(f"**{_sw('flags_title')}**")
-        for _f in _flags:
-            st.warning(_f)
-
-    # --- Verdict (always red-bordered - this is fundamentally a cost/tax
-    # box, whichever way the comparison falls) ---------------------------
+    # --- The bottom line (first thing under the pickers, per the mock) --
     st.markdown(f"##### {_sw('verdict_title')}")
-    _verdict_html_open = "<div style='border-left:4px solid #fb7185; background:rgba(251,113,133,.06); border-radius:6px; padding:10px 14px; margin:6px 0;'>"
-    if _ret_a is None or _ret_b is None or _z is None:
+    _verdict_html_open = ("<div style='border-left:4px solid #fb7185; "
+                           "background:rgba(251,113,133,.06); border-radius:6px; "
+                           "padding:12px 16px; margin:6px 0; font-size:1.02rem;'>")
+    if _v is None:
         st.markdown(_verdict_html_open + _sw("verdict_no_iv") + "</div>", unsafe_allow_html=True)
     else:
-        _spread = _ret_b - _ret_a
-        _v = switch_analyzer_engine.verdict(_spread, _z)
         _vkey = "verdict_passes" if _v["passes"] else "verdict_fails"
         _vtext = _sw(
             _vkey, to_ticker=_to_ticker, from_ticker=_from_ticker,
@@ -14167,57 +14123,253 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
         )
         st.markdown(_verdict_html_open + _vtext + "</div>", unsafe_allow_html=True)
 
-        # --- When would this flip? --------------------------------------
-        st.markdown(f"**{_sw('flip_title')}**")
-        _flip = switch_analyzer_engine.break_even_years(_from_row["value_aud"], _toll["proceeds_after_toll"], _spread)
-        if _flip is not None:
-            st.caption(_sw("flip_body", spread=f"{_spread * 100:.1f}", n=f"{_flip:.1f}"))
-        else:
-            st.caption(_sw("flip_never"))
-
-    # --- Trim instead of switching fully ---------------------------------
-    st.markdown(f"##### {_sw('trim_title')}")
-    st.caption(_sw("trim_caption", from_ticker=_from_ticker, to_ticker=_to_ticker))
-    _trim = st.slider(
-        _sw("trim_slider", ticker=_from_ticker), min_value=0, max_value=100, value=50, step=5,
-        key=_pf_key(_active_portfolio, "sw_trim_slider"),
-    ) / 100.0
-    _trim_toll = switch_analyzer_engine.trimmed_toll(
-        _from_row["value_aud"], _from_row["cost_aud"], _tax_rate, _brokerage, _trim, held_days=_held_days,
+    # --- Flags, as an inline chip strip rather than stacked warning boxes
+    _total_portfolio_value = _totals.get("value_aud") or 0.0
+    _existing_b_value = next((r["value_aud"] for r in _rows if r["ticker"] == _to_ticker and r["value_aud"]), 0.0)
+    _resulting_pct = (
+        (_existing_b_value + _toll["proceeds_after_toll"]) / _total_portfolio_value * 100
+        if _total_portfolio_value else None
     )
-    if _trim_toll:
-        st.caption(_sw(
-            "trim_toll_line", toll=f"{_trim_toll['toll_total']:,.0f}",
-            pct=f"{(_trim_toll['toll_pct_of_value'] or 0) * 100:.1f}",
+    _corr_b = _switch_correlation_vs_rest(_to_ticker, _from_key, _holdings, _analyses)
+    _corr_a = _switch_correlation_vs_rest(_from_ticker, _from_key, _holdings, _analyses)
+    _stale_a, _detail_a = _switch_data_staleness(_from_ticker)
+    _stale_b, _detail_b = _switch_data_staleness(_to_ticker)
+    _status_a, _reason_a = card_blurb_store.get_research_status(_from_ticker)
+    _status_b, _reason_b = card_blurb_store.get_research_status(_to_ticker)
+
+    _warn_flags = []
+    if switch_analyzer_engine.concentration_flag(_resulting_pct):
+        _warn_flags.append(_sw("flag_concentration", ticker=_to_ticker, pct=f"{_resulting_pct:.0f}",
+                                threshold=f"{switch_analyzer_engine.CONCENTRATION_FLAG_PCT:.0f}"))
+    if switch_analyzer_engine.high_correlation_flag(_corr_b):
+        _warn_flags.append(_sw("flag_correlation", ticker=_to_ticker, corr=f"{_corr_b:.2f}"))
+    if _stale_a:
+        _warn_flags.append(_sw("flag_stale_a", ticker=_from_ticker, detail=_detail_a))
+    if _stale_b:
+        _warn_flags.append(_sw("flag_stale_b", ticker=_to_ticker, detail=_detail_b))
+    for _tk, _status, _reason in ((_from_ticker, _status_a, _reason_a), (_to_ticker, _status_b, _reason_b)):
+        if _status == "terminated":
+            _warn_flags.append(_sw("flag_terminated", ticker=_tk, reason=(f" ({_reason})" if _reason else "")))
+
+    _confirm_flags = []
+    _cf = switch_analyzer_engine.cgt_twelve_month_counterfactual(
+        _from_row["value_aud"], _from_row["cost_aud"], _tax_rate, _brokerage, _held_days,
+    )
+    if _cf:
+        _warn_flags.append(_sw(
+            "twelve_month_chip", tax_now=f"{_cf['tax_now']:,.0f}", tax_later=f"{_cf['tax_after_12mo']:,.0f}",
+            days=_cf["days_remaining"], extra=f"{_cf['extra_tax_now']:,.0f}",
         ))
-    if _ret_a is not None and _ret_b is not None:
-        _blend = switch_analyzer_engine.blended_expected_return(_ret_a, _ret_b, _trim)
-        if _blend is not None:
-            st.caption(_sw("trim_blended_return", pct=f"{_blend * 100:.1f}"))
+    elif _toll["discount_applied"] and _from_row.get("buy_date"):
+        # The mirror-image case: already past 12 months. See this
+        # function's own docstring for why toll_without_discount() (an
+        # existing, already-tested function) is the right tool here.
+        _no_discount = switch_analyzer_engine.toll_without_discount(
+            _from_row["value_aud"], _from_row["cost_aud"], _tax_rate, _brokerage,
+        )
+        _z_no_discount = switch_analyzer_engine.annualised_toll_rate(
+            _from_row["value_aud"], _no_discount["proceeds_after_toll"], _years,
+        ) if _no_discount else None
+        try:
+            _anniversary = (_date.fromisoformat(_from_row["buy_date"])
+                             + timedelta(days=switch_analyzer_engine.CGT_DISCOUNT_ELIGIBLE_DAYS))
+        except Exception:
+            _anniversary = None
+        if _no_discount and _z_no_discount is not None and _anniversary and _z is not None:
+            _confirm_flags.append(_sw(
+                "flag_twelve_month_confirmed", date=_anniversary.isoformat(),
+                tax_without=f"{_no_discount['tax']:,.0f}", tax_with=f"{_toll['tax']:,.0f}",
+                pct=f"{_z_no_discount * 100:.1f}", pct_actual=f"{_z * 100:.1f}",
+            ))
 
-    st.markdown(f"**{_sw('trim_sim_title')}**")
-    # Full-portfolio weights (this named portfolio only - tickers are
-    # unique within one portfolio, see portfolio_holdings' own PK), with
-    # `_from_ticker`'s value reduced by the trimmed-out amount and that
-    # same amount added onto `_to_ticker` (0 if not currently held).
-    _sim_weights = dict(_stress_weights_and_value(_holdings, _analyses)[0])
-    _moved_value = _from_row["value_aud"] * _trim
-    _sim_weights[_from_ticker] = max(_from_row["value_aud"] - _moved_value, 0.0)
-    _sim_weights[_to_ticker] = _sim_weights.get(_to_ticker, 0.0) + _moved_value
-    _sim_total = sum(_sim_weights.values())
-    _sim_tickers = tuple(sorted(_sim_weights.keys()))
-    _sim_histories = _stress_history_bundle(_sim_tickers)
-    _sim_histories, _sim_faulty = _stress_apply_guard(
-        _sim_histories, list(_holdings) + [{"ticker": _to_ticker, "kind": "STOCK"}],
-    )
-    try:
-        _mc_trim = stress_engine.monte_carlo(_sim_weights, _sim_histories, _sim_total, seed=42)
-    except Exception:
-        _mc_trim = None
-    if _mc_trim:
-        st.markdown(_stress_mc_band_html(_mc_trim), unsafe_allow_html=True)
-    else:
-        st.caption(_sw("trim_sim_unavailable"))
+    if _warn_flags or _confirm_flags:
+        _chip_html = ["<div style='display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 14px'>"]
+        for _f in _warn_flags:
+            _chip_html.append(
+                "<span style='border:1px solid #fbbf24;color:#fbbf24;background:rgba(251,191,36,.08);"
+                "border-radius:8px;font-size:.8rem;padding:5px 11px;line-height:1.4'>⚠ " + _f + "</span>"
+            )
+        for _f in _confirm_flags:
+            _chip_html.append(
+                "<span style='border:1px solid #34d399;color:#34d399;background:rgba(52,211,153,.08);"
+                "border-radius:8px;font-size:.8rem;padding:5px 11px;line-height:1.4'>✓ " + _f + "</span>"
+            )
+        _chip_html.append("</div>")
+        st.markdown("".join(_chip_html), unsafe_allow_html=True)
+
+    # --- Grid: readings side-by-side + the toll/bridge card --------------
+    _g1, _g2 = st.columns([1, 1.1])
+    _q_a = (_analyses.get(_from_key, {}).get("snapshot") or {}).get("quality_score")
+    _q_b = _to.get("quality_score")
+    with _g1:
+        with st.container(border=True):
+            st.markdown(f"**{_sw('side_by_side_title')}**")
+            # Metrics as ROWS, the two tickers as columns (matching the
+            # mock's own card layout - and, unlike the pre-rebuild
+            # ticker-per-row/metric-per-column orientation, this keeps
+            # every row readable without a horizontal scrollbar now that
+            # Quality/Correlation add two more metrics to the card).
+            def _sbs_row(_label, _a, _b):
+                return {"": _label, _from_ticker: _a, _to_ticker: _b}
+            _sbs_rows = [
+                _sbs_row(_sw("col_price"),
+                         f"{_price_a:,.2f}" if _price_a is not None else "n/a",
+                         f"{_price_b:,.2f}" if _price_b is not None else "n/a"),
+                _sbs_row(_sw("col_fair_value"),
+                         f"{_iv_a:,.2f}" if _iv_a is not None else "n/a",
+                         f"{_iv_b:,.2f}" if _iv_b is not None else "n/a"),
+                _sbs_row(_sw("col_source"), _source_label.get(_source_a, "n/a"), _source_label.get(_source_b, "n/a")),
+                _sbs_row(_sw("col_upside"),
+                         (f"{((_iv_a - _price_a) / _price_a) * 100:.1f}%" if (_iv_a is not None and _price_a) else "n/a"),
+                         (f"{((_iv_b - _price_b) / _price_b) * 100:.1f}%" if (_iv_b is not None and _price_b) else "n/a")),
+                _sbs_row(_sw("col_expected_return", years=_years),
+                         (f"{_ret_a * 100:.1f}%" if _ret_a is not None else "n/a"),
+                         (f"{_ret_b * 100:.1f}%" if _ret_b is not None else "n/a")),
+                _sbs_row(_sw("col_quality"), f"{_q_a:.0f}" if _q_a is not None else "n/a",
+                         f"{_q_b:.0f}" if _q_b is not None else "n/a"),
+                _sbs_row(_sw("col_correlation"), f"{_corr_a:.2f}" if _corr_a is not None else "n/a",
+                         f"{_corr_b:.2f}" if _corr_b is not None else "n/a"),
+            ]
+            st.dataframe(_sbs_rows, hide_index=True, use_container_width=True)
+
+    with _g2:
+        with st.container(border=True):
+            st.markdown(f"**{_sw('bridge_title')}**")
+
+            # NET tiles (implied return B − implied return A − toll = NET),
+            # matching the mock's own tile row - all three inputs are
+            # already computed above (_ret_a/_ret_b/_z), this is display
+            # only. Skipped (falls back to the derivation table alone)
+            # when either implied return is unavailable, same condition
+            # the verdict box above already uses.
+            if _ret_a is not None and _ret_b is not None and _z is not None:
+                _net = _v["margin_pct"] if _v is not None else None
+                _net_color = "#34d399" if (_net is not None and _net >= 0) else "#fb7185"
+                _tile = lambda caption, value, color, flex="1", bg="rgba(255,255,255,.03)", border="rgba(255,255,255,.12)": (
+                    f"<div style='flex:{flex};min-width:110px;background:{bg};border:1px solid {border};"
+                    f"border-radius:9px;padding:8px 10px'><div style='color:#8aa0b8;font-size:10.5px'>{caption}</div>"
+                    f"<div style='font-family:ui-monospace,Menlo,monospace;font-weight:700;font-size:17px;"
+                    f"color:{color}'>{value}</div></div>"
+                )
+                _tiles_html = (
+                    "<div style='display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;margin:2px 0 12px'>"
+                    + _tile(_sw("bridge_tile_caption", ticker=_to_ticker, iv=f"{_iv_b:,.2f}", years=_years),
+                            f"{_ret_b * 100:+.1f}%/yr", "#34d399" if _ret_b >= 0 else "#fb7185")
+                    + "<div style='align-self:center;color:#5b7290;font-weight:800'>&minus;</div>"
+                    + _tile(_sw("bridge_tile_caption", ticker=_from_ticker, iv=f"{_iv_a:,.2f}", years=_years),
+                            f"{_ret_a * 100:+.1f}%/yr", "#34d399" if _ret_a >= 0 else "#fb7185")
+                    + "<div style='align-self:center;color:#5b7290;font-weight:800'>&minus;</div>"
+                    + _tile(_sw("bridge_tile_toll_caption", years=_years), f"{_z * 100:.1f}%/yr", "#fbbf24")
+                    + "<div style='align-self:center;color:#5b7290;font-weight:800'>=</div>"
+                    + (_tile(_sw("bridge_tile_net_label"), f"{_net * 100:+.1f}%/yr", _net_color, flex="1.2",
+                              bg="rgba(251,113,133,.06)" if _net_color == "#fb7185" else "rgba(52,211,153,.06)",
+                              border=_net_color) if _net is not None else "")
+                    + "</div>"
+                )
+                st.markdown(_tiles_html, unsafe_allow_html=True)
+                if _net is not None:
+                    st.caption(_sw("bridge_tile_net_hurdle_passes" if _net >= 0 else "bridge_tile_net_hurdle_fails"))
+
+            st.caption(_sw("bridge_caption", ticker=_from_ticker))
+            _bridge_rows = [
+                {"": _sw("bridge_value"), " ": f"A${_from_row['value_aud']:,.0f}"},
+                {"": _sw("bridge_cost_base"), " ": f"A${_from_row['cost_aud']:,.0f}"},
+                {"": _sw("bridge_gain"), " ": f"A${_toll['gain']:,.0f}"},
+                {"": (_sw("bridge_discount_applied") if _toll["discount_applied"] else _sw("bridge_discount_not_applied")), " ": ""},
+                {"": _sw("bridge_taxable_gain"), " ": f"A${_toll['taxable_gain']:,.0f}"},
+                {"": _sw("bridge_tax", rate=f"{_tax_rate * 100:.0f}"), " ": f"A${_toll['tax']:,.0f}"},
+                {"": _sw("bridge_brokerage", each=f"A${_brokerage:,.0f}"), " ": f"A${_toll['brokerage_total']:,.0f}"},
+                {"": _sw("bridge_proceeds"), " ": f"A${_toll['proceeds_after_toll']:,.0f}"},
+            ]
+            st.dataframe(_bridge_rows, hide_index=True, use_container_width=True, column_config={
+                "": st.column_config.Column(""), " ": st.column_config.Column(""),
+            })
+            if _toll["toll_pct_of_value"] is not None:
+                st.caption(_sw("bridge_toll_pct", pct=f"{_toll['toll_pct_of_value'] * 100:.1f}"))
+            with st.expander(_sw("bridge_formula_title"), expanded=False):
+                st.caption(_sw("bridge_formula", years=_years))
+            if _z is not None:
+                st.markdown(f"**{_sw('bridge_z_line', pct=f'{_z * 100:.2f}', years=_years)}**")
+
+            # "Where the two implied returns come from" - the mock's own
+            # narrative for the price -> fair value convergence math
+            # (expected_rerating_return() is a pure (fair_value/price)
+            # **(1/years) - 1 formula, no yield term, so this describes
+            # exactly that and nothing more).
+            if _ret_a is not None and _ret_b is not None:
+                st.caption(f"**{_sw('bridge_returns_source_title')}**  \n" + "  \n".join([
+                    _sw("bridge_returns_source_line", ticker=_to_ticker, price=f"{_price_b:,.2f}",
+                        iv=f"{_iv_b:,.2f}", multiple=f"{(_iv_b / _price_b):.2f}", years=_years,
+                        pct=f"{_ret_b * 100:.1f}"),
+                    _sw("bridge_returns_source_line", ticker=_from_ticker, price=f"{_price_a:,.2f}",
+                        iv=f"{_iv_a:,.2f}", multiple=f"{(_iv_a / _price_a):.2f}", years=_years,
+                        pct=f"{_ret_a * 100:.1f}"),
+                ]))
+
+            # Horizon pills - the actual widget, placed here to match the
+            # mock; its value was already read further up (see the note
+            # there on why that's safe in Streamlit's execution model).
+            st.radio(
+                _sw("years_label"), [3, 5, 10], index=1, format_func=lambda y: f"{y}y",
+                horizontal=True, key=_years_key, label_visibility="visible",
+            )
+
+            if _v is not None:
+                _flip = switch_analyzer_engine.break_even_years(_from_row["value_aud"], _toll["proceeds_after_toll"], _spread)
+                _flip_body = (_sw("flip_body", spread=f"{_spread * 100:.1f}", n=f"{_flip:.1f}")
+                              if _flip is not None else _sw("flip_never"))
+                st.markdown(
+                    "<div style='margin-top:6px;background:rgba(255,255,255,.03);"
+                    "border:1px dashed rgba(255,255,255,.2);border-radius:9px;padding:8px 11px;"
+                    "font-size:.85rem;color:#8aa0b8;line-height:1.6'>&#8987; <b>"
+                    + _sw("flip_title") + "</b> " + _flip_body + "</div>",
+                    unsafe_allow_html=True,
+                )
+
+    # --- Trim instead of switching fully, own card at the bottom --------
+    with st.container(border=True):
+        st.markdown(f"##### {_sw('trim_title')}")
+        st.caption(_sw("trim_caption", from_ticker=_from_ticker, to_ticker=_to_ticker))
+        _trim = st.slider(
+            _sw("trim_slider", ticker=_from_ticker), min_value=0, max_value=100, value=50, step=5,
+            key=_pf_key(_active_portfolio, "sw_trim_slider"),
+        ) / 100.0
+        _trim_toll = switch_analyzer_engine.trimmed_toll(
+            _from_row["value_aud"], _from_row["cost_aud"], _tax_rate, _brokerage, _trim, held_days=_held_days,
+        )
+        if _trim_toll:
+            st.caption(_sw(
+                "trim_toll_line", toll=f"{_trim_toll['toll_total']:,.0f}",
+                pct=f"{(_trim_toll['toll_pct_of_value'] or 0) * 100:.1f}",
+            ))
+        if _ret_a is not None and _ret_b is not None:
+            _blend = switch_analyzer_engine.blended_expected_return(_ret_a, _ret_b, _trim)
+            if _blend is not None:
+                st.caption(_sw("trim_blended_return", pct=f"{_blend * 100:.1f}"))
+
+        st.markdown(f"**{_sw('trim_sim_title')}**")
+        # Full-portfolio weights (this named portfolio only - tickers are
+        # unique within one portfolio, see portfolio_holdings' own PK), with
+        # `_from_ticker`'s value reduced by the trimmed-out amount and that
+        # same amount added onto `_to_ticker` (0 if not currently held).
+        _sim_weights = dict(_stress_weights_and_value(_holdings, _analyses)[0])
+        _moved_value = _from_row["value_aud"] * _trim
+        _sim_weights[_from_ticker] = max(_from_row["value_aud"] - _moved_value, 0.0)
+        _sim_weights[_to_ticker] = _sim_weights.get(_to_ticker, 0.0) + _moved_value
+        _sim_total = sum(_sim_weights.values())
+        _sim_tickers = tuple(sorted(_sim_weights.keys()))
+        _sim_histories = _stress_history_bundle(_sim_tickers)
+        _sim_histories, _sim_faulty = _stress_apply_guard(
+            _sim_histories, list(_holdings) + [{"ticker": _to_ticker, "kind": "STOCK"}],
+        )
+        try:
+            _mc_trim = stress_engine.monte_carlo(_sim_weights, _sim_histories, _sim_total, seed=42)
+        except Exception:
+            _mc_trim = None
+        if _mc_trim:
+            st.markdown(_stress_mc_band_html(_mc_trim), unsafe_allow_html=True)
+        else:
+            st.caption(_sw("trim_sim_unavailable"))
 
 
 def _stress_portfolio_ask_summary(_holdings, _analyses):

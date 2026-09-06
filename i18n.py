@@ -1530,6 +1530,11 @@ EN = {
     "portfolio.switch.settings_brokerage": "Brokerage per trade (A$)",
     "portfolio.switch.settings_save": "Save settings",
     "portfolio.switch.settings_saved": "Settings saved.",
+    # Owner review round fix #3: compact one-line settings summary shown
+    # once tax rate/brokerage are set, replacing the always-open settings
+    # expander per the approved mock's "Settings: marginal tax 39% ·
+    # brokerage $20/trade ✎" single-line convention.
+    "portfolio.switch.settings_summary": "{tax}% tax &middot; A\\${brokerage}/trade",
     "portfolio.switch.settings_missing": (
         "Enter and save your tax rate and brokerage above before running an analysis - "
         "this tool never guesses either one."
@@ -1557,6 +1562,16 @@ EN = {
     "portfolio.switch.col_source": "Source",
     "portfolio.switch.col_upside": "Upside to fair value",
     "portfolio.switch.col_expected_return": "Implied return over {years}y",
+    # Owner review round fix #3: the approved mock's side-by-side card adds
+    # Quality (already-fetched nightly-model field, no new network call)
+    # and correlation-to-rest (already computed for the flag strip below,
+    # here just also shown as a plain reading for both sides). Moat is
+    # deliberately NOT added - sourcing it for an arbitrary candidate
+    # ticker not already in the portfolio's own cached moat computation
+    # would need a new per-pageview moat_engine call, which the shared
+    # rules for this batch rule out; flagged in this part's own report.
+    "portfolio.switch.col_quality": "Quality",
+    "portfolio.switch.col_correlation": "Correlation to rest of portfolio",
     "portfolio.switch.bridge_title": "The switching toll",
     "portfolio.switch.bridge_caption": (
         "Selling {ticker} triggers this before a dollar of it can be redeployed into the new "
@@ -1579,10 +1594,31 @@ EN = {
         "over N years, just to close the gap the toll opened up."
     ),
     "portfolio.switch.bridge_z_line": "Annualised toll (Z): {pct}%/yr over {years} years",
+    "portfolio.switch.bridge_tile_caption": "{ticker} - if price reaches its {iv} fair value in {years}y",
+    "portfolio.switch.bridge_tile_toll_caption": "The toll (tax + brokerage, {years}y)",
+    "portfolio.switch.bridge_tile_net_label": "NET, on the model's numbers",
+    "portfolio.switch.bridge_tile_net_hurdle_passes": "the switch clears its own hurdle",
+    "portfolio.switch.bridge_tile_net_hurdle_fails": "the switch falls short of its own hurdle",
+    "portfolio.switch.bridge_returns_source_title": "Where the two implied returns come from:",
+    "portfolio.switch.bridge_returns_source_line": (
+        "{ticker}: price {price} → fair value {iv} = {multiple}× over {years}y → {pct}%/yr"
+    ),
     "portfolio.switch.twelve_month_chip": (
         "Selling now forgoes the 12-month CGT discount: tax would be A\\${tax_now} now vs "
         "A\\${tax_later} after {days} more day(s) (assuming the same sale value) - a "
         "difference of A\\${extra}."
+    ),
+    # Owner review round fix #3: the mirror-image confirmation chip for a
+    # position that's ALREADY past 12 months (the approved mock's third
+    # flag chip, "Held > 12 months - CGT discount already applies").
+    # Built from switch_analyzer_engine.toll_without_discount() - the same
+    # function twelve_month_chip's own counterfactual already calls, just
+    # used in the other direction (see that function's own docstring:
+    # "...or vice versa").
+    "portfolio.switch.flag_twelve_month_confirmed": (
+        "Held over 12 months - the CGT discount already applies. Selling before {date} "
+        "would have meant A\\${tax_without} tax instead of A\\${tax_with} - a toll of "
+        "≈{pct}%/yr instead of today's {pct_actual}%/yr."
     ),
     "portfolio.switch.verdict_title": "Verdict",
     "portfolio.switch.verdict_passes": (
@@ -3035,6 +3071,7 @@ ES = {
     "portfolio.switch.settings_brokerage": "Comisión por operación (A$)",
     "portfolio.switch.settings_save": "Guardar ajustes",
     "portfolio.switch.settings_saved": "Ajustes guardados.",
+    "portfolio.switch.settings_summary": "{tax}% impuesto &middot; A\\${brokerage}/operación",
     "portfolio.switch.settings_missing": (
         "Introduce y guarda tu tasa de impuesto y comisión arriba antes de ejecutar un análisis "
         "- esta herramienta nunca los adivina."
@@ -3062,6 +3099,8 @@ ES = {
     "portfolio.switch.col_source": "Fuente",
     "portfolio.switch.col_upside": "Potencial hasta el valor razonable",
     "portfolio.switch.col_expected_return": "Rendimiento implícito en {years} años",
+    "portfolio.switch.col_quality": "Calidad",
+    "portfolio.switch.col_correlation": "Correlación con el resto de la cartera",
     "portfolio.switch.bridge_title": "El peaje del cambio",
     "portfolio.switch.bridge_caption": (
         "Vender {ticker} genera esto antes de que un solo dólar pueda reinvertirse en la nueva posición."
@@ -3083,10 +3122,24 @@ ES = {
         "durante N años, solo para cerrar la brecha que abrió el peaje."
     ),
     "portfolio.switch.bridge_z_line": "Peaje anualizado (Z): {pct}%/año durante {years} años",
+    "portfolio.switch.bridge_tile_caption": "{ticker} - si el precio alcanza su valor razonable de {iv} en {years} años",
+    "portfolio.switch.bridge_tile_toll_caption": "El peaje (impuesto + comisión, {years} años)",
+    "portfolio.switch.bridge_tile_net_label": "NETO, según los números del modelo",
+    "portfolio.switch.bridge_tile_net_hurdle_passes": "el cambio supera su propio umbral",
+    "portfolio.switch.bridge_tile_net_hurdle_fails": "el cambio no alcanza su propio umbral",
+    "portfolio.switch.bridge_returns_source_title": "De dónde salen los dos rendimientos implícitos:",
+    "portfolio.switch.bridge_returns_source_line": (
+        "{ticker}: precio {price} → valor razonable {iv} = {multiple}× en {years} años → {pct}%/año"
+    ),
     "portfolio.switch.twelve_month_chip": (
         "Vender ahora renuncia al descuento de 12 meses: el impuesto sería A\\${tax_now} ahora "
         "frente a A\\${tax_later} dentro de {days} día(s) más (suponiendo el mismo valor de venta) "
         "- una diferencia de A\\${extra}."
+    ),
+    "portfolio.switch.flag_twelve_month_confirmed": (
+        "Mantenida más de 12 meses - el descuento de CGT ya aplica. Vender antes del {date} "
+        "habría significado A\\${tax_without} de impuesto en vez de A\\${tax_with} - un costo de "
+        "≈{pct}%/año en vez del {pct_actual}%/año actual."
     ),
     "portfolio.switch.verdict_title": "Veredicto",
     "portfolio.switch.verdict_passes": (
