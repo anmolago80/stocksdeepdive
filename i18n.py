@@ -149,6 +149,10 @@ EN = {
     "dd.chip.dividends": "Dividends",
     "dd.chip.financials": "10-yr financials",
     "dd.chip.peers": "Peers",
+    # Deep Dive first-screen instruction, Part 2: shown once, right under
+    # the now-clickable chip row, so a visitor knows the chips are jump
+    # links to the full analysis below rather than just decoration.
+    "dd.chip.scroll_cue": "Full analysis below ↓",
 
     "dd.kpi.price": "Price",
     "dd.kpi.intrinsic_value": "Intrinsic Value",
@@ -685,6 +689,7 @@ ES = {
     "dd.chip.dividends": "Dividendos",
     "dd.chip.financials": "Financieros de 10 años",
     "dd.chip.peers": "Comparables",
+    "dd.chip.scroll_cue": "Análisis completo abajo ↓",
 
     "dd.kpi.price": "Precio",
     "dd.kpi.intrinsic_value": "Valor intrínseco",

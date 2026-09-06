@@ -1318,6 +1318,17 @@ st.markdown(
     .sdd-stat .v { font-family:ui-monospace,Menlo,monospace; font-size:16px; font-weight:600; color:#e6edf5; margin-top:2px; }
     .sdd-pill { font-size:11px; font-weight:700; font-family:ui-monospace,Menlo,monospace;
       padding:3px 10px; border-radius:999px; letter-spacing:.4px; display:inline-block; }
+    /* Deep Dive first-screen instruction, Part 2: the anchor-chip row
+       (Reverse DCF / Moat / Ask AI / ...) - a bordered button look with a
+       hover state, replacing the old flat rounded-pill tags. inline-block
+       wraps naturally onto a second line at narrow widths with no extra
+       media-query needed. */
+    .sdd-chip-btn { display:inline-block; background:#121f36 !important;
+      border:1.5px solid #1f3352 !important; border-radius:8px; padding:6px 14px;
+      margin:3px 6px 3px 0; font-size:12.5px; font-weight:600; color:#8aa0b8 !important;
+      text-decoration:none !important; transition:all .15s ease; cursor:pointer; }
+    .sdd-chip-btn:hover { border-color:#2dd4bf !important; color:#2dd4bf !important;
+      background:rgba(45,212,191,.08) !important; }
     .sdd-spark-cap { font-size:11px; color:#5b7290; margin-bottom:4px; display:flex; justify-content:space-between; }
     .sdd-strip { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
       gap:14px; margin:26px 0 8px; }
@@ -6083,14 +6094,29 @@ def _render_dd_verdict_and_chips(dd):
 
     if not chips:
         return
+    # Deep Dive first-screen instruction, Part 2: these chips looked like
+    # navigation (an <a href="#anchor">) but a live test during this
+    # instruction's own verify pass showed they didn't actually scroll -
+    # Streamlit's main content lives inside its own scrollable container
+    # (section[data-testid="stMain"]), not the window/document body, and a
+    # plain browser anchor jump only ever scrolls the window. The onclick
+    # below calls scrollIntoView() on the target section directly instead,
+    # which scrolls whichever ancestor actually has the scrollbar - no
+    # jQuery/component needed, and it degrades to the (inert) href jump if
+    # JS is somehow unavailable. "return false" stops the browser's own
+    # anchor jump from also firing and fighting the smooth scroll.
+    # Style: a bordered button with a hover state (.sdd-chip-btn, site-wide
+    # stylesheet) replaces the old flat pill look per the brief's own
+    # "bordered button look with hover, not flat tags" ask.
     chips_html = "".join(
-        f'<a href="#{anchor}" style="display:inline-block;background:#121f36;'
-        f'border:1px solid #1f3352;border-radius:999px;padding:5px 12px;'
-        f'margin:3px 6px 3px 0;font-size:12.5px;color:#8aa0b8;'
-        f'text-decoration:none;">{html.escape(label)}</a>'
+        f'<a href="#{anchor}" class="sdd-chip-btn" '
+        f"onclick=\"var t=document.getElementById('{anchor}'); "
+        "if(t){t.scrollIntoView({behavior:'smooth',block:'start'});} return false;\">"
+        f"{html.escape(label)}</a>"
         for label, anchor in chips
     )
     st.markdown(f'<div style="line-height:2.4">{chips_html}</div>', unsafe_allow_html=True)
+    st.caption(i18n.t("dd.chip.scroll_cue", _lang))
 
 
 def _render_reverse_dcf_card(dd):
