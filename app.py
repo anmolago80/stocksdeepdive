@@ -52,6 +52,7 @@ import portfolio_health_engine
 import portfolio_charts_engine
 import portfolio_news_engine
 import etf_insights
+import stress_engine
 import name_directory
 import score_history
 import blog_comments_store
@@ -10909,10 +10910,11 @@ def page_portfolio():
                     _analyses[_futures[_fut]] = _fut.result()
 
     (_tab_holdings, _tab_income, _tab_overview, _tab_health, _tab_progress,
-     _tab_etfs, _tab_ask, _tab_alerts) = st.tabs(
+     _tab_etfs, _tab_stress, _tab_ask, _tab_alerts) = st.tabs(
         [i18n.t("portfolio.tab_holdings", _pf_lang), i18n.t("portfolio.tab_income", _pf_lang),
          i18n.t("portfolio.tab_overview", _pf_lang), i18n.t("portfolio.tab_health", _pf_lang),
          i18n.t("portfolio.tab_progress", _pf_lang), i18n.t("portfolio.tab_etfs", _pf_lang),
+         i18n.t("portfolio.tab_stress", _pf_lang),
          i18n.t("portfolio.tab_ask", _pf_lang), i18n.t("portfolio.tab_alerts", _pf_lang)]
     )
 
@@ -10936,6 +10938,12 @@ def page_portfolio():
         # gating), zero new per-holding network calls (reuses each
         # holding's already-fetched 2y price history).
         _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses)
+    with _tab_stress:
+        # Next-batch instruction, Part 3: needs >=1 priced holding (see
+        # _render_portfolio_stress_tab's own gating). Never suggests
+        # weights, never modifies the real portfolio - both hard rules
+        # enforced in the rebalance sandbox below.
+        _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses)
     with _tab_ask:
         # AI-readiness roadmap Phase 3: private to this account - never
         # shown to, or answerable about, anyone else's holdings. See
@@ -11399,6 +11407,454 @@ def _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses):
         st.caption(_etf("whatif_caption"))
 
 
+# -----------------------------------------------------------------
+# Next-batch instruction, Part 3 - "Stress Test" tab.
+# -----------------------------------------------------------------
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _stress_history_bundle(tickers):
+    """Cached bundle of each ticker's own long price history.
+    stress_engine.get_long_history() already caches each ticker 24h on
+    the volume; this extra 30-minute process-level cache (same TTL
+    convention as every other yfinance-backed function on the site)
+    just avoids re-reading that sqlite cache on every Streamlit rerun
+    within a session. `tickers` must be a tuple (hashable) for
+    st.cache_data's own key."""
+    return {t: stress_engine.get_long_history(t) for t in tickers}
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _stress_index_histories():
+    return {"^GSPC": stress_engine.get_long_history("^GSPC"),
+            "^AXJO": stress_engine.get_long_history("^AXJO")}
+
+
+def _stress_weights_and_value(_holdings, _analyses):
+    """{ticker: value_aud} for every holding with a live value (one
+    with an unavailable price is simply excluded - stress_engine's own
+    functions renormalize weight across the rest), and the portfolio's
+    total current value - both straight from _build_portfolio_rows so
+    this tab's numbers agree with every other tab's."""
+    _rows, _totals, _fx_missing, _price_missing = _build_portfolio_rows(_holdings, _analyses)
+    weights = {}
+    for r in _rows:
+        if r["value_aud"] is not None:
+            weights[r["ticker"]] = weights.get(r["ticker"], 0.0) + r["value_aud"]
+    return weights, (_totals.get("value_aud") or 0.0)
+
+
+def _stress_dt(d):
+    return d.strftime("%Y-%m-%d") if d is not None else None
+
+
+def _stress_series_to_pairs(series):
+    if series is None or series.empty:
+        return []
+    return [[d.strftime("%Y-%m-%d"), None if pd.isna(v) else round(float(v) * 100.0, 3)]
+            for d, v in series.items()]
+
+
+def _stress_compute_full(weights, histories, index_histories, total_value_aud):
+    """The full, JSON-safe Part 3 computation for the portfolio's
+    CURRENT weights - the caller is responsible for caching this (see
+    stress_engine.get_cached_result/set_cached_result) since this
+    function itself is pure. The rebalance sandbox's own "what-if"
+    recompute deliberately does NOT call this (see
+    _stress_whatif_metrics) - it only recomputes the handful of
+    weight-dependent aggregates, reusing the SAME already-fetched
+    `histories`/`index_histories`, which is what keeps each weight
+    interaction fast."""
+    betas = {}
+    for t in weights:
+        idx_t = stress_engine.home_index_for(t)
+        betas[t] = stress_engine.compute_beta(histories.get(t), index_histories.get(idx_t))
+
+    hist_15y = {t: stress_engine.cap_to_years(h, 15) for t, h in histories.items()}
+    series, used, dropped = stress_engine.build_combined_series(weights, hist_15y)
+    dd = stress_engine.max_drawdown(series) if series is not None else None
+    best12 = stress_engine.best_rolling_12m(series) if series is not None else None
+    ret10 = stress_engine.replayed_return_pa(series, 10) if series is not None else None
+    dd_series = stress_engine.drawdown_series(series) if series is not None else None
+    runup_series = stress_engine.runup_from_trough_series(series) if series is not None else None
+
+    crises = [stress_engine.scenario_replay(weights, histories, index_histories, betas, w, total_value_aud)
+              for w in stress_engine.CRISES]
+    rallies = [stress_engine.scenario_replay(weights, histories, index_histories, betas, w, total_value_aud)
+               for w in stress_engine.RALLIES]
+
+    pbeta = stress_engine.portfolio_beta(weights, betas)
+    grid = stress_engine.shock_grid(pbeta, total_value_aud)
+    mc = stress_engine.monte_carlo(weights, histories, total_value_aud)
+
+    per_holding = []
+    for t, w in weights.items():
+        h15 = hist_15y.get(t)
+        r = stress_engine.daily_returns(h15)
+        own_series = (1.0 + r).cumprod() if r is not None else None
+        own_dd = stress_engine.max_drawdown(own_series) if own_series is not None else None
+        own_best12 = stress_engine.best_rolling_12m(own_series) if own_series is not None else None
+        row = {
+            "ticker": t, "weight_pct": (w / total_value_aud * 100.0) if total_value_aud else None,
+            "beta": betas.get(t),
+            "worst_drawdown_pct": own_dd["pct"] if own_dd else None,
+            "best_12m_pct": own_best12["pct"] if own_best12 else None,
+            "scenarios": {},
+        }
+        for c in crises + rallies:
+            match = next((rr for rr in c["rows"] if rr["ticker"] == t), None)
+            row["scenarios"][c["key"]] = (
+                {"move_pct": match["move_pct"], "estimated": match["estimated"]} if match else None
+            )
+        per_holding.append(row)
+
+    return {
+        "used": used, "dropped": dropped,
+        "max_drawdown": ({**dd, "peak_date": _stress_dt(dd["peak_date"]),
+                           "trough_date": _stress_dt(dd["trough_date"]),
+                           "recovered_date": _stress_dt(dd["recovered_date"])} if dd else None),
+        "best_12m": ({**best12, "start_date": _stress_dt(best12["start_date"]),
+                       "end_date": _stress_dt(best12["end_date"])} if best12 else None),
+        "replayed_10y_pct": ret10,
+        "drawdown_series": _stress_series_to_pairs(dd_series),
+        "runup_series": _stress_series_to_pairs(runup_series),
+        "crises": crises, "rallies": rallies,
+        "portfolio_beta": pbeta, "shock_grid": grid, "monte_carlo": mc,
+        "per_holding": per_holding, "total_value_aud": total_value_aud,
+    }
+
+
+def _stress_whatif_metrics(weights, histories, index_histories, total_value_aud):
+    """The 5 weight-dependent aggregates the rebalance sandbox compares
+    (Current vs What-if) - deliberately a small subset of
+    _stress_compute_full's full output, recomputed live on every
+    slider/number-input interaction. No new network or sqlite-cache
+    reads happen here - `histories`/`index_histories` are the SAME
+    dicts already fetched once for the whole tab render."""
+    betas = {t: stress_engine.compute_beta(histories.get(t), index_histories.get(stress_engine.home_index_for(t)))
+             for t in weights}
+    hist_15y = {t: stress_engine.cap_to_years(h, 15) for t, h in histories.items()}
+    series, _used, _dropped = stress_engine.build_combined_series(weights, hist_15y)
+    dd = stress_engine.max_drawdown(series) if series is not None else None
+    best12 = stress_engine.best_rolling_12m(series) if series is not None else None
+    ret10 = stress_engine.replayed_return_pa(series, 10) if series is not None else None
+    covid_window = next(w for w in stress_engine.CRISES if w[0] == "covid")
+    covid_result = stress_engine.scenario_replay(weights, histories, index_histories, betas, covid_window, total_value_aud)
+    pbeta = stress_engine.portfolio_beta(weights, betas)
+    return {
+        "max_downside_pct": dd["pct"] if dd else None,
+        "max_upside_pct": best12["pct"] if best12 else None,
+        "covid_pct": covid_result["move_pct"],
+        "beta": pbeta,
+        "replayed_10y_pct": ret10,
+    }
+
+
+def _stress_area_chart(pairs, title, line_color, fill_color):
+    if not pairs:
+        return None
+    dates = [p[0] for p in pairs]
+    vals = [p[1] for p in pairs]
+    fig = go.Figure(data=[go.Scatter(
+        x=dates, y=vals, mode="lines", line=dict(color=line_color, width=1.5),
+        fill="tozeroy", fillcolor=fill_color,
+    )])
+    fig.update_layout(
+        title=title, margin=dict(t=44, b=10, l=10, r=10), height=260,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#c7d2e0"), yaxis=dict(ticksuffix="%"),
+    )
+    return fig
+
+
+def _stress_window_label(key, _st_):
+    return _st_(f"window.{key}")
+
+
+def _render_stress_scenario_table(scenarios, _st_, is_crisis):
+    title_key = "crisis_table_title" if is_crisis else "rally_table_title"
+    best_col_key = "col_best_defender" if is_crisis else "col_biggest_engine"
+    worst_col_key = "col_worst_hit" if is_crisis else "col_drag"
+    st.markdown(f"##### {_st_(title_key)}")
+    rows = []
+    any_estimated = False
+    for s in scenarios:
+        if s["move_pct"] is None:
+            continue
+        best, worst = s.get("best"), s.get("worst")
+        rows.append({
+            _st_("col_window"): _stress_window_label(s["key"], _st_),
+            _st_("col_move_pct"): f"{s['move_pct']:+.1f}%",
+            _st_("col_move_value"): _fmt_aud(s["move_value_aud"]),
+            _st_(best_col_key): f"{best['ticker']} ({best['move_pct']:+.1f}%)" if best else "—",
+            _st_(worst_col_key): f"{worst['ticker']} ({worst['move_pct']:+.1f}%)" if worst else "—",
+        })
+        any_estimated = any_estimated or any(r["estimated"] for r in s["rows"])
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        if any_estimated:
+            st.caption(_st_("estimated_flag"))
+    else:
+        st.caption(_st_("no_data"))
+
+
+def _render_stress_per_holding_table(result, _st_):
+    st.markdown(f"##### {_st_('per_holding_table_title')}")
+    per_holding = result.get("per_holding") or []
+    if not per_holding:
+        st.caption(_st_("no_data"))
+        return
+    _na = _st_("na")
+    scenario_keys = [w[0] for w in stress_engine.CRISES + stress_engine.RALLIES]
+    scenario_labels = {k: _stress_window_label(k, _st_) for k in scenario_keys}
+    rows = []
+    for h in sorted(per_holding, key=lambda r: r["weight_pct"] or 0, reverse=True):
+        row = {
+            _st_("col_ticker"): f"/deep-dive?ticker={h['ticker']}",
+            _st_("col_weight"): h["weight_pct"],
+            _st_("col_beta"): f"{h['beta']:.2f}" if h["beta"] is not None else _na,
+            _st_("col_worst_drawdown"): f"{h['worst_drawdown_pct']:.1f}%" if h["worst_drawdown_pct"] is not None else _na,
+            _st_("col_best_12m"): f"{h['best_12m_pct']:.1f}%" if h["best_12m_pct"] is not None else _na,
+        }
+        for k in scenario_keys:
+            sc = h["scenarios"].get(k)
+            if sc is None:
+                row[scenario_labels[k]] = _na
+            else:
+                mark = " ◆" if sc["estimated"] else ""
+                row[scenario_labels[k]] = f"{sc['move_pct']:+.1f}%{mark}"
+        rows.append(row)
+    st.dataframe(
+        pd.DataFrame(rows), hide_index=True, use_container_width=True,
+        column_config={
+            _st_("col_ticker"): st.column_config.LinkColumn(
+                _st_("col_ticker"), display_text=r"ticker=(.+)$", help="Open this holding's Deep Dive",
+            ),
+            _st_("col_weight"): st.column_config.NumberColumn(_st_("col_weight"), format="%.1f%%"),
+        },
+    )
+
+
+def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, index_histories,
+                                       total_value_aud, current_result, _st_):
+    st.markdown(f"##### {_st_('rebalance_title')}")
+    st.caption(_st_("rebalance_never_suggests"))
+    st.caption(_st_("rebalance_never_modifies"))
+
+    _skey = f"stress_wi_{_active_portfolio or 'all'}"
+    tickers = sorted(weights.keys())
+    total_current = sum(weights.values()) or 1.0
+    current_pcts = {t: weights[t] / total_current * 100.0 for t in tickers}
+
+    if st.button(_st_("rebalance_reset"), key=f"{_skey}_reset"):
+        for t in tickers:
+            st.session_state[f"{_skey}_w_{t}"] = round(current_pcts[t], 1)
+
+    edited_pcts = {}
+    cols = st.columns(min(4, len(tickers)) or 1)
+    for i, t in enumerate(tickers):
+        with cols[i % len(cols)]:
+            default_val = st.session_state.get(f"{_skey}_w_{t}", round(current_pcts[t], 1))
+            edited_pcts[t] = st.number_input(
+                t, min_value=0.0, max_value=100.0, value=float(default_val), step=0.5,
+                key=f"{_skey}_w_{t}",
+            )
+    total_edit = sum(edited_pcts.values())
+    st.caption(_st_("rebalance_weight_total", total=f"{total_edit:.1f}"))
+    if abs(total_edit - 100.0) > 0.5:
+        return
+
+    edited_weights = {t: (edited_pcts[t] / 100.0) * total_value_aud for t in tickers}
+    whatif = _stress_whatif_metrics(edited_weights, histories, index_histories, total_value_aud)
+    covid_current = next((c for c in current_result.get("crises", []) if c["key"] == "covid"), None)
+    current_metrics = {
+        "max_downside_pct": current_result["max_drawdown"]["pct"] if current_result.get("max_drawdown") else None,
+        "max_upside_pct": current_result["best_12m"]["pct"] if current_result.get("best_12m") else None,
+        "covid_pct": covid_current["move_pct"] if covid_current else None,
+        "beta": current_result.get("portfolio_beta"),
+        "replayed_10y_pct": current_result.get("replayed_10y_pct"),
+    }
+
+    _na = _st_("na")
+
+    def _fmt_pct_metric(v):
+        return f"{v:.1f}%" if v is not None else _na
+
+    def _fmt_beta_metric(v):
+        return f"{v:.2f}" if v is not None else _na
+
+    st.markdown(f"**{_st_('whatif_table_title')}**")
+    metric_defs = [
+        ("metric_max_downside", "max_downside_pct", _fmt_pct_metric),
+        ("metric_max_upside", "max_upside_pct", _fmt_pct_metric),
+        ("metric_covid_replay", "covid_pct", _fmt_pct_metric),
+        ("metric_beta", "beta", _fmt_beta_metric),
+        ("metric_replayed_10y", "replayed_10y_pct", _fmt_pct_metric),
+    ]
+    table_rows = []
+    for label_key, field, fmt in metric_defs:
+        cur_v, wi_v = current_metrics[field], whatif[field]
+        delta = (wi_v - cur_v) if (cur_v is not None and wi_v is not None) else None
+        table_rows.append({
+            _st_("col_metric"): _st_(label_key),
+            _st_("col_current"): fmt(cur_v),
+            _st_("col_whatif"): fmt(wi_v),
+            _st_("col_delta"): (f"{delta:+.2f}" if delta is not None else _na),
+        })
+    st.dataframe(pd.DataFrame(table_rows), hide_index=True, use_container_width=True)
+
+
+def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
+    """Part 3b - the "Stress Test" tab: headline cards -> drawdown/run-
+    up mini charts -> crisis/rally replay tables -> shock grid ->
+    rebalance sandbox -> per-holding detail -> collapsed Monte Carlo.
+    Needs >=1 holding with a live price; otherwise a single line."""
+    _lang = st.session_state.get("lang", "en")
+    _st_ = lambda key, **fmt: i18n.t(f"portfolio.stress.{key}", _lang, **fmt)
+    _na = _st_("na")
+
+    weights, total_value_aud = _stress_weights_and_value(_holdings, _analyses)
+    if not weights:
+        st.caption(_st_("empty"))
+        return
+
+    st.caption(_st_("intro_caption"))
+
+    tickers = tuple(sorted(weights.keys()))
+    with st.spinner(_st_("loading_spinner")):
+        histories = _stress_history_bundle(tickers)
+        index_histories = _stress_index_histories()
+
+    _cache_key = stress_engine.cache_key(_holdings)
+    result = stress_engine.get_cached_result(_cache_key)
+    if result is None:
+        result = _stress_compute_full(weights, histories, index_histories, total_value_aud)
+        try:
+            stress_engine.set_cached_result(_cache_key, result)
+        except Exception:
+            pass
+
+    # --- 1. Headline cards -------------------------------------------
+    _c1, _c2 = st.columns(2)
+    dd, best12 = result.get("max_drawdown"), result.get("best_12m")
+    with _c1:
+        st.markdown(f"**{_st_('max_downside_title')}**")
+        if dd:
+            _val = abs(dd["pct"]) / 100.0 * total_value_aud
+            if dd.get("recovered_date"):
+                st.markdown(_st_(
+                    "downside_line", pct=f"{dd['pct']:.1f}", value=f"{_val:,.0f}",
+                    peak=dd["peak_date"], trough=dd["trough_date"],
+                    months=f"{dd['months_to_recover']:.1f}",
+                ))
+            else:
+                st.markdown(_st_(
+                    "downside_line_no_recovery", pct=f"{dd['pct']:.1f}", value=f"{_val:,.0f}",
+                    peak=dd["peak_date"], trough=dd["trough_date"],
+                ))
+        else:
+            st.caption(_st_("no_data"))
+    with _c2:
+        st.markdown(f"**{_st_('max_upside_title')}**")
+        if best12:
+            _val = best12["pct"] / 100.0 * total_value_aud
+            st.markdown(_st_(
+                "upside_line", pct=f"{best12['pct']:.1f}", value=f"{_val:,.0f}",
+                start=best12["start_date"], end=best12["end_date"],
+            ))
+        else:
+            st.caption(_st_("no_data"))
+    if result.get("replayed_10y_pct") is not None:
+        st.caption(_st_("replayed_return_line", years=10, pct=f"{result['replayed_10y_pct']:.1f}"))
+
+    # --- 2. Drawdown / run-up mini charts ------------------------------
+    _cc1, _cc2 = st.columns(2)
+    with _cc1:
+        _fig = _stress_area_chart(result["drawdown_series"], _st_("drawdown_chart_title"),
+                                    "#fb7185", "rgba(251,113,133,0.18)")
+        if _fig is not None:
+            sdd_plotly_chart(_fig, key=f"stress_dd_{_active_portfolio or 'all'}")
+        if dd:
+            st.caption(f"{dd['pct']:.1f}%")
+    with _cc2:
+        _fig = _stress_area_chart(result["runup_series"], _st_("runup_chart_title"),
+                                    "#22c55e", "rgba(34,197,94,0.18)")
+        if _fig is not None:
+            sdd_plotly_chart(_fig, key=f"stress_ru_{_active_portfolio or 'all'}")
+        if best12:
+            st.caption(f"+{best12['pct']:.1f}%")
+
+    # --- 3. Crisis / rally replay tables --------------------------------
+    _render_stress_scenario_table(result.get("crises", []), _st_, is_crisis=True)
+    _render_stress_scenario_table(result.get("rallies", []), _st_, is_crisis=False)
+
+    # --- 4. Shock grid ---------------------------------------------------
+    st.markdown(f"##### {_st_('shock_grid_title')}")
+    _pbeta = result.get("portfolio_beta")
+    if _pbeta is not None:
+        st.caption(_st_("shock_grid_beta_line", beta=f"{_pbeta:.2f}"))
+        _grid_rows = [{
+            _st_("col_shock"): f"{g['shock_pct']:+d}%",
+            _st_("col_move_pct"): f"{g['move_pct']:+.1f}%",
+            _st_("col_move_value"): _fmt_aud(g["move_value_aud"]),
+        } for g in result.get("shock_grid", [])]
+        st.dataframe(pd.DataFrame(_grid_rows), hide_index=True, use_container_width=True)
+        st.caption(_st_("shock_grid_caption"))
+    else:
+        st.caption(_st_("no_data"))
+
+    # --- 5. Rebalance sandbox --------------------------------------------
+    _render_stress_rebalance_sandbox(
+        _active_portfolio, weights, histories, index_histories, total_value_aud, result, _st_,
+    )
+
+    # --- 6. Per-holding detail --------------------------------------------
+    _render_stress_per_holding_table(result, _st_)
+
+    # --- 7. Monte Carlo (collapsed) ---------------------------------------
+    with st.expander(_st_("monte_carlo_title"), expanded=False):
+        mc = result.get("monte_carlo")
+        if mc:
+            st.markdown(_st_(
+                "monte_carlo_band_line", p5=f"{mc['p5_pct']:.1f}", p95=f"{mc['p95_pct']:.1f}",
+                p5_value=f"{mc['p5_value_aud']:,.0f}", p95_value=f"{mc['p95_value_aud']:,.0f}",
+            ))
+        else:
+            st.caption(_st_("no_data"))
+        st.caption(_st_("monte_carlo_caption"))
+    st.caption(_st_("footer_caption"))
+
+
+def _stress_portfolio_ask_summary(_holdings, _analyses):
+    """Part 3c - compact plain-text stress-test headline summary
+    appended to the portfolio Ask box's private grounding context
+    (never cached/persisted, same convention as
+    _etf_portfolio_ask_summary). Empty string if there's nothing to
+    replay yet."""
+    weights, total_value_aud = _stress_weights_and_value(_holdings, _analyses)
+    if not weights:
+        return ""
+    tickers = tuple(sorted(weights.keys()))
+    histories = _stress_history_bundle(tickers)
+    index_histories = _stress_index_histories()
+    _cache_key = stress_engine.cache_key(_holdings)
+    result = stress_engine.get_cached_result(_cache_key)
+    if result is None:
+        result = _stress_compute_full(weights, histories, index_histories, total_value_aud)
+        try:
+            stress_engine.set_cached_result(_cache_key, result)
+        except Exception:
+            pass
+    dd, best12 = result.get("max_drawdown"), result.get("best_12m")
+    lines = ["", "Stress test (replayed against real historical prices):"]
+    if dd:
+        lines.append(f"- Worst historical drawdown at these weights: {dd['pct']:.1f}%")
+    if best12:
+        lines.append(f"- Best historical 12-month return at these weights: +{best12['pct']:.1f}%")
+    if result.get("portfolio_beta") is not None:
+        lines.append(f"- Portfolio beta vs a blended S&P 500/ASX 200 index: {result['portfolio_beta']:.2f}")
+    return "\n".join(lines) if len(lines) > 2 else ""
+
+
 def _portfolio_ask_context(_holdings, _analyses):
     """Compact plain-text summary of THIS visitor's OWN holdings for the
     Ask box's system prompt - built fresh on every call from data
@@ -11440,6 +11896,12 @@ def _portfolio_ask_context(_holdings, _analyses):
         _etf_summary = ""
     if _etf_summary:
         lines.append(_etf_summary)
+    try:
+        _stress_summary = _stress_portfolio_ask_summary(_holdings, _analyses)
+    except Exception:
+        _stress_summary = ""
+    if _stress_summary:
+        lines.append(_stress_summary)
     return "\n".join(lines)
 
 

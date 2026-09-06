@@ -883,6 +883,7 @@ EN = {
     "portfolio.tab_health": "\U0001FA7A Health & News",
     "portfolio.tab_progress": "\U0001F4C8 Progress",
     "portfolio.tab_etfs": "\U0001F9FA My ETFs",
+    "portfolio.tab_stress": "\U0001F9EA Stress Test",
     "portfolio.tab_ask": "\U0001F4AC Ask",
     "portfolio.tab_alerts": "\U0001F514 My alerts",
 
@@ -949,6 +950,93 @@ EN = {
     ),
     "portfolio.etfs.whatif_caption": "A what-if calculation at the rate you set - not a forecast.",
     "portfolio.etfs.na": "—",
+
+    "portfolio.stress.empty": "Add a holding with a live price to run a stress test.",
+    "portfolio.stress.loading_spinner": "Replaying your holdings against historical prices...",
+    "portfolio.stress.intro_caption": (
+        "Your current holdings and weights applied to real historical prices "
+        "+ distributions - facts about the past, not predictions about the "
+        "future."
+    ),
+    "portfolio.stress.max_downside_title": "MAX DOWNSIDE",
+    "portfolio.stress.max_upside_title": "MAX UPSIDE",
+    "portfolio.stress.downside_line": (
+        "{pct}% (A\\${value}) · {peak} to {trough} · {months} months to recover"
+    ),
+    "portfolio.stress.downside_line_no_recovery": (
+        "{pct}% (A\\${value}) · {peak} to {trough} · not yet recovered"
+    ),
+    "portfolio.stress.upside_line": "{pct}% (A\\${value}) · {start} to {end}",
+    "portfolio.stress.no_data": "Not enough shared price history across your holdings to replay this yet.",
+    "portfolio.stress.drawdown_chart_title": "Drawdown history",
+    "portfolio.stress.runup_chart_title": "Run-up history",
+    "portfolio.stress.replayed_return_line": "Replayed {years}y return: {pct}% p.a.",
+    "portfolio.stress.crisis_table_title": "Crisis replays",
+    "portfolio.stress.rally_table_title": "Rally replays",
+    "portfolio.stress.col_window": "Window",
+    "portfolio.stress.col_shock": "Shock",
+    "portfolio.stress.col_move_pct": "Portfolio move",
+    "portfolio.stress.col_move_value": "Portfolio move (AUD)",
+    "portfolio.stress.col_best_defender": "Best defender",
+    "portfolio.stress.col_worst_hit": "Worst hit",
+    "portfolio.stress.col_biggest_engine": "Biggest engine",
+    "portfolio.stress.col_drag": "Biggest drag",
+    "portfolio.stress.estimated_flag": "◆ estimated (proxied via sector/index × beta)",
+    "portfolio.stress.shock_grid_title": "Shock grid",
+    "portfolio.stress.shock_grid_beta_line": "Portfolio beta (vs a blended S&P 500 / ASX 200 index): {beta}",
+    "portfolio.stress.shock_grid_caption": (
+        "A plain beta-weighted model, not a replay - a low-beta portfolio "
+        "cushions crashes and damps rallies by the same mechanism."
+    ),
+    "portfolio.stress.rebalance_title": "⚖️ Rebalance sandbox",
+    "portfolio.stress.rebalance_never_suggests": (
+        "This site never suggests weights - no optimiser, no recommendation. "
+        "Set your own what-if weights below."
+    ),
+    "portfolio.stress.rebalance_never_modifies": (
+        "Nothing here changes your real portfolio - this is a what-if "
+        "calculation only."
+    ),
+    "portfolio.stress.rebalance_weight_total": "Total: {total}% (must be 100% to compare)",
+    "portfolio.stress.rebalance_reset": "Reset to current weights",
+    "portfolio.stress.whatif_table_title": "Current vs what-if",
+    "portfolio.stress.col_metric": "Metric",
+    "portfolio.stress.col_current": "Current",
+    "portfolio.stress.col_whatif": "What-if",
+    "portfolio.stress.col_delta": "Δ",
+    "portfolio.stress.metric_max_downside": "Max downside",
+    "portfolio.stress.metric_max_upside": "Max upside",
+    "portfolio.stress.metric_covid_replay": "COVID replay",
+    "portfolio.stress.metric_beta": "Beta",
+    "portfolio.stress.metric_replayed_10y": "Replayed 10y return p.a.",
+    "portfolio.stress.per_holding_table_title": "Per-holding detail",
+    "portfolio.stress.col_ticker": "Ticker",
+    "portfolio.stress.col_weight": "Weight",
+    "portfolio.stress.col_beta": "Beta",
+    "portfolio.stress.col_worst_drawdown": "Worst drawdown (15y)",
+    "portfolio.stress.col_best_12m": "Best 12 months",
+    "portfolio.stress.monte_carlo_title": "Monte Carlo (1-year band)",
+    "portfolio.stress.monte_carlo_band_line": (
+        "5th-95th percentile: {p5}% to {p95}% (A\\${p5_value} to A\\${p95_value})"
+    ),
+    "portfolio.stress.monte_carlo_caption": (
+        "5,000 simulated paths from historical volatility and correlations. "
+        "Based on the past behaving like the future - which it may not. Not "
+        "a prediction."
+    ),
+    "portfolio.stress.footer_caption": (
+        "Correlations rise in severe panics; the replays capture this (it "
+        "happened in the data), the grid and simulation partly understate it."
+    ),
+    "portfolio.stress.window.gfc": "GFC",
+    "portfolio.stress.window.q4_2018": "2018 Q4",
+    "portfolio.stress.window.covid": "COVID crash",
+    "portfolio.stress.window.rate_shock_2022": "2022 rate shock",
+    "portfolio.stress.window.post_gfc": "Post-GFC rebound",
+    "portfolio.stress.window.melt_up_2016_17": "2016-17 melt-up",
+    "portfolio.stress.window.covid_recovery": "COVID recovery",
+    "portfolio.stress.window.ai_rally_2023_24": "2023-24 AI rally",
+    "portfolio.stress.na": "—",
 }
 
 ES = {
@@ -1703,6 +1791,7 @@ ES = {
     "portfolio.tab_health": "\U0001FA7A Salud y noticias",
     "portfolio.tab_progress": "\U0001F4C8 Progreso",
     "portfolio.tab_etfs": "\U0001F9FA Mis ETFs",
+    "portfolio.tab_stress": "\U0001F9EA Prueba de estrés",
     "portfolio.tab_ask": "\U0001F4AC Preguntar",
     "portfolio.tab_alerts": "\U0001F514 Mis alertas",
 
@@ -1763,6 +1852,95 @@ ES = {
     ),
     "portfolio.etfs.whatif_caption": "Un cálculo \"qué pasaría si\" a la tasa que fijes - no es una previsión.",
     "portfolio.etfs.na": "—",
+
+    "portfolio.stress.empty": "Añade una posición con precio en vivo para ejecutar una prueba de estrés.",
+    "portfolio.stress.loading_spinner": "Reproduciendo tus posiciones sobre precios históricos...",
+    "portfolio.stress.intro_caption": (
+        "Tus posiciones y ponderaciones actuales aplicadas a precios + "
+        "distribuciones históricas reales - hechos sobre el pasado, no "
+        "predicciones sobre el futuro."
+    ),
+    "portfolio.stress.max_downside_title": "MÁXIMA CAÍDA",
+    "portfolio.stress.max_upside_title": "MÁXIMA SUBIDA",
+    "portfolio.stress.downside_line": (
+        "{pct}% (A\\${value}) · {peak} a {trough} · {months} meses para recuperarse"
+    ),
+    "portfolio.stress.downside_line_no_recovery": (
+        "{pct}% (A\\${value}) · {peak} a {trough} · aún sin recuperar"
+    ),
+    "portfolio.stress.upside_line": "{pct}% (A\\${value}) · {start} a {end}",
+    "portfolio.stress.no_data": "No hay suficiente historial de precios compartido entre tus posiciones para reproducir esto todavía.",
+    "portfolio.stress.drawdown_chart_title": "Historial de caídas",
+    "portfolio.stress.runup_chart_title": "Historial de recuperación",
+    "portfolio.stress.replayed_return_line": "Rentabilidad reproducida a {years} años: {pct}% anual",
+    "portfolio.stress.crisis_table_title": "Repeticiones de crisis",
+    "portfolio.stress.rally_table_title": "Repeticiones de repuntes",
+    "portfolio.stress.col_window": "Periodo",
+    "portfolio.stress.col_shock": "Choque",
+    "portfolio.stress.col_move_pct": "Movimiento de la cartera",
+    "portfolio.stress.col_move_value": "Movimiento de la cartera (AUD)",
+    "portfolio.stress.col_best_defender": "Mejor defensa",
+    "portfolio.stress.col_worst_hit": "Más golpeada",
+    "portfolio.stress.col_biggest_engine": "Mayor motor",
+    "portfolio.stress.col_drag": "Mayor lastre",
+    "portfolio.stress.estimated_flag": "◆ estimado (aproximado vía sector/índice × beta)",
+    "portfolio.stress.shock_grid_title": "Cuadrícula de choques",
+    "portfolio.stress.shock_grid_beta_line": "Beta de la cartera (vs. un índice combinado S&P 500 / ASX 200): {beta}",
+    "portfolio.stress.shock_grid_caption": (
+        "Un modelo simple ponderado por beta, no una repetición histórica - "
+        "una cartera de beta baja amortigua las caídas y también atenúa las "
+        "subidas por el mismo mecanismo."
+    ),
+    "portfolio.stress.rebalance_title": "⚖️ Simulador de reponderación",
+    "portfolio.stress.rebalance_never_suggests": (
+        "Este sitio nunca sugiere ponderaciones - sin optimizador, sin "
+        "recomendación. Fija tú mismo las ponderaciones \"qué pasaría si\" abajo."
+    ),
+    "portfolio.stress.rebalance_never_modifies": (
+        "Nada aquí cambia tu cartera real - esto es solo un cálculo \"qué "
+        "pasaría si\"."
+    ),
+    "portfolio.stress.rebalance_weight_total": "Total: {total}% (debe ser 100% para comparar)",
+    "portfolio.stress.rebalance_reset": "Restablecer a las ponderaciones actuales",
+    "portfolio.stress.whatif_table_title": "Actual vs. qué pasaría si",
+    "portfolio.stress.col_metric": "Métrica",
+    "portfolio.stress.col_current": "Actual",
+    "portfolio.stress.col_whatif": "Qué pasaría si",
+    "portfolio.stress.col_delta": "Δ",
+    "portfolio.stress.metric_max_downside": "Máxima caída",
+    "portfolio.stress.metric_max_upside": "Máxima subida",
+    "portfolio.stress.metric_covid_replay": "Repetición COVID",
+    "portfolio.stress.metric_beta": "Beta",
+    "portfolio.stress.metric_replayed_10y": "Rentabilidad reproducida a 10 años anual",
+    "portfolio.stress.per_holding_table_title": "Detalle por posición",
+    "portfolio.stress.col_ticker": "Ticker",
+    "portfolio.stress.col_weight": "Ponderación",
+    "portfolio.stress.col_beta": "Beta",
+    "portfolio.stress.col_worst_drawdown": "Peor caída (15 años)",
+    "portfolio.stress.col_best_12m": "Mejores 12 meses",
+    "portfolio.stress.monte_carlo_title": "Monte Carlo (banda a 1 año)",
+    "portfolio.stress.monte_carlo_band_line": (
+        "Percentil 5-95: {p5}% a {p95}% (A\\${p5_value} a A\\${p95_value})"
+    ),
+    "portfolio.stress.monte_carlo_caption": (
+        "5.000 trayectorias simuladas a partir de la volatilidad y "
+        "correlaciones históricas. Basado en que el pasado se comporte "
+        "como el futuro - lo cual puede no ocurrir. No es una predicción."
+    ),
+    "portfolio.stress.footer_caption": (
+        "Las correlaciones aumentan en pánicos severos; las repeticiones "
+        "históricas lo capturan (ocurrió en los datos), la cuadrícula y la "
+        "simulación lo subestiman en parte."
+    ),
+    "portfolio.stress.window.gfc": "Crisis financiera de 2008",
+    "portfolio.stress.window.q4_2018": "4.º trimestre de 2018",
+    "portfolio.stress.window.covid": "Desplome por COVID",
+    "portfolio.stress.window.rate_shock_2022": "Shock de tipos de 2022",
+    "portfolio.stress.window.post_gfc": "Repunte post-crisis de 2009",
+    "portfolio.stress.window.melt_up_2016_17": "Subida de 2016-17",
+    "portfolio.stress.window.covid_recovery": "Recuperación post-COVID",
+    "portfolio.stress.window.ai_rally_2023_24": "Repunte de la IA 2023-24",
+    "portfolio.stress.na": "—",
 }
 
 
