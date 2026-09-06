@@ -659,7 +659,9 @@ EN = {
     ),
 
     "home.toolkit.kicker": "THE TOOLKIT",
-    "home.toolkit.h2": "Four ways in. One consistent model.",
+    # Second amendment to Part 5 (6 Sep): Deep Dive joins the toolkit row
+    # as its own (first) tile, so "Four ways in" became five.
+    "home.toolkit.h2": "Five ways in. One consistent model.",
     "home.toolkit.secsub_factual": (
         "Every tool runs the same engine &mdash; the same DCF model, the same "
         "quality calculation, the same psychology read &mdash; so the numbers "
@@ -734,6 +736,12 @@ EN = {
     # hardcoded here, so a stat can never go stale the way the old "8 tools
     # inside" mock number already had (Portfolio has grown to 9 tabs).
     "home.tiles.free_badge": "FREE",
+    "home.tiles.deepdive_title": "Deep Dive",
+    "home.tiles.deepdive_desc": (
+        "Any ticker, the full workup &mdash; valuation, quality, moat, "
+        "psychology, alerts."
+    ),
+    "home.tiles.deepdive_stat": "{count} tickers covered",
     "home.tiles.research_title": "Hand-built Research",
     "home.tiles.research_desc": (
         "One company at a time, weeks each &mdash; thesis, valuation and "
@@ -1846,7 +1854,7 @@ ES = {
     ),
 
     "home.toolkit.kicker": "EL KIT DE HERRAMIENTAS",
-    "home.toolkit.h2": "Cuatro formas de empezar. Un solo modelo consistente.",
+    "home.toolkit.h2": "Cinco formas de empezar. Un solo modelo consistente.",
     "home.toolkit.secsub_factual": (
         "Cada herramienta usa el mismo motor &mdash; el mismo modelo DCF, "
         "el mismo cálculo de calidad, la misma lectura de psicología "
@@ -1917,6 +1925,12 @@ ES = {
     # Part 5 (home tiles, Option C) - Spanish counterparts, see the EN
     # dict's matching comment for what fills {count}/{latest}/{universes}.
     "home.tiles.free_badge": "GRATIS",
+    "home.tiles.deepdive_title": "Deep Dive",
+    "home.tiles.deepdive_desc": (
+        "Cualquier ticker, el análisis completo &mdash; valoración, "
+        "calidad, foso, psicología, alertas."
+    ),
+    "home.tiles.deepdive_stat": "{count} tickers cubiertos",
     "home.tiles.research_title": "Investigación hecha a mano",
     "home.tiles.research_desc": (
         "Una empresa a la vez, semanas de trabajo cada una &mdash; tesis, "

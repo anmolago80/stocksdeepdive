@@ -1443,6 +1443,13 @@ st.markdown(
        .sdd-cards5 grid (Deep Dive dropped - reached from the hero search
        box instead - leaving 4: Research/Scanner/Compare/Portfolio). */
     .sdd-tiles4 { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-top:22px; }
+    /* Second amendment to Part 5: Deep Dive joins the toolkit row as its
+       own (first) tile, making five - same card/gap/margin rules as
+       .sdd-tiles4, just one more column on desktop. Included alongside
+       .sdd-tiles4 in both responsive breakpoints below rather than
+       duplicating those rules, so the 2-per-row/1-per-row wrap behaviour
+       stays identical between the two. */
+    .sdd-tiles5 { display:grid; grid-template-columns:repeat(5,1fr); gap:14px; margin-top:22px; }
     .sdd-feat { background:#121f36; border:1px solid #1f3352; border-radius:14px; padding:18px 20px;
       text-decoration:none !important; display:block; position:relative;
       transition:border-color .15s, transform .15s, box-shadow .15s; }
@@ -1521,7 +1528,7 @@ st.markdown(
       margin-top:6px; text-decoration:none !important; }
     .sdd-calempty { color:#5b7290; font-size:12px; padding:4px 2px; }
     @media (max-width:900px) {
-      .sdd-tiles4, .sdd-covgrid { grid-template-columns:1fr 1fr; }
+      .sdd-tiles4, .sdd-tiles5, .sdd-covgrid { grid-template-columns:1fr 1fr; }
       .sdd-steps { grid-template-columns:1fr; }
       .sdd-strip { grid-template-columns:1fr 1fr; }
       .sdd-h1 { font-size:30px; }
@@ -1553,7 +1560,7 @@ st.markdown(
          width, still a squeeze at phone width (each card down to
          roughly half the already-narrow viewport). One more column at
          this breakpoint. */
-      .sdd-tiles4, .sdd-covgrid, .sdd-strip { grid-template-columns:1fr; }
+      .sdd-tiles4, .sdd-tiles5, .sdd-covgrid, .sdd-strip { grid-template-columns:1fr; }
       /* Part 7 week board: five day columns stack as day sections at
          phone width, same "1 column" treatment as the cards above. */
       .sdd-calboard { grid-template-columns:1fr; }
@@ -5539,6 +5546,26 @@ def _home_scanner_stat():
     return {"count": f"{_rounded:,}+" if _rounded else "0", "universes": _n_universes}
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def _home_deepdive_stat():
+    """Second amendment to Part 5: live "{count} tickers covered" stat for
+    the new Deep Dive tile - the exact same snapshot_store.all_public_
+    rows() count _home_scanner_stat() already reads (Deep Dive can in
+    fact analyse ANY ticker live, not just ones the nightly scanner has
+    already covered, but "tickers covered" is naturally read as the
+    site's own tracked universe, and reusing this call adds no new
+    network fetch or second source of truth to keep in sync). Unlike the
+    Scanner tile's rounded "2,100+", this is the plain exact count - the
+    spec's own copy ("<N> tickers covered") reads as a precise number,
+    not an approximation. None if the store is empty/unreachable, so the
+    caller can omit the stat line rather than show "0 tickers covered"."""
+    try:
+        _n = len(snapshot_store.all_public_rows())
+    except Exception:
+        _n = 0
+    return {"count": _n} if _n else None
+
+
 def page_home():
     # page_home renders its own header (view badge + account bar) instead
     # of calling _render_header, so the src capture + view-count bump that
@@ -5645,19 +5672,29 @@ def page_home():
     # of waiting on hero_r's height.
     _mood_box = hero_l.container()
 
-    # ---- feature tiles (Part 5, Option C) ----
-    # Four tiles - Deep Dive dropped (it's reached from the hero search box
-    # above, not a separate tile) - each pairing fixed copy with a LIVE
-    # stat line computed from local data (_home_research_stat/
-    # _home_scanner_stat/len(_PORTFOLIO_TAB_I18N_KEYS) - no new network
-    # call, same rule every stat source in this file already follows).
-    # Compare has no stat per the spec (a comparison isn't a fixed
-    # inventory the way "N companies" or "N stocks" is).
+    # ---- feature tiles (Part 5, Option C; Deep Dive added back in by the
+    # Second amendment to Part 5) ----
+    # Five tiles - Deep Dive first (originally dropped since it's reached
+    # from the hero search box above, but the owner's amendment put it
+    # back as its own tile), then the original four - each pairing fixed
+    # copy with a LIVE stat line computed from local data
+    # (_home_deepdive_stat/_home_research_stat/_home_scanner_stat/
+    # len(_PORTFOLIO_TAB_I18N_KEYS) - no new network call, same rule every
+    # stat source in this file already follows). Compare has no stat per
+    # the spec (a comparison isn't a fixed inventory the way "N companies"
+    # or "N stocks" is).
     _tk = lambda key: i18n.t(f"home.toolkit.{key}", _home_lang)
     _tl = lambda key, **kw: i18n.t(f"home.tiles.{key}", _home_lang, **kw)
     _secsub = _tk("secsub_factual") if _factual() else _tk("secsub_signal")
     _free_badge = html.escape(_tl("free_badge"))
 
+    _deepdive_stat = _home_deepdive_stat()
+    _deepdive_stat_html = ""
+    if _deepdive_stat:
+        _deepdive_count_fmt = f"{_deepdive_stat['count']:,}"
+        _deepdive_stat_html = (
+            f"<div class='sdd-feat-stat'>{_tl('deepdive_stat', count=_deepdive_count_fmt)}</div>"
+        )
     _research_stat = _home_research_stat()
     _research_stat_html = (
         f"<div class='sdd-feat-stat'>{_tl('research_stat', count=_research_stat['count'], latest=html.escape(_research_stat['latest']))}</div>"
@@ -5677,19 +5714,23 @@ def page_home():
 <div class='sdd-kicker'>{_tk('kicker')}</div>
 <div class='sdd-h2'>{_tk('h2')}</div>
 <div class='sdd-secsub'>{_secsub}</div>
-<div class='sdd-tiles4'>
+<div class='sdd-tiles5'>
+  <a class='sdd-feat' href='/deep-dive' target='_self'>
+    <span class='sdd-feat-badge'>{_free_badge}</span>
+    <div class='ic'>&#128300;</div><h3>{_tl('deepdive_title')}</h3>
+    <p>{_tl('deepdive_desc')}</p>{_deepdive_stat_html}
+    <span class='sdd-feat-arrow'>&#8594;</span>
+  </a>
   <a class='sdd-feat' href='/research' target='_self'>
     <span class='sdd-feat-badge'>{_free_badge}</span>
     <div class='ic'>&#128218;</div><h3>{_tl('research_title')}</h3>
-    <p>{_tl('research_desc')}</p>
-    {_research_stat_html}
+    <p>{_tl('research_desc')}</p>{_research_stat_html}
     <span class='sdd-feat-arrow'>&#8594;</span>
   </a>
   <a class='sdd-feat' href='/scanner' target='_self'>
     <span class='sdd-feat-badge'>{_free_badge}</span>
     <div class='ic'>&#128225;</div><h3>{_tl('scanner_title')}</h3>
-    <p>{_tl('scanner_desc')}</p>
-    {_scanner_stat_html}
+    <p>{_tl('scanner_desc')}</p>{_scanner_stat_html}
     <span class='sdd-feat-arrow'>&#8594;</span>
   </a>
   <a class='sdd-feat' href='/comparison' target='_self'>
@@ -5700,8 +5741,7 @@ def page_home():
   </a>
   <a class='sdd-feat' href='/portfolio' target='_self'>
     <div class='ic'>&#128188;</div><h3>{_tl('portfolio_title')}</h3>
-    <p>{_tl('portfolio_desc')}</p>
-    {_portfolio_stat_html}
+    <p>{_tl('portfolio_desc')}</p>{_portfolio_stat_html}
     <span class='sdd-feat-arrow'>&#8594;</span>
   </a>
 </div>
