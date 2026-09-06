@@ -5930,12 +5930,6 @@ def page_home():
     # of waiting on hero_r's height.
     _mood_box = hero_l.container()
 
-    # ---- Part 18 home banner (placement B1): between the hero/mood area
-    # and the toolkit row, promoting the Budget Planner specifically. ----
-    st.divider()
-    _render_tools_home_banner(_home_lang)
-    st.divider()
-
     # ---- feature tiles (Part 5, Option C; Deep Dive added back in by the
     # Second amendment to Part 5; Tools added as a sixth by Part 18) ----
     # Five tiles - Deep Dive first (originally dropped since it's reached
@@ -6029,6 +6023,15 @@ def page_home():
 """,
         unsafe_allow_html=True,
     )
+
+    # ---- Part 18 home banner (placement B1, moved by owner review round
+    # fix #7): was between the hero/mood area and the toolkit row; the
+    # owner wants it directly AFTER the toolkit tiles instead (toolkit ->
+    # banner -> what follows). Banner content/behaviour itself unchanged -
+    # only its position moved. ----
+    st.divider()
+    _render_tools_home_banner(_home_lang)
+    st.divider()
 
     # AI-readiness roadmap Phase 6: natural-language screening teaser -
     # a new, self-contained section (nothing above/below it changed) that
