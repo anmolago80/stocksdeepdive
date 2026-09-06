@@ -5889,6 +5889,114 @@ def _dd_verdict_sentence(dd, lang="en"):
     return sentence
 
 
+def _render_dd_colored_metric(container, label, value, help_text, key, color):
+    """st.metric(), but with its value text recoloured - Deep Dive
+    first-screen instruction, Part 1: "MOS and Value Score get their
+    existing colour semantics (score colour band) instead of plain
+    white." st.metric() itself has no colour parameter for its main value
+    (only a red/green delta arrow), so this wraps the metric in its own
+    st.container(key=...) and injects one scoped CSS rule targeting that
+    container's [data-testid="stMetricValue"] - the same st-key-<key>
+    selector scoping already used elsewhere on this page (e.g. the
+    Compounder View header card, _render_explain_popover's hover rule)
+    for a single-instance widget, safe here because page_deep_dive()
+    renders exactly one KPI row per view (unlike Comparison's per-ticker
+    loop, this page is never called twice in one run) - so a static key
+    needs no per-ticker suffix, which also sidesteps a raw ticker
+    (dots, carets) ever landing in a CSS class name.
+
+    `color` is None for "no comparable colour band" (e.g. no MOS
+    computed) - falls back to st.metric()'s normal default text colour by
+    skipping the CSS injection entirely, never forcing a colour that
+    doesn't mean anything."""
+    with container:
+        with st.container(key=key):
+            st.metric(label, value, help=help_text)
+        if color:
+            st.markdown(
+                f"<style>div.st-key-{key} [data-testid='stMetricValue'] "
+                f"{{ color:{color} !important; }}</style>",
+                unsafe_allow_html=True,
+            )
+
+
+def _render_dd_mini_valuation_bar(dd, lang="en"):
+    """Deep Dive first-screen instruction, Part 1: a slim (~28px) Price vs
+    Intrinsic Value bar directly under the verdict sentence - the "one
+    killer visual" the brief asks for, so the page's single most
+    important comparison is visible before any scrolling. Pure HTML/CSS
+    (no Plotly instance for a static, non-interactive bar - the brief
+    explicitly allows "whichever is lighter"), reusing exactly the two
+    numbers the bigger Price vs Intrinsic Value chart further down
+    (_dd_valuation()) already computes from - no new calculation, no new
+    network call.
+
+    Drawn as one track (0 -> max(price, intrinsic value)) with two thin
+    marker ticks - Price above the track, Intrinsic Value below it, so
+    the two labels never collide even when the two values are close
+    together - and the gap between them shaded the same green/red the
+    bigger chart's own _iv_color already uses (green when the model's
+    estimate sits above price, i.e. undervalued). Renders nothing when
+    there's no intrinsic value to compare against - same guard
+    _dd_verdict_sentence() itself already applies, so this never appears
+    orphaned under an empty verdict line.
+
+    Red-flag rule: when the intrinsic value itself rests on a default/
+    estimated input (dd["value_default"] - the same flag that already
+    triggers the "Rests on a default/estimated input..." caption right
+    above this bar), the Intrinsic Value tick's label carries a trailing
+    "*" so the flag survives into this new visual too, not just the text
+    note above it.
+
+    Mobile fix: each label's horizontal shift is pinned to its OWN marker
+    percentage (translateX(-{pct}%)) rather than a flat -50% - the
+    standard edge-safe centering trick. A flat -50% centers the label on
+    its marker everywhere, but at 390px wide a marker sitting near the
+    right edge (e.g. Price at or near the bar's own max) then pushes half
+    the label text past the viewport - caught on a 390x844 screenshot
+    during this instruction's own verify pass. Pinning the shift to the
+    marker's position instead means 0% (left edge) never shifts left and
+    100% (right edge) never shifts right, so the label is always fully
+    inside the bar's own width; it reads slightly off-center near the
+    edges, which is the correct trade-off for "never clipped" over
+    "always perfectly centered"."""
+    if not dd.get("intrinsic_value") or dd.get("mos") is None:
+        return
+    price = float(dd["price"])
+    iv = float(dd["intrinsic_value"])
+    ccy = dd.get("currency") or ""
+    hi = max(price, iv, 0.01)
+    price_pct = max(0.0, min(100.0, price / hi * 100.0))
+    iv_pct = max(0.0, min(100.0, iv / hi * 100.0))
+    lo_pct, hi_pct = min(price_pct, iv_pct), max(price_pct, iv_pct)
+    iv_color = "#34d399" if iv > price else "#fb7185"
+    iv_flag = "*" if dd.get("value_default") else ""
+    price_lbl = html.escape(i18n.t("dd.kpi.price", lang))
+    iv_lbl = html.escape(i18n.t("dd.kpi.intrinsic_value", lang))
+    st.markdown(
+        "<div style='position:relative;height:46px;margin:4px 0 10px;'>"
+        f"<div style='position:absolute;top:2px;left:{price_pct:.2f}%;"
+        f"transform:translateX(-{price_pct:.2f}%);font-size:10.5px;color:#8aa0b8;"
+        "white-space:nowrap;'>"
+        f"{price_lbl} {price:,.2f} {html.escape(ccy)}</div>"
+        "<div style='position:absolute;top:19px;left:0;right:0;height:8px;"
+        "background:#1f3352;border-radius:4px;'>"
+        f"<div style='position:absolute;left:{lo_pct:.2f}%;"
+        f"width:{max(hi_pct - lo_pct, 0.6):.2f}%;height:8px;"
+        f"background:{iv_color};border-radius:4px;'></div></div>"
+        f"<div style='position:absolute;top:19px;left:{price_pct:.2f}%;"
+        "transform:translateX(-50%);width:2px;height:8px;background:#e6edf5;'></div>"
+        f"<div style='position:absolute;top:19px;left:{iv_pct:.2f}%;"
+        "transform:translateX(-50%);width:2px;height:8px;background:#e6edf5;'></div>"
+        f"<div style='position:absolute;top:31px;left:{iv_pct:.2f}%;"
+        f"transform:translateX(-{iv_pct:.2f}%);font-size:10.5px;color:{iv_color};"
+        "white-space:nowrap;'>"
+        f"{iv_lbl} {iv:,.2f} {html.escape(ccy)}{iv_flag}</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def _render_dd_verdict_and_chips(dd):
     """Renders directly under the ticker header, above the score gauges:
     one server-computed verdict sentence (see _dd_verdict_sentence), then
@@ -5907,13 +6015,50 @@ def _render_dd_verdict_and_chips(dd):
     every other lang-aware call site on this page uses) rather than
     taking a parameter, since this function's own signature is otherwise
     unchanged from the pre-Español conversion pass and several other call
-    sites still call it with just (dd)."""
+    sites still call it with just (dd).
+
+    Deep Dive first-screen instruction, Part 1: the MOS figure inside the
+    sentence is now colour-coded (green positive / red negative, the same
+    threshold _featured_card_html's own mos_color already uses: > 0 is
+    green), and the valuation label (UNDERVALUED/FAIR/EXPENSIVE) is
+    appended as the scanner's own pill at the end of the sentence - same
+    .sdd-pill class + colour map _featured_card_html's _pillmap already
+    established, just inlined here since that dict is local to that
+    function. _dd_verdict_sentence() itself stays plain-text/untouched (it
+    has no other caller today, but keeping it pure text means nothing
+    downstream that might reuse it for a non-HTML context - e.g. "Copy as
+    text" - inherits stray HTML); the colour span and pill are spliced in
+    here, at the one place the sentence is actually rendered as HTML. The
+    MOS substring is replaced with count=1 so a coincidentally-identical
+    implied/model growth percentage later in the sentence is never
+    touched - str.replace's first match is always the MOS clause, since it
+    sits earlier in the template than the growth suffix."""
     _lang = st.session_state.get("lang", "en")
     sentence = _dd_verdict_sentence(dd, _lang)
     if sentence:
-        st.markdown(f"##### {html.escape(sentence)}")
+        _v_html = html.escape(sentence)
+        if dd.get("mos") is not None:
+            _v_mos_txt = f"{dd['mos']:+.0f}%"
+            _v_mos_color = "#34d399" if dd["mos"] > 0 else "#fb7185"
+            _v_html = _v_html.replace(
+                _v_mos_txt,
+                f"<span style='color:{_v_mos_color};'>{_v_mos_txt}</span>",
+                1,
+            )
+        _v_valuation = dd.get("valuation")
+        if _v_valuation and _v_valuation != "N/A":
+            _v_pill_color = {
+                "UNDERVALUED": "#34d399", "FAIR": "#fbbf24", "EXPENSIVE": "#fb7185",
+            }.get(_v_valuation, "#8aa0b8")
+            _v_html += (
+                f" <span class='sdd-pill' style='background:{_v_pill_color}22;"
+                f"color:{_v_pill_color};border:1px solid {_v_pill_color}55;'>"
+                f"{html.escape(_v_valuation)}</span>"
+            )
+        st.markdown(f"##### {_v_html}", unsafe_allow_html=True)
         if dd.get("quality_default") or dd.get("value_default"):
             st.caption(i18n.t("dd.verdict.default_note", _lang))
+        _render_dd_mini_valuation_bar(dd, _lang)
 
     ticker = dd["ticker"]
     chips = []
@@ -6370,6 +6515,17 @@ def page_deep_dive():
         # keys are internal, never displayed) and are intentionally
         # untouched.
         _dd_lang = st.session_state.get("lang", "en")
+        # Deep Dive first-screen instruction, Part 1: MOS/Value Score (Long
+        # Score in the admin view) tiles get the same colour bands already
+        # used elsewhere on this page (the MOS sign convention _featured_
+        # card_html's mos_color uses; the STRONG LONG/LONG/WATCHLIST/AVOID
+        # bands _dd_signal is already computed from, just above) instead of
+        # plain white - see _render_dd_colored_metric's own docstring.
+        _dd_mos_color = ("#34d399" if _dd["mos"] > 0 else "#fb7185") if _dd["mos"] is not None else None
+        _dd_score_color = {
+            "STRONG LONG": "#34d399", "LONG": "#34d399",
+            "WATCHLIST": "#fbbf24", "AVOID": "#fb7185",
+        }.get(_dd_signal)
         if _factual():
             _m1, _m2, _m3, _m4 = st.columns(4)
             _m1.metric(i18n.t("dd.kpi.price", _dd_lang), f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
@@ -6384,7 +6540,8 @@ def page_deep_dive():
                 f"{_dd['intrinsic_value']:,.2f} {_dd['currency']}" if _dd["intrinsic_value"] else "N/A",
                 help=METRIC_HELP["Intrinsic Value"],
             )
-            _m3.metric(
+            _render_dd_colored_metric(
+                _m3,
                 # Simple view, Part 5: label softening, first
                 # occurrence only - "MOS" is unabbreviated here (the
                 # underlying dd["mos"] field/METRIC_HELP key are
@@ -6392,9 +6549,12 @@ def page_deep_dive():
                 # else it already appears on the page after this.
                 i18n.t("dd.kpi.mos_label", _dd_lang),
                 f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
-                help=METRIC_HELP["MOS"],
+                METRIC_HELP["MOS"], "dd_kpi_mos", _dd_mos_color,
             )
-            _m4.metric(i18n.t("dd.kpi.value_score", _dd_lang), f"{_dd['long_score']:.1f}", help=METRIC_HELP["Value Score"])
+            _render_dd_colored_metric(
+                _m4, i18n.t("dd.kpi.value_score", _dd_lang), f"{_dd['long_score']:.1f}",
+                METRIC_HELP["Value Score"], "dd_kpi_score", _dd_score_color,
+            )
         else:
             _m1, _m2, _m3, _m4, _m5 = st.columns(5)
             _m1.metric(i18n.t("dd.kpi.price", _dd_lang), f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
@@ -6409,14 +6569,18 @@ def page_deep_dive():
                 f"{_dd['intrinsic_value']:,.2f} {_dd['currency']}" if _dd["intrinsic_value"] else "N/A",
                 help=METRIC_HELP["Intrinsic Value"],
             )
-            _m3.metric(
+            _render_dd_colored_metric(
+                _m3,
                 # Simple view, Part 5: same first-occurrence label
                 # softening as the _factual() branch above.
                 i18n.t("dd.kpi.mos_label", _dd_lang),
                 f"{_dd['mos']:+.1f}%" if _dd["mos"] is not None else "N/A",
-                help=METRIC_HELP["MOS"],
+                METRIC_HELP["MOS"], "dd_kpi_mos", _dd_mos_color,
             )
-            _m4.metric(i18n.t("dd.kpi.long_score", _dd_lang), f"{_dd['long_score']:.1f}", help=METRIC_HELP["Long Score"])
+            _render_dd_colored_metric(
+                _m4, i18n.t("dd.kpi.long_score", _dd_lang), f"{_dd['long_score']:.1f}",
+                METRIC_HELP["Long Score"], "dd_kpi_score", _dd_score_color,
+            )
             _m5.metric(i18n.t("dd.kpi.signal", _dd_lang), _dd_signal, help=METRIC_HELP["Signal"])
 
             # Task 10: flag it on screen whenever the DCF's base cash flow used
