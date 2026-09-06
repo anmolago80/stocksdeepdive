@@ -2209,7 +2209,7 @@ def _render_watchlist_bulk_import():
                     st.rerun()
 
 
-def _render_header(compact, page_label=None):
+def _render_header(compact, page_label=None, ultra_compact=False):
     _capture_first_src()
     _lang = st.session_state.get("lang", "en")
     _render_tape()
@@ -2236,6 +2236,72 @@ def _render_header(compact, page_label=None):
         extra_widget3=lambda: _render_lang_picker(key_prefix=page_label or "header"),
         lang=_lang,
     )
+
+    if ultra_compact:
+        # Deep Dive first-screen instruction, Part 4: on a ticker landing,
+        # the full hero (big logo + search box + 5 nav buttons) pushes the
+        # ticker header and price chart below the fold. This collapses it
+        # to one slim row - small logo, compact search, nav tucked into a
+        # popover menu - so the ticker header is visible without scrolling.
+        # The full-size hero (compact=False/True without ultra_compact)
+        # is completely untouched below - this branch returns early and
+        # never falls through to that code, so Home and ticker-less
+        # /deep-dive keep exactly the hero they had before this change.
+        _uc_logo_col, _uc_search_col, _uc_nav_col = st.columns(
+            [2, 5, 1], vertical_alignment="center"
+        )
+        with _uc_logo_col:
+            st.markdown(
+                """
+                <style>
+                .site-title-mini {
+                    font-weight: 800; font-family: 'Segoe UI', sans-serif;
+                    color: #e6edf5; font-size: 15px; margin: 0;
+                    white-space: nowrap;
+                }
+                .site-title-mini .accent { color: #2dd4bf; }
+                .site-title-mini-link, .site-title-mini-link:hover,
+                .site-title-mini-link:visited {
+                    text-decoration: none !important; display: block;
+                }
+                </style>
+                <a href="/" target="_self" class="site-title-mini-link">
+                    <div class="site-title-mini">Stocks<span class="accent">DeepDive</span></div>
+                </a>
+                """,
+                unsafe_allow_html=True,
+            )
+        with _uc_search_col:
+            with st.form("site_search_form", clear_on_submit=False, border=False):
+                _uc_text_col, _uc_btn_col = st.columns([5, 1])
+                with _uc_text_col:
+                    _search_text = st.text_input(
+                        "Ticker search",
+                        placeholder=i18n.t("header.search_placeholder", _lang),
+                        label_visibility="collapsed",
+                        key="site_search",
+                    )
+                with _uc_btn_col:
+                    _searched = st.form_submit_button(
+                        i18n.t("header.search_button", _lang),
+                        use_container_width=True, type="primary",
+                    )
+        with _uc_nav_col:
+            with st.popover("☰", key="dd_hero_nav_popover"):
+                _uc_nav_buttons = [
+                    (i18n.t("nav.research", _lang), "nav_research_uc", PG_RESEARCH),
+                    (i18n.t("nav.comparison", _lang), "nav_comparison_uc", PG_COMPARISON),
+                    (i18n.t("nav.scanner", _lang), "nav_scanner_uc", PG_SCANNER),
+                    (i18n.t("nav.calendar", _lang), "nav_results_calendar_uc", PG_RESULTS_CALENDAR),
+                    (i18n.t("nav.portfolio", _lang), "nav_portfolio_uc", PG_PORTFOLIO),
+                ]
+                for _uc_label, _uc_key, _uc_page in _uc_nav_buttons:
+                    if st.button(_uc_label, use_container_width=True, key=_uc_key):
+                        st.switch_page(_uc_page)
+        if _searched:
+            _dispatch_search(_search_text)
+        return
+
     st.markdown(
         f"""
         <style>
@@ -6429,6 +6495,39 @@ def _render_peer_context(dd):
         st.caption(i18n.t("dd.peer.no_peers", _peer_lang, universe=universe))
 
 
+def _render_dd_header_sparkline(ticker):
+    """Deep Dive first-screen instruction, Part 4: "a tiny 6-month close
+    sparkline (no axes, ~120x36px) next to the company name, from the
+    price history already fetched for the page - zero new network
+    calls." get_price_history() is @st.cache_data(ttl=1800)-decorated
+    (see its own definition), and the page's price chart already calls
+    it for this same ticker earlier in the render, so this second call
+    is a cache hit - no new yfinance request. Silently renders nothing
+    if there isn't enough history (new listing, data hiccup, etc.) -
+    a missing sparkline is a much smaller problem than a page error."""
+    try:
+        _hist = get_price_history(ticker)
+        _closes = _hist["Close"].dropna().tail(120)
+        if len(_closes) < 2:
+            return
+        _pts, _last_pt = _spark_path(list(_closes), width=120, height=36, pad=3)
+        if not _pts or not _last_pt:
+            return
+        _trend_color = "#34d399" if float(_closes.iloc[-1]) >= float(_closes.iloc[0]) else "#fb7185"
+        _lx, _ly = _last_pt.split(",")
+        st.markdown(
+            f"""<svg width="120" height="36" viewBox="0 0 120 36"
+                     style="display:block;" aria-hidden="true" role="presentation">
+                <polyline points="{_pts}" fill="none" stroke="{_trend_color}"
+                    stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+                <circle cx="{_lx}" cy="{_ly}" r="2.2" fill="{_trend_color}"/>
+            </svg>""",
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        pass
+
+
 def _render_dd_action_row(dd):
     """Deep Dive first-screen instruction, Part 3: "Watchlist / Alerts /
     Checklist, up beside the name" - replaces the three oversized
@@ -6482,7 +6581,17 @@ def _render_dd_action_row(dd):
 
 
 def page_deep_dive():
-    _render_header(compact=True, page_label="Deep Dive")
+    # Deep Dive first-screen instruction, Part 4: a ticker landing (either
+    # a fresh ?ticker= query param, or a result already sitting in session
+    # state from a prior interaction) gets the ultra-compact hero so the
+    # ticker header and price chart aren't pushed below the fold. Checked
+    # before _render_header runs; a bare /deep-dive with no ticker falls
+    # through false and keeps the existing full-size hero unchanged.
+    _dd_ticker_landing = bool(
+        (st.query_params.get("ticker") or "").strip()
+        or st.session_state.get("dd_result")
+    )
+    _render_header(compact=True, page_label="Deep Dive", ultra_compact=_dd_ticker_landing)
     _dd = st.session_state.get("dd_result")
 
     # Shareable URLs: /deep-dive?ticker=CSL.AX runs the analysis directly,
@@ -6568,7 +6677,11 @@ def page_deep_dive():
         else:
             _dd_value_word = "WEAK"
 
-        st.subheader(f"{_dd['ticker']} - {_dd['name']}")
+        _dd_hdr_col, _dd_spark_col = st.columns([6, 1], vertical_alignment="center")
+        with _dd_hdr_col:
+            st.subheader(f"{_dd['ticker']} - {_dd['name']}")
+        with _dd_spark_col:
+            _render_dd_header_sparkline(_dd["ticker"])
         _render_dd_action_row(_dd)
         _render_data_as_of(_dd["ticker"])
         _render_recent_results_banner(_dd["ticker"])
