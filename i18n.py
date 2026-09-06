@@ -1115,6 +1115,12 @@ EN = {
     "portfolio.stress.metric_covid_replay": "COVID replay",
     "portfolio.stress.metric_beta": "Beta",
     "portfolio.stress.metric_replayed_10y": "Replayed 10y return p.a.",
+    # Mega-batch Part 13: 1-yr 5th-95th percentile simulated range,
+    # shown as its own visually-distinct row (divider above, italic/
+    # dimmed styling) below the historical what-if metrics, so it can
+    # never be mistaken for another historical-replay fact - this one is
+    # a model, not something that happened.
+    "portfolio.stress.metric_mc_range": "1-yr range, simulated (95%) — not a prediction",
     "portfolio.stress.per_holding_table_title": "Per-holding detail",
     "portfolio.stress.col_ticker": "Ticker",
     "portfolio.stress.col_weight": "Weight",
@@ -2160,6 +2166,7 @@ ES = {
     "portfolio.stress.metric_covid_replay": "Repetición COVID",
     "portfolio.stress.metric_beta": "Beta",
     "portfolio.stress.metric_replayed_10y": "Rentabilidad reproducida a 10 años anual",
+    "portfolio.stress.metric_mc_range": "Rango a 1 año, simulado (95%) — no es una predicción",
     "portfolio.stress.per_holding_table_title": "Detalle por posición",
     "portfolio.stress.col_ticker": "Ticker",
     "portfolio.stress.col_weight": "Ponderación",

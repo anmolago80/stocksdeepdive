@@ -12996,11 +12996,43 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
         })
     st.dataframe(pd.DataFrame(table_rows), hide_index=True, use_container_width=True)
 
+    # Mega-batch Part 13: 1-yr 5th-95th percentile simulated range, set
+    # visually apart from the five historical-replay metrics above (a
+    # divider, then italic/dimmed text) so it can never be mistaken for
+    # another thing-that-actually-happened - it's a model output. Reuses
+    # the SAME already-fetched `histories` price data the historical
+    # metrics above were built from (no new network fetch) - the "current"
+    # figure is simply the one already computed and cached in
+    # current_result (stress_engine's own result cache), while the
+    # "what-if" figure re-runs stress_engine.monte_carlo() for the edited
+    # weights: that function's own cost is a handful of numpy draws over
+    # the monthly mean/vol/correlation it derives from `histories`, not
+    # a network fetch, so this is cheap to redo live. A fixed seed keeps
+    # the what-if number stable across reruns triggered by unrelated
+    # widgets elsewhere on the page - only an actual weight change moves it.
+    st.divider()
+    _mc_current = current_result.get("monte_carlo")
+    _mc_whatif = stress_engine.monte_carlo(edited_weights, histories, total_value_aud, seed=42)
+
+    def _fmt_mc_range(mc):
+        return f"{mc['p5_pct']:+.1f}% to {mc['p95_pct']:+.1f}%" if mc else _na
+
+    _mc_cols = st.columns([2, 1, 1, 1])
+    with _mc_cols[0]:
+        st.caption(f"*{_st_('metric_mc_range')}*")
+    with _mc_cols[1]:
+        st.caption(f"*{_fmt_mc_range(_mc_current)}*")
+    with _mc_cols[2]:
+        st.caption(f"*{_fmt_mc_range(_mc_whatif)}*")
+    with _mc_cols[3]:
+        st.caption("*—*")
+
 
 def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
     """Part 3b - the "Stress Test" tab: headline cards -> drawdown/run-
     up mini charts -> crisis/rally replay tables -> shock grid ->
-    rebalance sandbox -> per-holding detail -> collapsed Monte Carlo.
+    rebalance sandbox -> per-holding detail -> Monte Carlo (always-open
+    bordered box - see the 6 Sep amendment note at that section below).
     Needs >=1 holding with a live price; otherwise a single line."""
     _lang = st.session_state.get("lang", "en")
     _st_ = lambda key, **fmt: i18n.t(f"portfolio.stress.{key}", _lang, **fmt)
@@ -13111,8 +13143,13 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
     # --- 6. Per-holding detail --------------------------------------------
     _render_stress_per_holding_table(result, _st_)
 
-    # --- 7. Monte Carlo (collapsed) ---------------------------------------
-    with st.expander(_st_("monte_carlo_title"), expanded=False):
+    # --- 7. Monte Carlo -----------------------------------------------
+    # Mega-batch amendment (6 Sep, applied retroactively to this Part 3
+    # section): "Monte Carlo must render open/inline, not collapsed" -
+    # was a collapsed st.expander(expanded=False); now an always-open
+    # bordered box, same content, still last on the tab.
+    with st.container(border=True):
+        st.markdown(f"##### {_st_('monte_carlo_title')}")
         mc = result.get("monte_carlo")
         if mc:
             st.markdown(_st_(
