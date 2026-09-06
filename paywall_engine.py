@@ -545,7 +545,6 @@ _PILL_BUTTON_CSS = """
     display: flex;
     align-items: center;
     justify-content: flex-start;
-    height: 38px;
     font-size: 14px;
     font-weight: 600;
     color: #e6edf5;
@@ -553,6 +552,20 @@ _PILL_BUTTON_CSS = """
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+/* Owner review round fix #6: Streamlit's own internal st.markdown()
+   wrapper carries a small negative bottom margin (its standard
+   compact-spacing rule) that only matters once vertical_alignment="center"
+   starts centring each column by its own natural content height instead
+   of stretching it - it made the account name text settle ~8px off the
+   RC view/Sign out/Sign In buttons' shared centre. Scoped to just the
+   account-name container (st.container(key="pw_account_name_box")) so no
+   other st.markdown() output on the site is affected. */
+div.st-key-pw_account_name_box div[data-testid="stMarkdown"] > div {
+    height: auto !important;
+}
+div.st-key-pw_account_name_box [data-testid="stMarkdownContainer"] {
+    margin-bottom: 0 !important;
 }
 </style>
 """
@@ -595,7 +608,19 @@ def _right_widget_columns(left_widths, extra_widget=None, extra_widget2=None,
            + ([2.6] if extra_widget3 else []))
     _trail = [trailing_width] if trailing_width else []
     _spacer = max(0.5, total - sum(left_widths) - sum(_rw) - sum(_trail))
-    cols = st.columns(left_widths + [_spacer] + _rw + _trail, gap="small")
+    # Owner review round fix #6: the account row's pieces (name text,
+    # feedback popover, RC view popover, the EN/ES segmented control,
+    # Sign In/Subscribe/Sign out buttons) each have a different natural
+    # height, and st.columns() without vertical_alignment top-aligns
+    # every column - so their TOPS lined up but their vertical centres
+    # (and, for the shorter ones, their visible baseline) didn't,
+    # exactly the owner's "sit at different vertical centres/heights"
+    # description. center-aligning the row fixes every combination of
+    # widgets this function is called with (signed-in, signed-out, with
+    # or without the RC view/feedback extras) in one place, rather than
+    # chasing each widget's own padding to match a shared pixel height.
+    cols = st.columns(left_widths + [_spacer] + _rw + _trail, gap="small",
+                       vertical_alignment="center")
     _n_left = len(left_widths)
     _widget_cols = []
     _i = _n_left + 1
@@ -626,10 +651,11 @@ def _render_name_and_signout(name, extra_widget=None, extra_widget2=None,
         [1.4], extra_widget, extra_widget2, trailing_width=1.1,
         extra_widget3=extra_widget3)
     with _left[0]:
-        st.markdown(
-            f'<div class="pw-account-name">{html.escape(name or "")}</div>',
-            unsafe_allow_html=True,
-        )
+        with st.container(key="pw_account_name_box"):
+            st.markdown(
+                f'<div class="pw-account-name">{html.escape(name or "")}</div>',
+                unsafe_allow_html=True,
+            )
     for _col, _w in _widgets:
         with _col:
             _w()
@@ -721,10 +747,11 @@ def render_account_bar(extra_widget=None, extra_widget2=None, extra_widget3=None
         [1.2, 1.0], extra_widget, extra_widget2, trailing_width=1.1,
         extra_widget3=extra_widget3)
     with _left[0]:
-        st.markdown(
-            f'<div class="pw-account-name">{html.escape(name or "")}</div>',
-            unsafe_allow_html=True,
-        )
+        with st.container(key="pw_account_name_box"):
+            st.markdown(
+                f'<div class="pw-account-name">{html.escape(name or "")}</div>',
+                unsafe_allow_html=True,
+            )
     with _left[1]:
         _subscribe_label = i18n.t("account.subscribe", lang)
         if _stripe_configured():
