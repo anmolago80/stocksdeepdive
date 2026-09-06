@@ -7,6 +7,7 @@ import html
 import os
 import math
 import hmac
+import hashlib
 import difflib
 import concurrent.futures
 import contextlib
@@ -535,11 +536,26 @@ def _record_admin_key_failure():
 
 
 def _admin_cookie_value() -> str:
-    """A signed-ish token derived from the admin key - never the key
+    """A signed token derived from the admin key - never the key
     itself - stored in a cookie so the unlock survives full page loads
-    (typing a URL / opening a new tab), not just in-app navigation."""
-    import hashlib
-    return hashlib.sha256(f"sdd-fullview:{_admin_key_env}".encode()).hexdigest()[:40]
+    (typing a URL / opening a new tab) and, per Mega-batch Part 11, a
+    Railway redeploy (previously a 30-day cookie; now
+    ADMIN_COOKIE_MAX_AGE_SECONDS below). A proper HMAC (hmac.new with
+    hashlib.sha256, per Part 11's own explicit ask) - not a plain hash
+    of a concatenated string - keyed by the admin key over a fixed
+    label, so it changes
+    (and every existing cookie stops matching) the moment
+    ADMIN_REFRESH_KEY changes on Railway - that IS the revocation path
+    for a compromised key, since there is no server-side session store
+    to invalidate."""
+    return hmac.new(_admin_key_env.encode(), b"sdd-fullview-v1", hashlib.sha256).hexdigest()[:40]
+
+
+# Mega-batch Part 11: >=180 days (spec's own floor) - was 30 days
+# (2592000s), which is very plausibly why the owner experienced the
+# unlock as "dying" periodically even though the underlying mechanism
+# already survived a redeploy correctly on its own.
+ADMIN_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 200  # 200 days
 
 
 def _set_admin_cookie(clear: bool = False):
@@ -548,7 +564,7 @@ def _set_admin_cookie(clear: bool = False):
         _js = "document.cookie='sdd_fullview=; path=/; max-age=0; SameSite=Lax';"
     else:
         _js = (f"document.cookie='sdd_fullview={_admin_cookie_value()}; "
-               "path=/; max-age=2592000; SameSite=Lax';")
+               f"path=/; max-age={ADMIN_COOKIE_MAX_AGE_SECONDS}; SameSite=Lax';")
     _components.html(f"<script>{_js}</script>", height=0)
 
 
@@ -2873,6 +2889,22 @@ def _render_compounder_admin_panel():
     if not admin_key:
         return
 
+    # Mega-batch Part 11: the ☰ icon used to render for EVERY visitor
+    # unconditionally (only its POPOVER CONTENTS were gated), and typing
+    # the right key here unlocked a SEPARATE, non-persistent flag from
+    # the "RC view" control's own full_view_unlocked/sdd_fullview cookie
+    # - two doors, two keys to remember, neither surviving a fresh
+    # browser session. Now: (1) the icon itself only renders for a
+    # visitor _admin_ever_seen() has already engaged with (same
+    # invisibility rule "RC view" already used - see that flag's own
+    # audit-fix docstring above), and (2) entering the key here sets the
+    # SAME full_view_unlocked state + the SAME long-lived sdd_fullview
+    # cookie every other admin control on the site already reads - one
+    # key, one unlock, everywhere, surviving a redeploy exactly like RC
+    # view already does.
+    if not _admin_ever_seen():
+        return
+
     # A small "☰" icon tucked in the top-left corner, not a full-width
     # labelled bar -- st.popover() with an icon-only label is Streamlit's
     # native equivalent of a menu button: closed by default, no text
@@ -2914,14 +2946,36 @@ def _render_compounder_admin_panel():
         # both `with`s on one line keeps everything below at its existing
         # indentation.
         with st.container(key="cp_admin_trigger_wrap"), st.popover("☰"):
-            entered = st.text_input("Admin key", type="password", key="cp_admin_key")
-            if not entered:
-                return
-            if entered != admin_key:
-                st.error("Incorrect key.")
-                return
+            if not st.session_state.get("full_view_unlocked"):
+                # Same shared unlock as every other admin control - see
+                # this function's own Part 11 docstring note above.
+                # Reuses the identical rate-limit the ?admin=/RC-view
+                # door already enforces (_admin_key_locked_out/
+                # _record_admin_key_failure - a single shared counter,
+                # so guessing here counts toward the same lockout as
+                # guessing anywhere else).
+                if _admin_key_locked_out():
+                    st.error("Too many wrong attempts. Try again later.")
+                    return
+                entered = st.text_input("Admin key", type="password", key="cp_admin_key")
+                if not entered:
+                    return
+                if not hmac.compare_digest(entered, admin_key):
+                    _record_admin_key_failure()
+                    st.error("Incorrect key.")
+                    return
+                st.session_state["full_view_unlocked"] = True
+                st.session_state.pop("full_view_exited", None)
+                st.session_state["_pending_admin_cookie"] = True
+                st.rerun()
 
             st.success("Admin key accepted.")
+            if st.button("🔒 Lock admin on this browser", key="cp_admin_lock_btn"):
+                st.session_state["full_view_unlocked"] = False
+                st.session_state["full_view_exited"] = True
+                st.query_params.pop("admin", None)
+                st.session_state["_pending_admin_cookie_clear"] = True
+                st.rerun()
 
             if paywall_engine.current_user_email():
                 st.caption(
@@ -15206,13 +15260,17 @@ _BLOG_FIELDS = {
 
 
 def _blog_admin_unlocked() -> bool:
-    """Admin gate. The full-view unlock (?admin= / the RC view popover)
-    counts, so an already-unlocked admin session doesn't have to type the
-    key twice; otherwise the key is asked for on this page."""
+    """Admin gate. Mega-batch Part 11: unified onto the SAME
+    full_view_unlocked flag every other admin control on the site now
+    reads (RC view / ?admin= / the Research page's ☰ panel) - this used
+    to also accept its own separate, non-persistent blog_admin_unlocked
+    flag, meaning a key typed here didn't carry over anywhere else and
+    didn't survive a fresh browser session. Typing the key on THIS page
+    now sets the shared flag (see page_blog_admin's own key-entry block
+    below), so it persists exactly like unlocking anywhere else does."""
     if not _admin_key_env:
         return False
-    return bool(st.session_state.get("full_view_unlocked")
-                or st.session_state.get("blog_admin_unlocked"))
+    return bool(st.session_state.get("full_view_unlocked"))
 
 
 def _blog_load_form(post):
@@ -15781,12 +15839,22 @@ def page_blog_admin():
 
     if not _blog_admin_unlocked():
         st.caption("Admin only.")
+        # Mega-batch Part 11: same shared unlock (full_view_unlocked +
+        # the persistent sdd_fullview cookie) and the same failed-
+        # attempt lockout every other admin entry point uses - see
+        # _blog_admin_unlocked's own docstring.
+        if _admin_key_locked_out():
+            st.error("Too many wrong attempts. Try again later.")
+            return
         _k = st.text_input("Admin key", type="password", key="blog_admin_key_in")
         if st.button("Unlock", type="primary", key="blog_admin_unlock_btn"):
-            if _k.strip() == _admin_key_env:
-                st.session_state["blog_admin_unlocked"] = True
+            if hmac.compare_digest(_k.strip(), _admin_key_env):
+                st.session_state["full_view_unlocked"] = True
+                st.session_state.pop("full_view_exited", None)
+                st.session_state["_pending_admin_cookie"] = True
                 st.rerun()
             else:
+                _record_admin_key_failure()
                 st.error("Incorrect key.")
         return
 
