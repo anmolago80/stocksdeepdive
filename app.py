@@ -1193,56 +1193,70 @@ st.markdown(
         color: #ffffff !important;
         border-color: #2dd4bf !important;
     }
-    /* Nav buttons: keep the (nowrap) label horizontally centred even when
-       it's as wide as the button - otherwise a label hugs the right edge.
-       Matches by the "nav_" key prefix every _render_app_nav_items() nav
-       button uses (row layout, stack layout, and the "More" popover's own
-       buttons alike), rather than naming each item, so it keeps applying
-       automatically as nav items are added/renamed. */
+    /* Amendment to Part 5 (owner, 6 Sep, from live screenshots): "the nav
+       must NOT look like buttons" - the deployed nav rendered every item
+       as an outlined teal pill/button, not the approved Option B mock's
+       flat text links. Every st.button under a "nav_" key (the primary
+       row, the stack layout inside ultra_compact's "☰" popover, and the
+       "☰ More" popover's own trigger alike - [class*="st-key-nav_"]
+       matches all three, since "st-key-nav_more_pop"/"st-key-nav_uc_
+       more_pop" both contain "st-key-nav_" as a substring) is stripped
+       of every piece of button chrome - border, background, radius,
+       shadow - so only a bare text label with padding for a click target
+       remains. Colours copied verbatim from blog_render.py's own
+       `nav.site a` rule (#8aa0b8 inactive) so the two navs are pixel-
+       identical, per the amendment's own "screenshot the app nav next to
+       a blog page's nav - they must be visually identical" acceptance
+       test; the one deliberate departure from the blog nav is hover
+       (teal here, white there) - the amendment's own explicit "Hover:
+       teal text" instruction for THIS nav, which a static screenshot
+       comparison never exercises anyway. */
     [class*="st-key-nav_"] button {
         display: flex !important;
         justify-content: center !important;
-        padding-left: 0.5rem !important;
-        padding-right: 0.5rem !important;
+        align-items: center !important;
+        border: none !important;
+        border-bottom: 2px solid transparent !important;
+        border-radius: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        color: #8aa0b8 !important;
+        /* blog_render.py's own `nav.site a` sets no font-weight at all
+           (inherits body's normal 400) - matched here literally rather
+           than the semi-bold 600 the old pill chrome used, so a
+           side-by-side screenshot reads as the same weight, not just the
+           same colour/size. */
+        font-weight: 400 !important;
+        font-size: 14px !important;
+        padding: 0.5rem 0.5rem !important;
+        transition: color 0.15s ease, border-color 0.15s ease !important;
+    }
+    [class*="st-key-nav_"] button:hover {
+        color: #2dd4bf !important;
+        background: transparent !important;
+        border-bottom-color: transparent !important;
     }
     [class*="st-key-nav_"] button p {
         text-align: center !important;
+        color: inherit !important;
+        font-weight: inherit !important;
     }
-    /* Part 5 (site-wide slim nav): the "☰ More" popover's own trigger
-       button, and the Blog/Track record same-tab anchor pills
-       (_render_app_nav_items - Blog and Track record have no Streamlit
-       st.Page, see that function's own docstring, so they're plain <a>
-       tags rather than st.button) - both styled to match the ordinary
-       .stButton pill above so the whole nav row reads as one consistent
-       set of controls. */
-    [class*="st-key-nav_more_pop"] button,
-    [class*="st-key-nav_uc_more_pop"] button {
-        border-radius: 10px !important;
-        border: 1.5px solid #2dd4bf !important;
-        color: #2dd4bf !important;
-        background-color: rgba(45, 212, 191, 0.07) !important;
-        font-weight: 600 !important;
-        padding: 0.55rem 1.1rem !important;
-        transition: all 0.15s ease !important;
-    }
-    [class*="st-key-nav_more_pop"] button:hover,
-    [class*="st-key-nav_uc_more_pop"] button:hover {
-        background-color: #2dd4bf !important;
-        color: #ffffff !important;
-        border-color: #2dd4bf !important;
-    }
+    /* Blog/Track record (_render_app_nav_items - no Streamlit st.Page for
+       either, see that function's own docstring) render as plain <a>
+       tags rather than st.button, styled here to match the flat buttons
+       above exactly so the whole row still reads as one consistent set
+       of links, not two different nav systems glued together. */
     .sdd-navpill {
         display: flex; align-items: center; justify-content: center;
         width: 100%; box-sizing: border-box; height: 100%;
-        border-radius: 10px; border: 1.5px solid #2dd4bf;
-        color: #2dd4bf !important; background-color: rgba(45, 212, 191, 0.07);
-        font-weight: 600; font-size: 14px; white-space: nowrap;
-        padding: 0.55rem 1.1rem; text-decoration: none !important;
-        transition: all 0.15s ease; box-sizing: border-box;
+        border: none; border-bottom: 2px solid transparent; border-radius: 0;
+        background: transparent; color: #8aa0b8 !important;
+        font-weight: 400; font-size: 14px; white-space: nowrap;
+        padding: 0.5rem 0.5rem; text-decoration: none !important;
+        transition: color 0.15s ease, border-color 0.15s ease; box-sizing: border-box;
     }
     .sdd-navpill:hover {
-        background-color: #2dd4bf; color: #ffffff !important;
-        border-color: #2dd4bf;
+        color: #2dd4bf !important; background: transparent; border-bottom-color: transparent;
     }
     /* layout="stack" (ultra_compact's own "☰" popover): pills read as a
        vertical list there, not squeezed into one row's worth of width. */
@@ -1257,6 +1271,26 @@ st.markdown(
     .stButton > button[kind="primaryFormSubmit"]:hover, .stFormSubmitButton > button[kind="primaryFormSubmit"]:hover {
         background-color: #14b8a6 !important;
         border-color: #14b8a6 !important;
+    }
+    /* Active nav page (kind="primary" - _page_button's own current==_id
+       check): teal text + a 2px teal underline sitting on the nav's
+       bottom rule, never the solid teal fill the two generic
+       button[kind="primary"] rules just above give every OTHER primary
+       button on the site (e.g. "Add holding"/"Save settings" forms) -
+       the nav must never look like those per this same amendment. Placed
+       AFTER those two generic rules (equal selector specificity, so
+       source order decides the winner) rather than relying on
+       specificity alone. */
+    [class*="st-key-nav_"] button[kind="primary"] {
+        background-color: transparent !important;
+        color: #2dd4bf !important;
+        border: none !important;
+        border-bottom: 2px solid #2dd4bf !important;
+    }
+    [class*="st-key-nav_"] button[kind="primary"]:hover {
+        background-color: transparent !important;
+        color: #2dd4bf !important;
+        border-bottom-color: #2dd4bf !important;
     }
     /* The site search box (st.form("site_search_form")) shouldn't show its
        own outline/background -- the search input's own light-gray fill is
@@ -1348,7 +1382,13 @@ st.markdown(
     .sdd-tk b { color:#e6edf5; font-weight:600; }
     .sdd-tk .up { color:#34d399; } .sdd-tk .dn { color:#fb7185; }
     .sdd-navrow { display:flex; align-items:center; justify-content:space-between; padding:4px 0 18px; }
-    .sdd-logo { font-size:22px; font-weight:800; letter-spacing:-.3px; color:#e6edf5; }
+    /* Amendment to Part 5: "Logo: 'StocksDeepDive' back to its previous
+       prominence... exactly as the static blog/snapshot pages render
+       it." 21px/800/no letter-spacing matches blog_render.py's own
+       `.brand` rule exactly (21px, weight 800, color #e6edf5, .accent
+       #2dd4bf) - was 22px with -.3px letter-spacing, close but not the
+       literal "exactly" the amendment asks for. */
+    .sdd-logo { font-size:21px; font-weight:800; color:#e6edf5; }
     .sdd-logo .accent { color:#2dd4bf; }
     .sdd-h1 { font-size:38px; line-height:1.14; letter-spacing:-.6px; font-weight:800; color:#e6edf5; }
     .sdd-h1 em { font-style:normal; color:#2dd4bf; }
@@ -2524,7 +2564,11 @@ def _render_header(compact, page_label=None, ultra_compact=False, current=None):
         .site-title {{
             text-align: center; font-weight: 800;
             font-family: 'Segoe UI', sans-serif; color: #e6edf5;
-            font-size: {"20px" if compact else "58px"};
+            /* Amendment to Part 5: 21px on the compact (every non-home
+               page) header matches blog_render.py's own `.brand` rule
+               exactly, per "exactly as the static blog/snapshot pages
+               render it" - was 20px. */
+            font-size: {"21px" if compact else "58px"};
             margin-top: {"2px" if compact else "44px"};
             margin-bottom: {"2px" if compact else "8px"};
         }}
