@@ -13507,8 +13507,17 @@ def _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses):
             ))
     else:
         st.caption(_etf("overlap_none"))
-    if _overlap["top5"]:
-        st.markdown(f"**{_etf('top5_title')}**")
+    # Fix round 10 #4: compute_overlap()'s "top5" list is padded out
+    # with direct-only holdings (see its own docstring) so it can be
+    # non-empty - and even a full 5 rows - with ZERO actual ETF overlap,
+    # which used to render a "Top 5" heading over what was really just
+    # the portfolio's biggest direct positions. Hide the block entirely
+    # when there's no real overlap at all, and never show "Top 5" over
+    # fewer than 5 rows - the heading always matches the row count.
+    if _overlap["matches"] and _overlap["top5"]:
+        _top5_n = len(_overlap["top5"])
+        _top5_heading = _etf("top5_title") if _top5_n == 5 else _etf("topn_title", n=_top5_n)
+        st.markdown(f"**{_top5_heading}**")
         for t in _overlap["top5"]:
             st.markdown(f"- {t['underlying']}: {_fmt_aud(t['combined_value'])}")
     st.caption(_etf("overlap_caption"))

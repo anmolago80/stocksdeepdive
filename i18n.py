@@ -1403,6 +1403,15 @@ EN = {
         "published top-10s."
     ),
     "portfolio.etfs.top5_title": "Top 5 combined exposures",
+    # Fix round 10 #4: compute_overlap's "top5" list is padded with
+    # direct-only holdings when there's little/no real ETF overlap, so a
+    # fixed "Top 5" title could show as few as 1-4 rows, or even list
+    # holdings with zero ETF overlap at all under a "Top 5" heading. The
+    # block is hidden entirely when there's no overlap at all
+    # (_overlap["matches"] empty); when there IS overlap but fewer than
+    # 5 combined-exposure rows, this templated title is used instead so
+    # the number in the heading always matches the row count shown.
+    "portfolio.etfs.topn_title": "Top {n} combined exposures",
     "portfolio.etfs.overlap_caption": (
         "Computed from each fund's published top-10 - approximate; a "
         "described calculation, not a recommendation."
@@ -3047,6 +3056,7 @@ ES = {
         "10 principales publicadas de tus ETFs."
     ),
     "portfolio.etfs.top5_title": "Las 5 mayores exposiciones combinadas",
+    "portfolio.etfs.topn_title": "Las {n} mayores exposiciones combinadas",
     "portfolio.etfs.overlap_caption": (
         "Calculado a partir de las 10 principales posiciones publicadas "
         "de cada fondo - aproximado; un cálculo descrito, no una "
