@@ -1332,6 +1332,56 @@ def _footer_html(lang="en"):
 """
 
 
+# Fix #8c (owner, real-iPhone photo AFTER #8b): the same ?navdebug=1
+# diagnostic app.py's _render_mobile_bottom_nav() carries, for these
+# static pages' own copy of the bar. No window.parent/iframe reach-
+# through needed here (this script already runs in the real top-level
+# document), and no "re-assert if reparented" check either - a plain
+# server-rendered page has no client-side framework that could ever
+# move this DOM node after the fact, unlike app.py's Streamlit shell.
+# Harmless without the query param (the whole body is gated on it).
+_NAVDEBUG_JS = r"""
+<script>
+(function () {
+  if (window.location.search.indexOf('navdebug=1') === -1) return;
+  var bar = document.querySelector('.sdd-mnav-bottom');
+  if (bar) { bar.style.outline = '3px solid #f43f5e'; bar.style.outlineOffset = '-2px'; }
+  var panel = document.createElement('div');
+  panel.id = 'sdd-navdebug-panel';
+  panel.style.cssText = 'position:fixed;top:8px;left:8px;right:8px;z-index:2147483647;' +
+    'background:#000;color:#0f0;font:11px/1.4 monospace;padding:8px;border-radius:6px;' +
+    'white-space:pre-wrap;pointer-events:none;';
+  document.body.appendChild(panel);
+  var probe = document.createElement('div');
+  probe.id = 'sdd-navdebug-safearea';
+  probe.style.cssText = 'position:fixed;bottom:0;height:0;' +
+    'padding-bottom:env(safe-area-inset-bottom);visibility:hidden;';
+  document.body.appendChild(probe);
+  function update() {
+    var bar2 = document.querySelector('.sdd-mnav-bottom');
+    var r = bar2 ? bar2.getBoundingClientRect() : null;
+    var vv = window.visualViewport;
+    var safeArea = getComputedStyle(probe).paddingBottom;
+    panel.textContent = 'navdebug\n' +
+      'window.innerHeight: ' + window.innerHeight + '\n' +
+      'visualViewport.height: ' + (vv ? vv.height : 'n/a') + '\n' +
+      'visualViewport.offsetTop: ' + (vv ? vv.offsetTop : 'n/a') + '\n' +
+      'bar rect top/bottom: ' + (r ? (r.top.toFixed(1) + ' / ' + r.bottom.toFixed(1)) : 'no bar') + '\n' +
+      'env(safe-area-inset-bottom): ' + safeArea + '\n' +
+      'gap (innerHeight - bar.bottom): ' + (r ? (window.innerHeight - r.bottom).toFixed(1) : 'n/a');
+  }
+  update();
+  window.addEventListener('resize', update);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', update);
+    window.visualViewport.addEventListener('scroll', update);
+  }
+  setInterval(update, 500);
+})();
+</script>
+"""
+
+
 def _page(head, body, lang="en", path=None, lang_urls=None):
     """lang="es" (Español instruction, Part 2) sets <html lang="es"> and
     renders the Spanish header/footer chrome - every existing caller
@@ -1353,7 +1403,8 @@ def _page(head, body, lang="en", path=None, lang_urls=None):
     own unrelated slug, not at "/es" + this post's path) is the one
     caller that needs this."""
     return (f"<!doctype html>\n<html lang=\"{lang}\">\n<head>\n{head}\n</head>\n"
-            f"<body>\n{_header_html(lang, path, lang_urls)}\n{body}\n{_footer_html(lang)}\n</body>\n</html>")
+            f"<body>\n{_header_html(lang, path, lang_urls)}\n{body}\n{_footer_html(lang)}"
+            f"\n{_NAVDEBUG_JS}</body>\n</html>")
 
 
 # -----------------------------------

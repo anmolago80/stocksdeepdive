@@ -2877,32 +2877,116 @@ def _render_mobile_bottom_nav(lang, current=None):
     nothing here or in Streamlit's own bundled stylesheet places this bar
     (or an ancestor) via 100vh; (c) ruled out too - no Streamlit-native
     fixed footer/toolbar competes for the same bottom edge (checked every
-    fixed/sticky element on the page). What's actually missing:
-    Streamlit's own default viewport meta tag
-    (width=device-width, initial-scale=1, shrink-to-fit=no - see
-    streamlit/static/index.html) never sets viewport-fit=cover, which
-    Streamlit's Python API has no config knob for. Without it, iOS
-    treats env(safe-area-inset-bottom) as 0 AND keeps fixed-bottom
-    elements clear of its own dynamic toolbar/home-indicator chrome by
-    reserving space above it instead of letting the page draw under that
-    chrome itself - Apple's own documented cause of exactly this "fixed
-    footer floats above the true bottom with a gap" symptom, and
-    viewport-fit=cover + env() is Apple's own documented fix (already
-    applied correctly on the static blog/snapshot pages - see
-    blog_render.py's _header_html - this bar is the one place it was
-    missing). Streamlit's Python API can't set this meta tag directly,
-    so it's patched onto the real page (not this sandboxed iframe) the
-    same way _PUSH_CONTROL_JS below reaches window.parent - idempotent
-    (checked before appending) since this runs again on every rerun.
+    fixed/sticky element on the page). #8b's fix: patch viewport-fit=cover
+    onto the real page's viewport meta via JS (Streamlit's Python API has
+    no config knob for it), since without it iOS treats
+    env(safe-area-inset-bottom) as 0 and reserves its own chrome space
+    above fixed-bottom elements - Apple's own documented cause of exactly
+    this symptom.
+
+    Fix #8c (owner, real-iPhone photo AFTER #8b): the gap persisted. Two
+    things checked before writing new code, per the instruction's own
+    "diagnose, don't guess":
+    - Whether #8b's JS patch was losing a timing race (WebKit can ignore
+      a late/duplicate viewport meta). It wasn't APPENDING a duplicate
+      tag either way - the code above always mutated the one tag's
+      `content` in place.
+    - Whether server.py's proxy already had a server-side option. It
+      did, already live: _inject_pwa_head_tags() (added earlier, for PWA
+      standalone mode) rewrites Streamlit's OWN viewport meta's `content`
+      in place on EVERY text/html response, at parse time, before the
+      browser ever sees it - confirmed by curling the real proxy path
+      end-to-end (not just reading the code) and finding
+      content="...,viewport-fit=cover" already present. So the meta tag
+      has been correct since before #8b even shipped, both server-side
+      AND via the (redundant but harmless) JS patch - viewport-fit=cover
+      was very likely never the actual root cause. This is reported
+      honestly rather than claimed as "fixed" - the real cause is still
+      unconfirmed pending real-device data.
+    That reframes #8c's job: instead of a redundant third viewport-meta
+    patch, this now (1) keeps the JS mutate-in-place patch as the
+    documented fallback (untouched from #8b, already correct), (2) adds
+    a defensive re-assert - if the bar ever ends up under an ancestor
+    that DOES create a containing block (the one condition that would
+    break position:fixed's anchor to the real viewport), it's moved to
+    be a direct child of <body>, and (3) adds ?navdebug=1: outlines the
+    bar and prints window.innerHeight, visualViewport.height, the bar's
+    own rect, and the resolved env(safe-area-inset-bottom) on screen,
+    live-updating, so the owner's next real-phone screenshot gives exact
+    numbers instead of another guess. All in the one script below,
+    reached via window.parent the same way _PUSH_CONTROL_JS does; runs
+    again every rerun, so both the meta patch and the ancestor check
+    stay idempotent/self-correcting rather than assuming a check done
+    once still holds five reruns later.
     """
     import streamlit.components.v1 as _components
     _components.html(
         "<script>(function(){"
         "var h=window;"
         "try{if(window.parent&&window.parent!==window&&window.parent.document){h=window.parent;}}catch(e){}"
-        "var m=h.document.querySelector('meta[name=\"viewport\"]');"
+        "var doc=h.document;"
+        # Fix #8b's patch, unchanged: mutate the one existing tag's
+        # content in place - kept as the documented fallback now that
+        # server.py's proxy does the same rewrite server-side (see the
+        # docstring above).
+        "var m=doc.querySelector('meta[name=\"viewport\"]');"
         "if(m&&m.getAttribute('content').indexOf('viewport-fit=cover')===-1){"
         "m.setAttribute('content',m.getAttribute('content')+', viewport-fit=cover');"
+        "}"
+        # Fix #8c item 3: if any ancestor between the bar and <body> has
+        # picked up a transform/filter/perspective/contain/will-change
+        # (the one thing that would break position:fixed's anchor to the
+        # real viewport), re-home the bar directly under <body> where no
+        # such ancestor can exist. Runs every rerun rather than once, so
+        # it self-corrects if Streamlit's tree ever changes shape.
+        "function reassertBar(){"
+        "var bar=doc.querySelector('.sdd-mnav-bottom');"
+        "if(!bar) return null;"
+        "var bad=false, el=bar.parentElement;"
+        "while(el&&el!==doc.body){"
+        "var cs=h.getComputedStyle(el);"
+        "if(cs.transform!=='none'||cs.filter!=='none'||cs.perspective!=='none'||"
+        "(cs.contain&&cs.contain!=='none')||cs.willChange!=='auto'){bad=true;break;}"
+        "el=el.parentElement;"
+        "}"
+        "if(bad&&bar.parentElement!==doc.body){doc.body.appendChild(bar);}"
+        "return bar;"
+        "}"
+        "var _bar=reassertBar();"
+        # Fix #8c item 2: ?navdebug=1 - outline the bar, print live
+        # numbers. env(safe-area-inset-bottom) is read the standard way
+        # (an offscreen probe element's own resolved padding-bottom),
+        # since JS can't read an env() token directly.
+        "if(h.location.search.indexOf('navdebug=1')!==-1){"
+        "if(_bar){_bar.style.outline='3px solid #f43f5e';_bar.style.outlineOffset='-2px';}"
+        "var panel=doc.getElementById('sdd-navdebug-panel');"
+        "if(!panel){panel=doc.createElement('div');panel.id='sdd-navdebug-panel';"
+        "panel.style.cssText='position:fixed;top:8px;left:8px;right:8px;z-index:2147483647;"
+        "background:#000;color:#0f0;font:11px/1.4 monospace;padding:8px;border-radius:6px;"
+        "white-space:pre-wrap;pointer-events:none;';doc.body.appendChild(panel);}"
+        "var probe=doc.getElementById('sdd-navdebug-safearea');"
+        "if(!probe){probe=doc.createElement('div');probe.id='sdd-navdebug-safearea';"
+        "probe.style.cssText='position:fixed;bottom:0;height:0;"
+        "padding-bottom:env(safe-area-inset-bottom);visibility:hidden;';"
+        "doc.body.appendChild(probe);}"
+        "function update(){"
+        "var bar2=doc.querySelector('.sdd-mnav-bottom');"
+        "var r=bar2?bar2.getBoundingClientRect():null;"
+        "var vv=h.visualViewport;"
+        "var safeArea=h.getComputedStyle(probe).paddingBottom;"
+        "panel.textContent='navdebug\\n'+"
+        "'window.innerHeight: '+h.innerHeight+'\\n'+"
+        "'visualViewport.height: '+(vv?vv.height:'n/a')+'\\n'+"
+        "'visualViewport.offsetTop: '+(vv?vv.offsetTop:'n/a')+'\\n'+"
+        "'bar rect top/bottom: '+(r?(r.top.toFixed(1)+' / '+r.bottom.toFixed(1)):'no bar')+'\\n'+"
+        "'env(safe-area-inset-bottom): '+safeArea+'\\n'+"
+        "'gap (innerHeight - bar.bottom): '+(r?(h.innerHeight-r.bottom).toFixed(1):'n/a');"
+        "}"
+        "update();"
+        "h.addEventListener('resize',update);"
+        "if(h.visualViewport){h.visualViewport.addEventListener('resize',update);"
+        "h.visualViewport.addEventListener('scroll',update);}"
+        "setInterval(update,500);"
         "}"
         "})();</script>",
         height=0,
