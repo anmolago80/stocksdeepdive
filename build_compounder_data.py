@@ -279,6 +279,17 @@ METRIC_META = {
 # automatically) but that Andrew asked to drop from the app entirely.
 EXCLUDE_COLUMNS = {
     ("Stock Analysis", "CJ"),  # "Variance and Standard Deviation" - not useful as a card
+    # Workbook schema update (owner, 8 Sep): Cost of Capital Analysis's
+    # new AK-AP columns (Market, Risk Free Rate, Country Risk Premium,
+    # Beta, Cost of Equity CAPM, After-Tax Cost of Debt) get their OWN
+    # dedicated "WACC build-up" pill-row (see WACC_BUILDUP_COLS and the
+    # extraction further down in build()) rather than also appearing as
+    # six more generic metric cards in the ordinary colour-coded/plain
+    # grid - excluded here the same way CJ above is, so they render
+    # exactly once, in the purpose-built block, not twice.
+    ("Cost of Capital Analysis", "AK"), ("Cost of Capital Analysis", "AL"),
+    ("Cost of Capital Analysis", "AM"), ("Cost of Capital Analysis", "AN"),
+    ("Cost of Capital Analysis", "AO"), ("Cost of Capital Analysis", "AP"),
 }
 
 # Andrew's follow-up: for the three "thin" sheets that only had 1-2
@@ -313,6 +324,19 @@ PLAIN_EXTRA = {
     "Cost of Capital Analysis": [
         ("I", "cur"), ("M", "cur"), ("Q", "cur"), ("U", "cur"),
         ("Y", "pct"), ("AC", "cur"), ("AJ", "cur"),
+        # Workbook schema update (owner, 8 Sep) threaded-comment guard
+        # side effect: AF's header (row 1 AND row 3) carries a genuine
+        # Excel "threaded" comment, which _is_threaded_comment_junk()
+        # below now correctly treats as no comment at all (its raw text
+        # is boilerplate, not Andrew's own words - see that function's
+        # own docstring). AF already had its own METRIC_META entry
+        # (format="pct") and already fed WACC_ROIC_COLS, so it was only
+        # ever included in the metrics grid because of that now-filtered
+        # comment - added here so the fix removes the garbage text
+        # without also silently dropping the WACC card that was already
+        # showing (the AF metrics tuple's own "pct" is redundant with
+        # METRIC_META, which takes priority - kept for readability).
+        ("AF", "pct"),
     ],
 }
 
@@ -335,6 +359,32 @@ PE_RATIO_REF_COLS = {"avg_3y": "AV", "overall_avg": "AU"}
 WACC_ROIC_COLS = {
     "wacc": ["AF", "AG", "AH", "AI"],
     "roic": ["Y", "Z", "AA", "AB"],
+}
+
+# Workbook schema update (owner, 8 Sep): Cost of Capital Analysis's new
+# columns at the end - the per-company WACC build-up inputs, one column
+# each, in the order Andrew described them. AK ("Market") is text (e.g.
+# "US"/"AU"); AL-AP are numeric.
+WACC_BUILDUP_COLS = {
+    "market": "AK",
+    "risk_free_rate": "AL",
+    "country_risk_premium": "AM",
+    "beta": "AN",
+    "cost_of_equity_capm": "AO",
+    "after_tax_cost_of_debt": "AP",
+}
+
+# The three single-cell (row-1-only, not per-company) assumption constants
+# from the same schema update - read live every rebuild, never hardcoded,
+# per the instruction's own explicit rule. AL1 is a FALLBACK (the per-row
+# AL column above holds each company's own actual risk-free rate; AL1 is
+# only what's used when a market isn't in the General!P11:S21 country
+# table) - two different things sharing a column letter by coincidence of
+# where Andrew put the constant, not a typo here.
+WACC_BUILDUP_ASSUMPTION_CELLS = {
+    "fallback_risk_free_rate": "AL1",
+    "base_equity_risk_premium": "AO1",
+    "min_discount_rate_floor": "AQ1",
 }
 
 # Fair Value follow-up: the key inputs behind each valuation method, shown
@@ -767,6 +817,45 @@ def _clean_num(v):
     return None
 
 
+def _clean_text(v):
+    """Same "blank or Excel error string -> None, never invented" rule
+    as _clean_num above, for the one new WACC build-up field (AK,
+    "Market") that's text rather than a number - openpyxl's data_only
+    cache returns an errored formula cell as the literal error string
+    itself (e.g. "#NAME?", "#REF!", "#N/A"), always starting with "#",
+    so that's the one thing this needs to additionally guard against
+    that a genuine blank (None) doesn't already rule out."""
+    if isinstance(v, str):
+        s = v.strip()
+        if s and not s.startswith("#"):
+            return s
+    return None
+
+
+def _is_threaded_comment_junk(text):
+    """Workbook schema update (owner, 8 Sep), threaded-comment guard:
+    Excel's newer "threaded" comments (as opposed to the older legacy
+    Note type) come back from openpyxl as boilerplate wrapping whatever
+    Andrew actually typed - "[Threaded comment]\\n\\nYour version of
+    Excel allows you to read this threaded comment; however, any edits
+    to it will get removed if the file is opened in a newer version of
+    Excel...", THEN his real comment. This is the ONE place in this file
+    that reads cell.comment.text (see its call site in build() below,
+    inside the loop that already runs over every column of every sheet
+    in SECTIONS), so filtering here is a global, all-sheets guard by
+    construction - not something that needs repeating per sheet.
+
+    Deliberately just detects and discards the whole thing (comment_text
+    becomes None, exactly as if there were no comment at all) rather
+    than trying to fish Andrew's own words back out from inside the
+    wrapper - a regex/substring extraction could easily mangle or
+    misattribute text he didn't write (the wrapper can itself contain a
+    "Reply:" section that ISN'T his own comment), and "never rewrite my
+    comment wording" is safer served by not touching it at all than by
+    a best-effort parse."""
+    return "[Threaded comment]" in text or "Your version of Excel" in text
+
+
 def build(path, anthropic_api_key=None):
     """anthropic_api_key: enables the live Company Potential grammar/wording
     check (see _cp_correct_batch_via_ai) when set, either passed explicitly
@@ -827,7 +916,22 @@ def build(path, anthropic_api_key=None):
                 if cell.value not in (None, ""):
                     header_text = str(cell.value).strip()
                 if cell.comment is not None:
-                    comment_text = cell.comment.text.strip()
+                    _raw_comment = cell.comment.text.strip()
+                    # Workbook schema update (owner, 8 Sep): a genuine
+                    # Excel "threaded" comment (as opposed to the older
+                    # legacy Note type) comes back from openpyxl as
+                    # boilerplate junk, not Andrew's own words - see
+                    # _is_threaded_comment_junk()'s own docstring. A junk
+                    # comment on one header row is simply skipped (never
+                    # assigned to comment_text) rather than overwriting
+                    # whatever a DIFFERENT header row for this same
+                    # column already set - so a genuine comment on one
+                    # row survives even if another row for the same
+                    # column happens to carry threaded junk. Applies on
+                    # every sheet (this loop already runs over all of
+                    # them, not just Cost of Capital Analysis).
+                    if not _is_threaded_comment_junk(_raw_comment):
+                        comment_text = _raw_comment
             is_plain_extra = letter in plain_extra_cols
             if comment_text is None and not is_plain_extra:
                 continue  # only the columns Andrew himself annotated (+ curated extras)
@@ -1020,6 +1124,38 @@ def build(path, anthropic_api_key=None):
         if series_out:
             wacc_roic_series[tkr] = series_out
     out["sections"]["Cost of Capital"]["wacc_roic_series"] = wacc_roic_series
+
+    # ---- Workbook schema update (owner, 8 Sep): the WACC build-up block
+    # - one row of per-company inputs (columns AK-AP) rendered under the
+    # WACC vs ROIC chart above by compounder_ui.py, plus the three
+    # single-cell assumption constants (AL1/AO1/AQ1) as one caption under
+    # that. Every field is read straight from the cell and passed through
+    # _clean_num/_clean_text (blank cells and Excel error strings -> None,
+    # never invented, per the instruction's own rule); a ticker with
+    # NOTHING usable across all six fields is left out of wacc_buildup
+    # entirely rather than rendering an empty pill-row.
+    #
+    # As of this rebuild, columns AK-AQ are still blank in the source
+    # workbook this ran against (its own max_column stops at AJ) - this
+    # extraction is written and unit-tested to activate automatically the
+    # moment Andrew populates them; nothing here was verified against
+    # real numbers for those specific columns since none exist yet (see
+    # the engagement report for the honest caveat on this one item).
+    wacc_buildup = {}
+    for tkr, r in coc_rows.items():
+        entry = {}
+        for field, col in WACC_BUILDUP_COLS.items():
+            c = column_index_from_string(col)
+            raw = ws_coc.cell(row=r, column=c).value
+            entry[field] = _clean_text(raw) if field == "market" else _clean_num(raw)
+        if any(v is not None for v in entry.values()):
+            wacc_buildup[tkr] = entry
+    out["sections"]["Cost of Capital"]["wacc_buildup"] = wacc_buildup
+
+    out["sections"]["Cost of Capital"]["wacc_buildup_assumptions"] = {
+        key: _clean_num(ws_coc[cell_ref].value)
+        for key, cell_ref in WACC_BUILDUP_ASSUMPTION_CELLS.items()
+    }
 
     # ---- Company Potential follow-up: H/M/L ratings called out directly,
     # short Yes/No checks, and the long free-text answers merged into a

@@ -640,6 +640,123 @@ def _cp_wacc_roic_chart(ticker, wacc_roic_series):
     return fig
 
 
+def _cp_wacc_buildup_html(ticker, wacc_buildup, base_equity_risk_premium):
+    """Workbook schema update (owner, 8 Sep): the "WACC build-up" pill-row
+    under the WACC vs ROIC chart, built from Cost of Capital Analysis's
+    new AK-AP columns - build_compounder_data.py's own extraction already
+    reduced every field to a clean number/text or None (blank cell or
+    Excel error string), so this only has to decide, per field, whether
+    there's anything to show - never invents a value for a missing one.
+    Visual design matches mocks/coc_section_mock.html exactly: a row of
+    small pills joined by "+"/"→" glyphs, the Cost of Equity result pill
+    picked out in teal, After-tax cost of debt appended plainly at the
+    end (it isn't part of the CAPM sum, so no operator before it).
+
+    base_equity_risk_premium is the GLOBAL AO1 assumption (read once,
+    same for every company) - the per-row β term reads "β X × equity
+    premium Y%" using this global rate, not a per-company one (the
+    workbook has no per-company equity-premium column; only AO1 exists).
+    Returns None (render nothing) when this ticker has no build-up data
+    at all yet."""
+    entry = (wacc_buildup or {}).get(ticker)
+    if not entry:
+        return None
+
+    def _pill(label, value_html, result=False):
+        _style = (
+            "border-color:#14b8a6;background:#10312d;color:#2dd4bf;"
+            if result else "background:#121f36;border-color:#1f3352;color:#c7d2e0;"
+        )
+        return (
+            f"<span style='{_style}border:1px solid;border-radius:8px;"
+            f"padding:5px 11px;font-size:12.5px;display:inline-block;'>"
+            f"{html.escape(label)} <b style='font-family:ui-monospace,Menlo,monospace;"
+            f"color:{'#2dd4bf' if result else '#e6edf5'};'>{value_html}</b></span>"
+        )
+
+    _op = "<span style='color:#5b7290;font-weight:700;'>{}</span>"
+
+    pills = []
+    if entry.get("market"):
+        pills.append(_pill("Market", html.escape(entry["market"])))
+    _capm_sum_pills = []
+    if entry.get("risk_free_rate") is not None:
+        _capm_sum_pills.append(_pill("Risk-free", f"{entry['risk_free_rate'] * 100:.2f}%"))
+    if entry.get("country_risk_premium") is not None:
+        _capm_sum_pills.append(_pill("Country risk", f"{entry['country_risk_premium'] * 100:.2f}%"))
+    if entry.get("beta") is not None:
+        _beta_html = f"{entry['beta']:.2f}</b> × equity premium <b style='font-family:ui-monospace,Menlo,monospace;color:#e6edf5;'>"
+        if base_equity_risk_premium is not None:
+            _capm_sum_pills.append(_pill("β", f"{_beta_html}{base_equity_risk_premium * 100:.1f}%"))
+        else:
+            _capm_sum_pills.append(_pill("β", f"{entry['beta']:.2f}"))
+    for i, p in enumerate(_capm_sum_pills):
+        if i > 0:
+            pills.append(_op.format("+"))
+        pills.append(p)
+    if entry.get("cost_of_equity_capm") is not None:
+        if _capm_sum_pills:
+            pills.append(_op.format("&#8594;"))
+        pills.append(_pill("Cost of equity (CAPM)", f"{entry['cost_of_equity_capm'] * 100:.2f}%", result=True))
+    if entry.get("after_tax_cost_of_debt") is not None:
+        pills.append(_pill("After-tax cost of debt", f"{entry['after_tax_cost_of_debt'] * 100:.2f}%"))
+
+    if not pills:
+        return None
+
+    return (
+        "<div style='background:#0b1220;border:1px solid #2a3b5c;border-radius:10px;"
+        "padding:10px 14px;margin-top:14px;'>"
+        "<div style='font-size:12px;color:#2dd4bf;font-weight:700;letter-spacing:.5px;"
+        "margin-bottom:7px;'>HOW THE WACC IS BUILT (from the workbook's own inputs)</div>"
+        "<div style='display:flex;gap:8px;flex-wrap:wrap;align-items:center;'>"
+        + "".join(pills) +
+        "</div>"
+        "<div style='color:#5b7290;font-size:11.5px;margin-top:10px;line-height:1.6;'>"
+        "Blended by the workbook's own weights into the WACC bars above. "
+        "Cells that are blank or erroring in the workbook are simply "
+        "skipped &mdash; nothing is invented.</div>"
+        "</div>"
+    )
+
+
+def _cp_wacc_buildup_assumptions_caption(assumptions):
+    """The one caption under the build-up block for the three single-cell
+    (not per-company) constants AL1/AO1/AQ1 - each read live from the
+    workbook by build_compounder_data.py, never hardcoded here, so this
+    function only ever formats whatever came through; per-value skip
+    (same rule as the pill-row above) means a still-blank constant simply
+    doesn't get its own clause rather than showing a fake number. Matches
+    mocks/coc_section_mock.html's own caption wording, including the
+    floor's meaning ("the calculated WACC is never applied below this")
+    which the instruction specifically asked to carry over."""
+    assumptions = assumptions or {}
+    clauses = []
+    erp = assumptions.get("base_equity_risk_premium")
+    if erp is not None:
+        clauses.append(f"base equity risk premium <b style='color:#8aa0b8;'>{erp * 100:.1f}%</b>")
+    rf = assumptions.get("fallback_risk_free_rate")
+    if rf is not None:
+        clauses.append(
+            f"fallback risk-free <b style='color:#8aa0b8;'>{rf * 100:.1f}%</b> "
+            "(country-specific rates used where the General table sets them)"
+        )
+    floor = assumptions.get("min_discount_rate_floor")
+    if floor is not None:
+        clauses.append(
+            f"discount-rate floor <b style='color:#8aa0b8;'>{floor * 100:.1f}%</b> "
+            "&mdash; the calculated WACC is never applied below this"
+        )
+    if not clauses:
+        return None
+    return (
+        "<div style='color:#5b7290;font-size:11.5px;border-top:1px solid #1f3352;"
+        "padding-top:10px;margin-top:14px;line-height:1.6;'>"
+        "Assumptions (read live from the workbook): " + " &middot; ".join(clauses) + "."
+        "</div>"
+    )
+
+
 # Fair Value bar order/labels/colours - shared between the chart and the
 # "inputs under each bar" row so the two line up.
 _CP_VALUATION_METHOD_ORDER = [
@@ -942,6 +1059,22 @@ def render_section(sections, ticker, section_label, gate=None, lang="en"):
         fig = _cp_wacc_roic_chart(ticker, section.get("wacc_roic_series", {}))
         if fig:
             sdd_plotly_chart(fig, config={"displayModeBar": False})
+        # Workbook schema update (owner, 8 Sep): the new WACC build-up
+        # pill-row + assumptions caption, both gracefully no-ops when the
+        # underlying data isn't there yet (hand-built workbook only -
+        # auto_compounder_engine.build_sections() never sets these keys,
+        # so the Deep Dive page's "Compounder View (auto)" simply shows
+        # nothing extra here, exactly as before this change).
+        _wacc_assumptions = section.get("wacc_buildup_assumptions", {})
+        _wacc_buildup_html = _cp_wacc_buildup_html(
+            ticker, section.get("wacc_buildup", {}),
+            _wacc_assumptions.get("base_equity_risk_premium"),
+        )
+        if _wacc_buildup_html:
+            st.markdown(_wacc_buildup_html, unsafe_allow_html=True)
+            _wacc_caption_html = _cp_wacc_buildup_assumptions_caption(_wacc_assumptions)
+            if _wacc_caption_html:
+                st.markdown(_wacc_caption_html, unsafe_allow_html=True)
     elif section_label == "Fair Value":
         fig, used = _cp_valuation_methods_chart(ticker, section.get("valuation_methods", {}))
         if fig:
