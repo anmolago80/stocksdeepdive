@@ -14631,38 +14631,59 @@ def _switch_readings_table_html(rows, from_ticker, to_ticker):
     )
 
 
-def _switch_bridge_bars_fig(ret_b, ret_a, toll_z, net, to_ticker, from_ticker, lang):
-    """Addendum to Fix #3b ("Value Opportunity gets graphs"), chart 1:
-    three horizontal bars (candidate/incumbent implied return, the toll)
-    plus a fourth signed NET bar - "one glance = the verdict's
-    arithmetic", per the addendum's own words. Recomputed on every
-    input/horizon change since the caller passes in the already-live
-    _ret_a/_ret_b/_z/net values, same as the tile row above it."""
+def _switch_toll_waterfall_fig(ret_b, ret_a, toll_z, net, to_ticker, from_ticker, lang):
+    """Owner's picks (7 Sep), option 1B: replaces the four tiles AND the
+    old _switch_bridge_bars_fig bar chart with ONE waterfall - same
+    visual grammar as the Cash-vs-Offset waterfall (tools_dr_waterfall_
+    chart just above, go.Waterfall with absolute/relative/relative/total
+    measures) so the two tools rhyme, per the owner's own words. The
+    candidate's implied return is the starting (absolute) bar (green),
+    a step down for the incumbent's implied return (red), a step down
+    for the toll (amber), landing on NET - a forced "total" bar, bold/
+    coloured teal when it clears its own hurdle (>=0) or red when it
+    falls short. marker.color is passed as an explicit per-bar list
+    (Plotly Waterfall supports this) rather than relying on the
+    increasing/decreasing/totals convenience dicts, since those only
+    give two colours (one for "went up", one for "went down") and this
+    needs four independent, semantically-fixed colours. Recomputes on
+    every input/horizon change, same as the tiles/bar chart it
+    replaces."""
     _labels = [
         i18n.t("portfolio.switch.chart_bridge_row_candidate", lang, ticker=to_ticker),
         i18n.t("portfolio.switch.chart_bridge_row_incumbent", lang, ticker=from_ticker),
         i18n.t("portfolio.switch.chart_bridge_row_toll", lang),
         i18n.t("portfolio.switch.chart_bridge_row_net", lang),
     ]
-    _values = [ret_b * 100, ret_a * 100, toll_z * 100, net * 100]
-    _colors = [
-        "#34d399" if ret_b >= 0 else "#fb7185",
-        "#34d399" if ret_a >= 0 else "#fb7185",
-        "#fbbf24",
-        "#34d399" if net >= 0 else "#fb7185",
-    ]
+    # This site's installed Plotly version does not accept a `marker`
+    # override on go.Waterfall (only the increasing/decreasing/totals
+    # convenience dicts, each ONE colour for a whole bucket) - both the
+    # incumbent and toll bars are "went down" bars that need two
+    # DIFFERENT colours from each other, which those buckets can't
+    # express in one trace. Built as a manually-floated go.Bar "waterfall"
+    # instead (base=the bar's bottom edge, y=its own height) - same
+    # floating-steps visual as go.Waterfall/the mock's own SVG, full
+    # per-bar colour control via marker_color (which go.Bar DOES support
+    # as an array, unlike this Waterfall version).
+    _b1_top = ret_b * 100
+    _b2_base, _b2_h = _b1_top - ret_a * 100, ret_a * 100
+    _b4_h = net * 100
+    _b3_base, _b3_h = _b4_h, toll_z * 100
+    _net_color = "#2dd4bf" if net >= 0 else "#fb7185"
+    _bases = [0.0, _b2_base, _b3_base, 0.0]
+    _heights = [_b1_top, _b2_h, _b3_h, _b4_h]
+    _colors = ["#34d399", "#fb7185", "#fbbf24", _net_color]
+    _texts = [f"{ret_b * 100:+.1f}%", f"{-ret_a * 100:+.1f}%", f"{-toll_z * 100:+.1f}%", f"{net * 100:+.1f}%"]
     fig = go.Figure(go.Bar(
-        x=_values, y=_labels, orientation="h", marker_color=_colors,
-        text=[f"{v:+.1f}%" for v in _values], textposition="outside", cliponaxis=False,
+        x=_labels, y=_heights, base=_bases, marker_color=_colors,
+        text=_texts, textposition="outside", cliponaxis=False,
     ))
-    _pad = max(abs(v) for v in _values) * 1.35 or 1.0
     fig.update_layout(
         title=i18n.t("portfolio.switch.chart_bridge_title", lang),
-        xaxis_title=i18n.t("portfolio.switch.chart_bridge_xaxis", lang),
-        showlegend=False, height=260, margin=dict(l=10, r=50, t=40, b=10),
+        showlegend=False, height=280, margin=dict(l=10, r=10, t=40, b=30),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2e0"),
-        xaxis=dict(range=[-_pad, _pad], zeroline=True, zerolinecolor="rgba(138,160,184,0.35)", showgrid=False),
-        yaxis=dict(showgrid=False),
+        yaxis=dict(gridcolor="#1f3352", title=i18n.t("portfolio.switch.chart_bridge_xaxis", lang), ticksuffix="%",
+                   zeroline=True, zerolinecolor="rgba(138,160,184,0.35)"),
+        xaxis=dict(gridcolor="#1f3352"),
     )
     return fig
 
@@ -14755,6 +14776,80 @@ def _switch_trim_curve_fig(ret_a, ret_b, current_trim, lang):
     return fig
 
 
+def _switch_trim_sim_weights(base_weights, from_ticker, to_ticker, from_value, trim_fraction):
+    """{ticker: value_aud} for the FULL portfolio with `from_ticker`
+    reduced by `trim_fraction` of its value and that same amount moved
+    onto `to_ticker` (0 if not currently held) - the exact construction
+    the trim card's Monte Carlo simulation already used for the single
+    "current slider position" scenario, pulled into its own pure
+    function so option 2A's three mini bands (Keep everything / current
+    slider % / Sell everything) can call it three times for three
+    different fractions without repeating the logic. No network/
+    Streamlit dependency - directly unit-testable."""
+    sim_weights = dict(base_weights)
+    moved_value = from_value * trim_fraction
+    sim_weights[from_ticker] = max(from_value - moved_value, 0.0)
+    sim_weights[to_ticker] = sim_weights.get(to_ticker, 0.0) + moved_value
+    return sim_weights
+
+
+def _switch_trim_range_bands_html(bands, lang):
+    """Owner's picks (7 Sep), option 2A: replaces the trim card's old
+    single "1-yr range, simulated (95%)" text/band row with one small
+    horizontal gradient band PER COLUMN (Keep everything / current
+    slider % / Sell everything - the owner's own instruction lists all
+    three), each with a white median tick and a compact
+    "-14% - median +9% - +57%" line underneath, per the approved
+    mocks/vo_graph_options_mock.html section 2A. The gradient itself is
+    a FIXED decorative red-to-neutral-to-green background (independent
+    of where the data marks land) - same convention already documented
+    on _stress_mc_band_html's own docstring for the site's other Monte
+    Carlo band; only the median tick's position is computed from the
+    real p5/p50/p95 numbers, using that same function's lo/hi/_pos
+    convention so every MC band on the site places its tick the same
+    way.
+
+    `bands`: [(label, mc_or_None), ...] - a band with mc=None (the
+    simulation couldn't run for that column - e.g. not enough shared
+    price history) renders a plain "-" in place of the gradient rather
+    than being skipped, so the three columns always line up."""
+    _sw = lambda key, **fmt: i18n.t(f"portfolio.switch.{key}", lang, **fmt)
+    _cells = []
+    for label, mc in bands:
+        if not mc:
+            _cells.append(
+                "<div style='min-width:150px'>"
+                f"<div style='font-size:12px;color:#8aa0b8;margin-bottom:2px'>{html.escape(label)}</div>"
+                "<div style='width:170px;height:14px;background:rgba(255,255,255,.05);border-radius:7px'></div>"
+                f"<div style='color:#5b7290;font-size:11px;margin-top:3px'>{html.escape(_sw('trim_range_unavailable'))}</div>"
+                "</div>"
+            )
+            continue
+        p5, p95 = mc["p5_pct"], mc["p95_pct"]
+        p50 = mc.get("p50_pct")
+        lo, hi = min(p5, -5.0) - 10.0, max(p95, 5.0) + 10.0
+        span = (hi - lo) or 1.0
+        _tick_pos = max(3.0, min(97.0, ((p50 if p50 is not None else (p5 + p95) / 2) - lo) / span * 100.0))
+        _range_line = _sw(
+            "trim_range_line", p5=f"{p5:+.0f}%", p95=f"{p95:+.0f}%",
+            p50=(f"{p50:+.0f}%" if p50 is not None else "n/a"),
+        )
+        _cells.append(
+            "<div style='min-width:150px'>"
+            f"<div style='font-size:12px;color:#8aa0b8;margin-bottom:2px'>{html.escape(label)}</div>"
+            "<div style='width:170px;height:14px;border-radius:7px;position:relative;"
+            "background:linear-gradient(90deg,#7f1d1d,#1a2740 45%,#065f46)'>"
+            f"<span style='position:absolute;left:{_tick_pos:.1f}%;top:-3px;bottom:-3px;width:2px;"
+            "background:#e6edf5'></span></div>"
+            f"<div style='color:#8aa0b8;font-size:11px;margin-top:3px'>{html.escape(_range_line)}</div>"
+            "</div>"
+        )
+    return (
+        "<div style='display:flex;gap:20px;margin-top:8px;flex-wrap:wrap'>" + "".join(_cells) + "</div>"
+        f"<div style='color:#5b7290;font-size:11px;margin-top:9px;font-style:italic'>{html.escape(_sw('trim_range_caption'))}</div>"
+    )
+
+
 def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses):
     """Owner review round fix #3, fix #3b, and fix #3b's two addenda -
     everything visible on one screen, top to bottom exactly as the
@@ -14785,9 +14880,12 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
     value at all, even from the 🤖 fallback.
 
     The 1st addendum ("gets graphs") adds three Plotly charts, one per
-    card - _switch_bridge_bars_fig/_switch_crossover_fig/_switch_trim_
+    card - _switch_toll_waterfall_fig/_switch_crossover_fig/_switch_trim_
     curve_fig (all three defined just above this function) - each
     recomputing on every input/horizon/trim change, EN/ES via i18n.
+    (_switch_toll_waterfall_fig replaced the original bar-chart version,
+    _switch_bridge_bars_fig, per the owner's picks presentation rework -
+    see that function's own docstring.)
 
     The maths itself is untouched from the original Part 17 build: every
     switch_analyzer_engine.* call below is either identical to the
@@ -15184,55 +15282,25 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
         with st.container(key="sw_bridge_card", border=True):
             st.markdown(f"**{_sw('bridge_title')}**")
 
-            # NET tiles (implied return B − implied return A − toll =
-            # NET), matching the mock's own tile row. Fix #3b, item 4:
-            # ALWAYS rendered now (was previously skipped entirely
-            # whenever either implied return was missing) - "-"
-            # placeholders plus a plain-English note instead of the tile
-            # row just vanishing, so a candidate with no fair value at
-            # all (e.g. an ETF) still shows the full card layout.
-            _net_color = "#34d399" if (_net is not None and _net >= 0) else "#fb7185"
-            _tile = lambda caption, value, color, flex="1", bg="rgba(255,255,255,.03)", border="rgba(255,255,255,.12)": (
-                f"<div style='flex:{flex};min-width:110px;background:{bg};border:1px solid {border};"
-                f"border-radius:9px;padding:8px 10px'><div style='color:#8aa0b8;font-size:10.5px'>{caption}</div>"
-                f"<div style='font-family:ui-monospace,Menlo,monospace;font-weight:700;font-size:17px;"
-                f"color:{color}'>{value}</div></div>"
-            )
-            _val_b = f"{_ret_b * 100:+.1f}%/yr" if _ret_b is not None else "—"
-            _val_a = f"{_ret_a * 100:+.1f}%/yr" if _ret_a is not None else "—"
-            _val_z = f"{_z * 100:.1f}%/yr" if _z is not None else "—"
-            _val_net = f"{_net * 100:+.1f}%/yr" if _net is not None else "—"
-            _color_b = "#8aa0b8" if _ret_b is None else ("#34d399" if _ret_b >= 0 else "#fb7185")
-            _color_a = "#8aa0b8" if _ret_a is None else ("#34d399" if _ret_a >= 0 else "#fb7185")
-            _tiles_html = (
-                "<div style='display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;margin:2px 0 12px'>"
-                + _tile(_sw("bridge_tile_caption", ticker=_to_ticker,
-                            iv=(f"{_iv_b:,.2f}" if _iv_b is not None else "n/a"), years=_years), _val_b, _color_b)
-                + "<div style='align-self:center;color:#5b7290;font-weight:800'>&minus;</div>"
-                + _tile(_sw("bridge_tile_caption", ticker=_from_ticker,
-                            iv=(f"{_iv_a:,.2f}" if _iv_a is not None else "n/a"), years=_years), _val_a, _color_a)
-                + "<div style='align-self:center;color:#5b7290;font-weight:800'>&minus;</div>"
-                + _tile(_sw("bridge_tile_toll_caption", years=_years), _val_z, "#fbbf24" if _z is not None else "#8aa0b8")
-                + "<div style='align-self:center;color:#5b7290;font-weight:800'>=</div>"
-                + _tile(_sw("bridge_tile_net_label"), _val_net, _net_color if _net is not None else "#8aa0b8",
-                        flex="1.2",
-                        bg=("rgba(251,113,133,.06)" if (_net is not None and _net_color == "#fb7185")
-                            else ("rgba(52,211,153,.06)" if _net is not None else "rgba(255,255,255,.03)")),
-                        border=(_net_color if _net is not None else "rgba(255,255,255,.12)"))
-                + "</div>"
-            )
-            st.markdown(_tiles_html, unsafe_allow_html=True)
-            if _net is not None:
-                st.caption(_sw("bridge_tile_net_hurdle_passes" if _net >= 0 else "bridge_tile_net_hurdle_fails"))
-            elif _ret_a is None or _ret_b is None:
-                st.caption(_sw("bridge_tile_no_iv_note", ticker=(_to_ticker if _ret_b is None else _from_ticker)))
-
-            # Addendum to Fix #3b, chart 1 ("bridge bars"): only
-            # plottable once all three of ret_a/ret_b/z (and therefore
-            # net) are real numbers - same gating the tile colouring
-            # above already implies.
+            # Owner's picks (7 Sep), option 1B: the four tiles AND the
+            # old bar chart (_switch_bridge_bars_fig) are replaced by
+            # ONE waterfall (_switch_toll_waterfall_fig) - candidate's
+            # implied return (green) -> step down for the incumbent's
+            # (red) -> step down for the toll (amber) -> NET (teal when
+            # it clears its own hurdle, red when it falls short). Same
+            # gating as the tiles/bar chart it replaces: only plottable
+            # once all three of ret_a/ret_b/z (and therefore net) are
+            # real numbers; the "-" plain-English fallback note (Fix
+            # #3b, item 4) is kept unchanged for the no-IV case, so a
+            # candidate with no fair value at all (e.g. an ETF) still
+            # shows a full card rather than a chart that can't compute.
             if _ret_a is not None and _ret_b is not None and _z is not None and _net is not None:
-                sdd_plotly_chart(_switch_bridge_bars_fig(_ret_b, _ret_a, _z, _net, _to_ticker, _from_ticker, _lang))
+                sdd_plotly_chart(
+                    _switch_toll_waterfall_fig(_ret_b, _ret_a, _z, _net, _to_ticker, _from_ticker, _lang)
+                )
+                st.caption(_sw("bridge_tile_net_hurdle_passes" if _net >= 0 else "bridge_tile_net_hurdle_fails"))
+            else:
+                st.caption(_sw("bridge_tile_no_iv_note", ticker=(_to_ticker if _ret_b is None else _from_ticker)))
 
             st.caption(_sw("bridge_caption", ticker=_from_ticker))
             # Fix #3b, item 2: the derivation is now a narrative list of
@@ -15348,26 +15416,41 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
                 sdd_plotly_chart(_switch_trim_curve_fig(_ret_a, _ret_b, _trim, _lang))
 
         st.markdown(f"**{_sw('trim_sim_title')}**")
-        # Full-portfolio weights (this named portfolio only - tickers are
-        # unique within one portfolio, see portfolio_holdings' own PK), with
-        # `_from_ticker`'s value reduced by the trimmed-out amount and that
-        # same amount added onto `_to_ticker` (0 if not currently held).
-        _sim_weights = dict(_stress_weights_and_value(_holdings, _analyses)[0])
-        _moved_value = _from_row["value_aud"] * _trim
-        _sim_weights[_from_ticker] = max(_from_row["value_aud"] - _moved_value, 0.0)
-        _sim_weights[_to_ticker] = _sim_weights.get(_to_ticker, 0.0) + _moved_value
-        _sim_total = sum(_sim_weights.values())
-        _sim_tickers = tuple(sorted(_sim_weights.keys()))
+        # Owner's picks (7 Sep), option 2A: three mini gradient bands -
+        # Keep everything (trim=0) / the current slider % / Sell
+        # everything (trim=1) - replacing the old single-scenario band.
+        # The ticker SET is identical for all three fractions (only the
+        # WEIGHT distribution across from_ticker/to_ticker changes), so
+        # histories + the sanity guard are fetched/applied ONCE here and
+        # reused for all three Monte Carlo calls below -
+        # _switch_trim_sim_weights (pure, unit-tested) builds each
+        # scenario's weights.
+        _base_weights = _stress_weights_and_value(_holdings, _analyses)[0]
+        _trim_scenarios = [
+            (_sw("trim_range_col_keep"), 0.0),
+            (_sw("trim_range_col_partial", pct=f"{_trim * 100:.0f}"), _trim),
+            (_sw("trim_range_col_full"), 1.0),
+        ]
+        _sim_weights_by_scenario = {
+            label: _switch_trim_sim_weights(_base_weights, _from_ticker, _to_ticker, _from_row["value_aud"], frac)
+            for label, frac in _trim_scenarios
+        }
+        _sim_tickers = tuple(sorted({t for w in _sim_weights_by_scenario.values() for t in w}))
         _sim_histories = _stress_history_bundle(_sim_tickers)
         _sim_histories, _sim_faulty = _stress_apply_guard(
             _sim_histories, list(_holdings) + [{"ticker": _to_ticker, "kind": "STOCK"}],
         )
-        try:
-            _mc_trim = stress_engine.monte_carlo(_sim_weights, _sim_histories, _sim_total, seed=42)
-        except Exception:
-            _mc_trim = None
-        if _mc_trim:
-            st.markdown(_stress_mc_band_html(_mc_trim, lang=_lang, compact=True), unsafe_allow_html=True)
+        _bands = []
+        for label, _frac in _trim_scenarios:
+            _sim_weights = _sim_weights_by_scenario[label]
+            _sim_total = sum(_sim_weights.values())
+            try:
+                _mc_scenario = stress_engine.monte_carlo(_sim_weights, _sim_histories, _sim_total, seed=42)
+            except Exception:
+                _mc_scenario = None
+            _bands.append((label, _mc_scenario))
+        if any(mc for _, mc in _bands):
+            st.markdown(_switch_trim_range_bands_html(_bands, _lang), unsafe_allow_html=True)
         else:
             st.caption(_sw("trim_sim_unavailable"))
 

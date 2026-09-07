@@ -1570,19 +1570,23 @@ EN = {
     # Analyzer" to "Value Opportunity" everywhere the public sees it -
     # internal key/module names ("portfolio.switch.*", switch_analyzer_
     # engine.py) intentionally stay as-is (no data migration for a label).
-    "portfolio.tab_switch": "\U0001F504 Value Opportunity",
+    # Owner's picks (7 Sep): renamed AGAIN, from "Value Opportunity" to
+    # "The Toll" (exact spelling per the owner's own instruction) -
+    # same rule: internal key/module names stay untouched, only the
+    # display text every visitor sees changes.
+    "portfolio.tab_switch": "\U0001FA99 The Toll",
     "portfolio.switch.combined_view_note": (
-        "Pick one portfolio above (not \"All portfolios\") to use Value Opportunity - "
+        "Pick one portfolio above (not \"All portfolios\") to use The Toll - "
         "it needs a single portfolio's own tax rate/brokerage settings and cost bases."
     ),
-    "portfolio.switch.empty": "Add a holding with a live price to use Value Opportunity.",
+    "portfolio.switch.empty": "Add a holding with a live price to use The Toll.",
     "portfolio.switch.intro_caption": (
         "A factual opportunity-cost calculator, never a recommendation: selling a holding "
         "to buy something else costs real money first (capital-gains tax + brokerage on "
         "both trades) - this shows what the new position would need to out-earn every "
         "year just to make up for that cost, based on this site's own fair-value estimates."
     ),
-    "portfolio.switch.settings_title": "Value Opportunity settings",
+    "portfolio.switch.settings_title": "The Toll settings",
     "portfolio.switch.settings_caption": (
         "Your marginal tax rate and flat brokerage fee per trade, for this portfolio only. "
         "Used only for the calculations on this tab - never shared, never sent to the API/MCP."
@@ -1767,6 +1771,18 @@ EN = {
     "portfolio.switch.trim_blended_return": "Blended implied return after the trim: ≈{pct}%/yr",
     "portfolio.switch.trim_sim_title": "Simulated 1-year range after the trim",
     "portfolio.switch.trim_sim_unavailable": "Not enough shared price history to simulate this trim yet.",
+    # Owner's picks (7 Sep), option 2A: the old single "1-yr range,
+    # simulated (95%)" text/band row is replaced by one mini gradient
+    # band per column (Keep everything / current slider % / Sell
+    # everything) - see _switch_trim_range_bands_html (app.py).
+    "portfolio.switch.trim_range_col_keep": "Keep everything",
+    "portfolio.switch.trim_range_col_partial": "Sell {pct}%",
+    "portfolio.switch.trim_range_col_full": "Sell everything",
+    "portfolio.switch.trim_range_line": "{p5} ─ median {p50} ─ {p95}",
+    "portfolio.switch.trim_range_caption": (
+        "The shaded spread is the simulated one-year range; not a prediction."
+    ),
+    "portfolio.switch.trim_range_unavailable": "not enough data",
     # Fix #3b, 2nd addendum ("easy input"): quick-pick chips under the
     # searchable dropdown - one tap fills the "New opportunity" side.
     "portfolio.switch.quickpick_research_label": "\U0001F4DA Your research",
@@ -3199,12 +3215,16 @@ ES = {
     "portfolio.stress.window.ai_rally_2023_24": "Repunte de la IA 2023-24",
     "portfolio.stress.na": "—",
 
-    "portfolio.tab_switch": "\U0001F504 Oportunidad de valor",
+    # Owner's picks (7 Sep): "El Peaje" is the OWNER'S OWN suggested ES
+    # rename for "The Toll" - applied here per the instruction, but
+    # explicitly flagged as owner-reviewable (not a translation choice
+    # made unilaterally) in this fix's own report.
+    "portfolio.tab_switch": "\U0001FA99 El Peaje",
     "portfolio.switch.combined_view_note": (
-        "Elige una cartera arriba (no \"Todas las carteras\") para usar Oportunidad de "
-        "valor - necesita la tasa de impuesto/comisión de una sola cartera y sus bases de coste."
+        "Elige una cartera arriba (no \"Todas las carteras\") para usar El Peaje - "
+        "necesita la tasa de impuesto/comisión de una sola cartera y sus bases de coste."
     ),
-    "portfolio.switch.empty": "Añade una posición con precio en vivo para usar Oportunidad de valor.",
+    "portfolio.switch.empty": "Añade una posición con precio en vivo para usar El Peaje.",
     "portfolio.switch.intro_caption": (
         "Una calculadora factual de coste de oportunidad, nunca una recomendación: vender una "
         "posición para comprar otra cuesta dinero real primero (impuesto sobre ganancias de "
@@ -3212,7 +3232,7 @@ ES = {
         "más la nueva posición cada año solo para compensar ese coste, según las propias "
         "estimaciones de valor razonable de este sitio."
     ),
-    "portfolio.switch.settings_title": "Ajustes de Oportunidad de valor",
+    "portfolio.switch.settings_title": "Ajustes de El Peaje",
     "portfolio.switch.settings_caption": (
         "Tu tasa de impuesto marginal y comisión fija por operación, solo para esta cartera. "
         "Se usan únicamente en los cálculos de esta pestaña - nunca se comparten ni se envían a la API/MCP."
@@ -3360,6 +3380,14 @@ ES = {
     "portfolio.switch.trim_blended_return": "Rendimiento implícito combinado tras el recorte: ≈{pct}%/año",
     "portfolio.switch.trim_sim_title": "Rango simulado a 1 año tras el recorte",
     "portfolio.switch.trim_sim_unavailable": "Aún no hay suficiente historial de precios compartido para simular este recorte.",
+    "portfolio.switch.trim_range_col_keep": "Conservar todo",
+    "portfolio.switch.trim_range_col_partial": "Vender {pct}%",
+    "portfolio.switch.trim_range_col_full": "Vender todo",
+    "portfolio.switch.trim_range_line": "{p5} ─ mediana {p50} ─ {p95}",
+    "portfolio.switch.trim_range_caption": (
+        "El rango sombreado es el rango simulado a un año; no es una predicción."
+    ),
+    "portfolio.switch.trim_range_unavailable": "datos insuficientes",
     "portfolio.switch.quickpick_research_label": "\U0001F4DA Tu investigación",
     "portfolio.switch.quickpick_scorers_label": "\U0001F319 Los mejores Value Scorers de anoche",
     "portfolio.switch.chart_bridge_title": "La aritmética del veredicto, de un vistazo",
