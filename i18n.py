@@ -1562,6 +1562,15 @@ EN = {
         "best-12-months or replayed-return figure. Per-holding rows below "
         "still show what's available."
     ),
+    # Corporate-actions follow-up (2026-09-07): admin-only expander next to
+    # data_fault_note above, showing exactly what tripped the guard (date +
+    # move size) rather than leaving it a silent badge - see app.py's
+    # _stress_apply_guard / stress_engine.sanity_checked_history's new
+    # diagnostic return.
+    "portfolio.stress.data_fault_admin_diagnostics_title": "Admin: what tripped the guard",
+    "portfolio.stress.data_fault_admin_diagnostic_row": (
+        "{ticker}: {move_pct}% on {date} (threshold ±{threshold_pct}%)"
+    ),
     "portfolio.stress.shock_grid_title": "Shock grid",
     "portfolio.stress.shock_grid_beta_line": "Portfolio beta (vs a blended S&P 500 / ASX 200 index): {beta}",
     "portfolio.stress.shock_grid_caption": (
@@ -3269,6 +3278,10 @@ ES = {
         "caída, mejores 12 meses o rentabilidad reproducida a nivel de "
         "cartera. Las filas por posición debajo siguen mostrando lo que "
         "hay disponible."
+    ),
+    "portfolio.stress.data_fault_admin_diagnostics_title": "Admin: qué activó el aviso",
+    "portfolio.stress.data_fault_admin_diagnostic_row": (
+        "{ticker}: {move_pct}% el {date} (umbral ±{threshold_pct}%)"
     ),
     "portfolio.stress.shock_grid_title": "Cuadrícula de choques",
     "portfolio.stress.shock_grid_beta_line": "Beta de la cartera (vs. un índice combinado S&P 500 / ASX 200): {beta}",

@@ -13707,27 +13707,37 @@ def _stress_apply_guard(histories, holdings):
     only ever runs for a ticker that just failed the cheap check, so
     the common/healthy case pays nothing extra.
 
-    Returns (checked_histories, faulty_tickers) - a faulty ticker is
-    dropped from `histories` entirely, which is enough on its own to
-    make every stress_engine function downstream treat it exactly like
-    "no history available" (dropped from the replay, weight
-    renormalized across the rest - see build_combined_series/
+    Returns (checked_histories, faulty_tickers, diagnostics) - a faulty
+    ticker is dropped from `histories` entirely, which is enough on its
+    own to make every stress_engine function downstream treat it
+    exactly like "no history available" (dropped from the replay,
+    weight renormalized across the rest - see build_combined_series/
     scenario_replay/monte_carlo's own docstrings) rather than ever
-    computing from a corrupted series."""
+    computing from a corrupted series.
+
+    Corporate-actions follow-up (2026-09-07): `diagnostics` is new -
+    {ticker: {"date", "move_pct", "threshold_pct"}} for every ticker in
+    `faulty_tickers`, straight from stress_engine.sanity_checked_
+    history's own new 3-tuple return, so a false positive is never just
+    a silent "data fault" badge - the render layer can show admins
+    exactly what tripped the guard (see the admin-only expander at this
+    function's call site in the main Stress Test tab)."""
     kind_by_ticker = {}
     for h in (holdings or []):
         t = (h.get("ticker") or "").strip().upper()
         if t:
             kind_by_ticker[t] = (h.get("kind") or "STOCK").upper()
-    checked, faulty = {}, []
+    checked, faulty, diagnostics = {}, [], {}
     for t, hist in (histories or {}).items():
         is_fund = kind_by_ticker.get(t, "STOCK") == "ETF"
-        ok_hist, was_faulty = stress_engine.sanity_checked_history(t, hist, is_fund)
+        ok_hist, was_faulty, diagnostic = stress_engine.sanity_checked_history(t, hist, is_fund)
         if was_faulty:
             faulty.append(t)
+            if diagnostic is not None:
+                diagnostics[t] = diagnostic
         else:
             checked[t] = ok_hist
-    return checked, sorted(faulty)
+    return checked, sorted(faulty), diagnostics
 
 
 STRESS_GUARD_ON_GUARD_THRESHOLD_PCT = 25.0
@@ -14342,10 +14352,26 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
         # Part 14: sanity-guard every holding's own history before any
         # of it reaches a drawdown/beta/Monte-Carlo computation - see
         # _stress_apply_guard's own docstring.
-        histories, _faulty_tickers = _stress_apply_guard(histories, _holdings)
+        histories, _faulty_tickers, _faulty_diagnostics = _stress_apply_guard(histories, _holdings)
 
     if _faulty_tickers:
         st.warning(_st_("data_fault_note", tickers=", ".join(_faulty_tickers)))
+        # Corporate-actions follow-up (2026-09-07): admin-only, so a
+        # false positive (offending date + move size, straight from
+        # stress_engine's own new diagnostic) is never just a silent
+        # badge for whoever's actually debugging it - reuses the same
+        # _admin_ever_seen() gate every other admin-only surface on the
+        # site already uses, rather than a new mechanism.
+        if _faulty_diagnostics and _admin_ever_seen():
+            with st.expander(_st_("data_fault_admin_diagnostics_title"), expanded=False):
+                for _t in _faulty_tickers:
+                    _diag = _faulty_diagnostics.get(_t)
+                    if _diag:
+                        st.caption(_st_(
+                            "data_fault_admin_diagnostic_row",
+                            ticker=_t, date=_diag["date"],
+                            move_pct=f"{_diag['move_pct']:+.1f}", threshold_pct=f"{_diag['threshold_pct']:.0f}",
+                        ))
 
     # Fix round 10 #3 ("guard on the guard"): _faulty_tickers being
     # excluded is correct on its own (never feed a corrupted series into
@@ -14588,7 +14614,7 @@ def _switch_correlation_vs_rest(candidate_ticker, exclude_hkey, _holdings, _anal
         return None
     _tickers = tuple(sorted(set(weights.keys()) | {candidate_ticker}))
     histories = _stress_history_bundle(_tickers)
-    histories, _faulty = _stress_apply_guard(histories, _rest + [{"ticker": candidate_ticker, "kind": "STOCK"}])
+    histories, _faulty, _ = _stress_apply_guard(histories, _rest + [{"ticker": candidate_ticker, "kind": "STOCK"}])
     _cand_hist = histories.get(candidate_ticker)
     if _cand_hist is None or _cand_hist.empty:
         return None
@@ -15555,7 +15581,7 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
         }
         _sim_tickers = tuple(sorted({t for w in _sim_weights_by_scenario.values() for t in w}))
         _sim_histories = _stress_history_bundle(_sim_tickers)
-        _sim_histories, _sim_faulty = _stress_apply_guard(
+        _sim_histories, _sim_faulty, _ = _stress_apply_guard(
             _sim_histories, list(_holdings) + [{"ticker": _to_ticker, "kind": "STOCK"}],
         )
         _bands = []
@@ -15587,7 +15613,7 @@ def _stress_portfolio_ask_summary(_holdings, _analyses):
     index_histories = _stress_index_histories()
     # Part 14: same sanity guard as the rendered tab - this summary
     # must never quote a number built from a data-fault-excluded ticker.
-    histories, _faulty_tickers = _stress_apply_guard(histories, _holdings)
+    histories, _faulty_tickers, _ = _stress_apply_guard(histories, _holdings)
     _cache_key = stress_engine.cache_key(_holdings)
     result = stress_engine.get_cached_result(_cache_key)
     if result is None:

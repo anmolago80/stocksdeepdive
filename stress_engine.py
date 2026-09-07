@@ -89,10 +89,73 @@ result was potentially built from the old, unadjusted convention, and
 a plain schema/table-version bump is the simplest way to guarantee
 nothing stale is ever read again, without needing a one-off migration
 script that has to run exactly once in production.
+
+FOLLOW-UP TO FIX ROUND 10 #3 (owner instruction, corporate-actions
+override table, 2026-09-07): Fix round 10 #3 diagnosed - but
+deliberately did not act on - IVV.AX and GOLD.AX both having REAL,
+confirmed corporate actions that yfinance's own `.splits` feed
+apparently doesn't carry for these ASX-listed, internationally-
+domiciled ETPs (empty/incomplete, per every check possible from this
+sandbox - see that fix's own diagnostic note a little further down).
+This follow-up makes the repair for those two SPECIFIC, source-
+verified tickers deterministic rather than dependent on that feed ever
+showing up: KNOWN_CORPORATE_ACTIONS below, consulted first by
+_attempt_split_repair(). One correction to the instruction that
+prompted this table, found while verifying its own claim against the
+primary ASX announcement (not a secondary tracker) before hardcoding
+anything, per the standing "verify before hardcoding" rule: GOLD.AX's
+8 Jun 2022 action was a FORWARD 10:1 split (10 new units per 1 old
+unit, roughly $230-260 -> $23-26 per unit, explicitly to improve
+retail accessibility per Global X's own announcement text), NOT the
+reverse "1-for-10 consolidation" the instruction described - the
+opposite direction. Using the wrong direction would have applied the
+wrong correction (multiplying instead of dividing), making a false
+positive WORSE, not better - exactly what this whole mechanism exists
+to prevent. See KNOWN_CORPORATE_ACTIONS's own comment for both
+tickers' primary sources.
+
+Also new in this follow-up:
+  - get_long_history() now fetches with yfinance's own repair=True
+    (previously omitted). yfinance's documented price-repair heuristics
+    specifically target the "false positive, no real corporate action"
+    failure class the instruction asked about for OCL.AX - missed
+    splits not present in .splits, and 100x currency mixups ($/cents)
+    that a small, less-liquid ASX stock's feed is a known plausible
+    candidate for. OCL.AX's own dividend history was checked first (the
+    instruction's own leading hypothesis, a large special distribution
+    misread as a price gap) and found to REFUTE it - every distribution
+    on record is $0.015-$0.21/share against a multi-dollar unit price,
+    nowhere near the guard's 60% threshold (see this fix's own commit
+    message / report for the sources). repair=True is the best general-
+    purpose fix available without live yfinance access to pin OCL.AX's
+    exact offending date by hand (this sandbox has none - see the
+    module's own environment-constraint note above); if it doesn't
+    fully clear OCL.AX on Railway, the new diagnostic logging just below
+    will show exactly which date/move to add as a third
+    KNOWN_CORPORATE_ACTIONS entry in a fast follow-up.
+  - sanity_checked_history() now also returns a diagnostic (offending
+    date + move size) whenever a ticker ends up excluded, so a false
+    positive like OCL.AX's is never just a silent "data fault" badge
+    again - it's logged server-side and surfaced to admin (see app.py's
+    _stress_apply_guard).
+  - _v2 -> _v3 table rename (same "guarantee nothing stale is read
+    again" reasoning as the _v1 -> _v2 rename above) - a cached history
+    or result from before this fix could itself still be the
+    unrepaired/excluded series, and this module has no live path to
+    reach the production volume from this sandbox to invalidate three
+    specific ticker rows by hand, so the same zero-manual-steps
+    version-bump pattern is reused rather than a script that would need
+    someone to actually run it. This does mean every ticker's cache
+    refreshes once, not just IVV.AX/GOLD.AX/OCL.AX's - a one-time,
+    cheap, already-proven trade-off, not a targeted invalidation of
+    only the three affected tickers as the instruction literally asked
+    for; flagged in this fix's own report as a deliberate substitution,
+    not an oversight.
 """
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -102,6 +165,8 @@ import pandas as pd
 import yfinance as yf
 
 import etf_insights
+
+_stress_logger = logging.getLogger("sdd.stress")
 
 # -----------------------------------------------------------------
 # Storage - same volume-resolution rule as every other store in this
@@ -118,19 +183,22 @@ LONG_HISTORY_TTL_HOURS = 24  # see module docstring - "nightly-ish"
 RESULT_TTL_HOURS = 24        # the assembled stress-test result itself
 
 
-_LONG_HISTORY_TABLE = "stress_long_history_v2"
-_RESULT_CACHE_TABLE = "stress_result_cache_v2"
+_LONG_HISTORY_TABLE = "stress_long_history_v3"
+_RESULT_CACHE_TABLE = "stress_result_cache_v3"
 
 
 def _conn():
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
     # Part 14: _v2 table names (was stress_long_history/stress_result_cache)
-    # - see module docstring's "two layers" note. The old tables are left
-    # in place untouched (harmless, tiny) rather than dropped; they are
-    # simply never read again, which is all "invalidate the cache" needs
-    # to mean here - every ticker/result recomputes fresh under the new
-    # auto_adjust=True + sanity-guard convention on its next request.
+    # - see module docstring's "two layers" note. Corporate-actions follow-up
+    # (2026-09-07): bumped again to _v3 - same reasoning, see the module
+    # docstring's own follow-up paragraph. Every old-versioned table is left
+    # in place untouched (harmless, tiny) rather than dropped; it is simply
+    # never read again, which is all "invalidate the cache" needs to mean
+    # here - every ticker/result recomputes fresh under the current
+    # auto_adjust=True + repair=True + sanity-guard convention on its next
+    # request.
     conn.execute(
         f"""CREATE TABLE IF NOT EXISTS {_LONG_HISTORY_TABLE} (
             ticker TEXT PRIMARY KEY,
@@ -212,7 +280,7 @@ def get_long_history(ticker, force_refresh=False):
         if cached is not None:
             return cached
     try:
-        hist = yf.Ticker(ticker).history(period="max", auto_adjust=True)
+        hist = yf.Ticker(ticker).history(period="max", auto_adjust=True, repair=True)
         if hist is None or hist.empty:
             hist = pd.DataFrame()
         else:
@@ -274,10 +342,14 @@ SPLIT_ANOMALY_THRESHOLD_STOCK = 0.60
 # directly - that live check still needs doing on Railway, where the app
 # actually runs.
 #   - IVV.AX genuinely split ~15:1 in Dec 2022, and GOLD.AX genuinely did
-#     a 1-for-10 REVERSE split on 8 Jun 2022 (ASX announcement
-#     459h6dtw1n4ncb.pdf) - so the instruction's own assumption that
-#     "OCL/GOLD have no splits to fault" does not hold for GOLD.AX; it
-#     has a real, confirmed split. The likely reason _attempt_split_repair
+#     a FORWARD 10:1 split on 8 Jun 2022 (ASX announcement
+#     459h6dtw1n4ncb.pdf - 9 new units issued per 1 held, ~$230-260 ->
+#     ~$23-26/unit; CORRECTED from this note's original "1-for-10
+#     REVERSE split" guess, which had the direction backwards - see the
+#     KNOWN_CORPORATE_ACTIONS follow-up note in the module docstring) -
+#     so the instruction's own assumption that "OCL/GOLD have no splits
+#     to fault" does not hold for GOLD.AX; it has a real, confirmed
+#     split. The likely reason _attempt_split_repair
 #     still fails for both IVV.AX and GOLD.AX is that yfinance's own
 #     `Ticker(...).splits` corporate-actions feed is known to be
 #     incomplete for ASX-listed, internationally-domiciled ETPs (it's
@@ -303,42 +375,138 @@ SPLIT_ANOMALY_THRESHOLD_STOCK = 0.60
 # from a rump of survivors and shown as if authoritative.
 
 
-def _detect_anomalous_move(hist, threshold):
-    """True if `hist`'s Close has any single-day move beyond
-    `threshold` in absolute value - the guard's trigger condition."""
+def _worst_single_day_move(hist):
+    """The single largest-magnitude day-over-day Close move in `hist`,
+    as (date, move_pct) - move_pct signed (e.g. -93.9, not 93.9) so the
+    caller/log can tell a crash-shaped move from a split-shaped one at a
+    glance. (None, None) if `hist` has under 2 usable rows. Split out of
+    the old bool-only _detect_anomalous_move so the guard-trip diagnostic
+    (offending date + move size, per the corporate-actions follow-up)
+    can reuse the same computation instead of re-deriving it."""
     if hist is None or hist.empty or "Close" not in hist.columns or len(hist) < 2:
-        return False
+        return None, None
     close = hist["Close"].astype(float)
     ret = close.pct_change().dropna()
     if ret.empty:
+        return None, None
+    worst_date = ret.abs().idxmax()
+    return worst_date, float(ret.loc[worst_date]) * 100.0
+
+
+def _detect_anomalous_move(hist, threshold):
+    """True if `hist`'s Close has any single-day move beyond
+    `threshold` in absolute value - the guard's trigger condition. Thin
+    wrapper over _worst_single_day_move (kept for the two existing call
+    sites in sanity_checked_history that only need the bool)."""
+    _date, move_pct = _worst_single_day_move(hist)
+    if move_pct is None:
         return False
-    return bool((ret.abs() > threshold).any())
+    return abs(move_pct) / 100.0 > threshold
+
+
+KNOWN_CORPORATE_ACTIONS = {
+    # ratio follows yfinance's own .splits convention (new units per old
+    # unit - 15.0 for a 15:1 forward split, 0.1 for a 1:10 reverse
+    # split), so _apply_split_ratio below is the exact same divide-
+    # before-the-effective-date arithmetic as the yfinance-fed path in
+    # the general case further down - never a second convention to keep
+    # in sync.
+    "IVV.AX": {
+        "ratio": 15.0,
+        "effective_date": "2022-12-07",
+        "source": (
+            "iShares/BlackRock ASX announcement, 23 Nov 2022 "
+            "(announcements.asx.com.au/asxpdf/20221123/pdf/45hymhl1q63mqp.pdf): "
+            "15-for-1 forward split, 15 new units issued per 1 unit held. "
+            "2022-12-07 is when trading in post-split units began "
+            "(deferred-settlement code IVVDB); normal settlement under the "
+            "original IVV code resumed 2022-12-13 - if Yahoo's feed turns "
+            "out to price the gap through settlement resumption instead, "
+            "2022-12-13 is the fallback date to try."
+        ),
+    },
+    "GOLD.AX": {
+        "ratio": 10.0,
+        "effective_date": "2022-06-08",
+        "source": (
+            "Global X ASX announcement, 31 May 2022 "
+            "(announcements.asx.com.au/asxpdf/20220531/pdf/459h6dtw1n4ncb.pdf): "
+            "FORWARD 10:1 split (9 new units issued per 1 held, 10 total), "
+            "reducing unit price from ~$230-260 to ~$23-26 for retail "
+            "accessibility. 2022-06-08 is the announcement's own 'trading "
+            "commences in post-split units' date. NOTE: the owner instruction "
+            "that prompted this table described this as a '1-for-10 "
+            "consolidation' (i.e. a REVERSE split) - verified against this "
+            "primary ASX source before hardcoding (per that same instruction's "
+            "own 'verify before hardcoding' rule) and found to be the OPPOSITE "
+            "direction. Hardcoding the stated reverse direction would have "
+            "multiplied the pre-split price instead of dividing it, turning a "
+            "false positive into a wrong number instead of a fixed one - "
+            "flagged in this fix's own commit/report rather than silently "
+            "corrected with no trace."
+        ),
+    },
+}
+
+
+def _apply_split_ratio(hist, effective_date, ratio):
+    """Retroactively divides every Close price strictly before
+    `effective_date` by `ratio` (yfinance .splits convention - see
+    KNOWN_CORPORATE_ACTIONS's own comment). Shared by both the known-
+    table path and the general yfinance-.splits path below so the two
+    never drift into different arithmetic. Returns a repaired copy;
+    `hist` itself is never mutated."""
+    repaired = hist.copy()
+    idx = repaired.index
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_localize(None)
+        repaired.index = idx
+    ed = pd.Timestamp(effective_date)
+    if ed.tzinfo is not None:
+        ed = ed.tz_localize(None)
+    before = repaired.index < ed
+    repaired.loc[before, "Close"] = repaired.loc[before, "Close"] / ratio
+    return repaired
 
 
 def _attempt_split_repair(ticker, hist):
-    """Fetches `ticker`'s own split-event log directly (a small, one-
-    off, uncached call - only ever reached once _detect_anomalous_move
-    has already found a problem, so this never runs on the healthy
-    path) and, for every split it lists, retroactively divides every
-    Close price strictly before that split's ex-date by the split
-    ratio - exactly what auto_adjust=True is already supposed to have
-    done, redone by hand as a second line of defence for whichever
-    listings Yahoo's own back-adjustment doesn't fully cover. Returns
-    a (possibly) repaired copy of `hist`; never raises - a failed
-    lookup or an empty split log just returns `hist` unchanged, and
-    the caller's own re-check after this call is what actually decides
-    whether the ticker ends up usable."""
+    """First consults KNOWN_CORPORATE_ACTIONS (see module docstring's
+    follow-up note): for a ticker with an entry there, the fix is
+    applied from that source-verified, hardcoded ratio/date ONLY -
+    yfinance's own `.splits` feed is not consulted at all for that
+    ticker, both because it's already known to be empty/unreliable for
+    these specific listings (see the Fix round 10 #3 diagnostic note
+    above) and to avoid ever double-applying a correction from two
+    sources at once.
+
+    For every other ticker, falls back to the original general-case
+    path: `ticker`'s own split-event log is fetched directly (a small,
+    one-off, uncached call - only ever reached once
+    _detect_anomalous_move has already found a problem, so this never
+    runs on the healthy path) and every split it lists is applied via
+    _apply_split_ratio - exactly what auto_adjust=True (and, now,
+    repair=True) are already supposed to have done, redone by hand as a
+    second line of defence for whichever listings Yahoo's own back-
+    adjustment doesn't fully cover.
+
+    Returns a (possibly) repaired copy of `hist`; never raises - a
+    failed lookup or an empty split log just returns `hist` unchanged,
+    and the caller's own re-check after this call is what actually
+    decides whether the ticker ends up usable."""
+    known = KNOWN_CORPORATE_ACTIONS.get((ticker or "").strip().upper())
+    if known is not None:
+        try:
+            return _apply_split_ratio(hist, known["effective_date"], known["ratio"])
+        except Exception:
+            return hist
+
     try:
         splits = yf.Ticker(ticker).splits
     except Exception:
         return hist
     if splits is None or len(splits) == 0:
         return hist
-    repaired = hist.copy()
-    idx = repaired.index
-    if getattr(idx, "tz", None) is not None:
-        idx = idx.tz_localize(None)
-        repaired.index = idx
+    repaired = hist
     for split_date, ratio in splits.items():
         try:
             ratio = float(ratio)
@@ -346,31 +514,53 @@ def _attempt_split_repair(ticker, hist):
             continue
         if not ratio or ratio == 1.0:
             continue
-        sd = pd.Timestamp(split_date)
-        if sd.tzinfo is not None:
-            sd = sd.tz_localize(None)
-        before = repaired.index < sd
-        repaired.loc[before, "Close"] = repaired.loc[before, "Close"] / ratio
+        try:
+            repaired = _apply_split_ratio(repaired, split_date, ratio)
+        except Exception:
+            continue
     return repaired
 
 
 def sanity_checked_history(ticker, hist, is_fund):
     """Part 14's sanity guard. `hist` (already fetched with
-    auto_adjust=True) is checked for a single-day move beyond
-    SPLIT_ANOMALY_THRESHOLD_FUND (funds/ETFs) or _STOCK (everything
-    else). A clean series is returned unchanged. An anomalous one goes
-    through _attempt_split_repair and is re-checked; if that clears
+    auto_adjust=True, repair=True) is checked for a single-day move
+    beyond SPLIT_ANOMALY_THRESHOLD_FUND (funds/ETFs) or _STOCK
+    (everything else). A clean series is returned unchanged. An
+    anomalous one goes through _attempt_split_repair (KNOWN_CORPORATE_
+    ACTIONS first, yfinance .splits as the general-case fallback - see
+    that function's own docstring) and is re-checked; if that clears
     it, the repaired series is returned; if it doesn't, this ticker's
-    history is treated as unusable - (None, True) is returned - rather
-    than ever feeding a corrupted series into a drawdown/beta/Monte-
-    Carlo computation. Returns (checked_hist_or_None, was_faulty)."""
+    history is treated as unusable - excluded, per the same reasoning
+    as before, rather than ever feeding a corrupted series into a
+    drawdown/beta/Monte-Carlo computation.
+
+    Corporate-actions follow-up (2026-09-07): now returns a 3-tuple,
+    (checked_hist_or_None, was_faulty, diagnostic_or_None). diagnostic
+    is populated whenever the ticker ends up excluded - {"date",
+    "move_pct", "threshold_pct"} for the offending day found on the
+    LAST check performed (i.e. post-repair if a repair was attempted -
+    the day still tripping the guard after every available fix, which
+    is the one worth surfacing) - and a warning is logged server-side
+    at the same time, so a false positive like OCL.AX's is never just a
+    silent "data fault" badge again."""
     threshold = SPLIT_ANOMALY_THRESHOLD_FUND if is_fund else SPLIT_ANOMALY_THRESHOLD_STOCK
-    if not _detect_anomalous_move(hist, threshold):
-        return hist, False
+    worst_date, worst_move = _worst_single_day_move(hist)
+    if worst_move is None or abs(worst_move) / 100.0 <= threshold:
+        return hist, False, None
+
     repaired = _attempt_split_repair(ticker, hist)
-    if not _detect_anomalous_move(repaired, threshold):
-        return repaired, False
-    return None, True
+    r_date, r_move = _worst_single_day_move(repaired)
+    if r_move is None or abs(r_move) / 100.0 <= threshold:
+        return repaired, False, None
+
+    diagnostic = {"date": str(r_date.date()) if hasattr(r_date, "date") else str(r_date),
+                  "move_pct": round(r_move, 1), "threshold_pct": round(threshold * 100.0, 1)}
+    _stress_logger.warning(
+        "stress guard excluded %s: worst single-day move %.1f%% on %s "
+        "(threshold %.0f%%, fund=%s) - _attempt_split_repair did not clear it",
+        ticker, r_move, diagnostic["date"], threshold * 100.0, is_fund,
+    )
+    return None, True, diagnostic
 
 
 # -----------------------------------------------------------------
