@@ -18128,10 +18128,27 @@ def _utilities_run_extraction(email, _lang, uploaded_files):
         if resp2["ok"]:
             retry_fields = bill_check_engine.parse_extraction_response(resp2["text"])
             if retry_fields:
-                extracted = retry_fields
+                # Fix round 10 #2 (diagnosis): this used to be
+                # `extracted = retry_fields` - an unconditional REPLACE.
+                # If the retry (Sonnet) came back with FEWER fields than
+                # the first pass (Haiku) - e.g. it read the total but
+                # missed the postcode Haiku had already found - the
+                # replace silently threw away data the first pass got
+                # right. Merging keeps every field either pass returned,
+                # preferring the retry's value (the stronger model) where
+                # both passes returned the same key.
+                extracted = {**extracted, **retry_fields}
 
-    if not extracted:
-        return None, None  # caller shows extraction_failed and falls back to manual fields
+    # Fix round 10 #2: extraction used to be accepted as a success the
+    # moment it was a non-empty dict, even straight after a retry that
+    # STILL came back missing fuel/billing_period_days/total_amount -
+    # the review form would then silently pre-fill with blanks/zeros for
+    # those fields, no warning shown (the reported bug). Below-minimum
+    # after the retry has already run is now treated the same as a total
+    # failure: the caller shows extraction_failed and falls back to a
+    # blank manual-entry form instead of a silently-incomplete one.
+    if bill_check_engine.extraction_below_minimum(extracted):
+        return None, None
     return extracted, None
 
 

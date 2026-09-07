@@ -106,13 +106,27 @@ _PII_FIELD_MARKERS = (
     "customer", "reference_number",
 )
 
+# Fix round 10 #2 (diagnosis): the "name" marker above is deliberately a
+# broad substring match (catches "customer_name"/"account_holder_name"
+# drift) - but that same substring also matches "plan_name", an
+# EXPLICITLY allowed field (a product name, not a person's). The result
+# was silent: plan_name passed the whitelist check, then got dropped one
+# line later by the PII check, on every single extraction, no exception
+# raised. This is the one allowed field the broad substring match was
+# always going to catch, so it's the one named exemption rather than
+# narrowing the markers (which would weaken the drift-catching they're
+# there for).
+_PII_MARKER_EXEMPT_FIELDS = {"plan_name"}
+
 
 def sanitize_extracted_fields(raw):
     """Whitelist-filters an extraction dict down to ALLOWED_EXTRACTED_
     FIELDS, additionally dropping anything whose KEY matches a PII
     marker even if it were somehow also an allowed name (defence in
     depth - belt AND braces, since this is the one rule in this whole
-    tool that must never fail). Non-dict input -> {}."""
+    tool that must never fail) - except _PII_MARKER_EXEMPT_FIELDS, the
+    allowed fields already known not to be PII despite matching a
+    marker substring. Non-dict input -> {}."""
     if not isinstance(raw, dict):
         return {}
     out = {}
@@ -122,7 +136,7 @@ def sanitize_extracted_fields(raw):
         lk = k.strip().lower()
         if lk not in ALLOWED_EXTRACTED_FIELDS:
             continue
-        if any(marker in lk for marker in _PII_FIELD_MARKERS):
+        if lk not in _PII_MARKER_EXEMPT_FIELDS and any(marker in lk for marker in _PII_FIELD_MARKERS):
             continue
         out[lk] = v
     return out
@@ -596,6 +610,26 @@ def needs_retry(extracted):
         return True
     conf = extracted.get("confidence")
     return conf is not None and conf < 0.6
+
+
+def extraction_below_minimum(extracted):
+    """Fix round 10 #2: the caller used to accept whatever needs_retry()
+    triggered A retry for (missing required field OR low confidence) as
+    a SUCCESS the moment it got any non-empty dict back, even from the
+    retry - the exact bug: extraction could come back missing fuel/
+    billing_period_days/total_amount, get retried once, come back STILL
+    missing them, and still get treated as "extraction worked", pre-
+    filling the review form with blanks/zeros and no warning shown.
+    This is the caller's post-retry gate: True only when a REQUIRED
+    field is still missing after the retry has already run - the
+    caller should say so plainly and fall back to manual entry, not
+    show a silently-incomplete review form. Deliberately narrower than
+    needs_retry(): low confidence alone (every required field present,
+    just not confidently read) is still worth showing for the visitor
+    to eyeball and correct, not treated as an outright failure."""
+    if not extracted:
+        return True
+    return any(extracted.get(f) is None for f in REQUIRED_EXTRACTION_FIELDS)
 
 
 def parse_extraction_response(raw_text):
