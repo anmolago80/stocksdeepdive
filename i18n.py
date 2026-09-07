@@ -834,6 +834,10 @@ EN = {
     "tools.page_subtitle": "Free calculators, sign in to use.",
     "tools.signin_prompt": "Free with an account &mdash; sign in to build your plan.",
     "tools.registry_stat": "{count} tool &middot; more coming",
+    # Fix round 10 #1: per-tool error card - shown in place of a tool
+    # whose render raised an exception, so one broken tool doesn't take
+    # the whole Tools page down; the other tabs keep working.
+    "tools.tool_error": "{tool} hit an error and couldn't load &mdash; the other tools still work. It's been logged; please try again shortly.",
 
     "tools.budget.title": "Budget Planner",
     "tools.budget.subtitle": (
@@ -2464,6 +2468,7 @@ ES = {
     "tools.page_subtitle": "Calculadoras gratuitas, inicia sesión para usarlas.",
     "tools.signin_prompt": "Gratis con una cuenta &mdash; inicia sesión para crear tu plan.",
     "tools.registry_stat": "{count} herramienta &middot; más próximamente",
+    "tools.tool_error": "{tool} tuvo un error y no se pudo cargar &mdash; las demás herramientas siguen funcionando. Ha quedado registrado; inténtalo de nuevo en breve.",
 
     "tools.budget.title": "Planificador de presupuesto",
     "tools.budget.subtitle": (

@@ -9,6 +9,8 @@ import math
 import hmac
 import hashlib
 import difflib
+import logging
+import traceback
 import concurrent.futures
 import contextlib
 from datetime import datetime, timezone, date as _date, timedelta
@@ -17417,6 +17419,15 @@ TOOLS_REGISTRY = [
      "title_key": "tools.debt_recycling.title", "render": "_render_debt_recycling_tool"},
 ]
 
+# Fix round 10 #1: a None value slipping through an extraction-fed dict's
+# .get(key, default) idiom (the default only applies when the KEY is
+# missing, not when it's present with value None) crashed the Utilities
+# tool and, because page_tools() rendered every tool inline with no
+# isolation, took the entire Tools page down with it. _tools_logger
+# gives the per-tool try/except in page_tools() somewhere to put the
+# traceback server-side instead of just swallowing it.
+_tools_logger = logging.getLogger("sdd.tools")
+
 
 def _tools_registry_count():
     """The live "{count} tool(s) · more coming" stat shared by the home
@@ -18137,7 +18148,11 @@ def _utilities_compare(_ul, fields, household_size, typical_deal_rates):
     postcode = fields.get("postcode")
     result = {"fuel": fuel, "postcode": postcode, "fields": fields, "profile": prof}
 
-    if fuel in ("electricity", "gas") and fields.get("state", "").upper() not in (
+    # Fix round 10 #1: fields.get("state", "") crashed here whenever
+    # extraction returned "state": None (the key EXISTS with value None,
+    # so the ", ''" default never applies - only a MISSING key falls
+    # back to it). (fields.get("state") or "") catches both cases.
+    if fuel in ("electricity", "gas") and (fields.get("state") or "").upper() not in (
             "CA", "TX", "NY", "FL", "IL", "WA", "MA", "AZ") and postcode:
         # AU path - postcode present and not a recognised US state code.
         candidates = bill_check_engine.fetch_candidate_plans(postcode, fuel)
@@ -18177,7 +18192,11 @@ def _utilities_compare(_ul, fields, household_size, typical_deal_rates):
         return result
 
     # "other" (internet/mobile/etc.) - admin-editable typical-deal table.
-    typical = typical_deal_rates.get(fields.get("service_key", "other"))
+    # Same None-passes-through fault as the state check above: a missing
+    # service_key falls back to "other" fine, but extraction returning
+    # "service_key": None would not, silently looking up rates[None]
+    # (=> no benchmark) instead of the intended "other" bucket.
+    typical = typical_deal_rates.get(fields.get("service_key") or "other")
     mb = bill_check_engine.manual_typical_benchmark(prof["annual_cost"], typical)
     result["status"] = "benchmark"
     result["annual_cost"] = prof["annual_cost"]
@@ -18298,7 +18317,7 @@ def _render_utilities_new_check(email, _ul, _lang, allowed, reason, usage, typic
 
     c1, c2 = st.columns(2)
     with c1:
-        postcode = st.text_input(_ul("postcode_label"), value=fields.get("postcode", ""), key="tools_util_postcode")
+        postcode = st.text_input(_ul("postcode_label"), value=(fields.get("postcode") or ""), key="tools_util_postcode")
         billing_days = st.number_input(_ul("billing_days_label"), min_value=1, max_value=100,
                                        value=int(fields.get("billing_period_days") or 30),
                                        key="tools_util_days")
@@ -18306,7 +18325,7 @@ def _render_utilities_new_check(email, _ul, _lang, allowed, reason, usage, typic
                                        value=float(fields.get("total_amount") or 0.0),
                                        key="tools_util_total")
     with c2:
-        state = st.text_input(_ul("state_label"), value=fields.get("state", ""), key="tools_util_state")
+        state = st.text_input(_ul("state_label"), value=(fields.get("state") or ""), key="tools_util_state")
         if fuel in ("electricity",):
             usage_kwh = st.number_input(_ul("usage_label"), min_value=0.0, step=1.0,
                                         value=float(fields.get("usage_kwh") or 0.0),
@@ -18422,7 +18441,7 @@ def _render_utilities_dashboard(email, _ul, _lang, saved, typical_deal_rates):
             rc1, rc2, rc3 = st.columns([2, 1, 1])
             with rc1:
                 extra = b.get("extra", {})
-                st.markdown(f"**{extra.get('plan_name') or b['fuel'].title()}** &mdash; {extra.get('retailer', '')}")
+                st.markdown(f"**{extra.get('plan_name') or b['fuel'].title()}** &mdash; {extra.get('retailer') or ''}")
                 st.caption(badge_map.get(b["status"], ""))
             with rc2:
                 st.write(f"${b['annual_cost']:,.0f}/yr" if b["annual_cost"] else "—")
@@ -18465,10 +18484,10 @@ def _render_utilities_tool(email):
                      "fields": {"retailer": extra.get("retailer"), "plan_name": extra.get("plan_name"),
                                 "solar_export_kwh": extra.get("solar_export_kwh")},
                      "profile": {"annual_cost": bill["annual_cost"]},
-                     "ranked": {"user_rank": extra.get("user_rank", 1),
-                                "total_count": extra.get("total_count", 1),
-                                "cheapest": {"retailer": extra.get("cheapest_retailer", ""),
-                                             "plan_name": extra.get("cheapest_plan_name", ""),
+                     "ranked": {"user_rank": extra.get("user_rank") or 1,
+                                "total_count": extra.get("total_count") or 1,
+                                "cheapest": {"retailer": extra.get("cheapest_retailer") or "",
+                                             "plan_name": extra.get("cheapest_plan_name") or "",
                                              "annual_cost": bill.get("cheapest_annual_cost")},
                                 "switchable_saving": bill["switchable_saving"] or 0.0,
                                 "ranked": [{"is_time_of_use_blended": extra.get("is_time_of_use_blended")}]
@@ -18560,9 +18579,22 @@ def page_tools():
     st.query_params["tool"] = _tool_ids[_default_idx]
     for _tool, _tab in zip(TOOLS_REGISTRY, _tool_tabs):
         with _tab:
-            globals()[_tool["render"]](email)
-            if _tool["id"] == "utilities" and ai_gate.is_owner(email):
-                _render_utilities_admin_typical_deals(_lang)
+            # Fix round 10 #1: an exception anywhere in ONE tool (the
+            # Utilities None-crash above was the trigger, but any future
+            # bug in any tool has the same blast radius) used to blow up
+            # this whole function - Streamlit halts the entire script run
+            # on an uncaught exception, so the tabs rendered AFTER the
+            # failing one in registry order never rendered at all. Each
+            # tool now gets its own try/except: a friendly per-tool error
+            # card in its place, the traceback logged server-side, and
+            # every other tab renders normally.
+            try:
+                globals()[_tool["render"]](email)
+                if _tool["id"] == "utilities" and ai_gate.is_owner(email):
+                    _render_utilities_admin_typical_deals(_lang)
+            except Exception:
+                _tools_logger.exception("Tools page: %s failed to render", _tool["id"])
+                st.error(i18n.t("tools.tool_error", _lang, tool=i18n.t(_tool["title_key"], _lang)))
 
 
 def page_model_history():
