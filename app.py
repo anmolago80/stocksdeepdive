@@ -13,6 +13,7 @@ import logging
 import traceback
 import concurrent.futures
 import contextlib
+import random
 from datetime import datetime, timezone, date as _date, timedelta
 from urllib.parse import quote as _urlquote
 
@@ -1600,6 +1601,38 @@ st.markdown(
     }
     .sdd-tools-banner-headline { font-family:ui-monospace,Menlo,monospace; font-size:15px;
       color:#2dd4bf; margin:8px 0; }
+    /* Home bands rework (owner-approved Option B, mocks/banner_options_
+       mock.html): both spotlight bands (Money Tools above, the new My
+       Portfolio band further down page_home()) share this one card
+       treatment - re-skinning st.container(border=True) the same way
+       [class*="st-key-tools_banner_teaser"] above already re-skins the
+       Budget Planner teaser's own inner card, just applied to the
+       band's outer frame this time. Colour (teal vs purple) is the only
+       difference between the two bands, split into its own selector. */
+    [class*="st-key-money_tools_spotlight_band"],
+    [class*="st-key-my_portfolio_spotlight_band"] {
+        background: linear-gradient(120deg,#0e1930,#12303f) !important;
+        border-radius: 14px !important; padding: 6px 8px !important;
+    }
+    [class*="st-key-money_tools_spotlight_band"] { border-color: #2dd4bf !important; border-width: 1.5px !important; }
+    [class*="st-key-my_portfolio_spotlight_band"] { border-color: #8b5cf6 !important; border-width: 1.5px !important; }
+    .sdd-spotlight-kicker { color:#2dd4bf; font-size:10px; letter-spacing:2px; font-weight:700; }
+    .sdd-spotlight-kicker-purple { color:#c084fc; }
+    .sdd-spotlight-row { display:flex; gap:22px; align-items:center; flex-wrap:wrap; margin-top:4px; }
+    .sdd-spotlight-copy { flex:1.2; min-width:240px; }
+    .sdd-spotlight-cta-wrap { min-width:190px; text-align:right; }
+    .sdd-spotlight-cta { display:inline-block; background:#14b8a6; color:#04211d !important;
+      border:none; border-radius:9px; padding:8px 16px; font-weight:700; font-size:12.5px;
+      white-space:nowrap; text-decoration:none !important; }
+    .sdd-spotlight-cta-purple { background:#8b5cf6; color:#1c1033 !important; }
+    .sdd-spotlight-cap { color:#5b7290; font-size:11px; margin-top:8px; }
+    .sdd-spotlight-dots { text-align:center; margin-top:10px; color:#5b7290; letter-spacing:4px; font-size:13px; }
+    .sdd-spotlight-dots b { color:#2dd4bf; }
+    .sdd-spotlight-dots-purple b { color:#c084fc; }
+    .sdd-spotlight-footer { color:#5b7290; font-size:11px; margin-top:10px; line-height:1.5; text-align:left; }
+    .sdd-spotlight-footer a { color:#c084fc !important; font-weight:700; text-decoration:none !important; }
+    .sdd-badge-purple { color:#c084fc !important; background:rgba(139,92,246,.12) !important;
+      border-color:rgba(139,92,246,.35) !important; }
     .sdd-steps { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:22px; }
     .sdd-step { border-left:2px solid #14b8a6; padding:2px 0 2px 16px; }
     .sdd-step .n { font-family:ui-monospace,Menlo,monospace; color:#2dd4bf; font-size:12px; }
@@ -1742,6 +1775,17 @@ st.markdown(
         padding-right: 10px !important;
         font-size: 13px !important;
       }
+      /* Home bands rework: both spotlight bands' CTA column is
+         right-aligned at desktop width (mirroring the mock) - at phone
+         width that reads as a stranded button floating on the right
+         with the copy above it; left-align and go full width instead,
+         same "stack, don't squeeze" rule the rest of this pass follows.
+         Both bands already sit in normal document flow (no fixed
+         positioning), so - like every other section on the page -
+         they're never hidden behind the fixed bottom nav bar's own
+         reserved padding-bottom below. */
+      .sdd-spotlight-cta-wrap { text-align: left; width: 100%; }
+      .sdd-spotlight-row { gap: 10px; }
     }
     /* iOS safe-area: in standalone (installed-app) mode there is no browser
        chrome to absorb the notch/Dynamic Island, so the market tape at the
@@ -6632,6 +6676,16 @@ def page_home():
             ),
             unsafe_allow_html=True,
         )
+
+    # ---- 💼 My Portfolio services band (home bands rework, owner-
+    # approved Option B, mocks/banner_options_mock.html) - sits right
+    # after Tonight's top 5 and before "reported this week"/the blog
+    # row, per the instruction's own placement. Renders unconditionally
+    # (unlike top5 above, it isn't gated on scan data existing at all -
+    # it's an evergreen ad for My Portfolio's own tools, not a data
+    # strip fed by the nightly scan). ----
+    st.markdown("<div style='margin-top:36px;'></div>", unsafe_allow_html=True)
+    _render_my_portfolio_spotlight_band(_home_lang)
 
     # ---- reported this week (Services batch Part 4) ----
     # Skipped entirely (no empty box) when fewer than 2 tickers reported
@@ -17632,67 +17686,215 @@ def _tools_registry_count():
     return len(TOOLS_REGISTRY)
 
 
+def _spotlight_index(session_key, n, day_offset=0):
+    """Shared deterministic, timer-free rotation for the home page's two
+    spotlight bands (Money Tools below, the new My Portfolio band
+    further down page_home()). Which of the n items is featured is
+    decided ONCE per visit: the first time this runs for a given browser
+    session, a stable per-visit nonce is drawn and cached in
+    session_state, then combined with the day (so the pick also drifts
+    as days pass, not just between visits) via a plain deterministic
+    sum-mod-n. Nothing here is a JS timer/interval or a re-roll on every
+    rerun - the nonce is drawn once and reused for the rest of that
+    visit, the same "stable all day/session, no interval" property
+    _home_featured_pick() above already relies on for the featured-
+    analysis card (that one is day-only; this one adds the per-visit
+    nonce on top since the instruction specifically asked for
+    "day/visit-keyed", not day-only, rotation).
+
+    day_offset lets the two bands use different session_state keys AND
+    start their day-component on a different footing, so they don't
+    always happen to land on the same relative position together."""
+    if session_key not in st.session_state:
+        st.session_state[session_key] = random.randint(0, 999_999)
+    nonce = st.session_state[session_key]
+    today = datetime.now(timezone.utc).date()
+    days_since_epoch = (today - _date(2020, 1, 1)).days
+    return (days_since_epoch + day_offset + nonce) % n
+
+
+_MONEY_TOOLS_SPOTLIGHT_ORDER = ["budget_planner", "utilities", "debt_recycling"]
+
+
 def _render_tools_home_banner(lang):
-    """Mega-batch Part 18, placement B1: the home banner between the
-    hero/mood area and the toolkit row, promoting the Budget Planner
-    specifically. The right-hand mini teaser computes the SAME 10y
-    S&P-500-history headline the full tool page's projection panel
-    would for the same two numbers (both call
-    budget_planner_engine.future_value_of_savings() directly - see that
-    function's own docstring for the worked-example verification), so
-    the banner can never show a number the full page would disagree
-    with. Nothing here is persisted (tools_store only ever saves the
-    signed-in Budget Planner page's own inputs) - this is marketing, not
-    the tool itself, per the Amendment to Part 18's own framing."""
+    """Home bands rework (owner-approved Option B, mocks/banner_options_
+    mock.html): the home banner between the hero/mood area and the
+    toolkit row used to permanently promote the Budget Planner alone.
+    It's now a rotating spotlight over all THREE real Money Tools -
+    Budget Planner, Utilities bill check, Cash vs Offset vs Borrow - one
+    featured per visit via the shared _spotlight_index() rotation above,
+    with dots showing there are more. The Toll never appears here - per
+    the mock's own correction, it's a My Portfolio service (see
+    _render_my_portfolio_spotlight_band below), not a Money Tool.
+
+    Budget Planner keeps its live two-field teaser (the SAME
+    budget_planner_engine.future_value_of_savings() headline the full
+    tool page computes - this block is byte-for-byte the pre-rework
+    banner body, just now gated behind "is Budget Planner the one
+    featured this visit") whenever it's the one showing; Utilities and
+    Cash vs Offset instead show the mock's own static copy plus a plain
+    <a href="/tools?tool=<id>"> CTA - the exact ?tool= deep-link
+    page_tools() already reads (see that function's own docstring),
+    so no session_state hand-off is needed for those two the way the
+    Budget Planner button still uses (its own working mechanism, left
+    unchanged, is just as much a "deep link to the right tool" as the
+    URL-based one - only the transport differs)."""
     _bh = lambda key, **kw: i18n.t(f"home.banner.{key}", lang, **kw)
-    _bcol_l, _bcol_r = st.columns([3, 2], gap="large")
-    with _bcol_l:
+    _idx = _spotlight_index("_spotlight_money_tools_nonce", len(_MONEY_TOOLS_SPOTLIGHT_ORDER), day_offset=0)
+    _featured = _MONEY_TOOLS_SPOTLIGHT_ORDER[_idx]
+
+    with st.container(border=True, key="money_tools_spotlight_band"):
         st.markdown(
-            f"""
+            f"<div class='sdd-spotlight-kicker'>"
+            f"{_bh('spotlight_kicker', n=_idx + 1)}</div>",
+            unsafe_allow_html=True,
+        )
+
+        if _featured == "budget_planner":
+            _bcol_l, _bcol_r = st.columns([3, 2], gap="large")
+            with _bcol_l:
+                st.markdown(
+                    f"""
 <div class='sdd-tools-banner-badge'>{_bh('new_badge')}</div>
 <div class='sdd-tools-banner-title'>{_bh('tools_title')}</div>
 <div class='sdd-tools-banner-pitch'>{_bh('tools_pitch')}</div>
 """,
-            unsafe_allow_html=True,
-        )
-    with _bcol_r:
-        with st.container(border=True, key="tools_banner_teaser"):
-            _tc1, _tc2 = st.columns(2)
-            with _tc1:
-                _teaser_in = st.number_input(
-                    _bh("money_in_label"), min_value=0.0, step=100.0, format="%.0f",
-                    key="home_banner_money_in",
-                )
-            with _tc2:
-                _teaser_out = st.number_input(
-                    _bh("money_out_label"), min_value=0.0, step=100.0, format="%.0f",
-                    key="home_banner_money_out",
-                )
-            _teaser_yearly = (_teaser_in - _teaser_out) * 12
-            if _teaser_yearly > 0:
-                _teaser_fv = budget_planner_engine.future_value_of_savings(
-                    _teaser_yearly, budget_planner_engine.INDEX_HISTORICAL_RETURNS["sp500"],
-                    budget_planner_engine.DEFAULT_PROJECTION_YEARS,
-                )
-                st.markdown(
-                    f"<div class='sdd-tools-banner-headline'>"
-                    f"{_bh('headline_10y', index=i18n.t('tools.budget.index_us', lang), amount=f'${_teaser_fv:,.0f}')}"
-                    "</div>",
                     unsafe_allow_html=True,
                 )
-            else:
-                st.caption(_bh("headline_empty"))
-            if st.button(_bh("build_plan_button"), width='stretch',
-                         type="primary", key="tools_banner_cta"):
-                # Owner review round fix #2: land straight on the Budget
-                # Planner tab, not whichever tab happened to be last
-                # opened. st.switch_page() clears query params, so the
-                # target travels via session_state instead - the same
-                # hand-off convention as the Deep Dive -> Research
-                # cross-link (research_jump_ticker) - and page_tools()
-                # checks/clears this before falling back to ?tool=.
-                st.session_state["tools_jump_tool"] = "budget_planner"
-                st.switch_page(PG_TOOLS)
+            with _bcol_r:
+                with st.container(border=True, key="tools_banner_teaser"):
+                    _tc1, _tc2 = st.columns(2)
+                    with _tc1:
+                        _teaser_in = st.number_input(
+                            _bh("money_in_label"), min_value=0.0, step=100.0, format="%.0f",
+                            key="home_banner_money_in",
+                        )
+                    with _tc2:
+                        _teaser_out = st.number_input(
+                            _bh("money_out_label"), min_value=0.0, step=100.0, format="%.0f",
+                            key="home_banner_money_out",
+                        )
+                    _teaser_yearly = (_teaser_in - _teaser_out) * 12
+                    if _teaser_yearly > 0:
+                        _teaser_fv = budget_planner_engine.future_value_of_savings(
+                            _teaser_yearly, budget_planner_engine.INDEX_HISTORICAL_RETURNS["sp500"],
+                            budget_planner_engine.DEFAULT_PROJECTION_YEARS,
+                        )
+                        st.markdown(
+                            f"<div class='sdd-tools-banner-headline'>"
+                            f"{_bh('headline_10y', index=i18n.t('tools.budget.index_us', lang), amount=f'${_teaser_fv:,.0f}')}"
+                            "</div>",
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.caption(_bh("headline_empty"))
+                    if st.button(_bh("build_plan_button"), width='stretch',
+                                 type="primary", key="tools_banner_cta"):
+                        # Owner review round fix #2: land straight on the
+                        # Budget Planner tab, not whichever tab happened
+                        # to be last opened. st.switch_page() clears
+                        # query params, so the target travels via
+                        # session_state instead - the same hand-off
+                        # convention as the Deep Dive -> Research
+                        # cross-link (research_jump_ticker) - and
+                        # page_tools() checks/clears this before falling
+                        # back to ?tool=.
+                        st.session_state["tools_jump_tool"] = "budget_planner"
+                        st.switch_page(PG_TOOLS)
+        else:
+            _title_key, _pitch_key, _cta_key, _cap_key = {
+                "utilities": ("utilities_title", "utilities_pitch", "utilities_cta", "utilities_cap"),
+                "debt_recycling": ("debt_recycling_title", "debt_recycling_pitch",
+                                    "debt_recycling_cta", "debt_recycling_cap"),
+            }[_featured]
+            st.markdown(
+                f"""
+<div class='sdd-spotlight-row'>
+  <div class='sdd-spotlight-copy'>
+    <div class='sdd-tools-banner-badge'>{_bh('new_badge')}</div>
+    <div class='sdd-tools-banner-title'>{_bh(_title_key)}</div>
+    <div class='sdd-tools-banner-pitch'>{_bh(_pitch_key)}</div>
+  </div>
+  <div class='sdd-spotlight-cta-wrap'>
+    <a class='sdd-spotlight-cta' href='/tools?tool={_featured}' target='_self'>{_bh(_cta_key)}</a>
+    <div class='sdd-spotlight-cap'>{_bh(_cap_key)}</div>
+  </div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown(
+            "<div class='sdd-spotlight-dots'>"
+            + " ".join(
+                "<b>&#9679;</b>" if i == _idx else "&#9679;"
+                for i in range(len(_MONEY_TOOLS_SPOTLIGHT_ORDER))
+            )
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+
+
+_MY_PORTFOLIO_SPOTLIGHT_ORDER = ["stress_test", "toll", "income", "etfs"]
+
+
+def _render_my_portfolio_spotlight_band(lang):
+    """Home bands rework (owner-approved Option B): the NEW 💼 My
+    Portfolio services band - purple-accented per the mock, rotating
+    over 4 of My Portfolio's own tools (Stress Test, The Toll, Income &
+    franking, ETF look-through) via the same shared _spotlight_index()
+    mechanics as the Money Tools banner above, with its own
+    session_state key and a different day_offset so the two bands don't
+    always land on the same relative rotation position together. Sits
+    in page_home() right after Tonight's top 5 and before "reported this
+    week"/the blog row, per the instruction's own placement.
+
+    Every CTA links to /portfolio rather than a specific tab: unlike
+    Money Tools (?tool=<id>, read by page_tools()), My Portfolio's own
+    st.tabs() has no query-param deep-link today, and adding one wasn't
+    asked for here - a plain link to /portfolio still satisfies "signed-
+    out CTAs routing through sign-in" since page_portfolio() itself
+    already shows portfolio.signin_prompt instead of the tabs for a
+    signed-out visitor (no separate gating needed in this band). Flagged
+    in the report as a possible follow-up if per-tab deep-linking is
+    wanted later.
+
+    footer/footer_link render once, below the rotation, as a persistent
+    line - not part of the spotlight itself - and {n} is the SAME
+    len(_PORTFOLIO_TAB_I18N_KEYS) count the mock's own "10 tools inside"
+    line matches today, read live so it can never drift out of sync if
+    a tab is ever added or removed."""
+    _pb = lambda key, **kw: i18n.t(f"home.portfolio_band.{key}", lang, **kw)
+    _idx = _spotlight_index(
+        "_spotlight_my_portfolio_nonce", len(_MY_PORTFOLIO_SPOTLIGHT_ORDER), day_offset=2,
+    )
+    _featured = _MY_PORTFOLIO_SPOTLIGHT_ORDER[_idx]
+
+    _footer_link = (
+        f"<a href='/portfolio' target='_self'>{_pb('footer_link')}</a>"
+    )
+
+    with st.container(border=True, key="my_portfolio_spotlight_band"):
+        st.markdown(
+            f"""
+<div class='sdd-spotlight-kicker sdd-spotlight-kicker-purple'>{_pb('spotlight_kicker', n=_idx + 1)}</div>
+<div class='sdd-spotlight-row'>
+  <div class='sdd-spotlight-copy'>
+    <div class='sdd-tools-banner-badge sdd-badge-purple'>{_pb('badge')}</div>
+    <div class='sdd-tools-banner-title'>{_pb(f'{_featured}_title')}</div>
+    <div class='sdd-tools-banner-pitch'>{_pb(f'{_featured}_pitch')}</div>
+  </div>
+  <div class='sdd-spotlight-cta-wrap'>
+    <a class='sdd-spotlight-cta sdd-spotlight-cta-purple' href='/portfolio' target='_self'>{_pb(f'{_featured}_cta')}</a>
+  </div>
+</div>
+<div class='sdd-spotlight-dots sdd-spotlight-dots-purple'>{
+    " ".join("<b>&#9679;</b>" if i == _idx else "&#9679;" for i in range(len(_MY_PORTFOLIO_SPOTLIGHT_ORDER)))
+}</div>
+<div class='sdd-spotlight-footer'>{_pb('footer', n=len(_PORTFOLIO_TAB_I18N_KEYS), link=_footer_link)}</div>
+""",
+            unsafe_allow_html=True,
+        )
 
 
 def _budget_plan_projection_panel(_bl, yearly_savings, key_prefix):

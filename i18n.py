@@ -832,6 +832,69 @@ EN = {
     "home.banner.headline_empty": "Type money in/out to see the 10-year figure.",
     "home.banner.build_plan_button": "Build my full plan &rarr;",
 
+    # Home bands rework (owner-approved Option B, mocks/banner_options_
+    # mock.html): the banner above is now a rotating spotlight over all
+    # THREE real Money Tools rather than permanently promoting the Budget
+    # Planner alone (its own copy above is unchanged and reused verbatim
+    # when it's the one featured). The Toll never appears here - it's a
+    # My Portfolio service (home.portfolio_band.* below), per the mock's
+    # own correction. Only the Budget Planner variant had a fully-drawn
+    # mock example; Utilities/Cash-vs-Offset copy below is new, written to
+    # match that example's voice - flagged for the owner's own review.
+    "home.banner.spotlight_kicker": "MONEY TOOLS &middot; {n} OF 3",
+    "home.banner.utilities_title": "⚡ What's your power bill really costing you?",
+    "home.banner.utilities_pitch": (
+        "Scan the bill &mdash; we check every generally-available plan for "
+        "your postcode against your own usage, and show the saving invested."
+    ),
+    "home.banner.utilities_cta": "Check my bill &rarr;",
+    "home.banner.utilities_cap": "first check free &middot; sign in",
+    "home.banner.debt_recycling_title": "\U0001F4B0 Invest the cash, offset it, or borrow to invest?",
+    "home.banner.debt_recycling_pitch": (
+        "All four structures priced after tax, with the break-evens &mdash; "
+        "so you can see which one actually wins."
+    ),
+    "home.banner.debt_recycling_cta": "Price the decision &rarr;",
+    "home.banner.debt_recycling_cap": "free with an account",
+
+    # Home bands rework: the NEW 💼 My Portfolio services band, its own
+    # rotating spotlight over 4 of the 10 tabs inside My Portfolio -
+    # purple-accented per the mock, sitting after Tonight's top 5 and
+    # before the blog row on the home page (see page_home() for the exact
+    # placement). footer/footer_link render as one persistent line under
+    # every rotation (not part of the spotlight itself).
+    "home.portfolio_band.spotlight_kicker": "MY PORTFOLIO &middot; {n} OF 4",
+    "home.portfolio_band.badge": "FREE WITH AN ACCOUNT",
+    "home.portfolio_band.stress_test_title": "\U0001F9EA What would the GFC do to your mix?",
+    "home.portfolio_band.stress_test_pitch": (
+        "Your exact mix replayed through the GFC, COVID and the 2022 rate "
+        "shock &mdash; plus a 5,000-run simulation."
+    ),
+    "home.portfolio_band.stress_test_cta": "Stress it &rarr;",
+    "home.portfolio_band.toll_title": "\U0001FA99 Thinking of selling to buy something better?",
+    "home.portfolio_band.toll_pitch": (
+        "See the tax toll of switching, and whether it clears its own "
+        "hurdle before you touch a thing."
+    ),
+    "home.portfolio_band.toll_cta": "Price a switch &rarr;",
+    "home.portfolio_band.income_title": "\U0001F4B0 What does your portfolio really pay you?",
+    "home.portfolio_band.income_pitch": (
+        "Every dividend, grossed up with franking credits &mdash; the "
+        "income before and after tax."
+    ),
+    "home.portfolio_band.income_cta": "See my income &rarr;",
+    "home.portfolio_band.etfs_title": "\U0001F9FA What's actually inside your funds?",
+    "home.portfolio_band.etfs_pitch": (
+        "Holdings, fees, and overlaps with your direct stocks, plus a "
+        "what-if projector."
+    ),
+    "home.portfolio_band.etfs_cta": "Look through &rarr;",
+    "home.portfolio_band.footer": (
+        "&hellip;plus nightly health checks, the AI watchdog, alerts and "
+        "progress tracking &mdash; {n} tools inside &middot; {link}"
+    ),
+    "home.portfolio_band.footer_link": "Open My Portfolio &rarr;",
+
     # Part 18: the 🧰 Tools hub page itself and the Budget Planner, its
     # first (and today, only) registered tool. Sign-in required for all
     # of Tools per the Amendment to Part 18 (6 Sep) - tools.signin_prompt
@@ -2519,6 +2582,57 @@ ES = {
     "home.banner.headline_10y": "En 10 años, historial de {index} &#8776; {amount}",
     "home.banner.headline_empty": "Escribe ingresos/gastos para ver la cifra a 10 años.",
     "home.banner.build_plan_button": "Crear mi plan completo &rarr;",
+
+    "home.banner.spotlight_kicker": "HERRAMIENTAS DE DINERO &middot; {n} DE 3",
+    "home.banner.utilities_title": "⚡ ¿Cuánto te está costando realmente tu factura de luz?",
+    "home.banner.utilities_pitch": (
+        "Escanea la factura &mdash; comparamos todos los planes disponibles "
+        "para tu código postal según tu propio consumo, y mostramos el "
+        "ahorro invertido."
+    ),
+    "home.banner.utilities_cta": "Revisar mi factura &rarr;",
+    "home.banner.utilities_cap": "primera revisión gratis &middot; inicia sesión",
+    "home.banner.debt_recycling_title": "\U0001F4B0 ¿Invertir el efectivo, dejarlo en la cuenta offset o pedir prestado para invertir?",
+    "home.banner.debt_recycling_pitch": (
+        "Las cuatro estructuras calculadas después de impuestos, con los "
+        "puntos de equilibrio &mdash; para ver cuál gana realmente."
+    ),
+    "home.banner.debt_recycling_cta": "Calcular la decisión &rarr;",
+    "home.banner.debt_recycling_cap": "gratis con una cuenta",
+
+    "home.portfolio_band.spotlight_kicker": "MI CARTERA &middot; {n} DE 4",
+    "home.portfolio_band.badge": "GRATIS CON UNA CUENTA",
+    "home.portfolio_band.stress_test_title": "\U0001F9EA ¿Qué le haría la crisis de 2008 a tu combinación?",
+    "home.portfolio_band.stress_test_pitch": (
+        "Tu combinación exacta puesta a prueba con la crisis de 2008, el "
+        "COVID y la subida de tasas de 2022 &mdash; además de una "
+        "simulación de 5.000 corridas."
+    ),
+    "home.portfolio_band.stress_test_cta": "Ponla a prueba &rarr;",
+    "home.portfolio_band.toll_title": "\U0001FA99 ¿Piensas vender para comprar algo mejor?",
+    "home.portfolio_band.toll_pitch": (
+        "Mira el peaje fiscal de cambiar de posición, y si realmente "
+        "supera su propio umbral antes de mover nada."
+    ),
+    "home.portfolio_band.toll_cta": "Calcular un cambio &rarr;",
+    "home.portfolio_band.income_title": "\U0001F4B0 ¿Cuánto te paga realmente tu cartera?",
+    "home.portfolio_band.income_pitch": (
+        "Cada dividendo, ajustado con los créditos de franking &mdash; el "
+        "ingreso antes y después de impuestos."
+    ),
+    "home.portfolio_band.income_cta": "Ver mis ingresos &rarr;",
+    "home.portfolio_band.etfs_title": "\U0001F9FA ¿Qué hay realmente dentro de tus fondos?",
+    "home.portfolio_band.etfs_pitch": (
+        "Las participaciones, las comisiones y los solapamientos con tus "
+        "acciones directas, más un proyector de escenarios."
+    ),
+    "home.portfolio_band.etfs_cta": "Ver por dentro &rarr;",
+    "home.portfolio_band.footer": (
+        "&hellip;además de revisiones nocturnas de salud, el vigilante con "
+        "IA, alertas y seguimiento de progreso &mdash; {n} herramientas "
+        "dentro &middot; {link}"
+    ),
+    "home.portfolio_band.footer_link": "Abrir Mi Cartera &rarr;",
 
     "tools.page_title": "\U0001F4B0 Herramientas de dinero",
     "tools.page_subtitle": "Calculadoras gratuitas, inicia sesión para usarlas.",
