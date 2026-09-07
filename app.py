@@ -2308,17 +2308,55 @@ def _render_score_history_chart(ticker, score_word="Value Score"):
             name=i18n.t("dd.legend.moat", _lang),
             line=dict(color="#f0a34e", width=2, dash="dash"), connectgaps=False,
         ))
+    # Fix round 11 #3: an explicit day-only tickformat (no %H:%M) on
+    # EVERY over-time chart this function draws - a narrow date range
+    # (few recorded points) makes Plotly's own auto tick-granularity
+    # fall back to showing 00:00/12:00 hour marks instead of dates, which
+    # is exactly what was reported on the MOS chart below. Applied here
+    # too (not just MOS) per the instruction's own "apply the same
+    # treatment to any other over-time series" - this chart's own range
+    # is normally wide enough that the bug wasn't visible on it, but
+    # nothing here guarantees that stays true as more scan history
+    # accumulates.
+    _day_xaxis = dict(showgrid=False, type="date", tickformat="%d %b")
     fig.update_layout(
         margin=dict(t=10, b=10, l=10, r=10), height=280,
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#c7d2e0"), hovermode="x unified",
         legend=dict(orientation="h", y=-0.2),
-        xaxis=dict(showgrid=False),
+        xaxis=_day_xaxis,
         yaxis=dict(showgrid=True, gridcolor="rgba(138,160,184,0.15)", range=[0, 100]),
     )
     sdd_plotly_chart(fig)
 
-    mos_series = [s for s in series if s.get("mos_pct") is not None]
+    # Fix round 11 #3: MOS started days later than the Value Score chart
+    # above ("MOS over time starts 1 Sep" vs "Value Score over time
+    # starts 21 Aug") even though both come from the same score_history
+    # rows for the same tickers/days. Root cause: mos_pct/intrinsic_value
+    # were added to this table in the SAME schema-widening migration
+    # (see score_history.py's own module docstring, "Services batch Part
+    # 1/5") - long_score/price existed from day one, so early rows can
+    # have a real long_score/price but a NULL mos_pct/intrinsic_value
+    # simply because the column had nothing to backfill from at insert
+    # time. Wherever a row has both intrinsic_value and price recorded
+    # but mos_pct itself is NULL, it's derivable from already-recorded
+    # numbers using the SAME formula deep_dive_engine.py's own live
+    # calculation uses (never a different/invented one):
+    #   MOS% = (intrinsic_value - price) / intrinsic_value * 100
+    # A row that's missing intrinsic_value/price too (genuinely never
+    # recorded, not just never widened) is left alone - its gap is real,
+    # not a display bug, and the chart's own caption already says gaps
+    # can happen.
+    def _mos_backfilled(row):
+        if row.get("mos_pct") is not None:
+            return row["mos_pct"]
+        iv, price = row.get("intrinsic_value"), row.get("price")
+        if iv is not None and price is not None and iv > 0:
+            return (iv - price) / iv * 100.0
+        return None
+
+    mos_series = [{**s, "mos_pct": _mos_backfilled(s)} for s in series]
+    mos_series = [s for s in mos_series if s["mos_pct"] is not None]
     if len(mos_series) >= 5:
         fig_mos = go.Figure()
         fig_mos.add_trace(go.Scatter(
@@ -2330,7 +2368,14 @@ def _render_score_history_chart(ticker, score_word="Value Score"):
             title=i18n.t("dd.history.mos_title", _lang), margin=dict(t=36, b=10, l=10, r=10), height=200,
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color="#c7d2e0"), hovermode="x unified", showlegend=False,
-            xaxis=dict(showgrid=False),
+            # Same x-range as the Value Score chart above (Fix round 11
+            # #3: "put both charts on the same 21-Aug-> x-range") even
+            # when the backfill above still can't cover every early day
+            # - the MOS line then simply starts wherever its own
+            # (real-or-backfilled) data starts, inside the same shared
+            # axis, rather than the two charts silently disagreeing
+            # about what date range "recently" even covers.
+            xaxis={**_day_xaxis, "range": [dates[0], dates[-1]]},
             yaxis=dict(showgrid=True, gridcolor="rgba(138,160,184,0.15)", ticksuffix="%"),
         )
         sdd_plotly_chart(fig_mos)
@@ -3545,47 +3590,20 @@ def _render_compounder_admin_panel():
     if not _admin_ever_seen():
         return
 
-    # A small "☰" icon tucked in the top-left corner, not a full-width
-    # labelled bar -- st.popover() with an icon-only label is Streamlit's
-    # native equivalent of a menu button: closed by default, no text
-    # revealing this exists to an ordinary visitor, opens a small panel on
-    # click. Narrow right column is just spacing so the icon hugs the left
-    # edge. The scoped CSS below strips the default button border/background
-    # off just this one trigger (targeted via the container's key, so it
-    # can't leak onto any other button on the page) so only the glyph shows.
-    corner, _ = st.columns([1, 20])
+    # Fix round 11 #2: this used to sit alone at the page's top-LEFT
+    # (own narrow left column, plus scoped CSS stripping the trigger
+    # button's border/background so only the glyph showed) - reported as
+    # "floating debris" with nothing else on that row to anchor it to. It
+    # stays admin-only (unchanged above) but now sits top-RIGHT instead,
+    # aligned with the page's own top row like every other options
+    # popover here, and drops the custom CSS in favour of the SAME plain
+    # st.popover() style the shelf's own "⚙" trigger already uses
+    # (_render_research_shelf, opt_col) - "discreet" now means "looks
+    # like this site's other small icon-only popovers", not "invisible
+    # button chrome only this one trigger had".
+    _, corner = st.columns([20, 1])
     with corner:
-        # The style tag renders as an invisible zero-height element here --
-        # it just needs to reach the page's <head>/DOM once, doesn't need to
-        # be nested inside the same container as the button it targets.
-        st.markdown(
-            """
-            <style>
-            div.st-key-cp_admin_trigger_wrap button {
-                border: none !important;
-                background: transparent !important;
-                box-shadow: none !important;
-                padding: 0.1rem 0.3rem !important;
-                min-height: 0 !important;
-            }
-            div.st-key-cp_admin_trigger_wrap button:hover,
-            div.st-key-cp_admin_trigger_wrap button:focus,
-            div.st-key-cp_admin_trigger_wrap button:active {
-                border: none !important;
-                background: transparent !important;
-                box-shadow: none !important;
-                color: inherit !important;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-        # key= on the container adds a "st-key-<key>" CSS class to its own
-        # wrapping div, so the button inside (the popover trigger) is a
-        # genuine DOM descendant the selector above can reach -- combining
-        # both `with`s on one line keeps everything below at its existing
-        # indentation.
-        with st.container(key="cp_admin_trigger_wrap"), st.popover("☰"):
+        with st.popover("☰"):
             if not st.session_state.get("full_view_unlocked"):
                 # Same shared unlock as every other admin control - see
                 # this function's own Part 11 docstring note above.
