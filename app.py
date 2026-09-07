@@ -71,6 +71,7 @@ import switch_analyzer_engine
 import budget_planner_engine
 import debt_recycling_engine
 import bill_check_engine
+import insurance_engine
 import tools_store
 import i18n
 
@@ -17692,6 +17693,8 @@ TOOLS_REGISTRY = [
      "title_key": "tools.utilities.title", "render": "_render_utilities_tool"},
     {"id": "debt_recycling", "icon": "\U0001F4B0",
      "title_key": "tools.debt_recycling.title", "render": "_render_debt_recycling_tool"},
+    {"id": "insurance", "icon": "🛡️",
+     "title_key": "tools.insurance.title", "render": "_render_insurance_tool"},
 ]
 
 # Fix round 10 #1: a None value slipping through an extraction-fed dict's
@@ -18499,7 +18502,13 @@ def _render_debt_recycling_tool(email):
 # touches ai_gate at all since it makes no AI call.
 # --------------------------------------------------------------------------- #
 
-def _utilities_status(email):
+def _bill_check_status(email):
+    """The shared access-gate check for BOTH Utilities and Insurance
+    (Part 22) - tools_store.can_check()/bill_check_usage_status() were
+    already written keyed on email alone, never on which tool is
+    asking, so this one function (renamed from _utilities_status when
+    Insurance became its sibling) is genuinely shared as-is rather than
+    duplicated - the SAME trial/cap pool, per that part's own spec."""
     is_sub = False
     if paywall_engine.PAYWALL_ENABLED:
         try:
@@ -18871,50 +18880,113 @@ def _render_utilities_new_check(email, _ul, _lang, allowed, reason, usage, typic
     st.caption(_ul("disclaimer"))
 
 
-def _render_utilities_dashboard(email, _ul, _lang, saved, typical_deal_rates):
+_INSURANCE_FUEL_PREFIX = "ins_"
+
+
+def _bill_row_icon(fuel):
+    """One emoji per row, Part 22 addition (the spec's own "🛡️ rows"
+    requirement) - also fills in the icon column the utilities mocks
+    always showed but the live table never actually rendered until now,
+    so this is a small mock-fidelity improvement for BOTH tools, not
+    just a new requirement for Insurance."""
+    if (fuel or "").startswith(_INSURANCE_FUEL_PREFIX):
+        return "🛡️"
+    return {"electricity": "⚡", "gas": "\U0001F525", "water": "\U0001F4A7"}.get(fuel, "\U0001F310")
+
+
+def _bill_row_label_and_sub(b):
+    """(main_label, sub_label) for one dashboard row - insurance rows
+    read their product/insurer fields, utility rows their plan/retailer
+    fields (the two engines' extra blobs use different key names for
+    the same idea - see insurance_engine.py/bill_check_engine.py's own
+    ALLOWED_EXTRACTED_FIELDS)."""
+    extra = b.get("extra", {})
+    if b["fuel"].startswith(_INSURANCE_FUEL_PREFIX):
+        policy_type = b["fuel"][len(_INSURANCE_FUEL_PREFIX):]
+        main = extra.get("product_name") or policy_type.title()
+        sub = extra.get("insurer") or ""
+    else:
+        main = extra.get("plan_name") or b["fuel"].title()
+        sub = extra.get("retailer") or ""
+    return main, sub
+
+
+def _bill_row_badge_label(b, _lang):
+    """Each tool keeps its OWN badge wording (Utilities: "⚠ Could
+    save"/"✓ CHEAPEST"; Insurance: "⚠ cheaper comparable policy found"/
+    "✓ looks competitive" per that part's own spec) even though both
+    share the same underlying status vocabulary (switch/cheapest/
+    benchmark) - resolved per-row here so the ONE shared dashboard
+    still shows each row in its own tool's voice."""
+    ns = "insurance" if b["fuel"].startswith(_INSURANCE_FUEL_PREFIX) else "utilities"
+    key = {"switch": "badge_switch", "cheapest": "badge_cheapest", "benchmark": "badge_benchmark"}.get(b["status"])
+    return i18n.t(f"tools.{ns}.{key}", _lang) if key else ""
+
+
+def _render_bill_checks_dashboard(email, _lang, saved, typical_deal_rates,
+                                  add_button_label, add_view_state_key, add_view_state_value):
+    """Part 22: generalised from the Utilities-only _render_utilities_
+    dashboard (same name kept for history's sake in this comment, not
+    in code) into the ONE shared "your bills" view both Utilities and
+    Insurance now render - "insurance checks join the SAME multi-bill
+    dashboard as utilities bills (they are bills)", per that part's own
+    spec, applied literally: both tools pass the SAME combined `saved`
+    list (every bill_checks row for this email, of every fuel), so the
+    summary cards' totals and the row table are identical no matter
+    which tab you opened it from. Only the "add" button differs per
+    caller (each tool adds ITS OWN kind of check) - see the two call
+    sites for the label/view-state each passes."""
+    _bl = lambda k, **kw: i18n.t(f"tools.bills_dashboard.{k}", _lang, **kw)
     agg_rows = [{"annual_cost": b["annual_cost"], "switchable_saving": b["switchable_saving"],
                 "status": b["status"]} for b in saved]
     agg = bill_check_engine.dashboard_aggregate(agg_rows)
-    st.markdown(f"### {_ul('dashboard_title')}")
+    st.markdown(f"### {_bl('title')}")
     m1, m2, m3, m4 = st.columns(4)
     with m1:
-        st.metric(_ul("dashboard_card_total"), f"${agg['total_annual_cost']:,.0f}")
+        st.metric(_bl("card_total"), f"${agg['total_annual_cost']:,.0f}")
     with m2:
-        st.metric(_ul("dashboard_card_saving"), f"${agg['total_switchable_saving']:,.0f}")
+        st.metric(_bl("card_saving"), f"${agg['total_switchable_saving']:,.0f}")
     with m3:
-        st.metric(_ul("dashboard_card_cheapest"),
-                 _ul("dashboard_card_cheapest_value", cheapest=agg["cheapest_count"],
+        st.metric(_bl("card_cheapest"),
+                 _bl("card_cheapest_value", cheapest=agg["cheapest_count"],
                      comparable=agg["comparable_count"]))
     with m4:
         _proj = budget_planner_engine.future_value_of_savings(
             agg["total_switchable_saving"], budget_planner_engine.CAUTIOUS_RATE,
             budget_planner_engine.DEFAULT_PROJECTION_YEARS)
-        st.metric(_ul("dashboard_card_projection"), f"${_proj:,.0f}" if _proj else "—")
+        st.metric(_bl("card_projection"), f"${_proj:,.0f}" if _proj else "—")
 
-    badge_map = {"switch": _ul("badge_switch"), "cheapest": _ul("badge_cheapest"),
-                "benchmark": _ul("badge_benchmark")}
+    if not saved:
+        st.caption(_bl("empty"))
+
     for b in sorted(saved, key=lambda r: -(r["switchable_saving"] or 0.0)):
         with st.container(border=True):
             rc1, rc2, rc3 = st.columns([2, 1, 1])
             with rc1:
-                extra = b.get("extra", {})
-                st.markdown(f"**{extra.get('plan_name') or b['fuel'].title()}** &mdash; {extra.get('retailer') or ''}")
-                st.caption(badge_map.get(b["status"], ""))
+                main, sub = _bill_row_label_and_sub(b)
+                st.markdown(f"{_bill_row_icon(b['fuel'])} **{main}** &mdash; {sub}")
+                st.caption(_bill_row_badge_label(b, _lang))
             with rc2:
                 st.write(f"${b['annual_cost']:,.0f}/yr" if b["annual_cost"] else "—")
             with rc3:
                 if b["switchable_saving"]:
-                    st.write(_ul("dashboard_row_saving", amount=f"{b['switchable_saving']:,.0f}"))
+                    st.write(_bl("row_saving", amount=f"{b['switchable_saving']:,.0f}"))
                 hist = tools_store.get_bill_check_history(b["id"])
                 if hist:
-                    st.caption(_ul("dashboard_row_was", amount=f"{hist[-1]['annual_cost']:,.0f}"))
-            if st.button("→", key=f"tools_util_open_{b['id']}"):
-                st.session_state["tools_util_view"] = "detail"
-                st.session_state["tools_util_detail_id"] = b["id"]
+                    st.caption(_bl("row_was", amount=f"{hist[-1]['annual_cost']:,.0f}"))
+            if st.button("→", key=f"tools_bills_open_{b['id']}"):
+                if b["fuel"].startswith(_INSURANCE_FUEL_PREFIX):
+                    st.session_state["tools_jump_tool"] = "insurance"
+                    st.session_state["tools_ins_view"] = "detail"
+                    st.session_state["tools_ins_detail_id"] = b["id"]
+                else:
+                    st.session_state["tools_jump_tool"] = "utilities"
+                    st.session_state["tools_util_view"] = "detail"
+                    st.session_state["tools_util_detail_id"] = b["id"]
                 st.rerun()
 
-    if st.button(_ul("dashboard_add_button"), type="primary", key="tools_util_add_btn"):
-        st.session_state["tools_util_view"] = "new"
+    if st.button(add_button_label, type="primary", key=f"tools_bills_add_{add_view_state_key}"):
+        st.session_state[add_view_state_key] = add_view_state_value
         st.rerun()
 
 
@@ -18962,12 +19034,468 @@ def _render_utilities_tool(email):
                 st.rerun()
             return
 
-    if view == "new" or (view is None and len(saved) <= 1):
-        allowed, reason, usage = _utilities_status(email)
+    # Part 22: the "go straight to the entry flow on a near-empty
+    # dashboard" default now counts only THIS tool's own saved checks
+    # (utility fuels), not the shared combined list - opening Utilities
+    # for the first time still behaves exactly as before even once the
+    # visitor has several insurance checks saved, and vice versa (see
+    # _render_insurance_tool's own mirrored count further down). The
+    # DASHBOARD itself, once shown, still renders the full combined
+    # `saved` list either way - see _render_bill_checks_dashboard.
+    _utilities_saved_count = sum(1 for b in saved if not b["fuel"].startswith(_INSURANCE_FUEL_PREFIX))
+    if view == "new" or (view is None and _utilities_saved_count <= 1):
+        allowed, reason, usage = _bill_check_status(email)
         _render_utilities_new_check(email, _ul, _lang, allowed, reason, usage, typical_deal_rates)
         return
 
-    _render_utilities_dashboard(email, _ul, _lang, saved, typical_deal_rates)
+    _render_bill_checks_dashboard(email, _lang, saved, typical_deal_rates,
+                                  _ul("dashboard_add_button"), "tools_util_view", "new")
+
+
+
+# --------------------------------------------------------------------------- #
+# Mega-batch Part 22: 🛡️ Insurance bill check (Tools tool #4) - a sibling
+# of ⚡ Utilities bill check, reusing its machinery wherever it exists:
+# _bill_check_status() (the shared trial/cap gate), _render_bill_checks_
+# dashboard() (the shared multi-bill dashboard), _budget_plan_projection_
+# panel() (the shared invested-projection panel), and tools_store.
+# save_bill_check()/list_bill_checks() themselves (insurance rows are
+# just bill_checks rows with fuel="ins_<policy_type>" - see that
+# module's own docstring). Only what's genuinely insurance-specific
+# lives here: the extraction call, the health TRUE comparison, and the
+# car/home/CTP benchmark+renewal-creep path.
+# --------------------------------------------------------------------------- #
+
+_INSURANCE_POLICY_TYPES = ("health", "car", "home", "ctp")
+
+
+def _insurance_blocked_message(_il, reason, usage):
+    """Same shape as _utilities_blocked_message() - kept as its own
+    small function (rather than generalised) only because the MESSAGE
+    TEXT is tool-specific (tools.insurance.* vs tools.utilities.*); the
+    underlying `reason` vocabulary is shared (_bill_check_status() is
+    the one function that actually decides it)."""
+    if reason == "trial_used_paywall_off":
+        return _il("blocked_trial_used_paywall_off")
+    if reason == "needs_subscription":
+        return _il("blocked_needs_subscription", cap=usage["month_cap"])
+    if reason == "monthly_cap_reached":
+        return _il("blocked_monthly_cap", cap=usage["month_cap"])
+    return None
+
+
+def _insurance_run_extraction(email, _lang, uploaded_files):
+    """Same Haiku-then-Sonnet-retry shape as _utilities_run_extraction()
+    (mirrors it field-for-field), against insurance_engine's own prompt/
+    parse/retry functions. Given its own ai_gate feature key
+    ("insurance_check", distinct from Utilities' "bill_check") - this is
+    the site-wide AI-SPEND safety net (ai_gate), a different mechanism
+    from tools_store's per-account trial/cap pool that IS shared with
+    Utilities (see _bill_check_status()); keeping ai_gate's own spend
+    line item separate per tool is the smallest change that doesn't
+    conflate two different gates with two different purposes."""
+    import base64
+    ok_gate, gate_msg, _tier = ai_gate.check(email, "insurance_check", lang=_lang)
+    if not ok_gate:
+        return None, gate_msg
+
+    image_blocks = []
+    for f in uploaded_files[:3]:
+        media_type = f.type or "image/jpeg"
+        image_blocks.append({"media_type": media_type,
+                             "data_b64": base64.b64encode(f.getvalue()).decode("ascii")})
+    message = insurance_engine.build_extraction_message(image_blocks)
+
+    resp = ai_client.ask(insurance_engine.EXTRACTION_SYSTEM_PROMPT, message,
+                         model=ai_client.MODEL_HAIKU, max_tokens=600)
+    if resp["input_tokens"] or resp["output_tokens"]:
+        try:
+            ai_gate.record(email, "insurance_check", resp["model"], resp["input_tokens"],
+                           resp["output_tokens"], resp["cost_usd"])
+        except Exception:
+            pass
+    extracted = insurance_engine.parse_extraction_response(resp["text"]) if resp["ok"] else {}
+
+    if insurance_engine.needs_retry(extracted):
+        resp2 = ai_client.ask(insurance_engine.EXTRACTION_SYSTEM_PROMPT, message,
+                              model=ai_client.MODEL_SONNET, max_tokens=600)
+        if resp2["input_tokens"] or resp2["output_tokens"]:
+            try:
+                ai_gate.record(email, "insurance_check", resp2["model"], resp2["input_tokens"],
+                               resp2["output_tokens"], resp2["cost_usd"])
+            except Exception:
+                pass
+        if resp2["ok"]:
+            retry_fields = insurance_engine.parse_extraction_response(resp2["text"])
+            if retry_fields:
+                extracted = {**extracted, **retry_fields}
+
+    if insurance_engine.extraction_below_minimum(extracted):
+        return None, None
+    return extracted, None
+
+
+def _insurance_compare(_il, fields, typical_rates, prior_extra):
+    """fields: sanitized extraction OR manual-entry dict (see
+    insurance_engine.ALLOWED_EXTRACTED_FIELDS). prior_extra: the extra
+    blob of the LAST saved check for this same (fuel, state), if any -
+    the caller looks this up from tools_store BEFORE calling
+    save_bill_check() again (see _render_insurance_new_check). Returns
+    a result dict ready for both display and tools_store.save_bill_
+    check()'s columns/extra blob, or None if `policy_type` is missing/
+    unrecognised entirely."""
+    policy_type = (fields.get("policy_type") or "").lower()
+    if policy_type not in _INSURANCE_POLICY_TYPES:
+        return None
+    annual_premium = insurance_engine.annualise_premium(
+        fields.get("premium_amount"), fields.get("premium_period"))
+    state = (fields.get("state") or "").strip().upper() or None
+    result = {"policy_type": policy_type, "state": state, "fields": fields,
+             "annual_premium": annual_premium}
+
+    if policy_type == "health":
+        tier = (fields.get("tier") or "").strip().lower()
+        coverage = (fields.get("coverage") or "").strip().lower()
+        if (tier not in insurance_engine.HEALTH_TIERS
+                or coverage not in insurance_engine.HEALTH_COVERAGE or not state):
+            result["status"] = "unavailable"
+            result["note"] = _il("health_missing_fields")
+            return result
+        dataset = insurance_engine.fetch_latest_health_dataset()
+        candidates = [p for p in dataset
+                     if p["tier"] == tier and p["coverage"] == coverage and p["state"] == state]
+        if not candidates:
+            result["status"] = "unavailable"
+            result["note"] = _il("health_unavailable")
+            return result
+        ranked = insurance_engine.rank_health_policies(annual_premium, tier, coverage, state, candidates)
+        result["ranked"] = ranked
+        result["status"] = "cheapest" if ranked["switchable_saving"] == 0 else "switch"
+        result["annual_cost"] = annual_premium
+        result["cheapest_annual_cost"] = ranked["cheapest"]["annual_cost"] if ranked["cheapest"] else None
+        result["switchable_saving"] = ranked["switchable_saving"]
+        return result
+
+    # car / home / ctp - BENCHMARK badge always, per the spec's own
+    # "quotes are individualised, never pretend otherwise" rule.
+    current_sum_insured = fields.get("sum_insured_building") or fields.get("sum_insured_contents")
+    creep = insurance_engine.renewal_creep(prior_extra, annual_premium, current_sum_insured)
+    typical = (typical_rates.get(f"ins_{policy_type}:{state}") if state else None) \
+        or typical_rates.get(f"ins_{policy_type}:_default")
+    tb = insurance_engine.typical_premium_benchmark(annual_premium, typical)
+    result["status"] = "benchmark"
+    result["annual_cost"] = annual_premium
+    result["switchable_saving"] = None
+    result["benchmark"] = tb
+    result["creep"] = creep
+    result["excess_note"] = insurance_engine.excess_vs_premium_note_applicable(policy_type)
+    return result
+
+
+def _insurance_render_result(_il, _lang, result, key_prefix):
+    """Renders one comparison result - the health TRUE ranking, or a
+    car/home/CTP benchmark+creep card - shared between the fresh
+    single-check flow and a saved policy's detail view (same pattern as
+    _utilities_render_result)."""
+    policy_type = result["policy_type"]
+    status = result.get("status")
+
+    if status == "unavailable":
+        st.warning(result.get("note") or _il("health_unavailable"))
+        return
+
+    if policy_type == "health" and status in ("switch", "cheapest"):
+        ranked = result["ranked"]
+        st.markdown(f"**{_il('health_result_title')}**")
+        st.markdown(_il("rank_line", rank=ranked["user_rank"], total=ranked["total_count"]))
+        if status == "cheapest":
+            st.success(_il("you_are_cheapest"))
+        else:
+            cheapest = ranked["cheapest"]
+            st.markdown(_il("cheapest_policy_line", insurer=cheapest["insurer"],
+                            product_name=cheapest["product_name"], amount=f"{cheapest['annual_cost']:,.0f}"))
+            m1, m2 = st.columns(2)
+            with m1:
+                st.metric(_il("potential_saving"), f"${ranked['switchable_saving']:,.0f}/yr")
+            with m2:
+                st.metric(_il("your_premium_label"), f"${result['annual_cost']:,.0f}/yr")
+        st.caption(_il("rebate_lhc_caveat"))
+        st.markdown(f"[{_il('confirm_link')}](https://www.privatehealth.gov.au)")
+        return
+
+    # BENCHMARK (car / home / ctp).
+    bmk = result.get("benchmark", {})
+    st.markdown(f"**{_il('benchmark_title')}**")
+    st.caption(_il("benchmark_note"))
+    st.markdown(f"{_il('badge_benchmark')}")
+    gap = bmk.get("gap")
+    if gap is None:
+        st.caption("—")
+    elif gap > 0:
+        st.markdown(_il("gap_more", amount=f"{gap:,.0f}"))
+    else:
+        st.markdown(_il("gap_less", amount=f"{abs(gap):,.0f}"))
+
+    creep = result.get("creep")
+    if creep:
+        pchg = creep["premium_change_pct"]
+        if creep.get("sum_insured_change_pct") is not None:
+            st.markdown(_il("creep_line_with_sum_insured",
+                            premium_pct=f"{pchg:+.0f}", sum_pct=f"{creep['sum_insured_change_pct']:+.0f}"))
+        else:
+            st.markdown(_il("creep_line", premium_pct=f"{pchg:+.0f}"))
+    else:
+        st.caption(_il("creep_unlock_hint"))
+
+    if result.get("excess_note"):
+        st.caption(_il("excess_vs_premium_note"))
+    st.markdown(f"[{_il('moneysmart_link')}](https://moneysmart.gov.au/insurance)")
+
+
+def _render_insurance_new_check(email, _il, _lang, allowed, reason, usage, typical_deal_rates):
+    if not allowed:
+        msg = _insurance_blocked_message(_il, reason, usage)
+        st.info(msg)
+        if reason == "needs_subscription":
+            checkout_url = paywall_engine.create_checkout_url(email)
+            if checkout_url:
+                st.link_button(_il("subscribe_button"), checkout_url)
+        return
+
+    if usage["trial_used"]:
+        st.caption(_il("checks_left_month", used=usage["month_cap"] - usage["month_count"],
+                       cap=usage["month_cap"]))
+    else:
+        st.caption(_il("trial_note"))
+
+    mode = st.radio("input_mode", [_il("input_mode_upload"), _il("input_mode_manual")],
+                    horizontal=True, label_visibility="collapsed", key="tools_ins_input_mode")
+
+    fields = {}
+    if mode == _il("input_mode_upload"):
+        uploaded = st.file_uploader(_il("upload_label"), type=["png", "jpg", "jpeg", "pdf"],
+                                    accept_multiple_files=True, key="tools_ins_uploader")
+        st.caption(_il("upload_privacy_note"))
+        if uploaded and st.button(_il("upload_button"), type="primary", key="tools_ins_extract_btn"):
+            with st.spinner(_il("extracting_spinner")):
+                extracted, gate_error = _insurance_run_extraction(email, _lang, uploaded)
+            # `uploaded` (Streamlit's in-memory UploadedFile objects) goes
+            # out of scope at the end of this render - never written to
+            # disk, per insurance_engine.py's own privacy rule.
+            if gate_error:
+                st.error(gate_error)
+            elif not extracted:
+                st.warning(_il("extraction_failed"))
+            else:
+                st.session_state["tools_ins_review_fields"] = extracted
+        fields = st.session_state.get("tools_ins_review_fields", {})
+        if fields:
+            st.markdown(f"**{_il('review_title')}**")
+
+    policy_labels = {"health": _il("policy_health"), "car": _il("policy_car"),
+                     "home": _il("policy_home"), "ctp": _il("policy_ctp")}
+    policy_type = st.selectbox(
+        _il("policy_type_label"), _INSURANCE_POLICY_TYPES,
+        index=_INSURANCE_POLICY_TYPES.index(fields.get("policy_type"))
+        if fields.get("policy_type") in _INSURANCE_POLICY_TYPES else 0,
+        format_func=lambda p: policy_labels[p], key="tools_ins_policy_type",
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        state = st.text_input(_il("state_label"), value=(fields.get("state") or ""), key="tools_ins_state")
+        premium_amount = st.number_input(_il("premium_amount_label"), min_value=0.0, step=1.0,
+                                         value=float(fields.get("premium_amount") or 0.0),
+                                         key="tools_ins_premium_amount")
+        period_options = ["year", "month", "fortnight", "week"]
+        premium_period = st.selectbox(
+            _il("premium_period_label"), period_options,
+            index=period_options.index(fields.get("premium_period"))
+            if fields.get("premium_period") in period_options else 0,
+            format_func=lambda p: _il(f"period_{p}"), key="tools_ins_premium_period",
+        )
+    with c2:
+        excess = st.number_input(_il("excess_label"), min_value=0.0, step=1.0,
+                                 value=float(fields.get("excess") or 0.0), key="tools_ins_excess")
+        tier = coverage = cover_type = vehicle_value_basis = None
+        sum_building = sum_contents = None
+        if policy_type == "health":
+            tier_options = list(insurance_engine.HEALTH_TIERS)
+            tier = st.selectbox(_il("tier_label"), tier_options,
+                                index=tier_options.index(fields.get("tier")) if fields.get("tier") in tier_options else 0,
+                                format_func=lambda t: _il(f"tier_{t}"), key="tools_ins_tier")
+            cov_options = list(insurance_engine.HEALTH_COVERAGE)
+            coverage = st.selectbox(_il("coverage_label"), cov_options,
+                                    index=cov_options.index(fields.get("coverage")) if fields.get("coverage") in cov_options else 0,
+                                    format_func=lambda c: _il(f"coverage_{c}"), key="tools_ins_coverage")
+        elif policy_type == "car":
+            ct_options = ["comprehensive", "third_party"]
+            cover_type = st.selectbox(_il("cover_type_label"), ct_options,
+                                      index=ct_options.index(fields.get("cover_type")) if fields.get("cover_type") in ct_options else 0,
+                                      format_func=lambda c: _il(f"cover_type_{c}"), key="tools_ins_cover_type")
+            vb_options = ["agreed", "market"]
+            vehicle_value_basis = st.selectbox(_il("vehicle_value_basis_label"), vb_options,
+                                               index=vb_options.index(fields.get("vehicle_value_basis")) if fields.get("vehicle_value_basis") in vb_options else 0,
+                                               format_func=lambda v: _il(f"vehicle_value_basis_{v}"), key="tools_ins_vehicle_value_basis")
+        elif policy_type == "home":
+            sum_building = st.number_input(_il("sum_insured_building_label"), min_value=0.0, step=1000.0,
+                                           value=float(fields.get("sum_insured_building") or 0.0),
+                                           key="tools_ins_sum_building")
+            sum_contents = st.number_input(_il("sum_insured_contents_label"), min_value=0.0, step=1000.0,
+                                           value=float(fields.get("sum_insured_contents") or 0.0),
+                                           key="tools_ins_sum_contents")
+
+    manual_fields = dict(fields)
+    manual_fields.update({
+        "policy_type": policy_type, "state": state.strip() or None,
+        "premium_amount": premium_amount or None, "premium_period": premium_period,
+        "excess": excess or None,
+    })
+    if policy_type == "health":
+        manual_fields.update({"tier": tier, "coverage": coverage})
+    elif policy_type == "car":
+        manual_fields.update({"cover_type": cover_type, "vehicle_value_basis": vehicle_value_basis})
+    elif policy_type == "home":
+        manual_fields.update({"sum_insured_building": sum_building or None,
+                              "sum_insured_contents": sum_contents or None})
+    manual_fields = insurance_engine.sanitize_extracted_fields(manual_fields) or manual_fields
+
+    if st.button(_il("compare_button"), type="primary", key="tools_ins_compare_btn"):
+        # Renewal-creep needs the PRIOR saved reading for this SAME
+        # (fuel, state) - looked up now, before save_bill_check() (on
+        # the eventual Save click below) overwrites it. A brand-new
+        # policy (no prior row) simply gets creep=None -> the "scan
+        # last year's notice too" hint, per the spec.
+        _existing = next(
+            (b for b in tools_store.list_bill_checks(email)
+             if b["fuel"] == f"ins_{policy_type}" and b["postcode"] == manual_fields.get("state")),
+            None,
+        )
+        prior_extra = _existing.get("extra") if _existing else None
+        result = _insurance_compare(_il, manual_fields, typical_deal_rates, prior_extra)
+        if result:
+            if result.get("status") != "unavailable":
+                tools_store.record_check_usage(email)
+            st.session_state["tools_ins_last_result"] = result
+
+    result = st.session_state.get("tools_ins_last_result")
+    if result:
+        with st.container(border=True):
+            _insurance_render_result(_il, _lang, result, "tools_ins_result")
+            if result.get("status") == "unavailable":
+                st.caption(_il("disclaimer"))
+                return
+            if result.get("annual_cost"):
+                _budget_plan_projection_panel(
+                    lambda k, **kw: i18n.t(f"tools.budget.{k}", _lang, **kw)
+                    if k != "projection_title" else _il("projection_intro"),
+                    max(result.get("switchable_saving") or 0.0, 0.0), "tools_ins_proj",
+                )
+            if st.button(_il("save_button"), key="tools_ins_save_btn"):
+                _ranked = result.get("ranked") or {}
+                _cheapest = _ranked.get("cheapest") or {}
+                extra = {
+                    "insurer": result["fields"].get("insurer"),
+                    "product_name": result["fields"].get("product_name"),
+                    "annual_premium": result.get("annual_premium"),
+                    "sum_insured": (result["fields"].get("sum_insured_building")
+                                    or result["fields"].get("sum_insured_contents")),
+                    "tier": result["fields"].get("tier"), "coverage": result["fields"].get("coverage"),
+                    "cover_type": result["fields"].get("cover_type"),
+                    "user_rank": _ranked.get("user_rank"), "total_count": _ranked.get("total_count"),
+                    "cheapest_insurer": _cheapest.get("insurer"),
+                    "cheapest_product_name": _cheapest.get("product_name"),
+                    "benchmark": result.get("benchmark"),
+                }
+                tools_store.save_bill_check(
+                    email, f"ins_{result['policy_type']}", result.get("state"), result["status"],
+                    result.get("annual_cost"), result.get("cheapest_annual_cost"),
+                    result.get("switchable_saving"), extra,
+                )
+                st.success(_il("save_confirm"))
+                st.session_state.pop("tools_ins_last_result", None)
+                st.session_state.pop("tools_ins_review_fields", None)
+                st.rerun()
+    st.caption(_il("disclaimer"))
+
+
+def _render_insurance_tool(email):
+    _lang = st.session_state.get("lang", "en")
+    _il = lambda key, **kw: i18n.t(f"tools.insurance.{key}", _lang, **kw)
+    typical_deal_rates = tools_store.get_typical_deal_rates()
+
+    st.markdown(f"### {_il('title')}")
+    st.caption(_il("subtitle"))
+
+    saved = tools_store.list_bill_checks(email)
+    view = st.session_state.get("tools_ins_view")
+
+    if view == "detail" and st.session_state.get("tools_ins_detail_id"):
+        bill = next((b for b in saved if b["id"] == st.session_state["tools_ins_detail_id"]), None)
+        if bill:
+            if st.button(_il("back_to_dashboard"), key="tools_ins_back_btn"):
+                st.session_state["tools_ins_view"] = None
+                st.rerun()
+            policy_type = bill["fuel"][len(_INSURANCE_FUEL_PREFIX):]
+            extra = bill.get("extra", {})
+            result = {"policy_type": policy_type, "state": bill["postcode"], "status": bill["status"],
+                     "annual_cost": bill["annual_cost"], "switchable_saving": bill["switchable_saving"],
+                     "annual_premium": extra.get("annual_premium"),
+                     "fields": {"insurer": extra.get("insurer"), "product_name": extra.get("product_name"),
+                                "sum_insured_building": extra.get("sum_insured")},
+                     "ranked": {"user_rank": extra.get("user_rank") or 1,
+                                "total_count": extra.get("total_count") or 1,
+                                "cheapest": {"insurer": extra.get("cheapest_insurer") or "",
+                                             "product_name": extra.get("cheapest_product_name") or "",
+                                             "annual_cost": bill.get("cheapest_annual_cost")},
+                                "switchable_saving": bill["switchable_saving"] or 0.0},
+                     "benchmark": extra.get("benchmark") or {}, "creep": None, "excess_note": False}
+            with st.container(border=True):
+                _insurance_render_result(_il, _lang, result, f"tools_ins_detail_{bill['id']}")
+            hist = tools_store.get_bill_check_history(bill["id"])
+            if hist:
+                st.markdown(f"**{_il('history_title')}**")
+                st.table([{"product": h["plan_name"], "$/yr": f"${h['annual_cost']:,.0f}" if h["annual_cost"] else "—",
+                          "date": h["recorded_at"][:10]} for h in hist])
+            if st.button(_il("rescan_button"), key="tools_ins_rescan_btn"):
+                st.session_state["tools_ins_view"] = "new"
+                st.rerun()
+            return
+
+    _insurance_saved_count = sum(1 for b in saved if b["fuel"].startswith(_INSURANCE_FUEL_PREFIX))
+    if view == "new" or (view is None and _insurance_saved_count <= 1):
+        allowed, reason, usage = _bill_check_status(email)
+        _render_insurance_new_check(email, _il, _lang, allowed, reason, usage, typical_deal_rates)
+        return
+
+    _render_bill_checks_dashboard(email, _lang, saved, typical_deal_rates,
+                                  _il("dashboard_add_button"), "tools_ins_view", "new")
+
+
+def _render_insurance_admin_typical_premiums(_lang):
+    """Owner-only "Typical premium" editor for the car/home/CTP benchmark
+    path - same pattern as _render_utilities_admin_typical_deals(), one
+    row per (policy type, state) band, reusing tools_store's existing
+    typical_deal_rates table/functions with compound "ins_<type>:<state>"
+    keys (see tools_store.py's own note) rather than a new table.
+    AU_STATES reuses bill_check_engine's own water-benchmark state list
+    (WATER_TYPICAL_ANNUAL_COST_AU keys) rather than a fourth copy of the
+    same 8-state list somewhere in this codebase."""
+    _il = lambda key, **kw: i18n.t(f"tools.insurance.{key}", _lang, **kw)
+    _au_states = sorted(bill_check_engine.WATER_TYPICAL_ANNUAL_COST_AU.keys())
+    with st.expander(_il("admin_typical_premiums_title"), expanded=False):
+        st.caption(_il("admin_typical_premiums_note"))
+        rates = tools_store.get_typical_deal_rates()
+        for _policy_type in ("car", "home", "ctp"):
+            st.markdown(f"**{_il('policy_' + _policy_type)}**")
+            for _state in _au_states:
+                _svc_key = f"ins_{_policy_type}:{_state}"
+                _val = st.number_input(_state, min_value=0.0, step=10.0,
+                                       value=float(rates.get(_svc_key, 0.0)),
+                                       key=f"tools_ins_admin_typical_{_svc_key}")
+                if st.button(f"Save {_state}", key=f"tools_ins_admin_typical_save_{_svc_key}"):
+                    tools_store.set_typical_deal_rate(_svc_key, _val)
+                    st.success("Saved.")
 
 
 def _render_utilities_admin_typical_deals(_lang):
@@ -19049,6 +19577,8 @@ def page_tools():
                 globals()[_tool["render"]](email)
                 if _tool["id"] == "utilities" and ai_gate.is_owner(email):
                     _render_utilities_admin_typical_deals(_lang)
+                if _tool["id"] == "insurance" and ai_gate.is_owner(email):
+                    _render_insurance_admin_typical_premiums(_lang)
             except Exception:
                 _tools_logger.exception("Tools page: %s failed to render", _tool["id"])
                 st.error(i18n.t("tools.tool_error", _lang, tool=i18n.t(_tool["title_key"], _lang)))

@@ -9,6 +9,16 @@ rebuild", the spec's own words for the tools REGISTRY, applied here too
 at the persistence layer so every Tools sub-feature shares one file
 instead of each growing its own store module).
 
+Part 22 (🛡️ Insurance bill check) goes further than "a new table" - it
+adds NO new table for its saved checks at all, deliberately reusing
+bill_checks/bill_check_history/bill_check_usage AS-IS (an insurance
+check is just a row with fuel="ins_health"/"ins_car"/"ins_home"/
+"ins_ctp" - "they are bills", per that part's own spec wording). This
+is also how the two tools end up sharing the SAME trial/cap pool with
+ZERO changes to can_check()/record_check_usage()/bill_check_usage_
+status() below: those were already written keyed on email alone, never
+on which tool or fuel is asking.
+
 WHERE THE FILE LIVES / WHY SQLITE: identical rule to every other store in
 this app (see portfolio_store.py's own docstring) - the attached Railway
 Volume when one exists, falling back to this directory locally. Same
@@ -116,6 +126,21 @@ def _conn():
             recorded_at TEXT NOT NULL
         )"""
     )
+    # Part 22 (Insurance bill check): renewal-creep tracking ("your
+    # premium rose 18% - sums insured rose 3%") needs more than just the
+    # PRIOR annual_cost this table already kept - it needs that prior
+    # save's whole extra blob (sum_insured, tier, cover_type, ...) so a
+    # later rescan can read back whichever secondary field matters for
+    # THAT policy type. Guarded ALTER TABLE, same belt-and-braces
+    # pattern portfolio_store.py/blog_store.py already use to evolve an
+    # already-deployed sqlite schema (CREATE TABLE IF NOT EXISTS above
+    # is a no-op against an existing table). Utilities rows simply never
+    # populate this column (still NULL, harmless) - only insurance's own
+    # renewal_creep() read path looks at it.
+    try:
+        conn.execute("ALTER TABLE bill_check_history ADD COLUMN extra_json TEXT")
+    except sqlite3.OperationalError:
+        pass
     # Admin-editable "typical deal" benchmark figures for the manual-
     # entry-only rows (internet/mobile - spec's own wording) - a plain
     # key -> typical annual cost table, owner-maintained via the Tools
@@ -283,9 +308,9 @@ def save_bill_check(email, fuel, postcode, status, annual_cost,
             except (TypeError, ValueError):
                 prev_plan_name = None
             conn.execute(
-                "INSERT INTO bill_check_history (bill_id, plan_name, annual_cost, recorded_at) "
-                "VALUES (?, ?, ?, ?)",
-                (bill_id, prev_plan_name, prev_annual_cost, now),
+                "INSERT INTO bill_check_history (bill_id, plan_name, annual_cost, recorded_at, extra_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (bill_id, prev_plan_name, prev_annual_cost, now, prev_extra_json),
             )
             conn.execute(
                 "UPDATE bill_checks SET status = ?, annual_cost = ?, "
@@ -306,15 +331,27 @@ def save_bill_check(email, fuel, postcode, status, annual_cost,
 
 
 def get_bill_check_history(bill_id):
-    """[{"plan_name", "annual_cost", "recorded_at"}, ...] oldest first,
-    for the small per-row history table the spec asks for."""
+    """[{"plan_name", "annual_cost", "recorded_at", "extra"}, ...]
+    oldest first, for the small per-row history table the spec asks
+    for. "extra" (Part 22) is the prior save's full extra dict ({} for
+    a pre-Part-22 history row that predates the extra_json column, or
+    any row where it was never set) - insurance's renewal_creep() reads
+    hist[-1]["extra"] for the sum-insured/tier comparison; Utilities'
+    own history rendering simply never looks at this key."""
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT plan_name, annual_cost, recorded_at FROM bill_check_history "
+            "SELECT plan_name, annual_cost, recorded_at, extra_json FROM bill_check_history "
             "WHERE bill_id = ? ORDER BY recorded_at ASC",
             (bill_id,),
         ).fetchall()
-    return [{"plan_name": r[0], "annual_cost": r[1], "recorded_at": r[2]} for r in rows]
+    out = []
+    for r in rows:
+        try:
+            extra = json.loads(r[3]) if r[3] else {}
+        except (TypeError, ValueError):
+            extra = {}
+        out.append({"plan_name": r[0], "annual_cost": r[1], "recorded_at": r[2], "extra": extra})
+    return out
 
 
 def delete_bill_check(email, bill_id):
@@ -335,6 +372,15 @@ def delete_bill_check(email, bill_id):
 # -----------------------------------------------------------------
 # Part 19: admin-editable "typical deal" benchmark table (internet/
 # mobile manual-entry rows). Owner-maintained via the Tools admin panel.
+#
+# Part 22 (Insurance bill check) reuses this SAME table for its own
+# car/home/CTP "typical premium" benchmark, per state/policy-type band -
+# "reuse machinery wherever it exists" rather than a second table with
+# an identical shape. service_key for an insurance row is a compound
+# "ins_<policy_type>:<state>" string (e.g. "ins_car:NSW", "ins_home:VIC")
+# rather than a plain "internet_au"-style key - get_typical_deal_rates()/
+# set_typical_deal_rate() themselves need no change at all, since
+# service_key was always an opaque caller-chosen string.
 # -----------------------------------------------------------------
 
 def get_typical_deal_rates():

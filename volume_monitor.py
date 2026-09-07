@@ -24,7 +24,7 @@ all be quietly broken for days before anyone notices. This module adds:
           snapshots()'s own source (the Research page's rebuild-history
           picker) - pruning the OLDEST files first means the picker just
           shows a shorter list, never a broken one.
-       b) five TTL-based caches, each pruned once a row/file is older
+       b) six TTL-based caches, each pruned once a row/file is older
           than STALE_MULTIPLIER times ITS OWN normal TTL (a cache is
           disposable by design once genuinely long-expired - nothing
           still treats a row/file that old as valid data, since every
@@ -35,6 +35,10 @@ all be quietly broken for days before anyone notices. This module adds:
             - stress_engine's long-history + result caches (SQLite)
             - etf_insights' fund-facts cache (SQLite)
             - bill_check_engine's AER/CDR plan cache (SQLite, Part 19)
+            - insurance_engine's health-policy dataset cache (SQLite,
+              Part 22 - a single bounded snapshot row, not one row per
+              query, on a much longer ~2-week TTL since the underlying
+              government dataset itself only republishes monthly)
 
 PRUNE_NEVER (checked explicitly - see each function's own docstring for
 why it was excluded): the live account/portfolio/watchlist/alert/
@@ -421,6 +425,27 @@ def _prune_bill_check_aer_cache(log=print):
     return n
 
 
+def _prune_insurance_health_dataset_cache(log=print):
+    """Part 22's health-insurance government-dataset cache (insurance_
+    engine.health_policy_dataset_cache) - same created_at-column shape
+    as every cache above, pruned once a snapshot is STALE_MULTIPLIER x
+    its own ~2-week TTL old (~8 weeks) - generous on purpose, same
+    "retention hygiene, not an aggressive sweep" rule as every other
+    cache here; the cache's own 2-week TTL on the READ side already
+    refuses anything that old well before this pruner would ever touch
+    it in practice."""
+    try:
+        import insurance_engine as ie
+    except Exception as e:
+        log(f"[volume_monitor] could not import insurance_engine: {e}")
+        return 0
+    n = _prune_sqlite_table(ie.DB_PATH, "health_policy_dataset_cache",
+                            ie.HEALTH_DATASET_CACHE_TTL_HOURS, log=log)
+    if n:
+        log(f"[volume_monitor] pruned {n} stale insurance_engine health-dataset cache row(s)")
+    return n
+
+
 def run_retention_pruning(log=print):
     """Runs every pruning category and returns {"category": count_pruned}
     for the report/admin panel. Each category is independently wrapped
@@ -433,6 +458,7 @@ def run_retention_pruning(log=print):
         "stress_engine_cache": _prune_stress_engine_caches(log=log),
         "etf_insights_cache": _prune_etf_insights_cache(log=log),
         "bill_check_aer_cache": _prune_bill_check_aer_cache(log=log),
+        "insurance_health_dataset_cache": _prune_insurance_health_dataset_cache(log=log),
     }
 
 
