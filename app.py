@@ -1775,20 +1775,26 @@ st.markdown(
        st.markdown's HTML lands directly in the main page DOM, where
        fixed positioning behaves normally) replaces it. */
     @media (max-width: 768px) {
-      div[class*="st-key-site_nav_row"] { display: none !important; }
-      /* ultra_compact's own "☰" popover (ticker Deep Dive's compact
-         header) becomes redundant with the bottom bar's own "☰ More"
-         sheet on mobile - two different hamburger triggers with
-         overlapping content would be confusing, so this one hides too. */
-      div[class*="st-key-uc_nav_popover_col"] { display: none !important; }
-      /* Home renders its own logo+nav row (not through _render_header) -
-         hide just the nav column and let the logo column fill the row,
-         scoped to this one row only (not a global column rule) so no
-         other two-column layout site-wide is affected. */
-      div[class*="st-key-home_navrow"] div[data-testid="stColumn"]:last-child {
+      /* Fix #9 retired the "site_nav_row" (centred nav-only row) and
+         "uc_nav_popover_col" (ultra_compact's own "☰" popover) containers
+         entirely - every page's nav (including ultra_compact's) now
+         renders through _render_standard_nav_row, whose container key is
+         f"{key_prefix}_navrow" (a distinct key per caller, not one
+         hardcoded key - see that function's own docstring for why), so
+         this matches the shared "..._navrow" substring rather than one
+         exact key - the same two-attribute pattern
+         NAV_TOOLS_NEW_BADGE_ENABLED's CSS already uses a few hundred
+         lines up. The two selectors that used to hide the retired
+         containers had nothing left to match and were removed rather
+         than left pointing at dead keys. Hide just the nav column and
+         let the logo column fill the row, scoped to these rows only
+         (not a global column rule) so no other two-column layout
+         site-wide is affected - Fix #8's bottom bar is what actually
+         navigates on mobile. */
+      div[class*="st-key-nav"][class*="_navrow"] div[data-testid="stColumn"]:last-child {
         display: none !important;
       }
-      div[class*="st-key-home_navrow"] div[data-testid="stColumn"]:first-child {
+      div[class*="st-key-nav"][class*="_navrow"] div[data-testid="stColumn"]:first-child {
         width: 100% !important; flex: 1 1 100% !important;
       }
       /* Top row per the mock: logo + EN/ES toggle + Sign in/out, one
@@ -3051,6 +3057,57 @@ def _render_mobile_bottom_nav(lang, current=None):
     )
 
 
+def _render_standard_nav_row(lang, current=None, key_prefix="nav"):
+    """Fix #9 (owner screenshot, desktop): ONE nav row shared by every
+    page - logo LEFT at wordmark size, flat tabs beside it, teal
+    underline on the active page (the underline is already there for
+    free: [class*="st-key-nav_"] button[kind="primary"] a few hundred
+    lines up matches any key_prefix that contains "nav_", which every
+    caller's generated button key does). Before this fix, page_home()
+    built this exact row inline and nowhere else did - _render_header's
+    compact branch instead centred the logo above the search box with
+    the nav row underneath, and its ultra_compact branch tucked the
+    whole nav into a "☰" popover. Extracting page_home()'s own markup
+    verbatim into this one function and pointing every caller at it is
+    the fix: same component, rendered once, no per-page variants.
+
+    The container key is f"{key_prefix}_navrow" (page_home()'s own call
+    keeps its original literal "home_navrow", since key_prefix="nav_home"
+    there) rather than one single hardcoded key, caught by the existing
+    AppTest regression suite: "import app as _app" inside a test script
+    runs app.py's module-level st.navigation()/.run() as an import side
+    effect, which executes Home - a test that then ALSO calls
+    _render_header explicitly hits Streamlit's own duplicate-element-key
+    guard the moment both calls share one literal key, since both
+    containers land in the same script run. A real visitor's browser
+    only ever runs one page per request, so this could never surface in
+    production, but a per-caller key costs nothing and avoids relying on
+    that distinction. The <=768px mobile CSS below matches
+    [class*="st-key-nav"][class*="_navrow"] instead of one exact key -
+    the same two-attribute substring pattern NAV_TOOLS_NEW_BADGE_ENABLED's
+    CSS already uses a few hundred lines up - so it keeps applying to
+    every one of these rows without new per-page selectors. The one
+    visible change on Home itself: its logo is now a link back to "/"
+    like every other page's, where before it was static text - harmless
+    (Home linking to itself is a no-op click) and it's what makes this
+    truly one shared component rather than a near-duplicate."""
+    with st.container(key=f"{key_prefix}_navrow"):
+        _navrow_logo_col, _navrow_nav_col = st.columns([2, 8], vertical_alignment="center")
+        with _navrow_logo_col:
+            st.markdown(
+                """
+<div class='sdd-navrow'>
+  <a href="/" target="_self" style="text-decoration:none;">
+    <span class='sdd-logo'>Stocks<span class='accent'>DeepDive</span></span>
+  </a>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+        with _navrow_nav_col:
+            _render_app_nav_items(lang, current=current, key_prefix=key_prefix, layout="row")
+
+
 def _render_header(compact, page_label=None, ultra_compact=False, current=None):
     _capture_first_src()
     _lang = st.session_state.get("lang", "en")
@@ -3082,92 +3139,63 @@ def _render_header(compact, page_label=None, ultra_compact=False, current=None):
     if ultra_compact:
         # Deep Dive first-screen instruction, Part 4: on a ticker landing,
         # the full hero (big logo + search box + 5 nav buttons) pushes the
-        # ticker header and price chart below the fold. This collapses it
+        # ticker header and price chart below the fold. This collapsed it
         # to one slim row - small logo, compact search, nav tucked into a
         # popover menu - so the ticker header is visible without scrolling.
-        # The full-size hero (compact=False/True without ultra_compact)
-        # is completely untouched below - this branch returns early and
-        # never falls through to that code, so Home and ticker-less
-        # /deep-dive keep exactly the hero they had before this change.
-        _uc_logo_col, _uc_search_col, _uc_nav_col = st.columns(
-            [2, 5, 1], vertical_alignment="center"
-        )
-        with _uc_logo_col:
-            st.markdown(
-                """
-                <style>
-                .site-title-mini {
-                    font-weight: 800; font-family: 'Segoe UI', sans-serif;
-                    color: #e6edf5; font-size: 15px; margin: 0;
-                    white-space: nowrap;
-                }
-                .site-title-mini .accent { color: #2dd4bf; }
-                .site-title-mini-link, .site-title-mini-link:hover,
-                .site-title-mini-link:visited {
-                    text-decoration: none !important; display: block;
-                }
-                </style>
-                <a href="/" target="_self" class="site-title-mini-link">
-                    <div class="site-title-mini">Stocks<span class="accent">DeepDive</span></div>
-                </a>
-                """,
-                unsafe_allow_html=True,
-            )
-        with _uc_search_col:
-            with st.form("site_search_form", clear_on_submit=False, border=False):
-                _uc_text_col, _uc_btn_col = st.columns([5, 1])
-                with _uc_text_col:
-                    _search_text = st.text_input(
-                        "Ticker search",
-                        placeholder=i18n.t("header.search_placeholder", _lang),
-                        label_visibility="collapsed",
-                        key="site_search",
-                    )
-                with _uc_btn_col:
-                    _searched = st.form_submit_button(
-                        i18n.t("header.search_button", _lang),
-                        width='stretch', type="primary",
-                    )
-        with _uc_nav_col:
-            with st.container(key="uc_nav_popover_col"):
-                with st.popover("☰", key="dd_hero_nav_popover"):
-                    _render_app_nav_items(_lang, current=current, key_prefix="nav_uc", layout="stack")
+        #
+        # Fix #9: the popover-tucked nav was exactly the kind of per-page
+        # variant that fix retires - "the nav row above it must still be
+        # the standard one." So this branch now renders the same shared
+        # _render_standard_nav_row (logo left + flat tabs, teal underline)
+        # every other page uses, THEN the compact search strip below it -
+        # that strip is the part of the old collapsed hero that still
+        # earns its keep (it's what keeps the ticker header above the
+        # fold), so it stays, just without its own logo (the nav row's
+        # logo above already covers that) or its own nav popover (nav is
+        # already the row above it now). The full-size hero (compact=
+        # False/True without ultra_compact) below is untouched - this
+        # branch still returns early.
+        _render_standard_nav_row(_lang, current=current, key_prefix="nav_uc")
+        with st.form("site_search_form", clear_on_submit=False, border=False):
+            _uc_text_col, _uc_btn_col = st.columns([5, 1])
+            with _uc_text_col:
+                _search_text = st.text_input(
+                    "Ticker search",
+                    placeholder=i18n.t("header.search_placeholder", _lang),
+                    label_visibility="collapsed",
+                    key="site_search",
+                )
+            with _uc_btn_col:
+                _searched = st.form_submit_button(
+                    i18n.t("header.search_button", _lang),
+                    width='stretch', type="primary",
+                )
         _render_mobile_bottom_nav(_lang, current=current)
         if _searched:
             _dispatch_search(_search_text)
         return
 
-    st.markdown(
-        f"""
-        <style>
-        .site-title {{
-            text-align: center; font-weight: 800;
-            font-family: 'Segoe UI', sans-serif; color: #e6edf5;
-            /* Amendment to Part 5: 21px on the compact (every non-home
-               page) header matches blog_render.py's own `.brand` rule
-               exactly, per "exactly as the static blog/snapshot pages
-               render it" - was 20px. */
-            font-size: {"21px" if compact else "58px"};
-            margin-top: {"2px" if compact else "44px"};
-            margin-bottom: {"2px" if compact else "8px"};
-        }}
-        .site-title .accent {{ color: #2dd4bf; }}
-        .site-title-link, .site-title-link:hover, .site-title-link:visited {{
-            display: block; text-decoration: none !important; cursor: pointer;
-        }}
-        .site-title-link:hover .site-title {{ opacity: 0.85; }}
-        .site-sub {{
-            text-align: center; color: #8aa0b8; font-size: 16px;
-            margin-bottom: 28px; font-family: 'Segoe UI', sans-serif;
-        }}
-        </style>
-        <a href="/" target="_self" class="site-title-link">
-            <div class="site-title">Stocks<span class="accent">DeepDive</span></div>
-        </a>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Fix #9 (owner screenshot, desktop): the nav must be ONE consistent
+    # row on every page. This used to be a centred "site-title" logo,
+    # then the search box, then the nav row underneath it - the exact
+    # "search-above-nav" layout the fix retires. Now the shared standard
+    # nav row (logo left + flat tabs, same component every other page
+    # and Home use - see _render_standard_nav_row's own docstring) is
+    # Row 2, right below the account bar; the search box below is now
+    # ordinary page content, not part of the header. The old .site-title
+    # 58px/tagline treatment for a hypothetical compact=False caller had
+    # no live caller left once this moved (every real _render_header call
+    # site already passes compact=True) - the tagline itself is kept,
+    # just as page content under the nav rather than under a giant logo
+    # that no longer renders here.
+    _render_standard_nav_row(_lang, current=current, key_prefix="nav")
     if not compact:
+        st.markdown(
+            """<style>.site-sub { text-align:center; color:#8aa0b8;
+            font-size:16px; margin-bottom:28px;
+            font-family:'Segoe UI',sans-serif; }</style>""",
+            unsafe_allow_html=True,
+        )
         st.markdown(
             f'<div class="site-sub">{html.escape(i18n.t("header.tagline", _lang))}</div>',
             unsafe_allow_html=True,
@@ -3194,23 +3222,6 @@ def _render_header(compact, page_label=None, ultra_compact=False, current=None):
         if not compact:
             st.caption(i18n.t("header.search_caption", _lang))
 
-    # Symmetric 15%/15% outer margins (vs the old [2, 6, 1, 1]'s uneven
-    # 20% left / 10% right) so this row is centered under the page the
-    # same way the search row above it is - just over its own wider 70%
-    # content band, since four text-heavy labels don't fit in the search
-    # box's narrower 40%. Inside that band, each button gets a column
-    # WIDTH PROPORTIONAL TO ITS OWN LABEL LENGTH (plus a fixed padding
-    # allowance) rather than equal-width columns sized to fit the longest
-    # label - that's what made "Stock Scanner" and "My Portfolio" render
-    # as oversized boxes around short text. Streamlit still stretches
-    # each button to fill its column (width='stretch') and
-    # centers its label inside that box by default, so a column sized
-    # close to the label's own width is what makes the pill look tightly
-    # fitted and centered.
-    with st.container(key="site_nav_row"):
-        _bsp1, _bmid, _bsp2 = st.columns([2, 16, 2])
-        with _bmid:
-            _render_app_nav_items(_lang, current=current, key_prefix="nav", layout="row")
     _render_mobile_bottom_nav(_lang, current=current)
 
     if _searched:
@@ -6272,24 +6283,17 @@ def page_home():
     )
 
     # top row: logo + site-wide nav (Part 5, Option B) - Home isn't itself
-    # a nav item, so current=None highlights nothing here. Owner review
-    # round fix #8: wrapped in its own container key so the mobile
-    # @media block can hide just the nav column (keeping the logo) and
-    # widen the logo column to fill the row - see the "home_navrow"
-    # selectors a few hundred lines up in the site-wide <style> block.
-    with st.container(key="home_navrow"):
-        _navrow_logo_col, _navrow_nav_col = st.columns([2, 8], vertical_alignment="center")
-        with _navrow_logo_col:
-            st.markdown(
-                """
-<div class='sdd-navrow'>
-  <span class='sdd-logo'>Stocks<span class='accent'>DeepDive</span></span>
-</div>
-""",
-                unsafe_allow_html=True,
-            )
-        with _navrow_nav_col:
-            _render_app_nav_items(_home_lang, current=None, key_prefix="nav_home", layout="row")
+    # a nav item, so current=None highlights nothing here. Fix #9: this
+    # used to be Home's own bespoke inline block (the ONLY page with this
+    # exact logo-left-plus-tabs layout); every other page instead showed
+    # a centred logo above its search box, with the nav row underneath.
+    # Now it's _render_standard_nav_row - the same shared component every
+    # page calls, Home included, so the row is identical everywhere by
+    # construction rather than by coincidence. key_prefix="nav_home" here
+    # reproduces the exact container key ("home_navrow") this row always
+    # had - see that function's own docstring for why every OTHER caller
+    # now gets its own distinct key instead of also hardcoding this one.
+    _render_standard_nav_row(_home_lang, current=None, key_prefix="nav_home")
     _render_mobile_bottom_nav(_home_lang, current=None)
 
     hero_l, hero_r = st.columns([11, 10], gap="large")
