@@ -17585,6 +17585,15 @@ def _budget_plan_projection_panel(_bl, yearly_savings, key_prefix):
     _rate = budget_planner_engine.INDEX_HISTORICAL_RETURNS[_country]
     _index_label = _bl("index_us") if _country == "sp500" else _bl("index_au")
 
+    # Fix round 10 #5: the horizon used to read as a bare number ("10")
+    # with no calendar context. _current_year is real wall-clock time
+    # (never a stored/cached "as of" date - this is a live projection,
+    # always run from today), so "in 10 years" always resolves to the
+    # correct target year on every render.
+    _current_year = _date.today().year
+    _target_year = _current_year + int(_years)
+    st.caption(_bl("horizon_headline", years=int(_years), year=_target_year))
+
     _fv_cautious = budget_planner_engine.future_value_of_savings(
         yearly_savings, budget_planner_engine.CAUTIOUS_RATE, _years)
     _fv_hist = budget_planner_engine.future_value_of_savings(yearly_savings, _rate, _years)
@@ -17605,13 +17614,20 @@ def _budget_plan_projection_panel(_bl, yearly_savings, key_prefix):
 
     if yearly_savings and yearly_savings > 0:
         _xs, _inv, _sav = budget_planner_engine.projection_series(yearly_savings, _rate, _years)
+        # Fix round 10 #5: projection_series() itself still returns
+        # relative year-offsets (0..N) - unchanged, so every other caller
+        # of that pure function keeps working exactly as before. Only
+        # the CHART's x-values are shifted to real calendar years here,
+        # so the axis reads 2027…2036 (this year through the horizon)
+        # instead of 0..10.
+        _xs_calendar = [_current_year + x for x in _xs]
         _fig = go.Figure()
         _fig.add_trace(go.Scatter(
-            x=_xs, y=_inv, mode="lines", name=_bl("chart_invested"),
+            x=_xs_calendar, y=_inv, mode="lines", name=_bl("chart_invested"),
             line=dict(color="#2dd4bf", width=2.5),
         ))
         _fig.add_trace(go.Scatter(
-            x=_xs, y=_sav, mode="lines", name=_bl("chart_saved"),
+            x=_xs_calendar, y=_sav, mode="lines", name=_bl("chart_saved"),
             line=dict(color="#5b7290", width=2, dash="dot"),
         ))
         _fig.update_layout(
@@ -17619,7 +17635,8 @@ def _budget_plan_projection_panel(_bl, yearly_savings, key_prefix):
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color="#8aa0b8"),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-            xaxis=dict(gridcolor="#1f3352", title=_bl("years_label")),
+            xaxis=dict(gridcolor="#1f3352", title=_bl("chart_year_axis"),
+                       tickformat="d", dtick=1),
             yaxis=dict(gridcolor="#1f3352", tickprefix="$", tickformat=",.0f"),
         )
         sdd_plotly_chart(_fig, key=f"{key_prefix}_chart")

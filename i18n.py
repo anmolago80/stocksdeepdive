@@ -874,6 +874,14 @@ EN = {
     "tools.budget.index_us": "\U0001F1FA\U0001F1F8 S&amp;P 500",
     "tools.budget.index_au": "\U0001F1E6\U0001F1FA ASX 200",
     "tools.budget.years_label": "Years",
+    # Fix round 10 #5: the horizon used to render as a bare number with
+    # no calendar context ("10 years" with no indication of WHICH year
+    # that lands on) - this caption gives the real target calendar year,
+    # computed live from today's date every render (never a stored/
+    # cached value), and the chart's x-axis switches from 0..N to real
+    # calendar years to match.
+    "tools.budget.horizon_headline": "in {years} years ({year})",
+    "tools.budget.chart_year_axis": "Year",
     "tools.budget.figure_cautious_label": "Cautious &middot; 6%/yr",
     "tools.budget.figure_historical_label": "{index} history &middot; {rate}/yr",
     "tools.budget.figure_deposits_label": "Deposits alone &middot; no growth",
@@ -2531,6 +2539,8 @@ ES = {
     "tools.budget.index_us": "\U0001F1FA\U0001F1F8 S&amp;P 500",
     "tools.budget.index_au": "\U0001F1E6\U0001F1FA ASX 200",
     "tools.budget.years_label": "Años",
+    "tools.budget.horizon_headline": "en {years} años ({year})",
+    "tools.budget.chart_year_axis": "Año",
     "tools.budget.figure_cautious_label": "Cauteloso &middot; 6%/año",
     "tools.budget.figure_historical_label": "Historial de {index} &middot; {rate}/año",
     "tools.budget.figure_deposits_label": "Solo depósitos &middot; sin crecimiento",
