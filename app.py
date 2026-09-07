@@ -5726,22 +5726,20 @@ def _render_research_detail(ticker, data, section_order, lang="en"):
 
     with st.container(key=f"cp_header_card_{ticker}"):
         st.markdown(
-            f"""
-            <div class='sdd-card' style='margin-bottom:8px;'>
-              <div style='display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:14px;'>
-                <div>
-                  <div style='font-family:ui-monospace,Menlo,monospace; font-size:26px; font-weight:800; color:#e6edf5;'>
-                    {html.escape(ticker)}{(' — ' + html.escape(name)) if name else ''}
-                  </div>
-                  {_status_line_html}
-                </div>
-                <div>
-                  <div style='font-size:10.5px; color:#5b7290; letter-spacing:.6px;'>SECTIONS COVERED</div>
-                  <div style='font-family:ui-monospace,Menlo,monospace; font-size:16px; color:#e6edf5; margin-top:2px;'>{section_count} / {len(section_order)}</div>
-                </div>
-              </div>
-            </div>
-            """,
+            "<div class='sdd-card' style='margin-bottom:8px;'>"
+            "<div style='display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:14px;'>"
+            "<div>"
+            "<div style='font-family:ui-monospace,Menlo,monospace; font-size:26px; font-weight:800; color:#e6edf5;'>"
+            f"{html.escape(ticker)}{(' — ' + html.escape(name)) if name else ''}"
+            "</div>"
+            f"{_status_line_html}"
+            "</div>"
+            "<div>"
+            "<div style='font-size:10.5px; color:#5b7290; letter-spacing:.6px;'>SECTIONS COVERED</div>"
+            f"<div style='font-family:ui-monospace,Menlo,monospace; font-size:16px; color:#e6edf5; margin-top:2px;'>{section_count} / {len(section_order)}</div>"
+            "</div>"
+            "</div>"
+            "</div>",
             unsafe_allow_html=True,
         )
 
