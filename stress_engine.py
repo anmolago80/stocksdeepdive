@@ -266,6 +266,42 @@ def home_index_for(ticker):
 SPLIT_ANOMALY_THRESHOLD_FUND = 0.40
 SPLIT_ANOMALY_THRESHOLD_STOCK = 0.60
 
+# Fix round 10 #3 diagnostic note (owner-reported: IVV.AX/OCL.AX/GOLD.AX
+# all showing "data fault - excluded" in Stress Test). This sandbox has
+# no live yfinance access, so the root cause below is evidenced from
+# public corporate-action records cross-checked against ASX announcements
+# and third-party split trackers, NOT from calling yf.Ticker(...).splits
+# directly - that live check still needs doing on Railway, where the app
+# actually runs.
+#   - IVV.AX genuinely split ~15:1 in Dec 2022, and GOLD.AX genuinely did
+#     a 1-for-10 REVERSE split on 8 Jun 2022 (ASX announcement
+#     459h6dtw1n4ncb.pdf) - so the instruction's own assumption that
+#     "OCL/GOLD have no splits to fault" does not hold for GOLD.AX; it
+#     has a real, confirmed split. The likely reason _attempt_split_repair
+#     still fails for both IVV.AX and GOLD.AX is that yfinance's own
+#     `Ticker(...).splits` corporate-actions feed is known to be
+#     incomplete for ASX-listed, internationally-domiciled ETPs (it's
+#     sourced primarily for US-listed securities) - i.e. the repair logic
+#     above is very likely correct, but the split it needs from Yahoo
+#     probably never arrives. This needs a live check (log
+#     `yf.Ticker("IVV.AX").splits` / `yf.Ticker("GOLD.AX").splits` on
+#     Railway) to confirm before changing the repair logic itself.
+#   - OCL.AX has no confirmed split anywhere in public records searched -
+#     its guard trip looks like a genuine false positive unrelated to any
+#     split (a large special dividend/distribution misread as a price
+#     gap is the leading hypothesis per the instruction's own framing,
+#     but this also needs OCL.AX's actual Close series, live, to confirm
+#     the exact date/cause).
+# Deliberately NOT changing the repair-matching logic itself on this
+# evidence alone (that would mean guessing at which large moves are
+# "safe" to silently accept as real, and getting that wrong risks feeding
+# genuinely corrupted data into a drawdown/beta/Monte-Carlo computation -
+# exactly what this guard exists to prevent). What Fix round 10 #3 does
+# add is the "guard on the guard" below _stress_apply_guard's call site
+# in app.py: once excluded weight passes ~25% of the portfolio, the
+# portfolio-wide headline numbers are suppressed rather than computed
+# from a rump of survivors and shown as if authoritative.
+
 
 def _detect_anomalous_move(hist, threshold):
     """True if `hist`'s Close has any single-day move beyond

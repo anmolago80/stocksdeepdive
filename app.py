@@ -13603,6 +13603,25 @@ def _stress_apply_guard(histories, holdings):
     return checked, sorted(faulty)
 
 
+STRESS_GUARD_ON_GUARD_THRESHOLD_PCT = 25.0
+
+
+def _stress_guard_on_guard(weights, faulty_tickers, total_value_aud,
+                            threshold_pct=STRESS_GUARD_ON_GUARD_THRESHOLD_PCT):
+    """Fix round 10 #3: whether Part 14's per-ticker sanity guard has
+    excluded so much of the portfolio's value that the portfolio-WIDE
+    headline numbers (max downside/upside, drawdown/run-up charts,
+    replayed return) would no longer be a real replay of "your
+    portfolio" - just of whichever fraction of it survived the guard.
+    Returns (suppress: bool, faulty_weight_pct: float). Pure/no
+    Streamlit dependency so it's directly unit-testable."""
+    if not faulty_tickers or not total_value_aud:
+        return False, 0.0
+    faulty_weight_aud = sum(weights.get(t, 0.0) for t in faulty_tickers)
+    faulty_weight_pct = faulty_weight_aud / total_value_aud * 100.0
+    return faulty_weight_pct > threshold_pct, faulty_weight_pct
+
+
 def _stress_weights_and_value(_holdings, _analyses):
     """{ticker: value_aud} for every holding with a live value (one
     with an unavailable price is simply excluded - stress_engine's own
@@ -14201,6 +14220,25 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
     if _faulty_tickers:
         st.warning(_st_("data_fault_note", tickers=", ".join(_faulty_tickers)))
 
+    # Fix round 10 #3 ("guard on the guard"): _faulty_tickers being
+    # excluded is correct on its own (never feed a corrupted series into
+    # a computation) - but once those exclusions add up to a large slice
+    # of the portfolio's value, every PORTFOLIO-WIDE number below stops
+    # being a real replay of "your portfolio" and starts being a replay
+    # of "whatever fraction of your portfolio happened to survive the
+    # guard", which can look like a dramatic, authoritative headline
+    # (e.g. a deep "not yet recovered" drawdown) while actually being an
+    # artifact of missing data rather than a real historical fact. Once
+    # more than ~1/4 of the portfolio's value is excluded, suppress the
+    # portfolio-wide headline (section 1) and its drawdown/run-up charts
+    # (section 2) rather than show a number this unrepresentative - the
+    # per-holding table, crisis/rally tables and shock grid further down
+    # stay visible since those already handle faulty tickers individually.
+    _suppress_headline, _faulty_weight_pct = _stress_guard_on_guard(weights, _faulty_tickers, total_value_aud)
+    if _suppress_headline:
+        st.warning(_st_("data_fault_headline_suppressed",
+                         tickers=", ".join(_faulty_tickers), pct=f"{_faulty_weight_pct:.0f}"))
+
     _cache_key = stress_engine.cache_key(_holdings)
     result = stress_engine.get_cached_result(_cache_key)
     if result is None:
@@ -14211,56 +14249,57 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
             pass
 
     # --- 1. Headline cards -------------------------------------------
-    st.caption(stress_etf_help_copy.stress_section_caption("headline_cards", _lang))
-    _c1, _c2 = st.columns(2)
     dd, best12 = result.get("max_drawdown"), result.get("best_12m")
-    with _c1:
-        st.markdown(f"**{_st_('max_downside_title')}**")
-        if dd:
-            _val = abs(dd["pct"]) / 100.0 * total_value_aud
-            if dd.get("recovered_date"):
+    if not _suppress_headline:
+        st.caption(stress_etf_help_copy.stress_section_caption("headline_cards", _lang))
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            st.markdown(f"**{_st_('max_downside_title')}**")
+            if dd:
+                _val = abs(dd["pct"]) / 100.0 * total_value_aud
+                if dd.get("recovered_date"):
+                    st.markdown(_st_(
+                        "downside_line", pct=f"{dd['pct']:.1f}", value=f"{_val:,.0f}",
+                        peak=dd["peak_date"], trough=dd["trough_date"],
+                        months=f"{dd['months_to_recover']:.1f}",
+                    ))
+                else:
+                    st.markdown(_st_(
+                        "downside_line_no_recovery", pct=f"{dd['pct']:.1f}", value=f"{_val:,.0f}",
+                        peak=dd["peak_date"], trough=dd["trough_date"],
+                    ))
+            else:
+                st.caption(_st_("no_data"))
+        with _c2:
+            st.markdown(f"**{_st_('max_upside_title')}**")
+            if best12:
+                _val = best12["pct"] / 100.0 * total_value_aud
                 st.markdown(_st_(
-                    "downside_line", pct=f"{dd['pct']:.1f}", value=f"{_val:,.0f}",
-                    peak=dd["peak_date"], trough=dd["trough_date"],
-                    months=f"{dd['months_to_recover']:.1f}",
+                    "upside_line", pct=f"{best12['pct']:.1f}", value=f"{_val:,.0f}",
+                    start=best12["start_date"], end=best12["end_date"],
                 ))
             else:
-                st.markdown(_st_(
-                    "downside_line_no_recovery", pct=f"{dd['pct']:.1f}", value=f"{_val:,.0f}",
-                    peak=dd["peak_date"], trough=dd["trough_date"],
-                ))
-        else:
-            st.caption(_st_("no_data"))
-    with _c2:
-        st.markdown(f"**{_st_('max_upside_title')}**")
-        if best12:
-            _val = best12["pct"] / 100.0 * total_value_aud
-            st.markdown(_st_(
-                "upside_line", pct=f"{best12['pct']:.1f}", value=f"{_val:,.0f}",
-                start=best12["start_date"], end=best12["end_date"],
-            ))
-        else:
-            st.caption(_st_("no_data"))
-    if result.get("replayed_10y_pct") is not None:
-        st.caption(_st_("replayed_return_line", years=10, pct=f"{result['replayed_10y_pct']:.1f}"))
+                st.caption(_st_("no_data"))
+        if result.get("replayed_10y_pct") is not None:
+            st.caption(_st_("replayed_return_line", years=10, pct=f"{result['replayed_10y_pct']:.1f}"))
 
-    # --- 2. Drawdown / run-up mini charts ------------------------------
-    st.caption(stress_etf_help_copy.stress_section_caption("drawdown_runup", _lang))
-    _cc1, _cc2 = st.columns(2)
-    with _cc1:
-        _fig = _stress_area_chart(result["drawdown_series"], _st_("drawdown_chart_title"),
-                                    "#fb7185", "rgba(251,113,133,0.18)")
-        if _fig is not None:
-            sdd_plotly_chart(_fig, key=f"stress_dd_{_active_portfolio or 'all'}")
-        if dd:
-            st.caption(f"{dd['pct']:.1f}%")
-    with _cc2:
-        _fig = _stress_area_chart(result["runup_series"], _st_("runup_chart_title"),
-                                    "#22c55e", "rgba(34,197,94,0.18)")
-        if _fig is not None:
-            sdd_plotly_chart(_fig, key=f"stress_ru_{_active_portfolio or 'all'}")
-        if best12:
-            st.caption(f"+{best12['pct']:.1f}%")
+        # --- 2. Drawdown / run-up mini charts ------------------------------
+        st.caption(stress_etf_help_copy.stress_section_caption("drawdown_runup", _lang))
+        _cc1, _cc2 = st.columns(2)
+        with _cc1:
+            _fig = _stress_area_chart(result["drawdown_series"], _st_("drawdown_chart_title"),
+                                        "#fb7185", "rgba(251,113,133,0.18)")
+            if _fig is not None:
+                sdd_plotly_chart(_fig, key=f"stress_dd_{_active_portfolio or 'all'}")
+            if dd:
+                st.caption(f"{dd['pct']:.1f}%")
+        with _cc2:
+            _fig = _stress_area_chart(result["runup_series"], _st_("runup_chart_title"),
+                                        "#22c55e", "rgba(34,197,94,0.18)")
+            if _fig is not None:
+                sdd_plotly_chart(_fig, key=f"stress_ru_{_active_portfolio or 'all'}")
+            if best12:
+                st.caption(f"+{best12['pct']:.1f}%")
 
     # --- 3. Crisis / rally replay tables --------------------------------
     _render_stress_scenario_table(result.get("crises", []), _st_, is_crisis=True, lang=_lang)

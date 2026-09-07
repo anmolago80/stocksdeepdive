@@ -1460,6 +1460,22 @@ EN = {
         "tab so it can't skew the portfolio figures."
     ),
     "portfolio.stress.data_fault_cell": "⚠ data fault — excluded",
+    # Fix round 10 #3 ("guard on the guard"): once excluded holdings make
+    # up too much of the portfolio's value, the portfolio-wide headline
+    # numbers (max downside/upside, drawdown+run-up charts, replayed
+    # return) stop being computed from a representative sample of the
+    # portfolio and start being an artifact of whichever holdings
+    # happened to survive - so those numbers are hidden rather than shown
+    # looking authoritative. Per-holding rows, crisis/rally replay tables
+    # and the shock grid are unaffected (they already mark faulty
+    # holdings individually and stay informative on their own).
+    "portfolio.stress.data_fault_headline_suppressed": (
+        "⚠ Portfolio-wide numbers hidden: {tickers} have a data fault and "
+        "together make up {pct}% of this portfolio's value - too much to "
+        "exclude and still show a trustworthy portfolio-wide drawdown, "
+        "best-12-months or replayed-return figure. Per-holding rows below "
+        "still show what's available."
+    ),
     "portfolio.stress.shock_grid_title": "Shock grid",
     "portfolio.stress.shock_grid_beta_line": "Portfolio beta (vs a blended S&P 500 / ASX 200 index): {beta}",
     "portfolio.stress.shock_grid_caption": (
@@ -3089,6 +3105,14 @@ ES = {
         "cartera."
     ),
     "portfolio.stress.data_fault_cell": "⚠ fallo de datos — excluido",
+    "portfolio.stress.data_fault_headline_suppressed": (
+        "⚠ Cifras de la cartera ocultas: {tickers} tienen un fallo de "
+        "datos y juntos representan el {pct}% del valor de esta cartera - "
+        "demasiado para excluir y aun así mostrar una cifra fiable de "
+        "caída, mejores 12 meses o rentabilidad reproducida a nivel de "
+        "cartera. Las filas por posición debajo siguen mostrando lo que "
+        "hay disponible."
+    ),
     "portfolio.stress.shock_grid_title": "Cuadrícula de choques",
     "portfolio.stress.shock_grid_beta_line": "Beta de la cartera (vs. un índice combinado S&P 500 / ASX 200): {beta}",
     "portfolio.stress.shock_grid_caption": (
