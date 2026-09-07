@@ -4492,7 +4492,7 @@ def _render_push_test_button(key_suffix=""):
     _components.html(_PUSH_TEST_JS, height=80)
 
 
-def _render_follow_control(ticker, key_prefix):
+def _render_follow_control(ticker, key_prefix, wrap_container=True):
     """"Follow this company" email capture (follow_store.py) - shared by
     page_research (per selected ticker) and page_deep_dive (when the
     ticker has research coverage). Not FACTUAL_MODE gated: following is
@@ -4512,10 +4512,22 @@ def _render_follow_control(ticker, key_prefix):
     through i18n.t() (follow.*/signin.*/email_auth.*) - it duplicates
     paywall_engine._render_signin_control's email/code flow strings
     verbatim, so translating one without the other would have left two
-    near-identical boxes on the same page in different languages."""
+    near-identical boxes on the same page in different languages.
+
+    Fix round 11 #1: this used to always render its own full-width
+    bordered card, which on both Deep Dive and Research was a huge
+    mostly-empty box (a couple of short lines/one button in a card sized
+    for a whole section). Both call sites now open this INSIDE an
+    st.popover pill instead (see _render_dd_action_row / the Research
+    call site) - a popover already draws its own frame, so
+    wrap_container=False skips the (now redundant, doubled-up) inner
+    border there; wrap_container stays True (the original behaviour) for
+    any future caller that wants the standalone boxed look."""
     _fc_lang = st.session_state.get("lang", "en")
     _email = paywall_engine.current_user_email()
-    with st.container(border=True, key=f"{key_prefix}_box_{ticker}"):
+    _fc_ctx = (st.container(border=True, key=f"{key_prefix}_box_{ticker}")
+               if wrap_container else contextlib.nullcontext())
+    with _fc_ctx:
         if _email:
             _following = follow_store.is_following(_email, ticker)
             _label = (i18n.t("follow.following_label", _fc_lang) if _following
@@ -4741,7 +4753,7 @@ def _render_conversion_email_hook(ticker, key_prefix="dd_hook"):
                     (st.success if _ok else st.error)(_msg)
 
 
-def _render_research_conversion_hook(ticker, key_prefix="research_hook"):
+def _render_research_conversion_hook(ticker, key_prefix="research_hook", wrap_container=True):
     """Signed-out replacement for the Research page's pick_col3 slot
     (conversion pass, Part 7b) - the exact same row _render_follow_
     control already occupies, wording adapted to this page's "research
@@ -4763,8 +4775,17 @@ def _render_research_conversion_hook(ticker, key_prefix="research_hook"):
     report date). Worth the owner's attention: this does change what a
     signed-out submission in this slot does today (previously a per-
     ticker follow via _render_follow_control) - flagged in the final
-    report."""
-    with st.container(border=True, key=f"{key_prefix}_box_{ticker}"):
+    report.
+
+    Fix round 11 #1: wrap_container=False (used by the Research page's
+    compact "Follow research" popover pill, mirroring
+    _render_follow_control's own new parameter) skips this function's
+    own full-width bordered card, since the popover it now renders
+    inside already draws a frame - the same "huge mostly-empty card"
+    fix, applied to the signed-out variant too."""
+    _ctx = (st.container(border=True, key=f"{key_prefix}_box_{ticker}")
+            if wrap_container else contextlib.nullcontext())
+    with _ctx:
         _done_flag = f"{key_prefix}_done_{ticker}"
         if st.session_state.get(_done_flag):
             st.success("Done — you'll get new research by email. You're signed in.")
@@ -5704,9 +5725,23 @@ def _render_research_detail(ticker, data, section_order, lang="en"):
     deep-link and default-tab behaviour are unchanged), the compact
     email-follow hook, then the selected section's content exactly as
     today via _render_cp_section()."""
-    if st.button(i18n.t("research.back_to_shelf", lang), key=f"rc_back_{ticker}"):
-        st.query_params.pop("ticker", None)
-        st.rerun()
+    # Fix round 11 #1: the old full-width "Email me when research
+    # updates" card (signed-in: _render_follow_control; signed-out:
+    # _render_research_conversion_hook) is now a compact popover pill
+    # right beside the back link, instead of its own huge mostly-empty
+    # card further down the page. Same functions, same flows, just
+    # rendered with wrap_container=False inside st.popover.
+    _back_col, _follow_pop_col = st.columns([4, 1.4], gap="small")
+    with _back_col:
+        if st.button(i18n.t("research.back_to_shelf", lang), key=f"rc_back_{ticker}"):
+            st.query_params.pop("ticker", None)
+            st.rerun()
+    with _follow_pop_col:
+        with st.popover(i18n.t("dd.actions.follow_button", lang), key=f"follow_research_popover_{ticker}"):
+            if paywall_engine.current_user_email():
+                _render_follow_control(ticker, key_prefix="follow_research", wrap_container=False)
+            else:
+                _render_research_conversion_hook(ticker, key_prefix="follow_research", wrap_container=False)
 
     name = _rc_company_name(ticker)
     section_count = _rc_section_count(ticker, data, section_order)
@@ -5813,20 +5848,10 @@ def _render_research_detail(ticker, data, section_order, lang="en"):
                     unsafe_allow_html=True,
                 )
 
-    # The mock's own order is key numbers -> chips -> email hook -> section
-    # content, but st.tabs() makes that last step technically impossible:
-    # a tab's content is anchored to the tabs widget itself (via `with
-    # tab:`), so anything rendered "after st.tabs() but before the content
-    # loop" in script order actually lands AFTER the whole tabs widget
-    # (bar + active panel), not between the bar and the panel - confirmed
-    # by rendering it that way first and finding the follow-hook's own
-    # text physically after the tab content in the page. The email hook
-    # sits just above the chips instead - same compact box, no lost
-    # functionality, right under the key numbers.
-    if paywall_engine.current_user_email():
-        _render_follow_control(ticker, key_prefix="follow_research")
-    else:
-        _render_research_conversion_hook(ticker, key_prefix="follow_research")
+    # Fix round 11 #1: the email-follow hook used to render here (its own
+    # full-width card, right under the key numbers) - it's now the
+    # compact popover pill beside "← All companies" at the very top of
+    # this function instead (same functions/flows, wrap_container=False).
 
     _cp_gated = {"Fair Value", "Company Potential"}
     _cp_tab_labels = [
@@ -8180,7 +8205,7 @@ def _render_dd_header_sparkline(ticker):
         pass
 
 
-def _render_dd_action_row(dd):
+def _render_dd_action_row(dd, has_research=False):
     """Deep Dive first-screen instruction, Part 3: "Watchlist / Alerts /
     Checklist, up beside the name" - replaces the three oversized
     full-width elements (the plain "☆ Add to my watchlist" button, the
@@ -8200,10 +8225,19 @@ def _render_dd_action_row(dd):
     screens" mechanism already used elsewhere on this page (e.g. the
     Watchlist/Follow row this replaces) - Streamlit collapses columns to
     a single stack below its own mobile breakpoint, verified at 390x844
-    during this instruction's own verify pass."""
+    during this instruction's own verify pass.
+
+    Fix round 11 #1: when `has_research` is True, a 4th "\U0001F514
+    Follow research" popover joins this row, folding in the old
+    full-width Follow card (_render_follow_control, called with
+    wrap_container=False since the popover already draws its own frame)
+    - same "compact pill instead of a huge mostly-empty card" fix as the
+    Research page's own equivalent spot. Identical functionality, no
+    behaviour change to the follow flow itself."""
     ticker = dd["ticker"]
     _act_lang = st.session_state.get("lang", "en")
-    _wl_pop_col, _alert_pop_col, _cl_pop_col = st.columns(3, gap="small")
+    _act_cols = st.columns(4 if has_research else 3, gap="small")
+    _wl_pop_col, _alert_pop_col, _cl_pop_col = _act_cols[:3]
     with _wl_pop_col:
         with st.popover(i18n.t("dd.actions.watchlist_button", _act_lang), key=f"wl_popover_{ticker}"):
             _wl_email = paywall_engine.current_user_email()
@@ -8230,6 +8264,10 @@ def _render_dd_action_row(dd):
         _render_alert_control(ticker, dd, key_prefix="alert_dd")
     with _cl_pop_col:
         _render_checklist_panel(ticker, dd)
+    if has_research:
+        with _act_cols[3]:
+            with st.popover(i18n.t("dd.actions.follow_button", _act_lang), key=f"follow_dd_popover_{ticker}"):
+                _render_follow_control(ticker, key_prefix="follow_dd", wrap_container=False)
 
 
 def page_deep_dive():
@@ -8329,12 +8367,24 @@ def page_deep_dive():
         else:
             _dd_value_word = "WEAK"
 
+        # Fix round 11 #1: computed here (was previously computed much
+        # further down, right before the old full-width Follow card) so
+        # _render_dd_action_row can fold the Follow control into its own
+        # compact popover row when this ticker has research coverage,
+        # instead of a separate huge mostly-empty card further down the
+        # page. _load_compounder_data() is @st.cache_data, so computing
+        # it here and again (unused now - see below) costs nothing extra.
+        _cov_data_dd = _load_compounder_data()
+        _dd_has_research = bool(
+            _cov_data_dd and _dd["ticker"] in _cov_data_dd.get("tickers", {})
+        )
+
         _dd_hdr_col, _dd_spark_col = st.columns([6, 1], vertical_alignment="center")
         with _dd_hdr_col:
             st.subheader(f"{_dd['ticker']} - {_dd['name']}")
         with _dd_spark_col:
             _render_dd_header_sparkline(_dd["ticker"])
-        _render_dd_action_row(_dd)
+        _render_dd_action_row(_dd, has_research=_dd_has_research)
         _render_data_as_of(_dd["ticker"])
         _render_recent_results_banner(_dd["ticker"])
         _render_score_history_caption(_dd["ticker"], _dd.get("long_score"))
@@ -8507,11 +8557,8 @@ def page_deep_dive():
         # never survives the jump - the ticker is handed off via
         # st.session_state["research_jump_ticker"] instead, which
         # page_research() honours with priority over its own query param,
-        # then clears. ---
-        _cov_data_dd = _load_compounder_data()
-        _dd_has_research = bool(
-            _cov_data_dd and _dd["ticker"] in _cov_data_dd.get("tickers", {})
-        )
+        # then clears. `_dd_has_research` is already computed once, above
+        # the header row (Fix round 11 #1), and reused everywhere below. ---
         if _dd_has_research:
             if st.button(
                 f"\U0001F4DA Hand-built research available for {_dd['ticker']} "
@@ -8543,11 +8590,10 @@ def page_deep_dive():
         # hand-built research coverage. Deep Dive first-screen instruction,
         # Part 3: Watchlist/Alerts/Checklist moved into the compact popover
         # row right under the header (_render_dd_action_row, called just
-        # after st.subheader above) - Follow wasn't part of that brief, so
-        # it keeps its own spot here, no longer needing the two-column
-        # split it used to share with the Watchlist button. ---
-        if _dd_has_research:
-            _render_follow_control(_dd["ticker"], key_prefix="follow_dd")
+        # after st.subheader above). Fix round 11 #1: Follow now joins
+        # that SAME row as a 4th popover pill (was its own full-width
+        # card here, a huge mostly-empty box for what's normally 1-2
+        # lines of content) - see _render_dd_action_row's own docstring. ---
 
         # --- Fix 4, AI fixes round 1: "Copy as text" - see
         # _render_copy_as_text_button's own docstring. ---

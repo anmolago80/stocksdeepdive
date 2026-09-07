@@ -380,6 +380,12 @@ EN = {
     "dd.actions.watchlist_button": "☆ Watchlist",
     "dd.actions.alerts_button": "\U0001F514 Alerts",
     "dd.actions.checklist_button": "\U0001F4CB Checklist",
+    # Fix round 11 #1: the old full-width "Email me when research
+    # updates / Also notify on this device" card is now this compact
+    # popover pill, shared by Deep Dive's action row (_render_dd_
+    # action_row) and Research's own header row (_render_research_
+    # detail) - same trigger label/key on both pages.
+    "dd.actions.follow_button": "\U0001F514 Follow research",
 
     "dd.alert.expander": "\U0001F514 Alert me when {ticker}...",
     "dd.alert.signin_prompt": (
@@ -2127,6 +2133,7 @@ ES = {
     "dd.actions.watchlist_button": "☆ Seguimiento",
     "dd.actions.alerts_button": "\U0001F514 Alertas",
     "dd.actions.checklist_button": "\U0001F4CB Lista de verificación",
+    "dd.actions.follow_button": "\U0001F514 Seguir investigación",
 
     "dd.alert.expander": "\U0001F514 Avisarme cuando {ticker}...",
     "dd.alert.signin_prompt": (
