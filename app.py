@@ -18906,6 +18906,8 @@ def _utilities_run_extraction(email, _lang, uploaded_files):
                            resp["output_tokens"], resp["cost_usd"])
         except Exception:
             pass
+    if not resp["ok"]:
+        print(f"[bill_check] Haiku extraction call failed: {resp.get('error')}")
     extracted = bill_check_engine.parse_extraction_response(resp["text"]) if resp["ok"] else {}
 
     if bill_check_engine.needs_retry(extracted):
@@ -18917,6 +18919,8 @@ def _utilities_run_extraction(email, _lang, uploaded_files):
                                resp2["output_tokens"], resp2["cost_usd"])
             except Exception:
                 pass
+        if not resp2["ok"]:
+            print(f"[bill_check] Sonnet retry call failed: {resp2.get('error')}")
         if resp2["ok"]:
             retry_fields = bill_check_engine.parse_extraction_response(resp2["text"])
             if retry_fields:
@@ -18939,7 +18943,18 @@ def _utilities_run_extraction(email, _lang, uploaded_files):
     # after the retry has already run is now treated the same as a total
     # failure: the caller shows extraction_failed and falls back to a
     # blank manual-entry form instead of a silently-incomplete one.
+    # extraction_below_minimum() was itself widened 8 Sep 2026 (owner
+    # report: "it keeps all the bill data empty ... same issue we had
+    # before") to also catch a technically-present-but-degenerate
+    # $0/0-day read, not just an outright-missing field - the diagnostic
+    # print below is deliberately PII-free (field NAMES/presence only,
+    # per bill_check_engine.ALLOWED_EXTRACTED_FIELDS' own scrub) so a
+    # repeat of this report is debuggable from Railway's deploy logs
+    # instead of only from a screen recording.
     if bill_check_engine.extraction_below_minimum(extracted):
+        print(f"[bill_check] extraction below minimum after retry - fields present: "
+              f"{sorted(extracted.keys())}, billing_period_days={extracted.get('billing_period_days')!r}, "
+              f"total_amount={extracted.get('total_amount')!r}, confidence={extracted.get('confidence')!r}")
         return None, None
     return extracted, None
 
@@ -19459,6 +19474,8 @@ def _insurance_run_extraction(email, _lang, uploaded_files):
                            resp["output_tokens"], resp["cost_usd"])
         except Exception:
             pass
+    if not resp["ok"]:
+        print(f"[insurance_check] Haiku extraction call failed: {resp.get('error')}")
     extracted = insurance_engine.parse_extraction_response(resp["text"]) if resp["ok"] else {}
 
     if insurance_engine.needs_retry(extracted):
@@ -19470,12 +19487,22 @@ def _insurance_run_extraction(email, _lang, uploaded_files):
                                resp2["output_tokens"], resp2["cost_usd"])
             except Exception:
                 pass
+        if not resp2["ok"]:
+            print(f"[insurance_check] Sonnet retry call failed: {resp2.get('error')}")
         if resp2["ok"]:
             retry_fields = insurance_engine.parse_extraction_response(resp2["text"])
             if retry_fields:
                 extracted = {**extracted, **retry_fields}
 
+    # Widened 8 Sep 2026 alongside bill_check_engine's own fix (owner
+    # report: "same issue ... same with the insurance") - see that
+    # call site's comment for the full story. Diagnostic print is
+    # PII-free (field names/presence + the premium amount, which is not
+    # personal data) so a repeat is debuggable from Railway's logs.
     if insurance_engine.extraction_below_minimum(extracted):
+        print(f"[insurance_check] extraction below minimum after retry - fields present: "
+              f"{sorted(extracted.keys())}, policy_type={extracted.get('policy_type')!r}, "
+              f"premium_amount={extracted.get('premium_amount')!r}, confidence={extracted.get('confidence')!r}")
         return None, None
     return extracted, None
 

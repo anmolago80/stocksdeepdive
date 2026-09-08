@@ -580,6 +580,29 @@ REQUIRED_EXTRACTION_FIELDS = (
     "fuel", "billing_period_days", "total_amount",
 )
 
+# Owner report (8 Sep 2026 - "after uploading the bills it's not reading
+# the documents, it keeps all the bill data empty ... same issue we had
+# before"): Fix round 10 #2 (see extraction_below_minimum()'s own
+# docstring below) only ever checked these two fields for None - but a
+# bill the model genuinely couldn't read doesn't always come back with
+# an honest None for them. Sometimes it comes back with a technically-
+# present-but-meaningless total_amount: 0 or billing_period_days: 0
+# instead (the extraction prompt's "omit any field you cannot read
+# confidently" instruction isn't always followed for a field the prompt
+# also describes as required-sounding). None-only checks waved that
+# straight through as "extraction worked" - a real bill is never $0 due
+# over a 0-day billing period, so both must be POSITIVE to count as a
+# real read, not just non-None.
+_POSITIVE_REQUIRED_FIELDS = ("billing_period_days", "total_amount")
+
+
+def _extraction_has_degenerate_required_field(extracted):
+    for f in _POSITIVE_REQUIRED_FIELDS:
+        v = extracted.get(f)
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or v <= 0:
+            return True
+    return False
+
 
 def build_extraction_message(image_blocks):
     """image_blocks: [{"media_type": "image/jpeg"|"image/png"|
@@ -601,12 +624,16 @@ def build_extraction_message(image_blocks):
 
 
 def needs_retry(extracted):
-    """True if a required field is missing or the model's own reported
-    confidence is low - the spec's own retry trigger ("one retry with
-    MODEL_SONNET only if required fields are missing/low-confidence")."""
+    """True if a required field is missing (or present but degenerate -
+    see _extraction_has_degenerate_required_field()) or the model's own
+    reported confidence is low - the spec's own retry trigger ("one
+    retry with MODEL_SONNET only if required fields are missing/low-
+    confidence")."""
     if not extracted:
         return True
     if any(extracted.get(f) is None for f in REQUIRED_EXTRACTION_FIELDS):
+        return True
+    if _extraction_has_degenerate_required_field(extracted):
         return True
     conf = extracted.get("confidence")
     return conf is not None and conf < 0.6
@@ -621,15 +648,19 @@ def extraction_below_minimum(extracted):
     missing them, and still get treated as "extraction worked", pre-
     filling the review form with blanks/zeros and no warning shown.
     This is the caller's post-retry gate: True only when a REQUIRED
-    field is still missing after the retry has already run - the
+    field is still missing (or degenerate - a $0 total or 0-day period,
+    the 8 Sep 2026 follow-up fix) after the retry has already run - the
     caller should say so plainly and fall back to manual entry, not
-    show a silently-incomplete review form. Deliberately narrower than
-    needs_retry(): low confidence alone (every required field present,
-    just not confidently read) is still worth showing for the visitor
-    to eyeball and correct, not treated as an outright failure."""
+    show a silently-incomplete/silently-worthless review form.
+    Deliberately narrower than needs_retry(): low confidence alone
+    (every required field present, positive, just not confidently read)
+    is still worth showing for the visitor to eyeball and correct, not
+    treated as an outright failure."""
     if not extracted:
         return True
-    return any(extracted.get(f) is None for f in REQUIRED_EXTRACTION_FIELDS)
+    if any(extracted.get(f) is None for f in REQUIRED_EXTRACTION_FIELDS):
+        return True
+    return _extraction_has_degenerate_required_field(extracted)
 
 
 def parse_extraction_response(raw_text):

@@ -574,13 +574,33 @@ EXTRACTION_SYSTEM_PROMPT = (
 
 REQUIRED_EXTRACTION_FIELDS = ("policy_type", "premium_amount")
 
+# Owner report (8 Sep 2026 - "after uploading the bills it's not reading
+# the documents, it keeps all the bill data empty ... same issue we had
+# before ... it's the same issue ... same with the insurance"): same gap
+# as bill_check_engine.py's own fix of the same date - a None-only check
+# waves through a technically-present-but-meaningless premium_amount: 0
+# as "extraction worked". A real policy notice is never $0/period.
+_POSITIVE_REQUIRED_FIELDS = ("premium_amount",)
+
+
+def _extraction_has_degenerate_required_field(extracted):
+    for f in _POSITIVE_REQUIRED_FIELDS:
+        v = extracted.get(f)
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or v <= 0:
+            return True
+    return False
+
 
 def needs_retry(extracted):
     """Same trigger shape as bill_check_engine.needs_retry(): a required
-    field missing, or the model's own reported confidence is low."""
+    field missing or present-but-degenerate (see _extraction_has_
+    degenerate_required_field()), or the model's own reported
+    confidence is low."""
     if not extracted:
         return True
     if any(extracted.get(f) is None for f in REQUIRED_EXTRACTION_FIELDS):
+        return True
+    if _extraction_has_degenerate_required_field(extracted):
         return True
     conf = extracted.get("confidence")
     return conf is not None and conf < 0.6
@@ -589,11 +609,15 @@ def needs_retry(extracted):
 def extraction_below_minimum(extracted):
     """Same post-retry gate as bill_check_engine.extraction_below_
     minimum() (Fix round 10 #2's own fix, applied here from the start
-    rather than needing to reproduce that bug first): True only when a
-    REQUIRED field is STILL missing after the retry has already run."""
+    rather than needing to reproduce that bug first; extended 8 Sep
+    2026 the same way, in step with that module): True when a REQUIRED
+    field is STILL missing OR degenerate (a $0 premium) after the retry
+    has already run."""
     if not extracted:
         return True
-    return any(extracted.get(f) is None for f in REQUIRED_EXTRACTION_FIELDS)
+    if any(extracted.get(f) is None for f in REQUIRED_EXTRACTION_FIELDS):
+        return True
+    return _extraction_has_degenerate_required_field(extracted)
 
 
 def parse_extraction_response(raw_text):
