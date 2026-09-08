@@ -1582,38 +1582,41 @@ st.markdown(
     .sdd-feat:hover .sdd-feat-arrow { color:#2dd4bf; transform:translateX(3px); }
     .sdd-feat h3 { font-size:16px; margin:12px 0 8px; color:#e6edf5; }
     .sdd-feat p { color:#8aa0b8; font-size:13.3px; line-height:1.55; margin:0; }
-    /* Part 18: the home banner promoting the Budget Planner, between the
-       hero/mood area and the toolkit row. Pitch text on the left (plain
-       markdown, no card); the live teaser (real Streamlit number_inputs,
-       so it's rendered by the caller, not this CSS) sits inside a
-       teal-bordered card on the right via st.container(border=True) -
-       [class*="st-key-tools_banner_teaser"] below re-skins that generic
-       Streamlit border to match the site's own card look instead of
-       leaving the default grey outline. */
+    /* Part 18/22: the home banner promoting the Budget Planner, between the
+       hero/mood area and the toolkit row (now sharing one static
+       pitch+CTA structure with the Utilities/Debt Recycling variants -
+       the earlier live number_input teaser was removed per owner
+       feedback, so no card CSS is needed for it any more). */
     .sdd-tools-banner-badge { display:inline-block; font-size:9.5px; font-weight:800;
       letter-spacing:.6px; color:#f59e0b; background:rgba(245,158,11,.12);
       border:1px solid rgba(245,158,11,.35); border-radius:999px; padding:2px 8px;
       margin-bottom:10px; }
     .sdd-tools-banner-title { font-size:22px; font-weight:800; color:#e6edf5; line-height:1.3; }
     .sdd-tools-banner-pitch { color:#8aa0b8; font-size:14px; line-height:1.55; margin-top:8px; max-width:480px; }
-    [class*="st-key-tools_banner_teaser"] {
-        border-color: #1f3352 !important; background: #121f36 !important;
-        border-radius: 14px !important;
-    }
     .sdd-tools-banner-headline { font-family:ui-monospace,Menlo,monospace; font-size:15px;
       color:#2dd4bf; margin:8px 0; }
     /* Home bands rework (owner-approved Option B, mocks/banner_options_
        mock.html): both spotlight bands (Money Tools above, the new My
        Portfolio band further down page_home()) share this one card
-       treatment - re-skinning st.container(border=True) the same way
-       [class*="st-key-tools_banner_teaser"] above already re-skins the
-       Budget Planner teaser's own inner card, just applied to the
-       band's outer frame this time. Colour (teal vs purple) is the only
-       difference between the two bands, split into its own selector. */
+       treatment - re-skinning st.container(border=True) to match the
+       site's own card look instead of the default grey outline. Colour
+       (teal vs purple) is the only difference between the two bands,
+       split into its own selector. */
     [class*="st-key-money_tools_spotlight_band"],
     [class*="st-key-my_portfolio_spotlight_band"] {
         background: linear-gradient(120deg,#0e1930,#12303f) !important;
-        border-radius: 14px !important; padding: 6px 8px !important;
+        border-radius: 14px !important;
+        /* Bottom padding is deliberately larger than the sides/top: a
+        genuine Streamlit/Chromium layout quirk (confirmed by direct
+        browser reproduction) makes this bordered box measure itself a
+        few px short of its own real content height, which without this
+        buffer let the last line of text sit half outside the border
+        (owner-reported). A fixed CSS buffer is a plain, static, bounded
+        fix - a min-height computed live via injected JS was tried and
+        reverted: it fed back into its own measurement and made the card
+        grow without bound (owner-reported: huge blank box, page stuck
+        scrolling through it). This is smaller in scope but safe. */
+        padding: 6px 8px 24px !important;
     }
     [class*="st-key-money_tools_spotlight_band"] { border-color: #2dd4bf !important; border-width: 1.5px !important; }
     [class*="st-key-my_portfolio_spotlight_band"] { border-color: #8b5cf6 !important; border-width: 1.5px !important; }
@@ -6687,7 +6690,6 @@ def page_home():
     # strip fed by the nightly scan). ----
     st.markdown("<div style='margin-top:36px;'></div>", unsafe_allow_html=True)
     _render_my_portfolio_spotlight_band(_home_lang)
-    _fix_spotlight_band_heights()
 
     # ---- reported this week (Services batch Part 4) ----
     # Skipped entirely (no empty box) when fewer than 2 tickers reported
@@ -17744,15 +17746,38 @@ def _spotlight_index(session_key, n, day_offset=0):
 
 
 def _spotlight_effective_index(override_key, natural_idx):
-    """Layered on top of _spotlight_index()'s automatic per-visit
-    rotation: if the visitor has clicked one of the dots (recorded in
-    session_state[override_key] by _render_spotlight_dots below), that
-    explicit choice wins for the rest of the visit; otherwise the
-    automatic rotation stands untouched. A fresh session (no click yet)
-    always starts on the automatic pick - clicking a dot never persists
-    beyond session_state, so it can't go stale into a later visit."""
+    """Layered on top of the auto-advancing rotation: if the visitor has
+    clicked one of the dots (recorded in session_state[override_key] by
+    _render_spotlight_dots below), that explicit choice wins and the
+    band stops auto-advancing for the rest of the visit (the same way a
+    physical carousel's own dots typically pause its auto-play once
+    someone touches them) - otherwise the automatic rotation stands
+    untouched. A fresh session (no click yet) always starts on the
+    automatic pick."""
     _override = st.session_state.get(override_key)
     return _override if _override is not None else natural_idx
+
+
+_SPOTLIGHT_ROTATE_SECONDS = 6
+
+
+def _spotlight_auto_index(key_prefix, start_idx, n):
+    """Real, timer-driven auto-advance ("move by themselves", per the
+    owner's own request) built on top of _spotlight_index()'s existing
+    per-visit starting point: st.fragment(run_every=...) below reruns
+    just this band every _SPOTLIGHT_ROTATE_SECONDS, and how many steps
+    have elapsed is computed from WALL-CLOCK TIME since the visit's own
+    start (stored once in session_state), not from how many times the
+    fragment happened to rerun - a rerun triggered by something else
+    inside the same fragment (e.g. a dot button click) must not also
+    count as an advance, and time-based math is immune to that
+    regardless of why any given rerun fired."""
+    _start_ts_key = f"{key_prefix}_auto_start_ts"
+    if _start_ts_key not in st.session_state:
+        st.session_state[_start_ts_key] = time.time()
+    _elapsed = time.time() - st.session_state[_start_ts_key]
+    _steps = int(_elapsed // _SPOTLIGHT_ROTATE_SECONDS)
+    return (start_idx + _steps) % n
 
 
 def _render_spotlight_dots(key_prefix, idx, n, override_key, active_color, inactive_color="#5b7290"):
@@ -17764,7 +17789,16 @@ def _render_spotlight_dots(key_prefix, idx, n, override_key, active_color, inact
     (the same re-skin-a-plain-st.button trick already used elsewhere in
     this file, e.g. _render_explain_popover's ⓘ button); clicking one
     records that choice in session_state[override_key] and reruns, so
-    _spotlight_effective_index() picks it up on the very next render."""
+    _spotlight_effective_index() picks it up on the very next render.
+
+    The dots_row wrapper is forced from Streamlit's own default
+    flex-column (block-stacked, one per line) to a flex-ROW via CSS -
+    st.columns() was tried first and rejected (owner-reported: "dots
+    spacing are huge and look terrible") because columns always divide
+    the FULL width of their parent between them, spreading n=3-4 tiny
+    buttons across the entire card; a flex row instead sizes each
+    button to its own small content width, giving the tight, centered
+    cluster the original plain-text dots had."""
     _rules = "\n".join(
         f"""
         div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button,
@@ -17773,8 +17807,8 @@ def _render_spotlight_dots(key_prefix, idx, n, override_key, active_color, inact
         div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:active,
         div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:focus:not(:active) {{
             background:transparent !important; border:none !important; box-shadow:none !important;
-            outline:none !important; padding:0 !important; margin:0 auto !important;
-            min-height:0 !important; width:22px !important; height:22px !important;
+            outline:none !important; padding:0 !important; margin:0 !important;
+            min-height:0 !important; width:16px !important; height:16px !important;
             line-height:1 !important; font-size:13px !important;
         }}
         div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button,
@@ -17788,116 +17822,63 @@ def _render_spotlight_dots(key_prefix, idx, n, override_key, active_color, inact
         """
         for i in range(n)
     )
-    st.markdown(f"<style>{_rules}</style>", unsafe_allow_html=True)
-    with st.container(key=f"{key_prefix}_dots_row"):
-        _cols = st.columns(n, gap="small")
-        for i, _col in enumerate(_cols):
-            with _col:
-                with st.container(key=f"{key_prefix}_dot_{i}"):
-                    if st.button("●", key=f"{key_prefix}_dot_btn_{i}",
-                                 help=None):
-                        st.session_state[override_key] = i
-                        st.rerun()
-
-
-def _fix_spotlight_band_heights():
-    """Defensive follow-up to the border-cutting-through-text bug the
-    owner reported on the My Portfolio band (screenshot: the footer line
-    sliced by the card's own bottom border). Splitting that band's
-    footer into its own st.markdown call (see _render_my_portfolio_
-    spotlight_band below) fixed most of it, but a residual few-px gap
-    between the bordered card's own measured height and its actual
-    content height can still appear depending on which item is rotated
-    in and which language is active - a genuine Streamlit/Chromium
-    layout quirk (confirmed by direct browser reproduction: the card's
-    own box consistently measures a little short of its children's real
-    height) rather than anything in this app's own CSS. Rather than
-    chase the exact quirk further, this measures the ACTUAL rendered
-    content height of each spotlight band and sets min-height directly,
-    which is correct regardless of the underlying cause and self-
-    corrects on every rerun (dot clicks, rotation, language switch).
-
-    Plain st.markdown doesn't execute <script> tags (a well-known
-    Streamlit quirk, see _render_push_control's own docstring for the
-    same note) - components.html()'s srcdoc iframe is same-origin, so
-    window.parent.document reaches the real page the same way the nav
-    bar's own viewport-fit patch above already does.
-
-    Two belt-and-braces bits, both needed in practice (confirmed by
-    testing dot-clicks through all 4 My Portfolio rotations): (1) the
-    min-height is RECOMPUTED (not just raised) on every scan, since a
-    shorter rotation after a longer one needs it to shrink back down
-    too, not just grow; (2) a fresh per-render token is embedded as an
-    inert JS comment purely so this srcdoc string differs from the
-    previous render's, since Streamlit/the browser can otherwise skip
-    re-executing an unchanged iframe's script on a rerun - a periodic
-    re-scan then keeps self-correcting for that same iframe's lifetime
-    regardless of whether it does."""
-    import streamlit.components.v1 as _components
-    _components.html(
-        "<script>"
-        f"/* spotlight-height-fix:{time.time()}:{random.randint(0, 999_999)} */"
-        "(function(){"
-        "var h=window;"
-        "try{if(window.parent&&window.parent!==window&&window.parent.document){h=window.parent;}}catch(e){}"
-        "var doc=h.document;"
-        "function fixOne(band){"
-        # Deliberately NOT stElementContainer: that box is exactly the
-        # one this whole fix exists because of - it under-measures its
-        # own content (the original bug). Its actual rendered content
-        # (stMarkdownContainer's real text, stButton's real button) is
-        # what's measured instead, so this can't just reproduce the same
-        # undersizing it's trying to correct for.
-        "var kids=band.querySelectorAll('[data-testid=\"stMarkdownContainer\"],[data-testid=\"stButton\"]');"
-        "if(!kids.length)return;"
-        "var top=band.getBoundingClientRect().top;"
-        "var maxBottom=0;"
-        "kids.forEach(function(k){var r=k.getBoundingClientRect();if(r.bottom>maxBottom)maxBottom=r.bottom;});"
-        "var cs=h.getComputedStyle(band);"
-        "var padBottom=parseFloat(cs.paddingBottom)||0;"
-        "var need=Math.ceil((maxBottom-top)+padBottom+2);"
-        "band.style.minHeight=need+'px';"
-        "}"
-        "function scan(){"
-        "doc.querySelectorAll('[class*=\"st-key-money_tools_spotlight_band\"],"
-        "[class*=\"st-key-my_portfolio_spotlight_band\"]').forEach(fixOne);"
-        "}"
-        "scan();"
-        "h.setTimeout(scan,150);h.setTimeout(scan,400);h.setTimeout(scan,900);"
-        "h.setInterval(scan,600);"
-        "})();</script>",
-        height=0,
+    st.markdown(
+        f"""<style>
+        {_rules}
+        div.st-key-{key_prefix}_dots_row.st-key-{key_prefix}_dots_row {{
+            display:flex !important; flex-direction:row !important;
+            justify-content:center !important; align-items:center !important;
+            gap:8px !important; width:auto !important; margin:10px auto 0 !important;
+        }}
+        div.st-key-{key_prefix}_dots_row.st-key-{key_prefix}_dots_row > div {{
+            width:auto !important; flex:none !important;
+        }}
+        </style>""",
+        unsafe_allow_html=True,
     )
+    with st.container(key=f"{key_prefix}_dots_row"):
+        for i in range(n):
+            with st.container(key=f"{key_prefix}_dot_{i}"):
+                if st.button("●", key=f"{key_prefix}_dot_btn_{i}", help=None):
+                    st.session_state[override_key] = i
+                    st.rerun()
 
 
 _MONEY_TOOLS_SPOTLIGHT_ORDER = ["budget_planner", "utilities", "debt_recycling"]
 
 
+@st.fragment(run_every=_SPOTLIGHT_ROTATE_SECONDS)
 def _render_tools_home_banner(lang):
     """Home bands rework (owner-approved Option B, mocks/banner_options_
     mock.html): the home banner between the hero/mood area and the
     toolkit row used to permanently promote the Budget Planner alone.
     It's now a rotating spotlight over all THREE real Money Tools -
     Budget Planner, Utilities bill check, Cash vs Offset vs Borrow - one
-    featured per visit via the shared _spotlight_index() rotation above,
-    with dots showing there are more. The Toll never appears here - per
-    the mock's own correction, it's a My Portfolio service (see
-    _render_my_portfolio_spotlight_band below), not a Money Tool.
+    featured at a time, auto-advancing every _SPOTLIGHT_ROTATE_SECONDS
+    (owner-reported: "make the dots rotational so they move by
+    themselves" - st.fragment(run_every=...) is Streamlit's own
+    supported mechanism for this, reruns just this band on a timer with
+    no full-page reload and no hand-rolled JS interval), with dots
+    showing there are more and letting the visitor jump to one directly.
+    The Toll never appears here - per the mock's own correction, it's a
+    My Portfolio service (see _render_my_portfolio_spotlight_band
+    below), not a Money Tool.
 
-    Budget Planner keeps its live two-field teaser (the SAME
-    budget_planner_engine.future_value_of_savings() headline the full
-    tool page computes - this block is byte-for-byte the pre-rework
-    banner body, just now gated behind "is Budget Planner the one
-    featured this visit") whenever it's the one showing; Utilities and
-    Cash vs Offset instead show the mock's own static copy plus a plain
-    <a href="/tools?tool=<id>"> CTA - the exact ?tool= deep-link
-    page_tools() already reads (see that function's own docstring),
-    so no session_state hand-off is needed for those two the way the
-    Budget Planner button still uses (its own working mechanism, left
-    unchanged, is just as much a "deep link to the right tool" as the
-    URL-based one - only the transport differs)."""
+    All three variants render through the SAME static-copy-plus-CTA
+    structure now. Budget Planner used to carry its own live two-field
+    teaser (a working budget_planner_engine.future_value_of_savings()
+    calculator inline in the card) - owner-reported this should come
+    out ("You dont need to show the budget entries on that window"), so
+    it's gone; the card now just pitches the tool and links to it, the
+    same as Utilities and Cash vs Offset already did. All three now
+    share the exact same <a href="/tools?tool=<id>"> CTA - the ?tool=
+    deep-link page_tools() already reads - since "budget_planner" is as
+    valid a TOOLS_REGISTRY id as any other; the session_state hand-off
+    (tools_jump_tool) the old live-teaser button used is gone with it,
+    one less special case."""
     _bh = lambda key, **kw: i18n.t(f"home.banner.{key}", lang, **kw)
-    _natural_idx = _spotlight_index("_spotlight_money_tools_nonce", len(_MONEY_TOOLS_SPOTLIGHT_ORDER), day_offset=0)
+    _start_idx = _spotlight_index("_spotlight_money_tools_nonce", len(_MONEY_TOOLS_SPOTLIGHT_ORDER), day_offset=0)
+    _natural_idx = _spotlight_auto_index("money_tools_spotlight", _start_idx, len(_MONEY_TOOLS_SPOTLIGHT_ORDER))
     _idx = _spotlight_effective_index("_spotlight_money_tools_override", _natural_idx)
     _featured = _MONEY_TOOLS_SPOTLIGHT_ORDER[_idx]
 
@@ -17908,65 +17889,14 @@ def _render_tools_home_banner(lang):
             unsafe_allow_html=True,
         )
 
-        if _featured == "budget_planner":
-            _bcol_l, _bcol_r = st.columns([3, 2], gap="large")
-            with _bcol_l:
-                st.markdown(
-                    f"""
-<div class='sdd-tools-banner-badge'>{_bh('new_badge')}</div>
-<div class='sdd-tools-banner-title'>{_bh('tools_title')}</div>
-<div class='sdd-tools-banner-pitch'>{_bh('tools_pitch')}</div>
-""",
-                    unsafe_allow_html=True,
-                )
-            with _bcol_r:
-                with st.container(border=True, key="tools_banner_teaser"):
-                    _tc1, _tc2 = st.columns(2)
-                    with _tc1:
-                        _teaser_in = st.number_input(
-                            _bh("money_in_label"), min_value=0.0, step=100.0, format="%.0f",
-                            key="home_banner_money_in",
-                        )
-                    with _tc2:
-                        _teaser_out = st.number_input(
-                            _bh("money_out_label"), min_value=0.0, step=100.0, format="%.0f",
-                            key="home_banner_money_out",
-                        )
-                    _teaser_yearly = (_teaser_in - _teaser_out) * 12
-                    if _teaser_yearly > 0:
-                        _teaser_fv = budget_planner_engine.future_value_of_savings(
-                            _teaser_yearly, budget_planner_engine.INDEX_HISTORICAL_RETURNS["sp500"],
-                            budget_planner_engine.DEFAULT_PROJECTION_YEARS,
-                        )
-                        st.markdown(
-                            f"<div class='sdd-tools-banner-headline'>"
-                            f"{_bh('headline_10y', index=i18n.t('tools.budget.index_us', lang), amount=f'${_teaser_fv:,.0f}')}"
-                            "</div>",
-                            unsafe_allow_html=True,
-                        )
-                    else:
-                        st.caption(_bh("headline_empty"))
-                    if st.button(_bh("build_plan_button"), width='stretch',
-                                 type="primary", key="tools_banner_cta"):
-                        # Owner review round fix #2: land straight on the
-                        # Budget Planner tab, not whichever tab happened
-                        # to be last opened. st.switch_page() clears
-                        # query params, so the target travels via
-                        # session_state instead - the same hand-off
-                        # convention as the Deep Dive -> Research
-                        # cross-link (research_jump_ticker) - and
-                        # page_tools() checks/clears this before falling
-                        # back to ?tool=.
-                        st.session_state["tools_jump_tool"] = "budget_planner"
-                        st.switch_page(PG_TOOLS)
-        else:
-            _title_key, _pitch_key, _cta_key, _cap_key = {
-                "utilities": ("utilities_title", "utilities_pitch", "utilities_cta", "utilities_cap"),
-                "debt_recycling": ("debt_recycling_title", "debt_recycling_pitch",
-                                    "debt_recycling_cta", "debt_recycling_cap"),
-            }[_featured]
-            st.markdown(
-                f"""
+        _title_key, _pitch_key, _cta_key, _cap_key = {
+            "budget_planner": ("tools_title", "tools_pitch", "tools_cta", "tools_cap"),
+            "utilities": ("utilities_title", "utilities_pitch", "utilities_cta", "utilities_cap"),
+            "debt_recycling": ("debt_recycling_title", "debt_recycling_pitch",
+                                "debt_recycling_cta", "debt_recycling_cap"),
+        }[_featured]
+        st.markdown(
+            f"""
 <div class='sdd-spotlight-row'>
   <div class='sdd-spotlight-copy'>
     <div class='sdd-tools-banner-badge'>{_bh('new_badge')}</div>
@@ -17979,8 +17909,8 @@ def _render_tools_home_banner(lang):
   </div>
 </div>
 """,
-                unsafe_allow_html=True,
-            )
+            unsafe_allow_html=True,
+        )
 
         _render_spotlight_dots(
             "money_tools_spotlight", _idx, len(_MONEY_TOOLS_SPOTLIGHT_ORDER),
@@ -17991,16 +17921,20 @@ def _render_tools_home_banner(lang):
 _MY_PORTFOLIO_SPOTLIGHT_ORDER = ["stress_test", "toll", "income", "etfs"]
 
 
+@st.fragment(run_every=_SPOTLIGHT_ROTATE_SECONDS)
 def _render_my_portfolio_spotlight_band(lang):
     """Home bands rework (owner-approved Option B): the NEW 💼 My
     Portfolio services band - purple-accented per the mock, rotating
     over 4 of My Portfolio's own tools (Stress Test, The Toll, Income &
-    franking, ETF look-through) via the same shared _spotlight_index()
-    mechanics as the Money Tools banner above, with its own
-    session_state key and a different day_offset so the two bands don't
-    always land on the same relative rotation position together. Sits
-    in page_home() right after Tonight's top 5 and before "reported this
-    week"/the blog row, per the instruction's own placement.
+    franking, ETF look-through) via the same shared _spotlight_index()/
+    _spotlight_auto_index() mechanics as the Money Tools banner above,
+    with its own session_state key and a different day_offset so the
+    two bands don't always land on the same relative rotation position
+    together, and auto-advancing on its own timer via st.fragment(
+    run_every=...) the same way (owner-reported: "make the dots
+    rotational so they move by themselves"). Sits in page_home() right
+    after Tonight's top 5 and before "reported this week"/the blog row,
+    per the instruction's own placement.
 
     Every CTA links to /portfolio rather than a specific tab: unlike
     Money Tools (?tool=<id>, read by page_tools()), My Portfolio's own
@@ -18018,9 +17952,10 @@ def _render_my_portfolio_spotlight_band(lang):
     line matches today, read live so it can never drift out of sync if
     a tab is ever added or removed."""
     _pb = lambda key, **kw: i18n.t(f"home.portfolio_band.{key}", lang, **kw)
-    _natural_idx = _spotlight_index(
+    _start_idx = _spotlight_index(
         "_spotlight_my_portfolio_nonce", len(_MY_PORTFOLIO_SPOTLIGHT_ORDER), day_offset=2,
     )
+    _natural_idx = _spotlight_auto_index("my_portfolio_spotlight", _start_idx, len(_MY_PORTFOLIO_SPOTLIGHT_ORDER))
     _idx = _spotlight_effective_index("_spotlight_my_portfolio_override", _natural_idx)
     _featured = _MY_PORTFOLIO_SPOTLIGHT_ORDER[_idx]
 

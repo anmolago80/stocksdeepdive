@@ -831,6 +831,8 @@ EN = {
     "home.banner.headline_10y": "In 10 years, {index} history &#8776; {amount}",
     "home.banner.headline_empty": "Type money in/out to see the 10-year figure.",
     "home.banner.build_plan_button": "Build my full plan &rarr;",
+    "home.banner.tools_cta": "Build my full plan &rarr;",
+    "home.banner.tools_cap": "free tool &middot; takes 2 minutes",
 
     # Home bands rework (owner-approved Option B, mocks/banner_options_
     # mock.html): the banner above is now a rotating spotlight over all
@@ -2700,6 +2702,8 @@ ES = {
     "home.banner.headline_10y": "En 10 años, historial de {index} &#8776; {amount}",
     "home.banner.headline_empty": "Escribe ingresos/gastos para ver la cifra a 10 años.",
     "home.banner.build_plan_button": "Crear mi plan completo &rarr;",
+    "home.banner.tools_cta": "Crear mi plan completo &rarr;",
+    "home.banner.tools_cap": "herramienta gratis &middot; toma 2 minutos",
 
     "home.banner.spotlight_kicker": "HERRAMIENTAS DE DINERO &middot; {n} DE 3",
     "home.banner.utilities_title": "⚡ ¿Cuánto te está costando realmente tu factura de luz?",
