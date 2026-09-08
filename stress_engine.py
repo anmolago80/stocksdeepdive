@@ -182,9 +182,14 @@ DB_PATH = os.path.join(_data_dir(), "stocksdeepdive.db")
 LONG_HISTORY_TTL_HOURS = 24  # see module docstring - "nightly-ish"
 RESULT_TTL_HOURS = 24        # the assembled stress-test result itself
 
+# Part 26: floor on how far back get_long_history() fetches - see that
+# function's own Part 26 note (OCL.AX's IPO-era data-quality problem).
+# Years ahead of the earliest CRISES/RALLIES window (GFC, 2007-10-01).
+GET_LONG_HISTORY_FLOOR = "2005-01-01"
 
-_LONG_HISTORY_TABLE = "stress_long_history_v3"
-_RESULT_CACHE_TABLE = "stress_result_cache_v4"
+
+_LONG_HISTORY_TABLE = "stress_long_history_v4"
+_RESULT_CACHE_TABLE = "stress_result_cache_v5"
 
 
 def _conn():
@@ -213,6 +218,19 @@ def _conn():
     # round-trips through plain "YYYY-MM-DD" strings - see _hist_to_json/
     # _hist_from_json - so it was never tz-aware on the way back out
     # either, unaffected by this same part's tz_localize(None) fix above).
+    #
+    # Part 26 (2026-09-08): both tables bumped again (_v3->_v4, _v4->_v5).
+    # Owner-reported: GOLD.AX/IVV.AX/OCL.AX still excluded, and the
+    # headline Max Downside/Max Upside charts still suppressed, even
+    # after Part 24/25 fixed the rest of the portfolio - see
+    # get_long_history()'s and _attempt_split_repair()'s own Part 26
+    # notes for what changed. _LONG_HISTORY_TABLE needs the bump this
+    # time because get_long_history() now truncates the fetched range
+    # (a pre-2005 floor - see that function's own note); an entry cached
+    # under the old, untruncated convention would keep serving OCL.AX's
+    # IPO-era noise for up to 24h otherwise. _RESULT_CACHE_TABLE needs
+    # it for the usual reason (a pre-fix "excluded" result for this
+    # portfolio's holdings-hash would otherwise keep being served stale).
     conn.execute(
         f"""CREATE TABLE IF NOT EXISTS {_LONG_HISTORY_TABLE} (
             ticker TEXT PRIMARY KEY,
@@ -310,7 +328,25 @@ def get_long_history(ticker, force_refresh=False):
          split-adjustment bug in the first place), so this fallback
          costs nothing when repair=True was never the problem and
          restores a real (if less corporate-action-hardened) history
-         when it was."""
+         when it was.
+
+    Part 26 (owner-reported, same complaint as _attempt_split_repair's
+    own Part 26 note: GOLD.AX/IVV.AX/OCL.AX still excluded after Part
+    24/25). OCL.AX's guard-tripping anomaly (an 85% single-day move) is
+    dated 2000-08-17 - within weeks of Objective Corporation's own
+    stated ASX listing date (per objective.com's investor page, OCL has
+    been "listed since 2000" with FY25 marking "25 years since
+    listing"). A brand-new, thinly-traded microcap's first weeks of
+    trading are exactly where historical price archives are noisiest
+    (sparse quotes, wide spreads, low-volume price discovery) - there is
+    no known corporate action to explain this move, and none of this
+    period is inside any CRISES/RALLIES window this module actually
+    replays (the earliest, the GFC, starts 2007-10-01). Rather than
+    trying to "repair" data that most likely was never a clean split or
+    dividend event in the first place, GET_LONG_HISTORY_FLOOR simply
+    drops everything before it - a safety margin years ahead of the GFC
+    window, so nothing this module's own scenario replays or beta/vol
+    windows use is ever at risk of being cut short by this."""
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return pd.DataFrame()
@@ -345,6 +381,9 @@ def get_long_history(ticker, force_refresh=False):
         # safe to compare against another ticker.
         if h.index.tz is not None:
             h.index = h.index.tz_localize(None)
+        # Part 26: drop IPO-era/pre-history noise below the floor - see
+        # this function's own Part 26 docstring note (OCL.AX).
+        h = h[h.index >= pd.Timestamp(GET_LONG_HISTORY_FLOOR)]
         return h
 
     hist = pd.DataFrame()
@@ -539,10 +578,13 @@ def _apply_split_ratio(hist, effective_date, ratio):
     return repaired
 
 
+KNOWN_ACTION_DATE_TOLERANCE_DAYS = 14  # see _attempt_split_repair's Part 26 note
+
+
 def _attempt_split_repair(ticker, hist):
     """First consults KNOWN_CORPORATE_ACTIONS (see module docstring's
     follow-up note): for a ticker with an entry there, the fix is
-    applied from that source-verified, hardcoded ratio/date ONLY -
+    applied from that source-verified, hardcoded ratio ONLY -
     yfinance's own `.splits` feed is not consulted at all for that
     ticker, both because it's already known to be empty/unreliable for
     these specific listings (see the Fix round 10 #3 diagnostic note
@@ -559,35 +601,97 @@ def _attempt_split_repair(ticker, hist):
     second line of defence for whichever listings Yahoo's own back-
     adjustment doesn't fully cover.
 
+    Part 26 (owner-reported: GOLD.AX/IVV.AX still excluded after Part
+    24/25, despite GOLD.AX having a sourced, matching-date
+    KNOWN_CORPORATE_ACTIONS entry). Production's own diagnostic gave
+    the answer: GOLD.AX's post-repair worst move landed exactly ON its
+    hardcoded effective_date, POSITIVE and even larger than the
+    original unrepaired move (905.0%, vs. the clean ~-90% a real
+    unrepaired 10:1 split should show) - the signature of a divide
+    boundary planted one or more days short of where Yahoo's raw feed
+    actually prices the jump (the IVV.AX entry's own source note
+    already anticipated exactly this risk: "if Yahoo's feed turns out
+    to price the gap through settlement resumption instead, 2022-12-13
+    is the fallback date to try" - deferred-settlement trading codes can
+    genuinely shift which calendar day a data vendor attributes the
+    move to). Two changes:
+
+      1. Boundary auto-detection. `hist`'s OWN worst-move date (computed
+         fresh here, before any repair) is where the raw data actually
+         shows its biggest jump - by construction, that's the real
+         boundary as Yahoo represents it, whatever day that is. When
+         that date falls within KNOWN_ACTION_DATE_TOLERANCE_DAYS of the
+         sourced effective_date (confirming it's plausibly the same
+         event, just off by a few days), the DATA's date is used as the
+         actual divide boundary instead of the hardcoded string - same
+         sourced, verified ratio, only the day the divide starts
+         changes. When the two aren't even close - IVV.AX's own
+         guard-tripping move is dated 2015-12-28, nowhere near its
+         2022-12-07 split - the known correction almost certainly isn't
+         what's wrong here at all, and forcing it in at the sourced
+         date would plant an unrelated, artificial jump there for zero
+         benefit; the known-table repair is skipped in that case
+         (falls through to the self-correction below, which will keep
+         `hist` unchanged since there's nothing to compare it against).
+      2. Self-correction (both paths, known-table and general
+         yfinance-.splits): a "repaired" series is only returned if its
+         own worst move is genuinely smaller in magnitude than the
+         original's. This can't fix a ticker that's actually faulty,
+         but it guarantees a repair attempt is never itself the reason
+         a usable series ends up excluded - the exact failure mode
+         production hit.
+
     Returns a (possibly) repaired copy of `hist`; never raises - a
-    failed lookup or an empty split log just returns `hist` unchanged,
-    and the caller's own re-check after this call is what actually
-    decides whether the ticker ends up usable."""
+    failed lookup, an empty split log, or a repair that doesn't
+    actually help just returns `hist` unchanged, and the caller's own
+    re-check after this call is what actually decides whether the
+    ticker ends up usable."""
+    orig_date, orig_move = _worst_single_day_move(hist)
+    repaired = hist
+
     known = KNOWN_CORPORATE_ACTIONS.get((ticker or "").strip().upper())
     if known is not None:
+        boundary = known["effective_date"]
         try:
-            return _apply_split_ratio(hist, known["effective_date"], known["ratio"])
+            known_ts = pd.Timestamp(known["effective_date"])
+            if orig_date is not None:
+                od = orig_date
+                if getattr(od, "tzinfo", None) is not None:
+                    od = od.tz_localize(None)
+                if abs((od - known_ts).days) <= KNOWN_ACTION_DATE_TOLERANCE_DAYS:
+                    boundary = od
+                else:
+                    boundary = None  # unrelated anomaly - don't guess, see docstring
         except Exception:
-            return hist
+            pass
+        if boundary is not None:
+            try:
+                repaired = _apply_split_ratio(hist, boundary, known["ratio"])
+            except Exception:
+                repaired = hist
+    else:
+        try:
+            splits = yf.Ticker(ticker).splits
+        except Exception:
+            splits = None
+        if splits is not None and len(splits) > 0:
+            repaired = hist
+            for split_date, ratio in splits.items():
+                try:
+                    ratio = float(ratio)
+                except (TypeError, ValueError):
+                    continue
+                if not ratio or ratio == 1.0:
+                    continue
+                try:
+                    repaired = _apply_split_ratio(repaired, split_date, ratio)
+                except Exception:
+                    continue
 
-    try:
-        splits = yf.Ticker(ticker).splits
-    except Exception:
-        return hist
-    if splits is None or len(splits) == 0:
-        return hist
-    repaired = hist
-    for split_date, ratio in splits.items():
-        try:
-            ratio = float(ratio)
-        except (TypeError, ValueError):
-            continue
-        if not ratio or ratio == 1.0:
-            continue
-        try:
-            repaired = _apply_split_ratio(repaired, split_date, ratio)
-        except Exception:
-            continue
+    if repaired is not hist:
+        _, repaired_move = _worst_single_day_move(repaired)
+        if orig_move is not None and repaired_move is not None and abs(repaired_move) >= abs(orig_move):
+            return hist
     return repaired
 
 

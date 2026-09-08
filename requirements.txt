@@ -67,3 +67,22 @@ pypdf>=3.17
 # instead of formatted HTML (reported live 3 Sep 2026). Pinned <4 to
 # avoid a surprise major-version API change, same discipline as mcp. ---
 markdown>=3.6,<4
+
+# --- Stress Test Part 26: yfinance's history(repair=True) lazily imports
+# sklearn.cluster.DBSCAN and scipy.ndimage internally (verified by reading
+# yfinance's own scrapers/history.py source directly) to run Yahoo's own
+# price-repair heuristics (100x currency errors, missed splits, bad
+# dividend adjustments) - neither package was ever listed here, so on
+# Railway every repair=True call has been throwing ModuleNotFoundError
+# since the "Follow-up to Fix round 10 #3" commit first added that
+# argument, silently falling back (see stress_engine.get_long_history's
+# Part 24 note) to this codebase's own, narrower repair logic for every
+# single fetch instead. Adding both restores the originally-intended,
+# broader-purpose repair path - notably including the "bad dividend
+# adjustment" case, which this codebase's own KNOWN_CORPORATE_ACTIONS
+# table has no mechanism to address at all (that's specifically a
+# split-ratio table), and is the leading suspect for IVV.AX's own
+# still-unexplained 2015-12-28 anomaly (confirmed NOT a split - IVV.AX's
+# only real split on record is the known 2022-12-07 one). ---
+scipy>=1.11
+scikit-learn>=1.3
