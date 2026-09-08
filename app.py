@@ -18185,6 +18185,107 @@ def _budget_plan_projection_panel(_bl, yearly_savings, key_prefix):
     return _fv_hist
 
 
+def _tools_plan_key(active_name, base_key):
+    """Streamlit widget key scoped to the currently active named plan/
+    scenario - the exact _pf_key() pattern _render_portfolio_switcher
+    above already uses for My Portfolio (Part 30, 8 Sep 2026: "give
+    option with different budget and debt recycling names just like my
+    portfolio"). Switching the active plan must never leak a stale
+    widget value left behind by a different one - Streamlit persists
+    widget state by key across reruns, and each named plan's own values
+    differ."""
+    return f"{base_key}__{active_name}"
+
+
+def _render_named_plan_switcher(email, kind, active_key, list_fn, create_fn, rename_fn, delete_fn):
+    """Generic named-plan switcher (select + create/rename/delete),
+    shared by the Budget Planner and Debt Recycling tools below - same
+    UI shape as _render_portfolio_switcher above, just backed by
+    tools_store's own per-tool name registries instead of
+    portfolio_store's (Part 30, 8 Sep 2026). `kind` is only ever "plan"
+    or "scenario", used purely for the on-screen copy - there's no
+    i18n here, matching _render_portfolio_switcher's own precedent of
+    plain English switcher chrome. `active_key` is the session_state
+    key the caller's own selectbox lives under; ensure_default_*()
+    (called by each render function before this) guarantees list_fn()
+    is never empty, so the selectbox always has something to show.
+    Returns the active name."""
+    _names = list_fn(email)
+    _active = st.selectbox(f"Active {kind}", _names, key=active_key)
+
+    with st.expander(f"Manage {kind}s"):
+        st.caption(f"Create a new {kind}, or rename/delete the one currently selected above.")
+        _nc1, _nc2 = st.columns([3, 1])
+        with _nc1:
+            _new_name = st.text_input(
+                f"New {kind} name", key=_tools_plan_key(_active, f"{active_key}_new_name"),
+                placeholder="e.g. Personal",
+            )
+        with _nc2:
+            st.write("")
+            if st.button("Create", key=_tools_plan_key(_active, f"{active_key}_create_btn")):
+                _new_name = _new_name.strip()
+                if not _new_name:
+                    st.error("Enter a name.")
+                elif _new_name in _names:
+                    st.error(f'You already have a {kind} named "{_new_name}".')
+                else:
+                    create_fn(email, _new_name)
+                    st.session_state[active_key] = _new_name
+                    st.toast(f'Created "{_new_name}" - select it above.', icon="✅")
+                    st.rerun()
+
+        st.divider()
+        st.caption(f'Rename or delete **{_active}**')
+        _rc1, _rc2 = st.columns([3, 1])
+        with _rc1:
+            _rename_to = st.text_input(
+                "Rename to", value=_active,
+                key=_tools_plan_key(_active, f"{active_key}_rename_input"),
+            )
+        with _rc2:
+            st.write("")
+            if st.button("Rename", key=_tools_plan_key(_active, f"{active_key}_rename_btn")):
+                _rename_to = _rename_to.strip()
+                if not _rename_to:
+                    st.error("Enter a name.")
+                elif _rename_to != _active and _rename_to in _names:
+                    st.error(f'You already have a {kind} named "{_rename_to}".')
+                elif _rename_to != _active:
+                    rename_fn(email, _active, _rename_to)
+                    st.session_state[active_key] = _rename_to
+                    st.toast(f'Renamed to "{_rename_to}".', icon="✅")
+                    st.rerun()
+
+        if len(_names) <= 1:
+            st.caption(f"This is your only {kind}, so it can't be deleted - create another one first.")
+        else:
+            _confirm_key = _tools_plan_key(_active, f"{active_key}_confirm_delete")
+            if not st.session_state.get(_confirm_key):
+                if st.button(f'Delete "{_active}"', key=_tools_plan_key(_active, f"{active_key}_delete_btn")):
+                    st.session_state[_confirm_key] = True
+                    st.rerun()
+            else:
+                st.warning(f'Delete "{_active}"? This can\'t be undone.')
+                _dc1, _dc2 = st.columns(2)
+                with _dc1:
+                    if st.button("Yes, delete",
+                                key=_tools_plan_key(_active, f"{active_key}_delete_confirm"),
+                                type="primary"):
+                        delete_fn(email, _active)
+                        _remaining = list_fn(email)
+                        st.session_state[active_key] = _remaining[0] if _remaining else None
+                        st.session_state.pop(_confirm_key, None)
+                        st.toast(f'Deleted "{_active}".', icon="🗑️")
+                        st.rerun()
+                with _dc2:
+                    if st.button("Cancel", key=_tools_plan_key(_active, f"{active_key}_delete_cancel")):
+                        st.session_state.pop(_confirm_key, None)
+                        st.rerun()
+
+    return _active
+
+
 def _render_budget_planner_tool(email):
     """Mega-batch Part 18, tool #1: the Budget Planner. Public design
     called for a "sign in to save" fallback; the same-day Amendment to
@@ -18192,21 +18293,39 @@ def _render_budget_planner_tool(email):
     function runs page_tools() has already confirmed `email` is real -
     saving is therefore always automatic (no signed-out branch needed
     here at all, per the amendment's own "drop the separate 'Sign in to
-    save' state")."""
+    save' state").
+
+    Part 30 (8 Sep 2026, "give option with different budget and debt
+    recycling names just like my portfolio"): this tool now supports
+    multiple named plans per account, same shape as My Portfolio's own
+    switcher (_render_portfolio_switcher above). Every widget key below
+    is scoped to the active plan's name via _tools_plan_key() so
+    switching plans can never leak a stale value from a different one -
+    the auto-save at the end of this function stays unconditional and
+    automatic exactly as before, just now scoped to whichever plan is
+    active."""
     _lang = st.session_state.get("lang", "en")
     _bl = lambda key, **kw: i18n.t(f"tools.budget.{key}", _lang, **kw)
 
     st.markdown(f"### {_bl('title')}")
     st.caption(_bl("subtitle"))
 
-    _saved = tools_store.get_budget_plan(email) or {}
+    tools_store.ensure_default_budget_plan(email)
+    _active_plan = _render_named_plan_switcher(
+        email, "plan", "tools_budget_active_plan",
+        tools_store.list_budget_plan_names, tools_store.create_budget_plan,
+        tools_store.rename_budget_plan, tools_store.delete_budget_plan,
+    )
+
+    _saved = tools_store.get_budget_plan(email, _active_plan) or {}
     _saved_categories = _saved.get("categories") or {}
 
-    if "tools_budget_money_in" not in st.session_state:
-        st.session_state["tools_budget_money_in"] = float(_saved.get("money_in") or 0.0)
+    _money_in_key = _tools_plan_key(_active_plan, "tools_budget_money_in")
+    if _money_in_key not in st.session_state:
+        st.session_state[_money_in_key] = float(_saved.get("money_in") or 0.0)
     money_in = st.number_input(
         _bl("money_in"), min_value=0.0, step=100.0, format="%.0f",
-        key="tools_budget_money_in",
+        key=_money_in_key,
     )
 
     st.markdown(f"**{_bl('categories_kicker')}**")
@@ -18214,7 +18333,7 @@ def _render_budget_planner_tool(email):
     category_values = {}
     for _i, _cat in enumerate(budget_planner_engine.CATEGORIES):
         _cid = _cat["id"]
-        _skey = f"tools_budget_cat_{_cid}"
+        _skey = _tools_plan_key(_active_plan, f"tools_budget_cat_{_cid}")
         if _skey not in st.session_state:
             st.session_state[_skey] = float(_saved_categories.get(_cid) or 0.0)
         with _cat_cols[_i % 2]:
@@ -18251,17 +18370,18 @@ def _render_budget_planner_tool(email):
         _descriptor = budget_planner_engine.savings_rate_descriptor(_summary["savings_rate"])
         st.metric(_bl("results_rate"), _descriptor or "—")
 
+    _proj_key_prefix = _tools_plan_key(_active_plan, "tools_budget")
     with st.container(border=True):
         _budget_fv_hist = _budget_plan_projection_panel(
-            _bl, _summary["savings_year"], key_prefix="tools_budget",
+            _bl, _summary["savings_year"], key_prefix=_proj_key_prefix,
         )
 
     st.caption(_bl("saved_note"))
     tools_store.save_budget_plan(
-        email, money_in,
+        email, _active_plan, money_in,
         {k: v for k, v in category_values.items() if v is not None},
-        country=st.session_state.get("tools_budget_country"),
-        years=st.session_state.get("tools_budget_years"),
+        country=st.session_state.get(f"{_proj_key_prefix}_country"),
+        years=st.session_state.get(f"{_proj_key_prefix}_years"),
     )
 
 
@@ -18299,75 +18419,87 @@ def _render_debt_recycling_tool(email):
     for the OPPOSITE default: "nothing saved unless ... the user saves
     the scenario" (an explicit button below, not a background write on
     every keystroke). See debt_recycling_engine.py's module docstring for
-    every formula this UI only ever calls, never reimplements."""
+    every formula this UI only ever calls, never reimplements.
+
+    Part 30 (8 Sep 2026, "give option with different budget and debt
+    recycling names just like my portfolio"): this tool now supports
+    multiple named scenarios per account, same shape as My Portfolio's
+    own switcher (_render_portfolio_switcher above). Every widget key
+    below is scoped to the active scenario's name via _tools_plan_key()
+    so switching scenarios can never leak a stale value left behind by
+    a different one - the same reasoning _pf_key() documents for the
+    portfolio page."""
     _lang = st.session_state.get("lang", "en")
     _dl = lambda key, **kw: i18n.t(f"tools.debt_recycling.{key}", _lang, **kw)
 
     st.markdown(f"### \U0001F4B0 {_dl('title')}")
     st.caption(_dl("subtitle"))
 
-    _saved = tools_store.get_debt_recycling_scenario(email) or {}
+    tools_store.ensure_default_debt_recycling_scenario(email)
+    _active_scenario = _render_named_plan_switcher(
+        email, "scenario", "tools_dr_active_scenario",
+        tools_store.list_debt_recycling_scenario_names,
+        tools_store.create_debt_recycling_scenario,
+        tools_store.rename_debt_recycling_scenario,
+        tools_store.delete_debt_recycling_scenario,
+    )
+
+    _saved = tools_store.get_debt_recycling_scenario(email, _active_scenario) or {}
     _saved_inputs = _saved.get("inputs") or {}
 
     def _seed(key, default):
-        if key not in st.session_state:
-            st.session_state[key] = _saved_inputs.get(key, default)
+        _skey = _tools_plan_key(_active_scenario, key)
+        if _skey not in st.session_state:
+            st.session_state[_skey] = _saved_inputs.get(key, default)
+        return _skey
 
-    _seed("tools_dr_country", "au")
     country = st.radio(
         "Country", ["au", "us"],
         format_func=lambda c: _dl(f"country_{c}"),
-        horizontal=True, label_visibility="collapsed", key="tools_dr_country",
+        horizontal=True, label_visibility="collapsed", key=_seed("tools_dr_country", "au"),
     )
 
     with st.container(border=True):
         st.markdown(f"**{_dl('inputs_kicker')}**")
         _i1, _i2 = st.columns(2)
         with _i1:
-            _seed("tools_dr_cash", 20000.0)
             cash = st.number_input(_dl("cash_label"), min_value=0.0, step=1000.0,
-                                   format="%.0f", key="tools_dr_cash")
-            _seed("tools_dr_mortgage_rate", 6.0)
+                                   format="%.0f", key=_seed("tools_dr_cash", 20000.0))
             mortgage_rate_pct = st.number_input(_dl("mortgage_rate_label"), min_value=0.0,
                                                 max_value=20.0, step=0.1, format="%.2f",
-                                                key="tools_dr_mortgage_rate")
-            _seed("tools_dr_loan_rate", 7.0)
+                                                key=_seed("tools_dr_mortgage_rate", 6.0))
             loan_rate_pct = st.number_input(_dl("loan_rate_label"), min_value=0.0,
                                             max_value=20.0, step=0.1, format="%.2f",
-                                            key="tools_dr_loan_rate")
-            _seed("tools_dr_tax_rate", 37.0)
+                                            key=_seed("tools_dr_loan_rate", 7.0))
             tax_rate_pct = st.number_input(_dl("tax_rate_label"), min_value=0.0,
                                            max_value=60.0, step=0.5, format="%.1f",
-                                           key="tools_dr_tax_rate")
+                                           key=_seed("tools_dr_tax_rate", 37.0))
             if country == "au":
                 st.caption(_dl("tax_rate_medicare_note"))
         with _i2:
-            _seed("tools_dr_horizon", debt_recycling_engine.DEFAULT_HORIZON_YEARS)
             horizon = st.number_input(
                 _dl("horizon_label"),
                 min_value=debt_recycling_engine.MIN_HORIZON_YEARS,
                 max_value=debt_recycling_engine.MAX_HORIZON_YEARS,
-                step=1, key="tools_dr_horizon",
+                step=1, key=_seed("tools_dr_horizon", debt_recycling_engine.DEFAULT_HORIZON_YEARS),
             )
             us_baseline = "mortgage_extra"
             hys_rate_pct = 0.0
             _seed("tools_dr_ltcg_rate", 15.0)
             ltcg_rate_pct = 15.0
             if country == "us":
-                _seed("tools_dr_us_baseline", "mortgage_extra")
                 us_baseline = st.radio(
                     _dl("us_baseline_label"), ["mortgage_extra", "hys"],
                     format_func=lambda b: _dl(f"us_baseline_{b}"),
-                    key="tools_dr_us_baseline",
+                    key=_seed("tools_dr_us_baseline", "mortgage_extra"),
                 )
                 if us_baseline == "hys":
-                    _seed("tools_dr_hys_rate", 4.5)
                     hys_rate_pct = st.number_input(_dl("hys_rate_label"), min_value=0.0,
                                                    max_value=15.0, step=0.1, format="%.2f",
-                                                   key="tools_dr_hys_rate")
+                                                   key=_seed("tools_dr_hys_rate", 4.5))
                 ltcg_rate_pct = st.number_input(_dl("ltcg_rate_label"), min_value=0.0,
                                                 max_value=50.0, step=0.5, format="%.1f",
-                                                key="tools_dr_ltcg_rate")
+                                                key=_seed("tools_dr_ltcg_rate", 15.0))
 
         def _investment_inputs(n, kicker_key):
             st.markdown(f"**{_dl(kicker_key)}**")
@@ -18375,34 +18507,31 @@ def _render_debt_recycling_tool(email):
             with _pick1:
                 if st.button(_dl("pick_index_sp500"), key=f"tools_dr_pick_sp500_{n}",
                             width='stretch'):
-                    st.session_state[f"tools_dr_inv{n}_income"] = 0.0
-                    st.session_state[f"tools_dr_inv{n}_growth"] = round(
+                    st.session_state[_tools_plan_key(_active_scenario, f"tools_dr_inv{n}_income")] = 0.0
+                    st.session_state[_tools_plan_key(_active_scenario, f"tools_dr_inv{n}_growth")] = round(
                         budget_planner_engine.INDEX_HISTORICAL_RETURNS["sp500"] * 100, 1)
             with _pick2:
                 if st.button(_dl("pick_index_asx200"), key=f"tools_dr_pick_asx200_{n}",
                             width='stretch'):
-                    st.session_state[f"tools_dr_inv{n}_income"] = 0.0
-                    st.session_state[f"tools_dr_inv{n}_growth"] = round(
+                    st.session_state[_tools_plan_key(_active_scenario, f"tools_dr_inv{n}_income")] = 0.0
+                    st.session_state[_tools_plan_key(_active_scenario, f"tools_dr_inv{n}_growth")] = round(
                         budget_planner_engine.INDEX_HISTORICAL_RETURNS["asx200"] * 100, 1)
             st.caption(_dl("pick_index_caption"))
             _c1, _c2, _c3 = st.columns(3)
             with _c1:
-                _seed(f"tools_dr_inv{n}_income", 3.0)
                 income_pct = st.number_input(_dl("income_pct_label"), min_value=0.0,
                                              max_value=30.0, step=0.1, format="%.1f",
-                                             key=f"tools_dr_inv{n}_income")
+                                             key=_seed(f"tools_dr_inv{n}_income", 3.0))
             with _c2:
-                _seed(f"tools_dr_inv{n}_growth", 5.0)
                 growth_pct = st.number_input(_dl("growth_pct_label"), min_value=-20.0,
                                              max_value=30.0, step=0.1, format="%.1f",
-                                             key=f"tools_dr_inv{n}_growth")
+                                             key=_seed(f"tools_dr_inv{n}_growth", 5.0))
             franked_pct = 0.0
             with _c3:
                 if country == "au":
-                    _seed(f"tools_dr_inv{n}_franked", 50.0)
                     franked_pct = st.number_input(_dl("franked_pct_label"), min_value=0.0,
                                                   max_value=100.0, step=5.0, format="%.0f",
-                                                  key=f"tools_dr_inv{n}_franked")
+                                                  key=_seed(f"tools_dr_inv{n}_franked", 50.0))
             return income_pct, growth_pct, franked_pct
 
         inv1_income_pct, inv1_growth_pct, inv1_franked_pct = _investment_inputs(1, "inv1_kicker")
@@ -18410,14 +18539,14 @@ def _render_debt_recycling_tool(email):
         # Part 29 (8 Sep 2026, "option 1 deploy" - Investment 2 ghost
         # add-card): Investment 2 only ever feeds Scenario D's math, so it
         # doesn't need to sit visible by default for every visitor. Default
-        # to revealed only when this email already has a previously saved
-        # scenario (bool(_saved_inputs)) - a returning user who configured
+        # to revealed only when this scenario already has previously saved
+        # data (bool(_saved_inputs)) - a returning user who configured
         # Investment 2 before (even left at its defaults, since the save
         # button always writes all three inv2_* fields) keeps seeing their
-        # own form exactly as before this change; a brand-new visitor
+        # own form exactly as before this change; a brand-new scenario
         # instead sees a dashed ghost card and reveals the form by choice.
-        _seed("tools_dr_show_inv2", bool(_saved_inputs))
-        if st.session_state["tools_dr_show_inv2"]:
+        _show_inv2_key = _seed("tools_dr_show_inv2", bool(_saved_inputs))
+        if st.session_state[_show_inv2_key]:
             inv2_income_pct, inv2_growth_pct, inv2_franked_pct = _investment_inputs(2, "inv2_kicker")
         else:
             with st.container(key="dr_inv2_ghost", border=True):
@@ -18428,22 +18557,21 @@ def _render_debt_recycling_tool(email):
                     f"</div>",
                     unsafe_allow_html=True,
                 )
-                if st.button(_dl("inv2_ghost_button"), key="tools_dr_show_inv2_btn", width='stretch'):
-                    st.session_state["tools_dr_show_inv2"] = True
+                if st.button(_dl("inv2_ghost_button"),
+                            key=_tools_plan_key(_active_scenario, "tools_dr_show_inv2_btn"),
+                            width='stretch'):
+                    st.session_state[_show_inv2_key] = True
                     st.rerun()
             # Investment 2 still feeds Scenario D's comparison even while
             # its form is hidden - seed (never render) its three inputs so
-            # Scenario D keeps using this email's previously-saved values,
-            # or else the same 3.0/5.0/50.0 defaults _investment_inputs
-            # itself seeds, rather than going undefined.
-            _seed("tools_dr_inv2_income", 3.0)
-            _seed("tools_dr_inv2_growth", 5.0)
-            inv2_income_pct = st.session_state["tools_dr_inv2_income"]
-            inv2_growth_pct = st.session_state["tools_dr_inv2_growth"]
+            # Scenario D keeps using this scenario's previously-saved
+            # values, or else the same 3.0/5.0/50.0 defaults
+            # _investment_inputs itself seeds, rather than going undefined.
+            inv2_income_pct = st.session_state[_seed("tools_dr_inv2_income", 3.0)]
+            inv2_growth_pct = st.session_state[_seed("tools_dr_inv2_growth", 5.0)]
             inv2_franked_pct = 0.0
             if country == "au":
-                _seed("tools_dr_inv2_franked", 50.0)
-                inv2_franked_pct = st.session_state["tools_dr_inv2_franked"]
+                inv2_franked_pct = st.session_state[_seed("tools_dr_inv2_franked", 50.0)]
 
     # ---- Run the engine ----
     _engine_kwargs = dict(
@@ -18492,12 +18620,12 @@ def _render_debt_recycling_tool(email):
     # ---- D. Split slider ----
     st.markdown(f"#### {_dl('split_title')}")
     st.caption(_dl("split_caption"))
-    _seed("tools_dr_split_pct", 50)
-    split_pct = st.slider("Split", 0, 100, key="tools_dr_split_pct", label_visibility="collapsed")
-    _seed("tools_dr_pessimistic_rate", debt_recycling_engine.DEFAULT_PESSIMISTIC_RATE * 100)
+    split_pct = st.slider("Split", 0, 100, key=_seed("tools_dr_split_pct", 50),
+                          label_visibility="collapsed")
     pessimistic_rate_pct = st.number_input(
         _dl("pessimistic_rate_label"), min_value=-20.0, max_value=20.0, step=0.5,
-        format="%.1f", key="tools_dr_pessimistic_rate",
+        format="%.1f",
+        key=_seed("tools_dr_pessimistic_rate", debt_recycling_engine.DEFAULT_PESSIMISTIC_RATE * 100),
     )
     _split_rows = debt_recycling_engine.split_slider_rows(
         cash=cash, mortgage_rate=mortgage_rate_pct / 100, loan_rate=loan_rate_pct / 100,
@@ -18676,8 +18804,8 @@ def _render_debt_recycling_tool(email):
     with st.expander(_dl("simplifications_kicker")):
         st.caption(_dl("simplifications_us") if country == "us" else _dl("simplifications_au"))
 
-    if st.button(_dl("save_button"), key="tools_dr_save_btn"):
-        tools_store.save_debt_recycling_scenario(email, {
+    if st.button(_dl("save_button"), key=_tools_plan_key(_active_scenario, "tools_dr_save_btn")):
+        tools_store.save_debt_recycling_scenario(email, _active_scenario, {
             "country": country, "cash": cash, "mortgage_rate": mortgage_rate_pct,
             "loan_rate": loan_rate_pct, "tax_rate": tax_rate_pct, "horizon": horizon,
             "us_baseline": us_baseline, "hys_rate": hys_rate_pct, "ltcg_rate": ltcg_rate_pct,

@@ -50,17 +50,136 @@ def _data_dir():
 
 DB_PATH = os.path.join(_data_dir(), "stocksdeepdive.db")
 
+# Part 30 (8 Sep 2026, owner's own request: "give option with different
+# budget and debt recycling names just like my portfolio"): the name a
+# pre-existing single saved plan/scenario is folded into the first time
+# an already-live email hits the new multi-named-plan schema below (see
+# _migrate_legacy_single_plan_schema) - chosen per the owner's own
+# answer ("Auto-migrate into a first named plan") rather than starting
+# every existing user empty.
+_DEFAULT_BUDGET_PLAN_NAME = "My Plan"
+_DEFAULT_DEBT_RECYCLING_NAME = "My Scenario"
+
+
+def _table_columns(conn, table):
+    return [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+
+
+def _migrate_legacy_single_plan_schema(conn):
+    """One-time, idempotent fold-up from the original one-plan-per-email
+    shape into the multi-named-plan one (Part 30). Mirrors
+    portfolio_store.py's own _migrate_legacy_schema exactly: rename the
+    old table aside, recreate it with the new (email, name) PK, and give
+    every pre-existing row the same fixed name so nothing already saved
+    disappears or has to be re-entered - it just becomes named-plan #1.
+    Runs on every connection but is a single cheap PRAGMA check once
+    already migrated, so it costs nothing after the first call
+    post-upgrade. A brand-new install never has a legacy table to find
+    here at all - CREATE TABLE IF NOT EXISTS below already creates the
+    new (email, name) shape directly, so `name` is present from the
+    start and this whole function no-ops on its very first PRAGMA
+    check."""
+    _budget_cols = _table_columns(conn, "budget_plans")
+    if "name" not in _budget_cols:
+        conn.execute("ALTER TABLE budget_plans RENAME TO budget_plans_pre_multi")
+        conn.execute(
+            """CREATE TABLE budget_plans (
+                email TEXT NOT NULL,
+                name TEXT NOT NULL,
+                money_in REAL,
+                categories_json TEXT NOT NULL,
+                country TEXT,
+                years INTEGER,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (email, name)
+            )"""
+        )
+        _now = datetime.now(timezone.utc).isoformat()
+        for row in conn.execute(
+            "SELECT email, money_in, categories_json, country, years, updated_at "
+            "FROM budget_plans_pre_multi"
+        ).fetchall():
+            _email, _money_in, _categories_json, _country, _years, _updated_at = row
+            conn.execute(
+                "INSERT OR IGNORE INTO budget_plan_names (email, name, created_at) VALUES (?, ?, ?)",
+                (_email, _DEFAULT_BUDGET_PLAN_NAME, _now),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO budget_plans "
+                "(email, name, money_in, categories_json, country, years, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (_email, _DEFAULT_BUDGET_PLAN_NAME, _money_in, _categories_json,
+                 _country, _years, _updated_at),
+            )
+        conn.execute("DROP TABLE budget_plans_pre_multi")
+
+    _dr_cols = _table_columns(conn, "debt_recycling_scenarios")
+    if "name" not in _dr_cols:
+        conn.execute(
+            "ALTER TABLE debt_recycling_scenarios RENAME TO debt_recycling_scenarios_pre_multi"
+        )
+        conn.execute(
+            """CREATE TABLE debt_recycling_scenarios (
+                email TEXT NOT NULL,
+                name TEXT NOT NULL,
+                inputs_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (email, name)
+            )"""
+        )
+        _now = datetime.now(timezone.utc).isoformat()
+        for row in conn.execute(
+            "SELECT email, inputs_json, updated_at FROM debt_recycling_scenarios_pre_multi"
+        ).fetchall():
+            _email, _inputs_json, _updated_at = row
+            conn.execute(
+                "INSERT OR IGNORE INTO debt_recycling_scenario_names (email, name, created_at) "
+                "VALUES (?, ?, ?)",
+                (_email, _DEFAULT_DEBT_RECYCLING_NAME, _now),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO debt_recycling_scenarios "
+                "(email, name, inputs_json, updated_at) VALUES (?, ?, ?, ?)",
+                (_email, _DEFAULT_DEBT_RECYCLING_NAME, _inputs_json, _updated_at),
+            )
+        conn.execute("DROP TABLE debt_recycling_scenarios_pre_multi")
+
 
 def _conn():
     conn = sqlite3.connect(DB_PATH, timeout=10)
+    # Part 30: name registries, one row per named plan/scenario this
+    # email has - mirrors portfolio_store.py's own `portfolios` table
+    # exactly (email, name, created_at, PK (email, name)). A name can
+    # exist here before any plan/scenario data has ever been saved
+    # under it (e.g. right after "Create", or for Debt Recycling before
+    # its own explicit save button is ever clicked) - same as an empty
+    # portfolio existing before its first holding.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS budget_plan_names (
+            email TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (email, name)
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS debt_recycling_scenario_names (
+            email TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (email, name)
+        )"""
+    )
     conn.execute(
         """CREATE TABLE IF NOT EXISTS budget_plans (
-            email TEXT NOT NULL PRIMARY KEY,
+            email TEXT NOT NULL,
+            name TEXT NOT NULL,
             money_in REAL,
             categories_json TEXT NOT NULL,
             country TEXT,
             years INTEGER,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (email, name)
         )"""
     )
     # Part 20 (Cash vs Offset vs Borrow): UNLIKE budget_plans above, this
@@ -71,11 +190,14 @@ def _conn():
     # cards/charts, not just a subset of fields.
     conn.execute(
         """CREATE TABLE IF NOT EXISTS debt_recycling_scenarios (
-            email TEXT NOT NULL PRIMARY KEY,
+            email TEXT NOT NULL,
+            name TEXT NOT NULL,
             inputs_json TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (email, name)
         )"""
     )
+    _migrate_legacy_single_plan_schema(conn)
     # Part 19 (Utilities bill check): the trial/cap counter - ONE row per
     # email, lifetime. trial_used flips 0->1 the first time a check is
     # ever recorded and never resets. month_key/month_count track the
@@ -407,16 +529,87 @@ def set_typical_deal_rate(service_key, typical_annual_cost):
         )
 
 
-def get_debt_recycling_scenario(email):
-    """{"inputs": {...}} or None if this email has never saved a
-    scenario. inputs is exactly the dict save_debt_recycling_scenario()
-    was last called with - the caller (app.py) owns its own shape."""
+def list_debt_recycling_scenario_names(email):
+    """Ordered names of every Debt Recycling scenario this email has
+    (oldest first) - empty list if none yet. Mirrors portfolio_store.
+    list_portfolios() (Part 30, 8 Sep 2026)."""
     if not email:
+        return []
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT name FROM debt_recycling_scenario_names WHERE email = ? ORDER BY created_at",
+            (email,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def create_debt_recycling_scenario(email, name):
+    """Registers a new, empty named scenario - mirrors portfolio_store.
+    create_portfolio(). Idempotent (INSERT OR IGNORE): calling it again
+    for a name that already exists is a harmless no-op, never an
+    error."""
+    if not email or not name:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO debt_recycling_scenario_names (email, name, created_at) "
+            "VALUES (?, ?, ?)",
+            (email, name, now),
+        )
+
+
+def rename_debt_recycling_scenario(email, old_name, new_name):
+    if not email or not old_name or not new_name or old_name == new_name:
+        return
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE debt_recycling_scenario_names SET name = ? WHERE email = ? AND name = ?",
+            (new_name, email, old_name),
+        )
+        conn.execute(
+            "UPDATE debt_recycling_scenarios SET name = ? WHERE email = ? AND name = ?",
+            (new_name, email, old_name),
+        )
+
+
+def delete_debt_recycling_scenario(email, name):
+    if not email or not name:
+        return
+    with _conn() as conn:
+        conn.execute(
+            "DELETE FROM debt_recycling_scenario_names WHERE email = ? AND name = ?",
+            (email, name),
+        )
+        conn.execute(
+            "DELETE FROM debt_recycling_scenarios WHERE email = ? AND name = ?",
+            (email, name),
+        )
+
+
+def ensure_default_debt_recycling_scenario(email):
+    """Guarantees at least one named scenario exists for a signed-in
+    email - same role as portfolio_store.ensure_default_portfolio().
+    Called once at the top of the Debt Recycling render so a brand-new
+    user (never migrated, never created one) always has something to
+    select."""
+    if not email:
+        return
+    if not list_debt_recycling_scenario_names(email):
+        create_debt_recycling_scenario(email, _DEFAULT_DEBT_RECYCLING_NAME)
+
+
+def get_debt_recycling_scenario(email, name):
+    """{"inputs": {...}} or None if this email has never saved this
+    named scenario. inputs is exactly the dict save_debt_recycling_
+    scenario() was last called with for this name - the caller (app.py)
+    owns its own shape."""
+    if not email or not name:
         return None
     with _conn() as conn:
         row = conn.execute(
-            "SELECT inputs_json FROM debt_recycling_scenarios WHERE email = ?",
-            (email,),
+            "SELECT inputs_json FROM debt_recycling_scenarios WHERE email = ? AND name = ?",
+            (email, name),
         ).fetchone()
     if not row:
         return None
@@ -427,37 +620,109 @@ def get_debt_recycling_scenario(email):
     return {"inputs": inputs}
 
 
-def save_debt_recycling_scenario(email, inputs):
-    """Upserts the ONE scenario this email is allowed, same one-per-user
-    contract as save_budget_plan(). Only ever called from an explicit
-    "Save this scenario" button click (app.py) - never from a plain page
-    render, per the spec's own privacy rule for this tool."""
-    if not email:
+def save_debt_recycling_scenario(email, name, inputs):
+    """Upserts this ONE named scenario (Part 30 - previously the one
+    scenario this email was allowed at all; multiple names now live
+    side by side, same one-row-per-name contract as save_budget_plan()).
+    Only ever called from an explicit "Save this scenario" button click
+    (app.py) - never from a plain page render, per the spec's own
+    privacy rule for this tool. Also registers `name` in the names
+    registry (INSERT OR IGNORE) as a defensive belt-and-braces - every
+    caller is expected to have already called create_debt_recycling_
+    scenario()/ensure_default_debt_recycling_scenario() first, but a
+    save must never silently write an orphan row the switcher can't
+    see."""
+    if not email or not name:
         return
     now = datetime.now(timezone.utc).isoformat()
     inputs_json = json.dumps(inputs or {})
     with _conn() as conn:
         conn.execute(
-            "INSERT INTO debt_recycling_scenarios (email, inputs_json, updated_at) "
-            "VALUES (?, ?, ?) ON CONFLICT(email) DO UPDATE SET "
+            "INSERT OR IGNORE INTO debt_recycling_scenario_names (email, name, created_at) "
+            "VALUES (?, ?, ?)",
+            (email, name, now),
+        )
+        conn.execute(
+            "INSERT INTO debt_recycling_scenarios (email, name, inputs_json, updated_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(email, name) DO UPDATE SET "
             "inputs_json = excluded.inputs_json, updated_at = excluded.updated_at",
-            (email, inputs_json, now),
+            (email, name, inputs_json, now),
         )
 
 
-def get_budget_plan(email):
+def list_budget_plan_names(email):
+    """Ordered names of every Budget Planner plan this email has
+    (oldest first) - empty list if none yet. Mirrors portfolio_store.
+    list_portfolios() (Part 30, 8 Sep 2026)."""
+    if not email:
+        return []
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT name FROM budget_plan_names WHERE email = ? ORDER BY created_at",
+            (email,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def create_budget_plan(email, name):
+    """Registers a new, empty named plan - mirrors portfolio_store.
+    create_portfolio(). Idempotent (INSERT OR IGNORE)."""
+    if not email or not name:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO budget_plan_names (email, name, created_at) VALUES (?, ?, ?)",
+            (email, name, now),
+        )
+
+
+def rename_budget_plan(email, old_name, new_name):
+    if not email or not old_name or not new_name or old_name == new_name:
+        return
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE budget_plan_names SET name = ? WHERE email = ? AND name = ?",
+            (new_name, email, old_name),
+        )
+        conn.execute(
+            "UPDATE budget_plans SET name = ? WHERE email = ? AND name = ?",
+            (new_name, email, old_name),
+        )
+
+
+def delete_budget_plan(email, name):
+    if not email or not name:
+        return
+    with _conn() as conn:
+        conn.execute("DELETE FROM budget_plan_names WHERE email = ? AND name = ?", (email, name))
+        conn.execute("DELETE FROM budget_plans WHERE email = ? AND name = ?", (email, name))
+
+
+def ensure_default_budget_plan(email):
+    """Guarantees at least one named plan exists for a signed-in email -
+    same role as portfolio_store.ensure_default_portfolio(). Called once
+    at the top of the Budget Planner render so a brand-new user (never
+    migrated, never created one) always has something to select."""
+    if not email:
+        return
+    if not list_budget_plan_names(email):
+        create_budget_plan(email, _DEFAULT_BUDGET_PLAN_NAME)
+
+
+def get_budget_plan(email, name):
     """{"money_in": float|None, "categories": {id: float}, "country":
     str|None, "years": int|None} or None if this email has never saved
-    a plan. categories only ever contains keys the plan actually had a
-    value for (never a full zero-filled dict) - an unfilled category on
-    the page stays unfilled on reload too."""
-    if not email:
+    this named plan. categories only ever contains keys the plan
+    actually had a value for (never a full zero-filled dict) - an
+    unfilled category on the page stays unfilled on reload too."""
+    if not email or not name:
         return None
     with _conn() as conn:
         row = conn.execute(
             "SELECT money_in, categories_json, country, years "
-            "FROM budget_plans WHERE email = ?",
-            (email,),
+            "FROM budget_plans WHERE email = ? AND name = ?",
+            (email, name),
         ).fetchone()
     if not row:
         return None
@@ -468,20 +733,30 @@ def get_budget_plan(email):
     return {"money_in": row[0], "categories": categories, "country": row[2], "years": row[3]}
 
 
-def save_budget_plan(email, money_in, categories, country=None, years=None):
-    """Upserts the ONE plan this email is allowed (spec: "signed-in users
-    can save exactly one plan"). categories is stored as-is (only the
-    filled keys the caller passes) - the caller (app.py) is responsible
-    for not passing None/blank entries it doesn't want persisted."""
-    if not email:
+def save_budget_plan(email, name, money_in, categories, country=None, years=None):
+    """Upserts this ONE named plan (Part 30 - previously the one plan
+    this email was allowed at all; multiple names now live side by
+    side). categories is stored as-is (only the filled keys the caller
+    passes) - the caller (app.py) is responsible for not passing
+    None/blank entries it doesn't want persisted. Also registers `name`
+    in the names registry (INSERT OR IGNORE), same defensive reasoning
+    as save_debt_recycling_scenario() - this tool auto-saves on every
+    render, so an orphan row here would be far easier to hit than
+    Debt Recycling's explicit-button save."""
+    if not email or not name:
         return
     now = datetime.now(timezone.utc).isoformat()
     categories_json = json.dumps(categories or {})
     with _conn() as conn:
         conn.execute(
-            "INSERT INTO budget_plans (email, money_in, categories_json, country, years, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(email) DO UPDATE SET "
+            "INSERT OR IGNORE INTO budget_plan_names (email, name, created_at) VALUES (?, ?, ?)",
+            (email, name, now),
+        )
+        conn.execute(
+            "INSERT INTO budget_plans "
+            "(email, name, money_in, categories_json, country, years, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(email, name) DO UPDATE SET "
             "money_in = excluded.money_in, categories_json = excluded.categories_json, "
             "country = excluded.country, years = excluded.years, updated_at = excluded.updated_at",
-            (email, money_in, categories_json, country, years, now),
+            (email, name, money_in, categories_json, country, years, now),
         )
