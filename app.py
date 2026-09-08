@@ -18586,7 +18586,23 @@ def _bill_check_status(email):
     already written keyed on email alone, never on which tool is
     asking, so this one function (renamed from _utilities_status when
     Insurance became its sibling) is genuinely shared as-is rather than
-    duplicated - the SAME trial/cap pool, per that part's own spec."""
+    duplicated - the SAME trial/cap pool, per that part's own spec.
+
+    Owner bypass (8 Sep 2026, at the owner's own request: "give unlimited
+    entry to the utilities and insurance option to my account"): checked
+    BEFORE tools_store.can_check() so it never touches that module's
+    trial/cap counters at all - deliberately reuses ai_gate.is_owner()
+    (already imported here, already used at the admin-panel call sites
+    below) rather than inventing a second owner-email mechanism or a
+    tools_store.py change; tools_store.py's own docstring is explicit
+    that its only dependency is the stdlib, and can_check()/
+    bill_check_usage_status() stay untouched and unlimited-oblivious so
+    every OTHER visitor's trial/cap pool behaves exactly as before.
+    reason "owner" carries no blocked-message mapping (never reached,
+    since allowed is always True here) - see the two render functions'
+    own "owner" caption branch for the unlimited-access caption."""
+    if ai_gate.is_owner(email):
+        return True, "owner", tools_store.bill_check_usage_status(email)
     is_sub = False
     if paywall_engine.PAYWALL_ENABLED:
         try:
@@ -18821,7 +18837,9 @@ def _render_utilities_new_check(email, _ul, _lang, allowed, reason, usage, typic
                 st.link_button(_ul("subscribe_button"), checkout_url)
         return
 
-    if usage["trial_used"]:
+    if reason == "owner":
+        st.caption(_ul("unlimited_owner"))
+    elif usage["trial_used"]:
         st.caption(_ul("checks_left_month", used=usage["month_cap"] - usage["month_count"],
                        cap=usage["month_cap"]))
     else:
@@ -19340,7 +19358,9 @@ def _render_insurance_new_check(email, _il, _lang, allowed, reason, usage, typic
                 st.link_button(_il("subscribe_button"), checkout_url)
         return
 
-    if usage["trial_used"]:
+    if reason == "owner":
+        st.caption(_il("unlimited_owner"))
+    elif usage["trial_used"]:
         st.caption(_il("checks_left_month", used=usage["month_cap"] - usage["month_count"],
                        cap=usage["month_cap"]))
     else:

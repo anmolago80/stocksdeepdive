@@ -1127,6 +1127,10 @@ EN = {
     "tools.utilities.subtitle": "Scan or type in a bill — see if you're on the cheapest generally-available plan, and what switching could be worth invested.",
     "tools.utilities.trial_note": "Your first bill check is free.",
     "tools.utilities.checks_left_month": "{used} of {cap} checks left this month.",
+    # Owner bypass, 8 Sep 2026 (see app.py's _bill_check_status()) - shown
+    # instead of trial_note/checks_left_month only for the site owner's
+    # own account, which never touches the trial/cap counters at all.
+    "tools.utilities.unlimited_owner": "Unlimited checks on your account.",
     "tools.utilities.blocked_trial_used_paywall_off": "Your free check is used — paid plans open soon.",
     "tools.utilities.blocked_needs_subscription": "You've used your free check. An active subscription unlocks {cap} bill checks a month.",
     "tools.utilities.blocked_monthly_cap": "You've used all {cap} checks this month — more open up next month.",
@@ -1232,6 +1236,8 @@ EN = {
     ),
     "tools.insurance.trial_note": "Your first check is free — shared with Utilities bill check (one free check across both tools).",
     "tools.insurance.checks_left_month": "{used} of {cap} checks left this month (shared with Utilities bill check).",
+    # Owner bypass, 8 Sep 2026 - see tools.utilities.unlimited_owner above.
+    "tools.insurance.unlimited_owner": "Unlimited checks on your account.",
     "tools.insurance.blocked_trial_used_paywall_off": "Your free check is used — paid plans open soon.",
     "tools.insurance.blocked_needs_subscription": "You've used your free check. An active subscription unlocks {cap} bill checks a month, shared across Utilities and Insurance.",
     "tools.insurance.blocked_monthly_cap": "You've used all {cap} checks this month across Utilities and Insurance — more open up next month.",
@@ -2975,6 +2981,7 @@ ES = {
     "tools.utilities.subtitle": "Escanea o escribe una factura — mira si estás en la tarifa más barata disponible, y cuánto podría valer el cambio si lo inviertes.",
     "tools.utilities.trial_note": "Tu primera revisión es gratis.",
     "tools.utilities.checks_left_month": "Te quedan {used} de {cap} revisiones este mes.",
+    "tools.utilities.unlimited_owner": "Revisiones ilimitadas en tu cuenta.",
     "tools.utilities.blocked_trial_used_paywall_off": "Ya usaste tu revisión gratuita — los planes de pago abren pronto.",
     "tools.utilities.blocked_needs_subscription": "Ya usaste tu revisión gratuita. Una suscripción activa desbloquea {cap} revisiones al mes.",
     "tools.utilities.blocked_monthly_cap": "Ya usaste tus {cap} revisiones este mes — se renuevan el mes que viene.",
@@ -3074,6 +3081,7 @@ ES = {
     ),
     "tools.insurance.trial_note": "Tu primera revisión es gratis — compartida con la revisión de facturas de servicios (una revisión gratis entre ambas herramientas).",
     "tools.insurance.checks_left_month": "Te quedan {used} de {cap} revisiones este mes (compartidas con la revisión de facturas de servicios).",
+    "tools.insurance.unlimited_owner": "Revisiones ilimitadas en tu cuenta.",
     "tools.insurance.blocked_trial_used_paywall_off": "Tu revisión gratis está usada — los planes de pago abren pronto.",
     "tools.insurance.blocked_needs_subscription": "Ya usaste tu revisión gratis. Una suscripción activa desbloquea {cap} revisiones al mes, compartidas entre Servicios y Seguros.",
     "tools.insurance.blocked_monthly_cap": "Usaste tus {cap} revisiones de este mes entre Servicios y Seguros — se renuevan el próximo mes.",
