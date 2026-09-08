@@ -6687,6 +6687,7 @@ def page_home():
     # strip fed by the nightly scan). ----
     st.markdown("<div style='margin-top:36px;'></div>", unsafe_allow_html=True)
     _render_my_portfolio_spotlight_band(_home_lang)
+    _fix_spotlight_band_heights()
 
     # ---- reported this week (Services batch Part 4) ----
     # Skipped entirely (no empty box) when fewer than 2 tickers reported
@@ -17742,6 +17743,133 @@ def _spotlight_index(session_key, n, day_offset=0):
     return (days_since_epoch + day_offset + nonce) % n
 
 
+def _spotlight_effective_index(override_key, natural_idx):
+    """Layered on top of _spotlight_index()'s automatic per-visit
+    rotation: if the visitor has clicked one of the dots (recorded in
+    session_state[override_key] by _render_spotlight_dots below), that
+    explicit choice wins for the rest of the visit; otherwise the
+    automatic rotation stands untouched. A fresh session (no click yet)
+    always starts on the automatic pick - clicking a dot never persists
+    beyond session_state, so it can't go stale into a later visit."""
+    _override = st.session_state.get(override_key)
+    return _override if _override is not None else natural_idx
+
+
+def _render_spotlight_dots(key_prefix, idx, n, override_key, active_color, inactive_color="#5b7290"):
+    """Clickable spotlight-position dots, shared by both home spotlight
+    bands. These used to be plain, inert '&#9679;' characters - visually
+    identical to a carousel's own page dots but not actually clickable
+    (owner-reported: "I cant click on the dots to see the options").
+    Each dot is now a real button, CSS-reskinned down to a small circle
+    (the same re-skin-a-plain-st.button trick already used elsewhere in
+    this file, e.g. _render_explain_popover's ⓘ button); clicking one
+    records that choice in session_state[override_key] and reruns, so
+    _spotlight_effective_index() picks it up on the very next render."""
+    _rules = "\n".join(
+        f"""
+        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button,
+        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:hover,
+        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:focus,
+        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:active,
+        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:focus:not(:active) {{
+            background:transparent !important; border:none !important; box-shadow:none !important;
+            outline:none !important; padding:0 !important; margin:0 auto !important;
+            min-height:0 !important; width:22px !important; height:22px !important;
+            line-height:1 !important; font-size:13px !important;
+        }}
+        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button,
+        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:focus,
+        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:focus:not(:active) {{
+            color:{active_color if i == idx else inactive_color} !important;
+        }}
+        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:hover {{
+            color:{active_color} !important;
+        }}
+        """
+        for i in range(n)
+    )
+    st.markdown(f"<style>{_rules}</style>", unsafe_allow_html=True)
+    with st.container(key=f"{key_prefix}_dots_row"):
+        _cols = st.columns(n, gap="small")
+        for i, _col in enumerate(_cols):
+            with _col:
+                with st.container(key=f"{key_prefix}_dot_{i}"):
+                    if st.button("●", key=f"{key_prefix}_dot_btn_{i}",
+                                 help=None):
+                        st.session_state[override_key] = i
+                        st.rerun()
+
+
+def _fix_spotlight_band_heights():
+    """Defensive follow-up to the border-cutting-through-text bug the
+    owner reported on the My Portfolio band (screenshot: the footer line
+    sliced by the card's own bottom border). Splitting that band's
+    footer into its own st.markdown call (see _render_my_portfolio_
+    spotlight_band below) fixed most of it, but a residual few-px gap
+    between the bordered card's own measured height and its actual
+    content height can still appear depending on which item is rotated
+    in and which language is active - a genuine Streamlit/Chromium
+    layout quirk (confirmed by direct browser reproduction: the card's
+    own box consistently measures a little short of its children's real
+    height) rather than anything in this app's own CSS. Rather than
+    chase the exact quirk further, this measures the ACTUAL rendered
+    content height of each spotlight band and sets min-height directly,
+    which is correct regardless of the underlying cause and self-
+    corrects on every rerun (dot clicks, rotation, language switch).
+
+    Plain st.markdown doesn't execute <script> tags (a well-known
+    Streamlit quirk, see _render_push_control's own docstring for the
+    same note) - components.html()'s srcdoc iframe is same-origin, so
+    window.parent.document reaches the real page the same way the nav
+    bar's own viewport-fit patch above already does.
+
+    Two belt-and-braces bits, both needed in practice (confirmed by
+    testing dot-clicks through all 4 My Portfolio rotations): (1) the
+    min-height is RECOMPUTED (not just raised) on every scan, since a
+    shorter rotation after a longer one needs it to shrink back down
+    too, not just grow; (2) a fresh per-render token is embedded as an
+    inert JS comment purely so this srcdoc string differs from the
+    previous render's, since Streamlit/the browser can otherwise skip
+    re-executing an unchanged iframe's script on a rerun - a periodic
+    re-scan then keeps self-correcting for that same iframe's lifetime
+    regardless of whether it does."""
+    import streamlit.components.v1 as _components
+    _components.html(
+        "<script>"
+        f"/* spotlight-height-fix:{time.time()}:{random.randint(0, 999_999)} */"
+        "(function(){"
+        "var h=window;"
+        "try{if(window.parent&&window.parent!==window&&window.parent.document){h=window.parent;}}catch(e){}"
+        "var doc=h.document;"
+        "function fixOne(band){"
+        # Deliberately NOT stElementContainer: that box is exactly the
+        # one this whole fix exists because of - it under-measures its
+        # own content (the original bug). Its actual rendered content
+        # (stMarkdownContainer's real text, stButton's real button) is
+        # what's measured instead, so this can't just reproduce the same
+        # undersizing it's trying to correct for.
+        "var kids=band.querySelectorAll('[data-testid=\"stMarkdownContainer\"],[data-testid=\"stButton\"]');"
+        "if(!kids.length)return;"
+        "var top=band.getBoundingClientRect().top;"
+        "var maxBottom=0;"
+        "kids.forEach(function(k){var r=k.getBoundingClientRect();if(r.bottom>maxBottom)maxBottom=r.bottom;});"
+        "var cs=h.getComputedStyle(band);"
+        "var padBottom=parseFloat(cs.paddingBottom)||0;"
+        "var need=Math.ceil((maxBottom-top)+padBottom+2);"
+        "band.style.minHeight=need+'px';"
+        "}"
+        "function scan(){"
+        "doc.querySelectorAll('[class*=\"st-key-money_tools_spotlight_band\"],"
+        "[class*=\"st-key-my_portfolio_spotlight_band\"]').forEach(fixOne);"
+        "}"
+        "scan();"
+        "h.setTimeout(scan,150);h.setTimeout(scan,400);h.setTimeout(scan,900);"
+        "h.setInterval(scan,600);"
+        "})();</script>",
+        height=0,
+    )
+
+
 _MONEY_TOOLS_SPOTLIGHT_ORDER = ["budget_planner", "utilities", "debt_recycling"]
 
 
@@ -17769,7 +17897,8 @@ def _render_tools_home_banner(lang):
     unchanged, is just as much a "deep link to the right tool" as the
     URL-based one - only the transport differs)."""
     _bh = lambda key, **kw: i18n.t(f"home.banner.{key}", lang, **kw)
-    _idx = _spotlight_index("_spotlight_money_tools_nonce", len(_MONEY_TOOLS_SPOTLIGHT_ORDER), day_offset=0)
+    _natural_idx = _spotlight_index("_spotlight_money_tools_nonce", len(_MONEY_TOOLS_SPOTLIGHT_ORDER), day_offset=0)
+    _idx = _spotlight_effective_index("_spotlight_money_tools_override", _natural_idx)
     _featured = _MONEY_TOOLS_SPOTLIGHT_ORDER[_idx]
 
     with st.container(border=True, key="money_tools_spotlight_band"):
@@ -17853,14 +17982,9 @@ def _render_tools_home_banner(lang):
                 unsafe_allow_html=True,
             )
 
-        st.markdown(
-            "<div class='sdd-spotlight-dots'>"
-            + " ".join(
-                "<b>&#9679;</b>" if i == _idx else "&#9679;"
-                for i in range(len(_MONEY_TOOLS_SPOTLIGHT_ORDER))
-            )
-            + "</div>",
-            unsafe_allow_html=True,
+        _render_spotlight_dots(
+            "money_tools_spotlight", _idx, len(_MONEY_TOOLS_SPOTLIGHT_ORDER),
+            "_spotlight_money_tools_override", active_color="#2dd4bf",
         )
 
 
@@ -17894,9 +18018,10 @@ def _render_my_portfolio_spotlight_band(lang):
     line matches today, read live so it can never drift out of sync if
     a tab is ever added or removed."""
     _pb = lambda key, **kw: i18n.t(f"home.portfolio_band.{key}", lang, **kw)
-    _idx = _spotlight_index(
+    _natural_idx = _spotlight_index(
         "_spotlight_my_portfolio_nonce", len(_MY_PORTFOLIO_SPOTLIGHT_ORDER), day_offset=2,
     )
+    _idx = _spotlight_effective_index("_spotlight_my_portfolio_override", _natural_idx)
     _featured = _MY_PORTFOLIO_SPOTLIGHT_ORDER[_idx]
 
     _footer_link = (
@@ -17917,11 +18042,29 @@ def _render_my_portfolio_spotlight_band(lang):
     <a class='sdd-spotlight-cta sdd-spotlight-cta-purple' href='/portfolio' target='_self'>{_pb(f'{_featured}_cta')}</a>
   </div>
 </div>
-<div class='sdd-spotlight-dots sdd-spotlight-dots-purple'>{
-    " ".join("<b>&#9679;</b>" if i == _idx else "&#9679;" for i in range(len(_MY_PORTFOLIO_SPOTLIGHT_ORDER)))
-}</div>
-<div class='sdd-spotlight-footer'>{_pb('footer', n=len(_PORTFOLIO_TAB_I18N_KEYS), link=_footer_link)}</div>
 """,
+            unsafe_allow_html=True,
+        )
+        _render_spotlight_dots(
+            "my_portfolio_spotlight", _idx, len(_MY_PORTFOLIO_SPOTLIGHT_ORDER),
+            "_spotlight_my_portfolio_override", active_color="#c084fc",
+        )
+        # Rendered as its OWN st.markdown call, deliberately separate from
+        # the kicker/row block above: bundled into one call together (as
+        # this used to be, before this fix) hit a genuine Streamlit/
+        # Chromium layout bug - the bordered card's own box consistently
+        # measured itself about one text-line short of its actual content
+        # height, so this footer line got visually sliced by the card's
+        # own bottom border instead of sitting inside it (owner-reported,
+        # confirmed by direct browser reproduction: same HTML, split into
+        # two separate st.markdown calls the way the Money Tools band
+        # above always has, lays out with zero clipping). Two smaller
+        # markdown calls instead of one large one - no visual difference
+        # otherwise, since both still land inside the same bordered
+        # container.
+        st.markdown(
+            f"<div class='sdd-spotlight-footer'>"
+            f"{_pb('footer', n=len(_PORTFOLIO_TAB_I18N_KEYS), link=_footer_link)}</div>",
             unsafe_allow_html=True,
         )
 
