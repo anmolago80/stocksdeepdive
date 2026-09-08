@@ -269,6 +269,58 @@ def trimmed_toll(sale_value, cost_base, tax_rate, brokerage, trim_fraction, held
     )
 
 
+def blended_expected_return_after_toll(sale_value, cost_base, tax_rate, brokerage,
+                                        trim_fraction, return_a, return_b, years,
+                                        held_days=None):
+    """Owner-caught bug fix (8 Sep 2026): blended_expected_return() above
+    is a naive linear blend of the two RAW return estimates - it silently
+    assumes the FULL trimmed dollar amount survives the sale untouched
+    and starts compounding at return_b immediately. That is exactly the
+    gap this module's own annualised_toll_rate() (Z, see THE BRIDGE in
+    this module's own docstring) was built to price for a FULL switch,
+    but it was never reused down here for a PARTIAL trim - so the trim
+    card's "Blended implied return" caption/chart disagreed with the
+    toll/bridge card's own net figure a few pixels above it on the same
+    page (same tab, same inputs, two different answers).
+
+    trim_fraction=0 needs no toll at all (nothing sold) - returns
+    return_a unchanged, no sale_value/cost_base/return_b/years required.
+    Otherwise the KEPT slice ((1-trim_fraction) of the position) keeps
+    compounding at return_a untouched; the SOLD slice is charged its OWN
+    annualised toll rate Z_trim - computed from trimmed_toll()'s real
+    sale_value/proceeds for THIS exact fraction, not a naively scaled-
+    down version of the full-switch Z, since trimmed_toll()'s own
+    docstring already explains the flat per-trade brokerage fee makes a
+    small trim pay proportionally MORE of it:
+        (1 - trim_fraction) * return_a + trim_fraction * (return_b - Z_trim)
+    At trim_fraction=1 this reduces to return_b - Z, the exact same net
+    figure the toll/bridge card already shows for a full switch - the
+    two cards now agree by construction instead of by coincidence.
+
+    None if return_a or trim_fraction is missing; for trim_fraction > 0,
+    also None if return_b/sale_value/cost_base/years is missing, or if
+    trimmed_toll()/annualised_toll_rate() can't produce a usable
+    proceeds figure for this fraction (trimmed_toll's own docstring
+    already flags a non-positive proceeds_after_toll - e.g. a trim so
+    small the flat brokerage fee alone exceeds it - as a case callers
+    should treat as "this switch cannot be analysed" rather than divide
+    by)."""
+    if return_a is None or trim_fraction is None:
+        return None
+    trim_fraction = min(max(trim_fraction, 0.0), 1.0)
+    if trim_fraction == 0.0:
+        return return_a
+    if return_b is None or sale_value is None or cost_base is None or years is None:
+        return None
+    toll = trimmed_toll(sale_value, cost_base, tax_rate, brokerage, trim_fraction, held_days=held_days)
+    if not toll or toll["proceeds_after_toll"] <= 0:
+        return None
+    z_trim = annualised_toll_rate(sale_value * trim_fraction, toll["proceeds_after_toll"], years)
+    if z_trim is None:
+        return None
+    return (1 - trim_fraction) * return_a + trim_fraction * (return_b - z_trim)
+
+
 def concentration_flag(candidate_resulting_pct):
     """True if the candidate's resulting share of total portfolio value
     (after the switch) would exceed CONCENTRATION_FLAG_PCT. None input

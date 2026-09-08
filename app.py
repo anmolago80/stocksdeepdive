@@ -14892,27 +14892,60 @@ def _switch_crossover_fig(iv_a, ret_b, toll_z, price_a_today, years, from_ticker
     return fig, _flip_price
 
 
-def _switch_trim_curve_fig(ret_a, ret_b, current_trim, lang):
+def _switch_trim_curve_fig(sale_value, cost_base, tax_rate, brokerage, ret_a, ret_b,
+                            years, held_days, current_trim, lang):
     """Addendum to Fix #3b, chart 3: blended implied return (y) vs
-    fraction of the incumbent sold (x, 0-100%) - a straight line by
-    construction (blended_expected_return() is a linear interpolation),
-    with the slider's current position marked and the keep/100%
-    endpoints labelled, per the addendum's own spec."""
+    fraction of the incumbent sold (x, 0-100%), with the slider's
+    current position marked and the keep/100% endpoints labelled, per
+    the addendum's own spec.
+
+    Owner-caught bug fix (8 Sep 2026): this used to call
+    switch_analyzer_engine.blended_expected_return() - a naive linear
+    blend of the two raw returns that never charged the toll at all, so
+    its "sell 100%" endpoint silently disagreed with the toll/bridge
+    card's own net figure a few pixels above it on the same page. Now
+    calls blended_expected_return_after_toll() instead, which prices
+    the SOLD slice's own toll via the exact same trimmed_toll()/
+    annualised_toll_rate() machinery already used elsewhere on this tab
+    - see that function's own docstring for the full derivation. No
+    longer a perfectly straight line in principle (the sold slice's own
+    annualised toll rate is highest at the smallest trims, where a flat
+    per-trade brokerage fee dominates a tiny trimmed amount, and flattens
+    out toward the full-switch Z from there) - though in practice, for
+    most real position sizes, that curvature is compressed into the
+    first couple of percent of the slider and the rest reads as close to
+    a straight line, just offset lower and with a shallower slope than
+    the old, toll-blind version. The "keep everything" endpoint
+    (trim=0) is untouched either way - nothing is sold, so it's exactly
+    ret_a with no toll involved."""
     _xs = [i / 20 for i in range(21)]  # 0%, 5%, ... 100%
-    _ys = [switch_analyzer_engine.blended_expected_return(ret_a, ret_b, x) * 100 for x in _xs]
-    _current_blend = switch_analyzer_engine.blended_expected_return(ret_a, ret_b, current_trim) * 100
+    _ys_raw = [
+        switch_analyzer_engine.blended_expected_return_after_toll(
+            sale_value, cost_base, tax_rate, brokerage, x, ret_a, ret_b, years, held_days=held_days,
+        )
+        for x in _xs
+    ]
+    _ys = [(y * 100 if y is not None else None) for y in _ys_raw]
+    _current_blend_raw = switch_analyzer_engine.blended_expected_return_after_toll(
+        sale_value, cost_base, tax_rate, brokerage, current_trim, ret_a, ret_b, years, held_days=held_days,
+    )
+    _current_blend = _current_blend_raw * 100 if _current_blend_raw is not None else None
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=[x * 100 for x in _xs], y=_ys, mode="lines", line=dict(color="#a78bfa", width=2.5), showlegend=False,
+        connectgaps=False,
     ))
-    fig.add_trace(go.Scatter(
-        x=[current_trim * 100], y=[_current_blend], mode="markers", marker=dict(color="#e6edf5", size=11),
-        showlegend=False,
-    ))
-    fig.add_annotation(x=0, y=_ys[0], text=i18n.t("portfolio.switch.chart_trim_keep_label", lang),
-                        showarrow=False, yshift=16, font=dict(size=11, color="#8aa0b8"))
-    fig.add_annotation(x=100, y=_ys[-1], text=i18n.t("portfolio.switch.chart_trim_full_label", lang),
-                        showarrow=False, yshift=16, font=dict(size=11, color="#8aa0b8"))
+    if _current_blend is not None:
+        fig.add_trace(go.Scatter(
+            x=[current_trim * 100], y=[_current_blend], mode="markers", marker=dict(color="#e6edf5", size=11),
+            showlegend=False,
+        ))
+    if _ys[0] is not None:
+        fig.add_annotation(x=0, y=_ys[0], text=i18n.t("portfolio.switch.chart_trim_keep_label", lang),
+                            showarrow=False, yshift=16, font=dict(size=11, color="#8aa0b8"))
+    if _ys[-1] is not None:
+        fig.add_annotation(x=100, y=_ys[-1], text=i18n.t("portfolio.switch.chart_trim_full_label", lang),
+                            showarrow=False, yshift=16, font=dict(size=11, color="#8aa0b8"))
     fig.update_layout(
         title=i18n.t("portfolio.switch.chart_trim_title", lang),
         xaxis_title=i18n.t("portfolio.switch.chart_trim_xaxis", lang),
@@ -14924,20 +14957,41 @@ def _switch_trim_curve_fig(ret_a, ret_b, current_trim, lang):
     return fig
 
 
-def _switch_trim_sim_weights(base_weights, from_ticker, to_ticker, from_value, trim_fraction):
+def _switch_trim_sim_weights(base_weights, from_ticker, to_ticker, from_value, from_cost_base,
+                              tax_rate, brokerage, trim_fraction, held_days=None):
     """{ticker: value_aud} for the FULL portfolio with `from_ticker`
-    reduced by `trim_fraction` of its value and that same amount moved
-    onto `to_ticker` (0 if not currently held) - the exact construction
-    the trim card's Monte Carlo simulation already used for the single
-    "current slider position" scenario, pulled into its own pure
-    function so option 2A's three mini bands (Keep everything / current
-    slider % / Sell everything) can call it three times for three
-    different fractions without repeating the logic. No network/
-    Streamlit dependency - directly unit-testable."""
+    reduced by `trim_fraction` of its value and the AFTER-TOLL proceeds
+    of that fraction moved onto `to_ticker` (0 if not currently held) -
+    the exact construction the trim card's Monte Carlo simulation
+    already used for the single "current slider position" scenario,
+    pulled into its own pure function so option 2A's three mini bands
+    (Keep everything / current slider % / Sell everything) can call it
+    three times for three different fractions without repeating the
+    logic. No network/Streamlit dependency - directly unit-testable.
+
+    Owner-caught bug fix (8 Sep 2026): this used to move the FULL,
+    pre-tax trimmed dollar amount onto `to_ticker` - silently assuming
+    selling costs nothing, the same gap as blended_expected_return_
+    after_toll()'s own docstring describes for the trim chart right
+    above this simulation on the same card. Now moves only switch_
+    analyzer_engine.trimmed_toll()'s own proceeds_after_toll for this
+    exact fraction - the toll amount simply leaves the simulated
+    portfolio (spent on tax + brokerage), same as it does in real life.
+    sim_weights.values() therefore sums to LESS than the pre-trim
+    portfolio value whenever trim_fraction > 0 - intentional, not a
+    bug: that's the real, permanent cost of the round trip, and this
+    simulation should never pretend it vanishes."""
     sim_weights = dict(base_weights)
     moved_value = from_value * trim_fraction
     sim_weights[from_ticker] = max(from_value - moved_value, 0.0)
-    sim_weights[to_ticker] = sim_weights.get(to_ticker, 0.0) + moved_value
+    proceeds = 0.0
+    if trim_fraction > 0:
+        toll = switch_analyzer_engine.trimmed_toll(
+            from_value, from_cost_base, tax_rate, brokerage, trim_fraction, held_days=held_days,
+        )
+        if toll and toll["proceeds_after_toll"] > 0:
+            proceeds = toll["proceeds_after_toll"]
+    sim_weights[to_ticker] = sim_weights.get(to_ticker, 0.0) + proceeds
     return sim_weights
 
 
@@ -15548,7 +15602,17 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
                 pct=f"{(_trim_toll['toll_pct_of_value'] or 0) * 100:.1f}",
             ))
         if _ret_a is not None and _ret_b is not None:
-            _blend = switch_analyzer_engine.blended_expected_return(_ret_a, _ret_b, _trim)
+            # Owner-caught bug fix (8 Sep 2026): was blended_expected_
+            # return() - a naive linear blend that never charged the
+            # toll, so it disagreed with the toll/bridge card's own net
+            # figure above. blended_expected_return_after_toll() reuses
+            # that SAME toll math (trimmed_toll/annualised_toll_rate) so
+            # this figure and the bridge card's now agree at trim=100%
+            # by construction - see that function's own docstring.
+            _blend = switch_analyzer_engine.blended_expected_return_after_toll(
+                _from_row["value_aud"], _from_row["cost_aud"], _tax_rate, _brokerage,
+                _trim, _ret_a, _ret_b, _years, held_days=_held_days,
+            )
             if _blend is not None:
                 # Fix #3b: mock's trim table bolds this exact row
                 # ("<td><b>Implied return on this money...</b></td>") -
@@ -15561,7 +15625,10 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
                 # plottable under the same both-sides-have-a-return
                 # gating the blended-return caption right above it
                 # already uses.
-                sdd_plotly_chart(_switch_trim_curve_fig(_ret_a, _ret_b, _trim, _lang))
+                sdd_plotly_chart(_switch_trim_curve_fig(
+                    _from_row["value_aud"], _from_row["cost_aud"], _tax_rate, _brokerage,
+                    _ret_a, _ret_b, _years, _held_days, _trim, _lang,
+                ))
 
         st.markdown(f"**{_sw('trim_sim_title')}**")
         # Owner's picks (7 Sep), option 2A: three mini gradient bands -
@@ -15580,7 +15647,10 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
             (_sw("trim_range_col_full"), 1.0),
         ]
         _sim_weights_by_scenario = {
-            label: _switch_trim_sim_weights(_base_weights, _from_ticker, _to_ticker, _from_row["value_aud"], frac)
+            label: _switch_trim_sim_weights(
+                _base_weights, _from_ticker, _to_ticker, _from_row["value_aud"], _from_row["cost_aud"],
+                _tax_rate, _brokerage, frac, held_days=_held_days,
+            )
             for label, frac in _trim_scenarios
         }
         _sim_tickers = tuple(sorted({t for w in _sim_weights_by_scenario.values() for t in w}))
