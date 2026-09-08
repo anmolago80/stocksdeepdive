@@ -189,7 +189,7 @@ GET_LONG_HISTORY_FLOOR = "2005-01-01"
 
 
 _LONG_HISTORY_TABLE = "stress_long_history_v4"
-_RESULT_CACHE_TABLE = "stress_result_cache_v6"
+_RESULT_CACHE_TABLE = "stress_result_cache_v7"
 
 
 def _conn():
@@ -245,6 +245,14 @@ def _conn():
     # Part 24 and Part 26 bumps above already exist to prevent, repeated
     # by forgetting to apply it to this round too. Every Stress Test
     # result recomputes fresh from here.
+    #
+    # Part 26 FOURTH follow-up (2026-09-08): bumped again, _v6->_v7, so
+    # the new per-candidate diagnostic logging in _attempt_split_repair
+    # (added this same round, to see why IVV.AX's real full history
+    # scores every repair candidate worse than doing nothing, when a
+    # local test using the exact values Railway's own logs showed
+    # clears cleanly) actually runs on the next page load instead of a
+    # cached "still excluded" verdict serving from before this deploy.
     conn.execute(
         f"""CREATE TABLE IF NOT EXISTS {_LONG_HISTORY_TABLE} (
             ticker TEXT PRIMARY KEY,
@@ -823,8 +831,25 @@ def _attempt_split_repair(ticker, hist):
                     candidates.append((split_repaired, abs(split_move)))
 
     if not candidates or orig_move is None:
+        _stress_logger.warning(
+            "_attempt_split_repair(%s): no candidates produced (orig_move=%s)",
+            ticker, orig_move,
+        )
         return hist
     best_hist, best_abs_move = min(candidates, key=lambda c: c[1])
+    # Part 26 THIRD follow-up diagnostic (owner: IVV.AX still excluded after
+    # a fix that reproduces clean in a local, synthetic test using the exact
+    # values Railway's own log showed - meaning something in IVV.AX's REAL,
+    # FULL history outside that narrow logged window is making every
+    # candidate here score worse than just leaving hist alone, and this is
+    # the only way to see which candidate and why without guessing again.
+    best_worst_date, _ = _worst_single_day_move(best_hist)
+    _stress_logger.warning(
+        "_attempt_split_repair(%s): %d candidate(s) tried, orig_move=%.1f%%, "
+        "best_candidate_abs_move=%.1f%% (its own worst day now %s) - %s",
+        ticker, len(candidates), abs(orig_move), best_abs_move, best_worst_date,
+        "using best candidate" if best_abs_move < abs(orig_move) else "keeping original, no candidate helped",
+    )
     if best_abs_move < abs(orig_move):
         return best_hist
     return hist
