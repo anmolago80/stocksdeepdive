@@ -189,7 +189,7 @@ GET_LONG_HISTORY_FLOOR = "2005-01-01"
 
 
 _LONG_HISTORY_TABLE = "stress_long_history_v4"
-_RESULT_CACHE_TABLE = "stress_result_cache_v5"
+_RESULT_CACHE_TABLE = "stress_result_cache_v6"
 
 
 def _conn():
@@ -231,6 +231,20 @@ def _conn():
     # IPO-era noise for up to 24h otherwise. _RESULT_CACHE_TABLE needs
     # it for the usual reason (a pre-fix "excluded" result for this
     # portfolio's holdings-hash would otherwise keep being served stale).
+    #
+    # Part 26 THIRD follow-up (2026-09-08): _RESULT_CACHE_TABLE alone
+    # bumped again, _v5->_v6. The prior deploy (this same Part 26's
+    # bad-data-window repair) genuinely cleared OCL.AX server-side -
+    # confirmed directly from Railway's own logs, no more "stress guard
+    # excluded OCL.AX" lines after that deploy - but the owner's own
+    # screenshot straight after still showed OCL.AX marked excluded on
+    # the page. That deploy didn't bump this table, so the RESULT cached
+    # from the load right after the PRIOR deploy (which still excluded
+    # OCL.AX) kept being served, unchanged, for up to RESULT_TTL_HOURS -
+    # the exact same "cache outlives the fix" mistake this table's own
+    # Part 24 and Part 26 bumps above already exist to prevent, repeated
+    # by forgetting to apply it to this round too. Every Stress Test
+    # result recomputes fresh from here.
     conn.execute(
         f"""CREATE TABLE IF NOT EXISTS {_LONG_HISTORY_TABLE} (
             ticker TEXT PRIMARY KEY,
@@ -701,37 +715,59 @@ def _attempt_split_repair(ticker, hist):
     genuinely shift which calendar day a data vendor attributes the
     move to). Two changes:
 
-      1. Boundary auto-detection. `hist`'s OWN worst-move date (computed
+      1. Boundary candidates. `hist`'s OWN worst-move date (computed
          fresh here, before any repair) is where the raw data actually
-         shows its biggest jump - by construction, that's the real
-         boundary as Yahoo represents it, whatever day that is. When
-         that date falls within KNOWN_ACTION_DATE_TOLERANCE_DAYS of the
-         sourced effective_date (confirming it's plausibly the same
-         event, just off by a few days), the DATA's date is used as the
-         actual divide boundary instead of the hardcoded string - same
-         sourced, verified ratio, only the day the divide starts
-         changes. When the two aren't even close - IVV.AX's own
-         guard-tripping move is dated 2015-12-28, nowhere near its
-         2022-12-07 split - the known correction almost certainly isn't
-         what's wrong here at all, and forcing it in at the sourced
-         date would plant an unrelated, artificial jump there for zero
-         benefit; the known-table repair is skipped in that case
-         (falls through to the self-correction below, which will keep
-         `hist` unchanged since there's nothing to compare it against).
-      2. Self-correction (every path): a "repaired" series is only
-         returned if its own worst move is genuinely smaller in
-         magnitude than the original's. This can't fix a ticker that's
-         actually faulty, but it guarantees a repair attempt is never
-         itself the reason a usable series ends up excluded - the exact
-         failure mode production hit.
+         shows its biggest jump - by construction, that's a real
+         boundary as Yahoo represents it, whatever day that is. Both
+         that auto-detected date AND the sourced effective_date are
+         tried as separate candidates (same sourced, verified ratio
+         either way - only the divide-from day differs) rather than
+         picking one - see the Part 26 second-follow-up note below for
+         why the auto-detected date can legitimately land nowhere near
+         the sourced one and still be exactly right.
+      2. Self-correction (every path, every candidate): a "repaired"
+         series is only used if its own worst move is genuinely smaller
+         in magnitude than the original's, and only the single best
+         candidate overall is ever returned. This can't fix a ticker
+         that's actually faulty, but it guarantees a repair attempt is
+         never itself the reason a usable series ends up excluded - the
+         exact failure mode production hit, and it's also what makes
+         trying multiple boundary candidates safe: an unrelated
+         anomaly's date won't accidentally get the known ratio applied
+         to it, because doing so would only make that unrelated
+         anomaly's own worst move bigger, not smaller, and lose out to
+         "leave it alone" every time.
 
     Part 26 follow-up: now also tries _repair_isolated_spike (a bad-tick
     fix, a different failure shape entirely from a split - see that
-    function's own docstring) as a second candidate alongside whichever
-    of the known-table/yfinance-.splits repairs applies, and keeps
-    whichever candidate's own worst move is smallest (still only if
-    that beats the original - same self-correction as before, just
-    across more than one candidate now).
+    function's own docstring) as another candidate, and keeps whichever
+    candidate's own worst move is smallest (still only if that beats
+    the original).
+
+    Part 26 SECOND follow-up (owner: "same thing nothing chaged" after
+    the first Part 26 deploy). Checked Railway's own logs again - this
+    time with the new Close-window diagnostic logging from that same
+    deploy, giving real data instead of another guess. GOLD.AX's window
+    around its now-worst date (2011-01-04): ~135 for the prior two
+    weeks, then a clean, PERMANENT step down to ~13.5 that holds for the
+    following two weeks - ratio 135/13.5 = 9.997, i.e. almost exactly
+    10.0, GOLD.AX's own KNOWN_CORPORATE_ACTIONS ratio. IVV.AX's window
+    around ITS now-worst date (also 2011-01-04): ~100 for two weeks,
+    then a permanent step to ~6.8 - ratio 100/6.8 = 14.7, close to
+    IVV.AX's own known ratio of 15.0. Both tickers stepping down by
+    almost exactly their OWN real future 2022 split ratio, on the exact
+    same calendar date, is not a coincidence and not a second real
+    corporate action - it's a Yahoo/vendor data-processing seam: the
+    correct eventual ratio has apparently been retroactively baked into
+    this feed's numbers from 2011-01-04 onward, over a decade before the
+    2022 split actually happened, while data before that internal
+    cutoff was left at the original, unadjusted scale. KNOWN_ACTION_
+    DATE_TOLERANCE_DAYS (14 days) was built around a much smaller
+    settlement-timing slip and would never have caught a boundary this
+    far from the sourced date - so it's removed; both the sourced date
+    and the auto-detected date are now tried unconditionally as
+    candidates, letting self-correction alone (see point 2 above) decide
+    per ticker which one, if either, actually helps.
 
     Returns a (possibly) repaired copy of `hist`; never raises - a
     failed lookup, an empty split log, or a repair that doesn't
@@ -747,27 +783,22 @@ def _attempt_split_repair(ticker, hist):
         if spike_move is not None:
             candidates.append((spike_repaired, abs(spike_move)))
 
-    split_repaired = hist
     known = KNOWN_CORPORATE_ACTIONS.get((ticker or "").strip().upper())
     if known is not None:
-        boundary = known["effective_date"]
-        try:
-            known_ts = pd.Timestamp(known["effective_date"])
-            if orig_date is not None:
-                od = orig_date
-                if getattr(od, "tzinfo", None) is not None:
-                    od = od.tz_localize(None)
-                if abs((od - known_ts).days) <= KNOWN_ACTION_DATE_TOLERANCE_DAYS:
-                    boundary = od
-                else:
-                    boundary = None  # unrelated anomaly - don't guess, see docstring
-        except Exception:
-            pass
-        if boundary is not None:
+        boundaries = {known["effective_date"]}
+        if orig_date is not None:
+            od = orig_date
+            if getattr(od, "tzinfo", None) is not None:
+                od = od.tz_localize(None)
+            boundaries.add(od)
+        for boundary in boundaries:
             try:
-                split_repaired = _apply_split_ratio(hist, boundary, known["ratio"])
+                cand = _apply_split_ratio(hist, boundary, known["ratio"])
             except Exception:
-                split_repaired = hist
+                continue
+            _, cand_move = _worst_single_day_move(cand)
+            if cand_move is not None:
+                candidates.append((cand, abs(cand_move)))
     else:
         try:
             splits = yf.Ticker(ticker).splits
@@ -786,11 +817,10 @@ def _attempt_split_repair(ticker, hist):
                     split_repaired = _apply_split_ratio(split_repaired, split_date, ratio)
                 except Exception:
                     continue
-
-    if split_repaired is not hist:
-        _, split_move = _worst_single_day_move(split_repaired)
-        if split_move is not None:
-            candidates.append((split_repaired, abs(split_move)))
+            if split_repaired is not hist:
+                _, split_move = _worst_single_day_move(split_repaired)
+                if split_move is not None:
+                    candidates.append((split_repaired, abs(split_move)))
 
     if not candidates or orig_move is None:
         return hist
