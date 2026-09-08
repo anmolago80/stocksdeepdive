@@ -579,6 +579,91 @@ def _apply_split_ratio(hist, effective_date, ratio):
 
 
 KNOWN_ACTION_DATE_TOLERANCE_DAYS = 14  # see _attempt_split_repair's Part 26 note
+SPIKE_REVERSION_TOLERANCE = 0.20  # see _repair_isolated_spike's own docstring
+SPIKE_REVERSION_WINDOW_DAYS = 10  # how many trading days ahead to look for a reversion
+
+
+def _repair_isolated_spike(hist):
+    """Detects and repairs a TRANSIENT bad-data window - a run of one or
+    more days where Close diverges sharply from its established level
+    and later comes back close to it - as distinct from a genuine,
+    PERMANENT level shift (a real split, or a real sustained crash/rally
+    that holds). This is a fundamentally different failure shape from
+    everything _apply_split_ratio/_attempt_split_repair's known-table
+    and yfinance-.splits paths handle: those model a step change (every
+    day before the boundary shifts the same way, forever after); this
+    is V-shaped - the level itself never really changed, only some of
+    the prints did.
+
+    Part 26 follow-up (owner: still "no graph" and all three tickers
+    still excluded, even after boundary auto-detection and the
+    pre-2005 floor cleared each ticker's ORIGINAL flagged anomaly).
+    Checking Railway's logs for this exact deploy: each of GOLD.AX/
+    IVV.AX/OCL.AX is now failing on a SECOND, previously-hidden
+    anomaly, at a date with no matching corporate action anywhere
+    (confirmed by directly searching ASX announcement archives - only
+    GOLD.AX's known 2022 split exists on record).
+
+    IMPORTANT arithmetic note that shaped this function: a clean,
+    single-day bad print that fully reverts on the VERY NEXT day would
+    always show the REBOUND (not the drop) as the larger single-day
+    move by percentage - dropping 90% and recovering back to par is a
+    +900% day, bigger in magnitude than the -90% that caused it. Since
+    GOLD.AX's own flagged worst move is the DROP itself (-89.9% on
+    2011-01-04, not some huge positive rebound the next day), a same-
+    next-day full revert is arithmetically ruled out for it - so this
+    function searches a WINDOW of up to SPIKE_REVERSION_WINDOW_DAYS
+    trading days ahead for a return to the pre-divergence level, not
+    just the immediate next day, and repairs the WHOLE bad span (not
+    just one row) via straight-line interpolation between the last good
+    day and the first day that's back to normal - covering both a
+    single bad tick and a short run of bad prints that only self-
+    correct some days later, whichever this turns out to be once
+    deployed.
+
+    If no later day within the window comes back close to the pre-
+    divergence level, this function leaves `hist` completely untouched
+    - that's either a genuine, persisting level shift, or a real,
+    extreme market move (e.g. OCL.AX's 61.8% move on 2008-10-14 sits
+    squarely inside the real Oct 2008 GFC crash week and may simply be
+    real crisis-era volatility for a small-cap, not a data fault at
+    all) - and no version of this codebase should silently overwrite
+    that.
+
+    Returns hist unchanged (never raises) if there isn't a real prior
+    day to anchor on, or no reversion is found within the window."""
+    worst_date, _worst_move = _worst_single_day_move(hist)
+    if worst_date is None or hist is None or "Close" not in hist.columns:
+        return hist
+    idx = hist.index
+    try:
+        pos = idx.get_loc(worst_date)
+    except KeyError:
+        return hist
+    if not isinstance(pos, (int, np.integer)) or pos < 1:
+        return hist
+    close = hist["Close"].astype(float)
+    anchor_before = close.iloc[pos - 1]
+    if anchor_before <= 0:
+        return hist
+
+    reversion_pos = None
+    limit = min(pos + SPIKE_REVERSION_WINDOW_DAYS, len(idx) - 1)
+    for j in range(pos + 1, limit + 1):
+        val = close.iloc[j]
+        if val > 0 and abs(val - anchor_before) / anchor_before <= SPIKE_REVERSION_TOLERANCE:
+            reversion_pos = j
+            break
+    if reversion_pos is None:
+        return hist  # no reversion within the window - leave a real/persisting move alone
+
+    repaired = hist.copy()
+    close_col = repaired.columns.get_loc("Close")
+    anchor_after = close.iloc[reversion_pos]
+    span = reversion_pos - (pos - 1)
+    for k, j in enumerate(range(pos, reversion_pos), start=1):
+        repaired.iloc[j, close_col] = anchor_before + (anchor_after - anchor_before) * (k / span)
+    return repaired
 
 
 def _attempt_split_repair(ticker, hist):
@@ -633,13 +718,20 @@ def _attempt_split_repair(ticker, hist):
          benefit; the known-table repair is skipped in that case
          (falls through to the self-correction below, which will keep
          `hist` unchanged since there's nothing to compare it against).
-      2. Self-correction (both paths, known-table and general
-         yfinance-.splits): a "repaired" series is only returned if its
-         own worst move is genuinely smaller in magnitude than the
-         original's. This can't fix a ticker that's actually faulty,
-         but it guarantees a repair attempt is never itself the reason
-         a usable series ends up excluded - the exact failure mode
-         production hit.
+      2. Self-correction (every path): a "repaired" series is only
+         returned if its own worst move is genuinely smaller in
+         magnitude than the original's. This can't fix a ticker that's
+         actually faulty, but it guarantees a repair attempt is never
+         itself the reason a usable series ends up excluded - the exact
+         failure mode production hit.
+
+    Part 26 follow-up: now also tries _repair_isolated_spike (a bad-tick
+    fix, a different failure shape entirely from a split - see that
+    function's own docstring) as a second candidate alongside whichever
+    of the known-table/yfinance-.splits repairs applies, and keeps
+    whichever candidate's own worst move is smallest (still only if
+    that beats the original - same self-correction as before, just
+    across more than one candidate now).
 
     Returns a (possibly) repaired copy of `hist`; never raises - a
     failed lookup, an empty split log, or a repair that doesn't
@@ -647,8 +739,15 @@ def _attempt_split_repair(ticker, hist):
     re-check after this call is what actually decides whether the
     ticker ends up usable."""
     orig_date, orig_move = _worst_single_day_move(hist)
-    repaired = hist
+    candidates = []  # [(repaired_hist, abs(worst_move)), ...]
 
+    spike_repaired = _repair_isolated_spike(hist)
+    if spike_repaired is not hist:
+        _, spike_move = _worst_single_day_move(spike_repaired)
+        if spike_move is not None:
+            candidates.append((spike_repaired, abs(spike_move)))
+
+    split_repaired = hist
     known = KNOWN_CORPORATE_ACTIONS.get((ticker or "").strip().upper())
     if known is not None:
         boundary = known["effective_date"]
@@ -666,16 +765,16 @@ def _attempt_split_repair(ticker, hist):
             pass
         if boundary is not None:
             try:
-                repaired = _apply_split_ratio(hist, boundary, known["ratio"])
+                split_repaired = _apply_split_ratio(hist, boundary, known["ratio"])
             except Exception:
-                repaired = hist
+                split_repaired = hist
     else:
         try:
             splits = yf.Ticker(ticker).splits
         except Exception:
             splits = None
         if splits is not None and len(splits) > 0:
-            repaired = hist
+            split_repaired = hist
             for split_date, ratio in splits.items():
                 try:
                     ratio = float(ratio)
@@ -684,15 +783,21 @@ def _attempt_split_repair(ticker, hist):
                 if not ratio or ratio == 1.0:
                     continue
                 try:
-                    repaired = _apply_split_ratio(repaired, split_date, ratio)
+                    split_repaired = _apply_split_ratio(split_repaired, split_date, ratio)
                 except Exception:
                     continue
 
-    if repaired is not hist:
-        _, repaired_move = _worst_single_day_move(repaired)
-        if orig_move is not None and repaired_move is not None and abs(repaired_move) >= abs(orig_move):
-            return hist
-    return repaired
+    if split_repaired is not hist:
+        _, split_move = _worst_single_day_move(split_repaired)
+        if split_move is not None:
+            candidates.append((split_repaired, abs(split_move)))
+
+    if not candidates or orig_move is None:
+        return hist
+    best_hist, best_abs_move = min(candidates, key=lambda c: c[1])
+    if best_abs_move < abs(orig_move):
+        return best_hist
+    return hist
 
 
 def sanity_checked_history(ticker, hist, is_fund):
@@ -734,7 +839,44 @@ def sanity_checked_history(ticker, hist, is_fund):
         "(threshold %.0f%%, fund=%s) - _attempt_split_repair did not clear it",
         ticker, r_move, diagnostic["date"], threshold * 100.0, is_fund,
     )
+    # Part 26 follow-up: every guess so far (boundary auto-detection, the
+    # pre-2005 floor, the isolated-spike repair above) has been built on
+    # inference from a single (date, move_pct) pair rather than the raw
+    # data itself - and the last two rounds of "fixed it" both turned out
+    # to only be partially right. Logging the actual Close values in a
+    # window around the still-offending date, on the REPAIRED series (so
+    # this reflects whatever _attempt_split_repair already tried), means
+    # the next Railway check is reading real evidence instead of guessing
+    # again from one number.
+    try:
+        _log_window_around(ticker, repaired if repaired is not None else hist, r_date)
+    except Exception:
+        pass
     return None, True, diagnostic
+
+
+def _log_window_around(ticker, hist, center_date, days=8):
+    """Part 26 follow-up diagnostic: logs Close[center_date-days ..
+    center_date+days] (date: value, one per line via %s) so a guard
+    exclusion this codebase couldn't resolve on the first guess leaves
+    real, inspectable evidence behind instead of just a single (date,
+    move_pct) pair. Read-only, never raises to its caller (wrapped in
+    try/except at the call site) - a logging failure must never affect
+    which tickers the guard excludes."""
+    if hist is None or hist.empty or "Close" not in hist.columns:
+        return
+    idx = hist.index
+    try:
+        pos = idx.get_loc(center_date)
+    except KeyError:
+        return
+    if not isinstance(pos, (int, np.integer)):
+        return
+    lo = max(0, pos - days)
+    hi = min(len(idx) - 1, pos + days)
+    window = hist["Close"].astype(float).iloc[lo:hi + 1]
+    lines = ", ".join(f"{d.date()}={v:.4f}" for d, v in window.items())
+    _stress_logger.warning("stress guard %s: Close window around %s -> %s", ticker, center_date, lines)
 
 
 # -----------------------------------------------------------------
