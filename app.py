@@ -1952,6 +1952,20 @@ st.markdown(
     div[class*="st-key-sw_trim_card"] div[data-testid="stLayoutWrapper"] {
         border-radius: 12px !important;
     }
+    /* Debt recycling "Investment 2" ghost add-card (Part 29, 8 Sep 2026 -
+       "option 1 deploy"): dashed teal-on-hover border standing in for the
+       always-visible Investment 2 form until the user clicks to reveal it.
+       Same st-key-scoped stLayoutWrapper pattern as sw_bridge_card/
+       sw_trim_card above. */
+    div[class*="st-key-dr_inv2_ghost"] div[data-testid="stLayoutWrapper"] {
+        border: 1.5px dashed #2b3f5c !important;
+        border-radius: 12px !important;
+        transition: border-color .15s ease, background .15s ease;
+    }
+    div[class*="st-key-dr_inv2_ghost"] div[data-testid="stLayoutWrapper"]:hover {
+        border-color: #2dd4bf !important;
+        background: rgba(45, 212, 191, 0.04) !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -18392,7 +18406,44 @@ def _render_debt_recycling_tool(email):
             return income_pct, growth_pct, franked_pct
 
         inv1_income_pct, inv1_growth_pct, inv1_franked_pct = _investment_inputs(1, "inv1_kicker")
-        inv2_income_pct, inv2_growth_pct, inv2_franked_pct = _investment_inputs(2, "inv2_kicker")
+
+        # Part 29 (8 Sep 2026, "option 1 deploy" - Investment 2 ghost
+        # add-card): Investment 2 only ever feeds Scenario D's math, so it
+        # doesn't need to sit visible by default for every visitor. Default
+        # to revealed only when this email already has a previously saved
+        # scenario (bool(_saved_inputs)) - a returning user who configured
+        # Investment 2 before (even left at its defaults, since the save
+        # button always writes all three inv2_* fields) keeps seeing their
+        # own form exactly as before this change; a brand-new visitor
+        # instead sees a dashed ghost card and reveals the form by choice.
+        _seed("tools_dr_show_inv2", bool(_saved_inputs))
+        if st.session_state["tools_dr_show_inv2"]:
+            inv2_income_pct, inv2_growth_pct, inv2_franked_pct = _investment_inputs(2, "inv2_kicker")
+        else:
+            with st.container(key="dr_inv2_ghost", border=True):
+                st.markdown(
+                    f"<div style='text-align:center; padding: 14px 4px 4px;'>"
+                    f"<div style='font-size:14px; font-weight:600;'>{_dl('inv2_ghost_title')}</div>"
+                    f"<div style='font-size:12px; color:#8aa0b8; margin-top:3px;'>{_dl('inv2_ghost_sub')}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+                if st.button(_dl("inv2_ghost_button"), key="tools_dr_show_inv2_btn", width='stretch'):
+                    st.session_state["tools_dr_show_inv2"] = True
+                    st.rerun()
+            # Investment 2 still feeds Scenario D's comparison even while
+            # its form is hidden - seed (never render) its three inputs so
+            # Scenario D keeps using this email's previously-saved values,
+            # or else the same 3.0/5.0/50.0 defaults _investment_inputs
+            # itself seeds, rather than going undefined.
+            _seed("tools_dr_inv2_income", 3.0)
+            _seed("tools_dr_inv2_growth", 5.0)
+            inv2_income_pct = st.session_state["tools_dr_inv2_income"]
+            inv2_growth_pct = st.session_state["tools_dr_inv2_growth"]
+            inv2_franked_pct = 0.0
+            if country == "au":
+                _seed("tools_dr_inv2_franked", 50.0)
+                inv2_franked_pct = st.session_state["tools_dr_inv2_franked"]
 
     # ---- Run the engine ----
     _engine_kwargs = dict(
