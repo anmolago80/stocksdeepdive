@@ -189,7 +189,7 @@ GET_LONG_HISTORY_FLOOR = "2005-01-01"
 
 
 _LONG_HISTORY_TABLE = "stress_long_history_v4"
-_RESULT_CACHE_TABLE = "stress_result_cache_v7"
+_RESULT_CACHE_TABLE = "stress_result_cache_v8"
 
 
 def _conn():
@@ -253,6 +253,13 @@ def _conn():
     # local test using the exact values Railway's own logs showed
     # clears cleanly) actually runs on the next page load instead of a
     # cached "still excluded" verdict serving from before this deploy.
+    #
+    # Part 26 FIFTH follow-up (2026-09-08): bumped again, _v7->_v8. That
+    # diagnostic logging paid off immediately - it showed IVV.AX has two
+    # independent, LAYERED anomalies (a transient spike at 2015-12-28
+    # sitting on top of the same 2011-01-04 vendor seam GOLD.AX has), and
+    # _attempt_split_repair's own follow-up note above explains the fix.
+    # Every Stress Test result recomputes fresh from here.
     conn.execute(
         f"""CREATE TABLE IF NOT EXISTS {_LONG_HISTORY_TABLE} (
             ticker TEXT PRIMARY KEY,
@@ -777,6 +784,30 @@ def _attempt_split_repair(ticker, hist):
     candidates, letting self-correction alone (see point 2 above) decide
     per ticker which one, if either, actually helps.
 
+    Part 26 FIFTH follow-up (owner: IVV.AX still excluded, "same thing").
+    The new per-candidate diagnostic added in the prior round exposed the
+    real bug: IVV.AX's ORIGINAL worst move is 1385.7% on 2015-12-28 (a
+    transient spike, not the 2011 vendor seam at all) - so the "auto-
+    detected boundary" candidates above were anchoring on 2015-12-28, not
+    2011-01-04, because they were computed from hist's OWN worst-move
+    date, and hist's worst move is the SPIKE, not the seam. The isolated-
+    spike repair correctly clears the spike (1385.7% -> nothing), which
+    is exactly what revealed 2011-01-04 as the NEXT-worst move underneath
+    it - but every known-table candidate was still being built from the
+    RAW, un-spike-repaired hist, so none of them ever targeted the right
+    boundary. IVV.AX has two independent, LAYERED anomalies stacked on
+    top of each other, and a single repair pass can only ever find and
+    fix whichever one currently reads as "worst".
+
+    Fix: known-table (and yfinance-.splits) candidates are now built
+    against EACH of {hist, spike_repaired} as a base (skipping the
+    second if spike-repair didn't change anything), each contributing
+    its own auto-detected boundary (that base's own worst-move date) in
+    addition to the sourced one - so a second anomaly hiding under a
+    first one the spike-repair already cleared gets its own chance at a
+    correct boundary instead of inheriting the wrong one. Self-
+    correction is still what decides whether to actually use any of it.
+
     Returns a (possibly) repaired copy of `hist`; never raises - a
     failed lookup, an empty split log, or a repair that doesn't
     actually help just returns `hist` unchanged, and the caller's own
@@ -785,35 +816,44 @@ def _attempt_split_repair(ticker, hist):
     orig_date, orig_move = _worst_single_day_move(hist)
     candidates = []  # [(repaired_hist, abs(worst_move)), ...]
 
+    def _add_candidate(h):
+        if h is None:
+            return
+        _, m = _worst_single_day_move(h)
+        if m is not None:
+            candidates.append((h, abs(m)))
+
     spike_repaired = _repair_isolated_spike(hist)
+    bases = [hist]
     if spike_repaired is not hist:
-        _, spike_move = _worst_single_day_move(spike_repaired)
-        if spike_move is not None:
-            candidates.append((spike_repaired, abs(spike_move)))
+        _add_candidate(spike_repaired)
+        bases.append(spike_repaired)
 
     known = KNOWN_CORPORATE_ACTIONS.get((ticker or "").strip().upper())
     if known is not None:
-        boundaries = {known["effective_date"]}
-        if orig_date is not None:
-            od = orig_date
-            if getattr(od, "tzinfo", None) is not None:
-                od = od.tz_localize(None)
-            boundaries.add(od)
-        for boundary in boundaries:
-            try:
-                cand = _apply_split_ratio(hist, boundary, known["ratio"])
-            except Exception:
-                continue
-            _, cand_move = _worst_single_day_move(cand)
-            if cand_move is not None:
-                candidates.append((cand, abs(cand_move)))
+        for base in bases:
+            base_date, _ = _worst_single_day_move(base)
+            boundaries = {known["effective_date"]}
+            if base_date is not None:
+                bd = base_date
+                if getattr(bd, "tzinfo", None) is not None:
+                    bd = bd.tz_localize(None)
+                boundaries.add(bd)
+            for boundary in boundaries:
+                try:
+                    cand = _apply_split_ratio(base, boundary, known["ratio"])
+                except Exception:
+                    continue
+                _add_candidate(cand)
     else:
-        try:
-            splits = yf.Ticker(ticker).splits
-        except Exception:
-            splits = None
-        if splits is not None and len(splits) > 0:
-            split_repaired = hist
+        for base in bases:
+            try:
+                splits = yf.Ticker(ticker).splits
+            except Exception:
+                splits = None
+            if splits is None or len(splits) == 0:
+                continue
+            split_repaired = base
             for split_date, ratio in splits.items():
                 try:
                     ratio = float(ratio)
@@ -825,10 +865,8 @@ def _attempt_split_repair(ticker, hist):
                     split_repaired = _apply_split_ratio(split_repaired, split_date, ratio)
                 except Exception:
                     continue
-            if split_repaired is not hist:
-                _, split_move = _worst_single_day_move(split_repaired)
-                if split_move is not None:
-                    candidates.append((split_repaired, abs(split_move)))
+            if split_repaired is not base:
+                _add_candidate(split_repaired)
 
     if not candidates or orig_move is None:
         _stress_logger.warning(
