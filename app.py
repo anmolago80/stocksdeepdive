@@ -1953,18 +1953,62 @@ st.markdown(
         border-radius: 12px !important;
     }
     /* Debt recycling "Investment 2" ghost add-card (Part 29, 8 Sep 2026 -
-       "option 1 deploy"): dashed teal-on-hover border standing in for the
-       always-visible Investment 2 form until the user clicks to reveal it.
-       Same st-key-scoped stLayoutWrapper pattern as sw_bridge_card/
-       sw_trim_card above. */
-    div[class*="st-key-dr_inv2_ghost"] div[data-testid="stLayoutWrapper"] {
+       "option 1 deploy"; reworked 8 Sep 2026 follow-up - owner's own
+       screenshot showed the deployed container+separate-button combo
+       rendering as two visually distinct pieces (a bordered text box,
+       then a separate teal-outlined button underneath) instead of the
+       ONE unified dashed clickable card with a centered "+" the approved
+       mockup showed. A st.container + st.button is always two DOM
+       elements even styled identically - the only way to get a single
+       clickable surface is to style the button itself AS the whole card
+       and drop the wrapping container entirely (see the call site,
+       _render_debt_recycling_tool). Colors/radius/dash match the
+       approved mockup's own --border-soft/--teal/--text/--muted tokens
+       (scratch/dr_add_investment_options.html) exactly, not
+       reinterpreted. */
+    div[class*="st-key-dr_inv2_ghost_btn"] button {
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: 100% !important;
+        padding: 26px 20px 20px !important;
         border: 1.5px dashed #2b3f5c !important;
         border-radius: 12px !important;
-        transition: border-color .15s ease, background .15s ease;
+        background: transparent !important;
+        color: #8aa0b8 !important;
+        transition: border-color .15s ease, background .15s ease !important;
     }
-    div[class*="st-key-dr_inv2_ghost"] div[data-testid="stLayoutWrapper"]:hover {
+    div[class*="st-key-dr_inv2_ghost_btn"] button::before {
+        content: "+";
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        border: 1.5px solid #2dd4bf;
+        color: #2dd4bf;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 16px;
+        margin: 0 auto 10px;
+    }
+    div[class*="st-key-dr_inv2_ghost_btn"] button:hover {
         border-color: #2dd4bf !important;
         background: rgba(45, 212, 191, 0.04) !important;
+        color: #8aa0b8 !important;
+    }
+    div[class*="st-key-dr_inv2_ghost_btn"] button p {
+        margin: 0 !important;
+        line-height: 1.5 !important;
+        font-size: 11.5px !important;
+        text-align: center !important;
+    }
+    div[class*="st-key-dr_inv2_ghost_btn"] button p strong {
+        display: block !important;
+        font-size: 13.5px !important;
+        font-weight: 600 !important;
+        color: #e6edf5 !important;
+        margin-bottom: 3px !important;
     }
     </style>
     """,
@@ -18549,19 +18593,22 @@ def _render_debt_recycling_tool(email):
         if st.session_state[_show_inv2_key]:
             inv2_income_pct, inv2_growth_pct, inv2_franked_pct = _investment_inputs(2, "inv2_kicker")
         else:
-            with st.container(key="dr_inv2_ghost", border=True):
-                st.markdown(
-                    f"<div style='text-align:center; padding: 14px 4px 4px;'>"
-                    f"<div style='font-size:14px; font-weight:600;'>{_dl('inv2_ghost_title')}</div>"
-                    f"<div style='font-size:12px; color:#8aa0b8; margin-top:3px;'>{_dl('inv2_ghost_sub')}</div>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-                if st.button(_dl("inv2_ghost_button"),
-                            key=_tools_plan_key(_active_scenario, "tools_dr_show_inv2_btn"),
-                            width='stretch'):
-                    st.session_state[_show_inv2_key] = True
-                    st.rerun()
+            # 8 Sep 2026 follow-up (owner's screenshot: deployed card looked
+            # "different" to the approved mockup - a bordered text box with
+            # a SEPARATE button underneath, not one unified clickable card).
+            # ONE st.button, styled entirely via the st-key-dr_inv2_ghost_btn
+            # CSS above, replaces the old container+markdown+button trio -
+            # the button itself IS the dashed card, so there is only ever
+            # one clickable surface, matching the mockup exactly. The "+"
+            # badge is a pure-CSS ::before (not part of the label), and the
+            # bold **title** / plain subtitle split uses a markdown line
+            # break ("  \n") so both lines render inside the SAME <p>,
+            # letting the CSS above style the <strong> title distinctly
+            # from the muted subtitle beneath it without a second element.
+            _ghost_label = f"**{_dl('inv2_ghost_title')}**  \n{_dl('inv2_ghost_sub')}"
+            if st.button(_ghost_label, key="dr_inv2_ghost_btn", width='stretch'):
+                st.session_state[_show_inv2_key] = True
+                st.rerun()
             # Investment 2 still feeds Scenario D's comparison even while
             # its form is hidden - seed (never render) its three inputs so
             # Scenario D keeps using this scenario's previously-saved
@@ -18907,7 +18954,7 @@ def _utilities_run_extraction(email, _lang, uploaded_files):
         except Exception:
             pass
     if not resp["ok"]:
-        print(f"[bill_check] Haiku extraction call failed: {resp.get('error')}")
+        _tools_logger.warning("[bill_check] Haiku extraction call failed: %s", resp.get("error"))
     extracted = bill_check_engine.parse_extraction_response(resp["text"]) if resp["ok"] else {}
 
     if bill_check_engine.needs_retry(extracted):
@@ -18920,7 +18967,7 @@ def _utilities_run_extraction(email, _lang, uploaded_files):
             except Exception:
                 pass
         if not resp2["ok"]:
-            print(f"[bill_check] Sonnet retry call failed: {resp2.get('error')}")
+            _tools_logger.warning("[bill_check] Sonnet retry call failed: %s", resp2.get("error"))
         if resp2["ok"]:
             retry_fields = bill_check_engine.parse_extraction_response(resp2["text"])
             if retry_fields:
@@ -18952,10 +18999,26 @@ def _utilities_run_extraction(email, _lang, uploaded_files):
     # repeat of this report is debuggable from Railway's deploy logs
     # instead of only from a screen recording.
     if bill_check_engine.extraction_below_minimum(extracted):
-        print(f"[bill_check] extraction below minimum after retry - fields present: "
-              f"{sorted(extracted.keys())}, billing_period_days={extracted.get('billing_period_days')!r}, "
-              f"total_amount={extracted.get('total_amount')!r}, confidence={extracted.get('confidence')!r}")
+        _tools_logger.warning(
+            "[bill_check] extraction below minimum after retry - fields present: %s, "
+            "billing_period_days=%r, total_amount=%r, confidence=%r",
+            sorted(extracted.keys()), extracted.get("billing_period_days"),
+            extracted.get("total_amount"), extracted.get("confidence"))
         return None, None
+    # 8 Sep 2026 follow-up: log the ACCEPTED path too, not just rejections -
+    # the owner's first re-test after the degenerate-value fix deployed
+    # showed a review form with blank postcode/state/0.00 total on-screen
+    # with no warning shown, which should be impossible if extraction_
+    # below_minimum() rejected it. Logging every outcome (not just
+    # failures) is the only way to tell, next time, whether that was a
+    # genuinely-accepted-but-sparse extraction or a stale-session-state
+    # display bug instead of guessing from a screen recording again.
+    _tools_logger.warning(
+        "[bill_check] extraction ACCEPTED - fields present: %s, fuel=%r, "
+        "billing_period_days=%r, total_amount=%r, postcode=%r, state=%r, confidence=%r",
+        sorted(extracted.keys()), extracted.get("fuel"), extracted.get("billing_period_days"),
+        extracted.get("total_amount"), extracted.get("postcode"), extracted.get("state"),
+        extracted.get("confidence"))
     return extracted, None
 
 
@@ -19118,6 +19181,19 @@ def _render_utilities_new_check(email, _ul, _lang, allowed, reason, usage, typic
                                     accept_multiple_files=True, key="tools_util_uploader")
         st.caption(_ul("upload_privacy_note"))
         if uploaded and st.button(_ul("upload_button"), type="primary", key="tools_util_extract_btn"):
+            # 8 Sep 2026 follow-up fix: a stale review_fields dict from an
+            # EARLIER, already-completed extraction attempt this same
+            # browser session used to survive untouched here - a second
+            # upload that failed or came back degenerate would leave the
+            # PRIOR attempt's leftover data (or, worse, its own dimmed
+            # in-flight DOM) on screen with no warning, which is exactly
+            # what the owner's second video showed (a "What we read"
+            # section with real-looking labels but blank/zeroed values,
+            # no error). Clearing it before this attempt even starts means
+            # a fresh attempt's outcome can never be masked by an older
+            # one's leftovers - the form is genuinely blank (no header)
+            # until THIS attempt's real result lands.
+            st.session_state.pop("tools_util_review_fields", None)
             with st.spinner(_ul("extracting_spinner")):
                 extracted, gate_error = _utilities_run_extraction(email, _lang, uploaded)
             # `uploaded` (Streamlit's in-memory UploadedFile objects) is a
@@ -19475,7 +19551,7 @@ def _insurance_run_extraction(email, _lang, uploaded_files):
         except Exception:
             pass
     if not resp["ok"]:
-        print(f"[insurance_check] Haiku extraction call failed: {resp.get('error')}")
+        _tools_logger.warning("[insurance_check] Haiku extraction call failed: %s", resp.get("error"))
     extracted = insurance_engine.parse_extraction_response(resp["text"]) if resp["ok"] else {}
 
     if insurance_engine.needs_retry(extracted):
@@ -19488,7 +19564,7 @@ def _insurance_run_extraction(email, _lang, uploaded_files):
             except Exception:
                 pass
         if not resp2["ok"]:
-            print(f"[insurance_check] Sonnet retry call failed: {resp2.get('error')}")
+            _tools_logger.warning("[insurance_check] Sonnet retry call failed: %s", resp2.get("error"))
         if resp2["ok"]:
             retry_fields = insurance_engine.parse_extraction_response(resp2["text"])
             if retry_fields:
@@ -19496,14 +19572,29 @@ def _insurance_run_extraction(email, _lang, uploaded_files):
 
     # Widened 8 Sep 2026 alongside bill_check_engine's own fix (owner
     # report: "same issue ... same with the insurance") - see that
-    # call site's comment for the full story. Diagnostic print is
+    # call site's comment for the full story. Diagnostic logging is
     # PII-free (field names/presence + the premium amount, which is not
     # personal data) so a repeat is debuggable from Railway's logs.
+    # Switched from print() to _tools_logger 8 Sep 2026 follow-up: print()
+    # output was never actually reaching Railway's captured logs (stdout
+    # is block-buffered under a non-TTY container; the working loggers
+    # elsewhere in this codebase - sdd.stress, sdd.tools - all go through
+    # the logging module, which flushes on every call) - a re-test after
+    # the first fix deployed produced zero [insurance_check]/[bill_check]
+    # lines despite the feature genuinely being exercised, which is what
+    # exposed this.
     if insurance_engine.extraction_below_minimum(extracted):
-        print(f"[insurance_check] extraction below minimum after retry - fields present: "
-              f"{sorted(extracted.keys())}, policy_type={extracted.get('policy_type')!r}, "
-              f"premium_amount={extracted.get('premium_amount')!r}, confidence={extracted.get('confidence')!r}")
+        _tools_logger.warning(
+            "[insurance_check] extraction below minimum after retry - fields present: %s, "
+            "policy_type=%r, premium_amount=%r, confidence=%r",
+            sorted(extracted.keys()), extracted.get("policy_type"),
+            extracted.get("premium_amount"), extracted.get("confidence"))
         return None, None
+    _tools_logger.warning(
+        "[insurance_check] extraction ACCEPTED - fields present: %s, policy_type=%r, "
+        "premium_amount=%r, state=%r, confidence=%r",
+        sorted(extracted.keys()), extracted.get("policy_type"), extracted.get("premium_amount"),
+        extracted.get("state"), extracted.get("confidence"))
     return extracted, None
 
 
@@ -19651,6 +19742,12 @@ def _render_insurance_new_check(email, _il, _lang, allowed, reason, usage, typic
                                     accept_multiple_files=True, key="tools_ins_uploader")
         st.caption(_il("upload_privacy_note"))
         if uploaded and st.button(_il("upload_button"), type="primary", key="tools_ins_extract_btn"):
+            # 8 Sep 2026 follow-up fix: see the matching comment at
+            # Utilities' own upload-button call site - a stale review_
+            # fields dict from an earlier attempt this session must never
+            # survive to be shown alongside (or instead of) a fresh
+            # attempt's real outcome.
+            st.session_state.pop("tools_ins_review_fields", None)
             with st.spinner(_il("extracting_spinner")):
                 extracted, gate_error = _insurance_run_extraction(email, _lang, uploaded)
             # `uploaded` (Streamlit's in-memory UploadedFile objects) goes
