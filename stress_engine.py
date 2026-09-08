@@ -271,7 +271,32 @@ def get_long_history(ticker, force_refresh=False):
     splits Close series slipped through) - see module docstring's
     "two layers" note. The returned "Close" is Yahoo's own split-and-
     dividend-back-adjusted price; "Dividends" stays the raw per-share
-    amount, untouched by that adjustment."""
+    amount, untouched by that adjustment.
+
+    Part 24 (owner-reported: Stress Test showing "not enough shared
+    price history" for EVERY holding, including CSL.AX - a highly
+    liquid, decades-listed blue chip that unquestionably has data on
+    Yahoo Finance, which rules out a real data-availability gap and
+    points at the fetch itself). The follow-up to Fix round 10 #3 added
+    repair=True to this exact call two deploys ago; that argument was
+    never exercised against a live Yahoo Finance connection from any
+    prior dev sandbox (this module's own docstring says so plainly), so
+    a library-version incompatibility or a repair-heuristic bug specific
+    to the tickers in a given portfolio could silently turn EVERY fetch
+    into an exception, landing in the bare `except` below with nothing
+    logged - previously invisible by design. Two changes address that
+    without weakening the repair behaviour when it does work:
+      1. the exception is now logged (ticker + repr(exc)) via this
+         module's own _stress_logger, so a repeat of exactly this
+         failure mode is never silent again;
+      2. a single retry WITHOUT repair=True follows a failed repair=True
+         attempt - auto_adjust=True alone is the pre-repair, Part 14
+         configuration this module already ran on successfully (that
+         part's own fix is what caught and corrected the IVV.AX/CSL.AX
+         split-adjustment bug in the first place), so this fallback
+         costs nothing when repair=True was never the problem and
+         restores a real (if less corporate-action-hardened) history
+         when it was."""
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return pd.DataFrame()
@@ -279,14 +304,23 @@ def get_long_history(ticker, force_refresh=False):
         cached = _cache_get_history(ticker)
         if cached is not None:
             return cached
+
+    def _fetch(**kwargs):
+        h = yf.Ticker(ticker).history(period="max", auto_adjust=True, **kwargs)
+        if h is None or h.empty:
+            return pd.DataFrame()
+        return h[["Close", "Dividends"]] if "Dividends" in h.columns else h[["Close"]].assign(Dividends=0.0)
+
+    hist = pd.DataFrame()
     try:
-        hist = yf.Ticker(ticker).history(period="max", auto_adjust=True, repair=True)
-        if hist is None or hist.empty:
+        hist = _fetch(repair=True)
+    except Exception as exc:
+        _stress_logger.warning("get_long_history(%s): repair=True fetch failed (%r); retrying without repair", ticker, exc)
+        try:
+            hist = _fetch(repair=False)
+        except Exception as exc2:
+            _stress_logger.warning("get_long_history(%s): retry without repair also failed (%r)", ticker, exc2)
             hist = pd.DataFrame()
-        else:
-            hist = hist[["Close", "Dividends"]] if "Dividends" in hist.columns else hist[["Close"]].assign(Dividends=0.0)
-    except Exception:
-        hist = pd.DataFrame()
     try:
         if not hist.empty:
             _cache_set_history(ticker, hist)
