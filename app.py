@@ -19206,6 +19206,36 @@ def _render_utilities_new_check(email, _ul, _lang, allowed, reason, usage, typic
                 st.warning(_ul("extraction_failed"))
             else:
                 st.session_state["tools_util_review_fields"] = extracted
+                # 8 Sep 2026 second follow-up - THE REAL bug behind "it keeps
+                # all the bill data empty": Railway's own logs (now working,
+                # see _utilities_run_extraction) proved the AI extraction was
+                # correct the whole time - fuel/billing_period_days/
+                # total_amount/postcode/state all came back right, confidence
+                # 0.95. The review form still rendered blank because every
+                # field widget below (tools_util_postcode, _days, _total,
+                # _state, _usage, _controlled, _fuel) already has a `key=`,
+                # and Streamlit only ever applies a widget's `value=` argument
+                # the FIRST time that key is ever registered in session_state -
+                # these widgets were already registered (with their empty/
+                # zero defaults) on the very first page render, long before
+                # any upload happened, so every later `value=fields.get(...)`
+                # was silently ignored no matter what extracted. Verified this
+                # exact mechanism (and this exact fix) against a live local
+                # Streamlit repro before shipping - see this commit's own
+                # test. The fix: write each widget's session_state key
+                # directly, right here, BEFORE that widget is instantiated
+                # further down in this same script run - Streamlit honours a
+                # value set this way (it's simply "the current value" by the
+                # time the widget line executes), unlike a `value=` argument
+                # racing against an already-registered key.
+                if extracted.get("fuel") in ("electricity", "gas", "water", "other"):
+                    st.session_state["tools_util_fuel"] = extracted["fuel"]
+                st.session_state["tools_util_postcode"] = extracted.get("postcode") or ""
+                st.session_state["tools_util_days"] = int(extracted.get("billing_period_days") or 30)
+                st.session_state["tools_util_total"] = float(extracted.get("total_amount") or 0.0)
+                st.session_state["tools_util_state"] = extracted.get("state") or ""
+                st.session_state["tools_util_usage"] = float(extracted.get("usage_kwh") or 0.0)
+                st.session_state["tools_util_controlled"] = float(extracted.get("controlled_load_kwh") or 0.0)
         fields = st.session_state.get("tools_util_review_fields", {})
         if fields:
             st.markdown(f"**{_ul('review_title')}**")
@@ -19759,6 +19789,37 @@ def _render_insurance_new_check(email, _il, _lang, allowed, reason, usage, typic
                 st.warning(_il("extraction_failed"))
             else:
                 st.session_state["tools_ins_review_fields"] = extracted
+                # 8 Sep 2026 second follow-up - see the matching comment at
+                # Utilities' own success branch for the full story: every
+                # field widget below already has a `key=`, and Streamlit only
+                # ever applies a widget's `value=` argument the FIRST time
+                # that key is registered in session_state (these widgets were
+                # already registered - with empty/zero defaults - on the very
+                # first page render). Seeding each key directly, here, BEFORE
+                # its widget is instantiated further down in this same script
+                # run, is what actually makes a fresh extraction show up.
+                # policy_type is seeded FIRST since the policy-type-specific
+                # widgets below (tier/coverage, cover_type/vehicle_value_
+                # basis, sum_building/sum_contents) branch on its value - by
+                # seeding it here, that branch already sees the right value
+                # later in this same run, same as if the user had picked it.
+                if extracted.get("policy_type") in _INSURANCE_POLICY_TYPES:
+                    st.session_state["tools_ins_policy_type"] = extracted["policy_type"]
+                st.session_state["tools_ins_state"] = extracted.get("state") or ""
+                st.session_state["tools_ins_premium_amount"] = float(extracted.get("premium_amount") or 0.0)
+                if extracted.get("premium_period") in ("year", "month", "fortnight", "week"):
+                    st.session_state["tools_ins_premium_period"] = extracted["premium_period"]
+                st.session_state["tools_ins_excess"] = float(extracted.get("excess") or 0.0)
+                if extracted.get("tier") in insurance_engine.HEALTH_TIERS:
+                    st.session_state["tools_ins_tier"] = extracted["tier"]
+                if extracted.get("coverage") in insurance_engine.HEALTH_COVERAGE:
+                    st.session_state["tools_ins_coverage"] = extracted["coverage"]
+                if extracted.get("cover_type") in ("comprehensive", "third_party"):
+                    st.session_state["tools_ins_cover_type"] = extracted["cover_type"]
+                if extracted.get("vehicle_value_basis") in ("agreed", "market"):
+                    st.session_state["tools_ins_vehicle_value_basis"] = extracted["vehicle_value_basis"]
+                st.session_state["tools_ins_sum_building"] = float(extracted.get("sum_insured_building") or 0.0)
+                st.session_state["tools_ins_sum_contents"] = float(extracted.get("sum_insured_contents") or 0.0)
         fields = st.session_state.get("tools_ins_review_fields", {})
         if fields:
             st.markdown(f"**{_il('review_title')}**")
