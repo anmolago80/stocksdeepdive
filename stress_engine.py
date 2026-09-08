@@ -184,7 +184,7 @@ RESULT_TTL_HOURS = 24        # the assembled stress-test result itself
 
 
 _LONG_HISTORY_TABLE = "stress_long_history_v3"
-_RESULT_CACHE_TABLE = "stress_result_cache_v3"
+_RESULT_CACHE_TABLE = "stress_result_cache_v4"
 
 
 def _conn():
@@ -199,6 +199,20 @@ def _conn():
     # here - every ticker/result recomputes fresh under the current
     # auto_adjust=True + repair=True + sanity-guard convention on its next
     # request.
+    #
+    # Part 24 (2026-09-08): _RESULT_CACHE_TABLE alone bumped again, to _v4.
+    # The very first Stress Test load for a given portfolio's holdings-hash
+    # would have run under the repair=True ModuleNotFoundError bug (every
+    # get_long_history() call failing, cached as an all-"not enough data"
+    # result for RESULT_TTL_HOURS=24) - get_cached_result() has no way to
+    # know the underlying fetch is now fixed, so it would keep serving that
+    # stale empty result for up to a day even after this exact deploy
+    # corrected the fetch. Only the RESULT table needs the bump: nothing
+    # bad was ever written to _LONG_HISTORY_TABLE (its own cache_set is
+    # only ever called on a non-empty fetch, and every entry already
+    # round-trips through plain "YYYY-MM-DD" strings - see _hist_to_json/
+    # _hist_from_json - so it was never tz-aware on the way back out
+    # either, unaffected by this same part's tz_localize(None) fix above).
     conn.execute(
         f"""CREATE TABLE IF NOT EXISTS {_LONG_HISTORY_TABLE} (
             ticker TEXT PRIMARY KEY,
@@ -309,7 +323,29 @@ def get_long_history(ticker, force_refresh=False):
         h = yf.Ticker(ticker).history(period="max", auto_adjust=True, **kwargs)
         if h is None or h.empty:
             return pd.DataFrame()
-        return h[["Close", "Dividends"]] if "Dividends" in h.columns else h[["Close"]].assign(Dividends=0.0)
+        h = h[["Close", "Dividends"]] if "Dividends" in h.columns else h[["Close"]].assign(Dividends=0.0)
+        # Part 24 (2nd finding, same owner report): a fresh yfinance fetch
+        # returns a timezone-AWARE DatetimeIndex (e.g. "Australia/Sydney"
+        # for an ASX-listed stock), but this module also fetches home-
+        # index tickers (^AXJO/^GSPC) the same way - and Yahoo does not
+        # guarantee the same tz convention for an index ticker as for an
+        # individual stock. Reproduced directly (no live network needed):
+        # pd.concat([...], axis=1, join="inner") on two Series whose
+        # DatetimeIndexes differ only in tz-awareness silently returns ZERO
+        # rows (no exception) - which is exactly compute_beta()'s alignment
+        # step, so a tz mismatch between a holding and its benchmark index
+        # would silently zero out every beta, hence portfolio_beta() and
+        # the whole Shock Grid, with nothing to show for why. Stripping
+        # the tz here (to plain, naive timestamps) makes every fetch's
+        # index consistent regardless of what Yahoo happened to tag it
+        # with, and also matches what a CACHED fetch already looks like
+        # (_hist_from_json rebuilds the index from plain "YYYY-MM-DD"
+        # strings, which is always tz-naive) - so a first-time fetch and a
+        # cached one behave identically instead of only one of them being
+        # safe to compare against another ticker.
+        if h.index.tz is not None:
+            h.index = h.index.tz_localize(None)
+        return h
 
     hist = pd.DataFrame()
     try:
