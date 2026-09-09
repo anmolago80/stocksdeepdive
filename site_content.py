@@ -17,33 +17,6 @@ Everything below is Markdown.
 
 import moat_engine
 
-def _methodology_factual_swaps(moat_blended):
-    """Built per-call (not a static list) because two of these pairs quote
-    the factor count in the non-factual source text, and that count itself
-    depends on moat_engine.MOAT_IN_VALUE_SCORE - five factors when Moat is
-    blended into the Value Score, four when it isn't (same "N calculations"
-    fix as the METHODOLOGY_MD intro line just above). Mirrors the existing
-    two-variant Psychology-row pattern below, which already handles the
-    weight itself (20% vs 15%) changing the same way."""
-    factor_word = "five" if moat_blended else "four"
-    return [
-        # Verdict bands paragraph -> value-score description
-        ("Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise\n**AVOID**. If no intrinsic value could be computed at all, the signal is capped at\nWATCHLIST - a thesis whose value leg can't be verified doesn't get a full\nrecommendation.",
-         f"On this site the number is displayed as the **Value Score** - a weighted\ndescription of the {factor_word} calculations above, shown without signal labels or\nrecommendations. Where no intrinsic value could be computed, that is stated\nplainly and the affected values are marked."),
-        ("The Long Score (0\u2013100) and Investment Signal", "The Value Score (0\u2013100)"),
-        # Score heading + intro question -> neutral description
-        (f"#### The Long Score (0\u2013100)\n\nOne number answering \"is this a good business to own at this price?\" It blends {factor_word}\nfactors, each clamped to a fixed band first so no single factor can run away with the\nresult:",
-         f"#### The Value Score (0\u2013100)\n\nOne number summarising {factor_word} calculations, each clamped to a fixed band first so no\nsingle factor can run away with the result:"),
-        # Psychology row: drop the advice-flavoured sentence, keep the maths
-        ("| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
-         "| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
-        ("| Psychology | 15% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |",
-         "| Psychology | 15% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour; fear enters the formula with a positive sign. The sign convention is part of the stated arithmetic, not a recommendation. |"),
-        # Trade Setup / two-verdicts section -> psychology-readings description
-        ("#### Value vs timing - two separate verdicts\n\nThe **Investment Signal** answers \"good business to own?\" The **Trade Setup** answers\n\"is right now a sane entry?\" - support/resistance-based entry zone, stop loss and\ntargets, gated on trend safety and risk/reward. A great company can be a poor entry\ntoday; the site shows both rather than blurring them into one contradictory verdict.",
-         "#### Psychology and discovery readings\n\nAlongside the valuation models, the site reports what the crowd has been doing:\ndistance below the 3-month high (fear), distance from the 50-day average and greed/\nFOMO terms, and a discovery reading built from volume, search interest, news and\nsocial chatter. These are measurements, stated as numbers - the site does not\ndisplay entry levels, targets or trade verdicts."),
-    ]
-
 # Shown above the methodology text in the public (factual) presentation.
 METHODOLOGY_FACTUAL_NOTE = (
     "**Presentation note.** This site displays data, model outputs and "
@@ -53,97 +26,96 @@ METHODOLOGY_FACTUAL_NOTE = (
     "arithmetic, not guidance on what to do."
 )
 
-METHODOLOGY_MD = """
-Every tool on this site runs the same engine. A ticker goes in; live data comes back
-(prices and volumes, financial statements and analyst estimates via Yahoo Finance, search
-interest via Google Trends, headlines via Yahoo/NewsAPI, chatter via StockTwits); and the
-same value-investing maths runs every time. Nothing on this page is a black box - every
-score's inputs are charted right next to it on the site.
+def _methodology_md_en(factual, moat_blended):
+    """English 'How the scores work' copy (moat check, 9 Sep 2026 - owner
+    decision to stop publishing the internal recipe). Deliberately says
+    WHAT each score answers and how the pieces relate to each other, not
+    the weights, point allocations, scoring bands or formulas behind them
+    - the previous version was detailed enough that a competitor could
+    reimplement the model straight from this page.
 
-#### The Long Score (0–100)
+    In factual mode (the public default - see _factual() in app.py) the
+    Long Score becomes the Value Score and drops its verdict labels and
+    thresholds, and the Trade Setup section is swapped for a neutral
+    psychology/discovery description, so the public page never reads as
+    financial advice. Both presentations are built from one template here
+    so they can never drift apart, and app.py's page_methodology() calls
+    this function directly rather than keeping its own copy."""
+    moat_in_list = ", and durability of competitive advantage" if moat_blended else ""
+    _score_name = "Value Score" if factual else "Long Score"
+    moat_fold_note = (f" It's also folded into the {_score_name} above."
+                       if moat_blended else
+                       f" It's shown separately from the {_score_name} above.")
 
-One number answering "is this a good business to own at this price?" It blends @@FACTOR_COUNT@@
-factors, each clamped to a fixed band first so no single factor can run away with the
-result:
+    if factual:
+        score_section = f"""#### The Value Score (0–100)
 
-@@LONG_SCORE_TABLE@@
+One number summarising measures of business quality, valuation against intrinsic value,
+market psychology, market attention{moat_in_list}, weighted so no one factor can dominate
+the result. The number is shown without signal labels or recommendations - a description
+of the underlying calculations, not investment advice. Where no intrinsic value could be
+computed, that is stated plainly and the affected values are marked."""
+        timing_section = """#### Psychology and discovery readings
+
+Alongside the valuation models, the site reports what the crowd has been doing:
+distance below the 3-month high (fear), distance from the 50-day average and greed/
+FOMO terms, and a discovery reading built from volume, search interest, news and
+social chatter. These are measurements, stated as numbers - the site does not
+display entry levels, targets or trade verdicts."""
+    else:
+        score_section = f"""#### The Long Score (0–100)
+
+One number answering "is this a good business to own at this price?" It blends measures of
+business quality, valuation against intrinsic value, market psychology, market attention{moat_in_list}
+into a single score, weighted so no one factor can dominate the result.
 
 Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise
 **AVOID**. If no intrinsic value could be computed at all, the signal is capped at
 WATCHLIST - a thesis whose value leg can't be verified doesn't get a full
-recommendation.
-
-#### Moat Score (0–100)
-
-Quality (above) measures how good the business is **right now** - today's margins,
-returns and growth. Moat is a different question: how likely is the business to
-**stay** that good, over time? @@MOAT_FOLD_NOTE@@ Four pillars, each computed from
-the company's own multi-year statement history:
-
-| Pillar | Weight | What it measures |
-|---|---|---|
-| Excess-return spread | 30 pts | TTM return on capital (ROIC, or ROE for banks/insurers) minus the cost of that capital (WACC, or cost of equity for financials). ≤0% spread scores 0, 0–5% scores 10, 5–15% scores 20, above 15% scores the full 30. |
-| Persistence | 25 pts | The share of available fiscal years in which return on capital cleared 12%. Capped at 20/25 while fewer than 8 years of statement history are on file - the full 25-point read needs real multi-year depth. |
-| Pricing power | 25 pts | The gross-margin trend (falls back to operating margin, flagged, if no Gross Profit line is reported): held or expanded margin (10 pts), stability - low year-to-year variance (10 pts), and margin holding up while revenue actually grew (5 pts). |
-| Reinvestment | 20 pts | Incremental return on newly-deployed capital - the change in after-tax operating profit versus the change in invested capital, oldest available year to newest. A capital-light business that shrinks invested capital while holding or growing profit scores 16 here directly. |
-
-Above 70 = **Strong moat**, 40–70 = **Moderate moat**, 40 and below = **Weak/no
-moat** - the same colour bands (green/amber/red) used everywhere else on the site.
-
-**Erosion overlay.** Independently of the score above, if TTM return on capital and
-operating margin have both fallen meaningfully below their own recent multi-year
-average - return down more than 20% in relative terms, margin down more than 3
-points - the read becomes a **moat watch** caption (no score penalty). If that same
-weakness holds across the two most recent multi-year windows in a row, the read
-becomes **eroding**, and the score itself is capped at 50: a business can't read as
-a "strong moat" while its own numbers are actively deteriorating, however good its
-history looks. A single weak window is a caption, not a cap - a real business has
-uneven years.
-
-**Missing data is dropped, not guessed at.** If a pillar can't be computed from the
-data on file, it's left out entirely and the remaining pillars are reweighted to
-100 - never defaulted to a neutral or average score. The Deep Dive page's Moat
-section always shows how many pillars were actually used.
-
-Funds and ETFs don't get a Moat Score at all (a moat is a property of an operating
-business, not a basket of one) - shown as **N/A (fund)**. A ticker with fewer than
-two usable years of statement history also shows **N/A**, plainly, rather than a
-score built on too little to mean anything.
-
-#### Intrinsic value
-
-The primary model is a discounted cash flow built from the company's own reported free
-cash flows. The discount rate is calculated per stock (CAPM - the stock's own beta
-against its market), growth comes from analyst consensus where available, then the
-company's own historical FCF growth, and the terminal growth rate is set by the stock's
-currency. Where a DCF isn't possible, a P/E-blend fallback is used and labelled as such.
-Margin of Safety = (intrinsic value − price) ÷ intrinsic value.
-
-A stock trading 25%+ below intrinsic value is labelled **UNDERVALUED**; above intrinsic
-value, **EXPENSIVE**; between, **FAIR**.
-
-#### What the price implies (reverse DCF)
-
-Alongside the standard DCF above, the Deep Dive page also runs it in reverse: holding
-the same base free cash flow, discount rate and terminal growth rate that produced the
-Intrinsic Value figure, it solves numerically for the FCF growth rate that would make
-the model's fair value equal today's price. That figure - the implied growth rate -
-describes what the market is currently pricing in, shown alongside the growth rate the
-model itself assumed, so the two can be compared directly.
-
-This is a calculation from stated inputs, not a forecast: it says nothing about whether
-the implied growth rate is realistic, only what it is. The solve is bounded between
-−30% and +60% a year; a price outside what that range can produce is shown as "≤ −30%"
-or "≥ 60%" rather than an unbounded number. Where the base free cash flow rests on an
-estimate, this figure carries the same red-flag note as the Intrinsic Value it's
-derived from.
-
-#### Value vs timing - two separate verdicts
+recommendation."""
+        timing_section = """#### Value vs timing - two separate verdicts
 
 The **Investment Signal** answers "good business to own?" The **Trade Setup** answers
 "is right now a sane entry?" - support/resistance-based entry zone, stop loss and
 targets, gated on trend safety and risk/reward. A great company can be a poor entry
-today; the site shows both rather than blurring them into one contradictory verdict.
+today; the site shows both rather than blurring them into one contradictory verdict."""
+
+    return f"""
+Every tool on this site runs the same engine. A ticker goes in; live data comes back
+(prices and volumes, financial statements and analyst estimates via Yahoo Finance, search
+interest via Google Trends, headlines via Yahoo/NewsAPI, chatter via StockTwits); and the
+same value-investing framework runs every time.
+
+{score_section}
+
+#### Moat Score (0–100)
+
+A separate read on how likely the business is to stay as good as it looks today, not just
+how good it is right now.{moat_fold_note} Above 70 = **Strong moat**, 40–70 = **Moderate
+moat**, 40 and below = **Weak/no moat**.
+
+#### Intrinsic value
+
+The primary model is a discounted cash flow built from the company's own reported free cash
+flows, benchmarked against today's price to estimate a fair value. Where a full DCF isn't
+possible, a simpler estimate is used instead and labelled as such.
+
+A stock trading meaningfully below intrinsic value is labelled **UNDERVALUED**; meaningfully
+above, **EXPENSIVE**; between, **FAIR**.
+
+#### What the price implies (reverse DCF)
+
+Alongside the standard DCF above, the Deep Dive page also runs it in reverse: it solves for
+the growth rate that would make the model's fair value equal today's price. That figure -
+the implied growth rate - describes what the market is currently pricing in, shown alongside
+the growth rate the model itself assumed, so the two can be compared directly.
+
+This is a calculation from stated inputs, not a forecast: it says nothing about whether the
+implied growth rate is realistic, only what it is. Where the base free cash flow rests on an
+estimate, this figure carries the same red-flag note as the Intrinsic Value it's derived
+from.
+
+{timing_section}
 
 #### The red-flag rule
 
@@ -305,126 +277,93 @@ noted on the site.
 """
 
 
-def _methodology_factual_swaps_es(moat_blended):
-    """Español instruction, Part 2: the ES sibling of
-    _methodology_factual_swaps() above - same 5 swaps (the heading-only
-    no-op swap in the EN list, whose target string doesn't actually
-    appear in METHODOLOGY_MD, is dropped here since it would never match
-    anyway), applied to METHODOLOGY_MD_ES's own "full" tone text below.
-    Genuinely re-translated per swap, not a mechanical find/replace of
-    the EN swap pairs - a tone change reads differently in Spanish."""
-    factor_word = "cinco" if moat_blended else "cuatro"
-    return [
-        ("Por encima de 70 = **STRONG LONG**, por encima de 50 = **LONG**, por encima de 30 = **WATCHLIST**, de lo contrario\n**AVOID**. Si no se pudo calcular ningún valor intrínseco en absoluto, la señal se limita a\nWATCHLIST - una tesis cuya pata de valor no puede verificarse no recibe una\nrecomendación completa.",
-         f"En este sitio, ese número se muestra como el **Value Score** - una descripción\nponderada de los {factor_word} cálculos anteriores, mostrada sin etiquetas de señal ni\nrecomendaciones. Cuando no se pudo calcular ningún valor intrínseco, eso se indica\nclaramente y los valores afectados se marcan."),
-        (f"#### El Long Score (0–100)\n\nUn número que responde \"¿es esta una buena empresa para poseer a este precio?\" Combina {factor_word}\nfactores, cada uno limitado primero a una banda fija para que ningún factor individual pueda\ndominar el resultado:",
-         f"#### El Value Score (0–100)\n\nUn número que resume {factor_word} cálculos, cada uno limitado primero a una banda fija para que\nningún factor individual pueda dominar el resultado:"),
-        ("| Psicología | 20% | ¿Hacia dónde se inclina la multitud? Miedo menos codicia menos FOMO, leído a partir del comportamiento del precio. El miedo puntúa positivamente - la ventaja del inversor de valor es comprar calidad cuando otros están ansiosos. |",
-         "| Psicología | 20% | ¿Hacia dónde se inclina la multitud? Miedo menos codicia menos FOMO, leído a partir del comportamiento del precio; el miedo entra en la fórmula con signo positivo. La convención de signos es parte de la aritmética indicada, no una recomendación. |"),
-        ("| Psicología | 15% | ¿Hacia dónde se inclina la multitud? Miedo menos codicia menos FOMO, leído a partir del comportamiento del precio. El miedo puntúa positivamente - la ventaja del inversor de valor es comprar calidad cuando otros están ansiosos. |",
-         "| Psicología | 15% | ¿Hacia dónde se inclina la multitud? Miedo menos codicia menos FOMO, leído a partir del comportamiento del precio; el miedo entra en la fórmula con signo positivo. La convención de signos es parte de la aritmética indicada, no una recomendación. |"),
-        ("#### Valor frente al momento de entrada - dos veredictos separados\n\nLa **Señal de Inversión** responde \"¿es una buena empresa para poseer?\" El **Trade Setup** responde\n\"¿es ahora mismo una entrada sensata?\" - zona de entrada basada en soporte/resistencia, stop loss y\nobjetivos, condicionados a la seguridad de la tendencia y la relación riesgo/beneficio. Una gran empresa\npuede ser una mala entrada hoy; el sitio muestra ambas cosas en lugar de mezclarlas en un solo\nveredicto contradictorio.",
-         "#### Lecturas de psicología y descubrimiento\n\nJunto con los modelos de valoración, el sitio informa qué ha estado haciendo la multitud:\ndistancia por debajo del máximo de 3 meses (miedo), distancia respecto al promedio de 50 días y\ntérminos de codicia/FOMO, y una lectura de descubrimiento construida a partir del volumen, el\ninterés de búsqueda, las noticias y los comentarios en redes sociales. Son mediciones, presentadas\ncomo números - el sitio no muestra niveles de entrada, objetivos ni veredictos de trading."),
-    ]
+def _methodology_md_es(factual, moat_blended):
+    """Espejo en español de _methodology_md_en() - mismo recorte de detalle
+    (moat check, 9 de septiembre de 2026): dice QUÉ responde cada puntaje y
+    cómo se relacionan entre sí, no los pesos, puntos, bandas ni fórmulas
+    detrás de ellos. Traducido con cuidado término a término, no de forma
+    mecánica."""
+    moat_in_list = ", y la durabilidad de la ventaja competitiva" if moat_blended else ""
+    _score_name = "Value Score" if factual else "Long Score"
+    moat_fold_note = (f" También se incorpora al {_score_name} de arriba."
+                       if moat_blended else
+                       f" Se muestra por separado del {_score_name} de arriba.")
 
+    if factual:
+        score_section = f"""#### El Value Score (0–100)
 
-# Español instruction, Part 2: full ES translation, same @@ placeholders,
-# in the "full" (non-factual) tone - _methodology_factual_swaps_es() above
-# converts it to the factual/public tone the same way the EN swap list
-# converts METHODOLOGY_MD. Reviewed against the live EN copy term for
-# term, not paraphrased.
-METHODOLOGY_MD_ES = """
-Cada herramienta de este sitio ejecuta el mismo motor. Se introduce un ticker; se obtienen datos
-en vivo (precios y volúmenes, estados financieros y estimaciones de analistas vía Yahoo Finance,
-interés de búsqueda vía Google Trends, titulares vía Yahoo/NewsAPI, comentarios vía StockTwits); y
-se ejecuta la misma matemática de inversión en valor cada vez. Nada en esta página es una caja
-negra - las entradas de cada puntaje se grafican justo al lado en el sitio.
+Un número que resume medidas de la calidad del negocio, la valoración frente al valor
+intrínseco, la psicología del mercado, la atención del mercado{moat_in_list}, ponderadas
+para que ningún factor domine el resultado. El número se muestra sin etiquetas de señal
+ni recomendaciones - es una descripción de los cálculos subyacentes, no asesoramiento de
+inversión. Cuando no se pudo calcular ningún valor intrínseco, eso se indica claramente y
+los valores afectados se marcan."""
+        timing_section = """#### Lecturas de psicología y descubrimiento
 
-#### El Long Score (0–100)
+Junto con los modelos de valoración, el sitio informa qué ha estado haciendo la multitud:
+distancia por debajo del máximo de 3 meses (miedo), distancia respecto al promedio de 50
+días y términos de codicia/FOMO, y una lectura de descubrimiento construida a partir del
+volumen, el interés de búsqueda, las noticias y los comentarios en redes sociales. Son
+mediciones, presentadas como números - el sitio no muestra niveles de entrada, objetivos
+ni veredictos de trading."""
+    else:
+        score_section = f"""#### El Long Score (0–100)
 
-Un número que responde "¿es esta una buena empresa para poseer a este precio?" Combina @@FACTOR_COUNT@@
-factores, cada uno limitado primero a una banda fija para que ningún factor individual pueda
-dominar el resultado:
+Un número que responde "¿es esta una buena empresa para poseer a este precio?" Combina medidas
+de la calidad del negocio, la valoración frente al valor intrínseco, la psicología del mercado,
+la atención del mercado{moat_in_list} en un solo puntaje, ponderadas para que ningún factor
+domine el resultado.
 
-@@LONG_SCORE_TABLE@@
-
-Por encima de 70 = **STRONG LONG**, por encima de 50 = **LONG**, por encima de 30 = **WATCHLIST**, de lo contrario
-**AVOID**. Si no se pudo calcular ningún valor intrínseco en absoluto, la señal se limita a
-WATCHLIST - una tesis cuya pata de valor no puede verificarse no recibe una
-recomendación completa.
-
-#### El Puntaje de Foso (Moat Score, 0–100)
-
-La Calidad (arriba) mide qué tan buena es la empresa **ahora mismo** - los márgenes, retornos y
-crecimiento de hoy. El Foso es una pregunta distinta: ¿qué tan probable es que la empresa **siga**
-siendo así de buena, con el tiempo? @@MOAT_FOLD_NOTE@@ Cuatro pilares, cada uno calculado a partir
-del historial de estados financieros de varios años de la propia empresa:
-
-| Pilar | Peso | Qué mide |
-|---|---|---|
-| Diferencial de retorno excedente | 30 pts | El retorno sobre el capital de los últimos doce meses (ROIC, o ROE para bancos/aseguradoras) menos el costo de ese capital (WACC, o costo del capital propio para financieras). Un diferencial ≤0% puntúa 0, 0-5% puntúa 10, 5-15% puntúa 20, y por encima de 15% puntúa el total de 30. |
-| Persistencia | 25 pts | La proporción de años fiscales disponibles en los que el retorno sobre el capital superó el 12%. Se limita a 20/25 mientras haya menos de 8 años de historial de estados financieros registrados - la lectura completa de 25 puntos necesita profundidad real de varios años. |
-| Poder de fijación de precios | 25 pts | La tendencia del margen bruto (recurre al margen operativo, señalado, si no se reporta una línea de Utilidad Bruta): margen mantenido o ampliado (10 pts), estabilidad - baja variación año a año (10 pts), y margen sostenido mientras los ingresos realmente crecieron (5 pts). |
-| Reinversión | 20 pts | El retorno incremental sobre el capital recién desplegado - el cambio en la utilidad operativa después de impuestos frente al cambio en el capital invertido, del año más antiguo disponible al más reciente. Una empresa con poco uso de capital que reduce el capital invertido mientras mantiene o aumenta la utilidad puntúa 16 aquí directamente. |
-
-Por encima de 70 = **Foso fuerte**, 40-70 = **Foso moderado**, 40 o menos = **Foso débil/sin
-foso** - las mismas bandas de color (verde/ámbar/rojo) usadas en el resto del sitio.
-
-**Capa de erosión.** Independientemente del puntaje anterior, si el retorno sobre el capital y el
-margen operativo de los últimos doce meses han caído de forma significativa por debajo de su propio
-promedio reciente de varios años - retorno con una caída relativa de más del 20%, margen con una
-caída de más de 3 puntos - la lectura se convierte en una nota de **foso en observación** (sin
-penalización de puntaje). Si esa misma debilidad se mantiene durante las dos ventanas de varios
-años más recientes seguidas, la lectura se convierte en **en erosión**, y el puntaje mismo se
-limita a 50: una empresa no puede leerse como "foso fuerte" mientras sus propios números se están
-deteriorando activamente, sin importar qué tan bueno luzca su historial. Una sola ventana débil es
-una nota, no un límite - un negocio real tiene años irregulares.
-
-**Los datos faltantes se descartan, no se estiman.** Si un pilar no puede calcularse a partir de
-los datos disponibles, se omite por completo y los pilares restantes se reponderan a 100 - nunca se
-asigna por defecto un puntaje neutral o promedio. La sección de Foso de la página Deep Dive siempre
-muestra cuántos pilares se usaron realmente.
-
-Los fondos y ETF no reciben Puntaje de Foso en absoluto (un foso es una propiedad de un negocio
-operativo, no de una cesta de negocios) - se muestra como **N/D (fondo)**. Un ticker con menos de
-dos años útiles de historial de estados financieros también muestra **N/D**, claramente, en lugar
-de un puntaje construido sobre muy poca información como para significar algo.
-
-#### Valor intrínseco
-
-El modelo principal es un flujo de caja descontado (DCF) construido a partir de los flujos de caja
-libre reportados por la propia empresa. La tasa de descuento se calcula por acción (CAPM - el beta
-de la propia acción frente a su mercado), el crecimiento proviene del consenso de analistas cuando
-está disponible, luego del propio crecimiento histórico del FCF de la empresa, y la tasa de
-crecimiento terminal se fija según la divisa de la acción. Cuando no es posible un DCF, se usa un
-método alternativo de mezcla de P/E, etiquetado como tal. Margen de Seguridad = (valor intrínseco
-− precio) ÷ valor intrínseco.
-
-Una acción que cotiza un 25% o más por debajo del valor intrínseco se etiqueta como
-**INFRAVALORADA**; por encima del valor intrínseco, **CARA**; entre ambos, **JUSTA**.
-
-#### Qué implica el precio (DCF inverso)
-
-Además del DCF estándar anterior, la página Deep Dive también lo ejecuta a la inversa: manteniendo
-el mismo flujo de caja libre base, tasa de descuento y tasa de crecimiento terminal que produjeron
-la cifra de Valor Intrínseco, resuelve numéricamente la tasa de crecimiento del FCF que haría que
-el valor razonable del modelo sea igual al precio de hoy. Esa cifra - la tasa de crecimiento
-implícita - describe lo que el mercado está fijando en el precio actualmente, mostrada junto a la
-tasa de crecimiento que el propio modelo asumió, para que ambas puedan compararse directamente.
-
-Esto es un cálculo a partir de datos indicados, no un pronóstico: no dice nada sobre si la tasa de
-crecimiento implícita es realista, solo cuál es. La resolución está acotada entre −30% y +60% anual;
-un precio fuera de lo que ese rango puede producir se muestra como "≤ −30%" o "≥ 60%" en lugar de
-un número sin límite. Cuando el flujo de caja libre base descansa en una estimación, esta cifra
-lleva la misma nota de alerta que el Valor Intrínseco del que se deriva.
-
-#### Valor frente al momento de entrada - dos veredictos separados
+Por encima de 70 = **STRONG LONG**, por encima de 50 = **LONG**, por encima de 30 = **WATCHLIST**,
+de lo contrario **AVOID**. Si no se pudo calcular ningún valor intrínseco en absoluto, la señal
+se limita a WATCHLIST - una tesis cuya pata de valor no puede verificarse no recibe una
+recomendación completa."""
+        timing_section = """#### Valor frente al momento de entrada - dos veredictos separados
 
 La **Señal de Inversión** responde "¿es una buena empresa para poseer?" El **Trade Setup** responde
 "¿es ahora mismo una entrada sensata?" - zona de entrada basada en soporte/resistencia, stop loss y
-objetivos, condicionados a la seguridad de la tendencia y la relación riesgo/beneficio. Una gran empresa
-puede ser una mala entrada hoy; el sitio muestra ambas cosas en lugar de mezclarlas en un solo
-veredicto contradictorio.
+objetivos, condicionados a la seguridad de la tendencia y la relación riesgo/beneficio. Una gran
+empresa puede ser una mala entrada hoy; el sitio muestra ambas cosas en lugar de mezclarlas en un
+solo veredicto contradictorio."""
+
+    return f"""
+Cada herramienta de este sitio ejecuta el mismo motor. Se introduce un ticker; se obtienen datos
+en vivo (precios y volúmenes, estados financieros y estimaciones de analistas vía Yahoo Finance,
+interés de búsqueda vía Google Trends, titulares vía Yahoo/NewsAPI, comentarios vía StockTwits); y
+se ejecuta el mismo marco de inversión en valor cada vez.
+
+{score_section}
+
+#### El Puntaje de Foso (Moat Score, 0–100)
+
+Una lectura aparte de qué tan probable es que la empresa siga siendo tan buena como se ve hoy,
+no solo qué tan buena es ahora mismo.{moat_fold_note} Por encima de 70 = **Foso fuerte**,
+40–70 = **Foso moderado**, 40 o menos = **Foso débil/sin foso**.
+
+#### Valor intrínseco
+
+El modelo principal es un flujo de caja descontado (DCF) construido a partir de los flujos de
+caja libre reportados por la propia empresa, comparado con el precio de hoy para estimar un
+valor razonable. Cuando no es posible un DCF completo, se usa una estimación más simple en su
+lugar, etiquetada como tal.
+
+Una acción que cotiza significativamente por debajo del valor intrínseco se etiqueta como
+**INFRAVALORADA**; significativamente por encima, **CARA**; entre ambos, **JUSTA**.
+
+#### Qué implica el precio (DCF inverso)
+
+Además del DCF estándar anterior, la página Deep Dive también lo ejecuta a la inversa: resuelve
+la tasa de crecimiento que haría que el valor razonable del modelo sea igual al precio de hoy.
+Esa cifra - la tasa de crecimiento implícita - describe lo que el mercado está fijando en el
+precio actualmente, mostrada junto a la tasa de crecimiento que el propio modelo asumió, para
+que ambas puedan compararse directamente.
+
+Esto es un cálculo a partir de datos indicados, no un pronóstico: no dice nada sobre si la tasa
+de crecimiento implícita es realista, solo cuál es. Cuando el flujo de caja libre base descansa
+en una estimación, esta cifra lleva la misma nota de alerta que el Valor Intrínseco del que se
+deriva.
+
+{timing_section}
 
 #### La regla de la marca en rojo
 
@@ -452,86 +391,22 @@ que fue diseñado: como punto de partida para tu propio juicio, no como sustitut
 
 
 def methodology_md(factual=True, lang="en"):
-    """The methodology text as the given presentation sees it. In factual
-    mode the signal/verdict language is swapped for descriptions of the
-    same arithmetic - the public site must not read as a recommendation.
+    """The methodology text as the given presentation sees it - dispatches
+    to _methodology_md_en/_es, which read moat_engine.MOAT_IN_VALUE_SCORE
+    at call time so this text can never describe a different setup than
+    the one actually running. In factual mode (the public default) the
+    signal/verdict language is replaced with descriptions of the same
+    arithmetic - the public site must not read as a recommendation.
 
-    The Long/Value Score weight table and the Moat section's fold-in note
-    are resolved here at call time from moat_engine.MOAT_IN_VALUE_SCORE,
-    mirroring app.py's page_methodology() so this crawled/static copy of
-    the page can never describe a different formula than the one actually
-    running."""
+    Moat check, 9 Sep 2026: this used to include the exact factor weights,
+    Moat Score pillar points and scoring bands, DCF mechanics and
+    reverse-DCF bounds - detailed enough for a competitor to reimplement
+    the model from this page alone. Both language variants now describe
+    WHAT each score answers, not the formula behind it."""
     moat_blended = moat_engine.MOAT_IN_VALUE_SCORE
-    if moat_blended:
-        long_score_table = """| Factor | Weight | What it measures |
-|---|---|---|
-| Quality | 25% | Is this a good business? Return on equity, profit margin, revenue and earnings growth, free cash flow, debt - computed from the company's own fundamentals. Loss-making, cash-burning businesses are capped: a company that doesn't make money can't score as "high quality" no matter how fast it grows. |
-| Moat | 15% | How likely is the business to **stay** that good, not just how good it is today - the Moat Score described below, folded in directly. If no Moat Score can be computed (funds/ETFs, or too little statement history), this weight is dropped and the other four factors are reweighted proportionally to fill the gap - never defaulted to zero. |
-| Margin of Safety | 30% | Is the price below the value? The gap between our intrinsic-value estimate and today's price, clamped to ±50 so a wild discount (or premium) can move the score but never dominate it. |
-| Psychology | 15% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |
-| Discovery | 15% | Is the market noticing? Price activity, unusual volume, search trends, news flow and social chatter - attention only, deliberately separate from sentiment. |"""
-        moat_fold_note = (
-            "It's shown separately on the Deep Dive page, the Side-by-side comparison and "
-            "the Scanner, **and it is folded directly into the Value Score above** at a 15% "
-            "weight (see the weight table there) - dropped and the remaining factors "
-            "reweighted, never defaulted to zero, on any ticker it can't be computed for."
-        )
-    else:
-        long_score_table = """| Factor | Weight | What it measures |
-|---|---|---|
-| Quality | 35% | Is this a good business? Return on equity, profit margin, revenue and earnings growth, free cash flow, debt - computed from the company's own fundamentals. Loss-making, cash-burning businesses are capped: a company that doesn't make money can't score as "high quality" no matter how fast it grows. |
-| Margin of Safety | 25% | Is the price below the value? The gap between our intrinsic-value estimate and today's price, clamped to ±50 so a wild discount (or premium) can move the score but never dominate it. |
-| Psychology | 20% | Which way is the crowd leaning? Fear minus greed minus FOMO, read from price behaviour. Fear scores positively - the value investor's edge is buying quality when others are anxious. |
-| Discovery | 20% | Is the market noticing? Price activity, unusual volume, search trends, news flow and social chatter - attention only, deliberately separate from sentiment. |"""
-        moat_fold_note = (
-            "It's shown separately on the Deep Dive page, the Side-by-side comparison and "
-            "the Scanner - it is not currently folded into the Value Score above."
-        )
-
     if lang == "es":
-        base_text = METHODOLOGY_MD_ES
-        factor_word = "cinco" if moat_blended else "cuatro"
-        if moat_blended:
-            long_score_table = """| Factor | Peso | Qué mide |
-|---|---|---|
-| Calidad | 25% | ¿Es esta una buena empresa? Retorno sobre el patrimonio, margen de utilidad, crecimiento de ingresos y ganancias, flujo de caja libre, deuda - calculado a partir de los propios fundamentos de la empresa. Las empresas que pierden dinero o queman caja tienen un límite: una empresa que no genera ganancias no puede puntuar como "alta calidad" sin importar qué tan rápido crezca. |
-| Foso | 15% | Qué tan probable es que la empresa **siga** siendo así de buena, no solo qué tan buena es hoy - el Puntaje de Foso descrito abajo, incorporado directamente. Si no se puede calcular un Puntaje de Foso (fondos/ETF, o muy poco historial de estados financieros), este peso se elimina y los otros cuatro factores se reponderan proporcionalmente para llenar el vacío - nunca por defecto a cero. |
-| Margen de Seguridad | 30% | ¿Está el precio por debajo del valor? La diferencia entre nuestra estimación de valor intrínseco y el precio de hoy, limitada a ±50 para que un descuento (o prima) extremo pueda mover el puntaje pero nunca dominarlo. |
-| Psicología | 15% | ¿Hacia dónde se inclina la multitud? Miedo menos codicia menos FOMO, leído a partir del comportamiento del precio. El miedo puntúa positivamente - la ventaja del inversor de valor es comprar calidad cuando otros están ansiosos. |
-| Descubrimiento | 15% | ¿Lo está notando el mercado? Actividad de precio, volumen inusual, tendencias de búsqueda, flujo de noticias y comentarios en redes sociales - solo atención, deliberadamente separada del sentimiento. |"""
-            moat_fold_note = (
-                "Se muestra por separado en la página Deep Dive, la Comparación en paralelo y "
-                "el Buscador, **y se incorpora directamente al Value Score arriba** con un peso "
-                "del 15% (ver la tabla de pesos ahí) - se elimina y los factores restantes se "
-                "reponderan, nunca por defecto a cero, en cualquier ticker para el que no se "
-                "pueda calcular."
-            )
-        else:
-            long_score_table = """| Factor | Peso | Qué mide |
-|---|---|---|
-| Calidad | 35% | ¿Es esta una buena empresa? Retorno sobre el patrimonio, margen de utilidad, crecimiento de ingresos y ganancias, flujo de caja libre, deuda - calculado a partir de los propios fundamentos de la empresa. Las empresas que pierden dinero o queman caja tienen un límite: una empresa que no genera ganancias no puede puntuar como "alta calidad" sin importar qué tan rápido crezca. |
-| Margen de Seguridad | 25% | ¿Está el precio por debajo del valor? La diferencia entre nuestra estimación de valor intrínseco y el precio de hoy, limitada a ±50 para que un descuento (o prima) extremo pueda mover el puntaje pero nunca dominarlo. |
-| Psicología | 20% | ¿Hacia dónde se inclina la multitud? Miedo menos codicia menos FOMO, leído a partir del comportamiento del precio. El miedo puntúa positivamente - la ventaja del inversor de valor es comprar calidad cuando otros están ansiosos. |
-| Descubrimiento | 20% | ¿Lo está notando el mercado? Actividad de precio, volumen inusual, tendencias de búsqueda, flujo de noticias y comentarios en redes sociales - solo atención, deliberadamente separada del sentimiento. |"""
-            moat_fold_note = (
-                "Se muestra por separado en la página Deep Dive, la Comparación en paralelo y "
-                "el Buscador - actualmente no se incorpora al Value Score arriba."
-            )
-        text = base_text.replace("@@LONG_SCORE_TABLE@@", long_score_table)
-        text = text.replace("@@MOAT_FOLD_NOTE@@", moat_fold_note)
-        text = text.replace("@@FACTOR_COUNT@@", factor_word)
-        if factual:
-            for old, new in _methodology_factual_swaps_es(moat_blended):
-                text = text.replace(old, new)
-        return text
-
-    text = METHODOLOGY_MD.replace("@@LONG_SCORE_TABLE@@", long_score_table)
-    text = text.replace("@@MOAT_FOLD_NOTE@@", moat_fold_note)
-    text = text.replace("@@FACTOR_COUNT@@", "five" if moat_blended else "four")
-    if factual:
-        for old, new in _methodology_factual_swaps(moat_blended):
-            text = text.replace(old, new)
-    return text
+        return _methodology_md_es(factual, moat_blended)
+    return _methodology_md_en(factual, moat_blended)
 
 
 ABOUT_FACTUAL_MD_ES = """
