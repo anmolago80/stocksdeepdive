@@ -18132,6 +18132,52 @@ def _render_my_portfolio_spotlight_band(lang):
         )
 
 
+def _bill_check_projection_amount(result):
+    """9 Sep 2026 fix (owner report: Insurance benchmark empty-state showed
+    an "$0 across all three paths" invest-projection, which was misleading
+    - there was no real gap to invest). The dollar figure to hand the
+    shared invest-projection panel below, or None when there is no real
+    gap to invest (the caller hides the whole panel in that case rather
+    than showing a $0 projection).
+
+    A ranked comparison (Utilities AU electricity/gas, Insurance health)
+    already has a firm switchable_saving figure - used as-is.
+
+    A benchmark comparison (Utilities water/US/manual typical-deal,
+    Insurance car/home/CTP) intentionally never sets switchable_saving to
+    a real number - a typical/benchmark premium isn't an actual quote you
+    could switch to (see _insurance_compare/_utilities_compare's own
+    "individualised, never pretend otherwise" comment), and that None
+    must never change - it also feeds tools_store.save_bill_check() and
+    dashboard_aggregate()'s totals, where treating an estimate as a firm
+    switchable saving would be wrong. So this reads the SAME gap figure
+    the benchmark card itself displays instead (recomputing the US
+    benchmark's dollar gap from its gap_pct exactly like
+    _utilities_render_result does, so the two numbers can never drift
+    apart) - matching the existing copy, which already says "or closed
+    the gap" for Insurance's benchmark case (tools.insurance.
+    projection_intro)."""
+    status = result.get("status")
+    if status in ("switch", "cheapest"):
+        saving = result.get("switchable_saving")
+        return saving if saving and saving > 0 else None
+    if status != "benchmark":
+        return None
+    bmk = result.get("benchmark") or {}
+    if result.get("fuel") in ("electricity", "gas"):
+        # Utilities US benchmark stores only a % gap - recompute the same
+        # dollar figure the benchmark card itself shows, from the same
+        # profile annual_cost.
+        gap_pct = bmk.get("gap_pct")
+        annual_cost = (result.get("profile") or {}).get("annual_cost")
+        gap = annual_cost * (gap_pct / 100.0) if gap_pct is not None and annual_cost is not None else None
+    else:
+        # Utilities water/manual typical-deal, and Insurance car/home/CTP -
+        # all three already store a plain dollar "gap".
+        gap = bmk.get("gap")
+    return gap if gap and gap > 0 else None
+
+
 def _budget_plan_projection_panel(_bl, yearly_savings, key_prefix):
     """The shared "📈 If those savings were invested…" panel - used by
     both the full Budget Planner page and (in miniature, headline-number
@@ -19313,11 +19359,19 @@ def _render_utilities_new_check(email, _ul, _lang, allowed, reason, usage, typic
             if result.get("status") == "unavailable":
                 st.caption(_ul("disclaimer"))
                 return
-            if result.get("annual_cost"):
+            # 9 Sep 2026 fix: only render the invest-projection when there's
+            # a real gap to invest - a benchmark row (water/US/manual
+            # typical-deal) with no gap, or an already-cheapest/negative
+            # gap, used to still show a misleading "$0" projection because
+            # switchable_saving is always None for a benchmark row (see
+            # _bill_check_projection_amount's own docstring for why that
+            # must stay None). Same rule as the Insurance side below.
+            _util_proj_amount = _bill_check_projection_amount(result)
+            if _util_proj_amount:
                 _budget_plan_projection_panel(
                     lambda k, **kw: i18n.t(f"tools.budget.{k}", _lang, **kw)
                     if k != "projection_title" else _ul("projection_intro"),
-                    max(result.get("switchable_saving") or 0.0, 0.0), "tools_util_proj",
+                    _util_proj_amount, "tools_util_proj",
                 )
             if st.button(_ul("save_button"), key="tools_util_save_btn"):
                 _ranked = result.get("ranked") or {}
@@ -19685,11 +19739,15 @@ def _insurance_compare(_il, fields, typical_rates, prior_extra):
     return result
 
 
-def _insurance_render_result(_il, _lang, result, key_prefix):
+def _insurance_render_result(_il, _lang, result, key_prefix, is_admin=False):
     """Renders one comparison result - the health TRUE ranking, or a
     car/home/CTP benchmark+creep card - shared between the fresh
     single-check flow and a saved policy's detail view (same pattern as
-    _utilities_render_result)."""
+    _utilities_render_result). is_admin: whether to show the admin-
+    facing "add one under Typical premium rates below" empty-state
+    hint (9 Sep 2026 fix) instead of the visitor-facing wording - callers
+    pass ai_gate.is_owner(email), same gate page_tools() already uses to
+    decide whether the admin editor itself renders on this page."""
     policy_type = result["policy_type"]
     status = result.get("status")
 
@@ -19723,7 +19781,18 @@ def _insurance_render_result(_il, _lang, result, key_prefix):
     st.markdown(f"{_il('badge_benchmark')}")
     gap = bmk.get("gap")
     if gap is None:
-        st.caption("—")
+        # 9 Sep 2026 fix (owner report): a bare "—" here told the visitor
+        # nothing - it looks identical whether the admin simply hasn't set
+        # a typical premium yet for this policy type/state, or something
+        # is broken. Now says which, and points the admin at exactly where
+        # to fix it.
+        if is_admin:
+            state = result.get("state") or ""
+            _policy_state = f"{_il('policy_' + policy_type + '_short')}/{state}" if state \
+                else _il("policy_" + policy_type + "_short")
+            st.caption(_il("benchmark_missing_admin", policy_state=_policy_state))
+        else:
+            st.caption(_il("benchmark_missing_visitor"))
     elif gap > 0:
         st.markdown(_il("gap_more", amount=f"{gap:,.0f}"))
     else:
@@ -19913,15 +19982,25 @@ def _render_insurance_new_check(email, _il, _lang, allowed, reason, usage, typic
     result = st.session_state.get("tools_ins_last_result")
     if result:
         with st.container(border=True):
-            _insurance_render_result(_il, _lang, result, "tools_ins_result")
+            _insurance_render_result(_il, _lang, result, "tools_ins_result",
+                                     is_admin=ai_gate.is_owner(email))
             if result.get("status") == "unavailable":
                 st.caption(_il("disclaimer"))
                 return
-            if result.get("annual_cost"):
+            # 9 Sep 2026 fix (owner report): a benchmark row (car/home/CTP)
+            # with no admin typical-premium set for this policy type/state,
+            # or an already-at-typical/negative gap, used to still show a
+            # misleading "$0" invest-projection - switchable_saving is
+            # always None for a benchmark row by design (see
+            # _bill_check_projection_amount's docstring). Only render the
+            # panel when there's a real gap to invest. Same rule on the
+            # Utilities side above.
+            _ins_proj_amount = _bill_check_projection_amount(result)
+            if _ins_proj_amount:
                 _budget_plan_projection_panel(
                     lambda k, **kw: i18n.t(f"tools.budget.{k}", _lang, **kw)
                     if k != "projection_title" else _il("projection_intro"),
-                    max(result.get("switchable_saving") or 0.0, 0.0), "tools_ins_proj",
+                    _ins_proj_amount, "tools_ins_proj",
                 )
             if st.button(_il("save_button"), key="tools_ins_save_btn"):
                 _ranked = result.get("ranked") or {}
@@ -19983,7 +20062,8 @@ def _render_insurance_tool(email):
                                 "switchable_saving": bill["switchable_saving"] or 0.0},
                      "benchmark": extra.get("benchmark") or {}, "creep": None, "excess_note": False}
             with st.container(border=True):
-                _insurance_render_result(_il, _lang, result, f"tools_ins_detail_{bill['id']}")
+                _insurance_render_result(_il, _lang, result, f"tools_ins_detail_{bill['id']}",
+                                         is_admin=ai_gate.is_owner(email))
             hist = tools_store.get_bill_check_history(bill["id"])
             if hist:
                 st.markdown(f"**{_il('history_title')}**")

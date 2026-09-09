@@ -1261,6 +1261,11 @@ EN = {
     "tools.insurance.policy_car": "\U0001F697 Car",
     "tools.insurance.policy_home": "\U0001F3E0 Home & contents",
     "tools.insurance.policy_ctp": "CTP (compulsory third party)",
+    # 9 Sep 2026 fix - plain (no emoji/parenthetical) policy-type names for
+    # use inline in the benchmark empty-state sentence below.
+    "tools.insurance.policy_car_short": "Car",
+    "tools.insurance.policy_home_short": "Home",
+    "tools.insurance.policy_ctp_short": "CTP",
     "tools.insurance.state_label": "State",
     "tools.insurance.premium_amount_label": "Premium amount ($)",
     "tools.insurance.premium_period_label": "Billed per",
@@ -1315,6 +1320,11 @@ EN = {
     "tools.insurance.benchmark_note": "Car, home and CTP quotes are individualised — there's no public plan to rank against. This compares your premium to a typical premium for this policy type and state.",
     "tools.insurance.gap_more": "About ${amount}/yr more than typical.",
     "tools.insurance.gap_less": "About ${amount}/yr less than typical — nice.",
+    # 9 Sep 2026 fix: replaces a bare "—" for the no-typical-premium-set
+    # case (owner report) - admin gets a pointer to where to fix it,
+    # visitors get an honest "not available yet" instead of a dead dash.
+    "tools.insurance.benchmark_missing_admin": "No typical premium set for {policy_state} yet — add one under Typical premium rates below.",
+    "tools.insurance.benchmark_missing_visitor": "No typical-premium benchmark available for this policy type yet.",
     "tools.insurance.creep_line": "Your premium rose {premium_pct}% since your last saved check.",
     "tools.insurance.creep_line_with_sum_insured": "Your premium rose {premium_pct}% — sums insured rose {sum_pct}%.",
     "tools.insurance.creep_unlock_hint": "Scan last year's notice too to see how much your premium has crept since renewal.",
@@ -3109,6 +3119,9 @@ ES = {
     "tools.insurance.policy_car": "\U0001F697 Auto",
     "tools.insurance.policy_home": "\U0001F3E0 Hogar y contenidos",
     "tools.insurance.policy_ctp": "CTP (seguro obligatorio)",
+    "tools.insurance.policy_car_short": "Auto",
+    "tools.insurance.policy_home_short": "Hogar",
+    "tools.insurance.policy_ctp_short": "CTP",
     "tools.insurance.state_label": "Estado",
     "tools.insurance.premium_amount_label": "Monto de la prima ($)",
     "tools.insurance.premium_period_label": "Facturado por",
@@ -3161,6 +3174,8 @@ ES = {
     "tools.insurance.benchmark_note": "Las cotizaciones de auto, hogar y CTP son individualizadas — no hay un plan público con el que compararlas. Esto compara tu prima con una prima típica para este tipo de póliza y estado.",
     "tools.insurance.gap_more": "Unos ${amount}/año más de lo típico.",
     "tools.insurance.gap_less": "Unos ${amount}/año menos de lo típico — bien.",
+    "tools.insurance.benchmark_missing_admin": "Todavía no hay una prima típica configurada para {policy_state} — agrega una en Tarifas típicas de prima, más abajo.",
+    "tools.insurance.benchmark_missing_visitor": "Todavía no hay una referencia de prima típica disponible para este tipo de póliza.",
     "tools.insurance.creep_line": "Tu prima subió {premium_pct}% desde tu última revisión guardada.",
     "tools.insurance.creep_line_with_sum_insured": "Tu prima subió {premium_pct}% — la suma asegurada subió {sum_pct}%.",
     "tools.insurance.creep_unlock_hint": "Escanea también el aviso del año pasado para ver cuánto ha subido tu prima en cada renovación.",
