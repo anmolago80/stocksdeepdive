@@ -1717,6 +1717,20 @@ EN = {
         "calculation only."
     ),
     "portfolio.stress.rebalance_weight_total": "Total: {total}% (must be 100% to compare)",
+    # Fix (9 Sep 2026, owner-reported "rebalancing not working"): the
+    # comparison table used to just silently disappear once the total
+    # drifted off 100%, with the caption above as the only explanation -
+    # easy to miss mid-edit. These render as a proper st.warning banner
+    # right where the vanished table used to be, naming the exact
+    # direction and size of the fix needed.
+    "portfolio.stress.rebalance_weight_over_banner": (
+        "Total is {total}% - that's {diff} percentage points over 100%. Reduce "
+        "one or more of the weights below by a total of {diff} to see the comparison."
+    ),
+    "portfolio.stress.rebalance_weight_under_banner": (
+        "Total is {total}% - that's {diff} percentage points under 100%. Add "
+        "{diff} more across the weights below to see the comparison."
+    ),
     "portfolio.stress.rebalance_reset": "Reset to current weights",
     "portfolio.stress.whatif_table_title": "Current vs what-if",
     "portfolio.stress.col_metric": "Metric",
@@ -3543,6 +3557,16 @@ ES = {
         "pasaría si\"."
     ),
     "portfolio.stress.rebalance_weight_total": "Total: {total}% (debe ser 100% para comparar)",
+    "portfolio.stress.rebalance_weight_over_banner": (
+        "El total es {total}% - son {diff} puntos porcentuales por encima del "
+        "100%. Reduce una o más ponderaciones de abajo en un total de {diff} "
+        "para ver la comparación."
+    ),
+    "portfolio.stress.rebalance_weight_under_banner": (
+        "El total es {total}% - son {diff} puntos porcentuales por debajo del "
+        "100%. Añade {diff} más entre las ponderaciones de abajo para ver la "
+        "comparación."
+    ),
     "portfolio.stress.rebalance_reset": "Restablecer a las ponderaciones actuales",
     "portfolio.stress.whatif_table_title": "Actual vs. qué pasaría si",
     "portfolio.stress.col_metric": "Métrica",

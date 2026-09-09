@@ -14294,10 +14294,23 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
     total_edit = sum(edited_pcts.values())
     st.caption(_st_("rebalance_weight_total", total=f"{total_edit:.1f}"))
     if abs(total_edit - 100.0) > 0.5:
+        # Fix (9 Sep 2026, owner-reported "rebalancing not working" -
+        # video showed the whole comparison silently vanishing the
+        # instant the total drifted off 100%, with the small grey
+        # caption above as the only explanation): the early-return
+        # itself is correct - a mix that doesn't sum to 100% has no
+        # honest "what-if" answer to show - but that caption alone was
+        # easy to miss mid-edit and read as the feature having broken
+        # outright. Now also raises a proper st.warning naming the
+        # exact direction and size of the fix needed, right where the
+        # vanished table used to be.
+        _diff = total_edit - 100.0
+        if _diff > 0:
+            st.warning(_st_("rebalance_weight_over_banner", total=f"{total_edit:.1f}", diff=f"{_diff:.1f}"))
+        else:
+            st.warning(_st_("rebalance_weight_under_banner", total=f"{total_edit:.1f}", diff=f"{abs(_diff):.1f}"))
         return
 
-    edited_weights = {t: (edited_pcts[t] / 100.0) * total_value_aud for t in tickers}
-    whatif = _stress_whatif_metrics(edited_weights, histories, index_histories, total_value_aud)
     covid_current = next((c for c in current_result.get("crises", []) if c["key"] == "covid"), None)
     current_metrics = {
         "max_downside_pct": current_result["max_drawdown"]["pct"] if current_result.get("max_drawdown") else None,
@@ -14306,6 +14319,26 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
         "beta": current_result.get("portfolio_beta"),
         "replayed_10y_pct": current_result.get("replayed_10y_pct"),
     }
+
+    edited_weights = {t: (edited_pcts[t] / 100.0) * total_value_aud for t in tickers}
+    # Fix (9 Sep 2026, owner-reported bug): at rest - nothing edited yet,
+    # or every box reset back to its current weight - this used to still
+    # call _stress_whatif_metrics() on the 1-decimal-ROUNDED edited_pcts,
+    # recombining them into fresh dollar weights and rerunning the whole
+    # beta/drawdown/Monte-Carlo pipeline from scratch. That's a DIFFERENT
+    # (rounded) input than current_result was built from (current_result
+    # uses the portfolio's exact, unrounded dollar weights), so "Current
+    # vs what-if" never quite agreed with itself even when nothing had
+    # actually changed - tiny but real deltas like +0.01/-0.02 sat there
+    # permanently, undermining trust in the whole comparison. When every
+    # box still matches the current weights (rounded to the same 1
+    # decimal the boxes themselves display), reuse current_metrics
+    # directly instead of recomputing - guarantees an exact 0.00 delta at
+    # rest, and only actually recomputes once something has genuinely
+    # changed.
+    _at_rest = all(abs(edited_pcts[t] - round(current_pcts[t], 1)) < 1e-9 for t in tickers)
+    whatif = (dict(current_metrics) if _at_rest
+              else _stress_whatif_metrics(edited_weights, histories, index_histories, total_value_aud))
 
     _na = _st_("na")
 
@@ -14351,7 +14384,11 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
     # widgets elsewhere on the page - only an actual weight change moves it.
     st.divider()
     _mc_current = current_result.get("monte_carlo")
-    _mc_whatif = stress_engine.monte_carlo(edited_weights, histories, total_value_aud, seed=42)
+    # Same at-rest fix as whatif above: reuse the current figure exactly
+    # rather than rerunning the simulation on rounded weights, so this
+    # row can't show a phantom nonzero difference when nothing's changed.
+    _mc_whatif = (_mc_current if _at_rest else
+                  stress_engine.monte_carlo(edited_weights, histories, total_value_aud, seed=42))
 
     def _fmt_mc_range(mc):
         return f"{mc['p5_pct']:+.1f}% to {mc['p95_pct']:+.1f}%" if mc else _na
