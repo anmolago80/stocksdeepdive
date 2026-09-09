@@ -529,6 +529,60 @@ def set_typical_deal_rate(service_key, typical_annual_cost):
         )
 
 
+# 9 Sep 2026 fix: the Insurance car/home/CTP "typical premium" benchmark
+# used to require the owner to type EVERY figure in by hand before it
+# showed anything but "no typical premium set yet" - an empty admin table
+# out of the box makes the whole benchmark card useless on day one. This
+# seeds real, published reference figures so the benchmark actually says
+# something from the first deploy, while staying strictly additive:
+# INSERT OR IGNORE only ever fills a row that has NEVER been set (missing
+# from the table entirely) - it can never overwrite a value the owner
+# later edits via the admin panel, even a deliberately-zeroed one, and is
+# safe to call on every page_tools() render (a no-op after the first).
+#
+# Sources (checked live, not from training-data memory - see this
+# session's own research): Canstar's "How much does car insurance cost in
+# Australia?" (canstar.com.au, updated 10 Apr 2026, state averages from
+# 27 May 2025 data) for car; Canstar's "How Much is Home and Contents
+# Insurance in Australia?" (canstar.com.au, updated 27 Aug 2026, 2026
+# Home & Contents Insurance Awards data) for home - combined
+# home+contents figure, standard (not cyclone-zone North QLD) rate used
+# for QLD. A second source (Finder, early 2025) gave meaningfully LOWER
+# car figures for the same states (e.g. QLD $1,274 vs Canstar's $2,010) -
+# flagged to the owner rather than silently reconciled; Canstar's more
+# recent figures were used. ACT has no published figure from either
+# source for car or home - deliberately left UNSET (never guessed) rather
+# than reusing another state's number or a fabricated average; the
+# benchmark card will keep showing "not available yet" for ACT car/home
+# until a real figure is sourced or the owner sets one manually. CTP is
+# not seeded at all - no publisher was found with a clean, current,
+# state-by-state CTP premium table (schemes vary too much by state to
+# safely average), so every CTP benchmark keeps showing "not available
+# yet" until the owner has real figures to enter.
+DEFAULT_TYPICAL_INSURANCE_PREMIUMS = {
+    "ins_car:NSW": 2570.0, "ins_car:VIC": 2940.0, "ins_car:QLD": 2010.0,
+    "ins_car:WA": 2032.0, "ins_car:SA": 1970.0, "ins_car:TAS": 1785.0,
+    "ins_car:NT": 2283.0,
+    "ins_home:NSW": 2805.0, "ins_home:VIC": 2425.0, "ins_home:QLD": 3362.0,
+    "ins_home:WA": 2318.0, "ins_home:SA": 2061.0, "ins_home:TAS": 2303.0,
+    "ins_home:NT": 5340.0,
+}
+
+
+def seed_default_typical_deal_rates():
+    """Idempotent, additive-only: inserts DEFAULT_TYPICAL_INSURANCE_
+    PREMIUMS for any service_key that has NEVER been set, and touches
+    nothing that already has a row (own edit or a prior seed run alike).
+    Safe to call on every page_tools() render."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        conn.executemany(
+            "INSERT OR IGNORE INTO typical_deal_rates "
+            "(service_key, typical_annual_cost, updated_at) VALUES (?, ?, ?)",
+            [(k, v, now) for k, v in DEFAULT_TYPICAL_INSURANCE_PREMIUMS.items()],
+        )
+
+
 def list_debt_recycling_scenario_names(email):
     """Ordered names of every Debt Recycling scenario this email has
     (oldest first) - empty list if none yet. Mirrors portfolio_store.

@@ -20033,6 +20033,14 @@ def _render_insurance_new_check(email, _il, _lang, allowed, reason, usage, typic
 def _render_insurance_tool(email):
     _lang = st.session_state.get("lang", "en")
     _il = lambda key, **kw: i18n.t(f"tools.insurance.{key}", _lang, **kw)
+    # 9 Sep 2026 fix: seeds real published car/home typical-premium
+    # figures the FIRST time any visitor opens Insurance (owner report:
+    # the benchmark card was useless with an empty admin table) -
+    # additive-only, never overwrites an owner-set value, cheap no-op on
+    # every later render. See tools_store.seed_default_typical_deal_
+    # rates()'s own docstring for sources and what's deliberately left
+    # unset (ACT, CTP).
+    tools_store.seed_default_typical_deal_rates()
     typical_deal_rates = tools_store.get_typical_deal_rates()
 
     st.markdown(f"### {_il('title')}")
