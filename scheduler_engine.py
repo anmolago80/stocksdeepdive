@@ -84,11 +84,11 @@ CONFIG (Railway environment variables, all optional):
                            of where it sits in this list. Defaults to
                            _DEFAULT_NIGHTLY_UNIVERSES below - the round 2
                            instruction doc's own recommended cadence line
-                           (daily: ASX 200/S&P 500/Nasdaq 100/Dow Jones 30/
+                           (daily: ASX 200/S&P 500/Nasdaq 100/Russell 2000/
                            ASX 300/ASX All Technology; one large weekly
                            universe per weekday Mon-Fri: All Ordinaries/
                            S&P 400 MidCap/Small Caps (S&P 600)/Russell
-                           1000/Russell 2000) - set as the code default so
+                           1000) - set as the code default so
                            broader coverage works without the owner
                            needing to touch Railway at all; still
                            override-able there if the first live run's
@@ -168,13 +168,28 @@ def _save_state(state):
 # broader coverage works out of the box without the owner touching
 # Railway - see NIGHTLY_UNIVERSES' own docstring above for what each
 # cadence means. Daily: the six smaller/higher-priority universes.
-# One large weekly universe per weekday Mon-Fri, spreading them across
+# One large weekly universe per weekday Mon-Thu, spreading them across
 # separate nights rather than piling onto one.
+#
+# 9 Sep 2026 (owner-reported bug): Dow Jones 30 swapped out for Russell
+# 2000, daily. fetch_dow30()'s Wikipedia scrape (added in this same Fix
+# 8a/8b batch, flagged even then as never live-verified) turned out to
+# never resolve any tickers in production - the current Wikipedia page
+# for the Dow no longer carries a "Components" table matching the shape
+# the scraper looks for, so this universe never got a first successful
+# nightly scan and the Scanner showed nothing for it. Rather than chase
+# Wikipedia's page structure (and risk hand-typing a stale/wrong 30-
+# ticker fallback list into production), replaced it with Russell 2000 -
+# already one of the more resilient fetchers here (iShares IWM holdings
+# CSV, with its own last-good-list disk cache - see fetch_russell2000())
+# - promoted from its old Friday-only slot to daily, taking over Dow 30's
+# spot. scanner_engine.fetch_dow30()/DOW30_WIKI_URL/USA_UNIVERSES'
+# dispatch branch are left in place, just unreferenced, in case Wikipedia's
+# page structure gets fixed and someone wants to re-add it later.
 _DEFAULT_NIGHTLY_UNIVERSES = (
-    "ASX 200:daily, S&P 500:daily, Nasdaq 100:daily, Dow Jones 30:daily, "
+    "ASX 200:daily, S&P 500:daily, Nasdaq 100:daily, Russell 2000:daily, "
     "ASX 300:daily, ASX All Technology:daily, All Ordinaries:mon, "
-    "S&P 400 MidCap:tue, Small Caps (S&P 600):wed, Russell 1000:thu, "
-    "Russell 2000:fri"
+    "S&P 400 MidCap:tue, Small Caps (S&P 600):wed, Russell 1000:thu"
 )
 
 _WEEKDAY_ABBR = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}

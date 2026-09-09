@@ -10663,8 +10663,13 @@ _SCANNER_PILL_UNIVERSES = [
     ("🇦🇺 ASX 100", "Australia", "ASX 100"),
     ("🇺🇸 S&P 500", "USA", "S&P 500"),
     ("🇺🇸 Nasdaq 100", "USA", "Nasdaq 100"),
-    ("🇺🇸 Dow Jones 30", "USA", "Dow Jones 30"),
+    ("🇺🇸 Russell 2000", "USA", "Russell 2000"),
 ]
+# 9 Sep 2026 (owner-reported bug): Dow Jones 30 replaced here by Russell
+# 2000 - fetch_dow30()'s Wikipedia scrape never resolved any tickers in
+# production, so that universe never had a nightly scan and this pill
+# always led to an empty Scanner page. See scanner_engine.py's own
+# module docstring and USA_UNIVERSES comment for the full story.
 
 
 def _render_scanner_universe_pills(lang):

@@ -41,9 +41,12 @@ import scanner_engine
 # universe" per the spec, tried in order until one is found whose LAST
 # saved scan actually contains this ticker.
 _AU_PRIORITY = ["ASX 300", "ASX 200", "All Ordinaries", "ASX Small Ordinaries"]
-_US_PRIORITY = ["S&P 500", "S&P 1500", "Nasdaq 100", "Dow Jones 30",
+_US_PRIORITY = ["S&P 500", "S&P 1500", "Nasdaq 100",
                 "Russell 1000", "S&P 400 MidCap", "Small Caps (S&P 600)",
                 "Russell 2000"]
+# 9 Sep 2026: "Dow Jones 30" removed - that universe was pulled from
+# USA_UNIVERSES (scanner_engine.py) since its scraper never resolved any
+# tickers in production; it would never have matched here anyway.
 
 # (scan row field, public percentile key) - all five are "higher = better"
 # in this app's own convention (Psychology included: fear enters with a

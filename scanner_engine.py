@@ -19,8 +19,7 @@ own (labeled as such in get_universe_pool's source string):
              (derived), ASX 100, ASX 50, ASX 20, ASX All Technology
              (derived)
   USA:       S&P 500, Nasdaq 100, Russell 2000, Small Caps (S&P SmallCap
-             600), Dow Jones 30, S&P 400 MidCap, Russell 1000, S&P 1500
-             (derived)
+             600), S&P 400 MidCap, Russell 1000, S&P 1500 (derived)
 
 Every non-derived fetcher is a live scrape (Wikipedia constituent tables,
 or an iShares ETF holdings export for Russell 2000/1000) cached for 24h
@@ -34,6 +33,16 @@ live, derived or fallback data. The five new source URLs added in round 2
 be live-verified from either dev environment used to build this - see
 their own constants' comments above for that caveat; their first real
 test is the actual nightly run after this deploys.
+
+9 Sep 2026 (owner-reported bug): that caveat turned out to matter for Dow
+Jones 30 - fetch_dow30()'s target Wikipedia page no longer carries a
+"Components" table matching what the scraper looks for, so it never
+resolved any tickers and the universe never had a first successful
+nightly scan. Removed from USA_UNIVERSES/the Scanner's popular pills/the
+nightly cadence (replaced by Russell 2000, already the most resilient US
+fetcher here); fetch_dow30()/DOW30_WIKI_URL/its get_universe_pool()
+branch are left in place below, just unreferenced, in case Wikipedia's
+page structure gets fixed later.
 """
 
 import io
@@ -755,8 +764,19 @@ AUSTRALIA_UNIVERSES = [
 ]
 USA_UNIVERSES = [
     "S&P 500", "Nasdaq 100", "Russell 2000", "Small Caps (S&P 600)",
-    "Dow Jones 30", "S&P 400 MidCap", "Russell 1000", "S&P 1500",
+    "S&P 400 MidCap", "Russell 1000", "S&P 1500",
 ]
+# 9 Sep 2026 (owner-reported bug): "Dow Jones 30" removed from this list -
+# fetch_dow30()'s Wikipedia scrape never resolved any tickers in
+# production (the live page no longer carries a matching "Components"
+# table), so the universe never had a first successful nightly scan and
+# the Scanner showed nothing for it. Removing it from USA_UNIVERSES makes
+# it unselectable everywhere (Scanner dropdown, API, sitemap) without
+# deleting fetch_dow30()/DOW30_WIKI_URL/its get_universe_pool() branch
+# below - all left in place, just unreferenced, for easy revival if
+# Wikipedia's page structure gets fixed later. Replaced as a popular pill/
+# daily nightly slot by Russell 2000 - see scheduler_engine.py's
+# _DEFAULT_NIGHTLY_UNIVERSES and app.py's _SCANNER_PILL_UNIVERSES.
 
 
 def get_universes(country):
