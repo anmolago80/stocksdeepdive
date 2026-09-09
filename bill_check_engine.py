@@ -60,11 +60,23 @@ how the CDR plan data itself is expressed) unless noted otherwise.
 """
 
 import json
+import logging
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone, timedelta
 
 import requests
+
+# Shared with app.py's own _tools_logger (same logger NAME - Python's
+# logging.getLogger returns the SAME instance for a given name from
+# anywhere in the process) - this module can't import app.py (would be
+# circular), so it gets its own handle to the identical channel rather
+# than inventing a second one. Confirmed live on Railway (8 Sep 2026):
+# a bare logging.warning() call on this logger reaches the deploy logs
+# with no extra setup, unlike a plain print() (see app.py's own history
+# on this exact point).
+_logger = logging.getLogger("sdd.tools")
 
 
 # --------------------------------------------------------------------------- #
@@ -346,6 +358,13 @@ def _data_dir():
 DB_PATH = os.path.join(_data_dir(), "stocksdeepdive.db")
 
 CACHE_TTL_HOURS = 24.0  # spec: "Cache plan data per postcode/fuel ~24h on the volume"
+# 8 Sep 2026 fix (owner report: comparison stuck on "temporarily
+# unavailable" even after the underlying fetch bug was fixed) - a total
+# fetch failure (every retailer down/rejected) used to be cached at the
+# SAME 24h TTL as a real result, so one bad run silently blanked the
+# comparison for a full day. An empty result now only sticks for 15
+# minutes - see _cache_get.
+_EMPTY_CACHE_TTL_HOURS = 0.25
 
 # Curated major-retailer CDR brand slugs - NOT the whole AU energy
 # market (see module docstring). Each entry's own base URI is tried
@@ -354,14 +373,40 @@ CACHE_TTL_HOURS = 24.0  # spec: "Cache plan data per postcode/fuel ~24h on the v
 # plans - this could not be confirmed from this sandbox's network-
 # blocked environment; _PLAN_PATH_VARIANTS tries both and uses whichever
 # responds 200 first for that retailer).
+# 8 Sep 2026 fix: "origin-energy" replaced with "origin" - independently
+# confirmed (public third-party documentation of a live 2026-07-27
+# fetch against this exact gateway: 3,595 Origin plans under the
+# "origin" slug specifically) rather than assumed; "origin-energy" was
+# never confirmed and risks silently returning zero plans for this
+# retailer if wrong. "engie"/"globird-energy" added per the owner's own
+# report of testing them live - this sandbox has no outbound network
+# access to re-verify that (see module docstring), but a wrong slug
+# here costs nothing: _fetch_retailer_plans already fails closed and
+# just logs+skips a retailer whose slug doesn't resolve, exactly like
+# any other retailer outage.
 RETAILER_SLUGS = [
-    "agl", "origin-energy", "energyaustralia", "red-energy",
+    "agl", "origin", "energyaustralia", "red-energy",
     "alinta-energy", "momentum-energy", "powershop", "dodo",
     "simply-energy", "amber-electric", "tango-energy", "ovo-energy",
+    "engie", "globird-energy",
 ]
 _AER_BASE_TEMPLATE = "https://cdr.energymadeeasy.gov.au/{slug}/cds-au/v1"
 _PLAN_PATH_VARIANTS = ("/energy/plans", "/energy/generic/plans")
-_CDR_HEADERS = {"x-v": "3", "Accept": "application/json"}
+# 8 Sep 2026 fix - the root cause of the "temporarily unavailable" report:
+# every request sent x-v: 3 regardless of endpoint, 406-ing on this
+# gateway's listing endpoint (independently confirmed live 2026-07-27 by
+# a third party against this exact host: listing wants x-v: 1). This
+# sandbox still has no outbound network access to confirm the DETAIL
+# endpoint's own version live (see module docstring) - rather than
+# hardcode a second guessed number, _fetch_json now starts every request
+# at x-v: 1 and, on a 406, reads the gateway's OWN error body for its
+# min=/max= hint and retries once with THAT exact version. This is
+# correct today by construction (the gateway is the authority on its own
+# version, not a guess written into this file) and stays correct if the
+# CDS Energy standard is bumped again later.
+_CDR_HEADERS = {"Accept": "application/json"}
+_DEFAULT_XV = "1"
+_XV_HINT_RE = re.compile(r"\b(?:min|max)\s*[=:]\s*(\d+)")
 _REQUEST_TIMEOUT_S = 12
 
 
@@ -392,12 +437,20 @@ def _cache_get(cache_key):
         age = datetime.now(timezone.utc) - datetime.fromisoformat(row[1])
     except (TypeError, ValueError):
         return None
-    if age > timedelta(hours=CACHE_TTL_HOURS):
-        return None
     try:
-        return json.loads(row[0])
+        payload = json.loads(row[0])
     except (TypeError, ValueError):
         return None
+    # 8 Sep 2026 fix: see _EMPTY_CACHE_TTL_HOURS above - an empty
+    # (total-failure) result is only trusted for 15 minutes, not the
+    # full 24h a real result gets. This alone self-heals any entry
+    # already poisoned by the old unconditional-24h bug the moment this
+    # deploys - no separate cache-clear step needed, since a poisoned
+    # entry is by now almost certainly already older than 15 minutes.
+    ttl = timedelta(hours=CACHE_TTL_HOURS) if payload else timedelta(hours=_EMPTY_CACHE_TTL_HOURS)
+    if age > ttl:
+        return None
+    return payload
 
 
 def _cache_set(cache_key, payload):
@@ -414,32 +467,79 @@ def _cache_set(cache_key, payload):
         pass
 
 
+# 8 Sep 2026 fix: this gateway's unit convention (cents vs dollars) for
+# rate/charge fields is NOT confirmed live from this sandbox (no
+# outbound network access - module docstring), and the module's own
+# worst-case failure mode is exactly a silently-100x-wrong dollar
+# figure. Rather than assume a unit, every parsed rate/charge is
+# sanity-checked against a real-world-plausible AU band before being
+# trusted; a value that fits neither as-parsed nor x100 is dropped
+# (the plan is skipped, not shown with a fabricated number). Bands are
+# deliberately generous (real published AU rates/charges vary a lot by
+# distributor/tariff) - they exist to catch a UNIT mixup, not to
+# second-guess a genuinely unusual but real plan.
+_GENERAL_RATE_PLAUSIBLE_C_KWH = (5.0, 150.0)
+_SUPPLY_CHARGE_PLAUSIBLE_C_DAY = (20.0, 400.0)
+
+
+def _normalize_cents(raw, plausible_band):
+    if raw is None:
+        return None
+    lo, hi = plausible_band
+    if lo <= raw <= hi:
+        return raw
+    if lo <= raw * 100 <= hi:
+        return raw * 100
+    return None
+
+
 def _parse_electricity_contract(plan_detail, retailer_slug):
-    """plan_detail: one CDS 'electricityContract' object (from a Get
-    Generic Plan Detail response). Returns a candidate-plan dict with
-    rates in CENTS (c_kwh_general/c_kwh_controlled/daily_supply_c) or
-    None if the schema doesn't match what's expected - a plan this
-    can't confidently parse is skipped, never guessed at (module
-    docstring's fail-closed rule). Only the FIRST current tariffPeriod
-    is read (conditional/seasonal multi-period plans are a documented
-    simplification - shown as a single blended rate)."""
+    """plan_detail: a Get Generic Plan Detail response's `data` object.
+    Returns a candidate-plan dict with rates in CENTS (c_kwh_general/
+    c_kwh_controlled/daily_supply_c) or None if the schema doesn't match
+    what's expected - a plan this can't confidently parse is skipped,
+    never guessed at (module docstring's fail-closed rule). Only the
+    FIRST current tariffPeriod is read (conditional/seasonal
+    multi-period plans are a documented simplification - shown as a
+    single blended rate).
+
+    8 Sep 2026 fix: this gateway's v3 detail schema returns
+    `electricityContract` as a SINGULAR object (independently confirmed
+    - real third-party usage of this exact API) - the plural, indexed
+    `electricityContracts[0]` this parser originally assumed meant every
+    successful fetch was silently parsing to None. The plural form is
+    kept as a fallback only (never observed live from this sandbox -
+    module docstring), not because it's confirmed to still occur.
+    `controlledLoad` has been documented at both the CONTRACT level and
+    nested inside tariffPeriod across CDS schema revisions - both are
+    checked rather than assuming one."""
     try:
-        contract = plan_detail.get("electricityContracts", [{}])[0]
+        contract = plan_detail.get("electricityContract")
+        if not isinstance(contract, dict):
+            contracts = plan_detail.get("electricityContracts") or []
+            contract = contracts[0] if contracts else {}
         periods = contract.get("tariffPeriod") or []
         if not periods:
             return None
         period = periods[0]
-        daily_supply_c = None
+        daily_supply_raw = None
         try:
-            daily_supply_c = float(period.get("dailySupplyCharge")) if period.get("dailySupplyCharge") else None
+            raw = period.get("dailySupplyCharge")
+            if raw is None:
+                raw = period.get("dailySupplyCharges")  # seen pluralised in some CDS samples
+            daily_supply_raw = float(raw) if raw is not None else None
         except (TypeError, ValueError):
             pass
-        c_general = None
+        daily_supply_c = _normalize_cents(daily_supply_raw, _SUPPLY_CHARGE_PLAUSIBLE_C_DAY)
+        c_general_raw = None
         rate_type = period.get("rateBlockUType")
         if rate_type == "singleRate":
             rates = (period.get("singleRate") or {}).get("rates") or []
             if rates:
-                c_general = float(rates[0].get("unitPrice")) if rates[0].get("unitPrice") else None
+                try:
+                    c_general_raw = float(rates[0].get("unitPrice")) if rates[0].get("unitPrice") else None
+                except (TypeError, ValueError):
+                    pass
         elif rate_type == "timeOfUseRates":
             tou = period.get("timeOfUseRates") or []
             unit_prices = []
@@ -450,18 +550,20 @@ def _parse_electricity_contract(plan_detail, retailer_slug):
                     except (TypeError, ValueError):
                         pass
             if unit_prices:
-                c_general = sum(unit_prices) / len(unit_prices)  # simple blended average - flagged as such below
+                c_general_raw = sum(unit_prices) / len(unit_prices)  # simple blended average - flagged as such below
+        c_general = _normalize_cents(c_general_raw, _GENERAL_RATE_PLAUSIBLE_C_KWH)
         if c_general is None:
             return None
-        c_controlled = None
-        cl = period.get("controlledLoad") or []
+        c_controlled_raw = None
+        cl = contract.get("controlledLoad") or period.get("controlledLoad") or []
         if cl:
             cl_rates = (cl[0].get("rates") or [])
             if cl_rates:
                 try:
-                    c_controlled = float(cl_rates[0].get("unitPrice"))
+                    c_controlled_raw = float(cl_rates[0].get("unitPrice"))
                 except (TypeError, ValueError):
                     pass
+        c_controlled = _normalize_cents(c_controlled_raw, _GENERAL_RATE_PLAUSIBLE_C_KWH)
         return {
             "retailer": retailer_slug,
             "plan_name": plan_detail.get("displayName") or plan_detail.get("planId") or retailer_slug,
@@ -474,63 +576,118 @@ def _parse_electricity_contract(plan_detail, retailer_slug):
         return None
 
 
-def _fetch_json(url, params=None):
+def _fetch_json(url, params=None, x_v=_DEFAULT_XV):
+    """GETs url at the given x-v version. On a 406 (CDS content-
+    negotiation rejection), reads the gateway's OWN error body for a
+    min=/max= version hint and retries ONCE with that exact version -
+    see _CDR_HEADERS above for why this asks the gateway rather than
+    hardcoding a second guessed number. Returns (json_or_None,
+    http_status_or_None) - the status is surfaced purely for the
+    per-retailer logging in _fetch_retailer_plans, so a failure is
+    diagnosable from Railway's logs instead of just "returned fewer
+    plans" (the exact gap that made the original x-v bug invisible)."""
+    headers = dict(_CDR_HEADERS)
+    headers["x-v"] = x_v
     try:
-        resp = requests.get(url, headers=_CDR_HEADERS, params=params, timeout=_REQUEST_TIMEOUT_S)
+        resp = requests.get(url, headers=headers, params=params, timeout=_REQUEST_TIMEOUT_S)
+        if resp.status_code == 406:
+            hinted = _XV_HINT_RE.search(resp.text or "")
+            if hinted and hinted.group(1) != x_v:
+                headers["x-v"] = hinted.group(1)
+                resp = requests.get(url, headers=headers, params=params, timeout=_REQUEST_TIMEOUT_S)
         if resp.status_code != 200:
-            return None
-        return resp.json()
+            return None, resp.status_code
+        return resp.json(), resp.status_code
     except (requests.RequestException, ValueError):
-        return None
+        return None, None
 
 
-def _fetch_retailer_plans(slug, fuel_type):
+def _plan_stub_matches_postcode(stub, postcode):
+    """8 Sep 2026 addition: the LISTING response's own `geography` block
+    (per CDS Energy's documented shape - includedPostcodes/
+    excludedPostcodes as string arrays) can filter to the visitor's own
+    postcode BEFORE the (expensive, per-plan) detail fetches, instead of
+    fetching every plan's detail regardless of whether it's even sold in
+    this postcode. Deliberately permissive on missing data: a stub with
+    no geography block, or one that doesn't carry these specific keys,
+    is treated as available everywhere (the prior default) - this can
+    only ever narrow the candidate set, never wrongly exclude a plan
+    whose availability data isn't there to check."""
+    if not postcode or not isinstance(stub, dict):
+        return True
+    geo = stub.get("geography") or {}
+    included = geo.get("includedPostcodes")
+    if included:
+        return postcode in included
+    excluded = geo.get("excludedPostcodes")
+    if excluded and postcode in excluded:
+        return False
+    return True
+
+
+def _fetch_retailer_plans(slug, fuel_type, postcode=None):
     """One retailer's generic plan list + detail for each, trying both
     known path shapes. Returns [] on ANY failure for this retailer -
     callers loop every retailer and simply get fewer results, never an
-    exception."""
+    exception. Every attempt is logged (slug, path tried, HTTP status,
+    plans returned) - 8 Sep 2026 fix: this whole class of failure was
+    previously invisible, since every error here was silently
+    swallowed with nothing recorded anywhere."""
     base = _AER_BASE_TEMPLATE.format(slug=slug)
     listing = None
+    plans_path = None
+    listing_status = None
     for path in _PLAN_PATH_VARIANTS:
-        listing = _fetch_json(f"{base}{path}",
-                              params={"fuelType": fuel_type.upper(), "type": "STANDING", "page-size": 50})
+        listing, listing_status = _fetch_json(
+            f"{base}{path}",
+            params={"fuelType": fuel_type.upper(), "type": "STANDING", "page-size": 50},
+        )
         if listing:
             plans_path = path
             break
     if not listing:
+        _logger.warning("[bill_check_aer] %s listing failed - last path=%s status=%s",
+                        slug, path, listing_status)
         return []
     try:
         plan_stubs = listing.get("data", {}).get("plans") or listing.get("data") or []
         if isinstance(plan_stubs, dict):
             plan_stubs = plan_stubs.get("plans", [])
     except AttributeError:
+        _logger.warning("[bill_check_aer] %s listing status=%s but unparseable shape", slug, listing_status)
         return []
+    plan_stubs = [s for s in (plan_stubs or []) if _plan_stub_matches_postcode(s, postcode)]
     out = []
-    for stub in (plan_stubs or [])[:20]:  # bounded - protects latency/spend, not a full-market sweep
+    for stub in plan_stubs[:20]:  # bounded - protects latency/spend, not a full-market sweep
         plan_id = stub.get("planId") if isinstance(stub, dict) else None
         if not plan_id:
             continue
-        detail = _fetch_json(f"{base}{plans_path}/{plan_id}")
+        detail, detail_status = _fetch_json(f"{base}{plans_path}/{plan_id}")
         if not detail:
             continue
         parsed = _parse_electricity_contract(detail.get("data", detail), slug)
         if parsed:
             out.append(parsed)
+    _logger.warning("[bill_check_aer] %s: path=%s listing_status=%s candidates=%d parsed=%d",
+                    slug, plans_path, listing_status, len(plan_stubs), len(out))
     return out
 
 
 def fetch_candidate_plans(postcode, fuel_type="electricity", distributor=None):
     """The AU AER comparison's one entry point. postcode/distributor are
-    accepted for the cache key and for a future geography filter (the
-    CDS plan-detail geography block - `geography.excludedPostcodes`/
-    `includedPostcodes` - is NOT yet cross-checked against the user's
-    own postcode in this pass; every returned plan is presented as
-    "generally available", matching the spec's own wording, rather than
-    confirmed available at this exact address - a documented
-    simplification, not silently assumed). Returns [] if every retailer
-    fails (AER outage, schema drift, or - most likely from this
-    sandbox's own testing limits - a wrong path/base-URL guess that
-    needs the owner's post-deploy spot-check per the module docstring)."""
+    accepted for the cache key AND now used as a real geography filter:
+    each retailer's plan listing carries a `geography.includedPostcodes`/
+    `excludedPostcodes` block per plan stub, and `_fetch_retailer_plans`
+    checks the user's postcode against it before spending a detail fetch
+    on a plan that was never available at that address (see
+    `_plan_stub_matches_postcode`). A plan stub with no geography block
+    at all is treated as generally available, matching the spec's own
+    wording. Returns [] if every retailer fails (AER outage, schema
+    drift, or - most likely from this sandbox's own testing limits - a
+    wrong path/base-URL guess that needs the owner's post-deploy
+    spot-check per the module docstring); failed fetches are cached only
+    briefly (see `_EMPTY_CACHE_TTL_HOURS`) so a transient outage doesn't
+    block real comparisons for a full day."""
     if fuel_type not in ("electricity", "gas"):
         return []
     cache_key = f"{fuel_type}:{postcode}:{distributor or ''}"
@@ -540,8 +697,10 @@ def fetch_candidate_plans(postcode, fuel_type="electricity", distributor=None):
     all_plans = []
     for slug in RETAILER_SLUGS:
         try:
-            all_plans.extend(_fetch_retailer_plans(slug, fuel_type))
+            plans = _fetch_retailer_plans(slug, fuel_type, postcode=postcode)
+            all_plans.extend(plans)
         except Exception:
+            _logger.warning("[bill_check_aer] %s raised during fetch - skipped", slug, exc_info=True)
             continue  # one bad retailer never blocks the others
     _cache_set(cache_key, all_plans)
     return all_plans
