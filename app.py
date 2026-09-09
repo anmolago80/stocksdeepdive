@@ -17824,8 +17824,22 @@ TOOLS_REGISTRY = [
      "title_key": "tools.utilities.title", "render": "_render_utilities_tool"},
     {"id": "debt_recycling", "icon": "\U0001F4B0",
      "title_key": "tools.debt_recycling.title", "render": "_render_debt_recycling_tool"},
-    {"id": "insurance", "icon": "🛡️",
-     "title_key": "tools.insurance.title", "render": "_render_insurance_tool"},
+    # 9 Sep 2026 fix (owner decision): Insurance hidden from the Tools hub -
+    # even with real published typical-premium figures seeded in, a
+    # state-wide average premium proved too noisy to be a trustworthy
+    # personal benchmark for car/home/CTP, and there's no real public data
+    # source (unlike Utilities' AER/CDR feed) to make it a genuine ranked
+    # comparison instead - see this session's own research. Deliberately a
+    # QUICK, REVERSIBLE hide, not a deletion: _render_insurance_tool,
+    # insurance_engine.py, every "ins_*" saved bill_checks row, and the
+    # typical_deal_rates seed data are all left fully intact - restoring
+    # the tool is just uncommenting this entry. See the matching
+    # _INSURANCE_FUEL_PREFIX filter in _render_utilities_tool's dashboard
+    # call, which keeps a visitor's old saved insurance checks from
+    # dangling in the combined dashboard with a dead "open" button now
+    # that this tab doesn't exist to open them into.
+    # {"id": "insurance", "icon": "🛡️",
+    #  "title_key": "tools.insurance.title", "render": "_render_insurance_tool"},
 ]
 
 # Fix round 10 #1: a None value slipping through an extraction-fed dict's
@@ -19568,7 +19582,15 @@ def _render_utilities_tool(email):
         _render_utilities_new_check(email, _ul, _lang, allowed, reason, usage, typical_deal_rates)
         return
 
-    _render_bill_checks_dashboard(email, _lang, saved, typical_deal_rates,
+    # 9 Sep 2026 fix: with Insurance hidden from TOOLS_REGISTRY (see its
+    # own comment there), a visitor's OLD saved insurance checks would
+    # otherwise still dangle in this combined dashboard with a "→" button
+    # that silently does nothing (it jumps to a tab that no longer
+    # exists) - filtered out here rather than in _render_bill_checks_
+    # dashboard itself, so the combined-dashboard behavior stays exactly
+    # as designed for whenever Insurance is restored.
+    _utilities_only_saved = [b for b in saved if not b["fuel"].startswith(_INSURANCE_FUEL_PREFIX)]
+    _render_bill_checks_dashboard(email, _lang, _utilities_only_saved, typical_deal_rates,
                                   _ul("dashboard_add_button"), "tools_util_view", "new")
 
 
