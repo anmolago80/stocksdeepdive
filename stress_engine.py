@@ -189,7 +189,7 @@ GET_LONG_HISTORY_FLOOR = "2005-01-01"
 
 
 _LONG_HISTORY_TABLE = "stress_long_history_v4"
-_RESULT_CACHE_TABLE = "stress_result_cache_v8"
+_RESULT_CACHE_TABLE = "stress_result_cache_v9"
 
 
 def _conn():
@@ -260,6 +260,14 @@ def _conn():
     # sitting on top of the same 2011-01-04 vendor seam GOLD.AX has), and
     # _attempt_split_repair's own follow-up note above explains the fix.
     # Every Stress Test result recomputes fresh from here.
+    #
+    # Part 29 (2026-09-10, Monte Carlo audit): _RESULT_CACHE_TABLE alone
+    # bumped again, _v8->_v9. monte_carlo()'s result blob shape changed
+    # (new "months_used"/"n_holdings_given" keys, 29.2) AND its sampling
+    # method changed (historical bootstrap replaces the multivariate-
+    # normal draw, 29.4) - a pre-Part-29 cached blob is stale under the
+    # new method, not just missing keys, so nothing from before this
+    # deploy may be read again.
     conn.execute(
         f"""CREATE TABLE IF NOT EXISTS {_LONG_HISTORY_TABLE} (
             ticker TEXT PRIMARY KEY,
@@ -1278,14 +1286,27 @@ def shock_grid(beta, total_value_aud):
 # -----------------------------------------------------------------
 
 def monte_carlo(weights, histories, total_value_aud, n_paths=5000, horizon_months=12, seed=None):
-    """5,000 (default) simulated one-year portfolio paths, each drawn
-    from a multivariate-normal model of the holdings' own historical
-    monthly returns (mean vector + covariance matrix - captures the
-    same volatility AND correlation each holding actually showed).
-    Returns {"p5_pct","p95_pct","p5_value_aud","p95_value_aud",
-    "n_holdings_used"} - None if fewer than 2 holdings have enough
-    monthly history (>=12 months) to build a covariance matrix from."""
+    """5,000 (default) simulated one-year portfolio paths, each drawn by
+    HISTORICAL BOOTSTRAP: every simulated month is an actual joint
+    historical month resampled with replacement from the holdings' own
+    shared monthly-return history (all holdings' returns from the SAME
+    calendar month drawn together), not a fitted multivariate-normal
+    model. This preserves the real cross-holding correlation exactly
+    and lets real fat tails/skew (crash months worse than a fitted
+    normal implies) survive into the simulation.
+
+    Part 29 (10 Sep 2026 audit): replaces the prior
+    rng.multivariate_normal(mean_vec, cov, ...) draw - mean_vec/cov are
+    no longer computed. Everything else (weights, compounding,
+    percentiles, histogram, value math) is unchanged.
+
+    Returns {"p5_pct","p95_pct","p50_pct","p5_value_aud","p95_value_aud",
+    "p50_value_aud","n_holdings_used","n_holdings_given","months_used",
+    "hist_counts","hist_bin_edges"} - None if fewer than 1 holding has
+    enough monthly history (>=12 months) or fewer than 6 months are
+    shared across the included holdings."""
     weights = {t: w for t, w in (weights or {}).items() if w}
+    n_holdings_given = len(weights)
     monthlies = {}
     for t in weights:
         h = (histories or {}).get(t)
@@ -1304,20 +1325,16 @@ def monte_carlo(weights, histories, total_value_aud, n_paths=5000, horizon_month
         return None
     w_vec = np.array([weights[t] / used_w_total for t in tickers])
 
-    mean_vec = df[tickers].mean().values
-    cov = df[tickers].cov().values
-    # A single-holding portfolio (or a degenerate all-zero-variance
-    # covariance) still needs to run - np.random.multivariate_normal
-    # tolerates a positive-semidefinite (not just positive-definite)
-    # covariance matrix directly, so no special-casing needed here.
     rng = np.random.default_rng(seed)
+    hist_matrix = df[tickers].to_numpy()
     try:
-        draws = rng.multivariate_normal(mean_vec, cov, size=(n_paths, horizon_months))
+        idx = rng.integers(0, len(df), size=(n_paths, horizon_months))
+        draws = hist_matrix[idx]
     except Exception:
         return None
-    # draws shape: (n_paths, horizon_months, n_tickers) of simulated
-    # monthly returns per holding; compound each holding's own monthly
-    # draws across the horizon, then combine by weight.
+    # draws shape: (n_paths, horizon_months, n_tickers) of resampled
+    # historical monthly returns per holding; compound each holding's
+    # own monthly draws across the horizon, then combine by weight.
     holding_growth = np.prod(1.0 + draws, axis=1)  # (n_paths, n_tickers)
     port_growth = holding_growth @ w_vec            # (n_paths,)
     port_return_pct = (port_growth - 1.0) * 100.0
@@ -1343,6 +1360,13 @@ def monte_carlo(weights, histories, total_value_aud, n_paths=5000, horizon_month
         "p95_value_aud": (float(p95) / 100.0) * total_value_aud if total_value_aud else None,
         "p50_value_aud": (float(p50) / 100.0) * total_value_aud if total_value_aud else None,
         "n_holdings_used": len(tickers),
+        # Part 29 (29.2 - transparency caption): purely additive, same
+        # cached-blob-tolerance pattern as n_holdings_used/hist_counts
+        # above - a result cached before this change simply lacks these
+        # two keys, and the caller (app.py) omits the new caption line
+        # gracefully for such a blob rather than erroring.
+        "n_holdings_given": n_holdings_given,
+        "months_used": int(len(df)),
         "hist_counts": [int(c) for c in _hist_counts],
         "hist_bin_edges": [float(e) for e in _hist_edges],
     }

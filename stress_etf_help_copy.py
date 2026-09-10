@@ -101,22 +101,39 @@ SCENARIO_METHOD_ES = (
     "sector/índice × su beta."
 )
 
+# Part 29 (29.4 - bootstrap sampling, 10 Sep 2026 audit): reworded from
+# "measure average/volatility/correlations, draw from that fitted
+# model" to describe the historical bootstrap that replaced it (real
+# calendar months resampled with replacement, all holdings' returns
+# from the same month drawn together) - plus a new sentence noting
+# returns are simulated in each holding's local currency (AUD/USD
+# movement on US holdings is not part of the band, same convention as
+# the rest of the tab).
 MONTE_CARLO_METHOD_EN = (
-    "From your holdings' real monthly returns we measure average, "
-    "volatility and all cross-correlations, then simulate 5,000 possible "
-    "next-years (12 monthly draws each, shaped by those statistics), "
-    "apply your weights to each, sort the 5,000 outcomes, and report the "
-    "5th and 95th percentile. A statistical remix of the past — not a "
-    "prediction."
+    "From your holdings' shared history of real monthly returns, we "
+    "simulate 5,000 possible next-years by resampling 12 of those actual "
+    "historical months at a time, with replacement - each simulated "
+    "month is a real calendar month, with every holding's return from "
+    "that same month drawn together, so real cross-holding correlation "
+    "and fat tails carry through unchanged. We apply your weights to "
+    "each simulated year, sort the 5,000 outcomes, and report the 5th "
+    "and 95th percentile. Returns are simulated in each holding's local "
+    "currency; AUD/USD movement on US holdings isn't part of the band. A "
+    "statistical remix of the past — not a prediction."
 )
 MONTE_CARLO_METHOD_ES = (
-    "A partir de las rentabilidades mensuales reales de tus posiciones, "
-    "medimos el promedio, la volatilidad y todas las correlaciones "
-    "cruzadas; luego simulamos 5.000 posibles próximos años (12 sorteos "
-    "mensuales cada uno, formados por esas estadísticas), aplicamos tus "
-    "ponderaciones a cada uno, ordenamos los 5.000 resultados y "
-    "reportamos los percentiles 5 y 95. Una recombinación estadística del "
-    "pasado — no una predicción."
+    "A partir del historial compartido de rentabilidades mensuales "
+    "reales de tus posiciones, simulamos 5.000 posibles próximos años "
+    "remuestreando 12 de esos meses históricos reales a la vez, con "
+    "reemplazo - cada mes simulado es un mes calendario real, con la "
+    "rentabilidad de cada posición en ese mismo mes tomada en conjunto, "
+    "de modo que la correlación real entre posiciones y las colas "
+    "extremas se mantienen intactas. Aplicamos tus ponderaciones a cada "
+    "año simulado, ordenamos los 5.000 resultados y reportamos los "
+    "percentiles 5 y 95. Las rentabilidades se simulan en la moneda "
+    "local de cada posición; el movimiento AUD/USD en las posiciones "
+    "estadounidenses no forma parte de la banda. Una recombinación "
+    "estadística del pasado — no una predicción."
 )
 
 # ---------------------------------------------------------------------
@@ -152,10 +169,17 @@ STRESS_SECTION_CAPTIONS_EN = {
         "Every holding's own risk numbers side by side, so you can see "
         "which ones are driving the portfolio-level figures above."
     ),
+    # Part 29 (29.4, 10 Sep 2026 audit): reworded to name the bootstrap
+    # method (real historical months, not a fitted normal distribution)
+    # and note the local-currency convention - see MONTE_CARLO_METHOD_EN
+    # above for the fuller version of both points.
     "monte_carlo": (
-        "A statistical simulation of possible one-year outcomes - the "
-        "only section on this tab that isn't a replay of something that "
-        "actually happened."
+        "A statistical simulation of possible one-year outcomes, "
+        "resampled from your holdings' own real historical months (not a "
+        "fitted normal distribution) - the only section on this tab that "
+        "isn't a replay of something that actually happened. Simulated "
+        "in each holding's local currency - AUD/USD movement on US "
+        "holdings isn't part of the band."
     ),
 }
 STRESS_SECTION_CAPTIONS_ES = {
@@ -189,9 +213,13 @@ STRESS_SECTION_CAPTIONS_ES = {
         "ver cuáles están impulsando las cifras de la cartera de arriba."
     ),
     "monte_carlo": (
-        "Una simulación estadística de posibles resultados a un año - la "
-        "única sección de esta pestaña que no es una reproducción de "
-        "algo que realmente ocurrió."
+        "Una simulación estadística de posibles resultados a un año, "
+        "remuestreada a partir de los meses históricos reales de tus "
+        "posiciones (no una distribución normal ajustada) - la única "
+        "sección de esta pestaña que no es una reproducción de algo que "
+        "realmente ocurrió. Simulada en la moneda local de cada "
+        "posición - el movimiento AUD/USD en las posiciones "
+        "estadounidenses no forma parte de la banda."
     ),
 }
 

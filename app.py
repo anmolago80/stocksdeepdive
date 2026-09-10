@@ -13953,7 +13953,15 @@ def _stress_compute_full(weights, histories, index_histories, total_value_aud, f
 
     pbeta = stress_engine.portfolio_beta(weights, betas)
     grid = stress_engine.shock_grid(pbeta, total_value_aud)
-    mc = stress_engine.monte_carlo(weights, histories, total_value_aud)
+    # Part 29 (29.3 - one fixed seed everywhere, 10 Sep 2026 audit): the
+    # rebalance-sandbox what-if (_stress_whatif_metrics) and the Switch
+    # Analyzer scenario already pass seed=42 - this main run didn't,
+    # so the band's numbers used to wiggle ~+/-0.5-1pp every time the
+    # result cache expired with no actual portfolio change, and any
+    # current-vs-what-if difference partly reflected sampling noise
+    # rather than the weight change itself. Now identical every time
+    # for the same inputs.
+    mc = stress_engine.monte_carlo(weights, histories, total_value_aud, seed=42)
 
     per_holding = []
     for t, w in weights.items():
@@ -14887,15 +14895,52 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
             # top "How this tab works" expander).
             _info_popover_trigger(stress_etf_help_copy.monte_carlo_method(_lang))
         st.caption(stress_etf_help_copy.stress_section_caption("monte_carlo", _lang))
-        mc = result.get("monte_carlo")
-        if mc:
-            st.markdown(_stress_mc_band_html(mc, lang=_lang), unsafe_allow_html=True)
-            _hist_html = _stress_mc_histogram_html(mc)
-            if _hist_html:
-                st.markdown(_hist_html, unsafe_allow_html=True)
-                st.caption(_st_("monte_carlo_hist_caption"))
+        # Part 29 (29.1 - guard coverage, 10 Sep 2026 audit): the same
+        # >25%-excluded-by-value guard that already suppresses the
+        # headline cards/drawdown-runup charts (sections 1-2) above now
+        # also covers this section - a band silently re-weighted onto
+        # whatever fraction of the portfolio survived the data-fault
+        # guard has the exact same unrepresentativeness problem as those
+        # headline numbers. Box/title/popover/section caption above stay
+        # exactly as before so the layout doesn't jump; only the
+        # band+histogram (or the pre-existing "no_data" fallback) is
+        # swapped for this one caption when suppressed.
+        if _suppress_headline:
+            st.caption(_st_(
+                "monte_carlo_suppressed",
+                pct=f"{_faulty_weight_pct:.0f}", tickers=", ".join(_faulty_tickers),
+            ))
         else:
-            st.caption(_st_("no_data"))
+            mc = result.get("monte_carlo")
+            if mc:
+                st.markdown(_stress_mc_band_html(mc, lang=_lang), unsafe_allow_html=True)
+                _hist_html = _stress_mc_histogram_html(mc)
+                if _hist_html:
+                    st.markdown(_hist_html, unsafe_allow_html=True)
+                    st.caption(_st_("monte_carlo_hist_caption"))
+                # Part 29 (29.2 - transparency caption, 10 Sep 2026
+                # audit): holdings with under 12 months of history are
+                # silently dropped from the simulation, and the shared-
+                # history window is capped by the youngest included
+                # holding (inner join) - neither was visible before.
+                # "months_used"/"n_holdings_given" are new result keys
+                # (n_holdings_used already existed); a result cached
+                # before this change simply lacks them, so this caption
+                # is omitted gracefully with no error, per the file's
+                # own established cached-blob-tolerance pattern.
+                _mc_n_used = mc.get("n_holdings_used")
+                _mc_n_given = mc.get("n_holdings_given")
+                _mc_months = mc.get("months_used")
+                if _mc_n_used is not None and _mc_n_given is not None and _mc_months is not None:
+                    if _mc_n_used < _mc_n_given:
+                        st.caption(_st_(
+                            "monte_carlo_built_from_partial",
+                            n=_mc_n_used, m=_mc_n_given, k=_mc_months,
+                        ))
+                    else:
+                        st.caption(_st_("monte_carlo_built_from_all", n=_mc_n_used, k=_mc_months))
+            else:
+                st.caption(_st_("no_data"))
         st.caption(_st_("monte_carlo_caption"))
     st.caption(_st_("footer_caption"))
 

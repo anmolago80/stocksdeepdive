@@ -1784,10 +1784,40 @@ EN = {
         "Where the 5,000 simulated years landed - most cluster near the middle, "
         "the marked edges cut off the extreme 5% on each side."
     ),
+    # Part 29 (29.2 - transparency caption, 10 Sep 2026 audit): holdings
+    # with under 12 months of history are silently dropped from the
+    # simulation, and the shared-history window is capped by the
+    # youngest included holding - neither was visible before. Renders
+    # right under monte_carlo_hist_caption above, main Stress Test MC
+    # section only (not the compact Switch Analyzer embed). Omitted
+    # gracefully (see app.py) for a cached result predating this key.
+    "portfolio.stress.monte_carlo_built_from_partial": (
+        "Simulated from {n} of your {m} holdings (the rest lack 12 months "
+        "of history), over {k} months of shared monthly history."
+    ),
+    "portfolio.stress.monte_carlo_built_from_all": (
+        "Simulated from all {n} holdings, over {k} months of shared "
+        "monthly history."
+    ),
+    # Part 29 (29.1 - guard coverage, 10 Sep 2026 audit): the same
+    # >25%-excluded-by-value guard that already suppresses the headline
+    # cards/drawdown-runup charts now also covers this section - see
+    # app.py's _suppress_headline check around the Monte Carlo box.
+    "portfolio.stress.monte_carlo_suppressed": (
+        "Simulation suppressed: {pct}% of the portfolio's value "
+        "({tickers}) is currently excluded for a data fault, so a "
+        "simulation of the remainder would not represent the whole "
+        "portfolio."
+    ),
+    # Part 29 (29.4 - bootstrap sampling, 10 Sep 2026 audit): reworded -
+    # the simulation now resamples actual historical months (preserving
+    # real cross-holding correlation and fat tails) rather than drawing
+    # from a fitted multivariate-normal model. "Not a prediction." kept
+    # verbatim at the end per the owner's audit instruction.
     "portfolio.stress.monte_carlo_caption": (
-        "5,000 simulated paths from historical volatility and correlations. "
-        "Based on the past behaving like the future - which it may not. Not "
-        "a prediction."
+        "5,000 simulated years resampled from your holdings' own "
+        "historical months. Based on the past behaving like the future - "
+        "which it may not. Not a prediction."
     ),
     "portfolio.stress.footer_caption": (
         "Correlations rise in severe panics; the replays capture this (it "
@@ -3639,10 +3669,26 @@ ES = {
         "Dónde cayeron los 5.000 años simulados - la mayoría se agrupa cerca del centro, "
         "los bordes marcados recortan el 5% extremo de cada lado."
     ),
+    "portfolio.stress.monte_carlo_built_from_partial": (
+        "Simulado a partir de {n} de tus {m} posiciones (el resto no tiene "
+        "12 meses de historial), sobre {k} meses de historial mensual "
+        "compartido."
+    ),
+    "portfolio.stress.monte_carlo_built_from_all": (
+        "Simulado a partir de las {n} posiciones, sobre {k} meses de "
+        "historial mensual compartido."
+    ),
+    "portfolio.stress.monte_carlo_suppressed": (
+        "Simulación suprimida: el {pct}% del valor de la cartera "
+        "({tickers}) está actualmente excluido por un fallo de datos, así "
+        "que una simulación del resto no representaría a la cartera "
+        "completa."
+    ),
     "portfolio.stress.monte_carlo_caption": (
-        "5.000 trayectorias simuladas a partir de la volatilidad y "
-        "correlaciones históricas. Basado en que el pasado se comporte "
-        "como el futuro - lo cual puede no ocurrir. No es una predicción."
+        "5.000 años simulados remuestreados a partir de los meses "
+        "históricos reales de tus posiciones. Basado en que el pasado se "
+        "comporte como el futuro - lo cual puede no ocurrir. No es una "
+        "predicción."
     ),
     "portfolio.stress.footer_caption": (
         "Las correlaciones aumentan en pánicos severos; las repeticiones "
