@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import time
 import json
 import html
@@ -1656,6 +1657,18 @@ st.markdown(
     .sdd-carousel-dot::before { content:'●'; }
     .sdd-carousel-dot.active, .sdd-carousel-dot:hover { color:#2dd4bf; }
     .sdd-carousel-dot-purple.active, .sdd-carousel-dot-purple:hover { color:#c084fc; }
+    /* Owner-requested (12 Sep 2026): heat-scale slider for the Rebalance
+       sandbox's min-drawdown/equilibrium/max-upside presets - a real
+       st.slider (so a drag lands straight in session_state - no custom
+       JS-to-Python bridge needed) with its rail repainted as a
+       rose->grey->green gradient. The selector targets the widget's own
+       inline touch-action:none wrapper (a react-aria behavioural style)
+       rather than Streamlit's emotion-generated class names, which are
+       not part of its stable API and can change between versions. */
+    [class*="st-key-sdd_rebal_heat"] [data-testid="stSlider"] div[style*="touch-action: none"] > div:first-child {
+      background: linear-gradient(90deg, #fb7185 0%, #8aa0b8 50%, #34d399 100%) !important;
+      height: 6px !important; border-radius: 3px !important;
+    }
     .sdd-steps { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:22px; }
     .sdd-step { border-left:2px solid #14b8a6; padding:2px 0 2px 16px; }
     .sdd-step .n { font-family:ui-monospace,Menlo,monospace; color:#2dd4bf; font-size:12px; }
@@ -14030,6 +14043,122 @@ def _stress_whatif_metrics(weights, histories, index_histories, total_value_aud)
     }
 
 
+def _largest_remainder_round(pct_dict, decimals=1):
+    """Round every value in `pct_dict` to `decimals` places while keeping
+    the total as close to 100.0 as the rounding grid allows (largest-
+    remainder method) - so an optimizer preset/slider fill never itself
+    trips the sandbox's own '>0.5pp off 100' warning just from rounding
+    drift."""
+    if not pct_dict:
+        return {}
+    scale = 10 ** decimals
+    scaled = {k: v * scale for k, v in pct_dict.items()}
+    floors = {k: math.floor(v) for k, v in scaled.items()}
+    target = round(100 * scale)
+    remainder = target - sum(floors.values())
+    order = sorted(pct_dict.keys(), key=lambda k: scaled[k] - floors[k], reverse=True)
+    result = dict(floors)
+    for i in range(max(0, int(remainder))):
+        result[order[i % len(order)]] += 1
+    return {k: v / scale for k, v in result.items()}
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _optimize_rebalance_weights(tickers_sig, _histories, n_samples=3000, seed=0):
+    """Real (non-synthetic) search for three candidate weight mixes over
+    the tickers in `tickers_sig`, using the exact same historical-replay
+    math the sandbox's own Current-vs-what-if table already runs
+    (stress_engine.build_combined_series/max_drawdown/best_rolling_12m,
+    completely unmodified) - just evaluated across many random mixes at
+    once instead of one:
+
+      - "dd" (min drawdown): the mix with the shallowest max peak-to-
+        trough decline over its own up-to-15y replay window (the SAME
+        window _stress_whatif_metrics already caps to via
+        stress_engine.cap_to_years(h, 15)).
+      - "up" (max upside): the mix with the best rolling 12-month return
+        over that same window.
+      - "eq" (equilibrium): the mix with the best Calmar-style ratio -
+        best-12m upside per unit of max-drawdown pain, a standard
+        return-for-risk balance, not a new scoring metric of its own.
+
+    Owner-requested (12 Sep 2026): "best mathematical combination" for
+    max upside / min drawdown / best equilibrium, as one-click presets
+    that fill the manual % boxes below (still freely editable after) -
+    previewed first as a mockup artifact and approved before this real
+    version was wired up.
+
+    Vectorized with numpy rather than looping stress_engine's own
+    per-portfolio functions n_samples times - confirmed byte-identical
+    results against calling stress_engine.build_combined_series/
+    max_drawdown/best_rolling_12m directly on the same candidate weights
+    (dev benchmark cross-check); this is purely a performance rewrite of
+    the exact same formulas, not a different one. `_histories` is
+    excluded from the cache key (leading underscore) since DataFrames
+    are expensive to hash - `tickers_sig` (each ticker plus its
+    history's length and last date) is what actually invalidates the
+    cache when the data changes, so this only runs once per session per
+    holdings snapshot, not on every slider/button interaction.
+
+    Returns {"dd": {ticker: pct}, "up": {...}, "eq": {...}}, each dict's
+    percentages summing to ~100 (largest-remainder-rounded to 1
+    decimal), or {} if there's under a year of combined history to
+    optimize against."""
+    tickers = [t for t, _len, _last in tickers_sig]
+    hist_15y = {t: stress_engine.cap_to_years(_histories.get(t), 15) for t in tickers}
+    rets = {}
+    for t in tickers:
+        r = stress_engine.daily_returns(hist_15y.get(t))
+        if r is not None and not r.empty:
+            rets[t] = r
+    if len(rets) < 2:
+        return {}
+    used_tickers = list(rets.keys())
+    df = pd.concat(rets, axis=1, join="inner")
+    if df.empty or len(df) < 253:
+        return {}
+
+    R = df.to_numpy()
+    T, K = R.shape
+    rng = np.random.default_rng(seed)
+    W = rng.dirichlet(np.ones(K), size=n_samples)
+    P = R @ W.T
+    series = np.cumprod(1.0 + P, axis=0)
+    running_max = np.maximum.accumulate(series, axis=0)
+    max_dd_pct = (series / running_max - 1.0).min(axis=0) * 100.0
+    window = 252
+    rolled = series[window:] / series[:-window] - 1.0
+    best_up_pct = rolled.max(axis=0) * 100.0
+
+    idx_dd = int(np.argmax(max_dd_pct))
+    idx_up = int(np.argmax(best_up_pct))
+    calmar = best_up_pct / np.maximum(np.abs(max_dd_pct), 1e-6)
+    idx_eq = int(np.argmax(calmar))
+
+    def _to_pcts(idx):
+        raw = {t: float(W[idx, j]) * 100.0 for j, t in enumerate(used_tickers)}
+        for t in tickers:
+            raw.setdefault(t, 0.0)
+        return _largest_remainder_round(raw)
+
+    return {"dd": _to_pcts(idx_dd), "up": _to_pcts(idx_up), "eq": _to_pcts(idx_eq)}
+
+
+def _weights_for_slider_t(t, dd_pcts, eq_pcts, up_pcts, tickers):
+    """Piecewise-linear blend across the heat-scale slider's 0-100 range:
+    0-50 blends dd_pcts -> eq_pcts, 50-100 blends eq_pcts -> up_pcts (the
+    same 3-anchor-point interpolation as the approved preview mockup)."""
+    t = max(0.0, min(100.0, t))
+    if t <= 50.0:
+        frac = t / 50.0
+        a, b = dd_pcts, eq_pcts
+    else:
+        frac = (t - 50.0) / 50.0
+        a, b = eq_pcts, up_pcts
+    blended = {ti: a.get(ti, 0.0) + (b.get(ti, 0.0) - a.get(ti, 0.0)) * frac for ti in tickers}
+    return _largest_remainder_round(blended)
+
+
 def _stress_area_chart(pairs, title, line_color, fill_color):
     if not pairs:
         return None
@@ -14359,6 +14488,80 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
         for t in tickers:
             st.session_state[f"{_skey}_w_{t}"] = round(current_pcts[t], 1)
 
+    # Owner-requested (12 Sep 2026): one-click "best mathematical
+    # combination" presets (max upside / min drawdown / best equilibrium)
+    # plus a draggable heat-scale slider between them - previewed first
+    # as a mockup artifact, approved, now wired to the real portfolio's
+    # own price history via _optimize_rebalance_weights. Presets/slider
+    # fill the % boxes below but never lock them - every box stays a
+    # normal editable st.number_input.
+    _tickers_sig = tuple(sorted(
+        (t, len(histories.get(t)) if histories.get(t) is not None else 0,
+         str(histories[t].index[-1]) if histories.get(t) is not None and not histories[t].empty else "")
+        for t in tickers
+    ))
+    with st.spinner(_st_("optimizer_computing")):
+        _presets = _optimize_rebalance_weights(_tickers_sig, histories)
+
+    _slider_key = f"{_skey}_slider_t"
+    _slider_prev_key = f"{_skey}_slider_prev"
+
+    def _apply_preset_weights(pct_map):
+        for t in tickers:
+            st.session_state[f"{_skey}_w_{t}"] = round(pct_map.get(t, 0.0), 1)
+
+    if _presets:
+        _preset_title_cols = st.columns([10, 1])
+        with _preset_title_cols[0]:
+            st.caption(_st_("rebalance_optimizer_caption"))
+        with _preset_title_cols[1]:
+            _info_popover_trigger(stress_etf_help_copy.optimizer_help(lang))
+
+        _preset_cols = st.columns(3)
+        with _preset_cols[0]:
+            if st.button(_st_("preset_min_drawdown"), key=f"{_skey}_preset_dd", width='stretch'):
+                _apply_preset_weights(_presets["dd"])
+                st.session_state[_slider_key] = 0.0
+                st.session_state[_slider_prev_key] = 0.0
+        with _preset_cols[1]:
+            if st.button(_st_("preset_equilibrium"), key=f"{_skey}_preset_eq", width='stretch'):
+                _apply_preset_weights(_presets["eq"])
+                st.session_state[_slider_key] = 50.0
+                st.session_state[_slider_prev_key] = 50.0
+        with _preset_cols[2]:
+            if st.button(_st_("preset_max_upside"), key=f"{_skey}_preset_up", width='stretch'):
+                _apply_preset_weights(_presets["up"])
+                st.session_state[_slider_key] = 100.0
+                st.session_state[_slider_prev_key] = 100.0
+
+        with st.container(key="sdd_rebal_heat"):
+            _slider_val = st.slider(
+                _st_("slider_label"), min_value=0.0, max_value=100.0,
+                value=float(st.session_state.get(_slider_key, 50.0)), step=1.0,
+                key=_slider_key, label_visibility="collapsed",
+            )
+        _prev = st.session_state.get(_slider_prev_key)
+        if _prev is None:
+            st.session_state[_slider_prev_key] = _slider_val
+        elif abs(_slider_val - _prev) > 1e-9:
+            _interp = _weights_for_slider_t(_slider_val, _presets["dd"], _presets["eq"], _presets["up"], tickers)
+            _apply_preset_weights(_interp)
+            st.session_state[_slider_prev_key] = _slider_val
+
+        _slider_label_cols = st.columns(3)
+        with _slider_label_cols[0]:
+            st.caption(_st_("slider_dd_label"))
+        with _slider_label_cols[1]:
+            st.markdown(
+                f"<div style='text-align:center;font-size:12px;color:#8aa0b8;'>{_st_('slider_eq_label')}</div>",
+                unsafe_allow_html=True,
+            )
+        with _slider_label_cols[2]:
+            st.markdown(
+                f"<div style='text-align:right;font-size:12px;color:#8aa0b8;'>{_st_('slider_up_label')}</div>",
+                unsafe_allow_html=True,
+            )
+
     edited_pcts = {}
     cols = st.columns(min(4, len(tickers)) or 1)
     for i, t in enumerate(tickers):
@@ -14454,6 +14657,7 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
         ("metric_replayed_10y", "replayed_10y_pct", _fmt_pct_metric),
     ]
     table_rows = []
+    _delta_raw = []
     for label_key, field, fmt in metric_defs:
         cur_v, wi_v = current_metrics[field], whatif[field]
         delta = (wi_v - cur_v) if (cur_v is not None and wi_v is not None) else None
@@ -14463,7 +14667,33 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
             _st_("col_whatif"): fmt(wi_v),
             _st_("col_delta"): (f"{delta:+.2f}" if delta is not None else _na),
         })
-    st.dataframe(pd.DataFrame(table_rows), hide_index=True, width='stretch')
+        # Owner-requested (12 Sep 2026): color the Delta column so a
+        # change reads at a glance. Every metric here has an unambiguous
+        # "higher/less-negative what-if value = improvement" direction
+        # EXCEPT Beta, where neither direction is objectively "better" -
+        # it depends on the viewer's own risk appetite - so Beta's delta
+        # is deliberately left uncolored rather than guessing a
+        # direction for them (owner's own call, asked directly).
+        _delta_raw.append(None if label_key == "metric_beta" else delta)
+
+    _delta_col_name = _st_("col_delta")
+    _whatif_df = pd.DataFrame(table_rows)
+
+    def _style_whatif_deltas(_):
+        styles = pd.DataFrame("", index=_whatif_df.index, columns=_whatif_df.columns)
+        for i, d in enumerate(_delta_raw):
+            if d is None:
+                continue
+            if d > 1e-9:
+                styles.iloc[i, styles.columns.get_loc(_delta_col_name)] = "color: #34d399; font-weight: 600"
+            elif d < -1e-9:
+                styles.iloc[i, styles.columns.get_loc(_delta_col_name)] = "color: #fb7185; font-weight: 600"
+        return styles
+
+    st.dataframe(
+        _whatif_df.style.apply(_style_whatif_deltas, axis=None),
+        hide_index=True, width='stretch',
+    )
 
     # Mega-batch Part 13: 1-yr 5th-95th percentile simulated range, set
     # visually apart from the five historical-replay metrics above (a

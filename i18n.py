@@ -1708,14 +1708,30 @@ EN = {
         "cushions crashes and damps rallies by the same mechanism."
     ),
     "portfolio.stress.rebalance_title": "⚖️ Rebalance sandbox",
+    # Copy updated 12 Sep 2026: the sandbox gained real one-click
+    # optimizer presets below (see rebalance_optimizer_caption), so the
+    # old "no optimiser, no recommendation" line was no longer accurate -
+    # reworded to keep the important part (this is a backtest, not
+    # investment advice) without contradicting the feature that now sits
+    # right beneath it.
     "portfolio.stress.rebalance_never_suggests": (
-        "This site never suggests weights - no optimiser, no recommendation. "
-        "Set your own what-if weights below."
+        "Presets and the slider below are historical-replay optimizations "
+        "on this mix's own past prices - not investment advice. Set your "
+        "own what-if weights any time."
     ),
     "portfolio.stress.rebalance_never_modifies": (
         "Nothing here changes your real portfolio - this is a what-if "
         "calculation only."
     ),
+    "portfolio.stress.rebalance_optimizer_caption": "Fill weights automatically, or edit any box directly:",
+    "portfolio.stress.preset_min_drawdown": "📉 Min drawdown",
+    "portfolio.stress.preset_equilibrium": "⚖️ Equilibrium",
+    "portfolio.stress.preset_max_upside": "📈 Max upside",
+    "portfolio.stress.slider_label": "Risk/return blend",
+    "portfolio.stress.slider_dd_label": "Min drawdown",
+    "portfolio.stress.slider_eq_label": "Equilibrium",
+    "portfolio.stress.slider_up_label": "Max upside",
+    "portfolio.stress.optimizer_computing": "Finding the best mixes for these tickers…",
     "portfolio.stress.rebalance_weight_total": "Total: {total}% (must be 100% to compare)",
     # Fix (9 Sep 2026, owner-reported "rebalancing not working"): the
     # comparison table used to just silently disappear once the total
@@ -3550,13 +3566,26 @@ ES = {
     ),
     "portfolio.stress.rebalance_title": "⚖️ Simulador de reponderación",
     "portfolio.stress.rebalance_never_suggests": (
-        "Este sitio nunca sugiere ponderaciones - sin optimizador, sin "
-        "recomendación. Fija tú mismo las ponderaciones \"qué pasaría si\" abajo."
+        "Los ajustes predefinidos y el control deslizante de abajo son "
+        "optimizaciones basadas en la repetición histórica de precios de esta "
+        "combinación - no son un consejo de inversión. Puedes fijar tú mismo "
+        "las ponderaciones \"qué pasaría si\" cuando quieras."
     ),
     "portfolio.stress.rebalance_never_modifies": (
         "Nada aquí cambia tu cartera real - esto es solo un cálculo \"qué "
         "pasaría si\"."
     ),
+    "portfolio.stress.rebalance_optimizer_caption": (
+        "Rellena las ponderaciones automáticamente, o edita cualquier casilla directamente:"
+    ),
+    "portfolio.stress.preset_min_drawdown": "📉 Mínima caída",
+    "portfolio.stress.preset_equilibrium": "⚖️ Equilibrio",
+    "portfolio.stress.preset_max_upside": "📈 Máxima subida",
+    "portfolio.stress.slider_label": "Combinación riesgo/rentabilidad",
+    "portfolio.stress.slider_dd_label": "Mínima caída",
+    "portfolio.stress.slider_eq_label": "Equilibrio",
+    "portfolio.stress.slider_up_label": "Máxima subida",
+    "portfolio.stress.optimizer_computing": "Buscando las mejores combinaciones para estos tickers…",
     "portfolio.stress.rebalance_weight_total": "Total: {total}% (debe ser 100% para comparar)",
     "portfolio.stress.rebalance_weight_over_banner": (
         "El total es {total}% - son {diff} puntos porcentuales por encima del "

@@ -258,6 +258,34 @@ SANDBOX_METRICS_HELP_ES = (
     "que resume una década de subidas y bajadas reales."
 )
 
+# Owner-requested (12 Sep 2026): one-click optimizer presets (min
+# drawdown / max upside / equilibrium) plus a heat-scale slider between
+# them, feeding the sandbox's manual % boxes. This is the info-popover
+# text for that row, in the same spot sandbox_metrics_help's own popover
+# sits for the table below it.
+OPTIMIZER_HELP_EN = (
+    "Each preset tests thousands of random weight mixes against this "
+    "exact combination's own historical prices (the same replay the "
+    "table below uses) and keeps the best one for that goal. Min "
+    "drawdown: the shallowest peak-to-trough fall. Max upside: the best "
+    "rolling 12-month run. Equilibrium: the best balance of upside per "
+    "unit of drawdown risk (a return-for-risk ratio, sometimes called a "
+    "Calmar ratio). All three are backtests on real past prices, not "
+    "predictions - and the slider blends smoothly between them."
+)
+OPTIMIZER_HELP_ES = (
+    "Cada ajuste predefinido prueba miles de combinaciones de "
+    "ponderaciones aleatorias contra el historial de precios real de "
+    "esta combinación exacta (la misma repetición que usa la tabla de "
+    "abajo) y se queda con la mejor para ese objetivo. Mínima caída: la "
+    "caída de máximo a mínimo menos profunda. Máxima subida: la mejor "
+    "racha de 12 meses consecutivos. Equilibrio: el mejor balance entre "
+    "subida y riesgo de caída (una relación rentabilidad/riesgo, a veces "
+    "llamada ratio de Calmar). Las tres son pruebas retrospectivas sobre "
+    "precios reales pasados, no predicciones - y el control deslizante "
+    "combina suavemente entre ellas."
+)
+
 # ---------------------------------------------------------------------
 # Scenario columns (crisis + rally) - shared by the per-holding table
 # AND the two scenario tables. Exact date ranges from
@@ -391,6 +419,10 @@ def stress_column_help(key, lang="en"):
 
 def sandbox_metrics_help(lang="en"):
     return _pick(SANDBOX_METRICS_HELP_EN, SANDBOX_METRICS_HELP_ES, lang)
+
+
+def optimizer_help(lang="en"):
+    return _pick(OPTIMIZER_HELP_EN, OPTIMIZER_HELP_ES, lang)
 
 
 def etf_section_caption(key, lang="en"):
