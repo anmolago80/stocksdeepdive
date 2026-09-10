@@ -3455,6 +3455,51 @@ def _dd_contrib_chart(contributions, title, xaxis_title="Points", height=260):
     return fig
 
 
+def _dd_moat_pillar_chart(contributions, title, xaxis_title="Points", height=260):
+    """
+    Unsigned horizontal bar chart for Moat's four pillars (each 0 up to
+    its own max - Excess-return spread 30, Persistence 25, Pricing power
+    25, Reinvestment 20 - see moat_engine.py's module docstring - never
+    negative). Owner-reported bug (10 Sep 2026, XRO.AX showing a 0 Moat
+    gauge with all four pillar bars rendering FULL-length): the "What's
+    driving Moat" chart used to reuse _dd_contrib_chart, which fits Long
+    Score/Psychology (genuinely signed, red/green by sign) but not Moat.
+    Two problems that only show up together: (1) every bar showed green
+    regardless, since nothing here is ever "bad" by sign, only by size;
+    (2) _dd_contrib_chart's own zero-value epsilon nudge (see its
+    comment) becomes actively misleading for an all-nonnegative pillar
+    chart - when ALL FOUR pillars genuinely score 0 (verified for
+    XRO.AX: TTM ROIC -0.2% vs 8.1% cost of capital, 0/4 years above the
+    12% persistence bar, gross margin down 13.6pt with a volatile trend,
+    and -1.6% incremental ROIC on newly-deployed capital - a real, weak-
+    moat read, not a bug in the score itself), every bar gets nudged to
+    the same tiny 1e-6 value, and Plotly's default autorange then scales
+    the WHOLE axis to that microscopic range (labelled in "µ" units) -
+    making all four 0-point bars render as if they reached 100% of the
+    chart, the opposite of what a real zero should look like. Fixed by a
+    single accent colour, and an EXPLICIT x-axis range up to the largest
+    pillar's own max (30) instead of autoranging off the (possibly all-
+    epsilon) values, so a real 0 bar stays visually flush against zero no
+    matter what the other pillars do.
+    """
+    raw_values = list(contributions.values())
+    plot_values = [v if v != 0 else 1e-6 for v in raw_values]
+    fig = go.Figure(go.Bar(
+        x=plot_values,
+        y=list(contributions.keys()),
+        orientation="h",
+        marker_color="#34d399",
+        text=[f"{v:+.1f}" for v in raw_values],
+        textposition="outside",
+    ))
+    fig.update_layout(
+        title=title, xaxis_title=xaxis_title, showlegend=False, height=height,
+        margin=dict(l=10, r=10, t=40, b=10),
+        xaxis=dict(range=[0, 30]),
+    )
+    return fig
+
+
 def _dd_gate_chart(contributions, title, xaxis_title="Points", height=260):
     """
     Horizontal bar chart for PASS/FAIL gate weights (Trade Setup) - every
@@ -9130,7 +9175,7 @@ def page_deep_dive():
                 with _moat_col2:
                     if _dd.get("moat_contributions"):
                         sdd_plotly_chart(
-                            _dd_contrib_chart(
+                            _dd_moat_pillar_chart(
                                 _dd["moat_contributions"],
                                 i18n.t("dd.chart.driving_moat", st.session_state.get("lang", "en")),
                                 xaxis_title=i18n.t("dd.chart.points_moat", st.session_state.get("lang", "en")),
