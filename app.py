@@ -1637,6 +1637,25 @@ st.markdown(
     .sdd-spotlight-footer a { color:#c084fc !important; font-weight:700; text-decoration:none !important; }
     .sdd-badge-purple { color:#c084fc !important; background:rgba(139,92,246,.12) !important;
       border-color:rgba(139,92,246,.35) !important; }
+    /* Real client-side carousel for the two home spotlight bands (owner-
+       reported: can't swipe on phone, slow to respond to dot clicks on
+       desktop) - see _render_home_spotlight_carousel's own docstring for
+       the full story. Global, unscoped classes: the carousel's HTML is
+       injected straight into the page via st.html(unsafe_allow_javascript=
+       True), not an iframe, so it shares this one stylesheet with every
+       other page element instead of needing its own copy. */
+    .sdd-carousel-viewport { overflow:hidden; touch-action:pan-y; }
+    .sdd-carousel-track { display:flex; transition:transform .35s cubic-bezier(.22,.61,.36,1);
+      will-change:transform; }
+    .sdd-carousel-slide { flex:0 0 100%; min-width:100%; }
+    .sdd-carousel-dots { display:flex; flex-direction:row; justify-content:center;
+      align-items:center; gap:8px; margin:10px auto 0; }
+    .sdd-carousel-dot { appearance:none; -webkit-appearance:none; background:transparent;
+      border:none; padding:0; margin:0; width:16px; height:16px; line-height:1;
+      font-size:13px; cursor:pointer; color:#5b7290; }
+    .sdd-carousel-dot::before { content:'\25CF'; }
+    .sdd-carousel-dot.active, .sdd-carousel-dot:hover { color:#2dd4bf; }
+    .sdd-carousel-dot-purple.active, .sdd-carousel-dot-purple:hover { color:#c084fc; }
     .sdd-steps { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:22px; }
     .sdd-step { border-left:2px solid #14b8a6; padding:2px 0 2px 16px; }
     .sdd-step .n { font-family:ui-monospace,Menlo,monospace; color:#2dd4bf; font-size:12px; }
@@ -17768,124 +17787,148 @@ def _spotlight_index(session_key, n, day_offset=0):
     return (days_since_epoch + day_offset + nonce) % n
 
 
-def _spotlight_effective_index(override_key, natural_idx):
-    """Layered on top of the auto-advancing rotation: if the visitor has
-    clicked one of the dots (recorded in session_state[override_key] by
-    _render_spotlight_dots below), that explicit choice wins and the
-    band stops auto-advancing for the rest of the visit (the same way a
-    physical carousel's own dots typically pause its auto-play once
-    someone touches them) - otherwise the automatic rotation stands
-    untouched. A fresh session (no click yet) always starts on the
-    automatic pick."""
-    _override = st.session_state.get(override_key)
-    return _override if _override is not None else natural_idx
-
-
 _SPOTLIGHT_ROTATE_SECONDS = 6
 
 
-def _spotlight_auto_index(key_prefix, start_idx, n):
-    """Real, timer-driven auto-advance ("move by themselves", per the
-    owner's own request) built on top of _spotlight_index()'s existing
-    per-visit starting point: st.fragment(run_every=...) below reruns
-    just this band every _SPOTLIGHT_ROTATE_SECONDS, and how many steps
-    have elapsed is computed from WALL-CLOCK TIME since the visit's own
-    start (stored once in session_state), not from how many times the
-    fragment happened to rerun - a rerun triggered by something else
-    inside the same fragment (e.g. a dot button click) must not also
-    count as an advance, and time-based math is immune to that
-    regardless of why any given rerun fired."""
-    _start_ts_key = f"{key_prefix}_auto_start_ts"
-    if _start_ts_key not in st.session_state:
-        st.session_state[_start_ts_key] = time.time()
-    _elapsed = time.time() - st.session_state[_start_ts_key]
-    _steps = int(_elapsed // _SPOTLIGHT_ROTATE_SECONDS)
-    return (start_idx + _steps) % n
+def _render_home_spotlight_carousel(key_prefix, slides, initial_idx, dot_active_color,
+                                     dot_class_extra=""):
+    """Real client-side carousel for the home page's two spotlight bands
+    (Money Tools, My Portfolio) - replaces the old server-round-trip
+    st.button dots (_render_spotlight_dots) plus st.fragment(run_every=...)
+    auto-advance mechanism that used to drive these bands.
 
+    Owner-reported bug (two screenshots, "MY PORTFOLIO" and "MONEY TOOLS"
+    bands): "In the phone app I cant swipe the tools ... and in the laptop
+    it takes long to change when I click on the dots." Root cause: the old
+    dots were real st.button widgets - clicking one meant a full Streamlit
+    server round-trip just to swap which slide showed, and there was zero
+    touch/swipe handling anywhere, so a phone visitor had nothing to swipe
+    at all. The slide content is fixed at render time (it's just translated
+    i18n copy per slide), so none of this needs the server once it's on the
+    page - a real client-side carousel (CSS transform + a plain <script>)
+    can switch slides instantly and respond to touch, with no round-trip.
 
-def _render_spotlight_dots(key_prefix, idx, n, override_key, active_color, inactive_color="#5b7290"):
-    """Clickable spotlight-position dots, shared by both home spotlight
-    bands. These used to be plain, inert '&#9679;' characters - visually
-    identical to a carousel's own page dots but not actually clickable
-    (owner-reported: "I cant click on the dots to see the options").
-    Each dot is now a real button, CSS-reskinned down to a small circle
-    (the same re-skin-a-plain-st.button trick already used elsewhere in
-    this file, e.g. _render_explain_popover's ⓘ button); clicking one
-    records that choice in session_state[override_key] and reruns, so
-    _spotlight_effective_index() picks it up on the very next render.
+    Rendered via st.html(..., unsafe_allow_javascript=True) rather than the
+    older st.components.v1.html() (iframe-based, and confirmed deprecated
+    in the Streamlit version this site actually runs in production -
+    1.63.0, read directly off the live Railway container's dist-info).
+    st.html's content is NOT iframed - it's inserted straight into the
+    page's own DOM - so it reuses the site's existing .sdd-spotlight-*/
+    .sdd-carousel-* CSS classes (defined once, globally, a few hundred
+    lines up) with no duplication, needs no height/postMessage sizing hack
+    (mobile's taller wrapped text just grows the page normally, the way
+    every other native element already does), and its CTA links navigate
+    exactly as before (DOMPurify strips a target='_self' attribute here,
+    but that's a no-op removal - a same-origin link with no target
+    attribute at all already opens in the same tab, which is all
+    target='_self' ever did; the My Portfolio band's separate static
+    footer link, rendered via st.markdown below and not through this
+    function, is untouched and keeps its target='_self').
 
-    The dots_row wrapper is forced from Streamlit's own default
-    flex-column (block-stacked, one per line) to a flex-ROW via CSS -
-    st.columns() was tried first and rejected (owner-reported: "dots
-    spacing are huge and look terrible") because columns always divide
-    the FULL width of their parent between them, spreading n=3-4 tiny
-    buttons across the entire card; a flex row instead sizes each
-    button to its own small content width, giving the tight, centered
-    cluster the original plain-text dots had."""
-    _rules = "\n".join(
-        f"""
-        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button,
-        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:hover,
-        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:focus,
-        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:active,
-        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:focus:not(:active) {{
-            background:transparent !important; border:none !important; box-shadow:none !important;
-            outline:none !important; padding:0 !important; margin:0 !important;
-            min-height:0 !important; width:16px !important; height:16px !important;
-            line-height:1 !important; font-size:13px !important;
-        }}
-        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button,
-        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:focus,
-        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:focus:not(:active) {{
-            color:{active_color if i == idx else inactive_color} !important;
-        }}
-        div.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i}.st-key-{key_prefix}_dot_{i} button:hover {{
-            color:{active_color} !important;
-        }}
-        """
-        for i in range(n)
+    slides is a list of already-i18n-resolved HTML strings (kicker+badge+
+    title+pitch+cta[+cap], one per slide - the same markup the old single
+    combined st.markdown call used to render for whichever slide happened
+    to be featured). initial_idx seeds which slide starts featured, still
+    drawn once per visit/day via _spotlight_index() below, so a visitor's
+    first paint still varies the way the owner originally asked for -
+    everything AFTER that first paint (auto-advance, dot clicks, swipe) is
+    handled entirely client-side with no further server involvement.
+
+    Verified locally before shipping (throwaway `streamlit run` +
+    Playwright, matching the real 1.63.0 Streamlit build): dot clicks
+    switch slides with zero server round-trip and correctly pause auto-
+    advance for the rest of the visit; an untouched carousel auto-advances
+    on its own every _SPOTLIGHT_ROTATE_SECONDS; a synthesized touch swipe
+    on a narrow (390px) viewport advances the slide; the DOM/JS state
+    (current slide, paused-auto flag) survives an unrelated Streamlit
+    rerun triggered elsewhere on the page, since the generated HTML string
+    is byte-identical across such reruns for the same visit and st.html
+    only tears down/rebuilds its script when that string actually
+    changes."""
+    _slides_html = "\n".join(f'<div class="sdd-carousel-slide">{s}</div>' for s in slides)
+    _n = len(slides)
+    _dots_html = "\n".join(
+        f'<button type="button" class="sdd-carousel-dot{dot_class_extra}'
+        f'{" active" if i == initial_idx else ""}" aria-label="Go to slide {i + 1}"></button>'
+        for i in range(_n)
     )
-    st.markdown(
-        f"""<style>
-        {_rules}
-        div.st-key-{key_prefix}_dots_row.st-key-{key_prefix}_dots_row {{
-            display:flex !important; flex-direction:row !important;
-            justify-content:center !important; align-items:center !important;
-            gap:8px !important; width:auto !important; margin:10px auto 0 !important;
-        }}
-        div.st-key-{key_prefix}_dots_row.st-key-{key_prefix}_dots_row > div {{
-            width:auto !important; flex:none !important;
-        }}
-        </style>""",
-        unsafe_allow_html=True,
-    )
-    with st.container(key=f"{key_prefix}_dots_row"):
-        for i in range(n):
-            with st.container(key=f"{key_prefix}_dot_{i}"):
-                if st.button("●", key=f"{key_prefix}_dot_btn_{i}", help=None):
-                    st.session_state[override_key] = i
-                    st.rerun()
+    _rotate_ms = _SPOTLIGHT_ROTATE_SECONDS * 1000
+    _html = f"""<div class="sdd-carousel-wrap">
+<div class="sdd-carousel-viewport">
+  <div class="sdd-carousel-track" id="track-{key_prefix}">
+    {_slides_html}
+  </div>
+</div>
+<div class="sdd-carousel-dots" id="dots-{key_prefix}">
+  {_dots_html}
+</div>
+<script>
+(function() {{
+  var track = document.getElementById('track-{key_prefix}');
+  if (!track) return;
+  var dotsWrap = document.getElementById('dots-{key_prefix}');
+  var dots = dotsWrap.querySelectorAll('button');
+  var n = track.children.length;
+  var idx = {initial_idx};
+  var autoOn = true;
+  var timer = null;
+
+  function render() {{
+    track.style.transform = 'translateX(-' + (idx * 100) + '%)';
+    for (var i = 0; i < dots.length; i++) {{
+      dots[i].classList.toggle('active', i === idx);
+    }}
+  }}
+  function goTo(i, userInitiated) {{
+    idx = ((i % n) + n) % n;
+    if (userInitiated) {{ autoOn = false; stopAuto(); }}
+    render();
+  }}
+  function stopAuto() {{ if (timer) {{ clearInterval(timer); timer = null; }} }}
+  function startAuto() {{
+    stopAuto();
+    timer = setInterval(function() {{ if (autoOn) {{ goTo(idx + 1, false); }} }}, {_rotate_ms});
+  }}
+  for (var i = 0; i < dots.length; i++) {{
+    (function(i) {{ dots[i].addEventListener('click', function() {{ goTo(i, true); }}); }})(i);
+  }}
+
+  var startX = 0, startY = 0, dx = 0, dy = 0, dragging = false;
+  var vp = track.parentElement;
+  vp.addEventListener('touchstart', function(e) {{
+    var t = e.touches[0]; startX = t.clientX; startY = t.clientY; dx = 0; dy = 0; dragging = true;
+  }}, {{passive: true}});
+  vp.addEventListener('touchmove', function(e) {{
+    if (!dragging) return;
+    var t = e.touches[0]; dx = t.clientX - startX; dy = t.clientY - startY;
+    if (Math.abs(dx) > Math.abs(dy)) {{ e.preventDefault(); }}
+  }}, {{passive: false}});
+  vp.addEventListener('touchend', function() {{
+    if (!dragging) return;
+    dragging = false;
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) {{ goTo(idx + (dx < 0 ? 1 : -1), true); }}
+  }});
+
+  render();
+  startAuto();
+}})();
+</script>
+</div>"""
+    st.html(_html, unsafe_allow_javascript=True)
 
 
 _MONEY_TOOLS_SPOTLIGHT_ORDER = ["budget_planner", "utilities", "debt_recycling"]
 
 
-@st.fragment(run_every=_SPOTLIGHT_ROTATE_SECONDS)
 def _render_tools_home_banner(lang):
     """Home bands rework (owner-approved Option B, mocks/banner_options_
     mock.html): the home banner between the hero/mood area and the
     toolkit row used to permanently promote the Budget Planner alone.
     It's now a rotating spotlight over all THREE real Money Tools -
     Budget Planner, Utilities bill check, Cash vs Offset vs Borrow - one
-    featured at a time, auto-advancing every _SPOTLIGHT_ROTATE_SECONDS
-    (owner-reported: "make the dots rotational so they move by
-    themselves" - st.fragment(run_every=...) is Streamlit's own
-    supported mechanism for this, reruns just this band on a timer with
-    no full-page reload and no hand-rolled JS interval), with dots
-    showing there are more and letting the visitor jump to one directly.
-    The Toll never appears here - per the mock's own correction, it's a
-    My Portfolio service (see _render_my_portfolio_spotlight_band
-    below), not a Money Tool.
+    featured at a time. The Toll never appears here - per the mock's own
+    correction, it's a My Portfolio service (see
+    _render_my_portfolio_spotlight_band below), not a Money Tool.
 
     All three variants render through the SAME static-copy-plus-CTA
     structure now. Budget Planner used to carry its own live two-field
@@ -17898,28 +17941,27 @@ def _render_tools_home_banner(lang):
     deep-link page_tools() already reads - since "budget_planner" is as
     valid a TOOLS_REGISTRY id as any other; the session_state hand-off
     (tools_jump_tool) the old live-teaser button used is gone with it,
-    one less special case."""
+    one less special case.
+
+    Auto-advance and the dots are now a real client-side carousel (owner-
+    reported: can't swipe on phone, slow dot clicks on desktop) - see
+    _render_home_spotlight_carousel's own docstring for the full story.
+    This function's only job is to resolve each slide's i18n copy once
+    per render and hand the finished HTML fragments to that carousel;
+    no more st.fragment(run_every=...) driving a server-side timer here."""
     _bh = lambda key, **kw: i18n.t(f"home.banner.{key}", lang, **kw)
-    _start_idx = _spotlight_index("_spotlight_money_tools_nonce", len(_MONEY_TOOLS_SPOTLIGHT_ORDER), day_offset=0)
-    _natural_idx = _spotlight_auto_index("money_tools_spotlight", _start_idx, len(_MONEY_TOOLS_SPOTLIGHT_ORDER))
-    _idx = _spotlight_effective_index("_spotlight_money_tools_override", _natural_idx)
-    _featured = _MONEY_TOOLS_SPOTLIGHT_ORDER[_idx]
+    _idx = _spotlight_index("_spotlight_money_tools_nonce", len(_MONEY_TOOLS_SPOTLIGHT_ORDER), day_offset=0)
 
-    with st.container(border=True, key="money_tools_spotlight_band"):
-        st.markdown(
-            f"<div class='sdd-spotlight-kicker'>"
-            f"{_bh('spotlight_kicker', n=_idx + 1)}</div>",
-            unsafe_allow_html=True,
-        )
-
+    _slides = []
+    for _i, _featured in enumerate(_MONEY_TOOLS_SPOTLIGHT_ORDER):
         _title_key, _pitch_key, _cta_key, _cap_key = {
             "budget_planner": ("tools_title", "tools_pitch", "tools_cta", "tools_cap"),
             "utilities": ("utilities_title", "utilities_pitch", "utilities_cta", "utilities_cap"),
             "debt_recycling": ("debt_recycling_title", "debt_recycling_pitch",
                                 "debt_recycling_cta", "debt_recycling_cap"),
         }[_featured]
-        st.markdown(
-            f"""
+        _slides.append(f"""
+<div class='sdd-spotlight-kicker'>{_bh('spotlight_kicker', n=_i + 1)}</div>
 <div class='sdd-spotlight-row'>
   <div class='sdd-spotlight-copy'>
     <div class='sdd-tools-banner-badge'>{_bh('new_badge')}</div>
@@ -17927,37 +17969,31 @@ def _render_tools_home_banner(lang):
     <div class='sdd-tools-banner-pitch'>{_bh(_pitch_key)}</div>
   </div>
   <div class='sdd-spotlight-cta-wrap'>
-    <a class='sdd-spotlight-cta' href='/tools?tool={_featured}' target='_self'>{_bh(_cta_key)}</a>
+    <a class='sdd-spotlight-cta' href='/tools?tool={_featured}'>{_bh(_cta_key)}</a>
     <div class='sdd-spotlight-cap'>{_bh(_cap_key)}</div>
   </div>
 </div>
-""",
-            unsafe_allow_html=True,
-        )
+""")
 
-        _render_spotlight_dots(
-            "money_tools_spotlight", _idx, len(_MONEY_TOOLS_SPOTLIGHT_ORDER),
-            "_spotlight_money_tools_override", active_color="#2dd4bf",
+    with st.container(border=True, key="money_tools_spotlight_band"):
+        _render_home_spotlight_carousel(
+            "money_tools_spotlight", _slides, _idx, dot_active_color="#2dd4bf",
         )
 
 
 _MY_PORTFOLIO_SPOTLIGHT_ORDER = ["stress_test", "toll", "income", "etfs"]
 
 
-@st.fragment(run_every=_SPOTLIGHT_ROTATE_SECONDS)
 def _render_my_portfolio_spotlight_band(lang):
     """Home bands rework (owner-approved Option B): the NEW 💼 My
     Portfolio services band - purple-accented per the mock, rotating
     over 4 of My Portfolio's own tools (Stress Test, The Toll, Income &
-    franking, ETF look-through) via the same shared _spotlight_index()/
-    _spotlight_auto_index() mechanics as the Money Tools banner above,
-    with its own session_state key and a different day_offset so the
-    two bands don't always land on the same relative rotation position
-    together, and auto-advancing on its own timer via st.fragment(
-    run_every=...) the same way (owner-reported: "make the dots
-    rotational so they move by themselves"). Sits in page_home() right
-    after Tonight's top 5 and before "reported this week"/the blog row,
-    per the instruction's own placement.
+    franking, ETF look-through) via the same shared _spotlight_index()
+    mechanics as the Money Tools banner above, with its own session_state
+    key and a different day_offset so the two bands don't always land on
+    the same relative rotation position together. Sits in page_home()
+    right after Tonight's top 5 and before "reported this week"/the blog
+    row, per the instruction's own placement.
 
     Every CTA links to /portfolio rather than a specific tab: unlike
     Money Tools (?tool=<id>, read by page_tools()), My Portfolio's own
@@ -17970,26 +18006,25 @@ def _render_my_portfolio_spotlight_band(lang):
     wanted later.
 
     footer/footer_link render once, below the rotation, as a persistent
-    line - not part of the spotlight itself - and {n} is the SAME
+    line - not part of the spotlight itself, so it stays a plain
+    st.markdown call outside _render_home_spotlight_carousel rather than
+    being duplicated into every slide - and {n} is the SAME
     len(_PORTFOLIO_TAB_I18N_KEYS) count the mock's own "10 tools inside"
     line matches today, read live so it can never drift out of sync if
-    a tab is ever added or removed."""
+    a tab is ever added or removed.
+
+    Auto-advance and the dots are now a real client-side carousel (owner-
+    reported: can't swipe on phone, slow dot clicks on desktop) - see
+    _render_home_spotlight_carousel's own docstring for the full story."""
     _pb = lambda key, **kw: i18n.t(f"home.portfolio_band.{key}", lang, **kw)
-    _start_idx = _spotlight_index(
+    _idx = _spotlight_index(
         "_spotlight_my_portfolio_nonce", len(_MY_PORTFOLIO_SPOTLIGHT_ORDER), day_offset=2,
     )
-    _natural_idx = _spotlight_auto_index("my_portfolio_spotlight", _start_idx, len(_MY_PORTFOLIO_SPOTLIGHT_ORDER))
-    _idx = _spotlight_effective_index("_spotlight_my_portfolio_override", _natural_idx)
-    _featured = _MY_PORTFOLIO_SPOTLIGHT_ORDER[_idx]
 
-    _footer_link = (
-        f"<a href='/portfolio' target='_self'>{_pb('footer_link')}</a>"
-    )
-
-    with st.container(border=True, key="my_portfolio_spotlight_band"):
-        st.markdown(
-            f"""
-<div class='sdd-spotlight-kicker sdd-spotlight-kicker-purple'>{_pb('spotlight_kicker', n=_idx + 1)}</div>
+    _slides = []
+    for _i, _featured in enumerate(_MY_PORTFOLIO_SPOTLIGHT_ORDER):
+        _slides.append(f"""
+<div class='sdd-spotlight-kicker sdd-spotlight-kicker-purple'>{_pb('spotlight_kicker', n=_i + 1)}</div>
 <div class='sdd-spotlight-row'>
   <div class='sdd-spotlight-copy'>
     <div class='sdd-tools-banner-badge sdd-badge-purple'>{_pb('badge')}</div>
@@ -17997,15 +18032,19 @@ def _render_my_portfolio_spotlight_band(lang):
     <div class='sdd-tools-banner-pitch'>{_pb(f'{_featured}_pitch')}</div>
   </div>
   <div class='sdd-spotlight-cta-wrap'>
-    <a class='sdd-spotlight-cta sdd-spotlight-cta-purple' href='/portfolio' target='_self'>{_pb(f'{_featured}_cta')}</a>
+    <a class='sdd-spotlight-cta sdd-spotlight-cta-purple' href='/portfolio'>{_pb(f'{_featured}_cta')}</a>
   </div>
 </div>
-""",
-            unsafe_allow_html=True,
-        )
-        _render_spotlight_dots(
-            "my_portfolio_spotlight", _idx, len(_MY_PORTFOLIO_SPOTLIGHT_ORDER),
-            "_spotlight_my_portfolio_override", active_color="#c084fc",
+""")
+
+    _footer_link = (
+        f"<a href='/portfolio' target='_self'>{_pb('footer_link')}</a>"
+    )
+
+    with st.container(border=True, key="my_portfolio_spotlight_band"):
+        _render_home_spotlight_carousel(
+            "my_portfolio_spotlight", _slides, _idx, dot_active_color="#c084fc",
+            dot_class_extra=" sdd-carousel-dot-purple",
         )
         # Rendered as its OWN st.markdown call, deliberately separate from
         # the kicker/row block above: bundled into one call together (as
