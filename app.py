@@ -13992,12 +13992,20 @@ def _stress_compute_full(weights, histories, index_histories, total_value_aud, f
 
 
 def _stress_whatif_metrics(weights, histories, index_histories, total_value_aud):
-    """The 5 weight-dependent aggregates the rebalance sandbox compares
+    """The weight-dependent aggregates the rebalance sandbox compares
     (Current vs What-if) - deliberately a small subset of
     _stress_compute_full's full output, recomputed live on every
     slider/number-input interaction. No new network or sqlite-cache
     reads happen here - `histories`/`index_histories` are the SAME
-    dicts already fetched once for the whole tab render."""
+    dicts already fetched once for the whole tab render.
+
+    covid_recovery_pct (owner-reported: the sandbox table had COVID
+    replay but not the COVID recovery rally that followed it) is
+    computed the exact same way as covid_pct, just against the
+    "covid_recovery" entry in stress_engine.RALLIES instead of the
+    "covid" entry in stress_engine.CRISES - it's the same
+    scenario_replay() machinery either way, over a different named
+    window."""
     betas = {t: stress_engine.compute_beta(histories.get(t), index_histories.get(stress_engine.home_index_for(t)))
              for t in weights}
     hist_15y = {t: stress_engine.cap_to_years(h, 15) for t, h in histories.items()}
@@ -14007,11 +14015,16 @@ def _stress_whatif_metrics(weights, histories, index_histories, total_value_aud)
     ret10 = stress_engine.replayed_return_pa(series, 10) if series is not None else None
     covid_window = next(w for w in stress_engine.CRISES if w[0] == "covid")
     covid_result = stress_engine.scenario_replay(weights, histories, index_histories, betas, covid_window, total_value_aud)
+    covid_recovery_window = next(w for w in stress_engine.RALLIES if w[0] == "covid_recovery")
+    covid_recovery_result = stress_engine.scenario_replay(
+        weights, histories, index_histories, betas, covid_recovery_window, total_value_aud,
+    )
     pbeta = stress_engine.portfolio_beta(weights, betas)
     return {
         "max_downside_pct": dd["pct"] if dd else None,
         "max_upside_pct": best12["pct"] if best12 else None,
         "covid_pct": covid_result["move_pct"],
+        "covid_recovery_pct": covid_recovery_result["move_pct"],
         "beta": pbeta,
         "replayed_10y_pct": ret10,
     }
@@ -14376,10 +14389,18 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
         return
 
     covid_current = next((c for c in current_result.get("crises", []) if c["key"] == "covid"), None)
+    # Owner-reported: the table below had "COVID replay" (the crash) but
+    # was missing its counterpart rally - stress_engine.RALLIES already
+    # defines a "covid_recovery" window (1 Apr 2020 - 31 Mar 2021), it
+    # just wasn't surfaced here yet.
+    covid_recovery_current = next(
+        (r for r in current_result.get("rallies", []) if r["key"] == "covid_recovery"), None,
+    )
     current_metrics = {
         "max_downside_pct": current_result["max_drawdown"]["pct"] if current_result.get("max_drawdown") else None,
         "max_upside_pct": current_result["best_12m"]["pct"] if current_result.get("best_12m") else None,
         "covid_pct": covid_current["move_pct"] if covid_current else None,
+        "covid_recovery_pct": covid_recovery_current["move_pct"] if covid_recovery_current else None,
         "beta": current_result.get("portfolio_beta"),
         "replayed_10y_pct": current_result.get("replayed_10y_pct"),
     }
@@ -14412,11 +14433,23 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
     def _fmt_beta_metric(v):
         return f"{v:.2f}" if v is not None else _na
 
-    st.markdown(f"**{_st_('whatif_table_title')}**")
+    # Owner-reported: no explanation anywhere for what "Replayed 10y
+    # return p.a." (or any of these rows) means. This table's ROWS are
+    # the different metrics rather than one metric per COLUMN, so a
+    # single column_config(help=...) on "Metric" can't carry a different
+    # explanation per row - same ⓘ-popover affordance the Monte Carlo
+    # row below already uses instead (see sandbox_metrics_help's own
+    # docstring note in stress_etf_help_copy.py).
+    _title_cols = st.columns([10, 1])
+    with _title_cols[0]:
+        st.markdown(f"**{_st_('whatif_table_title')}**")
+    with _title_cols[1]:
+        _info_popover_trigger(stress_etf_help_copy.sandbox_metrics_help(lang))
     metric_defs = [
         ("metric_max_downside", "max_downside_pct", _fmt_pct_metric),
         ("metric_max_upside", "max_upside_pct", _fmt_pct_metric),
         ("metric_covid_replay", "covid_pct", _fmt_pct_metric),
+        ("metric_covid_recovery", "covid_recovery_pct", _fmt_pct_metric),
         ("metric_beta", "beta", _fmt_beta_metric),
         ("metric_replayed_10y", "replayed_10y_pct", _fmt_pct_metric),
     ]

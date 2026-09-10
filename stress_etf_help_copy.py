@@ -220,6 +220,45 @@ STRESS_COLUMN_HELP_ES = {
 }
 
 # ---------------------------------------------------------------------
+# Rebalance sandbox's own "Current vs what-if" table (owner-reported: the
+# table was missing a COVID recovery row alongside the existing COVID
+# replay one, and had no explanation anywhere for what "Replayed 10y
+# return p.a." means). Unlike the tables above, this one's ROWS are the
+# different metrics (Max downside, Beta, Replayed 10y, ...) rather than
+# one metric per COLUMN, so a single column_config(help=...) on "Metric"
+# can't carry a different explanation per row the way col_window's help
+# does for the crisis/rally tables - this is one combined tooltip body
+# instead, shown via the same ⓘ-popover affordance _info_popover_trigger
+# already gives the Monte Carlo row just below this table (a plain
+# st.popover, tap-to-open, so no separate mobile fallback is needed
+# either - unlike column_config's hover-only help).
+# ---------------------------------------------------------------------
+
+SANDBOX_METRICS_HELP_EN = (
+    "Max downside/upside: the worst peak-to-trough fall and the best "
+    "12-month-or-longer run this mix has lived through, replayed from "
+    "real prices. COVID replay/recovery: this mix's actual return over "
+    "the COVID crash (Feb-Mar 2020) and the rebound that followed "
+    "(Apr 2020-Mar 2021). Beta: this mix's overall sensitivity to its "
+    "home market index. Replayed 10y return p.a.: the annualised return "
+    "of this exact mix over its own last 10 years (or its full history "
+    "if shorter) - one compounded number standing in for a decade of "
+    "real ups and downs."
+)
+SANDBOX_METRICS_HELP_ES = (
+    "Máxima caída/subida: la mayor caída de máximo a mínimo y la mejor "
+    "racha de 12 meses o más que ha vivido esta combinación, reproducida "
+    "con precios reales. Repetición/recuperación COVID: la rentabilidad "
+    "real de esta combinación durante la caída del COVID (feb-mar 2020) "
+    "y el repunte que le siguió (abr 2020-mar 2021). Beta: la "
+    "sensibilidad general de esta combinación a su índice de mercado "
+    "local. Rentabilidad reproducida a 10 años anual: la rentabilidad "
+    "anualizada de esta combinación exacta durante sus últimos 10 años "
+    "(o todo su historial si es más corto) - una única cifra compuesta "
+    "que resume una década de subidas y bajadas reales."
+)
+
+# ---------------------------------------------------------------------
 # Scenario columns (crisis + rally) - shared by the per-holding table
 # AND the two scenario tables. Exact date ranges from
 # stress_engine.CRISES/RALLIES (kept in sync manually - both are small,
@@ -348,6 +387,10 @@ def stress_section_caption(key, lang="en"):
 def stress_column_help(key, lang="en"):
     d = STRESS_COLUMN_HELP_ES if lang == "es" else STRESS_COLUMN_HELP_EN
     return d.get(key) or STRESS_COLUMN_HELP_EN.get(key, "")
+
+
+def sandbox_metrics_help(lang="en"):
+    return _pick(SANDBOX_METRICS_HELP_EN, SANDBOX_METRICS_HELP_ES, lang)
 
 
 def etf_section_caption(key, lang="en"):
