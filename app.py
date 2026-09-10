@@ -1653,7 +1653,7 @@ st.markdown(
     .sdd-carousel-dot { appearance:none; -webkit-appearance:none; background:transparent;
       border:none; padding:0; margin:0; width:16px; height:16px; line-height:1;
       font-size:13px; cursor:pointer; color:#5b7290; }
-    .sdd-carousel-dot::before { content:'\25CF'; }
+    .sdd-carousel-dot::before { content:'●'; }
     .sdd-carousel-dot.active, .sdd-carousel-dot:hover { color:#2dd4bf; }
     .sdd-carousel-dot-purple.active, .sdd-carousel-dot-purple:hover { color:#c084fc; }
     .sdd-steps { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-top:22px; }
