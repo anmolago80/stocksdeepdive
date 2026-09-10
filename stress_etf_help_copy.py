@@ -258,32 +258,37 @@ SANDBOX_METRICS_HELP_ES = (
     "que resume una década de subidas y bajadas reales."
 )
 
-# Owner-requested (12 Sep 2026): one-click optimizer presets (min
-# drawdown / max upside / equilibrium) plus a heat-scale slider between
-# them, feeding the sandbox's manual % boxes. This is the info-popover
-# text for that row, in the same spot sandbox_metrics_help's own popover
-# sits for the table below it.
+# Owner-requested (12 Sep 2026): one-click optimizer presets, previewed
+# and shipped, then redesigned same day into two purely informational
+# reference tiles (best 12-month run / shallowest drawdown, any mix of
+# these tickers) after discussion of the presets' built-in bias toward
+# volatility over sustained quality. This is the info-popover text for
+# that row, in the same spot sandbox_metrics_help's own popover sits for
+# the table below it.
 OPTIMIZER_HELP_EN = (
-    "Each preset tests thousands of random weight mixes against this "
-    "exact combination's own historical prices (the same replay the "
-    "table below uses) and keeps the best one for that goal. Min "
-    "drawdown: the shallowest peak-to-trough fall. Max upside: the best "
-    "rolling 12-month run. Equilibrium: the best balance of upside per "
-    "unit of drawdown risk (a return-for-risk ratio, sometimes called a "
-    "Calmar ratio). All three are backtests on real past prices, not "
-    "predictions - and the slider blends smoothly between them."
+    "These two numbers are the best and worst extremes found by testing "
+    "3,000 different weight combinations for your tickers against their "
+    "real price history (the same replay the table below uses) - the "
+    "best single 12-month run any mix achieved, and the shallowest "
+    "peak-to-trough fall any mix achieved. They're a reference range, "
+    "not a suggested split - use them to judge how close (or far) your "
+    "own mix below lands from what this set of tickers has been capable "
+    "of. You still choose every %. \"Show the mix that reached this\" on "
+    "each tile is information only - it doesn't fill in or change "
+    "anything below."
 )
 OPTIMIZER_HELP_ES = (
-    "Cada ajuste predefinido prueba miles de combinaciones de "
-    "ponderaciones aleatorias contra el historial de precios real de "
-    "esta combinación exacta (la misma repetición que usa la tabla de "
-    "abajo) y se queda con la mejor para ese objetivo. Mínima caída: la "
-    "caída de máximo a mínimo menos profunda. Máxima subida: la mejor "
-    "racha de 12 meses consecutivos. Equilibrio: el mejor balance entre "
-    "subida y riesgo de caída (una relación rentabilidad/riesgo, a veces "
-    "llamada ratio de Calmar). Las tres son pruebas retrospectivas sobre "
-    "precios reales pasados, no predicciones - y el control deslizante "
-    "combina suavemente entre ellas."
+    "Estas dos cifras son los extremos mejor y peor hallados al probar "
+    "3.000 combinaciones de ponderaciones distintas para tus tickers "
+    "contra su historial de precios real (la misma repetición que usa la "
+    "tabla de abajo) - la mejor racha de 12 meses consecutivos que logró "
+    "cualquier combinación, y la caída de máximo a mínimo menos profunda "
+    "que logró cualquier combinación. Son un rango de referencia, no una "
+    "combinación sugerida - úsalas para juzgar qué tan cerca (o lejos) "
+    "queda tu propia combinación de abajo de lo que este conjunto de "
+    "tickers ha sido capaz de lograr. Tú sigues eligiendo cada %. "
+    "\"Mostrar la combinación que logró esto\" en cada casilla es solo "
+    "información - no rellena ni cambia nada de lo de abajo."
 )
 
 # ---------------------------------------------------------------------
