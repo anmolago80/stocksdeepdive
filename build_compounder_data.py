@@ -832,28 +832,62 @@ def _clean_text(v):
     return None
 
 
-def _is_threaded_comment_junk(text):
-    """Workbook schema update (owner, 8 Sep), threaded-comment guard:
-    Excel's newer "threaded" comments (as opposed to the older legacy
-    Note type) come back from openpyxl as boilerplate wrapping whatever
-    Andrew actually typed - "[Threaded comment]\\n\\nYour version of
-    Excel allows you to read this threaded comment; however, any edits
-    to it will get removed if the file is opened in a newer version of
-    Excel...", THEN his real comment. This is the ONE place in this file
-    that reads cell.comment.text (see its call site in build() below,
-    inside the loop that already runs over every column of every sheet
-    in SECTIONS), so filtering here is a global, all-sheets guard by
+def _extract_comment_text(raw):
+    """Mega-batch Part 31 fix (fundamentals cards all missing after Rev 3
+    upload): this REPLACES the old _is_threaded_comment_junk(), which
+    discarded EVERY threaded comment outright - including Andrew's own
+    header comments, which is what made every comment-driven fundamentals
+    card vanish after the 8 Sep workbook schema update. This is the ONE
+    place in this file that reads cell.comment.text (see its call site in
+    build() below, inside the loop that already runs over every column of
+    every sheet in SECTIONS), so this is a global, all-sheets fix by
     construction - not something that needs repeating per sheet.
 
-    Deliberately just detects and discards the whole thing (comment_text
-    becomes None, exactly as if there were no comment at all) rather
-    than trying to fish Andrew's own words back out from inside the
-    wrapper - a regex/substring extraction could easily mangle or
-    misattribute text he didn't write (the wrapper can itself contain a
-    "Reply:" section that ISN'T his own comment), and "never rewrite my
-    comment wording" is safer served by not touching it at all than by
-    a best-effort parse."""
-    return "[Threaded comment]" in text or "Your version of Excel" in text
+    Excel's newer "threaded" comments (as opposed to the older legacy Note
+    type) come back from openpyxl as boilerplate wrapping whatever Andrew
+    actually typed, confirmed verbatim against Andrew's real Rev 3
+    workbook (mega-batch Part 31 Step 1, run before this function was
+    written - never guessed):
+
+        "[Threaded comment]\\n\\nYour version of Excel allows you to read
+        this threaded comment; however, any edits to it will get removed
+        if the file is opened in a newer version of Excel. Learn more:
+        https://go.microsoft.com/fwlink/?linkid=870924\\n\\nComment:\\n
+        " + <Andrew's own comment, exactly as typed> + optionally
+        "\\nReply:\\n    " + <a reply thread - sometimes several,
+        stacked - that is NOT Andrew's own header comment>.
+
+    So: a raw comment with neither "[Threaded comment]" nor "Your version
+    of Excel" in it carries no wrapper at all - it's an older legacy-style
+    comment (Andrew's own workbook has these too, e.g. "ANDRES MORENO
+    LARA:\\n..." on the Cost of Capital assumption cells) and is returned
+    completely unchanged, exactly as before this guard ever existed.
+
+    For a genuine threaded wrapper, Andrew's own words are the text
+    between the "Comment:\\n    " marker and the first "Reply:" section
+    (if any) - every Reply: section is dropped entirely, never risking
+    misattributing someone else's reply as Andrew's own comment. The
+    leading 4-space indentation Excel puts under "Comment:" is stripped;
+    nothing else about Andrew's text is touched (case, punctuation,
+    em-dashes, curly quotes, arrows, non-breaking spaces - all preserved
+    byte-for-byte, never reworded or normalized).
+
+    Returns None only when the wrapper is present but nothing usable can
+    be found inside it (never fabricated, never guessed)."""
+    if "[Threaded comment]" not in raw and "Your version of Excel" not in raw:
+        return raw  # legacy-style comment - no wrapper, pass through unchanged
+    marker = "Comment:\n"
+    idx = raw.find(marker)
+    if idx == -1:
+        return None  # wrapper present but not in the shape we know how to parse
+    body = raw[idx + len(marker):]
+    if body.startswith("    "):
+        body = body[4:]
+    reply_idx = body.find("\nReply:")
+    if reply_idx != -1:
+        body = body[:reply_idx]
+    body = body.rstrip("\n").rstrip()
+    return body or None
 
 
 def build(path, anthropic_api_key=None):
@@ -917,21 +951,22 @@ def build(path, anthropic_api_key=None):
                     header_text = str(cell.value).strip()
                 if cell.comment is not None:
                     _raw_comment = cell.comment.text.strip()
-                    # Workbook schema update (owner, 8 Sep): a genuine
-                    # Excel "threaded" comment (as opposed to the older
-                    # legacy Note type) comes back from openpyxl as
-                    # boilerplate junk, not Andrew's own words - see
-                    # _is_threaded_comment_junk()'s own docstring. A junk
-                    # comment on one header row is simply skipped (never
-                    # assigned to comment_text) rather than overwriting
-                    # whatever a DIFFERENT header row for this same
-                    # column already set - so a genuine comment on one
-                    # row survives even if another row for the same
-                    # column happens to carry threaded junk. Applies on
+                    # Mega-batch Part 31 fix: extract Andrew's own text
+                    # from Excel's threaded-comment wrapper (or pass a
+                    # legacy-style comment through unchanged) rather than
+                    # discarding every threaded comment outright - see
+                    # _extract_comment_text()'s own docstring. A None
+                    # result (nothing extractable) on one header row is
+                    # simply skipped (never assigned to comment_text)
+                    # rather than overwriting whatever a DIFFERENT header
+                    # row for this same column already set - so a genuine
+                    # comment on one row survives even if another row for
+                    # the same column has no usable comment. Applies on
                     # every sheet (this loop already runs over all of
                     # them, not just Cost of Capital Analysis).
-                    if not _is_threaded_comment_junk(_raw_comment):
-                        comment_text = _raw_comment
+                    _extracted = _extract_comment_text(_raw_comment)
+                    if _extracted is not None:
+                        comment_text = _extracted
             is_plain_extra = letter in plain_extra_cols
             if comment_text is None and not is_plain_extra:
                 continue  # only the columns Andrew himself annotated (+ curated extras)
