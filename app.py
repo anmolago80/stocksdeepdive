@@ -19305,7 +19305,17 @@ def _render_debt_recycling_tool(email):
     def _seed(key, default):
         _skey = _tools_plan_key(_active_scenario, key)
         if _skey not in st.session_state:
-            st.session_state[_skey] = _saved_inputs.get(key, default)
+            # Bug fix (owner-reported, 11 Sep: "saved my offset info a
+            # few times but I lost the info after saving"): the saved
+            # dict's keys are unprefixed ("cash", "mortgage_rate", ...
+            # see the save button's call site below), never the widget
+            # key ("tools_dr_cash") - looking up by the bare widget key
+            # never matched, so every reload silently fell back to
+            # `default`. Stripping the "tools_dr_" prefix here is also
+            # exactly what every row saved BEFORE this fix needs (those
+            # rows already use the unprefixed shape), so existing saves
+            # come back with no migration.
+            st.session_state[_skey] = _saved_inputs.get(key.removeprefix("tools_dr_"), default)
         return _skey
 
     country = st.radio(
@@ -19670,6 +19680,12 @@ def _render_debt_recycling_tool(email):
             "inv1_income": inv1_income_pct, "inv1_growth": inv1_growth_pct,
             "inv1_franked": inv1_franked_pct, "inv2_income": inv2_income_pct,
             "inv2_growth": inv2_growth_pct, "inv2_franked": inv2_franked_pct,
+            # Bug fix: these two were already SEEDED from a saved
+            # scenario (_seed("tools_dr_split_pct", ...) / _seed(
+            # "tools_dr_pessimistic_rate", ...) above) but were never
+            # actually written into the save dict, so they could never
+            # round-trip even once the key-prefix bug above is fixed.
+            "split_pct": split_pct, "pessimistic_rate": pessimistic_rate_pct,
         })
         st.success(_dl("save_confirm"))
 
