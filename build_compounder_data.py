@@ -290,6 +290,15 @@ EXCLUDE_COLUMNS = {
     ("Cost of Capital Analysis", "AK"), ("Cost of Capital Analysis", "AL"),
     ("Cost of Capital Analysis", "AM"), ("Cost of Capital Analysis", "AN"),
     ("Cost of Capital Analysis", "AO"), ("Cost of Capital Analysis", "AP"),
+    # Part 31 (owner-reported, 1-line fix): AQ1 is the single min-
+    # discount-rate-floor assumption constant (8%, one cell, not a
+    # per-ticker column) - already read separately via
+    # WACC_BUILDUP_ASSUMPTION_CELLS["min_discount_rate_floor"] = "AQ1"
+    # and shown in the WACC assumptions caption. Its Excel comment on
+    # AQ1 was otherwise still picked up by the generic commented-column
+    # card scan, producing an empty "0.08 / N/A" card since the column
+    # has no real per-row data - excluded here the same way AK-AP are.
+    ("Cost of Capital Analysis", "AQ"),
 }
 
 # Andrew's follow-up: for the three "thin" sheets that only had 1-2
