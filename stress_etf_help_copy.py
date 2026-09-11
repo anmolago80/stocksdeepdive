@@ -287,36 +287,50 @@ SANDBOX_METRICS_HELP_ES = (
 )
 
 # Owner-requested (12 Sep 2026): one-click optimizer presets, previewed
-# and shipped, then redesigned same day into two purely informational
-# reference tiles (best 12-month run / shallowest drawdown, any mix of
-# these tickers) after discussion of the presets' built-in bias toward
+# and shipped, then redesigned same day into purely informational
+# reference tiles after discussion of the presets' built-in bias toward
 # volatility over sustained quality. This is the info-popover text for
 # that row, in the same spot sandbox_metrics_help's own popover sits for
 # the table below it.
+#
+# Part 30 (11 Sep 2026 audit): rewritten from "two numbers" to "three" -
+# 30.5 added the "best balance" tile and 30.6 changed the "up" tile's
+# own meaning from the single luckiest 12-month window to the best
+# full-period annualised return, so the old two-number/best-12-month
+# wording was no longer accurate. Also appends the hindsight-caveat
+# sentence (Part 30's own instruction: the same sentence added to the
+# on-page caption under the tiles).
 OPTIMIZER_HELP_EN = (
-    "These two numbers are the best and worst extremes found by testing "
-    "3,000 different weight combinations for your tickers against their "
-    "real price history (the same replay the table below uses) - the "
-    "best single 12-month run any mix achieved, and the shallowest "
-    "peak-to-trough fall any mix achieved. They're a reference range, "
-    "not a suggested split - use them to judge how close (or far) your "
-    "own mix below lands from what this set of tickers has been capable "
-    "of. You still choose every %. \"Show the mix that reached this\" on "
-    "each tile is information only - it doesn't fill in or change "
-    "anything below."
+    "These three numbers are reference points found by testing 3,000 "
+    "different weight combinations for your tickers against their real "
+    "price history (the same replay the table below uses): the best "
+    "full-period annualised return any mix achieved, the best balance "
+    "of that annualised return against its own max drawdown (a "
+    "return-for-risk ratio), and the shallowest peak-to-trough fall any "
+    "mix achieved. They're a reference range, not a suggested split - "
+    "use them to judge how close (or far) your own mix below lands from "
+    "what this set of tickers has been capable of. You still choose "
+    "every %. \"Show the mix that reached this\" on each tile is "
+    "information only - it doesn't fill in or change anything below. "
+    "The best mix for the last 15 years is not necessarily the best for "
+    "the next 15."
 )
 OPTIMIZER_HELP_ES = (
-    "Estas dos cifras son los extremos mejor y peor hallados al probar "
+    "Estas tres cifras son puntos de referencia hallados al probar "
     "3.000 combinaciones de ponderaciones distintas para tus tickers "
     "contra su historial de precios real (la misma repetición que usa la "
-    "tabla de abajo) - la mejor racha de 12 meses consecutivos que logró "
-    "cualquier combinación, y la caída de máximo a mínimo menos profunda "
+    "tabla de abajo): la mejor rentabilidad anualizada del periodo "
+    "completo que logró cualquier combinación, el mejor equilibrio entre "
+    "esa rentabilidad anualizada y su propia caída máxima (una relación "
+    "rentabilidad/riesgo), y la caída de máximo a mínimo menos profunda "
     "que logró cualquier combinación. Son un rango de referencia, no una "
     "combinación sugerida - úsalas para juzgar qué tan cerca (o lejos) "
     "queda tu propia combinación de abajo de lo que este conjunto de "
     "tickers ha sido capaz de lograr. Tú sigues eligiendo cada %. "
     "\"Mostrar la combinación que logró esto\" en cada casilla es solo "
-    "información - no rellena ni cambia nada de lo de abajo."
+    "información - no rellena ni cambia nada de lo de abajo. La mejor "
+    "combinación de los últimos 15 años no es necesariamente la mejor "
+    "para los próximos 15."
 )
 
 # ---------------------------------------------------------------------

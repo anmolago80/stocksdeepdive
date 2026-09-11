@@ -1724,16 +1724,68 @@ EN = {
         "calculation only."
     ),
     "portfolio.stress.rebalance_optimizer_caption": "What this mix has been capable of, historically:",
-    "portfolio.stress.bounds_up_label": "Best 12-month run, any mix of these tickers",
+    # Part 30 (30.6, 11 Sep 2026 audit): reworded from "best 12-month
+    # run" to "best replayed return (full period)" - this tile's search
+    # objective changed from the single luckiest rolling 12 months to
+    # the best FULL-PERIOD annualised return (see
+    # _optimize_rebalance_weights' own Part 30 docstring note). The
+    # comparison table's "Max upside (best 12 months)" row is unrelated
+    # and unchanged.
+    "portfolio.stress.bounds_up_label": "Best replayed return (full period, p.a.)",
+    "portfolio.stress.bounds_up_note": (
+        "the mix with the best annualised return over the whole 15y "
+        "replay - no longer the single luckiest 12 months"
+    ),
+    # Unbadged in the owner-approved mock (rebalance_sandbox_upgrade_
+    # mock.html) - stays exactly as already live, word for word.
     "portfolio.stress.bounds_dd_label": "Shallowest drawdown, any mix of these tickers",
-    "portfolio.stress.bounds_up_note": "found by testing 3,000 different weight combinations",
     "portfolio.stress.bounds_dd_note": "found across that same set of combinations",
+    # Part 30 (30.5, 11 Sep 2026 audit): new third reference tile -
+    # best ratio of full-period annualised return to max drawdown.
+    "portfolio.stress.bounds_bal_label": "Best balance (return per unit of drawdown)",
+    "portfolio.stress.bounds_bal_note": (
+        "the mix with the best ratio of replayed return to max "
+        "drawdown - usually the most informative reference of the three"
+    ),
     "portfolio.stress.bounds_mix_toggle": "Show the mix that reached this",
+    # Part 30 (hindsight caveat, 11 Sep 2026 audit): one sentence
+    # appended to the existing footnote - the base sentence is
+    # unchanged (unbadged in the mock).
     "portfolio.stress.bounds_footnote": (
         "No mix is auto-filled for you - set your own weights below and "
-        "watch the table update."
+        "watch the table update. *The best mix for the last 15 years is "
+        "not necessarily the best for the next 15.*"
     ),
     "portfolio.stress.optimizer_computing": "Finding the best and worst mixes for these tickers…",
+    # Part 30 (30.1, 11 Sep 2026 audit): "Scale my numbers to 100%"
+    # button, next to Reset - rescales the user's own currently-typed
+    # ratios so they sum to exactly 100.0, never invents a weight.
+    "portfolio.stress.rebalance_scale_button": "Scale my numbers to 100% ↺",
+    "portfolio.stress.rebalance_scale_caption": (
+        "Scale keeps your own ratios and just fixes the arithmetic - "
+        "e.g. 40 / 30 / 27.5 (total 97.5%) becomes 41.0 / 30.8 / 28.2."
+    ),
+    # Part 30 (30.2, 11 Sep 2026 audit): dollar buy/sell chips under the
+    # comparison table, shown only once the mix has actually been
+    # edited (nothing renders at rest).
+    "portfolio.stress.rebalance_dollar_chips_caption": (
+        "What this change means in dollars (difference to your current holdings):"
+    ),
+    "portfolio.stress.rebalance_chip_buy": "buy",
+    "portfolio.stress.rebalance_chip_sell": "sell",
+    # Part 30 (30.3, 11 Sep 2026 audit): states the sell total as a
+    # fact only - never estimates tax/CGT/the toll itself, that's The
+    # Toll's own job with the user's real cost bases. {toll_tab} is the
+    # existing portfolio.tab_switch string ("🪙 The Toll") - My
+    # Portfolio's own st.tabs() has no query-param/session-state deep-
+    # link mechanism the way the Tools hub's ?tool= does, so this
+    # names the tab in bold rather than building new link plumbing for
+    # a single caption (per the instruction's own fallback rule).
+    "portfolio.stress.rebalance_toll_caption": (
+        "Carrying out this change would mean selling {total} of holdings "
+        "- selling has a real cost (CGT + brokerage). Price the toll in "
+        "{toll_tab}."
+    ),
     "portfolio.stress.rebalance_weight_total": "Total: {total}% (must be 100% to compare)",
     # Fix (9 Sep 2026, owner-reported "rebalancing not working"): the
     # comparison table used to just silently disappear once the total
@@ -3610,23 +3662,47 @@ ES = {
     "portfolio.stress.rebalance_optimizer_caption": (
         "Lo que esta combinación ha sido capaz de lograr, históricamente:"
     ),
-    "portfolio.stress.bounds_up_label": (
-        "Mejor racha de 12 meses, con cualquier combinación de estos tickers"
+    "portfolio.stress.bounds_up_label": "Mejor rentabilidad reproducida (periodo completo, anual)",
+    "portfolio.stress.bounds_up_note": (
+        "la combinación con la mejor rentabilidad anualizada durante "
+        "toda la reproducción de 15 años - ya no los 12 meses más "
+        "afortunados"
     ),
     "portfolio.stress.bounds_dd_label": (
         "Caída menos profunda, con cualquier combinación de estos tickers"
     ),
-    "portfolio.stress.bounds_up_note": (
-        "hallada probando 3.000 combinaciones de ponderaciones distintas"
-    ),
     "portfolio.stress.bounds_dd_note": "hallada en ese mismo conjunto de combinaciones",
+    "portfolio.stress.bounds_bal_label": "Mejor equilibrio (rentabilidad por unidad de caída)",
+    "portfolio.stress.bounds_bal_note": (
+        "la combinación con la mejor relación entre rentabilidad "
+        "reproducida y caída máxima - normalmente la referencia más "
+        "informativa de las tres"
+    ),
     "portfolio.stress.bounds_mix_toggle": "Mostrar la combinación que logró esto",
     "portfolio.stress.bounds_footnote": (
         "Ninguna combinación se rellena automáticamente por ti - fija tus "
-        "propias ponderaciones abajo y observa cómo se actualiza la tabla."
+        "propias ponderaciones abajo y observa cómo se actualiza la tabla. "
+        "*La mejor combinación de los últimos 15 años no es necesariamente "
+        "la mejor para los próximos 15.*"
     ),
     "portfolio.stress.optimizer_computing": (
         "Buscando las mejores y peores combinaciones para estos tickers…"
+    ),
+    "portfolio.stress.rebalance_scale_button": "Ajustar mis cifras al 100% ↺",
+    "portfolio.stress.rebalance_scale_caption": (
+        "Ajustar conserva tus propias proporciones y solo corrige la "
+        "aritmética - p. ej. 40 / 30 / 27,5 (total 97,5%) pasa a ser "
+        "41,0 / 30,8 / 28,2."
+    ),
+    "portfolio.stress.rebalance_dollar_chips_caption": (
+        "Lo que este cambio significa en dólares (diferencia con tus posiciones actuales):"
+    ),
+    "portfolio.stress.rebalance_chip_buy": "comprar",
+    "portfolio.stress.rebalance_chip_sell": "vender",
+    "portfolio.stress.rebalance_toll_caption": (
+        "Llevar a cabo este cambio implicaría vender {total} de "
+        "posiciones - vender tiene un costo real (CGT + corretaje). "
+        "Calcula el costo en {toll_tab}."
     ),
     "portfolio.stress.rebalance_weight_total": "Total: {total}% (debe ser 100% para comparar)",
     "portfolio.stress.rebalance_weight_over_banner": (

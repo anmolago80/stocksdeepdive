@@ -14000,7 +14000,7 @@ def _stress_compute_full(weights, histories, index_histories, total_value_aud, f
     }
 
 
-def _stress_whatif_metrics(weights, histories, index_histories, total_value_aud):
+def _stress_whatif_metrics(weights, histories, index_histories, total_value_aud, betas=None):
     """The weight-dependent aggregates the rebalance sandbox compares
     (Current vs What-if) - deliberately a small subset of
     _stress_compute_full's full output, recomputed live on every
@@ -14014,9 +14014,18 @@ def _stress_whatif_metrics(weights, histories, index_histories, total_value_aud)
     "covid_recovery" entry in stress_engine.RALLIES instead of the
     "covid" entry in stress_engine.CRISES - it's the same
     scenario_replay() machinery either way, over a different named
-    window."""
-    betas = {t: stress_engine.compute_beta(histories.get(t), index_histories.get(stress_engine.home_index_for(t)))
-             for t in weights}
+    window.
+
+    `betas`: optional precomputed {ticker: beta} dict. Per-ticker beta
+    depends only on that ticker's own price history vs its home index -
+    NOT on the weight mix - so it's identical for every what-if edit of
+    the same portfolio. When the caller already has it (the sandbox
+    reuses current_result["per_holding"]'s betas), pass it here to skip
+    recomputing compute_beta() on every keystroke. When None, computed
+    exactly as before (backward compatible)."""
+    if betas is None:
+        betas = {t: stress_engine.compute_beta(histories.get(t), index_histories.get(stress_engine.home_index_for(t)))
+                 for t in weights}
     hist_15y = {t: stress_engine.cap_to_years(h, 15) for t, h in histories.items()}
     series, _used, _dropped = stress_engine.build_combined_series(weights, hist_15y)
     dd = stress_engine.max_drawdown(series) if series is not None else None
@@ -14061,49 +14070,69 @@ def _largest_remainder_round(pct_dict, decimals=1):
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def _optimize_rebalance_weights(tickers_sig, _histories, n_samples=3000, seed=0):
-    """Real (non-synthetic) search for the two historical extremes over
-    the tickers in `tickers_sig`, using the exact same historical-replay
+    """Real (non-synthetic) search for three reference points over the
+    tickers in `tickers_sig`, using the exact same historical-replay
     math the sandbox's own Current-vs-what-if table already runs
-    (stress_engine.build_combined_series/max_drawdown/best_rolling_12m,
-    completely unmodified) - just evaluated across many random mixes at
-    once instead of one:
+    (stress_engine.build_combined_series/max_drawdown, completely
+    unmodified) - just evaluated across many random mixes at once
+    instead of one:
 
-      - "dd" (min drawdown): the mix with the shallowest max peak-to-
-        trough decline over its own up-to-15y replay window (the SAME
-        window _stress_whatif_metrics already caps to via
-        stress_engine.cap_to_years(h, 15)).
-      - "up" (max upside): the mix with the best rolling 12-month return
-        over that same window.
+      - "dd" (shallowest max drawdown): the mix with the shallowest max
+        peak-to-trough decline over its own up-to-15y replay window
+        (the SAME window _stress_whatif_metrics already caps to via
+        stress_engine.cap_to_years(h, 15)). Unchanged by Part 30.
+      - "up" (best replayed return, full period p.a.): Part 30 (30.6,
+        11 Sep 2026 audit) - the mix with the best FULL-PERIOD
+        annualised return over that same window. Previously this was
+        the best single rolling-12-month window - the luckiest year of
+        the luckiest mix, which the 10 Sep audit found mechanically
+        rewards volatility/luck over sustained quality. Now it's the
+        mix whose own full replay compounded to the best annualised
+        rate - still a real historical fact about that one mix, just
+        measured over its whole window rather than its single best
+        year. The comparison TABLE's own "Max upside (best 12 months)"
+        row is UNCHANGED (still best_rolling_12m, computed separately
+        in _stress_whatif_metrics on the actual edited weights) - only
+        this reference tile's search objective changed.
+      - "bal" (best balance): Part 30 (30.5, 11 Sep 2026 audit) - new
+        third reference point, the mix with the best ratio of its own
+        full-period annualised return to its own max drawdown (a
+        Calmar-style return-for-risk ratio). A sample whose max
+        drawdown is exactly 0 is excluded from this search (nothing to
+        divide by) rather than given an artificial ratio.
 
     Owner-requested (12 Sep 2026), then redesigned same day after
-    discussion of the "up" search's built-in bias toward volatility/luck
-    over sustained quality (best_rolling_12m finds one best historical
-    window, not an average): rather than one-click presets that
-    auto-fill the manual % boxes, these two numbers are now shown as
+    discussion of the original "up" search's built-in bias toward
+    volatility/luck over sustained quality: rather than one-click
+    presets that auto-fill the manual % boxes, these are shown as
     purely informational reference bounds - "what this set of tickers
     has been capable of, historically" - with the winning weight mix
     available on request (see _render_stress_rebalance_sandbox's
     expanders) but never written into the % boxes below. The user always
     types every % themselves. Previewed first as a mockup artifact and
-    approved before this real version was wired up.
+    approved before this real version was wired up; the 30.5/30.6
+    changes were likewise previewed (rebalance_sandbox_upgrade_mock.html)
+    and approved before shipping.
 
     Vectorized with numpy rather than looping stress_engine's own
     per-portfolio functions n_samples times - confirmed byte-identical
     results against calling stress_engine.build_combined_series/
-    max_drawdown/best_rolling_12m directly on the same candidate weights
-    (dev benchmark cross-check); this is purely a performance rewrite of
-    the exact same formulas, not a different one. `_histories` is
-    excluded from the cache key (leading underscore) since DataFrames
-    are expensive to hash - `tickers_sig` (each ticker plus its
-    history's length and last date) is what actually invalidates the
-    cache when the data changes, so this only runs once per session per
-    holdings snapshot, not on every edit to the % boxes.
+    max_drawdown directly on the same candidate weights (dev benchmark
+    cross-check); this is purely a performance rewrite of the exact
+    same formulas, not a different one. `_histories` is excluded from
+    the cache key (leading underscore) since DataFrames are expensive
+    to hash - `tickers_sig` (each ticker plus its history's length and
+    last date) is what actually invalidates the cache when the data
+    changes, so this only runs once per session per holdings snapshot,
+    not on every edit to the % boxes.
 
     Returns {"dd": {"weights": {ticker: pct}, "value": <max drawdown %,
-    negative>}, "up": {"weights": {...}, "value": <best 12m return %>}},
-    each weights dict summing to ~100 (largest-remainder-rounded to 1
-    decimal), or {} if there's under a year of combined history to
-    search against."""
+    negative>}, "up": {"weights": {...}, "value": <full-period
+    annualised return %>}, "bal": {"weights": {...}, "ret_pa": <that
+    mix's own full-period annualised return %>, "dd": <that mix's own
+    max drawdown %, negative>}}, each weights dict summing to ~100
+    (largest-remainder-rounded to 1 decimal), or {} if there's under a
+    year of combined history to search against."""
     tickers = [t for t, _len, _last in tickers_sig]
     hist_15y = {t: stress_engine.cap_to_years(_histories.get(t), 15) for t in tickers}
     rets = {}
@@ -14126,12 +14155,23 @@ def _optimize_rebalance_weights(tickers_sig, _histories, n_samples=3000, seed=0)
     series = np.cumprod(1.0 + P, axis=0)
     running_max = np.maximum.accumulate(series, axis=0)
     max_dd_pct = (series / running_max - 1.0).min(axis=0) * 100.0
-    window = 252
-    rolled = series[window:] / series[:-window] - 1.0
-    best_up_pct = rolled.max(axis=0) * 100.0
+    # Part 30 (30.5/30.6, 11 Sep 2026 audit): full-period annualised
+    # return per sample, replacing the old best-rolling-12-month search
+    # for "up" and feeding the new "bal" balance-ratio search - both
+    # read straight off the SAME series matrix already built above, no
+    # new simulation. T is the number of trading days in the shared
+    # replay window (R.shape[0]), so 252.0/T annualises correctly
+    # regardless of how long that window happens to be.
+    ann_pa_pct = (series[-1, :] ** (252.0 / T) - 1.0) * 100.0
 
     idx_dd = int(np.argmax(max_dd_pct))
-    idx_up = int(np.argmax(best_up_pct))
+    idx_up = int(np.argmax(ann_pa_pct))
+    # Guard (30.5): a sample with max_dd_pct == 0 (no drawdown at all)
+    # has nothing to divide by - excluded from the balance search via
+    # -inf rather than given an artificial/undefined ratio.
+    _dd_denom = np.where(max_dd_pct == 0, np.nan, np.abs(max_dd_pct))
+    balance_ratio = np.where(np.isnan(_dd_denom), -np.inf, ann_pa_pct / _dd_denom)
+    idx_bal = int(np.argmax(balance_ratio))
 
     def _to_pcts(idx):
         raw = {t: float(W[idx, j]) * 100.0 for j, t in enumerate(used_tickers)}
@@ -14141,7 +14181,12 @@ def _optimize_rebalance_weights(tickers_sig, _histories, n_samples=3000, seed=0)
 
     return {
         "dd": {"weights": _to_pcts(idx_dd), "value": float(max_dd_pct[idx_dd])},
-        "up": {"weights": _to_pcts(idx_up), "value": float(best_up_pct[idx_up])},
+        "up": {"weights": _to_pcts(idx_up), "value": float(ann_pa_pct[idx_up])},
+        "bal": {
+            "weights": _to_pcts(idx_bal),
+            "ret_pa": float(ann_pa_pct[idx_bal]),
+            "dd": float(max_dd_pct[idx_bal]),
+        },
     }
 
 
@@ -14470,9 +14515,41 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
     total_current = sum(weights.values()) or 1.0
     current_pcts = {t: weights[t] / total_current * 100.0 for t in tickers}
 
-    if st.button(_st_("rebalance_reset"), key=f"{_skey}_reset"):
-        for t in tickers:
-            st.session_state[f"{_skey}_w_{t}"] = round(current_pcts[t], 1)
+    _reset_col, _scale_col = st.columns([1, 1.4])
+    with _reset_col:
+        if st.button(_st_("rebalance_reset"), key=f"{_skey}_reset"):
+            for t in tickers:
+                st.session_state[f"{_skey}_w_{t}"] = round(current_pcts[t], 1)
+
+    # Part 30.1 (audit fix): a "Scale my numbers to 100%" button. Distinct
+    # from Reset - it does NOT discard the user's own edits back to the
+    # current portfolio weights. Instead it takes whatever is currently
+    # sitting in each number_input (their own in-progress mix, which may
+    # total something other than 100% - the exact scenario the
+    # rebalance_weight_over/under_banner warning above already detects and
+    # blocks the whole comparison on) and rescales every box by the same
+    # factor 100/total, preserving their relative ratios exactly, then
+    # applies _largest_remainder_round (the SAME helper _optimize_rebalance_
+    # weights' own _to_pcts uses) so the scaled values round to 1 decimal
+    # while the total still lands as close to 100.0 as integer rounding
+    # allows. Like Reset, this is the only other control ever allowed to
+    # write into the number_input session_state keys - it does so BEFORE
+    # those widgets are instantiated below, same pattern as Reset. No-ops
+    # (button click does nothing) when the current total is zero (nothing
+    # to scale) or already within 0.05 of 100 (nothing worth touching).
+    with _scale_col:
+        if st.button(_st_("rebalance_scale_button"), key=f"{_skey}_scale"):
+            _scale_raw = {
+                t: st.session_state.get(f"{_skey}_w_{t}", round(current_pcts[t], 1))
+                for t in tickers
+            }
+            _scale_total = sum(_scale_raw.values())
+            if _scale_total > 0 and abs(_scale_total - 100.0) > 0.05:
+                _scaled = {t: v * 100.0 / _scale_total for t, v in _scale_raw.items()}
+                _scaled = _largest_remainder_round(_scaled)
+                for t in tickers:
+                    st.session_state[f"{_skey}_w_{t}"] = _scaled[t]
+    st.caption(_st_("rebalance_scale_caption"))
 
     # Owner-requested (12 Sep 2026): one-click "best mathematical
     # combination" presets, previewed as a mockup and shipped - then
@@ -14501,19 +14578,35 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
         with _bounds_title_cols[1]:
             _info_popover_trigger(stress_etf_help_copy.optimizer_help(lang))
 
-        _bound_cols = st.columns(2)
+        # Part 30.5/30.6: third "best balance" tile added, in the order
+        # up -> bal -> dd (matches the approved mock exactly). "up"'s
+        # value is now the full-period annualised return _optimize_
+        # rebalance_weights computes (a plain +X.X% tile, unchanged
+        # rendering), "dd" is untouched (still a plain +X.X% tile, its
+        # label/note left exactly as live per the mock's own unbadged
+        # convention), and "bal" is new: its value is a PAIR (return p.a.
+        # / max drawdown, teal) rather than the single number the other
+        # two tiles show, since a balance ratio alone is meaningless
+        # without both of the numbers that produced it.
+        _bound_cols = st.columns(3)
         _bound_specs = [
             ("up", _bound_cols[0], "#34d399", _st_("bounds_up_label"), _st_("bounds_up_note")),
-            ("dd", _bound_cols[1], "#fb7185", _st_("bounds_dd_label"), _st_("bounds_dd_note")),
+            ("bal", _bound_cols[1], "#2dd4bf", _st_("bounds_bal_label"), _st_("bounds_bal_note")),
+            ("dd", _bound_cols[2], "#fb7185", _st_("bounds_dd_label"), _st_("bounds_dd_note")),
         ]
         for _bkey, _bcol, _bcolor, _blabel, _bnote in _bound_specs:
             with _bcol:
                 with st.container(border=True):
-                    _bval = _bounds[_bkey]["value"]
+                    if _bkey == "bal":
+                        _bval_html = (
+                            f"{_bounds['bal']['ret_pa']:+.1f}% / {_bounds['bal']['dd']:+.0f}%"
+                        )
+                    else:
+                        _bval_html = f"{_bounds[_bkey]['value']:+.1f}%"
                     st.markdown(
                         f"<div style='font-size:12px;color:#8aa0b8;'>{_blabel}</div>"
                         f"<div style='font-size:28px;font-weight:700;color:{_bcolor};"
-                        f"font-variant-numeric:tabular-nums;line-height:1;margin-top:4px;'>{_bval:+.1f}%</div>"
+                        f"font-variant-numeric:tabular-nums;line-height:1;margin-top:4px;'>{_bval_html}</div>"
                         f"<div style='font-size:12px;color:#8aa0b8;margin-top:6px;'>{_bnote}</div>",
                         unsafe_allow_html=True,
                     )
@@ -14591,8 +14684,20 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
     # rest, and only actually recomputes once something has genuinely
     # changed.
     _at_rest = all(abs(edited_pcts[t] - round(current_pcts[t], 1)) < 1e-9 for t in tickers)
+    # Part 30.4 (audit fix, speed only - no behaviour change): per-ticker
+    # beta depends only on that ticker's own price history vs its home
+    # index, never on the weight mix, so it's identical for every what-if
+    # edit of the same portfolio. current_result["per_holding"] already
+    # carries each ticker's beta (computed once, in _stress_compute_full);
+    # reuse it here instead of recomputing compute_beta() from scratch on
+    # every keystroke inside _stress_whatif_metrics.
+    _current_betas = {
+        row["ticker"]: row["beta"] for row in current_result.get("per_holding", []) if "beta" in row
+    }
     whatif = (dict(current_metrics) if _at_rest
-              else _stress_whatif_metrics(edited_weights, histories, index_histories, total_value_aud))
+              else _stress_whatif_metrics(
+                  edited_weights, histories, index_histories, total_value_aud, betas=_current_betas,
+              ))
 
     _na = _st_("na")
 
@@ -14660,6 +14765,62 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
         _whatif_df.style.apply(_style_whatif_deltas, axis=None),
         hide_index=True, width='stretch',
     )
+
+    # Part 30.2/30.3 (audit fixes): dollar buy/sell chips + The Toll
+    # footer line. Both are gated on `not _at_rest` - at rest (nothing
+    # edited, or every box reset back to the current weights) there is no
+    # change to describe in dollars, so neither renders at all (per the
+    # mock's own annotation: "only appear once you've actually changed
+    # something - at rest they're hidden, no clutter"). This is a
+    # statement of arithmetic (what selling/buying this dollar amount
+    # would mean), never advice - no "you should" framing anywhere here.
+    if not _at_rest:
+        _delta_aud = {t: edited_weights[t] - weights[t] for t in tickers}
+        _chip_tickers = sorted(
+            (t for t in tickers if abs(_delta_aud[t]) >= 1.0),
+            key=lambda t: abs(_delta_aud[t]), reverse=True,
+        )
+        if _chip_tickers:
+            st.caption(_st_("rebalance_dollar_chips_caption"))
+            _chip_html = ["<div style='display:flex;gap:9px;flex-wrap:wrap;margin-top:2px;'>"]
+            for t in _chip_tickers:
+                _d = _delta_aud[t]
+                if _d >= 0:
+                    _verb, _color = _st_("rebalance_chip_buy"), "#34d399"
+                else:
+                    _verb, _color = _st_("rebalance_chip_sell"), "#fb7185"
+                _chip_html.append(
+                    "<span style='border-radius:8px;padding:5px 11px;font-size:12px;"
+                    "font-variant-numeric:tabular-nums;border:1px solid #1f3352;"
+                    "background:rgba(127,127,127,0.06);'>"
+                    f"<span style='color:#8aa0b8;'>{t}</span> "
+                    f"<b style='color:{_color};'>{_verb} A${abs(_d):,.0f}</b></span>"
+                )
+            _chip_html.append("</div>")
+            st.markdown("".join(_chip_html), unsafe_allow_html=True)
+
+            # The Toll footer: the sell-side dollar total only (what would
+            # actually need to be sold to reach this mix), stated as a
+            # fact with a pointer to The Toll tab to price the real CGT +
+            # brokerage cost - never estimated here. My Portfolio's own
+            # st.tabs() call (unlike the Tools hub's page_tools()) has no
+            # query-param/session_state deep-link mechanism to jump to
+            # another tab, so per the instruction's own fallback this is
+            # plain bold text naming the tab, not a link.
+            _sell_total = sum(-_delta_aud[t] for t in _chip_tickers if _delta_aud[t] < 0)
+            if _sell_total > 0:
+                _toll_tab_name = i18n.t("portfolio.tab_switch", lang)
+                st.markdown(
+                    "<div style='margin-top:12px;border:1px dashed #2a3b5c;border-radius:10px;"
+                    "padding:9px 13px;font-size:12.5px;'>"
+                    + _st_(
+                        "rebalance_toll_caption",
+                        total=f"A${_sell_total:,.0f}",
+                        toll_tab=f"<b>{_toll_tab_name}</b>",
+                    )
+                    + "</div>",
+                    unsafe_allow_html=True,
+                )
 
     # Mega-batch Part 13: 1-yr 5th-95th percentile simulated range, set
     # visually apart from the five historical-replay metrics above (a
