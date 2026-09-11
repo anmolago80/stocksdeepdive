@@ -15472,6 +15472,65 @@ def _switch_crossover_fig(iv_a, ret_b, toll_z, price_a_today, years, from_ticker
             ),
             annotation_position="top", annotation_font_size=11, annotation_font_color="#e6edf5",
         )
+
+    # Mega-batch Part 32.3: translucent decision-zone tints either side of
+    # the flip price, plus a cushion connector+label between today's
+    # marker and the flip line. Existing curve/marker/flip-line logic
+    # above is untouched - these are purely added shapes/annotations.
+    # Zone split point is clamped into [_lo, _hi] so a flip price outside
+    # the plotted window still tints the WHOLE visible range one colour
+    # (correctly) instead of erroring or drawing nothing.
+    if _flip_price is not None:
+        _zone_split = max(_lo, min(_hi, _flip_price))
+        # Labels are pinned to the OUTER edge of each zone (left edge for
+        # "keep", right edge for "switch") rather than centred within it -
+        # a zone always touches one of the plot's own outer edges by
+        # construction, so this is always inside its own zone, but unlike
+        # centring it never shrinks the gap between the two labels down
+        # to nothing when the chart itself is narrow (390px mobile).
+        if _zone_split > _lo:
+            fig.add_vrect(x0=_lo, x1=_zone_split, fillcolor="#7f1d1d", opacity=0.18, layer="below", line_width=0)
+            fig.add_annotation(
+                x=_lo, y=0.95, xref="x", yref="paper", xanchor="left", xshift=4, showarrow=False,
+                text=i18n.t("portfolio.switch.chart_crossover_zone_keep", lang, ticker=from_ticker),
+                font=dict(size=11.5, color="#fb7185"),
+            )
+        if _zone_split < _hi:
+            fig.add_vrect(x0=_zone_split, x1=_hi, fillcolor="#065f46", opacity=0.16, layer="below", line_width=0)
+            fig.add_annotation(
+                x=_hi, y=0.95, xref="x", yref="paper", xanchor="right", xshift=-4, showarrow=False,
+                text=i18n.t("portfolio.switch.chart_crossover_zone_switch", lang),
+                font=dict(size=11.5, color="#34d399"),
+            )
+        if _lo <= _flip_price <= _hi and _today_net is not None:
+            _cush_diff = price_a_today - _flip_price
+            if _cush_diff >= 0:
+                _cush_pct = (_cush_diff / price_a_today * 100) if price_a_today else 0.0
+                _cush_label = i18n.t(
+                    "portfolio.switch.chart_crossover_cushion_above", lang,
+                    diff=f"{_cush_diff:,.0f}", pct=f"{_cush_pct:.0f}",
+                )
+            else:
+                _cush_diff_abs = -_cush_diff
+                _cush_pct = (_cush_diff_abs / price_a_today * 100) if price_a_today else 0.0
+                _cush_label = i18n.t(
+                    "portfolio.switch.chart_crossover_cushion_below", lang,
+                    diff=f"{_cush_diff_abs:,.0f}", pct=f"{_cush_pct:.0f}",
+                )
+            fig.add_shape(
+                type="line", x0=price_a_today, y0=_today_net, x1=_flip_price, y1=_today_net,
+                xref="x", yref="y", line=dict(color="#8aa0b8", width=1.2),
+            )
+            fig.add_annotation(
+                # Shifted BELOW the connector line (negative yshift = down
+                # on screen) rather than above it - the existing "today's
+                # price" marker label already sits directly above this
+                # same point (textposition="top center"), so placing this
+                # new label above too would collide with it.
+                x=(price_a_today + _flip_price) / 2, y=_today_net, xref="x", yref="y",
+                yshift=-14, showarrow=False, text=_cush_label, font=dict(size=10.5, color="#8aa0b8"),
+            )
+
     fig.update_layout(
         title=i18n.t("portfolio.switch.flip_title", lang),
         xaxis_title=i18n.t("portfolio.switch.chart_crossover_xaxis", lang, ticker=from_ticker),
@@ -15640,6 +15699,181 @@ def _switch_trim_range_bands_html(bands, lang):
     return (
         "<div style='display:flex;gap:20px;margin-top:8px;flex-wrap:wrap'>" + "".join(_cells) + "</div>"
         f"<div style='color:#5b7290;font-size:11px;margin-top:9px;font-style:italic'>{html.escape(_sw('trim_range_caption'))}</div>"
+    )
+
+
+def _switch_runway_svg_html(to_ticker, price_b, iv_b, ret_b, from_ticker, price_a, iv_a, ret_a,
+                             spread, z, net, lang):
+    """Mega-batch Part 32.1 ("runway to fair value" graphic, owner-
+    approved mock: toll_z_flip_final_mock.html, card 1). Two fixed
+    horizontal tracks - candidate (to_ticker) on top, held ticker
+    (from_ticker) below - each track's own full length is THAT stock's
+    fair value, the filled segment is today's price, so the fill
+    fraction (price/fair_value) is each track's OWN scale, never
+    comparable in dollar terms between the two rows (per the mock's own
+    note - two very different upside ratios can legitimately draw as
+    equal-length tracks). Below a dashed divider, "The edge" row draws
+    the SAME three numbers the Z-line/verdict already print (spread, z,
+    net = spread - z, i.e. exactly _v["margin_pct"]) as a green/yellow/
+    teal strip - no new arithmetic anywhere in this function, purely a
+    picture of switch_analyzer_engine's existing outputs. Layout
+    (viewBox, x/y coordinates) mirrors the mock's own fixed pixel grid;
+    only the numbers, fill widths and bar lengths are computed live.
+    Candidate = green (track + label), incumbent = grey (track + label)
+    - the mock's own colour choice for this graphic, kept as-is even
+    though the waterfall chart elsewhere on this tab colours the
+    incumbent red; this is a separate, newer picture of the same pair."""
+    _sw = lambda key, **fmt: i18n.t(f"portfolio.switch.{key}", lang, **fmt)
+
+    def _track_row(y, ticker, price, iv, ret, fill_color, label_color):
+        _frac = max(0.0, min(1.0, price / iv)) if (price and iv and iv > 0) else 0.0
+        _fill_w = max(2.0, 180.0 * _frac)
+        _multiple = (iv / price) if (price and price > 0) else None
+        _ret_txt = f"{ret * 100:+.1f}%/yr" if ret is not None else "n/a"
+        _label = f"{iv:,.2f} · {_multiple:.2f}× → " if _multiple is not None else "n/a → "
+        return (
+            f"<text x='8' y='{y + 12:.0f}' fill='#8aa0b8' font-size='12'>{html.escape(ticker)}</text>"
+            f"<rect x='80' y='{y}' width='180' height='16' rx='4' fill='#1a2740'/>"
+            f"<rect x='80' y='{y}' width='180' height='16' rx='4' fill='none' stroke='#2a3b5c'/>"
+            f"<rect x='80' y='{y}' width='{_fill_w:.1f}' height='16' rx='4' fill='{fill_color}'/>"
+            f"<text x='84' y='{y + 12:.0f}' fill='#04211d' font-size='10.5' font-weight='700'>"
+            f"{price:,.2f}</text>"
+            f"<text x='264' y='{y + 12:.0f}' fill='#8aa0b8' font-size='10.5'>{html.escape(_label)}"
+            f"<tspan fill='{label_color}' font-weight='700'>{html.escape(_ret_txt)}</tspan></text>"
+        )
+
+    _rows_svg = (
+        _track_row(18, to_ticker, price_b, iv_b, ret_b, "#34d399", "#34d399")
+        + _track_row(50, from_ticker, price_a, iv_a, ret_a, "#8aa0b8", "#c7d2e0")
+    )
+
+    # "The edge" row - a fixed ~20px-per-percentage-point scale (matches
+    # the mock's own 166px/8.3 and 42px/2.09 bars); widths are drawn from
+    # MAGNITUDES so a negative spread or an outsized toll clamp visually
+    # rather than drawing off the card - the printed TEXT always carries
+    # the real signed number regardless. Each bar also has its own
+    # minimum width, roomy enough for its own label text - a small
+    # spread/toll (e.g. a 10-year horizon's ~4%/~0.7%) would otherwise
+    # draw a bar too narrow for its own text, which would then run on
+    # into and get overpainted by the next bar drawn after it.
+    _px_per_pt = 20.0
+    _gap_w = max(112.0, min(420.0, abs(spread) * 100 * _px_per_pt)) if spread is not None else 112.0
+    _toll_w = max(58.0, min(420.0, abs(z) * 100 * _px_per_pt)) if z is not None else 58.0
+    _toll_x = 80.0 + _gap_w + 6.0
+    _net_x = _toll_x + _toll_w + 12.0
+    _net_color = "#2dd4bf" if (net is not None and net >= 0) else "#fb7185"
+    _gap_txt = _sw("runway_gap_text", pct=f"{spread * 100:+.1f}") if spread is not None else ""
+    _toll_txt = f"{-z * 100:+.2f}" if z is not None else ""
+    _net_txt = _sw("runway_net_text", pct=f"{net * 100:+.2f}") if net is not None else ""
+
+    _edge_svg = (
+        "<line x1='80' y1='82' x2='600' y2='82' stroke='#1f3352' stroke-dasharray='3 3'/>"
+        f"<text x='8' y='112' fill='#8aa0b8' font-size='12'>{html.escape(_sw('runway_edge_label'))}</text>"
+        f"<rect x='80' y='100' width='{_gap_w:.1f}' height='16' rx='4' fill='#34d399'/>"
+        f"<text x='86' y='112' fill='#04211d' font-size='10.5' font-weight='700'>{html.escape(_gap_txt)}</text>"
+        f"<rect x='{_toll_x:.1f}' y='100' width='{_toll_w:.1f}' height='16' rx='4' fill='#fbbf24'/>"
+        f"<text x='{_toll_x + 4:.1f}' y='112' fill='#241d0e' font-size='10.5' font-weight='700'>"
+        f"{html.escape(_toll_txt)}</text>"
+        f"<text x='{_net_x:.1f}' y='112' fill='{_net_color}' font-size='12' font-weight='700'>"
+        f"{html.escape(_net_txt)}</text>"
+        f"<text x='80' y='140' fill='#5b7290' font-size='10.5'>{html.escape(_sw('runway_key_caption'))}</text>"
+    )
+
+    return (
+        "<svg viewBox='0 0 620 168' width='100%' style='max-width:620px'>" + _rows_svg + _edge_svg + "</svg>"
+        f"<div style='color:#5b7290;font-size:11px;margin-top:6px;line-height:1.55'>"
+        f"{html.escape(_sw('runway_caption'))}</div>"
+    )
+
+
+def _switch_race_svg_html(from_ticker, to_ticker, ret_a, ret_b, toll_pct, years, flip_years, lang):
+    """Mega-batch Part 32.2 ("the race" chart, owner-approved mock,
+    card 2). kept = 10000*(1+ret_a)^t (grey), switched =
+    10000*(1-toll_pct)*(1+ret_b)^t (teal) - the SAME two implied
+    returns and the SAME toll_pct_of_value already printed on the
+    bridge/toll card above, over t in [0, years] (the tab's own
+    3y/5y/10y selector). No new engine outputs.
+
+    The crossing marker is placed at flip_years -
+    switch_analyzer_engine.break_even_years()'s own N* - taken
+    verbatim, NEVER re-derived from where these two curves actually
+    cross: break_even_years solves Z(N) = return_spread using the
+    LINEAR spread (ret_b - ret_a), while these dollar curves compound
+    the two returns geometrically, so their true intersection sits at a
+    slightly different t whenever ret_a is non-trivial (the two
+    formulas are only first-order equivalent, i.e. equal for small
+    returns). Using N* directly for the marker's x-position - rather
+    than solving these curves for their own crossing - is what keeps
+    this chart and the ⏳ box's own N in exact agreement, as the mock
+    and instruction both require ("the same N the hourglass states");
+    see this Part's own final report for the numeric check that
+    confirms these two would otherwise disagree by more than the
+    Verify list's ±0.05y tolerance."""
+    _sw = lambda key, **fmt: i18n.t(f"portfolio.switch.{key}", lang, **fmt)
+    _n = 60
+    _ts = [years * i / _n for i in range(_n + 1)]
+    _kept = [10000.0 * ((1.0 + ret_a) ** t) for t in _ts]
+    _switched = [10000.0 * (1.0 - toll_pct) * ((1.0 + ret_b) ** t) for t in _ts]
+    _vmin, _vmax = min(_kept + _switched), max(_kept + _switched)
+    if _vmax <= _vmin:
+        _vmax = _vmin + 1.0
+    _pad = (_vmax - _vmin) * 0.08
+    _vmin, _vmax = _vmin - _pad, _vmax + _pad
+    _x0, _x1, _y0, _y1 = 55.0, 600.0, 18.0, 168.0
+
+    def _px(t):
+        return _x0 + (t / years) * (_x1 - _x0) if years else _x0
+
+    def _py(v):
+        return _y1 - (v - _vmin) / (_vmax - _vmin) * (_y1 - _y0)
+
+    _kept_pts = " ".join(f"{_px(t):.1f},{_py(v):.1f}" for t, v in zip(_ts, _kept))
+    _switched_pts = " ".join(f"{_px(t):.1f},{_py(v):.1f}" for t, v in zip(_ts, _switched))
+
+    _kept_end_y, _switched_end_y = _py(_kept[-1]), _py(_switched[-1])
+    if abs(_kept_end_y - _switched_end_y) < 18:
+        if _kept_end_y < _switched_end_y:
+            _kept_end_y, _switched_end_y = _kept_end_y - 9, _switched_end_y + 9
+        else:
+            _kept_end_y, _switched_end_y = _kept_end_y + 9, _switched_end_y - 9
+
+    _cross_svg = ""
+    if flip_years is not None and 0 <= flip_years <= years:
+        _kept_at_n = 10000.0 * ((1.0 + ret_a) ** flip_years)
+        _switched_at_n = 10000.0 * (1.0 - toll_pct) * ((1.0 + ret_b) ** flip_years)
+        _cx, _cy = _px(flip_years), _py((_kept_at_n + _switched_at_n) / 2.0)
+        _cross_svg = (
+            f"<circle cx='{_cx:.1f}' cy='{_cy:.1f}' r='6' fill='#0b1220' stroke='#e6edf5' stroke-width='2'/>"
+            f"<line x1='{_cx:.1f}' y1='{_cy:.1f}' x2='{_cx:.1f}' y2='{_y1:.0f}' stroke='#e6edf5' "
+            "stroke-width='1' stroke-dasharray='4 4'/>"
+            f"<text x='{_cx:.1f}' y='{_cy - 14:.1f}' fill='#e6edf5' font-size='11' font-weight='700' "
+            f"text-anchor='middle'>{html.escape(_sw('race_breakeven_label', n=f'{flip_years:.1f}'))}</text>"
+            f"<text x='{_cx:.1f}' y='182' fill='#8aa0b8' font-size='10.5' text-anchor='middle'>"
+            f"{flip_years:.1f}y</text>"
+        )
+
+    # Clamped to stay INSIDE the plot area (never spill down into the
+    # x-axis tick/title row below _y1) - the switched line can start
+    # very close to the bottom edge when toll_pct is small, which would
+    # otherwise push this note down onto the break-even tick label.
+    _start_note_y = max(_y0 + 10.0, min(_py(_switched[0]) + 16.0, _y1 - 4.0))
+    return (
+        "<svg viewBox='0 0 620 200' width='100%' style='max-width:620px'>"
+        f"<line x1='{_x0:.0f}' y1='{_y1:.0f}' x2='{_x1:.0f}' y2='{_y1:.0f}' stroke='#1f3352'/>"
+        f"<line x1='{_x0:.0f}' y1='{_y0:.0f}' x2='{_x0:.0f}' y2='{_y1:.0f}' stroke='#1f3352'/>"
+        f"<polyline points='{_kept_pts}' fill='none' stroke='#8aa0b8' stroke-width='2'/>"
+        f"<polyline points='{_switched_pts}' fill='none' stroke='#2dd4bf' stroke-width='2.5'/>"
+        + _cross_svg +
+        f"<text x='{_x1 - 5:.1f}' y='{_switched_end_y:.1f}' fill='#2dd4bf' font-size='11' font-weight='700' "
+        f"text-anchor='end'>{html.escape(_sw('race_switched_label', ticker=to_ticker))}</text>"
+        f"<text x='{_x1 - 5:.1f}' y='{_kept_end_y:.1f}' fill='#8aa0b8' font-size='11' font-weight='700' "
+        f"text-anchor='end'>{html.escape(_sw('race_kept_label', ticker=from_ticker))}</text>"
+        f"<text x='{_x0 + 8:.1f}' y='{_start_note_y:.1f}' fill='#5b7290' font-size='10.5'>"
+        f"{html.escape(_sw('race_starts_lower_note'))}</text>"
+        f"<text x='{(_x0 + _x1) / 2:.1f}' y='198' fill='#8aa0b8' font-size='11' text-anchor='middle'>"
+        f"{html.escape(_sw('race_xaxis_label'))}</text>"
+        f"<text x='18' y='40' fill='#8aa0b8' font-size='11'>{html.escape(_sw('race_yaxis_label'))}</text>"
+        "</svg>"
     )
 
 
@@ -16139,6 +16373,19 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
                         pct=f"{_ret_a * 100:.1f}"),
                 ]))
 
+                # Mega-batch Part 32.1: "runway to fair value" graphic,
+                # under the text lines above (kept unchanged) per the
+                # owner-approved mock - every number here is one of
+                # _price_a/_price_b/_iv_a/_iv_b/_ret_a/_ret_b/_spread/_z/
+                # _net, all already computed above; no recomputation.
+                st.markdown(
+                    _switch_runway_svg_html(
+                        _to_ticker, _price_b, _iv_b, _ret_b, _from_ticker, _price_a, _iv_a, _ret_a,
+                        _spread, _z, _net, _lang,
+                    ),
+                    unsafe_allow_html=True,
+                )
+
             # Horizon pills - the actual widget, placed here to match the
             # mock; its value was already read further up (see the note
             # there on why that's safe in Streamlit's execution model).
@@ -16151,13 +16398,64 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
                 _flip = switch_analyzer_engine.break_even_years(_from_row["value_aud"], _toll["proceeds_after_toll"], _spread)
                 _flip_body = (_sw("flip_body", spread=f"{_spread * 100:.1f}", n=f"{_flip:.1f}")
                               if _flip is not None else _sw("flip_never"))
-                st.markdown(
-                    "<div style='margin-top:6px;background:rgba(255,255,255,.03);"
-                    "border:1px dashed rgba(255,255,255,.2);border-radius:9px;padding:8px 11px;"
-                    "font-size:.85rem;color:#8aa0b8;line-height:1.6'>&#8987; <b>"
-                    + _sw("flip_title") + "</b> " + _flip_body + "</div>",
-                    unsafe_allow_html=True,
-                )
+                # Mega-batch Part 32.2: the N* formula used to sit inline
+                # in this box's own text (flip_body) - it now lives only
+                # in the ⓘ popover beside it (same _info_popover_trigger
+                # affordance used elsewhere on the tab), box text reworded
+                # to plain words (flip_body itself, i18n.py).
+                _hour_cols = st.columns([10, 1])
+                with _hour_cols[0]:
+                    st.markdown(
+                        "<div style='margin-top:6px;background:rgba(255,255,255,.03);"
+                        "border:1px dashed rgba(255,255,255,.2);border-radius:9px;padding:8px 11px;"
+                        "font-size:.85rem;color:#8aa0b8;line-height:1.6'>&#8987; <b>"
+                        + _sw("flip_title") + "</b> " + _flip_body + "</div>",
+                        unsafe_allow_html=True,
+                    )
+                with _hour_cols[1]:
+                    _info_popover_trigger(_sw("flip_formula"))
+
+                # Mega-batch Part 32.2: "the race" - $10,000 kept vs
+                # $10,000 switched, directly under the ⏳ box, built from
+                # the SAME ret_a/ret_b/toll_pct_of_value already on the
+                # page (no recomputation). The crossing marker is placed
+                # at _flip (the SAME N the box above states) - see
+                # _switch_race_svg_html's own docstring for why that's
+                # taken verbatim rather than solved from the curves.
+                _toll_pct_for_race = _toll.get("toll_pct_of_value")
+                if _toll_pct_for_race is not None:
+                    st.caption(f"**{_sw('race_label')}** — {_sw('race_subtitle')}")
+                    st.markdown(
+                        _switch_race_svg_html(
+                            _from_ticker, _to_ticker, _ret_a, _ret_b, _toll_pct_for_race, _years,
+                            _flip, _lang,
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                    _race_has_crossing = _flip is not None and 0 <= _flip <= _years
+                    st.caption(
+                        _sw("race_caption") if _race_has_crossing
+                        else _sw("race_caption_never", years=_years)
+                    )
+                    # Accessibility: the tab's existing "Text description
+                    # of this chart" expander pattern (sdd_plotly_chart,
+                    # compounder_ui.py) applies to this chart too - built
+                    # by hand here since this is inline SVG, not a Plotly
+                    # figure that goes through that wrapper.
+                    _kept_end = 10000.0 * ((1.0 + _ret_a) ** _years)
+                    _switched_start = 10000.0 * (1.0 - _toll_pct_for_race)
+                    _switched_end = 10000.0 * (1.0 - _toll_pct_for_race) * ((1.0 + _ret_b) ** _years)
+                    _race_desc = " ".join([
+                        _sw("race_desc_kept", ticker=_from_ticker, end=f"{_kept_end:,.2f}"),
+                        _sw("race_desc_switched", ticker=_to_ticker, start=f"{_switched_start:,.2f}",
+                            end=f"{_switched_end:,.2f}"),
+                        _sw("race_desc_crossing", n=f"{_flip:.1f}") if _race_has_crossing
+                        else _sw("race_desc_no_crossing", years=_years),
+                    ])
+                    with st.expander("Text description of this chart", expanded=False,
+                                      key=_pf_key(_active_portfolio, "sw_race_desc")):
+                        st.caption(_race_desc)
+
                 # Addendum to Fix #3b, chart 2 ("crossover chart"): placed
                 # right after the ⏳ box it illustrates, per the addendum's
                 # own "in/next to the ⏳ box" placement instruction. Both
@@ -16171,6 +16469,22 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
                 )
                 if _crossover_fig is not None:
                     sdd_plotly_chart(_crossover_fig)
+                    # Mega-batch Part 32.3: plain-words caption + ⓘ
+                    # (formula moved out of the caption, per the
+                    # instruction) - the zone tints/cushion label
+                    # themselves are drawn ON the figure above, in
+                    # _switch_crossover_fig.
+                    if _flip_price is not None and _flip_price > 0 and _price_a:
+                        _flip_diff = abs(_price_a - _flip_price)
+                        _flip_pct = _flip_diff / _price_a * 100
+                        _flip_cols = st.columns([10, 1])
+                        with _flip_cols[0]:
+                            st.caption(_sw(
+                                "chart_crossover_caption", ticker=_from_ticker,
+                                flip=f"{_flip_price:,.2f}", pct=f"{_flip_pct:.0f}",
+                            ))
+                        with _flip_cols[1]:
+                            _info_popover_trigger(_sw("chart_crossover_formula", ticker=_from_ticker))
 
     # --- Trim instead of switching fully, own card at the bottom - fix
     # #3b's own st.container(key=...) + CSS-hook pattern again, for the

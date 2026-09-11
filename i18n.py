@@ -2016,6 +2016,24 @@ EN = {
     "portfolio.switch.bridge_returns_source_line": (
         "{ticker}: price {price} → fair value {iv} = {multiple}× over {years}y → {pct}%/yr"
     ),
+    # Mega-batch Part 32.1 ("runway to fair value" graphic, owner-approved
+    # mock: toll_z_flip_final_mock.html, card 1) - draws the SAME two
+    # implied-return lines above as two horizontal tracks, plus the
+    # existing verdict's own spread/Z/net numbers as a green/yellow/teal
+    # "edge" row underneath. No new engine outputs - purely a picture of
+    # numbers already on the page (see _switch_runway_svg_html, app.py).
+    "portfolio.switch.runway_edge_label": "The edge",
+    "portfolio.switch.runway_gap_text": "{pct}%/yr return gap",
+    "portfolio.switch.runway_net_text": "= {pct}%/yr net, after the toll",
+    "portfolio.switch.runway_key_caption": (
+        "runway = today's price → your fair value, compressed into the holding period · "
+        "yellow = the toll, annualised"
+    ),
+    "portfolio.switch.runway_caption": (
+        "Filled bar = today's price; the track's full length = your fair value. The bottom "
+        "row is the whole verdict in one line: return gap − toll = net edge. Values recompute "
+        "from the same engine outputs already on the page."
+    ),
     "portfolio.switch.twelve_month_chip": (
         "Selling now forgoes the 12-month CGT discount: tax would be A\\${tax_now} now vs "
         "A\\${tax_later} after {days} more day(s) (assuming the same sale value) - a "
@@ -2061,14 +2079,55 @@ EN = {
         "\U0001F916 = nightly model estimate (fallback)."
     ),
     "portfolio.switch.flip_title": "When would this flip?",
+    # Mega-batch Part 32.2: reworded to plain words per the owner-approved
+    # mock (toll_z_flip_final_mock.html, card 2) - the N* formula that
+    # used to sit inline here MOVES into flip_formula below, shown via an
+    # ⓘ popover on this box instead (same _info_popover_trigger affordance
+    # used elsewhere on the tab).
     "portfolio.switch.flip_body": (
-        "Holding today's estimated ≈{spread}%/yr return edge steady each year, the switch "
-        "would break even at N≈{n} years (N* = ln(V÷P) ÷ ln(1+spread))."
+        "Holding today's estimated ≈{spread}%/yr return edge steady, the switch earns back "
+        "its toll after about {n} years — sell earlier and the toll wins; hold longer and "
+        "you're ahead."
     ),
     "portfolio.switch.flip_never": (
         "With today's estimated return edge at or below zero, a longer holding period alone "
         "never makes this switch break even - the edge itself would need to turn positive first."
     ),
+    "portfolio.switch.flip_formula": (
+        "N* = ln(V ÷ P) ÷ ln(1 + spread). V is the sale value before tax/brokerage, P is what's "
+        "left after the toll, and spread is today's estimated annual return edge (the "
+        "candidate's implied return minus the held ticker's implied return). Solving for N* "
+        "gives the number of years at which the annualised toll would exactly equal that edge."
+    ),
+    # Mega-batch Part 32.2: "the race" chart, directly under the ⏳ box -
+    # $10,000 kept vs $10,000 switched, both lines built from the SAME
+    # implied returns and toll_pct_of_value already on the page (see
+    # _switch_race_svg_html, app.py). The crossing marker is placed at
+    # the SAME N the ⏳ box states (switch_analyzer_engine.break_even_
+    # years, taken verbatim - never re-derived from the drawn curves).
+    "portfolio.switch.race_label": "The race",
+    "portfolio.switch.race_subtitle": "\\$10,000 kept vs \\$10,000 switched:",
+    "portfolio.switch.race_kept_label": "kept in {ticker}",
+    "portfolio.switch.race_switched_label": "switched → {ticker}",
+    "portfolio.switch.race_starts_lower_note": "starts lower — the toll is paid up front",
+    "portfolio.switch.race_breakeven_label": "break-even ≈ {n}y",
+    "portfolio.switch.race_xaxis_label": "years after the switch",
+    "portfolio.switch.race_yaxis_label": "value",
+    "portfolio.switch.race_caption": (
+        "Both lines compound the same two implied returns already shown above; the switched "
+        "line starts one toll lower. The crossing is the break-even the hourglass names. Not "
+        "a prediction — a projection of your own fair-value inputs."
+    ),
+    "portfolio.switch.race_caption_never": (
+        "Both lines compound the same two implied returns already shown above; the switched "
+        "line starts one toll lower. Within this {years}-year window the two lines never "
+        "cross - the switch hasn't earned back its toll yet. Not a prediction — a projection "
+        "of your own fair-value inputs."
+    ),
+    "portfolio.switch.race_desc_kept": "Kept in {ticker}: starts at \\$10,000.00, ends at \\${end}.",
+    "portfolio.switch.race_desc_switched": "Switched to {ticker}: starts at \\${start}, ends at \\${end}.",
+    "portfolio.switch.race_desc_crossing": "The two lines cross at about {n} years.",
+    "portfolio.switch.race_desc_no_crossing": "The two lines do not cross within this {years}-year window.",
     "portfolio.switch.flags_title": "Things worth checking before reading the verdict",
     "portfolio.switch.flag_concentration": (
         "Buying the full position would make {ticker} ≈{pct}% of the portfolio's value - "
@@ -2128,6 +2187,26 @@ EN = {
     "portfolio.switch.chart_crossover_flip_label": "flips at ≈{price}",
     "portfolio.switch.chart_crossover_today_label": "today's price",
     "portfolio.switch.chart_crossover_legend": "Net %/yr if {ticker} traded here",
+    # Mega-batch Part 32.3: decision-zone tints + cushion label on this
+    # same figure (see _switch_crossover_fig, app.py) - the existing
+    # curve/marker/flip-line computation is untouched, these are purely
+    # added shapes/annotations on top of it.
+    "portfolio.switch.chart_crossover_zone_keep": "KEEPING {ticker} WINS",
+    "portfolio.switch.chart_crossover_zone_switch": "THE SWITCH CLEARS",
+    "portfolio.switch.chart_crossover_cushion_above": "${diff} of cushion (−{pct}%)",
+    "portfolio.switch.chart_crossover_cushion_below": "${diff} below the flip (+{pct}% to clear)",
+    "portfolio.switch.chart_crossover_caption": (
+        "If {ticker} fell below ≈${flip} (about {pct}% under today), its own upside to your "
+        "fair value would be big enough that switching away no longer pays. Everything right "
+        "of the white line, the switch clears its toll."
+    ),
+    "portfolio.switch.chart_crossover_formula": (
+        "The flip price solves expected_rerating_return(P, fair value, years) = the "
+        "candidate's implied return minus today's annualised toll: P = fair value ÷ "
+        "(1 + target return) ^ years. Left of the white line, {ticker}'s own upside to your "
+        "fair value beats what the switch would net after its toll; right of it, the switch "
+        "wins."
+    ),
     "portfolio.switch.chart_trim_title": "Blended return as you trim",
     "portfolio.switch.chart_trim_xaxis": "Fraction sold, %",
     "portfolio.switch.chart_trim_yaxis": "Blended implied return, %/yr",
@@ -3878,6 +3957,19 @@ ES = {
     "portfolio.switch.bridge_returns_source_line": (
         "{ticker}: precio {price} → valor razonable {iv} = {multiple}× en {years} años → {pct}%/año"
     ),
+    "portfolio.switch.runway_edge_label": "El margen",
+    "portfolio.switch.runway_gap_text": "{pct}%/año de brecha de rendimiento",
+    "portfolio.switch.runway_net_text": "= {pct}%/año neto, tras el peaje",
+    "portfolio.switch.runway_key_caption": (
+        "recorrido = precio de hoy → tu valor razonable, comprimido en el periodo de tenencia "
+        "· amarillo = el peaje, anualizado"
+    ),
+    "portfolio.switch.runway_caption": (
+        "La barra rellena es el precio de hoy; la longitud completa de la pista es tu valor "
+        "razonable. La fila inferior es el veredicto completo en una línea: brecha de "
+        "rendimiento − peaje = margen neto. Los valores se recalculan a partir de los mismos "
+        "resultados del motor que ya aparecen en la página."
+    ),
     "portfolio.switch.twelve_month_chip": (
         "Vender ahora renuncia al descuento de 12 meses: el impuesto sería A\\${tax_now} ahora "
         "frente a A\\${tax_later} dentro de {days} día(s) más (suponiendo el mismo valor de venta) "
@@ -3913,13 +4005,45 @@ ES = {
     "portfolio.switch.flip_title": "¿Cuándo cambiaría esto?",
     "portfolio.switch.flip_body": (
         "Manteniendo constante la ventaja de rendimiento estimada de hoy de ≈{spread}%/año, "
-        "el cambio alcanzaría el punto de equilibrio en N≈{n} años (N* = ln(V÷P) ÷ ln(1+ventaja))."
+        "el cambio recupera su peaje en unos {n} años — vender antes y gana el peaje; "
+        "mantener más tiempo y vas por delante."
     ),
     "portfolio.switch.flip_never": (
         "Con la ventaja de rendimiento estimada de hoy en cero o por debajo, un periodo de "
         "tenencia más largo por sí solo nunca hace que este cambio alcance el punto de "
         "equilibrio - la ventaja misma tendría que volverse positiva primero."
     ),
+    "portfolio.switch.flip_formula": (
+        "N* = ln(V ÷ P) ÷ ln(1 + ventaja). V es el valor de venta antes de impuestos/corretaje, "
+        "P es lo que queda tras el peaje, y la ventaja es el margen de rendimiento anual "
+        "estimado de hoy (el rendimiento implícito del candidato menos el del ticker que "
+        "mantienes). Al resolver N* se obtiene el número de años en el que el peaje anualizado "
+        "igualaría exactamente esa ventaja."
+    ),
+    "portfolio.switch.race_label": "La carrera",
+    "portfolio.switch.race_subtitle": "\\$10.000 mantenidos vs \\$10.000 cambiados:",
+    "portfolio.switch.race_kept_label": "mantenido en {ticker}",
+    "portfolio.switch.race_switched_label": "cambiado → {ticker}",
+    "portfolio.switch.race_starts_lower_note": "empieza más abajo — el peaje se paga por adelantado",
+    "portfolio.switch.race_breakeven_label": "punto de equilibrio ≈ {n}y",
+    "portfolio.switch.race_xaxis_label": "años después del cambio",
+    "portfolio.switch.race_yaxis_label": "valor",
+    "portfolio.switch.race_caption": (
+        "Ambas líneas componen los mismos dos rendimientos implícitos ya mostrados arriba; la "
+        "línea del cambio empieza un peaje más abajo. El cruce es el punto de equilibrio que "
+        "nombra el recuadro del reloj de arena. No es una predicción — es una proyección de tus "
+        "propios datos de valor razonable."
+    ),
+    "portfolio.switch.race_caption_never": (
+        "Ambas líneas componen los mismos dos rendimientos implícitos ya mostrados arriba; la "
+        "línea del cambio empieza un peaje más abajo. Dentro de esta ventana de {years} años "
+        "las dos líneas no se cruzan - el cambio todavía no ha recuperado su peaje. No es una "
+        "predicción — es una proyección de tus propios datos de valor razonable."
+    ),
+    "portfolio.switch.race_desc_kept": "Mantenido en {ticker}: empieza en \\$10.000,00, termina en \\${end}.",
+    "portfolio.switch.race_desc_switched": "Cambiado a {ticker}: empieza en \\${start}, termina en \\${end}.",
+    "portfolio.switch.race_desc_crossing": "Las dos líneas se cruzan en torno a los {n} años.",
+    "portfolio.switch.race_desc_no_crossing": "Las dos líneas no se cruzan dentro de esta ventana de {years} años.",
     "portfolio.switch.flags_title": "Cosas que vale la pena revisar antes de leer el veredicto",
     "portfolio.switch.flag_concentration": (
         "Comprar toda la posición haría que {ticker} fuera ≈{pct}% del valor de la cartera - "
@@ -3967,6 +4091,22 @@ ES = {
     "portfolio.switch.chart_crossover_flip_label": "cambia en ≈{price}",
     "portfolio.switch.chart_crossover_today_label": "precio de hoy",
     "portfolio.switch.chart_crossover_legend": "Neto %/año si {ticker} cotizara aquí",
+    "portfolio.switch.chart_crossover_zone_keep": "MANTENER {ticker} GANA",
+    "portfolio.switch.chart_crossover_zone_switch": "EL CAMBIO COMPENSA",
+    "portfolio.switch.chart_crossover_cushion_above": "${diff} de margen (−{pct}%)",
+    "portfolio.switch.chart_crossover_cushion_below": "${diff} por debajo del cruce (+{pct}% para compensar)",
+    "portfolio.switch.chart_crossover_caption": (
+        "Si {ticker} cayera por debajo de ≈${flip} (unos {pct}% por debajo de hoy), su propio "
+        "recorrido hasta tu valor razonable sería lo bastante grande como para que cambiar ya "
+        "no compense. A la derecha de la línea blanca, el cambio ya cubre su peaje."
+    ),
+    "portfolio.switch.chart_crossover_formula": (
+        "El precio de cruce resuelve expected_rerating_return(P, valor razonable, años) = el "
+        "rendimiento implícito del candidato menos el peaje anualizado de hoy: P = valor "
+        "razonable ÷ (1 + rendimiento objetivo) ^ años. A la izquierda de la línea blanca, el "
+        "propio recorrido de {ticker} hacia tu valor razonable supera lo que el cambio "
+        "obtendría tras su peaje; a la derecha, gana el cambio."
+    ),
     "portfolio.switch.chart_trim_title": "Rendimiento combinado al recortar",
     "portfolio.switch.chart_trim_xaxis": "Fracción vendida, %",
     "portfolio.switch.chart_trim_yaxis": "Rendimiento implícito combinado, %/año",
