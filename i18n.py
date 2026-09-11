@@ -2182,6 +2182,17 @@ EN = {
     "portfolio.switch.chart_bridge_row_incumbent": "{ticker} (what you hold)",
     "portfolio.switch.chart_bridge_row_toll": "The toll",
     "portfolio.switch.chart_bridge_row_net": "NET",
+    # Part 33: negative/mixed-sign waterfall fix (owner picked Option A
+    # of the mock) - the all-negative footnote (only shown when every
+    # running total in the walk is <= 0) and the "Text description of
+    # this chart" override stating the walk's running totals rather
+    # than raw bar heights (see _switch_toll_waterfall_fig's call site).
+    "portfolio.switch.chart_bridge_all_negative_footnote": (
+        "everything below the 0% line works against the switch — this walk never gets above it"
+    ),
+    "portfolio.switch.chart_bridge_text_desc": (
+        "Starts at {t1}%. After holding, {t2}%. After the toll, {t3}%. NET {net}%/yr."
+    ),
     "portfolio.switch.chart_crossover_xaxis": "{ticker}'s share price",
     "portfolio.switch.chart_crossover_yaxis": "Net return, per year (after the toll)",
     "portfolio.switch.chart_crossover_flip_label": "flips at ≈{price}",
@@ -4086,6 +4097,13 @@ ES = {
     "portfolio.switch.chart_bridge_row_incumbent": "{ticker} (lo que tienes)",
     "portfolio.switch.chart_bridge_row_toll": "El peaje",
     "portfolio.switch.chart_bridge_row_net": "NETO",
+    "portfolio.switch.chart_bridge_all_negative_footnote": (
+        "todo lo que está por debajo de la línea del 0% juega en contra del cambio — "
+        "este recorrido nunca sube por encima de ella"
+    ),
+    "portfolio.switch.chart_bridge_text_desc": (
+        "Comienza en {t1}%. Tras mantener, {t2}%. Tras el peaje, {t3}%. NETO {net}%/año."
+    ),
     "portfolio.switch.chart_crossover_xaxis": "Precio de la acción de {ticker}",
     "portfolio.switch.chart_crossover_yaxis": "Rendimiento neto, por año (tras el peaje)",
     "portfolio.switch.chart_crossover_flip_label": "cambia en ≈{price}",

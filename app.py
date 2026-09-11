@@ -15376,17 +15376,47 @@ def _switch_toll_waterfall_fig(ret_b, ret_a, toll_z, net, to_ticker, from_ticker
     visual grammar as the Cash-vs-Offset waterfall (tools_dr_waterfall_
     chart just above, go.Waterfall with absolute/relative/relative/total
     measures) so the two tools rhyme, per the owner's own words. The
-    candidate's implied return is the starting (absolute) bar (green),
-    a step down for the incumbent's implied return (red), a step down
-    for the toll (amber), landing on NET - a forced "total" bar, bold/
-    coloured teal when it clears its own hurdle (>=0) or red when it
-    falls short. marker.color is passed as an explicit per-bar list
-    (Plotly Waterfall supports this) rather than relying on the
-    increasing/decreasing/totals convenience dicts, since those only
-    give two colours (one for "went up", one for "went down") and this
-    needs four independent, semantically-fixed colours. Recomputes on
-    every input/horizon change, same as the tiles/bar chart it
-    replaces."""
+    candidate's implied return is the starting (absolute) bar, a step
+    down for the incumbent's implied return, a step down for the toll
+    (amber), landing on NET - a forced "total" bar, bold/coloured teal
+    when it clears its own hurdle (>=0) or red when it falls short.
+    marker.color is passed as an explicit per-bar list (Plotly Waterfall
+    supports this) rather than relying on the increasing/decreasing/
+    totals convenience dicts, since those only give two colours (one
+    for "went up", one for "went down") and this needs four independent,
+    semantically-fixed colours. Recomputes on every input/horizon
+    change, same as the tiles/bar chart it replaces.
+
+    Part 33 (owner-reported, 11 Sep): the candidate bar was hard-coded
+    green regardless of its own sign, misleading when the candidate's
+    implied return is negative (e.g. CSL.AX->AUB.AX). Fix (Option A of
+    the owner-picked mock): bars 1/2 are now coloured by sign rather
+    than by role - bar 1 (candidate) by its own sign, bar 2 (incumbent)
+    by the sign of its EFFECT on the walk (i.e. of -ret_a, since it's a
+    subtraction: red when it drags the walk down, green on the rare
+    case it lifts it). The toll bar stays amber always (it is always a
+    subtraction) and NET keeps its existing >=0 threshold (unchanged -
+    matches switch_analyzer_engine.verdict()'s own pass/fail boundary
+    used elsewhere on this page). Bars 2/3/4's base/height maths were
+    ALREADY a correct floating waterfall (each already spans from the
+    running total before it to the running total after it) - no
+    geometry change was needed there, only bar 1's colour and the
+    additive elements below.
+
+    "_all_clean" below is the exact shape the ORIGINAL hard-coded
+    colours assumed (candidate non-negative, incumbent's own return
+    positive, NET passes) - the new sign-based colours evaluate
+    IDENTICALLY to the old hard-coded ones in that shape, so that
+    branch reproduces today's render byte-for-byte (same categorical
+    x-axis, no connectors, no zero-line emphasis, same margins) per the
+    instruction's "positive case must render exactly as it does today."
+    Any mixed-sign/negative shape takes the second branch: a numeric
+    x-axis (so the dashed connectors can land precisely in the small
+    gap between adjacent bars, not bar-centre to bar-centre, matching
+    the mock's own geometry) with the same 4 tick labels, dashed
+    connector lines at each running total, and an emphasised zero line
+    - Option A of the mock. The all-negative footnote (every running
+    total <= 0) is a stricter subset of that same branch."""
     _labels = [
         i18n.t("portfolio.switch.chart_bridge_row_candidate", lang, ticker=to_ticker),
         i18n.t("portfolio.switch.chart_bridge_row_incumbent", lang, ticker=from_ticker),
@@ -15408,22 +15438,66 @@ def _switch_toll_waterfall_fig(ret_b, ret_a, toll_z, net, to_ticker, from_ticker
     _b4_h = net * 100
     _b3_base, _b3_h = _b4_h, toll_z * 100
     _net_color = "#2dd4bf" if net >= 0 else "#fb7185"
+    _b1_color = "#34d399" if ret_b >= 0 else "#fb7185"
+    _b2_color = "#fb7185" if ret_a > 0 else "#34d399"
     _bases = [0.0, _b2_base, _b3_base, 0.0]
     _heights = [_b1_top, _b2_h, _b3_h, _b4_h]
-    _colors = ["#34d399", "#fb7185", "#fbbf24", _net_color]
+    _colors = [_b1_color, _b2_color, "#fbbf24", _net_color]
     _texts = [f"{ret_b * 100:+.1f}%", f"{-ret_a * 100:+.1f}%", f"{-toll_z * 100:+.1f}%", f"{net * 100:+.1f}%"]
+    _all_clean = (ret_b >= 0) and (ret_a > 0) and (net >= 0)
+
+    if _all_clean:
+        fig = go.Figure(go.Bar(
+            x=_labels, y=_heights, base=_bases, marker_color=_colors,
+            text=_texts, textposition="outside", cliponaxis=False,
+        ))
+        fig.update_layout(
+            title=i18n.t("portfolio.switch.chart_bridge_title", lang),
+            showlegend=False, height=280, margin=dict(l=10, r=10, t=40, b=30),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2e0"),
+            yaxis=dict(gridcolor="#1f3352", title=i18n.t("portfolio.switch.chart_bridge_xaxis", lang), ticksuffix="%",
+                       zeroline=True, zerolinecolor="rgba(138,160,184,0.35)"),
+            xaxis=dict(gridcolor="#1f3352"),
+        )
+        return fig
+
+    # Mixed-sign / negative branch (Option A). Running totals after each
+    # step - t3 is always == net*100, kept as its own name for clarity
+    # at the connector/footnote call sites below.
+    _t1, _t2, _t3 = _b1_top, _b2_base, _b3_base
+    _all_negative = (_t1 <= 0) and (_t2 <= 0) and (_t3 <= 0)
     fig = go.Figure(go.Bar(
-        x=_labels, y=_heights, base=_bases, marker_color=_colors,
+        x=[0, 1, 2, 3], y=_heights, base=_bases, marker_color=_colors,
         text=_texts, textposition="outside", cliponaxis=False,
     ))
+    # Dashed connectors (#2a3b5c) confined to the small gap between
+    # adjacent bars, at the running-total level, per the mock - the
+    # default bargap (0.2) puts each bar's edges at +/-0.4 from its
+    # integer x-position, so +0.4/-0.4 lands the connector exactly in
+    # that gap without touching either bar.
+    for _level, _k0, _k1 in ((_t1, 0, 1), (_t2, 1, 2), (_t3, 2, 3)):
+        fig.add_shape(
+            type="line", xref="x", yref="y",
+            x0=_k0 + 0.4, x1=_k1 - 0.4, y0=_level, y1=_level,
+            line=dict(color="#2a3b5c", width=1.5, dash="dash"),
+        )
     fig.update_layout(
         title=i18n.t("portfolio.switch.chart_bridge_title", lang),
         showlegend=False, height=280, margin=dict(l=10, r=10, t=40, b=30),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2e0"),
         yaxis=dict(gridcolor="#1f3352", title=i18n.t("portfolio.switch.chart_bridge_xaxis", lang), ticksuffix="%",
-                   zeroline=True, zerolinecolor="rgba(138,160,184,0.35)"),
-        xaxis=dict(gridcolor="#1f3352"),
+                   zeroline=True, zerolinecolor="#5b7290", zerolinewidth=1.5),
+        xaxis=dict(gridcolor="#1f3352", tickvals=[0, 1, 2, 3], ticktext=_labels),
     )
+    # The all-negative footnote (mock's one-line grey note) is rendered
+    # by the CALLER as a plain st.caption below the chart, not as an
+    # in-figure annotation - a fixed in-chart position collided with
+    # Plotly's own auto-rotated x-axis tick labels at mobile widths
+    # (the same auto-rotation the passing case already has today, out
+    # of this fix's scope to change), where a caption in normal
+    # document flow never can. See the call site for the "all running
+    # totals <= 0" gate (_t1/_t2/_t3 above), recomputed there from the
+    # same ret_b/ret_a/toll_z/net inputs.
     return fig
 
 
@@ -16322,9 +16396,25 @@ def _render_portfolio_switch_tab(email, _active_portfolio, _holdings, _analyses)
             # candidate with no fair value at all (e.g. an ETF) still
             # shows a full card rather than a chart that can't compute.
             if _ret_a is not None and _ret_b is not None and _z is not None and _net is not None:
+                # Part 33: the chart's own "Text description" expander now
+                # states the walk's running totals (not raw bar heights -
+                # see _switch_toll_waterfall_fig's docstring) via
+                # sdd_plotly_chart's text_description override; the
+                # all-negative footnote is rendered here as a plain
+                # st.caption (not inside the figure - see that function's
+                # own comment on why) using the same running totals.
+                _wf_t1 = _ret_b * 100
+                _wf_t2 = _wf_t1 - _ret_a * 100
+                _wf_t3 = _wf_t2 - _z * 100
                 sdd_plotly_chart(
-                    _switch_toll_waterfall_fig(_ret_b, _ret_a, _z, _net, _to_ticker, _from_ticker, _lang)
+                    _switch_toll_waterfall_fig(_ret_b, _ret_a, _z, _net, _to_ticker, _from_ticker, _lang),
+                    text_description=_sw(
+                        "chart_bridge_text_desc",
+                        t1=f"{_wf_t1:+.1f}", t2=f"{_wf_t2:+.1f}", t3=f"{_wf_t3:+.1f}", net=f"{_net * 100:+.1f}",
+                    ),
                 )
+                if _wf_t1 <= 0 and _wf_t2 <= 0 and _wf_t3 <= 0:
+                    st.caption(_sw("chart_bridge_all_negative_footnote"))
                 st.caption(_sw("bridge_tile_net_hurdle_passes" if _net >= 0 else "bridge_tile_net_hurdle_fails"))
             else:
                 st.caption(_sw("bridge_tile_no_iv_note", ticker=(_to_ticker if _ret_b is None else _from_ticker)))
