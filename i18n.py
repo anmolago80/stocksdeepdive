@@ -339,18 +339,19 @@ EN = {
     # rather than deleted, same low-risk convention as _dd_contrib_chart
     # itself being left in place unused - see that function's own Part
     # 43 comment.
-    "dd.chart.driving_score": "What's driving the {score_word} · relative influence",
+    # Part 44.1 (13 Sep 2026): the "· relative influence" suffix dated
+    # from the Part 43 Option 2 (no-numbers) chart; the Part 43 amendment
+    # brought the numeric labels back, so the suffix no longer describes
+    # what's shown. Dropped here to the plain form; keys unchanged.
+    "dd.chart.driving_score": "What's driving the {score_word}",
     "dd.chart.points_score": "Points toward {score_word}",
-    "dd.chart.driving_quality": "What's driving Quality · relative influence",
+    "dd.chart.driving_quality": "What's driving Quality",
     "dd.chart.points_quality": "Points toward Quality",
-    "dd.chart.driving_psychology": "What's driving Psychology · relative influence",
+    "dd.chart.driving_psychology": "What's driving Psychology",
     "dd.chart.points_psychology": "Points toward Psychology",
-    "dd.chart.driving_discovery": "What's driving Discovery · relative influence",
+    "dd.chart.driving_discovery": "What's driving Discovery",
     "dd.chart.points_discovery": "Points toward Discovery",
-    # Moat/MOS follow-up (13 Sep 2026): Moat's header now matches the
-    # same "· relative influence" wording as the four sections above,
-    # since Moat's own chart moved to the same Option 2 style.
-    "dd.chart.driving_moat": "What's driving Moat · relative influence",
+    "dd.chart.driving_moat": "What's driving Moat",
     "dd.chart.points_moat": "Points toward Moat",
     "dd.chart.driving_trade_setup": "What's driving the Trade Setup Score",
     "dd.chart.points_trade_setup": "Points toward Setup Score",
@@ -952,7 +953,7 @@ EN = {
     # own correction. Only the Budget Planner variant had a fully-drawn
     # mock example; Utilities/Cash-vs-Offset copy below is new, written to
     # match that example's voice - flagged for the owner's own review.
-    "home.banner.spotlight_kicker": "MONEY TOOLS &middot; {n} OF 3",
+    "home.banner.spotlight_kicker": "MONEY TOOLS &middot; {n} OF 4",
     "home.banner.utilities_title": "⚡ What's your power bill really costing you?",
     "home.banner.utilities_pitch": (
         "Scan the bill &mdash; we check every generally-available plan for "
@@ -967,6 +968,13 @@ EN = {
     ),
     "home.banner.debt_recycling_cta": "Price the decision &rarr;",
     "home.banner.debt_recycling_cap": "free with an account",
+    "home.banner.super_title": "\U0001F3E6 Is that extra salary sacrifice actually worth it?",
+    "home.banner.super_pitch": (
+        "Project your super balance with and without extra contributions, "
+        "the tax wedge, and the concessional cap &mdash; before you change a thing."
+    ),
+    "home.banner.super_cta": "Project my super &rarr;",
+    "home.banner.super_cap": "free with an account",
 
     # Home bands rework: the NEW 💼 My Portfolio services band, its own
     # rotating spotlight over 4 of the 10 tabs inside My Portfolio -
@@ -1233,6 +1241,56 @@ EN = {
     "tools.debt_recycling.save_button": "Save this scenario",
     "tools.debt_recycling.saved_note": "Saved to your account — come back any time to pick up where you left off.",
     "tools.debt_recycling.save_confirm": "Scenario saved.",
+
+    # Part 42 (13 Sep 2026): 🏦 Super & Retirement projector, tool #4
+    # (Insurance is currently hidden from the registry — see TOOLS_
+    # REGISTRY's own comment in app.py). AU-only v1: super_engine.py's
+    # own module docstring has every rate/cap/threshold source note.
+    "tools.super.title": "\U0001F3E6 Super & Retirement projector",
+    "tools.super.subtitle": (
+        "Project your super balance to retirement, with and without extra "
+        "salary sacrifice — the tax wedge, the concessional cap, and the "
+        "gap between the two paths. Described calculations only — never a "
+        "recommendation."
+    ),
+    "tools.super.country_au": "\U0001F1E6\U0001F1FA Australia",
+    "tools.super.country_us": "\U0001F1FA\U0001F1F8 United States",
+    "tools.super.us_placeholder": "Australian super only for now — a 401(k) version is planned.",
+    "tools.super.inputs_kicker": "Your numbers",
+    "tools.super.age_label": "Your age",
+    "tools.super.retirement_age_label": "Retirement age",
+    "tools.super.preservation_note": (
+        "Your preservation age — the earliest you can generally access super — "
+        "is 60. This projector doesn't stop you entering an earlier age, but "
+        "you won't actually be able to draw on the balance until then."
+    ),
+    "tools.super.balance_label": "Current super balance",
+    "tools.super.salary_label": "Salary (before tax)",
+    "tools.super.sacrifice_label": "Extra salary sacrifice ($/mo)",
+    "tools.super.return_label": "Return assumption (%/yr)",
+    "tools.super.marginal_rate_label": "Your marginal tax rate (%)",
+    "tools.super.chart_caption": "Balance at age {age} — from {balance_baseline} without extra sacrifice to {balance_with_sacrifice} with it",
+    "tools.super.delta_caption": "The extra {sacrifice}/mo is worth ≈{delta} at retirement",
+    "tools.super.label_baseline": "SG only",
+    "tools.super.label_with_sacrifice": "With extra sacrifice",
+    "tools.super.tax_wedge_caption": (
+        "The tax wedge, stated: that {sacrifice}/mo costs you ≈{take_home} in "
+        "take-home ({marginal:.0f}% marginal) but lands as {super_landing} in "
+        "super (15% contributions tax) — a ≈{head_start:.0f}% head start "
+        "before any returns."
+    ),
+    "tools.super.cap_check_ok": "⚠ Concessional cap check: you'd use {used} of the {cap} cap ✓",
+    "tools.super.cap_check_warn": "⚠ Concessional cap check: you'd use {used} — over the {cap} cap by {excess}",
+    "tools.super.div293_note": (
+        "Your combined salary + concessional contributions (≈{combined}) is "
+        "above the {threshold} Division 293 threshold — an extra 15% tax may "
+        "apply on top of the standard rate; confirm with your accountant."
+    ),
+    "tools.super.nominal_note": "All figures are in today's (nominal) dollars — not adjusted for inflation or future wage growth.",
+    "tools.super.not_advice": "Calculator outputs from stated inputs — not financial advice; super rules change.",
+    "tools.super.save_button": "Save this projection",
+    "tools.super.saved_note": "Saved to your account — come back any time to pick up where you left off.",
+    "tools.super.save_confirm": "Projection saved.",
 
     # Mega-batch Part 19: ⚡ Utilities bill check (Tools tool #2).
     "tools.utilities.title": "⚡ Utilities bill check",
@@ -1760,8 +1818,55 @@ EN = {
         "visitors, can see it."
     ),
     "portfolio.scoring_spinner": "Scoring your holdings...",
+
+    # Part 44 (13 Sep 2026, mock: portfolio_landing_options_mock.html):
+    # pulse header band (Option A), switcher cards (Option B), loading
+    # skeleton + first-visit state (Option C).
+    "portfolio.pulse.scope_all": "All portfolios",
+    "portfolio.pulse.holdings_count": "{n} holding(s)",
+    "portfolio.pulse.tile_value": "Total value",
+    "portfolio.pulse.tile_today": "Today",
+    "portfolio.pulse.tile_return": "Total return",
+    "portfolio.pulse.tile_income": "Income this FY",
+    "portfolio.pulse.tile_health": "Portfolio health",
+    "portfolio.pulse.since_buy": "since buy",
+    "portfolio.pulse.weighted_avg": "weighted avg · 0-100",
+    "portfolio.pulse.div_franking": "div. received + franking",
+    "portfolio.pulse.footnote_price": "{n} holding(s) without a live price excluded.",
+    "portfolio.pulse.footnote_buy": "{n} holding(s) without a buy price excluded.",
+    "portfolio.pulse.caption": (
+        "Every figure above is one this page already computes from your holdings - "
+        "described calculations, not advice. Nothing new is fetched for this band."
+    ),
+    "portfolio.switcher.all": "\U0001F4E6 All portfolios",
+    "portfolio.switcher.new_manage": "＋ New / manage",
+    "portfolio.switcher.count_only": "{n} holding(s)",
+    "portfolio.switcher.value_and_count": "{value} · {n} holding(s)",
+    "portfolio.firstvisit.headline": "Track what you own the way this site scores everything else",
+    "portfolio.firstvisit.step1_h": "Add your first holding",
+    "portfolio.firstvisit.step1_p": (
+        "Ticker, shares, buy price - or import your broker's CSV in one click."
+    ),
+    "portfolio.firstvisit.step2_h": "Get every score, live",
+    "portfolio.firstvisit.step2_p": (
+        "Health, income with franking, progress since purchase - computed nightly "
+        "for what you actually hold."
+    ),
+    "portfolio.firstvisit.step3_h": "Stress-test it",
+    "portfolio.firstvisit.step3_p": (
+        "Crisis replays, Monte Carlo, the rebalance sandbox and The Toll - on your "
+        "real portfolio, without touching it."
+    ),
+    "portfolio.firstvisit.cta_add": "＋ Add first holding",
+    "portfolio.firstvisit.cta_import": "Import broker CSV",
+    "portfolio.firstvisit.caption": (
+        "Described calculations from what you enter, computed the same way for "
+        "everyone - never advice on what to buy or sell."
+    ),
+
     "portfolio.tab_holdings": "\U0001F4BC Holdings",
     "portfolio.tab_income": "\U0001F4B0 Income",
+    "portfolio.tab_tax": "\U0001F9FE Tax",
     "portfolio.tab_overview": "\U0001F4CA Overview & P/L",
     "portfolio.tab_health": "\U0001FA7A Health & News",
     "portfolio.tab_progress": "\U0001F4C8 Progress",
@@ -1769,6 +1874,80 @@ EN = {
     "portfolio.tab_stress": "\U0001F9EA Stress Test",
     "portfolio.tab_ask": "\U0001F4AC Ask",
     "portfolio.tab_alerts": "\U0001F514 My alerts",
+
+    # Part 40 (13 Sep 2026, mock: section 2 of services_2345_mock.html) -
+    # Tax & CGT ledger.
+    "portfolio.tax.caption": (
+        "Per-holding CGT figures from your own inputs, at the marginal tax rate "
+        "you set below. Described calculations from your inputs - not tax advice; "
+        "confirm with your accountant."
+    ),
+    "portfolio.tax.rate_label": "Your marginal tax rate (%)",
+    "portfolio.tax.rate_save": "Save",
+    "portfolio.tax.rate_saved_toast": "Saved.",
+    "portfolio.tax.rate_combined_note": (
+        "This combined view uses a temporary rate for this session only - switch "
+        "to a single portfolio above to save your tax rate."
+    ),
+    "portfolio.tax.no_rate": "Enter your marginal tax rate above to see estimated tax figures.",
+    "portfolio.tax.tile_realised": "Realised gains, this FY",
+    "portfolio.tax.tile_realised_empty": "No sales recorded this FY",
+    "portfolio.tax.tile_unrealised": "Unrealised gains (total)",
+    "portfolio.tax.tile_est_cgt": "Est. CGT if sold everything today",
+    "portfolio.tax.tile_est_cgt_sub": "at your {rate:.0f}% marginal rate, losses netted against gains",
+    "portfolio.tax.tile_est_cgt_no_rate": "set your rate above",
+    "portfolio.tax.col_holding": "Holding",
+    "portfolio.tax.col_held_since": "Held since",
+    "portfolio.tax.col_cost_base": "Cost base",
+    "portfolio.tax.col_value": "Value",
+    "portfolio.tax.col_gain": "Unrealised gain",
+    "portfolio.tax.col_discount": "Discount status",
+    "portfolio.tax.col_est_tax": "Est. tax if sold",
+    "portfolio.tax.status_au_eligible": "✓ eligible",
+    "portfolio.tax.status_au_pending": "⏳ in {n} days ({date})",
+    "portfolio.tax.status_us_eligible": "long-term",
+    "portfolio.tax.status_us_pending": "long-term in {n} days",
+    "portfolio.tax.est_tax_both": "{now} now → {later} if you wait",
+    "portfolio.tax.est_tax_offset": "offsets {amount}",
+    "portfolio.tax.csv_button": "⬇ Year-end summary for your accountant (CSV)",
+    "portfolio.tax.fy_rule": (
+        "Realised gains follow each holding's own listing convention: AU "
+        "holdings (AUD) use the AU financial year (1 Jul-30 Jun); every other "
+        "holding uses the US calendar year (1 Jan-31 Dec)."
+    ),
+    "portfolio.tax.us_note": (
+        "The 50% CGT discount modelled above is the AU 12-month rule. US holdings "
+        "show a long-term/short-term status for your own reference, but no discount "
+        "is applied here - confirm the US long-term capital-gains rate that applies "
+        "to you with your accountant."
+    ),
+    "portfolio.tax.empty": "No holdings with a cost base yet.",
+
+    "portfolio.income_fwd.heading": "Next 12 months",
+    "portfolio.income_fwd.empty": "No recent payment history to project forward from yet.",
+    "portfolio.income_fwd.tile_expected": "Expected income",
+    "portfolio.income_fwd.tile_expected_sub": "Grossed up with franking credits: {grossed}",
+    "portfolio.income_fwd.tile_yield": "Forward yield",
+    "portfolio.income_fwd.tile_yield_sub": "Grossed-up forward yield: {grossed}",
+    "portfolio.income_fwd.tile_next": "Next payment",
+    "portfolio.income_fwd.tile_next_sub": "{amount} expected around {month}",
+    "portfolio.income_fwd.chart_caption": (
+        "Estimate only - assumes each holding repeats its last 12 months of payments "
+        "at the same amount and month next year. Not a promise of future income."
+    ),
+    "portfolio.income_fwd.goal_heading": "Income goal",
+    "portfolio.income_fwd.goal_input": "Annual income goal (AUD)",
+    "portfolio.income_fwd.goal_combined_note": (
+        "Switch to a single portfolio to set and save an income goal - this figure "
+        "isn't saved in the combined view."
+    ),
+    "portfolio.income_fwd.goal_progress": (
+        "{pct:.0f}% of your goal at today's grossed-up forward yield ({yield_pct:.1f}%). "
+        "About {gap} more invested at this yield would close the gap."
+    ),
+    "portfolio.income_fwd.goal_no_yield": (
+        "Set a goal once this portfolio has a projectable yield to track progress against it."
+    ),
 
     "portfolio.etfs.empty": "No ETFs in this portfolio.",
     "portfolio.etfs.summary_title": "ETF sleeve summary",
@@ -2694,15 +2873,15 @@ ES = {
         "que lo que el modelo estima que vale el negocio."
     ),
 
-    "dd.chart.driving_score": "Qué impulsa el {score_word} · influencia relativa",
+    "dd.chart.driving_score": "Qué impulsa el {score_word}",
     "dd.chart.points_score": "Puntos hacia el {score_word}",
-    "dd.chart.driving_quality": "Qué impulsa la Calidad · influencia relativa",
+    "dd.chart.driving_quality": "Qué impulsa la Calidad",
     "dd.chart.points_quality": "Puntos hacia Calidad",
-    "dd.chart.driving_psychology": "Qué impulsa la Psicología · influencia relativa",
+    "dd.chart.driving_psychology": "Qué impulsa la Psicología",
     "dd.chart.points_psychology": "Puntos hacia Psicología",
-    "dd.chart.driving_discovery": "Qué impulsa el Descubrimiento · influencia relativa",
+    "dd.chart.driving_discovery": "Qué impulsa el Descubrimiento",
     "dd.chart.points_discovery": "Puntos hacia Descubrimiento",
-    "dd.chart.driving_moat": "Qué impulsa el Foso · influencia relativa",
+    "dd.chart.driving_moat": "Qué impulsa el Foso",
     "dd.chart.points_moat": "Puntos hacia el Foso",
     "dd.chart.driving_trade_setup": "Qué impulsa el puntaje de Trade Setup",
     "dd.chart.points_trade_setup": "Puntos hacia el puntaje de Trade Setup",
@@ -3215,7 +3394,7 @@ ES = {
     "home.banner.tools_cta": "Crear mi plan completo &rarr;",
     "home.banner.tools_cap": "herramienta gratis &middot; toma 2 minutos",
 
-    "home.banner.spotlight_kicker": "HERRAMIENTAS DE DINERO &middot; {n} DE 3",
+    "home.banner.spotlight_kicker": "HERRAMIENTAS DE DINERO &middot; {n} DE 4",
     "home.banner.utilities_title": "⚡ ¿Cuánto te está costando realmente tu factura de luz?",
     "home.banner.utilities_pitch": (
         "Escanea la factura &mdash; comparamos todos los planes disponibles "
@@ -3231,6 +3410,13 @@ ES = {
     ),
     "home.banner.debt_recycling_cta": "Calcular la decisión &rarr;",
     "home.banner.debt_recycling_cap": "gratis con una cuenta",
+    "home.banner.super_title": "\U0001F3E6 ¿De verdad vale la pena ese aporte voluntario extra?",
+    "home.banner.super_pitch": (
+        "Proyecta tu saldo de super con y sin aportes extra, la brecha "
+        "impositiva y el tope concesional &mdash; antes de cambiar nada."
+    ),
+    "home.banner.super_cta": "Proyectar mi super &rarr;",
+    "home.banner.super_cap": "gratis con una cuenta",
 
     "home.portfolio_band.spotlight_kicker": "MI CARTERA &middot; {n} DE 4",
     "home.portfolio_band.badge": "GRATIS CON UNA CUENTA",
@@ -3482,6 +3668,56 @@ ES = {
     "tools.debt_recycling.save_button": "Guardar este escenario",
     "tools.debt_recycling.saved_note": "Guardado en tu cuenta — vuelve cuando quieras para continuar donde lo dejaste.",
     "tools.debt_recycling.save_confirm": "Escenario guardado.",
+
+    # Part 42 (13 Sep 2026): 🏦 Proyector de super y jubilación, herramienta #4
+    # (el Seguro está oculto del registro por ahora — ver el propio
+    # comentario de TOOLS_REGISTRY en app.py). Solo AU en v1.
+    "tools.super.title": "\U0001F3E6 Proyector de super y jubilación",
+    "tools.super.subtitle": (
+        "Proyecta tu saldo de super hasta la jubilación, con y sin aporte "
+        "voluntario extra — la brecha impositiva, el tope concesional, y la "
+        "diferencia entre ambos caminos. Solo cálculos descritos — nunca una "
+        "recomendación."
+    ),
+    "tools.super.country_au": "\U0001F1E6\U0001F1FA Australia",
+    "tools.super.country_us": "\U0001F1FA\U0001F1F8 Estados Unidos",
+    "tools.super.us_placeholder": "Por ahora solo super australiano — una versión 401(k) está planificada.",
+    "tools.super.inputs_kicker": "Tus números",
+    "tools.super.age_label": "Tu edad",
+    "tools.super.retirement_age_label": "Edad de jubilación",
+    "tools.super.preservation_note": (
+        "Tu edad de preservación — la edad mínima a la que generalmente puedes "
+        "acceder a tu super — es 60. Este proyector no te impide ingresar una "
+        "edad menor, pero no podrás retirar el saldo hasta esa edad."
+    ),
+    "tools.super.balance_label": "Saldo actual de super",
+    "tools.super.salary_label": "Salario (antes de impuestos)",
+    "tools.super.sacrifice_label": "Aporte voluntario extra ($/mes)",
+    "tools.super.return_label": "Rendimiento asumido (%/año)",
+    "tools.super.marginal_rate_label": "Tu tasa marginal de impuestos (%)",
+    "tools.super.chart_caption": "Saldo a los {age} años — de {balance_baseline} sin aporte extra a {balance_with_sacrifice} con él",
+    "tools.super.delta_caption": "El aporte extra de {sacrifice}/mes vale ≈{delta} al jubilarte",
+    "tools.super.label_baseline": "Solo SG",
+    "tools.super.label_with_sacrifice": "Con aporte extra",
+    "tools.super.tax_wedge_caption": (
+        "La brecha impositiva, en números: ese {sacrifice}/mes te cuesta "
+        "≈{take_home} en efectivo disponible ({marginal:.0f}% marginal) pero "
+        "llega como {super_landing} a tu super (15% de impuesto a las "
+        "contribuciones) — una ventaja de ≈{head_start:.0f}% antes de "
+        "cualquier retorno."
+    ),
+    "tools.super.cap_check_ok": "⚠ Verificación del tope concesional: usarías {used} del tope de {cap} ✓",
+    "tools.super.cap_check_warn": "⚠ Verificación del tope concesional: usarías {used} — por encima del tope de {cap} por {excess}",
+    "tools.super.div293_note": (
+        "Tu salario combinado con las contribuciones concesionales (≈{combined}) "
+        "supera el umbral de {threshold} de la División 293 — puede aplicar un "
+        "15% de impuesto adicional; confirma con tu contador."
+    ),
+    "tools.super.nominal_note": "Todas las cifras están en dólares de hoy (nominales) — no ajustadas por inflación ni crecimiento salarial futuro.",
+    "tools.super.not_advice": "Resultados de una calculadora a partir de tus datos — no es asesoramiento financiero; las reglas de super cambian.",
+    "tools.super.save_button": "Guardar esta proyección",
+    "tools.super.saved_note": "Guardado en tu cuenta — vuelve cuando quieras para continuar donde lo dejaste.",
+    "tools.super.save_confirm": "Proyección guardada.",
 
     # Mega-batch Part 19: ⚡ Revisión de facturas de servicios (herramienta #2).
     "tools.utilities.title": "⚡ Revisión de facturas de servicios",
@@ -3964,8 +4200,52 @@ ES = {
         "nadie más, incluidos otros visitantes conectados, puede verlo."
     ),
     "portfolio.scoring_spinner": "Puntuando tus posiciones...",
+
+    "portfolio.pulse.scope_all": "Todas las carteras",
+    "portfolio.pulse.holdings_count": "{n} posición(es)",
+    "portfolio.pulse.tile_value": "Valor total",
+    "portfolio.pulse.tile_today": "Hoy",
+    "portfolio.pulse.tile_return": "Retorno total",
+    "portfolio.pulse.tile_income": "Ingresos este año fiscal",
+    "portfolio.pulse.tile_health": "Salud de la cartera",
+    "portfolio.pulse.since_buy": "desde la compra",
+    "portfolio.pulse.weighted_avg": "promedio ponderado · 0-100",
+    "portfolio.pulse.div_franking": "dividendos recibidos + franking",
+    "portfolio.pulse.footnote_price": "{n} posición(es) sin precio en vivo excluida(s).",
+    "portfolio.pulse.footnote_buy": "{n} posición(es) sin precio de compra excluida(s).",
+    "portfolio.pulse.caption": (
+        "Cada cifra de arriba es un cálculo que esta página ya hace a partir de tus "
+        "posiciones - cálculos descritos, no un consejo. Esta franja no consulta nada nuevo."
+    ),
+    "portfolio.switcher.all": "\U0001F4E6 Todas las carteras",
+    "portfolio.switcher.new_manage": "＋ Nueva / gestionar",
+    "portfolio.switcher.count_only": "{n} posición(es)",
+    "portfolio.switcher.value_and_count": "{value} · {n} posición(es)",
+    "portfolio.firstvisit.headline": "Sigue lo que tienes de la misma forma en que este sitio puntúa todo lo demás",
+    "portfolio.firstvisit.step1_h": "Añade tu primera posición",
+    "portfolio.firstvisit.step1_p": (
+        "Ticker, acciones, precio de compra - o importa el CSV de tu bróker con un clic."
+    ),
+    "portfolio.firstvisit.step2_h": "Obtén cada puntuación, en vivo",
+    "portfolio.firstvisit.step2_p": (
+        "Salud, ingresos con franking, progreso desde la compra - calculado cada "
+        "noche para lo que realmente tienes."
+    ),
+    "portfolio.firstvisit.step3_h": "Ponla a prueba de estrés",
+    "portfolio.firstvisit.step3_p": (
+        "Réplicas de crisis, Monte Carlo, la caja de arena de rebalanceo y El Peaje "
+        "- sobre tu cartera real, sin tocarla."
+    ),
+    "portfolio.firstvisit.cta_add": "＋ Añadir primera posición",
+    "portfolio.firstvisit.cta_import": "Importar CSV del bróker",
+    "portfolio.firstvisit.caption": (
+        "Cálculos descritos a partir de lo que ingresas, calculados igual para "
+        "todos - nunca un consejo sobre qué comprar o vender."
+    ),
+
     "portfolio.tab_holdings": "\U0001F4BC Posiciones",
     "portfolio.tab_income": "\U0001F4B0 Ingresos",
+    "portfolio.tab_tax": "\U0001F9FE Impuestos",
     "portfolio.tab_overview": "\U0001F4CA Resumen y P/L",
     "portfolio.tab_health": "\U0001FA7A Salud y noticias",
     "portfolio.tab_progress": "\U0001F4C8 Progreso",
@@ -3973,6 +4253,82 @@ ES = {
     "portfolio.tab_stress": "\U0001F9EA Prueba de estrés",
     "portfolio.tab_ask": "\U0001F4AC Preguntar",
     "portfolio.tab_alerts": "\U0001F514 Mis alertas",
+
+    "portfolio.tax.caption": (
+        "Cifras de CGT (impuesto a las ganancias de capital) por posición, a partir de "
+        "tus propios datos, con la tasa marginal que definas abajo. Cálculos descritos a "
+        "partir de tus datos - no es asesoría fiscal; confírmalo con tu contador."
+    ),
+    "portfolio.tax.rate_label": "Tu tasa marginal de impuestos (%)",
+    "portfolio.tax.rate_save": "Guardar",
+    "portfolio.tax.rate_saved_toast": "Guardado.",
+    "portfolio.tax.rate_combined_note": (
+        "Esta vista combinada usa una tasa temporal solo para esta sesión - cambia a "
+        "una sola cartera arriba para guardar tu tasa de impuestos."
+    ),
+    "portfolio.tax.no_rate": "Ingresa tu tasa marginal de impuestos arriba para ver las cifras estimadas.",
+    "portfolio.tax.tile_realised": "Ganancias realizadas, este año fiscal",
+    "portfolio.tax.tile_realised_empty": "No hay ventas registradas este año fiscal",
+    "portfolio.tax.tile_unrealised": "Ganancias no realizadas (total)",
+    "portfolio.tax.tile_est_cgt": "CGT estimado si vendieras todo hoy",
+    "portfolio.tax.tile_est_cgt_sub": "a tu tasa marginal del {rate:.0f}%, pérdidas compensadas contra ganancias",
+    "portfolio.tax.tile_est_cgt_no_rate": "define tu tasa arriba",
+    "portfolio.tax.col_holding": "Posición",
+    "portfolio.tax.col_held_since": "En cartera desde",
+    "portfolio.tax.col_cost_base": "Base de costo",
+    "portfolio.tax.col_value": "Valor",
+    "portfolio.tax.col_gain": "Ganancia no realizada",
+    "portfolio.tax.col_discount": "Estado del descuento",
+    "portfolio.tax.col_est_tax": "Impuesto estimado si se vende",
+    "portfolio.tax.status_au_eligible": "✓ elegible",
+    "portfolio.tax.status_au_pending": "⏳ en {n} días ({date})",
+    "portfolio.tax.status_us_eligible": "largo plazo",
+    "portfolio.tax.status_us_pending": "largo plazo en {n} días",
+    "portfolio.tax.est_tax_both": "{now} ahora → {later} si esperas",
+    "portfolio.tax.est_tax_offset": "compensa {amount}",
+    "portfolio.tax.csv_button": "⬇ Resumen de fin de año para tu contador (CSV)",
+    "portfolio.tax.fy_rule": (
+        "Las ganancias realizadas siguen la convención de cada posición: las "
+        "posiciones AU (AUD) usan el año fiscal australiano (1 jul-30 jun); el "
+        "resto usa el año calendario de EE.UU. (1 ene-31 dic)."
+    ),
+    "portfolio.tax.us_note": (
+        "El descuento CGT del 50% modelado arriba es la regla australiana de 12 "
+        "meses. Las posiciones de EE.UU. muestran un estado de largo/corto plazo "
+        "solo como referencia, sin aplicar ningún descuento aquí - confirma con tu "
+        "contador la tasa de ganancias de capital a largo plazo de EE.UU. que te "
+        "corresponde."
+    ),
+    "portfolio.tax.empty": "Aún no hay posiciones con una base de costo.",
+
+    "portfolio.income_fwd.heading": "Próximos 12 meses",
+    "portfolio.income_fwd.empty": "Aún no hay suficiente historial de pagos para proyectar.",
+    "portfolio.income_fwd.tile_expected": "Ingreso esperado",
+    "portfolio.income_fwd.tile_expected_sub": "Con créditos de franking incluidos: {grossed}",
+    "portfolio.income_fwd.tile_yield": "Rendimiento proyectado",
+    "portfolio.income_fwd.tile_yield_sub": "Rendimiento proyectado con franking: {grossed}",
+    "portfolio.income_fwd.tile_next": "Próximo pago",
+    "portfolio.income_fwd.tile_next_sub": "{amount} esperado alrededor de {month}",
+    "portfolio.income_fwd.chart_caption": (
+        "Solo una estimación - asume que cada posición repite sus últimos 12 meses "
+        "de pagos por el mismo monto y mes el próximo año. No es una promesa de "
+        "ingresos futuros."
+    ),
+    "portfolio.income_fwd.goal_heading": "Meta de ingresos",
+    "portfolio.income_fwd.goal_input": "Meta de ingresos anual (AUD)",
+    "portfolio.income_fwd.goal_combined_note": (
+        "Cambia a una sola cartera para definir y guardar una meta de ingresos - "
+        "esta cifra no se guarda en la vista combinada."
+    ),
+    "portfolio.income_fwd.goal_progress": (
+        "{pct:.0f}% de tu meta al rendimiento proyectado actual con franking "
+        "({yield_pct:.1f}%). Invertir unos {gap} más a este rendimiento cerraría "
+        "la brecha."
+    ),
+    "portfolio.income_fwd.goal_no_yield": (
+        "Define una meta cuando esta cartera tenga un rendimiento proyectable "
+        "para seguir tu progreso."
+    ),
 
     "portfolio.etfs.empty": "No hay ETFs en esta cartera.",
     "portfolio.etfs.summary_title": "Resumen del bloque de ETFs",

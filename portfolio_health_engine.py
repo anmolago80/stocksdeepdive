@@ -293,9 +293,24 @@ def fetch_snapshot(ticker, discount_rate=None, perpetual_rate=None, growth_rate=
         range52 = (price - low_52wk) / (high_52wk - low_52wk)
     trend_vs_ma200 = (price - ma200) / ma200 if (price is not None and ma200) else None
 
+    # Part 44.2 (13 Sep 2026): the previous close, straight out of the SAME
+    # 2y history already fetched above for the 52wk/MA200 fallbacks - zero
+    # new network calls. Used by the My Portfolio pulse band's "Today"
+    # tile. `info.get("previousClose")` is deliberately NOT used as a
+    # fallback here: it can be a day stale relative to `hist`'s own last
+    # row on some tickers, which would make "Today" disagree with the
+    # price this same snapshot is using - one consistent source only.
+    prev_close = None
+    if hist is not None and not hist.empty and len(hist) >= 2:
+        try:
+            prev_close = float(hist["Close"].iloc[-2])
+        except Exception:
+            prev_close = None
+
     return {
         "ticker": ticker,
         "price": price,
+        "prev_close": prev_close,
         "name": info.get("longName") or info.get("shortName"),
         "quality_score": (lite or {}).get("Quality"),
         "intrinsic_value": (lite or {}).get("Intrinsic Value"),

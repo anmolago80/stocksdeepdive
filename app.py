@@ -73,6 +73,7 @@ import budget_planner_engine
 import debt_recycling_engine
 import bill_check_engine
 import insurance_engine
+import super_engine
 import tools_store
 import i18n
 
@@ -14504,20 +14505,182 @@ def _pf_key(active_portfolio, name):
     return f"{name}_{active_portfolio or 'all'}"
 
 
-def _render_portfolio_switcher(email):
-    """Portfolio selector + create/rename/delete, at the top of the
-    Portfolio page above the four tabs. Returns (active_portfolio,
-    is_combined) - active_portfolio is None exactly when the user has
-    "All portfolios" selected, which every tab below treats as a
-    read-only combined view (see the module's per-tab _is_combined
-    checks)."""
-    _portfolio_names = portfolio_store.list_portfolios(email)
-    _combined_option = "📦 All portfolios"
-    _options = [_combined_option] + _portfolio_names
-    _choice = st.selectbox("Portfolio", _options, key="pf_active_portfolio_select")
-    _active = None if _choice == _combined_option else _choice
+def _pf_switcher_href(name_or_none, lang):
+    """/portfolio?pf=<name>&lang=... deep link for one Part 44.3 switcher
+    card - the SAME mechanic as the Part 37 universe-picker chips (a real
+    <a href>, so a click is a genuine navigation, not a same-script
+    rerun; see _scanner_universe_href's own docstring). `name_or_none` is
+    None for the combined/"All portfolios" card, encoded as "pf=all"."""
+    _v = "all" if name_or_none is None else name_or_none
+    _qs = f"pf={_urlquote(_v)}"
+    if lang == "es":
+        _qs += "&lang=es"
+    return f"/portfolio?{_qs}"
 
-    with st.expander("Manage portfolios"):
+
+def _pf_manage_toggle_href(expanded, lang):
+    """Part 44.3's dashed "+ New/manage" chip - the same TARGET-encoding
+    as the Part 38.1 sector-toggle chip (_render_scanner_universe_picker's
+    own comment explains why): the href always carries the OPPOSITE of
+    this render's already-computed `expanded`, so the very first click
+    works correctly even before session_state holds anything."""
+    _qs = f"pf_manage={'close' if expanded else 'open'}"
+    if lang == "es":
+        _qs += "&lang=es"
+    return f"/portfolio?{_qs}"
+
+
+_PF_LANDING_STYLE = """
+<style>
+.sdd-pf-chips{display:flex;gap:10px;flex-wrap:wrap;margin:2px 0 4px}
+.sdd-pf-chip{background:#121f36;border:1.5px solid #22345a;border-radius:10px;
+  padding:9px 14px;min-width:150px;text-decoration:none;display:block;color:inherit}
+.sdd-pf-chip.on{border-color:#14b8a6;background:#0f2a33}
+.sdd-pf-chip .n{font-weight:700;font-size:13px;color:inherit}
+.sdd-pf-chip.on .n{color:#2dd4bf}
+.sdd-pf-chip .d{color:#8aa0b8;font-size:11px;margin-top:2px;font-variant-numeric:tabular-nums}
+.sdd-pf-chip.new{border-style:dashed;color:#8aa0b8;display:flex;align-items:center;
+  justify-content:center;font-size:12.5px;min-width:110px}
+.sdd-pf-tiles{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.sdd-pf-tile{flex:1;min-width:130px;background:#121f36;border:1px solid #22345a;
+  border-radius:10px;padding:10px 14px}
+.sdd-pf-tile .k{color:#8aa0b8;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em}
+.sdd-pf-tile .v{font-size:21px;font-weight:800;margin-top:2px;font-variant-numeric:tabular-nums}
+.sdd-pf-tile .s{font-size:11px;margin-top:1px}
+.sdd-pf-g{color:#34d399}.sdd-pf-r{color:#fb7185}.sdd-pf-t{color:#2dd4bf}.sdd-pf-m{color:#8aa0b8}
+.sdd-pf-spark{display:block;margin-top:4px}
+.sdd-pf-foot{color:#5b7290;font-size:11px;margin-top:9px;line-height:1.5}
+.sdd-pf-sk-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.sdd-pf-sk{position:relative;overflow:hidden;background:#121f36;border:1px solid #1c2c4a;
+  border-radius:10px;flex:1;min-width:130px;height:64px}
+.sdd-pf-sk::after{content:'';position:absolute;inset:0;transform:translateX(-100%);
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent);
+  animation:sdd-pf-sh 1.4s infinite}
+@keyframes sdd-pf-sh{100%{transform:translateX(100%)}}
+.sdd-pf-tickrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:2px}
+.sdd-pf-tick{background:#121f36;border:1px solid #22345a;border-radius:8px;padding:4px 10px;
+  font-size:11.5px;color:#8aa0b8;font-family:ui-monospace,Menlo,monospace}
+.sdd-pf-tick.done{border-color:#14532d;color:#34d399}
+.sdd-pf-steps{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}
+.sdd-pf-step{flex:1;min-width:200px;background:#121f36;border:1px solid #22345a;
+  border-radius:10px;padding:12px 14px}
+.sdd-pf-step .num{width:22px;height:22px;border-radius:50%;background:#10312d;
+  border:1px solid #14b8a6;color:#2dd4bf;font-weight:700;font-size:12px;display:inline-flex;
+  align-items:center;justify-content:center;margin-bottom:7px}
+.sdd-pf-step .h{font-size:12.5px;font-weight:700}
+.sdd-pf-step .p{color:#8aa0b8;font-size:11.5px;margin-top:3px;line-height:1.5}
+.sdd-pf-btn{display:inline-block;background:#14b8a6;color:#04211d;font-weight:700;
+  border-radius:8px;padding:7px 16px;font-size:12.5px;margin-top:10px;text-decoration:none}
+.sdd-pf-btn2{display:inline-block;background:none;border:1px solid #14b8a6;color:#2dd4bf;
+  border-radius:8px;padding:7px 16px;font-size:12.5px;margin-top:10px;margin-left:8px;
+  text-decoration:none}
+</style>
+"""
+
+
+def _pf_resolve_active(email):
+    """Reads the ?pf= deep link / session-stored choice into the active
+    portfolio (name, or None for combined), validated against the
+    account's current portfolio list. Pure state resolution, NO
+    rendering - split out from the chip row (_render_portfolio_switcher,
+    below) so the active portfolio is known, and _holdings loaded and
+    scored, BEFORE the switcher's own cards are drawn. That ordering is
+    what lets each card's stats line show a real $ value rather than a
+    count only: a card's value is only ever computed from data this run
+    already analyzed (see _render_portfolio_switcher's own docstring for
+    the exact rule) - never a fresh fetch just to fill in a chip."""
+    _portfolio_names = portfolio_store.list_portfolios(email)
+    _qp_pf = st.query_params.get("pf")
+    if _qp_pf is not None:
+        st.session_state["pf_active_choice"] = None if _qp_pf == "all" else _qp_pf
+        st.query_params.pop("pf", None)
+    _stored = st.session_state.get("pf_active_choice", "__unset__")
+    if _stored == "__unset__" or _stored is None:
+        return None
+    if _stored in _portfolio_names:
+        return _stored
+    return None  # a deep-linked/stored name that no longer exists (renamed/deleted)
+
+
+def _pf_card_value_map(email, active, holdings, analyses):
+    """{choice_key: value_aud} for the switcher's stats line - choice_key
+    is None (the "All portfolios" card) or a portfolio name. A card's
+    value is filled in ONLY when its holdings were actually analyzed
+    THIS run: always true for every card when `active` is the combined
+    view (get_holdings_all() already covered everyone), true ONLY for
+    the active portfolio's own card otherwise. Every other card is left
+    out of the returned dict entirely - the caller shows its holdings
+    count alone, and never triggers an extra price fetch for a
+    non-active portfolio just to fill in a chip."""
+    _out = {}
+    if active is None:
+        _rows, _totals, _fx, _pm = _build_portfolio_rows(holdings, analyses)
+        _out[None] = _totals.get("value_aud")
+        for _name in portfolio_store.list_portfolios(email):
+            _sub = [h for h in holdings if h.get("portfolio") == _name]
+            if _sub:
+                _srows, _stot, _sfx, _spm = _build_portfolio_rows(_sub, analyses)
+                _out[_name] = _stot.get("value_aud")
+    else:
+        _rows, _totals, _fx, _pm = _build_portfolio_rows(holdings, analyses)
+        _out[active] = _totals.get("value_aud")
+    return _out
+
+
+def _render_portfolio_switcher(email, lang, active, holdings=None, analyses=None):
+    """Renders the Part 44.3 switcher chip row (mock: Option B) + the
+    "+ New / manage" toggle's create/rename/delete panel (the SAME logic
+    the old st.selectbox + always-visible expander used, just moved
+    behind the toggle - not rewritten). `active` comes from
+    _pf_resolve_active(), called earlier so page_portfolio() can load
+    and score `holdings` BEFORE this renders - `holdings`/`analyses`
+    (this run's, possibly empty dicts) are used only to fill in each
+    card's $ value via _pf_card_value_map(); a card left out of that map
+    shows its holdings count alone. Does not return anything - the
+    active portfolio is already decided by the caller."""
+    _portfolio_names = portfolio_store.list_portfolios(email)
+    _value_map = _pf_card_value_map(email, active, holdings or [], analyses or {})
+
+    _qp_manage = st.query_params.get("pf_manage")
+    if _qp_manage in ("open", "close"):
+        st.session_state["pf_manage_open"] = (_qp_manage == "open")
+        st.query_params.pop("pf_manage", None)
+    _manage_open = bool(st.session_state.get("pf_manage_open"))
+
+    def _stats_line(choice_key, n):
+        _v = _value_map.get(choice_key)
+        if _v is not None:
+            return i18n.t("portfolio.switcher.value_and_count", lang, value=_fmt_aud(_v), n=n)
+        return i18n.t("portfolio.switcher.count_only", lang, n=n)
+
+    st.markdown(_PF_LANDING_STYLE, unsafe_allow_html=True)
+    _parts = ['<div class="sdd-pf-chips">']
+    _on = " on" if active is None else ""
+    _all_n = len(portfolio_store.get_holdings_all(email))
+    _parts.append(
+        f'<a class="sdd-pf-chip{_on}" href="{_pf_switcher_href(None, lang)}" target="_self">'
+        f'<div class="n">{html.escape(i18n.t("portfolio.switcher.all", lang))}</div>'
+        f'<div class="d">{html.escape(_stats_line(None, _all_n))}</div>'
+        f'</a>'
+    )
+    for _name in _portfolio_names:
+        _on = " on" if active == _name else ""
+        _n_here = len(portfolio_store.get_holdings(email, _name))
+        _parts.append(
+            f'<a class="sdd-pf-chip{_on}" href="{_pf_switcher_href(_name, lang)}" target="_self">'
+            f'<div class="n">{html.escape(_name)}</div>'
+            f'<div class="d">{html.escape(_stats_line(_name, _n_here))}</div>'
+            f'</a>'
+        )
+    _parts.append(
+        f'<a class="sdd-pf-chip new" href="{_pf_manage_toggle_href(_manage_open, lang)}" target="_self">'
+        f'{html.escape(i18n.t("portfolio.switcher.new_manage", lang))}</a>'
+    )
+    _parts.append('</div>')
+    st.markdown("".join(_parts), unsafe_allow_html=True)
+
+    _active = active
+    if _manage_open:
         st.caption("Create a new portfolio, or rename/delete the one currently selected above.")
         _nc1, _nc2 = st.columns([3, 1])
         with _nc1:
@@ -14554,6 +14717,7 @@ def _render_portfolio_switcher(email):
                         st.error(f'You already have a portfolio named "{_rename_to}".')
                     elif _rename_to != _active:
                         portfolio_store.rename_portfolio(email, _active, _rename_to)
+                        st.session_state["pf_active_choice"] = _rename_to
                         st.toast(f'Renamed to "{_rename_to}".', icon="✅")
                         st.rerun()
 
@@ -14576,6 +14740,7 @@ def _render_portfolio_switcher(email):
                         if st.button("Yes, delete", key=_pf_key(_active, "pf_delete_portfolio_confirm"), type="primary"):
                             portfolio_store.delete_portfolio(email, _active)
                             st.session_state.pop(_confirm_key, None)
+                            st.session_state["pf_active_choice"] = None
                             st.toast(f'Deleted "{_active}".', icon="🗑️")
                             st.rerun()
                     with _dc2:
@@ -14590,12 +14755,12 @@ def _render_portfolio_switcher(email):
 # does the Portfolio page have" - the mega-batch mock's own home-tile copy
 # said "8 tools inside", but the page has grown since that mock was drawn
 # (ETFs and Stress Test, Parts 2-3 of this same batch; Switch Analyzer,
-# Part 17), so it's now 10. Deriving both the st.tabs() call below AND the
-# home tile's live stat from len() of this one list means the displayed
-# count can never go stale like that again, no matter how many more tabs
-# get added later.
+# Part 17; Tax, Part 40), so it's now 11. Deriving both the st.tabs() call
+# below AND the home tile's live stat from len() of this one list means
+# the displayed count can never go stale like that again, no matter how
+# many more tabs get added later.
 _PORTFOLIO_TAB_I18N_KEYS = [
-    "portfolio.tab_holdings", "portfolio.tab_income", "portfolio.tab_overview",
+    "portfolio.tab_holdings", "portfolio.tab_income", "portfolio.tab_tax", "portfolio.tab_overview",
     "portfolio.tab_health", "portfolio.tab_progress", "portfolio.tab_etfs",
     "portfolio.tab_stress", "portfolio.tab_switch", "portfolio.tab_ask", "portfolio.tab_alerts",
 ]
@@ -14606,9 +14771,8 @@ def page_portfolio():
     _bump_page_view("portfolio")
     _pf_lang = st.session_state.get("lang", "en")
 
-    st.markdown(f"#### {i18n.t('portfolio.title', _pf_lang)}")
-
     if not paywall_engine.is_logged_in():
+        st.markdown(f"#### {i18n.t('portfolio.title', _pf_lang)}")
         st.info(i18n.t("portfolio.signin_prompt", _pf_lang))
         return
 
@@ -14629,33 +14793,93 @@ def page_portfolio():
     # after the line above); creates "Main" for a brand new visitor so
     # the selector below is never empty.
 
-    _active_portfolio = _render_portfolio_switcher(email)
+    # Part 44.4 (13 Sep 2026, Option C): a genuinely brand-new visitor -
+    # zero holdings in EVERY portfolio, not just the active one - gets the
+    # mock's first-visit invitation instead of the bare page; the pulse
+    # band (44.2) never renders for this case (it owns a "no holdings at
+    # all" state of its own, below). ensure_default_portfolio() above
+    # already guarantees at least one (empty) portfolio exists, so this
+    # check is purely about holdings, never about portfolios.
+    if not portfolio_store.get_holdings_all(email):
+        st.markdown(f"#### {i18n.t('portfolio.title', _pf_lang)}")
+        st.markdown(_pf_first_visit_html(_pf_lang), unsafe_allow_html=True)
+        return
+
+    _active_portfolio = _pf_resolve_active(email)
 
     if _active_portfolio:
         _holdings = portfolio_store.get_holdings(email, _active_portfolio)
     else:
         _holdings = portfolio_store.get_holdings_all(email)
 
-    _analyses = {}
-    if _holdings:
-        with st.spinner(i18n.t("portfolio.scoring_spinner", _pf_lang)):
-            # Each holding's analysis is dominated by network I/O (yfinance
-            # price/history/cashflow, News Intelligence feeds for non-ETFs)
-            # with no shared mutable state between holdings (each opens its
-            # own sqlite connection, never touches st.* itself) - fetching
-            # them one at a time made a 4-holding portfolio's first load
-            # (cold st.cache_data) take as long as ~4 holdings' worth of
-            # sequential network round-trips. Fetch them concurrently
-            # instead; a cache-warm reload within the 30-min TTL stays fast
-            # either way. Keyed by _hkey (portfolio, ticker), not ticker
-            # alone - the same ticker can appear more than once in the
-            # combined view, each occurrence with its own analysis.
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(_holdings))) as _pool:
-                _futures = {_pool.submit(_analyze_holding, h, email=email): _hkey(h) for h in _holdings}
-                for _fut in concurrent.futures.as_completed(_futures):
-                    _analyses[_futures[_fut]] = _fut.result()
+    if not _holdings:
+        # The account has holdings overall (the all-portfolios check above
+        # passed) but NOT in this specific portfolio - the 44.4 first-visit
+        # block doesn't fit here (this isn't a brand-new account), so the
+        # switcher still renders (count-only cards, nothing to value) and a
+        # plain empty note follows, same wording style as the Holdings tab
+        # already uses for this exact case.
+        _render_portfolio_switcher(email, _pf_lang, _active_portfolio, [], {})
+        st.markdown(f"#### {i18n.t('portfolio.title', _pf_lang)}")
+        st.info("No holdings in this portfolio yet - add one from the Holdings tab below, "
+                 "or switch to another portfolio above.")
+        _analyses = {}
+    else:
+        _skeleton_ph = st.empty()
+        _progress_ph = st.empty()
+        with _skeleton_ph:
+            st.markdown(_pf_skeleton_html(), unsafe_allow_html=True)
+        _all_tickers = [h["ticker"] for h in _holdings]
+        _done_tickers = []
+        with _progress_ph:
+            st.markdown(_pf_ticker_progress_html(_all_tickers, _done_tickers), unsafe_allow_html=True)
 
-    (_tab_holdings, _tab_income, _tab_overview, _tab_health, _tab_progress,
+        _analyses = {}
+        # Each holding's analysis is dominated by network I/O (yfinance
+        # price/history/cashflow, News Intelligence feeds for non-ETFs)
+        # with no shared mutable state between holdings (each opens its
+        # own sqlite connection, never touches st.* itself) - fetching
+        # them one at a time made a 4-holding portfolio's first load
+        # (cold st.cache_data) take as long as ~4 holdings' worth of
+        # sequential network round-trips. Fetch them concurrently
+        # instead; a cache-warm reload within the 30-min TTL stays fast
+        # either way. Keyed by _hkey (portfolio, ticker), not ticker
+        # alone - the same ticker can appear more than once in the
+        # combined view, each occurrence with its own analysis.
+        #
+        # Part 44.4: the st.spinner() this used to render is replaced by
+        # the skeleton tiles + ticker-progress chips above - ONE placeholder
+        # each (_skeleton_ph / _progress_ph), re-rendered in place as each
+        # future lands (never a new widget created inside the loop). Both
+        # are local variables recomputed fresh every script run, so a
+        # rerun mid-scoring just rebuilds them - no session-state counter
+        # that could double-count a ticker across reruns.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(_holdings))) as _pool:
+            _futures = {_pool.submit(_analyze_holding, h, email=email): _hkey(h) for h in _holdings}
+            for _fut in concurrent.futures.as_completed(_futures):
+                _k = _futures[_fut]
+                _analyses[_k] = _fut.result()
+                _done_tickers.append(_k[1])
+                with _progress_ph:
+                    st.markdown(_pf_ticker_progress_html(_all_tickers, _done_tickers), unsafe_allow_html=True)
+        _skeleton_ph.empty()
+        _progress_ph.empty()
+
+        # Switcher chips render here (not earlier) so each card's stats
+        # line can show a real $ value from THIS run's _analyses, just
+        # computed above - see _render_portfolio_switcher's own docstring.
+        _render_portfolio_switcher(email, _pf_lang, _active_portfolio, _holdings, _analyses)
+
+        # Part 44.2 (Option A): the pulse header band - title moved into
+        # its top row, computed ONLY from _holdings/_analyses just built
+        # above (zero new network calls). Renders once scoring is done,
+        # above the same ten tabs.
+        st.markdown(
+            _pf_pulse_band_html(email, _active_portfolio, _holdings, _analyses, _pf_lang),
+            unsafe_allow_html=True,
+        )
+
+    (_tab_holdings, _tab_income, _tab_tax, _tab_overview, _tab_health, _tab_progress,
      _tab_etfs, _tab_stress, _tab_switch, _tab_ask, _tab_alerts) = st.tabs(
         [i18n.t(_k, _pf_lang) for _k in _PORTFOLIO_TAB_I18N_KEYS]
     )
@@ -14668,6 +14892,13 @@ def page_portfolio():
         # its own tab per the spec, since Holdings already has a lot on
         # it and this is squarely its own concern (income, not P/L).
         _render_portfolio_income_tab(email, _active_portfolio, _holdings, _analyses)
+    with _tab_tax:
+        # Part 40 (13 Sep 2026): CGT ledger - realised/unrealised gains
+        # and the AU 12-month-discount / US long-term countdown, per
+        # holding. Placed right after Income & franking (its own mock's
+        # SITS: line) - the other "what does owning this cost/earn me"
+        # tab.
+        _render_portfolio_tax_tab(email, _active_portfolio, _holdings, _analyses)
     with _tab_overview:
         _render_portfolio_overview_tab(email, _active_portfolio, _holdings, _analyses)
     with _tab_health:
@@ -14851,6 +15082,294 @@ def _fmt_aud(v):
 
 def _fmt_pct1(v):
     return f"{v * 100:.1f}%" if v is not None else "n/a"
+
+
+# -----------------------------------------------------------------
+# Part 44 (13 Sep 2026, mock: portfolio_landing_options_mock.html) - the
+# My Portfolio pulse band's own tile math. Every function below is pure
+# (no st.*, no network) and reads ONLY the same _holdings/_analyses the
+# ten tabs already have for this run - zero new per-pageview fetches.
+# -----------------------------------------------------------------
+
+def _pf_day_change(_holdings, _analyses):
+    """(day_change_aud, day_change_pct, n_excluded) - "Today" tile math.
+    Uses `prev_close` (Part 44.2 addition to portfolio_health_engine.
+    fetch_snapshot, sourced from the SAME 2y price history each
+    holding's analysis already fetched - no new network call) alongside
+    the already-fetched `price`. A holding missing either is excluded
+    from both the $ and % figures and counted in n_excluded (the same
+    "leave it out rather than guess" convention _build_portfolio_rows
+    already uses for a missing live price)."""
+    _val_today = 0.0
+    _val_yesterday = 0.0
+    _any = False
+    _excluded = 0
+    for h in _holdings:
+        _a = _analyses.get(_hkey(h), {})
+        _snap = _a.get("snapshot") or {}
+        price = _snap.get("price")
+        prev_close = _snap.get("prev_close")
+        shares = h.get("shares") or 0
+        currency = h.get("currency")
+        if price is None or prev_close is None or not shares:
+            _excluded += 1
+            continue
+        _today_aud = portfolio_health_engine.to_aud(shares * price, currency)
+        _yday_aud = portfolio_health_engine.to_aud(shares * prev_close, currency)
+        if _today_aud is None or _yday_aud is None:
+            _excluded += 1
+            continue
+        _val_today += _today_aud
+        _val_yesterday += _yday_aud
+        _any = True
+    if not _any:
+        return None, None, _excluded
+    _change = _val_today - _val_yesterday
+    _pct = (_change / _val_yesterday) if _val_yesterday else None
+    return _change, _pct, _excluded
+
+
+def _pf_income_this_fy_aud(_holdings):
+    """Income this FY, grossed up with franking where entered - reuses
+    the Income tab's OWN helpers (portfolio_charts_engine.
+    dividends_received, _bucket_payments_by_au_fy) and its OWN franking
+    formula (amount x pct/100 x 30/70, byte-identical to
+    _render_portfolio_income_tab's) rather than re-deriving either.
+    The one piece that doesn't already exist as a single call: the
+    Income tab's own "Grossed-up" column grosses up the LIFETIME total
+    received (since buy date), and its "Cash this FY" column is FY-
+    scoped but never grossed up - no existing helper returns "this FY,
+    grossed up" as one number. This applies that SAME franking formula
+    to the FY-scoped cash bucket instead of the lifetime total, since
+    that's what a "this FY" tile needs; every underlying number and
+    formula is unchanged. Returns None if no holding has any dividend
+    history at all (mirrors the Income tab's own empty state)."""
+    _cur_fy, _ = _current_and_last_au_fy()
+    _net = 0.0
+    _any = False
+    for h in _holdings:
+        if not h.get("buy_date") or not h.get("shares"):
+            continue
+        _rec_aud, _trailing_ps, _payments = portfolio_charts_engine.dividends_received(
+            h["ticker"], h.get("currency"), h["shares"], h["buy_date"],
+        )
+        if _rec_aud is None:
+            continue
+        _any = True
+        _fy_buckets = _bucket_payments_by_au_fy(_payments)
+        _cash_this_fy = _fy_buckets.get(_cur_fy, 0.0)
+        _franking_pct = h.get("franking_pct")
+        _credits_this_fy = (_cash_this_fy * _franking_pct / 100 * 30 / 70) if _franking_pct else 0.0
+        _net += _cash_this_fy + _credits_this_fy
+    return _net if _any else None
+
+
+def _pf_weighted_health(_rows, _holdings, _analyses):
+    """Market-value-weighted average of each holding's Health overall
+    score (0-100) - portfolio_health_engine.compute_health()'s own
+    "overall" field, already computed per holding by _analyze_holding
+    for the Health & News tab; this just weights and averages it by
+    each row's value_aud from _build_portfolio_rows. A holding with no
+    price (no value_aud) or no health "overall" is skipped rather than
+    guessed into the average."""
+    _num = 0.0
+    _den = 0.0
+    for r in _rows:
+        if r.get("value_aud") is None:
+            continue
+        _a = _analyses.get((r.get("portfolio"), r.get("ticker")), {})
+        _overall = (_a.get("health") or {}).get("overall")
+        if _overall is None:
+            continue
+        _num += _overall * r["value_aud"]
+        _den += r["value_aud"]
+    return (_num / _den) if _den else None
+
+
+def _pf_sparkline_svg(values, w=86, h=18, pad=2):
+    """Tiny inline <svg> polyline, mock-sized (86x18) - same min/max
+    normalisation as portfolio_charts_engine.sparkline_data_uri (the
+    Overview tab's own per-row sparkline), just drawn as raw markup
+    (matching the mock's own inline <svg>) instead of a base64 data-URI,
+    since this one is a single portfolio-wide line, not a per-row table
+    image. Returns "" for fewer than 2 points - no placeholder dash, per
+    the Part 44.4 instruction ("omit the sparkline")."""
+    values = [v for v in (values or []) if v is not None]
+    if len(values) < 2:
+        return ""
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1.0
+    n = len(values)
+    xs = [pad + i * (w - 2 * pad) / (n - 1) for i in range(n)]
+    ys = [h - pad - (v - lo) / span * (h - 2 * pad) for v in values]
+    pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys))
+    color = "#34d399" if values[-1] >= values[0] else "#fb7185"
+    return (
+        f'<svg class="sdd-pf-spark" width="{w}" height="{h}" viewBox="0 0 {w} {h}">'
+        f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="1.6"/></svg>'
+    )
+
+
+def _pf_pulse_band_html(email, active_portfolio, _holdings, _analyses, lang):
+    """The Part 44.2 pulse band (mock Option A) - title + scope + count
+    on top, five tiles below, rendered as one HTML block (own site-card
+    styling, _PF_LANDING_STYLE) since a Streamlit-native title above a
+    row of st.columns can't be captioned/wrapped the way the mock's
+    single frame is. Every number comes from `_holdings`/`_analyses` -
+    this run's already-computed data; nothing here fetches anything."""
+    _rows, _totals, _fx_missing, _price_missing = _build_portfolio_rows(_holdings, _analyses)
+    _day_change, _day_pct, _day_excluded = _pf_day_change(_holdings, _analyses)
+    _income_fy = _pf_income_this_fy_aud(_holdings)
+    _health_avg = _pf_weighted_health(_rows, _holdings, _analyses)
+
+    _scope = (i18n.t("portfolio.pulse.scope_all", lang) if active_portfolio is None else active_portfolio)
+    _n_holdings = len(_holdings)
+    _title = (
+        f'\U0001F4BC {html.escape(i18n.t("portfolio.title", lang))} '
+        f'<span class="sdd-pf-m">· {html.escape(_scope)} · '
+        f'{html.escape(i18n.t("portfolio.pulse.holdings_count", lang, n=_n_holdings))}</span>'
+    )
+
+    _vseries = None
+    try:
+        _vseries = portfolio_charts_engine.compute_value_vs_index_series(_holdings)
+    except Exception:
+        _vseries = None
+    _spark = ""
+    if _vseries is not None and _vseries.get("value") is not None:
+        try:
+            _spark = _pf_sparkline_svg(list(_vseries["value"].tail(90)))
+        except Exception:
+            _spark = ""
+
+    _return_pct = ((_totals["profit_aud"] / _totals["cost_aud"])
+                   if (_totals.get("profit_aud") is not None and _totals.get("cost_aud")) else None)
+
+    def _tile(label_key, value_html, sub_html="", extra=""):
+        return (
+            f'<div class="sdd-pf-tile">{extra}<div class="k">{html.escape(i18n.t(label_key, lang))}</div>'
+            f'<div class="v">{value_html}</div>{sub_html}</div>'
+        )
+
+    _tiles = []
+    _tiles.append(_tile(
+        "portfolio.pulse.tile_value", html.escape(_fmt_aud(_totals.get("value_aud"))),
+        (f'<div class="s">{_spark}</div>' if _spark else ""),
+    ))
+    if _day_change is None:
+        _tiles.append(_tile("portfolio.pulse.tile_today", "–"))
+    else:
+        _cls = "sdd-pf-g" if _day_change >= 0 else "sdd-pf-r"
+        _sign = "+" if _day_change >= 0 else ""
+        _pct_txt = f"{_sign}{_day_pct * 100:.2f}%" if _day_pct is not None else ""
+        _tiles.append(_tile(
+            "portfolio.pulse.tile_today",
+            f'<span class="{_cls}">{_sign}{html.escape(_fmt_aud(_day_change))}</span>',
+            f'<div class="s {_cls}">{html.escape(_pct_txt)}</div>' if _pct_txt else "",
+        ))
+    if _totals.get("profit_aud") is None:
+        _tiles.append(_tile("portfolio.pulse.tile_return", "–"))
+    else:
+        _cls = "sdd-pf-g" if _totals["profit_aud"] >= 0 else "sdd-pf-r"
+        _sign = "+" if _totals["profit_aud"] >= 0 else ""
+        _sub = (f'{_sign}{_return_pct * 100:.1f}% {html.escape(i18n.t("portfolio.pulse.since_buy", lang))}'
+                if _return_pct is not None else "")
+        _tiles.append(_tile(
+            "portfolio.pulse.tile_return",
+            f'<span class="{_cls}">{_sign}{html.escape(_fmt_aud(_totals["profit_aud"]))}</span>',
+            f'<div class="s {_cls}">{_sub}</div>' if _sub else "",
+        ))
+    _tiles.append(_tile(
+        "portfolio.pulse.tile_income",
+        html.escape(_fmt_aud(_income_fy)) if _income_fy is not None else "–",
+        f'<div class="s sdd-pf-m">{html.escape(i18n.t("portfolio.pulse.div_franking", lang))}</div>',
+    ))
+    _tiles.append(_tile(
+        "portfolio.pulse.tile_health",
+        f'<span class="sdd-pf-t">{_health_avg:.0f}</span>' if _health_avg is not None else "–",
+        f'<div class="s sdd-pf-m">{html.escape(i18n.t("portfolio.pulse.weighted_avg", lang))}</div>',
+    ))
+
+    _footnotes = []
+    if _price_missing:
+        _footnotes.append(html.escape(i18n.t("portfolio.pulse.footnote_price", lang, n=len(_price_missing))))
+    _n_no_buy = sum(1 for r in _rows if not r.get("buy_price"))
+    if _n_no_buy:
+        _footnotes.append(html.escape(i18n.t("portfolio.pulse.footnote_buy", lang, n=_n_no_buy)))
+    _foot_html = "".join(f'<div class="sdd-pf-foot">{f}</div>' for f in _footnotes)
+
+    return (
+        f'{_PF_LANDING_STYLE}<div class="sdd-pf-band" style="background:#0e1930;border:1px solid #1f3352;'
+        f'border-radius:12px;padding:16px 18px;margin-bottom:14px">'
+        f'<div style="font-size:17px;font-weight:800;margin-bottom:12px">{_title}</div>'
+        f'<div class="sdd-pf-tiles">{"".join(_tiles)}</div>'
+        f'<div class="sdd-pf-foot">{html.escape(i18n.t("portfolio.pulse.caption", lang))}</div>'
+        f'{_foot_html}'
+        f'</div>'
+    )
+
+
+def _pf_skeleton_html():
+    """Part 44.4's five shimmer tiles, standing in for the pulse band's
+    own five tiles while scoring is in flight."""
+    return (
+        f'{_PF_LANDING_STYLE}<div class="sdd-pf-sk-row">'
+        + "".join('<div class="sdd-pf-sk"></div>' for _ in range(5))
+        + '</div>'
+    )
+
+
+def _pf_ticker_progress_html(all_tickers, done_tickers):
+    """Part 44.4's ticker-progress chips - grey until a holding's
+    analysis lands (done_tickers), then flips to a green tick. Re-
+    rendered into the SAME st.empty() placeholder each time a future
+    completes (see page_portfolio()); never creates a new widget."""
+    _done = set(done_tickers)
+    _chips = []
+    for t in all_tickers:
+        if t in _done:
+            _chips.append(f'<span class="sdd-pf-tick done">{html.escape(t)} ✓</span>')
+        else:
+            _chips.append(f'<span class="sdd-pf-tick">{html.escape(t)}</span>')
+    return f'{_PF_LANDING_STYLE}<div class="sdd-pf-tickrow">{"".join(_chips)}</div>'
+
+
+def _pf_first_visit_html(lang):
+    """Part 44.4's brand-new-user block (mock: the "while scoring" frame's
+    lower half) - three numbered steps + two CTA chips. Real wiring
+    where trivial: _render_add_holding_expander already renders "Add a
+    holding" pre-expanded whenever the active portfolio has zero
+    holdings (`expanded=not _holdings`, unchanged, pre-existing) - a
+    brand-new visitor lands on this exact state already, so the "Add
+    first holding" CTA needs no new code to be true, just a scroll down
+    to the Holdings tab. The CSV importer has no such default-expanded
+    hook to reuse, so both CTAs are plain self-links (the mock's own
+    fallback for this case) rather than invented new plumbing.
+    Advice-safe copy throughout, EN/ES via i18n."""
+    _steps = [
+        ("1", "portfolio.firstvisit.step1_h", "portfolio.firstvisit.step1_p"),
+        ("2", "portfolio.firstvisit.step2_h", "portfolio.firstvisit.step2_p"),
+        ("3", "portfolio.firstvisit.step3_h", "portfolio.firstvisit.step3_p"),
+    ]
+    _steps_html = "".join(
+        f'<div class="sdd-pf-step"><span class="num">{n}</span>'
+        f'<div class="h">{html.escape(i18n.t(hk, lang))}</div>'
+        f'<div class="p">{html.escape(i18n.t(pk, lang))}</div></div>'
+        for n, hk, pk in _steps
+    )
+    _self_href = "/portfolio" + ("?lang=es" if lang == "es" else "")
+    return (
+        f'{_PF_LANDING_STYLE}<div class="sdd-pf-band" style="background:#0e1930;border:1px solid #1f3352;'
+        f'border-radius:12px;padding:16px 18px;margin-bottom:14px">'
+        f'<div style="font-size:15px;font-weight:800">{html.escape(i18n.t("portfolio.firstvisit.headline", lang))}</div>'
+        f'<div class="sdd-pf-steps">{_steps_html}</div>'
+        f'<a class="sdd-pf-btn" href="{_self_href}" target="_self">'
+        f'{html.escape(i18n.t("portfolio.firstvisit.cta_add", lang))}</a>'
+        f'<a class="sdd-pf-btn2" href="{_self_href}" target="_self">'
+        f'{html.escape(i18n.t("portfolio.firstvisit.cta_import", lang))}</a>'
+        f'<div class="sdd-pf-foot">{html.escape(i18n.t("portfolio.firstvisit.caption", lang))}</div>'
+        f'</div>'
+    )
 
 
 # -----------------------------------------------------------------
@@ -19114,6 +19633,423 @@ def _render_portfolio_income_tab(email, active_portfolio, _holdings, _analyses):
         "advice; confirm against your broker/registry statements."
     )
 
+    # Part 41 (13 Sep 2026, mock: section 3 of services_2345_mock.html):
+    # the forward-looking "Next 12 months" section, under the tax-time
+    # report above. Reuses the SAME already-fetched/cached payments list
+    # (portfolio_charts_engine.dividends_received, already called for
+    # every row above) - zero new per-pageview network calls.
+    st.divider()
+    _render_income_forward_section(email, active_portfolio, _rows, _franking_by_key)
+
+
+def _render_income_forward_section(email, active_portfolio, _rows, _franking_by_key):
+    """Part 41's "Next 12 months" block - see _pf_forward_income's own
+    docstring for the projection method."""
+    _lang = st.session_state.get("lang", "en")
+    st.markdown(f"##### {i18n.t('portfolio.income_fwd.heading', _lang)}")
+
+    _fwd = _pf_forward_income([r for r in _rows if r.get("buy_date") and r.get("shares")], _franking_by_key)
+    if not _fwd["any"]:
+        st.caption(i18n.t("portfolio.income_fwd.empty", _lang))
+        return
+
+    _total_value_aud = sum(r["value_aud"] for r in _rows if r["value_aud"] is not None) or None
+    _net_yield = (_fwd["net_total"] / _total_value_aud) if (_total_value_aud and _fwd["net_total"] is not None) else None
+    _grossed_yield = (_fwd["grossed_total"] / _total_value_aud) if (_total_value_aud and _fwd["grossed_total"] is not None) else None
+
+    _fc1, _fc2, _fc3 = st.columns(3)
+    _fc1.metric(
+        i18n.t("portfolio.income_fwd.tile_expected", _lang), _fmt_aud(_fwd["net_total"]),
+        help=i18n.t("portfolio.income_fwd.tile_expected_sub", _lang, grossed=_fmt_aud(_fwd["grossed_total"])),
+    )
+    _fc2.metric(
+        i18n.t("portfolio.income_fwd.tile_yield", _lang),
+        _fmt_pct1(_net_yield) if _net_yield is not None else "–",
+        help=(i18n.t("portfolio.income_fwd.tile_yield_sub", _lang, grossed=_fmt_pct1(_grossed_yield))
+              if _grossed_yield is not None else None),
+    )
+    if _fwd["next_payment"] is not None:
+        _np = _fwd["next_payment"]
+        _fc3.metric(
+            i18n.t("portfolio.income_fwd.tile_next", _lang), _np["ticker"],
+            help=i18n.t("portfolio.income_fwd.tile_next_sub", _lang,
+                         amount=_fmt_aud(_np["amount_aud"]), month=_np["month_label"]),
+        )
+    else:
+        _fc3.metric(i18n.t("portfolio.income_fwd.tile_next", _lang), "–")
+
+    _fig = go.Figure(go.Bar(
+        x=_fwd["month_labels"], y=_fwd["month_values"], marker_color="#14b8a6",
+        text=[_fmt_aud(v) if v else "" for v in _fwd["month_values"]], textposition="outside",
+        cliponaxis=False,
+        hovertext=[", ".join(p) if p else "" for p in _fwd["month_payers"]], hoverinfo="x+y+text",
+    ))
+    _fig.update_layout(
+        height=280, margin=dict(t=20, b=10, l=10, r=10), showlegend=False,
+        yaxis=dict(tickprefix="A$", separatethousands=True),
+    )
+    sdd_plotly_chart(_fig)
+    st.caption(i18n.t("portfolio.income_fwd.chart_caption", _lang))
+
+    st.markdown(f"**{i18n.t('portfolio.income_fwd.goal_heading', _lang)}**")
+    _goal_stored = portfolio_store.get_income_goal(email, active_portfolio) if active_portfolio else None
+    _gc1, _gc2 = st.columns([3, 1])
+    with _gc1:
+        _goal_in = st.number_input(
+            i18n.t("portfolio.income_fwd.goal_input", _lang), min_value=0.0, step=500.0,
+            value=float(_goal_stored or 0.0),
+            key=_pf_key(active_portfolio, "pf_income_goal_input"),
+            disabled=(active_portfolio is None),
+        )
+    with _gc2:
+        st.write("")
+        if active_portfolio is not None:
+            if st.button(i18n.t("portfolio.tax.rate_save", _lang), key=_pf_key(active_portfolio, "pf_income_goal_save")):
+                portfolio_store.set_income_goal(email, active_portfolio, _goal_in or None)
+                st.toast(i18n.t("portfolio.tax.rate_saved_toast", _lang), icon="✅")
+                st.rerun()
+    if active_portfolio is None:
+        st.caption(i18n.t("portfolio.income_fwd.goal_combined_note", _lang))
+
+    _goal = _goal_stored if active_portfolio is not None else None
+    if _goal and _grossed_yield:
+        _progress = min(_fwd["grossed_total"] / _goal, 1.0) if _fwd["grossed_total"] else 0.0
+        _gap_value_aud = max(_goal - _fwd["grossed_total"], 0.0) / _grossed_yield if _grossed_yield else None
+        st.progress(_progress)
+        st.caption(i18n.t(
+            "portfolio.income_fwd.goal_progress", _lang,
+            pct=_progress * 100, gap=_fmt_aud(_gap_value_aud) if _gap_value_aud else "$0",
+            yield_pct=_grossed_yield * 100,
+        ))
+    elif _goal and not _grossed_yield:
+        st.caption(i18n.t("portfolio.income_fwd.goal_no_yield", _lang))
+
+
+def _pf_forward_income(_rows, _franking_by_key):
+    """Next-12-calendar-months income projection (Part 41). Method: for
+    each holding, replay its own trailing-365-day payments (the SAME
+    `payments` list portfolio_charts_engine.dividends_received already
+    returned for the backward-looking table above - zero new network
+    calls) forward by exactly 365 days each - i.e. "the same payment, at
+    the same calendar month and amount, happens again next year." Any
+    payment in the trailing year lands, after that +365-day shift,
+    somewhere in the NEXT 365 days - so this always fully (and only)
+    covers the forward window, never double counting or missing a
+    payment at the boundary. Franking credits use each holding's own
+    franking_pct with the SAME 30/70 formula as the tax-time report
+    above. Purely a repeat-last-year assumption - captioned as an
+    estimate, never a promise, per the mock's own wording.
+
+    Returns {"any", "month_labels", "month_values", "month_payers",
+    "net_total", "grossed_total", "next_payment"} - month_* cover the
+    12 calendar months STARTING NEXT MONTH (matching the mock's own
+    Oct-Sep layout for a mid-September "today")."""
+    from calendar import month_abbr
+    _today = datetime.now(timezone.utc).date()
+    _y, _m = _today.year, _today.month
+    _m += 1
+    if _m > 12:
+        _m = 1
+        _y += 1
+    _month_keys = []
+    for _ in range(12):
+        _month_keys.append((_y, _m))
+        _m += 1
+        if _m > 12:
+            _m = 1
+            _y += 1
+    _month_totals = {k: 0.0 for k in _month_keys}
+    _month_payers = {k: [] for k in _month_keys}
+    _cutoff = _today - timedelta(days=365)
+    _net_total = 0.0
+    _grossed_total = 0.0
+    _any = False
+    _future_payments = []  # (projected_date, ticker, amount_aud)
+    for r in _rows:
+        _rec_aud, _trailing_ps, _payments = portfolio_charts_engine.dividends_received(
+            r["ticker"], r.get("currency"), r["shares"], r["buy_date"],
+        )
+        if _rec_aud is None:
+            continue
+        _franking_pct = _franking_by_key.get((r["portfolio"], r["ticker"]))
+        for p in _payments:
+            if p.get("amount_aud") is None:
+                continue
+            try:
+                _d = _date.fromisoformat(p["date"])
+            except Exception:
+                continue
+            if _d < _cutoff:
+                continue
+            _any = True
+            _fwd_date = _d + timedelta(days=365)
+            _key = (_fwd_date.year, _fwd_date.month)
+            _amt = p["amount_aud"]
+            _credit = (_amt * _franking_pct / 100 * 30 / 70) if _franking_pct else 0.0
+            _net_total += _amt
+            _grossed_total += _amt + _credit
+            if _key in _month_totals:
+                _month_totals[_key] += _amt
+                if r["ticker"] not in _month_payers[_key]:
+                    _month_payers[_key].append(r["ticker"])
+            _future_payments.append((_fwd_date, r["ticker"], _amt))
+
+    _next_payment = None
+    if _future_payments:
+        _future_payments.sort(key=lambda t: t[0])
+        _fd, _ftk, _famt = _future_payments[0]
+        _next_payment = {
+            "ticker": _ftk, "amount_aud": _famt,
+            "month_label": f"{month_abbr[_fd.month]} {_fd.year}",
+        }
+
+    return {
+        "any": _any,
+        "month_labels": [month_abbr[m] for (_, m) in _month_keys],
+        "month_values": [_month_totals[k] for k in _month_keys],
+        "month_payers": [_month_payers[k] for k in _month_keys],
+        "net_total": _net_total if _any else None,
+        "grossed_total": _grossed_total if _any else None,
+        "next_payment": _next_payment,
+    }
+
+
+# -----------------------------------------------------------------
+# Part 40 (13 Sep 2026, mock: section 2 of services_2345_mock.html) - Tax
+# & CGT ledger. REUSES switch_analyzer_engine's own AU 12-month/50%-
+# discount CGT math (compute_toll, cgt_twelve_month_counterfactual) -
+# never re-derives it - for AUD-currency holdings. That module has NO US
+# tax model to reuse (confirmed: no country/jurisdiction branch anywhere
+# in it - see this Part's own report for the full note); every other
+# currency gets a long/short-term STATUS label only, with tax estimated
+# as gain x rate and no discount, clearly caveated below and in the
+# rendered "portfolio.tax.us_note" caption.
+#
+# No sale/realised-gain records exist anywhere in portfolio_store.py
+# (confirmed by search before writing this Part) - per the instruction's
+# own "only build a record-a-sale affordance if sale data does not
+# already exist - check first and say what you found" rule, this tab
+# therefore NEVER builds one; the realised-gains tile always shows the
+# "no sales recorded this FY" empty state, and the CSV's realised-events
+# section is always empty for the same reason.
+# -----------------------------------------------------------------
+
+def _pf_tax_rows(_holdings, _analyses, tax_rate):
+    """Per-holding CGT ledger rows. Reuses _build_portfolio_rows for
+    every price/FX/cost figure (byte-identical to every other tab) and
+    ADDS: held_days, AU-eligibility (>=365 days) or a US long/short-term
+    label, and an estimated tax if sold today. `tax_rate` is a plain
+    0-1 fraction, or None (every tax figure then comes back None - "no
+    rate set" rather than a guessed default). AU treatment (currency ==
+    "AUD") calls switch_analyzer_engine.compute_toll/
+    cgt_twelve_month_counterfactual with brokerage=0 (this ledger has no
+    brokerage of its own - the Toll's brokerage figure is switch-
+    specific); every other currency is treated as US per this Part's own
+    documented simplification (see the module comment above)."""
+    _rows, _totals, _fx_missing, _price_missing = _build_portfolio_rows(_holdings, _analyses)
+    _today = datetime.now(timezone.utc).date()
+    out = []
+    for r in _rows:
+        if r["cost_aud"] is None:
+            continue
+        _is_au = (r.get("currency") == "AUD")
+        _held_days = None
+        _buy_date = r.get("buy_date")
+        if _buy_date:
+            try:
+                _held_days = (_today - _date.fromisoformat(_buy_date)).days
+            except Exception:
+                _held_days = None
+        _eligible = (_held_days is not None and _held_days >= 365)
+        _days_left = (max(365 - _held_days, 0) if (_held_days is not None and not _eligible) else None)
+        _eligible_date = None
+        if _held_days is not None and not _eligible and _buy_date:
+            try:
+                _eligible_date = (_date.fromisoformat(_buy_date) + timedelta(days=365)).isoformat()
+            except Exception:
+                _eligible_date = None
+
+        _taxable_gain = None  # post-AU-discount (or raw, for US), floored at 0 - for the TOTAL tile's netting
+        _tax_now = None
+        _tax_after_wait = None
+        _gain_aud = r["profit_aud"]
+        if _gain_aud is not None and tax_rate is not None:
+            if _is_au:
+                _toll = switch_analyzer_engine.compute_toll(
+                    r["value_aud"], r["cost_aud"], tax_rate, 0.0, held_days=_held_days,
+                )
+                if _toll:
+                    _taxable_gain = _toll["taxable_gain"]
+                    _tax_now = _toll["tax"]
+                if not _eligible and _held_days is not None:
+                    _cf = switch_analyzer_engine.cgt_twelve_month_counterfactual(
+                        r["value_aud"], r["cost_aud"], tax_rate, 0.0, _held_days,
+                    )
+                    if _cf:
+                        _tax_after_wait = _cf["tax_after_12mo"]
+            else:
+                _taxable_gain = max(_gain_aud, 0.0)
+                _tax_now = _taxable_gain * tax_rate
+
+        out.append({
+            **r, "is_au": _is_au, "held_days": _held_days, "eligible": _eligible,
+            "days_left": _days_left, "eligible_date": _eligible_date,
+            "taxable_gain": _taxable_gain, "tax_now": _tax_now, "tax_after_wait": _tax_after_wait,
+        })
+    return out
+
+
+def _pf_est_cgt_today(_tax_rows, tax_rate):
+    """Est. CGT if everything were sold today, netting losses against
+    gains across the whole ledger - a deliberately simplified "your net
+    position" figure, NOT an exact ATO netting-order calculation (real
+    rules net losses against un-discounted gains before applying the
+    12-month discount to what remains; approximating that precisely
+    needs a per-asset ordering choice this tab doesn't make on your
+    behalf). Since one tax_rate applies to every holding here, netting
+    before or after multiplying by that single constant rate gives the
+    same total, so this nets the ALREADY-computed per-holding
+    taxable_gain/loss figures and multiplies once at the end. Returns
+    None if no rate is set or no holding has a computable gain/loss."""
+    if tax_rate is None:
+        return None
+    _total_taxable_gain = 0.0
+    _total_loss = 0.0
+    _any = False
+    for r in _tax_rows:
+        if r["profit_aud"] is None:
+            continue
+        _any = True
+        if r["profit_aud"] < 0:
+            _total_loss += -r["profit_aud"]
+        elif r.get("taxable_gain") is not None:
+            _total_taxable_gain += r["taxable_gain"]
+    if not _any:
+        return None
+    _net = max(_total_taxable_gain - _total_loss, 0.0)
+    return _net * tax_rate
+
+
+def _render_portfolio_tax_tab(email, active_portfolio, _holdings, _analyses):
+    """"Tax" tab (Part 40) - see the module comment block above this
+    function for the full design/reuse notes."""
+    _lang = st.session_state.get("lang", "en")
+    st.caption(i18n.t("portfolio.tax.caption", _lang))
+
+    _is_combined = active_portfolio is None
+    if _is_combined:
+        # Same precedent as "Portfolio settings" on the Holdings tab
+        # (get_settings_all only ever SUMS, never lets you edit, in the
+        # combined view) - a marginal tax rate is inherently a per-
+        # account, not a stored-per-portfolio setting, but
+        # get_switch_settings/set_switch_settings ARE keyed per
+        # portfolio (The Toll's own storage) with no "all" row to write
+        # to, so combined view gets a session-only (unsaved) rate.
+        st.caption(i18n.t("portfolio.tax.rate_combined_note", _lang))
+        _rate_pct = st.number_input(
+            i18n.t("portfolio.tax.rate_label", _lang), min_value=0.0, max_value=100.0, step=0.5,
+            value=float(st.session_state.get("pf_tax_rate_combined_pct", 0.0)),
+            key="pf_tax_rate_combined_input",
+        )
+        st.session_state["pf_tax_rate_combined_pct"] = _rate_pct
+        _tax_rate = (_rate_pct / 100.0) if _rate_pct else None
+    else:
+        _settings = portfolio_store.get_switch_settings(email, active_portfolio)
+        _stored_rate = _settings.get("tax_rate")
+        _rc1, _rc2 = st.columns([3, 1])
+        with _rc1:
+            _rate_pct_in = st.number_input(
+                i18n.t("portfolio.tax.rate_label", _lang), min_value=0.0, max_value=100.0, step=0.5,
+                value=float((_stored_rate or 0.0) * 100), key=_pf_key(active_portfolio, "pf_tax_rate_input"),
+                help="Shared with The Toll's own tax-rate setting for this portfolio - enter it once, use it in both places.",
+            )
+        with _rc2:
+            st.write("")
+            if st.button(i18n.t("portfolio.tax.rate_save", _lang), key=_pf_key(active_portfolio, "pf_tax_rate_save")):
+                portfolio_store.set_switch_settings(email, active_portfolio, tax_rate=_rate_pct_in / 100.0,
+                                                       brokerage=_settings.get("brokerage"))
+                st.toast(i18n.t("portfolio.tax.rate_saved_toast", _lang), icon="✅")
+                st.rerun()
+        _tax_rate = (_stored_rate if _stored_rate is not None else None)
+
+    _tax_rows = _pf_tax_rows(_holdings, _analyses, _tax_rate)
+    if not _tax_rows:
+        st.info(i18n.t("portfolio.tax.empty", _lang))
+        return
+
+    _unrealised_total = sum(r["profit_aud"] for r in _tax_rows if r["profit_aud"] is not None) or None
+    _est_cgt_today = _pf_est_cgt_today(_tax_rows, _tax_rate)
+
+    _tc1, _tc2, _tc3 = st.columns(3)
+    _tc1.metric(i18n.t("portfolio.tax.tile_realised", _lang), i18n.t("portfolio.tax.tile_realised_empty", _lang))
+    _tc2.metric(i18n.t("portfolio.tax.tile_unrealised", _lang), _fmt_aud(_unrealised_total))
+    _tc3.metric(
+        i18n.t("portfolio.tax.tile_est_cgt", _lang),
+        _fmt_aud(_est_cgt_today) if _tax_rate is not None else "–",
+        help=(i18n.t("portfolio.tax.tile_est_cgt_sub", _lang, rate=_tax_rate * 100)
+              if _tax_rate is not None else i18n.t("portfolio.tax.tile_est_cgt_no_rate", _lang)),
+    )
+    if _tax_rate is None:
+        st.caption(i18n.t("portfolio.tax.no_rate", _lang))
+
+    _table_rows = []
+    for r in _tax_rows:
+        # A loss is never subject to the discount question at all (per
+        # the mock's own CSL.AX row: "— (loss)", not an eligibility
+        # countdown) - the discount status column is about gains only.
+        if r["profit_aud"] is not None and r["profit_aud"] < 0:
+            _status = "—"
+        elif r["is_au"]:
+            _status = (i18n.t("portfolio.tax.status_au_eligible", _lang) if r["eligible"]
+                        else i18n.t("portfolio.tax.status_au_pending", _lang, n=r["days_left"],
+                                     date=r["eligible_date"] or "?"))
+        else:
+            _status = (i18n.t("portfolio.tax.status_us_eligible", _lang) if r["eligible"]
+                        else i18n.t("portfolio.tax.status_us_pending", _lang, n=r["days_left"]))
+
+        if r["profit_aud"] is not None and r["profit_aud"] < 0:
+            _est_tax_txt = i18n.t("portfolio.tax.est_tax_offset", _lang, amount=_fmt_aud(-r["profit_aud"]))
+        elif r["tax_now"] is None:
+            _est_tax_txt = "–"
+        elif r["is_au"] and r["tax_after_wait"] is not None:
+            _est_tax_txt = i18n.t("portfolio.tax.est_tax_both", _lang,
+                                    now=_fmt_aud(r["tax_now"]), later=_fmt_aud(r["tax_after_wait"]))
+        else:
+            _est_tax_txt = _fmt_aud(r["tax_now"])
+
+        _table_rows.append({
+            i18n.t("portfolio.tax.col_holding", _lang): r["label"],
+            i18n.t("portfolio.tax.col_held_since", _lang): r.get("buy_date") or "–",
+            i18n.t("portfolio.tax.col_cost_base", _lang): _fmt_aud(r["cost_aud"]),
+            i18n.t("portfolio.tax.col_value", _lang): _fmt_aud(r["value_aud"]),
+            i18n.t("portfolio.tax.col_gain", _lang): _fmt_aud(r["profit_aud"]),
+            i18n.t("portfolio.tax.col_discount", _lang): _status,
+            i18n.t("portfolio.tax.col_est_tax", _lang): _est_tax_txt,
+        })
+    st.dataframe(pd.DataFrame(_table_rows), hide_index=True, width='stretch')
+    st.caption(i18n.t("portfolio.tax.fy_rule", _lang))
+    st.caption(i18n.t("portfolio.tax.us_note", _lang))
+
+    try:
+        _csv_rows = list(_table_rows)  # per-holding section
+        _csv_df = pd.DataFrame(_csv_rows)
+        # Realised events section: always empty (see the module comment
+        # block above - no sale/realised-gain records exist anywhere in
+        # portfolio_store.py), appended as its own labelled block so the
+        # CSV's shape doesn't silently change the day that changes.
+        _realised_header = pd.DataFrame([{list(_csv_rows[0].keys())[0]: "-- Realised events this FY: none recorded --"}])
+        _export_df = pd.concat([_csv_df, _realised_header], ignore_index=True)
+        st.download_button(
+            i18n.t("portfolio.tax.csv_button", _lang),
+            data=data_export_engine.table_to_csv_bytes(_export_df),
+            file_name=f"StocksDeepDive_tax_{(active_portfolio or 'all_portfolios').replace(' ', '_')}_"
+                      f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.csv",
+            mime="text/csv",
+            key=_pf_key(active_portfolio, "pf_tax_csv"),
+        )
+    except Exception:
+        pass
+
 
 def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses):
     _is_combined = active_portfolio is None
@@ -19949,6 +20885,16 @@ TOOLS_REGISTRY = [
      "title_key": "tools.utilities.title", "render": "_render_utilities_tool"},
     {"id": "debt_recycling", "icon": "\U0001F4B0",
      "title_key": "tools.debt_recycling.title", "render": "_render_debt_recycling_tool"},
+    # Part 42 (13 Sep 2026): Super & Retirement projector. The mock's own
+    # placement note says "after Insurance" - but Insurance has been
+    # HIDDEN from this registry since the 9 Sep 2026 fix immediately
+    # below (a standing, already-committed decision from before this
+    # Part - not something this Part reopens), so with Insurance absent
+    # from the live tab row, Super lands as tool #4 here, right after
+    # Debt Recycling, rather than #5. See this Part's own report for the
+    # full note.
+    {"id": "super", "icon": "\U0001F3E6",
+     "title_key": "tools.super.title", "render": "_render_super_tool"},
     # 9 Sep 2026 fix (owner decision): Insurance hidden from the Tools hub -
     # even with real published typical-premium figures seeded in, a
     # state-wide average premium proved too noisy to be a trustworthy
@@ -20142,17 +21088,18 @@ def _render_home_spotlight_carousel(key_prefix, slides, initial_idx, dot_active_
     st.html(_html, unsafe_allow_javascript=True)
 
 
-_MONEY_TOOLS_SPOTLIGHT_ORDER = ["budget_planner", "utilities", "debt_recycling"]
+_MONEY_TOOLS_SPOTLIGHT_ORDER = ["budget_planner", "utilities", "debt_recycling", "super"]
 
 
 def _render_tools_home_banner(lang):
     """Home bands rework (owner-approved Option B, mocks/banner_options_
     mock.html): the home banner between the hero/mood area and the
     toolkit row used to permanently promote the Budget Planner alone.
-    It's now a rotating spotlight over all THREE real Money Tools -
-    Budget Planner, Utilities bill check, Cash vs Offset vs Borrow - one
-    featured at a time. The Toll never appears here - per the mock's own
-    correction, it's a My Portfolio service (see
+    It's now a rotating spotlight over the real Money Tools - Budget
+    Planner, Utilities bill check, Cash vs Offset vs Borrow, and (Part
+    42, 13 Sep 2026) Super & Retirement - one featured at a time. The
+    Toll never appears here - per the mock's own correction, it's a My
+    Portfolio service (see
     _render_my_portfolio_spotlight_band below), not a Money Tool.
 
     All three variants render through the SAME static-copy-plus-CTA
@@ -20184,6 +21131,7 @@ def _render_tools_home_banner(lang):
             "utilities": ("utilities_title", "utilities_pitch", "utilities_cta", "utilities_cap"),
             "debt_recycling": ("debt_recycling_title", "debt_recycling_pitch",
                                 "debt_recycling_cta", "debt_recycling_cap"),
+            "super": ("super_title", "super_pitch", "super_cta", "super_cap"),
         }[_featured]
         _slides.append(f"""
 <div class='sdd-spotlight-kicker'>{_bh('spotlight_kicker', n=_i + 1)}</div>
@@ -21082,6 +22030,147 @@ def _render_debt_recycling_tool(email):
             "split_pct": split_pct, "pessimistic_rate": pessimistic_rate_pct,
         })
         st.success(_dl("save_confirm"))
+
+
+def _render_super_tool(email):
+    """Part 42 (13 Sep 2026, mock: section 4 of services_2345_mock.html),
+    tool #4: 🏦 Super & Retirement projector. AU-only v1 - the country
+    toggle exists (per the instruction's own spec) purely to show the
+    one-line "planned" placeholder for "us"; every input below and every
+    call into super_engine.py only ever runs for country=="au".
+
+    Save/load follows the SAME shape and the SAME "widget key vs saved-
+    dict key" discipline as _render_debt_recycling_tool above (_seed()
+    strips the "tools_super_" widget-key prefix to find the bare field
+    name in the saved dict - see that function's own bug-fix comment for
+    why this distinction matters): tools_store.get/save_super_scenario()
+    is a full named-scenario store (mirrors debt recycling's own), but
+    this render only ever uses the ONE default name - the mock shows no
+    scenario switcher for this tool, so v1 doesn't build one (see this
+    Part's own report for the full note)."""
+    _lang = st.session_state.get("lang", "en")
+    _sl = lambda key, **kw: i18n.t(f"tools.super.{key}", _lang, **kw)
+
+    st.markdown(f"### \U0001F3E6 {_sl('title')}")
+    st.caption(_sl("subtitle"))
+
+    tools_store.ensure_default_super_scenario(email)
+    _active = tools_store.list_super_scenario_names(email)[0]
+    _saved = tools_store.get_super_scenario(email, _active) or {}
+    _saved_inputs = _saved.get("inputs") or {}
+
+    def _seed(key, default):
+        _skey = _tools_plan_key(_active, key)
+        if _skey not in st.session_state:
+            st.session_state[_skey] = _saved_inputs.get(key.removeprefix("tools_super_"), default)
+        return _skey
+
+    country = st.radio(
+        "Country", ["au", "us"],
+        format_func=lambda c: _sl(f"country_{c}"),
+        horizontal=True, label_visibility="collapsed", key=_seed("tools_super_country", "au"),
+    )
+
+    if country == "us":
+        st.info(_sl("us_placeholder"))
+        return
+
+    with st.container(border=True):
+        st.markdown(f"**{_sl('inputs_kicker')}**")
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            age = st.number_input(_sl("age_label"), min_value=18, max_value=79, step=1,
+                                  key=_seed("tools_super_age", 38))
+            retirement_age = st.number_input(
+                _sl("retirement_age_label"), min_value=super_engine.MIN_PRESERVATION_AGE,
+                max_value=80, step=1, key=_seed("tools_super_retirement_age", 60),
+            )
+            st.caption(_sl("preservation_note"))
+            balance = st.number_input(_sl("balance_label"), min_value=0.0, step=1000.0,
+                                      format="%.0f", key=_seed("tools_super_balance", 50000.0))
+        with _c2:
+            salary = st.number_input(_sl("salary_label"), min_value=0.0, step=1000.0,
+                                     format="%.0f", key=_seed("tools_super_salary", 100000.0))
+            extra_sacrifice_monthly = st.slider(
+                _sl("sacrifice_label"), min_value=0.0, max_value=3000.0, step=50.0,
+                key=_seed("tools_super_sacrifice", 0.0),
+            )
+            return_pct = st.number_input(_sl("return_label"), min_value=0.0, max_value=15.0,
+                                         step=0.1, format="%.1f", key=_seed("tools_super_return_pct", 7.0))
+            marginal_rate_pct = st.number_input(
+                _sl("marginal_rate_label"), min_value=0.0, max_value=60.0, step=0.5,
+                format="%.1f", key=_seed("tools_super_marginal_rate_pct", 32.5),
+            )
+
+    _proj = super_engine.project_super(
+        age=age, retirement_age=retirement_age, balance=balance, salary=salary,
+        extra_sacrifice_monthly=extra_sacrifice_monthly, return_rate_annual=return_pct / 100.0,
+    )
+
+    if _proj["years"] > 0:
+        _ages = [age] + [p["age"] for p in _proj["baseline"]]
+        _baseline_vals = [balance] + [p["balance"] for p in _proj["baseline"]]
+        _sac_vals = [balance] + [p["balance"] for p in _proj["with_sacrifice"]]
+        _fig = go.Figure()
+        _fig.add_trace(go.Scatter(
+            x=_ages, y=_baseline_vals, mode="lines", name=_sl("label_baseline"),
+            line=dict(color="#5b7290", width=2),
+        ))
+        _fig.add_trace(go.Scatter(
+            x=_ages, y=_sac_vals, mode="lines", name=_sl("label_with_sacrifice"),
+            line=dict(color="#2dd4bf", width=2.5),
+        ))
+        _fig.update_layout(
+            height=300, margin=dict(t=20, b=10, l=10, r=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            yaxis=dict(tickprefix="$", separatethousands=True),
+            xaxis=dict(title=None),
+        )
+        sdd_plotly_chart(_fig)
+        st.caption(_sl(
+            "chart_caption", age=retirement_age,
+            balance_baseline=_fmt_aud(_proj["end_balance_baseline"]),
+            balance_with_sacrifice=_fmt_aud(_proj["end_balance_with_sacrifice"]),
+        ))
+        if extra_sacrifice_monthly > 0:
+            st.markdown(f"**{_sl('delta_caption', sacrifice=_fmt_aud(extra_sacrifice_monthly), delta=_fmt_aud(_proj['delta']))}**")
+
+        if extra_sacrifice_monthly > 0:
+            _wedge = super_engine.tax_wedge(extra_sacrifice_monthly, marginal_rate_pct / 100.0)
+            st.caption(_sl(
+                "tax_wedge_caption", sacrifice=_fmt_aud(extra_sacrifice_monthly),
+                take_home=_fmt_aud(_wedge["take_home_cost"]), marginal=marginal_rate_pct,
+                super_landing=_fmt_aud(_wedge["super_landing"]),
+                head_start=_wedge["head_start_pct"] if _wedge["head_start_pct"] is not None else 0.0,
+            ))
+
+        _cap = super_engine.concessional_cap_check(salary, extra_sacrifice_monthly)
+        if _cap["exceeds"]:
+            st.warning(_sl(
+                "cap_check_warn", used=_fmt_aud(_cap["total"]), cap=_fmt_aud(_cap["cap"]),
+                excess=_fmt_aud(_cap["total"] - _cap["cap"]),
+            ))
+        else:
+            st.caption(_sl("cap_check_ok", used=_fmt_aud(_cap["total"]), cap=_fmt_aud(_cap["cap"])))
+
+        _d293 = super_engine.division293_check(salary, _cap["total"])
+        if _d293["applies"]:
+            st.caption(_sl(
+                "div293_note", combined=_fmt_aud(_d293["combined"]),
+                threshold=_fmt_aud(_d293["threshold"]),
+            ))
+
+    st.caption(_sl("nominal_note"))
+    st.caption(_sl("not_advice"))
+
+    if st.button(_sl("save_button"), key=_tools_plan_key(_active, "tools_super_save_btn")):
+        tools_store.save_super_scenario(email, _active, {
+            "country": country, "age": age, "retirement_age": retirement_age,
+            "balance": balance, "salary": salary,
+            "sacrifice": extra_sacrifice_monthly, "return_pct": return_pct,
+            "marginal_rate_pct": marginal_rate_pct,
+        })
+        st.success(_sl("save_confirm"))
 
 
 # --------------------------------------------------------------------------- #
