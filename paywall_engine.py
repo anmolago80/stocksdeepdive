@@ -60,6 +60,14 @@ import streamlit as st
 
 import email_auth
 
+# Mega-batch Part 35.1: aggregate-only sign-in counting for the new owner
+# Admin Dashboard - see restore_email_session() below for the one call
+# site and admin_metrics_store.py's own docstring for the privacy rules.
+try:
+    import admin_metrics_store
+except Exception:
+    admin_metrics_store = None
+
 
 # -----------------------------------
 # MASTER SWITCH
@@ -296,6 +304,17 @@ def restore_email_session():
                 )
             except Exception:
                 pass
+            # Part 35.1: one sign-in EVENT per browser session, for BOTH
+            # auth methods (this block already runs once per session
+            # regardless of which one signed the visitor in - "works for
+            # Google sign-ins too", per this function's own docstring) -
+            # reusing the _signup_recorded guard immediately below makes
+            # this naturally rerun-safe with no new flag needed.
+            if admin_metrics_store is not None:
+                try:
+                    admin_metrics_store.record_signin(_em)
+                except Exception:
+                    pass
             st.session_state["_signup_recorded"] = True
 
 
@@ -438,6 +457,26 @@ def is_subscribed(email):
         return False
     except Exception:
         return False
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def subscriber_count():
+    """Total ACTIVE subscriptions on the configured price - the Admin
+    Dashboard's "Subscribers" tile (Mega-batch Part 35.2). Same cache/
+    fail-CLOSED-to-zero convention as is_subscribed() above: a Stripe
+    hiccup shows 0 rather than crashing the dashboard."""
+    if not _stripe_configured():
+        return 0
+    try:
+        import stripe
+        stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
+        price_id = os.environ["STRIPE_PRICE_ID"]
+        n = 0
+        for sub in stripe.Subscription.list(status="active", price=price_id, limit=100).auto_paging_iter():
+            n += 1
+        return n
+    except Exception:
+        return 0
 
 
 def create_checkout_url(email):

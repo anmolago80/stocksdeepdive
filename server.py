@@ -56,8 +56,10 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import httpx
@@ -101,6 +103,14 @@ try:
     import metrics_store
 except Exception:  # analytics must never be able to stop the site serving
     metrics_store = None
+
+# Mega-batch Part 35.1: the new owner Admin Dashboard's "site pulse"
+# counters - see admin_metrics_store.py's own docstring for the privacy
+# rules and why this is a separate layer from metrics_store above.
+try:
+    import admin_metrics_store
+except Exception:
+    admin_metrics_store = None
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -209,6 +219,10 @@ async def lifespan(app: FastAPI):
     # Don't block startup on it: /blog must answer even while the app is
     # still importing, and Railway's own health probe shouldn't time out.
     asyncio.create_task(_wait_for_streamlit())
+    # Part 35.1: periodic off-request-path flush of the in-memory pulse
+    # counters - see _pulse_flush_loop's own comment above for why this
+    # can't be a per-request write.
+    _pulse_task = asyncio.create_task(_pulse_flush_loop())
     # AI-readiness roadmap Phase 2: mcp_server.mcp is mounted below as a
     # Streamable HTTP sub-app (app.mount("/mcp", ...)), but Starlette does
     # NOT propagate this app's lifespan into a mounted sub-app on its own -
@@ -222,6 +236,10 @@ async def lifespan(app: FastAPI):
         try:
             yield
         finally:
+            _pulse_task.cancel()
+            with suppress(Exception):
+                await _pulse_task
+            _pulse_flush_once()  # don't lose the last <60s of counts on shutdown
             if _client:
                 await _client.aclose()
             if _streamlit_proc and _streamlit_proc.poll() is None:
@@ -233,6 +251,130 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/pwa", StaticFiles(directory=STATIC_DIR), name="pwa_static")
+
+
+# -----------------------------------------------------------------
+# Mega-batch Part 35.1: fail-open HTTP-level "site pulse" counting.
+#
+# WHY THIS SEES DIFFERENT TRAFFIC THAN metrics_store.bump(): Streamlit is
+# a single-page app - once the browser has the shell, in-session
+# navigation (clicking between pages/tickers) happens over the
+# persistent websocket (see this module's own docstring above), NOT as
+# new HTTP requests through this middleware. So this only ever counts
+# the FIRST HTTP request of a browser session: direct links, fresh
+# loads/reloads, crawlers, and an article's `src=`-tagged click-through -
+# a different, complementary signal from metrics_store's own per-render
+# page-view counter (which fires on every Streamlit rerun/navigation,
+# Streamlit-side). Both are real; neither is a duplicate of the other.
+#
+# WHY IN-MEMORY, NOT A DB WRITE PER REQUEST: this middleware sits in
+# front of EVERY request the whole site serves, so a synchronous SQLite
+# write (or even a read) on that path would be the one place a slow disk
+# could show up as visible added latency for every visitor - directly
+# against the instruction's own "fail-open... adds no measurable
+# latency" rule. Counting a request costs two dict/set operations under
+# a lock; the actual SQLite write happens later, off the request path,
+# on a periodic background task (_pulse_flush_loop, started from
+# lifespan()) - a missed flush (process restart mid-interval) just means
+# that interval's counts are lost, which is the correct fail-open
+# behaviour for a diagnostics counter, not a data-integrity one.
+# -----------------------------------------------------------------
+_PULSE_FLUSH_INTERVAL_SECONDS = 60
+
+_pulse_lock = threading.Lock()
+_pulse_counts: dict[str, int] = {}
+_pulse_known_src_today: set[str] = set()
+_pulse_known_src_day: str | None = None
+
+
+def _pulse_bump(key, n=1):
+    with _pulse_lock:
+        _pulse_counts[key] = _pulse_counts.get(key, 0) + n
+
+
+_PULSE_SRC_SANITIZE_RE = re.compile(r"[^a-z0-9-]")
+
+
+def _pulse_sanitize_src(raw):
+    """Instruction, verbatim: "sanitize: strip non [a-z0-9-], truncate to
+    40 chars" - applied before the tag ever reaches the distinct-tags-
+    per-day cap below, so a hostile/junk src= value can't both flood the
+    cap AND land unsanitized characters in the stored key."""
+    return _PULSE_SRC_SANITIZE_RE.sub("", raw.strip().lower())[:40]
+
+
+def _pulse_src_key(src):
+    """Folds a sanitized `src=` query tag into a bounded 'src:<tag>' key,
+    or 'src:other' once today has already seen
+    admin_metrics_store.MAX_NEW_SRC_TAGS_PER_DAY distinct tags - see that
+    constant's own docstring for why this cap exists and why it's
+    enforced here, in memory, before anything ever reaches SQLite."""
+    global _pulse_known_src_day
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    cap = admin_metrics_store.MAX_NEW_SRC_TAGS_PER_DAY if admin_metrics_store else 50
+    with _pulse_lock:
+        if _pulse_known_src_day != today:
+            _pulse_known_src_day = today
+            _pulse_known_src_today.clear()
+        if src in _pulse_known_src_today:
+            return f"src:{src}"
+        if len(_pulse_known_src_today) >= cap:
+            return "src:other"
+        _pulse_known_src_today.add(src)
+        return f"src:{src}"
+
+
+# Instruction, verbatim: "the ticker for /research?ticker=X and
+# /deep-dive?ticker=X views" - these are the two st.Page url_path values
+# (app.py's PG_RESEARCH/PG_DEEP_DIVE) that take a ?ticker= query param.
+# Same "first HTTP hit of a session only" caveat as every other counter
+# in this middleware - see the module-level comment above _pulse_counts.
+_PULSE_TICKER_VIEW_PATHS = {"/research": "research", "/deep-dive": "deep_dive"}
+
+
+def _pulse_flush_once():
+    with _pulse_lock:
+        if not _pulse_counts:
+            return
+        batch = dict(_pulse_counts)
+        _pulse_counts.clear()
+    if admin_metrics_store is None:
+        return
+    try:
+        admin_metrics_store.bump_many(batch)
+    except Exception:
+        log.warning("pulse metrics flush failed - this interval's counts are lost")
+
+
+async def _pulse_flush_loop():
+    while True:
+        await asyncio.sleep(_PULSE_FLUSH_INTERVAL_SECONDS)
+        _pulse_flush_once()
+
+
+@app.middleware("http")
+async def _pulse_counting_middleware(request: Request, call_next):
+    """Fail-open request counter - see the module-level comment above
+    _pulse_counts for the full design. The try/except around the
+    counting itself (not around call_next) means a bug here can never
+    turn into a 500 for a real visitor and never changes the response
+    that _proxy/every other route already produced."""
+    response = await call_next(request)
+    try:
+        _pulse_bump("requests")
+        if response.status_code >= 500:
+            _pulse_bump("requests_5xx")
+        src = _pulse_sanitize_src(request.query_params.get("src") or "")
+        if src:
+            _pulse_bump(_pulse_src_key(src))
+        _tv_key = _PULSE_TICKER_VIEW_PATHS.get(request.url.path)
+        if _tv_key:
+            ticker = (request.query_params.get("ticker") or "").strip().upper()[:12]
+            if ticker:
+                _pulse_bump(f"ticker_view:{_tv_key}:{ticker}")
+    except Exception:
+        pass
+    return response
 
 
 # -----------------------------------

@@ -449,6 +449,22 @@ def signup_stats():
             "active_7_days": active7}
 
 
+def signups_in_window(start_days_ago, end_days_ago):
+    """COUNT of signups whose first_seen falls in [now - start_days_ago
+    days, now - end_days_ago days) - e.g. (13, 6) is "the 7-day window
+    immediately before the last 7 days", for the Admin Dashboard's
+    week-over-week New accounts delta (Mega-batch Part 35.2). Same
+    aggregate-only, no-identities convention as signup_stats() above."""
+    start = _iso(_now() - timedelta(days=start_days_ago))
+    end = _iso(_now() - timedelta(days=end_days_ago))
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM signups WHERE first_seen >= ? AND first_seen < ?",
+            (start, end),
+        ).fetchone()
+    return row[0] if row else 0
+
+
 def list_signups(limit=1000):
     """The raw per-email sign-up registry - email, method, first_seen,
     last_seen, signin_count, src - newest first. UNLIKE every other
