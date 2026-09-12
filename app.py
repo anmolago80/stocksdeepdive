@@ -3559,12 +3559,14 @@ def _render_header(compact, page_label=None, ultra_compact=False, current=None):
 
 def _dd_gauge(value, title, zones, bar_color="#e6edf5", height=260, axis_range=(0, 100)):
     """
-    One consistent gauge for the Deep Dive tab's per-factor scores
-    (Quality / Psychology / Discovery / Trade Setup / Margin of Safety) -
-    same shape as the Long Score gauge above, parameterised so it isn't
-    rebuilt each time. zones: list of (lo, hi, color) tuples covering
-    axis_range. axis_range defaults to the usual 0-100 score scale; the
-    Margin of Safety dial is the one caller that passes a signed range.
+    Plotly gauge for the Deep Dive tab's per-factor scores. Originally
+    shared by Quality/Psychology/Discovery/Trade Setup/Margin of Safety;
+    Part 43 (12 Sep 2026) moved Quality/Psychology/Discovery to the
+    hand-built _dd_gauge_svg below, and the Moat/Margin of Safety
+    follow-up (13 Sep 2026, see that comment near _dd_gauge_svg) moved
+    Moat and Margin of Safety too - Trade Setup is this function's only
+    remaining caller. zones: list of (lo, hi, color) tuples covering
+    axis_range. axis_range defaults to the usual 0-100 score scale.
 
     The title is drawn as its own paper-space annotation pinned above an
     explicitly-shrunk gauge domain, rather than using the Indicator's
@@ -3661,10 +3663,14 @@ def _dd_moat_pillar_chart(contributions, title, xaxis_title="Points", height=260
     - the same per-term recipe leak Quality/Psychology/Discovery/Value
     Score's own chart had, just never named in 43.1/43.2's own restyle
     scope since Moat uses this separate, unsigned chart builder. Minimal
-    fix here (not the full Option 2 relative-bar treatment those four
-    sections got - that's a larger redesign this Part didn't ask for):
-    drop the per-bar numeric label only. Bar lengths, the fixed axis
-    range and the XRO.AX zero-value fix above are all untouched.
+    fix at the time (not the full Option 2 relative-bar treatment those
+    four sections got): drop the per-bar numeric label only.
+
+    Follow-up (13 Sep 2026, owner request - "update moat score graph
+    like the others"): Moat's own section now calls
+    _dd_relative_drivers_html directly instead of this function, so this
+    builder has no remaining call site. Left defined/unused rather than
+    deleted, same as _dd_contrib_chart above.
     """
     raw_values = list(contributions.values())
     plot_values = [v if v != 0 else 1e-6 for v in raw_values]
@@ -3730,6 +3736,22 @@ def _dd_gate_chart(contributions, title, xaxis_title="Points", height=260):
 # _explain_context_text's own comment below). Zero change to any scoring
 # engine: every value read below is the SAME already-computed dd['...']
 # figure the old gauge/chart also read; only how it's drawn changes.
+#
+# Follow-up (13 Sep 2026, owner request - "update moat score graph like
+# the others and also update MOS graph but in this case keep the
+# numbers"): Moat's gauge AND drivers chart now also use
+# _dd_gauge_svg/_dd_relative_drivers_html, same visual family and same
+# recipe-protection rule as the four sections above (Moat's pillar
+# contributions were never a currency/price fact - they're weighted
+# points same as Quality's, so the no-numbers treatment applies the same
+# way). Margin of Safety's GAUGE also moved to _dd_gauge_svg for visual
+# consistency, but its "Price vs Intrinsic Value" bar chart is
+# deliberately left untouched, numeric labels and all - those are actual
+# AUD/USD price and intrinsic-value figures (public facts already shown
+# elsewhere on the page), not per-term scoring points, so they were
+# never part of the recipe-protection rule to begin with. Trade Setup is
+# the only section still on the old _dd_gauge/_dd_gate_chart pair -
+# not requested here, left alone.
 # ---------------------------------------------------------------------
 
 # One dark->bright 2-stop gradient per zone-colour "family" already used
@@ -9690,10 +9712,11 @@ def page_deep_dive():
 
         def _dd_moat():
             # Moat Score (Phase 1 - display only, NOT part of Value Score -
-            # see moat_engine.py's own module docstring). Same gauge +
-            # "what's driving" chart pattern as Quality/Psychology/Discovery
-            # above, reusing the same _dd_gauge/_dd_contrib_chart helpers -
-            # no new chart style invented for this.
+            # see moat_engine.py's own module docstring). Gauge + "what's
+            # driving" chart use the same _dd_gauge_svg/
+            # _dd_relative_drivers_html pair as Quality/Psychology/
+            # Discovery (Moat/MOS follow-up, 13 Sep 2026 - see the Part 43
+            # comment block above).
             # Conversion pass, Part 1: anchor for the top-of-page chip row -
             # a zero-height marker, not a visible element, so it can't ever
             # shift this section's own layout.
@@ -9743,32 +9766,37 @@ def page_deep_dive():
                         "Not currently part of the Value Score - see Methodology."
                     )
                 )
+                _moat_lang = st.session_state.get("lang", "en")
                 _moat_col1, _moat_col2 = st.columns(2)
                 with _moat_col1:
-                    sdd_plotly_chart(
-                        _dd_gauge(
-                            _dd["moat_gauge"],
-                            i18n.t("dd.gauge.moat", st.session_state.get("lang", "en"), label=_dd["moat_band_label"]),
+                    st.markdown(
+                        _dd_gauge_svg(
+                            _dd["moat"], f"{_dd['moat']:.1f}",
+                            i18n.t("dd.gauge.moat", _moat_lang, label=_dd["moat_band_label"]),
+                            # Chip text uppercased here only - unlike
+                            # quality_label/discovery_label/valuation,
+                            # moat_band_label is stored sentence-case
+                            # ("Strong moat") for use in the subheader/
+                            # captions, which are left untouched.
+                            _dd["moat_band_label"].upper(),
                             [(0, 40, "#43222e"), (40, 70, "#43371c"), (70, 100, "#27584a")],
+                            "moat",
                         ),
+                        unsafe_allow_html=True,
                     )
                 with _moat_col2:
                     if _dd.get("moat_contributions"):
-                        sdd_plotly_chart(
-                            _dd_moat_pillar_chart(
+                        st.markdown(
+                            _dd_relative_drivers_html(
                                 _dd["moat_contributions"],
-                                i18n.t("dd.chart.driving_moat", st.session_state.get("lang", "en")),
-                                xaxis_title=i18n.t("dd.chart.points_moat", st.session_state.get("lang", "en")),
+                                i18n.t("dd.chart.driving_moat", _moat_lang),
+                                _moat_lang,
                             ),
-                            # Part 43 (43.3.4 grep finding): override the
-                            # auto text-equivalent, which reads this bar
-                            # chart's own raw (leaked) point values - see
-                            # _dd_gate_text_description's near-identical
-                            # comment on the same underlying issue.
-                            text_description=_dd_drivers_text_description(
-                                _dd["moat_contributions"], st.session_state.get("lang", "en"),
-                            ),
+                            unsafe_allow_html=True,
                         )
+                        with st.expander("Text description of this chart", expanded=False):
+                            st.caption(_dd_drivers_text_description(_dd["moat_contributions"], _moat_lang))
+                        st.caption(i18n.t("dd.driver.caption", _moat_lang))
 
 
         def _dd_valuation():
@@ -9785,26 +9813,35 @@ def page_deep_dive():
                 st.caption(i18n.t("dd.plain.mos", st.session_state.get("lang", "en")))
                 _render_explain_popover(_dd, "margin_of_safety")
                 _mos_gauge_val = max(-50, min(_mos_val, 100))
+                _mos_lang = st.session_state.get("lang", "en")
                 _mos_col1, _mos_col2 = st.columns(2)
                 with _mos_col1:
-                    sdd_plotly_chart(
-                        _dd_gauge(
-                            _mos_gauge_val,
-                            i18n.t("dd.gauge.mos", st.session_state.get("lang", "en"), label=_dd["valuation"]),
-                            # Audit fix 5.6: the underlying label logic
-                            # genuinely is 3-bucket (UNDERVALUED/FAIR/EXPENSIVE
-                            # - see the caption right below), but the gauge
-                            # used to draw the >=25% zone as two slightly
-                            # different green shades (25-50, 50-100), which
-                            # the caption doesn't describe as two separate
-                            # things. One shade for the whole >=25% zone now
-                            # matches the caption exactly - cosmetic only, the
-                            # 25% threshold and the UNDERVALUED/FAIR/EXPENSIVE
-                            # labels themselves are unchanged.
+                    st.markdown(
+                        _dd_gauge_svg(
+                            _mos_gauge_val, f"{_mos_val:+.1f}%",
+                            # No label= kwarg here (see dd.gauge.mos's own
+                            # i18n comment) - the verdict is shown in the
+                            # chip below, not repeated in the sublabel.
+                            i18n.t("dd.gauge.mos", _mos_lang),
+                            _dd["valuation"],
+                            # Audit fix 5.6 (kept through the Moat/MOS
+                            # follow-up, 13 Sep 2026): the underlying label
+                            # logic genuinely is 3-bucket (UNDERVALUED/FAIR/
+                            # EXPENSIVE - see the caption right below), so
+                            # the >=25% zone stays a single shade rather
+                            # than two - cosmetic only, unrelated to this
+                            # gauge's own restyle. Note: unlike the other
+                            # restyled gauges, this one's numeric display
+                            # ("+69.5%") is a real, public percentage fact
+                            # (price discount to intrinsic value) - nothing
+                            # about MOS's own gauge number was ever part of
+                            # the recipe-protection rule.
                             [(-50, 0, "#43222e"), (0, 25, "#43371c"),
                              (25, 100, "#1e3d34")],
+                            "mos",
                             axis_range=(-50, 100),
                         ),
+                        unsafe_allow_html=True,
                     )
                     if _mos_val != _mos_gauge_val:
                         st.caption("Dial capped at -50%/100% for readability.")

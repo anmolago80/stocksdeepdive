@@ -204,7 +204,14 @@ EN = {
     "dd.gauge.psychology": "Psychology - {label}",
     "dd.gauge.discovery": "Discovery - {label}",
     "dd.gauge.moat": "Moat - {label}",
-    "dd.gauge.mos": "Margin of Safety - {label}",
+    # Moat/MOS follow-up (13 Sep 2026): no {label} suffix here (unlike
+    # Quality/Psychology/Discovery/Moat) - "Margin of Safety - UNDERVALUED"
+    # overflowed the gauge's own 220-unit-wide SVG viewBox and got clipped
+    # (caught via a visual preview, not by any of these unit checks -
+    # nothing checks rendered TEXT WIDTH). Same fix already used by
+    # dd.gauge.value_score above: drop the verdict from the sublabel since
+    # it's already shown in the chip right below the gauge.
+    "dd.gauge.mos": "Margin of Safety",
     "dd.gauge.value_score": "Value Score",
     "dd.gauge.long_score": "Long Score - {label}",
     # "Trade Setup" is kept as-is in both languages - the already-shipped
@@ -340,7 +347,10 @@ EN = {
     "dd.chart.points_psychology": "Points toward Psychology",
     "dd.chart.driving_discovery": "What's driving Discovery · relative influence",
     "dd.chart.points_discovery": "Points toward Discovery",
-    "dd.chart.driving_moat": "What's driving Moat (durability of the return)",
+    # Moat/MOS follow-up (13 Sep 2026): Moat's header now matches the
+    # same "· relative influence" wording as the four sections above,
+    # since Moat's own chart moved to the same Option 2 style.
+    "dd.chart.driving_moat": "What's driving Moat · relative influence",
     "dd.chart.points_moat": "Points toward Moat",
     "dd.chart.driving_trade_setup": "What's driving the Trade Setup Score",
     "dd.chart.points_trade_setup": "Points toward Setup Score",
@@ -2587,7 +2597,7 @@ ES = {
     "dd.gauge.psychology": "Psicología - {label}",
     "dd.gauge.discovery": "Descubrimiento - {label}",
     "dd.gauge.moat": "Foso - {label}",
-    "dd.gauge.mos": "Margen de Seguridad - {label}",
+    "dd.gauge.mos": "Margen de Seguridad",
     "dd.gauge.value_score": "Puntaje Value",
     "dd.gauge.long_score": "Puntaje Long - {label}",
     "dd.gauge.trade_setup": "Trade Setup - {label}",
@@ -2692,7 +2702,7 @@ ES = {
     "dd.chart.points_psychology": "Puntos hacia Psicología",
     "dd.chart.driving_discovery": "Qué impulsa el Descubrimiento · influencia relativa",
     "dd.chart.points_discovery": "Puntos hacia Descubrimiento",
-    "dd.chart.driving_moat": "Qué impulsa el Foso (durabilidad del retorno)",
+    "dd.chart.driving_moat": "Qué impulsa el Foso · influencia relativa",
     "dd.chart.points_moat": "Puntos hacia el Foso",
     "dd.chart.driving_trade_setup": "Qué impulsa el puntaje de Trade Setup",
     "dd.chart.points_trade_setup": "Puntos hacia el puntaje de Trade Setup",
