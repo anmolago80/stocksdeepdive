@@ -537,6 +537,73 @@ EN = {
         "stop these, remove all stocks from your watchlist on the site."
     ),
 
+    # Mega-batch Part 36: the "get the next deep dive by email" capture
+    # box (research page bottom / blog post bottom / once on the home
+    # page - newsletter_store.py) plus its confirm/notify/unsubscribe
+    # emails and landing pages. Deliberately separate key family from
+    # "blog.subscribe.*" above (the older, still-live follow_store.
+    # ALL_TICKERS box) - see newsletter_store.py's own module docstring
+    # for why these are two distinct mechanisms today.
+    "email_signup.heading": "\U0001F4EC Get the next deep dive by email",
+    "email_signup.sub": (
+        "One email when new research or a new post goes live. No spam, "
+        "unsubscribe anytime."
+    ),
+    "email_signup.email_placeholder": "you@example.com",
+    "email_signup.submit_button": "Notify me",
+    "email_signup.subscribe_button": "Subscribe",
+    "email_signup.signed_in_confirmed": "You're subscribed with {email}.",
+    "email_signup.signed_in_pending": (
+        "Check your inbox to confirm {email} - we've sent a confirmation "
+        "link."
+    ),
+    "email_signup.invalid_email": "Enter a valid email address.",
+    "email_signup.not_configured": "Email signup isn't available right now.",
+    "email_signup.too_many": "Too many attempts today - please try again tomorrow.",
+    "email_signup.send_failed": "Couldn't send the confirmation email - please try again.",
+    "email_signup.already_confirmed": "You're already on the list.",
+    "email_signup.pending_resent": (
+        "You're already on the list - check your inbox to confirm."
+    ),
+    "email_signup.sent": "Check your inbox and click the link to confirm.",
+
+    "email.newsletter_confirm.subject": "Confirm your StocksDeepDive email updates",
+    "email.newsletter_confirm.heading": "Confirm your email",
+    "email.newsletter_confirm.body": (
+        "Click below to start getting an email when new research or a "
+        "new post goes live."
+    ),
+    "email.newsletter_confirm.button": "Confirm subscription",
+    "email.newsletter_confirm.ignore": (
+        "If you didn't request this, just ignore this email - you won't "
+        "be subscribed unless you click the link."
+    ),
+
+    "email.newsletter_notify.subject": "New on StocksDeepDive: {title}",
+    "email.newsletter_notify.heading": "New post",
+    "email.newsletter_notify.cta": "Read it →",
+    "email.newsletter_notify.footer": (
+        "You're receiving this because {email} subscribed to StocksDeepDive "
+        "email updates."
+    ),
+    "email.newsletter_notify.unsubscribe": "Unsubscribe",
+
+    "newsletter_confirm_page.body": (
+        "You're on the list - we'll email you when new research or a new "
+        "post goes live."
+    ),
+    "newsletter_confirm_page.expired": (
+        "This confirmation link has expired. Please sign up again."
+    ),
+    "newsletter_confirm_page.invalid": "This confirmation link isn't valid.",
+    "newsletter_confirm_page.back": "Back to StocksDeepDive",
+
+    "newsletter_unsub_page.body": "You won't receive any more StocksDeepDive emails.",
+    "newsletter_unsub_page.invalid": (
+        "This unsubscribe link isn't valid (it may already have been used)."
+    ),
+    "newsletter_unsub_page.back": "Back to StocksDeepDive",
+
     # Español completion, Part 2: metric alerts ("condition met" email +
     # push template, alert_engine.py). These are a NEW, email-only label
     # lookup ("alert.metric.*") - deliberately separate from alert_engine.
@@ -2715,6 +2782,67 @@ ES = {
         "estando conectado. Para dejar de recibirlo, elimina todas las "
         "acciones de tu lista de seguimiento en el sitio."
     ),
+
+    "email_signup.heading": "\U0001F4EC Recibe el próximo análisis por correo",
+    "email_signup.sub": (
+        "Un correo cuando se publique un nuevo análisis o una nueva "
+        "entrada. Sin spam, cancela cuando quieras."
+    ),
+    "email_signup.email_placeholder": "tucorreo@ejemplo.com",
+    "email_signup.submit_button": "Avisarme",
+    "email_signup.subscribe_button": "Suscribirse",
+    "email_signup.signed_in_confirmed": "Estás suscrito con {email}.",
+    "email_signup.signed_in_pending": (
+        "Revisa tu bandeja de entrada para confirmar {email} - te enviamos "
+        "un enlace de confirmación."
+    ),
+    "email_signup.invalid_email": "Ingresa una dirección de correo válida.",
+    "email_signup.not_configured": "La suscripción por correo no está disponible en este momento.",
+    "email_signup.too_many": "Demasiados intentos hoy - vuelve a intentarlo mañana.",
+    "email_signup.send_failed": "No se pudo enviar el correo de confirmación - vuelve a intentarlo.",
+    "email_signup.already_confirmed": "Ya estás en la lista.",
+    "email_signup.pending_resent": (
+        "Ya estás en la lista - revisa tu bandeja de entrada para confirmar."
+    ),
+    "email_signup.sent": "Revisa tu bandeja de entrada y haz clic en el enlace para confirmar.",
+
+    "email.newsletter_confirm.subject": "Confirma tus actualizaciones por correo de StocksDeepDive",
+    "email.newsletter_confirm.heading": "Confirma tu correo",
+    "email.newsletter_confirm.body": (
+        "Haz clic abajo para empezar a recibir un correo cuando se publique "
+        "un nuevo análisis o una nueva entrada."
+    ),
+    "email.newsletter_confirm.button": "Confirmar suscripción",
+    "email.newsletter_confirm.ignore": (
+        "Si no solicitaste esto, ignora este correo - no quedarás suscrito "
+        "a menos que hagas clic en el enlace."
+    ),
+
+    "email.newsletter_notify.subject": "Nuevo en StocksDeepDive: {title}",
+    "email.newsletter_notify.heading": "Nueva entrada",
+    "email.newsletter_notify.cta": "Leerla →",
+    "email.newsletter_notify.footer": (
+        "Recibes esto porque {email} se suscribió a las actualizaciones por "
+        "correo de StocksDeepDive."
+    ),
+    "email.newsletter_notify.unsubscribe": "Cancelar suscripción",
+
+    "newsletter_confirm_page.body": (
+        "Ya estás en la lista - te escribiremos cuando se publique un "
+        "nuevo análisis o una nueva entrada."
+    ),
+    "newsletter_confirm_page.expired": (
+        "Este enlace de confirmación ha expirado. Vuelve a suscribirte."
+    ),
+    "newsletter_confirm_page.invalid": "Este enlace de confirmación no es válido.",
+    "newsletter_confirm_page.back": "Volver a StocksDeepDive",
+
+    "newsletter_unsub_page.body": "No recibirás más correos de StocksDeepDive.",
+    "newsletter_unsub_page.invalid": (
+        "Este enlace para cancelar la suscripción no es válido (puede que "
+        "ya se haya usado)."
+    ),
+    "newsletter_unsub_page.back": "Volver a StocksDeepDive",
 
     "alert.metric.mos_pct": "MOS",
     "alert.metric.value_score": "Puntaje Value",

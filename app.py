@@ -117,6 +117,10 @@ import push_store
 # page_admin_dashboard()/_render_view_badge() below for the call sites.
 import admin_metrics_store
 
+# Mega-batch Part 36: the "get the next deep dive by email" list - see
+# newsletter_store.py's own module docstring.
+import newsletter_store
+
 # Services batch, Part 1: metric alerts - no Anthropic API call anywhere in
 # this feature, see alert_engine.py's own docstring.
 import alert_store
@@ -941,6 +945,71 @@ _TOOL_OPEN_LABELS = {
     "debt_recycling": "Cash vs Offset vs Borrow",
     "insurance": "Insurance bill check",
 }
+
+
+def _render_email_capture_box(key_prefix, lang="en"):
+    """Mega-batch Part 36: the "get the next deep dive by email" capture
+    box - called once at the bottom of the research page and once on the
+    home page (right after Tonight's top 5). The blog-post placement is
+    separate and server-rendered (blog_render._newsletter_capture_html +
+    server.py's /newsletter/subscribe route) since a blog post has no
+    Streamlit runtime at all - see that function's own docstring for why
+    it's additive alongside the blog's older, separate follow_store-based
+    box rather than replacing it.
+
+    Double opt-in applies even to the signed-in one-click path below -
+    see newsletter_store.subscribe()'s own docstring for why this hard
+    rule is applied with no signed-in carve-out (flagged as an
+    interpretation call in the deployment report).
+
+    key_prefix must be unique per call site ("research"/"home") so the
+    two placements never collide on the same widget/session-state keys
+    within one browser session. Per-IP throttling is deliberately not
+    threaded through here, matching the exact precedent already set by
+    _render_follow_control/_render_research_conversion_hook's own
+    email_auth.send_code() calls just above/below in this file (neither
+    passes client_ip either) - newsletter_store's per-EMAIL daily cap
+    still applies regardless."""
+    _email = paywall_engine.current_user_email()
+    _msg_key = f"{key_prefix}_newsletter_msg"
+    _ok_key = f"{key_prefix}_newsletter_ok"
+
+    with st.container(border=True, key=f"{key_prefix}_newsletter_box"):
+        st.markdown(f"**{i18n.t('email_signup.heading', lang)}**")
+        st.caption(i18n.t("email_signup.sub", lang))
+
+        if _email:
+            try:
+                _status = newsletter_store.subscription_status(_email)
+            except Exception:
+                _status = None
+            if _status == "confirmed":
+                st.success(i18n.t("email_signup.signed_in_confirmed", lang, email=_email))
+            elif _status == "pending":
+                st.info(i18n.t("email_signup.signed_in_pending", lang, email=_email))
+            elif st.button(i18n.t("email_signup.subscribe_button", lang),
+                           key=f"{key_prefix}_newsletter_subscribe_btn"):
+                _ok, _msg = newsletter_store.subscribe(
+                    _email, lang=lang, src=st.session_state.get("first_src"))
+                st.session_state[_ok_key], st.session_state[_msg_key] = _ok, _msg
+        else:
+            _c1, _c2 = st.columns([3, 2])
+            with _c1:
+                _em_in = st.text_input(
+                    "Email address", key=f"{key_prefix}_newsletter_email",
+                    placeholder=i18n.t("email_signup.email_placeholder", lang),
+                    label_visibility="collapsed",
+                )
+            with _c2:
+                if st.button(i18n.t("email_signup.submit_button", lang),
+                             key=f"{key_prefix}_newsletter_submit", width='stretch'):
+                    _ok, _msg = newsletter_store.subscribe(
+                        _em_in, lang=lang, src=st.session_state.get("first_src"))
+                    st.session_state[_ok_key], st.session_state[_msg_key] = _ok, _msg
+
+        if st.session_state.get(_msg_key):
+            (st.success if st.session_state.get(_ok_key) else st.error)(
+                st.session_state[_msg_key])
 
 
 def _save_live_snapshot(dd, signal):
@@ -6243,6 +6312,13 @@ def page_research():
 
     _render_research_detail(ticker, data, section_order, _rc_lang)
 
+    # Mega-batch Part 36: once at the bottom of every public research
+    # page view, regardless of which tab is open (_render_research_
+    # detail itself has no single "bottom" - see that function's own
+    # docstring - so this sits right after it returns instead).
+    st.markdown("<div style='margin-top:14px;'></div>", unsafe_allow_html=True)
+    _render_email_capture_box("research", _rc_lang)
+
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _home_top5_by_country():
@@ -6781,6 +6857,12 @@ def page_home():
             ),
             unsafe_allow_html=True,
         )
+
+    # Mega-batch Part 36: once on the home page, right after Tonight's
+    # top 5 - per the instruction's own explicit placement - and before
+    # the My Portfolio spotlight band below.
+    st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
+    _render_email_capture_box("home", _home_lang)
 
     # ---- 💼 My Portfolio services band (home bands rework, owner-
     # approved Option B, mocks/banner_options_mock.html) - sits right
@@ -21242,6 +21324,11 @@ The weekly digest is sent (via Mailgun) only to signed-in users who have saved a
 watchlist. To stop it, remove all stocks from your watchlist, or email us and we'll
 remove you.
 
+If you sign up for the "get the next deep dive by email" list, we store your email
+address and confirmation status only for that list, only send it when new research
+or a new post goes live, and every email has a one-click unsubscribe link that
+removes you immediately, no sign-in needed.
+
 #### Data retention and deletion
 
 Watchlists and feedback are kept while your account is active. Email us from your
@@ -22058,8 +22145,20 @@ def page_blog_admin():
             _remove_hero = st.checkbox("Remove the current image",
                                        key="blog_f_hero_remove")
 
+        # Mega-batch Part 36.2: "Send to subscribers" - owner-triggered
+        # ONLY, never automatic on save/publish, and only offered once a
+        # post is actually published (a draft has no public URL to send).
+        # Computed before the button row below so _b4 knows whether to
+        # show the button or the "already sent" caption in its place.
+        _news_sent_row = None
+        if selected and selected.get("status") == blog_store.STATUS_PUBLISHED:
+            try:
+                _news_sent_row = newsletter_store.send_status(selected_id)
+            except Exception:
+                _news_sent_row = None
+
         st.markdown("")
-        _b1, _b2, _b3 = st.columns([1.2, 1, 1])
+        _b1, _b2, _b3, _b4 = st.columns([1.2, 1, 1, 1.5])
         with _b1:
             _save = st.button("Save", type="primary", width='stretch',
                               key="blog_save")
@@ -22072,6 +22171,71 @@ def page_blog_admin():
                                     key="blog_delete")
             else:
                 _delete = False
+        with _b4:
+            _send_clicked = False
+            if selected and selected.get("status") == blog_store.STATUS_PUBLISHED:
+                if _news_sent_row:
+                    # Literal instruction: "a post already sent shows
+                    # 'sent to N subscribers on <date>' instead of the
+                    # button" - the primary button disappears entirely;
+                    # re-sending is the deliberately-separate expander
+                    # below, not this row.
+                    st.caption(
+                        f"Sent to {_news_sent_row['recipient_count']} "
+                        f"subscriber(s) on "
+                        f"{_admin_fmt_dt(_news_sent_row['sent_at']) or _news_sent_row['sent_at']}"
+                        + (f" - {_news_sent_row['failed_count']} failed"
+                           if _news_sent_row["failed_count"] else "")
+                    )
+                else:
+                    _send_clicked = st.button(
+                        "Send to subscribers", width='stretch',
+                        key="blog_send_subs",
+                    )
+
+        if (selected and selected.get("status") == blog_store.STATUS_PUBLISHED
+                and _news_sent_row):
+            with st.expander("Re-send to subscribers"):
+                st.caption(
+                    "A deliberate re-send - use this only if the post "
+                    "genuinely needs re-sending (e.g. it was corrected "
+                    "after the first send)."
+                )
+                if st.button("Re-send to subscribers", key="blog_resend_subs"):
+                    st.session_state["blog_send_confirm_id"] = selected_id
+
+        if _send_clicked:
+            st.session_state["blog_send_confirm_id"] = selected_id
+
+        if st.session_state.get("blog_send_confirm_id") == selected_id and selected_id:
+            try:
+                _n_confirmed = newsletter_store.confirmed_count()
+            except Exception:
+                _n_confirmed = 0
+            st.warning(
+                f"This will email {_n_confirmed} confirmed subscriber(s) "
+                f"about “{selected.get('title', '')}”. This cannot be undone."
+            )
+            _cc1, _cc2 = st.columns(2)
+            with _cc1:
+                if st.button("Confirm send", type="primary", width='stretch',
+                             key="blog_send_confirm_go"):
+                    with st.spinner(f"Sending to {_n_confirmed} subscriber(s)..."):
+                        _news_summary = newsletter_store.send_post_notification(
+                            selected, log=print)
+                    st.session_state.pop("blog_send_confirm_id", None)
+                    st.success(
+                        f"Sent to {_news_summary['sent']} of "
+                        f"{_news_summary['total']} confirmed subscriber(s)"
+                        + (f" - {_news_summary['failed']} failed"
+                           if _news_summary["failed"] else "")
+                    )
+                    st.rerun()
+            with _cc2:
+                if st.button("Cancel", width='stretch',
+                             key="blog_send_confirm_cancel"):
+                    st.session_state.pop("blog_send_confirm_id", None)
+                    st.rerun()
 
         if _delete:
             if st.session_state.get("blog_confirm_delete") == selected_id:
@@ -22541,6 +22705,43 @@ def page_admin_dashboard():
                       delta_color="off")
         except Exception:
             st.metric("Push subscribers", "unavailable")
+
+    # --- NEWSLETTER (Mega-batch Part 36.3) ------------------------------
+    # Counts only - no subscriber-list UI anywhere on this page, per the
+    # instruction's own hard rule (the data lives in the DB the owner
+    # already controls). Named "Email list" rather than "Subscribers" to
+    # avoid colliding with the SITE PULSE row's own "Subscribers" tile
+    # above, which is the unrelated paid-Stripe-subscription count
+    # (paywall_engine.subscriber_count()) - flagged in the deployment
+    # report as a naming collision worth the owner's attention.
+    st.markdown("---")
+    st.markdown("### Email list")
+    _n1, _n2, _n3 = st.columns(3)
+    with _n1:
+        try:
+            st.metric("Confirmed", newsletter_store.confirmed_count())
+        except Exception:
+            st.metric("Confirmed", "unavailable")
+    with _n2:
+        try:
+            st.metric("Pending confirmation", newsletter_store.pending_count())
+        except Exception:
+            st.metric("Pending confirmation", "unavailable")
+    with _n3:
+        try:
+            _last_send = newsletter_store.last_send_summary()
+        except Exception:
+            _last_send = None
+        if _last_send:
+            st.metric("Last send", _admin_fmt_dt(_last_send["sent_at"]) or "-")
+            st.caption(
+                f"“{_last_send.get('title', '')}” - "
+                f"{_last_send['recipient_count']} sent"
+                + (f", {_last_send['failed_count']} failed"
+                   if _last_send["failed_count"] else "")
+            )
+        else:
+            st.metric("Last send", "none yet")
 
     # --- ACCOUNTS & TRAFFIC DETAIL (everything the old Stats popover
     # showed that doesn't have its own tile above - kept in full so

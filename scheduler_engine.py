@@ -145,6 +145,14 @@ try:
 except Exception:
     admin_metrics_store = None
 
+# Mega-batch Part 36: the newsletter list's own nightly retention prune
+# (newsletter_store.prune_stale_unconfirmed) - same guarded-import shape
+# as admin_metrics_store above, wired into _run_volume_check() below.
+try:
+    import newsletter_store
+except Exception:
+    newsletter_store = None
+
 
 def _data_dir():
     return os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
@@ -675,6 +683,14 @@ def _run_volume_check(log):
             admin_metrics_store.prune_old_counters(log=log)
         except Exception as e:
             log(f"[scheduler] pulse-counter prune failed: {e}")
+    # Mega-batch Part 36: same nightly slot, same "log on failure only,
+    # never raise" contract - see newsletter_store.prune_stale_
+    # unconfirmed's own docstring for exactly what it deletes.
+    if newsletter_store is not None:
+        try:
+            newsletter_store.prune_stale_unconfirmed(log=log)
+        except Exception as e:
+            log(f"[scheduler] newsletter prune failed: {e}")
 
 
 def _universes_needing_scan(cfg):

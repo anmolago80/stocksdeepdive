@@ -73,6 +73,7 @@ import blog_render
 import blog_store
 import email_auth
 import follow_store
+import newsletter_store
 import nightly_scan
 import push_send
 import push_store
@@ -1023,19 +1024,23 @@ async def blog_post(slug: str, request: Request):
     comments = blog_comments_store.approved_for(slug)
     comment_status = request.query_params.get("comment")
     comment_msg = request.query_params.get("msg")
+    newsletter_status = request.query_params.get("newsletter")
+    newsletter_msg = request.query_params.get("nmsg")
     signed_in_email = _signed_in_email(request)
     html_out = blog_render.render_post(
         post, base, prev_post=older, next_post=newer, comments=comments,
         comment_status=comment_status, comment_msg=comment_msg,
         signed_in_email=signed_in_email,
         src=request.query_params.get("src"),
+        newsletter_status=newsletter_status, newsletter_msg=newsletter_msg,
     )
     # A page carrying a one-time "thanks"/error banner from a just-submitted
-    # comment must never be cached and handed to the next visitor. Also
-    # never cached for a signed-in visitor - the Part 3 subscribe box's
-    # "You're on the list"/hidden state is visitor-specific, same reasoning
-    # as the comment banner just above.
-    cache = ("no-store" if (comment_status or signed_in_email)
+    # comment (or, Part 36, a just-submitted newsletter signup) must never
+    # be cached and handed to the next visitor. Also never cached for a
+    # signed-in visitor - the Part 3 subscribe box's "You're on the list"/
+    # hidden state and Part 36's own signed-in confirmed/pending state are
+    # both visitor-specific, same reasoning as the comment banner just above.
+    cache = ("no-store" if (comment_status or newsletter_status or signed_in_email)
              else "public, max-age=300")
     return _html(html_out, cache=cache)
 
@@ -1119,6 +1124,72 @@ async def blog_comment_submit(slug: str, request: Request):
         msg = quote(result.get("reason") or "Something went wrong.")
         target = f"/blog/{slug}?comment=error&msg={msg}#comments"
     return RedirectResponse(target, status_code=303)
+
+
+@app.post("/newsletter/subscribe", include_in_schema=False)
+async def newsletter_subscribe(request: Request):
+    """Mega-batch Part 36: plain HTML form POST from blog_render._
+    newsletter_capture_html (and the equivalent Streamlit-side box on the
+    research/home pages calls newsletter_store.subscribe() directly - it
+    has a live Streamlit runtime and needs no HTTP round trip). Same
+    _same_origin CSRF gate as blog_comment_submit just above - a normal
+    browser form submit from a page this site served sends a Referer
+    naming this host."""
+    if not _same_origin(request):
+        return Response(status_code=403)
+    try:
+        form = await request.form()
+    except Exception:
+        form = {}
+    email = str(form.get("email") or "").strip()
+    lang = str(form.get("lang") or "en").strip().lower()
+    src = str(form.get("src") or "").strip() or None
+    honeypot = str(form.get("website") or "").strip()
+    return_to = str(form.get("return_to") or "/blog").strip()
+    if not return_to.startswith("/"):
+        return_to = "/blog"
+
+    from urllib.parse import quote
+    if honeypot:
+        # Bot-filled hidden field - pretend success, never touch Mailgun
+        # or the DB for it. Same "silently dropped" contract as the
+        # sign-in popover's own honeypot (paywall_engine._render_signin_
+        # control, see email_auth.py's module docstring).
+        sep = "&" if "?" in return_to else "?"
+        return RedirectResponse(f"{return_to}{sep}newsletter=sent", status_code=303)
+
+    ok, msg = newsletter_store.subscribe(email, lang=lang, src=src,
+                                          client_ip=_client_ip(request))
+    sep = "&" if "?" in return_to else "?"
+    flag = "sent" if ok else "error"
+    target = f"{return_to}{sep}newsletter={flag}&nmsg={quote(msg)}"
+    return RedirectResponse(target, status_code=303)
+
+
+@app.get("/newsletter/confirm", include_in_schema=False)
+async def newsletter_confirm(request: Request):
+    """Mega-batch Part 36: the emailed confirm link. GET (a clicked email
+    link is inherently GET) - confirm() itself is idempotent, so a mail
+    client's link-prefetch hitting this harmlessly re-confirms an already-
+    confirmed row rather than doing anything destructive."""
+    token = (request.query_params.get("token") or "").strip()
+    ok, msg, lang = newsletter_store.confirm(token)
+    html_out = blog_render.render_newsletter_confirm(_base_url(request), ok, msg, lang=lang)
+    return _html(html_out, cache="no-store")
+
+
+@app.get("/newsletter/unsubscribe", include_in_schema=False)
+async def newsletter_unsubscribe(request: Request):
+    """Mega-batch Part 36: one-click, immediate, no sign-in (Verify 3) -
+    the DELETE happens on this GET itself, per the instruction's own
+    "instantly" requirement, rather than requiring a second confirm
+    click that would contradict "one-click". A mail client's link-
+    prefetch unsubscribing someone early is a known, accepted trade-off
+    of that choice - flagged in the deployment report."""
+    token = (request.query_params.get("token") or "").strip()
+    ok, msg, lang = newsletter_store.unsubscribe(token)
+    html_out = blog_render.render_newsletter_unsubscribe(_base_url(request), ok, msg, lang=lang)
+    return _html(html_out, cache="no-store")
 
 
 # -----------------------------------

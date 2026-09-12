@@ -111,6 +111,13 @@ CRITICAL_TABLES = [
     "checklists", "ai_usage", "ai_settings", "push_subscriptions",
     "card_blurbs", "author_positions",
     "blog_posts", "blog_comments", "blog_redirects", "followers",
+    # Mega-batch Part 36: the newsletter list is user-authored consent
+    # data (an email + its confirmed/pending state), not a re-fetchable
+    # cache - same "must survive the critical-tables-only fallback" bucket
+    # as signups/auth_codes/auth_sessions above. newsletter_sends (per-
+    # post send stats) is small and re-derivable-in-spirit, so it's left
+    # out here the same way e.g. metrics tables are.
+    "newsletter_subscribers",
 ]
 
 

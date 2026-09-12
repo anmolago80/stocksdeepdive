@@ -29,6 +29,7 @@ from xml.sax.saxutils import escape as xml_escape
 
 import blog_store
 import follow_store
+import newsletter_store
 import snapshot_store
 
 SITE_NAME = "StocksDeepDive"
@@ -669,6 +670,133 @@ def _blog_subscribe_html(signed_in_email=None, src=None, lang="en"):
 }})();
 </script>
 """
+
+
+def _newsletter_capture_html(signed_in_email=None, lang="en", src=None,
+                             status=None, msg=None, return_to="/blog"):
+    """Mega-batch Part 36: the site-wide "get the next deep dive by
+    email" capture box, additive alongside the older _blog_subscribe_html
+    above (see newsletter_store.py's own module docstring for why these
+    are two separate mechanisms today, not one - flagged for the owner
+    in the Part 36 deployment report rather than silently merged or
+    removed).
+
+    Unlike _blog_subscribe_html's two-step fetch()+code flow, this is a
+    single plain HTML <form method="POST" action="/newsletter/subscribe">
+    - one field, one click, confirmation happens by clicking a link in an
+    emailed message rather than typing a code back into the page. Same
+    same-origin CSRF gate and honeypot pattern as the comment form
+    (server.py's blog_comment_submit) rather than the JS-fetch pattern,
+    since a plain form needs no JS at all to work.
+
+    status/msg: the one-time outcome flag server.py's post-submit
+    redirect carries back (?newsletter=sent|error&nmsg=...) - shown once,
+    matching the comment form's own ?comment=thanks/error convention.
+    Never cached - see blog_post()'s cache header."""
+    import i18n
+    e = html.escape
+    lang = lang if lang in ("en", "es") else "en"
+
+    banner = ""
+    if status == "sent":
+        banner = (f'<div class="meta" style="color:#2dd4bf;margin:0 0 10px">'
+                  f'{e(msg or "")}</div>')
+    elif status == "error":
+        banner = (f'<div class="meta" style="color:#fb7185;margin:0 0 10px">'
+                  f'{e(msg or "")}</div>')
+
+    if signed_in_email:
+        try:
+            sub_status = newsletter_store.subscription_status(signed_in_email)
+        except Exception:
+            sub_status = None
+        if sub_status == "confirmed":
+            body = (f'<p>{i18n.t("email_signup.signed_in_confirmed", lang, email=e(signed_in_email))}</p>')
+        elif sub_status == "pending":
+            body = (f'<p>{i18n.t("email_signup.signed_in_pending", lang, email=e(signed_in_email))}</p>')
+        else:
+            body = f"""
+    <form method="POST" action="/newsletter/subscribe" style="margin-top:10px">
+      <input type="hidden" name="email" value="{e(signed_in_email)}">
+      <input type="hidden" name="lang" value="{e(lang)}">
+      <input type="hidden" name="src" value="{e(src or '')}">
+      <input type="hidden" name="return_to" value="{e(return_to)}">
+      <button type="submit" class="sdd-cite-btn"
+        style="padding:10px 20px;font-size:14px">{i18n.t("email_signup.subscribe_button", lang)}</button>
+    </form>
+"""
+    else:
+        body = f"""
+    <form method="POST" action="/newsletter/subscribe"
+      style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      <input type="hidden" name="lang" value="{e(lang)}">
+      <input type="hidden" name="src" value="{e(src or '')}">
+      <input type="hidden" name="return_to" value="{e(return_to)}">
+      <input type="text" name="website" tabindex="-1" autocomplete="off"
+        style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0" aria-hidden="true">
+      <input type="email" name="email" required
+        placeholder="{i18n.t('email_signup.email_placeholder', lang)}"
+        style="flex:1 1 220px;background:#0b1220;color:#e6edf5;border:1px solid #1f3352;
+        border-radius:8px;padding:10px 12px;font-size:15px;font-family:inherit">
+      <button type="submit" class="sdd-cite-btn"
+        style="padding:10px 20px;font-size:14px">{i18n.t("email_signup.submit_button", lang)}</button>
+    </form>
+"""
+    return f"""
+<div class="cta" id="sdd-newsletter">
+  <h3>{i18n.t("email_signup.heading", lang)}</h3>
+  <p>{i18n.t("email_signup.sub", lang)}</p>
+  {banner}
+  {body}
+</div>
+"""
+
+
+def render_newsletter_confirm(base_url, ok, message, lang="en"):
+    """Part 36: the confirm-link landing page (server.py's GET
+    /newsletter/confirm). Same minimal, standalone, noindex _head()/
+    _page() wrapper as render_not_found below - this isn't about any one
+    post, so it carries no post-specific chrome."""
+    import i18n
+    e = html.escape
+    lang = lang if lang in ("en", "es") else "en"
+    heading = ("¡Listo!" if lang == "es" else "Done!") if ok else (
+        "No se pudo confirmar" if lang == "es" else "Couldn't confirm")
+    title = ("Confirmación" if lang == "es" else "Confirmation") + " | " + SITE_NAME
+    body = f"""
+<main><div class="wrap">
+  <div class="kicker">StocksDeepDive</div>
+  <h1>{e(heading)}</h1>
+  <p class="lede">{e(message)}</p>
+  <p><a href="{e(base_url)}">{e(i18n.t("newsletter_confirm_page.back", lang))}</a></p>
+</div></main>
+"""
+    head = _head(title, message, None, base_url, noindex=True)
+    return _page(head, body, lang=lang)
+
+
+def render_newsletter_unsubscribe(base_url, ok, message, lang="en"):
+    """Part 36: the one-click unsubscribe landing page (server.py's GET
+    /newsletter/unsubscribe) - the unsubscribe itself has already
+    happened by the time this renders (immediate, no extra confirm
+    click, per the instruction's own "instantly...no sign-in needed"
+    rule); this is only the friendly result page."""
+    import i18n
+    e = html.escape
+    lang = lang if lang in ("en", "es") else "en"
+    heading = ("Cancelado" if lang == "es" else "Unsubscribed") if ok else (
+        "No se pudo procesar" if lang == "es" else "Couldn't process that")
+    title = ("Suscripción cancelada" if lang == "es" else "Unsubscribed") + " | " + SITE_NAME
+    body = f"""
+<main><div class="wrap">
+  <div class="kicker">StocksDeepDive</div>
+  <h1>{e(heading)}</h1>
+  <p class="lede">{e(message)}</p>
+  <p><a href="{e(base_url)}">{e(i18n.t("newsletter_unsub_page.back", lang))}</a></p>
+</div></main>
+"""
+    head = _head(title, message, None, base_url, noindex=True)
+    return _page(head, body, lang=lang)
 
 
 def post_url(base_url, slug):
@@ -1745,7 +1873,8 @@ def _comments_section_html(slug, comments, comment_status=None, comment_msg=None
 
 def render_post(post, base_url, prev_post=None, next_post=None,
                 comments=None, comment_status=None, comment_msg=None,
-                signed_in_email=None, src=None):
+                signed_in_email=None, src=None,
+                newsletter_status=None, newsletter_msg=None):
     e = html.escape
     url = post_url(base_url, post["slug"])
     desc = post_description(post)
@@ -1869,10 +1998,19 @@ def render_post(post, base_url, prev_post=None, next_post=None,
     # just above, since a draft isn't a real, indexed, shareable post yet.
     snapshot_strip_html = ""
     subscribe_html = ""
+    newsletter_html = ""
     if not is_draft:
         if primary_ticker:
             snapshot_strip_html = _ticker_snapshot_strip_html(primary_ticker, base_url)
         subscribe_html = _blog_subscribe_html(signed_in_email=signed_in_email, src=src, lang=post_lang)
+        # Mega-batch Part 36: the new, separate "get the next deep dive by
+        # email" box - see _newsletter_capture_html's own docstring for
+        # why it sits alongside (not replacing) subscribe_html above.
+        newsletter_html = _newsletter_capture_html(
+            signed_in_email=signed_in_email, lang=post_lang, src=src,
+            status=newsletter_status, msg=newsletter_msg,
+            return_to=f"/blog/{post['slug']}",
+        )
 
     citation_html = ""
     if not is_draft:
@@ -1908,6 +2046,7 @@ def render_post(post, base_url, prev_post=None, next_post=None,
   {cta_html}
   {snapshot_strip_html}
   {subscribe_html}
+  {newsletter_html}
   {nav_html}
   {comments_html}
 </div></main>
