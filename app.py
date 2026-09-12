@@ -219,21 +219,34 @@ METRIC_HELP = {
         "Price. Positive means Price is below the Intrinsic Value estimate; "
         "negative means it's above."
     ),
+    # Part 43 (12 Sep 2026): these two used to spell out the exact
+    # per-factor weight percentages - the scoring recipe the owner asked
+    # to stop publishing everywhere on the site, not just on the charts.
+    # Same "(see Methodology)" pattern the Comparison page's own caption
+    # already used safely (see page_comparison()'s "Value Score is a
+    # weighted calculation (see Methodology)" line) - ingredients (which
+    # factors feed the score) stay named, the weights don't.
     "Value Score": (
-        "A 0-100 weighted calculation: quality 25%, moat 15%, MOS 30%, "
-        "psychology 15%, discovery 15% (moat weight dropped and the rest "
-        "reweighted proportionally where no Moat Score exists)."
+        "A 0-100 weighted calculation blending business quality, valuation "
+        "against intrinsic value, market psychology, market attention and "
+        "moat durability, weighted so no single factor can dominate the "
+        "result - see Methodology."
         if moat_engine.MOAT_IN_VALUE_SCORE else
-        "A 0-100 weighted calculation: quality 35%, MOS 25%, psychology "
-        "20%, discovery 20%."
+        "A 0-100 weighted calculation blending business quality, valuation "
+        "against intrinsic value, market psychology and market attention, "
+        "weighted so no single factor can dominate the result - see "
+        "Methodology."
     ),
     "Long Score": (
-        "A 0-100 weighted calculation: quality 25%, moat 15%, MOS 30%, "
-        "psychology 15%, discovery 15% (moat weight dropped and the rest "
-        "reweighted proportionally where no Moat Score exists)."
+        "A 0-100 weighted calculation blending business quality, valuation "
+        "against intrinsic value, market psychology, market attention and "
+        "moat durability, weighted so no single factor can dominate the "
+        "result - see Methodology."
         if moat_engine.MOAT_IN_VALUE_SCORE else
-        "A 0-100 weighted calculation: quality 35%, MOS 25%, psychology "
-        "20%, discovery 20%."
+        "A 0-100 weighted calculation blending business quality, valuation "
+        "against intrinsic value, market psychology and market attention, "
+        "weighted so no single factor can dominate the result - see "
+        "Methodology."
     ),
     "Signal": (
         "STRONG LONG / LONG / WATCHLIST / AVOID are fixed labels applied to "
@@ -3642,6 +3655,16 @@ def _dd_moat_pillar_chart(contributions, title, xaxis_title="Points", height=260
     pillar's own max (30) instead of autoranging off the (possibly all-
     epsilon) values, so a real 0 bar stays visually flush against zero no
     matter what the other pillars do.
+
+    Part 43 (12 Sep 2026, 43.3.4 grep finding): this chart used to print
+    each pillar's exact point value (text=f"{v:+.1f}") on the bar itself
+    - the same per-term recipe leak Quality/Psychology/Discovery/Value
+    Score's own chart had, just never named in 43.1/43.2's own restyle
+    scope since Moat uses this separate, unsigned chart builder. Minimal
+    fix here (not the full Option 2 relative-bar treatment those four
+    sections got - that's a larger redesign this Part didn't ask for):
+    drop the per-bar numeric label only. Bar lengths, the fixed axis
+    range and the XRO.AX zero-value fix above are all untouched.
     """
     raw_values = list(contributions.values())
     plot_values = [v if v != 0 else 1e-6 for v in raw_values]
@@ -3650,8 +3673,6 @@ def _dd_moat_pillar_chart(contributions, title, xaxis_title="Points", height=260
         y=list(contributions.keys()),
         orientation="h",
         marker_color="#34d399",
-        text=[f"{v:+.1f}" for v in raw_values],
-        textposition="outside",
     ))
     fig.update_layout(
         title=title, xaxis_title=xaxis_title, showlegend=False, height=height,
@@ -3688,6 +3709,266 @@ def _dd_gate_chart(contributions, title, xaxis_title="Points", height=260):
         margin=dict(l=10, r=10, t=40, b=10),
     )
     return fig
+
+
+# ---------------------------------------------------------------------
+# Part 43 (12 Sep 2026): scoring-recipe protection - gauge restyle (43.1)
+# + drivers chart -> Option 2, relative-only (43.2), for the four score
+# sections named in the instruction (the Value Score/Long Score summary,
+# Quality, Psychology, Discovery). Moat, Trade Setup and Margin of Safety
+# keep using _dd_gauge/_dd_contrib_chart above UNCHANGED - they weren't
+# named in 43.1/43.2's own scope, and neither Moat's own
+# _dd_moat_pillar_chart nor Trade Setup's _dd_gate_chart reuse
+# _dd_contrib_chart, so replacing these four calls can't touch them.
+#
+# IP goal (owner's explicit concern): the ingredients (actual ROIC/FCF/
+# margins - public facts, still shown in Fundamentals) stay visible; the
+# recipe (weights, base, thresholds, per-term point values) is never
+# printed again anywhere these four sections touch - the gauge, the
+# drivers chart, its hover text, its "Text description" expander, and
+# the "Explain this" AI popover's own context/output (see
+# _explain_context_text's own comment below). Zero change to any scoring
+# engine: every value read below is the SAME already-computed dd['...']
+# figure the old gauge/chart also read; only how it's drawn changes.
+# ---------------------------------------------------------------------
+
+# One dark->bright 2-stop gradient per zone-colour "family" already used
+# by every _dd_gauge() caller's own `zones` list above - reused here so
+# the new gauge's fill colour is driven by the SAME red/amber/neutral/
+# green bands already established on this page, not a new colour
+# vocabulary. Bright stops match the site's own universal verdict
+# accents used elsewhere (_featured_card_html's vcolor: "#fb7185" red /
+# "#fbbf24" amber / "#34d399" green), so the restyled gauge never
+# introduces a colour that doesn't already mean the same thing somewhere
+# else on the site. The green family's dark stop intentionally uses the
+# owner-picked mock's own "#0f766e" (its Option 2 card's actual gradient
+# stop) rather than either existing green zone background, since the
+# mock shows one continuous teal->green ramp across BOTH "good" bands,
+# not a banded change at the 80 boundary.
+_DD_GAUGE_FAMILY = {
+    "#43222e": ("#7f1d2e", "#fb7185"),   # red     (e.g. Quality < 40)
+    "#43371c": ("#78500d", "#fbbf24"),   # amber   (e.g. Quality 40-60)
+    "#1f3352": ("#28456b", "#5ed3f0"),   # neutral (Psychology 45-55 only)
+    "#1e3d34": ("#0f766e", "#34d399"),   # green   (e.g. Quality 60-80)
+    "#27584a": ("#0f766e", "#34d399"),   # green, brighter band (80-100)
+}
+_DD_GAUGE_TRACK = "#16233d"
+
+
+def _dd_gauge_zone_ramp(value, zones):
+    """(dark_stop, bright_stop) for whichever zone `value` falls in, per
+    _DD_GAUGE_FAMILY above. Falls back to the green ramp if value somehow
+    lands outside every given zone (shouldn't happen for a clamped
+    score, but a gradient beats a crash)."""
+    for lo, hi, color in zones:
+        if lo <= value <= hi:
+            return _DD_GAUGE_FAMILY.get(color, _DD_GAUGE_FAMILY["#1e3d34"])
+    return _DD_GAUGE_FAMILY["#1e3d34"]
+
+
+_DD_GAUGE_STYLE = """
+<style>
+.sdd-dd-gauge{display:flex;flex-direction:column;align-items:center;gap:8px;margin:4px 0 8px}
+.sdd-dd-gauge svg{max-width:230px;width:100%;height:auto}
+.sdd-dd-gauge .chip{display:inline-block;font-weight:700;border-radius:8px;padding:3px 14px;font-size:11.5px;letter-spacing:0.3px}
+</style>
+"""
+
+
+def _dd_gauge_svg(value, value_display, score_word, verdict_text, zones, gauge_id, axis_range=(0, 100)):
+    """Deep Dive score gauge, Part 43 Option 2 restyle: a slim rounded
+    arc on a dark track, a teal->green (or the matching red/amber/
+    neutral ramp - see _DD_GAUGE_FAMILY above) gradient fill proportional
+    to the score, a soft glow dot at the fill tip, the score as a big
+    centred number with a "{SCORE WORD} - 0-100"-style sublabel, and the
+    verdict chip BELOW the gauge - per the owner-picked Option 2 card of
+    quality_gauge_refine_mock.html (the acceptance bar for this restyle).
+
+    Hand-built inline SVG, not a Plotly go.Indicator: go.Indicator has no
+    gradient-fill or glow-marker support, so this reuses the exact same
+    semicircle geometry (cx/cy/r, theta = pi * frac) _featured_card_html
+    above already hand-builds in SVG for the very same reason - just at
+    the mock's own 220x130 viewBox/dimensions instead of that card's
+    200x120.
+
+    value/axis_range drive the maths only; `value_display` is the exact
+    already-formatted string the page's own subheader shows for this
+    score (never re-derived here), so the big number inside the gauge
+    can never drift from - or imply different precision than - the
+    number the rest of the page already committed to for this score."""
+    lo, hi = axis_range
+    frac = 0.0 if hi == lo else max(0.0, min(1.0, (value - lo) / (hi - lo)))
+    cx, cy, r = 110, 110, 85
+    theta = math.pi * frac
+    tip_x = cx - r * math.cos(theta)
+    tip_y = cy - r * math.sin(theta)
+    dark_stop, bright_stop = _dd_gauge_zone_ramp(value, zones)
+    grad_id = f"sdd-dd-grad-{gauge_id}"
+
+    fill_arc = ""
+    glow = ""
+    if frac > 0.01:
+        fill_arc = (
+            f"<path d='M 25 110 A 85 85 0 0 1 {tip_x:.2f} {tip_y:.2f}' fill='none' "
+            f"stroke='url(#{grad_id})' stroke-width='14' stroke-linecap='round'/>"
+        )
+        glow = (
+            f"<circle cx='{tip_x:.2f}' cy='{tip_y:.2f}' r='9' fill='{bright_stop}' opacity='0.28'/>"
+            f"<circle cx='{tip_x:.2f}' cy='{tip_y:.2f}' r='4.5' fill='{bright_stop}'/>"
+        )
+
+    return _DD_GAUGE_STYLE + f"""
+<div class="sdd-dd-gauge">
+<svg viewBox="0 0 220 130" role="img" aria-label="{html.escape(score_word)} score {html.escape(str(value_display))}">
+<defs><linearGradient id="{grad_id}" x1="0" y1="0" x2="1" y2="0">
+<stop offset="0" stop-color="{dark_stop}"/><stop offset="1" stop-color="{bright_stop}"/>
+</linearGradient></defs>
+<path d="M 25 110 A 85 85 0 0 1 195 110" fill="none" stroke="{_DD_GAUGE_TRACK}" stroke-width="14" stroke-linecap="round"/>
+{fill_arc}
+{glow}
+<text x="110" y="92" fill="#e6edf5" font-size="34" font-weight="800" text-anchor="middle">{html.escape(str(value_display))}</text>
+<text x="110" y="108" fill="#8aa0b8" font-size="10" text-anchor="middle" letter-spacing="1">{html.escape(score_word.upper())} &middot; {lo:.0f}&ndash;{hi:.0f}</text>
+</svg>
+<span class="chip" style="background:{dark_stop}44;border:1px solid {bright_stop};color:{bright_stop};">{html.escape(str(verdict_text))}</span>
+</div>
+"""
+
+
+# 5-step verbal scale (43.2's own "4-5 step verbal scale" requirement),
+# keyed to i18n so hover text/hover-equivalent text and the "Text
+# description" expander both read correctly in EN and ES. Thresholds are
+# fractions of the single largest |contribution| in the chart (the same
+# quantity the bar WIDTHS are scaled to - see _dd_relative_drivers_html),
+# so "strong" always means "close to the tallest bar on THIS chart", not
+# an absolute point value - there is no absolute point value left
+# anywhere in this codepath for a threshold to be expressed in.
+_DD_DRIVER_TIERS = [
+    (0.85, "dd.driver.strong_positive", "dd.driver.strong_drag"),
+    (0.55, "dd.driver.solid_positive", "dd.driver.notable_drag"),
+    (0.25, "dd.driver.moderate_positive", "dd.driver.moderate_drag"),
+    (0.08, "dd.driver.minor_positive", "dd.driver.slight_drag"),
+    (0.0, "dd.driver.negligible_positive", "dd.driver.negligible_drag"),
+]
+
+
+def _dd_driver_tier_key(value, max_abs):
+    """i18n key for value's verbal tier (see _DD_DRIVER_TIERS above) -
+    words only, by design: this is the one function every recipe-leak
+    fix in this Part routes a per-term number through (the chart's hover
+    text, its text-description expander, and the AI explain-popover's
+    own context) specifically so there is no code path left that can
+    print the number itself."""
+    frac = 0.0 if max_abs <= 0 else min(1.0, abs(value) / max_abs)
+    for threshold, pos_key, neg_key in _DD_DRIVER_TIERS:
+        if frac >= threshold:
+            return pos_key if value >= 0 else neg_key
+    return _DD_DRIVER_TIERS[-1][1] if value >= 0 else _DD_DRIVER_TIERS[-1][2]
+
+
+_DD_DRIVERS_STYLE = """
+<style>
+.sdd-dd-drivers .h{font-size:12.5px;font-weight:700;color:#e6edf5;margin-bottom:8px}
+.sdd-dd-drivers .row{display:flex;align-items:center;gap:9px;margin:6px 0}
+.sdd-dd-drivers .row .n{width:120px;flex:0 0 auto;font-size:11px;color:#8aa0b8;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sdd-dd-drivers .row .track{flex:1;height:9px;background:#121f36;border-radius:5px;position:relative;overflow:visible}
+.sdd-dd-drivers .row .fill{position:absolute;left:0;top:0;bottom:0;border-radius:5px;background:linear-gradient(90deg,#0f766e,#34d399)}
+.sdd-dd-drivers .row .fill.neg{background:#fb7185;left:auto}
+</style>
+"""
+
+
+def _dd_driver_sort_key(item):
+    """Shared ordering for both the drivers chart and its text
+    description: positives first (largest-first among them), penalties
+    last (largest-first among them too) - matching the owner-picked
+    mock's own Option 2 card EXACTLY (its Earnings Growth row, a small
+    positive, sits ABOVE Debt Penalty even though Debt Penalty's own bar
+    is visually wider - the mock groups by sign before it sorts by
+    size). A single blended sort by |value| alone (positives and
+    penalties interleaved) does NOT reproduce that ordering."""
+    _name, _val = item
+    return (_val < 0, -abs(_val))
+
+
+def _dd_relative_drivers_html(contributions, header_text, lang, exclude_keys=()):
+    """The "What's driving X" chart, Part 43 Option 2 restyle: one slim
+    bar per driver, scaled to the LARGEST driver on this chart (never to
+    a base, which is no longer drawn at all - and never shown for a key
+    in `exclude_keys`, e.g. Quality's own "Base" term), positives in the
+    teal->green gradient, penalties as a small red bar right-aligned in
+    its own track - drivers sorted positives-first-largest-first then
+    penalties-largest-first (see _dd_driver_sort_key above), NO numeric
+    labels anywhere. Hover text (the track's title=) gives words only,
+    from _dd_driver_tier_key above - never a number.
+
+    Hand-built HTML/CSS (same "track + fill" component compounder_ui.
+    band_gauge already uses elsewhere on this site for the identical
+    reason: no numeric text is ever drawn on top of the bar for a
+    Plotly-rendered bar chart's own auto text/hover to leak), not a
+    Plotly figure - which is also why this chart gets its OWN "Text
+    description" expander (_dd_drivers_text_description below) instead
+    of sdd_plotly_chart's auto-generated one (that auto description
+    reads a bar chart's exact values, which is exactly the leak this
+    Part closes)."""
+    items = [(k, v) for k, v in contributions.items() if k not in exclude_keys]
+    if not items:
+        return ""
+    items.sort(key=_dd_driver_sort_key)
+    max_abs = max(abs(v) for _, v in items) or 1.0
+    rows = []
+    for name, val in items:
+        pct = max(2.0, min(100.0, abs(val) / max_abs * 100.0))
+        word = i18n.t(_dd_driver_tier_key(val, max_abs), lang)
+        cls = "fill" if val >= 0 else "fill neg"
+        style = f"width:{pct:.1f}%" + ("" if val >= 0 else ";right:0")
+        rows.append(
+            f"<div class='row'><span class='n'>{html.escape(str(name))}</span>"
+            f"<span class='track'><span class='{cls}' style='{style}' title='{html.escape(word)}'></span></span></div>"
+        )
+    return (
+        _DD_DRIVERS_STYLE
+        + f"<div class='sdd-dd-drivers'><div class='h'>{html.escape(header_text)}</div>"
+        + "".join(rows) + "</div>"
+    )
+
+
+def _dd_gate_text_description(contributions, lang):
+    """Part 43 (43.3.4 grep finding): sdd_plotly_chart's own auto "Text
+    description of this chart" reads a bar trace's raw x-VALUES
+    regardless of what `text=` was drawn on the bar - so even though
+    _dd_gate_chart's bars only ever show "PASS"/"FAIL", the chart's own
+    auto-generated text-equivalent was still reading out each gate's
+    exact underlying WEIGHT (e.g. "Trend Safety: 20.00; ..." -
+    trade_filter_engine.score_trade_setup's own per-gate point values).
+    Passed as this chart's explicit text_description= instead, mirroring
+    only what the bars themselves visibly show - pass/fail, never the
+    weight behind a pass."""
+    if not contributions:
+        return i18n.t("dd.driver.text_none", lang)
+    _pass = i18n.t("dd.driver.gate_pass", lang)
+    _fail = i18n.t("dd.driver.gate_fail", lang)
+    return " ".join(f"{name}: {_pass if val else _fail}." for name, val in contributions.items())
+
+
+def _dd_drivers_text_description(contributions, lang, exclude_keys=()):
+    """Qualitative "Text description of this chart" equivalent for
+    _dd_relative_drivers_html above - one word-only tier per driver, in
+    the SAME order (_dd_driver_sort_key) as the bars/hover, exactly
+    mirroring what they already show. Replaces sdd_plotly_chart's own
+    generic auto-description (which would otherwise read the chart's
+    exact bar values - see that function's own docstring) since this
+    chart isn't a Plotly figure any more and doesn't go through
+    sdd_plotly_chart at all."""
+    items = [(k, v) for k, v in contributions.items() if k not in exclude_keys]
+    if not items:
+        return i18n.t("dd.driver.text_none", lang)
+    items.sort(key=_dd_driver_sort_key)
+    max_abs = max(abs(v) for _, v in items) or 1.0
+    parts = [
+        f"{name}: {i18n.t(_dd_driver_tier_key(val, max_abs), lang)}."
+        for name, val in items
+    ]
+    return " ".join(parts)
 
 
 # -----------------------------------
@@ -7368,9 +7649,19 @@ Write 2-3 short sentences of plain prose - no headings, no bullet points.
 Explain what this specific figure means for THIS stock in particular, not
 a generic definition of the metric (the site already shows that
 separately) - grounded in the exact inputs/components given below. Use
-the Methodology's own definition to explain HOW the number is calculated,
-then state what that calculation came out to for this stock and why
-(citing the components given)."""
+the Methodology's own definition to explain HOW the number is calculated
+IN GENERAL TERMS, then describe qualitatively what drove this stock's own
+result and why (citing the components given).
+
+IMPORTANT - the scoring recipe is never disclosed, to this reader or any
+other: never state a weight, percentage, the base value the score starts
+from, a per-factor point contribution, or the arithmetic formula itself,
+even if asked. Describe each driver only in qualitative terms (e.g. "a
+strong positive contributor", "a slight drag") exactly as it is labelled
+below - never convert that label back into an implied number. You may
+cite a specific public input fact if one is given below (e.g. an ROIC
+percentage), since the underlying facts are public; only the weights and
+point values behind the score are not."""
 
 
 def _explain_context_text(dd, metric_key):
@@ -7380,18 +7671,34 @@ def _explain_context_text(dd, metric_key):
     rendered somewhere on this same page render, nothing new is computed."""
     lines = [f"TICKER: {dd['ticker']} ({dd.get('name') or ''})"]
 
+    # Part 43 (12 Sep 2026): every "  - {name}: {points}" line below used
+    # to hand the AI the exact per-term point contribution - since the
+    # model is told to "cite the components given", that number could
+    # (and did) come straight back out in the generated explanation shown
+    # to the visitor. Fixed the same way as the on-page drivers chart:
+    # route every contribution through _dd_driver_tier_key's qualitative
+    # scale instead, so there is no number left in the context for the
+    # AI to cite. English regardless of site language, same as every
+    # other line in this function - _render_explain_popover doesn't
+    # localise the AI call itself.
+    def _qual_lines(contributions, exclude_keys=()):
+        _items = [(n, v) for n, v in (contributions or {}).items() if n not in exclude_keys]
+        if not _items:
+            return
+        _max_abs = max(abs(v) for _, v in _items) or 1.0
+        for _name, _val in _items:
+            lines.append(f"  - {_name}: {i18n.t(_dd_driver_tier_key(_val, _max_abs), 'en')}")
+
     if metric_key == "value_score":
         _label = "Value Score" if _factual() else "Long Score"
         lines.append(f"{_label}: {dd['long_score']:.1f}/100")
         lines.append(f"Valuation read: {dd.get('valuation')}")
-        for _name, _val in (dd.get("contributions") or {}).items():
-            lines.append(f"  - {_name}: {_val:+.1f} points")
+        _qual_lines(dd.get("contributions"))
     elif metric_key == "quality":
         lines.append(f"Quality Score: {dd['quality_score']}/100 ({dd['quality_label']})")
         if dd.get("quality_default"):
             lines.append("No fundamentals data was available - this is the base/default score.")
-        for _name, _val in (dd.get("quality_components") or {}).items():
-            lines.append(f"  - {_name}: {_val:+.1f} points")
+        _qual_lines(dd.get("quality_components"), exclude_keys=("Base",))
     elif metric_key == "psychology":
         lines.append(f"Psychology Score: {dd['psychology']:+.1f} ({dd['psychology_sentiment']})")
         lines.append(f"Fear: {dd.get('fear')}, Greed: {dd.get('greed')}, FOMO: {dd.get('fomo')}")
@@ -7399,21 +7706,18 @@ def _explain_context_text(dd, metric_key):
             lines.append("MA50 could not be computed this run - Greed defaulted to 0.")
         elif dd.get("ma50") is not None:
             lines.append(f"50-day moving average: {dd['ma50']:,.2f} {dd.get('currency')}")
-        for _name, _val in (dd.get("psychology_contributions") or {}).items():
-            lines.append(f"  - {_name}: {_val:+.1f} points")
+        _qual_lines(dd.get("psychology_contributions"))
     elif metric_key == "discovery":
         lines.append(f"Discovery Score: {dd['discovery']:.1f} ({dd['discovery_label']})")
         if dd.get("trend_score_failed"):
             lines.append("Trend Score's fetch failed this run - Discovery may be understated.")
-        for _name, _val in (dd.get("discovery_contributions") or {}).items():
-            lines.append(f"  - {_name}: {_val:+.1f} points")
+        _qual_lines(dd.get("discovery_contributions"))
     elif metric_key == "moat":
         lines.append(f"Moat Score: {dd.get('moat')}/100 ({dd.get('moat_band_label')})")
         lines.append(f"{dd.get('moat_years', 0)} year(s) of statement data used, mode={dd.get('moat_mode')}")
         if dd.get("moat_erosion") in ("eroding", "watch"):
             lines.append(f"Moat erosion flag: {dd['moat_erosion']}")
-        for _name, _val in (dd.get("moat_contributions") or {}).items():
-            lines.append(f"  - {_name}: {_val:+.1f} points")
+        _qual_lines(dd.get("moat_contributions"))
     elif metric_key == "margin_of_safety":
         lines.append(f"Price: {dd['price']:,.2f} {dd['currency']}")
         lines.append(f"Intrinsic Value (DCF base case): {dd['intrinsic_value']:,.2f} {dd['currency']}")
@@ -7425,8 +7729,7 @@ def _explain_context_text(dd, metric_key):
             f"Entry zone {dd.get('trade_setup_entry')}, Stop {dd.get('trade_setup_stop')}, "
             f"Target 1 {dd.get('trade_setup_target1')}"
         )
-        for _name, _val in (dd.get("trade_setup_contributions") or {}).items():
-            lines.append(f"  - {_name}: {_val:+.1f} points")
+        _qual_lines(dd.get("trade_setup_contributions"))
     return "\n".join(lines)
 
 
@@ -9163,51 +9466,63 @@ def page_deep_dive():
             # stack per request). Heading added to match the Quality/Discovery/
             # Psychology sections below, each of which leads with a
             # "X Score: value - LABEL" subheader before their gauge.
+            _sh_lang = st.session_state.get("lang", "en")
             if _factual():
                 st.subheader(f"Value Score: {_dd['long_score']:.1f} - {_dd_value_word}")
                 st.caption(_section_why("Value Score"))
-                st.caption(i18n.t("dd.plain.value_score", st.session_state.get("lang", "en")))
+                st.caption(i18n.t("dd.plain.value_score", _sh_lang))
                 _render_explain_popover(_dd, "value_score")
-                sdd_plotly_chart(
-                    _dd_gauge(
-                        _dd["long_score"],
-                        i18n.t("dd.gauge.value_score", st.session_state.get("lang", "en")),
+                st.markdown(
+                    _dd_gauge_svg(
+                        _dd["long_score"], f"{_dd['long_score']:.1f}",
+                        i18n.t("dd.gauge.value_score", _sh_lang), _dd_value_word,
                         [
                             (0, SIGNAL_THRESHOLDS["WATCHLIST"], "#43222e"),
                             (SIGNAL_THRESHOLDS["WATCHLIST"], SIGNAL_THRESHOLDS["LONG"], "#43371c"),
                             (SIGNAL_THRESHOLDS["LONG"], SIGNAL_THRESHOLDS["STRONG_LONG"], "#1e3d34"),
                             (SIGNAL_THRESHOLDS["STRONG_LONG"], 100, "#27584a"),
                         ],
+                        "value-score",
                     ),
+                    unsafe_allow_html=True,
                 )
             else:
                 st.subheader(f"Long Score: {_dd['long_score']:.1f} - {_dd_signal}")
                 st.caption(_section_why("Value Score"))
-                st.caption(i18n.t("dd.plain.value_score", st.session_state.get("lang", "en")))
+                st.caption(i18n.t("dd.plain.value_score", _sh_lang))
                 _render_explain_popover(_dd, "value_score")
-                sdd_plotly_chart(
-                    _dd_gauge(
-                        _dd["long_score"],
-                        i18n.t("dd.gauge.long_score", st.session_state.get("lang", "en"), label=_dd_signal),
+                st.markdown(
+                    _dd_gauge_svg(
+                        _dd["long_score"], f"{_dd['long_score']:.1f}",
+                        i18n.t("dd.gauge.long_score", _sh_lang, label=_dd_signal), _dd_signal,
                         [
                             (0, SIGNAL_THRESHOLDS["WATCHLIST"], "#43222e"),
                             (SIGNAL_THRESHOLDS["WATCHLIST"], SIGNAL_THRESHOLDS["LONG"], "#43371c"),
                             (SIGNAL_THRESHOLDS["LONG"], SIGNAL_THRESHOLDS["STRONG_LONG"], "#1e3d34"),
                             (SIGNAL_THRESHOLDS["STRONG_LONG"], 100, "#27584a"),
                         ],
+                        "long-score",
                     ),
+                    unsafe_allow_html=True,
                 )
             if _factual():
+                # Part 43: this used to spell out the exact weight
+                # percentages (quality 25%/35%, MOS 30%/25%, ...) - same
+                # leak, same fix, as METRIC_HELP["Value Score"] above.
                 st.caption(
                     (
-                        "Value Score is a weighted calculation: quality 25%, moat "
-                        "15%, MOS 30%, psychology 15%, discovery 15% (moat "
-                        "reweighted into the others where no Moat Score exists). "
-                        "It is a description of data, not a recommendation."
+                        "Value Score is a weighted calculation blending business "
+                        "quality, valuation against intrinsic value, market "
+                        "psychology, market attention and moat durability, "
+                        "weighted so no single factor can dominate the result "
+                        "(see Methodology). It is a description of data, not a "
+                        "recommendation."
                         if moat_engine.MOAT_IN_VALUE_SCORE else
-                        "Value Score is a weighted calculation: quality 35%, "
-                        "MOS 25%, psychology 20%, discovery 20%. It is a "
-                        "description of data, not a recommendation."
+                        "Value Score is a weighted calculation blending business "
+                        "quality, valuation against intrinsic value, market "
+                        "psychology and market attention, weighted so no single "
+                        "factor can dominate the result (see Methodology). It is "
+                        "a description of data, not a recommendation."
                     )
                 )
             else:
@@ -9218,47 +9533,62 @@ def page_deep_dive():
                 )
 
             _score_word = "Value Score" if _factual() else "Long Score"
-            _sh_lang = st.session_state.get("lang", "en")
             _sh_score_word = (
                 i18n.t("dd.kpi.value_score", _sh_lang) if _score_word == "Value Score"
                 else i18n.t("dd.kpi.long_score", _sh_lang)
             )
-            sdd_plotly_chart(
-                _dd_contrib_chart(
+            st.markdown(
+                _dd_relative_drivers_html(
                     _dd["contributions"],
                     i18n.t("dd.chart.driving_score", _sh_lang, score_word=_sh_score_word),
-                    xaxis_title=i18n.t("dd.chart.points_score", _sh_lang, score_word=_sh_score_word),
-                    height=280,
+                    _sh_lang,
                 ),
+                unsafe_allow_html=True,
             )
+            with st.expander("Text description of this chart", expanded=False):
+                st.caption(_dd_drivers_text_description(_dd["contributions"], _sh_lang))
+            st.caption(i18n.t("dd.driver.caption", _sh_lang))
 
             _render_score_history_chart(_dd["ticker"], _score_word)
 
 
         def _dd_quality():
+            _q_lang = st.session_state.get("lang", "en")
             st.subheader(f"Quality Score: {_dd['quality_score']} - {_dd['quality_label']}")
             st.caption(_section_why("Quality"))
-            st.caption(i18n.t("dd.plain.quality", st.session_state.get("lang", "en")))
+            st.caption(i18n.t("dd.plain.quality", _q_lang))
             _render_explain_popover(_dd, "quality")
             _q_col1, _q_col2 = st.columns(2)
             with _q_col1:
-                sdd_plotly_chart(
-                    _dd_gauge(
-                        _dd["quality_score"],
-                        i18n.t("dd.gauge.quality", st.session_state.get("lang", "en"), label=_dd["quality_label"]),
+                st.markdown(
+                    _dd_gauge_svg(
+                        _dd["quality_score"], f"{_dd['quality_score']}",
+                        i18n.t("dd.gauge.quality", _q_lang, label=_dd["quality_label"]), _dd["quality_label"],
                         [(0, 40, "#43222e"), (40, 60, "#43371c"),
                          (60, 80, "#1e3d34"), (80, 100, "#27584a")],
+                        "quality",
                     ),
+                    unsafe_allow_html=True,
                 )
             with _q_col2:
+                # "Base" (the +50 starting point - see deep_dive_engine.
+                # _quality_breakdown's own docstring) is excluded here: no
+                # base is drawn at all in the Option 2 restyle, per 43.2.
                 if _dd["quality_components"]:
-                    sdd_plotly_chart(
-                        _dd_contrib_chart(
+                    st.markdown(
+                        _dd_relative_drivers_html(
                             _dd["quality_components"],
-                            i18n.t("dd.chart.driving_quality", st.session_state.get("lang", "en")),
-                            xaxis_title=i18n.t("dd.chart.points_quality", st.session_state.get("lang", "en")),
+                            i18n.t("dd.chart.driving_quality", _q_lang),
+                            _q_lang,
+                            exclude_keys=("Base",),
                         ),
+                        unsafe_allow_html=True,
                     )
+                    with st.expander("Text description of this chart", expanded=False):
+                        st.caption(_dd_drivers_text_description(
+                            _dd["quality_components"], _q_lang, exclude_keys=("Base",),
+                        ))
+                    st.caption(i18n.t("dd.driver.caption", _q_lang))
                 else:
                     st.info(
                         "Quality Score is a manual override for this ticker - "
@@ -9270,12 +9600,13 @@ def page_deep_dive():
 
         def _dd_psychology():
             st.divider()
+            _p_lang = st.session_state.get("lang", "en")
             # Simple view, Part 5: first-occurrence label softening -
             # display only, "psychology"/"psychology_sentiment" etc. on dd
             # and every internal reference are untouched.
             st.subheader(f"Crowd mood (Psychology) Score: {_dd['psychology']:+.1f} - {_dd['psychology_sentiment']}")
             st.caption(_section_why("Psychology"))
-            st.caption(i18n.t("dd.plain.psychology", st.session_state.get("lang", "en")))
+            st.caption(i18n.t("dd.plain.psychology", _p_lang))
             _render_explain_popover(_dd, "psychology")
             if _dd.get("ma50_defaulted"):
                 st.warning(
@@ -9288,31 +9619,39 @@ def page_deep_dive():
                 st.caption(f"MA50: {_dd['currency']} {_dd['ma50']:,.2f}")
             _p_col1, _p_col2 = st.columns(2)
             with _p_col1:
-                sdd_plotly_chart(
-                    _dd_gauge(
-                        _dd["psychology_gauge"],
-                        i18n.t("dd.gauge.psychology", st.session_state.get("lang", "en"), label=_dd["psychology_sentiment"]),
+                st.markdown(
+                    _dd_gauge_svg(
+                        _dd["psychology_gauge"], f"{_dd['psychology_gauge']:.0f}",
+                        i18n.t("dd.gauge.psychology", _p_lang, label=_dd["psychology_sentiment"]),
+                        _dd["psychology_sentiment"],
                         [(0, 30, "#43222e"), (30, 45, "#43371c"), (45, 55, "#1f3352"),
                          (55, 70, "#1e3d34"), (70, 100, "#27584a")],
+                        "psychology",
                     ),
+                    unsafe_allow_html=True,
                 )
             with _p_col2:
-                sdd_plotly_chart(
-                    _dd_contrib_chart(
+                st.markdown(
+                    _dd_relative_drivers_html(
                         _dd["psychology_contributions"],
-                        i18n.t("dd.chart.driving_psychology", st.session_state.get("lang", "en")),
-                        xaxis_title=i18n.t("dd.chart.points_psychology", st.session_state.get("lang", "en")),
+                        i18n.t("dd.chart.driving_psychology", _p_lang),
+                        _p_lang,
                     ),
+                    unsafe_allow_html=True,
                 )
+                with st.expander("Text description of this chart", expanded=False):
+                    st.caption(_dd_drivers_text_description(_dd["psychology_contributions"], _p_lang))
+                st.caption(i18n.t("dd.driver.caption", _p_lang))
 
 
         def _dd_discovery():
             st.divider()
+            _dv_lang = st.session_state.get("lang", "en")
             # Simple view, Part 5: first-occurrence label softening -
             # display only, "discovery"/"discovery_label" etc. untouched.
             st.subheader(f"Attention (Discovery) Score: {_dd['discovery']:.1f} - {_dd['discovery_label']}")
             st.caption(_section_why("Discovery"))
-            st.caption(i18n.t("dd.plain.discovery", st.session_state.get("lang", "en")))
+            st.caption(i18n.t("dd.plain.discovery", _dv_lang))
             _render_explain_popover(_dd, "discovery")
             if _dd.get("trend_score_failed"):
                 st.warning(
@@ -9324,22 +9663,29 @@ def page_deep_dive():
                 )
             _dv_col1, _dv_col2 = st.columns(2)
             with _dv_col1:
-                sdd_plotly_chart(
-                    _dd_gauge(
-                        _dd["discovery_gauge"],
-                        i18n.t("dd.gauge.discovery", st.session_state.get("lang", "en"), label=_dd["discovery_label"]),
+                st.markdown(
+                    _dd_gauge_svg(
+                        _dd["discovery_gauge"], f"{_dd['discovery_gauge']:.0f}",
+                        i18n.t("dd.gauge.discovery", _dv_lang, label=_dd["discovery_label"]),
+                        _dd["discovery_label"],
                         [(0, 25, "#43222e"), (25, 50, "#43371c"),
                          (50, 75, "#1e3d34"), (75, 100, "#27584a")],
+                        "discovery",
                     ),
+                    unsafe_allow_html=True,
                 )
             with _dv_col2:
-                sdd_plotly_chart(
-                    _dd_contrib_chart(
+                st.markdown(
+                    _dd_relative_drivers_html(
                         _dd["discovery_contributions"],
-                        i18n.t("dd.chart.driving_discovery", st.session_state.get("lang", "en")),
-                        xaxis_title=i18n.t("dd.chart.points_discovery", st.session_state.get("lang", "en")),
+                        i18n.t("dd.chart.driving_discovery", _dv_lang),
+                        _dv_lang,
                     ),
+                    unsafe_allow_html=True,
                 )
+                with st.expander("Text description of this chart", expanded=False):
+                    st.caption(_dd_drivers_text_description(_dd["discovery_contributions"], _dv_lang))
+                st.caption(i18n.t("dd.driver.caption", _dv_lang))
 
 
         def _dd_moat():
@@ -9389,8 +9735,10 @@ def page_deep_dive():
                 st.caption(
                     f"{_dd.get('moat_years', 0)} year(s) of statement data used. "
                     + (
-                        "Folded into the Value Score above at a 15% weight - see "
-                        "Methodology."
+                        # Part 43 (43.3.4 grep finding): this used to name
+                        # the exact 15% weight - same leak, same fix, as
+                        # the Value Score caption/tooltip above.
+                        "Folded into the Value Score above - see Methodology."
                         if moat_engine.MOAT_IN_VALUE_SCORE else
                         "Not currently part of the Value Score - see Methodology."
                     )
@@ -9411,6 +9759,14 @@ def page_deep_dive():
                                 _dd["moat_contributions"],
                                 i18n.t("dd.chart.driving_moat", st.session_state.get("lang", "en")),
                                 xaxis_title=i18n.t("dd.chart.points_moat", st.session_state.get("lang", "en")),
+                            ),
+                            # Part 43 (43.3.4 grep finding): override the
+                            # auto text-equivalent, which reads this bar
+                            # chart's own raw (leaked) point values - see
+                            # _dd_gate_text_description's near-identical
+                            # comment on the same underlying issue.
+                            text_description=_dd_drivers_text_description(
+                                _dd["moat_contributions"], st.session_state.get("lang", "en"),
                             ),
                         )
 
@@ -9521,6 +9877,15 @@ def page_deep_dive():
                             _dd["trade_setup_contributions"],
                             i18n.t("dd.chart.driving_trade_setup", st.session_state.get("lang", "en")),
                             xaxis_title=i18n.t("dd.chart.points_trade_setup", st.session_state.get("lang", "en")),
+                        ),
+                        # Part 43 (43.3.4 grep finding): override the auto
+                        # text-equivalent, which reads this bar chart's
+                        # own raw x-values - trade_filter_engine.
+                        # score_trade_setup's exact per-gate WEIGHT (20 /
+                        # 15 / 12.5, ...) - even though the bars
+                        # themselves only ever show PASS/FAIL.
+                        text_description=_dd_gate_text_description(
+                            _dd["trade_setup_contributions"], st.session_state.get("lang", "en"),
                         ),
                     )
 

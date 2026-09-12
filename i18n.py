@@ -323,18 +323,50 @@ EN = {
         "the model estimates the business is worth."
     ),
 
-    "dd.chart.driving_score": "What's driving the {score_word} (points contributed by each factor)",
+    # Part 43 (12 Sep 2026): these four headers used to say "(points
+    # contributed by each factor)"/"(weighted terms)" - itself a hint at
+    # the recipe - now "relative influence", matching the Option 2
+    # restyle's own header exactly (quality_gauge_refine_mock.html).
+    # dd.chart.points_* below are now unused by these four (Option 2 has
+    # no points/x-axis at all) but left defined/untranslated-unused
+    # rather than deleted, same low-risk convention as _dd_contrib_chart
+    # itself being left in place unused - see that function's own Part
+    # 43 comment.
+    "dd.chart.driving_score": "What's driving the {score_word} · relative influence",
     "dd.chart.points_score": "Points toward {score_word}",
-    "dd.chart.driving_quality": "What's driving Quality (weighted terms)",
+    "dd.chart.driving_quality": "What's driving Quality · relative influence",
     "dd.chart.points_quality": "Points toward Quality",
-    "dd.chart.driving_psychology": "What's driving Psychology (Fear - Greed - FOMO)",
+    "dd.chart.driving_psychology": "What's driving Psychology · relative influence",
     "dd.chart.points_psychology": "Points toward Psychology",
-    "dd.chart.driving_discovery": "What's driving Discovery (attention & momentum)",
+    "dd.chart.driving_discovery": "What's driving Discovery · relative influence",
     "dd.chart.points_discovery": "Points toward Discovery",
     "dd.chart.driving_moat": "What's driving Moat (durability of the return)",
     "dd.chart.points_moat": "Points toward Moat",
     "dd.chart.driving_trade_setup": "What's driving the Trade Setup Score",
     "dd.chart.points_trade_setup": "Points toward Setup Score",
+
+    # Part 43: the Option 2 drivers chart's own caption (43.2), the 5-step
+    # verbal scale used for its hover text/text-description AND for the
+    # "Explain this" AI popover's own qualitative context (43.3.1's
+    # _dd_driver_tier_key), and the pass/fail words for Trade Setup's
+    # gate chart's own text-description override (43.3.4).
+    "dd.driver.caption": (
+        "Bars show each factor's relative influence on this company's "
+        "score - the ingredients are public, the recipe is ours."
+    ),
+    "dd.driver.text_none": "No drivers to show for this score yet.",
+    "dd.driver.strong_positive": "strong positive contributor",
+    "dd.driver.solid_positive": "positive contributor",
+    "dd.driver.moderate_positive": "moderate contributor",
+    "dd.driver.minor_positive": "minor contributor",
+    "dd.driver.negligible_positive": "negligible contributor",
+    "dd.driver.strong_drag": "significant drag",
+    "dd.driver.notable_drag": "notable drag",
+    "dd.driver.moderate_drag": "moderate drag",
+    "dd.driver.slight_drag": "slight drag",
+    "dd.driver.negligible_drag": "negligible drag",
+    "dd.driver.gate_pass": "pass",
+    "dd.driver.gate_fail": "fail",
 
     "dd.history.title": "{score_word} over time",
     "dd.history.show_quality": "Show Quality",
@@ -2652,18 +2684,39 @@ ES = {
         "que lo que el modelo estima que vale el negocio."
     ),
 
-    "dd.chart.driving_score": "Qué impulsa el {score_word} (puntos aportados por cada factor)",
+    "dd.chart.driving_score": "Qué impulsa el {score_word} · influencia relativa",
     "dd.chart.points_score": "Puntos hacia el {score_word}",
-    "dd.chart.driving_quality": "Qué impulsa la Calidad (términos ponderados)",
+    "dd.chart.driving_quality": "Qué impulsa la Calidad · influencia relativa",
     "dd.chart.points_quality": "Puntos hacia Calidad",
-    "dd.chart.driving_psychology": "Qué impulsa la Psicología (Miedo - Codicia - FOMO)",
+    "dd.chart.driving_psychology": "Qué impulsa la Psicología · influencia relativa",
     "dd.chart.points_psychology": "Puntos hacia Psicología",
-    "dd.chart.driving_discovery": "Qué impulsa el Descubrimiento (atención y momentum)",
+    "dd.chart.driving_discovery": "Qué impulsa el Descubrimiento · influencia relativa",
     "dd.chart.points_discovery": "Puntos hacia Descubrimiento",
     "dd.chart.driving_moat": "Qué impulsa el Foso (durabilidad del retorno)",
     "dd.chart.points_moat": "Puntos hacia el Foso",
     "dd.chart.driving_trade_setup": "Qué impulsa el puntaje de Trade Setup",
     "dd.chart.points_trade_setup": "Puntos hacia el puntaje de Trade Setup",
+
+    # Part 43 (ES): mismas claves nuevas que la versión en inglés arriba -
+    # ver ese bloque para el contexto completo.
+    "dd.driver.caption": (
+        "Las barras muestran la influencia relativa de cada factor en el "
+        "puntaje de esta empresa - los ingredientes son públicos, la "
+        "receta es nuestra."
+    ),
+    "dd.driver.text_none": "Todavía no hay factores que mostrar para este puntaje.",
+    "dd.driver.strong_positive": "contribuyente positivo fuerte",
+    "dd.driver.solid_positive": "contribuyente positivo",
+    "dd.driver.moderate_positive": "contribuyente moderado",
+    "dd.driver.minor_positive": "contribuyente menor",
+    "dd.driver.negligible_positive": "contribuyente insignificante",
+    "dd.driver.strong_drag": "lastre significativo",
+    "dd.driver.notable_drag": "lastre notable",
+    "dd.driver.moderate_drag": "lastre moderado",
+    "dd.driver.slight_drag": "lastre leve",
+    "dd.driver.negligible_drag": "lastre insignificante",
+    "dd.driver.gate_pass": "cumple",
+    "dd.driver.gate_fail": "no cumple",
 
     "dd.history.title": "{score_word} en el tiempo",
     "dd.history.show_quality": "Mostrar Calidad",

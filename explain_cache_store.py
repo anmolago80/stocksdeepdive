@@ -52,6 +52,35 @@ def _conn():
             PRIMARY KEY (ticker, metric_key)
         )"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS explain_cache_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )"""
+    )
+    # Part 43 (12 Sep 2026, scoring-recipe protection): app.py's
+    # _explain_context_text and _EXPLAIN_SYSTEM_PROMPT changed what the
+    # AI is fed and told - qualitative driver tiers instead of raw
+    # per-term point contributions, and an explicit instruction never to
+    # state a weight/base/point value. Every explanation cached BEFORE
+    # this change may still contain the old leaked numeric breakdown in
+    # its own already-generated prose, and the 24h TTL alone isn't a
+    # reliable purge (get_fresh() only stops SERVING a stale row - a row
+    # written minutes before this deploy would still read as "fresh" for
+    # up to another 24h). One-time, idempotent, guarded by this meta
+    # marker so it only ever runs the first time this code executes
+    # against a given database - same "one-time migration on a Railway
+    # Volume" convention app.py's _load_compounder_data already uses.
+    _purged = conn.execute(
+        "SELECT value FROM explain_cache_meta WHERE key = 'part43_purged'"
+    ).fetchone()
+    if not _purged:
+        conn.execute("DELETE FROM explain_cache")
+        conn.execute(
+            "INSERT INTO explain_cache_meta (key, value) VALUES ('part43_purged', ?)",
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+        conn.commit()
     return conn
 
 
