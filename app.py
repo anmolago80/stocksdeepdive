@@ -6362,9 +6362,30 @@ def _home_top5_by_country():
 
     Returns {"AU": [...], "US": [...]}, each a list of up to 5
     public_view-shaped dicts (+ "ticker"/"universe"/"generated_at"),
-    sorted by value_score descending."""
+    sorted by value_score descending.
+
+    Bug fix (owner-reported, 12 Sep 2026): FID.AX surfaced here with a
+    universe chip reading the literal "live" and a days-old timestamp.
+    Root cause: snapshot_store.all_public_rows() also returns rows a
+    single-ticker LIVE fetch wrote (the deep-dive/follow "refresh this
+    ticker's public snapshot" hook - see snapshot_store.save_snapshot's
+    own docstring), tagged universe="live" (or, for any other non-scan
+    write path, some other non-universe tag) - never from a nightly
+    universe scan, and possibly days old if nobody has re-viewed that
+    ticker since. Those rows are exactly as valid as ever for deep-dive/
+    portfolio surfaces; they just don't belong in a ranking that's
+    presented as "tonight's" scan results. Two checks now gate entry
+    into this ranking (both re-applied below, not carried on the row):
+      - eligibility: row["universe"] must be one this site actually
+        nightly-scans (scanner_engine.AUSTRALIA_UNIVERSES/USA_UNIVERSES) -
+        "live", "imported", or anything else is excluded;
+      - freshness: row["generated_at"] must be within 72h, the same
+        cutoff scan_store.load_scan() uses to hide a stale scan from the
+        Scanner page itself."""
     rows = snapshot_store.all_public_rows()
     by_country = {"AU": [], "US": []}
+    _eligible_universes = set(scanner_engine.AUSTRALIA_UNIVERSES) | set(scanner_engine.USA_UNIVERSES)
+    _now = datetime.now(timezone.utc)
     for r in rows:
         price = r.get("price")
         if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
@@ -6372,6 +6393,14 @@ def _home_top5_by_country():
         if r.get("value_score") is None:
             continue
         if "ETF" in (r.get("company_name") or "").upper():
+            continue
+        if r.get("universe") not in _eligible_universes:
+            continue
+        try:
+            _gen = datetime.fromisoformat(r.get("generated_at") or "")
+        except ValueError:
+            continue
+        if (_now - _gen).total_seconds() / 3600.0 > 72:
             continue
         country = "AU" if (r.get("ticker") or "").upper().endswith(".AX") else "US"
         by_country[country].append(r)
@@ -6393,9 +6422,18 @@ def _home_featured_top10_by_country():
     not to touch, so it stays untouched and this is a separate read of
     the same underlying local data (no new network call either way).
     Returns {"AU": [ticker, ...], "US": [ticker, ...]}, ticker symbols
-    only, sorted by Value Score descending, up to 10 each."""
+    only, sorted by Value Score descending, up to 10 each.
+
+    Bug fix (owner-reported, 12 Sep 2026): same "live"-tagged/stale-row
+    leak as _home_top5_by_country above, and the same pool - see that
+    function's docstring for the root cause. Same two checks, applied
+    here too: universe must be a real nightly-scanned one
+    (scanner_engine.AUSTRALIA_UNIVERSES/USA_UNIVERSES) and generated_at
+    within 72h (scan_store.load_scan()'s own cutoff)."""
     rows = snapshot_store.all_public_rows()
     by_country = {"AU": [], "US": []}
+    _eligible_universes = set(scanner_engine.AUSTRALIA_UNIVERSES) | set(scanner_engine.USA_UNIVERSES)
+    _now = datetime.now(timezone.utc)
     for r in rows:
         price = r.get("price")
         if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
@@ -6403,6 +6441,14 @@ def _home_featured_top10_by_country():
         if r.get("value_score") is None:
             continue
         if "ETF" in (r.get("company_name") or "").upper():
+            continue
+        if r.get("universe") not in _eligible_universes:
+            continue
+        try:
+            _gen = datetime.fromisoformat(r.get("generated_at") or "")
+        except ValueError:
+            continue
+        if (_now - _gen).total_seconds() / 3600.0 > 72:
             continue
         country = "AU" if (r.get("ticker") or "").upper().endswith(".AX") else "US"
         by_country[country].append(r)
