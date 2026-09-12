@@ -81,6 +81,28 @@ def _conn():
             (datetime.now(timezone.utc).isoformat(),),
         )
         conn.commit()
+
+    # Amendment to Part 43 (13 Sep 2026, owner decision - numbers restored
+    # on the drivers charts): app.py's _explain_context_text and
+    # _EXPLAIN_SYSTEM_PROMPT changed AGAIN - back to numeric per-term
+    # contributions for value_score/quality/psychology/discovery/moat, and
+    # the system prompt's "never state a weight/base/point value"
+    # paragraph removed. Every explanation cached under the part43_purged
+    # regime was written to be deliberately qualitative-only (no numbers),
+    # which would now read as inconsistent with the chart's own numbers
+    # sitting right next to it - a second one-time, idempotent purge under
+    # its own new marker, same convention as above (never re-runs the
+    # first purge, never re-runs itself once done).
+    _purged_amendment = conn.execute(
+        "SELECT value FROM explain_cache_meta WHERE key = 'part43_amendment_numbers_purged'"
+    ).fetchone()
+    if not _purged_amendment:
+        conn.execute("DELETE FROM explain_cache")
+        conn.execute(
+            "INSERT INTO explain_cache_meta (key, value) VALUES ('part43_amendment_numbers_purged', ?)",
+            (datetime.now(timezone.utc).isoformat(),),
+        )
+        conn.commit()
     return conn
 
 
