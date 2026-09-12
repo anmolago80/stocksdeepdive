@@ -550,7 +550,13 @@ def _renders_html(path) -> bool:
 # static shell. content_page()'s own four pages (methodology/about/
 # privacy/how-we-use-ai) are unaffected either way - they're real /es/
 # path twins now, not query-driven, and don't consult this set at all.
-_STREAMLIT_ONLY_PARAMS = {"ticker", "tickers", "admin", "code", "state", "app", "src", "lang"}
+# Part 37: "universe" joins this set so a bare /scanner?universe=... pill
+# link (app.py's new HTML-chip universe picker - see
+# _scanner_universe_href, app.py) boots the interactive Streamlit app
+# instead of the fast static landing page, exactly like "ticker" already
+# does for /research and /deep-dive. No ?universe= link existed anywhere
+# on the site before this Part.
+_STREAMLIT_ONLY_PARAMS = {"ticker", "tickers", "admin", "code", "state", "app", "src", "lang", "universe"}
 
 
 def _needs_streamlit(request: Request) -> bool:
@@ -1349,8 +1355,8 @@ async def tool_landing(request: Request):
     """Same rule as the homepage: a BARE tool URL is the tool's front door
     and is served as an indexable page describing it; the instant the URL
     carries one of _STREAMLIT_ONLY_PARAMS (?ticker=, ?tickers=, ?app=1,
-    ?src=, ?admin=, ?code=, ?state=) the request is a real use of the tool
-    and goes straight to Streamlit. (Audit fix 4.3: previously gated on
+    ?src=, ?admin=, ?code=, ?state=, ?universe=) the request is a real use
+    of the tool and goes straight to Streamlit. (Audit fix 4.3: previously gated on
     ANY query string at all, including harmless UTM/marketing params -
     see _needs_streamlit()'s comment above.)
 

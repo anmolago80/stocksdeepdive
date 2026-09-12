@@ -1543,9 +1543,10 @@ EN = {
 
     "dd.data_as_of": "Data as of {date} (latest available daily close).",
 
-    # Part 34.6 (11 Sep 2026): the picker above (four pill rows - see
-    # _SCANNER_PICKER_ROWS, app.py) now reaches all 30 universes on its
-    # own, so this expander's old "+{n} more universes" framing (n was
+    # Part 34.6 (11 Sep 2026, superseded by Part 37's two-band picker -
+    # see _SCANNER_PICKER_BANDS, app.py): the picker above reaches all 30
+    # universes on its own, so this expander's old "+{n} more universes"
+    # framing (n was
     # always 0 the moment the new picker covers everything) no longer
     # makes sense - reworded to describe what this expander is actually
     # still for: toggling AU/USA broadly and the Sector filter, neither
@@ -1583,14 +1584,15 @@ EN = {
     # 34.8 (Part 34 addendum, 11 Sep 2026): row-cap guard note, shown only
     # when a universe's overnight table has more rows than the render cap.
     "scanner.row_cap_note": "showing the top {cap} of {total} by value score - use the filters to narrow",
-    # Part 34.6 (11 Sep 2026): the four-row universe picker (Option A of
-    # the mock) - one row label + "+N more" toggle pair per row.
-    "scanner.picker_row_au_size": "\U0001F1E6\U0001F1FA AUSTRALIA · BY SIZE",
-    "scanner.picker_row_au_sector": "\U0001F1E6\U0001F1FA AUSTRALIA · BY SECTOR",
-    "scanner.picker_row_us_size_theme": "\U0001F1FA\U0001F1F8 USA · BY SIZE & THEME",
-    "scanner.picker_row_us_sector": "\U0001F1FA\U0001F1F8 USA · BY SECTOR",
-    "scanner.picker_more": "+{n} more ▾",
-    "scanner.picker_show_less": "show less ▴",
+    # Part 37 (12 Sep 2026): replaces Part 34.6's four row labels + "+N
+    # more" pair with two band labels (Option B of universe_picker_fix_
+    # options_mock.html - owner-picked, everything visible, no "more").
+    # Flags are SVG in the picker's own HTML (see _FLAG_AU_SVG/_FLAG_US_SVG,
+    # app.py) - deliberately NOT baked into this string as emoji, since
+    # emoji flags are the exact bug being fixed (bare "au"/"us" letters on
+    # Windows).
+    "scanner.picker_band_australia": "AUSTRALIA",
+    "scanner.picker_band_usa": "USA",
     # Part 34.6 (11 Sep 2026): sector-word pill labels, translated (index/
     # universe PROPER names like "S&P 500"/"Dow Jones 30"/"Dividend
     # Aristocrats" stay in English everywhere on this site, matching the
@@ -3730,12 +3732,8 @@ ES = {
     "scanner.scan_of": "escaneo del {when}",
     "scanner.scan_of_repriced": "escaneo de fundamentales del {scan_when} · precios actualizados el {price_when}",
     "scanner.row_cap_note": "mostrando los primeros {cap} de {total} por puntaje de valor - usa los filtros para acotar",
-    "scanner.picker_row_au_size": "\U0001F1E6\U0001F1FA AUSTRALIA · POR TAMAÑO",
-    "scanner.picker_row_au_sector": "\U0001F1E6\U0001F1FA AUSTRALIA · POR SECTOR",
-    "scanner.picker_row_us_size_theme": "\U0001F1FA\U0001F1F8 EE. UU. · POR TAMAÑO Y TEMA",
-    "scanner.picker_row_us_sector": "\U0001F1FA\U0001F1F8 EE. UU. · POR SECTOR",
-    "scanner.picker_more": "+{n} más ▾",
-    "scanner.picker_show_less": "mostrar menos ▴",
+    "scanner.picker_band_australia": "AUSTRALIA",
+    "scanner.picker_band_usa": "EE. UU.",
     "scanner.sector_pill_financials": "Financieras",
     "scanner.sector_pill_materials_mining": "Materiales y Minería",
     "scanner.sector_pill_health_care": "Salud",

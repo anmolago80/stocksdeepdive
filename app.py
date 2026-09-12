@@ -10808,159 +10808,180 @@ def _consume_pending_nl_screen_query():
         _apply_nl_screen_result(_parsed)
 
 
-# Part 34.6 (11 Sep 2026): replaces the old single 6-pill "Popular
-# universes" row - see universe_picker_options_mock.html's Option A
-# (owner-approved acceptance bar) for the exact four-row layout this
-# implements. Each pill tuple is (i18n_key_or_None, literal_label_or_
-# None, country, universe) - an i18n_key is given only for generic
-# sector words (translated ES per the instruction's "row labels and
-# universe display names fully translated" rule); every proper index/
-# universe NAME (ASX 200, S&P 500, Dividend Aristocrats, Dow Jones 30...)
-# stays a literal, untranslated string, matching this site's existing
-# universe-selectbox convention everywhere else. "Nasdaq Next Gen 100" is
-# deliberately absent from the USA-by-size-&-theme "+more" list in the
-# mock - live-verified during development that no Wikipedia source
-# exists for it at all, so it was never built (see scanner_engine.
-# USA_UNIVERSES' own comment) and isn't offered here either, rather than
-# shipping a pill that always leads to an empty Scanner page.
-_SCANNER_PICKER_ROWS = [
-    ("au_size", "scanner.picker_row_au_size", [
-        (None, "ASX 200", "Australia", "ASX 200"),
-        (None, "ASX 300", "Australia", "ASX 300"),
-        (None, "ASX 100", "Australia", "ASX 100"),
-        (None, "All Ordinaries", "Australia", "All Ordinaries"),
-    ], [
-        (None, "ASX Small Ords", "Australia", "ASX Small Ordinaries"),
-        (None, "ASX 50", "Australia", "ASX 50"),
-        (None, "ASX 20", "Australia", "ASX 20"),
+# Part 37 (12 Sep 2026, owner-reported bug fix): replaces Part 34.6's
+# four-row + "+N more" picker with Option B of universe_picker_fix_
+# options_mock.html (owner-picked acceptance bar) - two labeled bands,
+# ALL 30 universes visible at once, no "+more" anywhere. The old picker's
+# st.pills/st.button/st.columns layout put the "+more" toggle in its own
+# floating right-hand column (orphaned, per the owner's screenshot) and
+# could only ever show emoji flags (bare "au"/"us" letters on Windows,
+# also in that screenshot) since none of those widgets accept raw HTML.
+#
+# Each pill tuple is (i18n_key_or_None, literal_label_or_None, universe) -
+# country is the band's own, not per-pill (unlike the old rows). An
+# i18n_key is given only for generic sector words, matching the existing
+# universe-selectbox convention that every proper index/universe NAME
+# (ASX 200, S&P 500, Dividend Aristocrats, Dow 30...) stays a literal,
+# untranslated string. A bare `None` entry is a divider between the
+# size/theme group and the sector group, matching the mock's own single
+# .pills row per band with a <span class="divider"> in the middle.
+# Display labels differ from the underlying universe identifier in three
+# spots, matching the mock's own wording exactly while leaving
+# scanner_engine's actual universe keys (and therefore every scan/lookup
+# downstream) untouched: "Small Ordinaries" (was "ASX Small Ords"),
+# "S&P 600 Small" (was "Small Caps (S&P 600)"), "Dow 30" (was "Dow Jones
+# 30"). "Nasdaq Next Gen 100" is still deliberately absent - see
+# scanner_engine.USA_UNIVERSES' own comment (no Wikipedia source exists
+# for it at all, so it was never built and isn't offered here either).
+_SCANNER_PICKER_BANDS = [
+    ("Australia", "scanner.picker_band_australia", [
+        (None, "ASX 200", "ASX 200"),
+        (None, "ASX 300", "ASX 300"),
+        (None, "ASX 100", "ASX 100"),
+        (None, "ASX 50", "ASX 50"),
+        (None, "ASX 20", "ASX 20"),
+        (None, "All Ordinaries", "All Ordinaries"),
+        (None, "Small Ordinaries", "ASX Small Ordinaries"),
+        None,
+        ("scanner.sector_pill_financials", None, "ASX Financials"),
+        ("scanner.sector_pill_materials_mining", None, "ASX Materials & Mining"),
+        ("scanner.sector_pill_health_care", None, "ASX Health Care"),
+        ("scanner.sector_pill_consumer", None, "ASX Consumer"),
+        ("scanner.sector_pill_industrials", None, "ASX Industrials"),
+        ("scanner.sector_pill_areits", None, "ASX A-REITs"),
+        ("scanner.sector_pill_all_technology", None, "ASX All Technology"),
     ]),
-    ("au_sector", "scanner.picker_row_au_sector", [
-        ("scanner.sector_pill_financials", None, "Australia", "ASX Financials"),
-        ("scanner.sector_pill_materials_mining", None, "Australia", "ASX Materials & Mining"),
-        ("scanner.sector_pill_health_care", None, "Australia", "ASX Health Care"),
-        ("scanner.sector_pill_consumer", None, "Australia", "ASX Consumer"),
-    ], [
-        ("scanner.sector_pill_industrials", None, "Australia", "ASX Industrials"),
-        ("scanner.sector_pill_areits", None, "Australia", "ASX A-REITs"),
-        ("scanner.sector_pill_all_technology", None, "Australia", "ASX All Technology"),
-    ]),
-    ("us_size_theme", "scanner.picker_row_us_size_theme", [
-        (None, "S&P 500", "USA", "S&P 500"),
-        (None, "Nasdaq 100", "USA", "Nasdaq 100"),
-        (None, "Russell 2000", "USA", "Russell 2000"),
-        (None, "Dividend Aristocrats", "USA", "S&P 500 Dividend Aristocrats"),
-    ], [
-        (None, "S&P 400 MidCap", "USA", "S&P 400 MidCap"),
-        (None, "Small Caps (S&P 600)", "USA", "Small Caps (S&P 600)"),
-        (None, "Russell 1000", "USA", "Russell 1000"),
-        (None, "S&P 1500", "USA", "S&P 1500"),
-        (None, "Russell 3000", "USA", "Russell 3000"),
-        (None, "Dow Jones 30", "USA", "Dow Jones 30"),
-    ]),
-    ("us_sector", "scanner.picker_row_us_sector", [
-        ("scanner.sector_pill_technology", None, "USA", "US Technology"),
-        ("scanner.sector_pill_healthcare", None, "USA", "US Healthcare"),
-        ("scanner.sector_pill_financials", None, "USA", "US Financials"),
-        ("scanner.sector_pill_energy", None, "USA", "US Energy"),
-    ], [
-        ("scanner.sector_pill_industrials", None, "USA", "US Industrials"),
-        ("scanner.sector_pill_consumer", None, "USA", "US Consumer"),
+    ("USA", "scanner.picker_band_usa", [
+        (None, "S&P 500", "S&P 500"),
+        (None, "S&P 400 MidCap", "S&P 400 MidCap"),
+        (None, "S&P 600 Small", "Small Caps (S&P 600)"),
+        (None, "S&P 1500", "S&P 1500"),
+        (None, "Nasdaq 100", "Nasdaq 100"),
+        (None, "Russell 1000", "Russell 1000"),
+        (None, "Russell 2000", "Russell 2000"),
+        (None, "Russell 3000", "Russell 3000"),
+        (None, "Dow 30", "Dow Jones 30"),
+        (None, "Dividend Aristocrats", "S&P 500 Dividend Aristocrats"),
+        None,
+        ("scanner.sector_pill_technology", None, "US Technology"),
+        ("scanner.sector_pill_healthcare", None, "US Healthcare"),
+        ("scanner.sector_pill_financials", None, "US Financials"),
+        ("scanner.sector_pill_energy", None, "US Energy"),
+        ("scanner.sector_pill_industrials", None, "US Industrials"),
+        ("scanner.sector_pill_consumer", None, "US Consumer"),
     ]),
 ]
 
+# Same "SVG constant, never emoji" convention blog_render.py's
+# _FLAG_GB_SVG/_FLAG_ES_SVG already established for the EN/ES nav toggle
+# (emoji flags render as bare letters on Windows - the exact bug in the
+# owner's screenshot) - the markup itself is the mock's own inline AU/US
+# SVGs verbatim (viewBox 0 0 30 22, ~15x11), so a screenshot of this
+# picker matches the acceptance bar pixel-for-pixel on the flags.
+_FLAG_AU_SVG = (
+    '<svg class="uflag" viewBox="0 0 30 22" aria-hidden="true" focusable="false">'
+    '<rect width="30" height="22" fill="#00247d"/>'
+    '<path d="M0 0l12 9M12 0L0 9" stroke="#fff" stroke-width="2.2"/>'
+    '<path d="M0 0l12 9M12 0L0 9" stroke="#cf142b" stroke-width="1"/>'
+    '<rect x="5" y="0" width="2.2" height="9" fill="#fff"/>'
+    '<rect x="0" y="3.4" width="12" height="2.2" fill="#fff"/>'
+    '<rect x="5.6" y="0" width="1" height="9" fill="#cf142b"/>'
+    '<rect x="0" y="4" width="12" height="1" fill="#cf142b"/>'
+    '<circle cx="21" cy="6" r="1.3" fill="#fff"/>'
+    '<circle cx="17" cy="13" r="1.1" fill="#fff"/>'
+    '<circle cx="25" cy="13" r="1.1" fill="#fff"/>'
+    '<circle cx="21" cy="18" r="1.1" fill="#fff"/>'
+    '<circle cx="7" cy="16" r="1.6" fill="#fff"/>'
+    '</svg>'
+)
+_FLAG_US_SVG = (
+    '<svg class="uflag" viewBox="0 0 30 22" aria-hidden="true" focusable="false">'
+    '<rect width="30" height="22" fill="#fff"/>'
+    '<g fill="#b22234">'
+    '<rect y="0" width="30" height="2.4"/><rect y="4.8" width="30" height="2.4"/>'
+    '<rect y="9.6" width="30" height="2.4"/><rect y="14.4" width="30" height="2.4"/>'
+    '<rect y="19.2" width="30" height="2.4"/>'
+    '</g>'
+    '<rect width="13" height="12" fill="#3c3b6e"/>'
+    '</svg>'
+)
+_SCANNER_PICKER_FLAGS = {"Australia": _FLAG_AU_SVG, "USA": _FLAG_US_SVG}
+
+# Zero indentation on every line, deliberately - Streamlit's Markdown
+# parser treats 4+ leading spaces as a code-block fence, exactly the trap
+# the instruction calls out (this is also why _render_scanner_universe_
+# picker below joins everything into ONE st.markdown call with no
+# indentation of its own, rather than one call per band/pill).
+_SCANNER_PICKER_STYLE = """
+<style>
+.sdd-uni-picker{margin:2px 0 16px}
+.sdd-uni-picker .band{margin-bottom:10px}
+.sdd-uni-picker .band:last-child{margin-bottom:0}
+.sdd-uni-picker .lbl{font-size:11px;letter-spacing:1.4px;color:#5b7290;font-weight:700;margin:0 0 6px;text-transform:uppercase;display:flex;align-items:center;gap:6px}
+.sdd-uni-picker .pills{display:flex;flex-wrap:wrap;gap:7px;align-items:center}
+.sdd-uni-picker .pill{border:1px solid #2a3b5c;background:#0b1220;border-radius:99px;padding:5px 13px;font-size:12.5px;color:#c7d2e0;white-space:nowrap;text-decoration:none;display:inline-flex;align-items:center;gap:6px;line-height:1.4}
+.sdd-uni-picker .pill:hover{border-color:#3d5375;color:#e6edf5}
+.sdd-uni-picker .pill.on{border-color:#14b8a6;color:#2dd4bf;background:#10312d}
+.sdd-uni-picker .divider{width:1px;height:18px;background:#1f3352;margin:0 4px}
+.sdd-uni-picker .uflag{width:15px;height:11px;border-radius:2px;flex:0 0 auto}
+</style>
+"""
+
 
 def _picker_pill_label(item, lang):
-    _i18n_key, _literal, _country, _universe = item
+    _i18n_key, _literal, _universe = item
     return i18n.t(_i18n_key, lang) if _i18n_key else _literal
 
 
+def _scanner_universe_href(universe, lang):
+    """/scanner?universe=... deep link for one pill. No ?universe= link
+    existed anywhere on the site before this Part (confirmed by search -
+    only ticker/tickers/app/src/admin/code/state/lang were ever recognized
+    by server.py's _STREAMLIT_ONLY_PARAMS), so this follows that EXACT
+    existing ?ticker= convention (see page_research()'s own
+    st.query_params.get("ticker") handling) rather than inventing a new
+    mechanism, per the instruction's "do not invent new plumbing" rule.
+    ?lang=es is appended too, matching every other cross-page link on
+    this site (blog_render.py's own "/scanner?lang=es") - belt and
+    braces on top of the sdd_lang cookie that actually drives _init_lang()."""
+    _qs = f"universe={_urlquote(universe)}"
+    if lang == "es":
+        _qs += "&lang=es"
+    return f"/scanner?{_qs}"
+
+
 def _render_scanner_universe_picker(lang):
-    """Part 34.6 (Option A of the mock - see _SCANNER_PICKER_ROWS'
-    comment above): four labeled pill rows (AU by size / AU by sector /
-    US by size & theme / US by sector), each showing its first 4 pills
-    plus a "+N more" toggle that expands the row in place (a plain
-    st.button flipping a session_state flag - clicking it is itself a
-    Streamlit rerun, so "in place, no page jump" falls out for free; a
-    button is tap-friendly on mobile by construction). Replaces Mega-
-    batch Part 6's old single 6-pill _render_scanner_universe_pills(),
-    now that there are 30 (not 6) shortcut-worthy universes.
-
-    Fast path onto the same scanner_country_au/us + scanner_universe
-    session_state keys the "+N more" expander's own AU/US checkboxes and
-    universe selectbox read/write further down in page_scanner() - fixed
-    up here BEFORE those widgets are instantiated, same "fix up first"
-    convention already used everywhere else on this page.
-
-    Only ONE pill is ever shown selected across all four rows (matching
-    the old single-pill-row behaviour): a first pass below peeks each
-    row's raw pending widget value (Streamlit already writes a clicked
-    pill's new value into st.session_state[key] before the script starts
-    its rerun, so this sees the click immediately - no one-rerun lag),
-    applies whichever row actually changed to the shared state, then
-    clears every OTHER row's own pill-widget key so they redraw
-    unselected in the second (actual drawing) pass right below it. A row
-    is force-expanded for rendering whenever the CURRENT global selection
-    is one of its own "+more" pills, regardless of the row's own
-    collapsed/expanded toggle - otherwise collapsing that row after
-    picking a hidden pill would leave Streamlit's own widget state
-    pointing at an option no longer offered."""
-    _current_universe = st.session_state.get("scanner_universe")
-
-    def _row_options(_more_tup, _base_tup, _row_key):
-        _force = _current_universe in {u for _k, _l, _c, u in _more_tup}
-        _expanded = st.session_state.get(f"scanner_picker_expand_{_row_key}", False) or _force
-        return (_base_tup + _more_tup) if _expanded else _base_tup, _expanded
-
-    _changed_row = None
-    for _row_key, _row_label_key, _base, _more in _SCANNER_PICKER_ROWS:
-        _shown, _ = _row_options(_more, _base, _row_key)
-        _lookup = {_picker_pill_label(item, lang): (item[2], item[3]) for item in _shown}
-        _raw = st.session_state.get(f"scanner_picker_pills_{_row_key}")
-        if _raw and _raw in _lookup:
-            _country, _uni = _lookup[_raw]
-            if _uni != _current_universe:
-                _changed_row = _row_key
-                st.session_state["scanner_country_au"] = (_country == "Australia")
-                st.session_state["scanner_country_us"] = (_country == "USA")
-                st.session_state["scanner_universe"] = _uni
-                _current_universe = _uni
-                break
-    if _changed_row:
-        for _row_key, *_rest in _SCANNER_PICKER_ROWS:
-            if _row_key != _changed_row:
-                st.session_state.pop(f"scanner_picker_pills_{_row_key}", None)
-
-    for _row_key, _row_label_key, _base, _more in _SCANNER_PICKER_ROWS:
-        _shown, _expanded = _row_options(_more, _base, _row_key)
-        _pill_key = f"scanner_picker_pills_{_row_key}"
-        _shown_labels = [_picker_pill_label(item, lang) for item in _shown]
-        # Same "fix session_state before the widget reads it" guard the
-        # universe selectbox below already uses: a stale stored label
-        # (row just collapsed past it, or the UI language just changed)
-        # that no longer matches any CURRENT option would otherwise make
-        # st.pills raise - clearing it here just falls back to `default`.
-        if st.session_state.get(_pill_key) not in (None, *_shown_labels):
-            st.session_state.pop(_pill_key, None)
-        _label_by_uni = {item[3]: _picker_pill_label(item, lang) for item in _shown}
-        _default = _label_by_uni.get(_current_universe)
-
-        _label_col, _toggle_col = st.columns([9, 3], vertical_alignment="bottom")
-        with _label_col:
-            st.caption(i18n.t(_row_label_key, lang))
-        with _toggle_col:
-            if _more:
-                _toggle_label = (
-                    i18n.t("scanner.picker_show_less", lang) if _expanded
-                    else i18n.t("scanner.picker_more", lang, n=len(_more))
-                )
-                if st.button(_toggle_label, key=f"scanner_picker_toggle_{_row_key}"):
-                    st.session_state[f"scanner_picker_expand_{_row_key}"] = not _expanded
-                    st.rerun()
-        st.pills(
-            i18n.t(_row_label_key, lang), _shown_labels,
-            selection_mode="single", default=_default,
-            key=_pill_key, label_visibility="collapsed",
-        )
+    """Part 37, Option B of the mock (see _SCANNER_PICKER_BANDS' own
+    comment above). Built as ONE st.markdown(..., unsafe_allow_html=True)
+    HTML block per the instruction's implementation constraint - real
+    <a href="/scanner?universe=..."> chips, not Streamlit widgets, so a
+    click is a genuine navigation (full page load, see
+    _scanner_universe_href) rather than a same-script rerun; this is what
+    lets every pill carry an SVG flag, which st.pills/st.caption cannot
+    render. No indentation on any joined line below - Streamlit's
+    Markdown parser treats 4+ leading spaces as a code block, exactly the
+    trap the instruction calls out."""
+    _current = st.session_state.get("scanner_universe")
+    _parts = [_SCANNER_PICKER_STYLE, '<div class="sdd-uni-picker">']
+    for _country, _label_key, _pills in _SCANNER_PICKER_BANDS:
+        _flag = _SCANNER_PICKER_FLAGS[_country]
+        _parts.append('<div class="band">')
+        _parts.append(f'<div class="lbl">{_flag}{html.escape(i18n.t(_label_key, lang))}</div>')
+        _parts.append('<div class="pills">')
+        for _item in _pills:
+            if _item is None:
+                _parts.append('<span class="divider"></span>')
+                continue
+            _universe = _item[2]
+            _label = html.escape(_picker_pill_label(_item, lang))
+            _on = " on" if _universe == _current else ""
+            _href = _scanner_universe_href(_universe, lang)
+            _parts.append(
+                f'<a class="pill{_on}" href="{_href}" target="_self">{_flag}{_label}</a>'
+            )
+        _parts.append('</div></div>')
+    _parts.append('</div>')
+    st.markdown("".join(_parts), unsafe_allow_html=True)
 
 
 def page_scanner():
@@ -10977,10 +10998,35 @@ def page_scanner():
     st.session_state.setdefault("scanner_country_us", False)
     st.session_state.setdefault("scanner_universe", "ASX 200")
 
-    # ---- Universe picker (Part 34.6, Option A of the mock): four pill
-    # rows covering all 30 universes, always visible - runs BEFORE the
-    # instant-results read below so a click this rerun already shows in
-    # the same run's table.
+    # ---- Part 37: ?universe= deep link, read BEFORE the picker draws so
+    # a pill click (a real navigation now, not a rerun - see
+    # _scanner_universe_href) already reflects in this very same run's
+    # highlight and table. Same shape as the existing ?ticker= pattern
+    # elsewhere on this page: a recognized value wins over whatever's
+    # already in session_state, an unrecognized one is ignored outright.
+    # Popped immediately after use (exactly like the ticker case's own
+    # st.query_params.pop("ticker", None) a few thousand lines up) so a
+    # LATER rerun from some other widget on this page (the country
+    # checkboxes/selectbox further down, which share these same
+    # session_state keys) is never overridden back to this stale URL
+    # value - the query string only ever drives the FIRST script run
+    # after a real page load.
+    _qp_universe = (st.query_params.get("universe") or "").strip()
+    if _qp_universe:
+        if _qp_universe in scanner_engine.AUSTRALIA_UNIVERSES:
+            st.session_state["scanner_universe"] = _qp_universe
+            st.session_state["scanner_country_au"] = True
+            st.session_state["scanner_country_us"] = False
+        elif _qp_universe in scanner_engine.USA_UNIVERSES:
+            st.session_state["scanner_universe"] = _qp_universe
+            st.session_state["scanner_country_us"] = True
+            st.session_state["scanner_country_au"] = False
+        st.query_params.pop("universe", None)
+
+    # ---- Universe picker (Part 37, Option B of the mock): two labeled
+    # bands covering all 30 universes, always visible, no "+more" -
+    # runs BEFORE the instant-results read below so a click this rerun
+    # already shows in the same run's table.
     _render_scanner_universe_picker(_scan_lang)
 
     # ---- Instant results: rendered FIRST, above every picker AND above
@@ -11010,9 +11056,10 @@ def page_scanner():
             "country/universe/sector filters you could set by hand."
         )
 
-    # "Browse by country & filter by sector" (Part 34.6): the four pill
-    # rows above now reach every one of scanner_engine's universes on
-    # their own (see _SCANNER_PICKER_ROWS), so this expander's job is no
+    # "Browse by country & filter by sector" (Part 34.6, picker itself
+    # superseded by Part 37's two bands): the picker above reaches every
+    # one of scanner_engine's universes on its own (see
+    # _SCANNER_PICKER_BANDS), so this expander's job is no
     # longer "+N more universes" - it's the broader country toggle plus
     # the Sector filter, neither of which the pill picker itself exposes.
     # Mechanism (country checkboxes + universe selectbox + sector
