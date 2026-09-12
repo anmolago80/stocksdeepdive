@@ -641,6 +641,52 @@ def _set_admin_seen_cookie():
     _components.html(f"<script>{_js}</script>", height=0)
 
 
+# Bug fix (owner-reported, 12 Sep 2026): "Exit full view" doesn't stick -
+# moving to a new tab/page snaps straight back to full view. Root cause:
+# "full_view_exited" lived in st.session_state only, so any fresh session
+# (new tab, reload, reopened browser) starts without it, and BOTH the
+# sdd_fullview cookie-restore branch above and the Part 35.3 owner
+# auto-unlock branch below immediately re-unlock. Exit needs to be exactly
+# as durable as the unlock it's undoing - hence this cookie, same JS-write
+# plumbing as _set_admin_cookie (a pending-flag deferral for anything
+# triggered from inside a button callback, since st.rerun() there cancels
+# delivery of a <script> tag written in the same call). Deliberately NOT
+# a signed/derived token like _admin_cookie_value(): this cookie never
+# grants a privilege by itself - at most it withholds an auto-unlock,
+# which only ever pushes a browser toward the public/factual view, never
+# away from it - so there's nothing here worth forging.
+_FULLVIEW_EXITED_COOKIE = "sdd_fullview_exited"
+FULLVIEW_EXITED_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 30  # ~30 days
+
+
+def _set_fullview_exited_cookie(clear: bool = False):
+    import streamlit.components.v1 as _components
+    if clear:
+        _js = f"document.cookie='{_FULLVIEW_EXITED_COOKIE}=; path=/; max-age=0; SameSite=Lax';"
+    else:
+        _js = (f"document.cookie='{_FULLVIEW_EXITED_COOKIE}=1; "
+               f"path=/; max-age={FULLVIEW_EXITED_COOKIE_MAX_AGE_SECONDS}; SameSite=Lax';")
+    _components.html(f"<script>{_js}</script>", height=0)
+
+
+def _fullview_exited() -> bool:
+    """True when THIS BROWSER should be kept out of full view even though
+    it would otherwise qualify (owner auto-unlock, or a valid sdd_fullview
+    cookie) - either this session already exited (full_view_exited in
+    session_state, unchanged from before this fix) or a past session on
+    this same browser did (the sdd_fullview_exited cookie, new here). Both
+    restore paths below must check this instead of session_state alone,
+    or a fresh session simply forgets the exit ever happened."""
+    if st.session_state.get("full_view_exited"):
+        return True
+    try:
+        if st.context.cookies.get(_FULLVIEW_EXITED_COOKIE):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 # -----------------------------------------------------------------
 # Español instruction, Part 1: a persisted EN/ES language choice - a
 # cookie, a one-shot _init_lang() resolution, and a compact
@@ -760,7 +806,14 @@ def _admin_ever_seen() -> bool:
         return True
     try:
         cookies = st.context.cookies
-        if cookies.get("sdd_fullview") or cookies.get(_ADMIN_SEEN_COOKIE):
+        if (cookies.get("sdd_fullview") or cookies.get(_ADMIN_SEEN_COOKIE)
+                or cookies.get(_FULLVIEW_EXITED_COOKIE)):
+            # Bug fix (12 Sep 2026): a browser carrying sdd_fullview_exited
+            # has, by definition, engaged the admin flow before (that's the
+            # only way it gets set) - counting it here means the owner's
+            # "Return to RC view" one-click affordance (_render_admin_
+            # unlock, below) still shows up in a brand new tab after they
+            # exited, not just for the rest of the exiting session.
             return True
     except Exception:
         pass
@@ -784,6 +837,12 @@ if _admin_key_env:
         st.session_state["full_view_unlocked"] = True
         st.session_state.pop("full_view_exited", None)
         _set_admin_cookie()
+        # Bug fix (12 Sep 2026): a deliberate re-entry into full view
+        # clears any past exit on this browser too - otherwise the very
+        # next fresh tab would read the still-present sdd_fullview_exited
+        # cookie and refuse to honour the ?admin= unlock this run just
+        # granted (owner auto-unlock/cookie-restore both check it).
+        _set_fullview_exited_cookie(clear=True)
         # Audit fix (3.1): the key was sitting in the URL (address bar,
         # browser history, any access/proxy logs) for the rest of the
         # admin session - strip it immediately on a successful unlock, the
@@ -795,12 +854,16 @@ if _admin_key_env:
         # attempt at all, so it's excluded from both branches above.)
         _record_admin_key_failure()
     elif (not st.session_state.get("full_view_unlocked")
-          and not st.session_state.get("full_view_exited")):
-        # "full_view_exited" matters here: after Exit, the browser's old
-        # cookie is still attached to the CURRENT request (the clearing
-        # script hasn't reached the browser yet), and without this flag
-        # the cookie check would re-unlock the session instantly - the
-        # "I can't get out" bug.
+          and not _fullview_exited()):
+        # _fullview_exited() matters here: after Exit, the browser's old
+        # sdd_fullview cookie may still be attached to the CURRENT request
+        # (the clearing script hasn't reached the browser yet THIS run),
+        # and without this check that cookie would re-unlock the session
+        # instantly - the "I can't get out" bug. Bug fix (12 Sep 2026):
+        # this now also checks the durable sdd_fullview_exited cookie (not
+        # just this session's own state), so a brand new tab/session on a
+        # browser that exited earlier stays out too - that's the actual
+        # reported bug (exit not persisting across tabs/reloads).
         try:
             if hmac.compare_digest(st.context.cookies.get("sdd_fullview") or "", _admin_cookie_value()):
                 st.session_state["full_view_unlocked"] = True
@@ -817,6 +880,10 @@ if st.session_state.pop("_pending_admin_cookie_clear", False):
     _set_admin_cookie(clear=True)
 if st.session_state.pop("_pending_admin_seen_cookie", False):
     _set_admin_seen_cookie()
+if st.session_state.pop("_pending_fullview_exited_cookie", False):
+    _set_fullview_exited_cookie()
+if st.session_state.pop("_pending_fullview_exited_cookie_clear", False):
+    _set_fullview_exited_cookie(clear=True)
 
 # Español instruction, Part 1: same pending-flag deferral pattern as the
 # admin cookie just above, plus the one-shot resolution itself - called
@@ -848,13 +915,16 @@ paywall_engine.restore_email_session()
 # co-admin who's unlocked full view via the shared ?admin=/RC-view key
 # is not the owner and must not be treated as one anywhere else on the
 # site (see page_admin_dashboard()'s own, separate, strict owner check).
-# Respects "full_view_exited" (this session's own "Exit full view" click)
-# so the owner can still step back into the public/factual presentation
-# for the rest of a session without this immediately re-unlocking it -
-# same override precedent as the cookie-restore branch above.
+# Respects _fullview_exited() (this session's own "Exit full view" click,
+# OR - bug fix, 12 Sep 2026 - a past session on this same browser having
+# exited, via the sdd_fullview_exited cookie) so the owner can step back
+# into the public/factual presentation and have it actually stick across
+# tabs/reloads for the rest of that ~30-day window, not just the one
+# session that clicked Exit - same override precedent as the
+# cookie-restore branch above, same underlying helper.
 if ai_gate.is_owner(paywall_engine.current_user_email()):
     if (not st.session_state.get("full_view_unlocked")
-            and not st.session_state.get("full_view_exited")):
+            and not _fullview_exited()):
         st.session_state["full_view_unlocked"] = True
         st.session_state["_pending_admin_cookie"] = True
     st.session_state["_owner_auto_unlocked"] = True
@@ -1147,6 +1217,11 @@ def _render_view_badge():
                 st.session_state["full_view_exited"] = True
                 st.query_params.pop("admin", None)
                 st.session_state["_pending_admin_cookie_clear"] = True
+                # Bug fix (12 Sep 2026): make the exit itself as durable
+                # as the unlock it's undoing - see _fullview_exited()'s
+                # own docstring for why session_state alone let this reset
+                # on the very next new tab/page load.
+                st.session_state["_pending_fullview_exited_cookie"] = True
                 st.rerun()
 
 
@@ -1249,13 +1324,31 @@ def _render_admin_unlock():
     """Small "RC view" popover rendered next to Sign out: typing the admin
     key switches THIS BROWSER to the full presentation (same effect as the
     ?admin= URL, cookie included). Public visitors who click it just see a
-    key prompt; a wrong key gets a flat "incorrect" and nothing else."""
+    key prompt; a wrong key gets a flat "incorrect" and nothing else.
+
+    Bug fix (owner-reported, 12 Sep 2026): the signed-in OWNER, once
+    exited, gets a one-click "Return to RC view" BUTTON here instead of
+    the key popover - their identity is already proven by sign-in (the
+    same ai_gate.is_owner() check the auto-unlock branch near the top of
+    this file uses), so re-typing the shared admin key would be pure
+    friction for the one person that key was never meant to gate in the
+    first place. Anyone else - a co-admin who knows the key but isn't the
+    owner - still gets the key prompt exactly as before; this branch is
+    strictly additive and owner-only."""
     if not (_FACTUAL_DEFAULT and _admin_key_env):
         return
     if st.session_state.get("full_view_unlocked"):
         return  # the FULL VIEW badge row already shows state + Exit
     if not _admin_ever_seen():
         return  # ordinary visitor who's never touched the admin flow
+    if ai_gate.is_owner(paywall_engine.current_user_email()) and _fullview_exited():
+        if st.button("Return to RC view", key="rc_view_owner_return"):
+            st.session_state["full_view_unlocked"] = True
+            st.session_state.pop("full_view_exited", None)
+            st.session_state["_pending_admin_cookie"] = True
+            st.session_state["_pending_fullview_exited_cookie_clear"] = True
+            st.rerun()
+        return
     with st.popover("RC view", key="rc_view_pop"):
         _key_try = st.text_input(
             "Access key", type="password", key="rc_view_key_input",
@@ -1265,6 +1358,7 @@ def _render_admin_unlock():
                 st.session_state["full_view_unlocked"] = True
                 st.session_state.pop("full_view_exited", None)
                 st.session_state["_pending_admin_cookie"] = True
+                st.session_state["_pending_fullview_exited_cookie_clear"] = True
                 st.rerun()
             else:
                 st.error("Incorrect key.")
@@ -3843,6 +3937,14 @@ def _render_compounder_admin_panel():
                 st.session_state["full_view_unlocked"] = True
                 st.session_state.pop("full_view_exited", None)
                 st.session_state["_pending_admin_cookie"] = True
+                # Bug fix (12 Sep 2026): this control shares the exact same
+                # full_view_unlocked/sdd_fullview state as every other
+                # admin entry point (this function's own docstring above),
+                # so it must clear the new sdd_fullview_exited cookie the
+                # same way they all do - otherwise a browser that exited
+                # earlier, then unlocked again from HERE specifically,
+                # would still read as "exited" on its very next tab.
+                st.session_state["_pending_fullview_exited_cookie_clear"] = True
                 st.rerun()
 
             st.success("Admin key accepted.")
@@ -3851,6 +3953,10 @@ def _render_compounder_admin_panel():
                 st.session_state["full_view_exited"] = True
                 st.query_params.pop("admin", None)
                 st.session_state["_pending_admin_cookie_clear"] = True
+                # Bug fix (12 Sep 2026): same durability fix as "Exit full
+                # view" - this button is the same lock action, just on a
+                # different page's popover.
+                st.session_state["_pending_fullview_exited_cookie"] = True
                 st.rerun()
 
             if paywall_engine.current_user_email():
@@ -22086,6 +22192,13 @@ def page_blog_admin():
                 st.session_state["full_view_unlocked"] = True
                 st.session_state.pop("full_view_exited", None)
                 st.session_state["_pending_admin_cookie"] = True
+                # Bug fix (12 Sep 2026): same shared state as every other
+                # admin entry point (this page's own comment above) - clear
+                # any lingering sdd_fullview_exited cookie the same way
+                # they all now do, so a browser that exited earlier and
+                # unlocks from HERE isn't still treated as "exited" on its
+                # next tab.
+                st.session_state["_pending_fullview_exited_cookie_clear"] = True
                 st.rerun()
             else:
                 _record_admin_key_failure()
