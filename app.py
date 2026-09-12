@@ -109,6 +109,13 @@ import explain_cache_store
 import comment_triage_store
 import ai_settings_store
 import ai_usage_store
+import volume_monitor
+import push_store
+
+# Mega-batch Part 35.1: the new owner Admin Dashboard's "site pulse"
+# counters - see admin_metrics_store.py's own docstring, and
+# page_admin_dashboard()/_render_view_badge() below for the call sites.
+import admin_metrics_store
 
 # Services batch, Part 1: metric alerts - no Anthropic API call anywhere in
 # this feature, see alert_engine.py's own docstring.
@@ -826,6 +833,39 @@ if st.session_state.pop("_pending_auth_cookie_clear", False):
     paywall_engine.write_auth_cookie(None)
 paywall_engine.restore_email_session()
 
+# Mega-batch Part 35.3: owner auto-unlock - the owner's own signed-in
+# email always gets full_view_unlocked with no key prompt, on any
+# device, instead of needing to know/type ADMIN_REFRESH_KEY on a fresh
+# browser (a real gap the owner kept hitting). Deliberately placed AFTER
+# restore_email_session() (just above): current_user_email() only starts
+# returning a value once that call has run this script. Checks
+# ai_gate.is_owner() specifically (the owner's exact configured email),
+# NOT just "is full_view_unlocked already true some other way" - a
+# co-admin who's unlocked full view via the shared ?admin=/RC-view key
+# is not the owner and must not be treated as one anywhere else on the
+# site (see page_admin_dashboard()'s own, separate, strict owner check).
+# Respects "full_view_exited" (this session's own "Exit full view" click)
+# so the owner can still step back into the public/factual presentation
+# for the rest of a session without this immediately re-unlocking it -
+# same override precedent as the cookie-restore branch above.
+if ai_gate.is_owner(paywall_engine.current_user_email()):
+    if (not st.session_state.get("full_view_unlocked")
+            and not st.session_state.get("full_view_exited")):
+        st.session_state["full_view_unlocked"] = True
+        st.session_state["_pending_admin_cookie"] = True
+    st.session_state["_owner_auto_unlocked"] = True
+elif st.session_state.pop("_owner_auto_unlocked", False):
+    # The owner had been auto-unlocked earlier THIS session but is no
+    # longer signed in as the owner (e.g. they just clicked Sign out) -
+    # the unlock was granted purely because of their identity, so it
+    # must not outlive that identity (Verify 4: "sign out -> factual
+    # view returns"). A manual ?admin=/RC-view-key unlock never sets
+    # _owner_auto_unlocked, so this never touches that separate,
+    # deliberate grant - a co-admin's key-based unlock keeps working on
+    # a signed-out browser exactly as before.
+    st.session_state["full_view_unlocked"] = False
+    st.session_state["_pending_admin_cookie_clear"] = True
+
 
 def _factual() -> bool:
     """True when this session should see the factual-information
@@ -864,6 +904,43 @@ def _bump_page_view(page, ticker=None):
         metrics_store.bump(page, ticker=ticker, src=_src)
     except Exception:
         pass
+
+
+def _count_tool_open_once(tool_key):
+    """Fail-open, rerun-safe "tool opened" counter for the Admin
+    Dashboard's ranked Tool opens table (Mega-batch Part 35.1).
+
+    Streamlit re-executes EVERY st.tabs()/TOOLS_REGISTRY body on every
+    script rerun regardless of which tab is visually selected - a tab
+    click alone doesn't even trigger a rerun, so the server never learns
+    which tab a visitor is looking at. The only reliable, non-inflated
+    signal available is "this tool was the one the page actually
+    navigated TO" (page_tools()'s own ?tool=/tools_jump_tool convention,
+    or a fresh My Portfolio visit) - counted once per browser SESSION via
+    this guard, never once per rerun. See page_tools()/page_portfolio()'s
+    own call sites for exactly where that "navigated to" moment is, and
+    this function's callers' comments for what that does and doesn't
+    capture."""
+    _seen = st.session_state.setdefault("_tool_open_counted", set())
+    if tool_key in _seen:
+        return
+    _seen.add(tool_key)
+    try:
+        admin_metrics_store.bump(f"tool_open:{tool_key}")
+    except Exception:
+        pass
+
+
+# Human-readable labels for the Admin Dashboard's ranked Tool opens table -
+# TOOLS_REGISTRY's own "id" values (e.g. "debt_recycling") are internal
+# slugs, not the display names the mock shows ("Cash vs Offset vs
+# Borrow").
+_TOOL_OPEN_LABELS = {
+    "budget_planner": "Budget Planner",
+    "utilities": "Utilities bill check",
+    "debt_recycling": "Cash vs Offset vs Borrow",
+    "insurance": "Insurance bill check",
+}
 
 
 def _save_live_snapshot(dd, signal):
@@ -978,119 +1055,20 @@ def _render_view_badge():
                 unsafe_allow_html=True,
             )
         with _bs:
-            with st.popover("Stats", key="admin_signup_stats"):
-                try:
-                    _s = email_auth.signup_stats()
-                    st.markdown(f"### {_s['total']} accounts")
-                    st.markdown(
-                        f"- **{_s['last_7_days']}** new in the last 7 days\n"
-                        f"- **{_s['last_30_days']}** new in the last 30 days\n"
-                        f"- **{_s['active_7_days']}** signed in within 7 days\n"
-                        f"- Google **{_s['google']}** · Email **{_s['email']}**"
-                    )
-                    st.caption("Aggregate counts only - stored on the "
-                               "Railway volume, survives redeploys.")
-                except Exception:
-                    st.caption("No sign-up data yet.")
-
-                if st.checkbox("Show email list", key="admin_show_signup_emails"):
-                    try:
-                        _signup_rows = email_auth.list_signups()
-                    except Exception:
-                        _signup_rows = []
-                    if _signup_rows:
-                        _signup_df = pd.DataFrame(_signup_rows)
-                        st.dataframe(_signup_df, width='stretch', hide_index=True)
-                        st.download_button(
-                            "Download as CSV",
-                            _signup_df.to_csv(index=False).encode("utf-8"),
-                            file_name="stocksdeepdive_signups.csv",
-                            mime="text/csv",
-                            key="admin_download_signup_emails",
-                        )
-                    else:
-                        st.caption("No sign-up data yet.")
-                st.markdown("---")
-                st.markdown("### Page views")
-                try:
-                    _m = metrics_store.stats(days=30)
-                    st.markdown(
-                        f"- **{_m['total_7d']}** views in the last 7 days\n"
-                        f"- **{_m['total_30d']}** views in the last 30 days"
-                    )
-                    if _m["by_page"]:
-                        st.markdown("**Top pages (30d)**")
-                        for _p, _v in _m["by_page"][:5]:
-                            st.markdown(f"- {_p}: **{_v}**")
-                    if _m["by_src"]:
-                        _signup_by_src = {}
-                        try:
-                            _signup_by_src = email_auth.signup_counts_by_src()
-                        except Exception:
-                            pass
-                        st.markdown("**Top src (30d) - views / sign-ups**")
-                        for _src, _v in _m["by_src"][:5]:
-                            st.markdown(
-                                f"- {_src}: **{_v}** views / "
-                                f"**{_signup_by_src.get(_src, 0)}** sign-ups"
-                            )
-                    st.caption(
-                        "First-party, aggregate counts only - no third-party "
-                        "trackers, no per-visitor identity stored."
-                    )
-                except Exception:
-                    st.caption("No page-view data yet.")
-
-                # Conversion pass, Part 4: a clearly-labeled sign-ups-by-src
-                # block with two GENUINE windows (30d and all time), next to
-                # (not replacing) the "Top src (30d) - views / sign-ups"
-                # line above - that one already existed but joined a 30-day
-                # views figure against an ALL-TIME sign-ups figure, which
-                # reads like a matched 30-day comparison and isn't one.
-                # Ranked by all-time volume rather than limited to the top
-                # 5 srcs by page views, so a src with no view-tracking
-                # overlap (e.g. a Reddit "src=reddit-abc" label that never
-                # got a matching page-view row) still shows up here.
-                st.markdown("---")
-                st.markdown("### Sign-ups by src (30d / all time)")
-                try:
-                    _src_30d = email_auth.signup_counts_by_src(days=30)
-                    _src_all = email_auth.signup_counts_by_src()
-                    _all_srcs = sorted(_src_all, key=lambda s: _src_all[s], reverse=True)
-                    if _all_srcs:
-                        for _src in _all_srcs[:10]:
-                            st.markdown(
-                                f"- {_src}: **{_src_30d.get(_src, 0)}** / "
-                                f"**{_src_all[_src]}**"
-                            )
-                    else:
-                        st.caption("No sign-ups with a recorded src yet.")
-                except Exception:
-                    st.caption("No sign-up-by-src data yet.")
-
-                # Audit fix 2.10: surfaces the background scheduler
-                # thread's heartbeat so a dead thread (nightly scans/
-                # weekly digest silently stopped) is visible somewhere
-                # reachable instead of only discoverable by noticing scans
-                # have stopped updating days later.
-                st.markdown("---")
-                st.markdown("### Scheduler")
-                try:
-                    import scheduler_engine
-                    _hb_age = scheduler_engine.heartbeat_age_seconds()
-                    if _hb_age is None:
-                        st.caption("No heartbeat recorded yet (thread hasn't "
-                                   "ticked, or hasn't started).")
-                    elif _hb_age < 300:
-                        st.caption(f"Alive - last tick {_hb_age:.0f}s ago.")
-                    else:
-                        st.markdown(
-                            f":red[**Stuck?**] last tick {_hb_age / 60:.0f} min ago "
-                            "(expected every few minutes) - nightly scans/weekly "
-                            "digest may have silently stopped. A redeploy restarts it."
-                        )
-                except Exception:
-                    st.caption("Scheduler status unavailable.")
+            # Mega-batch Part 35.2: this used to be a crowded "Stats"
+            # popover (sign-up counts, page views, sign-ups-by-src,
+            # scheduler heartbeat) crammed into one dropdown - all of
+            # that content now lives on the dedicated Admin Dashboard
+            # page (page_admin_dashboard() below), reorganised to match
+            # the owner-approved mock, with nothing dropped (see that
+            # function's own docstring for exactly where each old line
+            # of this popover ended up). Strictly owner-gated (not just
+            # "is full_view_unlocked"), same reasoning as
+            # page_admin_dashboard()'s own check.
+            if ai_gate.is_owner(paywall_engine.current_user_email()):
+                if st.button("Admin dashboard", key="admin_dashboard_nav",
+                             width='stretch'):
+                    st.switch_page(PG_ADMIN_DASHBOARD)
         with _ba:
             with st.popover("AI settings", key="admin_ai_settings"):
                 _render_ai_admin_panel()
@@ -10177,7 +10155,21 @@ def _render_overnight_scan_table(universe_label, overnight):
     _title_col, _info_col = st.columns([12, 1], vertical_alignment="top")
     with _title_col:
         st.markdown(f"#### {universe_label} &middot; {_on_n} stocks")
-        st.caption(i18n.t("scanner.scan_of", _on_lang, when=overnight["generated_at_label"]))
+        # Part 34 addendum 34.7 (11 Sep 2026): two-part date line for a
+        # universe the nightly reprice pass has touched - "fundamentals
+        # scan of <date> - prices updated <date>" - so a weekly-cadence
+        # universe never LOOKS week-stale even though its fundamentals
+        # genuinely are only that old (repriced_at_label is only ever
+        # present when scan_store.load_scan() found a repriced_at newer
+        # than generated_at - see that function's own docstring).
+        if overnight.get("repriced_at_label"):
+            st.caption(i18n.t(
+                "scanner.scan_of_repriced", _on_lang,
+                scan_when=overnight["generated_at_label"],
+                price_when=overnight["repriced_at_label"],
+            ))
+        else:
+            st.caption(i18n.t("scanner.scan_of", _on_lang, when=overnight["generated_at_label"]))
     with _info_col:
         _methodology_text = (
             "Pre-computed while nobody was waiting. Attention-lite "
@@ -10218,6 +10210,18 @@ def _render_overnight_scan_table(universe_label, overnight):
         reverse=True,
     )
 
+    # 34.8 (Part 34 addendum, 11 Sep 2026): row-cap guard - a 2,000-3,000
+    # row universe (Russell 2000/3000) must never render as one giant
+    # table (the owner's own "the info may block the app" concern). Only
+    # the RENDERED table is capped - the CSV download and the insider
+    # batch query below still cover every row, same as before this Part,
+    # since a capped export would silently drop data a visitor explicitly
+    # asked to download.
+    _ON_ROW_CAP = 500
+    _on_rows_for_render = _on_rows[:_ON_ROW_CAP]
+    if _on_n > _ON_ROW_CAP:
+        st.caption(i18n.t("scanner.row_cap_note", _on_lang, cap=_ON_ROW_CAP, total=_on_n))
+
     # Services batch, Part 2: one batched query for every ticker in
     # this table's "Insider net 12m" column - see _insider_cell's own
     # docstring for why this must be computed once, not per row.
@@ -10225,7 +10229,7 @@ def _render_overnight_scan_table(universe_label, overnight):
         [r.get("Ticker") for r in _on_rows if r.get("Ticker")]
     )
     _on_rows_html = []
-    for _on_rank, _orow in enumerate(_on_rows, start=1):
+    for _on_rank, _orow in enumerate(_on_rows_for_render, start=1):
         _tk = _orow.get("Ticker") or "-"
         _tk_cell = (
             f"<a href='/deep-dive?ticker={_tk}' target='_self' "
@@ -10722,51 +10726,159 @@ def _consume_pending_nl_screen_query():
         _apply_nl_screen_result(_parsed)
 
 
-_SCANNER_PILL_UNIVERSES = [
-    ("🇦🇺 ASX 200", "Australia", "ASX 200"),
-    ("🇦🇺 ASX 300", "Australia", "ASX 300"),
-    ("🇦🇺 ASX 100", "Australia", "ASX 100"),
-    ("🇺🇸 S&P 500", "USA", "S&P 500"),
-    ("🇺🇸 Nasdaq 100", "USA", "Nasdaq 100"),
-    ("🇺🇸 Russell 2000", "USA", "Russell 2000"),
+# Part 34.6 (11 Sep 2026): replaces the old single 6-pill "Popular
+# universes" row - see universe_picker_options_mock.html's Option A
+# (owner-approved acceptance bar) for the exact four-row layout this
+# implements. Each pill tuple is (i18n_key_or_None, literal_label_or_
+# None, country, universe) - an i18n_key is given only for generic
+# sector words (translated ES per the instruction's "row labels and
+# universe display names fully translated" rule); every proper index/
+# universe NAME (ASX 200, S&P 500, Dividend Aristocrats, Dow Jones 30...)
+# stays a literal, untranslated string, matching this site's existing
+# universe-selectbox convention everywhere else. "Nasdaq Next Gen 100" is
+# deliberately absent from the USA-by-size-&-theme "+more" list in the
+# mock - live-verified during development that no Wikipedia source
+# exists for it at all, so it was never built (see scanner_engine.
+# USA_UNIVERSES' own comment) and isn't offered here either, rather than
+# shipping a pill that always leads to an empty Scanner page.
+_SCANNER_PICKER_ROWS = [
+    ("au_size", "scanner.picker_row_au_size", [
+        (None, "ASX 200", "Australia", "ASX 200"),
+        (None, "ASX 300", "Australia", "ASX 300"),
+        (None, "ASX 100", "Australia", "ASX 100"),
+        (None, "All Ordinaries", "Australia", "All Ordinaries"),
+    ], [
+        (None, "ASX Small Ords", "Australia", "ASX Small Ordinaries"),
+        (None, "ASX 50", "Australia", "ASX 50"),
+        (None, "ASX 20", "Australia", "ASX 20"),
+    ]),
+    ("au_sector", "scanner.picker_row_au_sector", [
+        ("scanner.sector_pill_financials", None, "Australia", "ASX Financials"),
+        ("scanner.sector_pill_materials_mining", None, "Australia", "ASX Materials & Mining"),
+        ("scanner.sector_pill_health_care", None, "Australia", "ASX Health Care"),
+        ("scanner.sector_pill_consumer", None, "Australia", "ASX Consumer"),
+    ], [
+        ("scanner.sector_pill_industrials", None, "Australia", "ASX Industrials"),
+        ("scanner.sector_pill_areits", None, "Australia", "ASX A-REITs"),
+        ("scanner.sector_pill_all_technology", None, "Australia", "ASX All Technology"),
+    ]),
+    ("us_size_theme", "scanner.picker_row_us_size_theme", [
+        (None, "S&P 500", "USA", "S&P 500"),
+        (None, "Nasdaq 100", "USA", "Nasdaq 100"),
+        (None, "Russell 2000", "USA", "Russell 2000"),
+        (None, "Dividend Aristocrats", "USA", "S&P 500 Dividend Aristocrats"),
+    ], [
+        (None, "S&P 400 MidCap", "USA", "S&P 400 MidCap"),
+        (None, "Small Caps (S&P 600)", "USA", "Small Caps (S&P 600)"),
+        (None, "Russell 1000", "USA", "Russell 1000"),
+        (None, "S&P 1500", "USA", "S&P 1500"),
+        (None, "Russell 3000", "USA", "Russell 3000"),
+        (None, "Dow Jones 30", "USA", "Dow Jones 30"),
+    ]),
+    ("us_sector", "scanner.picker_row_us_sector", [
+        ("scanner.sector_pill_technology", None, "USA", "US Technology"),
+        ("scanner.sector_pill_healthcare", None, "USA", "US Healthcare"),
+        ("scanner.sector_pill_financials", None, "USA", "US Financials"),
+        ("scanner.sector_pill_energy", None, "USA", "US Energy"),
+    ], [
+        ("scanner.sector_pill_industrials", None, "USA", "US Industrials"),
+        ("scanner.sector_pill_consumer", None, "USA", "US Consumer"),
+    ]),
 ]
-# 9 Sep 2026 (owner-reported bug): Dow Jones 30 replaced here by Russell
-# 2000 - fetch_dow30()'s Wikipedia scrape never resolved any tickers in
-# production, so that universe never had a nightly scan and this pill
-# always led to an empty Scanner page. See scanner_engine.py's own
-# module docstring and USA_UNIVERSES comment for the full story.
 
 
-def _render_scanner_universe_pills(lang):
-    """Mega-batch Part 6 (Scanner opener): a visible, one-click row for
-    the 6 most-scanned universes (3 AU + 3 US, flag-grouped), so the
-    common case never needs the "+N more" expander below at all. Those
-    6 plus scanner_engine's other 10 universes are exactly the site's
-    "16 universes" home-tile stat (_home_scanner_stat, app.py) - N is
-    derived from that same live count so it self-corrects if a universe
-    is ever added.
+def _picker_pill_label(item, lang):
+    _i18n_key, _literal, _country, _universe = item
+    return i18n.t(_i18n_key, lang) if _i18n_key else _literal
 
-    This is a fast path onto the SAME session_state keys
-    (scanner_country_au/us, scanner_universe) the "+N more" expander's
-    own AU/US checkboxes and universe selectbox read/write below - fixed
-    up here BEFORE those widgets are instantiated (same "fix up first"
-    guard already used for their own selectbox/session_state mismatch
-    handling further down), so picking a pill here and then opening the
-    expander always shows the two in agreement, never a stale mismatch."""
-    _current = st.session_state.get("scanner_universe")
-    _label_by_universe = {u: lbl for lbl, _, u in _SCANNER_PILL_UNIVERSES}
-    _universe_by_label = {lbl: (c, u) for lbl, c, u in _SCANNER_PILL_UNIVERSES}
-    _sel = st.pills(
-        i18n.t("scanner.pills_label", lang),
-        [lbl for lbl, _, _ in _SCANNER_PILL_UNIVERSES],
-        selection_mode="single", default=_label_by_universe.get(_current),
-        key="scanner_universe_pill",
-    )
-    if _sel and _label_by_universe.get(_current) != _sel:
-        _country, _uni = _universe_by_label[_sel]
-        st.session_state["scanner_country_au"] = (_country == "Australia")
-        st.session_state["scanner_country_us"] = (_country == "USA")
-        st.session_state["scanner_universe"] = _uni
+
+def _render_scanner_universe_picker(lang):
+    """Part 34.6 (Option A of the mock - see _SCANNER_PICKER_ROWS'
+    comment above): four labeled pill rows (AU by size / AU by sector /
+    US by size & theme / US by sector), each showing its first 4 pills
+    plus a "+N more" toggle that expands the row in place (a plain
+    st.button flipping a session_state flag - clicking it is itself a
+    Streamlit rerun, so "in place, no page jump" falls out for free; a
+    button is tap-friendly on mobile by construction). Replaces Mega-
+    batch Part 6's old single 6-pill _render_scanner_universe_pills(),
+    now that there are 30 (not 6) shortcut-worthy universes.
+
+    Fast path onto the same scanner_country_au/us + scanner_universe
+    session_state keys the "+N more" expander's own AU/US checkboxes and
+    universe selectbox read/write further down in page_scanner() - fixed
+    up here BEFORE those widgets are instantiated, same "fix up first"
+    convention already used everywhere else on this page.
+
+    Only ONE pill is ever shown selected across all four rows (matching
+    the old single-pill-row behaviour): a first pass below peeks each
+    row's raw pending widget value (Streamlit already writes a clicked
+    pill's new value into st.session_state[key] before the script starts
+    its rerun, so this sees the click immediately - no one-rerun lag),
+    applies whichever row actually changed to the shared state, then
+    clears every OTHER row's own pill-widget key so they redraw
+    unselected in the second (actual drawing) pass right below it. A row
+    is force-expanded for rendering whenever the CURRENT global selection
+    is one of its own "+more" pills, regardless of the row's own
+    collapsed/expanded toggle - otherwise collapsing that row after
+    picking a hidden pill would leave Streamlit's own widget state
+    pointing at an option no longer offered."""
+    _current_universe = st.session_state.get("scanner_universe")
+
+    def _row_options(_more_tup, _base_tup, _row_key):
+        _force = _current_universe in {u for _k, _l, _c, u in _more_tup}
+        _expanded = st.session_state.get(f"scanner_picker_expand_{_row_key}", False) or _force
+        return (_base_tup + _more_tup) if _expanded else _base_tup, _expanded
+
+    _changed_row = None
+    for _row_key, _row_label_key, _base, _more in _SCANNER_PICKER_ROWS:
+        _shown, _ = _row_options(_more, _base, _row_key)
+        _lookup = {_picker_pill_label(item, lang): (item[2], item[3]) for item in _shown}
+        _raw = st.session_state.get(f"scanner_picker_pills_{_row_key}")
+        if _raw and _raw in _lookup:
+            _country, _uni = _lookup[_raw]
+            if _uni != _current_universe:
+                _changed_row = _row_key
+                st.session_state["scanner_country_au"] = (_country == "Australia")
+                st.session_state["scanner_country_us"] = (_country == "USA")
+                st.session_state["scanner_universe"] = _uni
+                _current_universe = _uni
+                break
+    if _changed_row:
+        for _row_key, *_rest in _SCANNER_PICKER_ROWS:
+            if _row_key != _changed_row:
+                st.session_state.pop(f"scanner_picker_pills_{_row_key}", None)
+
+    for _row_key, _row_label_key, _base, _more in _SCANNER_PICKER_ROWS:
+        _shown, _expanded = _row_options(_more, _base, _row_key)
+        _pill_key = f"scanner_picker_pills_{_row_key}"
+        _shown_labels = [_picker_pill_label(item, lang) for item in _shown]
+        # Same "fix session_state before the widget reads it" guard the
+        # universe selectbox below already uses: a stale stored label
+        # (row just collapsed past it, or the UI language just changed)
+        # that no longer matches any CURRENT option would otherwise make
+        # st.pills raise - clearing it here just falls back to `default`.
+        if st.session_state.get(_pill_key) not in (None, *_shown_labels):
+            st.session_state.pop(_pill_key, None)
+        _label_by_uni = {item[3]: _picker_pill_label(item, lang) for item in _shown}
+        _default = _label_by_uni.get(_current_universe)
+
+        _label_col, _toggle_col = st.columns([9, 3], vertical_alignment="bottom")
+        with _label_col:
+            st.caption(i18n.t(_row_label_key, lang))
+        with _toggle_col:
+            if _more:
+                _toggle_label = (
+                    i18n.t("scanner.picker_show_less", lang) if _expanded
+                    else i18n.t("scanner.picker_more", lang, n=len(_more))
+                )
+                if st.button(_toggle_label, key=f"scanner_picker_toggle_{_row_key}"):
+                    st.session_state[f"scanner_picker_expand_{_row_key}"] = not _expanded
+                    st.rerun()
+        st.pills(
+            i18n.t(_row_label_key, lang), _shown_labels,
+            selection_mode="single", default=_default,
+            key=_pill_key, label_visibility="collapsed",
+        )
 
 
 def page_scanner():
@@ -10783,10 +10895,11 @@ def page_scanner():
     st.session_state.setdefault("scanner_country_us", False)
     st.session_state.setdefault("scanner_universe", "ASX 200")
 
-    # ---- Universe pills (Part 6): one click among the 6 most common
-    # universes, always visible - runs BEFORE the instant-results read
-    # below so a click this rerun already shows in the same run's table.
-    _render_scanner_universe_pills(_scan_lang)
+    # ---- Universe picker (Part 34.6, Option A of the mock): four pill
+    # rows covering all 30 universes, always visible - runs BEFORE the
+    # instant-results read below so a click this rerun already shows in
+    # the same run's table.
+    _render_scanner_universe_picker(_scan_lang)
 
     # ---- Instant results: rendered FIRST, above every picker AND above
     # the NL-screening box (Part 6 - "results-first... the overnight
@@ -10815,14 +10928,15 @@ def page_scanner():
             "country/universe/sector filters you could set by hand."
         )
 
-    # "+N more universes & sector filter" (Part 6): the pill row above
-    # covers 6 of scanner_engine's 16 total universes; everything else -
-    # the other 10, plus the sector filter - lives in this expander,
-    # unchanged mechanism from before this batch.
-    _n_more = (len(scanner_engine.AUSTRALIA_UNIVERSES) + len(scanner_engine.USA_UNIVERSES)
-               - len(_SCANNER_PILL_UNIVERSES))
+    # "Browse by country & filter by sector" (Part 34.6): the four pill
+    # rows above now reach every one of scanner_engine's universes on
+    # their own (see _SCANNER_PICKER_ROWS), so this expander's job is no
+    # longer "+N more universes" - it's the broader country toggle plus
+    # the Sector filter, neither of which the pill picker itself exposes.
+    # Mechanism (country checkboxes + universe selectbox + sector
+    # dropdown) is otherwise UNCHANGED from before this Part.
     with st.expander(
-        i18n.t("scanner.change_expander", _scan_lang, n=_n_more),
+        i18n.t("scanner.change_expander", _scan_lang),
         expanded=not bool(_overnight_top)
     ):
         st.write(i18n.t("scanner.change_instruction", _scan_lang))
@@ -13226,6 +13340,15 @@ def page_portfolio():
     if not paywall_engine.is_logged_in():
         st.info(i18n.t("portfolio.signin_prompt", _pf_lang))
         return
+
+    # Part 35.1: My Portfolio's own st.tabs() (below) has no query-param
+    # or other signal telling the server which tab is visually
+    # selected - EVERY tab body runs on every rerun regardless (see
+    # _count_tool_open_once's own docstring) - so these four move
+    # together as "a My Portfolio session that can reach this tool",
+    # once per session, rather than genuine per-tab-click counts.
+    for _pf_tool in ("Stress Test", "The Toll", "ETF look-through", "Income"):
+        _count_tool_open_once(_pf_tool)
 
     email = paywall_engine.current_user_email()
     portfolio_store.seed_desktop_import(email)  # no-op for everyone except
@@ -20131,6 +20254,10 @@ def _render_utilities_new_check(email, _ul, _lang, allowed, reason, usage, typic
             # that isn't their fault.
             if result.get("status") != "unavailable":
                 tools_store.record_check_usage(email)
+                try:
+                    admin_metrics_store.bump("bill_check_energy")
+                except Exception:
+                    pass
             st.session_state["tools_util_last_result"] = result
 
     result = st.session_state.get("tools_util_last_result")
@@ -20766,6 +20893,10 @@ def _render_insurance_new_check(email, _il, _lang, allowed, reason, usage, typic
         if result:
             if result.get("status") != "unavailable":
                 tools_store.record_check_usage(email)
+                try:
+                    admin_metrics_store.bump("bill_check_insurance")
+                except Exception:
+                    pass
             st.session_state["tools_ins_last_result"] = result
 
     result = st.session_state.get("tools_ins_last_result")
@@ -20971,6 +21102,11 @@ def page_tools():
 
     _tool_tabs = st.tabs(_tab_labels, default=_tab_labels[_default_idx])
     st.query_params["tool"] = _tool_ids[_default_idx]
+    # Part 35.1: count the tool the page actually navigated to (a direct
+    # ?tool= link, the tools_jump_tool hand-off, or simply the first tab
+    # on a fresh load) - see _count_tool_open_once's own docstring for
+    # why this is the only signal Streamlit's tabs expose server-side.
+    _count_tool_open_once(_TOOL_OPEN_LABELS.get(_tool_ids[_default_idx], _tool_ids[_default_idx]))
     for _tool, _tab in zip(TOOLS_REGISTRY, _tool_tabs):
         with _tab:
             # Fix round 10 #1: an exception anywhere in ONE tool (the
@@ -22102,6 +22238,390 @@ def page_blog_admin():
                         st.rerun()
 
 
+def _admin_fmt_dt(iso_str):
+    """'DD Mon YYYY, HH:MM UTC' from an ISO timestamp, or None - shared
+    formatter for every timestamp on the Admin Dashboard (Mega-batch
+    Part 35.2). Never raises on a malformed/missing value."""
+    if not iso_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_str)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+
+
+_ADMIN_JOB_LABELS = {
+    "nightly": "Nightly universe scan (+ reprice, alerts, results-day)",
+    "watchdog": "Portfolio AI watchdog",
+    "backup": "Off-site DB backup",
+    "volume_check": "Volume usage check + retention prune",
+    "earnings_refresh": "Earnings calendar refresh (weekly)",
+    "digest": "Weekly AI brief (digest)",
+}
+
+
+def page_admin_dashboard():
+    """Mega-batch Part 35.2: the owner Admin Dashboard - matches the
+    owner-approved mock at mocks/admin_dashboard_mock.html. Replaces the
+    old crowded "Stats" popover (_render_view_badge used to carry it);
+    every figure that popover showed is reproduced somewhere on this
+    page (see the "Accounts & traffic detail" expander near the bottom
+    for the ones with no dedicated tile in the mock's own layout) -
+    nothing from it was dropped, per the instruction's own hard rule.
+
+    STRICTLY owner-only (another hard rule) - checked here independently
+    of full_view_unlocked, which a non-owner co-admin could also hold via
+    the shared ?admin=/RC-view key. A direct URL/state-manipulation
+    attempt (typing the page's URL, or forging full_view_unlocked in
+    session state some other way) still hits this exact check and is
+    refused - there is no other gate anywhere else on this page."""
+    _content_page_shell("🛠 Admin dashboard", current=None)
+    _bump_page_view("admin_dashboard")
+
+    _owner_ok = ai_gate.is_owner(paywall_engine.current_user_email())
+    if not _owner_ok:
+        st.error("This page isn't available.")
+        return
+
+    st.markdown(
+        "<div style='display:inline-block;background:#1a2332;color:#2dd4bf;"
+        "border:1px solid #2dd4bf;border-radius:8px;padding:2px 10px;"
+        "font-size:12px;font-weight:700;letter-spacing:.5px;'>OWNER ONLY</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Every figure below is an aggregate daily count - no IPs, no "
+        "per-visitor identifiers, no browsing trails are ever stored."
+    )
+
+    # --- SITE PULSE - LAST 7 DAYS -----------------------------------
+    st.markdown("### Site pulse - last 7 days")
+    try:
+        _pulse = admin_metrics_store.pulse_7d()
+    except Exception:
+        _pulse = {}
+    _req = _pulse.get("requests", {"current": 0, "previous": None})
+    # "—" when no prior-week data exists yet (e.g. the first week or two
+    # after this counter shipped - see pulse_7d()'s own docstring for why
+    # that's distinguishable from "genuinely zero requests last week"),
+    # per the instruction's own "deltas render '—' when no prior-week
+    # data exists yet - first weeks must render gracefully" rule.
+    if _req.get("previous") is None:
+        _req_delta = "—"
+    elif _req["previous"] == 0:
+        _req_delta = "new" if _req["current"] else "—"
+    else:
+        _req_delta = f"{(_req['current'] - _req['previous']) / _req['previous'] * 100:+.0f}%"
+    try:
+        _signup_stats = email_auth.signup_stats()
+    except Exception:
+        _signup_stats = {"last_7_days": 0}
+    try:
+        _new_prev = email_auth.signups_in_window(13, 6)
+    except Exception:
+        _new_prev = 0
+    _new_cur = _signup_stats.get("last_7_days", 0)
+    # Verify 5 (empty-state): a genuinely fresh site (no accounts at all
+    # yet either week) shows "—" rather than a not-quite-meaningful "+0".
+    _new_delta = "—" if (_new_cur == 0 and _new_prev == 0) else f"{_new_cur - _new_prev:+d}"
+    _signins = _pulse.get("signins", {"current": 0, "previous": 0})["current"]
+    _signins_unique = _pulse.get("signins_unique", 0)
+    _bc_energy = _pulse.get("bill_checks_energy", 0)
+    _bc_insurance = _pulse.get("bill_checks_insurance", 0)
+    try:
+        _subs = paywall_engine.subscriber_count()
+    except Exception:
+        _subs = 0
+
+    _t1, _t2, _t3, _t4, _t5 = st.columns(5)
+    with _t1:
+        st.metric("Requests", f"{_req['current']:,}", _req_delta,
+                  delta_color="off" if _req_delta in ("—", "new") else "normal")
+    with _t2:
+        st.metric("New accounts", _new_cur, _new_delta,
+                  delta_color="off" if _new_delta == "—" else "normal")
+    with _t3:
+        st.metric("Sign-ins", _signins)
+        st.caption(f"{_signins_unique} unique account(s)")
+    with _t4:
+        st.metric("Bill checks run", _bc_energy + _bc_insurance)
+        st.caption(f"{_bc_energy}⚡ energy / {_bc_insurance}🛡 insurance")
+    with _t5:
+        st.metric("Subscribers", _subs)
+
+    st.markdown("---")
+    _g1, _g2 = st.columns(2)
+    with _g1:
+        with st.container(border=True):
+            st.markdown("**Tool opens (7 days)**")
+            _opens = _pulse.get("tool_opens", {})
+            if _opens:
+                _max_open = max(_opens.values()) or 1
+                for _k, _v in sorted(_opens.items(), key=lambda kv: -kv[1]):
+                    st.progress(min(1.0, _v / _max_open), text=f"{_k}: {_v}")
+            else:
+                st.caption("No tool-open data recorded yet.")
+            st.caption(
+                "Money Tools rows count a real navigation to that tool "
+                "(a direct link or the hub's default tab). Portfolio "
+                "rows (Stress Test / The Toll / ETF look-through / "
+                "Income) count a My Portfolio visit each - Streamlit "
+                "doesn't tell the server which in-page tab a visitor is "
+                "actually looking at, so those four move together."
+            )
+    with _g2:
+        with st.container(border=True):
+            st.markdown("**Where tagged visits came from (7 days)**")
+            _srcs = _pulse.get("src_tags", {})
+            if _srcs:
+                _max_src = max(_srcs.values()) or 1
+                for _k, _v in sorted(_srcs.items(), key=lambda kv: -kv[1]):
+                    st.progress(min(1.0, _v / _max_src), text=f"{_k}: {_v}")
+            else:
+                st.caption("No tagged (src=) visits recorded yet.")
+            st.caption("Untagged direct/organic visits aren't shown here - "
+                       "only links carrying a src= tag are.")
+            st.markdown("---")
+            st.markdown("**Most-viewed research (7 days)**")
+            try:
+                _mv = metrics_store.stats(days=7)["by_ticker"][:5]
+            except Exception:
+                _mv = []
+            if _mv:
+                for _tk, _v in _mv:
+                    st.markdown(f"- {_tk}: **{_v}**")
+            else:
+                st.caption("No ticker-view data yet.")
+
+    # --- DATA & CONTENT ----------------------------------------------
+    st.markdown("---")
+    st.markdown("### Data & content")
+    with st.container(border=True):
+        try:
+            _cp_data = _load_compounder_data()
+        except Exception:
+            _cp_data = None
+        _snap_label = _admin_fmt_dt((_cp_data or {}).get("generated_at"))
+        st.markdown(
+            f"**Workbook snapshot:** {_snap_label or 'not built yet'}"
+        )
+        try:
+            _archives = build_compounder_data.list_archived_snapshots()
+            _last_rebuild = _archives[0]["label"] if _archives else None
+        except Exception:
+            _last_rebuild = None
+        st.markdown(f"**Last rebuild:** {_last_rebuild or 'no archived rebuilds yet'}")
+        try:
+            _published = blog_store.count_posts(include_drafts=False)
+            _all_posts = blog_store.count_posts(include_drafts=True)
+            _drafts = _all_posts - _published
+        except Exception:
+            _published, _drafts = 0, 0
+        st.markdown(f"**Blog posts:** {_published} published, {_drafts} draft")
+        try:
+            _statuses = card_blurb_store.all_research_statuses()
+            _terminated = [t for t, (s, _r) in _statuses.items() if s == "terminated"]
+            _filled = [t for t in _terminated if _statuses[t][1].strip()]
+            _missing = [t for t in _terminated if not _statuses[t][1].strip()]
+        except Exception:
+            _terminated, _filled, _missing = [], [], []
+        st.markdown(
+            f"**Terminated research reasons:** {len(_filled)} of "
+            f"{len(_terminated)} filled in"
+            + (f" - missing: {', '.join(_missing)}" if _missing else "")
+        )
+        st.caption(
+            "No general \"junk labels\" data-quality metric exists in the "
+            "codebase to check against, so that line from the mock is "
+            "left out here rather than shown with invented numbers."
+        )
+        _d1, _d2, _d3, _d4 = st.columns(4)
+        with _d1:
+            if st.button("⬆ Upload workbook & rebuild", key="admin_dash_go_rebuild",
+                         width='stretch'):
+                st.switch_page(PG_RESEARCH)
+        with _d2:
+            if st.button("Manage blog", key="admin_dash_go_blog", width='stretch'):
+                st.switch_page(PG_BLOG_ADMIN)
+        with _d3:
+            if st.button("Typical deal rates tables", key="admin_dash_go_rates",
+                         width='stretch'):
+                st.session_state["tools_jump_tool"] = "utilities"
+                st.switch_page(PG_TOOLS)
+        with _d4:
+            if st.button("Card blurbs", key="admin_dash_go_blurbs", width='stretch'):
+                st.switch_page(PG_RESEARCH)
+        st.caption(
+            "\"Upload workbook & rebuild\" and \"Card blurbs\" both open the "
+            "same admin panel (the ☰ menu) on the Rational Compounder "
+            "Analysis page - Streamlit has no way to deep-link straight "
+            "into an already-open popover's expanded state from a "
+            "different page, so both buttons navigate there rather than "
+            "duplicating that panel's logic."
+        )
+
+    # --- NIGHTLY JOBS - LAST RUN --------------------------------------
+    st.markdown("---")
+    st.markdown("### Nightly jobs - last run")
+    with st.container(border=True):
+        try:
+            _jobs = admin_metrics_store.all_job_statuses()
+        except Exception:
+            _jobs = []
+        if _jobs:
+            _job_rows = []
+            for _j in _jobs:
+                _icon = {"ok": "✓ ok", "warn": "⚠ warn", "error": "✗ error"}.get(
+                    _j["result"], _j["result"])
+                _job_rows.append({
+                    "Job": _ADMIN_JOB_LABELS.get(_j["job"], _j["job"]),
+                    "When (UTC)": _admin_fmt_dt(_j["last_run_at"]) or "-",
+                    "Result": _icon,
+                    "Duration": (f"{_j['duration_seconds']:.0f}s"
+                                 if _j.get("duration_seconds") is not None else "-"),
+                    "Detail": _j.get("detail") or "",
+                })
+            st.dataframe(pd.DataFrame(_job_rows), width='stretch', hide_index=True)
+        else:
+            st.caption("No job runs recorded yet since this feature shipped - "
+                      "each job's row appears here after its next scheduled run.")
+        try:
+            import scheduler_engine
+            _hb_age = scheduler_engine.heartbeat_age_seconds()
+        except Exception:
+            _hb_age = None
+        if _hb_age is None:
+            st.caption("Scheduler heartbeat: not recorded yet.")
+        elif _hb_age < 300:
+            st.caption(f"Scheduler heartbeat: alive - last tick {_hb_age:.0f}s ago.")
+        else:
+            st.markdown(
+                f":red[**Scheduler may be stuck**] - last tick {_hb_age / 60:.0f} "
+                "min ago (expected every few minutes). A redeploy restarts it."
+            )
+
+    # --- SYSTEM --------------------------------------------------------
+    st.markdown("---")
+    st.markdown("### System")
+    _s1, _s2, _s3, _s4 = st.columns(4)
+    with _s1:
+        try:
+            _usage = volume_monitor.disk_usage()
+        except Exception:
+            _usage = None
+        if _usage:
+            _gb_used = _usage["used_bytes"] / (1024 ** 3)
+            _gb_total = _usage["total_bytes"] / (1024 ** 3)
+            st.metric("Volume disk", f"{_gb_used:.1f} GB",
+                      f"of {_gb_total:.1f} GB", delta_color="off")
+        else:
+            st.metric("Volume disk", "unavailable")
+    with _s2:
+        try:
+            _spend = ai_usage_store.spend_this_month()
+            _calls = sum(v["count"] for v in
+                        ai_usage_store.usage_by_feature_this_month().values())
+            st.metric("AI spend (month)", f"US${_spend:,.2f}", f"{_calls} calls",
+                      delta_color="off")
+        except Exception:
+            st.metric("AI spend (month)", "unavailable")
+    with _s3:
+        _req_total = _req.get("current", 0)
+        _req_5xx = _pulse.get("requests_5xx", {"current": 0})["current"]
+        _err_pct = (_req_5xx / _req_total * 100) if _req_total else 0.0
+        st.metric("5xx errors (7d)", f"{_err_pct:.1f}%", f"{_req_5xx} of {_req_total}",
+                  delta_color="off")
+    with _s4:
+        try:
+            _push = push_store.subscription_count()
+            st.metric("Push subscribers", _push["emails"], f"{_push['devices']} device(s)",
+                      delta_color="off")
+        except Exception:
+            st.metric("Push subscribers", "unavailable")
+
+    # --- ACCOUNTS & TRAFFIC DETAIL (everything the old Stats popover
+    # showed that doesn't have its own tile above - kept in full so
+    # nothing from it was lost, per the instruction's hard rule) --------
+    st.markdown("---")
+    with st.expander("Accounts & traffic detail (from the old Stats popover)"):
+        try:
+            _s = email_auth.signup_stats()
+            st.markdown(f"#### {_s['total']} accounts")
+            st.markdown(
+                f"- **{_s['last_7_days']}** new in the last 7 days\n"
+                f"- **{_s['last_30_days']}** new in the last 30 days\n"
+                f"- **{_s['active_7_days']}** signed in within 7 days\n"
+                f"- Google **{_s['google']}** · Email **{_s['email']}**"
+            )
+        except Exception:
+            st.caption("No sign-up data yet.")
+
+        if st.checkbox("Show email list", key="admin_dash_show_signup_emails"):
+            try:
+                _signup_rows = email_auth.list_signups()
+            except Exception:
+                _signup_rows = []
+            if _signup_rows:
+                _signup_df = pd.DataFrame(_signup_rows)
+                st.dataframe(_signup_df, width='stretch', hide_index=True)
+                st.download_button(
+                    "Download as CSV",
+                    _signup_df.to_csv(index=False).encode("utf-8"),
+                    file_name="stocksdeepdive_signups.csv",
+                    mime="text/csv",
+                    key="admin_dash_download_signup_emails",
+                )
+            else:
+                st.caption("No sign-up data yet.")
+
+        st.markdown("---")
+        st.markdown("#### Page views (metrics_store)")
+        try:
+            _m = metrics_store.stats(days=30)
+            st.markdown(
+                f"- **{_m['total_7d']}** views in the last 7 days\n"
+                f"- **{_m['total_30d']}** views in the last 30 days"
+            )
+            if _m["by_page"]:
+                st.markdown("**Top pages (30d)**")
+                for _p, _v in _m["by_page"][:5]:
+                    st.markdown(f"- {_p}: **{_v}**")
+            if _m["by_src"]:
+                _signup_by_src = {}
+                try:
+                    _signup_by_src = email_auth.signup_counts_by_src()
+                except Exception:
+                    pass
+                st.markdown("**Top src (30d) - views / sign-ups**")
+                for _src, _v in _m["by_src"][:5]:
+                    st.markdown(
+                        f"- {_src}: **{_v}** views / "
+                        f"**{_signup_by_src.get(_src, 0)}** sign-ups"
+                    )
+        except Exception:
+            st.caption("No page-view data yet.")
+
+        st.markdown("---")
+        st.markdown("#### Sign-ups by src (30d / all time)")
+        try:
+            _src_30d = email_auth.signup_counts_by_src(days=30)
+            _src_all = email_auth.signup_counts_by_src()
+            _all_srcs = sorted(_src_all, key=lambda s: _src_all[s], reverse=True)
+            if _all_srcs:
+                for _src in _all_srcs[:10]:
+                    st.markdown(
+                        f"- {_src}: **{_src_30d.get(_src, 0)}** / "
+                        f"**{_src_all[_src]}**"
+                    )
+            else:
+                st.caption("No sign-ups with a recorded src yet.")
+        except Exception:
+            st.caption("No sign-up-by-src data yet.")
+
+
 # -----------------------------------
 # PAGE ROUTING
 #
@@ -22137,11 +22657,19 @@ PG_HOW_AI_IS_USED = st.Page(page_how_ai_is_used, title="How this site uses AI",
 # Disallowed in robots.txt.
 PG_BLOG_ADMIN = st.Page(page_blog_admin, title="Blog admin",
                         url_path="blog-admin")
+# Mega-batch Part 35.2: owner-only Admin Dashboard - see
+# page_admin_dashboard()'s own docstring for its strict, independent
+# owner check (this page is reachable by URL like any other st.Page, so
+# the check has to live inside the page function itself, not just in
+# whether a nav button to it is shown).
+PG_ADMIN_DASHBOARD = st.Page(page_admin_dashboard, title="Admin dashboard",
+                             url_path="admin-dashboard")
 
 _nav = st.navigation(
     [PG_HOME, PG_DEEP_DIVE, PG_COMPARISON, PG_RESEARCH, PG_SCANNER,
      PG_RESULTS_CALENDAR, PG_PORTFOLIO, PG_TOOLS, PG_METHODOLOGY, PG_ABOUT,
-     PG_MODEL_HISTORY, PG_PRIVACY, PG_HOW_AI_IS_USED, PG_BLOG_ADMIN],
+     PG_MODEL_HISTORY, PG_PRIVACY, PG_HOW_AI_IS_USED, PG_BLOG_ADMIN,
+     PG_ADMIN_DASHBOARD],
     position="hidden",
 )
 _nav.run()

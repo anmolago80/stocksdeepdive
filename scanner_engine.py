@@ -114,6 +114,15 @@ IWB_HOLDINGS_CSV_URL = (
     "?fileType=csv&fileName=IWB_holdings&dataType=fund"
 )
 
+# Part 34.4 (11 Sep 2026): S&P 500 Dividend Aristocrats' own Wikipedia
+# article - live-verified during development via WebSearch->WebFetch
+# (this dev sandbox has no direct network route to Wikipedia, same
+# constraint as every other fetcher's own comment in this file - see
+# above): the page carries a real "Ticker symbol / Company / Sector"
+# table, 69 rows at verification time, so min_rows/max_rows below are
+# set with real headroom either side of that (not a guess).
+DIVIDEND_ARISTOCRATS_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P_500_Dividend_Aristocrats"
+
 # Wikipedia's own S&P/ASX 300 page does not carry a real ~300-row constituent
 # table (only a ~10-row "Top Ten Companies" table) - asx300list.com does, and
 # is used as the primary source; Wikipedia is kept only as a secondary
@@ -131,6 +140,27 @@ IWM_HOLDINGS_CSV_URL = (
 # Static, tiny emergency fallback if the S&P 500 scrape itself is down -
 # better than returning nothing at all.
 _SP500_STATIC_FALLBACK = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "BRK-B", "UNH"]
+
+# Part 34.4 (11 Sep 2026): Dow Jones 30 hardcoded static fallback - the
+# Dow's OWN Wikipedia article has never carried a parseable "Components"
+# table (confirmed again during this Part's development, live, via
+# WebSearch->WebFetch - matches fetch_dow30()'s own long-standing
+# comment), so unlike every other universe here, its live scrape can
+# never be trusted to eventually work; the universe needs a real,
+# maintained fallback rather than just "try again next deploy". This 30-
+# ticker list is the current membership AS OF 29 JUN 2026 (Alphabet/
+# GOOGL replaced Verizon/VZ that day - S&P Dow Jones Indices press
+# release, cross-checked against a second independent source) - update
+# this constant + comment by hand on the next reconstitution, same as
+# any other dated static list in this codebase. Tried AFTER
+# fetch_dow30()'s own scrape attempt in get_universe_pool() below, never
+# instead of it, so a future fix to Wikipedia's page structure is picked
+# up automatically without this constant needing to be removed.
+_DOW30_STATIC_FALLBACK = [
+    "NVDA", "AAPL", "GOOGL", "MSFT", "AMZN", "JPM", "WMT", "V", "JNJ", "CSCO",
+    "CVX", "KO", "CAT", "MRK", "UNH", "PG", "GS", "HD", "AXP", "IBM",
+    "AMGN", "CRM", "DIS", "MCD", "BA", "MMM", "SHW", "TRV", "HON", "NKE",
+]
 
 # Local ASX 200 fallback map, used only if the live ASX 200 scrape fails -
 # hand-grouped by sector so the Sector filter still works on fallback data.
@@ -575,6 +605,22 @@ def fetch_dow30():
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
+def fetch_dividend_aristocrats():
+    """Part 34.4: S&P 500 Dividend Aristocrats' own Wikipedia article -
+    "Ticker symbol / Company / Sector" table, same _parse_table() pattern
+    as every other fetcher here. min_rows=55/max_rows=85 per the
+    instruction, bracketing the real 69-row count confirmed live during
+    development (see DIVIDEND_ARISTOCRATS_WIKI_URL's own comment) with
+    real headroom either side for routine index reconstitution."""
+    try:
+        html = _get(DIVIDEND_ARISTOCRATS_WIKI_URL)
+    except Exception:
+        return None
+    return _parse_table(html, ["ticker symbol", "ticker", "symbol"], ["sector", "gics sector"],
+                         _normalize_us_ticker, min_rows=55, max_rows=85)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
 def fetch_sp400():
     try:
         html = _get(SP400_WIKI_URL)
@@ -592,6 +638,19 @@ def _sp1500_df():
     more than one Wikipedia snapshot during index-reconstitution
     windows)."""
     parts = [df for df in (fetch_sp500(), fetch_sp400(), fetch_sp600()) if df is not None]
+    if not parts:
+        return None
+    return pd.concat(parts, ignore_index=True).drop_duplicates(subset="Ticker", keep="first")
+
+
+def _russell3000_df():
+    """Part 34.3: Russell 3000 = union of Russell 1000 + Russell 2000
+    (the index's own definition) - exact same derived-union pattern as
+    _sp1500_df() right above, just two parents instead of three. None
+    only if NEITHER parent pool is available; otherwise the union of
+    whichever one(s) are, de-duplicated by ticker (Russell reconstitution
+    windows can briefly show a name in both iShares exports)."""
+    parts = [df for df in (fetch_russell1000(), fetch_russell2000()) if df is not None]
     if not parts:
         return None
     return pd.concat(parts, ignore_index=True).drop_duplicates(subset="Ticker", keep="first")
@@ -746,6 +805,126 @@ def _asx_alltech_df():
         "Information Technology|Technology", case=False, na=False)]
 
 
+# Part 34.1/34.2 (11 Sep 2026): AU + US sector universes, derived from
+# the nightly ASX 300 / S&P 500 scans exactly like _asx_alltech_df()
+# above - filter the already-fetched parent pool's Sector column, never
+# a new scrape. The real, distinct GICS sector strings each parent pool
+# actually carries were printed and verified live before writing this
+# mapping (see the Part 34 report for the full printout) - the one
+# genuine, must-not-guess discrepancy between the two markets: ASX 300's
+# Sector column (merged in from fetch_asx200()'s own live GICS data -
+# see fetch_asx300()'s docstring) uses "Healthcare" (one word), while
+# the S&P 500's Sector column uses "Health Care" (two words) - same
+# global GICS taxonomy, genuinely different spelling on the two
+# exchanges' own Wikipedia pages. Every other GICS sector name matched
+# exactly between the two markets. Sectors outside each six-name list
+# (AU: Energy/Utilities/Telecom/IT beyond the six named; US: none of the
+# 11 GICS sectors omitted except by not being in this dict) simply
+# belong to no sector universe for now, per the instruction's own "do
+# NOT invent extra universes" rule - only the "All" sector filter still
+# reaches them.
+_ASX_SECTOR_UNIVERSE_MAP = {
+    "ASX Financials": ["Financials"],
+    "ASX Materials & Mining": ["Materials"],
+    "ASX Health Care": ["Healthcare"],
+    "ASX Consumer": ["Consumer Staples", "Consumer Discretionary"],
+    "ASX Industrials": ["Industrials"],
+    "ASX A-REITs": ["Real Estate"],
+}
+
+_US_SECTOR_UNIVERSE_MAP = {
+    "US Technology": ["Information Technology"],
+    "US Healthcare": ["Health Care"],
+    "US Financials": ["Financials"],
+    "US Energy": ["Energy"],
+    "US Industrials": ["Industrials"],
+    "US Consumer": ["Consumer Staples", "Consumer Discretionary"],
+}
+
+
+def _asx_sector_df(universe_name):
+    """One AU sector universe (34.1) - ASX 300 members whose Sector is in
+    _ASX_SECTOR_UNIVERSE_MAP[universe_name]. None if ASX 300 itself isn't
+    available (nothing to filter)."""
+    df300 = fetch_asx300()
+    if df300 is None:
+        return None
+    return df300[df300["Sector"].isin(_ASX_SECTOR_UNIVERSE_MAP[universe_name])]
+
+
+def _us_sector_df(universe_name):
+    """One US sector universe (34.2) - S&P 500 members whose Sector is in
+    _US_SECTOR_UNIVERSE_MAP[universe_name]. None if S&P 500 itself isn't
+    available."""
+    df500 = fetch_sp500()
+    if df500 is None:
+        return None
+    return df500[df500["Sector"].isin(_US_SECTOR_UNIVERSE_MAP[universe_name])]
+
+
+def _asx200_marketcap_map():
+    """Part 34.5: a separate, isolated parse of the SAME ASX 200
+    Wikipedia page fetch_asx200() already scrapes, pulling out its
+    "Market Capitalisation (A$)" column into a {ticker: float} map -
+    live-verified during development (via WebSearch->WebFetch) to be
+    plain digit-and-comma figures, e.g. "289,174,295,462" for CBA, no
+    currency symbol or bn/m suffix to strip beyond that.
+
+    Deliberately its OWN fetch + parse, not a widened return shape on
+    fetch_asx200() itself (which many existing callers already depend on
+    being a plain ['Ticker','Sector'] frame) - this keeps the ASX 100
+    fallback fix below fully isolated, zero risk to any existing caller.
+    Returns {} (not None) on any failure, so callers can use it with a
+    plain .get(ticker, 0) without a None-check.
+    """
+    import re
+    try:
+        html = _get(ASX200_WIKI_URL)
+        tables = pd.read_html(io.StringIO(html))
+    except Exception:
+        return {}
+    for table in tables:
+        ticker_col = _find_column(table.columns, ["code", "ticker", "symbol"])
+        cap_col = _find_column(table.columns, ["market capitalisation", "market capitalization", "market cap"])
+        if ticker_col is None or cap_col is None:
+            continue
+        df = table[[ticker_col, cap_col]].dropna()
+        if len(df) < 150:
+            continue
+        out = {}
+        for _, row in df.iterrows():
+            ticker = _normalize_asx_ticker(row[ticker_col])
+            digits = re.sub(r"[^\d.]", "", str(row[cap_col]))
+            if digits:
+                try:
+                    out[ticker] = float(digits)
+                except ValueError:
+                    pass
+        if out:
+            return out
+    return {}
+
+
+def _asx_topn_by_marketcap_df(n):
+    """Part 34.5: the top `n` ASX 200 members by market capitalisation
+    (via _asx200_marketcap_map() above), Sector carried over from
+    fetch_asx200()'s own live GICS data. None if ASX 200 itself, or the
+    market-cap map, isn't available - callers fall back further from
+    there exactly like every other tier in get_universe_pool()."""
+    df200 = fetch_asx200()
+    if df200 is None or df200.empty:
+        return None
+    caps = _asx200_marketcap_map()
+    if not caps:
+        return None
+    df = df200.copy()
+    df["_cap"] = df["Ticker"].map(caps)
+    df = df.dropna(subset=["_cap"]).sort_values("_cap", ascending=False)
+    if df.empty:
+        return None
+    return df.head(n)[["Ticker", "Sector"]]
+
+
 def _asx_fallback_df():
     return pd.DataFrame({"Ticker": list(ASX_SECTOR_MAP.keys()), "Sector": list(ASX_SECTOR_MAP.values())})
 
@@ -761,22 +940,45 @@ def _asx_fallback_df():
 AUSTRALIA_UNIVERSES = [
     "ASX 200", "ASX 300", "All Ordinaries", "ASX Small Ordinaries",
     "ASX 100", "ASX 50", "ASX 20", "ASX All Technology",
+    # Part 34.1 (11 Sep 2026): AU sector universes, derived from ASX 300 -
+    # see _ASX_SECTOR_UNIVERSE_MAP's own comment above for the mapping.
+    "ASX Financials", "ASX Materials & Mining", "ASX Health Care",
+    "ASX Consumer", "ASX Industrials", "ASX A-REITs",
 ]
 USA_UNIVERSES = [
     "S&P 500", "Nasdaq 100", "Russell 2000", "Small Caps (S&P 600)",
     "S&P 400 MidCap", "Russell 1000", "S&P 1500",
+    # Part 34.3 (11 Sep 2026): Russell 3000, derived union of R1000+R2000.
+    "Russell 3000",
+    # Part 34.4 (11 Sep 2026): three new scanned US universes. "Nasdaq
+    # Next Gen 100" is deliberately NOT added - live-verified during
+    # development (WebSearch, twice) that no Wikipedia article exists
+    # for it at all, so per the instruction's own explicit fallback
+    # ("say so in the report and skip this universe rather than shipping
+    # another empty pill") it is skipped entirely rather than shipped
+    # with a guaranteed-empty fetcher.
+    "S&P 500 Dividend Aristocrats",
+    # Part 34.4 (11 Sep 2026): "Dow Jones 30" re-added - see
+    # _DOW30_STATIC_FALLBACK's own comment above for why this is now
+    # safe again (a real, dated static fallback behind the existing
+    # scrape attempt, so the universe can never come back empty even
+    # though the live Wikipedia scrape still doesn't resolve). This
+    # reverses the 9 Sep 2026 emergency removal noted below.
+    "Dow Jones 30",
+    # Part 34.2 (11 Sep 2026): US sector universes, derived from S&P 500 -
+    # see _US_SECTOR_UNIVERSE_MAP's own comment above for the mapping.
+    "US Technology", "US Healthcare", "US Financials", "US Energy",
+    "US Industrials", "US Consumer",
 ]
-# 9 Sep 2026 (owner-reported bug): "Dow Jones 30" removed from this list -
-# fetch_dow30()'s Wikipedia scrape never resolved any tickers in
-# production (the live page no longer carries a matching "Components"
-# table), so the universe never had a first successful nightly scan and
-# the Scanner showed nothing for it. Removing it from USA_UNIVERSES makes
-# it unselectable everywhere (Scanner dropdown, API, sitemap) without
-# deleting fetch_dow30()/DOW30_WIKI_URL/its get_universe_pool() branch
-# below - all left in place, just unreferenced, for easy revival if
-# Wikipedia's page structure gets fixed later. Replaced as a popular pill/
-# daily nightly slot by Russell 2000 - see scheduler_engine.py's
-# _DEFAULT_NIGHTLY_UNIVERSES and app.py's _SCANNER_PILL_UNIVERSES.
+# 9 Sep 2026 (owner-reported bug): "Dow Jones 30" was removed from this
+# list because fetch_dow30()'s Wikipedia scrape never resolved any
+# tickers in production (the live page still carries no matching
+# "Components" table - reconfirmed live during Part 34's own development,
+# 11 Sep 2026). Re-added above by Part 34.4 now that a real, dated static
+# fallback (_DOW30_STATIC_FALLBACK) sits behind that same scrape attempt
+# in get_universe_pool() below, so the universe can never be empty again
+# regardless of whether Wikipedia's page structure ever gets fixed.
+# fetch_dow30()/DOW30_WIKI_URL are unchanged and still tried first.
 
 
 def get_universes(country):
@@ -870,6 +1072,18 @@ def get_universe_pool(country, universe):
         df = fetch_asx100()
         if df is not None:
             return df, "Wikipedia S&P/ASX 100 (live)"
+        # Part 34.5 (11 Sep 2026): fetch_asx100() has no live source at
+        # all (owner-verified: /api/v1/scan/asx-100 was silently serving
+        # ASX 200's full ~200-row set under the "ASX 100" label) - rather
+        # than fall straight through to the whole ASX 200 as if it WERE
+        # the ASX 100, derive the top 100 ASX 200 names by market cap
+        # first (a real, honestly-labelled 100-row approximation), and
+        # only fall all the way through to the raw ASX 200/local fallback
+        # if even THAT can't be built (e.g. the market-cap column itself
+        # becomes unparseable one day too).
+        df_topn = _asx_topn_by_marketcap_df(100)
+        if df_topn is not None and not df_topn.empty:
+            return df_topn, "top 100 of ASX 200 by market cap - membership list unavailable"
         df200 = fetch_asx200()
         if df200 is not None:
             return df200, "ASX 100 unavailable - showing ASX 200 (live) instead"
@@ -910,7 +1124,19 @@ def get_universe_pool(country, universe):
 
     if universe == "Dow Jones 30":
         df = fetch_dow30()
-        return (df, "Wikipedia Dow Jones Industrial Average (live)") if df is not None else (None, "Web scrape unavailable")
+        if df is not None:
+            return df, "Wikipedia Dow Jones Industrial Average (live)"
+        # Part 34.4 (11 Sep 2026): the Dow's own Wikipedia page has never
+        # carried a parseable Components table (re-confirmed live during
+        # this Part's development - see fetch_dow30()'s own docstring and
+        # _DOW30_STATIC_FALLBACK's comment above), so this universe needs
+        # a real fallback rather than the usual "next deploy might fix
+        # it" - a dated static 30-ticker list, tried only after the live
+        # scrape attempt above, so it never masks a future working scrape.
+        fallback_df = pd.DataFrame({
+            "Ticker": _DOW30_STATIC_FALLBACK, "Sector": [None] * len(_DOW30_STATIC_FALLBACK),
+        })
+        return fallback_df, "Web scrape unavailable - static 30-ticker fallback list (as of 29 Jun 2026)"
 
     if universe == "S&P 400 MidCap":
         df = fetch_sp400()
@@ -923,6 +1149,38 @@ def get_universe_pool(country, universe):
     if universe == "S&P 1500":
         df = _sp1500_df()
         return (df, "Derived: S&P 500 + S&P 400 + S&P 600 (live)") if df is not None else (None, "Web scrape unavailable")
+
+    # --- Part 34.3 (11 Sep 2026): Russell 3000, derived union ---
+
+    if universe == "Russell 3000":
+        df = _russell3000_df()
+        return (df, "Derived: Russell 1000 + Russell 2000 (live)") if df is not None else (None, "Web scrape unavailable")
+
+    # --- Part 34.4 (11 Sep 2026): S&P 500 Dividend Aristocrats ---
+
+    if universe == "S&P 500 Dividend Aristocrats":
+        df = fetch_dividend_aristocrats()
+        return (df, "Wikipedia S&P 500 Dividend Aristocrats (live)") if df is not None else (None, "Web scrape unavailable")
+
+    # --- Part 34.1/34.2 (11 Sep 2026): AU + US sector universes ---
+
+    if universe in _ASX_SECTOR_UNIVERSE_MAP:
+        df = _asx_sector_df(universe)
+        if df is not None and not df.empty:
+            return df, "Derived: ASX 300 filtered by sector (live)"
+        df300 = fetch_asx300()
+        if df300 is not None:
+            return df300, f"{universe} unavailable - showing ASX 300 (live) instead"
+        return _asx_fallback_df(), "Live scrape unavailable - local curated ASX 200 list instead"
+
+    if universe in _US_SECTOR_UNIVERSE_MAP:
+        df = _us_sector_df(universe)
+        if df is not None and not df.empty:
+            return df, "Derived: S&P 500 filtered by sector (live)"
+        df500 = fetch_sp500()
+        if df500 is not None:
+            return df500, f"{universe} unavailable - showing S&P 500 (live) instead"
+        return None, "Web scrape unavailable"
 
     return None, "Unknown universe"
 

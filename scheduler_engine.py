@@ -136,6 +136,15 @@ import threading
 import time
 from datetime import datetime, timezone
 
+# Mega-batch Part 35.1: NIGHTLY JOBS table on the new owner Admin
+# Dashboard - see _record_job() below for how each job's ok/warn/error
+# result and duration are captured, and admin_metrics_store.py's own
+# docstring for the rest of the site-pulse design.
+try:
+    import admin_metrics_store
+except Exception:
+    admin_metrics_store = None
+
 
 def _data_dir():
     return os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
@@ -186,10 +195,29 @@ def _save_state(state):
 # spot. scanner_engine.fetch_dow30()/DOW30_WIKI_URL/USA_UNIVERSES'
 # dispatch branch are left in place, just unreferenced, in case Wikipedia's
 # page structure gets fixed and someone wants to re-add it later.
+#
+# Part 34 ADDENDUM (owner-discussed, 11 Sep 2026): reworked into the
+# owner's own explicit weekly calendar now that Dow 30 has a real dated
+# static fallback behind its scrape attempt (scanner_engine.
+# _DOW30_STATIC_FALLBACK - see that constant's own comment) - it can
+# never come back empty again, so it reclaims a daily slot and Russell
+# 2000 moves to Saturday (pairing with the addendum's Nasdaq Next Gen 100
+# Saturday slot - SKIPPED here and everywhere else in this Part, since
+# live verification found no Wikipedia source for it at all; see
+# USA_UNIVERSES' own comment in scanner_engine.py). Daily core: ASX 200,
+# ASX 300, ASX All Technology, S&P 500, Nasdaq 100, Dow Jones 30.
+# Rotation: All Ordinaries:mon, S&P 400 MidCap:tue, Small Caps (S&P
+# 600):wed, Russell 1000:thu, S&P 500 Dividend Aristocrats:fri, Russell
+# 2000:sat. Sunday is left free (digest night), matching the addendum
+# exactly. REMINDER (stated again in the Part 34 report): the owner must
+# mirror this whole line into Railway's own NIGHTLY_UNIVERSES variable
+# after deploy - this code default is not read at all once that env var
+# is set.
 _DEFAULT_NIGHTLY_UNIVERSES = (
-    "ASX 200:daily, S&P 500:daily, Nasdaq 100:daily, Russell 2000:daily, "
-    "ASX 300:daily, ASX All Technology:daily, All Ordinaries:mon, "
-    "S&P 400 MidCap:tue, Small Caps (S&P 600):wed, Russell 1000:thu"
+    "ASX 200:daily, ASX 300:daily, ASX All Technology:daily, S&P 500:daily, "
+    "Nasdaq 100:daily, Dow Jones 30:daily, All Ordinaries:mon, "
+    "S&P 400 MidCap:tue, Small Caps (S&P 600):wed, Russell 1000:thu, "
+    "S&P 500 Dividend Aristocrats:fri, Russell 2000:sat"
 )
 
 _WEEKDAY_ABBR = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
@@ -201,11 +229,18 @@ _WEEKDAY_ABBR = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "su
 # unlisted universe sorts last (safest assumption - never lets an
 # unknown-size universe jump the queue ahead of a known-small one).
 _APPROX_UNIVERSE_SIZE = {
-    "ASX 20": 20, "Dow Jones 30": 30, "ASX 50": 50, "ASX All Technology": 60,
-    "Nasdaq 100": 100, "ASX 100": 100, "ASX 200": 200,
+    "ASX 20": 20, "Dow Jones 30": 30, "ASX 50": 50,
+    "ASX Financials": 40, "ASX Materials & Mining": 45,
+    "ASX Health Care": 15, "ASX Industrials": 30, "ASX A-REITs": 20,
+    "ASX All Technology": 60, "ASX Consumer": 35,
+    "US Energy": 25, "US Healthcare": 65, "US Industrials": 75,
+    "US Financials": 70, "US Consumer": 90,
+    "Nasdaq 100": 100, "ASX 100": 100, "US Technology": 100,
+    "S&P 500 Dividend Aristocrats": 70, "ASX 200": 200,
     "ASX Small Ordinaries": 200, "ASX 300": 300, "S&P 400 MidCap": 400,
     "All Ordinaries": 500, "S&P 500": 500, "Small Caps (S&P 600)": 600,
     "Russell 1000": 1000, "S&P 1500": 1500, "Russell 2000": 2000,
+    "Russell 3000": 3000,
 }
 
 
@@ -408,6 +443,36 @@ def _run_nightly(cfg, log):
     except Exception as e:
         log(f"[scheduler] results-day check failed: {e}")
 
+    # Part 34 addendum 34.7 (11 Sep 2026): nightly reprice pass - every
+    # REAL universe (one with its own cadence entry in NIGHTLY_UNIVERSES,
+    # i.e. cfg["universe_cadence"] - derived universes have no cadence
+    # entry at all and are rebuilt below instead, never repriced
+    # directly) that did NOT get a full scan tonight gets its stored
+    # rows' price/MOS/psychology/discovery/value score refreshed via a
+    # batch download - see nightly_scan.reprice_universe()'s own
+    # docstring. `ordered` (built above) is tonight's actual full-scan
+    # list, "imported" excluded since it isn't a scanner_engine universe
+    # at all. Runs inside the SAME "nightly" job lock this whole function
+    # already executes under (see _loop()'s _acquire_job_lock("nightly")
+    # call) and strictly after every full scan above - satisfying the
+    # addendum's "same single-process lock... same scheduler slot, after
+    # the scans" guard without any extra locking code needed here.
+    try:
+        scanned_tonight = {u for u in ordered if u != nightly_scan.IMPORTED_UNIVERSE}
+        to_reprice = [u for u in cfg.get("universe_cadence", {}).keys() if u not in scanned_tonight]
+        if to_reprice:
+            log(f"[scheduler] reprice pass: {len(to_reprice)} universe(s) not scanned "
+                f"tonight ({', '.join(to_reprice)})")
+            for universe in to_reprice:
+                try:
+                    nightly_scan.reprice_universe(universe, log=log)
+                except Exception as e:
+                    log(f"[scheduler] reprice {universe} failed: {e}")
+        else:
+            log("[scheduler] reprice pass: every real universe was scanned tonight, nothing to reprice")
+    except Exception as e:
+        log(f"[scheduler] reprice pass failed: {e}")
+
     # Fix 8c, AI fixes round 2 (2026-08-31) - see _build_derived_
     # universes()'s own docstring above.
     try:
@@ -435,6 +500,25 @@ _DERIVED_UNIVERSE_PARENTS = {
     "ASX 50": ["ASX 200", "ASX 300"],
     "ASX 20": ["ASX 200", "ASX 300"],
     "S&P 1500": ["S&P 500", "S&P 400 MidCap", "Small Caps (S&P 600)"],
+    # Part 34.1/34.2 (11 Sep 2026): AU + US sector universes - same
+    # membership-filter mechanism, parent(s) unchanged from what each
+    # sector filters ("ASX 300" for AU, "S&P 500" for US - see
+    # scanner_engine._ASX_SECTOR_UNIVERSE_MAP/_US_SECTOR_UNIVERSE_MAP).
+    "ASX Financials": ["ASX 300", "ASX 200"],
+    "ASX Materials & Mining": ["ASX 300", "ASX 200"],
+    "ASX Health Care": ["ASX 300", "ASX 200"],
+    "ASX Consumer": ["ASX 300", "ASX 200"],
+    "ASX Industrials": ["ASX 300", "ASX 200"],
+    "ASX A-REITs": ["ASX 300", "ASX 200"],
+    "US Technology": ["S&P 500"],
+    "US Healthcare": ["S&P 500"],
+    "US Financials": ["S&P 500"],
+    "US Energy": ["S&P 500"],
+    "US Industrials": ["S&P 500"],
+    "US Consumer": ["S&P 500"],
+    # Part 34.3 (11 Sep 2026): Russell 3000, derived union of the two
+    # already-scanned Russell parents - same pattern as S&P 1500 above.
+    "Russell 3000": ["Russell 1000", "Russell 2000"],
 }
 
 
@@ -575,6 +659,22 @@ def _run_volume_check(log):
         volume_monitor.run_nightly_check(log=log)
     except Exception as e:
         log(f"[scheduler] volume monitor failed: {e}")
+    # Part 35.1: prune the signed-in-account hash table on the same
+    # nightly slot as every other retention prune above - see
+    # admin_metrics_store.prune_old_signin_hashes()'s own docstring for
+    # why this table needs pruning at all (privacy: no hash should
+    # outlive the window any admin tile reads) and why it's safe here
+    # (this whole function already only ever logs on failure, never
+    # raises to its caller).
+    if admin_metrics_store is not None:
+        try:
+            admin_metrics_store.prune_old_signin_hashes(log=log)
+        except Exception as e:
+            log(f"[scheduler] signin-hash prune failed: {e}")
+        try:
+            admin_metrics_store.prune_old_counters(log=log)
+        except Exception as e:
+            log(f"[scheduler] pulse-counter prune failed: {e}")
 
 
 def _universes_needing_scan(cfg):
@@ -647,6 +747,55 @@ def heartbeat_age_seconds():
     return time.time() - _last_heartbeat
 
 
+def _record_job(job_name, log, run_fn):
+    """Times run_fn(wrapped_log) and records the result to
+    admin_metrics_store's job_status table for the Admin Dashboard's
+    NIGHTLY JOBS table - WITHOUT changing any _run_* function's own
+    body. Every _run_* job already wraps its own work in try/except and
+    logs a line containing "failed" rather than raising (so one bad
+    universe/ticker never stops the rest of that job) - wrapping the log
+    function they're already given, rather than their return value
+    (there isn't one), lets this count how many "failed" lines a run
+    logged with zero changes to any job's existing, already-tested error
+    handling:
+      - 0 "failed" lines logged  -> 'ok'
+      - >=1 "failed" line logged -> 'warn' (the job completed, but at
+        least one step inside it didn't)
+      - an exception escapes run_fn entirely (every _run_* function's
+        own top-level try/except means this should be rare - one more
+        outer safety net, same convention as _loop()'s own try/except
+        around the whole tick) -> 'error', then re-raised so the
+        existing job-lock `finally` and outer loop error handling still
+        see it exactly as before this existed.
+    Never changes whether/how the job itself runs; the metrics write
+    itself is try/except-guarded so a logging bug here can never take a
+    real job down."""
+    fail_count = [0]
+
+    def _tracking_log(msg):
+        if "failed" in str(msg):
+            fail_count[0] += 1
+        log(msg)
+
+    t0 = time.time()
+    result, detail = "ok", ""
+    try:
+        run_fn(_tracking_log)
+        if fail_count[0]:
+            result = "warn"
+            detail = f"{fail_count[0]} step(s) logged a failure - see server logs"
+    except Exception as e:
+        result, detail = "error", str(e)[:200]
+        raise
+    finally:
+        if admin_metrics_store is not None:
+            try:
+                admin_metrics_store.record_job_result(
+                    job_name, result, detail, time.time() - t0)
+            except Exception:
+                pass
+
+
 def _loop(log):
     global _last_heartbeat
     while True:
@@ -674,7 +823,10 @@ def _loop(log):
                             try:
                                 log(f"[scheduler] starting nightly scans ({', '.join(due)}) "
                                     f"[attempt {n_today + 1}/3 today]")
-                                _run_nightly({**cfg, "universes": due}, log)
+                                _record_job(
+                                    "nightly", log,
+                                    lambda lg: _run_nightly({**cfg, "universes": due}, lg),
+                                )
                             finally:
                                 _release_job_lock("nightly")
                         else:
@@ -693,7 +845,7 @@ def _loop(log):
                     if _acquire_job_lock("watchdog"):
                         try:
                             log("[scheduler] starting portfolio watchdog")
-                            _run_watchdog(log)
+                            _record_job("watchdog", log, _run_watchdog)
                         finally:
                             _release_job_lock("watchdog")
                     else:
@@ -712,7 +864,7 @@ def _loop(log):
                     if _acquire_job_lock("backup"):
                         try:
                             log("[scheduler] starting off-site DB backup")
-                            _run_backup(log)
+                            _record_job("backup", log, _run_backup)
                         finally:
                             _release_job_lock("backup")
                     else:
@@ -731,7 +883,7 @@ def _loop(log):
                     if _acquire_job_lock("volume_check"):
                         try:
                             log("[scheduler] starting volume usage check + retention prune")
-                            _run_volume_check(log)
+                            _record_job("volume_check", log, _run_volume_check)
                         finally:
                             _release_job_lock("volume_check")
                     else:
@@ -751,7 +903,7 @@ def _loop(log):
                     if _acquire_job_lock("earnings_refresh"):
                         try:
                             log("[scheduler] starting earnings calendar refresh")
-                            _run_earnings_refresh(log)
+                            _record_job("earnings_refresh", log, _run_earnings_refresh)
                         finally:
                             _release_job_lock("earnings_refresh")
                     else:
@@ -770,7 +922,7 @@ def _loop(log):
                     if _acquire_job_lock("digest"):
                         try:
                             log(f"[scheduler] starting weekly digest (forced: {force})")
-                            _run_digest(log)
+                            _record_job("digest", log, _run_digest)
                         finally:
                             _release_job_lock("digest")
                     else:
@@ -785,7 +937,7 @@ def _loop(log):
                     if _acquire_job_lock("digest"):
                         try:
                             log("[scheduler] starting weekly digest")
-                            _run_digest(log)
+                            _record_job("digest", log, _run_digest)
                         finally:
                             _release_job_lock("digest")
                     else:

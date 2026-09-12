@@ -440,6 +440,10 @@ def run_universe_scan(universe, max_tickers=None, log=print):
     # (_sector_by_ticker) so peer_context.py can group same-sector
     # peers/percentiles purely from the saved scan - see that module's
     # own docstring.
+    # 34.8 (Part 34 addendum, 11 Sep 2026): elapsed-time logging so the
+    # real nightly cost is visible in Railway logs instead of guessed -
+    # see the final log line below for the "N tickers in Xm Ys" format.
+    _scan_start = time.time()
     country = "Australia" if universe in scanner_engine.AUSTRALIA_UNIVERSES else "USA"
     pool_df, source = scanner_engine.get_universe_pool(country, universe)
     if pool_df is None or pool_df.empty:
@@ -543,8 +547,11 @@ def run_universe_scan(universe, max_tickers=None, log=print):
 
     payload = scan_store.save_scan(universe, rows, source, attention_lite=attention_lite,
                                     degraded=degraded)
+    _scan_elapsed = time.time() - _scan_start
+    _mins, _secs = divmod(int(_scan_elapsed), 60)
     log(f"[nightly_scan] {universe}: saved {len(rows)} rows, skipped {skipped_no_price} "
-        f"(no price)" + (" (degraded)" if degraded else ""))
+        f"(no price)" + (" (degraded)" if degraded else "") +
+        f" - {len(tickers)} tickers in {_mins}m {_secs}s")
     try:
         score_history.record(rows)
         log(f"[nightly_scan] {universe}: recorded {len(rows)} rows to score_history")
@@ -622,6 +629,248 @@ def run_imported_scan(max_tickers=IMPORTED_NIGHTLY_BATCH, log=print):
         log(f"[nightly_scan] imported: recorded {len(rows)} rows to score_history")
     except Exception as e:  # history logging must never fail the scan itself
         log(f"[nightly_scan] imported: score_history.record failed: {e}")
+    return payload
+
+
+# ---------------------------------------------------------------------
+# Part 34 addendum 34.7 (11 Sep 2026): nightly reprice pass.
+#
+# A weekly- (or rotation-) cadence universe must not show week-old
+# prices between its full scans - price sits inside MOS and the value
+# score, so staleness there compounds. scheduler_engine._run_nightly()
+# calls reprice_universe() below, once per real (non-derived) universe
+# that did NOT get a full scan tonight, AFTER the night's full scans and
+# before _build_derived_universes() rebuilds the sector/union universes
+# from the freshly-repriced parents.
+# ---------------------------------------------------------------------
+
+REPRICE_CHUNK_SIZE = 175  # tickers per yf.download() batch call - "chunks
+# of ~150-200 tickers per request" per the addendum; NEVER per-ticker -
+# see reprice_universe() below, which is the only loop in this whole
+# pass that touches the network, and it always calls yf.download() on a
+# whole chunk at once (same multi-ticker download mechanism scanner_
+# engine._heat_download_batch() already uses elsewhere in this app).
+REPRICE_CHUNK_SLEEP = 2.0  # seconds between chunks - Yahoo etiquette for
+# the one bulk request per chunk (this pass can touch 2000+ tickers in a
+# night for a universe like Russell 2000, so a small pause per chunk,
+# not per ticker, keeps that polite without materially slowing the run).
+
+
+def _reprice_row(row, hist_df):
+    """Recomputes ONLY the price-dependent outputs of one already-scanned
+    row, given its freshly batch-downloaded 6-month OHLCV history
+    `hist_df` (one ticker's slice from the chunked yf.download() call in
+    reprice_universe() below) - through the EXACT SAME formulas
+    analyze_ticker_lite() uses for these same fields above. Deliberately
+    duplicated here rather than factored into a shared helper both
+    functions call: analyze_ticker_lite() is also used standalone by
+    digest_engine's weekly watchlist email and must not change shape for
+    this batch-oriented caller.
+
+    Returns a NEW dict (the input `row` is never mutated) with Price/
+    MOS %/Valuation/Psychology/Discovery (lite)/Long Score/Signal/
+    Dividend Yield % updated, or None if `hist_df` has no usable close -
+    the caller then keeps `row` exactly as it was (the addendum's "a
+    ticker that fails in the batch keeps its previous values" rule).
+
+    Deliberately does NOT touch: Quality, Quality Default, Intrinsic
+    Value, Intrinsic Default, Type, Company Name, Moat/Moat Erosion/Moat
+    Mode, Payout Ratio %, Dividend TTM, Next Ex-Div Date, Trend, Trade
+    Setup, Implied Growth %, Model Growth %. The addendum's own line is
+    "recompute ONLY the price-dependent outputs... price, MOS..,
+    valuation label, psychology.., discovery.., and the value score" -
+    that word "ONLY" is read here as an exhaustive list, not an
+    illustrative one, so Trend/Trade Setup (technical-indicator fields)
+    and the reverse-DCF growth figures are price-dependent too but stay
+    untouched by this pass, refreshing on that universe's own next full
+    scan. Dividend Yield % IS recomputed even though it isn't itself
+    named in that list - it's a direct, same-row arithmetic function of
+    Price (Dividend TTM / Price) and the instruction explicitly puts
+    Price in scope, so leaving it stale would make the row internally
+    inconsistent with its own new Price. Both calls are flagged in the
+    Part 34 report as the interpretive judgment this pass makes."""
+    if hist_df is None or hist_df.empty or "Close" not in hist_df.columns:
+        return None
+    window_3mo = hist_df.tail(63)
+    close_series = window_3mo["Close"].dropna()
+    if close_series.empty:
+        return None
+    current_price = float(close_series.iloc[-1])
+    if not math.isfinite(current_price) or current_price <= 0:
+        return None
+    high_price = float(close_series.max())
+    fear = ((high_price - current_price) / high_price) * 100 if high_price else 0.0
+    ma50 = close_series.rolling(50).mean().iloc[-1]
+    if pd.isna(ma50) or ma50 == 0:
+        ma50 = current_price
+    greed = max(((current_price - ma50) / ma50) * 100, 0)
+
+    intrinsic = row.get("Intrinsic Value")
+    mos = ((intrinsic - current_price) / intrinsic) * 100 if intrinsic and intrinsic > 0 else None
+
+    if len(close_series) >= 6 and close_series.iloc[-6] != 0:
+        weekly = ((current_price - close_series.iloc[-6]) / close_series.iloc[-6]) * 100
+    else:
+        weekly = 0.0
+    fomo = max(greed + max(weekly, 0), 0)
+    psychology = fear - greed - fomo
+
+    activity = abs(weekly)
+    avg_vol = window_3mo["Volume"].mean() if "Volume" in window_3mo.columns else 0
+    vol_ratio = (window_3mo["Volume"].iloc[-1] / avg_vol) if avg_vol and avg_vol > 0 else 0
+    # Lite composition only (price/volume attention) - the addendum's own
+    # note: "big universes never had the social signals, so nothing is
+    # lost" - this pass only ever runs against universes tonight's full
+    # scan skipped, which is exactly the population that was already
+    # attention_lite (>NIGHTLY_LITE_THRESHOLD tickers) the last time it
+    # WAS fully scanned.
+    discovery = activity + vol_ratio * 10
+
+    quality = row.get("Quality") or 0
+    long_score = calculate_long_score(quality, mos if mos is not None else 0.0, psychology, discovery)
+
+    if not intrinsic or intrinsic <= 0:
+        valuation = "N/A"
+    elif mos >= 25:
+        valuation = "UNDERVALUED"
+    elif mos < 0:
+        valuation = "EXPENSIVE"
+    else:
+        valuation = "FAIR"
+
+    if long_score > 70:
+        signal = "STRONG LONG"
+    elif long_score > 50:
+        signal = "LONG"
+    elif long_score > 30:
+        signal = "WATCHLIST"
+    else:
+        signal = "AVOID"
+    if valuation == "N/A" and signal in ("STRONG LONG", "LONG"):
+        signal = "WATCHLIST"
+
+    new_row = dict(row)
+    new_row["Price"] = round(current_price, 2)
+    new_row["MOS %"] = round(mos, 1) if mos is not None else None
+    new_row["Psychology"] = round(psychology, 1)
+    new_row["Discovery (lite)"] = round(discovery, 1)
+    new_row["Long Score"] = round(long_score, 1)
+    new_row["Valuation"] = valuation
+    new_row["Signal"] = signal
+    _div_ttm = row.get("Dividend TTM")
+    if _div_ttm:
+        new_row["Dividend Yield %"] = round(_div_ttm / current_price * 100, 2) if current_price else None
+    return new_row
+
+
+def _reprice_download_chunk(tickers):
+    """One yf.download() call for a chunk of tickers (~150-200 - see
+    REPRICE_CHUNK_SIZE), returning {ticker: DataFrame} - the SAME batch-
+    download shape scanner_engine._heat_download_batch() already uses
+    elsewhere in this app for a multi-ticker history pull, including its
+    single-vs-multi-ticker column handling (yf.download returns a flat
+    frame for a 1-ticker request, a ticker-keyed MultiIndex for more than
+    one). Never raises - a chunk that fails outright just yields no
+    history for any ticker in it, which reprice_universe() below treats
+    exactly like any other per-ticker failure (row kept as-is)."""
+    out = {}
+    try:
+        data = yf.download(
+            list(tickers), period="6mo", progress=False,
+            group_by="ticker", threads=True, auto_adjust=True,
+        )
+    except Exception:
+        return out
+    if data is None or len(data) == 0:
+        return out
+    single = len(tickers) == 1
+    for t in tickers:
+        try:
+            out[t] = data if single else data[t]
+        except Exception:
+            pass
+    return out
+
+
+def reprice_universe(universe, log=print):
+    """Part 34 addendum 34.7: refreshes ONE universe's stored scan rows
+    in place with tonight's prices, via chunked batch downloads (never
+    per-ticker loops) - see _reprice_row()'s own docstring for exactly
+    which fields this does and doesn't touch, and REPRICE_CHUNK_SIZE's
+    for the batching itself. Only ever called (from scheduler_engine.
+    _run_nightly()) for a universe that has an EXISTING stored scan but
+    did NOT get a full scan tonight. No-op (returns None) if there's no
+    prior scan on disk at all - a universe with nothing scanned yet has
+    nothing for this pass to reprice; it gets its first real content
+    from its own full-scan cadence instead.
+
+    Processes one chunk's downloaded history at a time (never holds every
+    universe's full history in memory at once - 34.8's memory guard) and
+    logs elapsed time + repriced/kept-stale counts (34.8's duration-
+    logging guard) in the same "[[nightly_scan] ...: N tickers in Xm Ys"
+    style the rest of this module already uses."""
+    start = time.time()
+    existing = scan_store.load_scan_raw(universe)
+    if existing is None:
+        log(f"[nightly_scan] reprice {universe}: no prior scan on disk, skipping")
+        return None
+
+    rows_by_ticker = {}
+    ordered_tickers = []
+    for row in existing.get("rows") or []:
+        t = (row.get("Ticker") or "").strip()
+        if t and t not in rows_by_ticker:
+            rows_by_ticker[t] = row
+            ordered_tickers.append(t)
+
+    repriced_count = 0
+    kept_stale_count = 0
+    new_rows = []
+    n_chunks = 0
+    for i in range(0, len(ordered_tickers), REPRICE_CHUNK_SIZE):
+        chunk = ordered_tickers[i:i + REPRICE_CHUNK_SIZE]
+        n_chunks += 1
+        try:
+            hist_by_ticker = _reprice_download_chunk(chunk)
+        except Exception as e:
+            log(f"[nightly_scan] reprice {universe}: chunk {n_chunks} download failed: {e}")
+            hist_by_ticker = {}
+        for t in chunk:
+            row = rows_by_ticker[t]
+            try:
+                new_row = _reprice_row(row, hist_by_ticker.get(t))
+            except Exception as e:
+                log(f"[nightly_scan] reprice {universe} {t}: {e}")
+                new_row = None
+            if new_row is not None:
+                new_rows.append(new_row)
+                repriced_count += 1
+            else:
+                new_rows.append(row)  # kept exactly as-is - never blanked
+                kept_stale_count += 1
+        if i + REPRICE_CHUNK_SIZE < len(ordered_tickers):
+            time.sleep(REPRICE_CHUNK_SLEEP)
+
+    new_rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
+    payload = scan_store.reprice_scan(
+        universe, new_rows, repriced_count=repriced_count, kept_stale_count=kept_stale_count)
+    elapsed = time.time() - start
+    mins, secs = divmod(int(elapsed), 60)
+    log(f"[nightly_scan] reprice {universe}: {len(ordered_tickers)} tickers in "
+        f"{n_chunks} chunk(s) of <={REPRICE_CHUNK_SIZE}, {repriced_count} repriced, "
+        f"{kept_stale_count} kept-stale, in {mins}m {secs}s")
+
+    # Rebuild the public /s/<TICKER> snapshot for this universe from its
+    # freshly-repriced rows, same as a full scan does in scheduler_
+    # engine._run_nightly() - otherwise the snapshot/API surfaces would
+    # keep showing this universe's pre-reprice prices indefinitely.
+    if payload and payload.get("rows"):
+        try:
+            import snapshot_store
+            snapshot_store.build_snapshots_from_scan(universe, payload["rows"], log=log)
+        except Exception as e:
+            log(f"[nightly_scan] reprice {universe}: snapshot rebuild failed: {e}")
+
     return payload
 
 

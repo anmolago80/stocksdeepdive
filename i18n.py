@@ -1476,11 +1476,17 @@ EN = {
 
     "dd.data_as_of": "Data as of {date} (latest available daily close).",
 
-    # Part 6 (Scanner opener): "+{n} more universes & sector filter" -
-    # {n} is 16 minus the 6 pill shortcuts in _SCANNER_PILL_UNIVERSES
-    # (app.py), computed at render time so this stays right if a universe
-    # is ever added/removed from scanner_engine's own lists.
-    "scanner.change_expander": "+{n} more universes & sector filter",
+    # Part 34.6 (11 Sep 2026): the picker above (four pill rows - see
+    # _SCANNER_PICKER_ROWS, app.py) now reaches all 30 universes on its
+    # own, so this expander's old "+{n} more universes" framing (n was
+    # always 0 the moment the new picker covers everything) no longer
+    # makes sense - reworded to describe what this expander is actually
+    # still for: toggling AU/USA broadly and the Sector filter, neither
+    # of which the pill picker itself exposes. The country checkboxes +
+    # universe selectbox mechanism inside it is otherwise UNCHANGED (Part
+    # 34's own instruction: "the existing country/universe selectbox
+    # further down stays as-is").
+    "scanner.change_expander": "Browse by country & filter by sector",
     "scanner.change_instruction": (
         "Tick one or more countries, then pick a single universe to scan - "
         "each universe below is scanned entirely on its own (ASX 200 and "
@@ -1503,6 +1509,36 @@ EN = {
     "scanner.sort_price": "Price",
     "scanner.rank_col": "#",
     "scanner.scan_of": "scan of {when}",
+    # Part 34 addendum 34.7 (11 Sep 2026): two-part date line for a
+    # universe the nightly reprice pass has refreshed since its last full
+    # fundamentals scan - see scan_store.load_scan()'s own docstring.
+    "scanner.scan_of_repriced": "fundamentals scan of {scan_when} · prices updated {price_when}",
+    # 34.8 (Part 34 addendum, 11 Sep 2026): row-cap guard note, shown only
+    # when a universe's overnight table has more rows than the render cap.
+    "scanner.row_cap_note": "showing the top {cap} of {total} by value score - use the filters to narrow",
+    # Part 34.6 (11 Sep 2026): the four-row universe picker (Option A of
+    # the mock) - one row label + "+N more" toggle pair per row.
+    "scanner.picker_row_au_size": "\U0001F1E6\U0001F1FA AUSTRALIA · BY SIZE",
+    "scanner.picker_row_au_sector": "\U0001F1E6\U0001F1FA AUSTRALIA · BY SECTOR",
+    "scanner.picker_row_us_size_theme": "\U0001F1FA\U0001F1F8 USA · BY SIZE & THEME",
+    "scanner.picker_row_us_sector": "\U0001F1FA\U0001F1F8 USA · BY SECTOR",
+    "scanner.picker_more": "+{n} more ▾",
+    "scanner.picker_show_less": "show less ▴",
+    # Part 34.6 (11 Sep 2026): sector-word pill labels, translated (index/
+    # universe PROPER names like "S&P 500"/"Dow Jones 30"/"Dividend
+    # Aristocrats" stay in English everywhere on this site, matching the
+    # existing universe selectbox's own long-standing convention - only
+    # these generic sector words need a Spanish string).
+    "scanner.sector_pill_financials": "Financials",
+    "scanner.sector_pill_materials_mining": "Materials & Mining",
+    "scanner.sector_pill_health_care": "Health Care",
+    "scanner.sector_pill_consumer": "Consumer",
+    "scanner.sector_pill_industrials": "Industrials",
+    "scanner.sector_pill_areits": "A-REITs",
+    "scanner.sector_pill_all_technology": "All Technology",
+    "scanner.sector_pill_technology": "Technology",
+    "scanner.sector_pill_healthcare": "Healthcare",
+    "scanner.sector_pill_energy": "Energy",
 
     "comparison.empty_message": "Search two or more tickers above to run a Comparison.",
     # Part 6 (Comparison opener): the new [ticker] VS [ticker] input row +
@@ -3539,7 +3575,9 @@ ES = {
 
     "dd.data_as_of": "Datos al {date} (último cierre diario disponible).",
 
-    "scanner.change_expander": "+{n} universos más y filtro de sector",
+    # Part 34.6 (11 Sep 2026): reworded to match the EN key's own change -
+    # see that key's comment in the EN dict for why.
+    "scanner.change_expander": "Explorar por país y filtrar por sector",
     "scanner.change_instruction": (
         "Marca uno o más países, luego elige un único universo para "
         "escanear - cada universo se escanea de forma totalmente "
@@ -3562,6 +3600,24 @@ ES = {
     "scanner.sort_price": "Precio",
     "scanner.rank_col": "#",
     "scanner.scan_of": "escaneo del {when}",
+    "scanner.scan_of_repriced": "escaneo de fundamentales del {scan_when} · precios actualizados el {price_when}",
+    "scanner.row_cap_note": "mostrando los primeros {cap} de {total} por puntaje de valor - usa los filtros para acotar",
+    "scanner.picker_row_au_size": "\U0001F1E6\U0001F1FA AUSTRALIA · POR TAMAÑO",
+    "scanner.picker_row_au_sector": "\U0001F1E6\U0001F1FA AUSTRALIA · POR SECTOR",
+    "scanner.picker_row_us_size_theme": "\U0001F1FA\U0001F1F8 EE. UU. · POR TAMAÑO Y TEMA",
+    "scanner.picker_row_us_sector": "\U0001F1FA\U0001F1F8 EE. UU. · POR SECTOR",
+    "scanner.picker_more": "+{n} más ▾",
+    "scanner.picker_show_less": "mostrar menos ▴",
+    "scanner.sector_pill_financials": "Financieras",
+    "scanner.sector_pill_materials_mining": "Materiales y Minería",
+    "scanner.sector_pill_health_care": "Salud",
+    "scanner.sector_pill_consumer": "Consumo",
+    "scanner.sector_pill_industrials": "Industriales",
+    "scanner.sector_pill_areits": "A-REITs",
+    "scanner.sector_pill_all_technology": "Toda la Tecnología",
+    "scanner.sector_pill_technology": "Tecnología",
+    "scanner.sector_pill_healthcare": "Salud",
+    "scanner.sector_pill_energy": "Energía",
 
     "comparison.empty_message": "Busca dos o más tickers arriba para ejecutar una Comparación.",
     "comparison.add_third": "+ añadir un tercero",
