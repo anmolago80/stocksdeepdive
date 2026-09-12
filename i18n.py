@@ -1609,6 +1609,63 @@ EN = {
     "scanner.sector_pill_healthcare": "Healthcare",
     "scanner.sector_pill_energy": "Energy",
 
+    # Part 38.1 (12 Sep 2026): the collapsed-by-default sector toggle chip
+    # (scanner_full_page_mock.html) - the arrow flips direction and the
+    # chip goes teal once a band's sector pills are showing.
+    "scanner.sector_toggle_collapsed": "🏷 Filter by sector ▾",
+    "scanner.sector_toggle_expanded": "🏷 Sectors ▴",
+
+    # Part 38.3: market-pulse tile labels/details - every value falls
+    # back to "-" when the field is missing across the whole universe
+    # (see _render_scanner_pulse_tiles), so these strings never need to
+    # describe a missing value themselves.
+    "scanner.pulse_scanned_label": "Scanned tonight",
+    "scanner.pulse_scanned_detail": "of the {universe}",
+    "scanner.pulse_undervalued_label": "Rated UNDERVALUED",
+    "scanner.pulse_undervalued_detail": "{pct}% of the universe",
+    "scanner.pulse_mos_label": "Median margin of safety",
+    "scanner.pulse_mos_detail": "price vs intrinsic value",
+    "scanner.pulse_quality_label": "Quality ≥ 80 going cheap",
+    "scanner.pulse_quality_detail": "high quality + MOS > 30%",
+
+    # Part 38.4: score histogram panel.
+    "scanner.hist_heading": "Where tonight's value scores landed",
+    "scanner.hist_caption": (
+        "Each bar is a score band - the green tail on the right is where "
+        "the scanner's attention goes."
+    ),
+    "scanner.hist_desc": (
+        "Bar chart of {n} stocks' value scores, grouped into {buckets} "
+        "score bands - taller, greener bars toward the right are where "
+        "the scanner's attention goes."
+    ),
+    # Shared "not enough data to plot" fallback for both new chart panels.
+    "scanner.chart_no_data": "Not enough stocks with the needed data to chart yet.",
+
+    # Part 38.5: the Value Map panel.
+    "scanner.vmap_heading": "The Value Map - every stock, one dot",
+    "scanner.vmap_caption": (
+        "Cheapness across, quality up. The green corner is where cheap "
+        "meets high quality - hover any dot to name it, click to open its "
+        "page."
+    ),
+    "scanner.vmap_corner_label": "CHEAP & HIGH QUALITY",
+    "scanner.vmap_cap_note": "top {cap} of {total} shown - the full list is in the table below",
+    "scanner.vmap_clip_note": (
+        "{n} stock(s) beyond the chart's right edge are pinned there "
+        "(an extreme MOS value would otherwise squash every other dot)"
+    ),
+    "scanner.vmap_xaxis": "Margin of safety (cheapness) →",
+    "scanner.vmap_yaxis": "Quality ↑",
+    "scanner.vmap_hover_price": "Price",
+    "scanner.vmap_hover_mos": "MOS",
+    "scanner.vmap_hover_quality": "Quality",
+    "scanner.vmap_hover_score": "Value Score",
+    "scanner.vmap_desc": (
+        "Scatter of {n} stocks, margin of safety across and quality up - "
+        "top standouts in the cheap-and-high-quality corner: {standouts}."
+    ),
+
     "comparison.empty_message": "Search two or more tickers above to run a Comparison.",
     # Part 6 (Comparison opener): the new [ticker] VS [ticker] input row +
     # popular-pair chips, and the head-to-head table shown for paying
@@ -3744,6 +3801,56 @@ ES = {
     "scanner.sector_pill_technology": "Tecnología",
     "scanner.sector_pill_healthcare": "Salud",
     "scanner.sector_pill_energy": "Energía",
+
+    "scanner.sector_toggle_collapsed": "🏷 Filtrar por sector ▾",
+    "scanner.sector_toggle_expanded": "🏷 Sectores ▴",
+
+    "scanner.pulse_scanned_label": "Escaneado esta noche",
+    "scanner.pulse_scanned_detail": "del {universe}",
+    "scanner.pulse_undervalued_label": "Calificado INFRAVALORADO",
+    "scanner.pulse_undervalued_detail": "{pct}% del universo",
+    "scanner.pulse_mos_label": "Margen de seguridad mediano",
+    "scanner.pulse_mos_detail": "precio vs. valor intrínseco",
+    "scanner.pulse_quality_label": "Calidad ≥ 80 a precio bajo",
+    "scanner.pulse_quality_detail": "alta calidad + MOS > 30%",
+
+    "scanner.hist_heading": "Dónde cayeron los puntajes de valor de esta noche",
+    "scanner.hist_caption": (
+        "Cada barra es una banda de puntaje - la cola verde a la derecha "
+        "es donde va la atención del escáner."
+    ),
+    "scanner.hist_desc": (
+        "Gráfico de barras de los puntajes de valor de {n} acciones, "
+        "agrupados en {buckets} bandas de puntaje - las barras más altas "
+        "y verdes hacia la derecha son donde va la atención del escáner."
+    ),
+    "scanner.chart_no_data": "Aún no hay suficientes acciones con los datos necesarios para graficar.",
+
+    "scanner.vmap_heading": "El Mapa de Valor - cada acción, un punto",
+    "scanner.vmap_caption": (
+        "Barateza a lo ancho, calidad hacia arriba. El rincón verde es "
+        "donde lo barato se encuentra con la alta calidad - pasa el "
+        "cursor sobre cualquier punto para ver su nombre, haz clic para "
+        "abrir su página."
+    ),
+    "scanner.vmap_corner_label": "BARATA Y DE ALTA CALIDAD",
+    "scanner.vmap_cap_note": "primeras {cap} de {total} mostradas - la lista completa está en la tabla de abajo",
+    "scanner.vmap_clip_note": (
+        "{n} acción(es) más allá del borde derecho del gráfico quedan "
+        "fijadas ahí (un valor de MOS extremo aplastaría a todos los "
+        "demás puntos)"
+    ),
+    "scanner.vmap_xaxis": "Margen de seguridad (barateza) →",
+    "scanner.vmap_yaxis": "Calidad ↑",
+    "scanner.vmap_hover_price": "Precio",
+    "scanner.vmap_hover_mos": "MOS",
+    "scanner.vmap_hover_quality": "Calidad",
+    "scanner.vmap_hover_score": "Puntaje de Valor",
+    "scanner.vmap_desc": (
+        "Dispersión de {n} acciones, margen de seguridad a lo ancho y "
+        "calidad hacia arriba - los principales destacados en el rincón "
+        "barato y de alta calidad: {standouts}."
+    ),
 
     "comparison.empty_message": "Busca dos o más tickers arriba para ejecutar una Comparación.",
     "comparison.add_third": "+ añadir un tercero",

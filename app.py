@@ -10349,7 +10349,7 @@ def _td(inner, minw=None):
     return f"<td style='padding:6px 10px;{_w}'>{inner}</td>"
 
 
-def _render_overnight_scan_table(universe_label, overnight):
+def _render_overnight_scan_table(universe_label, overnight, show_market_pulse=False):
     """The pre-computed overnight-scan table, shared by every universe on
     the Scanner page - originally inline in page_scanner(), extracted here
     unchanged (behaviour-for-behaviour) so the "Imported screen" cohort
@@ -10357,6 +10357,17 @@ def _render_overnight_scan_table(universe_label, overnight):
     instead of a second hand-maintained copy. `overnight` is a
     scan_store.load_scan(...) payload; `universe_label` decorates the
     heading text.
+
+    Part 38 (12 Sep 2026, market-pulse header + Value Map + collapsed
+    sector picker): `show_market_pulse` gates the new four-tile pulse
+    header, score histogram, and Value Map (see
+    _render_scanner_market_pulse below) that the owner-approved mock
+    (scanner_full_page_mock.html) puts between this heading and the
+    existing sort+table. Defaults to False so this function's OTHER
+    caller - _render_screen_import_admin()'s admin-only "Imported
+    screen" cohort - is completely unaffected; only page_scanner()'s own
+    call passes True. Everything the new panels need is already sitting
+    in `overnight["rows"]`, so turning this on adds zero new fetching.
 
     Mega-batch Part 6 (Scanner opener, "results-first"): this used to be
     wrapped in its own st.expander (heading = one long sentence) - a
@@ -10419,6 +10430,13 @@ def _render_overnight_scan_table(universe_label, overnight):
             "columns. Run a live scan below for current prices."
         )
         _render_static_explainer(f"overnight_{universe_label}", "ⓘ", _methodology_text)
+
+    # Part 38: market-pulse tiles + histogram + Value Map, ONLY on the
+    # real Scanner page's own call (see this function's docstring) -
+    # rendered here, between the headline/stamp above and the sort+table
+    # below, exactly matching the mock's top-to-bottom order.
+    if show_market_pulse:
+        _render_scanner_market_pulse(universe_label, overnight, _on_lang)
 
     # Sort-by pills ("sortable" - see this function's own docstring for
     # why a real click-to-sort column header isn't available here). The
@@ -10554,6 +10572,382 @@ def _render_overnight_scan_table(universe_label, overnight):
         )
     except Exception:
         pass
+
+
+# -----------------------------------
+# Part 38 (12 Sep 2026): Scanner page market-pulse header + score
+# histogram + Value Map (owner-approved mock: scanner_full_page_mock.html).
+# Every number below comes from the SAME `rows` the table above already
+# has in memory - scan_store.load_scan() was already called once by
+# page_scanner() before _render_overnight_scan_table ever runs, so none of
+# this adds a second fetch; switching universe just calls this again with
+# the new payload on the next script run (Streamlit's normal top-to-bottom
+# rerun), same as the table itself already does.
+# -----------------------------------
+
+def _median(values):
+    """Tiny local median - avoids adding a top-level `import statistics`
+    for the one call site that needs it (Part 38.3's "Median margin of
+    safety" tile)."""
+    if not values:
+        return None
+    _s = sorted(values)
+    _n = len(_s)
+    _mid = _n // 2
+    if _n % 2:
+        return float(_s[_mid])
+    return (_s[_mid - 1] + _s[_mid]) / 2.0
+
+
+def _scanner_gradient_color(frac):
+    """Red -> grey-navy -> teal -> bright green ramp, the palette family
+    the owner-approved mock uses for both the score histogram bars (Part
+    38.4) and the Value Map dots (Part 38.5). frac is clamped to [0,1];
+    the four anchors below are lifted straight from the mock's own bar
+    fills (#7f1d1d / #2a3b5c / #0f766e / #34d399)."""
+    frac = 0.0 if frac < 0 else (1.0 if frac > 1 else frac)
+    _stops = [
+        (0.0, (127, 29, 29)),
+        (0.35, (42, 59, 92)),
+        (0.65, (15, 118, 110)),
+        (1.0, (52, 211, 153)),
+    ]
+    for (_f0, _c0), (_f1, _c1) in zip(_stops, _stops[1:]):
+        if _f0 <= frac <= _f1:
+            _t = (frac - _f0) / (_f1 - _f0) if _f1 > _f0 else 0.0
+            _r = round(_c0[0] + (_c1[0] - _c0[0]) * _t)
+            _g = round(_c0[1] + (_c1[1] - _c0[1]) * _t)
+            _b = round(_c0[2] + (_c1[2] - _c0[2]) * _t)
+            return f"#{_r:02x}{_g:02x}{_b:02x}"
+    return "#34d399"
+
+
+_SCANNER_PULSE_STYLE = """
+<style>
+.sdd-pulse-tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0 0}
+.sdd-pulse-tiles .tile{background:#0e1930;border:1px solid #1f3352;border-radius:10px;padding:10px 13px}
+.sdd-pulse-tiles .l{font-size:10.5px;color:#8aa0b8}
+.sdd-pulse-tiles .v{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;margin-top:2px}
+.sdd-pulse-tiles .v.g{color:#34d399}
+.sdd-pulse-tiles .v.t{color:#2dd4bf}
+.sdd-pulse-tiles .v.a{color:#fbbf24}
+.sdd-pulse-tiles .d{font-size:10px;color:#5b7290;margin-top:2px}
+@media (max-width:820px){.sdd-pulse-tiles{grid-template-columns:repeat(2,1fr)}}
+</style>
+"""
+
+
+def _render_scanner_pulse_tiles(universe_label, rows, lang):
+    """Part 38.3: the four stat tiles, computed purely from the loaded
+    scan rows. Every tile falls back to "-" gracefully (per the
+    instruction) rather than a raw None/0 when a field is missing across
+    the whole universe - "missing across the board" is the only case that
+    can happen here since nightly_scan.analyze_ticker_lite() always writes
+    these fields when it succeeds at all; a row that failed simply isn't
+    in `rows`."""
+    _n = len(rows)
+    _undervalued_n = sum(1 for r in rows if r.get("Valuation") == "UNDERVALUED")
+    _mos_vals = [r["MOS %"] for r in rows if isinstance(r.get("MOS %"), (int, float))]
+    _median_mos = _median(_mos_vals)
+    _cheap_quality_n = sum(
+        1 for r in rows
+        if isinstance(r.get("Quality"), (int, float)) and r["Quality"] >= 80
+        and isinstance(r.get("MOS %"), (int, float)) and r["MOS %"] > 30
+    )
+    _undervalued_pct = round(_undervalued_n / _n * 100) if _n else 0
+
+    _tiles = [
+        (
+            i18n.t("scanner.pulse_scanned_label", lang), "",
+            str(_n) if _n else "—",
+            i18n.t("scanner.pulse_scanned_detail", lang, universe=universe_label),
+        ),
+        (
+            i18n.t("scanner.pulse_undervalued_label", lang), "g",
+            str(_undervalued_n) if _n else "—",
+            i18n.t("scanner.pulse_undervalued_detail", lang, pct=_undervalued_pct),
+        ),
+        (
+            i18n.t("scanner.pulse_mos_label", lang), "t",
+            f"{_median_mos:+.0f}%" if _median_mos is not None else "—",
+            i18n.t("scanner.pulse_mos_detail", lang),
+        ),
+        (
+            i18n.t("scanner.pulse_quality_label", lang), "a",
+            str(_cheap_quality_n) if _n else "—",
+            i18n.t("scanner.pulse_quality_detail", lang),
+        ),
+    ]
+    _tiles_html = "".join(
+        f'<div class="tile"><div class="l">{html.escape(_lbl)}</div>'
+        f'<div class="v {_cls}">{html.escape(_val)}</div>'
+        f'<div class="d">{html.escape(_det)}</div></div>'
+        for _lbl, _cls, _val, _det in _tiles
+    )
+    st.markdown(
+        _SCANNER_PULSE_STYLE + f'<div class="sdd-pulse-tiles">{_tiles_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_scanner_score_histogram(universe_label, rows, lang):
+    """Part 38.4: "Where tonight's value scores landed" - value scores
+    (the underlying "Long Score" field, same one the table's own Sort-by
+    pills use regardless of display label) bucketed in bands of 5, or 10
+    for a small (<60 row) universe so a Dow-30-sized scan still gets a
+    readable handful of bars instead of ~14 mostly-empty ones. Renders
+    fine at either extreme (Dow 30's ~30 rows or Russell 2000/3000's
+    ~2,000-3,000) since the bucket COUNT scales with the data's own
+    min/max, not a fixed axis."""
+    _scores = [r["Long Score"] for r in rows if isinstance(r.get("Long Score"), (int, float))]
+    with st.container(border=True):
+        st.markdown(
+            f'<div style="font-size:13.5px;font-weight:700;margin-bottom:2px;">'
+            f'{html.escape(i18n.t("scanner.hist_heading", lang))}</div>',
+            unsafe_allow_html=True,
+        )
+        if not _scores:
+            st.caption(i18n.t("scanner.chart_no_data", lang))
+            return
+        st.markdown(
+            f'<div style="color:#5b7290;font-size:11px;margin-bottom:8px;">'
+            f'{html.escape(i18n.t("scanner.hist_caption", lang))}</div>',
+            unsafe_allow_html=True,
+        )
+
+        _bucket = 5 if len(_scores) >= 60 else 10
+        _lo = math.floor(min(_scores) / _bucket) * _bucket
+        _hi = math.floor(max(_scores) / _bucket) * _bucket + _bucket
+        _n_buckets = max(1, int(round((_hi - _lo) / _bucket)))
+        _counts = [0] * _n_buckets
+        for _s in _scores:
+            _idx = min(_n_buckets - 1, int((_s - _lo) / _bucket))
+            _counts[_idx] += 1
+        _labels = [f"{_lo + i * _bucket}–{_lo + (i + 1) * _bucket}" for i in range(_n_buckets)]
+        _colors = [_scanner_gradient_color(i / max(1, _n_buckets - 1)) for i in range(_n_buckets)]
+
+        fig = go.Figure(go.Bar(
+            x=_labels, y=_counts, marker=dict(color=_colors),
+            hovertemplate="%{x}: %{y}<extra></extra>",
+        ))
+        # Bar labels only on a few x-ticks (first/middle/last), per the
+        # mock - a label under every one of up to ~20 buckets on a
+        # Russell-2000-sized scan would be unreadable clutter.
+        _tick_idx = sorted(set([0, _n_buckets // 2, _n_buckets - 1]))
+        fig.update_layout(
+            height=180, margin=dict(l=10, r=10, t=10, b=30),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#c7d2e0"), showlegend=False,
+            xaxis=dict(
+                showgrid=False, tickmode="array",
+                tickvals=[_labels[i] for i in _tick_idx],
+            ),
+            yaxis=dict(showgrid=False, showticklabels=False),
+            bargap=0.15,
+        )
+        sdd_plotly_chart(
+            fig, key=f"scanner_hist_{universe_label}",
+            text_description=i18n.t(
+                "scanner.hist_desc", lang, n=len(_scores), buckets=_n_buckets,
+            ),
+        )
+
+
+_SCANNER_VMAP_CAP = 600
+
+
+def _render_scanner_value_map(universe_label, rows, lang):
+    """Part 38.5, the centrepiece: a Plotly scatter of every stock with
+    both an MOS % and a Quality value, x=MOS (cheapness), y=Quality,
+    coloured by value score on the same red/grey/teal/green ramp the
+    histogram uses (teal for most dots, bright green reserved for the
+    handful of true standouts). Big-universe guard: above
+    _SCANNER_VMAP_CAP rows, only the top-scoring 600 are plotted (the
+    table below still lists every row) with a caption saying so. Outlier
+    clamp: the x-axis is capped at min(150%, the 99th percentile MOS) so
+    one absurd MOS value can't squash every other dot - anything beyond
+    the cap is still plotted, pinned to the cap, and counted in a
+    caption. Clicking a dot redirects to that stock's Deep Dive, the same
+    destination the table's own Ticker links use."""
+    import streamlit.components.v1 as _components
+
+    with st.container(border=True):
+        st.markdown(
+            f'<div style="font-size:13.5px;font-weight:700;margin-bottom:2px;">'
+            f'{html.escape(i18n.t("scanner.vmap_heading", lang))}</div>',
+            unsafe_allow_html=True,
+        )
+        _valid = [
+            r for r in rows
+            if isinstance(r.get("MOS %"), (int, float)) and isinstance(r.get("Quality"), (int, float))
+        ]
+        if not _valid:
+            st.caption(i18n.t("scanner.chart_no_data", lang))
+            return
+        st.markdown(
+            f'<div style="color:#5b7290;font-size:11px;margin-bottom:8px;">'
+            f'{html.escape(i18n.t("scanner.vmap_caption", lang))}</div>',
+            unsafe_allow_html=True,
+        )
+
+        _total_valid = len(_valid)
+        _capped = _total_valid > _SCANNER_VMAP_CAP
+        if _capped:
+            _valid = sorted(
+                _valid,
+                key=lambda r: r.get("Long Score") if isinstance(r.get("Long Score"), (int, float)) else float("-inf"),
+                reverse=True,
+            )[:_SCANNER_VMAP_CAP]
+
+        _scores = [
+            r.get("Long Score") if isinstance(r.get("Long Score"), (int, float)) else 0.0
+            for r in _valid
+        ]
+        _score_lo, _score_hi = min(_scores), max(_scores)
+        _score_span = (_score_hi - _score_lo) or 1.0
+
+        # Outlier clamp (min of 150% or the 99th percentile MOS).
+        _mos_sorted = sorted(r["MOS %"] for r in _valid)
+        _pct99_idx = min(len(_mos_sorted) - 1, max(0, int(math.ceil(0.99 * len(_mos_sorted))) - 1))
+        _pct99 = _mos_sorted[_pct99_idx]
+        _x_cap = min(150.0, _pct99) if _pct99 > 0 else 150.0
+        _x_cap = max(_x_cap, 1.0)
+
+        # Top ~4 standouts (never label every dot, per the instruction):
+        # ranked by value score among rows already inside the "cheap &
+        # high quality" corner (top 50% of this universe's own MOS range,
+        # top 70% of its own Quality range); falls back to the top 4 by
+        # value score outright if fewer than 4 stocks qualify for the
+        # corner (a small/defensive universe might have none).
+        _mos_hi = max((r["MOS %"] for r in _valid), default=0)
+        _q_hi = max((r["Quality"] for r in _valid), default=0)
+        _corner_candidates = [
+            r for r in _valid
+            if r["MOS %"] >= _mos_hi * 0.5 and r["Quality"] >= _q_hi * 0.7
+        ]
+        _pool = _corner_candidates if len(_corner_candidates) >= 4 else _valid
+        _standouts = sorted(_pool, key=lambda r: r.get("Long Score") or 0, reverse=True)[:4]
+        _standout_tickers = {r.get("Ticker") for r in _standouts if r.get("Ticker")}
+
+        _xs, _ys, _colors, _customdata, _texts, _sizes = [], [], [], [], [], []
+        _n_clipped = 0
+        for r in _valid:
+            _mos = r["MOS %"]
+            _clamped = min(_mos, _x_cap)
+            if _mos > _x_cap:
+                _n_clipped += 1
+            _xs.append(_clamped)
+            _ys.append(r["Quality"])
+            _tk = r.get("Ticker") or "-"
+            _score = r.get("Long Score")
+            if _tk in _standout_tickers:
+                _colors.append("#34d399")
+                _sizes.append(11)
+                _texts.append(_tk)
+            else:
+                _frac = ((_score if isinstance(_score, (int, float)) else _score_lo) - _score_lo) / _score_span
+                _colors.append(_scanner_gradient_color(0.25 + 0.6 * _frac))
+                _sizes.append(8)
+                _texts.append("")
+            _customdata.append([_tk, r.get("Price"), _mos, r.get("Quality"), _score])
+
+        fig = go.Figure()
+        # Translucent "cheap & high quality" corner - a fixed top-right
+        # paper-fraction rectangle (matching the mock's own fixed tint),
+        # not a data-derived threshold box, so it always reads as "this
+        # corner of the chart" regardless of the universe's own MOS/
+        # Quality range.
+        fig.add_shape(
+            type="rect", xref="paper", yref="paper",
+            x0=0.62, x1=1.0, y0=0.62, y1=1.0,
+            fillcolor="rgba(6,95,70,0.18)", line=dict(width=0), layer="below",
+        )
+        fig.add_annotation(
+            xref="paper", yref="paper", x=0.995, y=0.965,
+            text=i18n.t("scanner.vmap_corner_label", lang),
+            showarrow=False, font=dict(size=9.5, color="#34d399"),
+            xanchor="right", yanchor="top", align="right",
+        )
+        fig.add_trace(go.Scatter(
+            x=_xs, y=_ys, mode="markers+text", text=_texts,
+            textposition="top center", textfont=dict(size=10, color="#34d399"),
+            marker=dict(size=_sizes, color=_colors, line=dict(width=0)),
+            customdata=_customdata,
+            hovertemplate=(
+                "<b>%{customdata[0]}</b><br>"
+                + i18n.t("scanner.vmap_hover_price", lang) + ": $%{customdata[1]:,.2f}<br>"
+                + i18n.t("scanner.vmap_hover_mos", lang) + ": %{customdata[2]:.1f}%<br>"
+                + i18n.t("scanner.vmap_hover_quality", lang) + ": %{customdata[3]:.0f}<br>"
+                + i18n.t("scanner.vmap_hover_score", lang) + ": %{customdata[4]:.1f}"
+                "<extra></extra>"
+            ),
+        ))
+        fig.update_layout(
+            height=380, margin=dict(l=50, r=45, t=15, b=45),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#c7d2e0"), showlegend=False,
+            xaxis=dict(
+                title=i18n.t("scanner.vmap_xaxis", lang), range=[0, _x_cap * 1.02],
+                showgrid=True, gridcolor="rgba(138,160,184,0.12)", zeroline=False,
+            ),
+            yaxis=dict(
+                title=i18n.t("scanner.vmap_yaxis", lang),
+                showgrid=True, gridcolor="rgba(138,160,184,0.12)", zeroline=False,
+            ),
+        )
+
+        _result = sdd_plotly_chart(
+            fig, key=f"scanner_vmap_{universe_label}",
+            on_select="rerun", selection_mode="points",
+            text_description=i18n.t(
+                "scanner.vmap_desc", lang, n=len(_valid),
+                standouts=", ".join(sorted(_standout_tickers)) or "-",
+            ),
+        )
+        _points = ((_result or {}).get("selection") or {}).get("points") or []
+        if _points:
+            _clicked = _points[0].get("customdata")
+            _clicked_ticker = _clicked[0] if isinstance(_clicked, (list, tuple)) and _clicked else None
+            if _clicked_ticker and _clicked_ticker != "-":
+                # _components.html() renders into its OWN sandboxed
+                # iframe. Confirmed by harness testing: that sandbox
+                # grants allow-popups but NOT allow-top-navigation, so
+                # `window.top.location = ...` is silently swallowed (a
+                # bare `window.location = ...` would only navigate the
+                # iframe itself, same problem). `window.open(url,
+                # "_blank")` is the one navigation primitive the sandbox
+                # actually permits - it opens the ticker's Deep Dive in a
+                # new tab rather than replacing the current one, which
+                # still satisfies "click opens that stock's page."
+                _components.html(
+                    "<script>window.open("
+                    f"'/deep-dive?ticker={_urlquote(_clicked_ticker)}', '_blank'"
+                    ");</script>",
+                    height=0,
+                )
+
+        if _capped:
+            st.caption(i18n.t(
+                "scanner.vmap_cap_note", lang, cap=_SCANNER_VMAP_CAP, total=_total_valid,
+            ))
+        if _n_clipped:
+            st.caption(i18n.t("scanner.vmap_clip_note", lang, n=_n_clipped))
+
+
+def _render_scanner_market_pulse(universe_label, overnight, lang):
+    """Part 38 top-level entry point, called only from
+    _render_overnight_scan_table when show_market_pulse=True (i.e. only
+    from page_scanner()'s own instant-results call - see that function's
+    docstring). Renders the four pulse tiles (38.3), the score histogram
+    (38.4), and the Value Map (38.5) in that order, matching the mock's
+    top-to-bottom layout, all from `overnight["rows"]` - the exact rows
+    the table below already has, so this adds no new fetching."""
+    _rows = overnight.get("rows") or []
+    if not _rows:
+        return
+    _render_scanner_pulse_tiles(universe_label, _rows, lang)
+    _render_scanner_score_histogram(universe_label, _rows, lang)
+    _render_scanner_value_map(universe_label, _rows, lang)
 
 
 def _render_screen_import_admin():
@@ -11076,6 +11470,9 @@ _SCANNER_PICKER_STYLE = """
 .sdd-uni-picker .pill.on{border-color:#14b8a6;color:#2dd4bf;background:#10312d}
 .sdd-uni-picker .divider{width:1px;height:18px;background:#1f3352;margin:0 4px}
 .sdd-uni-picker .uflag{width:15px;height:11px;border-radius:2px;flex:0 0 auto}
+.sdd-uni-picker .pill.sector-toggle{border-style:dashed;color:#8aa0b8;font-size:11.5px}
+.sdd-uni-picker .pill.sector-toggle.on{border-color:#14b8a6;color:#2dd4bf;background:transparent}
+.sdd-uni-picker .sector-pills{margin-top:6px;padding-left:14px;border-left:2px solid #1f3352}
 </style>
 """
 
@@ -11112,18 +11509,36 @@ def _render_scanner_universe_picker(lang):
     lets every pill carry an SVG flag, which st.pills/st.caption cannot
     render. No indentation on any joined line below - Streamlit's
     Markdown parser treats 4+ leading spaces as a code block, exactly the
-    trap the instruction calls out."""
+    trap the instruction calls out.
+
+    Part 38.1 (12 Sep 2026): each band's flat pill list is split at its
+    `None` divider into "main" (size/theme) pills - always shown - and
+    "sector" pills, collapsed by default behind a dashed "Filter by
+    sector" toggle chip (also a real <a href>, see the ?sector_toggle=
+    handling in page_scanner()). A band is expanded when EITHER its own
+    per-session toggle is on OR the currently active universe is one of
+    its own sector pills - the latter is recomputed fresh from
+    `_current` on every render (not just on the toggle click), so a
+    ?universe= deep link straight to a sector universe auto-expands with
+    no extra plumbing, and the active pill can never end up hidden behind
+    a collapsed chip."""
     _current = st.session_state.get("scanner_universe")
     _parts = [_SCANNER_PICKER_STYLE, '<div class="sdd-uni-picker">']
     for _country, _label_key, _pills in _SCANNER_PICKER_BANDS:
         _flag = _SCANNER_PICKER_FLAGS[_country]
         _parts.append('<div class="band">')
         _parts.append(f'<div class="lbl">{_flag}{html.escape(i18n.t(_label_key, lang))}</div>')
+
+        if None in _pills:
+            _divider_at = _pills.index(None)
+            _main_pills = _pills[:_divider_at]
+            _sector_pills = _pills[_divider_at + 1:]
+        else:
+            _main_pills = _pills
+            _sector_pills = []
+
         _parts.append('<div class="pills">')
-        for _item in _pills:
-            if _item is None:
-                _parts.append('<span class="divider"></span>')
-                continue
+        for _item in _main_pills:
             _universe = _item[2]
             _label = html.escape(_picker_pill_label(_item, lang))
             _on = " on" if _universe == _current else ""
@@ -11131,7 +11546,53 @@ def _render_scanner_universe_picker(lang):
             _parts.append(
                 f'<a class="pill{_on}" href="{_href}" target="_self">{_flag}{_label}</a>'
             )
-        _parts.append('</div></div>')
+
+        if _sector_pills:
+            _band_key = f"scanner_sectors_expanded_{_country.lower()}"
+            _sector_universes = {_it[2] for _it in _sector_pills}
+            _expanded = bool(st.session_state.get(_band_key)) or (_current in _sector_universes)
+            _toggle_label = i18n.t(
+                "scanner.sector_toggle_expanded" if _expanded else "scanner.sector_toggle_collapsed",
+                lang,
+            )
+            # Encodes the TARGET action ("open"/"close"), not a bare
+            # toggle flag - confirmed by harness testing that a plain
+            # <a href> pill click here is a full page navigation, same
+            # as every other pill in this picker, and this deployment
+            # does not carry st.session_state across a full navigation
+            # (only real, same-session Streamlit widget reruns do). A
+            # "flip whatever's currently in session_state" instruction
+            # would see an empty session_state on every single click and
+            # could only ever land on "open," never "close." Baking in
+            # the opposite of THIS render's own already-computed
+            # `_expanded` makes the click self-describing instead,
+            # exactly like every ?universe= pill already is.
+            _toggle_qs = f"sector_toggle={_urlquote(_country)}&sector_action={'close' if _expanded else 'open'}"
+            if lang == "es":
+                _toggle_qs += "&lang=es"
+            _toggle_href = f"/scanner?{_toggle_qs}"
+            _toggle_on = " on" if _expanded else ""
+            _parts.append(
+                f'<a class="pill sector-toggle{_toggle_on}" href="{_toggle_href}" '
+                f'target="_self">{html.escape(_toggle_label)}</a>'
+            )
+            _parts.append('</div>')  # close the always-visible .pills row
+
+            if _expanded:
+                _parts.append('<div class="pills sector-pills">')
+                for _item in _sector_pills:
+                    _universe = _item[2]
+                    _label = html.escape(_picker_pill_label(_item, lang))
+                    _on = " on" if _universe == _current else ""
+                    _href = _scanner_universe_href(_universe, lang)
+                    _parts.append(
+                        f'<a class="pill{_on}" href="{_href}" target="_self">{_flag}{_label}</a>'
+                    )
+                _parts.append('</div>')
+        else:
+            _parts.append('</div>')  # close .pills - no sector row for this band
+
+        _parts.append('</div>')  # close .band
     _parts.append('</div>')
     st.markdown("".join(_parts), unsafe_allow_html=True)
 
@@ -11175,6 +11636,30 @@ def page_scanner():
             st.session_state["scanner_country_au"] = False
         st.query_params.pop("universe", None)
 
+    # ---- Part 38.1: sector-band expand/collapse chip deep link. The
+    # "Filter by sector" chip is a real <a href> like every other pill in
+    # this picker (not a widget - see _render_scanner_universe_picker),
+    # so its click is a full navigation carrying ?sector_toggle=<country>
+    # &sector_action=open|close - read+popped the same way as
+    # _qp_universe just above, and BEFORE the picker renders so a click
+    # already reflects in this same run. sector_action is an explicit
+    # TARGET state, not a toggle-in-place flag: a full page navigation
+    # doesn't carry st.session_state over in this deployment (confirmed
+    # by harness testing - only a same-session widget rerun does), so the
+    # chip's own href already bakes in the opposite of whatever it just
+    # rendered as (see that function's own comment) rather than asking
+    # this code to flip a value it can no longer see. A band whose active
+    # universe is itself a sector universe still renders expanded
+    # regardless of this flag either way (see that function's own "the
+    # active pill must never be hidden" comment).
+    _qp_sector_toggle = (st.query_params.get("sector_toggle") or "").strip()
+    _qp_sector_action = (st.query_params.get("sector_action") or "").strip()
+    if _qp_sector_toggle in ("Australia", "USA") and _qp_sector_action in ("open", "close"):
+        _toggle_key = f"scanner_sectors_expanded_{_qp_sector_toggle.lower()}"
+        st.session_state[_toggle_key] = (_qp_sector_action == "open")
+        st.query_params.pop("sector_toggle", None)
+        st.query_params.pop("sector_action", None)
+
     # ---- Universe picker (Part 37, Option B of the mock): two labeled
     # bands covering all 30 universes, always visible, no "+more" -
     # runs BEFORE the instant-results read below so a click this rerun
@@ -11194,7 +11679,7 @@ def page_scanner():
     _top_universe = st.session_state.get("scanner_universe", "ASX 200")
     _overnight_top = scan_store.load_scan(_top_universe)
     if _overnight_top:
-        _render_overnight_scan_table(_top_universe, _overnight_top)
+        _render_overnight_scan_table(_top_universe, _overnight_top, show_market_pulse=True)
 
     # ---- NL-screening box: now BELOW the results table (Part 6), so it
     # never delays a first-time visitor's first ranked table. ----
