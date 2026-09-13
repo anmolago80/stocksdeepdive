@@ -20981,11 +20981,25 @@ _TOOLS_HUB_STYLE = """
 .sdd-tools-tagline{color:#8aa0b8;font-size:12.5px;margin:2px 0 14px;max-width:720px;line-height:1.55}
 .sdd-tools-grid{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px}
 .sdd-tools-card{flex:1;min-width:210px;background:#121f36;border:1.5px solid #22345a;
-  border-radius:12px;padding:14px 16px;text-decoration:none;color:inherit;display:block}
+  border-radius:12px;padding:14px 16px;display:block}
 .sdd-tools-card.linked:hover{border-color:#14b8a6}
 .sdd-tools-card.static{opacity:.85;cursor:default}
-.sdd-tools-card .ic{font-size:22px}
-.sdd-tools-card .n{font-weight:800;font-size:14px;margin:6px 0 3px;color:inherit}
+/* Owner follow-up (13 Sep 2026): Streamlit's own theme CSS was leaking its
+   default link styling (underline + link-blue) onto the card <a> and every
+   descendant of it - the mock has zero underlines anywhere on these cards.
+   !important on text-decoration beats that theme rule regardless of
+   selector specificity; :link/:visited/:hover/:active are covered
+   explicitly since a plain element/class rule doesn't reliably cover
+   every pseudo-class state a browser (or Streamlit's own CSS) might target
+   directly. Hover feedback per the mock is the border turning teal
+   (.linked:hover above), never an underline. */
+.sdd-tools-card, .sdd-tools-card:link, .sdd-tools-card:visited,
+.sdd-tools-card:hover, .sdd-tools-card:active,
+.sdd-tools-card *, .sdd-tools-card *:link, .sdd-tools-card *:visited,
+.sdd-tools-card *:hover, .sdd-tools-card *:active{
+  text-decoration:none !important;color:inherit}
+.sdd-tools-card .ic{font-size:22px;border-bottom:none}
+.sdd-tools-card .n{font-weight:800;font-size:14px;margin:6px 0 3px;color:#e6edf5}
 .sdd-tools-card .p{color:#8aa0b8;font-size:11.5px;line-height:1.5}
 .sdd-tools-card .out{margin-top:9px;border-top:1px dashed #22345a;padding-top:8px;
   font-size:11px;color:#5b7290}
