@@ -46,6 +46,7 @@ import scan_store
 import score_history
 import scanner_engine
 import screen_import_store
+import sector_cache_store
 import snapshot_store
 import indicators_engine
 import social_engine
@@ -66,6 +67,14 @@ PER_TICKER_SLEEP = 0.5
 # don't otherwise share config, but the VALUE must stay in sync so overnight
 # and live scans agree about what counts as "big enough to go lite".
 NIGHTLY_LITE_THRESHOLD = 100
+
+# Part 48.2(c): the nightly sector-cache top-up is deliberately small and
+# rate-limited - it exists to slowly self-heal Small Ords/All Ords
+# coverage over many nights, not to backfill everything in one pass (that
+# would mean tens of extra Yahoo Finance calls beyond what the scan
+# itself already makes, every single night, forever). See
+# run_sector_topup()'s own docstring.
+SECTOR_TOPUP_PER_NIGHT = 40
 
 # Audit fix 2.3: a scan that completed for fewer than this fraction of its
 # resolved universe is treated as failed/degraded rather than a
@@ -504,6 +513,23 @@ def run_universe_scan(universe, max_tickers=None, log=print):
             log(f"[nightly_scan] {universe}: {i + 1}/{len(tickers)} done")
         time.sleep(PER_TICKER_SLEEP)
 
+    # Part 48.2(a): bulk-learn every row's sector into the persistent
+    # cache (source="scan") right after this universe's rows are built -
+    # a plain local SQLite write on data already in hand, no extra fetch.
+    # This is what lets a sector-less universe (Small Ords/All Ords -
+    # see sector_cache_store.py's own docstring) benefit from a ticker
+    # that ALSO happens to appear in a sector-carrying universe (ASX 200/
+    # S&P 500) on some other night - one write-through here, and every
+    # later sector_for_ticker() call for that ticker resolves from cache,
+    # in any universe, with no rescan needed. A row with no Sector
+    # (universe doesn't carry one) is simply skipped - learn() itself
+    # already no-ops on a blank/None sector, but checking here avoids a
+    # pointless DB round-trip for the common no-sector case.
+    for _r in rows:
+        _sec = _r.get("Sector")
+        if _sec:
+            sector_cache_store.learn(_r.get("Ticker"), _sec, source="scan")
+
     rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
 
     # Services batch 2, Part 2: percentile ranks (universe + sector),
@@ -558,6 +584,54 @@ def run_universe_scan(universe, max_tickers=None, log=print):
     except Exception as e:  # history logging must never fail the scan itself
         log(f"[nightly_scan] {universe}: score_history.record failed: {e}")
     return payload
+
+
+def run_sector_topup(tickers, log=print):
+    """Part 48.2(c): the sector cache's self-healing top-up. Takes the
+    subset of `tickers` (meant to be every ticker scanned across every
+    universe tonight - scheduler_engine._run_nightly collects this) that
+    sector_cache_store has no row for yet, caps it at
+    SECTOR_TOPUP_PER_NIGHT, and fetches ONLY each one's yfinance .info
+    sector field - the exact same company-info route analyze_ticker_lite()
+    above already uses for every ticker's fundamentals (`tk.info`), just
+    without the price-history/cashflow calls that route also makes, since
+    a sector top-up needs none of that. Same PER_TICKER_SLEEP pacing as
+    the main scan loop above (this module's own docstring: "one ticker at
+    a time with a small sleep").
+
+    Deliberately small and slow by design: this exists to gradually close
+    the Small Ords/All Ords coverage gap over many nights (a ticker that
+    fails or gets skipped tonight simply reappears in unknown_among() on
+    a future night, cheap and automatic), not to force it shut in one
+    run - that would mean up to hundreds of extra Yahoo Finance calls in
+    a single night on top of what the scan itself already makes, exactly
+    the kind of nightly-cost blowout this module's own docstring already
+    warns about for the Trends/News/Social calls.
+
+    Any single ticker's failure (network hiccup, no 'sector' key,
+    delisted ticker, etc.) is skipped silently and never retried
+    same-night - see sector_cache_store.learn()'s own no-op-on-blank
+    guarantee. Returns the count actually learned, for the caller's own
+    one-line log."""
+    candidates = sector_cache_store.unknown_among(tickers, limit=SECTOR_TOPUP_PER_NIGHT)
+    if not candidates:
+        log("[nightly_scan] sector top-up: nothing to do (every scanned ticker "
+            "already has a cached sector, or none were passed in)")
+        return 0
+    learned = 0
+    for t in candidates:
+        try:
+            info = yf.Ticker(t).info or {}
+            sector = info.get("sector")
+            if isinstance(sector, str) and sector.strip():
+                sector_cache_store.learn(t, sector, source="topup")
+                learned += 1
+        except Exception:
+            pass  # skip silently - see docstring; comes up again another night
+        time.sleep(PER_TICKER_SLEEP)
+    log(f"[nightly_scan] sector top-up: learned {learned}/{len(candidates)} new "
+        f"sector(s) ({len(tickers)} ticker(s) considered, cap {SECTOR_TOPUP_PER_NIGHT})")
+    return learned
 
 
 def run_imported_scan(max_tickers=IMPORTED_NIGHTLY_BATCH, log=print):

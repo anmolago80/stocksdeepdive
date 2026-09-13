@@ -386,6 +386,13 @@ def _run_nightly(cfg, log):
         [u for u in cfg["universes"] if u != nightly_scan.IMPORTED_UNIVERSE]
         + [u for u in cfg["universes"] if u == nightly_scan.IMPORTED_UNIVERSE]
     )
+    # Part 48.2(c): every ticker scanned tonight, across every universe
+    # (real ones and "imported" alike) - the candidate pool the sector-
+    # cache top-up draws from after the loop below. Collected here rather
+    # than re-derived later since `payload["rows"]` (already in hand per
+    # universe) is exactly the "was scanned tonight" fact the top-up
+    # needs, and nothing else after this loop still has it this cheaply.
+    _tickers_scanned_tonight = []
     for universe in ordered:
         try:
             if universe == nightly_scan.IMPORTED_UNIVERSE:
@@ -398,6 +405,8 @@ def _run_nightly(cfg, log):
             # computed, no extra network calls. A failure here must never
             # take down the scan it rides on.
             if payload and payload.get("rows"):
+                _tickers_scanned_tonight.extend(
+                    r.get("Ticker") for r in payload["rows"] if r.get("Ticker"))
                 try:
                     import snapshot_store
                     snapshot_store.build_snapshots_from_scan(
@@ -424,6 +433,17 @@ def _run_nightly(cfg, log):
                     log(f"[scheduler] insider refresh {universe} failed: {e}")
         except Exception as e:
             log(f"[scheduler] nightly scan {universe} failed: {e}")
+
+    # Part 48.2(c): sector-cache top-up, once, over every ticker scanned
+    # tonight above - see nightly_scan.run_sector_topup()'s own docstring
+    # for the cap/pacing/failure-silent guarantees. Runs strictly after
+    # the scan loop (never inside it) since it needs the FULL de-duplicated
+    # list of tonight's tickers, not just one universe's, to pick its
+    # batch fairly across whichever universes ran tonight.
+    try:
+        nightly_scan.run_sector_topup(_tickers_scanned_tonight, log=log)
+    except Exception as e:
+        log(f"[scheduler] sector top-up failed: {e}")
 
     # Services batch, Part 1: tickers with an active alert that weren't
     # covered by any universe/imported scan above get one lightweight

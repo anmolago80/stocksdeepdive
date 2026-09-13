@@ -55,6 +55,8 @@ import requests
 import streamlit as st
 import yfinance as yf
 
+import sector_cache_store
+
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StocksDeepDiveBot/1.0; +https://stocksdeepdive.com)"}
 
 SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
@@ -1196,10 +1198,10 @@ def get_sectors(df):
     return ["All"] + sorted(sectors)
 
 
-# Part 47 (13 Sep 2026): the single sector-lookup helper for the three UI
-# placements (Deep Dive header chip, Value Map tooltip, Scanner table
-# second line) - deliberately NEVER fetches anything itself. Precedence,
-# cheapest/most-authoritative first:
+# Part 47 (13 Sep 2026), extended by Part 48 (13 Sep 2026): the single
+# sector-lookup helper for the three UI placements (Deep Dive header chip,
+# Value Map tooltip, Scanner table second line) - deliberately NEVER
+# fetches anything itself. Precedence, cheapest/most-authoritative first:
 #   1. `scan_row["Sector"]` when given and non-empty - nightly_scan.
 #      run_universe_scan() already attaches this to every scanned row
 #      (Services batch 2, Part 2, 2026-09-01: "Sector, straight from the
@@ -1211,35 +1213,64 @@ def get_sectors(df):
 #      path the Scanner table and Value Map always use (they're only ever
 #      handed real scan rows), and the path Deep Dive uses whenever the
 #      ticker has a stored snapshot.
-#   2. An ASX ticker with no scan_row sector: ASX_SECTOR_MAP, the static
-#      module-level dict above - already resident in memory, zero fetch.
-#      Its own comment flags it as the "local ASX 200 fallback... used
-#      only if the live ASX 200 scrape fails" - i.e. genuinely partial
-#      coverage (~100 of several hundred ASX tickers), which is exactly
-#      why an ASX ticker outside it simply renders no chip rather than a
-#      guess.
-#   3. `company_info["sector"]` when given - the yfinance .info dict a
+#   2. Part 48: sector_cache_store's local, persistent cache - a plain
+#      SQLite read, zero fetch. This is what fills the gap step 1 leaves
+#      for Small Ordinaries/All Ordinaries names (their constituent
+#      source carries no Sector column at all - unlike ASX 200/S&P 500's
+#      own live pool fetch): once ANY path below (or a scan on a
+#      sector-carrying universe, or the nightly top-up) has ever learned
+#      a ticker's sector, every later call for that ticker resolves here,
+#      forever, without waiting for a rescan.
+#   3. An ASX ticker with no scan_row sector and no cache row:
+#      ASX_SECTOR_MAP, the static module-level dict above - already
+#      resident in memory, zero fetch. Its own comment flags it as the
+#      "local ASX 200 fallback... used only if the live ASX 200 scrape
+#      fails" - i.e. genuinely partial coverage (~100 of several hundred
+#      ASX tickers). A hit here is written through to the cache (source=
+#      "static_map") so this lookup only ever has to happen once per
+#      ticker, not on every render.
+#   4. `company_info["sector"]` when given - the yfinance .info dict a
 #      CALLER already fetched for its own purposes (e.g. Deep Dive's
 #      get_ticker_info(), already invoked once per page by deep_dive_
 #      engine.analyze() itself, cached 30 min - a second call in the same
 #      run is a cache hit, not a new fetch). This function never fetches
-#      it itself.
-#   4. None - the ticker's sector is genuinely unknown. Every call site
-#      must render nothing at all (never "Unknown"/"-"), per the
-#      instruction's own hard rule.
+#      it itself. A hit here is also written through to the cache
+#      (source="deep_dive" - today's only caller that ever passes
+#      company_info), so a ticker Deep Dive resolves once via this path
+#      also lights up its Scanner-table/Value-Map second line/tooltip
+#      from then on, with no rescan needed.
+#   5. None - the ticker's sector is genuinely unknown to every source
+#      above. Every call site must render nothing at all (never
+#      "Unknown"/"-"), per the instruction's own hard rule.
+#
+# Deliberately NOT written through to the cache: a scan_row hit (step 1).
+# nightly_scan.run_universe_scan() already bulk-learns every one of its
+# own rows' sectors in one pass right after the scan (source="scan") -
+# see that function's own comment - so re-writing the same value here on
+# every single page render that happens to pass a scan_row would just be
+# a redundant SQLite write for no new information.
 def sector_for_ticker(ticker, scan_row=None, company_info=None):
     if scan_row:
         _s = scan_row.get("Sector")
         if isinstance(_s, str) and _s.strip():
             return _s.strip()
-    if ticker and str(ticker).strip().upper().endswith(".AX"):
-        _s = ASX_SECTOR_MAP.get(str(ticker).strip().upper())
+    _tk = str(ticker).strip().upper() if ticker else None
+    if _tk:
+        _cached = sector_cache_store.get(_tk)
+        if _cached:
+            return _cached
+    if _tk and _tk.endswith(".AX"):
+        _s = ASX_SECTOR_MAP.get(_tk)
         if _s:
+            sector_cache_store.learn(_tk, _s, source="static_map")
             return _s
     if company_info:
         _s = company_info.get("sector")
         if isinstance(_s, str) and _s.strip():
-            return _s.strip()
+            _s = _s.strip()
+            if _tk:
+                sector_cache_store.learn(_tk, _s, source="deep_dive")
+            return _s
     return None
 
 
