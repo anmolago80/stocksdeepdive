@@ -1019,13 +1019,47 @@ EN = {
     # of Tools per the Amendment to Part 18 (6 Sep) - tools.signin_prompt
     # is the amendment's own verbatim copy.
     "tools.page_title": "\U0001F4B0 Money Tools",
-    "tools.page_subtitle": "Free calculators, sign in to use.",
-    "tools.signin_prompt": "Free with an account &mdash; sign in to build your plan.",
+    # Part 45: repurposed for the Option A hub tagline (was "Free
+    # calculators, sign in to use." - stale once the hub shows its own
+    # cards + the account bar already shows sign-in state). Verbatim from
+    # money_tools_landing_options_mock.html's Option A frame. A literal
+    # "-" (not an &mdash; entity) - this string is passed through
+    # html.escape() before going into raw HTML (see _render_tools_hub),
+    # and html.escape() would double-encode an entity into visible
+    # "&mdash;" text - same reasoning as portfolio.switcher.*'s literal
+    # "·" elsewhere in this file.
+    "tools.page_subtitle": "Free calculators for the money around your investing — budget, bills, offset and super. Described calculations from your own inputs, never advice.",
+    # Part 45: repurposed for the Option C (signed-out) hub tagline (was
+    # the old single-line "sign in to use" info text this replaces).
+    # Verbatim from the mock's Option C frame. Literal "—", same
+    # html.escape() reasoning as tools.page_subtitle above.
+    "tools.signin_prompt": "Four free calculators — free account, no card, no spam.",
     "tools.registry_stat": "{count} tool &middot; more coming",
     # Fix round 10 #1: per-tool error card - shown in place of a tool
     # whose render raised an exception, so one broken tool doesn't take
     # the whole Tools page down; the other tabs keep working.
     "tools.tool_error": "{tool} hit an error and couldn't load &mdash; the other tools still work. It's been logged; please try again shortly.",
+
+    # Part 45 (Money Tools landing rework, Options A + C): per-tool hub
+    # card copy (blurb + a STATIC "e.g." teaser, never computed - see
+    # _tools_hub_cards_html's own comment) plus the two Option C CTAs.
+    # Verbatim from money_tools_landing_options_mock.html. Blurbs use
+    # literal "—"/"·" (html.escape()'d before insertion, like
+    # tools.page_subtitle above); teasers are inserted RAW (never
+    # escaped - they carry an intentional <b> around the headline figure,
+    # exactly the mock's own markup), so entities or literal characters
+    # render identically there - literal characters used throughout for
+    # one consistent convention.
+    "tools.hub.budget_planner_blurb": "Type a family budget in a minute — see savings /mo and /yr, and what they'd become invested.",
+    "tools.hub.budget_planner_teaser": 'e.g. <b>$1,240/mo</b> spare → <b>$214k</b> in 10y at index returns',
+    "tools.hub.utilities_blurb": "Upload a bill photo — pay only for what you use? Rates checked against typical deals.",
+    "tools.hub.utilities_teaser": "reads the bill in-memory · nothing stored",
+    "tools.hub.debt_recycling_blurb": "Where a lump sum works hardest: offset the mortgage, invest it, or recycle debt.",
+    "tools.hub.debt_recycling_teaser": 'e.g. offset saves <b>$3.1k/yr</b> at 6.1% — after-tax',
+    "tools.hub.super_blurb": "Balance at retirement, with and without extra salary sacrifice — caps checked.",
+    "tools.hub.super_teaser": 'e.g. +$200/mo sacrifice → <b>+$96k</b> at 60',
+    "tools.hub.signin_cta": "Sign in free to use them",
+    "tools.hub.methodology_cta": "How the numbers are computed",
 
     "tools.budget.title": "Budget Planner",
     "tools.budget.subtitle": (
@@ -3453,10 +3487,27 @@ ES = {
     "home.portfolio_band.footer_link": "Abrir Mi Cartera &rarr;",
 
     "tools.page_title": "\U0001F4B0 Herramientas de dinero",
-    "tools.page_subtitle": "Calculadoras gratuitas, inicia sesión para usarlas.",
-    "tools.signin_prompt": "Gratis con una cuenta &mdash; inicia sesión para crear tu plan.",
+    # Part 45: repurposed for the Option A hub tagline - see the EN
+    # block's comment (literal "—", never an &mdash; entity, since
+    # this string is html.escape()'d before going into raw HTML).
+    "tools.page_subtitle": "Calculadoras gratuitas para el dinero alrededor de tu inversión — presupuesto, facturas, offset y super. Cálculos descritos a partir de tus datos, nunca son un consejo.",
+    # Part 45: repurposed for the Option C (signed-out) hub tagline.
+    "tools.signin_prompt": "Cuatro calculadoras gratuitas — cuenta gratis, sin tarjeta, sin spam.",
     "tools.registry_stat": "{count} herramienta &middot; más próximamente",
     "tools.tool_error": "{tool} tuvo un error y no se pudo cargar &mdash; las demás herramientas siguen funcionando. Ha quedado registrado; inténtalo de nuevo en breve.",
+
+    # Part 45 (Money Tools landing rework, Options A + C) - see the EN
+    # block's comment for the html.escape()/literal-character reasoning.
+    "tools.hub.budget_planner_blurb": "Escribe el presupuesto familiar en un minuto — ve el ahorro mensual y anual, y en qué se convertiría si se invirtiera.",
+    "tools.hub.budget_planner_teaser": 'ej. <b>$1.240/mes</b> de sobra → <b>$214k</b> en 10 años a rendimientos indexados',
+    "tools.hub.utilities_blurb": "Sube una foto de la factura — ¿pagas solo por lo que usas? Tarifas comparadas con ofertas típicas.",
+    "tools.hub.utilities_teaser": "lee la factura en memoria · no se guarda nada",
+    "tools.hub.debt_recycling_blurb": "Dónde rinde más una suma extra: offset de la hipoteca, invertirla, o reciclaje de deuda.",
+    "tools.hub.debt_recycling_teaser": 'ej. el offset ahorra <b>$3.1k/año</b> al 6,1% — después de impuestos',
+    "tools.hub.super_blurb": "Saldo al jubilarte, con y sin sacrificio salarial adicional — topes verificados.",
+    "tools.hub.super_teaser": 'ej. +$200/mes de sacrificio → <b>+$96k</b> a los 60',
+    "tools.hub.signin_cta": "Inicia sesión gratis para usarlas",
+    "tools.hub.methodology_cta": "Cómo se calculan los números",
 
     "tools.budget.title": "Planificador de presupuesto",
     "tools.budget.subtitle": (

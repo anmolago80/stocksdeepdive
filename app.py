@@ -3436,7 +3436,7 @@ def _render_standard_nav_row(lang, current=None, key_prefix="nav"):
             _render_app_nav_items(lang, current=current, key_prefix=key_prefix, layout="row")
 
 
-def _render_header(compact, page_label=None, ultra_compact=False, current=None):
+def _render_header(compact, page_label=None, ultra_compact=False, current=None, show_search=True):
     _capture_first_src()
     _lang = st.session_state.get("lang", "en")
     _render_tape()
@@ -3534,21 +3534,29 @@ def _render_header(compact, page_label=None, ultra_compact=False, current=None):
     # rather than spanning half-plus the browser width. Same ratio on every
     # page (compact or not) now, so the box doesn't change width depending
     # on which page you're on.
-    _col_ratio = [3, 4, 3]
-    _sp1, _mid, _sp2 = st.columns(_col_ratio)
-    with _mid:
-        with st.form("site_search_form", clear_on_submit=False, border=not compact):
-            _search_text = st.text_input(
-                "Ticker search",
-                placeholder=i18n.t("header.search_placeholder", _lang),
-                label_visibility="collapsed",
-                key="site_search",
-            )
-            _searched = st.form_submit_button(
-                i18n.t("header.search_button", _lang), width='stretch', type="primary"
-            )
-        if not compact:
-            st.caption(i18n.t("header.search_caption", _lang))
+    # Part 45 (Money Tools landing rework): show_search=False lets one page
+    # (Money Tools) hide this ticker-search strip while keeping every other
+    # part of the header - account bar, nav row, mobile bottom nav -
+    # identical to every other page. A calculators page shouldn't open with
+    # a stock-search form (the mock's own annotation); nothing else changes.
+    _searched = False
+    _search_text = ""
+    if show_search:
+        _col_ratio = [3, 4, 3]
+        _sp1, _mid, _sp2 = st.columns(_col_ratio)
+        with _mid:
+            with st.form("site_search_form", clear_on_submit=False, border=not compact):
+                _search_text = st.text_input(
+                    "Ticker search",
+                    placeholder=i18n.t("header.search_placeholder", _lang),
+                    label_visibility="collapsed",
+                    key="site_search",
+                )
+                _searched = st.form_submit_button(
+                    i18n.t("header.search_button", _lang), width='stretch', type="primary"
+                )
+            if not compact:
+                st.caption(i18n.t("header.search_caption", _lang))
 
     _render_mobile_bottom_nav(_lang, current=current)
 
@@ -20733,8 +20741,8 @@ def _render_portfolio_progress_tab(active_portfolio, _holdings, _analyses):
     st.dataframe(pd.DataFrame(_detail_rows), width='stretch', hide_index=True)
 
 
-def _content_page_shell(title, current=None):
-    _render_header(compact=True, current=current)
+def _content_page_shell(title, current=None, show_search=True):
+    _render_header(compact=True, current=current, show_search=show_search)
     st.markdown(f"## {title}")
 
 
@@ -20929,6 +20937,148 @@ def _tools_registry_count():
     truth so a future tool #2 updates every one of those the moment its
     registry entry is added, with no separate stat to remember to bump."""
     return len(TOOLS_REGISTRY)
+
+
+# --------------------------------------------------------------------------- #
+# Part 45 (Money Tools landing rework - Options A + C of
+# mocks/money_tools_landing_options_mock.html; Option B was NOT built, per
+# the owner's own pairing note on that mock: "Recommended pairing: A + C").
+#
+# Option A replaces the old "drop straight into the first tool's tabs"
+# landing with a card-per-tool hub shown ONLY when no tool has been chosen
+# yet (?tool= unset and no tools_jump_tool hand-off) - clicking a card is a
+# real navigation to /tools?tool=<id> (the Part 37 pattern: an <a href>, not
+# a same-script rerun), which lands back in page_tools() with a resolved
+# target and renders the EXACT SAME st.tabs() UI as before, unchanged - the
+# card row is never shown again once a tool is open, matching the mock's own
+# "tabs remain inside, unchanged" note. Cards are built from TOOLS_REGISTRY,
+# so a future tool #5 gets a card with zero changes here.
+#
+# Option C replaces the bare "sign in to use" info line with the same card
+# grid, display-only (opacity + no hrefs, since there's nothing to deep-link
+# a signed-out visitor into), plus the two CTAs the mock shows. "Sign in
+# free to use them" can't invoke the account bar's own sign-in popover
+# directly (Streamlit has no cross-component trigger for another widget's
+# popover) - it instead smooth-scrolls the actual Streamlit scroll
+# container (section[data-testid="stMain"], not the window - see the Deep
+# Dive first-screen chip-row comment a few thousand lines up for why a
+# plain window scroll doesn't work here) back up to where that sign-in
+# control already renders, every page, signed out. The existing src=
+# query-param attribution (_capture_first_src) already covers whichever
+# link brought the visitor to /tools in the first place - no separate
+# tagging needed on this CTA itself.
+#
+# Both options reuse ONE card-list source (_tools_hub_cards) so Option A's
+# 4 live cards and Option C's are never allowed to drift into two different
+# tool lists by hand - the mock's own Option C frame happens to show only 3
+# of the 4 registry tools (Utilities omitted); this implementation shows
+# all 4 for both, since the registry-driven "a new tool needs no separate
+# hub-copy decision" rule matters more than matching that one frame's
+# illustrative subset - see this Part's own report for the note.
+# --------------------------------------------------------------------------- #
+_TOOLS_HUB_STYLE = """
+<style>
+.sdd-tools-tagline{color:#8aa0b8;font-size:12.5px;margin:2px 0 14px;max-width:720px;line-height:1.55}
+.sdd-tools-grid{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.sdd-tools-card{flex:1;min-width:210px;background:#121f36;border:1.5px solid #22345a;
+  border-radius:12px;padding:14px 16px;text-decoration:none;color:inherit;display:block}
+.sdd-tools-card.linked:hover{border-color:#14b8a6}
+.sdd-tools-card.static{opacity:.85;cursor:default}
+.sdd-tools-card .ic{font-size:22px}
+.sdd-tools-card .n{font-weight:800;font-size:14px;margin:6px 0 3px;color:inherit}
+.sdd-tools-card .p{color:#8aa0b8;font-size:11.5px;line-height:1.5}
+.sdd-tools-card .out{margin-top:9px;border-top:1px dashed #22345a;padding-top:8px;
+  font-size:11px;color:#5b7290}
+.sdd-tools-card .out b{color:#2dd4bf;font-variant-numeric:tabular-nums}
+.sdd-tools-cta-row{margin-top:6px}
+.sdd-tools-btn{display:inline-block;background:#14b8a6;color:#04211d;font-weight:700;
+  border-radius:8px;padding:7px 16px;font-size:12.5px;text-decoration:none;cursor:pointer}
+.sdd-tools-btn2{display:inline-block;background:none;border:1px solid #14b8a6;color:#2dd4bf;
+  border-radius:8px;padding:7px 16px;font-size:12.5px;margin-left:8px;text-decoration:none}
+</style>
+"""
+
+# One blurb + one static "e.g." teaser key per registry id - the teaser is
+# a labelled, static example (never computed from a real user's inputs),
+# exactly the mock's own "STATIC example... not computed - zero new
+# engines" rule for these cards.
+_TOOLS_HUB_CARD_COPY = {
+    "budget_planner": ("budget_planner_blurb", "budget_planner_teaser"),
+    "utilities": ("utilities_blurb", "utilities_teaser"),
+    "debt_recycling": ("debt_recycling_blurb", "debt_recycling_teaser"),
+    "super": ("super_blurb", "super_teaser"),
+}
+
+
+def _tools_card_href(tool_id, lang):
+    """/tools?tool=<id>&lang=... - the Part 37/Part 44.3 deep-link chip
+    mechanic (a real <a href>, genuine navigation, not a rerun)."""
+    _qs = f"tool={_urlquote(tool_id)}"
+    if lang == "es":
+        _qs += "&lang=es"
+    return f"/tools?{_qs}"
+
+
+def _tools_hub_cards_html(lang, linked):
+    """One card per TOOLS_REGISTRY entry. linked=True -> Option A (each
+    card is a real deep link into that tool); linked=False -> Option C
+    (display-only, no href, matching the mock's signed-out treatment)."""
+    _parts = []
+    for _t in TOOLS_REGISTRY:
+        _copy_keys = _TOOLS_HUB_CARD_COPY.get(_t["id"])
+        if not _copy_keys:
+            continue  # a registry entry with no hub copy written yet is skipped, never a blank card
+        _blurb = i18n.t(f"tools.hub.{_copy_keys[0]}", lang)
+        _teaser = i18n.t(f"tools.hub.{_copy_keys[1]}", lang)
+        _title = i18n.t(_t["title_key"], lang).strip()
+        if _title.startswith(_t["icon"]):
+            _title = _title[len(_t["icon"]):].strip()
+        _body = (
+            f'<div class="ic">{_t["icon"]}</div>'
+            f'<div class="n">{html.escape(_title)}</div>'
+            f'<div class="p">{html.escape(_blurb)}</div>'
+            f'<div class="out">{_teaser}</div>'
+        )
+        if linked:
+            _parts.append(
+                f'<a class="sdd-tools-card linked" href="{_tools_card_href(_t["id"], lang)}" '
+                f'target="_self">{_body}</a>'
+            )
+        else:
+            _parts.append(f'<div class="sdd-tools-card static">{_body}</div>')
+    return f'<div class="sdd-tools-grid">{"".join(_parts)}</div>'
+
+
+def _render_tools_hub(lang):
+    """Option A - signed-in landing, no tool selected yet."""
+    st.markdown(_TOOLS_HUB_STYLE, unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="sdd-tools-tagline">{html.escape(i18n.t("tools.page_subtitle", lang))}</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(_tools_hub_cards_html(lang, linked=True), unsafe_allow_html=True)
+
+
+def _render_tools_signedout_hub(lang):
+    """Option C - the signed-out landing (display-only cards + two CTAs),
+    replacing the old single st.info "sign in to use" line."""
+    st.markdown(_TOOLS_HUB_STYLE, unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="sdd-tools-tagline">{html.escape(i18n.t("tools.signin_prompt", lang))}</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(_tools_hub_cards_html(lang, linked=False), unsafe_allow_html=True)
+    st.markdown(
+        '<div class="sdd-tools-cta-row">'
+        '<a class="sdd-tools-btn" href="#" onclick="'
+        'var m=document.querySelector(\'section[data-testid=\\"stMain\\"]\'); '
+        "if(m){m.scrollTo({top:0,behavior:'smooth'});} return false;\">"
+        f'{html.escape(i18n.t("tools.hub.signin_cta", lang))}</a> '
+        f'<a class="sdd-tools-btn2" href="/methodology" target="_self">'
+        f'{html.escape(i18n.t("tools.hub.methodology_cta", lang))}</a>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _spotlight_index(session_key, n, day_offset=0):
@@ -23438,27 +23588,37 @@ def page_tools():
     a few thousand lines up for the same note) - so the same
     session_state hand-off convention is used instead:
     st.session_state["tools_jump_tool"] is checked FIRST, with priority
-    over the query param, then cleared so it only fires once."""
+    over the query param, then cleared so it only fires once.
+
+    Part 45: a bare visit (no ?tool=/tools_jump_tool) or a signed-out visit
+    now shows the money_tools_landing_options_mock.html Option A/C card hub
+    instead of always falling straight into the tabs below - see
+    _render_tools_hub's own comment block a few thousand lines up. Once a
+    tool IS resolved, everything from here down is unchanged."""
     _lang = st.session_state.get("lang", "en")
-    _content_page_shell(i18n.t("tools.page_title", _lang), current="tools")
+    _content_page_shell(i18n.t("tools.page_title", _lang), current="tools", show_search=False)
     _bump_page_view("tools")
-    st.caption(i18n.t("tools.page_subtitle", _lang))
 
     if not paywall_engine.is_logged_in():
-        st.info(i18n.t("tools.signin_prompt", _lang))
+        _render_tools_signedout_hub(_lang)
         return
 
     email = paywall_engine.current_user_email()
 
     _tool_ids = [t["id"] for t in TOOLS_REGISTRY]
+    _jump_target = st.session_state.pop("tools_jump_tool", None)
+    _target = (_jump_target or st.query_params.get("tool") or "").strip().lower()
+
+    if _target not in _tool_ids:
+        _render_tools_hub(_lang)
+        return
+
     _tab_labels = []
     for _t in TOOLS_REGISTRY:
         _title = i18n.t(_t["title_key"], _lang)
         _tab_labels.append(_title if _title.strip().startswith(_t["icon"]) else f"{_t['icon']} {_title}")
 
-    _jump_target = st.session_state.pop("tools_jump_tool", None)
-    _target = (_jump_target or st.query_params.get("tool") or "").strip().lower()
-    _default_idx = _tool_ids.index(_target) if _target in _tool_ids else 0
+    _default_idx = _tool_ids.index(_target)
 
     _tool_tabs = st.tabs(_tab_labels, default=_tab_labels[_default_idx])
     st.query_params["tool"] = _tool_ids[_default_idx]
