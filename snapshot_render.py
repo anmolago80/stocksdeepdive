@@ -545,8 +545,16 @@ def render_snapshot(snap, base_url, lang="en", hreflang_alternates=None):
         "dateModified": (snap.get("generated_at") or "")[:19],
         "inLanguage": lang,
     })
+    # Part 39 (13 Sep 2026): every /s/<ticker> page used to omit image=
+    # here entirely, so EVERY ticker shared the one generic site-wide
+    # DEFAULT_OG_IMAGE (_head()'s own fallback - see its docstring) -
+    # confirmed by reading _head()'s call sites before this change. The
+    # per-ticker card server.py's new /og/<ticker>.png route serves is
+    # the SAME snapshot this page already rendered from (`pub`/`snap`
+    # above), so this is a zero-new-data-source, zero-network addition.
+    og_image = f"{base_url}/og/{ticker}.png"
     head = blog_render._head(
-        title, description, canonical, base_url,
+        title, description, canonical, base_url, image=og_image,
         extra_meta=f"<style>{_grid_css()}</style>", json_ld=json_ld,
         hreflang_alternates=hreflang_alternates,
     )

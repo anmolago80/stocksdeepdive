@@ -2069,7 +2069,18 @@ def render_post(post, base_url, prev_post=None, next_post=None,
         description=desc,
         canonical=url,
         base_url=base_url,
-        image=hero_url(base_url, post),
+        # Part 39 (13 Sep 2026): a post with its own uploaded hero image
+        # keeps using it unchanged (a real photo beats a generated title
+        # card) - but a post with none used to fall through to the
+        # single site-wide DEFAULT_OG_IMAGE (_head()'s own fallback), so
+        # every hero-less post shared one identical, non-post-specific
+        # share image. Falling back to THIS post's own auto-generated
+        # card (server.py's new /og/blog/{slug}.png - brand + this
+        # post's own title, per the instruction's "blog card"
+        # requirement) instead gives every post a distinct, on-brand
+        # card with zero authoring effort, while never touching the
+        # (better) hero-image path.
+        image=hero_url(base_url, post) or f"{base_url}/og/blog/{post['slug']}.png",
         noindex=is_draft,
         extra_meta=(
             f'<meta property="og:type" content="article">\n'

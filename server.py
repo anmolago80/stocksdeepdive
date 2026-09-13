@@ -50,6 +50,7 @@ DEFAULT_OG_IMAGE                absolute URL used as the social card image
 
 import asyncio
 import hmac
+import html
 import logging
 import os
 import re
@@ -82,6 +83,7 @@ import site_content
 # AI-readiness roadmap Phase 1 (AI_ROADMAP_stocksdeepdive.md): the public
 # snapshot pages + read-only JSON API. See api_v1.py / snapshot_render.py.
 import api_v1
+import og_card_render
 import snapshot_render
 import snapshot_store
 
@@ -1436,6 +1438,161 @@ async def snapshot_page(ticker: str, request: Request):
 
 
 # -----------------------------------
+# Part 39 (13 Sep 2026, mock: mocks/social_card_mock.html): social
+# preview ("Open Graph") card PNGs. Registered here - BEFORE the
+# catch_all() proxy at the bottom of this file - for the same reason
+# /s/{ticker} above is: FastAPI matches routes in registration order, so
+# a route defined after catch_all's "/{path:path}" would never be
+# reached (catch_all matches everything).
+#
+# Caching: one PNG per key (ticker / "blog__<slug>" / "_default"),
+# keep-latest-only (a re-render simply overwrites the same filename -
+# never a growing history), on the SAME Railway Volume every other
+# *_store.py already uses (see _og_data_dir() below - identical
+# one-liner to portfolio_store.py/snapshot_store.py's own _data_dir()).
+# "Render once per ticker per day" (the instruction's own words) is
+# implemented as "reuse the cached file if its own mtime falls on
+# today's UTC date" - no separate sidecar/index file needed, and
+# volume_monitor.usage_breakdown() already walks every top-level
+# directory under the volume generically (confirmed by reading it), so
+# this new og_cache/ folder is automatically included in disk-usage
+# accounting with zero changes there.
+# -----------------------------------
+
+_OG_CACHE_DIRNAME = "og_cache"
+_OG_CACHE_HEADERS = "public, max-age=43200"  # 12h - long-ish per the instruction; well inside the once-a-day regen window
+
+
+def _og_data_dir():
+    return os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+
+
+def _og_cache_dir():
+    path = os.path.join(_og_data_dir(), _OG_CACHE_DIRNAME)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        pass
+    return path
+
+
+def _og_safe_name(name):
+    return "".join(c if (c.isalnum() or c in "._-") else "-" for c in name) or "_"
+
+
+def _og_cache_path(name):
+    return os.path.join(_og_cache_dir(), f"{_og_safe_name(name)}.png")
+
+
+def _og_cached_today(path):
+    try:
+        mtime = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
+    except OSError:
+        return False
+    return mtime.date() == datetime.now(timezone.utc).date()
+
+
+def _og_read_or_render(name, render_fn):
+    """Serve today's cached PNG for `name` if one exists, else call
+    render_fn() (already guaranteed non-raising by every call site below
+    - see each route's own try/except -> render_default_card() fail-
+    safe), cache the result, and serve that. Logs a line either way so a
+    second same-day request being served from cache is provable from the
+    logs alone (Verify item f) without needing to inspect the volume."""
+    path = _og_cache_path(name)
+    if os.path.exists(path) and _og_cached_today(path):
+        log.info("og card cache HIT: %s", name)
+        with open(path, "rb") as f:
+            return f.read()
+    log.info("og card cache MISS (rendering): %s", name)
+    png = render_fn()
+    try:
+        with open(path, "wb") as f:
+            f.write(png)
+    except OSError:
+        log.warning("og card cache write failed for %s - serving uncached this request", name)
+    return png
+
+
+def _og_default_png():
+    return _og_read_or_render("_default", og_card_render.render_default_card)
+
+
+@app.get("/og/default.png", include_in_schema=False)
+async def og_default_card():
+    """The site-default card - also the universal fail-safe every route
+    below falls back to (per the instruction's own "any exception in
+    card rendering returns the static default card; nothing here may
+    ever 500 a share preview" rule)."""
+    try:
+        png = _og_default_png()
+    except Exception:
+        log.exception("default OG card render failed - serving an uncached render")
+        png = og_card_render.render_default_card()
+    return Response(png, media_type="image/png", headers={"Cache-Control": _OG_CACHE_HEADERS})
+
+
+@app.get("/og/blog/{slug}.png", include_in_schema=False)
+async def og_blog_card(slug: str):
+    """A published post's own title card. An unknown/draft slug (never
+    published, mistyped, or a draft preview link someone shared before
+    realising it isn't public) gets the site-default card, HTTP 200 -
+    never a 404 on a share-preview image, matching the ticker route's
+    own "unknown -> default, never an error" rule below."""
+    try:
+        post = blog_store.get_post(slug)
+        if not post:
+            png = _og_default_png()
+        else:
+            png = _og_read_or_render(
+                f"blog__{_og_safe_name(slug)}",
+                lambda: og_card_render.render_blog_card(post.get("title")),
+            )
+    except Exception:
+        log.exception("blog OG card render failed for slug=%s", slug)
+        try:
+            png = og_card_render.render_default_card()
+        except Exception:
+            log.exception("even the default OG card failed to render for slug=%s", slug)
+            return Response(status_code=204)
+    return Response(png, media_type="image/png", headers={"Cache-Control": _OG_CACHE_HEADERS})
+
+
+@app.get("/og/{ticker}.png", include_in_schema=False)
+async def og_ticker_card(ticker: str):
+    """The per-ticker card (`render_ticker_card` in og_card_render.py) -
+    data comes ONLY from snapshot_store.get_snapshot(ticker), the same
+    already-scanned row /s/{ticker} and the research/deep-dive pages
+    read - zero live/network fetching in this request path, per the
+    instruction's own requirement. An unrecognised ticker shape or a
+    ticker that has never been scanned both get the site-default card,
+    HTTP 200 (Verify item c) - a share-preview image is never worth a
+    404 or a 500."""
+    ticker = ticker.strip().upper()
+    try:
+        if not _TICKER_RE.match(ticker):
+            png = _og_default_png()
+        else:
+            snap = snapshot_store.get_snapshot(ticker)
+            if not snap:
+                png = _og_default_png()
+            else:
+                def _render(_snap=snap, _ticker=ticker):
+                    pub = snapshot_store.public_view(_snap.get("data") or {})
+                    return og_card_render.render_ticker_card(
+                        _ticker, pub, _snap.get("generated_at"), moat=_snap.get("moat"))
+                png = _og_read_or_render(ticker, _render)
+    except Exception:
+        log.exception("ticker OG card render failed for ticker=%s", ticker)
+        try:
+            png = og_card_render.render_default_card()
+        except Exception:
+            log.exception("even the default OG card failed to render for ticker=%s", ticker)
+            return Response(status_code=204)
+    return Response(png, media_type="image/png", headers={"Cache-Control": _OG_CACHE_HEADERS})
+
+
+# -----------------------------------
 # AI-readiness roadmap Phase 4 (AI_ROADMAP_stocksdeepdive.md): citation
 # helpers. /track-record has no Streamlit equivalent (see
 # track_record_render.py's own docstring for what it is and, just as
@@ -1853,7 +2010,7 @@ async def _proxy(request: Request):
     if content_type.startswith("text/html"):
         html_bytes = await upstream.aread()
         await upstream.aclose()
-        html_bytes = _inject_pwa_head_tags(html_bytes)
+        html_bytes = _inject_pwa_head_tags(html_bytes, request)
         # aread() already transparently decompressed the body (httpx
         # decodes Content-Encoding for a normal .aread()/.content read,
         # unlike the raw passthrough in aiter_raw() below) - forwarding
@@ -1884,7 +2041,93 @@ _VIEWPORT_RE = re.compile(r'<meta\s+name="viewport"[^>]*/?>',
                           re.IGNORECASE | re.DOTALL)
 
 
-def _inject_pwa_head_tags(html_bytes: bytes) -> bytes:
+_SITE_DEFAULT_OG_TITLE = "StocksDeepDive — Value investing with every number shown"
+_SITE_DEFAULT_OG_DESCRIPTION = (
+    "Fair value, quality, and psychology for every stock — described "
+    "calculations, not advice."
+)
+# Only these two proxied paths get a real per-ticker card (Part 39's own
+# instruction text names exactly "research pages" and "deep-dive pages"
+# for this treatment); every other proxied page - /scanner, /comparison,
+# /portfolio, /tools, and research/deep-dive itself when no ticker is
+# resolved - gets the site-default block below instead ("a site-default
+# for everything else", same instruction).
+_OG_TICKER_PATHS = {"/research", "/deep-dive"}
+
+
+def _social_meta_tags_for_request(request: Request, base_url: str) -> str:
+    """Part 39 (13 Sep 2026): og:title / og:description / og:image /
+    og:url / twitter:card for a PROXIED Streamlit page - the real gap
+    this Part's own research confirmed: _proxy() has `request` in scope
+    but never threaded it into the head-tag injector, so every one of
+    these live app pages (unlike /blog and /s/<ticker>, which are
+    server-rendered and already go through blog_render._head()) got NO
+    page-specific head content at all before this change, just the
+    generic PWA tags below. This function is the fix: called WITH the
+    request, so it can actually tell "this is CPRT's /research page"
+    from "this is /scanner" - see _OG_TICKER_PATHS above for exactly
+    which paths get a real per-ticker card versus the site-default.
+
+    Deliberately NOT the full blog_render._head() output (that would
+    replace the Streamlit shell's own required tags, e.g. its own
+    <title>/viewport - this only ever ADDS five tags into the existing
+    shell, the same "splice into </head>" approach _inject_pwa_head_tags
+    already uses for the PWA tags). Never raises: any lookup failure
+    (bad query param, snapshot_store error) falls through to the site-
+    default block rather than ever blocking the page itself from
+    loading - a missing OG tag is invisible to the visitor actually
+    using the app; only a shared LINK's preview would ever see it."""
+    e = html.escape
+    path = request.url.path.rstrip("/") or "/"
+    ticker = (request.query_params.get("ticker") or "").strip().upper()
+
+    title = _SITE_DEFAULT_OG_TITLE
+    description = _SITE_DEFAULT_OG_DESCRIPTION
+    image = f"{base_url}/og/default.png"
+    canonical = f"{base_url}{request.url.path}"
+
+    if path in _OG_TICKER_PATHS and ticker and _TICKER_RE.match(ticker):
+        try:
+            snap = snapshot_store.get_snapshot(ticker)
+        except Exception:
+            snap = None
+        if snap:
+            try:
+                pub = snapshot_store.public_view(snap.get("data") or {})
+                company_name = pub.get("company_name")
+                title = (f"{ticker} — {company_name} | StocksDeepDive" if company_name
+                         else f"{ticker} | StocksDeepDive")
+                _bits = []
+                if isinstance(pub.get("intrinsic_value"), (int, float)):
+                    _bits.append(f"fair value ${pub['intrinsic_value']:,.2f}")
+                if pub.get("valuation_label"):
+                    _bits.append(str(pub["valuation_label"]).lower())
+                if isinstance(pub.get("quality"), (int, float)):
+                    _bits.append(f"quality {pub['quality']:.0f}")
+                description = (
+                    (f"{company_name or ticker}: " + ", ".join(_bits) + " — every input "
+                     "shown, described calculations, not advice.")
+                    if _bits else
+                    f"{company_name or ticker}: every input shown, described calculations, not advice."
+                )
+                image = f"{base_url}/og/{ticker}.png"
+                canonical = f"{base_url}{path}?ticker={ticker}"
+            except Exception:
+                pass  # snapshot found but malformed - falls through with the site-default already set above
+
+    return "\n".join([
+        f'<meta property="og:title" content="{e(title)}">',
+        f'<meta property="og:description" content="{e(description)}">',
+        f'<meta property="og:image" content="{e(image)}">',
+        f'<meta property="og:url" content="{e(canonical)}">',
+        '<meta name="twitter:card" content="summary_large_image">',
+        f'<meta name="twitter:title" content="{e(title)}">',
+        f'<meta name="twitter:description" content="{e(description)}">',
+        f'<meta name="twitter:image" content="{e(image)}">',
+    ])
+
+
+def _inject_pwa_head_tags(html_bytes: bytes, request: Request = None) -> bytes:
     """Insert the manifest/icon/PWA meta tags and the service-worker
     registration snippet into the proxied Streamlit shell's own <head>,
     and add viewport-fit=cover to its existing viewport tag so the
@@ -1892,6 +2135,13 @@ def _inject_pwa_head_tags(html_bytes: bytes) -> bytes:
     (installed) mode. blog_render.PWA_HEAD_TAGS is the SAME constant the
     server-rendered pages use (see blog_render._head()) - one source for
     both injection points, so they can't drift apart.
+
+    `request` (Part 39, 13 Sep 2026): when given, also splices in the
+    real OG/Twitter social-card tags via _social_meta_tags_for_request()
+    above - optional (default None) purely so any other/future caller of
+    this function that doesn't have a request handy still gets the PWA
+    tags exactly as before; _proxy() (this function's only real caller)
+    always passes one.
 
     Never raises on unexpected shell markup: a decode failure or a
     missing </head> just returns the original bytes untouched rather than
@@ -1911,8 +2161,16 @@ def _inject_pwa_head_tags(html_bytes: bytes) -> bytes:
 
     text = _VIEWPORT_RE.sub(_add_viewport_fit, text, count=1)
 
+    _extra_tags = blog_render.PWA_HEAD_TAGS
+    if request is not None:
+        try:
+            _social = _social_meta_tags_for_request(request, _base_url(request))
+            _extra_tags = _social + "\n" + _extra_tags
+        except Exception:
+            log.exception("social meta tag injection failed for %s - PWA tags only", request.url.path)
+
     if "</head>" in text:
-        text = text.replace("</head>", blog_render.PWA_HEAD_TAGS + "\n</head>", 1)
+        text = text.replace("</head>", _extra_tags + "\n</head>", 1)
     return text.encode("utf-8")
 
 

@@ -86,3 +86,15 @@ markdown>=3.6,<4
 # only real split on record is the known 2022-12-07 one). ---
 scipy>=1.11
 scikit-learn>=1.3
+
+# --- Part 39 (13 Sep 2026): social preview ("Open Graph") card PNGs -
+# see og_card_render.py's own module docstring. Pinned >=10.1 because
+# that release added the `size=` argument to ImageFont.load_default(),
+# which og_card_render.py relies on for a scalable bundled font with NO
+# external .ttf file and NO dependency on the container image already
+# having system fonts installed (verified: this repo ships none, and a
+# minimal Railway build image cannot be assumed to either) - a missing
+# font would otherwise turn "every share becomes a small advertisement"
+# into "every share 500s", exactly the failure mode Part 39's own spec
+# calls out as never acceptable. ---
+Pillow>=10.1
