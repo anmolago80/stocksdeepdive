@@ -59,6 +59,13 @@ DB_PATH = os.path.join(_data_dir(), "stocksdeepdive.db")
 # every existing user empty.
 _DEFAULT_BUDGET_PLAN_NAME = "My Plan"
 _DEFAULT_DEBT_RECYCLING_NAME = "My Scenario"
+# Part 42 (13 Sep 2026): Super & Retirement projector. Same named-
+# scenario shape as debt recycling above (names registry + inputs_json
+# blob table) even though v1's own render function only ever uses this
+# ONE default name (no scenario switcher in the mock) - so a future
+# switcher needs zero migration, exactly the position debt_recycling was
+# in before its own Part 30 multi-scenario upgrade.
+_DEFAULT_SUPER_SCENARIO_NAME = "My Projection"
 
 
 def _table_columns(conn, table):
@@ -190,6 +197,29 @@ def _conn():
     # cards/charts, not just a subset of fields.
     conn.execute(
         """CREATE TABLE IF NOT EXISTS debt_recycling_scenarios (
+            email TEXT NOT NULL,
+            name TEXT NOT NULL,
+            inputs_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (email, name)
+        )"""
+    )
+    # Part 42 (13 Sep 2026): Super & Retirement projector's own saved-
+    # inputs table, IDENTICAL shape to debt_recycling_scenario_names /
+    # debt_recycling_scenarios above (names registry + inputs_json blob,
+    # both keyed on (email, name)) - see _DEFAULT_SUPER_SCENARIO_NAME's
+    # own comment for why a full names table exists even though v1 only
+    # ever uses one name.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS super_scenario_names (
+            email TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (email, name)
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS super_scenarios (
             email TEXT NOT NULL,
             name TEXT NOT NULL,
             inputs_json TEXT NOT NULL,
@@ -698,6 +728,88 @@ def save_debt_recycling_scenario(email, name, inputs):
         )
         conn.execute(
             "INSERT INTO debt_recycling_scenarios (email, name, inputs_json, updated_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(email, name) DO UPDATE SET "
+            "inputs_json = excluded.inputs_json, updated_at = excluded.updated_at",
+            (email, name, inputs_json, now),
+        )
+
+
+def list_super_scenario_names(email):
+    """Ordered names of every Super projection this email has (oldest
+    first) - empty list if none yet. Mirrors list_debt_recycling_
+    scenario_names() exactly."""
+    if not email:
+        return []
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT name FROM super_scenario_names WHERE email = ? ORDER BY created_at",
+            (email,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def create_super_scenario(email, name):
+    """Registers a new, empty named Super projection. Idempotent (INSERT
+    OR IGNORE) - mirrors create_debt_recycling_scenario()."""
+    if not email or not name:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO super_scenario_names (email, name, created_at) "
+            "VALUES (?, ?, ?)",
+            (email, name, now),
+        )
+
+
+def ensure_default_super_scenario(email):
+    """Guarantees at least one named Super projection exists for a
+    signed-in email - mirrors ensure_default_debt_recycling_scenario().
+    Called once at the top of the Super tool's render."""
+    if not email:
+        return
+    if not list_super_scenario_names(email):
+        create_super_scenario(email, _DEFAULT_SUPER_SCENARIO_NAME)
+
+
+def get_super_scenario(email, name):
+    """{"inputs": {...}} or None if this email has never saved this named
+    Super projection. inputs is exactly the dict save_super_scenario()
+    was last called with for this name - the caller (app.py) owns its
+    own shape. Mirrors get_debt_recycling_scenario()."""
+    if not email or not name:
+        return None
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT inputs_json FROM super_scenarios WHERE email = ? AND name = ?",
+            (email, name),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        inputs = json.loads(row[0]) if row[0] else {}
+    except (TypeError, ValueError):
+        inputs = {}
+    return {"inputs": inputs}
+
+
+def save_super_scenario(email, name, inputs):
+    """Upserts this ONE named Super projection - same one-row-per-name
+    contract as save_debt_recycling_scenario(). Also registers `name` in
+    the names registry (INSERT OR IGNORE) as the same defensive belt-
+    and-braces measure."""
+    if not email or not name:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    inputs_json = json.dumps(inputs or {})
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO super_scenario_names (email, name, created_at) "
+            "VALUES (?, ?, ?)",
+            (email, name, now),
+        )
+        conn.execute(
+            "INSERT INTO super_scenarios (email, name, inputs_json, updated_at) "
             "VALUES (?, ?, ?, ?) ON CONFLICT(email, name) DO UPDATE SET "
             "inputs_json = excluded.inputs_json, updated_at = excluded.updated_at",
             (email, name, inputs_json, now),
