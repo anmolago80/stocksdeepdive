@@ -192,6 +192,14 @@ def _conn():
         conn.execute("ALTER TABLE portfolio_settings ADD COLUMN switch_brokerage REAL")
     except sqlite3.OperationalError:
         pass
+    # Part 41 (13 Sep 2026): the Income planner's "Goal mode" - a per-
+    # portfolio yearly grossed-up income target the user types in once.
+    # NULL until set (never a guessed default), same convention/pattern
+    # as switch_tax_rate/switch_brokerage just above.
+    try:
+        conn.execute("ALTER TABLE portfolio_settings ADD COLUMN income_goal_aud REAL")
+    except sqlite3.OperationalError:
+        pass
     _migrate_legacy_schema(conn)
     return conn
 
@@ -531,6 +539,36 @@ def set_switch_settings(email, portfolio, tax_rate=None, brokerage=None):
             "switch_tax_rate = excluded.switch_tax_rate, switch_brokerage = excluded.switch_brokerage, "
             "updated_at = excluded.updated_at",
             (email, portfolio, tax_rate, brokerage, now),
+        )
+
+
+def get_income_goal(email, portfolio):
+    """The Income planner's "Goal mode" target (Part 41) - yearly
+    grossed-up income in AUD, or None if never set (never a guessed
+    default). Same missing-row convention as get_switch_settings()."""
+    if not email or not portfolio:
+        return None
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT income_goal_aud FROM portfolio_settings WHERE email = ? AND portfolio = ?",
+            (email, portfolio),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def set_income_goal(email, portfolio, goal_aud):
+    """Kept separate from set_settings()/set_switch_settings() above -
+    same separation-of-concerns precedent already established for every
+    other per-portfolio setting in this table."""
+    if not email or not portfolio:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO portfolio_settings (email, portfolio, income_goal_aud, updated_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(email, portfolio) DO UPDATE SET "
+            "income_goal_aud = excluded.income_goal_aud, updated_at = excluded.updated_at",
+            (email, portfolio, goal_aud, now),
         )
 
 
