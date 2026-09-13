@@ -1059,7 +1059,6 @@ EN = {
     "tools.hub.super_blurb": "Balance at retirement, with and without extra salary sacrifice — caps checked.",
     "tools.hub.super_teaser": 'e.g. +$200/mo sacrifice → <b>+$96k</b> at 60',
     "tools.hub.signin_cta": "Sign in free to use them",
-    "tools.hub.methodology_cta": "How the numbers are computed",
 
     "tools.budget.title": "Budget Planner",
     "tools.budget.subtitle": (
@@ -3507,7 +3506,6 @@ ES = {
     "tools.hub.super_blurb": "Saldo al jubilarte, con y sin sacrificio salarial adicional — topes verificados.",
     "tools.hub.super_teaser": 'ej. +$200/mes de sacrificio → <b>+$96k</b> a los 60',
     "tools.hub.signin_cta": "Inicia sesión gratis para usarlas",
-    "tools.hub.methodology_cta": "Cómo se calculan los números",
 
     "tools.budget.title": "Planificador de presupuesto",
     "tools.budget.subtitle": (

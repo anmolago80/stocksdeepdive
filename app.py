@@ -21060,8 +21060,16 @@ def _render_tools_hub(lang):
 
 
 def _render_tools_signedout_hub(lang):
-    """Option C - the signed-out landing (display-only cards + two CTAs),
-    replacing the old single st.info "sign in to use" line."""
+    """Option C - the signed-out landing (display-only cards + one CTA),
+    replacing the old single st.info "sign in to use" line.
+
+    Owner follow-up (13 Sep 2026): the mock's second CTA, "How the numbers
+    are computed", was dropped after this shipped - it pointed at
+    /methodology, which explains the STOCK-SCORING methodology (DCF,
+    Quality, Moat), not how these four calculators compute their numbers;
+    no page describing the calculators themselves exists today, so
+    linking anywhere would have overpromised. Only "Sign in free to use
+    them" remains."""
     st.markdown(_TOOLS_HUB_STYLE, unsafe_allow_html=True)
     st.markdown(
         f'<div class="sdd-tools-tagline">{html.escape(i18n.t("tools.signin_prompt", lang))}</div>',
@@ -21073,9 +21081,7 @@ def _render_tools_signedout_hub(lang):
         '<a class="sdd-tools-btn" href="#" onclick="'
         'var m=document.querySelector(\'section[data-testid=\\"stMain\\"]\'); '
         "if(m){m.scrollTo({top:0,behavior:'smooth'});} return false;\">"
-        f'{html.escape(i18n.t("tools.hub.signin_cta", lang))}</a> '
-        f'<a class="sdd-tools-btn2" href="/methodology" target="_self">'
-        f'{html.escape(i18n.t("tools.hub.methodology_cta", lang))}</a>'
+        f'{html.escape(i18n.t("tools.hub.signin_cta", lang))}</a>'
         '</div>',
         unsafe_allow_html=True,
     )
