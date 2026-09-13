@@ -9023,6 +9023,24 @@ def _render_peer_context(dd):
         st.caption(i18n.t("dd.peer.no_peers", _peer_lang, universe=universe))
 
 
+# Part 47 (13 Sep 2026): the one sector-chip visual, shared by the Deep
+# Dive header and the Scanner table's Ticker-cell second line - a small
+# grey, unclickable, no-hover chip (never colored - it's a passive fact,
+# not a signal, same reasoning the mock gives for keeping it visually
+# distinct from every clickable chip/badge elsewhere on the site).
+# Caller must already have a non-empty `sector` string; this never
+# renders a placeholder for None/empty - the "no known sector -> render
+# nothing" rule lives at every call site instead of here, so this
+# function is never the thing deciding whether to call itself.
+def _sector_chip_html(sector, font_size="11.5px", padding="2px 10px"):
+    return (
+        f'<span style="display:inline-block;background:#1a2740;'
+        f'border:1px solid #2a3b5c;color:#8aa0b8;border-radius:7px;'
+        f'padding:{padding};font-size:{font_size};font-weight:600;'
+        f'letter-spacing:.02em;white-space:nowrap">\U0001F3F7 {html.escape(sector)}</span>'
+    )
+
+
 def _render_dd_header_sparkline(ticker):
     """Deep Dive first-screen instruction, Part 4: "a tiny 6-month close
     sparkline (no axes, ~120x36px) next to the company name, from the
@@ -9232,7 +9250,45 @@ def page_deep_dive():
 
         _dd_hdr_col, _dd_spark_col = st.columns([6, 1], vertical_alignment="center")
         with _dd_hdr_col:
-            st.subheader(f"{_dd['ticker']} - {_dd['name']}")
+            # Part 47.2 (13 Sep 2026): switched from a plain st.subheader()
+            # to equivalent custom HTML so the sector chip can sit inline,
+            # vertically centred on the title line (wrapping below it at
+            # mobile width via flex-wrap) exactly like the mock's Section 1
+            # - a separate st.markdown call right after st.subheader would
+            # render as its own new block-level line, never inline with the
+            # title. Sized to approximate Streamlit's own subheader
+            # typography (1.5rem/600) - this sandbox can't run the live
+            # theme CSS to confirm pixel-for-pixel; flagged in this Part's
+            # report. Deliberately does NOT join _render_dd_action_row's
+            # chip row below (Reverse DCF/Moat/Ask AI/...) - those are
+            # navigation, the sector is a passive fact (mock's own "One
+            # chip, one place" note).
+            #
+            # Sector source, in order (scanner_engine.sector_for_ticker's
+            # own precedence): this ticker's stored scan/snapshot row when
+            # one exists (snapshot_store already merges nightly-scan rows
+            # in - no fetch), else the yfinance info dict this exact page
+            # already fetched via get_ticker_info() inside deep_dive_
+            # engine.analyze() moments ago in this same render (30-min
+            # st.cache_data - a second call here is a cache hit, same
+            # reasoning _render_dd_header_sparkline above already documents
+            # for get_price_history()) - never a fresh fetch just for this.
+            _dd_snapshot_row = (snapshot_store.get_snapshot(_dd["ticker"]) or {}).get("data")
+            _dd_sector = scanner_engine.sector_for_ticker(
+                _dd["ticker"], scan_row=_dd_snapshot_row,
+                company_info=get_ticker_info(_dd["ticker"]),
+            )
+            _dd_title_html = (
+                '<div style="display:flex;align-items:center;gap:10px;'
+                'flex-wrap:wrap;margin:0.5rem 0 1rem">'
+                '<span style="font-size:1.5rem;font-weight:600;'
+                'line-height:1.3;color:inherit">'
+                f'{html.escape(_dd["ticker"])} - {html.escape(_dd["name"])}</span>'
+            )
+            if _dd_sector:
+                _dd_title_html += _sector_chip_html(_dd_sector)
+            _dd_title_html += "</div>"
+            st.markdown(_dd_title_html, unsafe_allow_html=True)
         with _dd_spark_col:
             _render_dd_header_sparkline(_dd["ticker"])
         _render_dd_action_row(_dd, has_research=_dd_has_research)
@@ -11002,6 +11058,20 @@ def _render_overnight_scan_table(universe_label, overnight, show_market_pulse=Fa
             "style='color:inherit;text-decoration:underline;'><b>"
             f"{_tk}</b></a>" if _tk != "-" else "<b>-</b>"
         )
+        # Part 47.4 (13 Sep 2026): sector as a small grey second line
+        # inside this SAME Ticker cell - not a new column, so every row
+        # gains the fact at zero horizontal cost (the mock's own framing).
+        # `_orow` is a raw scan row, already carrying "Sector" straight
+        # from the nightly scan (scanner_engine.sector_for_ticker's own
+        # docstring) - no sector on the row means "never scanned with
+        # sector data", not "fetch it now", so a ticker with no known
+        # sector simply renders no second line (never "Unknown"/"-").
+        _tk_sector = scanner_engine.sector_for_ticker(_tk, scan_row=_orow) if _tk != "-" else None
+        if _tk_sector:
+            _tk_cell += (
+                f"<br><span style='color:#5b7290;font-size:10.5px'>"
+                f"{html.escape(_tk_sector)}</span>"
+            )
         _row_html = (
             "<tr>"
             + _td(f"<span style='color:#5b7290;'>{_on_rank}</span>")
@@ -11343,7 +11413,7 @@ def _render_scanner_value_map(universe_label, rows, lang):
         _standouts = sorted(_pool, key=lambda r: r.get("Long Score") or 0, reverse=True)[:4]
         _standout_tickers = {r.get("Ticker") for r in _standouts if r.get("Ticker")}
 
-        _xs, _ys, _colors, _customdata, _texts, _sizes = [], [], [], [], [], []
+        _xs, _ys, _colors, _customdata, _sizes, _row_sectors = [], [], [], [], [], []
         _n_clipped = 0
         for r in _valid:
             _mos = r["MOS %"]
@@ -11354,16 +11424,67 @@ def _render_scanner_value_map(universe_label, rows, lang):
             _ys.append(r["Quality"])
             _tk = r.get("Ticker") or "-"
             _score = r.get("Long Score")
+            # Part 47.3 (13 Sep 2026): sector for the tooltip - `r` is a
+            # raw scan row (this function is only ever handed real
+            # overnight-scan rows), already carrying "Sector" straight
+            # from the nightly scan - see scanner_engine.sector_for_
+            # ticker's own docstring. No fetch here, ever.
+            _sector = scanner_engine.sector_for_ticker(_tk, scan_row=r) if _tk != "-" else None
+            _row_sectors.append(_sector)
             if _tk in _standout_tickers:
                 _colors.append("#34d399")
                 _sizes.append(11)
-                _texts.append(_tk)
             else:
                 _frac = ((_score if isinstance(_score, (int, float)) else _score_lo) - _score_lo) / _score_span
                 _colors.append(_scanner_gradient_color(0.25 + 0.6 * _frac))
                 _sizes.append(8)
+            # customdata[5]: the sector tooltip LINE, pre-formatted with
+            # its own trailing <br> (empty string when unknown) - Plotly's
+            # hovertemplate can't branch on whether a value is present, so
+            # baking the line break into the value itself is what lets an
+            # unknown-sector point's hover simply skip the line instead of
+            # showing an empty "Sector: " placeholder.
+            _customdata.append([
+                _tk, r.get("Price"), _mos, r.get("Quality"), _score,
+                (f"\U0001F3F7 {_sector}<br>" if _sector else ""),
+            ])
+
+        # Part 47.3: standout label text - ticker alone, or "TICKER ·
+        # Sector" when appending the sector text wouldn't visually collide
+        # with another plotted dot (the mock's own "labels never overlap
+        # dots to fit a sector" rule). This sandbox can't measure actual
+        # rendered pixel collisions, so "fits" is judged by each
+        # standout's own nearest-neighbor distance to ANY other plotted
+        # point (not just other standouts), in the chart's own normalized
+        # [0,1]x[0,1] coordinate space (x by the MOS axis cap, y by this
+        # universe's own Quality range) - a deliberately conservative
+        # proxy, disclosed in this Part's report.
+        _y_lo = min(_ys) if _ys else 0.0
+        _y_hi = max(_ys) if _ys else 100.0
+        _y_span = (_y_hi - _y_lo) or 1.0
+        _STANDOUT_LABEL_FIT_THRESHOLD = 0.09
+        _norm_pts = [
+            (_xs[i] / _x_cap if _x_cap else 0.0, (_ys[i] - _y_lo) / _y_span)
+            for i in range(len(_xs))
+        ]
+        _texts = []
+        for i, r in enumerate(_valid):
+            _tk = r.get("Ticker") or "-"
+            if _tk not in _standout_tickers:
                 _texts.append("")
-            _customdata.append([_tk, r.get("Price"), _mos, r.get("Quality"), _score])
+                continue
+            _nx, _ny = _norm_pts[i]
+            _nearest = min(
+                (math.hypot(_nx - _ox, _ny - _oy)
+                 for j, (_ox, _oy) in enumerate(_norm_pts) if j != i),
+                default=999.0,
+            )
+            _sector = _row_sectors[i]
+            _texts.append(
+                f"{_tk} · {_sector}"
+                if (_sector and _nearest >= _STANDOUT_LABEL_FIT_THRESHOLD)
+                else _tk
+            )
 
         fig = go.Figure()
         # Translucent "cheap & high quality" corner - a fixed top-right
@@ -11389,6 +11510,21 @@ def _render_scanner_value_map(universe_label, rows, lang):
             customdata=_customdata,
             hovertemplate=(
                 "<b>%{customdata[0]}</b><br>"
+                # Part 47.3 (13 Sep 2026): sector line, right after the
+                # ticker (the closest this real tooltip has to "between the
+                # company name and the numbers" - unlike the mock's
+                # illustrative markup, this live hovertemplate never showed
+                # a separate company-name line to insert between; flagged
+                # as a deviation in this Part's report). customdata[5] is
+                # pre-formatted with its own trailing <br> (or "" when the
+                # sector is unknown), since Plotly's hovertemplate can't
+                # conditionally skip a line on its own - see the customdata
+                # build comment above. Plain text, not the chip-styled
+                # visual the other two placements use: Plotly hover labels
+                # only support a small fixed tag set (<br>/<b>/<i>/...),
+                # never an arbitrary styled <span> - also flagged in the
+                # report.
+                + "%{customdata[5]}"
                 + i18n.t("scanner.vmap_hover_price", lang) + ": $%{customdata[1]:,.2f}<br>"
                 + i18n.t("scanner.vmap_hover_mos", lang) + ": %{customdata[2]:.1f}%<br>"
                 + i18n.t("scanner.vmap_hover_quality", lang) + ": %{customdata[3]:.0f}<br>"

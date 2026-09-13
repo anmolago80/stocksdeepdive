@@ -1196,6 +1196,53 @@ def get_sectors(df):
     return ["All"] + sorted(sectors)
 
 
+# Part 47 (13 Sep 2026): the single sector-lookup helper for the three UI
+# placements (Deep Dive header chip, Value Map tooltip, Scanner table
+# second line) - deliberately NEVER fetches anything itself. Precedence,
+# cheapest/most-authoritative first:
+#   1. `scan_row["Sector"]` when given and non-empty - nightly_scan.
+#      run_universe_scan() already attaches this to every scanned row
+#      (Services batch 2, Part 2, 2026-09-01: "Sector, straight from the
+#      constituent pool already fetched above - no extra call"), straight
+#      off the SAME live GICS data fetch_asx200()/fetch_sp500()/etc.
+#      already do for the sector-universe filters - and it survives the
+#      nightly reprice pass unchanged (_reprice_row() starts from
+#      `dict(row)` and only overwrites price-dependent keys). This is the
+#      path the Scanner table and Value Map always use (they're only ever
+#      handed real scan rows), and the path Deep Dive uses whenever the
+#      ticker has a stored snapshot.
+#   2. An ASX ticker with no scan_row sector: ASX_SECTOR_MAP, the static
+#      module-level dict above - already resident in memory, zero fetch.
+#      Its own comment flags it as the "local ASX 200 fallback... used
+#      only if the live ASX 200 scrape fails" - i.e. genuinely partial
+#      coverage (~100 of several hundred ASX tickers), which is exactly
+#      why an ASX ticker outside it simply renders no chip rather than a
+#      guess.
+#   3. `company_info["sector"]` when given - the yfinance .info dict a
+#      CALLER already fetched for its own purposes (e.g. Deep Dive's
+#      get_ticker_info(), already invoked once per page by deep_dive_
+#      engine.analyze() itself, cached 30 min - a second call in the same
+#      run is a cache hit, not a new fetch). This function never fetches
+#      it itself.
+#   4. None - the ticker's sector is genuinely unknown. Every call site
+#      must render nothing at all (never "Unknown"/"-"), per the
+#      instruction's own hard rule.
+def sector_for_ticker(ticker, scan_row=None, company_info=None):
+    if scan_row:
+        _s = scan_row.get("Sector")
+        if isinstance(_s, str) and _s.strip():
+            return _s.strip()
+    if ticker and str(ticker).strip().upper().endswith(".AX"):
+        _s = ASX_SECTOR_MAP.get(str(ticker).strip().upper())
+        if _s:
+            return _s
+    if company_info:
+        _s = company_info.get("sector")
+        if isinstance(_s, str) and _s.strip():
+            return _s.strip()
+    return None
+
+
 def resolve_tickers(country, universe, sector):
     """
     Final ticker list for Run Scan: the chosen universe's pool, narrowed to
