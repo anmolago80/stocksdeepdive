@@ -20005,8 +20005,11 @@ def _render_portfolio_tax_tab(email, active_portfolio, _holdings, _analyses):
         # A loss is never subject to the discount question at all (per
         # the mock's own CSL.AX row: "— (loss)", not an eligibility
         # countdown) - the discount status column is about gains only.
+        # Part 46.2 (13 Sep 2026, owner-reported: the bare "—" read as
+        # a missing value rather than an intentional "not applicable" -
+        # labelled via i18n instead.
         if r["profit_aud"] is not None and r["profit_aud"] < 0:
-            _status = "—"
+            _status = i18n.t("portfolio.tax.status_loss", _lang)
         elif r["is_au"]:
             _status = (i18n.t("portfolio.tax.status_au_eligible", _lang) if r["eligible"]
                         else i18n.t("portfolio.tax.status_au_pending", _lang, n=r["days_left"],
@@ -22214,10 +22217,15 @@ def _render_super_tool(email):
     strips the "tools_super_" widget-key prefix to find the bare field
     name in the saved dict - see that function's own bug-fix comment for
     why this distinction matters): tools_store.get/save_super_scenario()
-    is a full named-scenario store (mirrors debt recycling's own), but
-    this render only ever uses the ONE default name - the mock shows no
-    scenario switcher for this tool, so v1 doesn't build one (see this
-    Part's own report for the full note)."""
+    is a full named-scenario store (mirrors debt recycling's own).
+
+    Part 46.1 (13 Sep 2026, owner-reported: unlike Budget Planner and
+    Debt Recycling, this tool never rendered _render_named_plan_switcher
+    even though tools_store already had the named-scenario storage
+    wired - it always loaded list_super_scenario_names(email)[0] and
+    called it a day). Now wired identically to _render_debt_recycling_
+    tool above: same call shape, same "scenario" kind, same
+    ensure_default_*() immediately before it."""
     _lang = st.session_state.get("lang", "en")
     _sl = lambda key, **kw: i18n.t(f"tools.super.{key}", _lang, **kw)
 
@@ -22225,7 +22233,13 @@ def _render_super_tool(email):
     st.caption(_sl("subtitle"))
 
     tools_store.ensure_default_super_scenario(email)
-    _active = tools_store.list_super_scenario_names(email)[0]
+    _active = _render_named_plan_switcher(
+        email, "scenario", "tools_super_active_scenario",
+        tools_store.list_super_scenario_names,
+        tools_store.create_super_scenario,
+        tools_store.rename_super_scenario,
+        tools_store.delete_super_scenario,
+    )
     _saved = tools_store.get_super_scenario(email, _active) or {}
     _saved_inputs = _saved.get("inputs") or {}
 
@@ -22268,8 +22282,15 @@ def _render_super_tool(email):
             return_pct = st.number_input(_sl("return_label"), min_value=0.0, max_value=15.0,
                                          step=0.1, format="%.1f", key=_seed("tools_super_return_pct", 7.0))
             marginal_rate_pct = st.number_input(
+                # Part 46.3 (13 Sep 2026): default lowered from the
+                # pre-2024 32.5% bracket rate to 32.0% (current 30%
+                # bracket + 2% Medicare levy). Default only - _seed()
+                # only ever falls back to this when nothing was saved
+                # yet, so an existing scenario saved with 32.5 keeps
+                # loading 32.5 unchanged.
                 _sl("marginal_rate_label"), min_value=0.0, max_value=60.0, step=0.5,
-                format="%.1f", key=_seed("tools_super_marginal_rate_pct", 32.5),
+                format="%.1f", key=_seed("tools_super_marginal_rate_pct", 32.0),
+                help=_sl("marginal_rate_help"),
             )
 
     _proj = super_engine.project_super(

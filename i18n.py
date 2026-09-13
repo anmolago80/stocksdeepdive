@@ -1302,9 +1302,17 @@ EN = {
     "tools.super.sacrifice_label": "Extra salary sacrifice ($/mo)",
     "tools.super.return_label": "Return assumption (%/yr)",
     "tools.super.marginal_rate_label": "Your marginal tax rate (%)",
+    # Part 46.3 (13 Sep 2026): help caption for the marginal-rate input,
+    # shown alongside the lowered default (32.0 = current 30% bracket +
+    # 2% Medicare levy, was the pre-2024 32.5% bracket).
+    "tools.super.marginal_rate_help": "Your bracket rate + 2% Medicare levy",
     "tools.super.chart_caption": "Balance at age {age} — from {balance_baseline} without extra sacrifice to {balance_with_sacrifice} with it",
     "tools.super.delta_caption": "The extra {sacrifice}/mo is worth ≈{delta} at retirement",
-    "tools.super.label_baseline": "SG only",
+    # Part 46.4 (13 Sep 2026, owner-reported: "SG only" read as jargon on
+    # the chart legend) - SG (Superannuation Guarantee) is the employer's
+    # compulsory contribution, so this names that plainly while keeping
+    # the acronym for anyone who already knows it.
+    "tools.super.label_baseline": "Employer only (SG)",
     "tools.super.label_with_sacrifice": "With extra sacrifice",
     "tools.super.tax_wedge_caption": (
         "The tax wedge, stated: that {sacrifice}/mo costs you ≈{take_home} in "
@@ -1936,6 +1944,12 @@ EN = {
     "portfolio.tax.col_gain": "Unrealised gain",
     "portfolio.tax.col_discount": "Discount status",
     "portfolio.tax.col_est_tax": "Est. tax if sold",
+    # Part 46.2 (13 Sep 2026, owner-reported: the Discount status column
+    # showed a bare "-" for a holding currently at a loss, with no context
+    # on why there's no eligibility countdown). Loss rows never face the
+    # discount question at all (see the table-build comment in app.py),
+    # so this replaces the bare dash with a labelled one.
+    "portfolio.tax.status_loss": "— (currently a loss)",
     "portfolio.tax.status_au_eligible": "✓ eligible",
     "portfolio.tax.status_au_pending": "⏳ in {n} days ({date})",
     "portfolio.tax.status_us_eligible": "long-term",
@@ -3744,9 +3758,10 @@ ES = {
     "tools.super.sacrifice_label": "Aporte voluntario extra ($/mes)",
     "tools.super.return_label": "Rendimiento asumido (%/año)",
     "tools.super.marginal_rate_label": "Tu tasa marginal de impuestos (%)",
+    "tools.super.marginal_rate_help": "La tasa de tu tramo impositivo + 2% Medicare levy",
     "tools.super.chart_caption": "Saldo a los {age} años — de {balance_baseline} sin aporte extra a {balance_with_sacrifice} con él",
     "tools.super.delta_caption": "El aporte extra de {sacrifice}/mes vale ≈{delta} al jubilarte",
-    "tools.super.label_baseline": "Solo SG",
+    "tools.super.label_baseline": "Solo empleador (SG)",
     "tools.super.label_with_sacrifice": "Con aporte extra",
     "tools.super.tax_wedge_caption": (
         "La brecha impositiva, en números: ese {sacrifice}/mes te cuesta "
@@ -4329,6 +4344,7 @@ ES = {
     "portfolio.tax.col_gain": "Ganancia no realizada",
     "portfolio.tax.col_discount": "Estado del descuento",
     "portfolio.tax.col_est_tax": "Impuesto estimado si se vende",
+    "portfolio.tax.status_loss": "— (actualmente en pérdida)",
     "portfolio.tax.status_au_eligible": "✓ elegible",
     "portfolio.tax.status_au_pending": "⏳ en {n} días ({date})",
     "portfolio.tax.status_us_eligible": "largo plazo",

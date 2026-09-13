@@ -762,6 +762,44 @@ def create_super_scenario(email, name):
         )
 
 
+def rename_super_scenario(email, old_name, new_name):
+    """Renames a named Super projection - mirrors rename_debt_recycling_
+    scenario() exactly (Part 46, 13 Sep 2026: the Super tool never had a
+    scenario switcher wired up at all, so this sibling function never
+    existed before)."""
+    if not email or not old_name or not new_name or old_name == new_name:
+        return
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE super_scenario_names SET name = ? WHERE email = ? AND name = ?",
+            (new_name, email, old_name),
+        )
+        conn.execute(
+            "UPDATE super_scenarios SET name = ? WHERE email = ? AND name = ?",
+            (new_name, email, old_name),
+        )
+
+
+def delete_super_scenario(email, name):
+    """Deletes a named Super projection - mirrors delete_debt_recycling_
+    scenario() exactly (Part 46, 13 Sep 2026). The "never delete the
+    last remaining scenario" guard lives in the shared
+    _render_named_plan_switcher UI (app.py), same as every other tool
+    wired to that switcher - this function has no guard of its own,
+    matching its sibling."""
+    if not email or not name:
+        return
+    with _conn() as conn:
+        conn.execute(
+            "DELETE FROM super_scenario_names WHERE email = ? AND name = ?",
+            (email, name),
+        )
+        conn.execute(
+            "DELETE FROM super_scenarios WHERE email = ? AND name = ?",
+            (email, name),
+        )
+
+
 def ensure_default_super_scenario(email):
     """Guarantees at least one named Super projection exists for a
     signed-in email - mirrors ensure_default_debt_recycling_scenario().
