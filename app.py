@@ -16572,11 +16572,36 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
     total_current = sum(weights.values()) or 1.0
     current_pcts = {t: weights[t] / total_current * 100.0 for t in tickers}
 
-    _reset_col, _scale_col = st.columns([1, 1.4])
+    # Part 49: saved what-if mixes. Storage is per (email, portfolio_key)
+    # where portfolio_key is the real portfolio name, or the literal
+    # "__all__" for the combined "All portfolios" view - distinct
+    # namespace from _skey's own 'all' suffix (that one's just a widget-
+    # key convenience, this one's the actual storage scope). email is
+    # always real here: page_portfolio() gates the whole page on
+    # paywall_engine.is_logged_in() before this ever renders, the same
+    # established precedent every other call to current_user_email() in
+    # this file already relies on.
+    email = paywall_engine.current_user_email()
+    _pkey = _active_portfolio or "__all__"
+    _loaded_key = f"{_skey}_loaded_mix"
+    _show_save_key = f"{_skey}_rbmix_show_save_as"
+    _ignored_key = f"{_skey}_rbmix_ignored"
+    _loaded_name = st.session_state.get(_loaded_key)
+
+    _row_widths = [1, 1.4, 1.6] if _loaded_name else [1, 1.4]
+    _row_cols = st.columns(_row_widths)
+    _reset_col, _scale_col = _row_cols[0], _row_cols[1]
     with _reset_col:
         if st.button(_st_("rebalance_reset"), key=f"{_skey}_reset"):
             for t in tickers:
                 st.session_state[f"{_skey}_w_{t}"] = round(current_pcts[t], 1)
+            # Part 49: Reset discards the in-progress edit back to the
+            # current portfolio weights, so it no longer matches whatever
+            # mix was loaded - clear the teal highlight and any stale
+            # "no longer held" note along with it. Scale (below) does NOT
+            # do this - only Reset is called out for it in the spec.
+            st.session_state.pop(_loaded_key, None)
+            st.session_state.pop(_ignored_key, None)
 
     # Part 30.1 (audit fix): a "Scale my numbers to 100%" button. Distinct
     # from Reset - it does NOT discard the user's own edits back to the
@@ -16606,6 +16631,27 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
                 _scaled = _largest_remainder_round(_scaled)
                 for t in tickers:
                     st.session_state[f"{_skey}_w_{t}"] = _scaled[t]
+
+    # Part 49: "Save changes to <name>" - only shown once a mix is loaded
+    # (mock groups it in this same button row). Reads current slider
+    # values the exact same way Scale (above) already does - whatever is
+    # currently sitting in each number_input, BEFORE those widgets are
+    # (re)instantiated below - and overwrites the loaded mix in place.
+    # Overwriting an existing name never counts against the 10-mix cap
+    # (save_rebalance_mix's own upsert-first-check), so this can never be
+    # refused.
+    if _loaded_name:
+        with _row_cols[2]:
+            if st.button(
+                _st_("rebalance_mixes_save_changes_button", name=_loaded_name),
+                key=f"{_skey}_rbmix_save_changes",
+            ):
+                _current_vals = {
+                    t: st.session_state.get(f"{_skey}_w_{t}", round(current_pcts[t], 1))
+                    for t in tickers
+                }
+                portfolio_store.save_rebalance_mix(email, _pkey, _loaded_name, _current_vals)
+                st.toast(_st_("rebalance_mixes_save_success", name=_loaded_name), icon="💾")
     st.caption(_st_("rebalance_scale_caption"))
 
     # Owner-requested (12 Sep 2026): one-click "best mathematical
@@ -16677,6 +16723,194 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
                                 unsafe_allow_html=True,
                             )
         st.caption(_st_("bounds_footnote"))
+
+    # Part 49 - the saved-mixes strip. Placed directly above the weight
+    # inputs below (the instruction's own words), which puts it AFTER the
+    # existing Reset/Scale/optimizer-bounds sections above rather than
+    # literally where the mock's simplified layout draws it (mock shows a
+    # bare chips -> sliders -> buttons stack with no optimizer tiles) -
+    # this is disclosed in the Part report. Nothing above this point
+    # changed behaviourally; everything below is new.
+    _mixes = portfolio_store.list_rebalance_mixes(email, _pkey) if email else []
+    _mix_names = {m["name"] for m in _mixes}
+    # Loaded-mix highlight can only be shown for a mix still in the list
+    # (e.g. it may have just been deleted) - session_state itself is left
+    # alone either way; delete/rename already keep it in sync explicitly.
+    _loaded_idx = next((j for j, m in enumerate(_mixes) if m["name"] == _loaded_name), None)
+
+    st.caption(_st_(
+        "rebalance_mixes_caption",
+        scope=(_st_("rebalance_mixes_scope_named", name=_active_portfolio) if _active_portfolio
+               else _st_("rebalance_mixes_scope_all")),
+    ))
+
+    # CSS-injection safety (Part 49 design note): mix/portfolio names are
+    # arbitrary user text, so they're used freely in Streamlit's own
+    # key= parameter (an opaque string Streamlit itself turns into a CSS
+    # class - safe, that's its job) but NEVER typed by this code into a
+    # CSS selector string. The three selectors below match only on fixed,
+    # code-controlled literals ("rbmix_chip", "rbmix_save_chip", and a
+    # plain positional int for the loaded highlight) - never on the raw
+    # name - so a mix called e.g. </style><script> can't inject anything:
+    # it only ever ends up inside a button's key=, not inside this <style>
+    # block's own selector text.
+    _chip_css = """
+    <style>
+    div[class*="st-key-rbmix_chip"] button {
+        border: 1.5px solid #22345a !important;
+        border-radius: 10px !important;
+        background: #121f36 !important;
+        color: #e6edf5 !important;
+        font-size: 12.5px !important;
+        font-weight: 600 !important;
+        padding: 7px 13px !important;
+        width: 100% !important;
+    }
+    div[class*="st-key-rbmix_save_chip"] button {
+        border: 1.5px dashed #2b3f5c !important;
+        border-radius: 10px !important;
+        background: transparent !important;
+        color: #8aa0b8 !important;
+        font-size: 12px !important;
+        font-weight: 400 !important;
+        padding: 7px 13px !important;
+        width: 100% !important;
+    }
+    </style>
+    """
+    if _loaded_idx is not None:
+        _chip_css += f"""
+        <style>
+        div[class*="st-key-rbmix_chip{_loaded_idx}_"] button {{
+            border-color: #14b8a6 !important;
+            background: #0f2a33 !important;
+            color: #2dd4bf !important;
+        }}
+        </style>
+        """
+    st.markdown(_chip_css, unsafe_allow_html=True)
+
+    _chip_cols = st.columns(min(4, len(_mixes) + 1) or 1)
+    for _j, _m in enumerate(_mixes):
+        with _chip_cols[_j % len(_chip_cols)]:
+            try:
+                _saved_dt = datetime.fromisoformat(_m["saved_at"])
+                _saved_label = i18n.format_date_dm(_saved_dt, lang)
+            except (TypeError, ValueError):
+                _saved_label = _m["saved_at"] or ""
+            _chip_label = _st_("rebalance_mixes_chip_label", name=_m["name"], date=_saved_label)
+            # Part 37 lesson: the emoji (when present, e.g. the save chip
+            # below) stays INSIDE the button's own label string, never in
+            # a separate st.column of its own.
+            if st.button(_chip_label, key=f"{_skey}_rbmix_chip{_j}_btn"):
+                _stored = portfolio_store.get_rebalance_mix(email, _pkey, _m["name"])
+                _stored_weights = (_stored or {}).get("weights_pct", {}) or {}
+                _ignored = [tk for tk in _stored_weights if tk not in tickers]
+                for t in tickers:
+                    st.session_state[f"{_skey}_w_{t}"] = round(float(_stored_weights.get(t, 0.0)), 1)
+                st.session_state[_loaded_key] = _m["name"]
+                st.session_state[_ignored_key] = _ignored
+                st.rerun()
+    with _chip_cols[len(_mixes) % len(_chip_cols)]:
+        if st.button(_st_("rebalance_mixes_save_chip"), key=f"{_skey}_rbmix_save_chip_btn"):
+            st.session_state[_show_save_key] = not st.session_state.get(_show_save_key, False)
+            st.rerun()
+
+    _ignored_now = st.session_state.get(_ignored_key) or []
+    if _ignored_now:
+        st.caption(_st_("rebalance_mixes_ignored_caption", tickers=", ".join(_ignored_now)))
+
+    if st.session_state.get(_show_save_key):
+        _sc1, _sc2, _sc3 = st.columns([3, 1, 1])
+        with _sc1:
+            _new_mix_name = st.text_input(
+                _st_("rebalance_mixes_save_name_placeholder"),
+                key=f"{_skey}_rbmix_new_name",
+                placeholder=_st_("rebalance_mixes_save_name_placeholder"),
+                label_visibility="collapsed",
+            )
+        with _sc2:
+            if st.button(_st_("rebalance_mixes_save_button"), key=f"{_skey}_rbmix_save_confirm"):
+                _new_mix_name = (_new_mix_name or "").strip()
+                if not _new_mix_name:
+                    st.error(_st_("rebalance_mixes_name_empty_error"))
+                elif _new_mix_name in _mix_names:
+                    st.error(_st_("rebalance_mixes_duplicate_error", name=_new_mix_name))
+                else:
+                    _current_vals = {
+                        t: st.session_state.get(f"{_skey}_w_{t}", round(current_pcts[t], 1))
+                        for t in tickers
+                    }
+                    _ok = portfolio_store.save_rebalance_mix(email, _pkey, _new_mix_name, _current_vals)
+                    if not _ok:
+                        st.error(_st_("rebalance_mixes_cap_reached"))
+                    else:
+                        st.session_state[_loaded_key] = _new_mix_name
+                        st.session_state[_show_save_key] = False
+                        st.toast(_st_("rebalance_mixes_save_success", name=_new_mix_name), icon="💾")
+                        st.rerun()
+        with _sc3:
+            if st.button(_st_("rebalance_mixes_cancel_button"), key=f"{_skey}_rbmix_save_cancel"):
+                st.session_state[_show_save_key] = False
+                st.rerun()
+
+    # Manage (rename/delete) - operates on whichever mix is currently
+    # loaded, matching the mock's own 'Manage "Defensive tilt"' framing
+    # rather than a separate independent picker. "Small link" per the
+    # spec is this expander - the closest native Streamlit affordance that
+    # keeps the control tucked away by default.
+    with st.expander(_st_("rebalance_mixes_manage_toggle")):
+        _manage_active = st.session_state.get(_loaded_key)
+        if not _manage_active:
+            st.caption(_st_("rebalance_mixes_manage_none_loaded"))
+        else:
+            _mrc1, _mrc2 = st.columns([3, 1])
+            with _mrc1:
+                _rename_to = st.text_input(
+                    _st_("rebalance_mixes_rename_label"),
+                    value=_manage_active,
+                    key=f"{_skey}_rbmix_rename_input",
+                )
+            with _mrc2:
+                st.write("")
+                if st.button(_st_("rebalance_mixes_rename_button"), key=f"{_skey}_rbmix_rename_btn"):
+                    _rename_to = (_rename_to or "").strip()
+                    if not _rename_to:
+                        st.error(_st_("rebalance_mixes_name_empty_error"))
+                    elif _rename_to != _manage_active and _rename_to in _mix_names:
+                        st.error(_st_("rebalance_mixes_duplicate_error", name=_rename_to))
+                    elif _rename_to != _manage_active:
+                        portfolio_store.rename_rebalance_mix(email, _pkey, _manage_active, _rename_to)
+                        st.session_state[_loaded_key] = _rename_to
+                        st.toast(_st_("rebalance_mixes_rename_success", name=_rename_to), icon="✅")
+                        st.rerun()
+
+            # Two-step confirm - same pattern _render_portfolio_switcher's
+            # own portfolio-delete uses (session-state flag + rerun, then
+            # a warning + Yes/Cancel pair). Deleting a mix never touches
+            # holdings or any other data; it only clears the loaded-mix
+            # highlight, leaving the sliders exactly as they are.
+            _confirm_key = f"{_skey}_rbmix_confirm_delete_{_manage_active}"
+            if not st.session_state.get(_confirm_key):
+                if st.button(_st_("rebalance_mixes_delete_button", name=_manage_active),
+                             key=f"{_skey}_rbmix_delete_btn"):
+                    st.session_state[_confirm_key] = True
+                    st.rerun()
+            else:
+                st.warning(_st_("rebalance_mixes_delete_confirm_warning", name=_manage_active))
+                _dc1, _dc2 = st.columns(2)
+                with _dc1:
+                    if st.button(_st_("rebalance_mixes_delete_confirm_yes"),
+                                 key=f"{_skey}_rbmix_delete_confirm", type="primary"):
+                        portfolio_store.delete_rebalance_mix(email, _pkey, _manage_active)
+                        st.session_state.pop(_confirm_key, None)
+                        st.session_state.pop(_loaded_key, None)
+                        st.toast(_st_("rebalance_mixes_delete_success", name=_manage_active), icon="🗑️")
+                        st.rerun()
+                with _dc2:
+                    if st.button(_st_("rebalance_mixes_delete_cancel"), key=f"{_skey}_rbmix_delete_cancel"):
+                        st.session_state.pop(_confirm_key, None)
+                        st.rerun()
 
     edited_pcts = {}
     cols = st.columns(min(4, len(tickers)) or 1)

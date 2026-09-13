@@ -200,8 +200,36 @@ def _conn():
         conn.execute("ALTER TABLE portfolio_settings ADD COLUMN income_goal_aud REAL")
     except sqlite3.OperationalError:
         pass
+    # Part 49: the Rebalance sandbox's saved what-if mixes - a mix is
+    # PRIVATE to (email, portfolio_key, name); portfolio_key is either a
+    # real portfolio name or the literal "__all__" for the combined "All
+    # portfolios" view (distinct namespace from any real portfolio name,
+    # since "__all__" isn't a name a user can give a real portfolio).
+    # weights_json stores ONLY the ticker->percent dict the sliders held
+    # at save time, nothing else - never the what-if metrics themselves
+    # (those recompute live from _stress_whatif_metrics, untouched by this
+    # table). A saved mix never touches portfolio_holdings and is never
+    # read by anything outside the signed-in owner's own sandbox render -
+    # no API/snapshot/MCP surface exposes this table.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS rebalance_mixes (
+            email TEXT NOT NULL,
+            portfolio_key TEXT NOT NULL,
+            name TEXT NOT NULL,
+            weights_json TEXT NOT NULL,
+            saved_at TEXT NOT NULL,
+            PRIMARY KEY (email, portfolio_key, name)
+        )"""
+    )
     _migrate_legacy_schema(conn)
     return conn
+
+
+# Part 49: at most this many saved mixes per (email, portfolio_key) - an
+# 11th save is refused (save_rebalance_mix returns False) rather than
+# silently evicting the oldest one; the caller shows a caption telling the
+# user to delete one first via Manage.
+REBALANCE_MIX_CAP = 10
 
 
 def _table_columns(conn, table):
@@ -590,6 +618,99 @@ def list_portfolio_owners():
                ORDER BY ps.email, ps.portfolio"""
         ).fetchall()
     return [(r[0], r[1]) for r in rows]
+
+
+def list_rebalance_mixes(email, portfolio_key):
+    """[{"name": ..., "saved_at": ...}, ...] for this (email, portfolio_key),
+    newest-saved-first - the chip strip's own read. Part 49."""
+    if not email or not portfolio_key:
+        return []
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT name, saved_at FROM rebalance_mixes "
+            "WHERE email = ? AND portfolio_key = ? ORDER BY saved_at DESC",
+            (email, portfolio_key),
+        ).fetchall()
+    return [{"name": r[0], "saved_at": r[1]} for r in rows]
+
+
+def get_rebalance_mix(email, portfolio_key, name):
+    """{"weights_pct": {ticker: pct, ...}, "saved_at": ...} or None if no
+    such mix. Part 49."""
+    if not email or not portfolio_key or not name:
+        return None
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT weights_json, saved_at FROM rebalance_mixes "
+            "WHERE email = ? AND portfolio_key = ? AND name = ?",
+            (email, portfolio_key, name),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        weights_pct = json.loads(row[0]) if row[0] else {}
+    except (TypeError, ValueError):
+        weights_pct = {}
+    return {"weights_pct": weights_pct, "saved_at": row[1]}
+
+
+def save_rebalance_mix(email, portfolio_key, name, weights_pct):
+    """Upsert (email, portfolio_key, name) -> weights_pct, stamped with the
+    current saved_at. Capped at REBALANCE_MIX_CAP (10) per (email,
+    portfolio_key): a save that would CREATE an 11th mix is refused -
+    returns False, does NOT auto-delete the oldest one. Overwriting an
+    EXISTING name (Save changes to "X") never counts against the cap,
+    since the row count doesn't change. Returns True on success. Part 49."""
+    if not email or not portfolio_key or not name:
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    weights_json = json.dumps(weights_pct or {})
+    with _conn() as conn:
+        _exists = conn.execute(
+            "SELECT 1 FROM rebalance_mixes WHERE email = ? AND portfolio_key = ? AND name = ?",
+            (email, portfolio_key, name),
+        ).fetchone()
+        if not _exists:
+            _count = conn.execute(
+                "SELECT COUNT(*) FROM rebalance_mixes WHERE email = ? AND portfolio_key = ?",
+                (email, portfolio_key),
+            ).fetchone()[0]
+            if _count >= REBALANCE_MIX_CAP:
+                return False
+        conn.execute(
+            "INSERT INTO rebalance_mixes (email, portfolio_key, name, weights_json, saved_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(email, portfolio_key, name) DO UPDATE SET "
+            "weights_json = excluded.weights_json, saved_at = excluded.saved_at",
+            (email, portfolio_key, name, weights_json, now),
+        )
+    return True
+
+
+def rename_rebalance_mix(email, portfolio_key, old_name, new_name):
+    """No duplicate-name guard here - same separation-of-concerns
+    precedent as tools_store.rename_super_scenario(): the caller (app.py)
+    checks for a collision against list_rebalance_mixes() before calling
+    this, matching _render_portfolio_switcher's own pattern. Part 49."""
+    if not email or not portfolio_key or not old_name or not new_name or old_name == new_name:
+        return
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE rebalance_mixes SET name = ? WHERE email = ? AND portfolio_key = ? AND name = ?",
+            (new_name, email, portfolio_key, old_name),
+        )
+
+
+def delete_rebalance_mix(email, portfolio_key, name):
+    """Deletes one saved mix. Never touches portfolio_holdings or any
+    other data - a saved mix is purely a remembered slider position.
+    Part 49."""
+    if not email or not portfolio_key or not name:
+        return
+    with _conn() as conn:
+        conn.execute(
+            "DELETE FROM rebalance_mixes WHERE email = ? AND portfolio_key = ? AND name = ?",
+            (email, portfolio_key, name),
+        )
 
 
 def _row_to_dict(row):

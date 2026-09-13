@@ -2232,6 +2232,41 @@ EN = {
         "{diff} more across the weights below to see the comparison."
     ),
     "portfolio.stress.rebalance_reset": "Reset to current weights",
+    # Part 49: saved what-if mixes (save / load / rename / delete) for the
+    # Rebalance sandbox - a saved mix is per (account, portfolio, name),
+    # never touches the real portfolio, and never suggests weights (same
+    # two captions above, unchanged). Wording below deliberately mirrors
+    # _render_portfolio_switcher's own plain-English phrasing (Enter a
+    # name. / duplicate-name / two-step delete confirm) for consistency,
+    # but as real translatable keys - that switcher itself has no i18n by
+    # its own documented precedent, which doesn't apply here.
+    "portfolio.stress.rebalance_mixes_caption": "Saved mixes · {scope}",
+    "portfolio.stress.rebalance_mixes_scope_named": "this portfolio ({name})",
+    "portfolio.stress.rebalance_mixes_scope_all": "all portfolios (combined)",
+    "portfolio.stress.rebalance_mixes_save_chip": "\U0001F4BE Save current sliders as…",
+    "portfolio.stress.rebalance_mixes_chip_label": "{name} · saved {date}",
+    "portfolio.stress.rebalance_mixes_save_name_placeholder": "e.g. Rate-cut scenario",
+    "portfolio.stress.rebalance_mixes_save_button": "Save",
+    "portfolio.stress.rebalance_mixes_cancel_button": "Cancel",
+    "portfolio.stress.rebalance_mixes_name_empty_error": "Enter a name.",
+    "portfolio.stress.rebalance_mixes_duplicate_error": 'You already have a mix named "{name}".',
+    "portfolio.stress.rebalance_mixes_cap_reached": (
+        "You've reached the 10-mix limit for this portfolio — delete one "
+        "under Manage before saving a new one."
+    ),
+    "portfolio.stress.rebalance_mixes_save_success": 'Saved "{name}".',
+    "portfolio.stress.rebalance_mixes_manage_toggle": "✏ Manage",
+    "portfolio.stress.rebalance_mixes_manage_none_loaded": "Load a mix above to rename or delete it.",
+    "portfolio.stress.rebalance_mixes_rename_label": "Rename to",
+    "portfolio.stress.rebalance_mixes_rename_button": "Rename",
+    "portfolio.stress.rebalance_mixes_rename_success": 'Renamed to "{name}".',
+    "portfolio.stress.rebalance_mixes_delete_button": 'Delete "{name}"…',
+    "portfolio.stress.rebalance_mixes_delete_confirm_warning": 'Delete "{name}"? This can\'t be undone.',
+    "portfolio.stress.rebalance_mixes_delete_confirm_yes": "Yes, delete",
+    "portfolio.stress.rebalance_mixes_delete_cancel": "Cancel",
+    "portfolio.stress.rebalance_mixes_delete_success": 'Deleted "{name}".',
+    "portfolio.stress.rebalance_mixes_ignored_caption": "No longer held, ignored: {tickers}",
+    "portfolio.stress.rebalance_mixes_save_changes_button": '\U0001F4BE Save changes to "{name}"',
     "portfolio.stress.whatif_table_title": "Current vs what-if",
     "portfolio.stress.col_metric": "Metric",
     "portfolio.stress.col_current": "Current",
@@ -4579,6 +4614,35 @@ ES = {
         "comparación."
     ),
     "portfolio.stress.rebalance_reset": "Restablecer a las ponderaciones actuales",
+    # Part 49 (ES drafts - not reviewed by a native speaker, flagged in the
+    # Part report per the instruction's own "ES drafts flagged" request).
+    "portfolio.stress.rebalance_mixes_caption": "Combinaciones guardadas · {scope}",
+    "portfolio.stress.rebalance_mixes_scope_named": "esta cartera ({name})",
+    "portfolio.stress.rebalance_mixes_scope_all": "todas las carteras (combinadas)",
+    "portfolio.stress.rebalance_mixes_save_chip": "\U0001F4BE Guardar los valores actuales como…",
+    "portfolio.stress.rebalance_mixes_chip_label": "{name} · guardada el {date}",
+    "portfolio.stress.rebalance_mixes_save_name_placeholder": "p. ej. Escenario de baja de tasas",
+    "portfolio.stress.rebalance_mixes_save_button": "Guardar",
+    "portfolio.stress.rebalance_mixes_cancel_button": "Cancelar",
+    "portfolio.stress.rebalance_mixes_name_empty_error": "Ingresa un nombre.",
+    "portfolio.stress.rebalance_mixes_duplicate_error": 'Ya tienes una combinación llamada "{name}".',
+    "portfolio.stress.rebalance_mixes_cap_reached": (
+        "Alcanzaste el límite de 10 combinaciones para esta cartera — elimina una "
+        "en Administrar antes de guardar una nueva."
+    ),
+    "portfolio.stress.rebalance_mixes_save_success": 'Se guardó "{name}".',
+    "portfolio.stress.rebalance_mixes_manage_toggle": "✏ Administrar",
+    "portfolio.stress.rebalance_mixes_manage_none_loaded": "Carga una combinación arriba para renombrarla o eliminarla.",
+    "portfolio.stress.rebalance_mixes_rename_label": "Renombrar a",
+    "portfolio.stress.rebalance_mixes_rename_button": "Renombrar",
+    "portfolio.stress.rebalance_mixes_rename_success": 'Se renombró a "{name}".',
+    "portfolio.stress.rebalance_mixes_delete_button": 'Eliminar "{name}"…',
+    "portfolio.stress.rebalance_mixes_delete_confirm_warning": '¿Eliminar "{name}"? Esto no se puede deshacer.',
+    "portfolio.stress.rebalance_mixes_delete_confirm_yes": "Sí, eliminar",
+    "portfolio.stress.rebalance_mixes_delete_cancel": "Cancelar",
+    "portfolio.stress.rebalance_mixes_delete_success": 'Se eliminó "{name}".',
+    "portfolio.stress.rebalance_mixes_ignored_caption": "Ya no está en cartera, ignorado: {tickers}",
+    "portfolio.stress.rebalance_mixes_save_changes_button": '\U0001F4BE Guardar cambios en "{name}"',
     "portfolio.stress.whatif_table_title": "Actual vs. qué pasaría si",
     "portfolio.stress.col_metric": "Métrica",
     "portfolio.stress.col_current": "Actual",
@@ -4992,6 +5056,20 @@ def format_date_dmy(dt, lang="en"):
     mon_en = dt.strftime("%b")
     mon = _MONTH_ABBREV_ES.get(mon_en, mon_en) if lang == "es" else mon_en
     return f"{day} {mon} {year}"
+
+
+def format_date_dm(dt, lang="en"):
+    """"%d %b" (e.g. "13 Sep") - day + month, no year, month abbreviation
+    translated when lang=="es" (e.g. "13 sep"). Part 49: the Rebalance
+    sandbox's saved-mix chips show "saved 13 Sep" with no year (mixes are
+    recent, short-lived what-ifs - the mock's own format), so this is a
+    dedicated sibling of format_date_dmy rather than a widened signature,
+    same "don't touch an existing caller" precedent as format_date_a_d_b
+    above. Reuses the same _MONTH_ABBREV_ES map."""
+    day = dt.strftime("%d")
+    mon_en = dt.strftime("%b")
+    mon = _MONTH_ABBREV_ES.get(mon_en, mon_en) if lang == "es" else mon_en
+    return f"{day} {mon}"
 
 
 # Español completion, Part 3: calendar_render.py's day-group labels use
