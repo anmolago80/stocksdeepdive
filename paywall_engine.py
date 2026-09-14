@@ -606,6 +606,100 @@ div.st-key-pw_account_name_box div[data-testid="stMarkdown"] > div {
 div.st-key-pw_account_name_box [data-testid="stMarkdownContainer"] {
     margin-bottom: 0 !important;
 }
+/* Part 50.4 (mobile account-bar overlap fix, owner-reported ~400px
+   screenshot): app.py's own <=768px rule for this exact row
+   (div[data-testid="stHorizontalBlock"]:has(.pw-account-name) /
+   :has([class*="st-key-account_bar_signin"]), added for the 641-768px
+   "narrow desktop window" case) sets flex-wrap:nowrap so this one row
+   never stacks the way every other st.columns() row on the site does
+   below 640px. Right for that narrow-desktop case, wrong at real phone
+   width, where up to five columns (name, feedback, RC-view unlock,
+   language picker, Sign out/Subscribe) get squeezed onto one line and
+   visually collide instead. This block is scoped to <=640px only (a
+   strict subset of that 768px rule) and, being loaded later than
+   app.py's own site-wide <style> block on every page (render_account_bar
+   always calls st.markdown(_PILL_BUTTON_CSS, ...) after app.py's site-
+   wide CSS has already been emitted this run) at equal selector
+   specificity, wins the cascade there without editing that rule or
+   touching the 641-768px behaviour at all - desktop and the 641-768px
+   case stay byte-identical.
+   Reflow: name + Sign out (+ Subscribe, on the one code path that shows
+   both) stay one line (row 1, unchanged left-to-right order); a zero-
+   height ::after flex item with flex-basis:100% forces everything
+   ordered after it onto a second, wrapping row of compact chips
+   (feedback, RC-view unlock, language picker) - `order` alone assigns
+   each widget's row, so none of the widgets' own render functions
+   (feedback popover, RC-view unlock, language switch, sign-out) change
+   at all. */
+@media (max-width: 640px) {
+div[data-testid="stHorizontalBlock"]:has(.pw-account-name),
+div[data-testid="stHorizontalBlock"]:has([class*="st-key-account_bar_signin"]) {
+    flex-wrap: wrap !important;
+    row-gap: 10px !important;
+    column-gap: 8px !important;
+}
+div[data-testid="stHorizontalBlock"]:has(.pw-account-name)::after,
+div[data-testid="stHorizontalBlock"]:has([class*="st-key-account_bar_signin"])::after {
+    content: "";
+    order: 10;
+    flex-basis: 100%;
+    height: 0;
+}
+div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:has([class*="st-key-account_bar_signout"]),
+div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:has([class*="st-key-account_bar_subscribe"]) {
+    order: 9;
+    margin-left: auto !important;
+}
+div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:has([class*="st-key-fb_popover_"]) {
+    order: 11;
+}
+div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:has([class*="st-key-rc_view_pop"]),
+div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:has([class*="st-key-rc_view_owner_return"]) {
+    order: 12;
+}
+div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:has([class*="_lang_picker"]) {
+    order: 13;
+}
+/* Feedback trigger collapses to icon-only "\U0001F4AC" at phone width -
+   same st.popover(), same label string, same click behaviour and the
+   same full "Tell us what you think" title inside the box it opens
+   (feedback_engine.render_feedback_widget is untouched); this purely
+   clips the rendered button box to a 40px circle with
+   justify-content:flex-start so only the leading emoji glyph stays
+   inside the visible/unclipped area and the trailing label text is
+   clipped away, never centre-cropped into the emoji itself. The full
+   label remains in the DOM for assistive tech. */
+[class*="st-key-fb_popover_"] button {
+    width: 44px !important;
+    min-width: 44px !important;
+    min-height: 40px !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    display: inline-flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    border-radius: 999px !important;
+}
+[class*="st-key-fb_popover_"] button p,
+[class*="st-key-fb_popover_"] button div {
+    overflow: hidden !important;
+    white-space: nowrap !important;
+    text-align: left !important;
+    width: 15px !important;
+    flex: none !important;
+}
+/* Tap-target floor (Verify item 10): the RC-view unlock control's own
+   popover/button already has its own colours (app.py, ~line 1407) -
+   only height changes here. The language picker's own segmented-control
+   buttons already get min-height:40px from app.py's pre-existing
+   sitewide <=640px rule for div[data-testid="stButtonGroup"] button
+   (shared by every st.pills/st.segmented_control on the site), so
+   nothing new is needed for it here. */
+[class*="st-key-rc_view_pop"] button,
+[class*="st-key-rc_view_owner_return"] button {
+    min-height: 40px !important;
+}
+}
 </style>
 """
 

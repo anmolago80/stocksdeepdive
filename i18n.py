@@ -2186,6 +2186,17 @@ EN = {
         "watch the table update. *The best mix for the last 15 years is "
         "not necessarily the best for the next 15.*"
     ),
+    # Part 50 (50.2, clarity fix): the three tiles above said "full
+    # period" with no number while the comparison table's own replay
+    # row says "10y" - read side by side they looked like the same
+    # window. This appends the ACTUAL span of the shared replay history
+    # _optimize_rebalance_weights used (computed from real data, not a
+    # guess) to each tile's own sublabel.
+    "portfolio.stress.bounds_span_note": "over the whole ~{years}y replay",
+    "portfolio.stress.bounds_vs_table_window_caption": (
+        "The tiles above replay the full shared history; this table's "
+        "replay row uses 10 years — different windows give different numbers."
+    ),
     "portfolio.stress.optimizer_computing": "Finding the best and worst mixes for these tickers…",
     # Part 30 (30.1, 11 Sep 2026 audit): "Scale my numbers to 100%"
     # button, next to Reset - rescales the user's own currently-typed
@@ -2278,12 +2289,17 @@ EN = {
     "portfolio.stress.metric_covid_recovery": "COVID recovery",
     "portfolio.stress.metric_beta": "Beta",
     "portfolio.stress.metric_replayed_10y": "Replayed 10y return p.a.",
-    # Mega-batch Part 13: 1-yr 5th-95th percentile simulated range,
-    # shown as its own visually-distinct row (divider above, italic/
-    # dimmed styling) below the historical what-if metrics, so it can
-    # never be mistaken for another historical-replay fact - this one is
-    # a model, not something that happened.
-    "portfolio.stress.metric_mc_range": "1-yr range, simulated (95%) — not a prediction",
+    # Mega-batch Part 13: 1-yr 5th-95th percentile simulated range - was
+    # its own visually-distinct row (divider above, italic/dimmed
+    # styling) below the historical what-if metrics, so it could never
+    # be mistaken for another historical-replay fact (this one's a
+    # model, not something that happened). Part 50 (50.3b, clarity fix):
+    # the italic/dimmed treatment read as an afterthought rather than a
+    # real comparison row - now rendered at the same visual weight as
+    # the rows above it (still a Δ of "—", still model-not-fact - the
+    # figure itself and how it's computed are both unchanged), with a
+    # clearer label naming what it actually is.
+    "portfolio.stress.metric_mc_range": "Monte Carlo range (1y, 5th–95th)",
     "portfolio.stress.per_holding_table_title": "Per-holding detail",
     "portfolio.stress.col_ticker": "Ticker",
     "portfolio.stress.col_weight": "Weight",
@@ -2291,6 +2307,14 @@ EN = {
     "portfolio.stress.col_worst_drawdown": "Worst drawdown (15y)",
     "portfolio.stress.col_best_12m": "Best 12 months",
     "portfolio.stress.monte_carlo_title": "Monte Carlo (1-year band)",
+    # Part 50 (50.3a, clarity fix): this always-open box simulates the
+    # CURRENT portfolio only - the sandbox above already has its own
+    # what-if Monte Carlo row (metric_mc_range, just above), and the two
+    # were easy to conflate since both are labelled "Monte Carlo".
+    "portfolio.stress.monte_carlo_current_only_caption": (
+        "Simulates your CURRENT holdings — the sandbox's what-if mix has "
+        "its own Monte Carlo row in the comparison above."
+    ),
     "portfolio.stress.monte_carlo_band_line": (
         "5th-95th percentile: {p5}% to {p95}% (A\\${p5_value} to A\\${p95_value})"
     ),
@@ -2336,6 +2360,49 @@ EN = {
         "historical months. Based on the past behaving like the future - "
         "which it may not. Not a prediction."
     ),
+    # Part 50 (50.1) - "Deploy new money with this mix": a collapsed
+    # expander in the rebalance sandbox, directly under the Current-vs-
+    # What-if table. Pure arithmetic over inputs already on the page
+    # (current $ per holding, the mix %, each ticker's last close from
+    # the same `histories` already fetched) - no new fetch, no engine
+    # touched, and it never writes to the portfolio or anywhere else.
+    "portfolio.stress.newmoney_expander_title": "\U0001F4B5 Deploy new money with this mix",
+    "portfolio.stress.newmoney_deposit_label": "New money to invest (AUD)",
+    "portfolio.stress.newmoney_mode_label": "Allocation mode",
+    "portfolio.stress.newmoney_mode_a": "Split by mix %",
+    "portfolio.stress.newmoney_mode_b": "Top up toward mix",
+    "portfolio.stress.newmoney_mode_caption": (
+        "Split by mix %: the amount is divided exactly by the percentages "
+        "above. Top up toward mix: the amount goes preferentially to the "
+        "holdings furthest below their target weight, so the whole "
+        "portfolio lands as close to the mix as possible without selling "
+        "anything."
+    ),
+    "portfolio.stress.newmoney_col_holding": "Holding",
+    "portfolio.stress.newmoney_col_mix_pct": "Mix %",
+    "portfolio.stress.newmoney_col_hold_now": "You hold now",
+    "portfolio.stress.newmoney_col_target": "Target after deposit",
+    "portfolio.stress.newmoney_col_gap": "Gap",
+    "portfolio.stress.newmoney_col_buys": "This deposit buys",
+    "portfolio.stress.newmoney_col_units": "≈ Units @ last close",
+    "portfolio.stress.newmoney_col_weight_after": "Weight after",
+    "portfolio.stress.newmoney_col_total": "Total",
+    "portfolio.stress.newmoney_gap_over": "over",
+    "portfolio.stress.newmoney_unallocated_caption": "Unallocated cash: {amount}",
+    "portfolio.stress.newmoney_method_b_caption": (
+        "Method: target value per holding = mix % × (current total + "
+        "deposit); the deposit is allocated to the largest shortfalls "
+        "first, never selling and never exceeding the deposit. When the "
+        "cash can't close every gap, the allocation is proportional to "
+        "the remaining shortfalls. Holdings already at/above target "
+        "receive nothing."
+    ),
+    "portfolio.stress.newmoney_disclosure_caption": (
+        "units rounded down · brokerage not modelled (see {toll_tab} for "
+        "the real cost of trades) · a described calculation from your "
+        "inputs, not a recommendation to buy anything."
+    ),
+    "portfolio.stress.newmoney_zero_caption": "Enter an amount above to see what it would buy.",
     "portfolio.stress.footer_caption": (
         "Correlations rise in severe panics; the replays capture this (it "
         "happened in the data), the grid and simulation partly understate it."
@@ -4583,6 +4650,13 @@ ES = {
         "*La mejor combinación de los últimos 15 años no es necesariamente "
         "la mejor para los próximos 15.*"
     ),
+    # Part 50 (50.2, ES drafts - not reviewed by a native speaker)
+    "portfolio.stress.bounds_span_note": "sobre todo el repaso de ~{years} años",
+    "portfolio.stress.bounds_vs_table_window_caption": (
+        "Los recuadros de arriba repasan todo el historial compartido; la "
+        "fila de repaso de esta tabla usa 10 años — ventanas distintas dan "
+        "números distintos."
+    ),
     "portfolio.stress.optimizer_computing": (
         "Buscando las mejores y peores combinaciones para estos tickers…"
     ),
@@ -4654,7 +4728,9 @@ ES = {
     "portfolio.stress.metric_covid_recovery": "Recuperación COVID",
     "portfolio.stress.metric_beta": "Beta",
     "portfolio.stress.metric_replayed_10y": "Rentabilidad reproducida a 10 años anual",
-    "portfolio.stress.metric_mc_range": "Rango a 1 año, simulado (95%) — no es una predicción",
+    # Part 50 (50.3b): etiqueta actualizada, deja de tener estilo cursiva/
+    # atenuado (ver app.py) - misma cifra, mismo cálculo.
+    "portfolio.stress.metric_mc_range": "Rango de Monte Carlo (1 año, percentil 5–95)",
     "portfolio.stress.per_holding_table_title": "Detalle por posición",
     "portfolio.stress.col_ticker": "Ticker",
     "portfolio.stress.col_weight": "Ponderación",
@@ -4662,6 +4738,12 @@ ES = {
     "portfolio.stress.col_worst_drawdown": "Peor caída (15 años)",
     "portfolio.stress.col_best_12m": "Mejores 12 meses",
     "portfolio.stress.monte_carlo_title": "Monte Carlo (banda a 1 año)",
+    # Part 50 (50.3a, ES draft)
+    "portfolio.stress.monte_carlo_current_only_caption": (
+        "Simula tu cartera ACTUAL — la combinación hipotética del "
+        "simulador tiene su propia fila de Monte Carlo en la comparación "
+        "de arriba."
+    ),
     "portfolio.stress.monte_carlo_band_line": (
         "Percentil 5-95: {p5}% a {p95}% (A\\${p5_value} a A\\${p95_value})"
     ),
@@ -4693,6 +4775,46 @@ ES = {
         "comporte como el futuro - lo cual puede no ocurrir. No es una "
         "predicción."
     ),
+    # Part 50 (50.1, ES drafts - not reviewed by a native speaker)
+    "portfolio.stress.newmoney_expander_title": "\U0001F4B5 Invertir dinero nuevo con esta combinación",
+    "portfolio.stress.newmoney_deposit_label": "Dinero nuevo a invertir (AUD)",
+    "portfolio.stress.newmoney_mode_label": "Modo de asignación",
+    "portfolio.stress.newmoney_mode_a": "Dividir por % de la combinación",
+    "portfolio.stress.newmoney_mode_b": "Completar hacia la combinación",
+    "portfolio.stress.newmoney_mode_caption": (
+        "Dividir por % de la combinación: el monto se divide exactamente "
+        "según los porcentajes de arriba. Completar hacia la combinación: "
+        "el monto va preferentemente a las posiciones más por debajo de su "
+        "ponderación objetivo, para que toda la cartera se acerque lo más "
+        "posible a la combinación sin vender nada."
+    ),
+    "portfolio.stress.newmoney_col_holding": "Posición",
+    "portfolio.stress.newmoney_col_mix_pct": "% combinación",
+    "portfolio.stress.newmoney_col_hold_now": "Tienes ahora",
+    "portfolio.stress.newmoney_col_target": "Objetivo tras el depósito",
+    "portfolio.stress.newmoney_col_gap": "Brecha",
+    "portfolio.stress.newmoney_col_buys": "Este depósito compra",
+    "portfolio.stress.newmoney_col_units": "≈ Unidades @ último cierre",
+    "portfolio.stress.newmoney_col_weight_after": "Ponderación después",
+    "portfolio.stress.newmoney_col_total": "Total",
+    "portfolio.stress.newmoney_gap_over": "por encima",
+    "portfolio.stress.newmoney_unallocated_caption": "Efectivo sin asignar: {amount}",
+    "portfolio.stress.newmoney_method_b_caption": (
+        "Método: valor objetivo por posición = % combinación × (total "
+        "actual + depósito); el depósito se asigna primero a las brechas "
+        "más grandes, sin vender nunca y sin superar el depósito. Cuando "
+        "el efectivo no alcanza para cerrar todas las brechas, la "
+        "asignación es proporcional a las brechas restantes. Las "
+        "posiciones que ya están en su objetivo o por encima no reciben "
+        "nada."
+    ),
+    "portfolio.stress.newmoney_disclosure_caption": (
+        "unidades redondeadas hacia abajo · el corretaje no está modelado "
+        "(ver {toll_tab} para el costo real de las operaciones) · un "
+        "cálculo descrito a partir de tus datos, no una recomendación de "
+        "comprar nada."
+    ),
+    "portfolio.stress.newmoney_zero_caption": "Ingresa un monto arriba para ver qué compraría.",
     "portfolio.stress.footer_caption": (
         "Las correlaciones aumentan en pánicos severos; las repeticiones "
         "históricas lo capturan (ocurrió en los datos), la cuadrícula y la "

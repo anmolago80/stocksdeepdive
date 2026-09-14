@@ -16105,19 +16105,28 @@ def _stress_whatif_metrics(weights, histories, index_histories, total_value_aud,
     }
 
 
-def _largest_remainder_round(pct_dict, decimals=1):
+def _largest_remainder_round(pct_dict, decimals=1, target=100.0):
     """Round every value in `pct_dict` to `decimals` places while keeping
-    the total as close to 100.0 as the rounding grid allows (largest-
+    the total as close to `target` as the rounding grid allows (largest-
     remainder method) - so an optimizer preset/slider fill never itself
     trips the sandbox's own '>0.5pp off 100' warning just from rounding
-    drift."""
+    drift.
+
+    Part 50 (50.1): `target` used to be hardcoded at 100.0 (every caller
+    before this Part rounds percentages that should sum to 100). Added
+    as an optional parameter, defaulting to 100.0, so both existing
+    callers (Scale button, _optimize_rebalance_weights' own _to_pcts)
+    are byte-for-byte unaffected - neither passes it. The "Deploy new
+    money" section reuses this exact same algorithm with decimals=2 and
+    target=<the deposit amount> to allocate CENTS across holdings that
+    sum to the deposit exactly, rather than percentages summing to 100."""
     if not pct_dict:
         return {}
     scale = 10 ** decimals
     scaled = {k: v * scale for k, v in pct_dict.items()}
     floors = {k: math.floor(v) for k, v in scaled.items()}
-    target = round(100 * scale)
-    remainder = target - sum(floors.values())
+    target_scaled = round(target * scale)
+    remainder = target_scaled - sum(floors.values())
     order = sorted(pct_dict.keys(), key=lambda k: scaled[k] - floors[k], reverse=True)
     result = dict(floors)
     for i in range(max(0, int(remainder))):
@@ -16187,9 +16196,19 @@ def _optimize_rebalance_weights(tickers_sig, _histories, n_samples=3000, seed=0)
     negative>}, "up": {"weights": {...}, "value": <full-period
     annualised return %>}, "bal": {"weights": {...}, "ret_pa": <that
     mix's own full-period annualised return %>, "dd": <that mix's own
-    max drawdown %, negative>}}, each weights dict summing to ~100
-    (largest-remainder-rounded to 1 decimal), or {} if there's under a
-    year of combined history to search against."""
+    max drawdown %, negative>}, "span_years": <the shared replay
+    window's own length in years, one decimal's worth of precision>},
+    each weights dict summing to ~100 (largest-remainder-rounded to 1
+    decimal), or {} if there's under a year of combined history to
+    search against.
+
+    Part 50 (50.2, clarity fix): "span_years" is new - purely additive,
+    nothing above changed. It's T (the shared replay window's own
+    trading-day count, already computed below for the SAME annualising
+    math every "up"/"bal" figure already uses) divided by 252, so the
+    UI can tell the user the actual number behind "full period" instead
+    of leaving them to guess whether it means the same thing as the
+    comparison table's fixed 10y row (it doesn't, and now it says so)."""
     tickers = [t for t, _len, _last in tickers_sig]
     hist_15y = {t: stress_engine.cap_to_years(_histories.get(t), 15) for t in tickers}
     rets = {}
@@ -16244,6 +16263,7 @@ def _optimize_rebalance_weights(tickers_sig, _histories, n_samples=3000, seed=0)
             "ret_pa": float(ann_pa_pct[idx_bal]),
             "dd": float(max_dd_pct[idx_bal]),
         },
+        "span_years": T / 252.0,
     }
 
 
@@ -16697,6 +16717,16 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
             ("bal", _bound_cols[1], "#2dd4bf", _st_("bounds_bal_label"), _st_("bounds_bal_note")),
             ("dd", _bound_cols[2], "#fb7185", _st_("bounds_dd_label"), _st_("bounds_dd_note")),
         ]
+        # Part 50 (50.2, clarity fix): the actual span of the shared
+        # replay history _optimize_rebalance_weights searched, straight
+        # from its own new "span_years" return key (never re-derived
+        # here, so it can't drift from what the search actually used) -
+        # appended as a second small line under each tile's existing
+        # note. `.get()` guards a cached result from before this Part
+        # deployed (that key simply wasn't there yet); the tile still
+        # renders exactly as before in that one case, just without the
+        # new line, until the 1h cache naturally refreshes.
+        _bounds_span_years = _bounds.get("span_years")
         for _bkey, _bcol, _bcolor, _blabel, _bnote in _bound_specs:
             with _bcol:
                 with st.container(border=True):
@@ -16706,11 +16736,17 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
                         )
                     else:
                         _bval_html = f"{_bounds[_bkey]['value']:+.1f}%"
+                    _bspan_html = (
+                        f"<div style='font-size:11px;color:#5b7290;margin-top:2px;'>"
+                        f"{_st_('bounds_span_note', years=f'{_bounds_span_years:.1f}')}</div>"
+                        if _bounds_span_years is not None else ""
+                    )
                     st.markdown(
                         f"<div style='font-size:12px;color:#8aa0b8;'>{_blabel}</div>"
                         f"<div style='font-size:28px;font-weight:700;color:{_bcolor};"
                         f"font-variant-numeric:tabular-nums;line-height:1;margin-top:4px;'>{_bval_html}</div>"
-                        f"<div style='font-size:12px;color:#8aa0b8;margin-top:6px;'>{_bnote}</div>",
+                        f"<div style='font-size:12px;color:#8aa0b8;margin-top:6px;'>{_bnote}</div>"
+                        f"{_bspan_html}",
                         unsafe_allow_html=True,
                     )
                     with st.expander(_st_("bounds_mix_toggle")):
@@ -17066,6 +17102,12 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
         _whatif_df.style.apply(_style_whatif_deltas, axis=None),
         hide_index=True, width='stretch',
     )
+    # Part 50 (50.2, clarity fix): this table's own "Replayed 10y return
+    # p.a." row uses a fixed 10-year window, while the optimizer tiles
+    # above replay the FULL shared history (now labelled with its own
+    # actual span, right above) - without this line the two "full
+    # period"-ish numbers read as directly comparable when they're not.
+    st.caption(_st_("bounds_vs_table_window_caption"))
 
     # Part 30.2/30.3 (audit fixes): dollar buy/sell chips + The Toll
     # footer line. Both are gated on `not _at_rest` - at rest (nothing
@@ -17148,21 +17190,246 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
     def _fmt_mc_range(mc):
         return f"{mc['p5_pct']:+.1f}% to {mc['p95_pct']:+.1f}%" if mc else _na
 
+    # Part 50 (50.3b, clarity fix): this row used to be wrapped in
+    # markdown "*italics*" inside st.caption - a smaller, dimmer font
+    # than the dataframe table above it, which read as a lesser
+    # afterthought rather than a genuine sixth comparison row. Same 5-
+    # column layout, same figures (_mc_current/_mc_whatif/_na are
+    # unchanged - only the text styling below changed), same ⓘ popover;
+    # font-size/color here are picked to match the table's own body text
+    # rather than st.caption's smaller, muted default.
     _mc_cols = st.columns([2, 1, 1, 1, 0.4])
     with _mc_cols[0]:
-        st.caption(f"*{_st_('metric_mc_range')}*")
+        st.markdown(
+            f"<div style='font-size:14px;color:#e6edf5;'>{_st_('metric_mc_range')}</div>",
+            unsafe_allow_html=True,
+        )
     with _mc_cols[1]:
-        st.caption(f"*{_fmt_mc_range(_mc_current)}*")
+        st.markdown(
+            "<div style='font-size:14px;color:#e6edf5;font-variant-numeric:tabular-nums;"
+            f"text-align:right;'>{_fmt_mc_range(_mc_current)}</div>",
+            unsafe_allow_html=True,
+        )
     with _mc_cols[2]:
-        st.caption(f"*{_fmt_mc_range(_mc_whatif)}*")
+        st.markdown(
+            "<div style='font-size:14px;color:#e6edf5;font-variant-numeric:tabular-nums;"
+            f"text-align:right;'>{_fmt_mc_range(_mc_whatif)}</div>",
+            unsafe_allow_html=True,
+        )
     with _mc_cols[3]:
-        st.caption("*—*")
+        st.markdown(
+            f"<div style='font-size:14px;color:#e6edf5;text-align:right;'>{_na}</div>",
+            unsafe_allow_html=True,
+        )
     with _mc_cols[4]:
         # Mega-batch Part 15: "Monte Carlo (the expander and the Part-13
         # sandbox row): include the one-paragraph method as its help
         # text" - this row isn't a dataframe column, so it gets the same
         # superscript-ⓘ affordance a non-dataframe table gets elsewhere.
         _info_popover_trigger(stress_etf_help_copy.monte_carlo_method(lang))
+
+    # Part 50 (50.1) - "Deploy new money with this mix": a collapsed
+    # expander, placed AFTER the Current-vs-What-if block (including its
+    # Monte Carlo row just above) so it inherits that block's own must-
+    # total-100% gating for free - the whole function already returned
+    # early, well above this point, the moment `edited_pcts` stopped
+    # summing to ~100% (see the `if abs(total_edit - 100.0) > 0.5: ...
+    # return` earlier in this same function), so nothing below that
+    # point - the whole comparison table, the MC row, and this section -
+    # ever renders otherwise.
+    #
+    # Pure arithmetic over inputs already in scope (weights, edited_pcts,
+    # each ticker's own last Close inside the already-fetched `histories`
+    # - zero new network calls). This NEVER writes to portfolio_store,
+    # session_state's slider keys, or anywhere else - it only ever
+    # describes what a deposit COULD buy, exactly like the instruction's
+    # own required caption says at the bottom of the section.
+    with st.expander(_st_("newmoney_expander_title"), expanded=False):
+        _nm_current_total = sum(weights.get(t, 0.0) for t in tickers)
+
+        _nm_dep_col, _nm_mode_col = st.columns([1, 1.4])
+        with _nm_dep_col:
+            _nm_deposit = st.number_input(
+                _st_("newmoney_deposit_label"), min_value=0.0, value=5000.0, step=100.0,
+                key=f"{_skey}_newmoney_deposit",
+            )
+        with _nm_mode_col:
+            st.write("")
+            _nm_mode_a_label = _st_("newmoney_mode_a")
+            _nm_mode_b_label = _st_("newmoney_mode_b")
+            _nm_mode = st.segmented_control(
+                _st_("newmoney_mode_label"), [_nm_mode_a_label, _nm_mode_b_label],
+                default=_nm_mode_a_label, key=f"{_skey}_newmoney_mode",
+                label_visibility="collapsed",
+            ) or _nm_mode_a_label
+        st.caption(_st_("newmoney_mode_caption"))
+
+        # CSS-injection safety, same precedent as Part 49's saved-mix
+        # chips: `_skey` carries arbitrary user text (the active
+        # portfolio's own name), so it's used freely in the widget's
+        # key= (safe - Streamlit's own job to turn that into a DOM
+        # class) but never typed into this selector string, which
+        # matches only on a fixed, code-controlled fragment
+        # ("_newmoney_mode") to approximate the mock's pill-toggle look.
+        # Zero-indent lesson from the Part 49 CSS bugfix applied here
+        # too: the string starts with "<style>" immediately after the
+        # opening triple-quote, no leading newline+indent, so st.markdown
+        # never mistakes it for an indented code block.
+        st.markdown("""<style>
+        div[class*="st-key-"][class*="_newmoney_mode"] div[role="radiogroup"] {
+            border: 1px solid #22345a !important;
+            border-radius: 9px !important;
+            overflow: hidden !important;
+            display: inline-flex !important;
+            width: auto !important;
+        }
+        div[class*="st-key-"][class*="_newmoney_mode"] div[role="radiogroup"] button {
+            border-radius: 0 !important;
+            border: none !important;
+        }
+        </style>""", unsafe_allow_html=True)
+
+        # Latest close per ticker, reusing the SAME `histories` this
+        # whole tab already fetched (Part 24's own long-history bundle) -
+        # zero new network calls. A ticker with no usable history gets
+        # price=None; its whole allocation stays unspent cash below,
+        # rather than dividing by a missing price.
+        _nm_prices = {}
+        for t in tickers:
+            _h = histories.get(t)
+            if _h is not None and not _h.empty and "Close" in _h.columns:
+                try:
+                    _nm_prices[t] = float(_h["Close"].iloc[-1])
+                except (TypeError, ValueError, IndexError):
+                    _nm_prices[t] = None
+            else:
+                _nm_prices[t] = None
+
+        if _nm_deposit <= 0:
+            st.caption(_st_("newmoney_zero_caption"))
+        else:
+            _nm_is_mode_b = _nm_mode == _nm_mode_b_label
+            if _nm_is_mode_b:
+                # Mode B - "Top up toward mix": target_i = pct_i/100 *
+                # (current_total + deposit); shortfall_i = max(0,
+                # target_i - current_i). If the total shortfall can't be
+                # fully closed by this deposit, the cash is split
+                # PROPORTIONALLY to the shortfalls (the biggest gaps get
+                # the most, nothing is ever pushed past its own gap by
+                # this branch). Once every gap IS closed (including the
+                # trivial case where nothing was underweight to begin
+                # with), whatever cash is left over splits by mix % -
+                # exactly Mode A's own rule, reused via the same
+                # _largest_remainder_round(target=...) call so both
+                # modes allocate cents identically once there's no gap
+                # left to fill. A holding already at/above its target has
+                # shortfall 0 and therefore receives $0 here - this
+                # section only ever ADDS cash to a holding, it never
+                # removes any, so nothing is ever negative or a sell.
+                _nm_target = {
+                    t: (edited_pcts[t] / 100.0) * (_nm_current_total + _nm_deposit) for t in tickers
+                }
+                _nm_shortfall = {t: max(0.0, _nm_target[t] - weights.get(t, 0.0)) for t in tickers}
+                _nm_total_shortfall = sum(_nm_shortfall.values())
+                if _nm_total_shortfall >= _nm_deposit and _nm_total_shortfall > 0:
+                    _nm_buy = {
+                        t: _nm_deposit * (_nm_shortfall[t] / _nm_total_shortfall) for t in tickers
+                    }
+                else:
+                    _nm_remainder = _nm_deposit - _nm_total_shortfall
+                    _nm_remainder_split = _largest_remainder_round(
+                        {t: (edited_pcts[t] / 100.0) * _nm_remainder for t in tickers},
+                        decimals=2, target=_nm_remainder,
+                    )
+                    _nm_buy = {t: _nm_shortfall[t] + _nm_remainder_split[t] for t in tickers}
+            else:
+                # Mode A - "Split by mix %": exactly the current mix,
+                # largest-remainder rounded to the CENT (decimals=2, not
+                # this helper's usual 1-decimal-percent grid) so the
+                # column sums to the deposit exactly, never a few cents
+                # short/over from plain per-row rounding.
+                _nm_target = None
+                _nm_buy = _largest_remainder_round(
+                    {t: (edited_pcts[t] / 100.0) * _nm_deposit for t in tickers},
+                    decimals=2, target=_nm_deposit,
+                )
+
+            # Units are floored at the latest close - a fraction of a
+            # share can't actually be bought. A priceless ticker buys 0
+            # units; its whole allocation stays unallocated cash below
+            # rather than raising a divide-by-None.
+            _nm_units, _nm_spent = {}, {}
+            for t in tickers:
+                _p = _nm_prices.get(t)
+                if _p and _p > 0:
+                    _u = math.floor(_nm_buy[t] / _p)
+                    _nm_units[t] = _u
+                    _nm_spent[t] = _u * _p
+                else:
+                    _nm_units[t] = None
+                    _nm_spent[t] = 0.0
+
+            _nm_unallocated = _nm_deposit - sum(_nm_spent.values())
+            _nm_new_total = _nm_current_total + _nm_deposit
+
+            _col_holding, _col_mix, _col_hold_now, _col_target, _col_gap, _col_buys, _col_units, _col_weight = (
+                _st_("newmoney_col_holding"), _st_("newmoney_col_mix_pct"),
+                _st_("newmoney_col_hold_now"), _st_("newmoney_col_target"),
+                _st_("newmoney_col_gap"), _st_("newmoney_col_buys"),
+                _st_("newmoney_col_units"), _st_("newmoney_col_weight_after"),
+            )
+            _nm_rows = []
+            for t in tickers:
+                _row = {_col_holding: t, _col_mix: f"{edited_pcts[t]:.1f}%"}
+                if _nm_target is not None:
+                    _gap = weights.get(t, 0.0) - _nm_target[t]
+                    _row[_col_hold_now] = _fmt_aud(weights.get(t, 0.0))
+                    _row[_col_target] = _fmt_aud(_nm_target[t])
+                    _row[_col_gap] = (
+                        _st_("newmoney_gap_over") if _gap >= 0 else f"-{_fmt_aud(abs(_gap))}"
+                    )
+                else:
+                    _row[_col_hold_now] = _fmt_aud(weights.get(t, 0.0))
+                _row[_col_buys] = _fmt_aud(_nm_buy[t])
+                _u = _nm_units[t]
+                _row[_col_units] = f"{_u:,.0f} @ {_fmt_aud(_nm_prices[t])}" if _u is not None else _na
+                _row[_col_weight] = (
+                    f"{(weights.get(t, 0.0) + _nm_spent[t]) / _nm_new_total * 100.0:.1f}%"
+                    if _nm_new_total > 0 else _na
+                )
+                _nm_rows.append(_row)
+
+            # Total footer row, matching the mock's own.
+            _total_row = {_col_holding: _st_("newmoney_col_total"), _col_mix: f"{sum(edited_pcts.values()):.1f}%"}
+            if _nm_target is not None:
+                _total_row[_col_hold_now] = _fmt_aud(_nm_current_total)
+                _total_row[_col_target] = _fmt_aud(_nm_current_total + _nm_deposit)
+                _total_row[_col_gap] = _na
+            else:
+                _total_row[_col_hold_now] = _fmt_aud(_nm_current_total)
+            _total_row[_col_buys] = _fmt_aud(sum(_nm_buy.values()))
+            _total_row[_col_units] = _na
+            _total_row[_col_weight] = "100.0%" if _nm_new_total > 0 else _na
+            _nm_rows.append(_total_row)
+
+            _nm_df = pd.DataFrame(_nm_rows)
+
+            def _style_nm_buys(_):
+                styles = pd.DataFrame("", index=_nm_df.index, columns=_nm_df.columns)
+                styles[_col_buys] = "color: #34d399; font-weight: 600"
+                return styles
+
+            st.dataframe(
+                _nm_df.style.apply(_style_nm_buys, axis=None),
+                hide_index=True, width='stretch',
+            )
+            st.caption(_st_("newmoney_unallocated_caption", amount=_fmt_aud(_nm_unallocated)))
+            if _nm_target is not None:
+                st.caption(_st_("newmoney_method_b_caption"))
+            st.caption(_st_(
+                "newmoney_disclosure_caption",
+                toll_tab=f"**{i18n.t('portfolio.tab_switch', lang)}**",
+            ))
 
 
 def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
@@ -17356,6 +17623,12 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
             # section's help text (its fuller version also lives in the
             # top "How this tab works" expander).
             _info_popover_trigger(stress_etf_help_copy.monte_carlo_method(_lang))
+        # Part 50 (50.3a, clarity fix): this box simulates the CURRENT
+        # portfolio only - it's easy to mistake for covering the sandbox's
+        # what-if mix too, especially now that mix has its own Monte
+        # Carlo row (50.3b, just above in the sandbox). One caption, no
+        # change to what this box actually computes or shows below.
+        st.caption(_st_("monte_carlo_current_only_caption"))
         st.caption(stress_etf_help_copy.stress_section_caption("monte_carlo", _lang))
         # Part 29 (29.1 - guard coverage, 10 Sep 2026 audit): the same
         # >25%-excluded-by-value guard that already suppresses the
