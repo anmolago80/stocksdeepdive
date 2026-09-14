@@ -16754,8 +16754,16 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
     # name - so a mix called e.g. </style><script> can't inject anything:
     # it only ever ends up inside a button's key=, not inside this <style>
     # block's own selector text.
-    _chip_css = """
-    <style>
+    # Bug fix (14 Sep 2026, owner-reported): st.markdown's Markdown parser
+    # treats 4+ leading spaces on a block's FIRST content line as an
+    # indented code block, rendering the CSS as literal text instead of
+    # applying it - exactly the rule this Part's own design note had
+    # already restated but the code below didn't follow. Fix: start the
+    # string with "<style>" immediately after the opening triple-quote
+    # (no newline+indent before it), same as the established
+    # _render_lang_picker precedent above (line ~778) - indentation on
+    # the CONTINUATION lines below is fine, only the first line matters.
+    _chip_css = """<style>
     div[class*="st-key-rbmix_chip"] button {
         border: 1.5px solid #22345a !important;
         border-radius: 10px !important;
@@ -16776,18 +16784,20 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
         padding: 7px 13px !important;
         width: 100% !important;
     }
-    </style>
-    """
+    </style>"""
+    # Bug fix, same cause: the loaded-highlight rule is appended as its
+    # own separate string, keyed to whichever chip is ACTUALLY loaded
+    # right now (_loaded_idx, computed above from the current _mixes list
+    # - never hardcoded) - loading a different mix moves the highlight to
+    # that mix's own positional index on the next rerun.
     if _loaded_idx is not None:
-        _chip_css += f"""
-        <style>
+        _chip_css += f"""<style>
         div[class*="st-key-rbmix_chip{_loaded_idx}_"] button {{
             border-color: #14b8a6 !important;
             background: #0f2a33 !important;
             color: #2dd4bf !important;
         }}
-        </style>
-        """
+        </style>"""
     st.markdown(_chip_css, unsafe_allow_html=True)
 
     _chip_cols = st.columns(min(4, len(_mixes) + 1) or 1)
