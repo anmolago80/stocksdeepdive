@@ -2185,6 +2185,54 @@ st.markdown(
         color: #e6edf5 !important;
         margin-bottom: 3px !important;
     }
+
+    /* ---------------------------------------------------------------
+       DEEP DIVE FIRST SCREEN (pre-search). The old empty state was a
+       grey st.caption, then an st.info repeating "search above", then a
+       "Try one:" pill row - three instructions and no demonstration.
+       This is the replacement: a headline that states the question the
+       page answers, a full-width search box, and a real (cached,
+       attention-lite) Deep Dive for a rotating ticker so a first-time
+       visitor sees the output before spending a search.
+       Rendered by _render_dd_empty_state().
+       --------------------------------------------------------------- */
+    .sdd-ddh-title { font-size:23px; font-weight:700; letter-spacing:-.5px;
+      color:#e6edf5; margin:2px 0 5px; line-height:1.25; }
+    .sdd-ddh-sub { color:#8aa0b8; font-size:14.5px; line-height:1.5;
+      max-width:72ch; margin:0 0 14px; }
+    .sdd-ddf-rule { display:flex; align-items:center; gap:10px; margin:22px 0 10px; }
+    .sdd-ddf-rule .k { font-size:11.5px; letter-spacing:1.4px; text-transform:uppercase;
+      color:#5b7290; font-weight:700; white-space:nowrap; }
+    .sdd-ddf-rule .l { flex:1; height:1px; background:#1f3352; }
+    .sdd-ddf-rule a { font-size:12.5px; color:#2dd4bf !important; font-weight:600;
+      text-decoration:none !important; white-space:nowrap; }
+    .sdd-ddf-rule a:hover { text-decoration:underline !important; }
+    .sdd-ddf { background:#121f36; border:1px solid rgba(45,212,191,.28);
+      border-radius:14px; padding:16px 18px; }
+    .sdd-ddf-grid { display:grid; grid-template-columns:1.15fr 1fr; gap:22px; }
+    .sdd-ddf-head { display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; }
+    .sdd-ddf-tkr { font-size:18px; font-weight:700; color:#2dd4bf; }
+    .sdd-ddf-nm { font-size:15px; font-weight:600; color:#e6edf5; }
+    .sdd-ddf-mid { display:flex; align-items:flex-end; gap:16px; margin:13px 0 9px;
+      flex-wrap:wrap; }
+    .sdd-ddf-score { font-size:42px; font-weight:800; line-height:1;
+      letter-spacing:-1.6px; font-variant-numeric:tabular-nums; }
+    .sdd-ddf-k { font-size:11px; letter-spacing:.9px; text-transform:uppercase;
+      color:#5b7290; font-weight:700; }
+    .sdd-ddf-px { font-size:12.5px; color:#8aa0b8; padding-bottom:3px; }
+    .sdd-ddf-px b { color:#e6edf5; }
+    .sdd-ddf-row { display:grid; grid-template-columns:96px 1fr 40px; gap:9px;
+      align-items:center; font-size:12.5px; padding:5px 0; }
+    .sdd-ddf-row .n { color:#8aa0b8; }
+    .sdd-ddf-row .v { text-align:right; font-weight:700;
+      font-variant-numeric:tabular-nums; }
+    .sdd-ddf-track { height:6px; border-radius:99px; background:#0b1628;
+      border:1px solid #1f3352; overflow:hidden; position:relative; display:block; }
+    .sdd-ddf-fill { display:block; height:100%; border-radius:99px; }
+    @media (max-width:760px) {
+      .sdd-ddf-grid { grid-template-columns:1fr; gap:16px; }
+      .sdd-ddh-title { font-size:20px; }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -9139,6 +9187,267 @@ def _render_dd_action_row(dd, has_research=False):
                 _render_follow_control(ticker, key_prefix="follow_dd", wrap_container=False)
 
 
+def _dd_empty_band_color(v):
+    """Green/amber/red for a 0-100 factor score on the first-screen card -
+    the same three brand colours the gauges and pills already use."""
+    if v is None:
+        return "#5b7290"
+    return "#34d399" if v >= 60 else ("#fbbf24" if v >= 40 else "#fb7185")
+
+
+def _dd_empty_bar_html(label, value, color, signed=False):
+    """One factor row (label / bar / number) in the first-screen featured
+    card. `signed` draws from the centre for Psychology, whose score runs
+    -100..+100 rather than 0..100; a None value renders an explicit N/A
+    (Moat is None for funds and under-2-year listings) instead of a
+    misleading empty bar."""
+    if value is None:
+        return (
+            "<div class='sdd-ddf-row'><span class='n'>%s</span>"
+            "<span class='sdd-ddf-track'></span>"
+            "<span class='v' style='color:#5b7290;'>N/A</span></div>"
+            % html.escape(str(label))
+        )
+    v = float(value)
+    if signed:
+        half = max(0.0, min(100.0, abs(v))) / 2.0
+        off = 50.0 if v >= 0 else 50.0 - half
+        bar = (
+            "<span class='sdd-ddf-fill' style='width:%.1f%%;margin-left:%.1f%%;"
+            "background:%s;'></span>" % (half, off, color)
+        )
+        txt = "%+.0f" % v
+    else:
+        pct = max(0.0, min(100.0, v))
+        bar = (
+            "<span class='sdd-ddf-fill' style='width:%.1f%%;background:%s;'></span>"
+            % (pct, color)
+        )
+        txt = "%.0f" % v
+    return (
+        "<div class='sdd-ddf-row'><span class='n'>%s</span>"
+        "<span class='sdd-ddf-track'>%s</span>"
+        "<span class='v' style='color:%s;'>%s</span></div>"
+        % (html.escape(str(label)), bar, color, txt)
+    )
+
+
+def _dd_empty_featured_html(dd, spark_pts, last_pt, lang):
+    """The featured-Deep-Dive card on the pre-search first screen: verdict
+    score, price vs intrinsic value, a 6-month sparkline, and the four
+    factor scores as bars.
+
+    Deliberately NOT _featured_card_html() (the home page's card): that one
+    leads with a half-circle gauge and repeats the same ticker the home
+    page is already showing. This one uses bars so the four factors are
+    comparable at a glance - the whole point of the redesign - and it reads
+    only fields _featured_analysis() actually populates (live_data and
+    social are off there, so no news/social claims are made).
+
+    Verdict vocabulary follows the same split page_deep_dive() already
+    uses: neutral EXCELLENT/GOOD/FAIR/WEAK in the public factual view,
+    STRONG LONG/LONG/WATCHLIST/AVOID only in the unlocked full view.
+    """
+    score = max(0.0, min(100.0, float(dd.get("long_score") or 0.0)))
+    factual = _factual()
+    if score > SIGNAL_THRESHOLDS["STRONG_LONG"]:
+        word, vcolor = ("EXCELLENT" if factual else "STRONG LONG"), "#34d399"
+    elif score > SIGNAL_THRESHOLDS["LONG"]:
+        word, vcolor = ("GOOD" if factual else "LONG"), "#34d399"
+    elif score > SIGNAL_THRESHOLDS["WATCHLIST"]:
+        word, vcolor = ("FAIR" if factual else "WATCHLIST"), "#fbbf24"
+    else:
+        word, vcolor = ("WEAK" if factual else "AVOID"), "#fb7185"
+
+    _pillmap = {
+        "UNDERVALUED": "#34d399", "FAIR": "#fbbf24", "EXPENSIVE": "#fb7185",
+    }
+    pills = [(word, vcolor)]
+    val = dd.get("valuation")
+    if val and val != "N/A":
+        pills.append((val, _pillmap.get(val, "#8aa0b8")))
+    pills_html = "".join(
+        "<span class='sdd-pill' style='background:%s22;color:%s;"
+        "border:1px solid %s55;'>%s</span>" % (c, c, c, html.escape(str(t)))
+        for t, c in pills
+    )
+
+    cur = html.escape(str(dd.get("currency") or ""))
+    iv = dd.get("intrinsic_value")
+    mos = dd.get("mos")
+    px_line = "<div class='sdd-ddf-px'>%s <b>%s</b> %s <b>%s</b> %s</div>" % (
+        html.escape(i18n.t("dd.empty.price_word", lang)),
+        "{:,.2f}".format(dd.get("price") or 0.0),
+        html.escape(i18n.t("dd.empty.iv_word", lang)),
+        ("{:,.2f}".format(iv) if iv else "N/A"),
+        cur,
+    )
+    mos_line = ""
+    if mos is not None:
+        mcol = "#34d399" if mos > 0 else "#fb7185"
+        mos_line = (
+            "<div class='sdd-ddf-px' style='color:%s;font-weight:700;'>"
+            "%+.1f%% %s</div>"
+            % (mcol, mos, html.escape(i18n.t("dd.empty.mos_word", lang)))
+        )
+
+    spark_html = ""
+    if spark_pts:
+        dot = ""
+        if last_pt:
+            lx, ly = last_pt.split(",")
+            dot = (
+                "<circle cx='%s' cy='%s' r='3.5' fill='#2dd4bf' stroke='#0b1220' "
+                "stroke-width='2'/>" % (lx, ly)
+            )
+        spark_html = (
+            "<div class='sdd-spark-cap'><span>%s</span><span>via Yahoo Finance</span></div>"
+            "<svg viewBox='0 0 440 52' width='100%%' height='46'>"
+            "<polyline points='%s' fill='none' stroke='#2dd4bf' stroke-width='2'/>"
+            "%s</svg>" % (html.escape(i18n.t("dd.empty.spark_cap", lang)), spark_pts, dot)
+        )
+
+    bars = (
+        _dd_empty_bar_html(
+            i18n.t("dd.empty.f_quality", lang), dd.get("quality_score"),
+            _dd_empty_band_color(dd.get("quality_score")),
+        )
+        + _dd_empty_bar_html(
+            i18n.t("dd.empty.f_moat", lang), dd.get("moat"),
+            _dd_empty_band_color(dd.get("moat")),
+        )
+        + _dd_empty_bar_html(
+            i18n.t("dd.empty.f_mood", lang), dd.get("psychology"),
+            ("#34d399" if (dd.get("psychology") or 0) >= 0 else "#fb7185"),
+            signed=True,
+        )
+        + _dd_empty_bar_html(
+            i18n.t("dd.empty.f_attention", lang), dd.get("discovery"), "#60a5fa",
+        )
+    )
+
+    return """
+<div class='sdd-ddf'>
+  <div class='sdd-ddf-grid'>
+    <div>
+      <div class='sdd-ddf-head'>
+        <span class='sdd-ddf-tkr'>{tkr}</span>
+        <span class='sdd-ddf-nm'>{name}</span>
+        {pills}
+      </div>
+      <div class='sdd-ddf-mid'>
+        <div>
+          <div class='sdd-ddf-k'>{score_lbl}</div>
+          <div class='sdd-ddf-score' style='color:{vcolor};'>{score:.1f}</div>
+        </div>
+        <div>{px}{mos}</div>
+      </div>
+      {spark}
+    </div>
+    <div>
+      <div class='sdd-ddf-k' style='margin-bottom:8px;'>{drivers}</div>
+      {bars}
+    </div>
+  </div>
+</div>""".format(
+        tkr=html.escape(str(dd.get("ticker") or "")),
+        name=html.escape(str(dd.get("name") or "")),
+        pills=pills_html,
+        score_lbl=html.escape(i18n.t("dd.kpi.value_score", lang)),
+        vcolor=vcolor,
+        score=score,
+        px=px_line,
+        mos=mos_line,
+        spark=spark_html,
+        drivers=html.escape(i18n.t("dd.empty.drivers", lang)),
+        bars=bars,
+    )
+
+
+def _render_dd_empty_state():
+    """Deep Dive FIRST SCREEN - what a visitor sees before searching.
+
+    Replaces the previous three-instructions-and-nothing-else empty state
+    (st.caption -> st.info("Search a ticker above...") -> st.pills("Try
+    one:")). Order now: the question the page answers, a full-width search
+    box (the header's own [3,4,3] strip was narrow enough to truncate its
+    own placeholder mid-word, which is why the header renders without it
+    here), then a real Deep Dive for a rotating ticker, then the example
+    chips.
+
+    The featured ticker comes from the fixed _FEATURED_ROTATION, offset by
+    3 from the day-of-year the home page's own fallback uses so the two
+    pages don't show the same company on the same day. Compute is the
+    existing _featured_analysis(ticker, day_key) - cached 6h, live_data
+    and social off - so this adds no new quota cost and at most one cold
+    fetch per ticker per six hours.
+
+    Every fetch is wrapped: _featured_analysis returns None on any engine
+    error, and a price-history failure only drops the sparkline. If the
+    card can't be built at all the page degrades to exactly the old
+    search-plus-chips view rather than rendering a blank panel.
+    """
+    _lang = st.session_state.get("lang", "en")
+
+    st.markdown(
+        "<div class='sdd-ddh-title'>%s</div><div class='sdd-ddh-sub'>%s</div>"
+        % (
+            html.escape(i18n.t("dd.empty.headline", _lang)),
+            html.escape(i18n.t("dd.empty.sub", _lang)),
+        ),
+        unsafe_allow_html=True,
+    )
+
+    with st.form("dd_empty_search_form", clear_on_submit=False, border=False):
+        _s_col, _b_col = st.columns([6, 1])
+        with _s_col:
+            _search_text = st.text_input(
+                "Ticker search",
+                placeholder=i18n.t("header.search_placeholder", _lang),
+                label_visibility="collapsed",
+                key="dd_empty_search",
+            )
+        with _b_col:
+            _searched = st.form_submit_button(
+                i18n.t("header.search_button", _lang),
+                width="stretch", type="primary",
+            )
+    if _searched:
+        _dispatch_search(_search_text)
+
+    _feat = None
+    _spark_pts, _last_pt = None, None
+    try:
+        _today = datetime.now(timezone.utc).date()
+        _feat_tk = _FEATURED_ROTATION[
+            (_today.timetuple().tm_yday + 3) % len(_FEATURED_ROTATION)
+        ]
+        _feat = _featured_analysis(_feat_tk, _today.strftime("%Y-%m-%d"))
+    except Exception:
+        _feat = None
+
+    if _feat and not _feat.get("error"):
+        try:
+            _closes = get_price_history(_feat["ticker"])["Close"].dropna().tail(120)
+            _spark_pts, _last_pt = _spark_path(_closes)
+        except Exception:
+            _spark_pts, _last_pt = None, None
+        st.markdown(
+            "<div class='sdd-ddf-rule'><span class='k'>%s</span>"
+            "<span class='l'></span>"
+            "<a href='/deep-dive?ticker=%s' target='_self'>%s</a></div>%s"
+            % (
+                html.escape(i18n.t("dd.empty.example", _lang)),
+                _urlquote(_feat["ticker"]),
+                html.escape(i18n.t("dd.empty.open_full", _lang)),
+                _dd_empty_featured_html(_feat, _spark_pts, _last_pt, _lang),
+            ),
+            unsafe_allow_html=True,
+        )
+
+    _render_example_chips("dd_empty")
+
+
 def page_deep_dive():
     # Deep Dive first-screen instruction, Part 4: a ticker landing (either
     # a fresh ?ticker= query param, or a result already sitting in session
@@ -9150,7 +9459,20 @@ def page_deep_dive():
         (st.query_params.get("ticker") or "").strip()
         or st.session_state.get("dd_result")
     )
-    _render_header(compact=True, page_label="Deep Dive", ultra_compact=_dd_ticker_landing, current="deep_dive")
+    # Deep Dive first screen: on the EMPTY state (no ?ticker=, no result in
+    # session) the hero below renders its own headline + search box, because
+    # the pitch has to sit ABOVE the box and the header's own [3,4,3] strip
+    # is narrow enough to truncate its own placeholder mid-word. So the
+    # header's search strip is suppressed here exactly the way Money Tools
+    # already does it (show_search=False) - account bar, nav row and mobile
+    # bottom nav are untouched. On a ticker landing _dd_ticker_landing is
+    # True, which also means ultra_compact=True, and that branch renders its
+    # own compact search strip and returns before show_search is consulted -
+    # so the result view is byte-identical to before.
+    _render_header(
+        compact=True, page_label="Deep Dive", ultra_compact=_dd_ticker_landing,
+        current="deep_dive", show_search=_dd_ticker_landing,
+    )
     _dd = st.session_state.get("dd_result")
 
     # Shareable URLs: /deep-dive?ticker=CSL.AX runs the analysis directly,
@@ -9184,7 +9506,13 @@ def page_deep_dive():
     # The explanatory line only earns its space when there's nothing else
     # on the page yet - and it leads with outcomes, not model internals
     # (the methodology detail lives on the results themselves).
-    if _dd is None or _dd.get("error"):
+    # Deep Dive first screen: the empty state now opens with its own
+    # headline + sub-line (dd.empty.headline / dd.empty.sub, rendered by
+    # _render_dd_empty_state), so this caption would be a second, quieter
+    # copy of the same pitch directly underneath it. Kept for the ERROR
+    # state, which has no hero and where it's still the only orientation
+    # on the page.
+    if _dd is not None and _dd.get("error"):
         if _factual():
             st.caption(
                 "One ticker, the complete picture: an intrinsic value "
@@ -9204,8 +9532,7 @@ def page_deep_dive():
             )
 
     if _dd is None:
-        st.info("Search a ticker above to see its Deep Dive - or try one of these:")
-        _render_example_chips("dd_empty")
+        _render_dd_empty_state()
     elif _dd.get("error"):
         st.error(_dd["error"])
         _render_suggestion_chips("dd_err", st.session_state.get("search_suggestions") or [])

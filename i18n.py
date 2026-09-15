@@ -193,6 +193,36 @@ EN = {
     # links to the full analysis below rather than just decoration.
     "dd.chip.scroll_cue": "Full analysis below ↓",
 
+    # ---------------------------------------------------------------
+    # Deep Dive FIRST SCREEN (pre-search). The empty state used to be
+    # three instructions stacked on top of each other - a grey caption,
+    # an st.info telling you to search, then a "Try one:" pill label -
+    # and nothing at all showing what a Deep Dive actually produces.
+    # It now leads with the question the page answers, then renders a
+    # real, cached Deep Dive for a rotating ticker underneath the search
+    # box. See _render_dd_empty_state() in app.py.
+    # ---------------------------------------------------------------
+    "dd.empty.headline": (
+        "What is this company worth, and is now a sane time to buy it?"
+    ),
+    "dd.empty.sub": (
+        "A live DCF built from the company's own cash flows, a quality "
+        "score from reported fundamentals, and a read on whether the "
+        "crowd is fearful or greedy - every input stated, every estimate "
+        "flagged."
+    ),
+    "dd.empty.example": "Today's example",
+    "dd.empty.open_full": "Open the full Deep Dive →",
+    "dd.empty.drivers": "What drives it",
+    "dd.empty.price_word": "Price",
+    "dd.empty.iv_word": "vs intrinsic",
+    "dd.empty.mos_word": "margin of safety",
+    "dd.empty.spark_cap": "6-month close",
+    "dd.empty.f_quality": "Quality",
+    "dd.empty.f_moat": "Moat",
+    "dd.empty.f_mood": "Crowd mood",
+    "dd.empty.f_attention": "Attention",
+
     "dd.kpi.price": "Price",
     "dd.kpi.intrinsic_value": "Intrinsic Value",
     "dd.kpi.mos_label": "Margin of safety (discount to estimated worth)",
@@ -2909,6 +2939,28 @@ ES = {
     "dd.chip.financials": "Financieros de 10 años",
     "dd.chip.peers": "Comparables",
     "dd.chip.scroll_cue": "Análisis completo abajo ↓",
+
+    # Deep Dive first screen (pre-search) - see the EN block's comment.
+    "dd.empty.headline": (
+        "¿Cuánto vale esta empresa y es sensato comprarla ahora?"
+    ),
+    "dd.empty.sub": (
+        "Un DCF en vivo construido con los propios flujos de caja de la "
+        "empresa, un puntaje de calidad a partir de los fundamentales "
+        "reportados, y una lectura de si el mercado tiene miedo o "
+        "codicia - cada dato declarado, cada estimación señalada."
+    ),
+    "dd.empty.example": "Ejemplo de hoy",
+    "dd.empty.open_full": "Ver el Análisis Profundo completo →",
+    "dd.empty.drivers": "Qué lo impulsa",
+    "dd.empty.price_word": "Precio",
+    "dd.empty.iv_word": "vs. intrínseco",
+    "dd.empty.mos_word": "margen de seguridad",
+    "dd.empty.spark_cap": "Cierre de 6 meses",
+    "dd.empty.f_quality": "Calidad",
+    "dd.empty.f_moat": "Foso",
+    "dd.empty.f_mood": "Ánimo del mercado",
+    "dd.empty.f_attention": "Atención",
 
     "dd.kpi.price": "Precio",
     "dd.kpi.intrinsic_value": "Valor intrínseco",
