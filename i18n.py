@@ -2410,6 +2410,7 @@ EN = {
     ),
     "portfolio.stress.newmoney_col_holding": "Holding",
     "portfolio.stress.newmoney_col_mix_pct": "Mix %",
+    "portfolio.stress.newmoney_col_invested": "You invested",
     "portfolio.stress.newmoney_col_hold_now": "You hold now",
     "portfolio.stress.newmoney_col_target": "Target after deposit",
     "portfolio.stress.newmoney_col_gap": "Gap",
@@ -2433,6 +2434,13 @@ EN = {
         "inputs, not a recommendation to buy anything."
     ),
     "portfolio.stress.newmoney_zero_caption": "Enter an amount above to see what it would buy.",
+    "portfolio.stress.newmoney_invested_caption": (
+        "\"You invested\" is your recorded cost basis (shares × buy price) "
+        "for each holding, and the % beneath it is its gain/loss since then. "
+        "If you've bought into a position more than once, this reflects "
+        "only the shares/buy price currently saved for it, not a running "
+        "average of every purchase."
+    ),
     "portfolio.stress.footer_caption": (
         "Correlations rise in severe panics; the replays capture this (it "
         "happened in the data), the grid and simulation partly understate it."
@@ -4842,6 +4850,7 @@ ES = {
     ),
     "portfolio.stress.newmoney_col_holding": "Posición",
     "portfolio.stress.newmoney_col_mix_pct": "% combinación",
+    "portfolio.stress.newmoney_col_invested": "Invertiste",
     "portfolio.stress.newmoney_col_hold_now": "Tienes ahora",
     "portfolio.stress.newmoney_col_target": "Objetivo tras el depósito",
     "portfolio.stress.newmoney_col_gap": "Brecha",
@@ -4867,6 +4876,13 @@ ES = {
         "comprar nada."
     ),
     "portfolio.stress.newmoney_zero_caption": "Ingresa un monto arriba para ver qué compraría.",
+    "portfolio.stress.newmoney_invested_caption": (
+        "\"Invertiste\" es tu costo base registrado (acciones × precio de "
+        "compra) para cada posición, y el % debajo es su ganancia/pérdida "
+        "desde entonces. Si compraste una posición más de una vez, esto "
+        "refleja solo las acciones/precio de compra guardados actualmente "
+        "para ella, no un promedio de todas las compras."
+    ),
     "portfolio.stress.footer_caption": (
         "Las correlaciones aumentan en pánicos severos; las repeticiones "
         "históricas lo capturan (ocurrió en los datos), la cuadrícula y la "

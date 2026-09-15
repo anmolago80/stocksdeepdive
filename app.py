@@ -16289,6 +16289,26 @@ def _stress_weights_and_value(_holdings, _analyses):
     return weights, (_totals.get("value_aud") or 0.0)
 
 
+def _stress_costs(_holdings, _analyses):
+    """{ticker: cost_aud} - the AUD cost basis (shares x buy_price,
+    FX-converted) for every holding, straight from _build_portfolio_rows
+    so it lines up exactly with `weights` (value_aud) from
+    _stress_weights_and_value above, with zero extra assumptions. Feeds
+    the "Deploy new money" section's "You invested" column (see
+    _render_stress_rebalance_sandbox). Note this is whatever shares/
+    buy_price is currently saved per (portfolio, ticker) - portfolio_
+    store enforces exactly one row per ticker per portfolio and never
+    auto-averages repeat purchases, so a position bought into more than
+    once reflects only its latest saved buy_price/shares here, same as
+    every other tab that reads cost_aud."""
+    _rows, _totals, _fx_missing, _price_missing = _build_portfolio_rows(_holdings, _analyses)
+    costs = {}
+    for r in _rows:
+        if r["cost_aud"] is not None:
+            costs[r["ticker"]] = costs.get(r["ticker"], 0.0) + r["cost_aud"]
+    return costs
+
+
 def _stress_dt(d):
     return d.strftime("%Y-%m-%d") if d is not None else None
 
@@ -16908,12 +16928,14 @@ def _render_stress_per_holding_table(result, _st_, lang="en"):
 
 
 def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, index_histories,
-                                       total_value_aud, current_result, _st_, lang="en"):
+                                       total_value_aud, current_result, _st_, lang="en",
+                                       costs=None):
     st.markdown(f"##### {_st_('rebalance_title')}")
     st.caption(stress_etf_help_copy.stress_section_caption("sandbox", lang))
     st.caption(_st_("rebalance_never_suggests"))
     st.caption(_st_("rebalance_never_modifies"))
 
+    costs = costs or {}
     _skey = f"stress_wi_{_active_portfolio or 'all'}"
     tickers = sorted(weights.keys())
     total_current = sum(weights.values()) or 1.0
@@ -17699,15 +17721,25 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
             _nm_unallocated = _nm_deposit - sum(_nm_spent.values())
             _nm_new_total = _nm_current_total + _nm_deposit
 
-            _col_holding, _col_mix, _col_hold_now, _col_target, _col_gap, _col_buys, _col_units, _col_weight = (
+            _col_holding, _col_mix, _col_invested, _col_hold_now, _col_target, _col_gap, _col_buys, _col_units, _col_weight = (
                 _st_("newmoney_col_holding"), _st_("newmoney_col_mix_pct"),
+                _st_("newmoney_col_invested"),
                 _st_("newmoney_col_hold_now"), _st_("newmoney_col_target"),
                 _st_("newmoney_col_gap"), _st_("newmoney_col_buys"),
                 _st_("newmoney_col_units"), _st_("newmoney_col_weight_after"),
             )
             _nm_rows = []
+            _nm_gain_signs = []  # parallel to _nm_rows (holding rows only) - >0/<0/None
             for t in tickers:
                 _row = {_col_holding: t, _col_mix: f"{edited_pcts[t]:.1f}%"}
+                _cost = costs.get(t, 0.0)
+                if _cost > 0:
+                    _gain_pct = (weights.get(t, 0.0) - _cost) / _cost * 100.0
+                    _row[_col_invested] = f"{_fmt_aud(_cost)} ({_gain_pct:+.1f}%)"
+                    _nm_gain_signs.append(_gain_pct)
+                else:
+                    _row[_col_invested] = _fmt_aud(_cost) if _cost else _na
+                    _nm_gain_signs.append(None)
                 if _nm_target is not None:
                     _gap = weights.get(t, 0.0) - _nm_target[t]
                     _row[_col_hold_now] = _fmt_aud(weights.get(t, 0.0))
@@ -17726,8 +17758,11 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
                 )
                 _nm_rows.append(_row)
 
-            # Total footer row, matching the mock's own.
+            # Total footer row, matching the mock's own - no gain/loss % on
+            # the aggregate, same as the mockup left it.
             _total_row = {_col_holding: _st_("newmoney_col_total"), _col_mix: f"{sum(edited_pcts.values()):.1f}%"}
+            _total_row[_col_invested] = _fmt_aud(sum(costs.get(t, 0.0) for t in tickers))
+            _nm_gain_signs.append(None)
             if _nm_target is not None:
                 _total_row[_col_hold_now] = _fmt_aud(_nm_current_total)
                 _total_row[_col_target] = _fmt_aud(_nm_current_total + _nm_deposit)
@@ -17744,6 +17779,11 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
             def _style_nm_buys(_):
                 styles = pd.DataFrame("", index=_nm_df.index, columns=_nm_df.columns)
                 styles[_col_buys] = "color: #34d399; font-weight: 600"
+                for _i, _sign in enumerate(_nm_gain_signs):
+                    if _sign is not None:
+                        styles.at[_nm_df.index[_i], _col_invested] = (
+                            "color: #34d399" if _sign >= 0 else "color: #fb7185"
+                        )
                 return styles
 
             st.dataframe(
@@ -17751,6 +17791,7 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
                 hide_index=True, width='stretch',
             )
             st.caption(_st_("newmoney_unallocated_caption", amount=_fmt_aud(_nm_unallocated)))
+            st.caption(_st_("newmoney_invested_caption"))
             if _nm_target is not None:
                 st.caption(_st_("newmoney_method_b_caption"))
             st.caption(_st_(
@@ -17773,6 +17814,7 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
     if not weights:
         st.caption(_st_("empty"))
         return
+    _nm_costs = _stress_costs(_holdings, _analyses)
 
     st.caption(_st_("intro_caption"))
 
@@ -17930,7 +17972,7 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
     # --- 5. Rebalance sandbox --------------------------------------------
     _render_stress_rebalance_sandbox(
         _active_portfolio, weights, histories, index_histories, total_value_aud, result, _st_,
-        lang=_lang,
+        lang=_lang, costs=_nm_costs,
     )
 
     # --- 6. Per-holding detail --------------------------------------------
