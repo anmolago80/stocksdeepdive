@@ -39,16 +39,38 @@ Jones 30 - fetch_dow30()'s target Wikipedia page no longer carries a
 "Components" table matching what the scraper looks for, so it never
 resolved any tickers and the universe never had a first successful
 nightly scan. Removed from USA_UNIVERSES/the Scanner's popular pills/the
-nightly cadence (replaced by Russell 2000, already the most resilient US
-fetcher here); fetch_dow30()/DOW30_WIKI_URL/its get_universe_pool()
-branch are left in place below, just unreferenced, in case Wikipedia's
-page structure gets fixed later.
+nightly cadence (replaced by Russell 2000, believed at the time to be the
+most resilient US fetcher here); fetch_dow30()/DOW30_WIKI_URL/its
+get_universe_pool() branch are left in place below, just unreferenced, in
+case Wikipedia's page structure gets fixed later.
+
+Part 52 (16 Sep 2026): that belief turned out to be wrong too - the
+production nightly scheduler's own logs showed "Russell 2000: no tickers
+resolved (Web scrape unavailable)" on every attempt, and Russell 3000
+(its derived union with Russell 1000) with it. Root cause: ishares.com
+blocks requests from the production datacentre outright, and the disk
+cache (fetch_russell2000()'s/fetch_russell1000()'s own last-resort
+fallback) had therefore never once been populated - there was no
+fallback under the fallback. Fixed per-universe: Russell 1000 gained a
+live Wikipedia fallback (fetch_russell1000_wikipedia(), which also feeds
+sector_cache_store for free); Russell 2000 has no size-matched public
+constituent table anywhere, so it gained a repo-committed static holdings
+snapshot instead (_r2k_static_fallback_df() - a real, once-downloaded,
+verified ~1,957-row export, not a hand-picked list, honestly labelled
+with its as-of date and expected to go stale until manually refreshed at
+the next reconstitution). Both fetchers now also try the live iShares
+CSV with browser-like headers and one retry first (_fetch_ishares_csv) -
+cheap, might start working again someday. See _resolve_russell1000()/
+_resolve_russell2000() for the full per-universe fallback chains, and
+Part 52's own report for what was actually verified live before this
+shipped.
 """
 
 import io
 import os
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 
 import pandas as pd
 import requests
@@ -58,6 +80,43 @@ import yfinance as yf
 import sector_cache_store
 
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StocksDeepDiveBot/1.0; +https://stocksdeepdive.com)"}
+
+# Part 52: iShares blocks the production datacentre outright (confirmed via
+# nightly scheduler logs - "Russell 2000: no tickers resolved (Web scrape
+# unavailable)" on every attempt), not just a bare-Python-UA rejection - so
+# this alone is "cheap, might start working" rather than a guaranteed fix,
+# per the Part's own framing. Real Chrome UA/Accept/Accept-Language/Referer
+# instead of _HEADERS' honest-bot string above, used only for the two
+# iShares CSV exports (IWB/IWM) - every other fetch in this module keeps
+# its existing _HEADERS untouched.
+_ISHARES_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/csv,application/csv,text/plain,*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.ishares.com/",
+}
+
+
+def _fetch_ishares_csv(url, timeout=20, retries=1, backoff=1.5):
+    """GET an iShares holdings-CSV export with _ISHARES_BROWSER_HEADERS and
+    one retry after a short backoff - a blocked/rate-limited response is
+    sometimes transient, and this is nearly free to try. Raises on final
+    failure; callers already wrap this in their own try/except, same as
+    every other requests.get call in this module."""
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            resp = requests.get(url, headers=_ISHARES_BROWSER_HEADERS, timeout=timeout)
+            resp.raise_for_status()
+            return resp.text
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(backoff)
+    raise last_exc
 
 SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 SP600_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies"
@@ -115,6 +174,16 @@ IWB_HOLDINGS_CSV_URL = (
     "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf/"
     "?fileType=csv&fileName=IWB_holdings&dataType=fund"
 )
+
+# Part 52.1: Russell 1000 Wikipedia fallback, tried after the live iShares
+# IWB export fails. NOT "Russell 1000 Index" (https://en.wikipedia.org/
+# wiki/Russell_1000_Index) - that article only describes the index and
+# carries no constituent table. This is the dedicated list article,
+# live-verified during this Part's development (WebSearch -> WebFetch,
+# then the full page fetched and test-parsed against real HTML - see
+# Part 52's own report): a "Company / Symbol / GICS Sector / GICS
+# Sub-Industry" table, ~1,000 rows.
+RUSSELL1000_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_Russell_1000_companies"
 
 # Part 34.4 (11 Sep 2026): S&P 500 Dividend Aristocrats' own Wikipedia
 # article - live-verified during development via WebSearch->WebFetch
@@ -487,44 +556,161 @@ def _r2k_cache_path():
     return os.path.join(base, "russell2000_cache.csv")
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def fetch_russell2000():
-    """
-    Best-effort: iShares publishes IWM's full holdings as a downloadable CSV.
-    The export has several metadata rows before the real header. Returns a
-    ['Ticker','Sector'] frame (Sector is always None - this export doesn't
-    carry GICS sector) or None if unavailable.
-    """
+def _disk_cache_label(universe_name, cache_path):
+    """Part 52: the disk-cache fallback used to share the SAME "Web scrape
+    unavailable" label as total failure (get_universe_pool never actually
+    distinguished "served yesterday's real list" from "served nothing") -
+    this makes it honest, and states the list's own as-of date (the
+    cache file's mtime - it's rewritten only when a fetch actually
+    succeeds, so mtime IS the list's real age) same as the static file's
+    own dated label below."""
     try:
-        resp = requests.get(IWM_HOLDINGS_CSV_URL, headers=_HEADERS, timeout=20)
-        resp.raise_for_status()
-        raw = pd.read_csv(io.StringIO(resp.text), skiprows=9, on_bad_lines="skip")
-    except Exception:
-        return _r2k_from_disk_cache()
+        as_of = datetime.fromtimestamp(os.path.getmtime(cache_path), tz=timezone.utc).strftime("%d %b %Y")
+        return f"{universe_name} scrape unavailable - last cached list (as of {as_of}) instead"
+    except OSError:
+        return f"{universe_name} scrape unavailable - last cached list instead"
 
+
+def _clean_ishares_holdings_df(raw, min_rows=1, max_rows=None):
+    """Shared cleaning for an iShares holdings-CSV export already read into
+    a DataFrame (skiprows=9 past the metadata block) - used by BOTH the
+    live IWM/IWB fetch and the Russell 2000 static-file fallback (Part
+    52.2), so there is zero behavioural drift between "live" and
+    "static" data quality.
+
+    Drops cash/FX placeholder rows, the literal "-" ticker iShares uses
+    for unlisted/escrow/private-placement lines (a real $ holding but not
+    a tradeable, scannable ticker - found and fixed during this Part's
+    verification against the real ~1,957-row IWM export, where it was
+    silently surviving the old CASH/USD-only filter), and anything
+    longer than 6 chars. (An earlier version also dropped any ticker
+    containing "-" entirely, which silently removed legitimate class
+    shares - small-cap indices do contain them - so this only excludes
+    the exact "-" placeholder, not every ticker containing a dash.)
+
+    Returns None if there's no ticker-like column, nothing survives
+    cleaning, or the resulting row count falls outside [min_rows,
+    max_rows] (max_rows=None skips that upper check) - the same min/max-
+    row guard discipline _parse_table() already uses for Wikipedia
+    tables, applied here for CSV exports."""
     ticker_col = _find_column(raw.columns, ["ticker"])
     if ticker_col is None:
-        return _r2k_from_disk_cache()
+        return None
 
     df = raw[[ticker_col]].copy()
     df.columns = ["Ticker"]
     df = df.dropna(subset=["Ticker"])
-    # Drop cash/FX placeholder rows only. (An earlier version also dropped
-    # any ticker containing "-", which silently removed legitimate class
-    # shares - small-cap indices do contain them.)
     _t = df["Ticker"].astype(str).str.strip().str.upper()
-    df = df[~_t.str.contains("CASH|USD", na=False) & (_t.str.len() <= 6)]
-    if df.empty:
+    df = df[
+        ~_t.str.contains("CASH|USD", na=False)
+        & (_t.str.len() > 0) & (_t.str.len() <= 6)
+        & (_t != "-")
+    ]
+    if df.empty or len(df) < min_rows:
+        return None
+    if max_rows is not None and len(df) > max_rows:
         return None
 
     df["Ticker"] = df["Ticker"].apply(_normalize_us_ticker)
     df["Sector"] = None
-    out = df[["Ticker", "Sector"]]
+    return df[["Ticker", "Sector"]].drop_duplicates(subset="Ticker").reset_index(drop=True)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_russell2000():
+    """Best-effort LIVE attempt only. iShares publishes IWM's full holdings
+    as a downloadable CSV; the export has several metadata rows before
+    the real header. Returns a ['Ticker','Sector'] frame (Sector is
+    always None - this export's own Sector column is coarser than GICS
+    and isn't wired up here) or None on ANY failure.
+
+    Part 52: no internal fallback anymore - iShares blocks the
+    production datacentre outright (nightly scheduler logs: "Russell
+    2000: no tickers resolved (Web scrape unavailable)" on every
+    attempt), so this now uses _fetch_ishares_csv's browser-like headers
+    + one retry (cheap, might start working) and returns None straight
+    away on failure. _resolve_russell2000() below owns the full disk-
+    cache/static-file chain, so THIS function's return value alone tells
+    get_universe_pool whether the LIVE path specifically worked, for an
+    accurate source label - the old version conflated "live worked" and
+    "disk cache worked" into the same return value."""
+    try:
+        text = _fetch_ishares_csv(IWM_HOLDINGS_CSV_URL)
+        raw = pd.read_csv(io.StringIO(text), skiprows=9, on_bad_lines="skip")
+    except Exception:
+        return None
+
+    out = _clean_ishares_holdings_df(raw)
+    if out is None:
+        return None
     try:
         out.to_csv(_r2k_cache_path(), index=False)
     except OSError:
         pass
     return out
+
+
+def _r2k_static_cache_path():
+    """The repo-committed emergency fallback file (Part 52.2) - distinct
+    from _r2k_cache_path() above, which is a RUNTIME artifact that only
+    exists after some night's LIVE scrape has succeeded at least once.
+    Production has never had that happen (iShares blocks the datacentre
+    outright), so the disk cache alone left Russell 2000 permanently
+    empty. This file ships in the repo instead."""
+    return os.path.join(os.path.dirname(__file__), "russell2000_static_2026-09-14.csv")
+
+
+# Part 52.2: as-of date for the static file's own honest label, kept as a
+# named constant next to the file itself so the two can never drift apart
+# silently - update both together (filename + this constant + the file's
+# contents) by hand at the next reconstitution.
+RUSSELL2000_STATIC_AS_OF = "14 Sep 2026"
+
+
+def _r2k_static_fallback_df():
+    """Parses the repo-committed static IWM holdings snapshot (see
+    _r2k_static_cache_path()'s own comment for why this exists) through
+    the EXACT SAME _clean_ishares_holdings_df() the live CSV path uses -
+    same skiprows=9 metadata-block skip, same cleaning, same output
+    shape - so there's zero behavioural drift between "live" and
+    "static" Russell 2000 data. min_rows=1500/max_rows=2500 brackets the
+    real, verified row count (1,957 constituents as of 14 Sep 2026 - see
+    Part 52's own report for how this file was obtained and verified)
+    with headroom either side, same guard discipline as every other
+    fetcher in this module."""
+    try:
+        with open(_r2k_static_cache_path(), "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+    try:
+        raw = pd.read_csv(io.StringIO(text), skiprows=9, on_bad_lines="skip")
+    except Exception:
+        return None
+    return _clean_ishares_holdings_df(raw, min_rows=1500, max_rows=2500)
+
+
+def _resolve_russell2000():
+    """(df, source_label) for Russell 2000, trying each source in order
+    (Part 52.2): live iShares IWM CSV -> yesterday's disk cache -> the
+    repo-committed static snapshot. The live fetch persists to the disk
+    cache on success (see fetch_russell2000() above) so a single success
+    on ANY night gives every later cold-start a real fallback before
+    ever reaching the static file. Shared by get_universe_pool's own
+    "Russell 2000" branch (which needs the label) and _russell3000_df()
+    (which only needs the df - Russell 3000 gets this whole chain "for
+    free" simply by calling this instead of the old bare
+    fetch_russell2000())."""
+    df = fetch_russell2000()
+    if df is not None:
+        return df, "iShares IWM ETF holdings (live)"
+    df = _r2k_from_disk_cache()
+    if df is not None:
+        return df, _disk_cache_label("Russell 2000", _r2k_cache_path())
+    df = _r2k_static_fallback_df()
+    if df is not None:
+        return df, f"iShares export unavailable - static holdings list (as of {RUSSELL2000_STATIC_AS_OF})"
+    return None, "Web scrape unavailable"
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -651,8 +837,18 @@ def _russell3000_df():
     _sp1500_df() right above, just two parents instead of three. None
     only if NEITHER parent pool is available; otherwise the union of
     whichever one(s) are, de-duplicated by ticker (Russell reconstitution
-    windows can briefly show a name in both iShares exports)."""
-    parts = [df for df in (fetch_russell1000(), fetch_russell2000()) if df is not None]
+    windows can briefly show a name in both iShares exports).
+
+    Part 52.3: calls the two full _resolve_*() chains (live -> Wikipedia/
+    disk-cache -> static, per each parent's own fallback order) instead
+    of the old bare fetch_russell1000()/fetch_russell2000() - so Russell
+    3000 "needs no change" in the sense the instruction means: its own
+    derivation logic (union + de-dup) is untouched, it simply gets each
+    parent's new resilience for free by asking for the resolved parent
+    rather than only its live-only attempt. The label half of each
+    resolver's return is discarded here; only get_universe_pool's own
+    "Russell 3000" branch needs a label, and that one is unchanged."""
+    parts = [df for df, _label in (_resolve_russell1000(), _resolve_russell2000()) if df is not None]
     if not parts:
         return None
     return pd.concat(parts, ignore_index=True).drop_duplicates(subset="Ticker", keep="first")
@@ -678,36 +874,84 @@ def _r1k_from_disk_cache():
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_russell1000():
-    """Mirrors fetch_russell2000() exactly (same iShares CSV-export
-    mechanism, same disk-cache-on-failure fallback) - see that
-    function's own docstring for the shared reasoning."""
+    """Best-effort LIVE attempt only - mirrors fetch_russell2000() exactly
+    (same iShares CSV-export mechanism, same browser-like headers + one
+    retry via _fetch_ishares_csv, same shared _clean_ishares_holdings_df
+    cleaning). Part 52.1: no internal fallback anymore - see
+    fetch_russell2000()'s own docstring for why (_resolve_russell1000()
+    below owns the full Wikipedia/disk-cache chain)."""
     try:
-        resp = requests.get(IWB_HOLDINGS_CSV_URL, headers=_HEADERS, timeout=20)
-        resp.raise_for_status()
-        raw = pd.read_csv(io.StringIO(resp.text), skiprows=9, on_bad_lines="skip")
+        text = _fetch_ishares_csv(IWB_HOLDINGS_CSV_URL)
+        raw = pd.read_csv(io.StringIO(text), skiprows=9, on_bad_lines="skip")
     except Exception:
-        return _r1k_from_disk_cache()
-
-    ticker_col = _find_column(raw.columns, ["ticker"])
-    if ticker_col is None:
-        return _r1k_from_disk_cache()
-
-    df = raw[[ticker_col]].copy()
-    df.columns = ["Ticker"]
-    df = df.dropna(subset=["Ticker"])
-    _t = df["Ticker"].astype(str).str.strip().str.upper()
-    df = df[~_t.str.contains("CASH|USD", na=False) & (_t.str.len() <= 6)]
-    if df.empty:
         return None
 
-    df["Ticker"] = df["Ticker"].apply(_normalize_us_ticker)
-    df["Sector"] = None
-    out = df[["Ticker", "Sector"]]
+    out = _clean_ishares_holdings_df(raw)
+    if out is None:
+        return None
     try:
         out.to_csv(_r1k_cache_path(), index=False)
     except OSError:
         pass
     return out
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_russell1000_wikipedia():
+    """Part 52.1 fallback #2 for Russell 1000, tried after the live iShares
+    IWB export fails: Wikipedia's dedicated "List of Russell 1000
+    companies" article (RUSSELL1000_WIKI_URL - see that constant's own
+    comment for why it's NOT the "Russell 1000 Index" article, and for
+    the live-verification note). Same _parse_table() convention as every
+    other Wikipedia fetcher in this module: a "Company / Symbol / GICS
+    Sector / GICS Sub-Industry" table, min_rows=900 leaving headroom
+    below the real ~1,000-row count for ordinary reconstitution drift
+    while still rejecting a wrong/empty table.
+
+    Feeds the real GICS Sector column into sector_cache_store for free
+    (Part 52.1) - the one thing this source has that the iShares CSV
+    export doesn't. Also writes the shared disk cache on success (Part
+    52.3), same as the live iShares path above - a Wikipedia-only
+    success one night is still a real, persisted list for every later
+    cold-start, not just an in-memory answer for this one render."""
+    try:
+        html = _get(RUSSELL1000_WIKI_URL)
+    except Exception:
+        return None
+    df = _parse_table(html, ["symbol", "ticker"], ["gics sector", "sector"], _normalize_us_ticker, min_rows=900)
+    if df is None:
+        return None
+
+    for _, row in df.iterrows():
+        if row["Sector"]:
+            sector_cache_store.learn(row["Ticker"], row["Sector"], source="wikipedia_r1000")
+
+    try:
+        df.to_csv(_r1k_cache_path(), index=False)
+    except OSError:
+        pass
+    return df
+
+
+def _resolve_russell1000():
+    """(df, source_label) for Russell 1000, trying each source in order
+    (Part 52.1): live iShares IWB CSV -> Wikipedia's "List of Russell
+    1000 companies" -> yesterday's disk cache. The first two both persist
+    to the disk cache on success (Part 52.3), so a single success on
+    EITHER path, on any night, gives every later cold-start a real
+    fallback before ever falling through to a stale cache. Shared by
+    get_universe_pool's own "Russell 1000" branch (which needs the
+    label) and _russell3000_df() (which only needs the df)."""
+    df = fetch_russell1000()
+    if df is not None:
+        return df, "iShares IWB ETF holdings (live)"
+    df = fetch_russell1000_wikipedia()
+    if df is not None:
+        return df, "Wikipedia Russell 1000 (live)"
+    df = _r1k_from_disk_cache()
+    if df is not None:
+        return df, _disk_cache_label("Russell 1000", _r1k_cache_path())
+    return None, "Web scrape unavailable"
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -1043,8 +1287,9 @@ def get_universe_pool(country, universe):
         )
 
     if universe == "Russell 2000":
-        df = fetch_russell2000()
-        return (df, "iShares IWM ETF holdings (live)") if df is not None else (None, "Web scrape unavailable")
+        # Part 52.2: live iShares -> disk cache -> repo-committed static
+        # snapshot - see _resolve_russell2000()'s own docstring.
+        return _resolve_russell2000()
 
     if universe == "Small Caps (S&P 600)":
         df = fetch_sp600()
@@ -1145,8 +1390,10 @@ def get_universe_pool(country, universe):
         return (df, "Wikipedia S&P 400 (live)") if df is not None else (None, "Web scrape unavailable")
 
     if universe == "Russell 1000":
-        df = fetch_russell1000()
-        return (df, "iShares IWB ETF holdings (live)") if df is not None else (None, "Web scrape unavailable")
+        # Part 52.1: live iShares -> Wikipedia "List of Russell 1000
+        # companies" -> disk cache - see _resolve_russell1000()'s own
+        # docstring.
+        return _resolve_russell1000()
 
     if universe == "S&P 1500":
         df = _sp1500_df()
