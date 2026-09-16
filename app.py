@@ -15551,6 +15551,24 @@ def _fmt_aud(v):
     return f"A${v:,.0f}" if v is not None else "n/a"
 
 
+def _fmt_aud_md(v):
+    """_fmt_aud(), with its literal "$" escaped for markdown-rendered
+    text (Part 53 bugfix). st.caption/st.warning/st.markdown all run
+    Streamlit's own markdown+KaTeX renderer, which treats a PAIR of
+    literal "$" characters on the same line as inline math delimiters -
+    e.g. the Super projector's tax-wedge caption, which interpolates
+    THREE _fmt_aud() amounts into one st.caption() call, rendered as
+    garbled italic math instead of plain text ("A$1,700/mo costs you"
+    read as a LaTeX expression). Use this instead of _fmt_aud() only at
+    a call site where the same rendered string carries two or more
+    dollar amounts; a lone "$" has no closing pair and needs no escape,
+    and every non-markdown context (st.dataframe cells, st.metric,
+    chart labels, st.table) should keep using plain _fmt_aud() - a
+    literal backslash would render visibly there instead of being
+    consumed as an escape."""
+    return _fmt_aud(v).replace("$", "\\$")
+
+
 def _fmt_pct1(v):
     return f"{v * 100:.1f}%" if v is not None else "n/a"
 
@@ -20440,9 +20458,12 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
     if _costed:
         _by_cost = sorted(_costed, key=lambda r: r["cost_aud"])
         _max_r, _min_r = _by_cost[-1], _by_cost[0]
+        # Part 53: two literal "A$" amounts on one st.caption() line - same
+        # bug/fix as _fmt_aud_md() above (this caption isn't routed
+        # through _fmt_aud() at all, so escaped directly here instead).
         st.caption(
-            f"Max investment: **{_max_r['label']}** (A${_max_r['cost_aud']:,.0f}) · "
-            f"Min investment: **{_min_r['label']}** (A${_min_r['cost_aud']:,.0f})"
+            f"Max investment: **{_max_r['label']}** (A\\${_max_r['cost_aud']:,.0f}) · "
+            f"Min investment: **{_min_r['label']}** (A\\${_min_r['cost_aud']:,.0f})"
         )
 
     if not _is_combined:
@@ -23340,37 +23361,43 @@ def _render_super_tool(email):
             xaxis=dict(title=None),
         )
         sdd_plotly_chart(_fig)
+        # Part 53: every _fmt_aud() below is _fmt_aud_md() instead - each of
+        # these captions interpolates TWO OR MORE dollar amounts into one
+        # st.caption()/st.warning()/st.markdown() call, and Streamlit's
+        # markdown renderer treats a pair of literal "$" on the same line
+        # as inline LaTeX math delimiters (see _fmt_aud_md()'s own
+        # docstring for the bug this fixes).
         st.caption(_sl(
             "chart_caption", age=retirement_age,
-            balance_baseline=_fmt_aud(_proj["end_balance_baseline"]),
-            balance_with_sacrifice=_fmt_aud(_proj["end_balance_with_sacrifice"]),
+            balance_baseline=_fmt_aud_md(_proj["end_balance_baseline"]),
+            balance_with_sacrifice=_fmt_aud_md(_proj["end_balance_with_sacrifice"]),
         ))
         if extra_sacrifice_monthly > 0:
-            st.markdown(f"**{_sl('delta_caption', sacrifice=_fmt_aud(extra_sacrifice_monthly), delta=_fmt_aud(_proj['delta']))}**")
+            st.markdown(f"**{_sl('delta_caption', sacrifice=_fmt_aud_md(extra_sacrifice_monthly), delta=_fmt_aud_md(_proj['delta']))}**")
 
         if extra_sacrifice_monthly > 0:
             _wedge = super_engine.tax_wedge(extra_sacrifice_monthly, marginal_rate_pct / 100.0)
             st.caption(_sl(
-                "tax_wedge_caption", sacrifice=_fmt_aud(extra_sacrifice_monthly),
-                take_home=_fmt_aud(_wedge["take_home_cost"]), marginal=marginal_rate_pct,
-                super_landing=_fmt_aud(_wedge["super_landing"]),
+                "tax_wedge_caption", sacrifice=_fmt_aud_md(extra_sacrifice_monthly),
+                take_home=_fmt_aud_md(_wedge["take_home_cost"]), marginal=marginal_rate_pct,
+                super_landing=_fmt_aud_md(_wedge["super_landing"]),
                 head_start=_wedge["head_start_pct"] if _wedge["head_start_pct"] is not None else 0.0,
             ))
 
         _cap = super_engine.concessional_cap_check(salary, extra_sacrifice_monthly)
         if _cap["exceeds"]:
             st.warning(_sl(
-                "cap_check_warn", used=_fmt_aud(_cap["total"]), cap=_fmt_aud(_cap["cap"]),
-                excess=_fmt_aud(_cap["total"] - _cap["cap"]),
+                "cap_check_warn", used=_fmt_aud_md(_cap["total"]), cap=_fmt_aud_md(_cap["cap"]),
+                excess=_fmt_aud_md(_cap["total"] - _cap["cap"]),
             ))
         else:
-            st.caption(_sl("cap_check_ok", used=_fmt_aud(_cap["total"]), cap=_fmt_aud(_cap["cap"])))
+            st.caption(_sl("cap_check_ok", used=_fmt_aud_md(_cap["total"]), cap=_fmt_aud_md(_cap["cap"])))
 
         _d293 = super_engine.division293_check(salary, _cap["total"])
         if _d293["applies"]:
             st.caption(_sl(
-                "div293_note", combined=_fmt_aud(_d293["combined"]),
-                threshold=_fmt_aud(_d293["threshold"]),
+                "div293_note", combined=_fmt_aud_md(_d293["combined"]),
+                threshold=_fmt_aud_md(_d293["threshold"]),
             ))
 
     st.caption(_sl("nominal_note"))
