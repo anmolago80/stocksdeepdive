@@ -1051,13 +1051,80 @@ _ADMIN_SECTION_LABELS = [
     ("other", "🔗 Other"),
 ]
 
+# Part 53.2 follow-up (16 Sep 2026, "Other bucket is 4,317 vs a few
+# hundred for every real section"): the first pass only mapped the six
+# raw keys _bump_page_view() itself uses (app.py, Streamlit-side) and
+# missed every key server.py's _count_view() writes for the FAST, non-
+# Streamlit static/SEO surfaces - the same page_views table, a
+# completely different set of call sites. Rebuilt from an exhaustive
+# `grep -rn "metrics_store.bump(\|_bump_page_view(\|_count_view("`
+# across the whole repo (both files' full call-site lists are in the
+# Part 53.2-follow-up deployment report):
+#
+#   app.py (_bump_page_view, Streamlit):
+#     research, home, scanner, results_calendar, comparison, portfolio,
+#     methodology, about, tools, model_history, privacy,
+#     how_ai_is_used, admin_dashboard, deep_dive
+#   server.py (_count_view, fast static/SEO paths - the SAME
+#   page_views table, via metrics_store.bump() directly):
+#     home, blog, blog:<slug>, methodology, about, privacy,
+#     how_ai_is_used (all four via _CONTENT_PAGES[...]["page"], which
+#     already match app.py's own spelling - no split there),
+#     deep-dive, comparison, scanner, research (via
+#     path.lstrip("/") on /deep-dive|/comparison|/scanner|/research -
+#     comparison/scanner/research already match app.py's keys; ONLY
+#     deep-dive doesn't - see the hyphen/underscore note below),
+#     snapshot_index, snapshot, track_record, results_calendar.
+#
+# THE RENAME-SHAPED BUG: server.py's fast /deep-dive landing (no
+# ?ticker=, so _needs_streamlit() is False and Streamlit's own
+# page_deep_dive() never even runs) counts under the raw URL path
+# "deep-dive" (hyphen - path.lstrip("/")), while every OTHER visit to
+# the same logical page - anything carrying ?ticker=, which proxies
+# straight to Streamlit - counts under "deep_dive" (underscore, app.py's
+# own _bump_page_view("deep_dive", ...) key). These two keys have
+# existed side by side since server.py's fast-landing-page routes were
+# built; this mapping fix is what actually unifies them for the first
+# time (checked against the "Deep Dive: empty-state redesign" commit,
+# e898d1c, 15 Sep 2026 - that commit does NOT touch either counting call
+# site or the routing/gating around them, so it did not itself create or
+# rename a key; the split predates it). Whatever shifted the day-to-day
+# balance between the two - more bare/SEO landings, fewer ?ticker= hits,
+# or something else entirely - the fix is the same either way: both
+# keys are the same section, so both map to it, so the 82%/28% swing
+# resolves into one accurate number regardless of cause.
+#
+# snapshot / snapshot_index (server.py's /s/<ticker> and /s/ index - the
+# public, signed-out-friendly pages showing the exact same nightly-scan
+# score Deep Dive shows) are folded into Deep Dive for the same reason -
+# same underlying content, a different serving path.
+#
+# track_record and results_calendar get their own dedicated Streamlit
+# pages/nav entries (see PG_RESULTS_CALENDAR, the "track_record" More-
+# menu item) but aren't among the mock's 7 rows. Both are analysis
+# content about companies' own numbers/events, not an interactive tool
+# or a distinct traffic source, so - a judgment call, flagged in the
+# report - they fold into Research rather than sitting as "Other"
+# strays big enough to look like a real gap every week.
+#
+# comparison stays a genuine Other stray: real traffic, but a single
+# fixed key with no natural home among the mock's 7 rows and no
+# per-ticker/per-slug fan-out to roll up - exactly what Other is for.
+_ADMIN_SECTION_KEY_MAP = {
+    "deep_dive": "deep_dive", "deep-dive": "deep_dive",
+    "snapshot": "deep_dive", "snapshot_index": "deep_dive",
+    "home": "home",
+    "scanner": "scanner",
+    "research": "research", "results_calendar": "research", "track_record": "research",
+    "portfolio": "portfolio",
+    "tools": "tools",
+}
+
 
 def _admin_section_key(page):
     if page == "blog" or (page or "").startswith("blog:"):
         return "blog"
-    if page in {"deep_dive", "home", "scanner", "research", "portfolio", "tools"}:
-        return page
-    return "other"
+    return _ADMIN_SECTION_KEY_MAP.get(page, "other")
 
 
 def _admin_sections_by_visits():
@@ -1090,6 +1157,23 @@ def _admin_sections_by_visits():
             _out.append((_label, _c, _p))
     _out.sort(key=lambda t: -t[1])
     return _out
+
+
+def _admin_other_breakdown(limit=15):
+    """[(raw_page_key, current_7d), ...] sorted desc, capped at `limit` -
+    the "what's inside Other" expander (Part 53.2 follow-up), so a future
+    mapping gap is visible on the dashboard itself instead of silently
+    inflating Other until someone notices the total looks wrong. Same
+    source as _admin_sections_by_visits(), filtered to whatever
+    _admin_section_key() doesn't recognise. Never raises - returns []
+    on any read error."""
+    try:
+        _raw = metrics_store.by_page_delta_7d()
+    except Exception:
+        return []
+    _rows = [(p, c) for p, c, _prev in _raw if _admin_section_key(p) == "other" and c]
+    _rows.sort(key=lambda t: -t[1])
+    return _rows[:limit]
 
 
 def _render_admin_sections_html(rows):
@@ -26248,6 +26332,29 @@ def page_admin_dashboard():
                 "\"—\" where last week has no data. No new counter - same "
                 "fail-open counting as everything else on this page."
             )
+            # Part 53.2 follow-up: "what's inside Other" - makes a future
+            # mapping gap visible here instead of silently inflating
+            # Other until someone happens to notice the total looks off.
+            _other_rows = _admin_other_breakdown(limit=15)
+            with st.expander(
+                f"What's inside Other ({sum(c for _, c in _other_rows)} views, "
+                f"top {len(_other_rows)} raw keys)" if _other_rows
+                else "What's inside Other"
+            ):
+                if _other_rows:
+                    st.dataframe(
+                        pd.DataFrame(
+                            [{"Raw page key": p, "Views (7d)": c} for p, c in _other_rows]
+                        ),
+                        width='stretch', hide_index=True,
+                    )
+                    st.caption(
+                        "Raw metrics_store page keys _admin_section_key() doesn't "
+                        "map to a section yet - either a genuine minor page (fine) "
+                        "or a new key that needs adding to _ADMIN_SECTION_KEY_MAP."
+                    )
+                else:
+                    st.caption("Nothing in Other this week.")
     with _g3:
         with st.container(border=True):
             st.markdown("**Where tagged visits came from (7 days)**")
