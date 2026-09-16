@@ -1217,6 +1217,60 @@ EN = {
     "tools.debt_recycling.comp_loan_interest_after_tax": "Loan interest, after deduction",
     "tools.debt_recycling.comp_net_vs_offset": "Net vs. leaving it in the offset",
 
+    # Task 2 (16 Sep 2026, "show the workings" - mock:
+    # dr_breakdown_mock.html) - indented breakdown/derivation lines under
+    # the components above. Presentation only: every figure interpolated
+    # here comes from debt_recycling_engine.py's own output or the same
+    # public formula functions reused with the same inputs (see
+    # _dr_income_growth_split()/_dr_sub_lines() in app.py) - the engine
+    # file itself is untouched.
+    "tools.debt_recycling.comp_income_breakdown_franked": (
+        "— income after tax: **{amount}** ({years}y × {per_year}/yr, {franking})"
+    ),
+    "tools.debt_recycling.comp_growth_breakdown_au": "— capital growth after CGT discount: **{amount}**",
+    "tools.debt_recycling.comp_income_breakdown_us": "— income after tax: **{amount}** ({years}y × {per_year}/yr)",
+    "tools.debt_recycling.comp_growth_breakdown_us": (
+        "— capital growth after long-term capital-gains tax: **{amount}**"
+    ),
+    "tools.debt_recycling.franking_full": "fully franked",
+    "tools.debt_recycling.franking_partial": "{pct}% franked",
+    "tools.debt_recycling.franking_none": "unfranked",
+    "tools.debt_recycling.comp_offset_derivation": "= {cash} × {rate}% (your mortgage rate) × {years}y, simple ⓘ",
+    "tools.debt_recycling.comp_offset_derivation_hys": (
+        "= {cash} × {rate}% × (1−{tax}%) × {years}y, simple ⓘ"
+    ),
+    "tools.debt_recycling.comp_loan_derivation": (
+        "= {cash} × {rate}% × {years}y = {gross}, ×(1−{tax}%) deductible"
+    ),
+    "tools.debt_recycling.comp_mortgage_forgone_note": (
+        "already reflected in “{net_label}” below — not double-counted"
+    ),
+
+    "tools.debt_recycling.figures_add_up_title": "How these figures add up",
+    "tools.debt_recycling.figures_add_up_offset": "Offset = {cash} × {rate}% × {years}y = **{amount}**",
+    "tools.debt_recycling.figures_add_up_invest": "Invest = {income} income + {growth} growth = **{amount}**",
+    "tools.debt_recycling.figures_add_up_recycle": (
+        "Debt recycle = {offset} + {invest} − {loan} = **{amount}**"
+    ),
+    "tools.debt_recycling.figures_add_up_borrow_invest": (
+        "Borrow+invest = {inv1} + {inv2} − {loan} = **{amount}**"
+    ),
+    "tools.debt_recycling.figures_add_up_net_note": "Net vs offset (any card) = its headline − {amount}",
+    "tools.debt_recycling.figures_add_up_caption_au": (
+        "Every term above is the live figure from your own inputs — the expander re-renders as you "
+        "type. Income legs are annual after-tax income × years (paid out, not reinvested); growth "
+        "legs compound and are taxed with the 50% CGT discount at your marginal rate; loan interest is "
+        "interest-only, deductible at your marginal rate. Described calculations from stated inputs — "
+        "not advice."
+    ),
+    "tools.debt_recycling.figures_add_up_caption_us": (
+        "Every term above is the live figure from your own inputs — the expander re-renders as you "
+        "type. Income legs are annual after-tax income × years (paid out, not reinvested); growth "
+        "legs compound and are taxed at your long-term capital-gains rate (no discount); loan interest "
+        "is interest-only, deductible up to that year's investment income. Described calculations from "
+        "stated inputs — not advice."
+    ),
+
     "tools.debt_recycling.hurdles_kicker": "Two hurdles, shown as numbers",
     "tools.debt_recycling.hurdle1_label": "Pre-tax return needed to beat the offset",
     "tools.debt_recycling.hurdle2_label": "After-tax return needed to beat the loan",
@@ -3800,6 +3854,68 @@ ES = {
     "tools.debt_recycling.comp_offset_benefit": "Beneficio del offset (el efectivo nunca sale)",
     "tools.debt_recycling.comp_loan_interest_after_tax": "Interés del préstamo, después de la deducción",
     "tools.debt_recycling.comp_net_vs_offset": "Neto vs. dejarlo en el offset",
+
+    # Task 2 (16 Sep 2026) - ES drafts, not professionally reviewed; flag
+    # in the report. Mirrors the EN block above key-for-key.
+    "tools.debt_recycling.comp_income_breakdown_franked": (
+        "— ingreso después de impuestos: **{amount}** ({years} años × {per_year}/año, {franking})"
+    ),
+    "tools.debt_recycling.comp_growth_breakdown_au": (
+        "— crecimiento de capital después del descuento de CGT: **{amount}**"
+    ),
+    "tools.debt_recycling.comp_income_breakdown_us": (
+        "— ingreso después de impuestos: **{amount}** ({years} años × {per_year}/año)"
+    ),
+    "tools.debt_recycling.comp_growth_breakdown_us": (
+        "— crecimiento de capital después del impuesto a las ganancias de capital a largo plazo: **{amount}**"
+    ),
+    "tools.debt_recycling.franking_full": "totalmente franqueado",
+    "tools.debt_recycling.franking_partial": "{pct}% franqueado",
+    "tools.debt_recycling.franking_none": "sin franquear",
+    "tools.debt_recycling.comp_offset_derivation": (
+        "= {cash} × {rate}% (tu tasa hipotecaria) × {years} años, simple ⓘ"
+    ),
+    "tools.debt_recycling.comp_offset_derivation_hys": (
+        "= {cash} × {rate}% × (1−{tax}%) × {years} años, simple ⓘ"
+    ),
+    "tools.debt_recycling.comp_loan_derivation": (
+        "= {cash} × {rate}% × {years} años = {gross}, ×(1−{tax}%) deducible"
+    ),
+    "tools.debt_recycling.comp_mortgage_forgone_note": (
+        "ya reflejado en «tu {net_label}» abajo — no se cuenta dos veces"
+    ),
+
+    "tools.debt_recycling.figures_add_up_title": "Cómo se suman estas cifras",
+    "tools.debt_recycling.figures_add_up_offset": (
+        "Offset = {cash} × {rate}% × {years} años = **{amount}**"
+    ),
+    "tools.debt_recycling.figures_add_up_invest": (
+        "Inversión = {income} ingreso + {growth} crecimiento = **{amount}**"
+    ),
+    "tools.debt_recycling.figures_add_up_recycle": (
+        "Reciclaje de deuda = {offset} + {invest} − {loan} = **{amount}**"
+    ),
+    "tools.debt_recycling.figures_add_up_borrow_invest": (
+        "Pedir prestado+invertir = {inv1} + {inv2} − {loan} = **{amount}**"
+    ),
+    "tools.debt_recycling.figures_add_up_net_note": (
+        "Neto vs. offset (cualquier tarjeta) = su cifra principal − {amount}"
+    ),
+    "tools.debt_recycling.figures_add_up_caption_au": (
+        "Cada término anterior es la cifra en vivo de tus propios datos — el panel se actualiza "
+        "mientras escribes. Los ingresos son el ingreso anual después de impuestos × años (se "
+        "pagan, no se reinvierten); el crecimiento se compone y se grava con el descuento del 50% de "
+        "CGT a tu tasa marginal; el interés del préstamo es solo interés, deducible a tu tasa marginal. "
+        "Cálculos descritos a partir de los datos indicados — no es asesoramiento."
+    ),
+    "tools.debt_recycling.figures_add_up_caption_us": (
+        "Cada término anterior es la cifra en vivo de tus propios datos — el panel se actualiza "
+        "mientras escribes. Los ingresos son el ingreso anual después de impuestos × años (se "
+        "pagan, no se reinvierten); el crecimiento se compone y se grava a tu tasa de ganancias de "
+        "capital a largo plazo (sin descuento); el interés del préstamo es solo interés, deducible "
+        "hasta el ingreso de inversión de ese año. Cálculos descritos a partir de los datos indicados "
+        "— no es asesoramiento."
+    ),
 
     "tools.debt_recycling.hurdles_kicker": "Dos umbrales, mostrados como números",
     "tools.debt_recycling.hurdle1_label": "Retorno antes de impuestos necesario para superar el offset",

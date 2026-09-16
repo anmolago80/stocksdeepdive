@@ -23004,6 +23004,43 @@ def _dr_scenario_badges(scenario_id, dl):
     return [dl("badge_double_risk"), dl("badge_debt")]
 
 
+def _dr_income_growth_split(cash, income_rate, growth_rate, horizon, country,
+                            tax_rate, franked_pct=0.0, ltcg_rate=None):
+    """(after_tax_income_per_year, income_total, growth_total) for ONE
+    leg over the full horizon - Task 2 ("show the workings"), presentation
+    only. This calls the exact same public after_tax_income_au/us and
+    after_tax_capital_gain_au/us functions debt_recycling_engine.py's own
+    _income_and_growth_series() calls internally, with the identical
+    inputs, so income_total + growth_total reconciles to the engine's own
+    combined investment_after_tax figure to the cent - it is the SAME
+    formula surfaced in two pieces, not a new approximation.
+    debt_recycling_engine.py itself is untouched (zero edits - verified
+    by diff)."""
+    pretax_income_per_year = cash * (income_rate or 0.0)
+    if country == "au":
+        after_tax_income_per_year = debt_recycling_engine.after_tax_income_au(
+            pretax_income_per_year, franked_pct, tax_rate)
+    else:
+        after_tax_income_per_year = debt_recycling_engine.after_tax_income_us(
+            pretax_income_per_year, tax_rate)
+    income_total = after_tax_income_per_year * horizon
+    pretax_gain = cash * ((1 + (growth_rate or 0.0)) ** horizon - 1)
+    if country == "au":
+        growth_total = debt_recycling_engine.after_tax_capital_gain_au(pretax_gain, tax_rate)
+    else:
+        growth_total = debt_recycling_engine.after_tax_capital_gain_us(pretax_gain, ltcg_rate)
+    return after_tax_income_per_year, income_total, growth_total
+
+
+def _dr_esc(s):
+    """Escape every literal "$" for Streamlit's markdown+KaTeX renderer
+    (Part 53.2/Task 2 note: the same bug class _fmt_aud_md() exists for -
+    a rendered line carrying two or more "$" amounts reads as an inline
+    math pair otherwise). Applied to every new Task 2 breakdown/derivation
+    line below, regardless of how many "$" it carries."""
+    return s.replace("$", "\\$")
+
+
 def _render_debt_recycling_tool(email):
     """Mega-batch Part 20, tool #3: Cash vs Offset vs Borrow. Sign-in
     required for the whole of Tools already (Part 18's own amendment), so
@@ -23192,6 +23229,63 @@ def _render_debt_recycling_tool(email):
     _scenario_order = ("A", "B", "C", "D")
     _winner = max(_scenario_order, key=lambda k: res[k]["headline"])
 
+    # Task 2 ("show the workings") - the income/growth split for each
+    # investing leg, computed once here and reused both on the scenario
+    # cards below and in the "How these figures add up" expander, so the
+    # same two numbers never get computed twice. See
+    # _dr_income_growth_split()'s own docstring for why this is "print,
+    # don't recompute" (same public engine functions, same inputs).
+    _inv1_py, _inv1_income_total, _inv1_growth_total = _dr_income_growth_split(
+        cash, inv1_income_pct / 100, inv1_growth_pct / 100, horizon, country,
+        tax_rate_pct / 100, franked_pct=inv1_franked_pct / 100, ltcg_rate=ltcg_rate_pct / 100)
+    _inv2_py, _inv2_income_total, _inv2_growth_total = _dr_income_growth_split(
+        cash, inv2_income_pct / 100, inv2_growth_pct / 100, horizon, country,
+        tax_rate_pct / 100, franked_pct=inv2_franked_pct / 100, ltcg_rate=ltcg_rate_pct / 100)
+
+    def _dr_sub_lines(_comp_key, _comp_val):
+        """Extra indented lines under one scenario-card component (Task
+        2, points 1-4). Every dollar figure here is either an engine
+        component verbatim or the same public formula function reused
+        with the same inputs (see _dr_income_growth_split) - nothing is
+        reimplemented, and debt_recycling_engine.py is never touched."""
+        _out = []
+        if _comp_key in ("investment_after_tax", "investment1_after_tax", "investment2_after_tax"):
+            _is_inv2 = _comp_key == "investment2_after_tax"
+            _py = _inv2_py if _is_inv2 else _inv1_py
+            _income_total = _inv2_income_total if _is_inv2 else _inv1_income_total
+            _growth_total = _inv2_growth_total if _is_inv2 else _inv1_growth_total
+            _franked = inv2_franked_pct if _is_inv2 else inv1_franked_pct
+            if country == "au":
+                if _franked >= 100:
+                    _franking = _dl("franking_full")
+                elif _franked <= 0:
+                    _franking = _dl("franking_none")
+                else:
+                    _franking = _dl("franking_partial", pct=f"{_franked:.0f}")
+                _out.append(_dl("comp_income_breakdown_franked", amount=f"${_income_total:,.0f}",
+                                years=horizon, per_year=f"${_py:,.0f}", franking=_franking))
+                _out.append(_dl("comp_growth_breakdown_au", amount=f"${_growth_total:,.0f}"))
+            else:
+                _out.append(_dl("comp_income_breakdown_us", amount=f"${_income_total:,.0f}",
+                                years=horizon, per_year=f"${_py:,.0f}"))
+                _out.append(_dl("comp_growth_breakdown_us", amount=f"${_growth_total:,.0f}"))
+        elif _comp_key == "tax_free_return":
+            if country == "au" or us_baseline == "mortgage_extra":
+                _out.append(_dl("comp_offset_derivation", cash=f"${cash:,.0f}",
+                                rate=f"{mortgage_rate_pct:.2f}", years=horizon))
+            else:
+                _out.append(_dl("comp_offset_derivation_hys", cash=f"${cash:,.0f}",
+                                rate=f"{hys_rate_pct:.2f}", tax=f"{tax_rate_pct:.0f}", years=horizon))
+        elif _comp_key == "loan_interest_after_tax":
+            _gross = cash * (loan_rate_pct / 100) * horizon
+            _net = -_comp_val
+            _eff_pct = (1 - (_net / _gross)) * 100 if _gross else 0.0
+            _out.append(_dl("comp_loan_derivation", cash=f"${cash:,.0f}", rate=f"{loan_rate_pct:.2f}",
+                            years=horizon, gross=f"${_gross:,.0f}", tax=f"{_eff_pct:.0f}"))
+        elif _comp_key == "mortgage_interest_forgone":
+            _out.append(_dl("comp_mortgage_forgone_note", net_label=_dl("comp_net_vs_offset")))
+        return _out
+
     # ---- B. Four scenario cards ----
     _cols = st.columns(4)
     for _sid, _col in zip(_scenario_order, _cols):
@@ -23208,7 +23302,33 @@ def _render_debt_recycling_tool(email):
                 if _sid == "A":
                     st.caption(_dl("baseline_caption"))
                 for _comp_key, _comp_val in res[_sid]["components"].items():
-                    st.caption(f"{_dl('comp_' + _comp_key)}: ${_comp_val:,.0f}")
+                    st.caption(_dr_esc(f"{_dl('comp_' + _comp_key)}: ${_comp_val:,.0f}"))
+                    for _sub_line in _dr_sub_lines(_comp_key, _comp_val):
+                        # Two leading non-breaking spaces = the sub-line's
+                        # visual indent under its parent caption (mock's
+                        # .sub treatment) - plain text, no unsafe_allow_html.
+                        st.caption(_dr_esc(f"  {_sub_line}"))
+
+    # ---- B2. "How these figures add up" (Task 2, point 5) - collapsed by
+    # default, every term the live figure already shown on the cards
+    # above; nothing here is a new calculation. ----
+    _loan_gross_display = -res["C"]["components"]["loan_interest_after_tax"]
+    with st.expander(_dl("figures_add_up_title")):
+        _lines = [
+            _dl("figures_add_up_offset", cash=f"${cash:,.0f}", rate=f"{mortgage_rate_pct:.2f}",
+                years=horizon, amount=f"${res['A']['headline']:,.0f}"),
+            _dl("figures_add_up_invest", income=f"${_inv1_income_total:,.0f}",
+                growth=f"${_inv1_growth_total:,.0f}", amount=f"${res['B']['headline']:,.0f}"),
+            _dl("figures_add_up_recycle", offset=f"${res['A']['headline']:,.0f}",
+                invest=f"${res['B']['headline']:,.0f}", loan=f"${_loan_gross_display:,.0f}",
+                amount=f"${res['C']['headline']:,.0f}"),
+            _dl("figures_add_up_borrow_invest", inv1=f"${res['B']['headline']:,.0f}",
+                inv2=f"${res['D']['components']['investment2_after_tax']:,.0f}",
+                loan=f"${_loan_gross_display:,.0f}", amount=f"${res['D']['headline']:,.0f}"),
+        ]
+        st.markdown(_dr_esc("  \n".join(_lines)))
+        st.caption(_dr_esc(_dl("figures_add_up_net_note", amount=f"${res['A']['headline']:,.0f}")))
+        st.caption(_dl("figures_add_up_caption_us" if country == "us" else "figures_add_up_caption_au"))
 
     # ---- C. Two hurdles ----
     st.markdown(f"**{_dl('hurdles_kicker')}**")
