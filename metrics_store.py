@@ -126,3 +126,36 @@ def stats(days=30):
         "by_ticker": by_ticker,
         "daily": daily,
     }
+
+
+def by_page_delta_7d():
+    """[(page, current_7d, previous_7d_or_None), ...] sorted by
+    current_7d desc - the Admin Dashboard's "Site sections by visits" box
+    (Part 53.2). Pure aggregation of the page_views day-buckets bump()
+    already writes above - no new counter, no new write path anywhere.
+    previous_7d is None (not 0) when NO row at all falls in the prior
+    week, same "-" convention admin_metrics_store's own
+    _sum_between_or_none uses, so the caller can render "-" instead of a
+    misleading "+0%"/"-100%" for a page that simply had no data yet last
+    week. Never raises - returns [] on any read error."""
+    now = datetime.now(timezone.utc)
+    since7 = (now - timedelta(days=6)).strftime("%Y-%m-%d")
+    prev_start = (now - timedelta(days=13)).strftime("%Y-%m-%d")
+    prev_end = since7  # exclusive
+    try:
+        with _conn() as conn:
+            cur_rows = dict(conn.execute(
+                "SELECT page, SUM(views) FROM page_views WHERE day >= ? GROUP BY page",
+                (since7,),
+            ).fetchall())
+            prev_rows = dict(conn.execute(
+                "SELECT page, SUM(views) FROM page_views WHERE day >= ? AND day < ? "
+                "GROUP BY page",
+                (prev_start, prev_end),
+            ).fetchall())
+        pages = set(cur_rows) | set(prev_rows)
+        out = [(p, cur_rows.get(p, 0), prev_rows.get(p)) for p in pages]
+        out.sort(key=lambda t: -t[1])
+        return out
+    except Exception:
+        return []

@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import yfinance as yf
 
+import admin_metrics_store
 import auto_compounder_engine
 import fundamentals_data
 import moat_engine
@@ -573,6 +574,16 @@ def run_universe_scan(universe, max_tickers=None, log=print):
 
     payload = scan_store.save_scan(universe, rows, source, attention_lite=attention_lite,
                                     degraded=degraded)
+    # Part 53.1: one tiny marker for the Admin Dashboard's weekly scan
+    # calendar - a full scan was just SAVED for this universe tonight.
+    # Wrapped in its own try/except, same must-never-break-the-scan
+    # convention as every other counting call site in this function
+    # (score_history.record below) - see bump_scan_calendar()'s own
+    # docstring for why this is a metrics write, not a second table.
+    try:
+        admin_metrics_store.bump_scan_calendar(universe, "scan")
+    except Exception as e:
+        log(f"[nightly_scan] {universe}: scan-calendar record failed: {e}")
     _scan_elapsed = time.time() - _scan_start
     _mins, _secs = divmod(int(_scan_elapsed), 60)
     log(f"[nightly_scan] {universe}: saved {len(rows)} rows, skipped {skipped_no_price} "
@@ -928,6 +939,16 @@ def reprice_universe(universe, log=print):
     new_rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
     payload = scan_store.reprice_scan(
         universe, new_rows, repriced_count=repriced_count, kept_stale_count=kept_stale_count)
+    # Part 53.1: same weekly-scan-calendar marker as run_universe_scan()
+    # above, but "reprice" - this universe wasn't fully rescanned tonight,
+    # just refreshed in place. Only recorded once reprice_scan() actually
+    # returned a payload (the `existing is None` early-return above never
+    # reaches here, so this only fires on a genuine reprice).
+    if payload:
+        try:
+            admin_metrics_store.bump_scan_calendar(universe, "reprice")
+        except Exception as e:
+            log(f"[nightly_scan] reprice {universe}: scan-calendar record failed: {e}")
     elapsed = time.time() - start
     mins, secs = divmod(int(elapsed), 60)
     log(f"[nightly_scan] reprice {universe}: {len(ordered_tickers)} tickers in "

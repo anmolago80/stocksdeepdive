@@ -1226,6 +1226,28 @@ USA_UNIVERSES = [
 # regardless of whether Wikipedia's page structure ever gets fixed.
 # fetch_dow30()/DOW30_WIKI_URL are unchanged and still tried first.
 
+# Part 53.1 (16 Sep 2026): every universe in AUSTRALIA_UNIVERSES/
+# USA_UNIVERSES whose get_universe_pool() branch below does NOT do a live
+# fetch of its own - it filters or unions a parent pool that's already
+# been fetched for some OTHER universe instead (Small Ordinaries = ASX
+# 300 minus ASX 100, the AU/US sector universes = a GICS-sector filter of
+# ASX 300/S&P 500, S&P 1500/Russell 3000 = a union of already-fetched
+# parents, etc). A derived universe never gets its own nightly scan slot
+# (scheduler_engine builds its scan table by filtering the parent scan's
+# rows instead - see the Fix 8a comment above), so the Admin Dashboard's
+# weekly scan calendar (Part 53.1) marks these rows with a ⧉ rather than
+# expecting a ✓/◦ of their own. Single source of truth here rather than a
+# second hand-maintained list in app.py, so this can never drift from
+# get_universe_pool()'s actual dispatch branches below.
+DERIVED_UNIVERSES = frozenset([
+    "ASX Small Ordinaries", "ASX 100", "ASX 50", "ASX 20", "ASX All Technology",
+    "ASX Financials", "ASX Materials & Mining", "ASX Health Care",
+    "ASX Consumer", "ASX Industrials", "ASX A-REITs",
+    "S&P 1500", "Russell 3000",
+    "US Technology", "US Healthcare", "US Financials", "US Energy",
+    "US Industrials", "US Consumer",
+])
+
 
 def get_universes(country):
     if country == "Australia":

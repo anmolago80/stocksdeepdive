@@ -34,6 +34,31 @@ only aggregate daily counters." Concretely, in this module:
 
 Same SQLite file / volume-resolution / WAL convention as every other
 *_store.py in this codebase.
+
+PART 53.3 EXCEPTION TO THE "EVENTS, NEVER PEOPLE" RULE (16 Sep 2026,
+owner-approved, Option A of mocks/admin_weekly_additions_mock.html): the
+`signin_accounts` table below is a DELIBERATE departure from the hard
+privacy rule quoted above - it stores a real (email, day) row, not a
+salted hash. This is scoped as tightly as the owner's own instruction:
+  - It names accounts from the site's OWN auth database (email_auth.py) -
+    nothing pulled from anywhere else.
+  - It is read ONLY by the owner-gated Admin Dashboard render
+    (app.py's page_admin_dashboard(), behind ai_gate.is_owner() - never
+    visible to a key-based co-admin, who only holds full_view_unlocked,
+    a separate and much weaker grant - see that page's own docstring).
+  - It is exposed on no API route, no snapshot page, no export, and no
+    signed-out surface anywhere in this codebase - grep the codebase for
+    `signin_accounts`/`signins_by_account` to confirm the only caller
+    outside this module is that one gated render.
+  - It is pruned at 90 days, same PRUNE_AFTER_DAYS retention as every
+    other table here (prune_old_account_signins, called from the same
+    nightly volume-check job as the two prunes below).
+The EXISTING anonymous counters above (`pulse_counters['signins']`,
+`daily_signin_hashes`) are completely unchanged by this - record_signin()
+still writes both exactly as before; the new table is one additional,
+isolated write (its own connection/transaction, its own try/except) so a
+failure writing the identifiable table can never roll back or block the
+anonymous ones. See record_signin()'s own docstring for the call site.
 """
 
 import hashlib
@@ -96,6 +121,16 @@ def _conn():
             duration_seconds REAL
         )"""
     )
+    # Part 53.3 - see this module's own docstring ("PART 53.3 EXCEPTION...")
+    # for why this one table is allowed to name a real account.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS signin_accounts (
+            email TEXT NOT NULL,
+            day TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (email, day)
+        )"""
+    )
     return conn
 
 
@@ -141,6 +176,57 @@ def bump_many(counts):
             )
 
 
+def bump_scan_calendar(universe, kind):
+    """Part 53.1: one tiny per-night marker (universe, day, kind) for the
+    Admin Dashboard's weekly scan calendar - deliberately reuses
+    pulse_counters (day, key, count) above rather than a new table, keyed
+    as 'scancal:{kind}:{universe}'. This gets the same 90-day prune for
+    free (prune_old_counters already deletes every pulse_counters row by
+    day regardless of key, so no new pruning code is needed) and the same
+    fail-open bump() underneath. `kind` is 'scan' (nightly_scan just
+    SAVED a full scan for this universe - see run_universe_scan()'s own
+    call site) or 'reprice' (the reprice pass just refreshed it in place
+    - see reprice_universe()'s own call site). Callers wrap this in
+    try/except, same convention as every other counting call site in
+    nightly_scan.py - a metrics write must never take a real scan down."""
+    if not universe or kind not in ("scan", "reprice"):
+        return
+    bump(f"scancal:{kind}:{universe}")
+
+
+def scan_calendar_grid(days=7):
+    """{universe: {day: 'scan'|'reprice'}} for the last `days` UTC days
+    (today inclusive) - the Admin Dashboard's weekly scan calendar (Part
+    53.1) reads this straight into its grid. 'scan' wins over 'reprice'
+    if a universe somehow recorded both markers on the same UTC day (a
+    full scan supersedes a same-night reprice-only mark). Only fills from
+    whatever day this feature shipped forward - there's no back-dated
+    history in pulse_counters for nights before bump_scan_calendar()
+    existed, so an older day simply has no row for any universe. Never
+    raises - returns {} on any read error, since this is a diagnostics
+    grid, not load-bearing."""
+    since = _day_n_ago(days - 1)
+    out = {}
+    try:
+        with _conn() as conn:
+            rows = conn.execute(
+                "SELECT day, key FROM pulse_counters WHERE key LIKE 'scancal:%' "
+                "AND day >= ?",
+                (since,),
+            ).fetchall()
+        for day, key in rows:
+            try:
+                _, kind, universe = key.split(":", 2)
+            except ValueError:
+                continue
+            day_map = out.setdefault(universe, {})
+            if kind == "scan" or day not in day_map:
+                day_map[day] = kind
+        return out
+    except Exception:
+        return {}
+
+
 def _acct_hash(email, day):
     # AUTH_COOKIE_SECRET is already a Railway-configured secret used
     # nowhere else this module can leak into - reusing it (rather than
@@ -162,7 +248,15 @@ def record_signin(email):
     already gates this behind its own once-per-session
     "_signup_recorded" flag, making this naturally rerun-safe (fires
     once per browser session, covering both the Google and email-code
-    sign-in methods that flow through that same function)."""
+    sign-in methods that flow through that same function).
+
+    Part 53.3: also records this sign-in against the real per-account
+    table (record_account_signin) - deliberately a SEPARATE connection/
+    transaction and its own try/except below, not folded into the
+    `with _conn()` block above, so a failure writing the new
+    identifiable table can never roll back or block the two anonymous
+    writes above. See module docstring ("PART 53.3 EXCEPTION...") for
+    why that table is allowed to exist at all."""
     if not email:
         return
     day = _today()
@@ -176,6 +270,30 @@ def record_signin(email):
         conn.execute(
             "INSERT OR IGNORE INTO daily_signin_hashes (day, acct_hash) VALUES (?, ?)",
             (day, h),
+        )
+    try:
+        record_account_signin(email)
+    except Exception:
+        pass
+
+
+def record_account_signin(email):
+    """UPSERT count+1 for (email, today) in signin_accounts - Part 53.3's
+    real per-account daily counter. Called from record_signin() above, in
+    its own isolated try/except, so it always fires on the same "one
+    sign-in EVENT per browser session" trigger those anonymous counters
+    use, with no separate guard flag needed. Not itself wrapped in
+    try/except - record_signin() wraps this call, and any other caller
+    must do the same, matching every other write in this module."""
+    if not email:
+        return
+    day = _today()
+    em = email.strip().lower()
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO signin_accounts (email, day, count) VALUES (?, ?, 1)
+               ON CONFLICT(email, day) DO UPDATE SET count = count + excluded.count""",
+            (em, day),
         )
 
 
@@ -192,6 +310,25 @@ def prune_old_signin_hashes(log=print):
             n = max(cur.rowcount, 0)
         if n:
             log(f"[admin_metrics_store] pruned {n} old signed-in-account hash row(s)")
+        return n
+    except Exception as e:
+        log(f"[admin_metrics_store] prune failed: {e}")
+        return 0
+
+
+def prune_old_account_signins(log=print):
+    """Deletes signin_accounts rows older than PRUNE_AFTER_DAYS (90) -
+    same 90-day retention the module docstring's Part 53.3 exception
+    promises for this table specifically. Called from scheduler_engine's
+    nightly volume-check job, alongside prune_old_signin_hashes/
+    prune_old_counters above. Never raises."""
+    cutoff = _day_n_ago(PRUNE_AFTER_DAYS)
+    try:
+        with _conn() as conn:
+            cur = conn.execute("DELETE FROM signin_accounts WHERE day < ?", (cutoff,))
+            n = max(cur.rowcount, 0)
+        if n:
+            log(f"[admin_metrics_store] pruned {n} old signin_accounts row(s)")
         return n
     except Exception as e:
         log(f"[admin_metrics_store] prune failed: {e}")
@@ -294,6 +431,33 @@ def pulse_7d():
         return out
     except Exception:
         return empty
+
+
+def signins_by_account(limit=50):
+    """([{'email','count_7d','last_seen'}, ...], total_accounts) - the
+    Admin Dashboard's Sign-ins by account table (Part 53.3), sorted by
+    count_7d desc and capped at `limit` (the caller renders a "+N more"
+    caption from total_accounts - len(returned list)). Scoped to accounts
+    with at least one sign-in in the last 7 days (matching the table's
+    own "(7 days)" heading), so last_seen is always inside that same
+    window - an account with zero sign-ins this week simply doesn't
+    appear, it isn't shown with a stale last_seen from further back.
+    Never raises - returns ([], 0) on any read error. See this module's
+    own docstring for why this one table is allowed to read back a real
+    email address."""
+    since7 = _day_n_ago(6)
+    try:
+        with _conn() as conn:
+            rows = conn.execute(
+                "SELECT email, SUM(count), MAX(day) FROM signin_accounts "
+                "WHERE day >= ? GROUP BY email ORDER BY 2 DESC",
+                (since7,),
+            ).fetchall()
+        total = len(rows)
+        out = [{"email": e, "count_7d": c, "last_seen": d} for e, c, d in rows[:limit]]
+        return out, total
+    except Exception:
+        return [], 0
 
 
 def record_job_result(job, result, detail="", duration_seconds=None):

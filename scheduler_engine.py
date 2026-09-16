@@ -303,6 +303,20 @@ def _cfg():
     }
 
 
+def nightly_universe_cadence():
+    """{universe: cadence} ('daily' | 'weekly' | a weekday abbreviation),
+    live-parsed from NIGHTLY_UNIVERSES (falling back to
+    _DEFAULT_NIGHTLY_UNIVERSES when that env var is unset) - the public
+    accessor _cfg()['universe_cadence'] already computes on every call,
+    for a caller outside this module that only needs the cadence map and
+    has no reason to reach into the private _cfg(). Added for the Admin
+    Dashboard's weekly scan calendar (Part 53.1, app.py's
+    _render_scan_calendar_html) - same "Scheduled" column source the
+    scheduler's own due-scan check (_universes_needing_scan below) reads
+    from."""
+    return _cfg()["universe_cadence"]
+
+
 # Audit fix 2.8: the "never double-start" guard in _loop() below (the
 # state-file attempt counter) only protects one thread inside ONE process
 # against itself - nothing stops a second Railway replica (if this
@@ -703,6 +717,14 @@ def _run_volume_check(log):
             admin_metrics_store.prune_old_counters(log=log)
         except Exception as e:
             log(f"[scheduler] pulse-counter prune failed: {e}")
+        # Part 53.3: same nightly slot, same retention window (90 days)
+        # as the two prunes above - see admin_metrics_store's module
+        # docstring ("PART 53.3 EXCEPTION...") for why this table exists
+        # and needs pruning at all.
+        try:
+            admin_metrics_store.prune_old_account_signins(log=log)
+        except Exception as e:
+            log(f"[scheduler] account-signin prune failed: {e}")
     # Mega-batch Part 36: same nightly slot, same "log on failure only,
     # never raise" contract - see newsletter_store.prune_stale_
     # unconfirmed's own docstring for exactly what it deletes.

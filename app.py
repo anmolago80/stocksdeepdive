@@ -1031,6 +1031,101 @@ _TOOL_OPEN_LABELS = {
 }
 
 
+# Part 53.2: raw metrics_store page keys grouped into the Admin
+# Dashboard's "Site sections by visits" rows - see _bump_page_view's own
+# call sites (this file) and _count_view's (server.py) for every raw key
+# that can appear. A blog post's key is "blog:<slug>" (server.py) - all
+# of those fold into the one "blog" row here, same as the bare "blog"
+# index key. Anything not listed here (comparison, results_calendar,
+# methodology, about, model_history, privacy, how_ai_is_used,
+# admin_dashboard, snapshot pages, track_record, ...) folds into "other"
+# rather than being silently dropped from the box's total.
+_ADMIN_SECTION_LABELS = [
+    ("deep_dive", "🔬 Deep Dive"),
+    ("home", "🏠 Home"),
+    ("scanner", "🔎 Scanner"),
+    ("research", "📚 Research"),
+    ("portfolio", "💼 Portfolio"),
+    ("tools", "💰 Money Tools"),
+    ("blog", "📝 Blog"),
+    ("other", "🔗 Other"),
+]
+
+
+def _admin_section_key(page):
+    if page == "blog" or (page or "").startswith("blog:"):
+        return "blog"
+    if page in {"deep_dive", "home", "scanner", "research", "portfolio", "tools"}:
+        return page
+    return "other"
+
+
+def _admin_sections_by_visits():
+    """[(label, current_7d, previous_7d_or_None), ...] grouped per
+    _ADMIN_SECTION_LABELS above and sorted by current_7d desc, for the
+    Admin Dashboard's "Site sections by visits" box (Part 53.2). Pure
+    aggregation of metrics_store.by_page_delta_7d()'s existing per-page
+    sums - no new counter, no new write path. A section's previous_7d is
+    None only when EVERY one of its member pages had no row at all last
+    week (matches the "—" convention the rest of this page already uses
+    for a brand-new counter's first week). A section with genuinely zero
+    activity either week is left out entirely, same as the Tool opens/
+    src-tags boxes right beside it."""
+    try:
+        _raw = metrics_store.by_page_delta_7d()
+    except Exception:
+        _raw = []
+    _cur, _prev, _prev_seen = {}, {}, set()
+    for _page, _c, _p in _raw:
+        _key = _admin_section_key(_page)
+        _cur[_key] = _cur.get(_key, 0) + _c
+        if _p is not None:
+            _prev[_key] = _prev.get(_key, 0) + _p
+            _prev_seen.add(_key)
+    _out = []
+    for _key, _label in _ADMIN_SECTION_LABELS:
+        _c = _cur.get(_key, 0)
+        _p = _prev.get(_key) if _key in _prev_seen else None
+        if _c or _p:
+            _out.append((_label, _c, _p))
+    _out.sort(key=lambda t: -t[1])
+    return _out
+
+
+def _render_admin_sections_html(rows):
+    """rows: _admin_sections_by_visits()'s own return shape. Builds one
+    HTML string via concatenation only (zero-indent HTML rule - no
+    hand-indented multi-line markup to worry about) for the "Site
+    sections by visits" box - same ranked-bar-with-delta shape as the
+    mock (mocks/admin_weekly_additions_mock.html section 2)."""
+    if not rows:
+        return ("<div style='color:#5b7290;font-size:12.5px'>"
+                 "No page-view data recorded yet.</div>")
+    _max = max(r[1] for r in rows) or 1
+    _parts = []
+    for _label, _cur, _prev in rows:
+        if _prev is None:
+            _delta = "<span style='color:#8aa0b8;font-size:11px'>—</span>"
+        elif _prev == 0:
+            _delta = ("<span style='color:#34d399;font-size:11px'>new</span>" if _cur
+                       else "<span style='color:#8aa0b8;font-size:11px'>—</span>")
+        else:
+            _pct = (_cur - _prev) / _prev * 100
+            _color = "#34d399" if _pct >= 0 else "#fb7185"
+            _delta = f"<span style='color:{_color};font-size:11px'>{_pct:+.0f}%</span>"
+        _width = max(3, round(_cur / _max * 100))
+        _parts.append(
+            "<div style='display:flex;justify-content:space-between;align-items:center;"
+            "max-width:560px;margin:7px 0;font-size:13px'>"
+            f"<span>{_label}</span><span><b>{_cur}</b> {_delta}"
+            "<span style='display:inline-block;width:140px;height:8px;background:#1a2740;"
+            "border-radius:4px;position:relative;vertical-align:middle;margin-left:10px'>"
+            f"<span style='position:absolute;left:0;top:0;bottom:0;width:{_width}%;"
+            "border-radius:4px;background:#2dd4bf'></span></span></span></div>"
+        )
+    return "".join(_parts)
+
+
 def _render_email_capture_box(key_prefix, lang="en"):
     """Mega-batch Part 36: the "get the next deep dive by email" capture
     box - called once at the bottom of the research page and once on the
@@ -25952,6 +26047,24 @@ def _admin_fmt_dt(iso_str):
     return dt.astimezone(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
 
 
+def _admin_fmt_last_seen(day_str):
+    """'today' / 'yesterday' / 'Nd ago' from a UTC day string
+    (YYYY-MM-DD) - the Admin Dashboard's Sign-ins by account table (Part
+    53.3). Never raises on a malformed/missing value."""
+    if not day_str:
+        return "-"
+    try:
+        _d = datetime.strptime(day_str, "%Y-%m-%d").date()
+    except ValueError:
+        return "-"
+    _delta = (datetime.now(timezone.utc).date() - _d).days
+    if _delta <= 0:
+        return "today"
+    if _delta == 1:
+        return "yesterday"
+    return f"{_delta}d ago"
+
+
 _ADMIN_JOB_LABELS = {
     "nightly": "Nightly universe scan (+ reprice, alerts, results-day)",
     "watchdog": "Portfolio AI watchdog",
@@ -25960,6 +26073,59 @@ _ADMIN_JOB_LABELS = {
     "earnings_refresh": "Earnings calendar refresh (weekly)",
     "digest": "Weekly AI brief (digest)",
 }
+
+_ADMIN_CADENCE_WEEKDAY = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+
+
+def _render_scan_calendar_html(cal, cadence, day_list):
+    """cal: admin_metrics_store.scan_calendar_grid()'s own return shape.
+    cadence: scheduler_engine._cfg()['universe_cadence'] ({universe:
+    cadence}) - live-parsed from NIGHTLY_UNIVERSES (or the code default
+    when unset), used ONLY to know which days a universe was actually
+    scheduled on. day_list: [(day_str, day_label), ...] oldest-first, the
+    same 7 days the grid's columns show. Builds one HTML string through
+    _sdd_table() (zero-indent HTML rule - no hand-indented markup to get
+    wrong).
+
+    A cell renders a red outline when its universe was scheduled to run
+    THAT day (cadence 'daily', or a weekday abbreviation matching that
+    day) but has no 'scan' record for it - a reprice-only ◦ still gets
+    the outline, since a scheduled night is supposed to produce a full
+    scan, not just a reprice (matches the mock's own "a scheduled night
+    with no ✓ renders...red outline" wording). A universe absent from
+    `cadence` entirely (every derived universe, plus any manually-run-
+    only one) shows "derived"/"—" in the Scheduled column and never gets
+    an outline - there's no schedule to compare against. A bare 'weekly'
+    cadence (NIGHTLY_UNIVERSES' generic catch-all, not used by the
+    shipped code default, which only ever uses 'daily' or a specific
+    weekday) also never triggers the outline, since there's no single day
+    to check it against - a documented interpretation call, not a bug."""
+    _headers = ["Universe", "Scheduled"] + [lbl for _, lbl in day_list]
+    _rows_html = []
+    for _u in (scanner_engine.AUSTRALIA_UNIVERSES + scanner_engine.USA_UNIVERSES):
+        _derived = _u in scanner_engine.DERIVED_UNIVERSES
+        _label = _u + (" ⧉" if _derived else "")
+        _uc = cadence.get(_u)
+        _sched_label = _uc if _uc else ("derived" if _derived else "-")
+        _row = f"<tr><td>{_label}</td><td style='color:#8aa0b8'>{_sched_label}</td>"
+        for _day, _ in day_list:
+            _mark = cal.get(_u, {}).get(_day)
+            if _mark == "scan":
+                _content = "<span style='color:#2dd4bf;font-weight:800'>✓</span>"
+            elif _mark == "reprice":
+                _content = "<span style='color:#5b7290'>◦</span>"
+            else:
+                _content = ""
+            _is_sched = _uc == "daily" or (
+                _uc in _ADMIN_CADENCE_WEEKDAY
+                and _ADMIN_CADENCE_WEEKDAY[_uc] == datetime.strptime(_day, "%Y-%m-%d").weekday()
+            )
+            _outline = ("outline:2px solid #fb7185;outline-offset:-2px;"
+                        if _is_sched and _mark != "scan" else "")
+            _row += f"<td style='{_outline}'>{_content}</td>"
+        _row += "</tr>"
+        _rows_html.append(_row)
+    return _sdd_table(_headers, _rows_html)
 
 
 def page_admin_dashboard():
@@ -26052,7 +26218,7 @@ def page_admin_dashboard():
         st.metric("Subscribers", _subs)
 
     st.markdown("---")
-    _g1, _g2 = st.columns(2)
+    _g1, _g2, _g3 = st.columns(3)
     with _g1:
         with st.container(border=True):
             st.markdown("**Tool opens (7 days)**")
@@ -26072,6 +26238,17 @@ def page_admin_dashboard():
                 "actually looking at, so those four move together."
             )
     with _g2:
+        with st.container(border=True):
+            st.markdown("**Site sections by visits (7 days)**")
+            st.markdown(_render_admin_sections_html(_admin_sections_by_visits()),
+                        unsafe_allow_html=True)
+            st.caption(
+                "Page VIEWS over 7 days (the existing per-page counter, "
+                "summed into sections), delta vs the prior 7 days, "
+                "\"—\" where last week has no data. No new counter - same "
+                "fail-open counting as everything else on this page."
+            )
+    with _g3:
         with st.container(border=True):
             st.markdown("**Where tagged visits came from (7 days)**")
             _srcs = _pulse.get("src_tags", {})
@@ -26094,6 +26271,34 @@ def page_admin_dashboard():
                     st.markdown(f"- {_tk}: **{_v}**")
             else:
                 st.caption("No ticker-view data yet.")
+
+    # --- SIGN-INS BY ACCOUNT (Part 53.3) ------------------------------
+    st.markdown("---")
+    st.markdown("### Sign-ins by account (7 days)")
+    st.caption(
+        "A real per-account counter - not the anonymous day-rotated "
+        "hashes the \"Sign-ins\" tile above uses. Deliberate, owner-"
+        "approved exception to the events-never-people rule this page "
+        "otherwise follows (Option A of the acceptance mock): see "
+        "admin_metrics_store.py's module docstring for the full scope of "
+        "that exception. Shown only here, on this owner-gated page."
+    )
+    with st.container(border=True):
+        try:
+            _acct_rows, _acct_total = admin_metrics_store.signins_by_account(limit=50)
+        except Exception:
+            _acct_rows, _acct_total = [], 0
+        if _acct_rows:
+            _acct_table = [{
+                "Account": r["email"] + (" (you)" if ai_gate.is_owner(r["email"]) else ""),
+                "Sign-ins (7d)": r["count_7d"],
+                "Last seen": _admin_fmt_last_seen(r["last_seen"]),
+            } for r in _acct_rows]
+            st.dataframe(pd.DataFrame(_acct_table), width='stretch', hide_index=True)
+            if _acct_total > len(_acct_rows):
+                st.caption(f"+{_acct_total - len(_acct_rows)} more")
+        else:
+            st.caption("No sign-ins recorded yet this week.")
 
     # --- DATA & CONTENT ----------------------------------------------
     st.markdown("---")
@@ -26201,6 +26406,42 @@ def page_admin_dashboard():
                 f":red[**Scheduler may be stuck**] - last tick {_hb_age / 60:.0f} "
                 "min ago (expected every few minutes). A redeploy restarts it."
             )
+
+    # --- WEEKLY SCAN CALENDAR (Part 53.1) -----------------------------
+    st.markdown("### Weekly scan calendar")
+    st.caption(
+        "Rows = every universe; columns = the last 7 days (UTC). ✓ = a "
+        "full scan was saved that night, ◦ = prices were refreshed by "
+        "the reprice pass only, blank = nothing happened that night. ⧉ "
+        "marks a derived universe (built by filtering/union of an "
+        "already-scanned parent - it never gets a nightly scan slot of "
+        "its own, so it has no ✓/◦ of its own to show). Scheduled comes "
+        "from NIGHTLY_UNIVERSES (falling back to the code default when "
+        "that env var is unset) - a night a universe was scheduled for "
+        "but has no ✓ renders with a red outline. This grid only fills "
+        "from the day this feature shipped forward - there's no back-"
+        "dated history for nights before that."
+    )
+    with st.container(border=True):
+        try:
+            _cal = admin_metrics_store.scan_calendar_grid(days=7)
+        except Exception:
+            _cal = {}
+        try:
+            import scheduler_engine as _sched_cal
+            _cadence = _sched_cal.nightly_universe_cadence()
+        except Exception:
+            _cadence = {}
+        _today_utc = datetime.now(timezone.utc).date()
+        _cal_day_list = [
+            ((_today_utc - timedelta(days=_n)).strftime("%Y-%m-%d"),
+             (_today_utc - timedelta(days=_n)).strftime("%a %d"))
+            for _n in range(6, -1, -1)
+        ]
+        st.markdown(
+            _render_scan_calendar_html(_cal, _cadence, _cal_day_list),
+            unsafe_allow_html=True,
+        )
 
     # --- SYSTEM --------------------------------------------------------
     st.markdown("---")
