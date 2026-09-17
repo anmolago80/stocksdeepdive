@@ -134,7 +134,7 @@ import json
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # Mega-batch Part 35.1: NIGHTLY JOBS table on the new owner Admin
 # Dashboard - see _record_job() below for how each job's ok/warn/error
@@ -735,6 +735,110 @@ def _run_volume_check(log):
             log(f"[scheduler] newsletter prune failed: {e}")
 
 
+# 17 Sep 2026 (restart-resilience fix): how long after the scan hour a
+# catch-up scan is still allowed to fire for that night - see
+# _catchup_reference_night() below for the exact window check. Kept
+# short and deliberate: long enough to cover a redeploy that kills a
+# scan mid-run and the container restarting soon after (the incident
+# this fix responds to: a 21:46 UTC deploy killed a 20:01-started scan;
+# a same-day restart is the case this exists for), short enough that an
+# unrelated restart hours later - the afternoon of the same UTC day, or
+# any day after - never fires a scan at a time nobody would expect one.
+# Past this window, a universe that's still missing its scan for the
+# night simply waits for the regular due-scan check
+# (_universes_needing_scan) to pick it up once its own staleness
+# threshold trips, exactly as it always has.
+CATCHUP_WINDOW_HOURS = 6
+
+
+def _catchup_reference_night(cfg, now):
+    """Returns the UTC calendar date (a 'YYYY-MM-DD' string) of the scan
+    night `now` is a valid catch-up moment for, or None if `now` isn't
+    within CATCHUP_WINDOW_HOURS of any scan-hour instant.
+
+    Checks BOTH today's and yesterday's scan-hour instant, not just
+    `now.hour >= cfg["scan_hour"]` - the window can cross UTC midnight
+    whenever scan_hour + CATCHUP_WINDOW_HOURS > 24 (the default
+    scan_hour=20 + a 6h window reaches 02:00 the next day). A naive
+    same-calendar-day check would incorrectly fall out of the window
+    right at midnight even though the scan night being caught up on
+    hasn't changed - checking yesterday's instant too means a catch-up
+    firing at, say, 01:00 UTC correctly resolves to YESTERDAY's scan
+    night (the one it's actually catching up), not today's (which
+    hasn't reached its own scan hour yet)."""
+    scan_hour = cfg["scan_hour"]
+    for days_back in (0, 1):
+        ref_date = (now - timedelta(days=days_back)).date()
+        scan_instant = datetime(
+            ref_date.year, ref_date.month, ref_date.day,
+            scan_hour, 0, 0, tzinfo=timezone.utc)
+        if scan_instant <= now < scan_instant + timedelta(hours=CATCHUP_WINDOW_HOURS):
+            return ref_date.strftime("%Y-%m-%d")
+    return None
+
+
+def _universes_missing_today(cfg, ref_day):
+    """Universes that were SCHEDULED for the `ref_day` ('YYYY-MM-DD' UTC
+    date - see _catchup_reference_night above) scan night but have no
+    scan_store entry whose own generated_at date matches - i.e. never
+    got a full scan saved that night, whether because a restart killed
+    the run before reaching them or (17 Sep 2026 fix, see the due-scan
+    block in _loop() below) a lock-contention tick burned an attempt
+    without ever starting one.
+
+    "Scheduled" mirrors _render_scan_calendar_html's (app.py) own admin-
+    calendar convention exactly: "daily" is scheduled every night; a
+    weekday-pinned cadence (mon..sun) is scheduled only on ITS OWN
+    weekday; a bare "weekly" (no pinned day) is never flagged missing
+    here, same as the admin calendar's own "Scheduled" column - there's
+    no single day to check a bare-weekly universe against, so it's left
+    entirely to the general due-scan check (_universes_needing_scan)
+    to pick up on whichever night its own staleness clock fires, exactly
+    as before this feature existed.
+
+    Deliberate interpretation note (documented per the task instruction
+    to flag this): the admin calendar's own "Scheduled"/"missing" grid
+    (admin_metrics_store.bump_scan_calendar / scan_calendar_grid) is
+    actually driven by a separate pulse-counter event log, not by
+    scan_store's generated_at directly. This function reads
+    scan_store.load_scan_raw()'s generated_at instead - the more
+    authoritative underlying source for "was a real scan for this
+    universe saved today" - while matching the calendar's SCHEDULING
+    convention (daily / pinned-weekday / bare-weekly) exactly. Uses
+    load_scan_raw() rather than load_scan() so a scan generated exactly
+    on ref_day still counts even were it to have since aged past
+    load_scan()'s 72h display cutoff - not realistic given this only
+    ever runs within a few hours of ref_day, but it's the correct/
+    authoritative accessor regardless (see that function's own
+    docstring in scan_store.py).
+
+    Sorted smallest-first, same _APPROX_UNIVERSE_SIZE convention as
+    _universes_needing_scan below, so a catch-up run that's interrupted
+    again still finishes as much as it can."""
+    import scan_store
+    ref_date = datetime.strptime(ref_day, "%Y-%m-%d").date()
+    ref_weekday = ref_date.weekday()
+    missing = []
+    for u, cadence in cfg["universe_cadence"].items():
+        if cadence in _WEEKDAY_ABBR:
+            if _WEEKDAY_ABBR[cadence] != ref_weekday:
+                continue  # not this universe's scheduled night
+        elif cadence == "weekly":
+            continue  # no pinned day - left to the general due-scan check
+        # cadence == "daily" falls through: scheduled every night
+        payload = scan_store.load_scan_raw(u)
+        gen_date = None
+        if payload:
+            try:
+                gen_date = datetime.fromisoformat(payload["generated_at"]).date().strftime("%Y-%m-%d")
+            except (KeyError, ValueError):
+                gen_date = None
+        if gen_date != ref_day:
+            missing.append(u)
+    missing.sort(key=lambda u: _APPROX_UNIVERSE_SIZE.get(u, 9999))
+    return missing
+
+
 def _universes_needing_scan(cfg):
     """Universes whose SAVED scan is missing or stale - the source of
     truth is the result file, not a 'ran today' marker, so a deploy/
@@ -871,14 +975,42 @@ def _loop(log):
                     n_today = attempts.get(today, 0)
                     if due and n_today < 3:  # retry cap: a persistently
                         # failing universe never turns into a hammering loop
-                        state["scan_attempts"] = {today: n_today + 1}
-                        state["last_scan_date"] = today
-                        _save_state(state)  # mark first: never double-start
+                        #
+                        # 17 Sep 2026 restart-resilience fix: the attempt
+                        # counter used to persist to disk BEFORE the lock-
+                        # acquisition check below. A hard-killed container
+                        # (a Railway deploy cutover mid-scan) orphans the
+                        # "nightly" job lock for up to _JOB_LOCK_STALE_
+                        # SECONDS (3h - see that constant's own docstring),
+                        # and every tick that found the lock still held was
+                        # ALSO burning a real attempt on nothing but a
+                        # "skipped - another process already holds the
+                        # lock" no-op - silently exhausting the whole day's
+                        # 3-attempt budget within minutes of the restart,
+                        # with zero actual scan attempts having run (the
+                        # 16-17 Sep 2026 incident: two lock-contention
+                        # skips a minute apart burned attempts 1 and 2, and
+                        # nothing touched the "nightly" job again for the
+                        # rest of that night). Persisting only AFTER a
+                        # successful lock acquisition means a lock-
+                        # contention tick no longer counts against the
+                        # budget at all - only a tick that actually starts
+                        # a scan does. The log line text/order for a
+                        # successful start is unchanged, so a normal
+                        # night's logs stay byte-identical to before this
+                        # fix; this budget is now also SHARED with the new
+                        # catch-up block below (same state key), so the
+                        # two together still cap this process at 3 real
+                        # nightly-scan attempts per UTC day.
+                        #
                         # Audit fix 2.8: cross-process lock, on top of the
                         # in-process state-file guard above - see
                         # _acquire_job_lock's docstring.
                         if _acquire_job_lock("nightly"):
                             try:
+                                state["scan_attempts"] = {today: n_today + 1}
+                                state["last_scan_date"] = today
+                                _save_state(state)
                                 log(f"[scheduler] starting nightly scans ({', '.join(due)}) "
                                     f"[attempt {n_today + 1}/3 today]")
                                 _record_job(
@@ -890,6 +1022,62 @@ def _loop(log):
                         else:
                             log("[scheduler] nightly scan skipped - another process "
                                 "already holds the lock")
+
+                # 17 Sep 2026 restart-resilience fix: catch-up scan for a
+                # universe that was SCHEDULED for tonight (see
+                # _universes_missing_today's own docstring for exactly
+                # what "scheduled" means) but never got a full scan saved
+                # - a restart mid-scan, or a tick that lost its attempt to
+                # lock contention before the fix above. Runs every tick,
+                # same as the due-scan block above (so it fires on
+                # scheduler startup too, not just "the regular tick" -
+                # startup IS a tick, the first one). Shares the SAME
+                # "nightly" job lock and the SAME persisted scan_attempts
+                # budget as the due-scan block immediately above (not a
+                # separate counter) - together they cap this process at 3
+                # real nightly-scan attempts per UTC day, catch-up or not,
+                # surviving any number of restarts in between since
+                # scan_attempts lives in scheduler_state.json on the
+                # Railway Volume. Only fires within CATCHUP_WINDOW_HOURS of
+                # the scan-hour instant it's catching up for (see
+                # _catchup_reference_night's own docstring for the UTC-
+                # midnight-safe window check) - an unrelated restart long
+                # after that window has closed does nothing here. A
+                # normal, uninterrupted night has nothing missing
+                # (_universes_missing_today returns []) on every tick this
+                # runs, so this block logs nothing and does nothing on
+                # such a night - byte-identical to before this feature
+                # existed. Reuses _run_nightly (via _record_job, exactly
+                # like the due-scan block) for the catch-up itself, so the
+                # normal post-scan steps - derived universes, the reprice
+                # pass, sector top-up, alerts - all run for what was
+                # caught up exactly as they do for a normal scan; this is
+                # not a parallel copy of that orchestration.
+                ref_night = _catchup_reference_night(cfg, now)
+                if ref_night is not None:
+                    missing = _universes_missing_today(cfg, ref_night)
+                    if missing:
+                        state = _load_state()
+                        attempts = state.get("scan_attempts", {})
+                        n_today = attempts.get(today, 0)
+                        if n_today < 3:
+                            if _acquire_job_lock("nightly"):
+                                try:
+                                    state["scan_attempts"] = {today: n_today + 1}
+                                    state["last_scan_date"] = today
+                                    _save_state(state)
+                                    log(f"[scheduler] catch-up scan for {ref_night} "
+                                        f"({', '.join(missing)}) "
+                                        f"[attempt {n_today + 1}/3 today]")
+                                    _record_job(
+                                        "nightly", log,
+                                        lambda lg: _run_nightly({**cfg, "universes": missing}, lg),
+                                    )
+                                finally:
+                                    _release_job_lock("nightly")
+                            else:
+                                log("[scheduler] catch-up scan skipped - another "
+                                    "process already holds the lock")
 
                 # AI-readiness roadmap Phase 5: nightly (every day, unlike
                 # the weekly digest below), one calendar-day-per-run guard
