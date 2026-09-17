@@ -15,6 +15,7 @@ import traceback
 import concurrent.futures
 import contextlib
 import random
+import re
 from datetime import datetime, timezone, date as _date, timedelta
 from urllib.parse import quote as _urlquote
 
@@ -9338,6 +9339,228 @@ def _render_dd_header_sparkline(ticker):
         pass
 
 
+# Company description (17 Sep 2026), Deep Dive page only, Option A: a
+# one-line truncated profile summary directly under the title row,
+# opening into a full "About <name>" expander with the summary in
+# full, a facts row (sector/industry/employees/HQ/website - only the
+# fields the provider actually returned, never a dash/n/a), and a
+# provenance caption. Data source is the SAME cached get_ticker_info()
+# call the title row above already makes for the sector chip
+# (@st.cache_data(ttl=1800) - a second call here in the same render is
+# a cache hit, zero new network calls, same reasoning
+# _render_dd_header_sparkline above documents for get_price_history()).
+# Scope: the automated Deep Dive page only - the hand-covered Research
+# pages carry the author's own verdict text and are untouched by this.
+
+_DD_ABOUT_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
+_DD_ABOUT_MD_ESCAPE_CHARS = ["\\", "*", "_", "`", "[", "]", "<", ">"]
+
+# Small, self-contained map for the HQ fact's country abbreviation (the
+# mock shows "Fort Lauderdale, US", not yfinance's raw "United
+# States") - no existing country-abbreviation helper was found
+# anywhere else in this codebase (checked app.py, scanner_engine.py,
+# deep_dive_engine.py). Deliberately NOT exhaustive: an unmapped
+# country still shows, just unabbreviated - the same "only fields the
+# provider actually returned, never a dash" rule this whole feature
+# follows elsewhere applies here too (an unmapped country is still a
+# real value, just not shortened).
+_DD_ABOUT_COUNTRY_ABBR = {
+    "United States": "US", "United States of America": "US", "USA": "US",
+    "United Kingdom": "UK", "Great Britain": "UK",
+    "Australia": "AU", "Canada": "CA", "New Zealand": "NZ",
+    "Germany": "DE", "France": "FR", "Italy": "IT", "Spain": "ES",
+    "Netherlands": "NL", "Switzerland": "CH", "Ireland": "IE",
+    "Sweden": "SE", "Norway": "NO", "Denmark": "DK", "Finland": "FI",
+    "Japan": "JP", "China": "CN", "Hong Kong": "HK", "Singapore": "SG",
+    "South Korea": "KR", "India": "IN", "Israel": "IL",
+    "Brazil": "BR", "South Africa": "ZA", "Mexico": "MX",
+}
+
+
+def _dd_about_first_sentence(summary):
+    """First sentence of the provider's business summary, via a
+    pragmatic sentence-boundary heuristic (split on ./!/? followed by
+    whitespace and a capital letter). Accepted, disclosed limitation:
+    an abbreviation like "U.S." immediately followed by a capitalised
+    word can split early - the ~140-char truncation below still
+    produces a sane one-liner either way, so this is a cosmetic edge
+    case, not a correctness one."""
+    summary = (summary or "").strip()
+    if not summary:
+        return ""
+    return _DD_ABOUT_SENTENCE_SPLIT_RE.split(summary, maxsplit=1)[0].strip()
+
+
+def _dd_about_truncate(text, limit=140):
+    """Truncates at a word boundary at or before `limit` chars - never
+    mid-word - appending an ellipsis only when truncation happened."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    _sp = cut.rfind(" ")
+    if _sp > 0:
+        cut = cut[:_sp]
+    return cut.rstrip(" ,;:—-") + "…"
+
+
+def _dd_about_md_escape(text):
+    """Escapes Streamlit-markdown-special characters so provider text
+    embedded as an st.expander label can never be misread as markdown
+    (bold/italic/code/links) - expander labels render as markdown but
+    do NOT process unsafe_allow_html, so this is the only protection
+    layer for that surface. Backslash is escaped FIRST so the
+    backslashes this function itself introduces are never re-escaped
+    on a later pass."""
+    for _ch in _DD_ABOUT_MD_ESCAPE_CHARS:
+        text = text.replace(_ch, "\\" + _ch)
+    return text
+
+
+def _dd_about_round_employees(count):
+    """~10 under 1,000 / ~100 under 10,000 / ~1,000 under 100,000 /
+    ~5,000 above - validated against the mock's own example
+    (234 -> "~230")."""
+    try:
+        _n = int(count)
+    except (TypeError, ValueError):
+        return None
+    if _n <= 0:
+        return None
+    if _n < 1_000:
+        _step = 10
+    elif _n < 10_000:
+        _step = 100
+    elif _n < 100_000:
+        _step = 1_000
+    else:
+        _step = 5_000
+    return f"~{int(round(_n / _step) * _step):,}"
+
+
+def _dd_about_website_display(url):
+    """"https://www.gqgpartners.com/" -> "gqgpartners.com" (matches the
+    mock's display form); the raw url is still used as the actual
+    href, never this shortened display text."""
+    url = (url or "").strip()
+    if not url:
+        return None
+    _disp = re.sub(r"^https?://", "", url, flags=re.IGNORECASE)
+    _disp = re.sub(r"^www\.", "", _disp, flags=re.IGNORECASE)
+    return _disp.rstrip("/") or None
+
+
+def _render_dd_about(ticker, name, lang="en"):
+    """Renders the one-liner + expander described in this block's
+    module comment above. Missing/empty provider summary -> renders
+    nothing at all, not even the facts row alone (no placeholder)."""
+    info = get_ticker_info(ticker) or {}
+    _summary_raw = (info.get("longBusinessSummary") or "").strip()
+    if not _summary_raw:
+        return
+
+    _first = _dd_about_first_sentence(_summary_raw) or _summary_raw
+    _snippet = _dd_about_md_escape(_dd_about_truncate(_first, 140))
+    _more_word = i18n.t("dd.about.more", lang)
+    _key = f"dd_about_{re.sub(r'[^A-Za-z0-9]+', '_', ticker)}"
+
+    # Best-effort visual match to the mock's slim one-liner (a plain
+    # grey line ending in a colored "more" affordance, not a bordered
+    # box until opened) - this sandbox can't run the live Streamlit
+    # theme CSS to confirm pixel-for-pixel against st.expander's actual
+    # rendered DOM, same disclosed limitation Part 47.2 flags for the
+    # title row above. `:blue[...]` is used for the "more" affordance
+    # because Streamlit's built-in colored-text markdown directive has
+    # no teal option (blue/green/orange/red/violet/gray/primary only) -
+    # the closest available stand-in for the mock's teal accent.
+    st.markdown(
+        f"""<style>
+        div[class*="st-key-{_key}"] details {{
+            border:none !important; background:transparent !important;
+            padding:0 !important; margin:0 0 0.35rem 0 !important;
+        }}
+        div[class*="st-key-{_key}"] summary {{
+            padding:0 !important; min-height:0 !important;
+        }}
+        div[class*="st-key-{_key}"] summary p {{
+            font-size:12.5px !important; color:#8aa0b8 !important;
+            line-height:1.5 !important;
+        }}
+        div[class*="st-key-{_key}"] details[open] {{
+            border:1px solid #22345a !important; border-radius:10px !important;
+            padding:10px 14px !important; background:transparent !important;
+        }}
+        </style>""",
+        unsafe_allow_html=True,
+    )
+
+    with st.expander(f"{_snippet} :blue[{_more_word} ▾]", expanded=False, key=_key):
+        st.markdown(
+            f'<b style="font-size:12.5px">'
+            f'{html.escape(i18n.t("dd.about.heading", lang, name=name))}</b>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div style="font-size:12.5px;margin-top:5px;line-height:1.65;'
+            f'color:#8aa0b8">{html.escape(_summary_raw)}</div>',
+            unsafe_allow_html=True,
+        )
+
+        _facts = []
+        _sector = (info.get("sector") or "").strip()
+        if _sector:
+            _facts.append((i18n.t("dd.about.fact_sector", lang), html.escape(_sector)))
+        _industry = (info.get("industry") or "").strip()
+        if _industry:
+            _facts.append((i18n.t("dd.about.fact_industry", lang), html.escape(_industry)))
+        _employees = _dd_about_round_employees(info.get("fullTimeEmployees"))
+        if _employees:
+            _facts.append((i18n.t("dd.about.fact_employees", lang), html.escape(_employees)))
+        _city = (info.get("city") or "").strip()
+        _country_raw = (info.get("country") or "").strip()
+        _country = _DD_ABOUT_COUNTRY_ABBR.get(_country_raw, _country_raw)
+        _hq = ", ".join(_p for _p in (_city, _country) if _p)
+        if _hq:
+            _facts.append((i18n.t("dd.about.fact_hq", lang), html.escape(_hq)))
+        _website_raw = (info.get("website") or "").strip()
+        _website_disp = _dd_about_website_display(_website_raw)
+        if _website_disp:
+            _href = (
+                _website_raw if re.match(r"^https?://", _website_raw, re.IGNORECASE)
+                else f"https://{_website_raw}"
+            )
+            _facts.append((
+                i18n.t("dd.about.fact_website", lang),
+                f'<a href="{html.escape(_href)}" target="_blank" '
+                f'rel="noopener noreferrer" style="color:#2dd4bf;'
+                f'text-decoration:none">{html.escape(_website_disp)} ↗</a>',
+            ))
+
+        if _facts:
+            _facts_html = (
+                '<div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:10px">'
+            )
+            for _label, _value_html in _facts:
+                _facts_html += (
+                    '<div><div style="color:#8aa0b8;font-size:10.5px;'
+                    'text-transform:uppercase;letter-spacing:.05em">'
+                    f'{html.escape(_label)}</div>'
+                    f'<div style="font-size:13px;font-weight:700;'
+                    f'margin-top:1px">{_value_html}</div></div>'
+                )
+            _facts_html += "</div>"
+            st.markdown(_facts_html, unsafe_allow_html=True)
+
+        _provenance = i18n.t("dd.about.provenance", lang)
+        if lang == "es":
+            _provenance += i18n.t("dd.about.provenance_es_suffix", lang)
+        st.markdown(
+            f'<div style="color:#5b7290;font-size:11px;margin-top:9px;'
+            f'line-height:1.55">{html.escape(_provenance)}</div>',
+            unsafe_allow_html=True,
+        )
+
+
 def _render_dd_action_row(dd, has_research=False):
     """Deep Dive first-screen instruction, Part 3: "Watchlist / Alerts /
     Checklist, up beside the name" - replaces the three oversized
@@ -9834,6 +10057,7 @@ def page_deep_dive():
             st.markdown(_dd_title_html, unsafe_allow_html=True)
         with _dd_spark_col:
             _render_dd_header_sparkline(_dd["ticker"])
+        _render_dd_about(_dd["ticker"], _dd["name"], lang=st.session_state.get("lang", "en"))
         _render_dd_action_row(_dd, has_research=_dd_has_research)
         _render_data_as_of(_dd["ticker"])
         _render_recent_results_banner(_dd["ticker"])

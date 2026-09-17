@@ -2937,6 +2937,25 @@ EN = {
         "above. Headlines judged unrelated to the company are never "
         "counted."
     ),
+    # Company description (17 Sep 2026), Deep Dive page only, Option A:
+    # a one-liner under the title row (first sentence of the provider's
+    # own business summary, truncated ~140 chars) that opens into a full
+    # "About <name>" expander with the summary in full plus a facts row.
+    # Every string here is short static UI chrome; the summary text
+    # itself is the data provider's own copy, shown as published, never
+    # translated or rewritten (see the provenance caption below).
+    "dd.about.more": "more",
+    "dd.about.heading": "About {name}",
+    "dd.about.fact_sector": "Sector",
+    "dd.about.fact_industry": "Industry",
+    "dd.about.fact_employees": "Employees",
+    "dd.about.fact_hq": "HQ",
+    "dd.about.fact_website": "Website",
+    "dd.about.provenance": (
+        "Company's own profile via the data provider, shown as "
+        "published (English) — not written or endorsed by this site."
+    ),
+    "dd.about.provenance_es_suffix": " (perfil en inglés, del proveedor de datos)",
 }
 
 ES = {
@@ -5387,6 +5406,18 @@ ES = {
         "anteriores. Los titulares considerados no relacionados con la "
         "empresa nunca se cuentan."
     ),
+    # Descripción de la empresa (17 Sep 2026) - ES DRAFT, not
+    # professionally reviewed (same convention as every other ES batch
+    # in this file). The company summary text itself is never
+    # translated (see dd.about.provenance / provenance_es_suffix in the
+    # EN dict) - only this short UI chrome is localized here.
+    "dd.about.more": "más",
+    "dd.about.heading": "Sobre {name}",
+    "dd.about.fact_sector": "Sector",
+    "dd.about.fact_industry": "Industria",
+    "dd.about.fact_employees": "Empleados",
+    "dd.about.fact_hq": "Sede",
+    "dd.about.fact_website": "Sitio web",
 }
 
 
