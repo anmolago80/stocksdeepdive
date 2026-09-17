@@ -6861,29 +6861,45 @@ def _render_research_detail(ticker, data, section_order, lang="en"):
     # this function instead (same functions/flows, wrap_container=False).
 
     _cp_gated = {"Fair Value", "Company Potential"}
+    # 📰 News tab: page-level, not workbook data - inserted right after
+    # "Fair Value" via the same compounder_ui.with_news_tab() helper the
+    # Deep Dive auto view's compounder_ui.render_tabs() uses, so News
+    # always lands in the same place on both views and both render it
+    # through the exact same compounder_ui.render_news_tab() component.
+    # This page builds its own st.tabs() (rather than calling
+    # compounder_ui.render_tabs() directly) because it also has to
+    # interleave "Company Potential", which has no compounder_ui.py
+    # computed-section equivalent at all - see that module's own
+    # top-of-file docstring.
+    _cp_section_order = compounder_ui.with_news_tab(section_order, lang=lang)
+    _cp_news_label = compounder_ui.news_tab_label(lang)
     _cp_tab_labels = [
         (f"🔒 {s}" if s in _cp_gated and paywall_engine.PAYWALL_ENABLED
          and not paywall_engine.is_subscribed(paywall_engine.current_user_email())
          else s)
-        for s in section_order
+        for s in _cp_section_order
     ]
     # Same ?section= deep-link convention page_research() always used - the
     # label passed to st.tabs()'s `default` has to be the (possibly 🔒-
     # prefixed) tab label actually in _cp_tab_labels, not the bare section
-    # name, so the lookup below maps back through section_order's index.
+    # name, so the lookup below maps back through _cp_section_order's index
+    # (News included, since with_news_tab() above already folded it in).
     _cp_default_idx = 0
     _qp_section = (st.query_params.get("section") or "").strip().lower()
     if _qp_section:
-        for _i, _s in enumerate(section_order):
+        for _i, _s in enumerate(_cp_section_order):
             if _s.lower() == _qp_section:
                 _cp_default_idx = _i
                 break
     _cp_tabs = st.tabs(_cp_tab_labels, default=_cp_tab_labels[_cp_default_idx])
-    st.query_params["section"] = section_order[_cp_default_idx]
-    for _cp_label, _cp_tab_label, _cp_tab in zip(section_order, _cp_tab_labels, _cp_tabs):
+    st.query_params["section"] = _cp_section_order[_cp_default_idx]
+    for _cp_label, _cp_tab_label, _cp_tab in zip(_cp_section_order, _cp_tab_labels, _cp_tabs):
         with _cp_tab:
-            st.markdown(f"### {ticker} - {_cp_label}")
-            _render_cp_section(ticker, _cp_label, data)
+            if _cp_label == _cp_news_label:
+                compounder_ui.render_news_tab(ticker, lang=lang)
+            else:
+                st.markdown(f"### {ticker} - {_cp_label}")
+                _render_cp_section(ticker, _cp_label, data)
 
 
 def _render_cp_section(ticker, section_label, data):

@@ -2900,6 +2900,43 @@ EN = {
     "research.terminated_fallback_reason": (
         "Research stopped — see the sections for what was completed."
     ),
+    # 📰 News tab (Rational Compounder tab row, Option B - tone dial +
+    # grouped feed): compounder_ui.py's render_news_tab(). Every string
+    # here is short static UI chrome, same class of text this module
+    # already covers - see that function's own docstring for the data
+    # source (portfolio_news_engine.analyze_holding_news(), the same
+    # News Intelligence feeds Portfolio Health reads). The word "score"
+    # is deliberately never used anywhere in this block - the dial reads
+    # "tone", on purpose, everywhere it's named.
+    "compounder.news.tab_label": "\U0001F4F0 News",
+    "compounder.news.group_positive": "Positive",
+    "compounder.news.group_neutral": "Neutral",
+    "compounder.news.group_negative": "Negative",
+    "compounder.news.tone_negative": "Negative",
+    "compounder.news.tone_leans_negative": "Leans negative",
+    "compounder.news.tone_neutral": "Neutral",
+    "compounder.news.tone_leans_positive": "Leans positive",
+    "compounder.news.tone_positive": "Positive",
+    "compounder.news.dial_prefix": "NEWS TONE · 30d ·",
+    "compounder.news.disclaimer": (
+        "Automated read of headline wording — describes the headlines, "
+        "not the company, and is not advice."
+    ),
+    "compounder.news.no_headlines": (
+        "No recent headlines found for {ticker} in the last 30 days."
+    ),
+    "compounder.news.headline_count": "{n} headlines in the last 30 days",
+    "compounder.news.info_button": "ⓘ",
+    "compounder.news.info_text": (
+        "Each headline is rated on a −2…+2 scale from its automated "
+        "severity read (thesis-breaking −2, material or temporary −1, "
+        "no clear signal 0, positive +2). The dial's needle sits at the "
+        "plain average of those values across every headline about this "
+        "company in the last 30 days — a bigger cluster of one tone "
+        "pulls it further that way — bucketed back onto the five levels "
+        "above. Headlines judged unrelated to the company are never "
+        "counted."
+    ),
 }
 
 ES = {
@@ -5313,6 +5350,42 @@ ES = {
     "research.terminated_badge": "⛔ Investigación terminada",
     "research.terminated_fallback_reason": (
         "Investigación detenida — ver las secciones para lo que se completó."
+    ),
+    # 📰 Pestaña de Noticias - ES DRAFT, not professionally reviewed (same
+    # convention as every other ES batch in this file - see the module
+    # docstring). Mirrors the EN block above 1:1; never uses the word
+    # "puntuación"/"puntaje" ("score") for the same reason the EN copy
+    # never uses "score".
+    "compounder.news.tab_label": "\U0001F4F0 Noticias",
+    "compounder.news.group_positive": "Positivo",
+    "compounder.news.group_neutral": "Neutro",
+    "compounder.news.group_negative": "Negativo",
+    "compounder.news.tone_negative": "Negativo",
+    "compounder.news.tone_leans_negative": "Tendencia negativa",
+    "compounder.news.tone_neutral": "Neutro",
+    "compounder.news.tone_leans_positive": "Tendencia positiva",
+    "compounder.news.tone_positive": "Positivo",
+    "compounder.news.dial_prefix": "TONO DE NOTICIAS · 30d ·",
+    "compounder.news.disclaimer": (
+        "Lectura automática del lenguaje de los titulares — describe los "
+        "titulares, no la empresa, y no es un consejo."
+    ),
+    "compounder.news.no_headlines": (
+        "No se encontraron titulares recientes de {ticker} en los "
+        "últimos 30 días."
+    ),
+    "compounder.news.headline_count": "{n} titulares en los últimos 30 días",
+    "compounder.news.info_button": "ⓘ",
+    "compounder.news.info_text": (
+        "Cada titular se valora en una escala de −2 a +2 según su "
+        "lectura de gravedad automática (que amenaza la tesis −2, "
+        "material o temporal −1, sin señal clara 0, positivo +2). La "
+        "aguja del indicador se sitúa en el promedio simple de esos "
+        "valores de todos los titulares sobre esta empresa en los "
+        "últimos 30 días — un grupo mayor de un tono la desplaza más en "
+        "esa dirección — agrupado de nuevo en los cinco niveles "
+        "anteriores. Los titulares considerados no relacionados con la "
+        "empresa nunca se cuentan."
     ),
 }
 

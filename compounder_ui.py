@@ -28,13 +28,16 @@ approved compact HTML look) and deleted from app.py once nothing referenced
 it any more.
 """
 
+import datetime as _dt
 import hashlib
 import html
+import math
 import re
 
 import plotly.graph_objects as go
 import streamlit as st
 
+import i18n
 from simple_view_copy import SECTION_WHY_CAPTIONS, SECTION_WHY_CAPTIONS_ES
 
 # -----------------------------------
@@ -1164,20 +1167,377 @@ def render_section(sections, ticker, section_label, gate=None, lang="en"):
             )
 
 
+# -----------------------------------
+# News tab (📰) - added to the Rational Compounder tab row, page-level
+# (not workbook data: no compounder_data.json / auto_compounder_engine
+# entry exists or is needed for it, unlike every other section this
+# module renders). Shared by BOTH callers - render_tabs() below (the
+# Deep Dive page's auto Compounder View) auto-inserts it, and the
+# hand-covered Research page's own tab loop (app.py's
+# _render_research_detail) calls render_news_tab() directly, since that
+# page can't route through render_tabs() itself (it also interleaves
+# "Company Potential", which has no compounder_ui.py-computed-section
+# equivalent at all - see this module's own top docstring). Either way
+# it's the exact same function producing the exact same component.
+#
+# Data: the SAME News Intelligence feeds + severity classifier
+# Portfolio Health already reads - portfolio_news_engine.
+# analyze_holding_news(), the exact same function app.py's
+# _research_note_news_text() already calls for a non-portfolio ticker.
+# No new engine, no new provider: every headline here was already being
+# fetched/classified by that module; this section only adds a
+# presentation-layer mapping from its 5-way SEVERITY read (noise /
+# temporary / material / thesis-breaking / positive) onto the 5-level
+# TONE vocabulary below, plus the dial/grouped-feed rendering.
+# -----------------------------------
+
+NEWS_TAB_LABEL = "\U0001F4F0 News"  # "📰 News" - EN fallback/default only;
+# the actual tab text is always news_tab_label(lang) below (EN/ES via
+# compounder.news.tab_label), never this bare constant directly.
+
+
+def news_tab_label(lang="en"):
+    """The 📰 News tab's own localized display text (EN/ES) - a function,
+    not a constant, since the tab bar itself must show "📰 Noticias" for
+    an ES visitor, not the English label with translated content behind
+    it. Both render_tabs() and the Research page's own tab loop
+    (app.py's _render_research_detail) use this SAME function for both
+    building the tab label AND identifying which tab is News inside
+    their render loop, so the two can never drift out of sync with each
+    other."""
+    return i18n.t("compounder.news.tab_label", lang)
+
+_NEWS_WINDOW_DAYS = 30
+_NEWS_MAX_HEADLINES = 30
+
+# portfolio_news_engine._classify_severity()'s own 5 categories, mapped
+# onto a -2..+2 tone value - reused as-is, never reclassified further
+# (see _news_info_text() below for the honest, in-tab statement of this
+# rule, and this module's own top-of-section comment for why this isn't
+# "a new engine"). thesis-breaking is the classifier's own worst
+# category -> -2; material and temporary (two different magnitudes of
+# "a real negative issue" in that classifier's own severity
+# definitions) both land on -1, the single "leans negative" step - the
+# classifier draws no finer line between them than that; noise (no
+# polarity either way) -> 0; positive (the classifier's only "good
+# news" category) -> +2.
+_TONE_VALUE_BY_SEVERITY = {
+    "thesis-breaking": -2.0,
+    "material": -1.0,
+    "temporary": -1.0,
+    "noise": 0.0,
+    "positive": 2.0,
+}
+
+# (background, border, text) - lifted verbatim from the approved
+# compounder_news_tab_mock.html (.tneg / .tln / .tn / .tlp / .tp).
+_TONE_CHIP_COLORS = {
+    "negative": ("#331419", "#7f1d1d", "#fb7185"),
+    "leans_negative": ("#2b1c22", "#59303c", "#f5a8b3"),
+    "neutral": ("#1a2740", "#2a3b5c", "#8aa0b8"),
+    "leans_positive": ("#132b1e", "#1d4436", "#7fd6a8"),
+    "positive": ("#10312d", "#14532d", "#34d399"),
+}
+
+# Dial zone colors, same mock, left (most negative) -> right (most
+# positive).
+_DIAL_ZONE_COLORS = {
+    "negative": "#7f1d1d", "leans_negative": "#59303c", "neutral": "#2a3b5c",
+    "leans_positive": "#1d6a4c", "positive": "#34d399",
+}
+
+# The three feed groups the task spec calls for: Positive folds in
+# leans-positive, Negative folds in leans-negative, Neutral stands
+# alone. Rendered in this order (best news first, same as the mock's
+# own "Leaning positive" example group).
+_GROUP_BY_LEVEL = {
+    "positive": "positive", "leans_positive": "positive",
+    "neutral": "neutral",
+    "negative": "negative", "leans_negative": "negative",
+}
+_GROUP_ORDER = ["positive", "neutral", "negative"]
+
+
+def _news_tone_value(severity):
+    return _TONE_VALUE_BY_SEVERITY.get(severity, 0.0)
+
+
+def _news_tone_level(value):
+    """Buckets a -2..+2 tone value onto the 5-level vocabulary -
+    boundaries evenly spaced at the halfway points between the 5 fixed
+    per-severity values above (-2 / -1 / 0 / +1 / +2), so a single
+    headline's own value always lands exactly on its "home" level, and
+    the aggregate 30-day average (see render_news_tab() below) lands
+    wherever the actual mix of headlines pulls it - which is the only
+    way "Leans positive" / "Leans negative" are ever reached, since no
+    single headline's own value sits between two of the fixed points."""
+    if value <= -1.5:
+        return "negative"
+    if value <= -0.5:
+        return "leans_negative"
+    if value < 0.5:
+        return "neutral"
+    if value < 1.5:
+        return "leans_positive"
+    return "positive"
+
+
+def _news_company_name(ticker):
+    """Local, no-network company name lookup for relevance-matching in
+    the news fetch below - same source _rc_company_name() (app.py) uses
+    for the Research shelf/header (the nightly scan's own snapshot
+    cache), read directly here instead of importing app.py (which
+    imports THIS module - importing back would be circular). Returns
+    None if this ticker hasn't been through a nightly scan yet;
+    analyze_holding_news() below already degrades gracefully to
+    ticker-root-only relevance matching in that case."""
+    try:
+        import snapshot_store
+        snap = snapshot_store.get_snapshot(ticker)
+        if not snap:
+            return None
+        return snapshot_store.public_view(snap.get("data") or {}).get("company_name")
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _news_tab_fetch(ticker, name):
+    """Cached (30-min TTL, same convention as app.py's get_price_history
+    / get_ticker_info / get_cashflow_df) per-ticker news fetch for the
+    News tab - so a tab switch or any other widget interaction on this
+    page never re-fetches or re-classifies for the same ticker within
+    the TTL window; a cache hit costs nothing.
+
+    Calls portfolio_news_engine.analyze_holding_news() - the SAME News
+    Intelligence feeds + severity classifier Portfolio Health already
+    reads - with no thesis_drivers (a Compounder ticker isn't
+    necessarily a held position with a thesis on file) and a `buy_date`
+    set to _NEWS_WINDOW_DAYS+3 days ago purely to bound the underlying
+    fetch window to roughly what this tab needs (that function's own
+    "keep events back to buy_date - 3 days" rule - see its docstring),
+    not to claim any purchase date. analyze_holding_news() has its own
+    internal REFETCH_STALE_HOURS re-fetch guard UNDER this cache (keyed
+    on ticker alone, shared with every other caller of that function,
+    portfolio holding or not) - this decorator's job is purely to stop
+    even the classification pass / stale-check DB read from repeating
+    on every rerun of the same session.
+
+    Returns a list of up to _NEWS_MAX_HEADLINES dicts
+    {date (a naive datetime or None), title, publisher, link, severity},
+    newest first, restricted to headlines analyze_holding_news() judged
+    RELEVANT to this company and dated within the last _NEWS_WINDOW_DAYS
+    days. Never raises - any failure (missing dependency, feed error,
+    bad data) returns [], which render_news_tab() below renders as the
+    fail-soft "No recent headlines found" line rather than breaking the
+    tab."""
+    try:
+        import portfolio_news_engine
+    except Exception:
+        return []
+    now = _dt.datetime.utcnow()
+    buy_date = (now - _dt.timedelta(days=_NEWS_WINDOW_DAYS + 3)).strftime("%Y-%m-%d")
+    try:
+        result = portfolio_news_engine.analyze_holding_news(
+            ticker, name=name, buy_date=buy_date, now=now,
+        )
+    except Exception:
+        return []
+    events = (result or {}).get("timeline") or []
+    cutoff = now - _dt.timedelta(days=_NEWS_WINDOW_DAYS)
+    out = []
+    for e in events:
+        if not e.get("relevant"):
+            continue
+        d = e.get("date")
+        if d is not None and d < cutoff:
+            continue
+        out.append({
+            "date": d, "title": (e.get("title") or "").strip(),
+            "publisher": e.get("publisher") or e.get("source") or "",
+            "link": e.get("link") or "", "severity": e.get("severity") or "noise",
+        })
+    out.sort(key=lambda e: e["date"] or _dt.datetime.min, reverse=True)
+    return out[:_NEWS_MAX_HEADLINES]
+
+
+def _news_chip_html(level, label):
+    bg, border, text = _TONE_CHIP_COLORS[level]
+    return (
+        '<span style="display:inline-block;border-radius:999px;padding:2px 10px;'
+        'font-size:10.5px;font-weight:700;white-space:nowrap;'
+        f'background:{bg};border:1px solid {border};color:{text};">'
+        f'{html.escape(label)}</span>'
+    )
+
+
+def _news_item_html(item, chip_html, lang):
+    title = html.escape(item["title"])
+    publisher = html.escape(item["publisher"])
+    date_label = i18n.format_date_dm(item["date"], lang) if item["date"] else ""
+    link = item["link"]
+    title_html = (
+        f'<a href="{html.escape(link, quote=True)}" target="_blank" '
+        f'rel="noopener noreferrer" style="color:#e6edf5;text-decoration:none;">'
+        f'{title}</a>'
+        if link else f'<span style="color:#e6edf5;">{title}</span>'
+    )
+    return (
+        '<div style="display:flex;gap:12px;align-items:flex-start;padding:9px 0;'
+        'border-bottom:1px solid #141f36;font-size:13px;">'
+        f'<span style="color:#5b7290;font-size:11px;white-space:nowrap;width:56px;">'
+        f'{html.escape(date_label)}</span>'
+        f'<div style="flex:1;">{title_html} '
+        f'<span style="color:#5b7290;font-size:11px;">· {publisher}</span></div>'
+        f'{chip_html}</div>'
+    )
+
+
+_GROUP_HEAD_COLOR = {"positive": "#34d399", "neutral": "#8aa0b8", "negative": "#fb7185"}
+
+
+def _news_dial_svg(value, level_label):
+    """Inline SVG 5-zone dial - arc paths lifted verbatim from the
+    approved mock (fixed geometry, a semicircle centred on (110,110),
+    radius 85, sweeping from 180deg at the left/most-negative end to
+    0deg at the right/most-positive end) - with a needle drawn at
+    `value` (-2..+2, clipped) and the "NEWS TONE · 30d · <level>" label
+    underneath, already localized by the caller. Never renders the word
+    "score" anywhere - see this module's news-tab section comment."""
+    v = max(-2.0, min(2.0, value))
+    theta = math.radians(90 - 45 * v)
+    cx, cy, needle_len = 110, 108, 76
+    x2 = cx + needle_len * math.cos(theta)
+    y2 = cy - needle_len * math.sin(theta)
+    return (
+        '<svg viewBox="0 0 220 130" width="200" role="img" '
+        f'aria-label="{html.escape(level_label)}">'
+        '<path d="M 25 110 A 85 85 0 0 1 59 42" fill="none" '
+        f'stroke="{_DIAL_ZONE_COLORS["negative"]}" stroke-width="13" stroke-linecap="round"/>'
+        '<path d="M 66 36 A 85 85 0 0 1 100 26" fill="none" '
+        f'stroke="{_DIAL_ZONE_COLORS["leans_negative"]}" stroke-width="13"/>'
+        '<path d="M 108 25 A 85 85 0 0 1 140 32" fill="none" '
+        f'stroke="{_DIAL_ZONE_COLORS["neutral"]}" stroke-width="13"/>'
+        '<path d="M 148 36 A 85 85 0 0 1 172 55" fill="none" '
+        f'stroke="{_DIAL_ZONE_COLORS["leans_positive"]}" stroke-width="13"/>'
+        '<path d="M 178 62 A 85 85 0 0 1 195 110" fill="none" '
+        f'stroke="{_DIAL_ZONE_COLORS["positive"]}" stroke-width="13" stroke-linecap="round"/>'
+        f'<line x1="{cx}" y1="{cy}" x2="{x2:.1f}" y2="{y2:.1f}" '
+        'stroke="#e6edf5" stroke-width="3"/>'
+        '<text x="110" y="125" fill="#8aa0b8" font-size="10" text-anchor="middle" '
+        f'font-family="Segoe UI">{html.escape(level_label)}</text>'
+        '</svg>'
+    )
+
+
+def render_news_tab(ticker, lang="en"):
+    """Renders the 📰 News tab's full content for `ticker`: a 5-zone
+    tone dial at the 30-day balance, the honesty disclaimer directly
+    beneath it, then the headline feed grouped under three heads
+    (Positive/Neutral/Negative). Fail-soft throughout - a feed error or
+    zero headlines renders only the "No recent headlines" line and
+    nothing else breaks; this function never raises."""
+    _t = lambda key, **fmt: i18n.t(f"compounder.news.{key}", lang, **fmt)
+
+    name = _news_company_name(ticker)
+    try:
+        items = _news_tab_fetch(ticker, name)
+    except Exception:
+        items = []
+
+    if not items:
+        st.info(_t("no_headlines", ticker=ticker))
+        return
+
+    scored = [(it, _news_tone_value(it["severity"])) for it in items]
+    balance = sum(v for _, v in scored) / len(scored)
+    level = _news_tone_level(balance)
+    level_word = _t(f"tone_{level}").lower()
+
+    dial_col, info_col = st.columns([5, 1])
+    with dial_col:
+        st.markdown(
+            '<div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;">'
+            + _news_dial_svg(balance, f'{_t("dial_prefix")} {level_word}')
+            + '<div style="font-size:12.5px;color:#8aa0b8;">'
+            + html.escape(_t("headline_count", n=len(items)))
+            + '</div></div>',
+            unsafe_allow_html=True,
+        )
+    with info_col:
+        with st.popover(_t("info_button")):
+            st.markdown(_t("info_text"))
+
+    st.markdown(
+        f'<div style="color:#8aa0b8;font-size:11.5px;margin-top:8px;">'
+        f'{html.escape(_t("disclaimer"))}</div>',
+        unsafe_allow_html=True,
+    )
+
+    groups = {g: [] for g in _GROUP_ORDER}
+    for it, v in scored:
+        item_level = _news_tone_level(v)
+        groups[_GROUP_BY_LEVEL[item_level]].append((it, item_level))
+
+    feed_html = ['<div style="margin-top:14px;">']
+    for group in _GROUP_ORDER:
+        group_items = groups[group]
+        if not group_items:
+            continue
+        feed_html.append(
+            f'<div style="font-weight:700;font-size:13px;margin:14px 0 4px;'
+            f'color:{_GROUP_HEAD_COLOR[group]};">'
+            f'{html.escape(_t(f"group_{group}"))} ({len(group_items)})</div>'
+        )
+        for it, item_level in group_items:
+            chip = _news_chip_html(item_level, _t(f"tone_{item_level}"))
+            feed_html.append(_news_item_html(it, chip, lang))
+    feed_html.append('</div>')
+    st.markdown("".join(feed_html), unsafe_allow_html=True)
+
+
+def with_news_tab(section_order, lang="en"):
+    """`section_order` with the News tab's own localized label
+    (news_tab_label(lang) above) inserted immediately after "Fair
+    Value" (or appended at the end if "Fair Value" isn't present) -
+    shared by render_tabs() below and the hand-covered Research page's
+    own tab loop (app.py's _render_research_detail), so News always
+    lands in the same place relative to the six computed sections on
+    both views. `section_order` itself is returned unmodified elsewhere
+    (section counts, ?section= deep-linking, etc.) - only the list
+    actually used to build tab labels/tabs needs News added to it."""
+    out = list(section_order)
+    label = news_tab_label(lang)
+    if "Fair Value" in out:
+        out.insert(out.index("Fair Value") + 1, label)
+    else:
+        out.append(label)
+    return out
+
+
 def render_tabs(sections, ticker, section_order, key_prefix, gates=None, lang="en"):
     """Renders `st.tabs(section_order)` and calls render_section() in each
     tab - the same navigation mechanism the Research page already uses
     (see page_research()), reused as-is for the Deep Dive auto view so
     both callers share one nav mechanism, not just one section renderer.
+    Always appends a 📰 News tab after "Fair Value" (see with_news_tab()
+    above) - page-level content, not part of `sections`, rendered via
+    render_news_tab() instead of render_section().
 
     gates: optional {section_label: (title, teaser, key_prefix)} - only
         the sections present here are gated; every other section renders
-        openly.
+        openly. Never applies to the News tab - it isn't gated.
     lang: "en"/"es" (Español instruction, Part 1) - passed straight
-        through to each tab's render_section() call.
+        through to each tab's render_section() call, and used to pick
+        the News tab's own localized label.
     """
     gates = gates or {}
-    tabs = st.tabs(section_order, key=key_prefix)
-    for label, tab in zip(section_order, tabs):
+    tab_labels = with_news_tab(section_order, lang=lang)
+    news_label = news_tab_label(lang)
+    tabs = st.tabs(tab_labels, key=key_prefix)
+    for label, tab in zip(tab_labels, tabs):
         with tab:
-            render_section(sections, ticker, label, gate=gates.get(label), lang=lang)
+            if label == news_label:
+                render_news_tab(ticker, lang=lang)
+            else:
+                render_section(sections, ticker, label, gate=gates.get(label), lang=lang)
