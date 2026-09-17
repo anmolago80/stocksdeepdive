@@ -978,12 +978,33 @@ def _capture_first_src():
 
 
 def _bump_page_view(page, ticker=None):
-    """One first-party, aggregate page-view count per page render
-    (metrics_store.py) - wrapped in try/except because analytics must
-    never break a page. src is attributed to only the FIRST bump of a
-    session (the "_src_counted" flag), so a visitor who arrives via one
-    article link and then browses five more pages shows up as one src
-    attribution, not six."""
+    """One first-party, aggregate page-view count per browser SESSION per
+    page (metrics_store.py) - wrapped in try/except because analytics
+    must never break a page.
+
+    17 Sep 2026 fix: Streamlit re-executes a page's whole script on every
+    rerun (every widget interaction, not just a navigation), so this used
+    to bump once per RERUN - an interactive page like Deep Dive inflated
+    hard against a static one like About. Fixed with the exact same
+    session-flag pattern _count_tool_open_once() already uses for Tool
+    opens: a `_page_view_counted` set in session_state, keyed on `page`
+    so reruns of the same page only ever count once. Deep Dive is keyed
+    on page+ticker instead (ten different tickers in one session are ten
+    real views, not one) - every other page ignores ticker for the key on
+    purpose, even where one is passed (e.g. Research), matching what was
+    asked for here; nothing else about those call sites changes.
+
+    src attribution is UNCHANGED - still attributed to only the FIRST
+    bump of a session (the "_src_counted" flag), so a visitor who arrives
+    via one article link and then browses five more pages shows up as
+    one src attribution, not six. That guard already only ever fires
+    once per session regardless of the rerun-vs-visit dedup above, so it
+    needed no change."""
+    _seen = st.session_state.setdefault("_page_view_counted", set())
+    _key = f"{page}:{ticker}" if page == "deep_dive" and ticker else page
+    if _key in _seen:
+        return
+    _seen.add(_key)
     try:
         _src = None
         if not st.session_state.get("_src_counted"):
@@ -26447,10 +26468,19 @@ def page_admin_dashboard():
             st.markdown(_render_admin_sections_html(_admin_sections_by_visits()),
                         unsafe_allow_html=True)
             st.caption(
-                "Page VIEWS over 7 days (the existing per-page counter, "
-                "summed into sections), delta vs the prior 7 days, "
-                "\"—\" where last week has no data. No new counter - same "
-                "fail-open counting as everything else on this page."
+                "Visits (once per session) over 7 days - the existing "
+                "per-page counter, summed into sections - delta vs the "
+                "prior 7 days, \"—\" where last week has no data. No new "
+                "counter - same fail-open counting as everything else on "
+                "this page."
+            )
+            st.caption(
+                "17 Sep 2026: page views now count once per browser "
+                "session per page (was: once per rerun, which inflated "
+                "interactive pages like Deep Dive against static ones). "
+                "Expect every number here - and the week-over-week deltas "
+                "- to look unusual for about 7 days while this window "
+                "still spans the old counting method."
             )
             # Part 53.2 follow-up: "what's inside Other" - makes a future
             # mapping gap visible here instead of silently inflating
