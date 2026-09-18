@@ -78,6 +78,7 @@ import newsletter_store
 import nightly_scan
 import push_send
 import push_store
+import scheduler_engine
 import site_content
 
 # AI-readiness roadmap Phase 1 (AI_ROADMAP_stocksdeepdive.md): the public
@@ -200,6 +201,24 @@ async def _wait_for_streamlit(timeout=180):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _streamlit_proc, _client
+    # 18 Sep 2026 boot-time fix: start the background scheduler HERE, at
+    # FastAPI startup, instead of relying solely on app.py's
+    # _start_background_scheduler() (an st.cache_resource-wrapped call
+    # that only runs once a browser session actually connects to the
+    # Streamlit subprocess - `streamlit run app.py` starts a server
+    # process immediately, but does NOT execute app.py's own script,
+    # including that call, until a client opens a session). That gap was
+    # observed in production three times this week: missed 23:00 backups
+    # Tue-Thu, and the lock-fix deploy this same morning sitting idle for
+    # ~15 minutes with no scans/backups/watchdog running until a human
+    # happened to open a page. scheduler_engine.start() is idempotent per
+    # process (see its own docstring) - app.py's own call, once a session
+    # eventually does open, is then a no-op in that (separate) process.
+    # Never allowed to stop the site serving, same rule as every other
+    # startup step below - starting a background thread essentially can't
+    # fail, but there's no reason to risk it.
+    with suppress(Exception):
+        scheduler_engine.start()
     blog_store.ensure_media_dir()
     # One-time-per-post inference for posts that predate primary_ticker
     # (P3.2) - deterministic given the same title, so safe on every

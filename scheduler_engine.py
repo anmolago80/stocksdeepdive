@@ -162,6 +162,16 @@ def _data_dir():
 STATE_PATH = os.path.join(_data_dir(), "scheduler_state.json")
 _CHECK_EVERY_SECONDS = 60
 
+# 18 Sep 2026 boot-time + retry fix: shared retry-cap for the daily jobs
+# (backup, watchdog) that now persist their "done for today" guard only
+# after a successful run - see the backup/watchdog blocks in _loop()
+# below. Smaller than the nightly scan's own 3-attempt budget (that one
+# covers an entire multi-universe scan that can genuinely take hours;
+# these are single, fast, all-or-nothing jobs) - 2 is enough for "try
+# again once" without letting a persistently broken night (e.g. Mailgun
+# down for the backup job) hammer the lock every tick until midnight.
+_DAILY_JOB_RETRY_CAP = 2
+
 
 def _load_state():
     try:
@@ -781,15 +791,21 @@ def _run_digest(log):
 def _run_watchdog(log):
     """AI-readiness roadmap Phase 5: the nightly Portfolio AI watchdog -
     see portfolio_watchdog_engine.py's own docstring for what it does and
-    why. Same shape as _run_digest above: import deferred (a background
-    job's heavy imports shouldn't slow every other scheduler tick), the
-    whole run wrapped so a failure here logs and waits for tomorrow night
-    rather than ever taking the scheduler thread down."""
-    try:
-        import portfolio_watchdog_engine
-        portfolio_watchdog_engine.run_nightly_watchdog(log=log)
-    except Exception as e:
-        log(f"[scheduler] portfolio watchdog failed: {e}")
+    why. Import deferred (a background job's heavy imports shouldn't slow
+    every other scheduler tick).
+
+    18 Sep 2026 retry fix: this used to catch-and-log its own failure
+    here, so it never raised and the scheduler thread was never at risk -
+    but that also meant the watchdog guard in _loop() below had no way to
+    tell a failed run from a successful one, and marked the day done
+    either way. Now lets the exception propagate instead, so _loop()'s
+    guard can persist "done for today" only on real success and retry
+    (within its attempt cap) otherwise. The scheduler thread is still
+    never at risk from this: _loop()'s own per-tick try/except (and, one
+    layer in, the guard's own try/except around this call - see that
+    comment) both catch it; only the log text/call site moved."""
+    import portfolio_watchdog_engine
+    portfolio_watchdog_engine.run_nightly_watchdog(log=log)
 
 
 def _run_earnings_refresh(log):
@@ -837,16 +853,25 @@ def _run_earnings_refresh(log):
 
 
 def _run_backup(log):
-    """Mega-batch Part 10: the nightly off-site DB backup. Same shape
-    as _run_digest/_run_watchdog above - import deferred, whole run
-    wrapped so a failure here logs (and, via db_backup_engine's own
-    once-per-failure-streak rule, emails the owner once) rather than
-    ever taking the scheduler thread down or repeating every night."""
-    try:
-        import db_backup_engine
-        db_backup_engine.run_nightly_backup(log=log)
-    except Exception as e:
-        log(f"[scheduler] db backup failed: {e}")
+    """Mega-batch Part 10: the nightly off-site DB backup. Import
+    deferred, same shape as _run_digest/_run_watchdog above.
+
+    18 Sep 2026 retry fix: used to catch-and-log its own failure here
+    (see db_backup_engine's own once-per-failure-streak emailing rule for
+    the owner-visible side of that), which meant a failed or killed
+    backup never raised and the _loop() guard below had no way to tell,
+    so it marked the day "done" and never retried until tomorrow night -
+    exactly the failure mode an off-site backup can least afford. Now
+    lets the exception propagate so that guard can persist "done for
+    today" only once this genuinely returns without raising, and retry
+    (within its attempt cap) otherwise - see that guard's own comment.
+    Nothing about failure VISIBILITY changes: _record_job() still logs
+    and records the failure to admin_metrics_store before it propagates,
+    and the guard's own except still logs the same
+    "[scheduler] db backup failed: ..." line this function used to log
+    itself."""
+    import db_backup_engine
+    db_backup_engine.run_nightly_backup(log=log)
 
 
 def _run_volume_check(log):
@@ -1253,39 +1278,90 @@ def _loop(log):
                 # the weekly digest below), one calendar-day-per-run guard
                 # exactly like the nightly scan's own state-then-lock
                 # pattern above.
+                #
+                # 18 Sep 2026 retry fix (mirroring the nightly scan's own
+                # 17 Sep restart-resilience fix): last_watchdog_date used
+                # to persist BEFORE the job ran, so a failed or killed
+                # watchdog run was marked "done" for the day and never
+                # retried until tomorrow night. Now persists ONLY once
+                # _run_watchdog returns without raising (it no longer
+                # swallows its own failure - see its own docstring), with
+                # a persisted _DAILY_JOB_RETRY_CAP-attempts-per-day cap
+                # (watchdog_attempts, same state file/shape as the
+                # nightly scan's own scan_attempts) so a persistently
+                # failing night retries once next tick rather than
+                # hammering the lock forever. The attempt is only counted
+                # once the lock is actually acquired - a lock-contention
+                # skip doesn't burn budget, same reasoning as the nightly
+                # scan's own attempt counter.
                 if (now.hour >= cfg["watchdog_hour"]
                         and state.get("last_watchdog_date") != today):
-                    state = _load_state()
-                    state["last_watchdog_date"] = today
-                    _save_state(state)
-                    if _acquire_job_lock("watchdog", log):
-                        try:
-                            log("[scheduler] starting portfolio watchdog")
-                            _record_job("watchdog", log, _run_watchdog)
-                        finally:
-                            _release_job_lock("watchdog")
-                    else:
-                        log("[scheduler] portfolio watchdog skipped - another process "
-                            "already holds the lock")
+                    attempts = state.get("watchdog_attempts", {})
+                    n_today = attempts.get(today, 0)
+                    if n_today < _DAILY_JOB_RETRY_CAP:
+                        if _acquire_job_lock("watchdog", log):
+                            try:
+                                state = _load_state()
+                                state["watchdog_attempts"] = {today: n_today + 1}
+                                _save_state(state)
+                                log(f"[scheduler] starting portfolio watchdog "
+                                    f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
+                                _record_job("watchdog", log, _run_watchdog)
+                                state = _load_state()
+                                state["last_watchdog_date"] = today
+                                _save_state(state)
+                            except Exception as e:
+                                log(f"[scheduler] portfolio watchdog failed: {e}")
+                            finally:
+                                _release_job_lock("watchdog")
+                        else:
+                            log("[scheduler] portfolio watchdog skipped - another process "
+                                "already holds the lock")
 
                 # Mega-batch Part 10: nightly off-site DB backup - same
                 # one-calendar-day-per-run guard as the watchdog above,
                 # deliberately its own hour (after both the scan and
                 # watchdog hours - see BACKUP_UTC_HOUR's own docstring).
+                #
+                # 18 Sep 2026 retry fix (mirroring the nightly scan's own
+                # 17 Sep restart-resilience fix): last_backup_date used to
+                # persist BEFORE the job ran, so a failed or killed backup
+                # was marked "done" for the day and never retried until
+                # tomorrow night - the exact failure mode a nightly
+                # off-site backup can least afford. Now persists ONLY
+                # once _run_backup returns without raising (it no longer
+                # swallows its own failure - see its own docstring), with
+                # a persisted _DAILY_JOB_RETRY_CAP-attempts-per-day cap
+                # (backup_attempts, same state file/shape as the nightly
+                # scan's own scan_attempts) so a genuinely broken
+                # Mailgun/backup night retries once next tick rather than
+                # hammering the lock forever. The attempt is only counted
+                # once the lock is actually acquired - a lock-contention
+                # skip doesn't burn budget, same reasoning as the nightly
+                # scan's own attempt counter.
                 if (now.hour >= cfg["backup_hour"]
                         and state.get("last_backup_date") != today):
-                    state = _load_state()
-                    state["last_backup_date"] = today
-                    _save_state(state)
-                    if _acquire_job_lock("backup", log):
-                        try:
-                            log("[scheduler] starting off-site DB backup")
-                            _record_job("backup", log, _run_backup)
-                        finally:
-                            _release_job_lock("backup")
-                    else:
-                        log("[scheduler] DB backup skipped - another process "
-                            "already holds the lock")
+                    attempts = state.get("backup_attempts", {})
+                    n_today = attempts.get(today, 0)
+                    if n_today < _DAILY_JOB_RETRY_CAP:
+                        if _acquire_job_lock("backup", log):
+                            try:
+                                state = _load_state()
+                                state["backup_attempts"] = {today: n_today + 1}
+                                _save_state(state)
+                                log(f"[scheduler] starting off-site DB backup "
+                                    f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
+                                _record_job("backup", log, _run_backup)
+                                state = _load_state()
+                                state["last_backup_date"] = today
+                                _save_state(state)
+                            except Exception as e:
+                                log(f"[scheduler] db backup failed: {e}")
+                            finally:
+                                _release_job_lock("backup")
+                        else:
+                            log("[scheduler] DB backup skipped - another process "
+                                "already holds the lock")
 
                 # Mega-batch Part 16: nightly Volume usage check +
                 # retention prune - same one-calendar-day-per-run guard,
@@ -1364,10 +1440,46 @@ def _loop(log):
         time.sleep(_CHECK_EVERY_SECONDS)
 
 
+_scheduler_thread = None
+_scheduler_start_lock = threading.Lock()
+
+
 def start(log=print):
-    """Start the scheduler daemon thread (idempotent per process via
-    app.py's st.cache_resource). Returns the thread."""
-    t = threading.Thread(target=_loop, args=(log,), daemon=True,
-                         name="sdd-scheduler")
-    t.start()
-    return t
+    """Start the scheduler daemon thread. Idempotent PER PROCESS - guarded
+    by a module-level thread handle + lock, not just app.py's
+    st.cache_resource.
+
+    18 Sep 2026 boot-time fix: server.py's FastAPI startup (lifespan())
+    now also calls this directly, at container boot, well before any
+    Streamlit session exists - see that call site's own comment for the
+    production incident this closes (missed 23:00 backups three nights
+    running; the lock-fix deploy this same week sat idle for its first
+    ~15 minutes until a human happened to open a page - the Streamlit
+    subprocess server.py launches doesn't actually execute app.py's
+    script, including its own call to this function, until a browser
+    session connects). st.cache_resource only wraps app.py's OWN call
+    site - it has no idea server.py might already have started the
+    scheduler in this same process (or that app.py's own call could fire
+    again later if Streamlit re-executes the script after that cache is
+    ever cleared) - so this function guards itself instead of relying on
+    either caller to know about the other. Whichever call happens first
+    wins; every later call in the SAME process is a no-op that returns
+    that same thread.
+
+    This can't (and doesn't need to) stop server.py's process and the
+    separate Streamlit subprocess process from each independently
+    running their own scheduler thread once a session does eventually
+    open - those are two different OS processes, so no in-process flag
+    reaches across them. That's already safe: every actual job
+    (nightly/watchdog/backup/etc.) is additionally gated by the existing
+    cross-process _acquire_job_lock()/_release_job_lock() file locks on
+    the shared Railway Volume, the same mechanism that already lets more
+    than one process tick this same loop without double-running a job."""
+    global _scheduler_thread
+    with _scheduler_start_lock:
+        if _scheduler_thread is not None and _scheduler_thread.is_alive():
+            return _scheduler_thread
+        _scheduler_thread = threading.Thread(
+            target=_loop, args=(log,), daemon=True, name="sdd-scheduler")
+        _scheduler_thread.start()
+        return _scheduler_thread

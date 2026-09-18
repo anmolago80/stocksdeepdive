@@ -558,6 +558,15 @@ def _dcf_overrides_for(ticker):
 # because the Railway Volume can only attach to one service and the web
 # app needs it. st.cache_resource = exactly one thread per server process.
 # Set SCHEDULER_ENABLED=false to turn it off entirely.
+#
+# 18 Sep 2026 boot-time fix: server.py's FastAPI startup (lifespan()) now
+# also calls scheduler_engine.start() directly, at container boot -
+# before this Streamlit script has ever run, since a browser session has
+# to connect first. This call stays as a fallback/second call site (e.g.
+# local dev running `streamlit run app.py` directly, without server.py in
+# front of it) - scheduler_engine.start() is idempotent per process (see
+# its own docstring), so once server.py has already started it in this
+# process, this is a no-op that returns the same thread.
 # -----------------------------------
 @st.cache_resource(show_spinner=False)
 def _start_background_scheduler():
