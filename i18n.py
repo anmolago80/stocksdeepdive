@@ -1058,7 +1058,7 @@ EN = {
     # and html.escape() would double-encode an entity into visible
     # "&mdash;" text - same reasoning as portfolio.switcher.*'s literal
     # "·" elsewhere in this file.
-    "tools.page_subtitle": "Free calculators for the money around your investing — budget, bills, offset and super. Described calculations from your own inputs, never advice.",
+    "tools.page_subtitle": "Free calculators for the money around your investing — budget, bills, offset, super and property. Described calculations from your own inputs, never advice.",
     # Part 45: repurposed for the Option C (signed-out) hub tagline (was
     # the old single-line "sign in to use" info text this replaces).
     # Verbatim from the mock's Option C frame. Literal "—", same
@@ -3879,7 +3879,7 @@ ES = {
     # Part 45: repurposed for the Option A hub tagline - see the EN
     # block's comment (literal "—", never an &mdash; entity, since
     # this string is html.escape()'d before going into raw HTML).
-    "tools.page_subtitle": "Calculadoras gratuitas para el dinero alrededor de tu inversión — presupuesto, facturas, offset y super. Cálculos descritos a partir de tus datos, nunca son un consejo.",
+    "tools.page_subtitle": "Calculadoras gratuitas para el dinero alrededor de tu inversión — presupuesto, facturas, offset, super y propiedad. Cálculos descritos a partir de tus datos, nunca son un consejo.",
     # Part 45: repurposed for the Option C (signed-out) hub tagline.
     "tools.signin_prompt": "Cuatro calculadoras gratuitas — cuenta gratis, sin tarjeta, sin spam.",
     "tools.registry_stat": "{count} herramienta &middot; más próximamente",
