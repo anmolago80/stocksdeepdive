@@ -539,6 +539,11 @@ def _run_nightly(cfg, log):
     # universe) is exactly the "was scanned tonight" fact the top-up
     # needs, and nothing else after this loop still has it this cheaply.
     _tickers_scanned_tonight = []
+    # Discovery drop-and-reweight fix, Part 2 (18 Sep 2026): universes
+    # scanned attention_lite=True tonight - the candidate pool the
+    # attention top-up loop below draws from, same "collected here,
+    # consumed after the loop" shape as _tickers_scanned_tonight above.
+    _lite_universes_scanned_tonight = []
     for universe in ordered:
         try:
             if universe == nightly_scan.IMPORTED_UNIVERSE:
@@ -553,6 +558,8 @@ def _run_nightly(cfg, log):
             if payload and payload.get("rows"):
                 _tickers_scanned_tonight.extend(
                     r.get("Ticker") for r in payload["rows"] if r.get("Ticker"))
+                if payload.get("attention_lite"):
+                    _lite_universes_scanned_tonight.append(universe)
                 try:
                     import snapshot_store
                     snapshot_store.build_snapshots_from_scan(
@@ -590,6 +597,25 @@ def _run_nightly(cfg, log):
         nightly_scan.run_sector_topup(_tickers_scanned_tonight, log=log)
     except Exception as e:
         log(f"[scheduler] sector top-up failed: {e}")
+
+    # Discovery drop-and-reweight fix, Part 2 (18 Sep 2026): attention
+    # top-up, once per universe that was scanned attention_lite=True
+    # tonight above (real universes AND catch-up universes alike - this
+    # whole function is what the catch-up block calls too, via the SAME
+    # _acquire_job_lock("nightly")-protected path, so nothing extra is
+    # needed to cover that case). See nightly_scan.run_attention_topup()'s
+    # own docstring for the cap/pacing/failure-silent guarantees - same
+    # shape as the sector top-up immediately above. Deliberately placed
+    # here, strictly BEFORE _build_derived_universes() further down,
+    # which re-reads each parent's scan_store rows fresh off disk - so a
+    # derived universe (ASX 100/Small Ords/Russell 3000/etc.) and the
+    # home page's "Tonight's top 5" both see the topped-up Long Scores,
+    # not the pre-topup ones.
+    for _universe in _lite_universes_scanned_tonight:
+        try:
+            nightly_scan.run_attention_topup(_universe, log=log)
+        except Exception as e:
+            log(f"[scheduler] attention top-up {_universe} failed: {e}")
 
     # Services batch, Part 1: tickers with an active alert that weren't
     # covered by any universe/imported scan above get one lightweight

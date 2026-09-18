@@ -77,6 +77,17 @@ NIGHTLY_LITE_THRESHOLD = 100
 # run_sector_topup()'s own docstring.
 SECTOR_TOPUP_PER_NIGHT = 40
 
+# Discovery drop-and-reweight fix, Part 2 (18 Sep 2026): after an
+# attention_lite universe's scan is saved, the table's actual LEADERS -
+# top ATTENTION_TOPUP_PER_UNIVERSE rows by the Part-1 reweighted Long
+# Score, the ones a visitor actually sees at the top of the Scanner
+# table or the home page's "Tonight's top 5" - get the same three real
+# attention calls a full-mode scan would have made (see
+# run_attention_topup() below). Env-var configurable, same default
+# order of magnitude as SECTOR_TOPUP_PER_NIGHT above (~4 lite universes
+# x 40 tickers is comparable nightly cost to the sector top-up).
+ATTENTION_TOPUP_PER_UNIVERSE = int(os.environ.get("ATTENTION_TOPUP_PER_UNIVERSE", "40"))
+
 # Audit fix 2.3: a scan that completed for fewer than this fraction of its
 # resolved universe is treated as failed/degraded rather than a
 # legitimate result - the realistic cause is Yahoo rate-limiting mid-run,
@@ -349,7 +360,14 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
             social_score = 0
         discovery += trend_score + news_score + social_score
 
-    long_score = calculate_long_score(quality, mos, psychology, discovery)
+    # Discovery drop-and-reweight fix, Part 1 (18 Sep 2026): a lite
+    # scan's discovery is price/volume only (see this function's own
+    # docstring) - not a genuine "no attention" reading, so its weight
+    # is dropped and redistributed rather than scored as a near-zero -
+    # see calculate_long_score's discovery_measured docstring in
+    # ranking_engine.py for the exact mechanics/fixture check.
+    long_score = calculate_long_score(quality, mos, psychology, discovery,
+                                       discovery_measured=not attention_lite)
 
     if intrinsic <= 0:
         valuation = "N/A"
@@ -643,6 +661,121 @@ def run_sector_topup(tickers, log=print):
     log(f"[nightly_scan] sector top-up: learned {learned}/{len(candidates)} new "
         f"sector(s) ({len(tickers)} ticker(s) considered, cap {SECTOR_TOPUP_PER_NIGHT})")
     return learned
+
+
+def run_attention_topup(universe, log=print):
+    """Discovery drop-and-reweight fix, Part 2 (18 Sep 2026). Only
+    meaningful for a universe whose CURRENTLY SAVED scan is
+    attention_lite=True - a full-mode universe already had every row's
+    Discovery genuinely measured by run_universe_scan()/
+    analyze_ticker_lite() itself, nothing to top up here.
+
+    Takes that scan's top ATTENTION_TOPUP_PER_UNIVERSE rows by Long
+    Score (the Part-1 reweighted score - the rows a visitor actually
+    sees leading the Scanner table or the home page's "Tonight's top
+    5"), and fetches the same three real attention signals
+    analyze_ticker_lite()'s own `if not attention_lite:` branch makes -
+    same functions, same formula, same api_key=None env fallback - for
+    each one. Folds them into that row's stored price/volume-only
+    "Discovery (lite)" number exactly like a full-mode scan would have
+    computed it in the first place, recomputes Long Score via
+    calculate_long_score(..., discovery_measured=True) - a genuinely
+    MEASURED Discovery now, not the lite placeholder Part 1 had to
+    drop-and-reweight around - and marks the row "attention_full": True.
+
+    Each of the three signal calls is independently try/excepted, same
+    as analyze_ticker_lite - one failing (or genuinely finding nothing,
+    e.g. no recent news) still lets the other two count, same as a real
+    full-mode scan. Only when ALL THREE fail outright is the row left
+    untouched (still Part 1's reweighted score) - a fetch failure is not
+    a measured zero, the same principle this whole fix exists to
+    enforce for Discovery in general; that ticker simply comes up again
+    next time it leads.
+
+    Persists via scan_store.apply_attention_topup (carries every other
+    payload field over unchanged - "generated_at" must never move for
+    this, it's a partial re-score of tonight's rows, not a new full
+    scan) and recomputes percentiles for the WHOLE universe afterward
+    (peer_context.attach_percentiles needs the full, current population -
+    a topped-up row's new Long Score shifts where every OTHER row in the
+    universe sits percentile-wise too, not just its own). Deliberately
+    called strictly before scheduler_engine._build_derived_universes()
+    in the post-scan sequence, so a derived universe (ASX 100/Small
+    Ords/Russell 3000/etc.) and the home page's "Tonight's top 5" both
+    read the topped-up rows straight off disk, not the pre-topup ones -
+    see that function's docstring for how it re-reads scan_store fresh
+    per parent. Returns the count of rows actually updated, for the
+    caller's log line - same shape as run_sector_topup's own return
+    above."""
+    payload = scan_store.load_scan_raw(universe)
+    if not payload or not payload.get("rows"):
+        log(f"[nightly_scan] {universe}: attention top-up skipped, no saved scan")
+        return 0
+    if not payload.get("attention_lite"):
+        log(f"[nightly_scan] {universe}: attention top-up skipped, already full-mode")
+        return 0
+
+    rows = payload["rows"]
+    leaders = sorted(rows, key=lambda r: r.get("Long Score") or 0, reverse=True)
+    leaders = leaders[:ATTENTION_TOPUP_PER_UNIVERSE]
+
+    updated = 0
+    for row in leaders:
+        ticker = row.get("Ticker")
+        if not ticker:
+            continue
+        keyword = ticker.split(".")[0]
+        trend_score, trend_ok = 0, False
+        try:
+            trend_score, _ = get_trend_score(keyword)
+            trend_ok = True
+        except Exception:
+            pass
+        news_score, news_ok = 0, False
+        try:
+            news_score = get_news_score(keyword) + get_yahoo_news_score(ticker)
+            news_ok = True
+        except Exception:
+            pass
+        social_score, social_ok = 0, False
+        try:
+            social_score, _social_detail = social_engine.get_social_score(ticker)
+            social_ok = True
+        except Exception:
+            pass
+
+        if not (trend_ok or news_ok or social_ok):
+            # All three failed outright - a fetch failure, not a
+            # measured zero (failed != measured-zero). Leave Part 1's
+            # reweighted score untouched.
+            time.sleep(PER_TICKER_SLEEP)
+            continue
+
+        full_discovery = (row.get("Discovery (lite)") or 0) + trend_score + news_score + social_score
+        mos_for_calc = row.get("MOS %")
+        if mos_for_calc is None:
+            mos_for_calc = 0.0
+        long_score = calculate_long_score(
+            row.get("Quality"), mos_for_calc, row.get("Psychology"),
+            full_discovery, discovery_measured=True,
+        )
+        row["Discovery (lite)"] = round(full_discovery, 1)
+        row["Long Score"] = round(long_score, 1)
+        row["attention_full"] = True
+        updated += 1
+        time.sleep(PER_TICKER_SLEEP)
+
+    if updated:
+        try:
+            peer_context.attach_percentiles(rows)
+        except Exception as e:
+            log(f"[nightly_scan] {universe}: attention top-up attach_percentiles failed: {e}")
+        rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
+        scan_store.apply_attention_topup(universe, rows, topped_up_count=updated)
+
+    log(f"[nightly_scan] {universe}: attention top-up measured {updated}/{len(leaders)} "
+        f"leader(s) (cap {ATTENTION_TOPUP_PER_UNIVERSE})")
+    return updated
 
 
 def run_imported_scan(max_tickers=IMPORTED_NIGHTLY_BATCH, log=print):

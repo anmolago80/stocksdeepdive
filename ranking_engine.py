@@ -45,6 +45,17 @@ def _clamp(value, lo, hi):
 MOAT_BLEND_WEIGHTS = {"quality": 0.25, "moat": 0.15, "mos": 0.30, "psy": 0.15, "disc": 0.15}
 
 
+def _drop_and_reweight(weights, key):
+    """Redistributes weights[key] proportionally across the other
+    entries, then drops it - the same "drop and reweight, never score
+    the missing thing as 0" convention moat_blend already uses for
+    moat_score=None below, now shared with discovery_measured=False."""
+    w = dict(weights)
+    dropped = w.pop(key)
+    remaining = sum(w.values())
+    return {k: v + v * (dropped / remaining) for k, v in w.items()}
+
+
 def calculate_long_score(
     quality_score,
     margin_of_safety,
@@ -55,6 +66,7 @@ def calculate_long_score(
     macro_score=0,
     mode="current",
     moat_score=None,
+    discovery_measured=True,
 ):
     """
     mode="current" (default):
@@ -77,6 +89,34 @@ def calculate_long_score(
         itself uses for a missing pillar. This mode is purely additive:
         "current" (the default, used everywhere Phase 2 is off) is
         untouched above.
+
+    discovery_measured=True (default): Discovery is scored normally, in
+    whichever mode is active - every existing caller (Deep Dive, the
+    weekly digest via analyze_ticker_lite, anything else that doesn't
+    pass this new parameter) is byte-identical to before this parameter
+    existed.
+
+    discovery_measured=False: nightly_scan.py's "attention_lite" path
+    (large universes - ASX 200/300, S&P 500, the Russells, etc. - see
+    that module's own docstring) never actually fetches Google Trends/
+    NewsAPI/StockTwits; the raw price/volume-only discovery_score it
+    computes instead is a near-zero placeholder, not a genuine "no
+    attention" reading. Rather than blending that placeholder in as if
+    it were measured (which is what silently deflated every stored
+    Value Score in every large universe), Discovery's weight is dropped
+    and redistributed proportionally across the OTHER weights in
+    whichever mode is active - the exact "drop and reweight, never
+    score the missing thing as 0" convention moat_blend already uses
+    for moat_score=None just above, now extended to Discovery. The row
+    still stores/displays the raw discovery_score exactly as passed in
+    (this module's own "we cap influence, not reported value"
+    convention) - only the BLEND treats it as unmeasured.
+
+    mode="current", discovery_measured=False:
+        Quality 43.75% + MOS(capped) 31.25% + Psychology(capped) 25%
+        (Discovery's 20% redistributed proportionally - the OCL.AX
+        fixture: quality=80, mos=69.6 (clamped 50), psychology=42.7 ->
+        80*.4375 + 50*.3125 + 42.7*.25 = 61.30).
     """
 
     mos_c = _clamp(margin_of_safety, -MOS_CLAMP, MOS_CLAMP)
@@ -84,6 +124,21 @@ def calculate_long_score(
     disc_c = _clamp(discovery_score, 0, DISCOVERY_CAP)
 
     if mode == "institutional":
+        if not discovery_measured:
+            w = _drop_and_reweight(
+                {"quality": 0.30, "mos": 0.20, "psy": 0.15, "disc": 0.15,
+                 "technical": 0.10, "insider": 0.05, "macro": 0.05},
+                "disc",
+            )
+            return round(
+                quality_score * w["quality"]
+                + mos_c * w["mos"]
+                + psy_c * w["psy"]
+                + technical_score * w["technical"]
+                + insider_score * w["insider"]
+                + macro_score * w["macro"],
+                2
+            )
         return round(
             quality_score * 0.30
             + mos_c * 0.20
@@ -101,11 +156,28 @@ def calculate_long_score(
             moat_w = w.pop("moat")
             remaining = sum(w.values())  # 0.85
             w = {k: v + v * (moat_w / remaining) for k, v in w.items()}
+            if not discovery_measured:
+                w = _drop_and_reweight(w, "disc")
+                return round(
+                    quality_score * w["quality"]
+                    + mos_c * w["mos"]
+                    + psy_c * w["psy"],
+                    2
+                )
             return round(
                 quality_score * w["quality"]
                 + mos_c * w["mos"]
                 + psy_c * w["psy"]
                 + disc_c * w["disc"],
+                2
+            )
+        if not discovery_measured:
+            w = _drop_and_reweight(w, "disc")
+            return round(
+                quality_score * w["quality"]
+                + moat_score * w["moat"]
+                + mos_c * w["mos"]
+                + psy_c * w["psy"],
                 2
             )
         return round(
@@ -117,6 +189,16 @@ def calculate_long_score(
             2
         )
 
+    if not discovery_measured:
+        w = _drop_and_reweight(
+            {"quality": 0.35, "mos": 0.25, "psy": 0.20, "disc": 0.20}, "disc"
+        )
+        return round(
+            quality_score * w["quality"]
+            + mos_c * w["mos"]
+            + psy_c * w["psy"],
+            2
+        )
     return round(
         (
             quality_score * 0.35

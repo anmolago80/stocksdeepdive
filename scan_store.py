@@ -159,6 +159,38 @@ def reprice_scan(universe, rows, repriced_count=None, kept_stale_count=None):
     return payload
 
 
+def apply_attention_topup(universe, rows, topped_up_count=None):
+    """Discovery drop-and-reweight fix, Part 2 (18 Sep 2026): persists
+    `rows` after nightly_scan.run_attention_topup() has recomputed
+    Discovery/Long Score with discovery_measured=True for an
+    attention_lite universe's top movers. Same carry-over convention as
+    reprice_scan() above: `rows` replaces the stored rows, everything
+    else about the payload (`generated_at` - the last full fundamentals
+    scan - `source`, `attention_lite`, `degraded`) is carried over
+    unchanged - this is a partial re-score of rows already scanned
+    tonight, not a new full scan, so `generated_at` must never move for
+    it (the admin scan calendar / staleness checks both key off it
+    meaning "last full scan"). Returns None (writes nothing) if there's
+    no prior scan on disk - the top-up always runs right after a fresh
+    save_scan() this same night, so this should never actually happen
+    in practice."""
+    existing = load_scan_raw(universe)
+    if existing is None:
+        return None
+    payload = dict(existing)
+    payload["rows"] = rows
+    payload["attention_topup_at"] = datetime.now(timezone.utc).isoformat()
+    if topped_up_count is not None:
+        payload["attention_topup_count"] = topped_up_count
+    for _k in ("generated_at_label", "age_hours", "repriced_at_label"):
+        payload.pop(_k, None)
+    tmp = _path(universe) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f)
+    os.replace(tmp, _path(universe))
+    return payload
+
+
 def invalidate(universe):
     """Deletes the stored scan for `universe`, if any - the file-based
     equivalent of "mark this universe's scan stale so the scheduler
