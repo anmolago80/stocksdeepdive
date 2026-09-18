@@ -107,6 +107,14 @@ import calendar_render
 # money_tools_render.py's own module docstring.
 import money_tools_render
 
+# SEO Commit C (18 Sep 2026): per-universe overnight scan snapshot pages
+# (/s/universe/<slug>) - see universe_snapshot_render.py's own module
+# docstring. scan_store is the same store scheduler_engine's overnight
+# scans already write to; reading it here is a new READ-ONLY caller, no
+# change to that module.
+import scan_store
+import universe_snapshot_render
+
 try:
     import metrics_store
 except Exception:  # analytics must never be able to stop the site serving
@@ -990,6 +998,15 @@ async def sitemap(request: Request):
                   f'<changefreq>weekly</changefreq><priority>0.6</priority></url>')
         extra += (f'\n  <url><loc>{_xml_escape(base)}/es/tools/{_slug}</loc>'
                   f'<changefreq>weekly</changefreq><priority>0.6</priority></url>')
+    # SEO Commit C (18 Sep 2026): one /s/universe/<slug> row per universe
+    # that actually has a scan file on disk right now (self-discovered,
+    # same "never a hardcoded list" choice as universe_snapshot_render.py
+    # itself) - EN + /es/ twins, same plain-entry convention as above.
+    for _slug in universe_snapshot_render._universe_slugs():
+        extra += (f'\n  <url><loc>{_xml_escape(base)}/s/universe/{_slug}</loc>'
+                  f'<changefreq>daily</changefreq><priority>0.5</priority></url>')
+        extra += (f'\n  <url><loc>{_xml_escape(base)}/es/s/universe/{_slug}</loc>'
+                  f'<changefreq>daily</changefreq><priority>0.5</priority></url>')
     xml = xml.replace("</urlset>", extra + "\n</urlset>\n")
     return Response(xml, media_type="application/xml",
                     headers={"Cache-Control": "public, max-age=60"})
@@ -1521,6 +1538,32 @@ async def snapshot_page(ticker: str, request: Request):
     _count_view("snapshot", ticker=ticker)
     return _html(snapshot_render.render_snapshot(
         snap, base, lang=lang, hreflang_alternates=hreflang_alternates),
+        cache="public, max-age=1800")
+
+
+# SEO Commit C (18 Sep 2026, mocks/seo_snapshots_mock2.html, frame 1):
+# /s/universe/<slug> - one page per overnight-scanned universe (ASX 200,
+# S&P 500, ...), always real server-rendered HTML like /s/{ticker} above
+# (never proxied to Streamlit - there is no Streamlit-side equivalent of
+# this exact top-10-table view to fall back to, so this route doesn't
+# check _needs_streamlit() at all). {slug} is a single path segment, so
+# it can never collide with /s/{ticker} above regardless of registration
+# order - FastAPI's default {param} converter only matches one segment.
+@app.get("/s/universe/{slug}", include_in_schema=False)
+@app.get("/es/s/universe/{slug}", include_in_schema=False)
+async def universe_snapshot_page(slug: str, request: Request):
+    base = _base_url(request)
+    path = request.url.path.rstrip("/") or "/"
+    lang = "es" if path.startswith("/es/") else "en"
+    universe = universe_snapshot_render.universe_name_for_slug(slug)
+    if not universe:
+        return _html(blog_render.render_not_found(base, lang=lang), status=404, cache="no-store")
+    payload = scan_store.load_scan(universe)
+    if not payload:
+        return _html(blog_render.render_not_found(base, lang=lang), status=404, cache="no-store")
+    _count_view(f"universe_snapshot_{slug}")
+    return _html(
+        universe_snapshot_render.render_universe_snapshot(universe, payload, base, lang=lang),
         cache="public, max-age=1800")
 
 
