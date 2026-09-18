@@ -134,6 +134,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 
 # Mega-batch Part 35.1: NIGHTLY JOBS table on the new owner Admin
@@ -329,10 +330,51 @@ def nightly_universe_cadence():
 # gives real cross-process coordination without needing any Railway-
 # platform-specific API: os.O_CREAT|O_EXCL is atomic at the filesystem
 # level, so only one process can ever win the race to create the lock
-# file. A lock older than _JOB_LOCK_STALE_SECONDS is treated as
-# abandoned (from a process that crashed before releasing it) and
-# cleared, so a dead lock can't wedge every future run forever.
-_JOB_LOCK_STALE_SECONDS = 3 * 3600
+# file.
+#
+# 18 Sep 2026 heartbeat fix (real incident): the ORIGINAL version of this
+# lock only ever compared the lock FILE's mtime against a flat 3-hour
+# ceiling, set once at creation and never refreshed while a job ran. The
+# 17 Sep 21:05 UTC deploy killed the nightly scan mid-Russell-2000 (at
+# 1000/1957) without ever reaching _release_job_lock's `finally`, and the
+# stale-mtime reclaim that was supposed to clear an abandoned lock like
+# that never fired in production - every catch-up tick since (confirmed
+# in Railway logs, once a minute, across two more deploys) logged
+# "another process already holds the lock" and skipped, meaning NO scan
+# of any universe could run at all, catch-up or the regular 20:00 UTC
+# nightly alike, until this fix ships. (The exact reason the mtime check
+# never fired wasn't confirmed with certainty - a Railway Volume mount
+# that resets file mtimes across a container replacement would produce
+# precisely this symptom - but it doesn't matter: mtime is an OS-level
+# property this code doesn't control end to end, so this fix stops
+# relying on it entirely.)
+#
+# The lock file's own CONTENT now carries a heartbeat this process
+# refreshes on every log line a running job emits (_record_job's
+# _tracking_log wrapper below calls _refresh_job_lock_heartbeat() on
+# every call - at least as often as the 25-ticker nightly_scan.py
+# progress lines, usually far more often), plus a per-boot UUID
+# identifying who holds it. Acquisition reclaims (deletes and
+# recreates) a lock it finds when EITHER the heartbeat is older than
+# _JOB_LOCK_HEARTBEAT_STALE_SECONDS regardless of holder, OR the
+# holder's boot_id differs from this process's own AND the heartbeat is
+# older than _JOB_LOCK_FOREIGN_BOOT_STALE_SECONDS (a quicker reclaim
+# once we're sure it's some OTHER process's lock, not a stray re-entry
+# of our own). A lock in the OLD plain-text "pid=... started=..."
+# format (or any file that isn't valid JSON with both fields) has no
+# heartbeat/holder to evaluate at all - _read_lock_payload treats that
+# as unreadable, and _acquire_job_lock reclaims it immediately on the
+# very first acquisition attempt after this fix ships, with no manual
+# step. That is exactly the shape of the lock stuck in production
+# right now, so deploying this fix is itself what clears the incident.
+_JOB_LOCK_HEARTBEAT_STALE_SECONDS = 10 * 60
+_JOB_LOCK_FOREIGN_BOOT_STALE_SECONDS = 2 * 60
+
+# Generated once when this module is first imported (i.e. once per
+# process boot) - identifies THIS process's lifetime across every lock
+# it acquires, so a lock can be told apart from "abandoned by some
+# earlier boot" vs "still held by the boot that's asking right now".
+_BOOT_ID = uuid.uuid4().hex
 
 
 def _lock_path(job_name):
@@ -340,25 +382,79 @@ def _lock_path(job_name):
     return os.path.join(base, f"scheduler_{job_name}.lock")
 
 
-def _acquire_job_lock(job_name):
+def _new_lock_payload():
+    return {
+        "pid": os.getpid(),
+        "boot_id": _BOOT_ID,
+        "started": datetime.now(timezone.utc).isoformat(),
+        "heartbeat": time.time(),
+    }
+
+
+def _read_lock_payload(path):
+    """The lock file's parsed {"pid", "boot_id", "started", "heartbeat"}
+    dict, or None if the file doesn't exist, can't be read, isn't valid
+    JSON (the old plain-text "pid=... started=..." format fails here),
+    or IS valid JSON but is missing "boot_id"/"heartbeat" (a legacy
+    payload some future format change left behind). None is the
+    "nothing usable to evaluate" signal _acquire_job_lock treats as
+    immediately reclaimable."""
+    try:
+        with open(path) as f:
+            raw = f.read()
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or "boot_id" not in data or "heartbeat" not in data:
+        return None
+    return data
+
+
+def _acquire_job_lock(job_name, log):
     """True if this process just acquired the lock for `job_name` (caller
     must call _release_job_lock when done); False if another process
-    already holds it. Fails OPEN (returns True without a real lock) on any
-    filesystem error, matching this module's existing single-replica
-    fail-safe stance - a lock that can't be checked should never be the
-    reason the scheduler stops running altogether."""
+    already holds it (and its heartbeat is still fresh enough to trust).
+    Fails OPEN (returns True without a real lock) on any filesystem
+    error, matching this module's existing single-replica fail-safe
+    stance - a lock that can't be checked should never be the reason the
+    scheduler stops running altogether. `log` is used only to report a
+    reclaim loudly (see the module comment above for the exact
+    conditions) - every call site is already inside _loop(log)."""
     path = _lock_path(job_name)
     try:
         if os.path.exists(path):
-            age = time.time() - os.path.getmtime(path)
-            if age > _JOB_LOCK_STALE_SECONDS:
+            payload = _read_lock_payload(path)
+            reclaim_msg = None
+            if payload is None:
+                reclaim_msg = (
+                    f"[scheduler] reclaimed stale scan lock for '{job_name}' "
+                    f"(legacy lock format, no heartbeat/holder fields)"
+                )
+            else:
+                age = time.time() - float(payload["heartbeat"])
+                holder_boot_id = payload.get("boot_id")
+                if age > _JOB_LOCK_HEARTBEAT_STALE_SECONDS:
+                    reclaim_msg = (
+                        f"[scheduler] reclaimed stale scan lock held by "
+                        f"{holder_boot_id}, heartbeat {age:.0f}s old"
+                    )
+                elif holder_boot_id != _BOOT_ID and age > _JOB_LOCK_FOREIGN_BOOT_STALE_SECONDS:
+                    reclaim_msg = (
+                        f"[scheduler] reclaimed stale scan lock held by "
+                        f"{holder_boot_id} (different process), heartbeat {age:.0f}s old"
+                    )
+            if reclaim_msg:
+                log(reclaim_msg)
                 try:
                     os.remove(path)
                 except OSError:
                     pass
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         with os.fdopen(fd, "w") as f:
-            f.write(f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()}\n")
+            f.write(json.dumps(_new_lock_payload()))
         return True
     except FileExistsError:
         return False
@@ -366,9 +462,45 @@ def _acquire_job_lock(job_name):
         return True
 
 
-def _release_job_lock(job_name):
+def _refresh_job_lock_heartbeat(job_name):
+    """Rewrites job_name's lock file with a fresh heartbeat, IF this
+    process still holds it (same boot_id) - called on every log line a
+    running job emits (see _record_job's _tracking_log wrapper), which
+    fires far more often than the staleness thresholds above, so a
+    genuinely-alive job's own lock never goes stale out from under it.
+    A no-op if the lock is missing/unreadable, or (should never happen
+    in normal operation - would mean we were already reclaimed) held by
+    a different boot_id: refreshing a lock this process doesn't
+    currently hold would defeat the reclaim this fix exists to do."""
+    path = _lock_path(job_name)
+    payload = _read_lock_payload(path)
+    if payload is None or payload.get("boot_id") != _BOOT_ID:
+        return
+    payload["heartbeat"] = time.time()
     try:
-        os.remove(_lock_path(job_name))
+        with open(path, "w") as f:
+            f.write(json.dumps(payload))
+    except OSError:
+        pass
+
+
+def _release_job_lock(job_name):
+    """Releases job_name's lock - but only if this process still holds
+    it. If a long quiet stretch (no log lines) let another process's
+    _acquire_job_lock decide our heartbeat was stale and reclaim it
+    out from under us, the lock on disk now belongs to THEM; blindly
+    os.remove()-ing it here would release a different process's
+    legitimately-held lock instead of our own (already-gone) one. Only
+    a payload we can positively read AND that names a different
+    boot_id blocks the removal - anything else (genuinely ours, or
+    unreadable/missing) falls through to the same unconditional remove
+    this function always did."""
+    path = _lock_path(job_name)
+    payload = _read_lock_payload(path)
+    if payload is not None and payload.get("boot_id") != _BOOT_ID:
+        return
+    try:
+        os.remove(path)
     except OSError:
         pass
 
@@ -931,12 +1063,24 @@ def _record_job(job_name, log, run_fn):
         see it exactly as before this existed.
     Never changes whether/how the job itself runs; the metrics write
     itself is try/except-guarded so a logging bug here can never take a
-    real job down."""
+    real job down.
+
+    18 Sep 2026 heartbeat fix: this same wrapper is also the natural
+    place to refresh job_name's scan-lock heartbeat (see
+    _refresh_job_lock_heartbeat's own docstring) - job_name here is
+    always the exact same string used as the lock name at every
+    _acquire_job_lock/_release_job_lock call site (e.g. "nightly"),
+    and every _run_* job already routes ALL of its progress logging
+    through this same wrapped log function, so this fires on every
+    line a running job logs - at least as often as nightly_scan.py's
+    25-ticker progress lines, usually far more often (every per-ticker
+    error too) - with no new plumbing into nightly_scan.py itself."""
     fail_count = [0]
 
     def _tracking_log(msg):
         if "failed" in str(msg):
             fail_count[0] += 1
+        _refresh_job_lock_heartbeat(job_name)
         log(msg)
 
     t0 = time.time()
@@ -1006,7 +1150,7 @@ def _loop(log):
                         # Audit fix 2.8: cross-process lock, on top of the
                         # in-process state-file guard above - see
                         # _acquire_job_lock's docstring.
-                        if _acquire_job_lock("nightly"):
+                        if _acquire_job_lock("nightly", log):
                             try:
                                 state["scan_attempts"] = {today: n_today + 1}
                                 state["last_scan_date"] = today
@@ -1061,7 +1205,7 @@ def _loop(log):
                         attempts = state.get("scan_attempts", {})
                         n_today = attempts.get(today, 0)
                         if n_today < 3:
-                            if _acquire_job_lock("nightly"):
+                            if _acquire_job_lock("nightly", log):
                                 try:
                                     state["scan_attempts"] = {today: n_today + 1}
                                     state["last_scan_date"] = today
@@ -1088,7 +1232,7 @@ def _loop(log):
                     state = _load_state()
                     state["last_watchdog_date"] = today
                     _save_state(state)
-                    if _acquire_job_lock("watchdog"):
+                    if _acquire_job_lock("watchdog", log):
                         try:
                             log("[scheduler] starting portfolio watchdog")
                             _record_job("watchdog", log, _run_watchdog)
@@ -1107,7 +1251,7 @@ def _loop(log):
                     state = _load_state()
                     state["last_backup_date"] = today
                     _save_state(state)
-                    if _acquire_job_lock("backup"):
+                    if _acquire_job_lock("backup", log):
                         try:
                             log("[scheduler] starting off-site DB backup")
                             _record_job("backup", log, _run_backup)
@@ -1126,7 +1270,7 @@ def _loop(log):
                     state = _load_state()
                     state["last_volume_check_date"] = today
                     _save_state(state)
-                    if _acquire_job_lock("volume_check"):
+                    if _acquire_job_lock("volume_check", log):
                         try:
                             log("[scheduler] starting volume usage check + retention prune")
                             _record_job("volume_check", log, _run_volume_check)
@@ -1146,7 +1290,7 @@ def _loop(log):
                     state = _load_state()
                     state["last_earnings_refresh_date"] = today
                     _save_state(state)
-                    if _acquire_job_lock("earnings_refresh"):
+                    if _acquire_job_lock("earnings_refresh", log):
                         try:
                             log("[scheduler] starting earnings calendar refresh")
                             _record_job("earnings_refresh", log, _run_earnings_refresh)
@@ -1165,7 +1309,7 @@ def _loop(log):
                 if force and state.get("digest_force_done") != force:
                     state["digest_force_done"] = force
                     _save_state(state)
-                    if _acquire_job_lock("digest"):
+                    if _acquire_job_lock("digest", log):
                         try:
                             log(f"[scheduler] starting weekly digest (forced: {force})")
                             _record_job("digest", log, _run_digest)
@@ -1180,7 +1324,7 @@ def _loop(log):
                     state = _load_state()
                     state["last_digest_date"] = today
                     _save_state(state)
-                    if _acquire_job_lock("digest"):
+                    if _acquire_job_lock("digest", log):
                         try:
                             log("[scheduler] starting weekly digest")
                             _record_job("digest", log, _run_digest)
