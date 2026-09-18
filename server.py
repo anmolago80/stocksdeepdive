@@ -613,14 +613,23 @@ def _needs_streamlit(request: Request) -> bool:
     return bool(set(request.query_params.keys()) & _STREAMLIT_ONLY_PARAMS)
 
 
-def _count_view(page, ticker=None):
+def _count_view(page, ticker=None, lang=None):
     """Keep the admin Stats popover honest. These pages used to be counted
     by app.py's _bump_page_view; now that they are served here, the count
-    has to happen here or the numbers silently stop."""
+    has to happen here or the numbers silently stop.
+
+    Commit F (18 Sep 2026): `lang` records this fast/static path's own
+    language - callers that already compute a local `lang` var for their
+    hreflang/rendering (every /es/-twinned route below) pass it straight
+    through; a route with no /es/ twin (home, blog posts) omits it and
+    falls back to "en", which is what it always is. Fails open to "en" on
+    anything else too (None, "", garbage) - a language mis-detection must
+    never break a render, same as every other counting call on this
+    page."""
     if not metrics_store:
         return
     try:
-        metrics_store.bump(page, ticker=ticker)
+        metrics_store.bump(page, ticker=ticker, lang=(lang or "en"))
     except Exception:
         pass
 
@@ -1053,7 +1062,7 @@ async def blog_index(request: Request):
     # "never hidden" rule. See blog_render.render_index()'s own docstring.
     lang = "es" if request.url.path == "/es/blog" else "en"
     tag = (request.query_params.get("tag") or "").strip().lower() or None
-    _count_view("blog")
+    _count_view("blog", lang=lang)
     posts = blog_store.list_posts(tag=tag)
     html_out = blog_render.render_index(
         posts, _base_url(request), tag=tag,
@@ -1408,7 +1417,7 @@ async def content_page(request: Request):
     # methodology indexable too, with no separate env var to remember.
     if not spec or not _renders_html(en_path):
         return await _proxy(request)
-    _count_view(spec["page"])
+    _count_view(spec["page"], lang=lang)
     note = (site_content.METHODOLOGY_FACTUAL_NOTE
             if en_path == "/methodology" and _FACTUAL and lang == "en" else None)
     base_url = _base_url(request)
@@ -1478,7 +1487,7 @@ async def money_tools_index(request: Request):
     lang = "es" if path == "/es/tools" else "en"
     if _needs_streamlit(request):
         return await _proxy(request)
-    _count_view("money_tools_index")
+    _count_view("money_tools_index", lang=lang)
     return _html(money_tools_render.render_money_tools_index(_base_url(request), lang=lang))
 
 
@@ -1495,7 +1504,7 @@ async def money_tool_landing(slug: str, request: Request):
             blog_render.render_not_found(_base_url(request), lang=lang), status=404)
     if _needs_streamlit(request):
         return await _proxy(request)
-    _count_view(f"money_tool_{slug}")
+    _count_view(f"money_tool_{slug}", lang=lang)
     return _html(money_tools_render.render_money_tool_landing(
         slug, _base_url(request), lang=lang))
 
@@ -1521,7 +1530,7 @@ async def snapshot_index(request: Request):
     base_url = _base_url(request)
     path = request.url.path.rstrip("/") or "/"
     lang = "es" if path == "/es/s" else "en"
-    _count_view("snapshot_index")
+    _count_view("snapshot_index", lang=lang)
     rows = snapshot_store.all_snapshots()
     hreflang_alternates = [
         ("en", f"{base_url}/s/"),
@@ -1555,7 +1564,7 @@ async def snapshot_page(ticker: str, request: Request):
     if not snap:
         return _html(snapshot_render.render_snapshot_not_found(base, ticker, lang=lang),
                     status=404, cache="no-store")
-    _count_view("snapshot", ticker=ticker)
+    _count_view("snapshot", ticker=ticker, lang=lang)
     return _html(snapshot_render.render_snapshot(
         snap, base, lang=lang, hreflang_alternates=hreflang_alternates),
         cache="public, max-age=1800")
@@ -1581,7 +1590,7 @@ async def universe_snapshot_page(slug: str, request: Request):
     payload = scan_store.load_scan(universe)
     if not payload:
         return _html(blog_render.render_not_found(base, lang=lang), status=404, cache="no-store")
-    _count_view(f"universe_snapshot_{slug}")
+    _count_view(f"universe_snapshot_{slug}", lang=lang)
     return _html(
         universe_snapshot_render.render_universe_snapshot(universe, payload, base, lang=lang),
         cache="public, max-age=1800")
@@ -1609,7 +1618,7 @@ async def research_snapshot_page(slug: str, request: Request):
     ticker = research_snapshot_render.ticker_for_slug(slug, data)
     if not ticker:
         return _html(blog_render.render_not_found(base, lang=lang), status=404, cache="no-store")
-    _count_view(f"research_snapshot_{slug}")
+    _count_view(f"research_snapshot_{slug}", lang=lang)
     return _html(
         research_snapshot_render.render_research_snapshot(ticker, data, base, lang=lang),
         cache="public, max-age=1800")
@@ -1786,7 +1795,7 @@ async def track_record(request: Request):
     base_url = _base_url(request)
     path = request.url.path.rstrip("/") or "/"
     lang = "es" if path == "/es/track-record" else "en"
-    _count_view("track_record")
+    _count_view("track_record", lang=lang)
     rows = score_history.tracked_summary()
     hreflang_alternates = [
         ("en", f"{base_url}/track-record"),
@@ -1816,7 +1825,7 @@ async def results_calendar(request: Request):
     base_url = _base_url(request)
     path = request.url.path.rstrip("/") or "/"
     lang = "es" if path == "/es/calendar" else "en"
-    _count_view("results_calendar")
+    _count_view("results_calendar", lang=lang)
     hreflang_alternates = [
         ("en", f"{base_url}/calendar"),
         ("es", f"{base_url}/es/calendar"),

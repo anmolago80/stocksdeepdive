@@ -51,6 +51,33 @@ def _conn():
             PRIMARY KEY (day, page, ticker, src)
         )"""
     )
+    # Commit F (18 Sep 2026): language-split page-view counting. Design
+    # note (flagged, not literally what was asked for): the spec called
+    # for the table to "gain a lang column", but this table's PRIMARY KEY
+    # is (day, page, ticker, src) - no lang - and SQLite can't alter an
+    # existing table's PRIMARY KEY in place. Adding a plain `lang` column
+    # without also putting it in the key would NOT give a real per-
+    # language split: two sessions bumping the same (day, page, ticker,
+    # src) in different languages - e.g. an EN and an ES visitor both
+    # landing on the bare "home" page the same day - would collide on the
+    # existing key and merge into one row, so the row's `lang` would just
+    # reflect whichever session wrote last while `views` silently counted
+    # both languages together. Rebuilding the table to put lang in the key
+    # would fix that, but that's a live-production-DB migration (rename/
+    # copy/drop) this session has no way to test against the real Railway
+    # volume - too risky to ship blind overnight. Instead: `views` keeps
+    # its exact existing meaning (total views, unchanged for every current
+    # reader), and a new `views_es` column counts only the ES-language
+    # subset of that same total - purely additive, one guarded ADD COLUMN,
+    # no key change, zero risk to any existing row or reader. EN count for
+    # a row is `views - views_es`, which is exactly `views` for every
+    # historical row (views_es defaults to 0) - "historical rows count as
+    # EN" falls out for free, per the spec.
+    try:
+        conn.execute(
+            "ALTER TABLE page_views ADD COLUMN views_es INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 
@@ -58,24 +85,41 @@ def _today():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-def bump(page, ticker=None, src=None):
+def bump(page, ticker=None, src=None, lang="en"):
     """UPSERT views+1 for today (UTC) for this (page, ticker, src). ticker
     and src are stored as '' when absent, so grouping/joins never have to
     deal with NULL. Callers wrap this in try/except - analytics must never
-    break a page render."""
+    break a page render.
+
+    Commit F: `lang` ("en"/"es", anything else fails open to "en") also
+    bumps `views_es` when the visit was Spanish - see _conn()'s own
+    comment for why this is a second counter column rather than a `lang`
+    column in the primary key. views_es is a SUBSET of views, never a
+    separate write - `views` keeps counting every visit exactly as
+    before, in both languages, unchanged."""
     if not page:
         return
     day = _today()
     ticker = (ticker or "").strip().upper()
     src = (src or "").strip()
+    is_es = (lang or "en").strip().lower() == "es"
     with _conn() as conn:
-        conn.execute(
-            """INSERT INTO page_views (day, page, ticker, src, views)
-               VALUES (?, ?, ?, ?, 1)
-               ON CONFLICT(day, page, ticker, src) DO UPDATE SET
-                 views = views + 1""",
-            (day, page, ticker, src),
-        )
+        if is_es:
+            conn.execute(
+                """INSERT INTO page_views (day, page, ticker, src, views, views_es)
+                   VALUES (?, ?, ?, ?, 1, 1)
+                   ON CONFLICT(day, page, ticker, src) DO UPDATE SET
+                     views = views + 1, views_es = views_es + 1""",
+                (day, page, ticker, src),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO page_views (day, page, ticker, src, views)
+                   VALUES (?, ?, ?, ?, 1)
+                   ON CONFLICT(day, page, ticker, src) DO UPDATE SET
+                     views = views + 1""",
+                (day, page, ticker, src),
+            )
 
 
 def stats(days=30):
@@ -159,3 +203,34 @@ def by_page_delta_7d():
         return out
     except Exception:
         return []
+
+
+def by_page_lang_split_7d():
+    """{page: {"en": n, "es": n}} for the trailing 7 days (same window as
+    by_page_delta_7d()'s current_7d) - Commit F, feeds the small EN/ES
+    split the Admin Dashboard shows under each "Site sections by visits"
+    row. Pure read of the views/views_es columns bump() already writes -
+    no new counter, no new write path. "en" is derived as views -
+    views_es (views_es only ever counts the ES-language SUBSET of the
+    same views total - see _conn()'s own comment for why there's no
+    separate lang-keyed row), so en + es always equals the page's total
+    views for the window, including for every historical row written
+    before this column existed (views_es=0 there -> en=views, "historical
+    rows count as EN" per the spec). Never raises - returns {} on any read
+    error, so a split-read glitch just hides the split, not the box's own
+    counts (which come from the pre-existing by_page_delta_7d(), untouched
+    by this)."""
+    since7 = (datetime.now(timezone.utc) - timedelta(days=6)).strftime("%Y-%m-%d")
+    try:
+        with _conn() as conn:
+            rows = conn.execute(
+                """SELECT page, SUM(views), SUM(views_es) FROM page_views
+                   WHERE day >= ? GROUP BY page""",
+                (since7,),
+            ).fetchall()
+        return {
+            page: {"es": (es or 0), "en": (total or 0) - (es or 0)}
+            for page, total, es in rows
+        }
+    except Exception:
+        return {}

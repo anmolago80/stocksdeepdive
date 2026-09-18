@@ -1061,7 +1061,18 @@ def _bump_page_view(page, ticker=None):
     via one article link and then browses five more pages shows up as
     one src attribution, not six. That guard already only ever fires
     once per session regardless of the rerun-vs-visit dedup above, so it
-    needed no change."""
+    needed no change.
+
+    Commit F (18 Sep 2026): also records the session's current language
+    (st.session_state["lang"], the same site-wide source of truth every
+    other lang-aware call site already reads) so the Admin Dashboard can
+    show an EN/ES split per section. The dedupe key above stays exactly
+    as it was - page (or page:ticker for deep_dive) only, no lang -
+    per the spec's own "switching language mid-session is not a second
+    visit" rule: a visitor who flips the language toggle mid-session
+    still counts as one visit to that page, now just attributed to
+    whichever language was active the first time this page was bumped
+    this session (same "first wins" shape as src attribution above)."""
     _seen = st.session_state.setdefault("_page_view_counted", set())
     _key = f"{page}:{ticker}" if page == "deep_dive" and ticker else page
     if _key in _seen:
@@ -1072,7 +1083,8 @@ def _bump_page_view(page, ticker=None):
         if not st.session_state.get("_src_counted"):
             st.session_state["_src_counted"] = True
             _src = st.session_state.get("first_src")
-        metrics_store.bump(page, ticker=ticker, src=_src)
+        _lang = st.session_state.get("lang", "en")
+        metrics_store.bump(page, ticker=ticker, src=_src, lang=_lang)
     except Exception:
         pass
 
@@ -1260,15 +1272,48 @@ def _admin_other_breakdown(limit=15):
     return _rows[:limit]
 
 
-def _render_admin_sections_html(rows):
+def _admin_sections_lang_split():
+    """{label: {"en": n, "es": n}} for the same 7-day window and section
+    grouping as _admin_sections_by_visits() above (Commit F, 18 Sep
+    2026) - feeds the small "EN n · ES n" line _render_admin_sections_html
+    now shows under each row's count. Pure aggregation of
+    metrics_store.by_page_lang_split_7d()'s per-page en/es counts, folded
+    into sections via the SAME _admin_section_key() every other box on
+    this dashboard already uses - no new counter, no new write path.
+    Never raises - returns {} on any read error, same fail-open shape as
+    _admin_sections_by_visits() beside it."""
+    try:
+        _raw = metrics_store.by_page_lang_split_7d()
+    except Exception:
+        _raw = {}
+    _label_by_key = dict(_ADMIN_SECTION_LABELS)
+    _out = {}
+    for _page, _counts in _raw.items():
+        _label = _label_by_key.get(_admin_section_key(_page))
+        if not _label:
+            continue
+        _cur = _out.setdefault(_label, {"en": 0, "es": 0})
+        _cur["en"] += _counts.get("en", 0)
+        _cur["es"] += _counts.get("es", 0)
+    return _out
+
+
+def _render_admin_sections_html(rows, lang_split=None):
     """rows: _admin_sections_by_visits()'s own return shape. Builds one
     HTML string via concatenation only (zero-indent HTML rule - no
     hand-indented multi-line markup to worry about) for the "Site
     sections by visits" box - same ranked-bar-with-delta shape as the
-    mock (mocks/admin_weekly_additions_mock.html section 2)."""
+    mock (mocks/admin_weekly_additions_mock.html section 2).
+
+    lang_split: _admin_sections_lang_split()'s own return shape (Commit
+    F) - optional so this function still works if ever called without it.
+    When a label has a split with at least one view, a small muted
+    "EN n · ES n" line renders under that row's existing count - no other
+    layout change, per the spec."""
     if not rows:
         return ("<div style='color:#5b7290;font-size:12.5px'>"
                  "No page-view data recorded yet.</div>")
+    lang_split = lang_split or {}
     _max = max(r[1] for r in rows) or 1
     _parts = []
     for _label, _cur, _prev in rows:
@@ -1282,14 +1327,21 @@ def _render_admin_sections_html(rows):
             _color = "#34d399" if _pct >= 0 else "#fb7185"
             _delta = f"<span style='color:{_color};font-size:11px'>{_pct:+.0f}%</span>"
         _width = max(3, round(_cur / _max * 100))
+        _split = lang_split.get(_label)
+        _split_html = ""
+        if _split and (_split.get("en") or _split.get("es")):
+            _split_html = (
+                "<div style='color:#8aa0b8;font-size:10.5px;text-align:right;"
+                f"margin-top:1px'>EN {_split.get('en', 0)} · ES {_split.get('es', 0)}</div>"
+            )
         _parts.append(
             "<div style='display:flex;justify-content:space-between;align-items:center;"
             "max-width:560px;margin:7px 0;font-size:13px'>"
-            f"<span>{_label}</span><span><b>{_cur}</b> {_delta}"
+            f"<span>{_label}</span><div style='text-align:right'><span><b>{_cur}</b> {_delta}"
             "<span style='display:inline-block;width:140px;height:8px;background:#1a2740;"
             "border-radius:4px;position:relative;vertical-align:middle;margin-left:10px'>"
             f"<span style='position:absolute;left:0;top:0;bottom:0;width:{_width}%;"
-            "border-radius:4px;background:#2dd4bf'></span></span></span></div>"
+            f"border-radius:4px;background:#2dd4bf'></span></span></span>{_split_html}</div></div>"
         )
     return "".join(_parts)
 
@@ -22533,20 +22585,9 @@ def _tools_registry_count():
 _TOOLS_HUB_STYLE = """
 <style>
 .sdd-tools-tagline{color:#8aa0b8;font-size:12.5px;margin:2px 0 14px;max-width:720px;line-height:1.55}
-/* Grid fix (18 Sep 2026, mocks/tools_landing_grid_fix_mock.html): tool #5
-   (Property vs S&P 500) broke the old flex:1/flex-wrap row - a 5th card
-   with nothing to sit beside it on its own wrapped line stretched to
-   fill the ENTIRE row width (flex:1 grows to fill available space on its
-   own line too), producing a full-width orphan banner below four
-   normal-width cards. A CSS grid with auto-fit/minmax has no such
-   last-row special case: every card is exactly the same track width
-   regardless of how many sit in the final row (5-across on a wide
-   screen, 3+2 on a laptop, one column once a row can't fit 2*215px+gap -
-   which lands at the same ~390px phone width the mock calls out), so a
-   6th tool later needs zero layout changes here either. */
-.sdd-tools-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px;margin-bottom:8px}
-.sdd-tools-card{background:#121f36;border:1.5px solid #22345a;
-  border-radius:12px;padding:14px 16px;display:flex;flex-direction:column}
+.sdd-tools-grid{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.sdd-tools-card{flex:1;min-width:210px;background:#121f36;border:1.5px solid #22345a;
+  border-radius:12px;padding:14px 16px;display:block}
 .sdd-tools-card.linked:hover{border-color:#14b8a6}
 .sdd-tools-card.static{opacity:.85;cursor:default}
 /* Owner follow-up (13 Sep 2026): Streamlit's own theme CSS was leaking its
@@ -22565,7 +22606,7 @@ _TOOLS_HUB_STYLE = """
   text-decoration:none !important;color:inherit}
 .sdd-tools-card .ic{font-size:22px;border-bottom:none}
 .sdd-tools-card .n{font-weight:800;font-size:14px;margin:6px 0 3px;color:#e6edf5}
-.sdd-tools-card .p{color:#8aa0b8;font-size:11.5px;line-height:1.5;flex:1}
+.sdd-tools-card .p{color:#8aa0b8;font-size:11.5px;line-height:1.5}
 .sdd-tools-card .out{margin-top:9px;border-top:1px dashed #22345a;padding-top:8px;
   font-size:11px;color:#5b7290}
 .sdd-tools-card .out b{color:#2dd4bf;font-variant-numeric:tabular-nums}
@@ -22588,21 +22629,6 @@ _TOOLS_HUB_CARD_COPY = {
     "super": ("super_blurb", "super_teaser"),
     "property_vs_index": ("property_vs_index_blurb", "property_vs_index_teaser"),
 }
-
-# Grid fix (18 Sep 2026): matches emoji-range characters for stripping a
-# leftover mid-string icon from a hub-card title in _tools_hub_cards_html
-# below (property_vs_index's title_key is "\U0001F3E0 Property vs
-# \U0001F4C8 S&P 500" - built for the tab-label context in page_tools(),
-# where the pair of icons previews the tool's own two comparison cards;
-# the hub card only ever shows one icon, in its own .ic div, above a
-# plain-text title). Deliberately narrow (pictograph/symbol/dingbat
-# blocks only) so it never eats real punctuation or non-Latin text in a
-# future translated title - every other current card's title has no
-# emoji left after the existing leading-icon strip below, so this is a
-# no-op for them.
-_EMOJI_RE = re.compile(
-    "[\U0001F300-\U0001FAFF\U00002600-\U000026FF\U00002700-\U000027BF]"
-)
 
 
 def _tools_card_href(tool_id, lang):
@@ -22628,8 +22654,6 @@ def _tools_hub_cards_html(lang, linked):
         _title = i18n.t(_t["title_key"], lang).strip()
         if _title.startswith(_t["icon"]):
             _title = _title[len(_t["icon"]):].strip()
-        _title = _EMOJI_RE.sub("", _title).strip()
-        _title = re.sub(r"\s{2,}", " ", _title)
         _body = (
             f'<div class="ic">{_t["icon"]}</div>'
             f'<div class="n">{html.escape(_title)}</div>'
@@ -27124,8 +27148,9 @@ def page_admin_dashboard():
     with _g2:
         with st.container(border=True):
             st.markdown("**Site sections by visits (7 days)**")
-            st.markdown(_render_admin_sections_html(_admin_sections_by_visits()),
-                        unsafe_allow_html=True)
+            st.markdown(_render_admin_sections_html(
+                _admin_sections_by_visits(), _admin_sections_lang_split()),
+                unsafe_allow_html=True)
             st.caption(
                 "Visits (once per session) over 7 days - the existing "
                 "per-page counter, summed into sections - delta vs the "
@@ -27140,6 +27165,13 @@ def page_admin_dashboard():
                 "Expect every number here - and the week-over-week deltas "
                 "- to look unusual for about 7 days while this window "
                 "still spans the old counting method."
+            )
+            st.caption(
+                "18 Sep 2026: each row now also shows an EN/ES split "
+                "(session language for app pages, /es/-prefixed vs "
+                "not for the fast static/SEO pages). The split starts "
+                "from this deploy - visits recorded before it count as "
+                "EN, so expect the ES side to look thin for about 7 days."
             )
             # Part 53.2 follow-up: "what's inside Other" - makes a future
             # mapping gap visible here instead of silently inflating
