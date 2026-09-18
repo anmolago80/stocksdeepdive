@@ -1058,7 +1058,7 @@ EN = {
     # and html.escape() would double-encode an entity into visible
     # "&mdash;" text - same reasoning as portfolio.switcher.*'s literal
     # "·" elsewhere in this file.
-    "tools.page_subtitle": "Free calculators for the money around your investing — budget, bills, offset, super and property. Described calculations from your own inputs, never advice.",
+    "tools.page_subtitle": "Free calculators for the money around your investing — budget, bills, offset and super. Described calculations from your own inputs, never advice.",
     # Part 45: repurposed for the Option C (signed-out) hub tagline (was
     # the old single-line "sign in to use" info text this replaces).
     # Verbatim from the mock's Option C frame. Literal "—", same
@@ -3060,6 +3060,45 @@ EN = {
         "published (English) — not written or endorsed by this site."
     ),
     "dd.about.provenance_es_suffix": " (perfil en inglés, del proveedor de datos)",
+
+    # SEO Commit E (18 Sep 2026, mocks/snapshot_faq_schema_mock.html): the
+    # "Common questions" FAQ block on /s/<ticker> - every answer built
+    # from the SAME stored scan row the rest of the page already renders,
+    # never a second fetch (see snapshot_render.py's own comment at each
+    # call site). "Value Score" translates to the site's own established
+    # "Puntaje Value" term (matches dd.kpi.value_score and friends
+    # elsewhere in this file); pub["valuation_label"] itself (e.g.
+    # "Undervalued") stays untranslated either way, per this codebase's
+    # standing rule for engine-output words (see snapshot_render.
+    # _valuation_note()'s own docstring) - snapshot_render.py passes it
+    # through unchanged regardless of which language string wraps it.
+    "snapshot.faq.heading": "Common questions",
+    "snapshot.faq.disclaimer": "This is a described calculation from public data, not a recommendation.",
+    "snapshot.faq.undervalued_q": "Is {ticker} undervalued?",
+    "snapshot.faq.undervalued_a": (
+        "As of {date}, {ticker} trades at {price} against a computed "
+        "intrinsic value of {intrinsic} ({mos} margin of safety) - "
+        "StocksDeepDive's valuation label for this is {valuation}."
+    ),
+    "snapshot.faq.value_score_q": "What is {company}'s Value Score?",
+    "snapshot.faq.value_score_a": (
+        "{company}'s Value Score is {score} as of {date} - it combines "
+        "value, quality, crowd psychology and market attention into one number."
+    ),
+    "snapshot.faq.dividend_q": "Does {ticker} pay a dividend?",
+    "snapshot.faq.dividend_a_with_yield": (
+        "Yes - {ticker}'s trailing twelve-month dividend is {ttm}/share, "
+        "a yield of {yield_pct}% at the current price (as of {date})."
+    ),
+    "snapshot.faq.dividend_a_no_yield": (
+        "Yes - {ticker}'s trailing twelve-month dividend is {ttm}/share (as of {date})."
+    ),
+    "snapshot.faq.about_q": "What does {company} do?",
+    "snapshot.faq.about_a": "{sentence} ({provenance})",
+    "snapshot.faq.about_provenance": (
+        "company's own profile via the data provider, shown as published "
+        "(English) - not written or endorsed by this site"
+    ),
 }
 
 ES = {
@@ -3879,7 +3918,7 @@ ES = {
     # Part 45: repurposed for the Option A hub tagline - see the EN
     # block's comment (literal "—", never an &mdash; entity, since
     # this string is html.escape()'d before going into raw HTML).
-    "tools.page_subtitle": "Calculadoras gratuitas para el dinero alrededor de tu inversión — presupuesto, facturas, offset, super y propiedad. Cálculos descritos a partir de tus datos, nunca son un consejo.",
+    "tools.page_subtitle": "Calculadoras gratuitas para el dinero alrededor de tu inversión — presupuesto, facturas, offset y super. Cálculos descritos a partir de tus datos, nunca son un consejo.",
     # Part 45: repurposed for the Option C (signed-out) hub tagline.
     "tools.signin_prompt": "Cuatro calculadoras gratuitas — cuenta gratis, sin tarjeta, sin spam.",
     "tools.registry_stat": "{count} herramienta &middot; más próximamente",
@@ -5629,6 +5668,41 @@ ES = {
     "dd.about.fact_employees": "Empleados",
     "dd.about.fact_hq": "Sede",
     "dd.about.fact_website": "Sitio web",
+
+    # SEO Commit E (18 Sep 2026) - ES drafts, not professionally reviewed
+    # (same convention as every other ES batch in this file); flagged in
+    # the report. Mirrors the EN block key-for-key. "Value Score" ->
+    # "Puntaje Value" (established term used throughout this file);
+    # {valuation} stays whatever engine-output word snapshot_render.py
+    # passes in, untranslated either way - see the EN block's own
+    # comment for why.
+    "snapshot.faq.heading": "Preguntas frecuentes",
+    "snapshot.faq.disclaimer": "Este es un cálculo descrito a partir de datos públicos, no una recomendación.",
+    "snapshot.faq.undervalued_q": "¿Está {ticker} infravalorada?",
+    "snapshot.faq.undervalued_a": (
+        "A fecha de {date}, {ticker} cotiza a {price} frente a un valor "
+        "intrínseco calculado de {intrinsic} ({mos} de margen de seguridad) "
+        "- la etiqueta de valoración de StocksDeepDive para esto es {valuation}."
+    ),
+    "snapshot.faq.value_score_q": "¿Cuál es el Puntaje Value de {company}?",
+    "snapshot.faq.value_score_a": (
+        "El Puntaje Value de {company} es {score} a fecha de {date} - combina "
+        "valor, calidad, psicología de la multitud y atención del mercado en un solo número."
+    ),
+    "snapshot.faq.dividend_q": "¿{ticker} paga dividendos?",
+    "snapshot.faq.dividend_a_with_yield": (
+        "Sí - el dividendo de los últimos doce meses de {ticker} es {ttm}/acción, "
+        "un rendimiento del {yield_pct}% al precio actual (a fecha de {date})."
+    ),
+    "snapshot.faq.dividend_a_no_yield": (
+        "Sí - el dividendo de los últimos doce meses de {ticker} es {ttm}/acción (a fecha de {date})."
+    ),
+    "snapshot.faq.about_q": "¿A qué se dedica {company}?",
+    "snapshot.faq.about_a": "{sentence} ({provenance})",
+    "snapshot.faq.about_provenance": (
+        "perfil propio de la empresa vía el proveedor de datos, mostrado tal "
+        "como fue publicado (en inglés) - no escrito ni respaldado por este sitio"
+    ),
 }
 
 

@@ -19,6 +19,7 @@ import html
 import re
 
 import blog_render
+import i18n
 import score_history
 import snapshot_store
 
@@ -240,6 +241,97 @@ def _dividend_line(pub, lang="en"):
     return " &middot; ".join(parts)
 
 
+def _faq_items(ticker, data, pub, company_name, cite_date, lang="en"):
+    """SEO Commit E (18 Sep 2026, mocks/snapshot_faq_schema_mock.html):
+    the "Common questions" FAQ entries for this ticker's snapshot page -
+    every fact pulled from `pub`/`data` (the SAME stored scan row
+    render_snapshot() already has in memory), never a second fetch, so an
+    answer can never disagree with the numbers shown above it on the same
+    page. Returns [{"question", "answer"}, ...] in a fixed, spec'd order,
+    each one included only when its underlying data actually exists (see
+    each block's own comment) - the standing "omit rather than fabricate"
+    convention every other optional line on this page already follows.
+    The trailing not-a-recommendation disclaimer is NOT included here -
+    render_snapshot() appends it to whichever item ends up first in the
+    returned list, so it's always present exactly once regardless of
+    which questions happen to have data for a given ticker."""
+    display_name = company_name or ticker
+    items = []
+
+    # (1) "Is <TICKER> undervalued?" - needs price, intrinsic value, MOS%
+    # and a real (non-"N/A") valuation label all at once, since the
+    # answer sentence references all four together.
+    price, intrinsic, mos, valn = (
+        pub.get("price"), pub.get("intrinsic_value"), pub.get("mos_pct"), pub.get("valuation_label"),
+    )
+    if price is not None and intrinsic is not None and mos is not None and valn and valn != "N/A":
+        items.append({
+            "question": i18n.t("snapshot.faq.undervalued_q", lang, ticker=ticker),
+            # valn is an engine-output status word (e.g. "Undervalued") -
+            # passed through unchanged, never translated, same standing
+            # rule _valuation_note() above already documents.
+            "answer": i18n.t(
+                "snapshot.faq.undervalued_a", lang,
+                ticker=ticker, date=cite_date, price=_fmt(price), intrinsic=_fmt(intrinsic),
+                mos=f"{mos:+.1f}%", valuation=valn,
+            ),
+        })
+
+    # (2) "What is <Company>'s Value Score?" - needs the score itself.
+    value_score = pub.get("value_score")
+    if value_score is not None:
+        items.append({
+            "question": i18n.t("snapshot.faq.value_score_q", lang, company=display_name),
+            "answer": i18n.t(
+                "snapshot.faq.value_score_a", lang,
+                company=display_name, score=_fmt(value_score), date=cite_date,
+            ),
+        })
+
+    # (3) "Does <TICKER> pay a dividend?" - needs the TTM figure; yield is
+    # included in the sentence only when it's also on file (same
+    # "never omit the whole line for a missing yield" convention
+    # _dividend_line() above already uses).
+    ttm = pub.get("dividend_ttm")
+    if ttm is not None:
+        yield_pct = pub.get("dividend_yield_pct")
+        key = "snapshot.faq.dividend_a_with_yield" if yield_pct is not None else "snapshot.faq.dividend_a_no_yield"
+        kwargs = {"ticker": ticker, "ttm": f"{ttm:g}", "date": cite_date}
+        if yield_pct is not None:
+            kwargs["yield_pct"] = f"{yield_pct:.1f}"
+        items.append({
+            "question": i18n.t("snapshot.faq.dividend_q", lang, ticker=ticker),
+            "answer": i18n.t(key, lang, **kwargs),
+        })
+
+    # (4) "What does <Company> do?" - first sentence of the provider
+    # profile, WITH the existing provenance convention (dd.about.
+    # provenance's own established wording, reused verbatim here). Reads
+    # from a raw "Business Summary" field on the stored row - nightly_
+    # scan.py has never populated one (confirmed before writing this;
+    # out of scope for this commit, whose diff is confined to snapshot_
+    # render.py + i18n.py), so this item does not render on any ticker
+    # today. Kept as real, working plumbing rather than left out
+    # entirely, so a FUTURE, separately-sanctioned change that starts
+    # caching a profile sentence into the nightly scan row makes this
+    # question start appearing with zero further change here - and so
+    # this function fully covers the task spec's own four-question set
+    # rather than silently dropping the one with no data source yet.
+    summary_raw = (data.get("Business Summary") or "").strip()
+    if summary_raw:
+        first = re.split(r"(?<=[.!?])\s+", summary_raw, maxsplit=1)[0].strip()
+        items.append({
+            "question": i18n.t("snapshot.faq.about_q", lang, company=display_name),
+            "answer": i18n.t(
+                "snapshot.faq.about_a", lang,
+                sentence=first, provenance=i18n.t("snapshot.faq.about_provenance", lang),
+            ),
+        })
+
+    return items
+
+
+
 def _score_history_line(ticker, today_score, lang="en"):
     """Server-rendered "Value Score 30 days ago: X -> today Y" text line
     (Services batch Part 5) - reads the same nightly-recorded history the
@@ -280,6 +372,16 @@ def _grid_css():
 .sdd-snap-table a{color:#2dd4bf}
 .sdd-hist-line{color:#8aa0b8;font-size:14.5px;margin:-8px 0 18px}
 .sdd-snap-pct{color:#8aa0b8;font-size:13.5px;margin:-20px 0 24px}
+.sdd-faq{margin:30px 0 10px}
+.sdd-faq h2{font-size:17px;margin:0 0 12px}
+.sdd-faq-item{background:#121f36;border:1px solid #1f3352;border-radius:10px;
+  padding:12px 16px;margin-bottom:10px}
+.sdd-faq-item summary{cursor:pointer;font-weight:600;font-size:14.5px;color:#e6edf5;
+  list-style:none}
+.sdd-faq-item summary::-webkit-details-marker{display:none}
+.sdd-faq-item summary::before{content:"+ ";color:#2dd4bf;font-weight:800}
+.sdd-faq-item[open] summary::before{content:"\\2212 "}
+.sdd-faq-item p{color:#c7d2e0;font-size:13.5px;line-height:1.65;margin:8px 0 0}
 """
 
 
@@ -456,6 +558,28 @@ def render_snapshot(snap, base_url, lang="en", hreflang_alternates=None):
     copy_html = blog_render._copy_as_text_html(
         copy_text, dom_id=f"sdd-copytext-{ticker}")
 
+    # SEO Commit E: "Common questions" FAQ block - see _faq_items()'s own
+    # docstring. The not-a-recommendation disclaimer is appended to
+    # whichever item ends up first (almost always the "undervalued"
+    # question, but never assumed - a ticker missing price/intrinsic/MOS
+    # data can still have a Value Score or dividend answer, and the
+    # disclaimer belongs on whichever one Google/an AI system actually
+    # sees first in the markup).
+    faq_items = _faq_items(ticker, data, pub, company_name, cite_date, lang)
+    if faq_items:
+        faq_items[0]["answer"] = faq_items[0]["answer"] + " " + i18n.t("snapshot.faq.disclaimer", lang)
+        faq_entries_html = "".join(
+            f'<details class="sdd-faq-item"><summary>{e(it["question"])}</summary>'
+            f'<p>{e(it["answer"])}</p></details>'
+            for it in faq_items
+        )
+        faq_html = (
+            f'<div class="sdd-faq"><h2>{e(i18n.t("snapshot.faq.heading", lang))}</h2>'
+            f'{faq_entries_html}</div>'
+        )
+    else:
+        faq_html = ""
+
     if lang == "es":
         kicker_word = "Resumen"
         cta_heading = "Usa estos datos mediante programación"
@@ -494,6 +618,7 @@ def render_snapshot(snap, base_url, lang="en", hreflang_alternates=None):
     <h3>{cta_heading}</h3>
     <p>{cta_body}</p>
   </div>
+  {faq_html}
 </div></main>
 """
     desc_subject = f"{ticker} ({company_name})" if has_name else ticker
@@ -545,7 +670,7 @@ def render_snapshot(snap, base_url, lang="en", hreflang_alternates=None):
                 "engine, updated nightly - descriptions of calculations, not "
                 "recommendations."
             )
-    json_ld = blog_render._json_ld({
+    webpage_ld = {
         "@context": "https://schema.org",
         "@type": "WebPage",
         "name": title,
@@ -553,10 +678,37 @@ def render_snapshot(snap, base_url, lang="en", hreflang_alternates=None):
         "url": canonical,
         "isPartOf": {"@type": "WebSite", "name": SITE_NAME, "url": base_url},
         "publisher": blog_render._organization_json_ld(base_url),
-        "about": {"@type": "Corporation", "name": company_name or ticker},
+        # tickerSymbol added (SEO Commit E) - name/type were already here.
+        "about": {"@type": "Corporation", "name": company_name or ticker, "tickerSymbol": ticker},
         "dateModified": (snap.get("generated_at") or "")[:19],
         "inLanguage": lang,
-    })
+    }
+    # SEO Commit E: FAQPage structured data, generated from the EXACT SAME
+    # faq_items list the visible <details> block above was built from -
+    # never a second derivation, so Google can never see markup that
+    # disagrees with what's on the page (the whole point of the "penalizes
+    # markup that doesn't match visible content" rule this was built to
+    # satisfy). Combined with the pre-existing WebPage block via @graph
+    # (one <script> tag, two schema.org types) rather than a second
+    # <script> tag - _head() only accepts one json_ld string.
+    if faq_items:
+        faqpage_ld = {
+            "@type": "FAQPage",
+            "mainEntity": [
+                {
+                    "@type": "Question",
+                    "name": it["question"],
+                    "acceptedAnswer": {"@type": "Answer", "text": it["answer"]},
+                }
+                for it in faq_items
+            ],
+        }
+        # @context lives once at the graph's top level - not repeated on
+        # each node - when wrapping WebPage alongside FAQPage this way.
+        webpage_ld_node = {k: v for k, v in webpage_ld.items() if k != "@context"}
+        json_ld = blog_render._json_ld({"@context": "https://schema.org", "@graph": [webpage_ld_node, faqpage_ld]})
+    else:
+        json_ld = blog_render._json_ld(webpage_ld)
     # Part 39 (13 Sep 2026): every /s/<ticker> page used to omit image=
     # here entirely, so EVERY ticker shared the one generic site-wide
     # DEFAULT_OG_IMAGE (_head()'s own fallback - see its docstring) -
