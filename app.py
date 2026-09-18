@@ -282,12 +282,62 @@ METRIC_HELP = {
 # anyway, since the same tickers get looked up again later in the loop.
 # -----------------------------------
 
+_fetch_logger = logging.getLogger("sdd.fetch")
+
+
+def _fetch_with_retry(fetch_fn, ticker, label, fallback, attempts=3, is_empty=None):
+    """Shared retry wrapper for the three @st.cache_data-wrapped yfinance
+    fetchers below (18 Sep 2026 fix). Before this, each of them caught
+    every exception and returned a bare empty fallback ({} / empty
+    DataFrame) with zero logging - and because the whole function is
+    @st.cache_data-wrapped, a single transient hiccup (timeout, a brief
+    rate limit, a dropped connection right after a fresh deploy's cold
+    cache) got that empty fallback CACHED for the full 30-minute ttl,
+    silently starving every downstream calculation (Deep Dive's live
+    intrinsic-value/margin-of-safety recompute, in particular - it fell
+    back to a "no positive EPS/FCF" reading purely because the info/
+    cashflow fetch it depends on came back empty, not because the
+    company's real fundamentals changed) for that whole window, with no
+    trace in the logs to diagnose it by.
+
+    This retries a couple of times with a short backoff BEFORE the
+    result is returned (and therefore before @st.cache_data caches it),
+    and now logs once, at warning level, if every attempt still came up
+    empty - so a genuine, persistent failure is diagnosable, while a
+    transient one self-heals within the same request instead of
+    poisoning the cache for 30 minutes. `is_empty(result)` treats a
+    call that returned WITHOUT raising (yfinance sometimes does this on
+    a hiccup instead of raising) as a retry-worthy failure too. Return
+    type/fallback value are byte-identical to before on both the
+    success and exhausted-retries paths - no caller anywhere in the
+    codebase needs to change."""
+    last_exc = None
+    result = fallback
+    for attempt in range(attempts):
+        try:
+            result = fetch_fn()
+            if is_empty is None or not is_empty(result):
+                return result
+            last_exc = None
+        except Exception as exc:
+            last_exc = exc
+            result = fallback
+        if attempt < attempts - 1:
+            time.sleep(0.5 * (attempt + 1))
+    _fetch_logger.warning(
+        "[%s] %s: all %d fetch attempts %s", label, ticker, attempts,
+        f"raised - last error: {last_exc}" if last_exc is not None
+        else "returned an empty/incomplete result",
+    )
+    return result
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_ticker_info(ticker):
-    try:
-        return yf.Ticker(ticker).info
-    except Exception:
-        return {}
+    return _fetch_with_retry(
+        lambda: yf.Ticker(ticker).info, ticker, "get_ticker_info",
+        fallback={}, is_empty=lambda d: not d or len(d) < 5,
+    )
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -299,12 +349,12 @@ def get_price_history(ticker):
     was removed from this public deployment - Auto-Trading isn't included
     here at all).
     """
-    try:
-        # 6 months (not 3) so the Trade Filter's 60-day support/resistance
-        # window has a comfortable buffer of real trading days behind it.
-        return yf.Ticker(ticker).history(period="6mo")
-    except Exception:
-        return pd.DataFrame()
+    # 6 months (not 3) so the Trade Filter's 60-day support/resistance
+    # window has a comfortable buffer of real trading days behind it.
+    return _fetch_with_retry(
+        lambda: yf.Ticker(ticker).history(period="6mo"), ticker, "get_price_history",
+        fallback=pd.DataFrame(), is_empty=lambda df: df is None or df.empty,
+    )
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -313,12 +363,13 @@ def get_cashflow_df(ticker):
     Annual cash-flow statement, cached. Used to derive each stock's OWN
     historical free-cash-flow growth (CAGR) for the DCF, rather than a fixed
     or single-point growth assumption. Returns an empty DataFrame on failure
-    so the DCF can fall back to info-based growth, then a flagged default.
+    (after a couple of retries - see _fetch_with_retry) so the DCF can fall
+    back to info-based growth, then a flagged default.
     """
-    try:
-        return yf.Ticker(ticker).cashflow
-    except Exception:
-        return pd.DataFrame()
+    return _fetch_with_retry(
+        lambda: yf.Ticker(ticker).cashflow, ticker, "get_cashflow_df",
+        fallback=pd.DataFrame(), is_empty=lambda df: df is None or df.empty,
+    )
 
 
 def _prefetch_scan_data(tickers, live_data, enable_social, news_api_key):
