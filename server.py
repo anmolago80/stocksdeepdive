@@ -2058,6 +2058,10 @@ async def _proxy(request: Request):
 
 _VIEWPORT_RE = re.compile(r'<meta\s+name="viewport"[^>]*/?>',
                           re.IGNORECASE | re.DOTALL)
+# SEO Commit A (18 Sep 2026): matches the Streamlit shell's own static
+# <title>Streamlit</title> so it can be swapped for a real one - see
+# _plain_seo_tags_for_request/_inject_pwa_head_tags below.
+_TITLE_RE = re.compile(r"<title>.*?</title>", re.IGNORECASE | re.DOTALL)
 
 
 _SITE_DEFAULT_OG_TITLE = "StocksDeepDive — Value investing with every number shown"
@@ -2146,6 +2150,100 @@ def _social_meta_tags_for_request(request: Request, base_url: str) -> str:
     ])
 
 
+# SEO Commit A (18 Sep 2026, mocks/tool_landing_seo_mock.html's own head-
+# fix note + next_task.md): a crawler or a browser tab hitting any
+# proxied Streamlit shell page - /portfolio (no curated landing at all),
+# /tools (no curated landing until its own SEO commit ships), or any
+# curated tool path the instant a query param like ?ticker= sends it
+# through to Streamlit anyway (see tool_landing() above) - got
+# Streamlit's own static <title>Streamlit</title> with no meta
+# description and no canonical link at all. _social_meta_tags_for_request
+# above (Part 39) already covers the OG/Twitter share-card tags for these
+# same pages; this is the same gap for the plain tags that matter for the
+# browser tab and, on the rare page that IS indexable, organic search.
+_SITE_DEFAULT_TITLE = "StocksDeepDive — Stock scanner, intrinsic value & money tools"
+_SITE_DEFAULT_DESCRIPTION = (
+    "Scan stocks by intrinsic value and quality, deep-dive any ticker, and "
+    "use free money tools for budget, super, debt recycling and property — "
+    "described calculations, not advice."
+)
+# Per-path <title> for a proxied Streamlit shell page with no ticker
+# resolved - the task-listed paths only ("if cheap"); everything else
+# (including /portfolio) gets the one default above. Deliberately
+# independent of blog_render.TOOL_PAGES's own titles - those pages don't
+# reach this code at all for a bare visit (tool_landing() above renders
+# them as real HTML first), this dict only ever fires once a query param
+# forces the SAME path through to the live Streamlit shell, or for a path
+# with no curated landing at all.
+_PATH_TITLES = {
+    "/deep-dive": "Deep Dive — StocksDeepDive",
+    "/scanner": "Scanner — StocksDeepDive",
+    "/tools": "Money Tools — StocksDeepDive",
+    "/portfolio": "Portfolio — StocksDeepDive",
+    "/research": "Rational Compounder Research — StocksDeepDive",
+}
+
+
+def _plain_seo_tags_for_request(request: Request, base_url: str) -> dict:
+    """Resolves the real <title> text plus a ready-made <meta
+    name="description">/<link rel="canonical"> block for a PROXIED
+    Streamlit shell page - see the module comment just above for which
+    pages actually reach this.
+
+    Deliberately a SEPARATE lookup from _social_meta_tags_for_request
+    above, not a shared refactor of it - that OG/Twitter card machinery
+    is already live and verified (Part 39, "reuse the OG-card machinery's
+    default" is this task's own instruction); duplicating its ~15-line
+    per-ticker snapshot lookup here costs nothing and means this new code
+    can never change what that one already outputs. Same fail-open
+    convention: any lookup failure just falls through to the site-default
+    title/description already set below - a missing/wrong <title> is
+    invisible to the visitor actually using the app."""
+    path = request.url.path.rstrip("/") or "/"
+    ticker = (request.query_params.get("ticker") or "").strip().upper()
+
+    title = _PATH_TITLES.get(path, _SITE_DEFAULT_TITLE)
+    description = _SITE_DEFAULT_DESCRIPTION
+    canonical = f"{base_url}{request.url.path}"
+
+    if path in _OG_TICKER_PATHS and ticker and _TICKER_RE.match(ticker):
+        try:
+            snap = snapshot_store.get_snapshot(ticker)
+        except Exception:
+            snap = None
+        if snap:
+            try:
+                pub = snapshot_store.public_view(snap.get("data") or {})
+                company_name = pub.get("company_name")
+                title = (f"{ticker} — {company_name} | StocksDeepDive" if company_name
+                         else f"{ticker} | StocksDeepDive")
+                _bits = []
+                if isinstance(pub.get("intrinsic_value"), (int, float)):
+                    _bits.append(f"fair value ${pub['intrinsic_value']:,.2f}")
+                if pub.get("valuation_label"):
+                    _bits.append(str(pub["valuation_label"]).lower())
+                if isinstance(pub.get("quality"), (int, float)):
+                    _bits.append(f"quality {pub['quality']:.0f}")
+                description = (
+                    (f"{company_name or ticker}: " + ", ".join(_bits) + " — every input "
+                     "shown, described calculations, not advice.")
+                    if _bits else
+                    f"{company_name or ticker}: every input shown, described calculations, not advice."
+                )
+                canonical = f"{base_url}{path}?ticker={ticker}"
+            except Exception:
+                pass  # snapshot found but malformed - falls through with the site-default already set above
+
+    e = html.escape
+    return {
+        "title": title,
+        "meta": (
+            f'<meta name="description" content="{e(description)}">\n'
+            f'<link rel="canonical" href="{e(canonical)}">'
+        ),
+    }
+
+
 def _inject_pwa_head_tags(html_bytes: bytes, request: Request = None) -> bytes:
     """Insert the manifest/icon/PWA meta tags and the service-worker
     registration snippet into the proxied Streamlit shell's own <head>,
@@ -2187,6 +2285,20 @@ def _inject_pwa_head_tags(html_bytes: bytes, request: Request = None) -> bytes:
             _extra_tags = _social + "\n" + _extra_tags
         except Exception:
             log.exception("social meta tag injection failed for %s - PWA tags only", request.url.path)
+        # SEO Commit A (18 Sep 2026): real <title> + <meta name="description">
+        # + <link rel="canonical"> - see _plain_seo_tags_for_request's own
+        # docstring. Swapped in ADDITION to (never instead of) the OG/Twitter
+        # tags above; a failure here only costs a real page title, never the
+        # page itself, so it's caught the same way.
+        try:
+            _seo = _plain_seo_tags_for_request(request, _base_url(request))
+            text = _TITLE_RE.sub(
+                lambda _m, _t=_seo["title"]: f"<title>{html.escape(_t)}</title>",
+                text, count=1,
+            )
+            _extra_tags = _seo["meta"] + "\n" + _extra_tags
+        except Exception:
+            log.exception("plain SEO tag injection failed for %s - title/meta/canonical skipped", request.url.path)
 
     if "</head>" in text:
         text = text.replace("</head>", _extra_tags + "\n</head>", 1)
