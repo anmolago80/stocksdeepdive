@@ -874,7 +874,7 @@ REPRICE_CHUNK_SLEEP = 2.0  # seconds between chunks - Yahoo etiquette for
 # not per ticker, keeps that polite without materially slowing the run).
 
 
-def _reprice_row(row, hist_df):
+def _reprice_row(row, hist_df, universe_attention_lite=True):
     """Recomputes ONLY the price-dependent outputs of one already-scanned
     row, given its freshly batch-downloaded 6-month OHLCV history
     `hist_df` (one ticker's slice from the chunked yf.download() call in
@@ -906,7 +906,29 @@ def _reprice_row(row, hist_df):
     Price (Dividend TTM / Price) and the instruction explicitly puts
     Price in scope, so leaving it stale would make the row internally
     inconsistent with its own new Price. Both calls are flagged in the
-    Part 34 report as the interpretive judgment this pass makes."""
+    Part 34 report as the interpretive judgment this pass makes.
+
+    Second addendum fix (18 Sep 2026): the ORIGINAL version of this
+    function always overwrote Discovery with the price/volume-only
+    formula and re-blended Long Score with discovery_measured defaulting
+    to True - silently WRONG on the (previously undocumented) assumption
+    that "this pass only ever runs against universes that were
+    attention_lite the last time they were scanned." A catch-up run (the
+    scheduler recovering a missed night by scanning only a subset of
+    universes, e.g. just Russell 1000/2000) breaks that assumption: every
+    OTHER real universe - including full-attention ones like Dow 30/
+    Nasdaq 100/ASX All Tech - reads as "not scanned tonight" and gets
+    repriced too, which used to blow away their genuinely-measured
+    Discovery and understate their Long Score exactly like the bug Part
+    1/2 fixed for lite scans, just via a different code path. Fixed by
+    only ever recomputing the price/volume PART of Discovery here
+    (`fresh_pv` below - this pass has no cheap way to re-fetch Trends/
+    News/StockTwits for a repriced ticker) and, for a row this function
+    determines is full-attention, preserving whatever attention remainder
+    the stored Discovery carried on top of that. `universe_attention_lite`
+    is reprice_universe()'s caller-supplied payload-level flag (the
+    scan's own attention_lite - preserved unchanged across reprices, see
+    scan_store.reprice_scan()) for exactly this purpose."""
     if hist_df is None or hist_df.empty or "Close" not in hist_df.columns:
         return None
     window_3mo = hist_df.tail(63)
@@ -936,16 +958,39 @@ def _reprice_row(row, hist_df):
     activity = abs(weekly)
     avg_vol = window_3mo["Volume"].mean() if "Volume" in window_3mo.columns else 0
     vol_ratio = (window_3mo["Volume"].iloc[-1] / avg_vol) if avg_vol and avg_vol > 0 else 0
-    # Lite composition only (price/volume attention) - the addendum's own
-    # note: "big universes never had the social signals, so nothing is
-    # lost" - this pass only ever runs against universes tonight's full
-    # scan skipped, which is exactly the population that was already
-    # attention_lite (>NIGHTLY_LITE_THRESHOLD tickers) the last time it
-    # WAS fully scanned.
-    discovery = activity + vol_ratio * 10
+    # The price/volume-only PART of Discovery - genuinely all this pass
+    # can recompute (see the second addendum note in this function's
+    # docstring above for why this used to be treated as the WHOLE of
+    # Discovery, unconditionally, and why that was wrong for a
+    # full-attention row caught up in a catch-up-shaped reprice run).
+    fresh_pv = activity + vol_ratio * 10
+
+    # Full-attention determination: Part 2's own per-row top-up marker
+    # first, then the payload-level "this universe's scan wasn't
+    # attention_lite" flag, then - only if neither marker is available,
+    # e.g. legacy stored data from before this fix - a heuristic: if the
+    # stored Discovery is bigger than price/volume alone would produce,
+    # that surplus can only have come from real attention signals.
+    stored_discovery = row.get("Discovery (lite)")
+    row_full_attention = bool(row.get("attention_full")) or not universe_attention_lite
+    if not row_full_attention and stored_discovery is not None:
+        row_full_attention = (stored_discovery - fresh_pv) > 0
+
+    if row_full_attention:
+        # Preserve the attention remainder on top of the freshly
+        # recomputed price/volume part - never negative, a fresh_pv that
+        # now exceeds the old stored value just means price/volume moved,
+        # not that attention shrank.
+        remainder = max(0.0, (stored_discovery - fresh_pv)) if stored_discovery is not None else 0.0
+        discovery = fresh_pv + remainder
+        discovery_measured = True
+    else:
+        discovery = fresh_pv
+        discovery_measured = False
 
     quality = row.get("Quality") or 0
-    long_score = calculate_long_score(quality, mos if mos is not None else 0.0, psychology, discovery)
+    long_score = calculate_long_score(quality, mos if mos is not None else 0.0, psychology, discovery,
+                                       discovery_measured=discovery_measured)
 
     if not intrinsic or intrinsic <= 0:
         valuation = "N/A"
@@ -1041,6 +1086,13 @@ def reprice_universe(universe, log=print):
             rows_by_ticker[t] = row
             ordered_tickers.append(t)
 
+    # Second addendum fix (18 Sep 2026): the scan's own attention_lite
+    # flag, carried over unchanged across reprices (scan_store.
+    # reprice_scan()) - _reprice_row() uses this to tell a genuinely
+    # lite universe apart from a full-attention one caught up in this
+    # reprice pass by a catch-up-shaped run.
+    universe_attention_lite = existing.get("attention_lite", True)
+
     repriced_count = 0
     kept_stale_count = 0
     new_rows = []
@@ -1056,7 +1108,7 @@ def reprice_universe(universe, log=print):
         for t in chunk:
             row = rows_by_ticker[t]
             try:
-                new_row = _reprice_row(row, hist_by_ticker.get(t))
+                new_row = _reprice_row(row, hist_by_ticker.get(t), universe_attention_lite)
             except Exception as e:
                 log(f"[nightly_scan] reprice {universe} {t}: {e}")
                 new_row = None
