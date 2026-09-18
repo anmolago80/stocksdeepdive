@@ -1088,6 +1088,8 @@ EN = {
     "tools.hub.debt_recycling_teaser": 'e.g. offset saves <b>$3.1k/yr</b> at 6.1% — after-tax',
     "tools.hub.super_blurb": "Balance at retirement, with and without extra salary sacrifice — caps checked.",
     "tools.hub.super_teaser": 'e.g. +$200/mo sacrifice → <b>+$96k</b> at 60',
+    "tools.hub.property_vs_index_blurb": "Buy an investment property, or put the same cash in the S&P 500? Both after tax, plus the break-even rent.",
+    "tools.hub.property_vs_index_teaser": 'e.g. $300k cash + $700k loan → <b>+$323k</b> property vs <b>+$300k</b> index over 10y',
     "tools.hub.signin_cta": "Sign in free to use them",
 
     "tools.budget.title": "Budget Planner",
@@ -1416,6 +1418,108 @@ EN = {
     "tools.super.save_button": "Save this projection",
     "tools.super.saved_note": "Saved to your account — come back any time to pick up where you left off.",
     "tools.super.save_confirm": "Projection saved.",
+
+    # Task (18 Sep 2026): 🏠 Property vs 📈 S&P 500, tool #4 on the
+    # Money Tools page (approved mock: property_vs_sp500_mock.html -
+    # Option A's cards + break-even strip PLUS Option B's crossover
+    # chart, chart always visible, never in an expander). Mirrors
+    # debt_recycling_engine's own modelling conventions exactly - see
+    # property_vs_index_engine.py's own module docstring for the full
+    # formula set and every source note.
+    "tools.property_vs_index.title": "🏠 Property vs 📈 S&P 500",
+    "tools.property_vs_index.subtitle": (
+        "Compare buying an investment property against putting the same "
+        "cash into the S&P 500 — both after tax, same assumptions, plus "
+        "the break-even rent where the property pays for itself. "
+        "Described calculations from your inputs — never a "
+        "recommendation."
+    ),
+    "tools.property_vs_index.inputs_kicker": "Your numbers",
+    "tools.property_vs_index.cash_label": "Your cash",
+    "tools.property_vs_index.loan_label": "Loan (interest-only)",
+    "tools.property_vs_index.loan_rate_label": "Loan rate (%/yr, IO)",
+    "tools.property_vs_index.price_caption": (
+        "Price = your cash + loan = {price}. Buy costs come out of your "
+        "cash first — {cash} cash buys a {price} property, but only "
+        "{deposit} of it is deposit once buy costs are paid."
+    ),
+    "tools.property_vs_index.weekly_rent_label": "Weekly rent",
+    "tools.property_vs_index.vacancy_weeks_label": "Vacancy (wk/yr)",
+    "tools.property_vs_index.holding_costs_label": "Holding costs ($/yr)",
+    "tools.property_vs_index.holding_costs_help": (
+        "Maintenance + rates + insurance + property management, one "
+        "yearly number."
+    ),
+    "tools.property_vs_index.property_growth_label": "Property growth (%/yr)",
+    "tools.property_vs_index.sp500_return_label": "S&P 500 total return (%/yr)",
+    "tools.property_vs_index.sp500_dividend_label": "…of which dividend yield (%)",
+    "tools.property_vs_index.marginal_rate_label": "Your marginal tax rate (%)",
+    "tools.property_vs_index.marginal_rate_help": "Your bracket rate + 2% Medicare levy",
+    "tools.property_vs_index.years_label": "Years",
+    "tools.property_vs_index.buy_costs_label": "Buy costs ($)",
+    "tools.property_vs_index.buy_costs_help": (
+        "Stamp duty + legals — paid out of your cash at purchase, never "
+        "financed."
+    ),
+    "tools.property_vs_index.sell_costs_label": "Sell costs (%)",
+    "tools.property_vs_index.card_property_title": "🏠 Investment property",
+    "tools.property_vs_index.card_property_subtitle": "Leveraged · {price} exposure · debt",
+    "tools.property_vs_index.card_index_title": "📈 S&P 500 with the same cash",
+    "tools.property_vs_index.card_index_subtitle": "No debt · liquid · {cash} exposure",
+    "tools.property_vs_index.winner_badge": "🏆 Ahead on these numbers",
+    "tools.property_vs_index.after_tax_position_label": "After-tax position after {years}y",
+    "tools.property_vs_index.line_growth_label": "Capital growth after CGT:",
+    "tools.property_vs_index.line_growth_sub": (
+        "{price} → {future_price}; gain taxed with 50% discount at {rate:.0f}%"
+    ),
+    "tools.property_vs_index.line_rent_label": "Rent after tax:",
+    "tools.property_vs_index.line_rent_sub": (
+        "{weekly_rent}/wk × (52 − {vacancy} wk vacancy) × {years}y, "
+        "taxed once at {rate:.0f}%"
+    ),
+    "tools.property_vs_index.line_interest_label": "Loan interest after deduction:",
+    "tools.property_vs_index.line_interest_sub": (
+        "{loan} × {rate_pct:.2f}% × {years}y, deductible at {tax:.0f}% "
+        "(negative gearing)"
+    ),
+    "tools.property_vs_index.line_costs_label": "Holding costs after deduction:",
+    "tools.property_vs_index.line_costs_sub": "{costs}/yr × {years}y, deductible at {tax:.0f}%",
+    "tools.property_vs_index.line_index_growth_label": "Growth after CGT:",
+    "tools.property_vs_index.line_index_growth_sub": (
+        "{cash} compounding at {rate:.1f}% price growth, taxed with 50% "
+        "discount at {tax:.0f}%"
+    ),
+    "tools.property_vs_index.line_index_dividends_label": "Dividends after tax:",
+    "tools.property_vs_index.line_index_dividends_sub": (
+        "{yield_pct:.1f}% yield on a growing balance, taxed once at "
+        "{tax:.0f}%, paid out yearly"
+    ),
+    "tools.property_vs_index.break_even_label": "Break-even rent",
+    "tools.property_vs_index.break_even_caption": (
+        "Your rent {rent}/wk covers {coverage:.0f}% of the property's "
+        "yearly cash bill (interest + holding costs, over the {weeks} "
+        "weeks you actually collect rent)."
+    ),
+    "tools.property_vs_index.shortfall_below": "Costs you ~{amount}/wk after tax, below break-even",
+    "tools.property_vs_index.shortfall_above": "Pays for itself — ~{amount}/wk ahead after tax, above break-even",
+    "tools.property_vs_index.shortfall_at": "Right at break-even — the property covers its own cash costs",
+    "tools.property_vs_index.chart_crossover_label": "crossover · year {year}",
+    "tools.property_vs_index.chart_no_crossover": "One side leads the whole {years} years on these numbers",
+    "tools.property_vs_index.chart_property_label": "🏠 property",
+    "tools.property_vs_index.chart_index_label": "📈 S&P 500",
+    "tools.property_vs_index.chart_caption": (
+        "Both after-tax positions if sold in that year — the crossover "
+        "year is where leverage catches up (or doesn't)."
+    ),
+    "tools.property_vs_index.honest_caption": (
+        "The property's edge here is leverage — {price} working vs "
+        "{cash}. At the same growth rates without the loan, the S&P 500 "
+        "wins — and leverage multiplies losses too if prices fall."
+    ),
+    "tools.property_vs_index.not_advice": "Described calculations from your inputs — not tax or financial advice.",
+    "tools.property_vs_index.save_button": "Save this scenario",
+    "tools.property_vs_index.saved_note": "Saved to your account — come back any time to pick up where you left off.",
+    "tools.property_vs_index.save_confirm": "Scenario saved.",
 
     # Mega-batch Part 19: ⚡ Utilities bill check (Tools tool #2).
     "tools.utilities.title": "⚡ Utilities bill check",
@@ -3791,6 +3895,10 @@ ES = {
     "tools.hub.debt_recycling_teaser": 'ej. el offset ahorra <b>$3.1k/año</b> al 6,1% — después de impuestos',
     "tools.hub.super_blurb": "Saldo al jubilarte, con y sin sacrificio salarial adicional — topes verificados.",
     "tools.hub.super_teaser": 'ej. +$200/mes de sacrificio → <b>+$96k</b> a los 60',
+    # ES DRAFT, not professionally reviewed (same convention as the rest
+    # of this file's Spanish copy - see e.g. the News-tab block below).
+    "tools.hub.property_vs_index_blurb": "¿Comprar una propiedad de inversión, o poner el mismo efectivo en el S&P 500? Ambos después de impuestos, más el alquiler de equilibrio.",
+    "tools.hub.property_vs_index_teaser": 'ej. $300k de efectivo + $700k de préstamo → <b>+$323k</b> propiedad vs <b>+$300k</b> índice en 10 años',
     "tools.hub.signin_cta": "Inicia sesión gratis para usarlas",
 
     "tools.budget.title": "Planificador de presupuesto",
@@ -4116,6 +4224,109 @@ ES = {
     "tools.super.save_button": "Guardar esta proyección",
     "tools.super.saved_note": "Guardado en tu cuenta — vuelve cuando quieras para continuar donde lo dejaste.",
     "tools.super.save_confirm": "Proyección guardada.",
+
+    # Task (18 Sep 2026): 🏠 Propiedad vs 📈 S&P 500, herramienta #4.
+    # ES DRAFT, not professionally reviewed (same convention as the rest
+    # of this file's Spanish copy) - flagged for native review, same as
+    # every other ES block in this module.
+    "tools.property_vs_index.title": "🏠 Propiedad vs 📈 S&P 500",
+    "tools.property_vs_index.subtitle": (
+        "Compara comprar una propiedad de inversión con invertir el "
+        "mismo efectivo en el S&P 500 — ambos después de impuestos, "
+        "mismos supuestos, más el alquiler de equilibrio al que la "
+        "propiedad se paga sola. Cálculos descritos a partir de tus "
+        "datos — nunca una recomendación."
+    ),
+    "tools.property_vs_index.inputs_kicker": "Tus números",
+    "tools.property_vs_index.cash_label": "Tu efectivo",
+    "tools.property_vs_index.loan_label": "Préstamo (solo intereses)",
+    "tools.property_vs_index.loan_rate_label": "Tasa del préstamo (%/año, IO)",
+    "tools.property_vs_index.price_caption": (
+        "Precio = tu efectivo + préstamo = {price}. Los costos de compra "
+        "salen primero de tu efectivo — {cash} de efectivo compra una "
+        "propiedad de {price}, pero solo {deposit} es depósito una vez "
+        "pagados los costos de compra."
+    ),
+    "tools.property_vs_index.weekly_rent_label": "Alquiler semanal",
+    "tools.property_vs_index.vacancy_weeks_label": "Vacancia (sem/año)",
+    "tools.property_vs_index.holding_costs_label": "Costos de mantención ($/año)",
+    "tools.property_vs_index.holding_costs_help": (
+        "Mantenimiento + tasas + seguro + administración de la "
+        "propiedad, un número anual."
+    ),
+    "tools.property_vs_index.property_growth_label": "Crecimiento de la propiedad (%/año)",
+    "tools.property_vs_index.sp500_return_label": "Retorno total del S&P 500 (%/año)",
+    "tools.property_vs_index.sp500_dividend_label": "…del cual dividendo (%)",
+    "tools.property_vs_index.marginal_rate_label": "Tu tasa marginal de impuestos (%)",
+    "tools.property_vs_index.marginal_rate_help": "La tasa de tu tramo impositivo + 2% Medicare levy",
+    "tools.property_vs_index.years_label": "Años",
+    "tools.property_vs_index.buy_costs_label": "Costos de compra ($)",
+    "tools.property_vs_index.buy_costs_help": (
+        "Impuesto de sello + legales — pagados de tu efectivo al "
+        "comprar, nunca financiados."
+    ),
+    "tools.property_vs_index.sell_costs_label": "Costos de venta (%)",
+    "tools.property_vs_index.card_property_title": "🏠 Propiedad de inversión",
+    "tools.property_vs_index.card_property_subtitle": "Apalancada · exposición de {price} · deuda",
+    "tools.property_vs_index.card_index_title": "📈 S&P 500 con el mismo efectivo",
+    "tools.property_vs_index.card_index_subtitle": "Sin deuda · líquido · exposición de {cash}",
+    "tools.property_vs_index.winner_badge": "🏆 Adelante en estos números",
+    "tools.property_vs_index.after_tax_position_label": "Posición después de impuestos a los {years} años",
+    "tools.property_vs_index.line_growth_label": "Crecimiento de capital después de CGT:",
+    "tools.property_vs_index.line_growth_sub": (
+        "{price} → {future_price}; ganancia gravada con descuento del "
+        "50% al {rate:.0f}%"
+    ),
+    "tools.property_vs_index.line_rent_label": "Alquiler después de impuestos:",
+    "tools.property_vs_index.line_rent_sub": (
+        "{weekly_rent}/sem × (52 − {vacancy} sem de vacancia) × "
+        "{years} años, gravado una vez al {rate:.0f}%"
+    ),
+    "tools.property_vs_index.line_interest_label": "Interés del préstamo después de deducción:",
+    "tools.property_vs_index.line_interest_sub": (
+        "{loan} × {rate_pct:.2f}% × {years} años, deducible al "
+        "{tax:.0f}% (negative gearing)"
+    ),
+    "tools.property_vs_index.line_costs_label": "Costos de mantención después de deducción:",
+    "tools.property_vs_index.line_costs_sub": "{costs}/año × {years} años, deducible al {tax:.0f}%",
+    "tools.property_vs_index.line_index_growth_label": "Crecimiento después de CGT:",
+    "tools.property_vs_index.line_index_growth_sub": (
+        "{cash} creciendo al {rate:.1f}% de crecimiento de precio, "
+        "gravado con descuento del 50% al {tax:.0f}%"
+    ),
+    "tools.property_vs_index.line_index_dividends_label": "Dividendos después de impuestos:",
+    "tools.property_vs_index.line_index_dividends_sub": (
+        "{yield_pct:.1f}% de rendimiento sobre un saldo creciente, "
+        "gravado una vez al {tax:.0f}%, pagado cada año"
+    ),
+    "tools.property_vs_index.break_even_label": "Alquiler de equilibrio",
+    "tools.property_vs_index.break_even_caption": (
+        "Tu alquiler de {rent}/sem cubre el {coverage:.0f}% de la cuenta "
+        "anual en efectivo de la propiedad (interés + costos de "
+        "mantención, sobre las {weeks} semanas en que realmente cobras "
+        "alquiler)."
+    ),
+    "tools.property_vs_index.shortfall_below": "Te cuesta ~{amount}/sem después de impuestos, bajo el equilibrio",
+    "tools.property_vs_index.shortfall_above": "Se paga sola — ~{amount}/sem a tu favor después de impuestos, sobre el equilibrio",
+    "tools.property_vs_index.shortfall_at": "Justo en el equilibrio — la propiedad cubre sus propios costos en efectivo",
+    "tools.property_vs_index.chart_crossover_label": "cruce · año {year}",
+    "tools.property_vs_index.chart_no_crossover": "Un lado va adelante los {years} años completos con estos números",
+    "tools.property_vs_index.chart_property_label": "🏠 propiedad",
+    "tools.property_vs_index.chart_index_label": "📈 S&P 500",
+    "tools.property_vs_index.chart_caption": (
+        "Ambas posiciones después de impuestos si se vendiera ese año — "
+        "el año de cruce es donde el apalancamiento alcanza (o no)."
+    ),
+    "tools.property_vs_index.honest_caption": (
+        "La ventaja de la propiedad aquí es el apalancamiento — {price} "
+        "trabajando frente a {cash}. Con las mismas tasas de crecimiento "
+        "sin el préstamo, el S&P 500 gana — y el apalancamiento también "
+        "multiplica las pérdidas si bajan los precios."
+    ),
+    "tools.property_vs_index.not_advice": "Cálculos descritos a partir de tus datos — no es asesoramiento fiscal ni financiero.",
+    "tools.property_vs_index.save_button": "Guardar este escenario",
+    "tools.property_vs_index.saved_note": "Guardado en tu cuenta — vuelve cuando quieras para continuar donde lo dejaste.",
+    "tools.property_vs_index.save_confirm": "Escenario guardado.",
 
     # Mega-batch Part 19: ⚡ Revisión de facturas de servicios (herramienta #2).
     "tools.utilities.title": "⚡ Revisión de facturas de servicios",

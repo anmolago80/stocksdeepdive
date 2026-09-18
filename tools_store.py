@@ -66,6 +66,11 @@ _DEFAULT_DEBT_RECYCLING_NAME = "My Scenario"
 # switcher needs zero migration, exactly the position debt_recycling was
 # in before its own Part 30 multi-scenario upgrade.
 _DEFAULT_SUPER_SCENARIO_NAME = "My Projection"
+# Task (18 Sep 2026): Property vs S&P 500 Money Tool. Same named-scenario
+# shape as debt_recycling/super above (names registry + inputs_json blob
+# table, both keyed on (email, name)) - this tool's own fourth consumer
+# of _render_named_plan_switcher (app.py), no parallel implementation.
+_DEFAULT_PROPERTY_VS_INDEX_NAME = "My Scenario"
 
 
 def _table_columns(conn, table):
@@ -220,6 +225,28 @@ def _conn():
     )
     conn.execute(
         """CREATE TABLE IF NOT EXISTS super_scenarios (
+            email TEXT NOT NULL,
+            name TEXT NOT NULL,
+            inputs_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (email, name)
+        )"""
+    )
+    # Task (18 Sep 2026): Property vs S&P 500 Money Tool's own saved-
+    # inputs table, IDENTICAL shape to super_scenario_names/super_
+    # scenarios above (names registry + inputs_json blob, both keyed on
+    # (email, name)) - this tool's own fourth consumer of the shared
+    # named-plan switcher, no parallel storage shape invented.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS property_vs_index_scenario_names (
+            email TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (email, name)
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS property_vs_index_scenarios (
             email TEXT NOT NULL,
             name TEXT NOT NULL,
             inputs_json TEXT NOT NULL,
@@ -848,6 +875,120 @@ def save_super_scenario(email, name, inputs):
         )
         conn.execute(
             "INSERT INTO super_scenarios (email, name, inputs_json, updated_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(email, name) DO UPDATE SET "
+            "inputs_json = excluded.inputs_json, updated_at = excluded.updated_at",
+            (email, name, inputs_json, now),
+        )
+
+
+def list_property_vs_index_scenario_names(email):
+    """Ordered names of every Property vs S&P 500 scenario this email has
+    (oldest first) - empty list if none yet. Mirrors list_super_scenario_
+    names() exactly."""
+    if not email:
+        return []
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT name FROM property_vs_index_scenario_names WHERE email = ? ORDER BY created_at",
+            (email,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def create_property_vs_index_scenario(email, name):
+    """Registers a new, empty named scenario. Idempotent (INSERT OR
+    IGNORE) - mirrors create_super_scenario()."""
+    if not email or not name:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO property_vs_index_scenario_names (email, name, created_at) "
+            "VALUES (?, ?, ?)",
+            (email, name, now),
+        )
+
+
+def rename_property_vs_index_scenario(email, old_name, new_name):
+    """Mirrors rename_super_scenario() exactly."""
+    if not email or not old_name or not new_name or old_name == new_name:
+        return
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE property_vs_index_scenario_names SET name = ? WHERE email = ? AND name = ?",
+            (new_name, email, old_name),
+        )
+        conn.execute(
+            "UPDATE property_vs_index_scenarios SET name = ? WHERE email = ? AND name = ?",
+            (new_name, email, old_name),
+        )
+
+
+def delete_property_vs_index_scenario(email, name):
+    """Mirrors delete_super_scenario() exactly - the "never delete the
+    last remaining scenario" guard lives in the shared
+    _render_named_plan_switcher UI (app.py), same as every other tool
+    wired to that switcher."""
+    if not email or not name:
+        return
+    with _conn() as conn:
+        conn.execute(
+            "DELETE FROM property_vs_index_scenario_names WHERE email = ? AND name = ?",
+            (email, name),
+        )
+        conn.execute(
+            "DELETE FROM property_vs_index_scenarios WHERE email = ? AND name = ?",
+            (email, name),
+        )
+
+
+def ensure_default_property_vs_index_scenario(email):
+    """Guarantees at least one named scenario exists for a signed-in
+    email - mirrors ensure_default_super_scenario(). Called once at the
+    top of the Property vs S&P 500 tool's render."""
+    if not email:
+        return
+    if not list_property_vs_index_scenario_names(email):
+        create_property_vs_index_scenario(email, _DEFAULT_PROPERTY_VS_INDEX_NAME)
+
+
+def get_property_vs_index_scenario(email, name):
+    """{"inputs": {...}} or None if this email has never saved this named
+    scenario. inputs is exactly the dict save_property_vs_index_scenario()
+    was last called with for this name - the caller (app.py) owns its own
+    shape. Mirrors get_super_scenario()."""
+    if not email or not name:
+        return None
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT inputs_json FROM property_vs_index_scenarios WHERE email = ? AND name = ?",
+            (email, name),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        inputs = json.loads(row[0]) if row[0] else {}
+    except (TypeError, ValueError):
+        inputs = {}
+    return {"inputs": inputs}
+
+
+def save_property_vs_index_scenario(email, name, inputs):
+    """Upserts this ONE named scenario - same one-row-per-name contract as
+    save_super_scenario(). Also registers `name` in the names registry
+    (INSERT OR IGNORE), same defensive belt-and-braces measure."""
+    if not email or not name:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    inputs_json = json.dumps(inputs or {})
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO property_vs_index_scenario_names (email, name, created_at) "
+            "VALUES (?, ?, ?)",
+            (email, name, now),
+        )
+        conn.execute(
+            "INSERT INTO property_vs_index_scenarios (email, name, inputs_json, updated_at) "
             "VALUES (?, ?, ?, ?) ON CONFLICT(email, name) DO UPDATE SET "
             "inputs_json = excluded.inputs_json, updated_at = excluded.updated_at",
             (email, name, inputs_json, now),

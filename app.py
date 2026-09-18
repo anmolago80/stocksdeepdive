@@ -75,6 +75,7 @@ import debt_recycling_engine
 import bill_check_engine
 import insurance_engine
 import super_engine
+import property_vs_index_engine
 import tools_store
 import i18n
 
@@ -1110,6 +1111,7 @@ _TOOL_OPEN_LABELS = {
     "utilities": "Utilities bill check",
     "debt_recycling": "Cash vs Offset vs Borrow",
     "insurance": "Insurance bill check",
+    "property_vs_index": "Property vs S&P 500",
 }
 
 
@@ -22449,6 +22451,12 @@ TOOLS_REGISTRY = [
     # full note.
     {"id": "super", "icon": "\U0001F3E6",
      "title_key": "tools.super.title", "render": "_render_super_tool"},
+    # Task (18 Sep 2026): \U0001F3E0 Property vs \U0001F4C8 S&P 500 - tool #5.
+    # "a new entry in a list, not a rebuild" (the registry's own founding
+    # rule, TOOLS_REGISTRY's own header comment above) - zero changes
+    # anywhere else in this list for a brand-new tool to appear.
+    {"id": "property_vs_index", "icon": "\U0001F3E0",
+     "title_key": "tools.property_vs_index.title", "render": "_render_property_vs_index_tool"},
     # 9 Sep 2026 fix (owner decision): Insurance hidden from the Tools hub -
     # even with real published typical-premium figures seeded in, a
     # state-wide average premium proved too noisy to be a trustworthy
@@ -22567,6 +22575,7 @@ _TOOLS_HUB_CARD_COPY = {
     "utilities": ("utilities_blurb", "utilities_teaser"),
     "debt_recycling": ("debt_recycling_blurb", "debt_recycling_teaser"),
     "super": ("super_blurb", "super_teaser"),
+    "property_vs_index": ("property_vs_index_blurb", "property_vs_index_teaser"),
 }
 
 
@@ -24029,6 +24038,328 @@ def _render_super_tool(email):
             "balance": balance, "salary": salary,
             "sacrifice": extra_sacrifice_monthly, "return_pct": return_pct,
             "marginal_rate_pct": marginal_rate_pct,
+        })
+        st.success(_sl("save_confirm"))
+
+
+# --------------------------------------------------------------------------- #
+# Task (18 Sep 2026): \U0001F3E0 Property vs \U0001F4C8 S&P 500 - Money Tools tool #5.
+# Approved mock: property_vs_sp500_mock.html - Option A's verdict cards +
+# break-even strip PLUS Option B's crossover chart, chart always visible
+# (never in an expander). Dark-theme CSS below reuses the mock's own
+# palette verbatim (it already matches this app's real dark theme - see
+# _TOOLS_HUB_STYLE's identical color set above) under a "pvi-" prefix so
+# nothing here can collide with any other tool's classes.
+# --------------------------------------------------------------------------- #
+_PVI_STYLE = """
+<style>
+.pvi-cards{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}
+.pvi-card{flex:1;min-width:280px;background:#0b1526;border:1px solid #1f3352;
+  border-radius:12px;padding:16px 18px}
+.pvi-card.win{border-color:#b45309}
+.pvi-o{color:#fbbf24;font-size:11px;font-weight:800;margin-bottom:2px}
+.pvi-k{color:#8aa0b8;font-size:11px;letter-spacing:.05em;text-transform:uppercase}
+.pvi-h{font-size:14.5px;font-weight:800;margin-bottom:3px;color:#e6edf5}
+.pvi-big{font-size:26px;font-weight:800;margin:6px 0 8px}
+.pvi-line{font-size:12px;color:#c7d2e0;margin:5px 0}
+.pvi-sub{font-size:11px;color:#8aa0b8;margin:1px 0 1px 14px}
+.pvi-g{color:#34d399}
+.pvi-r{color:#fb7185}
+.pvi-be{display:flex;gap:14px;align-items:center;background:#122031;border:1px solid #14532d;
+  border-radius:12px;padding:13px 18px;margin-top:12px;flex-wrap:wrap}
+.pvi-be .pvi-num{font-size:23px;font-weight:800;color:#34d399}
+.pvi-bar{height:11px;border-radius:6px;background:#1a2740;position:relative;flex:1;min-width:180px}
+.pvi-bar i{position:absolute;left:0;top:0;bottom:0;border-radius:6px;background:#2dd4bf}
+.pvi-bar u{position:absolute;top:-4px;bottom:-4px;width:2px;background:#fbbf24}
+.pvi-cap{font-size:11px;color:#5b7290;margin-top:5px;line-height:1.55}
+.pvi-shortfall{font-size:12px;color:#c7d2e0;margin-top:8px}
+</style>
+"""
+
+
+def _render_property_vs_index_tool(email):
+    """Task (18 Sep 2026): \U0001F3E0 Property vs \U0001F4C8 S&P 500. Engine is
+    property_vs_index_engine.py - deliberately self-contained (never
+    imports debt_recycling_engine.py, see that module's own docstring
+    for why) even though it mirrors debt_recycling_engine's own
+    conventions exactly: simple interest-only loan, after-tax income
+    legs paid out (not reinvested), growth compounded with the 50% CGT
+    discount at the user's marginal rate.
+
+    Save/load follows the SAME shape and the SAME "widget key vs saved-
+    dict key" discipline as _render_super_tool above (_seed() strips the
+    "tools_pvi_" widget-key prefix to find the bare field name in the
+    saved dict): tools_store.get/save_property_vs_index_scenario() is
+    this tool's own fourth consumer of _render_named_plan_switcher - no
+    parallel switcher implementation, per the task's own instruction.
+
+    Every \$ amount below goes through _fmt_aud_md() (never plain
+    _fmt_aud()) - every caption here interpolates two or more dollar
+    amounts on one line, which is exactly the Streamlit KaTeX
+    paired-"$" bug _fmt_aud_md()'s own docstring documents."""
+    _lang = st.session_state.get("lang", "en")
+    _sl = lambda key, **kw: i18n.t(f"tools.property_vs_index.{key}", _lang, **kw)
+    _eng = property_vs_index_engine
+
+    st.markdown(_PVI_STYLE, unsafe_allow_html=True)
+    st.markdown(f"### \U0001F3E0 {_sl('title')}")
+    st.caption(_sl("subtitle"))
+
+    tools_store.ensure_default_property_vs_index_scenario(email)
+    _active = _render_named_plan_switcher(
+        email, "scenario", "tools_pvi_active_scenario",
+        tools_store.list_property_vs_index_scenario_names,
+        tools_store.create_property_vs_index_scenario,
+        tools_store.rename_property_vs_index_scenario,
+        tools_store.delete_property_vs_index_scenario,
+    )
+    _saved = tools_store.get_property_vs_index_scenario(email, _active) or {}
+    _saved_inputs = _saved.get("inputs") or {}
+
+    def _seed(key, default):
+        _skey = _tools_plan_key(_active, key)
+        if _skey not in st.session_state:
+            st.session_state[_skey] = _saved_inputs.get(key.removeprefix("tools_pvi_"), default)
+        return _skey
+
+    with st.container(border=True):
+        st.markdown(f"**{_sl('inputs_kicker')}**")
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            cash = st.number_input(
+                _sl("cash_label"), min_value=0.0, step=5000.0, format="%.0f",
+                key=_seed("tools_pvi_cash", _eng.DEFAULT_CASH),
+            )
+            loan = st.number_input(
+                _sl("loan_label"), min_value=0.0, step=5000.0, format="%.0f",
+                key=_seed("tools_pvi_loan", _eng.DEFAULT_LOAN),
+            )
+            loan_rate_pct = st.number_input(
+                _sl("loan_rate_label"), min_value=0.0, max_value=20.0, step=0.01, format="%.2f",
+                key=_seed("tools_pvi_loan_rate_pct", _eng.DEFAULT_LOAN_RATE * 100),
+            )
+            weekly_rent = st.number_input(
+                _sl("weekly_rent_label"), min_value=0.0, step=10.0, format="%.0f",
+                key=_seed("tools_pvi_weekly_rent", _eng.DEFAULT_WEEKLY_RENT),
+            )
+            vacancy_weeks = st.number_input(
+                _sl("vacancy_weeks_label"), min_value=0, max_value=51, step=1,
+                key=_seed("tools_pvi_vacancy_weeks", _eng.DEFAULT_VACANCY_WEEKS),
+            )
+            holding_costs = st.number_input(
+                _sl("holding_costs_label"), min_value=0.0, step=500.0, format="%.0f",
+                help=_sl("holding_costs_help"),
+                key=_seed("tools_pvi_holding_costs", _eng.DEFAULT_HOLDING_COSTS),
+            )
+            buy_costs = st.number_input(
+                _sl("buy_costs_label"), min_value=0.0, step=1000.0, format="%.0f",
+                help=_sl("buy_costs_help"),
+                key=_seed("tools_pvi_buy_costs", _eng.DEFAULT_BUY_COSTS),
+            )
+        with _c2:
+            sell_costs_pct = st.number_input(
+                _sl("sell_costs_label"), min_value=0.0, max_value=10.0, step=0.1, format="%.1f",
+                key=_seed("tools_pvi_sell_costs_pct", _eng.DEFAULT_SELL_COSTS_PCT * 100),
+            )
+            property_growth_pct = st.number_input(
+                _sl("property_growth_label"), min_value=0.0, max_value=15.0, step=0.1, format="%.1f",
+                key=_seed("tools_pvi_property_growth_pct", _eng.DEFAULT_PROPERTY_GROWTH * 100),
+            )
+            sp500_return_pct = st.number_input(
+                _sl("sp500_return_label"), min_value=0.0, max_value=15.0, step=0.1, format="%.1f",
+                key=_seed("tools_pvi_sp500_return_pct", _eng.DEFAULT_SP500_TOTAL_RETURN * 100),
+            )
+            sp500_dividend_pct = st.number_input(
+                _sl("sp500_dividend_label"), min_value=0.0, max_value=10.0, step=0.1, format="%.1f",
+                key=_seed("tools_pvi_sp500_dividend_pct", _eng.DEFAULT_SP500_DIVIDEND_YIELD * 100),
+            )
+            marginal_rate_pct = st.number_input(
+                _sl("marginal_rate_label"), min_value=0.0, max_value=60.0, step=0.5, format="%.1f",
+                help=_sl("marginal_rate_help"),
+                key=_seed("tools_pvi_marginal_rate_pct", _eng.DEFAULT_MARGINAL_RATE * 100),
+            )
+            years = st.number_input(
+                _sl("years_label"), min_value=_eng.MIN_YEARS, max_value=_eng.MAX_YEARS, step=1,
+                key=_seed("tools_pvi_years", _eng.DEFAULT_YEARS),
+            )
+
+        _price = _eng.property_price(cash, loan)
+        st.caption(_sl(
+            "price_caption", price=_fmt_aud_md(_price), cash=_fmt_aud_md(cash),
+            deposit=_fmt_aud_md(cash - buy_costs),
+        ))
+
+    _r = _eng.run(
+        cash=cash, loan=loan, loan_rate=loan_rate_pct / 100.0,
+        weekly_rent=weekly_rent, vacancy_weeks=int(vacancy_weeks),
+        holding_costs=holding_costs, property_growth=property_growth_pct / 100.0,
+        sp500_total_return=sp500_return_pct / 100.0,
+        sp500_dividend_yield=sp500_dividend_pct / 100.0,
+        marginal_rate=marginal_rate_pct / 100.0, medicare_levy=_eng.MEDICARE_LEVY,
+        years=int(years), buy_costs=buy_costs, sell_costs_pct=sell_costs_pct / 100.0,
+    )
+    _p = _r["property"]
+    _idx = _r["index"]
+    _years_i = _r["years"]
+    _tax_pct = _r["tax_rate"] * 100.0
+
+    def _signed(v):
+        return f"{chr(43) if v >= 0 else chr(8722)}{_fmt_aud_md(abs(v))}"
+
+    def _cls(v):
+        return "pvi-g" if v >= 0 else "pvi-r"
+
+    _property_win = _r["winner"] == "property"
+    _badge = f'<div class="pvi-o">{html.escape(_sl("winner_badge"))}</div>'
+
+    _parts = ['<div class="pvi-cards">']
+
+    # -- Property card --------------------------------------------------
+    _parts.append(f'<div class="pvi-card{" win" if _property_win else ""}">')
+    if _property_win:
+        _parts.append(_badge)
+    _parts.append(f'<div class="pvi-h">{html.escape(_sl("card_property_title"))}</div>')
+    _parts.append(
+        f'<div class="pvi-k">{html.escape(_sl("card_property_subtitle", price=_fmt_aud_md(_price)))}</div>'
+    )
+    _parts.append(
+        f'<div class="pvi-k" style="margin-top:8px">'
+        f'{html.escape(_sl("after_tax_position_label", years=_years_i))}</div>'
+    )
+    _parts.append(f'<div class="pvi-big {_cls(_p["headline"])}">{_signed(_p["headline"])}</div>')
+
+    _growth = _p["growth"]
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl("line_growth_label"))} '
+        f'<span class="{_cls(_growth["after_tax"])}">{_signed(_growth["after_tax"])}</span></div>'
+    )
+    _parts.append(
+        f'<div class="pvi-sub">{html.escape(_sl("line_growth_sub", price=_fmt_aud_md(_price), future_price=_fmt_aud_md(_growth["future_price"]), rate=_tax_pct))}</div>'
+    )
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl("line_rent_label"))} '
+        f'<span class="{_cls(_p["rent_after_tax"])}">{_signed(_p["rent_after_tax"])}</span></div>'
+    )
+    _parts.append(
+        f'<div class="pvi-sub">{html.escape(_sl("line_rent_sub", weekly_rent=_fmt_aud_md(weekly_rent), vacancy=int(vacancy_weeks), years=_years_i, rate=_tax_pct))}</div>'
+    )
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl("line_interest_label"))} '
+        f'<span class="pvi-r">{_signed(-_p["interest_after_tax"])}</span></div>'
+    )
+    _parts.append(
+        f'<div class="pvi-sub">{html.escape(_sl("line_interest_sub", loan=_fmt_aud_md(loan), rate_pct=loan_rate_pct, years=_years_i, tax=_tax_pct))}</div>'
+    )
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl("line_costs_label"))} '
+        f'<span class="pvi-r">{_signed(-_p["costs_after_tax"])}</span></div>'
+    )
+    _parts.append(
+        f'<div class="pvi-sub">{html.escape(_sl("line_costs_sub", costs=_fmt_aud_md(holding_costs), years=_years_i, tax=_tax_pct))}</div>'
+    )
+    _parts.append('</div>')
+
+    # -- S&P 500 card -----------------------------------------------------
+    _parts.append(f'<div class="pvi-card{"" if _property_win else " win"}">')
+    if not _property_win:
+        _parts.append(_badge)
+    _parts.append(f'<div class="pvi-h">{html.escape(_sl("card_index_title"))}</div>')
+    _parts.append(
+        f'<div class="pvi-k">{html.escape(_sl("card_index_subtitle", cash=_fmt_aud_md(cash)))}</div>'
+    )
+    _parts.append(
+        f'<div class="pvi-k" style="margin-top:8px">'
+        f'{html.escape(_sl("after_tax_position_label", years=_years_i))}</div>'
+    )
+    _parts.append(f'<div class="pvi-big {_cls(_idx["headline"])}">{_signed(_idx["headline"])}</div>')
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl("line_index_growth_label"))} '
+        f'<span class="{_cls(_idx["growth_after_cgt"])}">{_signed(_idx["growth_after_cgt"])}</span></div>'
+    )
+    _parts.append(
+        f'<div class="pvi-sub">{html.escape(_sl("line_index_growth_sub", cash=_fmt_aud_md(cash), rate=_idx["price_growth_rate"] * 100, tax=_tax_pct))}</div>'
+    )
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl("line_index_dividends_label"))} '
+        f'<span class="{_cls(_idx["dividends_after_tax"])}">{_signed(_idx["dividends_after_tax"])}</span></div>'
+    )
+    _parts.append(
+        f'<div class="pvi-sub">{html.escape(_sl("line_index_dividends_sub", yield_pct=sp500_dividend_pct, tax=_tax_pct))}</div>'
+    )
+    _parts.append('</div>')
+    _parts.append('</div>')  # .pvi-cards
+
+    # -- Break-even strip -------------------------------------------------
+    _be_rent = _r["break_even_weekly_rent"]
+    if _be_rent is not None:
+        _bar_pct = max(0.0, min(_r["coverage_pct"] or 0.0, 100.0))
+        _working_weeks = 52 - int(vacancy_weeks)
+        _parts.append('<div class="pvi-be">')
+        _parts.append(
+            f'<div><div class="pvi-k">{html.escape(_sl("break_even_label"))}</div>'
+            f'<div class="pvi-num">{_fmt_aud_md(_be_rent)}/wk</div></div>'
+        )
+        _parts.append('<div style="flex:2;min-width:220px">')
+        _parts.append(
+            f'<div class="pvi-bar"><i style="width:{_bar_pct:.1f}%"></i>'
+            f'<u style="left:{_bar_pct:.1f}%"></u>'
+            f'<u style="left:100%;background:#34d399"></u></div>'
+        )
+        _parts.append(
+            f'<div class="pvi-cap">{html.escape(_sl("break_even_caption", rent=_fmt_aud_md(weekly_rent), coverage=_r["coverage_pct"] or 0.0, weeks=_working_weeks))}</div>'
+        )
+        _parts.append('</div></div>')
+
+        _shortfall = _r["after_tax_weekly_shortfall"]
+        if _shortfall > 0.5:
+            _parts.append(f'<div class="pvi-shortfall">{html.escape(_sl("shortfall_below", amount=_fmt_aud_md(_shortfall)))}</div>')
+        elif _shortfall < -0.5:
+            _parts.append(f'<div class="pvi-shortfall">{html.escape(_sl("shortfall_above", amount=_fmt_aud_md(abs(_shortfall))))}</div>')
+        else:
+            _parts.append(f'<div class="pvi-shortfall">{html.escape(_sl("shortfall_at"))}</div>')
+
+    st.markdown("".join(_parts), unsafe_allow_html=True)
+
+    # -- Crossover chart - ALWAYS visible, never in an expander ----------
+    _prop_series = _r["property_series"]
+    _idx_series = _r["index_series"]
+    _crossover = _r["crossover_year"]
+    _xs = list(range(_years_i + 1))
+    _fig = go.Figure()
+    _fig.add_trace(go.Scatter(
+        x=_xs, y=_prop_series, mode="lines", name=_sl("chart_property_label"),
+        line=dict(color="#fbbf24", width=2.5),
+    ))
+    _fig.add_trace(go.Scatter(
+        x=_xs, y=_idx_series, mode="lines", name=_sl("chart_index_label"),
+        line=dict(color="#2dd4bf", width=2.5),
+    ))
+    if _crossover is not None:
+        _fig.add_annotation(
+            x=_crossover, y=_prop_series[_crossover], text=_sl("chart_crossover_label", year=_crossover),
+            showarrow=True, arrowhead=2, ax=0, ay=-32, font=dict(color="#e6edf5", size=11),
+            arrowcolor="#e6edf5",
+        )
+    _fig.update_layout(
+        height=320, margin=dict(t=30, b=10, l=10, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        yaxis=dict(tickprefix="$", separatethousands=True),
+        xaxis=dict(title=None, dtick=1 if _years_i <= 15 else None),
+    )
+    sdd_plotly_chart(_fig)
+    st.caption(_sl("chart_caption") if _crossover is not None else _sl("chart_no_crossover", years=_years_i))
+
+    st.caption(_sl("honest_caption", price=_fmt_aud_md(_price), cash=_fmt_aud_md(cash)))
+    st.caption(_sl("not_advice"))
+
+    if st.button(_sl("save_button"), key=_tools_plan_key(_active, "tools_pvi_save_btn")):
+        tools_store.save_property_vs_index_scenario(email, _active, {
+            "cash": cash, "loan": loan, "loan_rate_pct": loan_rate_pct,
+            "weekly_rent": weekly_rent, "vacancy_weeks": vacancy_weeks,
+            "holding_costs": holding_costs, "buy_costs": buy_costs,
+            "sell_costs_pct": sell_costs_pct, "property_growth_pct": property_growth_pct,
+            "sp500_return_pct": sp500_return_pct, "sp500_dividend_pct": sp500_dividend_pct,
+            "marginal_rate_pct": marginal_rate_pct, "years": years,
         })
         st.success(_sl("save_confirm"))
 
