@@ -253,7 +253,13 @@ def render_calendar_page(base_url, generated_at=None, anchor=None, lang="en",
     caller (the /calendar route with no lang, and the Streamlit results-
     calendar page via _section_html/_entry_row_html directly) is
     byte-identical."""
-    canonical = f"{base_url}/calendar"
+    # Canonical fix (18 Sep 2026, priority micro-commit): must be self-
+    # referencing - the ES page's own canonical is its own /es/calendar
+    # URL, not the EN one (same fix as snapshot_render.py/
+    # track_record_render.py's own render functions). hreflang_alternates
+    # (passed in by the caller) already carries both language URLs
+    # correctly and is untouched by this fix.
+    canonical = f"{base_url}/es/calendar" if lang == "es" else f"{base_url}/calendar"
     entries = build_entries(None)
 
     this_mon, this_sun = week_bounds(anchor)

@@ -80,7 +80,16 @@ def render_track_record(rows, base_url, generated_at=None, lang="en",
     EXACTLY as before - the one existing caller (the /track-record route
     with no lang) is byte-identical."""
     e = html.escape
-    canonical = f"{base_url}/track-record"
+    # citation_url: the visible "Copy as text" citation (below) has always
+    # cited the canonical EN URL regardless of lang - untouched here, per
+    # this fix's own "zero visual change" scope.
+    citation_url = f"{base_url}/track-record"
+    # canonical: the <head> <link rel=canonical>/JSON-LD url - this one
+    # MUST be self-referencing (priority micro-commit, 18 Sep 2026: same
+    # fix as snapshot_render.py/calendar_render.py's own render
+    # functions). hreflang_alternates (passed in by the caller) already
+    # carries both language URLs correctly and is untouched by this fix.
+    canonical = f"{base_url}/es/track-record" if lang == "es" else citation_url
 
     trs = []
     for r in rows:
@@ -121,7 +130,7 @@ def render_track_record(rows, base_url, generated_at=None, lang="en",
             )
         citation_text = (
             f'{SITE_NAME}, "Historial" (datos registrados por el escaneo nocturno). '
-            f"{canonical}"
+            f"{citation_url}"
         )
         heading = "Historial"
         lede = (
@@ -174,7 +183,7 @@ def render_track_record(rows, base_url, generated_at=None, lang="en",
             )
         citation_text = (
             f'{SITE_NAME}, "Track record" (data as recorded by the nightly scan). '
-            f"{canonical}"
+            f"{citation_url}"
         )
         heading = "Track record"
         lede = (

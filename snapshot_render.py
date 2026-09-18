@@ -423,14 +423,26 @@ def render_snapshot(snap, base_url, lang="en", hreflang_alternates=None):
     else:
         title = (f"{display_name}: intrinsic value, Value Score, Moat | {SITE_NAME}"
                   if has_name else f"{ticker} snapshot - computed scores | {SITE_NAME}")
-    canonical = snapshot_url(base_url, ticker)
+    # citation_url: the visible "Copy as text" citation (below) has always
+    # cited the canonical EN URL regardless of lang - untouched here, per
+    # this fix's own "zero visual change" scope.
+    citation_url = snapshot_url(base_url, ticker)
+    # canonical: the <head> <link rel=canonical>/JSON-LD url - this one
+    # MUST be self-referencing (priority micro-commit, 18 Sep 2026): the
+    # ES page's own canonical is its own /es/s/<ticker> URL, not the EN
+    # one - a non-self-referencing canonical tells search engines the ES
+    # page isn't the "real" page, which is wrong (it's a real, separately
+    # indexable translation). The existing hreflang_alternates (passed in
+    # by the caller) already carry both language URLs correctly and are
+    # untouched by this fix - hreflang was never the bug, only this tag.
+    canonical = f"{base_url}/es/s/{ticker}" if lang == "es" else citation_url
     cite_date = (snap.get("generated_at") or "")[:10]
     if lang == "es":
         citation_text = f'{SITE_NAME}, "{ticker}: resumen,"' + (
-            f" {cite_date}" if cite_date else "") + f". {canonical}"
+            f" {cite_date}" if cite_date else "") + f". {citation_url}"
     else:
         citation_text = f'{SITE_NAME}, "{ticker} snapshot,"' + (
-            f" {cite_date}" if cite_date else "") + f". {canonical}"
+            f" {cite_date}" if cite_date else "") + f". {citation_url}"
 
     # Fix 4, AI fixes round 1 (2026-08-31): "Copy as text" - see
     # _snapshot_copy_text()'s and blog_render._copy_as_text_html()'s own
