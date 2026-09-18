@@ -115,6 +115,12 @@ import money_tools_render
 import scan_store
 import universe_snapshot_render
 
+# SEO Commit D (18 Sep 2026): per-company Rational Compounder research
+# snapshot pages (/s/research/<slug>) - see research_snapshot_render.py's
+# own module docstring (also explains why build_compounder_data/
+# paywall_engine are deliberately NOT imported at module level here).
+import research_snapshot_render
+
 try:
     import metrics_store
 except Exception:  # analytics must never be able to stop the site serving
@@ -1007,6 +1013,20 @@ async def sitemap(request: Request):
                   f'<changefreq>daily</changefreq><priority>0.5</priority></url>')
         extra += (f'\n  <url><loc>{_xml_escape(base)}/es/s/universe/{_slug}</loc>'
                   f'<changefreq>daily</changefreq><priority>0.5</priority></url>')
+    # SEO Commit D (18 Sep 2026): one /s/research/<slug> row per hand-
+    # covered research company with real public content right now (self-
+    # discovered - see research_snapshot_render._research_tickers()) -
+    # EN + /es/ twins, same plain-entry convention as above. A missing/
+    # not-yet-built compounder_data.json (this dev environment; a fresh
+    # Railway volume before its first admin rebuild) yields an empty
+    # slug list, not an error.
+    _research_data = research_snapshot_render._load_research_data()
+    if _research_data:
+        for _slug in research_snapshot_render.slug_map(_research_data):
+            extra += (f'\n  <url><loc>{_xml_escape(base)}/s/research/{_slug}</loc>'
+                      f'<changefreq>weekly</changefreq><priority>0.5</priority></url>')
+            extra += (f'\n  <url><loc>{_xml_escape(base)}/es/s/research/{_slug}</loc>'
+                      f'<changefreq>weekly</changefreq><priority>0.5</priority></url>')
     xml = xml.replace("</urlset>", extra + "\n</urlset>\n")
     return Response(xml, media_type="application/xml",
                     headers={"Cache-Control": "public, max-age=60"})
@@ -1564,6 +1584,34 @@ async def universe_snapshot_page(slug: str, request: Request):
     _count_view(f"universe_snapshot_{slug}")
     return _html(
         universe_snapshot_render.render_universe_snapshot(universe, payload, base, lang=lang),
+        cache="public, max-age=1800")
+
+
+# SEO Commit D (18 Sep 2026, mocks/seo_snapshots_mock2.html, frame 2):
+# /s/research/<slug> - one page per hand-covered Rational Compounder
+# research company, rendering exactly what a real signed-out visitor
+# already sees on /research?ticker=<ticker> today (see research_snapshot_
+# render.py's own module docstring for the full "what renders, what
+# doesn't" rules - News tab and anything owner/subscriber-gated never
+# reach this route). {slug} is a single path segment under /s/research/,
+# so it can never collide with /s/{ticker} or /s/universe/{slug} above
+# regardless of registration order, same reasoning as that route's own
+# comment.
+@app.get("/s/research/{slug}", include_in_schema=False)
+@app.get("/es/s/research/{slug}", include_in_schema=False)
+async def research_snapshot_page(slug: str, request: Request):
+    base = _base_url(request)
+    path = request.url.path.rstrip("/") or "/"
+    lang = "es" if path.startswith("/es/") else "en"
+    data = research_snapshot_render._load_research_data()
+    if not data:
+        return _html(blog_render.render_not_found(base, lang=lang), status=404, cache="no-store")
+    ticker = research_snapshot_render.ticker_for_slug(slug, data)
+    if not ticker:
+        return _html(blog_render.render_not_found(base, lang=lang), status=404, cache="no-store")
+    _count_view(f"research_snapshot_{slug}")
+    return _html(
+        research_snapshot_render.render_research_snapshot(ticker, data, base, lang=lang),
         cache="public, max-age=1800")
 
 
