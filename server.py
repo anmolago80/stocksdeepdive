@@ -103,6 +103,10 @@ import track_record_render
 # server-rendered twin - see calendar_render.py's own docstring.
 import calendar_render
 
+# SEO Commit B (18 Sep 2026): the Money Tools SEO landing pages - see
+# money_tools_render.py's own module docstring.
+import money_tools_render
+
 try:
     import metrics_store
 except Exception:  # analytics must never be able to stop the site serving
@@ -577,7 +581,18 @@ def _renders_html(path) -> bool:
 # instead of the fast static landing page, exactly like "ticker" already
 # does for /research and /deep-dive. No ?universe= link existed anywhere
 # on the site before this Part.
-_STREAMLIT_ONLY_PARAMS = {"ticker", "tickers", "admin", "code", "state", "app", "src", "lang", "universe"}
+# SEO Commit B (18 Sep 2026): "tool" added - /tools?tool=<id> is the
+# live app's own existing deep-link (page_tools() already reads
+# st.query_params.get("tool") with zero app.py changes needed - verified
+# against the current app.py before this commit). Before this addition
+# that URL fell through to the new curated /tools index page below
+# instead of forcing straight through to Streamlit, which would have
+# broken the Money Tools hub cards' own existing "/tools?tool=<id>"
+# links (_tools_card_href() in app.py) the moment a curated /tools route
+# existed - this one-line addition is what keeps that real, already-
+# shipped in-app navigation working exactly as before.
+_STREAMLIT_ONLY_PARAMS = {"ticker", "tickers", "admin", "code", "state", "app", "src", "lang",
+                          "universe", "tool"}
 
 
 def _needs_streamlit(request: Request) -> bool:
@@ -963,6 +978,18 @@ async def sitemap(request: Request):
               f'<changefreq>monthly</changefreq><priority>0.3</priority></url>')
     extra += (f'\n  <url><loc>{_xml_escape(base)}/es/ai</loc>'
               f'<changefreq>monthly</changefreq><priority>0.3</priority></url>')
+    # SEO Commit B (18 Sep 2026): the Money Tools index + one row per
+    # tool, EN + /es/ twins - same "plain additional <url> entry, no
+    # sitemap-level hreflang" choice as every other pair appended here.
+    extra += (f'\n  <url><loc>{_xml_escape(base)}/tools</loc>'
+              f'<changefreq>weekly</changefreq><priority>0.6</priority></url>')
+    extra += (f'\n  <url><loc>{_xml_escape(base)}/es/tools</loc>'
+              f'<changefreq>weekly</changefreq><priority>0.6</priority></url>')
+    for _slug in money_tools_render.MONEY_TOOL_SLUGS:
+        extra += (f'\n  <url><loc>{_xml_escape(base)}/tools/{_slug}</loc>'
+                  f'<changefreq>weekly</changefreq><priority>0.6</priority></url>')
+        extra += (f'\n  <url><loc>{_xml_escape(base)}/es/tools/{_slug}</loc>'
+                  f'<changefreq>weekly</changefreq><priority>0.6</priority></url>')
     xml = xml.replace("</urlset>", extra + "\n</urlset>\n")
     return Response(xml, media_type="application/xml",
                     headers={"Cache-Control": "public, max-age=60"})
@@ -1393,6 +1420,47 @@ async def tool_landing(request: Request):
         path, _base_url(request),
         coverage=_coverage() if path == "/research" else None,
     ))
+
+
+# -----------------------------------
+# SEO Commit B (18 Sep 2026, mocks/tool_landing_seo_mock.html): the Money
+# Tools SEO landing pages - /tools (index) and /tools/<slug>, EN + /es/.
+# Same "bare URL is the indexable front door, a query param that means a
+# real use of the app forces straight through to Streamlit" rule as
+# home()/tool_landing() above - see money_tools_render.py's own module
+# docstring for why these live in their own sibling module rather than
+# blog_render.py's TOOL_PAGES/render_tool_landing() (different, unrelated
+# pages - /deep-dive, /comparison, /scanner, /research - despite the
+# similar name).
+# -----------------------------------
+
+@app.get("/tools", include_in_schema=False)
+@app.get("/es/tools", include_in_schema=False)
+async def money_tools_index(request: Request):
+    path = request.url.path.rstrip("/") or "/"
+    lang = "es" if path == "/es/tools" else "en"
+    if _needs_streamlit(request):
+        return await _proxy(request)
+    _count_view("money_tools_index")
+    return _html(money_tools_render.render_money_tools_index(_base_url(request), lang=lang))
+
+
+@app.get("/tools/{slug}", include_in_schema=False)
+@app.get("/es/tools/{slug}", include_in_schema=False)
+async def money_tool_landing(slug: str, request: Request):
+    path = request.url.path.rstrip("/") or "/"
+    lang = "es" if path.startswith("/es/") else "en"
+    if slug not in money_tools_render.MONEY_TOOL_SLUGS:
+        # Unknown slug: same "let an ordinary 404 do its job" treatment
+        # as everywhere else on this site - never proxied (there is no
+        # Streamlit page at /tools/<anything>, only at bare /tools).
+        return _html(
+            blog_render.render_not_found(_base_url(request), lang=lang), status=404)
+    if _needs_streamlit(request):
+        return await _proxy(request)
+    _count_view(f"money_tool_{slug}")
+    return _html(money_tools_render.render_money_tool_landing(
+        slug, _base_url(request), lang=lang))
 
 
 # -----------------------------------
