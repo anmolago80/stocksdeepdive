@@ -45,6 +45,7 @@ import debt_recycling_engine
 import super_engine
 import budget_planner_engine
 import property_vs_index_engine
+import bill_check_engine
 
 e = html.escape
 
@@ -63,13 +64,15 @@ def _aud(n):
 # below is the one place that bridges them, so a mismatch anywhere can
 # only ever be a one-line fix.
 # --------------------------------------------------------------------------- #
-MONEY_TOOL_SLUGS = ["debt-recycling", "super", "budget", "property-vs-shares"]
+MONEY_TOOL_SLUGS = ["debt-recycling", "super", "budget", "property-vs-shares",
+                    "utilities-bill-check"]
 
 _REGISTRY_ID = {
     "debt-recycling": "debt_recycling",
     "super": "super",
     "budget": "budget_planner",
     "property-vs-shares": "property_vs_index",
+    "utilities-bill-check": "utilities",
 }
 
 
@@ -210,11 +213,49 @@ def _compute_super_example():
     }
 
 
+def _compute_utilities_example():
+    """A fixed internet-bill example - the "other"/manual-entry path
+    (see bill_check_engine.manual_typical_benchmark()'s own docstring):
+    $89/mo bill -> $1,068/yr, compared against a fixed $79/mo ($948/yr)
+    illustrative "typical deal" figure through the real, unmodified
+    bill_check_engine.manual_typical_benchmark() - the same function
+    app.py's _utilities_compare() calls for the internet/mobile/"other"
+    service path. Verified against the real function before being
+    written down (Dow-30 rule, see module docstring): manual_typical_
+    benchmark(1068.0, 948.0) returns {"typical_annual_cost": 948.0,
+    "gap": 120.0}. The other three comparison paths this tool actually
+    uses (AU electricity/gas against live market plans via fetch_
+    candidate_plans(), water against a household-size benchmark, US
+    electricity/gas against a state-average rate table) are each
+    network- or state-table-dependent, unsuitable for a fixed,
+    reproducible render-time example - they're described in the feature
+    copy below instead of duplicated here as a second worked example."""
+    res = bill_check_engine.manual_typical_benchmark(89.0 * 12, 79.0 * 12)
+    return {
+        "caption": {
+            "en": "EXAMPLE — an $89/mo internet bill against a $79/mo typical deal:",
+            "es": "EJEMPLO — una factura de internet de $89/mes frente a una oferta típica de $79/mes:",
+        },
+        "rows": [
+            {"label": {"en": "Your bill, annualised", "es": "Tu factura, anualizada"},
+             "value": _aud(89.0 * 12), "cls": "o"},
+            {"label": {"en": "Typical deal for this service",
+                       "es": "Oferta típica para este servicio"},
+             "value": _aud(res["typical_annual_cost"]), "cls": "g"},
+        ],
+        "extra_line": {
+            "en": f"That's {_aud(res['gap'])}/yr above a typical deal - worth comparing plans.",
+            "es": f"Eso es {_aud(res['gap'])}/año por encima de una oferta típica - vale la pena comparar planes.",
+        },
+    }
+
+
 _WORKED_EXAMPLES = {
     "debt-recycling": _compute_debt_recycling_example,
     "super": _compute_super_example,
     "budget": _compute_budget_example,
     "property-vs-shares": _compute_property_example,
+    "utilities-bill-check": _compute_utilities_example,
 }
 
 
@@ -516,6 +557,90 @@ MONEY_TOOL_PAGES = {
                           "ubica tu alquiler ingresado, después de impuestos.")}},
         ],
     },
+    "utilities-bill-check": {
+        "icon": "⚡",
+        "title": {"en": "Utilities Bill Check - compare your bill to a typical deal | StocksDeepDive",
+                   "es": "Revisión de Facturas de Servicios - compara tu factura con una oferta típica | StocksDeepDive"},
+        "h1": {"en": "Utilities Bill Check", "es": "Revisión de Facturas de Servicios"},
+        "meta_description": {
+            "en": ("Upload a photo of an electricity, gas, water, internet or mobile bill "
+                   "and see how it compares to a typical deal for that service - read in "
+                   "memory for that one check and never stored."),
+            "es": ("Sube una foto de una factura de electricidad, gas, agua, internet o "
+                   "móvil y compara con una oferta típica para ese servicio - se lee en "
+                   "memoria solo para esa verificación y nunca se guarda."),
+        },
+        "lead": {
+            "en": ("Upload a photo of a bill and the tool reads the numbers off it - "
+                   "provider, usage, total cost - with a chance to fix anything before it's "
+                   "used, then compares your annualised cost to a typical deal for that kind "
+                   "of service. The photo itself is read into memory for that one check and "
+                   "is never written to disk or stored anywhere; only the numbers you "
+                   "confirm are kept, to show in your own bill-check history."),
+            "es": ("Sube una foto de una factura y la herramienta lee los datos "
+                   "directamente de ella - proveedor, consumo, costo total - con la "
+                   "posibilidad de corregir cualquier dato antes de usarlo, y luego compara "
+                   "tu costo anualizado con una oferta típica para ese tipo de servicio. La "
+                   "foto en sí se lee en memoria solo para esa verificación y nunca se "
+                   "escribe en disco ni se guarda en ningún lugar; solo se conservan los "
+                   "números que confirmes, para mostrarlos en tu propio historial de "
+                   "facturas."),
+        },
+        "features": [
+            {"h": {"en": "Read from a photo, not typed in",
+                   "es": "Leída desde una foto, no escrita a mano"},
+             "p": {"en": ("Upload a photo of the bill and it reads the provider, usage and "
+                          "total cost off it automatically, with a review step to fix "
+                          "anything before it's compared."),
+                   "es": ("Sube una foto de la factura y lee automáticamente el proveedor, "
+                          "el consumo y el costo total, con un paso de revisión para "
+                          "corregir cualquier dato antes de compararlo.")}},
+            {"h": {"en": "Never stored", "es": "Nunca se guarda"},
+             "p": {"en": ("The bill photo is read into memory for that one check and is "
+                          "never written to disk or saved anywhere - only the numbers you "
+                          "confirm are kept, to build your own check history."),
+                   "es": ("La foto de la factura se lee en memoria solo para esa "
+                          "verificación y nunca se escribe en disco ni se guarda en ningún "
+                          "lugar - solo se conservan los números que confirmes, para "
+                          "construir tu propio historial de verificaciones.")}},
+            {"h": {"en": "The right benchmark for each service",
+                   "es": "El punto de comparación correcto para cada servicio"},
+             "p": {"en": ("Electricity and gas checked against real market plans "
+                          "(Australia) or state-average rates (US); water checked against a "
+                          "household-size benchmark; internet, mobile and other bills "
+                          "checked against a typical-deal figure."),
+                   "es": ("Electricidad y gas comparados con planes reales del mercado "
+                          "(Australia) o tarifas promedio por estado (EE. UU.); agua "
+                          "comparada con un punto de referencia según el tamaño del hogar; "
+                          "internet, móvil y otras facturas comparadas con una cifra de "
+                          "oferta típica.")}},
+        ],
+        "faq": [
+            {"q": {"en": "Is my bill photo stored anywhere?",
+                   "es": "¿Se guarda mi foto de la factura en algún lugar?"},
+             "a": {"en": ("No - it's read into memory for that one check and never written "
+                          "to disk or saved to your account. Only the numbers you confirm "
+                          "afterward are kept, so your bill-check dashboard can show your "
+                          "history."),
+                   "es": ("No - se lee en memoria solo para esa verificación y nunca se "
+                          "escribe en disco ni se guarda en tu cuenta. Solo se conservan los "
+                          "números que confirmes después, para que tu panel de facturas "
+                          "pueda mostrar tu historial.")}},
+            {"q": {"en": "What counts as a \"typical deal\"?",
+                   "es": "¿Qué se considera una \"oferta típica\"?"},
+             "a": {"en": ("It depends on the service: electricity and gas are checked "
+                          "against real market plans (Australia) or state-average rates "
+                          "(US), water against a household-size benchmark, and internet, "
+                          "mobile and other bills against a typical-deal figure - never a "
+                          "guess, always the same real comparison the tool itself uses."),
+                   "es": ("Depende del servicio: electricidad y gas se comparan con planes "
+                          "reales del mercado (Australia) o tarifas promedio por estado "
+                          "(EE. UU.), agua con un punto de referencia según el tamaño del "
+                          "hogar, e internet, móvil y otras facturas con una cifra de oferta "
+                          "típica - nunca una suposición, siempre la misma comparación real "
+                          "que usa la herramienta.")}},
+        ],
+    },
 }
 
 
@@ -565,6 +690,10 @@ _INDEX_CARD_BLURB = {
     "property-vs-shares": {
         "en": "A leveraged investment property against simply indexing the deposit - after tax, with break-even rent.",
         "es": "Una propiedad de inversión apalancada frente a simplemente indexar el depósito - después de impuestos, con alquiler de equilibrio.",
+    },
+    "utilities-bill-check": {
+        "en": "Upload a bill photo and see how it compares to a typical deal - read in memory, never stored.",
+        "es": "Sube una foto de tu factura y compárala con una oferta típica - se lee en memoria, nunca se guarda.",
     },
 }
 _INDEX_LEARN_MORE = {"en": "Learn more →", "es": "Ver más →"}
