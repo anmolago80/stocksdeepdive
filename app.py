@@ -4580,13 +4580,37 @@ _CP_HML_POLARITY_FIX = {"Insights": "good_high", "Market Activity": "good_high"}
 # you'd rather it read the other way.
 _CP_CHECK_COLOR = {"yes": "green", "no": "red", "medium": "amber"}
 
+# Fix (prose-valued ratings breaking the chip grid, 19 Sep 2026): the
+# small vocabulary this renderer actually knows how to turn into a chip -
+# every value _CP_HML_COLOR/_CP_CHECK_COLOR above color-code, derived from
+# those two dicts rather than hand-listed again so this can never drift
+# out of sync with them. A workbook cell for a Low/Medium/High-labelled
+# rating (e.g. "Market Activity") sometimes holds a full written note
+# instead (seen live on CPRT) - the field NAME doesn't reliably predict
+# this (another ticker's "Market Activity" can be a real H/M/L call), so
+# the check has to be on the VALUE, not the label.
+_CP_KNOWN_CHIP_VALUES = (
+    {v for _color_map in _CP_HML_COLOR.values() for v in _color_map}
+    | set(_CP_CHECK_COLOR)
+)
+
 
 def _cp_render_hml_ratings(ratings, extra_checks=None):
+    """Renders the two-column chip grid, then - fix, prose-valued ratings -
+    any rating/check whose value ISN'T one of _CP_KNOWN_CHIP_VALUES below
+    it, full-width, as a "Notes from the research" subsection instead of
+    cramming the raw paragraph into a chip. Source order preserved:
+    ratings are scanned before extra_checks, each in its own original
+    order - same order multiple prose fields would appear in the sheet."""
     st.markdown("##### Ratings (called directly from your Low/Medium/High cells)")
     html_parts = []
+    notes = []
     for r in ratings:
-        _pol = _CP_HML_POLARITY_FIX.get(r["label"], r["polarity"])
         _val = r["value"].strip().lower()
+        if _val not in _CP_KNOWN_CHIP_VALUES:
+            notes.append(r)
+            continue
+        _pol = _CP_HML_POLARITY_FIX.get(r["label"], r["polarity"])
         color_key = _CP_HML_COLOR.get(_pol, {}).get(_val)
         if color_key is None and _pol in ("good_high", "good_low"):
             # Yes/No answers sometimes live in these columns too (e.g.
@@ -4599,6 +4623,9 @@ def _cp_render_hml_ratings(ratings, extra_checks=None):
         )
     for c in (extra_checks or []):
         _val = c["value"].strip().lower()
+        if _val not in _CP_KNOWN_CHIP_VALUES:
+            notes.append(c)
+            continue
         color_key = _CP_CHECK_COLOR.get(_val)
         html_parts.append(
             f"<div style='margin-bottom:6px;'><span style='font-size:13px;color:#aebfd4;'>"
@@ -4611,6 +4638,22 @@ def _cp_render_hml_ratings(ratings, extra_checks=None):
         st.markdown("".join(html_parts[:half]), unsafe_allow_html=True)
     with col2:
         st.markdown("".join(html_parts[half:]), unsafe_allow_html=True)
+
+    if notes:
+        _cp_render_ratings_notes(notes)
+
+
+def _cp_render_ratings_notes(notes):
+    """The prose-valued ratings/checks _cp_render_hml_ratings pulled out of
+    the chip grid (see its own docstring/fix comment above) - full-width,
+    below the grid, in the same quiet boxed style _cp_render_text_groups
+    uses for the written analysis (a bordered container, bold label,
+    compounder_ui._cp_note() prose)."""
+    st.markdown("##### Notes from the research")
+    with st.container(border=True):
+        for n in notes:
+            st.markdown(f"**{_md_safe(n['label'])}**")
+            compounder_ui._cp_note(n["value"].strip())
 
 
 # _cp_note now lives in compounder_ui.py (imported above as
