@@ -22565,14 +22565,14 @@ def _tools_registry_count():
 # a signed-out visitor into), plus the two CTAs the mock shows. "Sign in
 # free to use them" can't invoke the account bar's own sign-in popover
 # directly (Streamlit has no cross-component trigger for another widget's
-# popover) - it instead smooth-scrolls the actual Streamlit scroll
-# container (section[data-testid="stMain"], not the window - see the Deep
-# Dive first-screen chip-row comment a few thousand lines up for why a
-# plain window scroll doesn't work here) back up to where that sign-in
-# control already renders, every page, signed out. The existing src=
-# query-param attribution (_capture_first_src) already covers whichever
-# link brought the visitor to /tools in the first place - no separate
-# tagging needed on this CTA itself.
+# popover) - it instead smooth-scrolls the page to where that sign-in
+# control already renders, every page, signed out (see the "Button-doesn't-
+# work fix" comment right on that CTA's own st.markdown() call, below, for
+# the current scrollIntoView()/key-class approach and why an earlier
+# section[data-testid="stMain"] version of this stopped working). The
+# existing src= query-param attribution (_capture_first_src) already covers
+# whichever link brought the visitor to /tools in the first place - no
+# separate tagging needed on this CTA itself.
 #
 # Both options reuse ONE card-list source (_tools_hub_cards) so Option A's
 # 4 live cards and Option C's are never allowed to drift into two different
@@ -22750,11 +22750,32 @@ def _render_tools_signedout_hub(lang):
         unsafe_allow_html=True,
     )
     st.markdown(_tools_hub_cards_html(lang, linked=False), unsafe_allow_html=True)
+    # Button-doesn't-work fix (19 Sep 2026): section[data-testid="stMain"]
+    # no longer exists in the deployed Streamlit version's DOM (this app.py
+    # itself already uses [data-testid="stMainBlockContainer"] elsewhere,
+    # not "stMain" - see the CSS around line 2213), so
+    # document.querySelector found nothing, the `if(m)` guard silently
+    # skipped the scroll, and the button did nothing when clicked - no JS
+    # error, just silence, which is why it looked "broken" rather than
+    # throwing anything visible in the console. Switched to the SAME
+    # scrollIntoView() technique the Deep Dive first-screen chip row
+    # already proved works regardless of which ancestor actually owns the
+    # scrollbar (see that code's own comment, a few thousand lines up) -
+    # and, rather than scrolling an assumed container to an assumed
+    # top-of-page position, targets the REAL sign-in control directly by
+    # its stable Streamlit key-class ([class*="st-key-account_bar_signin"],
+    # the exact same selector this file's own CSS already uses at line
+    # 2352/2356 to style that control - substring-matches both the plain
+    # st.button(key="account_bar_signin") case and the
+    # st.popover(key="account_bar_signin_pop") case, see
+    # paywall_engine._render_signin_control). block:'center' so it lands
+    # clearly in view even if a sticky header would otherwise clip it at
+    # the very top.
     st.markdown(
         '<div class="sdd-tools-cta-row">'
         '<a class="sdd-tools-btn" href="#" onclick="'
-        'var m=document.querySelector(\'section[data-testid=\\"stMain\\"]\'); '
-        "if(m){m.scrollTo({top:0,behavior:'smooth'});} return false;\">"
+        'var t=document.querySelector(\'[class*=\\"st-key-account_bar_signin\\"]\'); '
+        "if(t){t.scrollIntoView({behavior:'smooth',block:'center'});} return false;\">"
         f'{html.escape(i18n.t("tools.hub.signin_cta", lang))}</a>'
         '</div>',
         unsafe_allow_html=True,
