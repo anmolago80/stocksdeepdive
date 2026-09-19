@@ -22638,6 +22638,19 @@ _TOOLS_HUB_STYLE = """
   border-radius:8px;padding:7px 16px;font-size:12.5px;text-decoration:none;cursor:pointer}
 .sdd-tools-btn2{display:inline-block;background:none;border:1px solid #14b8a6;color:#2dd4bf;
   border-radius:8px;padding:7px 16px;font-size:12.5px;margin-left:8px;text-decoration:none}
+/* Follow-up fix (19 Sep 2026): same Streamlit link-styling leak the
+   Owner follow-up comment above documents for .sdd-tools-card - it was
+   only ever patched with !important on THAT selector, never on these
+   two buttons, so "Sign in free to use them" (.sdd-tools-btn) rendered
+   with Streamlit's default underlined link-blue text instead of the
+   solid dark-on-teal button text the mock shows. Same !important
+   pattern, same pseudo-class coverage, applied here too. */
+.sdd-tools-btn, .sdd-tools-btn:link, .sdd-tools-btn:visited,
+.sdd-tools-btn:hover, .sdd-tools-btn:active{
+  color:#04211d !important;text-decoration:none !important}
+.sdd-tools-btn2, .sdd-tools-btn2:link, .sdd-tools-btn2:visited,
+.sdd-tools-btn2:hover, .sdd-tools-btn2:active{
+  color:#2dd4bf !important;text-decoration:none !important}
 </style>
 """
 
