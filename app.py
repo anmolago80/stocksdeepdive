@@ -9086,25 +9086,31 @@ def _render_dd_verdict_and_chips(dd):
 
     if not chips:
         return
-    # Deep Dive first-screen instruction, Part 2: these chips looked like
-    # navigation (an <a href="#anchor">) but a live test during this
-    # instruction's own verify pass showed they didn't actually scroll -
-    # Streamlit's main content lives inside its own scrollable container
-    # (section[data-testid="stMain"]), not the window/document body, and a
-    # plain browser anchor jump only ever scrolls the window. The onclick
-    # below calls scrollIntoView() on the target section directly instead,
-    # which scrolls whichever ancestor actually has the scrollbar - no
-    # jQuery/component needed, and it degrades to the (inert) href jump if
-    # JS is somehow unavailable. "return false" stops the browser's own
-    # anchor jump from also firing and fighting the smooth scroll.
+    # Dead-onclick audit (Task 1, 19 Sep 2026): the scrollIntoView()
+    # onclick this block used to carry here NEVER RAN - confirmed
+    # elsewhere in this file (round 3's live DOM inspection, see
+    # paywall_engine.py's own history) that Streamlit's st.markdown(...,
+    # unsafe_allow_html=True) sanitizer strips inline onclick attributes
+    # outright, tag/class/href untouched. So every click on these chips
+    # has only ever done what a plain <a href="#anchor"> does on its
+    # own - and that's still real, working navigation: every one of
+    # these anchor ids (sdd-anchor-moat, -reverse-dcf, -ask, -insider,
+    # -dividends, -financials, -peers) is a genuine <div id="..."> this
+    # same page renders further down (grep confirms all seven), so the
+    # href isn't a dead fragment the way the old sign-in CTA's anchor
+    # was. What's gone is only the (never-firing) custom smooth-scroll -
+    # NOT independently re-verified live here whether a plain anchor
+    # jump visually scrolls Streamlit's own nested main container
+    # (section[data-testid="stMain"]) or just the outer window on the
+    # currently deployed Streamlit version; either way the link is real
+    # navigation now, never a silently-dead onclick, and if the scroll
+    # target turns out still imprecise that's a smaller, separate follow-
+    # up to verify live rather than another unverified onclick guess.
     # Style: a bordered button with a hover state (.sdd-chip-btn, site-wide
     # stylesheet) replaces the old flat pill look per the brief's own
     # "bordered button look with hover, not flat tags" ask.
     chips_html = "".join(
-        f'<a href="#{anchor}" class="sdd-chip-btn" '
-        f"onclick=\"var t=document.getElementById('{anchor}'); "
-        "if(t){t.scrollIntoView({behavior:'smooth',block:'start'});} return false;\">"
-        f"{html.escape(label)}</a>"
+        f'<a href="#{anchor}" class="sdd-chip-btn">{html.escape(label)}</a>'
         for label, anchor in chips
     )
     st.markdown(f'<div style="line-height:2.4">{chips_html}</div>', unsafe_allow_html=True)
