@@ -877,6 +877,21 @@ nav.site .nav-lang .flag{width:16px;height:11px;border-radius:2px;flex-shrink:0;
 nav.site a.nav-signin{color:#2dd4bf;font-weight:600;border:1.5px solid #2dd4bf;
   border-radius:8px;padding:5px 12px;font-size:13.5px}
 nav.site a.nav-signin:hover{background:#2dd4bf;color:#0b1220;text-decoration:none}
+/* Stage 2, nav ticker search: a plain-GET form (no-JS fallback is the
+   base behaviour - see server.py's search_page()), with an optional
+   vanilla-JS datalist autocomplete layered on top (_search_suggest_script
+   below). Sits between the brand and the link row on desktop; wraps to
+   its own full-width line on mobile via the @media block further down. */
+.sdd-search{display:flex;align-items:center;flex:0 1 220px;min-width:120px}
+.sdd-search-input{flex:1;min-width:0;background:#0e1930;border:1px solid #1f3352;
+  border-right:none;border-radius:8px 0 0 8px;color:#e6edf5;font-size:13.5px;
+  padding:7px 10px;outline:none}
+.sdd-search-input::placeholder{color:#5b7290}
+.sdd-search-input:focus{border-color:#2dd4bf}
+.sdd-search-btn{background:#0e1930;border:1px solid #1f3352;border-left:none;
+  border-radius:0 8px 8px 0;color:#8aa0b8;cursor:pointer;padding:7px 12px;
+  font-size:14px;line-height:1}
+.sdd-search-btn:hover{color:#2dd4bf;border-color:#2dd4bf}
 /* Hidden by default (desktop) - only the @media block below (<=768px)
    flips this to display:flex. Without an unconditional rule here, a
    bare <nav> falls back to the browser's default display:block outside
@@ -896,6 +911,10 @@ nav.site a.nav-signin:hover{background:#2dd4bf;color:#0b1220;text-decoration:non
   nav.site>a:not(.nav-signin){display:none}
   nav.site>details.nav-more{display:none}
   nav.site{gap:10px}
+  /* Stage 2, nav ticker search: keeps the "logo + EN/ES + Sign in" line
+     intact by pushing the search box (source order: brand, search,
+     nav.site) onto its own full-width line below it instead. */
+  .sdd-search{order:1;flex:1 1 100%;margin-top:10px}
   /* Fix #8b: same reasoning as app.py's own block-container padding -
      the bar's padding-bottom:env(safe-area-inset-bottom) two lines down
      needs matching room here too, or the last bit of page content ends
@@ -998,6 +1017,13 @@ footer.site .wrap{max-width:1080px}
 .disclaimer b{color:#8aa0b8}
 .empty{color:#8aa0b8;background:#121f36;border:1px solid #1f3352;
   border-radius:12px;padding:26px;text-align:center}
+/* Stage 2, nav ticker search: the "closest matches" list on the
+   not-covered page (snapshot_render._closest_matches_html). */
+.sdd-suggest-list{list-style:none;padding:0;margin:0 0 26px;display:flex;
+  flex-direction:column;gap:8px}
+.sdd-suggest-list li{background:#121f36;border:1px solid #1f3352;
+  border-radius:10px;padding:10px 14px;font-size:14.5px;color:#8aa0b8}
+.sdd-suggest-list a{color:#2dd4bf;font-weight:600}
 .comments{margin:46px 0 0}
 .comments h2{font-size:22px;margin:0 0 18px}
 .comment{background:#121f36;border:1px solid #1f3352;border-radius:10px;
@@ -1226,10 +1252,50 @@ document.addEventListener('click', function(ev){
 });
 </script>
 """
+    # Stage 2, nav ticker search: progressive enhancement ONLY - the form
+    # itself (.sdd-search below) is a plain GET to /search or /es/search
+    # and works with this script absent entirely (server.py's
+    # search_page() does the real matching). This just fills the
+    # input's <datalist> as the visitor types, from /search/suggest - a
+    # same-origin JSON endpoint backed by ticker_search_engine.py's
+    # cached-scan-data search(), no third-party/API call of any kind.
+    _search_suggest_script = """
+<script>
+(function(){
+  var inp = document.querySelector('.sdd-search-input');
+  var dl = document.getElementById('sdd-search-list');
+  if(!inp || !dl) return;
+  var timer = null;
+  inp.addEventListener('input', function(){
+    var q = inp.value.trim();
+    if(timer) clearTimeout(timer);
+    if(q.length < 1){ dl.innerHTML = ''; return; }
+    timer = setTimeout(function(){
+      fetch('/search/suggest?q=' + encodeURIComponent(q))
+        .then(function(r){ return r.ok ? r.json() : []; })
+        .then(function(items){
+          dl.innerHTML = (items || []).map(function(it){
+            var v = String(it.ticker || '').replace(/"/g, '&quot;');
+            var n = String(it.name || '').replace(/"/g, '&quot;');
+            return '<option value="' + v + '" label="' + n + '"></option>';
+          }).join('');
+        })
+        .catch(function(){});
+    }, 200);
+  });
+})();
+</script>
+"""
     if lang == "es":
         return f"""
 <header class="site"><div class="wrap">
   <a class="brand" href="/">Stocks<span class="accent">DeepDive</span></a>
+  <form class="sdd-search" method="get" action="/es/search" role="search">
+    <input type="text" name="q" class="sdd-search-input" placeholder="Ticker o empresa"
+           aria-label="Buscar acciones" autocomplete="off" list="sdd-search-list">
+    <datalist id="sdd-search-list"></datalist>
+    <button type="submit" class="sdd-search-btn" aria-label="Buscar">&#128269;</button>
+  </form>
   <nav class="site">
     <a href="/deep-dive?lang=es">Deep Dive</a>
     <a href="/research?lang=es">Investigación</a>
@@ -1307,10 +1373,16 @@ document.addEventListener('click', function(ev){
     </div>
   </details>
 </nav>
-{_nav_more_close_script}"""
+{_nav_more_close_script}{_search_suggest_script}"""
     return f"""
 <header class="site"><div class="wrap">
   <a class="brand" href="/">Stocks<span class="accent">DeepDive</span></a>
+  <form class="sdd-search" method="get" action="/search" role="search">
+    <input type="text" name="q" class="sdd-search-input" placeholder="Ticker or company"
+           aria-label="Search stocks" autocomplete="off" list="sdd-search-list">
+    <datalist id="sdd-search-list"></datalist>
+    <button type="submit" class="sdd-search-btn" aria-label="Search">&#128269;</button>
+  </form>
   <nav class="site">
     <a href="/deep-dive">Deep Dive</a>
     <a href="/research">Research</a>
@@ -1388,7 +1460,7 @@ document.addEventListener('click', function(ev){
     </div>
   </details>
 </nav>
-{_nav_more_close_script}"""
+{_nav_more_close_script}{_search_suggest_script}"""
 
 
 def _footer_html(lang="en"):

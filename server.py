@@ -65,8 +65,9 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, Request, Response, WebSocket
-from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse,
-                               RedirectResponse, StreamingResponse)
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               PlainTextResponse, RedirectResponse,
+                               StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 
 import blog_comments_store
@@ -120,6 +121,12 @@ import universe_snapshot_render
 # own module docstring (also explains why build_compounder_data/
 # paywall_engine are deliberately NOT imported at module level here).
 import research_snapshot_render
+
+# Stage 2, nav ticker search (/search, /es/search, /search/suggest) - see
+# ticker_search_engine.py's own docstring. Reads only snapshot_store's
+# already-cached scan rows, no new API/live fetch of any kind.
+import search_render
+import ticker_search_engine
 
 try:
     import metrics_store
@@ -1584,16 +1591,64 @@ async def snapshot_page(ticker: str, request: Request):
         ("x-default", f"{base}/s/{ticker}"),
     ]
     if not _TICKER_RE.match(ticker):
-        return _html(snapshot_render.render_snapshot_not_found(base, ticker, lang=lang),
+        return _html(snapshot_render.render_snapshot_not_found(
+            base, ticker, lang=lang, suggestions=ticker_search_engine.suggest(ticker)),
                     status=404, cache="no-store")
     snap = snapshot_store.get_snapshot(ticker)
     if not snap:
-        return _html(snapshot_render.render_snapshot_not_found(base, ticker, lang=lang),
+        return _html(snapshot_render.render_snapshot_not_found(
+            base, ticker, lang=lang, suggestions=ticker_search_engine.suggest(ticker)),
                     status=404, cache="no-store")
     _count_view("snapshot", ticker=ticker, lang=lang)
     return _html(snapshot_render.render_snapshot(
         snap, base, lang=lang, hreflang_alternates=hreflang_alternates),
         cache="public, max-age=1800")
+
+
+# Stage 2, nav ticker search: /search + /es/search (a plain GET - the
+# .sdd-search form in every page's nav, see blog_render._header_html,
+# works with no JS at all) and /search/suggest (a same-origin JSON
+# endpoint purely for that form's optional datalist autocomplete). All
+# matching happens in ticker_search_engine.py against snapshot_store's
+# already-cached scan rows - no new API/live data call anywhere here.
+@app.get("/search", include_in_schema=False)
+@app.get("/es/search", include_in_schema=False)
+async def search_page(request: Request):
+    """A single confident match (an exact ticker hit, or just one
+    candidate either way) redirects straight to its /s/<ticker> page
+    rather than making the visitor click through a one-row results
+    list. Zero matches goes to the same not-covered page /s/<ticker>
+    uses for an unrecognised ticker, now with "closest matches"
+    suggestions either way (see snapshot_render.render_snapshot_not_found)."""
+    path = request.url.path.rstrip("/") or "/"
+    lang = "es" if path.startswith("/es/") else "en"
+    base = _base_url(request)
+    query = (request.query_params.get("q") or "").strip()
+    s_prefix = "/es/s" if lang == "es" else "/s"
+    if not query:
+        return _html(search_render.render_search_results(query, [], base, lang=lang),
+                    cache="no-store")
+    matches = ticker_search_engine.search(query)
+    exact = [m for m in matches if m["ticker"].upper() == query.upper()]
+    target = exact[0] if len(exact) == 1 else (matches[0] if len(matches) == 1 else None)
+    if target:
+        return RedirectResponse(f"{s_prefix}/{target['ticker']}", status_code=302)
+    _count_view("search", lang=lang)
+    if not matches:
+        return _html(snapshot_render.render_snapshot_not_found(
+            base, query, lang=lang, suggestions=ticker_search_engine.suggest(query)),
+            status=404, cache="no-store")
+    return _html(search_render.render_search_results(query, matches, base, lang=lang),
+                cache="no-store")
+
+
+@app.get("/search/suggest", include_in_schema=False)
+async def search_suggest(request: Request):
+    query = (request.query_params.get("q") or "").strip()
+    matches = ticker_search_engine.search(query, limit=8) if query else []
+    payload = [{"ticker": m["ticker"], "name": m.get("company_name") or ""}
+              for m in matches]
+    return JSONResponse(payload, headers={"Cache-Control": "public, max-age=300"})
 
 
 # SEO Commit C (18 Sep 2026, mocks/seo_snapshots_mock2.html, frame 1):

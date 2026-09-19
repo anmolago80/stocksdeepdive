@@ -725,11 +725,36 @@ def render_snapshot(snap, base_url, lang="en", hreflang_alternates=None):
     return blog_render._page(head, body, lang=lang)
 
 
-def render_snapshot_not_found(base_url, ticker, lang="en"):
+def _closest_matches_html(suggestions, lang="en"):
+    """Stage 2 (nav ticker search): a short "did you mean" list under the
+    not-covered message - suggestions is ticker_search_engine.suggest()'s
+    output ([{"ticker":, "company_name":, "universe":}, ...]), already
+    sourced from cached scan data only. Empty/None suggestions renders
+    nothing, so this stays byte-identical to before for every existing
+    caller that doesn't pass any."""
+    if not suggestions:
+        return ""
+    e = html.escape
+    s_prefix = "/es/s" if lang == "es" else "/s"
+    items = "".join(
+        f'<li><a href="{s_prefix}/{e(s["ticker"])}">{e(s["ticker"])}</a>'
+        f'{" - " + e(s["company_name"]) if s.get("company_name") else ""}</li>'
+        for s in suggestions
+    )
+    label = "¿Quisiste decir...?" if lang == "es" else "Did you mean..."
+    return f'<p class="lede">{label}</p><ul class="sdd-suggest-list">{items}</ul>'
+
+
+def render_snapshot_not_found(base_url, ticker, lang="en", suggestions=None):
     """lang (Español completion, Part 3): this 404-ish page is noindex
     either way, but /es/s/{ticker} for an unrecognised ticker should
     still read as Spanish rather than silently falling back to English
-    chrome. lang="en" (the default) is byte-identical to before."""
+    chrome. lang="en" (the default) is byte-identical to before.
+
+    suggestions (Stage 2, nav ticker search): optional "closest matches"
+    list - see _closest_matches_html() above. Omitted (the default) is
+    byte-identical to before this parameter existed."""
+    suggest_html = _closest_matches_html(suggestions, lang=lang)
     if lang == "es":
         body = f"""
 <main><div class="wrap">
@@ -737,6 +762,7 @@ def render_snapshot_not_found(base_url, ticker, lang="en"):
   <h1>No hay resumen para {html.escape(ticker)}</h1>
   <p class="lede">Este ticker todavía no pasó por el escaneo nocturno -
   puede que no esté en un universo cubierto, o que un escaneo todavía no se haya ejecutado para él.</p>
+  {suggest_html}
   <p><a href="/es/s/">Explorar acciones cubiertas</a> &nbsp;&middot;&nbsp;
      <a href="/deep-dive?ticker={html.escape(ticker)}&lang=es">Probar el Deep Dive en vivo para {html.escape(ticker)} en su lugar &rarr;</a></p>
 </div></main>
@@ -753,6 +779,7 @@ def render_snapshot_not_found(base_url, ticker, lang="en"):
   <h1>No snapshot for {html.escape(ticker)}</h1>
   <p class="lede">This ticker hasn't been through the nightly scan yet -
   it may not be in a covered universe, or a scan just hasn't run for it.</p>
+  {suggest_html}
   <p><a href="/s/">Browse covered stocks</a> &nbsp;&middot;&nbsp;
      <a href="/deep-dive?ticker={html.escape(ticker)}">Try the live Deep Dive for {html.escape(ticker)} instead &rarr;</a></p>
 </div></main>
