@@ -831,44 +831,45 @@ def render_account_bar(extra_widget=None, extra_widget2=None, extra_widget3=None
 
     _ensure_auth_secrets_written()
     st.markdown(_PILL_BUTTON_CSS, unsafe_allow_html=True)
-    # Button-doesn't-work fix, round 2 (19 Sep 2026): the Money Tools
-    # signed-out CTA ("Sign in free to use them") needs a reliable way to
-    # scroll back up to this sign-in control. Round 1 tried
-    # [class*="st-key-account_bar_signin"] (the documented Streamlit
-    # key-class convention, already used by this file's OWN CSS a few
-    # lines below to STYLE the control) - deployed, but the owner reported
-    # the button still did nothing, and with no live-browser access this
-    # session to confirm why, the safer fix is to stop depending on any
-    # Streamlit-internal class/test-id naming (this is now the SECOND one
-    # that's turned out unreliable, after section[data-testid="stMain"] in
-    # round 1) and instead plant a plain, self-authored anchor id here -
-    # exactly the same "anchor div + getElementById(...).scrollIntoView()"
-    # pattern the Deep Dive first-screen chip row already proves works
-    # regardless of which ancestor owns the scrollbar. This div renders
-    # every time the account bar does (signed in or out, zero footprint -
-    # no size, no visible content by default) so any CTA anywhere on the
-    # site can reliably scroll back up to "where sign-in lives" without
-    # guessing at Streamlit's own DOM structure.
+    # Button-doesn't-work fix, round 3 (19 Sep 2026) - ROOT CAUSE FOUND.
+    # Rounds 1 and 2 (still visible in this file's own history/git log)
+    # both gave the Money Tools CTA an onclick="..." handler that queried
+    # for this anchor and called scrollIntoView() - round 1 targeted a
+    # Streamlit-generated class, round 2 targeted this plain self-owned
+    # #sdd-signin-anchor id instead, on the theory that the Streamlit
+    # class name might itself be stale/unreliable. Both shipped, both did
+    # nothing live. The owner sent a screenshot of the browser's own
+    # element inspector this time, which settled it: the deployed <a> tag
+    # had NO onclick attribute at all - just class and href. Streamlit's
+    # st.markdown(unsafe_allow_html=True) sanitizes the HTML it injects
+    # and strips inline event-handler attributes (onclick, onload, etc.)
+    # even though it passes the tag/class/href through untouched - so
+    # neither round's JS ever existed in the live DOM to fire. There was
+    # never a selector bug to find; the handler itself never survived
+    # rendering, on either attempt.
     #
-    # Also: on a short page (or a tall viewport) the sign-in control can
-    # already be fully in view when the CTA is clicked - the owner's own
+    # Fix: this div stays (a real target is still needed), but nothing
+    # here or on the CTA side depends on an onclick surviving the
+    # sanitizer any more. app.py's CTA now uses plain href="#sdd-signin-
+    # anchor" fragment navigation - the browser's native handling of that,
+    # same as scrollIntoView(), already walks up to whichever ancestor
+    # actually owns the scrollbar, and sanitizers have no reason to touch
+    # a plain href. The highlight-pulse feedback (for when this control's
+    # already in view and the scroll itself is 0px - the owner's own
     # screenshots of the Money Tools hub show the whole card grid fitting
-    # on screen at once, so a scroll of 0px is a real possibility, not an
-    # edge case. A pure scrollIntoView() with nothing else visible would
-    # look exactly like "the button does nothing" even if the JS ran
-    # perfectly - so this also gives the anchor a brief highlight pulse
-    # (CSS-only, ::before content, no layout shift since the div itself
-    # stays height:0) that the CTA's onclick triggers by toggling
-    # .sdd-flash - visible feedback on every click regardless of scroll
-    # distance.
+    # on screen at once, so that's a real case, not an edge case) is now a
+    # pure CSS :target rule instead of a JS-toggled class, since it also
+    # needs to work with no script involved: it fires automatically
+    # whenever the URL fragment matches this id, which native fragment
+    # navigation sets on its own.
     st.markdown(
         """<style>
         #sdd-signin-anchor{height:0;overflow:visible;position:relative}
-        #sdd-signin-anchor.sdd-flash::before{
+        #sdd-signin-anchor:target::before{
           content:'';display:block;height:44px;margin:-6px 0 10px;
           border-radius:10px;background:rgba(45,212,191,.32);
           box-shadow:0 0 0 1.5px rgba(45,212,191,.55);
-          animation:sddSigninFlash 1.5s ease-out}
+          animation:sddSigninFlash 1.5s ease-out forwards}
         @keyframes sddSigninFlash{0%{opacity:1}80%{opacity:1}100%{opacity:0}}
         </style>
         <div id="sdd-signin-anchor"></div>""",

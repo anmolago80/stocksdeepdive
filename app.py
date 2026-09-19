@@ -22750,36 +22750,40 @@ def _render_tools_signedout_hub(lang):
         unsafe_allow_html=True,
     )
     st.markdown(_tools_hub_cards_html(lang, linked=False), unsafe_allow_html=True)
-    # Button-doesn't-work fix, round 2 (19 Sep 2026): round 1 (still in
-    # this file's own history) replaced a stale section[data-testid=
-    # "stMain"] query with [class*="st-key-account_bar_signin"] - the
-    # documented Streamlit key-class convention, and this file's own CSS
-    # (line 2352/2356) already uses that exact selector to STYLE the
-    # control, so it looked solid. It shipped, and the owner reported the
-    # button still did nothing. No live-browser access was available this
-    # session to see the actual DOM and confirm why (a second stale
-    # Streamlit-internal name? a timing/hydration issue querying too
-    # early? unclear) - so rather than guess a THIRD Streamlit-internal
-    # selector, this drops the dependency on Streamlit's own generated
-    # class names entirely. paywall_engine.render_account_bar() now plants
-    # a plain, self-authored <div id="sdd-signin-anchor"> right where the
-    # sign-in control renders (see that file's own comment on it) - the
-    # exact same "anchor div + getElementById().scrollIntoView()" pattern
-    # already proven by the Deep Dive first-screen chip row, just pointed
-    # at an id this codebase controls instead of one Streamlit generates.
-    # block:'center' keeps it clear of any sticky header. Also toggles the
-    # anchor's .sdd-flash class (see paywall_engine's own comment on it) -
-    # on a short page/tall viewport the sign-in control can already be
-    # fully in view, so scrollIntoView alone could move 0px and look like
-    # nothing happened even though the click registered; the flash gives
-    # visible confirmation every time, independent of scroll distance.
+    # Button-doesn't-work fix, round 3 (19 Sep 2026) - ROOT CAUSE FOUND.
+    # Rounds 1 and 2 both used an onclick="..." attribute on this <a> tag,
+    # each time just changing WHAT the JS queried (a stale Streamlit
+    # test-id, then a self-owned anchor id). Both shipped and both did
+    # nothing live. The owner sent a screenshot of the live element
+    # inspector this time, and it settled it: the rendered tag is
+    # <a class="sdd-tools-btn" href="#">Sign in free to use them</a> -
+    # no onclick attribute at all. Streamlit's st.markdown(unsafe_allow_
+    # html=True) sanitizes the HTML it injects and strips inline event-
+    # handler attributes (onclick, onload, etc.) even though it lets the
+    # tag/class/href through - so the handler never existed in the DOM to
+    # fire, on EITHER previous attempt. No JS bug to find - there was no
+    # JS running at all. (This also means the Deep Dive first-screen chip
+    # row's own onclick, cited both previous rounds as "already proven
+    # working", almost certainly has this exact same problem and has
+    # never actually worked either - flagging that separately, out of
+    # scope for this fix.)
+    #
+    # Fix: stop depending on any inline JS handler surviving the
+    # sanitizer. Plain HTML fragment navigation - href="#<id>" - needs no
+    # onclick and sanitizers don't touch it. The browser's native fragment
+    # scroll (unlike window.scrollTo) already walks up to whichever
+    # ancestor actually owns the scrollbar to bring the target into view,
+    # so it works here for the same reason scrollIntoView did - it's just
+    # native and doesn't need a script tag to survive at all. Points at
+    # the same paywall_engine.py "#sdd-signin-anchor" div as round 2. The
+    # highlight-pulse feedback (for when the control's already in view and
+    # the scroll itself is 0px) moved from a JS-toggled class to a pure
+    # CSS #sdd-signin-anchor:target rule in paywall_engine.py, which fires
+    # automatically whenever the URL fragment matches - again, no script
+    # required anywhere in this path.
     st.markdown(
         '<div class="sdd-tools-cta-row">'
-        '<a class="sdd-tools-btn" href="#" onclick="'
-        "var t=document.getElementById('sdd-signin-anchor'); "
-        "if(t){t.scrollIntoView({behavior:'smooth',block:'center'}); "
-        "t.classList.remove('sdd-flash'); void t.offsetWidth; "
-        "t.classList.add('sdd-flash');} return false;\">"
+        '<a class="sdd-tools-btn" href="#sdd-signin-anchor">'
         f'{html.escape(i18n.t("tools.hub.signin_cta", lang))}</a>'
         '</div>',
         unsafe_allow_html=True,
