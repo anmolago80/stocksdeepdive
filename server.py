@@ -1017,7 +1017,33 @@ async def sitemap(request: Request):
     # that actually has a scan file on disk right now (self-discovered,
     # same "never a hardcoded list" choice as universe_snapshot_render.py
     # itself) - EN + /es/ twins, same plain-entry convention as above.
+    #
+    # Task 3 fix (19 Sep 2026): universe_snapshot_render._universe_slugs()
+    # lists EVERY *.json scan file on disk, including "imported" - the
+    # virtual, opportunistic-overflow universe screen_import_store.py/
+    # nightly_scan.IMPORTED_UNIVERSE assembles from user watchlist
+    # imports, which is intentionally non-public. It was landing in the
+    # sitemap even though api_v1.get_scan()'s own gate already rejects it
+    # (_resolve_universe("imported") is None - "imported" isn't in
+    # scanner_engine.AUSTRALIA_UNIVERSES/USA_UNIVERSES, the exact list
+    # _KNOWN_UNIVERSES is built from), sending crawlers to a dead URL.
+    # Reusing api_v1._resolve_universe() here - rather than hardcoding
+    # "imported" as a one-off skip - ties the sitemap to the SAME public/
+    # non-public condition the API route already enforces, so a future
+    # non-public universe (another virtual/opportunistic one, or a
+    # universe deliberately kept internal) is auto-excluded the moment
+    # it's excluded from _KNOWN_UNIVERSES, with nothing to remember to
+    # update here. server.py already imports api_v1 (to mount its
+    # sub-app), so no new import. Verified empirically (not just by
+    # inspection) that _resolve_universe() round-trips correctly for
+    # every one of scanner_engine's 30 real universes despite the two
+    # modules using different slug separators (scan_store's filenames
+    # use "_", api_v1's own _slug() uses "-" - _resolve_universe()'s own
+    # _slug() call normalizes either before the lookup) - see this
+    # commit's own verification note for the exact check.
     for _slug in universe_snapshot_render._universe_slugs():
+        if not api_v1._resolve_universe(_slug):
+            continue
         extra += (f'\n  <url><loc>{_xml_escape(base)}/s/universe/{_slug}</loc>'
                   f'<changefreq>daily</changefreq><priority>0.5</priority></url>')
         extra += (f'\n  <url><loc>{_xml_escape(base)}/es/s/universe/{_slug}</loc>'
