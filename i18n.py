@@ -1105,7 +1105,7 @@ EN = {
     "tools.hub.super_blurb": "Balance at retirement, with and without extra salary sacrifice — caps checked.",
     "tools.hub.super_teaser": 'e.g. +$200/mo sacrifice → <b>+$96k</b> at 60',
     "tools.hub.property_vs_index_blurb": "Buy an investment property, or put the same cash in the S&P 500? Both after tax, plus the break-even rent.",
-    "tools.hub.property_vs_index_teaser": 'e.g. $300k cash + $700k loan → <b>+$323k</b> property vs <b>+$300k</b> index over 10y',
+    "tools.hub.property_vs_index_teaser": 'e.g. $300k cash + $700k loan → <b>+$328k</b> property vs <b>+$300k</b> index over 10y',
     "tools.hub.signin_cta": "Sign in free to use them",
 
     "tools.budget.title": "Budget Planner",
@@ -1454,6 +1454,12 @@ EN = {
     "tools.property_vs_index.cash_label": "Your cash",
     "tools.property_vs_index.loan_label": "Loan (interest-only)",
     "tools.property_vs_index.loan_rate_label": "Loan rate (%/yr, IO)",
+    "tools.property_vs_index.io_period_label": "Interest-only period (yrs)",
+    "tools.property_vs_index.loan_term_label": "Loan term (yrs)",
+    "tools.property_vs_index.loan_term_help": (
+        "Typical bank structure: a 5-year interest-only period, then "
+        "principal-and-interest for the remainder of a 30-year term."
+    ),
     "tools.property_vs_index.price_caption": (
         "Price = your cash + loan = {price}. Buy costs come out of your "
         "cash first — {cash} cash buys a {price} property, but only "
@@ -1498,6 +1504,11 @@ EN = {
         "{loan} × {rate_pct:.2f}% × {years}y, deductible at {tax:.0f}% "
         "(negative gearing)"
     ),
+    "tools.property_vs_index.line_interest_sub_two_phase": (
+        "IO {io_period}y, then P&I over the remaining {pi_years}y of a "
+        "{term}y term — total interest {total_interest}, deductible at "
+        "{tax:.0f}%"
+    ),
     "tools.property_vs_index.line_costs_label": "Holding costs after deduction:",
     "tools.property_vs_index.line_costs_sub": "{costs}/yr × {years}y, deductible at {tax:.0f}%",
     "tools.property_vs_index.line_index_growth_label": "Growth after CGT:",
@@ -1519,6 +1530,14 @@ EN = {
     "tools.property_vs_index.shortfall_below": "Costs you ~{amount}/wk after tax, below break-even",
     "tools.property_vs_index.shortfall_above": "Pays for itself — ~{amount}/wk ahead after tax, above break-even",
     "tools.property_vs_index.shortfall_at": "Right at break-even — the property covers its own cash costs",
+    "tools.property_vs_index.weekly_cash_cost_phrase": "Costs you ~{amount}/wk after tax",
+    "tools.property_vs_index.weekly_cash_surplus_phrase": "Pays for itself — ~{amount}/wk ahead after tax",
+    "tools.property_vs_index.weekly_cash_even_phrase": "Right at break-even",
+    "tools.property_vs_index.weekly_cash_two_phase": (
+        "{io_phrase} during the IO years → {pi_phrase} once P&I starts "
+        "(of which {principal}/wk is principal — that part builds "
+        "equity, it isn't a cost)"
+    ),
     "tools.property_vs_index.chart_crossover_label": "crossover · year {year}",
     "tools.property_vs_index.chart_no_crossover": "One side leads the whole {years} years on these numbers",
     "tools.property_vs_index.chart_property_label": "🏠 property",
@@ -3957,7 +3976,7 @@ ES = {
     # ES DRAFT, not professionally reviewed (same convention as the rest
     # of this file's Spanish copy - see e.g. the News-tab block below).
     "tools.hub.property_vs_index_blurb": "¿Comprar una propiedad de inversión, o poner el mismo efectivo en el S&P 500? Ambos después de impuestos, más el alquiler de equilibrio.",
-    "tools.hub.property_vs_index_teaser": 'ej. $300k de efectivo + $700k de préstamo → <b>+$323k</b> propiedad vs <b>+$300k</b> índice en 10 años',
+    "tools.hub.property_vs_index_teaser": 'ej. $300k de efectivo + $700k de préstamo → <b>+$328k</b> propiedad vs <b>+$300k</b> índice en 10 años',
     "tools.hub.signin_cta": "Inicia sesión gratis para usarlas",
 
     "tools.budget.title": "Planificador de presupuesto",
@@ -4300,6 +4319,13 @@ ES = {
     "tools.property_vs_index.cash_label": "Tu efectivo",
     "tools.property_vs_index.loan_label": "Préstamo (solo intereses)",
     "tools.property_vs_index.loan_rate_label": "Tasa del préstamo (%/año, IO)",
+    "tools.property_vs_index.io_period_label": "Período de solo interés (años)",
+    "tools.property_vs_index.loan_term_label": "Plazo del préstamo (años)",
+    "tools.property_vs_index.loan_term_help": (
+        "Estructura bancaria típica: un período de 5 años de solo "
+        "interés, seguido de capital e interés durante el resto de un "
+        "plazo de 30 años."
+    ),
     "tools.property_vs_index.price_caption": (
         "Precio = tu efectivo + préstamo = {price}. Los costos de compra "
         "salen primero de tu efectivo — {cash} de efectivo compra una "
@@ -4346,6 +4372,11 @@ ES = {
         "{loan} × {rate_pct:.2f}% × {years} años, deducible al "
         "{tax:.0f}% (negative gearing)"
     ),
+    "tools.property_vs_index.line_interest_sub_two_phase": (
+        "Solo interés {io_period} años, luego P&I durante los "
+        "{pi_years} años restantes de un plazo de {term} años — "
+        "interés total {total_interest}, deducible al {tax:.0f}%"
+    ),
     "tools.property_vs_index.line_costs_label": "Costos de mantención después de deducción:",
     "tools.property_vs_index.line_costs_sub": "{costs}/año × {years} años, deducible al {tax:.0f}%",
     "tools.property_vs_index.line_index_growth_label": "Crecimiento después de CGT:",
@@ -4368,6 +4399,14 @@ ES = {
     "tools.property_vs_index.shortfall_below": "Te cuesta ~{amount}/sem después de impuestos, bajo el equilibrio",
     "tools.property_vs_index.shortfall_above": "Se paga sola — ~{amount}/sem a tu favor después de impuestos, sobre el equilibrio",
     "tools.property_vs_index.shortfall_at": "Justo en el equilibrio — la propiedad cubre sus propios costos en efectivo",
+    "tools.property_vs_index.weekly_cash_cost_phrase": "Te cuesta ~{amount}/sem después de impuestos",
+    "tools.property_vs_index.weekly_cash_surplus_phrase": "Se paga sola — ~{amount}/sem a tu favor después de impuestos",
+    "tools.property_vs_index.weekly_cash_even_phrase": "Justo en el equilibrio",
+    "tools.property_vs_index.weekly_cash_two_phase": (
+        "{io_phrase} durante los años de solo interés → {pi_phrase} "
+        "cuando empieza el P&I (de los cuales {principal}/sem es "
+        "capital — esa parte genera patrimonio, no es un costo)"
+    ),
     "tools.property_vs_index.chart_crossover_label": "cruce · año {year}",
     "tools.property_vs_index.chart_no_crossover": "Un lado va adelante los {years} años completos con estos números",
     "tools.property_vs_index.chart_property_label": "🏠 propiedad",

@@ -100,6 +100,26 @@ module docstring ("MARK-TO-MARKET GROWTH") for why this pattern (tax the
 position AS IF SOLD at every single year, not only at the horizon) keeps
 the chart's two curves point-for-point comparable rather than a
 final-year cliff.
+
+LOAN STRUCTURE (Task, 19 Sep 2026, "realistic loan structure ... IO
+period -> P&I"): the loan is no longer interest-only for the whole hold.
+It has its own two fixed features, independent of how many years the
+owner actually holds the property for - `io_period` (interest-only
+years) and `term` (the loan's total term) - see property_loan_schedule()
+below for the year-by-year mechanics. Years 1..io_period behave exactly
+as before (balance constant, interest = loan x rate); from year
+io_period+1 the loan amortises at a fixed ANNUAL principal-and-interest
+payment A = loan x [r(1+r)^n]/[(1+r)^n - 1], n = term - io_period, same
+annual (non-compounding-within-the-year) convention as the rest of this
+module. Only the INTEREST portion of a P&I payment is ever deductible or
+enters the headline through the "Loan interest after deduction" line;
+the PRINCIPAL portion is never deducted and never enters the headline -
+it converts cash into equity (reduces the loan balance) and nets out
+exactly at sale, the same way the old lump interest-only repayment did.
+REGRESSION ANCHOR: io_period == years leaves every modelled year in the
+IO branch (the P&I phase is never reached within the hold), reproducing
+the old pure-IO numbers to the cent - property_loan_schedule()'s own
+docstring spells out why.
 """
 
 DEFAULT_CASH = 300_000.0
@@ -116,6 +136,8 @@ MEDICARE_LEVY = 0.02
 DEFAULT_YEARS = 10
 DEFAULT_BUY_COSTS = 45_000.0
 DEFAULT_SELL_COSTS_PCT = 0.02
+DEFAULT_IO_PERIOD = 5
+DEFAULT_LOAN_TERM = 30
 
 MIN_YEARS = 1
 MAX_YEARS = 30
@@ -150,6 +172,114 @@ def _geometric_growth_sum(rate, n):
     if rate == 0:
         return float(n)
     return ((1 + rate) ** n - 1) / rate
+
+
+# --------------------------------------------------------------------------- #
+# Two-phase (interest-only, then principal-and-interest) loan schedule -
+# see the module docstring's own "LOAN STRUCTURE" section.
+# --------------------------------------------------------------------------- #
+
+def property_loan_schedule(loan, loan_rate, io_period, term, years):
+    """Year-by-year (simple annual convention, matching every other
+    formula in this module) loan schedule: years 1..io_period are
+    interest-only (balance constant, interest = start-of-year balance x
+    rate); years io_period+1..term amortise at the fixed annual payment
+    A = loan x [r(1+r)^n]/[(1+r)^n - 1], n = term - io_period (rate == 0
+    falls back to straight-line principal, A = loan / n, to avoid a 0/0
+    division in the compounding formula). `years` (how long the owner
+    actually holds it) can be shorter OR longer than the loan's own
+    io_period/term - the schedule only ever generates `years` entries and
+    simply never reaches the P&I phase if years <= io_period.
+
+    REGRESSION ANCHOR (io_period == years): every generated year has
+    year <= io_period, so every year takes the "interest-only" branch
+    below and the balance never moves - interest_per_year is `years`
+    copies of loan x rate, i.e. exactly property_interest_per_year(loan,
+    loan_rate) x years, the old pure-IO model's own total. A loan whose
+    own design has no P&I phase at all (term <= io_period) behaves the
+    same way for every year, forever - `annual_pi_payment` is None in
+    that case since there is nothing to pay it with.
+
+    Returns {"interest_per_year": [year 1, year 2, ... year `years`],
+    "balance_after_year": [balance at the end of each of those years],
+    "annual_pi_payment": the fixed A once/if the P&I phase starts within
+    this loan's own design, else None}."""
+    loan = loan or 0.0
+    rate = loan_rate or 0.0
+    io_period = max(0, int(io_period or 0))
+    term = max(io_period, int(term or 0))
+    years = max(0, int(years or 0))
+    n = term - io_period
+
+    annual_pi_payment = None
+    if n > 0:
+        if rate > 0:
+            growth = (1 + rate) ** n
+            annual_pi_payment = loan * (rate * growth) / (growth - 1)
+        else:
+            annual_pi_payment = loan / n
+
+    balance = loan
+    interest_per_year = []
+    balance_after_year = []
+    for year in range(1, years + 1):
+        interest = balance * rate
+        if year > io_period and annual_pi_payment is not None:
+            principal = min(max(annual_pi_payment - interest, 0.0), balance)
+            balance = max(balance - principal, 0.0)
+        interest_per_year.append(interest)
+        balance_after_year.append(balance)
+
+    return {
+        "interest_per_year": interest_per_year,
+        "balance_after_year": balance_after_year,
+        "annual_pi_payment": annual_pi_payment,
+    }
+
+
+def property_pi_phase_weekly_cash(loan, loan_rate, io_period, term, holding_costs, tax_rate):
+    """The FIRST year of the P&I phase's own after-tax weekly cash
+    figure, split into its interest (deductible) and principal (not
+    deductible, but not a real "cost" either - it converts cash into
+    equity) components - module docstring's "of which $Z/wk is
+    principal" UI copy reads straight off this. The first P&I year's
+    interest is still exactly loan x rate (the whole IO phase leaves the
+    balance untouched), so no day-by-day schedule is needed here - one
+    year is enough. None if this loan's own design has no P&I phase at
+    all (term <= io_period)."""
+    n = max(int(term or 0) - int(io_period or 0), 0)
+    if n <= 0:
+        return None
+    schedule = property_loan_schedule(loan, loan_rate, io_period, term, int(io_period or 0) + 1)
+    first_pi_interest = schedule["interest_per_year"][-1]
+    annual_pi_payment = schedule["annual_pi_payment"]
+    principal = max((annual_pi_payment or 0.0) - first_pi_interest, 0.0)
+    return {
+        "annual_pi_payment": annual_pi_payment,
+        "interest_pretax": first_pi_interest,
+        "principal": principal,
+        "interest_after_tax": first_pi_interest * (1 - tax_rate),
+        "costs_after_tax_yearly": property_holding_costs_after_tax(holding_costs, 1, tax_rate),
+    }
+
+
+def after_tax_weekly_shortfall_pi_phase(loan, loan_rate, io_period, term,
+                                        holding_costs, weekly_rent,
+                                        vacancy_weeks, tax_rate):
+    """Same shape/convention as after_tax_weekly_shortfall() below
+    (module docstring, AFTER-TAX WEEKLY SHORTFALL) but for the FIRST
+    year of the P&I phase: the payment's interest component is
+    deductible as always; its principal component is NOT deductible and
+    IS counted here as a real after-tax cash outflow, even though it
+    also builds equity (property_pi_phase_weekly_cash()'s own
+    docstring). Returns (shortfall_per_week, principal_per_week) - both
+    None if this loan's own design has no P&I phase (term <= io_period)."""
+    pi = property_pi_phase_weekly_cash(loan, loan_rate, io_period, term, holding_costs, tax_rate)
+    if pi is None:
+        return None, None
+    rent_after_tax_yearly = property_rent_after_tax(weekly_rent, vacancy_weeks, 1, tax_rate)
+    net_yearly = pi["interest_after_tax"] + pi["principal"] + pi["costs_after_tax_yearly"] - rent_after_tax_yearly
+    return net_yearly / WEEKS_PER_YEAR, pi["principal"] / WEEKS_PER_YEAR
 
 
 # --------------------------------------------------------------------------- #
@@ -196,8 +326,14 @@ def property_interest_per_year(loan, loan_rate):
     return (loan or 0.0) * (loan_rate or 0.0)
 
 
-def property_interest_after_tax(loan, loan_rate, years, tax_rate):
-    pretax = property_interest_per_year(loan, loan_rate) * years
+def property_interest_after_tax(loan, loan_rate, io_period, term, years, tax_rate):
+    """Total interest after tax over `years` (mark-to-market: "if sold at
+    year `years`") under the two-phase IO-then-P&I schedule
+    (property_loan_schedule() above) - replaces the old pure-IO formula
+    (loan x rate x years x (1 - tax)); io_period == years reproduces it
+    exactly, to the cent (property_loan_schedule()'s own docstring)."""
+    schedule = property_loan_schedule(loan, loan_rate, io_period, term, years)
+    pretax = sum(schedule["interest_per_year"])
     return pretax * (1 - tax_rate)
 
 
@@ -208,14 +344,16 @@ def property_holding_costs_after_tax(holding_costs, years, tax_rate):
 
 def property_breakdown(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
                        holding_costs, growth_rate, years, buy_costs,
-                       sell_costs_pct, tax_rate):
+                       sell_costs_pct, tax_rate, io_period, term):
     """The property card's full breakdown at `years` - the four lines
-    (module docstring) plus "headline", their exact sum."""
+    (module docstring) plus "headline", their exact sum. io_period/term
+    describe the loan's own two-phase structure (module docstring, LOAN
+    STRUCTURE) - io_period == years reproduces the old pure-IO numbers."""
     price = property_price(cash, loan)
     growth = property_capital_growth_after_cgt(
         price, growth_rate, years, buy_costs, sell_costs_pct, tax_rate)
     rent_after_tax = property_rent_after_tax(weekly_rent, vacancy_weeks, years, tax_rate)
-    interest_after_tax = property_interest_after_tax(loan, loan_rate, years, tax_rate)
+    interest_after_tax = property_interest_after_tax(loan, loan_rate, io_period, term, years, tax_rate)
     costs_after_tax = property_holding_costs_after_tax(holding_costs, years, tax_rate)
     headline = growth["after_tax"] + rent_after_tax - interest_after_tax - costs_after_tax
     return {
@@ -294,8 +432,14 @@ def after_tax_weekly_shortfall(loan, loan_rate, holding_costs, weekly_rent,
     """Positive = costs you this much/wk after tax (below break-even);
     negative = pays for itself by this much/wk after tax (above it) -
     module docstring, AFTER-TAX WEEKLY SHORTFALL, for why the divisor is
-    52 (a full calendar year) and not (52 - vacancy)."""
-    interest_after_tax_yearly = property_interest_after_tax(loan, loan_rate, 1, tax_rate)
+    52 (a full calendar year) and not (52 - vacancy). Always represents
+    an INTEREST-ONLY year's cash bill (one year of loan x rate) - this
+    is the "IO phase" figure the two-phase caption pairs with
+    after_tax_weekly_shortfall_pi_phase() above for the P&I phase; it
+    intentionally does not take io_period/term so it keeps working
+    unchanged for every old call site and every old-format saved
+    scenario (io_period == years never reaches a P&I phase anyway)."""
+    interest_after_tax_yearly = property_interest_per_year(loan, loan_rate) * (1 - tax_rate)
     costs_after_tax_yearly = property_holding_costs_after_tax(holding_costs, 1, tax_rate)
     rent_after_tax_yearly = property_rent_after_tax(weekly_rent, vacancy_weeks, 1, tax_rate)
     net_yearly = interest_after_tax_yearly + costs_after_tax_yearly - rent_after_tax_yearly
@@ -308,17 +452,21 @@ def after_tax_weekly_shortfall(loan, loan_rate, holding_costs, weekly_rent,
 
 def property_series(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
                     holding_costs, growth_rate, years, buy_costs,
-                    sell_costs_pct, tax_rate):
+                    sell_costs_pct, tax_rate, io_period, term):
     """[headline-if-sold-at-t for t = 0..years] - property, mark-to-
     market (module docstring, YEAR-BY-YEAR section). series[years] is
-    exactly property_breakdown(...)["headline"] at the same inputs."""
+    exactly property_breakdown(...)["headline"] at the same inputs.
+    Interest at each t is CUMULATIVE interest to year t under the same
+    fixed io_period/term loan schedule (property_loan_schedule() above),
+    not a flat per-year rate multiplied by t - the crossover chart's own
+    "cumulative interest per year" update (task, 19 Sep 2026)."""
     price = property_price(cash, loan)
     series = []
     for t in range(years + 1):
         growth = property_capital_growth_after_cgt(
             price, growth_rate, t, buy_costs, sell_costs_pct, tax_rate)
         rent = property_rent_after_tax(weekly_rent, vacancy_weeks, t, tax_rate)
-        interest = property_interest_after_tax(loan, loan_rate, t, tax_rate)
+        interest = property_interest_after_tax(loan, loan_rate, io_period, term, t, tax_rate)
         costs = property_holding_costs_after_tax(holding_costs, t, tax_rate)
         series.append(growth["after_tax"] + rent - interest - costs)
     return series
@@ -371,32 +519,50 @@ def run(cash=DEFAULT_CASH, loan=DEFAULT_LOAN, loan_rate=DEFAULT_LOAN_RATE,
        sp500_dividend_yield=DEFAULT_SP500_DIVIDEND_YIELD,
        marginal_rate=DEFAULT_MARGINAL_RATE, medicare_levy=MEDICARE_LEVY,
        years=DEFAULT_YEARS, buy_costs=DEFAULT_BUY_COSTS,
-       sell_costs_pct=DEFAULT_SELL_COSTS_PCT):
+       sell_costs_pct=DEFAULT_SELL_COSTS_PCT,
+       io_period=DEFAULT_IO_PERIOD, term=DEFAULT_LOAN_TERM):
     """One call, everything the UI needs: both cards' breakdowns, the
-    break-even rent + coverage + shortfall, and the year-by-year series
-    for the crossover chart (+ its crossover year). tax_rate =
-    marginal_rate + medicare_levy throughout - the Super tool's own "+2%
-    Medicare shown separately, applied together" convention."""
+    break-even rent + coverage + shortfall, the year-by-year series for
+    the crossover chart (+ its crossover year), and the loan's own
+    two-phase (IO -> P&I) structure (module docstring, LOAN STRUCTURE).
+    tax_rate = marginal_rate + medicare_levy throughout - the Super
+    tool's own "+2% Medicare shown separately, applied together"
+    convention. io_period/term are defensively clamped here too (never
+    trust the caller): io_period <= years, term >= io_period - the same
+    constraint the UI enforces on its own two new inputs."""
     years = max(MIN_YEARS, min(int(years), MAX_YEARS))
+    io_period = max(0, min(int(io_period if io_period is not None else years), years))
+    term = max(io_period, int(term if term is not None else io_period))
     tax_rate = (marginal_rate or 0.0) + (medicare_levy or 0.0)
 
     property_bd = property_breakdown(
         cash, loan, loan_rate, weekly_rent, vacancy_weeks, holding_costs,
-        property_growth, years, buy_costs, sell_costs_pct, tax_rate)
+        property_growth, years, buy_costs, sell_costs_pct, tax_rate,
+        io_period, term)
     index_bd = index_breakdown(cash, sp500_total_return, sp500_dividend_yield, years, tax_rate)
 
     be_rent = break_even_weekly_rent(loan, loan_rate, holding_costs, vacancy_weeks)
     coverage_pct = rent_coverage_pct(weekly_rent, be_rent)
     weekly_shortfall = after_tax_weekly_shortfall(
         loan, loan_rate, holding_costs, weekly_rent, vacancy_weeks, tax_rate)
+    pi_weekly_shortfall, pi_weekly_principal = after_tax_weekly_shortfall_pi_phase(
+        loan, loan_rate, io_period, term, holding_costs, weekly_rent, vacancy_weeks, tax_rate)
 
     prop_series = property_series(
         cash, loan, loan_rate, weekly_rent, vacancy_weeks, holding_costs,
-        property_growth, years, buy_costs, sell_costs_pct, tax_rate)
+        property_growth, years, buy_costs, sell_costs_pct, tax_rate,
+        io_period, term)
     idx_series = index_series(cash, sp500_total_return, sp500_dividend_yield, years, tax_rate)
     crossover_year = find_crossover_year(prop_series, idx_series)
 
     winner = "property" if property_bd["headline"] >= index_bd["headline"] else "index"
+
+    n_design = max(term - io_period, 0)
+    two_phase_active = years > io_period and n_design > 0
+    loan_sched = property_loan_schedule(loan, loan_rate, io_period, term, years)
+    total_interest_pretax = sum(loan_sched["interest_per_year"])
+    balance_at_sale = loan_sched["balance_after_year"][-1] if loan_sched["balance_after_year"] else (loan or 0.0)
+    principal_repaid = (loan or 0.0) - balance_at_sale
 
     return {
         "years": years,
@@ -411,4 +577,15 @@ def run(cash=DEFAULT_CASH, loan=DEFAULT_LOAN, loan_rate=DEFAULT_LOAN_RATE,
         "index_series": idx_series,
         "crossover_year": crossover_year,
         "interest_per_year": property_interest_per_year(loan, loan_rate),
+        # -- two-phase (IO -> P&I) loan structure - module docstring, LOAN STRUCTURE --
+        "io_period": io_period,
+        "term": term,
+        "pi_phase_years_design": n_design,
+        "two_phase_active": two_phase_active,
+        "annual_pi_payment": loan_sched["annual_pi_payment"],
+        "total_interest_pretax": total_interest_pretax,
+        "balance_at_sale": balance_at_sale,
+        "principal_repaid": principal_repaid,
+        "pi_phase_weekly_shortfall": pi_weekly_shortfall,
+        "pi_phase_weekly_principal": pi_weekly_principal,
     }

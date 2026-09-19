@@ -24236,10 +24236,21 @@ def _render_property_vs_index_tool(email):
     this tool's own fourth consumer of _render_named_plan_switcher - no
     parallel switcher implementation, per the task's own instruction.
 
-    Every \$ amount below goes through _fmt_aud_md() (never plain
-    _fmt_aud()) - every caption here interpolates two or more dollar
-    amounts on one line, which is exactly the Streamlit KaTeX
-    paired-"$" bug _fmt_aud_md()'s own docstring documents."""
+    Backslash fix (19 Sep 2026): this docstring used to say "every \$
+    amount below goes through _fmt_aud_md() (never plain _fmt_aud())" -
+    that was backwards and was the bug. _fmt_aud_md()'s OWN docstring
+    already says plain _fmt_aud() is correct for "every non-markdown
+    context ... a literal backslash would render visibly there instead
+    of being consumed as an escape" - and the cards/break-even/
+    shortfall strip below are built as one big HTML string (the _parts
+    list) rendered via st.markdown(..., unsafe_allow_html=True), which
+    IS exactly that non-markdown context: html.escape() doesn't touch a
+    literal backslash, so every "\$" _fmt_aud_md() produced was reaching
+    the live page as a literal backslash in front of every dollar sign
+    on this whole tool. Only price_caption and honest_caption below are
+    genuine st.caption() plain-markdown calls (no unsafe_allow_html) -
+    those two correctly keep _fmt_aud_md(); every dollar amount inside
+    the _parts HTML list uses plain _fmt_aud() instead."""
     _lang = st.session_state.get("lang", "en")
     _sl = lambda key, **kw: i18n.t(f"tools.property_vs_index.{key}", _lang, **kw)
     _eng = property_vs_index_engine
@@ -24280,6 +24291,28 @@ def _render_property_vs_index_tool(email):
             loan_rate_pct = st.number_input(
                 _sl("loan_rate_label"), min_value=0.0, max_value=20.0, step=0.01, format="%.2f",
                 key=_seed("tools_pvi_loan_rate_pct", _eng.DEFAULT_LOAN_RATE * 100),
+            )
+            # Realistic loan structure (IO period -> P&I), task 19 Sep
+            # 2026: an OLD-format saved scenario (has "years" but no
+            # "io_period" yet) defaults io_period to its OWN saved years
+            # - pure IO, reproducing its stored numbers exactly - while a
+            # brand-new scenario (nothing saved under this name at all,
+            # _saved_inputs == {}) gets the new 5/30 defaults. _seed()'s
+            # own "only used the first time a widget key is seen"
+            # discipline (module docstring above) makes this a single
+            # default expression each, same pattern as every other
+            # input on this tool.
+            io_period = st.number_input(
+                _sl("io_period_label"), min_value=0, max_value=_eng.MAX_YEARS, step=1,
+                help=_sl("loan_term_help"),
+                key=_seed("tools_pvi_io_period", _saved_inputs.get("years", _eng.DEFAULT_IO_PERIOD)),
+            )
+            loan_term = st.number_input(
+                _sl("loan_term_label"), min_value=1, max_value=_eng.MAX_YEARS, step=1,
+                key=_seed(
+                    "tools_pvi_loan_term",
+                    max(_eng.DEFAULT_LOAN_TERM, int(_saved_inputs.get("years", _eng.DEFAULT_LOAN_TERM))),
+                ),
             )
             weekly_rent = st.number_input(
                 _sl("weekly_rent_label"), min_value=0.0, step=10.0, format="%.0f",
@@ -24326,6 +24359,17 @@ def _render_property_vs_index_tool(email):
                 key=_seed("tools_pvi_years", _eng.DEFAULT_YEARS),
             )
 
+        # Constraint (task, 19 Sep 2026): io_period <= years and <=
+        # loan_term - clamped here rather than as each widget's own
+        # max_value, since `years`/`loan_term` are both defined AFTER
+        # io_period in this same script run (Streamlit widgets read
+        # their live value only once every widget above has executed) -
+        # property_vs_index_engine.run() defensively re-clamps this
+        # exact same way on its own, so this is belt-and-braces, not the
+        # only guard.
+        io_period = min(int(io_period), int(years), int(loan_term))
+        loan_term = max(int(loan_term), io_period)
+
         _price = _eng.property_price(cash, loan)
         st.caption(_sl(
             "price_caption", price=_fmt_aud_md(_price), cash=_fmt_aud_md(cash),
@@ -24338,6 +24382,7 @@ def _render_property_vs_index_tool(email):
         holding_costs=holding_costs, property_growth=property_growth_pct / 100.0,
         sp500_total_return=sp500_return_pct / 100.0,
         sp500_dividend_yield=sp500_dividend_pct / 100.0,
+        io_period=io_period, term=loan_term,
         marginal_rate=marginal_rate_pct / 100.0, medicare_levy=_eng.MEDICARE_LEVY,
         years=int(years), buy_costs=buy_costs, sell_costs_pct=sell_costs_pct / 100.0,
     )
@@ -24347,7 +24392,9 @@ def _render_property_vs_index_tool(email):
     _tax_pct = _r["tax_rate"] * 100.0
 
     def _signed(v):
-        return f"{chr(43) if v >= 0 else chr(8722)}{_fmt_aud_md(abs(v))}"
+        # Backslash fix: plain _fmt_aud() - every call site below is
+        # inside the raw-HTML _parts list, not a plain-markdown caption.
+        return f"{chr(43) if v >= 0 else chr(8722)}{_fmt_aud(abs(v))}"
 
     def _cls(v):
         return "pvi-g" if v >= 0 else "pvi-r"
@@ -24363,7 +24410,7 @@ def _render_property_vs_index_tool(email):
         _parts.append(_badge)
     _parts.append(f'<div class="pvi-h">{html.escape(_sl("card_property_title"))}</div>')
     _parts.append(
-        f'<div class="pvi-k">{html.escape(_sl("card_property_subtitle", price=_fmt_aud_md(_price)))}</div>'
+        f'<div class="pvi-k">{html.escape(_sl("card_property_subtitle", price=_fmt_aud(_price)))}</div>'
     )
     _parts.append(
         f'<div class="pvi-k" style="margin-top:8px">'
@@ -24377,28 +24424,43 @@ def _render_property_vs_index_tool(email):
         f'<span class="{_cls(_growth["after_tax"])}">{_signed(_growth["after_tax"])}</span></div>'
     )
     _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_growth_sub", price=_fmt_aud_md(_price), future_price=_fmt_aud_md(_growth["future_price"]), rate=_tax_pct))}</div>'
+        f'<div class="pvi-sub">{html.escape(_sl("line_growth_sub", price=_fmt_aud(_price), future_price=_fmt_aud(_growth["future_price"]), rate=_tax_pct))}</div>'
     )
     _parts.append(
         f'<div class="pvi-line">{html.escape(_sl("line_rent_label"))} '
         f'<span class="{_cls(_p["rent_after_tax"])}">{_signed(_p["rent_after_tax"])}</span></div>'
     )
     _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_rent_sub", weekly_rent=_fmt_aud_md(weekly_rent), vacancy=int(vacancy_weeks), years=_years_i, rate=_tax_pct))}</div>'
+        f'<div class="pvi-sub">{html.escape(_sl("line_rent_sub", weekly_rent=_fmt_aud(weekly_rent), vacancy=int(vacancy_weeks), years=_years_i, rate=_tax_pct))}</div>'
     )
     _parts.append(
         f'<div class="pvi-line">{html.escape(_sl("line_interest_label"))} '
         f'<span class="pvi-r">{_signed(-_p["interest_after_tax"])}</span></div>'
     )
-    _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_interest_sub", loan=_fmt_aud_md(loan), rate_pct=loan_rate_pct, years=_years_i, tax=_tax_pct))}</div>'
-    )
+    if _r["two_phase_active"]:
+        # Two-phase (IO -> P&I) loan structure, task 19 Sep 2026 - the
+        # loan reaches its own P&I phase within this hold (years >
+        # io_period, and the loan's own design has a P&I phase at all).
+        _interest_sub_text = _sl(
+            "line_interest_sub_two_phase", io_period=_r["io_period"],
+            pi_years=_r["pi_phase_years_design"], term=_r["term"],
+            total_interest=_fmt_aud(_r["total_interest_pretax"]), tax=_tax_pct,
+        )
+    else:
+        # Pure IO for the whole hold (io_period >= years, or the loan's
+        # own design has no P&I phase at all) - unchanged since before
+        # this task, the regression anchor's own copy.
+        _interest_sub_text = _sl(
+            "line_interest_sub", loan=_fmt_aud(loan), rate_pct=loan_rate_pct,
+            years=_years_i, tax=_tax_pct,
+        )
+    _parts.append(f'<div class="pvi-sub">{html.escape(_interest_sub_text)}</div>')
     _parts.append(
         f'<div class="pvi-line">{html.escape(_sl("line_costs_label"))} '
         f'<span class="pvi-r">{_signed(-_p["costs_after_tax"])}</span></div>'
     )
     _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_costs_sub", costs=_fmt_aud_md(holding_costs), years=_years_i, tax=_tax_pct))}</div>'
+        f'<div class="pvi-sub">{html.escape(_sl("line_costs_sub", costs=_fmt_aud(holding_costs), years=_years_i, tax=_tax_pct))}</div>'
     )
     _parts.append('</div>')
 
@@ -24408,7 +24470,7 @@ def _render_property_vs_index_tool(email):
         _parts.append(_badge)
     _parts.append(f'<div class="pvi-h">{html.escape(_sl("card_index_title"))}</div>')
     _parts.append(
-        f'<div class="pvi-k">{html.escape(_sl("card_index_subtitle", cash=_fmt_aud_md(cash)))}</div>'
+        f'<div class="pvi-k">{html.escape(_sl("card_index_subtitle", cash=_fmt_aud(cash)))}</div>'
     )
     _parts.append(
         f'<div class="pvi-k" style="margin-top:8px">'
@@ -24420,7 +24482,7 @@ def _render_property_vs_index_tool(email):
         f'<span class="{_cls(_idx["growth_after_cgt"])}">{_signed(_idx["growth_after_cgt"])}</span></div>'
     )
     _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_index_growth_sub", cash=_fmt_aud_md(cash), rate=_idx["price_growth_rate"] * 100, tax=_tax_pct))}</div>'
+        f'<div class="pvi-sub">{html.escape(_sl("line_index_growth_sub", cash=_fmt_aud(cash), rate=_idx["price_growth_rate"] * 100, tax=_tax_pct))}</div>'
     )
     _parts.append(
         f'<div class="pvi-line">{html.escape(_sl("line_index_dividends_label"))} '
@@ -24440,7 +24502,7 @@ def _render_property_vs_index_tool(email):
         _parts.append('<div class="pvi-be">')
         _parts.append(
             f'<div><div class="pvi-k">{html.escape(_sl("break_even_label"))}</div>'
-            f'<div class="pvi-num">{_fmt_aud_md(_be_rent)}/wk</div></div>'
+            f'<div class="pvi-num">{_fmt_aud(_be_rent)}/wk</div></div>'
         )
         _parts.append('<div style="flex:2;min-width:220px">')
         _parts.append(
@@ -24449,15 +24511,43 @@ def _render_property_vs_index_tool(email):
             f'<u style="left:100%;background:#34d399"></u></div>'
         )
         _parts.append(
-            f'<div class="pvi-cap">{html.escape(_sl("break_even_caption", rent=_fmt_aud_md(weekly_rent), coverage=_r["coverage_pct"] or 0.0, weeks=_working_weeks))}</div>'
+            f'<div class="pvi-cap">{html.escape(_sl("break_even_caption", rent=_fmt_aud(weekly_rent), coverage=_r["coverage_pct"] or 0.0, weeks=_working_weeks))}</div>'
         )
         _parts.append('</div></div>')
 
         _shortfall = _r["after_tax_weekly_shortfall"]
-        if _shortfall > 0.5:
-            _parts.append(f'<div class="pvi-shortfall">{html.escape(_sl("shortfall_below", amount=_fmt_aud_md(_shortfall)))}</div>')
+
+        def _pvi_phase_phrase(amount):
+            """One of the three single-phase shortfall sentences, as a
+            bare phrase (no leading capital-sentence assumption) - used
+            standalone below the break-even strip when the loan never
+            reaches a P&I phase within the hold, and as a BUILDING BLOCK
+            for the two-phase caption (weekly_cash_two_phase) when it
+            does - module docstring, WEEKLY CASH (TWO-PHASE CAPTION)."""
+            if amount > 0.5:
+                return _sl("weekly_cash_cost_phrase", amount=_fmt_aud(amount))
+            if amount < -0.5:
+                return _sl("weekly_cash_surplus_phrase", amount=_fmt_aud(abs(amount)))
+            return _sl("weekly_cash_even_phrase")
+
+        if _r["two_phase_active"] and _r["pi_phase_weekly_shortfall"] is not None:
+            # Two-phase weekly-cash caption (task, 19 Sep 2026): the IO
+            # years' cash figure (unchanged _shortfall above) -> the
+            # first P&I year's cash figure, which also carries how much
+            # of it is principal (equity, not a cost) - property_
+            # vs_index_engine.after_tax_weekly_shortfall_pi_phase()'s
+            # own docstring for the exact split.
+            _shortfall_text = _sl(
+                "weekly_cash_two_phase",
+                io_phrase=_pvi_phase_phrase(_shortfall),
+                pi_phrase=_pvi_phase_phrase(_r["pi_phase_weekly_shortfall"]),
+                principal=_fmt_aud(_r["pi_phase_weekly_principal"]),
+            )
+            _parts.append(f'<div class="pvi-shortfall">{html.escape(_shortfall_text)}</div>')
+        elif _shortfall > 0.5:
+            _parts.append(f'<div class="pvi-shortfall">{html.escape(_sl("shortfall_below", amount=_fmt_aud(_shortfall)))}</div>')
         elif _shortfall < -0.5:
-            _parts.append(f'<div class="pvi-shortfall">{html.escape(_sl("shortfall_above", amount=_fmt_aud_md(abs(_shortfall))))}</div>')
+            _parts.append(f'<div class="pvi-shortfall">{html.escape(_sl("shortfall_above", amount=_fmt_aud(abs(_shortfall))))}</div>')
         else:
             _parts.append(f'<div class="pvi-shortfall">{html.escape(_sl("shortfall_at"))}</div>')
 
@@ -24503,6 +24593,7 @@ def _render_property_vs_index_tool(email):
             "sell_costs_pct": sell_costs_pct, "property_growth_pct": property_growth_pct,
             "sp500_return_pct": sp500_return_pct, "sp500_dividend_pct": sp500_dividend_pct,
             "marginal_rate_pct": marginal_rate_pct, "years": years,
+            "io_period": io_period, "term": loan_term,
         })
         st.success(_sl("save_confirm"))
 
