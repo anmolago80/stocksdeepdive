@@ -300,6 +300,23 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
 app.mount("/pwa", StaticFiles(directory=STATIC_DIR), name="pwa_static")
 
 
+# Stage 3, robustness polish: Starlette's StaticFiles above sets no
+# Cache-Control of its own (only ETag/Last-Modified), so every icon/
+# offline.html request fell back to browser heuristic caching - short
+# and inconsistent, especially right after a fresh deploy. Everything
+# under /pwa/ (icons/, offline.html) is build-time generated and
+# effectively immutable content (scripts/generate_icons.py) - unlike
+# /sw.js itself, which is served by its own explicit route above with
+# its own "no-cache" header and never reaches this mount at all - so a
+# long, cacheable lifetime is correct here.
+@app.middleware("http")
+async def _pwa_static_cache_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/pwa/") and response.status_code == 200:
+        response.headers["Cache-Control"] = "public, max-age=604800, immutable"
+    return response
+
+
 # -----------------------------------------------------------------
 # Mega-batch Part 35.1: fail-open HTTP-level "site pulse" counting.
 #
@@ -2554,10 +2571,58 @@ def _inject_pwa_head_tags(html_bytes: bytes, request: Request = None) -> bytes:
     return text.encode("utf-8")
 
 
+# Stage 3, robustness polish: before this, ANY unrecognised URL reached
+# this point and got silently proxied to the Streamlit shell, which
+# (st.navigation falls back to its default=True page rather than
+# erroring on an unknown url_path) rendered the home page with a 200 -
+# so /nonsense, /stock/ and similar never actually 404'd, just quietly
+# showed the wrong page. Every route registered ABOVE this one in the
+# file (blog, /methodology|/about|/privacy, /s/*, /tools/*, /search,
+# etc.) already matches before catch_all ever runs, so this only needs
+# to recognise the two kinds of path that legitimately belong to the
+# live Streamlit app and have NO server.py-side route of their own:
+#
+#  1. Streamlit's own internal infra (JS/CSS bundle, the websocket,
+#     uploaded/generated media, custom components) - genuinely
+#     multi-segment, so matched by PREFIX.
+#  2. The exact url_path= of an app.py st.Page that isn't already
+#     handled above - see app.py's own PG_* / st.navigation() block.
+#     (deep-dive/comparison/scanner/research/tools/methodology/about/
+#     privacy/how-we-use-ai all DO have their own @app.get(...) route
+#     above and so never reach here at all.)
+#
+# Toggleable via STRICT_404 (default on) purely as an operator escape
+# hatch - same "env var kill switch" shape as INDEXABLE_PAGES/
+# FACTUAL_MODE above - in case some legitimate path this list missed
+# ever turns up live.
+_STRICT_404_ENABLED = (os.environ.get("STRICT_404", "true").strip().lower()
+                       not in ("false", "0", "no", "off"))
+_STREAMLIT_INFRA_PREFIXES = ("_stcore", "static", "media", "component", "vendor")
+_STREAMLIT_ONLY_PAGE_PATHS = {
+    "results-calendar", "portfolio", "model-history", "blog-admin",
+    "admin-dashboard",
+}
+
+
+def _is_legitimate_proxy_path(path: str) -> bool:
+    stripped = path.strip("/")
+    if not stripped:
+        return True
+    segment = stripped.split("/", 1)[0].lower()
+    if segment in _STREAMLIT_INFRA_PREFIXES:
+        return True
+    return stripped.lower() in _STREAMLIT_ONLY_PAGE_PATHS
+
+
 @app.api_route("/{path:path}", include_in_schema=False,
                methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD",
                         "OPTIONS"])
 async def catch_all(path: str, request: Request):
+    if (_STRICT_404_ENABLED and request.method in ("GET", "HEAD")
+            and not _is_legitimate_proxy_path(path)):
+        lang = "es" if path.strip("/").lower().startswith("es/") else "en"
+        return _html(blog_render.render_not_found(_base_url(request), lang=lang),
+                    status=404, cache="no-store")
     return await _proxy(request)
 
 
