@@ -337,6 +337,91 @@ def _sign_out():
         st.logout()
 
 
+def _render_signin_form_body(key, lang):
+    """The actual sign-in widgets - the "Continue with Google" button
+    (only if Google is configured), the email/code flow and its
+    honeypot. Extracted from _render_signin_control's own popover body
+    (Round 5 fix, 19 Sep 2026 - see _render_signin_control_inline's own
+    docstring for why) so there is still exactly ONE implementation of
+    this form: _render_signin_control wraps this in an st.popover for
+    the compact header/gate surfaces, _render_signin_control_inline
+    renders it directly, with no popover, for a surface that needs it
+    visible immediately. Nothing about the widgets or their keys changed
+    from the pre-Round-5 code - only where this body is called from."""
+    import i18n
+    if _auth_configured():
+        if st.button(i18n.t("signin.google_button", lang), key=f"{key}_google",
+                     type="primary", width='stretch'):
+            st.login()
+        st.markdown(
+            f"<div style='text-align:center;color:#5b7290;font-size:12px;"
+            f"margin:2px 0 6px;'>&mdash; {i18n.t('signin.or_divider', lang)} &mdash;</div>",
+            unsafe_allow_html=True,
+        )
+    _em_input = st.text_input(
+        i18n.t("signin.email_label", lang), key=f"{key}_email",
+        placeholder=i18n.t("signin.email_placeholder", lang),
+    )
+    # Honeypot: a field real visitors never see or fill in (label
+    # collapsed, styled off-screen below), but a scripted bot filling
+    # every input on the form will populate. A non-empty value here
+    # means "not a human" - silently pretend success without ever
+    # calling email_auth.send_code(), so no Mailgun quota is spent and
+    # the bot gets no signal to distinguish this from a real send.
+    st.markdown(
+        "<div style='position:absolute;left:-9999px;width:1px;height:1px;"
+        "overflow:hidden;' aria-hidden='true'>",
+        unsafe_allow_html=True,
+    )
+    _hp = st.text_input(i18n.t("signin.website_honeypot_label", lang), key=f"{key}_hp", label_visibility="collapsed")
+    st.markdown("</div>", unsafe_allow_html=True)
+    if not st.session_state.get(f"{key}_code_sent"):
+        if st.button(i18n.t("signin.send_code_button", lang), key=f"{key}_send",
+                     width='stretch'):
+            if _hp:
+                st.session_state[f"{key}_code_sent"] = True
+                st.session_state[f"{key}_sent_to"] = _em_input.strip().lower()
+                st.success(i18n.t("email_auth.code_sent", lang, email=_em_input.strip()))
+            else:
+                _ok, _msg = email_auth.send_code(_em_input, client_ip=_client_ip(), lang=lang)
+                if _ok:
+                    st.session_state[f"{key}_code_sent"] = True
+                    st.session_state[f"{key}_sent_to"] = _em_input.strip().lower()
+                    st.success(_msg)
+                else:
+                    st.error(_msg)
+    if st.session_state.get(f"{key}_code_sent"):
+        _sent_to = st.session_state.get(f"{key}_sent_to", "")
+        _code = st.text_input(
+            i18n.t("signin.code_label", lang), key=f"{key}_code", max_chars=6,
+            placeholder=i18n.t("signin.code_placeholder", lang),
+        )
+        _cv, _cr = st.columns(2)
+        with _cv:
+            if st.button(i18n.t("signin.verify_button", lang), key=f"{key}_verify", type="primary",
+                         width='stretch'):
+                _tok, _msg = email_auth.verify_code(
+                    _sent_to, _code, src=st.session_state.get("first_src"),
+                    lang=lang,
+                )
+                if _tok:
+                    st.session_state["email_user"] = _sent_to
+                    st.session_state["email_auth_token"] = _tok
+                    st.session_state.pop("email_signed_out", None)
+                    st.session_state["_pending_auth_cookie"] = _tok
+                    # verify_code already recorded the sign-up.
+                    st.session_state["_signup_recorded"] = True
+                    st.session_state.pop(f"{key}_code_sent", None)
+                    st.rerun()
+                else:
+                    st.error(_msg)
+        with _cr:
+            if st.button(i18n.t("signin.resend_button", lang), key=f"{key}_resend",
+                         width='stretch'):
+                _ok, _msg = email_auth.send_code(_sent_to, client_ip=_client_ip(), lang=lang)
+                (st.success if _ok else st.error)(_msg)
+
+
 def _render_signin_control(key="account_bar_signin", lang="en"):
     """The Sign In control. With email sign-in configured it's a popover
     offering "Continue with Google" and an email-code flow; without it,
@@ -347,84 +432,55 @@ def _render_signin_control(key="account_bar_signin", lang="en"):
     ("Continue with Google", the email/code flow strings, and the
     messages email_auth.send_code()/verify_code() return) are all
     translated (Español completion, Part 1b - previously a documented
-    gap, see i18n.py's docstring)."""
+    gap, see i18n.py's docstring).
+
+    The actual form widgets now live in _render_signin_form_body() (Round
+    5 fix, 19 Sep 2026) - this function's own behavior is unchanged, it
+    just calls that body instead of inlining it, so
+    _render_signin_control_inline() below can reuse the identical form
+    without a second implementation."""
     import i18n
     _label = i18n.t("account.sign_in", lang)
     if not _email_auth_available():
         st.button(_label, key=key, on_click=st.login)
         return
     with st.popover(_label, key=f"{key}_pop"):
-        if _auth_configured():
-            if st.button(i18n.t("signin.google_button", lang), key=f"{key}_google",
-                         type="primary", width='stretch'):
-                st.login()
-            st.markdown(
-                f"<div style='text-align:center;color:#5b7290;font-size:12px;"
-                f"margin:2px 0 6px;'>&mdash; {i18n.t('signin.or_divider', lang)} &mdash;</div>",
-                unsafe_allow_html=True,
-            )
-        _em_input = st.text_input(
-            i18n.t("signin.email_label", lang), key=f"{key}_email",
-            placeholder=i18n.t("signin.email_placeholder", lang),
-        )
-        # Honeypot: a field real visitors never see or fill in (label
-        # collapsed, styled off-screen below), but a scripted bot filling
-        # every input on the form will populate. A non-empty value here
-        # means "not a human" - silently pretend success without ever
-        # calling email_auth.send_code(), so no Mailgun quota is spent and
-        # the bot gets no signal to distinguish this from a real send.
-        st.markdown(
-            "<div style='position:absolute;left:-9999px;width:1px;height:1px;"
-            "overflow:hidden;' aria-hidden='true'>",
-            unsafe_allow_html=True,
-        )
-        _hp = st.text_input(i18n.t("signin.website_honeypot_label", lang), key=f"{key}_hp", label_visibility="collapsed")
-        st.markdown("</div>", unsafe_allow_html=True)
-        if not st.session_state.get(f"{key}_code_sent"):
-            if st.button(i18n.t("signin.send_code_button", lang), key=f"{key}_send",
-                         width='stretch'):
-                if _hp:
-                    st.session_state[f"{key}_code_sent"] = True
-                    st.session_state[f"{key}_sent_to"] = _em_input.strip().lower()
-                    st.success(i18n.t("email_auth.code_sent", lang, email=_em_input.strip()))
-                else:
-                    _ok, _msg = email_auth.send_code(_em_input, client_ip=_client_ip(), lang=lang)
-                    if _ok:
-                        st.session_state[f"{key}_code_sent"] = True
-                        st.session_state[f"{key}_sent_to"] = _em_input.strip().lower()
-                        st.success(_msg)
-                    else:
-                        st.error(_msg)
-        if st.session_state.get(f"{key}_code_sent"):
-            _sent_to = st.session_state.get(f"{key}_sent_to", "")
-            _code = st.text_input(
-                i18n.t("signin.code_label", lang), key=f"{key}_code", max_chars=6,
-                placeholder=i18n.t("signin.code_placeholder", lang),
-            )
-            _cv, _cr = st.columns(2)
-            with _cv:
-                if st.button(i18n.t("signin.verify_button", lang), key=f"{key}_verify", type="primary",
-                             width='stretch'):
-                    _tok, _msg = email_auth.verify_code(
-                        _sent_to, _code, src=st.session_state.get("first_src"),
-                        lang=lang,
-                    )
-                    if _tok:
-                        st.session_state["email_user"] = _sent_to
-                        st.session_state["email_auth_token"] = _tok
-                        st.session_state.pop("email_signed_out", None)
-                        st.session_state["_pending_auth_cookie"] = _tok
-                        # verify_code already recorded the sign-up.
-                        st.session_state["_signup_recorded"] = True
-                        st.session_state.pop(f"{key}_code_sent", None)
-                        st.rerun()
-                    else:
-                        st.error(_msg)
-            with _cr:
-                if st.button(i18n.t("signin.resend_button", lang), key=f"{key}_resend",
-                             width='stretch'):
-                    _ok, _msg = email_auth.send_code(_sent_to, client_ip=_client_ip(), lang=lang)
-                    (st.success if _ok else st.error)(_msg)
+        _render_signin_form_body(key, lang)
+
+
+def _render_signin_control_inline(key, lang="en"):
+    """Same sign-in form as _render_signin_control (same widgets, same
+    keys, same email_auth.send_code()/verify_code() calls) but WITHOUT
+    the st.popover wrapper - for a caller that needs the email field
+    visible the instant its own trigger is clicked, not after a second
+    click into a collapsed control.
+
+    Round 5 fix (19 Sep 2026, owner report: "the button exists but
+    clicking it does nothing ... no sign-in form appears anywhere in the
+    DOM"). Diagnosis: Round 4 (app.py's _render_tools_signedout_hub)
+    already did everything right on its own side - a real st.button, a
+    session_state flag, st.rerun(), then a direct call into
+    _render_signin_control(), never the header's expander (there never
+    was one to reopen - render_account_bar has no st.expander anywhere,
+    confirmed by re-reading paywall_engine.py fresh this round). The
+    actual bug was one level deeper: with email sign-in configured (true
+    in production - _email_auth_available() is live), _render_signin_
+    control() itself renders an st.popover(), which is CLOSED by
+    default. So Round 4's click correctly set the flag, correctly
+    reran, and correctly reached the call into _render_signin_control()
+    - which then rendered a second collapsed trigger control under the
+    first, needing ANOTHER click to reveal anything. That read as
+    "nothing happened" from one click, exactly as reported.
+
+    Fix: skip the popover for this one caller and render the form body
+    directly - _render_signin_form_body(key, lang) is the exact same
+    function _render_signin_control's popover calls, so this is still
+    one form implementation, just optionally unwrapped."""
+    import i18n
+    if not _email_auth_available():
+        st.button(i18n.t("account.sign_in", lang), key=key, on_click=st.login)
+        return
+    _render_signin_form_body(key, lang)
 
 
 # -----------------------------------

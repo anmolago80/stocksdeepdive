@@ -22785,23 +22785,34 @@ def _render_tools_signedout_hub(lang):
     #
     # Fix: a real st.button, no HTML at all. Clicking it sets a session-
     # state flag and reruns; when the flag is set, the actual sign-in
-    # form renders right underneath - paywall_engine._render_signin_
-    # control(), the EXACT SAME function the account bar itself calls a
-    # few lines into render_account_bar (no second sign-in implementation
-    # to keep in sync). That function already handles both configured
-    # states on its own (a plain "Sign In" button wired to st.login() when
-    # only Google is configured, or a popover with Google + email/code
-    # when email sign-in is also available) - this CTA doesn't need to
-    # know or care which. The flag is cleared once signed in, at the top
-    # of page_tools() (see there), so a future visit here starts closed
-    # again rather than reopening from stale state.
+    # form renders right underneath. The flag is cleared once signed in,
+    # at the top of page_tools() (see there), so a future visit here
+    # starts closed again rather than reopening from stale state.
+    #
+    # Round 5 fix (19 Sep 2026, owner report: "the button exists but
+    # clicking it does nothing ... no sign-in form appears anywhere in
+    # the DOM"): everything above this comment (the button, the flag,
+    # st.rerun()) was already correct - re-read fresh this round and
+    # confirmed there is no header expander anywhere in paywall_engine.py
+    # for a flag to (fail to) reopen. The actual bug was one call deeper:
+    # this used to call paywall_engine._render_signin_control(), which -
+    # with email sign-in configured (true in production) - renders an
+    # st.popover(): CLOSED by default. So the click correctly reran and
+    # correctly reached this line, which then rendered a SECOND collapsed
+    # trigger under the first CTA, itself needing another click before
+    # anything appeared - reading as "nothing happened" from one click,
+    # exactly as reported. Fix: call paywall_engine._render_signin_
+    # control_inline() instead - the identical form (same widgets, same
+    # keys, same email_auth calls; see that function's own docstring),
+    # just rendered directly with no popover wrapper, so the email field
+    # is visible right here after this CTA's own one click.
     if st.button(i18n.t("tools.hub.signin_cta", lang), key="tools_hub_signin_cta"):
         st.session_state["_show_signin_inline"] = True
         st.rerun()
     if st.session_state.get("_show_signin_inline"):
         with st.container(key="tools_hub_signin_inline_box"):
             st.markdown('<div class="sdd-tools-signin-inline">', unsafe_allow_html=True)
-            paywall_engine._render_signin_control(key="tools_hub_signin_inline", lang=lang)
+            paywall_engine._render_signin_control_inline(key="tools_hub_signin_inline", lang=lang)
             st.markdown('</div>', unsafe_allow_html=True)
 
 
