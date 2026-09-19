@@ -1058,12 +1058,28 @@ EN = {
     # and html.escape() would double-encode an entity into visible
     # "&mdash;" text - same reasoning as portfolio.switcher.*'s literal
     # "·" elsewhere in this file.
-    "tools.page_subtitle": "Free calculators for the money around your investing — budget, bills, offset and super. Described calculations from your own inputs, never advice.",
+    # RESTORED 19 Sep 2026 (grid-fix follow-up): the "and property" wording
+    # below was silently reverted by Commit E (18 Sep 2026, FAQ/schema
+    # commit) - that commit edited a stale local copy of i18n.py from
+    # before this line was ever updated, so writing it back overwrote the
+    # real file with the old four-tool wording while genuinely adding its
+    # own new FAQ keys elsewhere in this file. Re-applied verbatim; see
+    # this task's own report for the root cause.
+    "tools.page_subtitle": "Free calculators for the money around your investing — budget, bills, offset, super and property. Described calculations from your own inputs, never advice.",
     # Part 45: repurposed for the Option C (signed-out) hub tagline (was
     # the old single-line "sign in to use" info text this replaces).
     # Verbatim from the mock's Option C frame. Literal "—", same
     # html.escape() reasoning as tools.page_subtitle above.
-    "tools.signin_prompt": "Four free calculators — free account, no card, no spam.",
+    # Grid-fix follow-up (19 Sep 2026): "Four" -> "Five" - tool #5
+    # (Property vs S&P 500) shipped 18 Sep and this signed-out tagline
+    # was never updated to match, unlike tools.page_subtitle just above
+    # (which the same day's grid-fix commit, 585b2ec, DID update -
+    # this specific line was the one genuinely missed). Kept the
+    # existing short CTA-line voice/length rather than expanding it into
+    # a full category list - the "budget, bills, offset, super and
+    # property" phrasing already exists just above; flagged in the
+    # report in case the longer form is wanted here too.
+    "tools.signin_prompt": "Five free calculators — free account, no card, no spam.",
     "tools.registry_stat": "{count} tool &middot; more coming",
     # Fix round 10 #1: per-tool error card - shown in place of a tool
     # whose render raised an exception, so one broken tool doesn't take
@@ -3918,9 +3934,13 @@ ES = {
     # Part 45: repurposed for the Option A hub tagline - see the EN
     # block's comment (literal "—", never an &mdash; entity, since
     # this string is html.escape()'d before going into raw HTML).
-    "tools.page_subtitle": "Calculadoras gratuitas para el dinero alrededor de tu inversión — presupuesto, facturas, offset y super. Cálculos descritos a partir de tus datos, nunca son un consejo.",
+    # RESTORED 19 Sep 2026 (grid-fix follow-up) - see the EN block's own
+    # comment above this same key for the root cause.
+    "tools.page_subtitle": "Calculadoras gratuitas para el dinero alrededor de tu inversión — presupuesto, facturas, offset, super y propiedad. Cálculos descritos a partir de tus datos, nunca son un consejo.",
     # Part 45: repurposed for the Option C (signed-out) hub tagline.
-    "tools.signin_prompt": "Cuatro calculadoras gratuitas — cuenta gratis, sin tarjeta, sin spam.",
+    # Grid-fix follow-up (19 Sep 2026): "Cuatro" -> "Cinco" - see the EN
+    # block's own comment above this same key.
+    "tools.signin_prompt": "Cinco calculadoras gratuitas — cuenta gratis, sin tarjeta, sin spam.",
     "tools.registry_stat": "{count} herramienta &middot; más próximamente",
     "tools.tool_error": "{tool} tuvo un error y no se pudo cargar &mdash; las demás herramientas siguen funcionando. Ha quedado registrado; inténtalo de nuevo en breve.",
 

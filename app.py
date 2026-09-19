@@ -22585,9 +22585,32 @@ def _tools_registry_count():
 _TOOLS_HUB_STYLE = """
 <style>
 .sdd-tools-tagline{color:#8aa0b8;font-size:12.5px;margin:2px 0 14px;max-width:720px;line-height:1.55}
-.sdd-tools-grid{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px}
-.sdd-tools-card{flex:1;min-width:210px;background:#121f36;border:1.5px solid #22345a;
-  border-radius:12px;padding:14px 16px;display:block}
+/* Grid fix (18 Sep 2026, mocks/tools_landing_grid_fix_mock.html): tool #5
+   (Property vs S&P 500) broke the old flex:1/flex-wrap row - a 5th card
+   with nothing to sit beside it on its own wrapped line stretched to
+   fill the ENTIRE row width (flex:1 grows to fill available space on its
+   own line too), producing a full-width orphan banner below four
+   normal-width cards. A CSS grid with auto-fit/minmax has no such
+   last-row special case: every card is exactly the same track width
+   regardless of how many sit in the final row (5-across on a wide
+   screen, 3+2 on a laptop, one column once a row can't fit 2*215px+gap -
+   which lands at the same ~390px phone width the mock calls out), so a
+   6th tool later needs zero layout changes here either.
+
+   RESTORED 19 Sep 2026 (grid-fix follow-up): this fix, and the emoji
+   strip a little further down, were silently REVERTED by Commit F
+   (18 Sep 2026, language-split page-view counting) - that commit edited
+   a stale local copy of app.py that had been staged before this grid fix
+   was ever written, so writing it back overwrote the real, already-fixed
+   file with the old pre-fix content while genuinely adding its own
+   lang-split changes elsewhere in the file. Re-applied verbatim here;
+   see this task's own report for the full root-cause writeup and the
+   fix to the process that caused it (always re-stage a file fresh from
+   the device immediately before editing it, never reuse an
+   earlier-in-session local copy). */
+.sdd-tools-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px;margin-bottom:8px}
+.sdd-tools-card{background:#121f36;border:1.5px solid #22345a;
+  border-radius:12px;padding:14px 16px;display:flex;flex-direction:column}
 .sdd-tools-card.linked:hover{border-color:#14b8a6}
 .sdd-tools-card.static{opacity:.85;cursor:default}
 /* Owner follow-up (13 Sep 2026): Streamlit's own theme CSS was leaking its
@@ -22606,7 +22629,7 @@ _TOOLS_HUB_STYLE = """
   text-decoration:none !important;color:inherit}
 .sdd-tools-card .ic{font-size:22px;border-bottom:none}
 .sdd-tools-card .n{font-weight:800;font-size:14px;margin:6px 0 3px;color:#e6edf5}
-.sdd-tools-card .p{color:#8aa0b8;font-size:11.5px;line-height:1.5}
+.sdd-tools-card .p{color:#8aa0b8;font-size:11.5px;line-height:1.5;flex:1}
 .sdd-tools-card .out{margin-top:9px;border-top:1px dashed #22345a;padding-top:8px;
   font-size:11px;color:#5b7290}
 .sdd-tools-card .out b{color:#2dd4bf;font-variant-numeric:tabular-nums}
@@ -22629,6 +22652,21 @@ _TOOLS_HUB_CARD_COPY = {
     "super": ("super_blurb", "super_teaser"),
     "property_vs_index": ("property_vs_index_blurb", "property_vs_index_teaser"),
 }
+
+# Grid fix (18 Sep 2026): matches emoji-range characters for stripping a
+# leftover mid-string icon from a hub-card title in _tools_hub_cards_html
+# below (property_vs_index's title_key is "\U0001F3E0 Property vs
+# \U0001F4C8 S&P 500" - built for the tab-label context in page_tools(),
+# where the pair of icons previews the tool's own two comparison cards;
+# the hub card only ever shows one icon, in its own .ic div, above a
+# plain-text title). Deliberately narrow (pictograph/symbol/dingbat
+# blocks only) so it never eats real punctuation or non-Latin text in a
+# future translated title - every other current card's title has no
+# emoji left after the existing leading-icon strip below, so this is a
+# no-op for them.
+_EMOJI_RE = re.compile(
+    "[\U0001F300-\U0001FAFF\U00002600-\U000026FF\U00002700-\U000027BF]"
+)
 
 
 def _tools_card_href(tool_id, lang):
@@ -22654,6 +22692,8 @@ def _tools_hub_cards_html(lang, linked):
         _title = i18n.t(_t["title_key"], lang).strip()
         if _title.startswith(_t["icon"]):
             _title = _title[len(_t["icon"]):].strip()
+        _title = _EMOJI_RE.sub("", _title).strip()
+        _title = re.sub(r"\s{2,}", " ", _title)
         _body = (
             f'<div class="ic">{_t["icon"]}</div>'
             f'<div class="n">{html.escape(_title)}</div>'
