@@ -22651,6 +22651,19 @@ _TOOLS_HUB_STYLE = """
 .sdd-tools-btn2, .sdd-tools-btn2:link, .sdd-tools-btn2:visited,
 .sdd-tools-btn2:hover, .sdd-tools-btn2:active{
   color:#2dd4bf !important;text-decoration:none !important}
+/* Button-doesn't-work fix, round 4 (19 Sep 2026): the signed-out CTA is
+   now a real st.button (key="tools_hub_signin_cta"), not raw HTML - see
+   _render_tools_signedout_hub's own comment for why. Styled to match
+   .sdd-tools-btn as closely as a real Streamlit button allows, same
+   convention paywall_engine.py's own _PILL_BUTTON_CSS already uses for
+   the account-bar buttons ([class*="st-key-<key>"] button). */
+[class*="st-key-tools_hub_signin_cta"] button{
+  background:#14b8a6 !important;color:#04211d !important;font-weight:700 !important;
+  border-radius:8px !important;padding:7px 16px !important;font-size:12.5px !important;
+  border:1.5px solid #14b8a6 !important;box-shadow:none !important}
+[class*="st-key-tools_hub_signin_cta"] button:hover{
+  background:#2dd4bf !important;border-color:#2dd4bf !important;color:#04211d !important}
+.sdd-tools-signin-inline{margin-top:10px}
 </style>
 """
 
@@ -22750,44 +22763,40 @@ def _render_tools_signedout_hub(lang):
         unsafe_allow_html=True,
     )
     st.markdown(_tools_hub_cards_html(lang, linked=False), unsafe_allow_html=True)
-    # Button-doesn't-work fix, round 3 (19 Sep 2026) - ROOT CAUSE FOUND.
-    # Rounds 1 and 2 both used an onclick="..." attribute on this <a> tag,
-    # each time just changing WHAT the JS queried (a stale Streamlit
-    # test-id, then a self-owned anchor id). Both shipped and both did
-    # nothing live. The owner sent a screenshot of the live element
-    # inspector this time, and it settled it: the rendered tag is
-    # <a class="sdd-tools-btn" href="#">Sign in free to use them</a> -
-    # no onclick attribute at all. Streamlit's st.markdown(unsafe_allow_
-    # html=True) sanitizes the HTML it injects and strips inline event-
-    # handler attributes (onclick, onload, etc.) even though it lets the
-    # tag/class/href through - so the handler never existed in the DOM to
-    # fire, on EITHER previous attempt. No JS bug to find - there was no
-    # JS running at all. (This also means the Deep Dive first-screen chip
-    # row's own onclick, cited both previous rounds as "already proven
-    # working", almost certainly has this exact same problem and has
-    # never actually worked either - flagging that separately, out of
-    # scope for this fix.)
+    # Button-doesn't-work fix, round 4 (19 Sep 2026) - the raw-HTML CTA
+    # (rounds 1-3, all in this function's own git history) is gone.
+    # Round 3 diagnosed - correctly - that Streamlit's st.markdown(
+    # unsafe_allow_html=True) strips inline onclick handlers, so rounds 1
+    # and 2's JS never ran. What round 3 missed: its OWN replacement, a
+    # plain href="#sdd-signin-anchor" fragment link, still had nothing to
+    # navigate to, because the anchor div it pointed at (paywall_engine.
+    # render_account_bar) was itself a second, independent bug - written
+    # as an indented triple-quoted string, so Markdown rendered its
+    # content as a literal code block instead of real HTML. The owner's
+    # screenshot showed that literal block text sitting at the top of the
+    # live page. Three rounds of raw-HTML/CSS/JS fixes for one button is
+    # a sign the raw-HTML approach itself was the wrong tool here.
     #
-    # Fix: stop depending on any inline JS handler surviving the
-    # sanitizer. Plain HTML fragment navigation - href="#<id>" - needs no
-    # onclick and sanitizers don't touch it. The browser's native fragment
-    # scroll (unlike window.scrollTo) already walks up to whichever
-    # ancestor actually owns the scrollbar to bring the target into view,
-    # so it works here for the same reason scrollIntoView did - it's just
-    # native and doesn't need a script tag to survive at all. Points at
-    # the same paywall_engine.py "#sdd-signin-anchor" div as round 2. The
-    # highlight-pulse feedback (for when the control's already in view and
-    # the scroll itself is 0px) moved from a JS-toggled class to a pure
-    # CSS #sdd-signin-anchor:target rule in paywall_engine.py, which fires
-    # automatically whenever the URL fragment matches - again, no script
-    # required anywhere in this path.
-    st.markdown(
-        '<div class="sdd-tools-cta-row">'
-        '<a class="sdd-tools-btn" href="#sdd-signin-anchor">'
-        f'{html.escape(i18n.t("tools.hub.signin_cta", lang))}</a>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
+    # Fix: a real st.button, no HTML at all. Clicking it sets a session-
+    # state flag and reruns; when the flag is set, the actual sign-in
+    # form renders right underneath - paywall_engine._render_signin_
+    # control(), the EXACT SAME function the account bar itself calls a
+    # few lines into render_account_bar (no second sign-in implementation
+    # to keep in sync). That function already handles both configured
+    # states on its own (a plain "Sign In" button wired to st.login() when
+    # only Google is configured, or a popover with Google + email/code
+    # when email sign-in is also available) - this CTA doesn't need to
+    # know or care which. The flag is cleared once signed in, at the top
+    # of page_tools() (see there), so a future visit here starts closed
+    # again rather than reopening from stale state.
+    if st.button(i18n.t("tools.hub.signin_cta", lang), key="tools_hub_signin_cta"):
+        st.session_state["_show_signin_inline"] = True
+        st.rerun()
+    if st.session_state.get("_show_signin_inline"):
+        with st.container(key="tools_hub_signin_inline_box"):
+            st.markdown('<div class="sdd-tools-signin-inline">', unsafe_allow_html=True)
+            paywall_engine._render_signin_control(key="tools_hub_signin_inline", lang=lang)
+            st.markdown('</div>', unsafe_allow_html=True)
 
 
 def _spotlight_index(session_key, n, day_offset=0):
@@ -25777,6 +25786,16 @@ def page_tools():
     if not paywall_engine.is_logged_in():
         _render_tools_signedout_hub(_lang)
         return
+
+    # Button-doesn't-work fix, round 4 (19 Sep 2026): clears the signed-
+    # out hub's "show the inline sign-in form" flag (_show_signin_inline,
+    # set by _render_tools_signedout_hub's CTA button) now that the
+    # visitor is signed in - this branch only runs once is_logged_in() is
+    # True, so it's the first point after a successful sign-in where that
+    # holds. Without this, signing out and revisiting /tools later would
+    # reopen the inline form from stale session state instead of starting
+    # closed like a fresh visit.
+    st.session_state.pop("_show_signin_inline", None)
 
     email = paywall_engine.current_user_email()
 

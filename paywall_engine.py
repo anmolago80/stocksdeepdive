@@ -831,50 +831,27 @@ def render_account_bar(extra_widget=None, extra_widget2=None, extra_widget3=None
 
     _ensure_auth_secrets_written()
     st.markdown(_PILL_BUTTON_CSS, unsafe_allow_html=True)
-    # Button-doesn't-work fix, round 3 (19 Sep 2026) - ROOT CAUSE FOUND.
-    # Rounds 1 and 2 (still visible in this file's own history/git log)
-    # both gave the Money Tools CTA an onclick="..." handler that queried
-    # for this anchor and called scrollIntoView() - round 1 targeted a
-    # Streamlit-generated class, round 2 targeted this plain self-owned
-    # #sdd-signin-anchor id instead, on the theory that the Streamlit
-    # class name might itself be stale/unreliable. Both shipped, both did
-    # nothing live. The owner sent a screenshot of the browser's own
-    # element inspector this time, which settled it: the deployed <a> tag
-    # had NO onclick attribute at all - just class and href. Streamlit's
-    # st.markdown(unsafe_allow_html=True) sanitizes the HTML it injects
-    # and strips inline event-handler attributes (onclick, onload, etc.)
-    # even though it passes the tag/class/href through untouched - so
-    # neither round's JS ever existed in the live DOM to fire. There was
-    # never a selector bug to find; the handler itself never survived
-    # rendering, on either attempt.
+    # Button-doesn't-work fix, round 4 (19 Sep 2026) - the anchor-div/
+    # :target approach rounds 2-3 built here is GONE. Round 3's own fix
+    # comment (previously right here, see git history for the full text)
+    # explained why raw-HTML onclick handlers get silently stripped by
+    # Streamlit's sanitizer; what round 3 missed is that the anchor
+    # <div id="sdd-signin-anchor"> markdown call itself was ALSO broken,
+    # independently - it was written as a triple-quoted string whose CSS/
+    # HTML lines carried this function's own 8-space Python source
+    # indentation as literal string content, and Markdown treats 4+
+    # leading spaces as a fenced code block. So the div never existed as
+    # a real element at all - the owner was seeing its literal text
+    # rendered as a code block at the top of the live page. Round 3's
+    # href="#sdd-signin-anchor" had nothing to navigate to either way.
     #
-    # Fix: this div stays (a real target is still needed), but nothing
-    # here or on the CTA side depends on an onclick surviving the
-    # sanitizer any more. app.py's CTA now uses plain href="#sdd-signin-
-    # anchor" fragment navigation - the browser's native handling of that,
-    # same as scrollIntoView(), already walks up to whichever ancestor
-    # actually owns the scrollbar, and sanitizers have no reason to touch
-    # a plain href. The highlight-pulse feedback (for when this control's
-    # already in view and the scroll itself is 0px - the owner's own
-    # screenshots of the Money Tools hub show the whole card grid fitting
-    # on screen at once, so that's a real case, not an edge case) is now a
-    # pure CSS :target rule instead of a JS-toggled class, since it also
-    # needs to work with no script involved: it fires automatically
-    # whenever the URL fragment matches this id, which native fragment
-    # navigation sets on its own.
-    st.markdown(
-        """<style>
-        #sdd-signin-anchor{height:0;overflow:visible;position:relative}
-        #sdd-signin-anchor:target::before{
-          content:'';display:block;height:44px;margin:-6px 0 10px;
-          border-radius:10px;background:rgba(45,212,191,.32);
-          box-shadow:0 0 0 1.5px rgba(45,212,191,.55);
-          animation:sddSigninFlash 1.5s ease-out forwards}
-        @keyframes sddSigninFlash{0%{opacity:1}80%{opacity:1}100%{opacity:0}}
-        </style>
-        <div id="sdd-signin-anchor"></div>""",
-        unsafe_allow_html=True,
-    )
+    # Rather than re-fight raw-HTML indentation bugs a second time, the
+    # whole scroll-to-the-sign-in-control approach is retired. The Money
+    # Tools CTA (_render_tools_signedout_hub in app.py) is now a real
+    # st.button that reveals _render_signin_control() - the SAME function
+    # this bar calls a few lines below - inline, directly under itself,
+    # on click. No raw HTML, no anchor, no CSS trick needed in this file
+    # for that flow any more.
 
     # Layout: identity + Subscribe (when shown) hug the left edge (first
     # thing a visitor sees), the widgets and Sign out hug the right edge -
