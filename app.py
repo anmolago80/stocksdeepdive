@@ -22750,32 +22750,36 @@ def _render_tools_signedout_hub(lang):
         unsafe_allow_html=True,
     )
     st.markdown(_tools_hub_cards_html(lang, linked=False), unsafe_allow_html=True)
-    # Button-doesn't-work fix (19 Sep 2026): section[data-testid="stMain"]
-    # no longer exists in the deployed Streamlit version's DOM (this app.py
-    # itself already uses [data-testid="stMainBlockContainer"] elsewhere,
-    # not "stMain" - see the CSS around line 2213), so
-    # document.querySelector found nothing, the `if(m)` guard silently
-    # skipped the scroll, and the button did nothing when clicked - no JS
-    # error, just silence, which is why it looked "broken" rather than
-    # throwing anything visible in the console. Switched to the SAME
-    # scrollIntoView() technique the Deep Dive first-screen chip row
-    # already proved works regardless of which ancestor actually owns the
-    # scrollbar (see that code's own comment, a few thousand lines up) -
-    # and, rather than scrolling an assumed container to an assumed
-    # top-of-page position, targets the REAL sign-in control directly by
-    # its stable Streamlit key-class ([class*="st-key-account_bar_signin"],
-    # the exact same selector this file's own CSS already uses at line
-    # 2352/2356 to style that control - substring-matches both the plain
-    # st.button(key="account_bar_signin") case and the
-    # st.popover(key="account_bar_signin_pop") case, see
-    # paywall_engine._render_signin_control). block:'center' so it lands
-    # clearly in view even if a sticky header would otherwise clip it at
-    # the very top.
+    # Button-doesn't-work fix, round 2 (19 Sep 2026): round 1 (still in
+    # this file's own history) replaced a stale section[data-testid=
+    # "stMain"] query with [class*="st-key-account_bar_signin"] - the
+    # documented Streamlit key-class convention, and this file's own CSS
+    # (line 2352/2356) already uses that exact selector to STYLE the
+    # control, so it looked solid. It shipped, and the owner reported the
+    # button still did nothing. No live-browser access was available this
+    # session to see the actual DOM and confirm why (a second stale
+    # Streamlit-internal name? a timing/hydration issue querying too
+    # early? unclear) - so rather than guess a THIRD Streamlit-internal
+    # selector, this drops the dependency on Streamlit's own generated
+    # class names entirely. paywall_engine.render_account_bar() now plants
+    # a plain, self-authored <div id="sdd-signin-anchor"> right where the
+    # sign-in control renders (see that file's own comment on it) - the
+    # exact same "anchor div + getElementById().scrollIntoView()" pattern
+    # already proven by the Deep Dive first-screen chip row, just pointed
+    # at an id this codebase controls instead of one Streamlit generates.
+    # block:'center' keeps it clear of any sticky header. Also toggles the
+    # anchor's .sdd-flash class (see paywall_engine's own comment on it) -
+    # on a short page/tall viewport the sign-in control can already be
+    # fully in view, so scrollIntoView alone could move 0px and look like
+    # nothing happened even though the click registered; the flash gives
+    # visible confirmation every time, independent of scroll distance.
     st.markdown(
         '<div class="sdd-tools-cta-row">'
         '<a class="sdd-tools-btn" href="#" onclick="'
-        'var t=document.querySelector(\'[class*=\\"st-key-account_bar_signin\\"]\'); '
-        "if(t){t.scrollIntoView({behavior:'smooth',block:'center'});} return false;\">"
+        "var t=document.getElementById('sdd-signin-anchor'); "
+        "if(t){t.scrollIntoView({behavior:'smooth',block:'center'}); "
+        "t.classList.remove('sdd-flash'); void t.offsetWidth; "
+        "t.classList.add('sdd-flash');} return false;\">"
         f'{html.escape(i18n.t("tools.hub.signin_cta", lang))}</a>'
         '</div>',
         unsafe_allow_html=True,

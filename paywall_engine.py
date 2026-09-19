@@ -831,6 +831,49 @@ def render_account_bar(extra_widget=None, extra_widget2=None, extra_widget3=None
 
     _ensure_auth_secrets_written()
     st.markdown(_PILL_BUTTON_CSS, unsafe_allow_html=True)
+    # Button-doesn't-work fix, round 2 (19 Sep 2026): the Money Tools
+    # signed-out CTA ("Sign in free to use them") needs a reliable way to
+    # scroll back up to this sign-in control. Round 1 tried
+    # [class*="st-key-account_bar_signin"] (the documented Streamlit
+    # key-class convention, already used by this file's OWN CSS a few
+    # lines below to STYLE the control) - deployed, but the owner reported
+    # the button still did nothing, and with no live-browser access this
+    # session to confirm why, the safer fix is to stop depending on any
+    # Streamlit-internal class/test-id naming (this is now the SECOND one
+    # that's turned out unreliable, after section[data-testid="stMain"] in
+    # round 1) and instead plant a plain, self-authored anchor id here -
+    # exactly the same "anchor div + getElementById(...).scrollIntoView()"
+    # pattern the Deep Dive first-screen chip row already proves works
+    # regardless of which ancestor owns the scrollbar. This div renders
+    # every time the account bar does (signed in or out, zero footprint -
+    # no size, no visible content by default) so any CTA anywhere on the
+    # site can reliably scroll back up to "where sign-in lives" without
+    # guessing at Streamlit's own DOM structure.
+    #
+    # Also: on a short page (or a tall viewport) the sign-in control can
+    # already be fully in view when the CTA is clicked - the owner's own
+    # screenshots of the Money Tools hub show the whole card grid fitting
+    # on screen at once, so a scroll of 0px is a real possibility, not an
+    # edge case. A pure scrollIntoView() with nothing else visible would
+    # look exactly like "the button does nothing" even if the JS ran
+    # perfectly - so this also gives the anchor a brief highlight pulse
+    # (CSS-only, ::before content, no layout shift since the div itself
+    # stays height:0) that the CTA's onclick triggers by toggling
+    # .sdd-flash - visible feedback on every click regardless of scroll
+    # distance.
+    st.markdown(
+        """<style>
+        #sdd-signin-anchor{height:0;overflow:visible;position:relative}
+        #sdd-signin-anchor.sdd-flash::before{
+          content:'';display:block;height:44px;margin:-6px 0 10px;
+          border-radius:10px;background:rgba(45,212,191,.32);
+          box-shadow:0 0 0 1.5px rgba(45,212,191,.55);
+          animation:sddSigninFlash 1.5s ease-out}
+        @keyframes sddSigninFlash{0%{opacity:1}80%{opacity:1}100%{opacity:0}}
+        </style>
+        <div id="sdd-signin-anchor"></div>""",
+        unsafe_allow_html=True,
+    )
 
     # Layout: identity + Subscribe (when shown) hug the left edge (first
     # thing a visitor sees), the widgets and Sign out hug the right edge -
