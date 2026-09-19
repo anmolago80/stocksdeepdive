@@ -335,6 +335,134 @@ def _company_potential_html(cp_section, ticker, lang):
     return "".join(parts)
 
 
+# -----------------------------------
+# Public read-only API (api_v1.py's /api/v1/research, /api/v1/research/
+# {slug}) - structured DATA versions of the exact same section selection
+# and gating _section_html()/_company_potential_html() above already
+# apply for the live HTML page, so the API can never show a visitor
+# (human or machine) anything the real signed-out /s/research/<slug>
+# page wouldn't. Kept in sync with those two functions by hand - same
+# "duplicated on purpose, mirror any change" precedent as _fmt()'s own
+# docstring above (api_v1.py must not import Streamlit-coupled
+# compounder_ui.py, and these two HTML-string builders can't be reused
+# as-is by a JSON response).
+# -----------------------------------
+
+def public_sections_data(ticker, data, lang="en"):
+    """Same _SECTION_ORDER/_GATED_SECTIONS/_PAYWALL_ENABLED gate and _fmt()
+    formatting as render_research_snapshot() above, as a list of
+    {"heading":, "body": [{"label":, "value":}, ...]} dicts in source
+    order instead of HTML table rows. Appends the "Author's research
+    notes" section (see _research_notes_data() below) last, exactly
+    where render_research_snapshot() places it relative to the CTA -
+    still gated on _PAYWALL_ENABLED, still excluding "Investment
+    Recommendation"."""
+    ticker = (ticker or "").strip().upper()
+    sections = (data or {}).get("sections") or {}
+    out = []
+    for label in _SECTION_ORDER:
+        if label in _GATED_SECTIONS and _PAYWALL_ENABLED:
+            continue
+        section = sections.get(label)
+        if not section:
+            continue
+        rows = []
+        for m in (section.get("metrics") or []):
+            val = (m.get("values") or {}).get(ticker)
+            if val is None:
+                continue
+            shown = _fmt(val, m.get("format") or "num")
+            if shown is None:
+                continue
+            rows.append({"label": m.get("label") or m.get("key") or "", "value": shown})
+        if not rows:
+            continue
+        heading = _SECTION_LABEL_ES[label] if lang == "es" and label in _SECTION_LABEL_ES else label
+        out.append({"heading": heading, "body": rows})
+
+    if not _PAYWALL_ENABLED:
+        notes = _research_notes_data(sections.get("Company Potential") or {}, ticker)
+        if notes:
+            heading = "Notas de investigación del autor" if lang == "es" else "Author's research notes"
+            out.append({"heading": heading, "body": notes})
+    return out
+
+
+def _research_notes_data(cp_section, ticker):
+    """Same ratings/short-checks/long-checks-merge-into-"The Investment
+    Case"/text_groups selection as _company_potential_html() above, as
+    plain {"label":, "text":} (optionally "group":) rows instead of
+    HTML - including the same "Investment Recommendation" exclusion
+    (see module docstring's "WHAT RENDERS, WHAT DOESN'T" section - this
+    is the one closing buy/hold/pass call this whole SEO/API surface
+    deliberately never publishes)."""
+    ratings = list((cp_section.get("hml_ratings") or {}).get(ticker) or [])
+    checks = list((cp_section.get("yesno_checks") or {}).get(ticker) or [])
+    groups = [dict(g, items=list(g.get("items") or [])) for g in
+              ((cp_section.get("text_groups") or {}).get(ticker) or [])]
+
+    short_checks = [c for c in checks if len((c.get("value") or "").strip()) <= _CHECK_LONGFORM_MIN]
+    long_checks = [c for c in checks if len((c.get("value") or "").strip()) > _CHECK_LONGFORM_MIN]
+
+    if long_checks:
+        ic_items = [{"label": c.get("label"), "text": c.get("value")} for c in long_checks]
+        ic_group = next((g for g in groups if g.get("title") == "The Investment Case"), None)
+        if ic_group is not None:
+            ic_group["items"] = ic_group["items"] + ic_items
+        else:
+            groups = groups + [{"title": "The Investment Case", "items": ic_items}]
+
+    rows = []
+    for r in ratings:
+        label, value = (r.get("label") or "").strip(), (r.get("value") or "").strip()
+        if label and value:
+            rows.append({"label": label, "text": value})
+    for c in short_checks:
+        label, value = (c.get("label") or "").strip(), (c.get("value") or "").strip()
+        if label and value:
+            rows.append({"label": label, "text": value})
+    for g in groups:
+        title = (g.get("title") or "").strip()
+        for it in (g.get("items") or []):
+            label = (it.get("label") or "").strip()
+            text = (it.get("text") or "").strip()
+            if label in _EXCLUDED_TEXT_ITEM_LABELS or not text:
+                continue
+            rows.append({"group": title or None, "label": label or None, "text": text})
+    return rows
+
+
+_RESEARCH_ES_FLAG = (
+    "Investigación original en inglés — mostrada tal como fue escrita."
+)
+
+
+def list_public_research(data):
+    """{slug, ticker, company_name, last_updated, languages} for every
+    research ticker with public content right now - api_v1.py's
+    /api/v1/research list, built from the same self-discovered
+    _research_tickers()/slug_for_ticker() this module's sitemap loop
+    and /s/research/<slug> route already use. `languages` is always
+    ["en", "es"]: every entry here already has a real /s/research/<slug>
+    and /es/s/research/<slug> page (see module docstring's SLUG
+    section) - the ES page translates the chrome/headings around the
+    same author's-own-words content, it does not gate on a separate
+    translation being done."""
+    data = data or {}
+    generated_at = data.get("generated_at")
+    out = []
+    for ticker in _research_tickers(data):
+        company_name = _company_name(ticker)
+        out.append({
+            "slug": slug_for_ticker(ticker, company_name),
+            "ticker": ticker,
+            "company_name": company_name,
+            "last_updated": generated_at,
+            "languages": ["en", "es"],
+        })
+    return out
+
+
 _RSN_CSS = """
 <style>
 .rsn-table{width:100%;border-collapse:collapse;font-size:13.5px;margin:6px 0 18px}

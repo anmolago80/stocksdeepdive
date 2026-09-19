@@ -1949,6 +1949,16 @@ machine-readable schema at [{base}/api/v1/openapi.json]({base}/api/v1/openapi.js
 - `GET /api/v1/scan/{{universe}}` - the ranked overnight scan for a whole
   index, e.g. [{base}/api/v1/scan/asx-200]({base}/api/v1/scan/asx-200).
   Universe slugs: {universes}
+- `GET /api/v1/research` - every published Rational Compounder research
+  company (slug, ticker, company name, last updated, EN/ES availability),
+  e.g. [{base}/api/v1/research]({base}/api/v1/research)
+- `GET /api/v1/research/{{slug}}` - one research company's public sections
+  (both languages), exactly what a signed-out visitor sees on
+  `/s/research/{{slug}}` - never the News tab or anything gated.
+- `GET /api/v1/blog` - every published blog post (title, date, language),
+  e.g. [{base}/api/v1/blog]({base}/api/v1/blog)
+- `GET /api/v1/blog/{{slug}}` - one published post's body, split into
+  sections in source order.
 
 ### Coverage & update cadence
 

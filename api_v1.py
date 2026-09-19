@@ -42,6 +42,18 @@ import scanner_engine
 import snapshot_render
 import snapshot_store
 
+# Public read-only Research/Blog endpoints (added 19 Sep 2026) - reuse the
+# exact same public-view store/render functions the live pages already
+# call: blog_store.list_posts()/get_post() default to published-only
+# (include_drafts=False), and research_snapshot_render's
+# list_public_research()/public_sections_data() apply the identical
+# section-gating/exclusion rules render_research_snapshot() uses for
+# the real /s/research/<slug> page - see that module's own comments.
+# No new queries against either store's raw tables anywhere below.
+import blog_render
+import blog_store
+import research_snapshot_render
+
 SITE_NAME = "StocksDeepDive"
 ATTRIBUTION = snapshot_render.ATTRIBUTION
 DISCLAIMER = snapshot_render.PLAIN_DISCLAIMER
@@ -395,4 +407,157 @@ def get_history(ticker: str, request: Request):
         },
         as_of=datetime.fromtimestamp(fetched_at, tz=timezone.utc).isoformat(),
         link=snapshot_render.snapshot_url(base, ticker),
+    )
+
+
+# -----------------------------------
+# Research + Blog - GET /api/v1/research[/{slug}], GET /api/v1/blog[/{slug}]
+# (added 19 Sep 2026). Same envelope/rate-limit conventions as every
+# endpoint above. Reads only blog_store's and research_snapshot_render's
+# own public-view functions - blog_store.list_posts()/get_post() default
+# to published-only (include_drafts=False, never overridden here), and
+# research_snapshot_render.list_public_research()/public_sections_data()
+# apply the identical section-gating/exclusion rules
+# render_research_snapshot() uses for the real /s/research/<slug> page
+# (see that module's own module docstring and comments above those two
+# functions) - no new query against either store's raw tables anywhere
+# below.
+# -----------------------------------
+
+_BLOG_SECTION_RE = re.compile(r"^##\s+(.+)$", re.MULTILINE)
+
+
+def _blog_sections_data(post):
+    """post['body_md'] split on H2 (`## `) Markdown headings into
+    {"heading":, "body":} sections in source order - the same headings a
+    reader sees on the live /blog/<slug> page (blog_render.md_to_html()
+    is the exact same Markdown->HTML converter render_post() already
+    uses for the whole body, so each section's HTML here is
+    byte-identical to that stretch of the live page). A post with no H2
+    headings at all (most posts) comes back as one section under the
+    post's own title, covering the whole body."""
+    text = post.get("body_md") or ""
+    matches = list(_BLOG_SECTION_RE.finditer(text))
+    if not matches:
+        body_html = blog_render.md_to_html(text)
+        return [{"heading": post["title"], "body": body_html}] if body_html.strip() else []
+    sections = []
+    lead = text[:matches[0].start()].strip()
+    if lead:
+        sections.append({"heading": post["title"], "body": blog_render.md_to_html(lead)})
+    for i, m in enumerate(matches):
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        sections.append({
+            "heading": m.group(1).strip(),
+            "body": blog_render.md_to_html(text[start:end].strip()),
+        })
+    return sections
+
+
+def _blog_list_row(post, base_url):
+    return {
+        "slug": post["slug"],
+        "title": post["title"],
+        "summary": blog_render.post_description(post),
+        "date": post.get("published_at") or post.get("updated_at"),
+        "lang": post.get("lang") or "en",
+        "url": blog_render.post_url(base_url, post["slug"]),
+    }
+
+
+@api_app.get("/research", summary="Published Rational Compounder research companies")
+def get_research_list(request: Request):
+    """slug/ticker/company_name/last_updated/languages for every
+    hand-covered research company with public content - see
+    research_snapshot_render.list_public_research()."""
+    _check_rate_limit(request)
+    data = research_snapshot_render._load_research_data()
+    rows = research_snapshot_render.list_public_research(data)
+    base = str(request.base_url).rstrip("/")
+    for r in rows:
+        r["url"] = f"{base}/s/research/{r['slug']}"
+    return _envelope(
+        {"companies": rows},
+        as_of=(data or {}).get("generated_at"),
+        link=f"{base}/research",
+    )
+
+
+@api_app.get("/research/{slug}", summary="One research company, public sections only")
+def get_research_detail(slug: str, request: Request):
+    """Exactly what a signed-out visitor sees on /s/research/<slug> and
+    /es/s/research/<slug> - never the News tab, never owner/subscriber-
+    gated content (see research_snapshot_render.py's own module
+    docstring). Both language renditions are the SAME author's-own-words
+    content under a translated page shell (see that module's SLUG
+    section) - the ES side is flagged as such via `note` rather than
+    presented as an independent translation."""
+    _check_rate_limit(request)
+    data = research_snapshot_render._load_research_data()
+    ticker = research_snapshot_render.ticker_for_slug(slug, data)
+    if not ticker:
+        raise HTTPException(status_code=404, detail=f"No published research at '{slug}'.")
+    company_name = research_snapshot_render._company_name(ticker)
+    base = str(request.base_url).rstrip("/")
+    return _envelope(
+        {
+            "slug": slug,
+            "ticker": ticker,
+            "company_name": company_name,
+            "en": {"sections": research_snapshot_render.public_sections_data(ticker, data, lang="en")},
+            "es": {
+                "sections": research_snapshot_render.public_sections_data(ticker, data, lang="es"),
+                "note": research_snapshot_render._RESEARCH_ES_FLAG,
+            },
+        },
+        as_of=(data or {}).get("generated_at"),
+        link=f"{base}/s/research/{slug}",
+    )
+
+
+@api_app.get("/blog", summary="Published blog posts")
+def get_blog_list(
+    request: Request,
+    lang: str = Query(None, description="Filter by post language, 'en' or 'es'"),
+    limit: int = Query(None, ge=1, le=200, description="Max posts to return"),
+):
+    _check_rate_limit(request)
+    posts = blog_store.list_posts(include_drafts=False, limit=limit, lang=lang)
+    base = str(request.base_url).rstrip("/")
+    return _envelope(
+        {"posts": [_blog_list_row(p, base) for p in posts]},
+        as_of=blog_store.last_modified(include_drafts=False),
+        link=f"{base}/blog",
+    )
+
+
+@api_app.get("/blog/{slug}", summary="One published blog post, structured sections")
+def get_blog_detail(slug: str, request: Request):
+    """title/date/lang/sections for one published post - never a draft
+    or a post pending review (blog_store.get_post()'s default
+    include_drafts=False, never overridden here, is what makes an
+    unpublished slug 404 rather than leak)."""
+    _check_rate_limit(request)
+    post = blog_store.get_post(slug, include_drafts=False)
+    if not post:
+        raise HTTPException(status_code=404, detail=f"No published post at '{slug}'.")
+    base = str(request.base_url).rstrip("/")
+    sibling = blog_store.get_translation_sibling(post)
+    translation = (
+        {"slug": sibling["slug"], "lang": sibling.get("lang") or "en",
+         "url": blog_render.post_url(base, sibling["slug"])}
+        if sibling and sibling.get("status") == blog_store.STATUS_PUBLISHED else None
+    )
+    return _envelope(
+        {
+            "slug": post["slug"],
+            "title": post["title"],
+            "date": post.get("published_at") or post.get("updated_at"),
+            "lang": post.get("lang") or "en",
+            "sections": _blog_sections_data(post),
+            "translation": translation,
+        },
+        as_of=post.get("updated_at"),
+        link=blog_render.post_url(base, post["slug"]),
     )
