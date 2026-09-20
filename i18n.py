@@ -1473,8 +1473,14 @@ EN = {
         "yearly number."
     ),
     "tools.property_vs_index.property_growth_label": "Property growth (%/yr)",
-    "tools.property_vs_index.sp500_return_label": "S&P 500 total return (%/yr)",
-    "tools.property_vs_index.sp500_dividend_label": "…of which dividend yield (%)",
+    # Commit A (20 Sep 2026): relabelled - capital gain and dividend
+    # yield are now independent, additive inputs, not a total split
+    # into two parts (property_vs_index_engine.index_price_growth_
+    # rate()'s own docstring). Key names unchanged (only the displayed
+    # text moved) so no other code needs to know about the relabel.
+    "tools.property_vs_index.sp500_return_label": "Capital gain (%/yr)",
+    "tools.property_vs_index.sp500_dividend_label": "Dividend yield (%)",
+    "tools.property_vs_index.total_return_caption": "Total return {total:.1f}%",
     "tools.property_vs_index.marginal_rate_label": "Your marginal tax rate (%)",
     "tools.property_vs_index.marginal_rate_help": "Your bracket rate + 2% Medicare levy",
     "tools.property_vs_index.years_label": "Years",
@@ -4365,8 +4371,12 @@ ES = {
         "propiedad, un número anual."
     ),
     "tools.property_vs_index.property_growth_label": "Crecimiento de la propiedad (%/año)",
-    "tools.property_vs_index.sp500_return_label": "Retorno total del S&P 500 (%/año)",
-    "tools.property_vs_index.sp500_dividend_label": "…del cual dividendo (%)",
+    # Commit A (20 Sep 2026): ver la nota equivalente en el bloque EN -
+    # ganancia de capital y rendimiento por dividendos son ahora
+    # entradas independientes y aditivas, no un total dividido en dos.
+    "tools.property_vs_index.sp500_return_label": "Ganancia de capital (%/año)",
+    "tools.property_vs_index.sp500_dividend_label": "Rendimiento por dividendos (%)",
+    "tools.property_vs_index.total_return_caption": "Retorno total {total:.1f}%",
     "tools.property_vs_index.marginal_rate_label": "Tu tasa marginal de impuestos (%)",
     "tools.property_vs_index.marginal_rate_help": "La tasa de tu tramo impositivo + 2% Medicare levy",
     "tools.property_vs_index.years_label": "Años",

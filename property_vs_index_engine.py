@@ -53,24 +53,38 @@ Debt Recycling card's own "the numbers must add up on screen" rule):
      entered as one number).
 
 INDEX (S&P 500) SIDE - two lines summing to the headline:
-  1. Growth after CGT - the S&P 500's TOTAL return is split into a
-     price-growth component (total - dividend yield) the balance
-     compounds at, and the dividend yield (below); `cash` compounds at
-     the price-growth rate alone and is taxed at disposal with the same
-     50% CGT discount as the property side (no buy/sell costs on this
-     side - a lump-sum index purchase's brokerage is not modelled, per
-     the task spec's own inputs, which lists buy/sell costs only for the
-     property).
+  1. Growth after CGT - `capital_gain` IS the price-growth rate the
+     balance compounds at, directly; `cash` compounds at that rate
+     alone and is taxed at disposal with the same 50% CGT discount as
+     the property side (no buy/sell costs on this side - a lump-sum
+     index purchase's brokerage is not modelled, per the task spec's
+     own inputs, which lists buy/sell costs only for the property).
   2. Dividends after tax - EACH year's dividend is that year's OWN
-     start-of-year balance x dividend yield (a genuinely compounding
-     dividend STREAM, since the balance is growing at the price-growth
-     rate even though dividend cash itself is paid out, not reinvested)
-     - taxed ONCE at the full marginal rate (ordinary income, no
-     franking modelled - the S&P 500 is a US index, DR's own AU-only
-     franking treatment doesn't apply here) and paid out annually, the
-     same non-reinvestment convention as the property's rent line. The
-     sum of `years` distinct dividend payments is a finite geometric
-     series - see _geometric_growth_sum() below.
+     start-of-year balance x dividend_yield (a genuinely compounding
+     dividend STREAM, since the balance is growing at capital_gain even
+     though dividend cash itself is paid out, not reinvested) - taxed
+     ONCE at the full marginal rate (ordinary income, no franking
+     modelled - the S&P 500 is a US index, DR's own AU-only franking
+     treatment doesn't apply here) and paid out annually, the same
+     non-reinvestment convention as the property's rent line. The sum
+     of `years` distinct dividend payments is a finite geometric series
+     - see _geometric_growth_sum() below.
+
+  COMMIT A (20 Sep 2026): capital_gain and dividend_yield are
+  INDEPENDENT, ADDITIVE inputs, not a total split into two parts. The
+  ORIGINAL model had index_price_growth_rate(total_return,
+  dividend_yield) return total_return - dividend_yield - the first box
+  was a ceiling the second was carved out of, so raising the dividend
+  yield LOWERED the price-growth component and the headline barely
+  moved, even though the two boxes read as independent in the UI.
+  index_price_growth_rate() now returns capital_gain unchanged
+  (dividend_yield is accepted and ignored - kept only so this
+  function's signature, and every call site below that still passes
+  both args, needs no churn). Total return is now a DERIVED display
+  value (capital_gain + dividend_yield, computed in the UI layer) -
+  never an input anywhere in this engine. Dividends are still paid out,
+  not reinvested, and still taxed annually, exactly as before - a
+  reinvestment toggle was considered and dropped.
 
 BOTH SIDES share the exact same after_tax_capital_gain() 50%-discount
 function and the exact same "linear, non-reinvested, taxed once at
@@ -129,8 +143,17 @@ DEFAULT_WEEKLY_RENT = 650.0
 DEFAULT_VACANCY_WEEKS = 2
 DEFAULT_HOLDING_COSTS = 8_000.0
 DEFAULT_PROPERTY_GROWTH = 0.05
-DEFAULT_SP500_TOTAL_RETURN = 0.09
+DEFAULT_SP500_CAPITAL_GAIN = 0.077
 DEFAULT_SP500_DIVIDEND_YIELD = 0.013
+# Commit A (20 Sep 2026) back-compat alias: capital_gain and dividend_
+# yield are now independent, additive inputs (see index_price_growth_
+# rate()'s own docstring) - "total return" is a derived display value,
+# never an input, but this name is kept for one release in case
+# anything outside this module still imports it (grepped the whole
+# codebase before this commit - nothing currently does). Computed from
+# the two real defaults so it can never drift out of sync with them;
+# reproduces the exact old 0.09 value at today's defaults.
+DEFAULT_SP500_TOTAL_RETURN = DEFAULT_SP500_CAPITAL_GAIN + DEFAULT_SP500_DIVIDEND_YIELD
 DEFAULT_MARGINAL_RATE = 0.37
 MEDICARE_LEVY = 0.02
 DEFAULT_YEARS = 10
@@ -370,8 +393,14 @@ def property_breakdown(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
 # Index (S&P 500) side.
 # --------------------------------------------------------------------------- #
 
-def index_price_growth_rate(total_return, dividend_yield):
-    return (total_return or 0.0) - (dividend_yield or 0.0)
+def index_price_growth_rate(capital_gain, dividend_yield=None):
+    """Commit A (20 Sep 2026): capital_gain and dividend_yield are
+    independent, additive inputs, not a total split into two parts -
+    see the module docstring's own "INDEX (S&P 500) SIDE" section.
+    dividend_yield is accepted and ignored - kept so index_breakdown()/
+    index_series() below (and any other existing caller) don't need
+    signature churn."""
+    return capital_gain or 0.0
 
 
 def index_growth_after_cgt(cash, price_growth_rate, years, tax_rate):
@@ -386,10 +415,12 @@ def index_dividends_after_tax(cash, price_growth_rate, dividend_yield, years, ta
     return pretax * (1 - tax_rate)
 
 
-def index_breakdown(cash, total_return, dividend_yield, years, tax_rate):
+def index_breakdown(cash, capital_gain, dividend_yield, years, tax_rate):
     """The S&P 500 card's full breakdown at `years` - the two lines
-    (module docstring) plus "headline", their exact sum."""
-    price_growth_rate = index_price_growth_rate(total_return, dividend_yield)
+    (module docstring) plus "headline", their exact sum. Commit A (20
+    Sep 2026): `capital_gain` and `dividend_yield` are independent,
+    additive inputs - see index_price_growth_rate()'s own docstring."""
+    price_growth_rate = index_price_growth_rate(capital_gain, dividend_yield)
     growth_after_cgt = index_growth_after_cgt(cash, price_growth_rate, years, tax_rate)
     dividends_after_tax = index_dividends_after_tax(
         cash, price_growth_rate, dividend_yield, years, tax_rate)
@@ -472,11 +503,13 @@ def property_series(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
     return series
 
 
-def index_series(cash, total_return, dividend_yield, years, tax_rate):
+def index_series(cash, capital_gain, dividend_yield, years, tax_rate):
     """[headline-if-sold-at-t for t = 0..years] - S&P 500, mark-to-
     market. series[years] is exactly index_breakdown(...)["headline"]
-    at the same inputs."""
-    price_growth_rate = index_price_growth_rate(total_return, dividend_yield)
+    at the same inputs. Commit A (20 Sep 2026): `capital_gain` and
+    `dividend_yield` are independent, additive inputs - see index_
+    price_growth_rate()'s own docstring."""
+    price_growth_rate = index_price_growth_rate(capital_gain, dividend_yield)
     series = []
     for t in range(years + 1):
         growth = index_growth_after_cgt(cash, price_growth_rate, t, tax_rate)
@@ -515,7 +548,7 @@ def find_crossover_year(property_series_vals, index_series_vals):
 def run(cash=DEFAULT_CASH, loan=DEFAULT_LOAN, loan_rate=DEFAULT_LOAN_RATE,
        weekly_rent=DEFAULT_WEEKLY_RENT, vacancy_weeks=DEFAULT_VACANCY_WEEKS,
        holding_costs=DEFAULT_HOLDING_COSTS, property_growth=DEFAULT_PROPERTY_GROWTH,
-       sp500_total_return=DEFAULT_SP500_TOTAL_RETURN,
+       sp500_capital_gain=DEFAULT_SP500_CAPITAL_GAIN,
        sp500_dividend_yield=DEFAULT_SP500_DIVIDEND_YIELD,
        marginal_rate=DEFAULT_MARGINAL_RATE, medicare_levy=MEDICARE_LEVY,
        years=DEFAULT_YEARS, buy_costs=DEFAULT_BUY_COSTS,
@@ -539,7 +572,7 @@ def run(cash=DEFAULT_CASH, loan=DEFAULT_LOAN, loan_rate=DEFAULT_LOAN_RATE,
         cash, loan, loan_rate, weekly_rent, vacancy_weeks, holding_costs,
         property_growth, years, buy_costs, sell_costs_pct, tax_rate,
         io_period, term)
-    index_bd = index_breakdown(cash, sp500_total_return, sp500_dividend_yield, years, tax_rate)
+    index_bd = index_breakdown(cash, sp500_capital_gain, sp500_dividend_yield, years, tax_rate)
 
     be_rent = break_even_weekly_rent(loan, loan_rate, holding_costs, vacancy_weeks)
     coverage_pct = rent_coverage_pct(weekly_rent, be_rent)
@@ -552,7 +585,7 @@ def run(cash=DEFAULT_CASH, loan=DEFAULT_LOAN, loan_rate=DEFAULT_LOAN_RATE,
         cash, loan, loan_rate, weekly_rent, vacancy_weeks, holding_costs,
         property_growth, years, buy_costs, sell_costs_pct, tax_rate,
         io_period, term)
-    idx_series = index_series(cash, sp500_total_return, sp500_dividend_yield, years, tax_rate)
+    idx_series = index_series(cash, sp500_capital_gain, sp500_dividend_yield, years, tax_rate)
     crossover_year = find_crossover_year(prop_series, idx_series)
 
     winner = "property" if property_bd["headline"] >= index_bd["headline"] else "index"

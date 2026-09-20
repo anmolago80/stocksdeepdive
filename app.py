@@ -24430,6 +24430,29 @@ _PVI_STYLE = """
 """
 
 
+def _pvi_upgrade_saved_inputs(d):
+    """Commit A (20 Sep 2026): v1 stored sp500_return_pct as TOTAL
+    return, with sp500_dividend_pct carved out of it (property_vs_
+    index_engine's OLD index_price_growth_rate(total_return,
+    dividend_yield) = total_return - dividend_yield). v2 stores capital
+    gain and dividend as independent, additive rates instead - see that
+    function's own new docstring. Upgrade in place, read-time only (no
+    DB migration - tools_store stores this as a free-form JSON dict, it
+    doesn't care about the shape), so a v1 scenario keeps producing the
+    SAME numbers it always did instead of silently gaining its own
+    dividend yield on top of what used to be its total return."""
+    if not d or d.get("pvi_schema") == 2:
+        return d
+    d = dict(d)
+    if "sp500_return_pct" in d and "sp500_capital_gain_pct" not in d:
+        d["sp500_capital_gain_pct"] = (
+            float(d.get("sp500_return_pct") or 0.0)
+            - float(d.get("sp500_dividend_pct") or 0.0)
+        )
+    d["pvi_schema"] = 2
+    return d
+
+
 def _render_property_vs_index_tool(email):
     """Task (18 Sep 2026): \U0001F3E0 Property vs \U0001F4C8 S&P 500. Engine is
     property_vs_index_engine.py - deliberately self-contained (never
@@ -24479,6 +24502,7 @@ def _render_property_vs_index_tool(email):
     )
     _saved = tools_store.get_property_vs_index_scenario(email, _active) or {}
     _saved_inputs = _saved.get("inputs") or {}
+    _saved_inputs = _pvi_upgrade_saved_inputs(_saved_inputs)
 
     def _seed(key, default):
         _skey = _tools_plan_key(_active, key)
@@ -24551,14 +24575,29 @@ def _render_property_vs_index_tool(email):
                 _sl("property_growth_label"), min_value=0.0, max_value=15.0, step=0.1, format="%.1f",
                 key=_seed("tools_pvi_property_growth_pct", _eng.DEFAULT_PROPERTY_GROWTH * 100),
             )
-            sp500_return_pct = st.number_input(
+            # Commit A (20 Sep 2026): renamed from sp500_return_pct -
+            # capital gain and dividend yield are now independent,
+            # additive inputs, not a total split into two parts (see
+            # property_vs_index_engine.index_price_growth_rate()'s own
+            # docstring). Widget key renamed to match so _seed() looks
+            # up the new "sp500_capital_gain_pct" saved-dict field
+            # (_pvi_upgrade_saved_inputs() above backfills it from any
+            # older v1 scenario).
+            sp500_capital_gain_pct = st.number_input(
                 _sl("sp500_return_label"), min_value=0.0, max_value=15.0, step=0.1, format="%.1f",
-                key=_seed("tools_pvi_sp500_return_pct", _eng.DEFAULT_SP500_TOTAL_RETURN * 100),
+                key=_seed("tools_pvi_sp500_capital_gain_pct", _eng.DEFAULT_SP500_CAPITAL_GAIN * 100),
             )
             sp500_dividend_pct = st.number_input(
                 _sl("sp500_dividend_label"), min_value=0.0, max_value=10.0, step=0.1, format="%.1f",
                 key=_seed("tools_pvi_sp500_dividend_pct", _eng.DEFAULT_SP500_DIVIDEND_YIELD * 100),
             )
+            # Commit A: live, so nothing about the derived total is
+            # hidden - capital gain and dividend are independent
+            # additive inputs now, this is their sum, purely for
+            # display (never fed back into the engine as an input).
+            st.caption(_sl(
+                "total_return_caption", total=sp500_capital_gain_pct + sp500_dividend_pct,
+            ))
             marginal_rate_pct = st.number_input(
                 _sl("marginal_rate_label"), min_value=0.0, max_value=60.0, step=0.5, format="%.1f",
                 help=_sl("marginal_rate_help"),
@@ -24590,7 +24629,7 @@ def _render_property_vs_index_tool(email):
         cash=cash, loan=loan, loan_rate=loan_rate_pct / 100.0,
         weekly_rent=weekly_rent, vacancy_weeks=int(vacancy_weeks),
         holding_costs=holding_costs, property_growth=property_growth_pct / 100.0,
-        sp500_total_return=sp500_return_pct / 100.0,
+        sp500_capital_gain=sp500_capital_gain_pct / 100.0,
         sp500_dividend_yield=sp500_dividend_pct / 100.0,
         io_period=io_period, term=loan_term,
         marginal_rate=marginal_rate_pct / 100.0, medicare_levy=_eng.MEDICARE_LEVY,
@@ -24801,9 +24840,18 @@ def _render_property_vs_index_tool(email):
             "weekly_rent": weekly_rent, "vacancy_weeks": vacancy_weeks,
             "holding_costs": holding_costs, "buy_costs": buy_costs,
             "sell_costs_pct": sell_costs_pct, "property_growth_pct": property_growth_pct,
-            "sp500_return_pct": sp500_return_pct, "sp500_dividend_pct": sp500_dividend_pct,
+            "sp500_capital_gain_pct": sp500_capital_gain_pct,
+            # Commit A: kept as the DERIVED total (capital gain +
+            # dividend) for one release, same "read-time upgrade, no DB
+            # migration" reasoning as _pvi_upgrade_saved_inputs() above -
+            # anything still reading sp500_return_pct expecting a total
+            # return figure keeps getting one, just no longer as the
+            # live input it used to be.
+            "sp500_return_pct": sp500_capital_gain_pct + sp500_dividend_pct,
+            "sp500_dividend_pct": sp500_dividend_pct,
             "marginal_rate_pct": marginal_rate_pct, "years": years,
             "io_period": io_period, "term": loan_term,
+            "pvi_schema": 2,
         })
         st.success(_sl("save_confirm"))
 
