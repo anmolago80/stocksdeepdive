@@ -27643,6 +27643,59 @@ def page_admin_dashboard():
             unsafe_allow_html=True,
         )
 
+    # --- SOURCE HEALTH (Commit 2, 20 Sep 2026) --------------------------
+    st.markdown("### Source health")
+    st.caption(
+        "Health checks for scanner_engine.py's live data fetches that "
+        "have last-known-good tracking (currently: the ASX Listed "
+        "Companies CSV fetch_asx300()/fetch_allords() rank against). A "
+        "row-count guard alone only proves a fetch is well-formed, not "
+        "that it's current - asx300list.com/allordslist.com both passed "
+        "one for five years while frozen on a 28 April 2021 snapshot. "
+        "🔴 Stale means the fresh fetch or one of its checks (cross-"
+        "source against the live ASX 200, row-count drift vs last-"
+        "known-good, or a known-recent-listing canary) failed, and the "
+        "site is serving the last known-good snapshot instead of the "
+        "fresh (bad) one - you'll also have gotten an email/push about "
+        "it the moment that first happened."
+    )
+    with st.container(border=True):
+        import source_health_store
+        try:
+            _health = source_health_store.list_all(scanner_engine.TRACKED_HEALTH_SOURCES)
+        except Exception:
+            _health = {}
+        if not _health:
+            st.caption("No tracked sources.")
+        for _i, (_src, _rec) in enumerate(_health.items()):
+            if _i:
+                st.markdown("---")
+            if not _rec:
+                st.markdown(f"**{_src}**")
+                st.caption("Never checked yet")
+                continue
+            _stale = bool(_rec.get("stale"))
+            _hc1, _hc2, _hc3 = st.columns([3, 2, 5])
+            with _hc1:
+                st.markdown(f"**{_src}**")
+                st.caption("🔴 Stale - serving last-known-good" if _stale else "🟢 Healthy")
+                if _stale:
+                    st.caption(f"{_rec.get('consecutive_failures', 0)} consecutive failure(s)")
+            with _hc2:
+                _last_good = _rec.get("last_good_at")
+                st.caption("Last good fetch")
+                st.write(_last_good[:19].replace("T", " ") + " UTC" if _last_good else "never")
+                st.caption(f"{_rec.get('last_good_row_count', '-')} rows")
+            with _hc3:
+                st.caption("Last check results")
+                _checks = _rec.get("last_checks") or {}
+                if not _checks:
+                    st.write("-")
+                else:
+                    for _cname, _cres in _checks.items():
+                        _icon = "✅" if _cres.get("ok") else "❌"
+                        st.write(f"{_icon} **{_cname}**: {_cres.get('detail')}")
+
     # --- SYSTEM --------------------------------------------------------
     st.markdown("---")
     st.markdown("### System")

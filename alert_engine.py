@@ -35,17 +35,23 @@ user into ONE email + ONE push per night" per Part 1's spec, regardless of
 how many universes or the extra ticker pass contributed hits.
 """
 
+import html
 import os
 
 import requests
 
+import ai_gate  # owner_email() ONLY - a plain settings getter, not the AI
+# usage-gating machinery; this module still never calls the Anthropic
+# API itself (AI_FEATURE = None below still holds).
 import alert_store
 import email_auth
 import i18n
 
 AI_FEATURE = None  # this module never calls the Anthropic API - explicit,
 # so a reviewer grepping for ai_gate/ai_client usage across the batch's
-# five new modules finds nothing here and can move on immediately.
+# five new modules finds nothing here and can move on immediately (the
+# one ai_gate import above is its plain owner_email() getter, not an AI
+# feature call - see that import's own comment).
 
 
 # --------------------------------------------------------------------
@@ -387,3 +393,49 @@ def send_batched_notifications(log=print):
 
     alert_store.clear_pending_hits(all_hit_ids)
     return {"users_notified": notified}
+
+
+# --------------------------------------------------------------------
+# Source-health alerting (Commit 2, 20 Sep 2026) - scanner_engine.py's
+# fetchers used to fail open in total silence (a bad/stale source just
+# quietly degraded to a fallback, or to None); a data-source failure now
+# reaches the owner "like a price alert" - same delivery channels
+# (Mailgun email via _send() above, web push via push_send) this module
+# already uses, just addressed to the owner and sent immediately rather
+# than queued through alert_store: a source-health event isn't
+# ticker-shaped, so it doesn't fit that table's per-user/per-ticker
+# schema or cooldown model. Dedup against repeating the same alert every
+# day a source stays down is the CALLER's job (see source_health_store.
+# record_failure()'s own docstring) - check the prior record's `stale`
+# flag before calling this, and only call it on a fresh False -> True
+# transition.
+# --------------------------------------------------------------------
+
+def send_source_health_alert(source, checks, reason, log=print):
+    """Immediate email + push to the site owner (ai_gate.owner_email())
+    reporting a scanner_engine.py data source that just failed its
+    health check. Never raises - a failure to send the ALERT about a
+    failure must never itself break the fetch path that's already
+    degrading gracefully to last-known-good."""
+    owner = ai_gate.owner_email()
+    subject = f"[StocksDeepDive] Data source unhealthy: {source}"
+    failed_lines = [
+        f"{name}: {c.get('detail')}" for name, c in (checks or {}).items()
+        if not c.get("ok")
+    ]
+    body_lines = [reason] + failed_lines
+    body_text = "\n".join(body_lines)
+
+    if is_configured():
+        try:
+            body_html = "<br>".join(html.escape(line) for line in body_lines)
+            _send(owner, subject, f"<p style='font-family:monospace'>{body_html}</p>")
+        except Exception as e:
+            log(f"[alert_engine] source-health email to {owner} failed: {e}")
+
+    try:
+        import push_send
+        if push_send.is_configured():
+            push_send.send_to_email(owner, subject, body_text[:180], url="/admin-dashboard")
+    except Exception as e:
+        log(f"[alert_engine] source-health push to {owner} failed: {e}")

@@ -89,8 +89,10 @@ import requests
 import streamlit as st
 import yfinance as yf
 
+import alert_engine
 import market_cap_engine
 import sector_cache_store
+import source_health_store
 
 _log = logging.getLogger("sdd.scanner")
 
@@ -784,9 +786,37 @@ def fetch_asx200():
     return _asx_backfill_missing_subset_tickers(df, fetch_asx100(), "ASX 200", "ASX 100")
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def fetch_asx_listed_companies():
-    """Every ASX-listed company, straight from the ASX's own official
+_ASX_CSV_SOURCE_NAME = "ASX Listed Companies CSV"
+
+# Every source name that gets health-tracked via source_health_store -
+# single list the Admin Dashboard's "Source health" table (app.py's
+# page_admin_dashboard()) reads, so a future source added to this
+# tracking only needs listing here, not in app.py too. Only the ASX CSV
+# is wired in for Commit 2 - see that commit's own report for why the
+# other fetchers in this module weren't also brought under this system.
+TRACKED_HEALTH_SOURCES = [_ASX_CSV_SOURCE_NAME]
+
+# +/-15% of last-known-good's own row count - wide enough that ASX's
+# normal daily churn (new listings, delistings, corporate actions) never
+# trips it, narrow enough to catch the two failure shapes the task's own
+# "Why" names: a collapse (~2,500 -> a dozen rows) or an HTML error page
+# that happens to parse as some other, much smaller, valid-shaped table.
+_ASX_CSV_DRIFT_BAND = 0.15
+
+# A ticker known to have been listed AFTER the old asx300list.com/
+# allordslist.com sources' own frozen date (28 April 2021) - exactly the
+# fact that exposed the freeze in the first place (see fetch_asx300()'s
+# own comment). Present in a genuinely current CSV; absent from anything
+# still stuck on or before that date.
+_ASX_CSV_CANARY_TICKERS = ["GQG.AX"]
+
+
+def _fetch_asx_listed_companies_raw():
+    """Fetch + parse only - no health check, no last-known-good
+    fallback (see fetch_asx_listed_companies() below, the public
+    wrapper every other function in this module actually calls).
+
+    Every ASX-listed company, straight from the ASX's own official
     directory (Company name / ASX code / GICS industry group) - NOT an
     index, no membership tiering at all, just the full listed-company
     register (~2,500 rows as of 20 Sep 2026). This is the replacement
@@ -838,6 +868,100 @@ def fetch_asx_listed_companies():
     else:
         out["Sector"] = None
     return out[["Ticker", "Company", "Sector"]]
+
+
+def _check_asx_listed_companies(df, df200):
+    """Three checks (Commit 2, 20 Sep 2026) against a freshly-parsed
+    _fetch_asx_listed_companies_raw() frame - a row-count floor alone
+    already proved insufficient (asx300list.com/allordslist.com both
+    passed one for five years while frozen). Returns
+    {check_name: {"ok": bool, "detail": str}}; never raises.
+
+    - cross_source: every ticker in the LIVE Wikipedia ASX 200 must
+      appear in the CSV. A stale CSV is missing recent additions -
+      this is literally how GQG.AX exposed the 2021 freeze, and it
+      needs no publisher/third party to independently confirm it -
+      df200 already comes from a completely unrelated source.
+    - drift: row count within _ASX_CSV_DRIFT_BAND of last-known-good.
+    - canary: a ticker known to have been listed after the old sources'
+      frozen date is present (_ASX_CSV_CANARY_TICKERS)."""
+    checks = {}
+
+    if df200 is not None and not df200.empty:
+        missing_200 = sorted(set(df200["Ticker"]) - set(df["Ticker"]))
+        checks["cross_source"] = {
+            "ok": not missing_200,
+            "detail": ("all live ASX 200 tickers present" if not missing_200 else
+                      f"{len(missing_200)} ASX 200 ticker(s) missing from the CSV: "
+                      + ", ".join(missing_200[:10]) + (", ..." if len(missing_200) > 10 else "")),
+        }
+    else:
+        checks["cross_source"] = {"ok": True, "detail": "skipped - live ASX 200 itself unavailable"}
+
+    prior = source_health_store.get(_ASX_CSV_SOURCE_NAME)
+    prior_count = (prior or {}).get("last_good_row_count")
+    if prior_count:
+        lo, hi = prior_count * (1 - _ASX_CSV_DRIFT_BAND), prior_count * (1 + _ASX_CSV_DRIFT_BAND)
+        ok = lo <= len(df) <= hi
+        checks["drift"] = {
+            "ok": ok,
+            "detail": f"{len(df)} row(s) vs last-known-good {prior_count} "
+                     f"(expected {int(lo)}-{int(hi)})",
+        }
+    else:
+        checks["drift"] = {"ok": True, "detail": "skipped - no last-known-good on record yet"}
+
+    have = set(df["Ticker"])
+    missing_canary = [t for t in _ASX_CSV_CANARY_TICKERS if t not in have]
+    checks["canary"] = {
+        "ok": not missing_canary,
+        "detail": "present" if not missing_canary else f"missing: {', '.join(missing_canary)}",
+    }
+
+    return checks
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_asx_listed_companies():
+    """Public wrapper around _fetch_asx_listed_companies_raw() - every
+    OTHER function in this module calls this, never the raw fetcher
+    directly. Runs _check_asx_listed_companies() against the fresh
+    parse before trusting it:
+
+    - Parse failed, or every check passed: fresh data flows through as
+      normal. A clean pass ALSO becomes the new source_health_store
+      last-known-good and clears any stale flag - a source that was
+      down and has recovered goes back to reporting healthy with no
+      manual reset needed.
+    - Parse failed, or any check failed: does NOT return the bad data
+      (or None, the way a plain row-count guard used to silently
+      degrade) - falls back to source_health_store's last-known-good
+      snapshot instead, and marks the source stale. Alerts the owner
+      (alert_engine.send_source_health_alert) exactly once per NEW
+      failure - a source already marked stale from a prior check
+      doesn't re-alert every single day it stays down, same
+      alert-fatigue reasoning as a real price alert's own cooldown."""
+    df = _fetch_asx_listed_companies_raw()
+    checks = (_check_asx_listed_companies(df, fetch_asx200()) if df is not None
+             else {"parse": {"ok": False, "detail": "fetch or parse failed entirely"}})
+    all_ok = df is not None and all(c["ok"] for c in checks.values())
+
+    if all_ok:
+        source_health_store.record_success(_ASX_CSV_SOURCE_NAME, df.to_dict("records"), checks)
+        return df
+
+    prior = source_health_store.get(_ASX_CSV_SOURCE_NAME)
+    was_already_stale = bool(prior and prior.get("stale"))
+    reason = "fetch/parse failed" if df is None else "failed health check(s)"
+    source_health_store.record_failure(_ASX_CSV_SOURCE_NAME, checks, reason)
+    if not was_already_stale:
+        try:
+            alert_engine.send_source_health_alert(_ASX_CSV_SOURCE_NAME, checks, reason)
+        except Exception:
+            _log.exception("scanner_engine: source-health alert send failed for %s", _ASX_CSV_SOURCE_NAME)
+    _log.warning("scanner_engine: %s failed health check (%s) - serving last-known-good instead",
+                _ASX_CSV_SOURCE_NAME, reason)
+    return source_health_store.last_good_dataframe(_ASX_CSV_SOURCE_NAME)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
