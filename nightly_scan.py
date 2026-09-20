@@ -473,6 +473,15 @@ def run_universe_scan(universe, max_tickers=None, log=print):
     # see the final log line below for the "N tickers in Xm Ys" format.
     _scan_start = time.time()
     country = "Australia" if universe in scanner_engine.AUSTRALIA_UNIVERSES else "USA"
+    # Index containment regression guard (20 Sep 2026): "All Ordinaries"
+    # is the top of the AU nesting chain (ASX 20 subset ... subset ASX 300
+    # subset All Ordinaries - see scanner_engine.py's own comment above
+    # _AU_CONTAINMENT_CHAIN), so its scan is the natural point at which the
+    # whole chain has just been exercised for the night. Fail-open by
+    # design (verify_au_index_containment() never raises) - a violation
+    # only logs a warning here, it never blocks this or any other scan.
+    if universe == "All Ordinaries":
+        scanner_engine.verify_au_index_containment(log=log)
     pool_df, source = scanner_engine.get_universe_pool(country, universe)
     if pool_df is None or pool_df.empty:
         log(f"[nightly_scan] {universe}: no tickers resolved ({source})")

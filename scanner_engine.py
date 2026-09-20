@@ -67,6 +67,7 @@ shipped.
 """
 
 import io
+import logging
 import os
 import time
 from collections import defaultdict
@@ -78,6 +79,8 @@ import streamlit as st
 import yfinance as yf
 
 import sector_cache_store
+
+_log = logging.getLogger("sdd.scanner")
 
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StocksDeepDiveBot/1.0; +https://stocksdeepdive.com)"}
 
@@ -713,6 +716,55 @@ def _resolve_russell2000():
     return None, "Web scrape unavailable"
 
 
+# -----------------------------------------------------------------
+# Index containment (20 Sep 2026): the AU universes form a strict chain -
+# ASX 20 subset ASX 50 subset ASX 100 subset ASX 200 subset ASX 300 subset
+# All Ordinaries - so every ticker in a smaller index MUST also appear in
+# every larger one. Each fetcher above scrapes its own INDEPENDENT source
+# (a different Wikipedia page or third-party list per universe), so
+# there's no structural guarantee two adjacent sources agree - one can
+# simply be a stale/incomplete snapshot relative to the other (e.g.
+# GQG.AX present in the live ASX 300 source but absent from the ASX 200
+# one, or vice versa, depending on which page is currently more current).
+# The existing sector-merge steps below only ever ANNOTATE rows that are
+# already present; they never add a missing row, so a gap like that
+# persisted silently through to the scan/plot output.
+#
+# _asx_backfill_missing_subset_tickers() below fixes this at the source:
+# called from every fetch_* function that has a smaller sibling in the
+# chain, right after that function's own source fetch (and, where one
+# exists, before the sector-merge step - sector-merge still runs
+# afterward for the whole frame, backfilled rows included). One shared
+# helper rather than five copies of the same union logic.
+# -----------------------------------------------------------------
+
+def _asx_backfill_missing_subset_tickers(superset_df, subset_df, superset_label, subset_label):
+    """Enforces `subset_label` subset `superset_label` by unioning any
+    ticker `subset_df` has that `superset_df` is missing into
+    `superset_df` - carrying the ticker's own Sector across. A caller's
+    later sector-merge step (fetch_asx300/fetch_allords) can still
+    overwrite that Sector with a more authoritative source; this only
+    guarantees the ticker itself is present.
+
+    Returns `superset_df` unchanged (including None) if either frame is
+    None/empty or nothing is actually missing - never raises, same
+    fail-open convention as every other fetcher in this module. Logs one
+    INFO line with the backfilled count whenever it does something, so a
+    growing number of missing constituents is visible in the logs
+    instead of silently accumulating."""
+    if superset_df is None or subset_df is None or subset_df.empty:
+        return superset_df
+    missing = subset_df[~subset_df["Ticker"].isin(set(superset_df["Ticker"]))]
+    if missing.empty:
+        return superset_df
+    _log.info(
+        "scanner_engine: %s was missing %d ticker(s) that %s contains - "
+        "backfilled: %s",
+        superset_label, len(missing), subset_label, ", ".join(sorted(missing["Ticker"])),
+    )
+    return pd.concat([superset_df, missing[["Ticker", "Sector"]]], ignore_index=True)
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_asx200():
     try:
@@ -722,7 +774,7 @@ def fetch_asx200():
     df = _parse_table(html, ["code", "ticker", "symbol"], ["sector", "industry"], _normalize_asx_ticker, min_rows=150)
     if df is not None and df["Sector"].notna().sum() == 0:
         return None
-    return df
+    return _asx_backfill_missing_subset_tickers(df, fetch_asx100(), "ASX 200", "ASX 100")
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -738,6 +790,14 @@ def fetch_asx300():
     is merged in afterwards from fetch_asx200()'s live GICS sectors (covers
     the ~200 largest names; the remaining ~100 names show Sector=None and
     are only reachable via the "All" sector filter).
+
+    Index containment (20 Sep 2026): ASX 300's own source can be missing a
+    ticker the live ASX 200 source carries (see
+    _asx_backfill_missing_subset_tickers()'s own comment above for why,
+    and the module-level containment assertion at the bottom of this file
+    for the regression guard). Backfilled BEFORE the sector merge below,
+    so a backfilled row still gets a real GICS sector where fetch_asx200()
+    has one.
     """
     df = None
     try:
@@ -759,6 +819,8 @@ def fetch_asx300():
         return None
 
     df200 = fetch_asx200()
+    df = _asx_backfill_missing_subset_tickers(df, df200, "ASX 300", "ASX 200")
+
     if df200 is not None:
         sector_by_ticker = dict(zip(df200["Ticker"], df200["Sector"]))
         df = df.copy()
@@ -962,7 +1024,12 @@ def fetch_allords():
     ALLORDSLIST_URL's comment for the verification caveat). Sector is
     merged in afterwards from fetch_asx200()'s live GICS sectors, same
     as fetch_asx300() does - neither the All Ords nor ASX 300 list
-    sources carry their own Sector column for the full membership."""
+    sources carry their own Sector column for the full membership.
+
+    Index containment (20 Sep 2026): backfilled against fetch_asx300()
+    before the sector merge - see _asx_backfill_missing_subset_tickers()'s
+    own comment above. All Ords is the top of the AU chain, so ASX 300 is
+    its only subset to enforce here."""
     try:
         html = _get(ALLORDSLIST_URL)
         df = _parse_table(html, ["code"], ["sector", "industry"], _normalize_asx_ticker, min_rows=400)
@@ -971,6 +1038,8 @@ def fetch_allords():
 
     if df is None:
         return None
+
+    df = _asx_backfill_missing_subset_tickers(df, fetch_asx300(), "All Ordinaries", "ASX 300")
 
     df200 = fetch_asx200()
     if df200 is not None:
@@ -997,8 +1066,9 @@ def fetch_asx50():
         html = _get(ASX50_WIKI_URL)
     except Exception:
         return None
-    return _parse_table(html, ["symbol", "code"], ["sector", "industry"],
-                         _normalize_asx_ticker, min_rows=40, max_rows=55)
+    df = _parse_table(html, ["symbol", "code"], ["sector", "industry"],
+                      _normalize_asx_ticker, min_rows=40, max_rows=55)
+    return _asx_backfill_missing_subset_tickers(df, fetch_asx20(), "ASX 50", "ASX 20")
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -1007,13 +1077,75 @@ def fetch_asx100():
     this one (see ASX100_WIKI_URL's comment) - tried anyway since it's
     free to attempt and harmless on failure; get_universe_pool() falls
     back to ASX 200 (live) if this returns None, exactly like ASX 300's
-    own existing fallback chain."""
+    own existing fallback chain.
+
+    Index containment (20 Sep 2026): backfilled against fetch_asx50() -
+    see _asx_backfill_missing_subset_tickers()'s own comment above."""
     try:
         html = _get(ASX100_WIKI_URL)
     except Exception:
         return None
-    return _parse_table(html, ["symbol", "code", "ticker"], ["sector", "industry"],
-                         _normalize_asx_ticker, min_rows=80, max_rows=110)
+    df = _parse_table(html, ["symbol", "code", "ticker"], ["sector", "industry"],
+                      _normalize_asx_ticker, min_rows=80, max_rows=110)
+    return _asx_backfill_missing_subset_tickers(df, fetch_asx50(), "ASX 100", "ASX 50")
+
+
+# Smallest to largest - the standing nesting order this module's docstring
+# describes (ASX 20 subset ASX 50 subset ASX 100 subset ASX 200 subset ASX
+# 300 subset All Ordinaries). Named here as one list, not spread across
+# five separate backfill call sites, so the regression guard below can't
+# silently drift out of sync with which pair actually belongs together if
+# another AU universe is ever added to the chain.
+_AU_CONTAINMENT_CHAIN = [
+    ("ASX 20", fetch_asx20),
+    ("ASX 50", fetch_asx50),
+    ("ASX 100", fetch_asx100),
+    ("ASX 200", fetch_asx200),
+    ("ASX 300", fetch_asx300),
+    ("All Ordinaries", fetch_allords),
+]
+
+
+def verify_au_index_containment(log=None):
+    """Index containment regression guard (20 Sep 2026): re-checks every
+    adjacent pair in _AU_CONTAINMENT_CHAIN and reports any subset index
+    still holding a ticker its parent doesn't - the exact GQG.AX-shaped
+    bug the backfill in fetch_asx200()/fetch_asx300()/fetch_asx50()/
+    fetch_asx100()/fetch_allords() above fixes. Should never fire given
+    that backfill, but each of those functions unions in whatever ITS OWN
+    subset fetch currently returns - a live source going stale, changing
+    shape, or being swapped later could still reopen a gap here, which is
+    exactly the silent-drift this guard exists to catch instead of
+    absorbing quietly.
+
+    Never raises - same fail-open convention as every fetcher in this
+    module. Returns a list of (subset_name, superset_name, missing_
+    tickers) violation tuples (empty = all clear); a caller that wants a
+    hard failure (a CI check, say) should assert not
+    verify_au_index_containment() itself rather than expecting this to
+    raise on its own.
+
+    `log`: an optional log(str) callable - nightly_scan.run_universe_
+    scan()'s own convention (defaults to `print` there). Falls back to
+    this module's own `_log.warning` when omitted, so this is equally
+    callable from a plain script or the Python console."""
+    _log_fn = log or (lambda msg: _log.warning(msg))
+    frames = {name: fetch() for name, fetch in _AU_CONTAINMENT_CHAIN}
+    violations = []
+    chain_pairs = zip(_AU_CONTAINMENT_CHAIN, _AU_CONTAINMENT_CHAIN[1:])
+    for (subset_name, _), (superset_name, _) in chain_pairs:
+        subset_df, superset_df = frames[subset_name], frames[superset_name]
+        if subset_df is None or superset_df is None:
+            continue
+        missing = sorted(set(subset_df["Ticker"]) - set(superset_df["Ticker"]))
+        if missing:
+            violations.append((subset_name, superset_name, missing))
+            _log_fn(
+                f"[scanner_engine] CONTAINMENT VIOLATION: {subset_name} has "
+                f"{len(missing)} ticker(s) that {superset_name} is missing: "
+                f"{', '.join(missing)}"
+            )
+    return violations
 
 
 def _asx_small_ords_df():
