@@ -774,8 +774,21 @@ def _asx_backfill_missing_subset_tickers(superset_df, subset_df, superset_label,
     return pd.concat([superset_df, missing[["Ticker", "Sector"]]], ignore_index=True)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def fetch_asx200():
+_ASX200_SOURCE_NAME = "ASX 200 (Wikipedia)"
+
+# Same +/-15% drift convention as _ASX_CSV_DRIFT_BAND/_MARKET_CAP_ROW_
+# COUNT_DRIFT_BAND below - wide enough for ordinary index reconstitution,
+# narrow enough to catch a collapsed or broken scrape.
+_ASX200_DRIFT_BAND = 0.15
+
+
+def _fetch_asx200_raw():
+    """Fetch + parse only - no health check, no last-known-good fallback
+    (see fetch_asx200() below, the public wrapper every other function
+    in this module actually calls). Same fail-open contract this always
+    had: None on any fetch/parse failure, or if the parsed table came
+    back with not one single row carrying a Sector (the shape-changed-
+    entirely case a plain row-count floor wouldn't catch)."""
     try:
         html = _get(ASX200_WIKI_URL)
     except Exception:
@@ -783,7 +796,80 @@ def fetch_asx200():
     df = _parse_table(html, ["code", "ticker", "symbol"], ["sector", "industry"], _normalize_asx_ticker, min_rows=150)
     if df is not None and df["Sector"].notna().sum() == 0:
         return None
-    return _asx_backfill_missing_subset_tickers(df, fetch_asx100(), "ASX 200", "ASX 100")
+    return df
+
+
+def _check_asx200(df):
+    """Commit G (20 Sep 2026): row_count (drift vs last-known-good) and
+    sector_coverage (a structurally-valid-but-content-broken scrape can
+    still clear the row-count floor - e.g. Wikipedia keeps the table
+    shape but drops the Sector column's real values). Same {check_name:
+    {"ok":, "detail":}} shape as _check_asx_listed_companies() /
+    _rebuild_market_cap_ranking()'s own checks; never raises."""
+    checks = {}
+    prior = source_health_store.get(_ASX200_SOURCE_NAME)
+    prior_count = (prior or {}).get("last_good_row_count")
+    if prior_count:
+        lo, hi = prior_count * (1 - _ASX200_DRIFT_BAND), prior_count * (1 + _ASX200_DRIFT_BAND)
+        ok = lo <= len(df) <= hi
+        checks["row_count"] = {
+            "ok": ok,
+            "detail": f"{len(df)} row(s) vs last-known-good {prior_count} (expected {int(lo)}-{int(hi)})",
+        }
+    else:
+        checks["row_count"] = {"ok": True, "detail": "skipped - no last-known-good on record yet"}
+
+    have_sector = int(df["Sector"].notna().sum())
+    coverage = (have_sector / len(df)) if len(df) else 0.0
+    checks["sector_coverage"] = {
+        "ok": coverage >= 0.5,
+        "detail": f"{have_sector}/{len(df)} row(s) carry a Sector ({coverage:.0%}, band >= 50%)",
+    }
+    return checks
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_asx200():
+    """Public wrapper - every OTHER function in this module (and
+    _AU_CONTAINMENT_CHAIN below) calls this, never _fetch_asx200_raw()
+    directly. Commit G (20 Sep 2026): Wikipedia used to be a single
+    point of failure for THREE universes - this one directly, plus ASX
+    300/All Ordinaries, which both derive their tail from
+    _asx_non200_by_marketcap() past whatever this function returns (see
+    that function's own comment) - with the old asx300list.com/
+    allordslist.com independent fallback sources gone entirely (see this
+    module's header comment), one Wikipedia outage or page-structure
+    change emptied all three together, with nothing to fall back to.
+
+    Same last-known-good pattern as fetch_asx_listed_companies() (Commit
+    2) and _rebuild_market_cap_ranking() (Commit D/F): a clean pass (no
+    parse failure, every _check_asx200() check ok) backfills in ASX 100
+    (unchanged from the original behavior) and becomes the new last-
+    known-good; a failed pass falls back to the last-known-good snapshot
+    instead - already backfilled, from when IT was saved - and alerts
+    the owner once per new failure, not on every day it stays down."""
+    df = _fetch_asx200_raw()
+    checks = (_check_asx200(df) if df is not None
+             else {"parse": {"ok": False, "detail": "fetch or parse failed entirely"}})
+    all_ok = df is not None and all(c["ok"] for c in checks.values())
+
+    if all_ok:
+        merged = _asx_backfill_missing_subset_tickers(df, fetch_asx100(), "ASX 200", "ASX 100")
+        source_health_store.record_success(_ASX200_SOURCE_NAME, merged.to_dict("records"), checks)
+        return merged
+
+    prior = source_health_store.get(_ASX200_SOURCE_NAME)
+    was_already_stale = bool(prior and prior.get("stale"))
+    reason = "fetch/parse failed" if df is None else "failed health check(s)"
+    source_health_store.record_failure(_ASX200_SOURCE_NAME, checks, reason)
+    if not was_already_stale:
+        try:
+            alert_engine.send_source_health_alert(_ASX200_SOURCE_NAME, checks, reason)
+        except Exception:
+            _log.exception("scanner_engine: source-health alert send failed for %s", _ASX200_SOURCE_NAME)
+    _log.warning("scanner_engine: %s failed health check (%s) - serving last-known-good instead",
+                _ASX200_SOURCE_NAME, reason)
+    return source_health_store.last_good_dataframe(_ASX200_SOURCE_NAME)
 
 
 _ASX_CSV_SOURCE_NAME = "ASX Listed Companies CSV"
@@ -793,10 +879,12 @@ _MARKET_CAP_RANKING_SOURCE_NAME = "ASX market-cap ranking (non-ASX 200)"
 # single list the Admin Dashboard's "Source health" table (app.py's
 # page_admin_dashboard()) reads, so a future source added to this
 # tracking only needs listing here, not in app.py too. Commit D (20 Sep
-# 2026) adds the market-cap ranking alongside the ASX CSV added in
-# Commit 2 - see that commit's own report for why the other fetchers in
-# this module weren't also brought under this system.
-TRACKED_HEALTH_SOURCES = [_ASX_CSV_SOURCE_NAME, _MARKET_CAP_RANKING_SOURCE_NAME]
+# 2026) added the market-cap ranking alongside the ASX CSV added in
+# Commit 2; Commit G (20 Sep 2026) adds the live ASX 200 Wikipedia
+# scrape - Wikipedia was a single point of failure for THREE universes
+# (ASX 200 directly, plus ASX 300/All Ordinaries which both derive their
+# tail from it) with nothing to fall back to.
+TRACKED_HEALTH_SOURCES = [_ASX200_SOURCE_NAME, _ASX_CSV_SOURCE_NAME, _MARKET_CAP_RANKING_SOURCE_NAME]
 
 # +/-15% of last-known-good's own row count - wide enough that ASX's
 # normal daily churn (new listings, delistings, corporate actions) never
@@ -805,12 +893,22 @@ TRACKED_HEALTH_SOURCES = [_ASX_CSV_SOURCE_NAME, _MARKET_CAP_RANKING_SOURCE_NAME]
 # that happens to parse as some other, much smaller, valid-shaped table.
 _ASX_CSV_DRIFT_BAND = 0.15
 
-# A ticker known to have been listed AFTER the old asx300list.com/
+# Tickers known to have been listed AFTER the old asx300list.com/
 # allordslist.com sources' own frozen date (28 April 2021) - exactly the
 # fact that exposed the freeze in the first place (see fetch_asx300()'s
 # own comment). Present in a genuinely current CSV; absent from anything
-# still stuck on or before that date.
-_ASX_CSV_CANARY_TICKERS = ["GQG.AX"]
+# still stuck on or before that date. Commit G (20 Sep 2026): widened
+# from a single ticker (GQG.AX) to five, spanning 2021-2025 listing
+# dates, and the check below now passes if ANY of them are present, not
+# all - a single hardcoded canary means an acquisition, delisting, or
+# rename of that ONE company (GQG itself, say) would mark this source
+# permanently stale and alert forever, for a reason that has nothing to
+# do with whether the CSV is actually current. All five verified live
+# via web search as still ASX-listed as of 20 Sep 2026 (one candidate,
+# Arcadium Lithium/LTM.AX, was deliberately excluded after search
+# confirmed Rio Tinto's acquisition delisted it in March 2025 - exactly
+# the failure mode a single-ticker canary is vulnerable to).
+_ASX_CSV_CANARY_TICKERS = ["GQG.AX", "GGP.AX", "RDX.AX", "NEM.AX", "ACL.AX"]
 
 
 def _fetch_asx_listed_companies_raw():
@@ -885,8 +983,11 @@ def _check_asx_listed_companies(df, df200):
       needs no publisher/third party to independently confirm it -
       df200 already comes from a completely unrelated source.
     - drift: row count within _ASX_CSV_DRIFT_BAND of last-known-good.
-    - canary: a ticker known to have been listed after the old sources'
-      frozen date is present (_ASX_CSV_CANARY_TICKERS)."""
+    - canary: ANY of five tickers known to have been listed after the
+      old sources' frozen date is present (_ASX_CSV_CANARY_TICKERS) -
+      OR, not AND, so one of the five being acquired/delisted/renamed
+      can't permanently fail this check on its own (see that constant's
+      own comment)."""
     checks = {}
 
     if df200 is not None and not df200.empty:
@@ -913,11 +1014,14 @@ def _check_asx_listed_companies(df, df200):
     else:
         checks["drift"] = {"ok": True, "detail": "skipped - no last-known-good on record yet"}
 
+    # Commit G: passes if ANY canary ticker is present, not all - see
+    # _ASX_CSV_CANARY_TICKERS' own comment for why this is OR, not AND.
     have = set(df["Ticker"])
-    missing_canary = [t for t in _ASX_CSV_CANARY_TICKERS if t not in have]
+    present_canary = [t for t in _ASX_CSV_CANARY_TICKERS if t in have]
     checks["canary"] = {
-        "ok": not missing_canary,
-        "detail": "present" if not missing_canary else f"missing: {', '.join(missing_canary)}",
+        "ok": bool(present_canary),
+        "detail": (f"present: {', '.join(present_canary)}" if present_canary
+                  else f"none present (checked: {', '.join(_ASX_CSV_CANARY_TICKERS)})"),
     }
 
     return checks

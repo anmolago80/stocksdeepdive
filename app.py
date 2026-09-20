@@ -18353,6 +18353,48 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
                     # call Mode B uses, so both behave predictably next to
                     # each other. A holding at/above its cost-basis target
                     # gets $0 here too - never negative, never a sell.
+                    #
+                    # Commit G correction: a clamped-to-$0 holding (one
+                    # already at/above its cost-basis target) does NOT make
+                    # the else (remainder-split) branch below reachable -
+                    # verified both algebraically and by a 500,000-trial
+                    # randomized stress test (including holdings clamped by
+                    # large amounts) before writing this comment. Clamping a
+                    # negative raw gap to 0 REMOVES a negative term from the
+                    # sum rather than subtracting from it, which can only
+                    # push total_gap UP relative to deposit, never down -
+                    # every trial with edited_pcts summing to exactly 100%
+                    # had total_gap >= deposit, so the `if` branch above
+                    # always fired regardless of how far over target a
+                    # holding was. The else branch's real, verified trigger
+                    # is upstream of this Mode entirely: this whole section
+                    # only renders once edited_pcts sums within +/-0.5 of
+                    # 100% (the `abs(total_edit - 100.0) > 0.5: return` gate
+                    # well above), not exactly 100% - target_i's sum is
+                    # (edited total %)/100 * (invested_total + deposit), so
+                    # a total sitting under 100% (allowed by that tolerance)
+                    # makes target_i's sum, and therefore total_gap, come in
+                    # under deposit for real. Confirmed in the same stress
+                    # test: reachable in ~4% of trials when total_edit was
+                    # allowed to vary within that +/-0.5 band, and in every
+                    # one of those cases total_edit was under 100% - never
+                    # once with total_edit >= 100%, however far over target
+                    # a holding was. Do not delete this branch as
+                    # unreachable - it is real, just not for the reason a
+                    # "holding over target" framing suggests.
+                    #
+                    # Note (flagged for Andrew, not fixed here without a
+                    # decision): as written, the remainder in this branch
+                    # still splits by mix % across ALL tickers, including
+                    # one already over its cost-basis target - pushing it
+                    # further over and against Mode C's own "lands on the
+                    # mix" premise for committed money. Mode B has the
+                    # identical behavior and the original spec said to
+                    # mirror Mode B's structure exactly, so this is correct-
+                    # to-spec, not a bug - but restricting the remainder
+                    # split to only the tickers still under target would be
+                    # more faithful to what Mode C promises. Left as spec'd
+                    # pending Andrew's call.
                     _nm_target = {
                         t: (edited_pcts[t] / 100.0) * (_nm_invested_total + _nm_deposit) for t in tickers
                     }
@@ -27752,25 +27794,29 @@ def page_admin_dashboard():
         )
 
     # --- SOURCE HEALTH (Commit 2, 20 Sep 2026; Commit D added the market- --
-    # cap ranking, 20 Sep 2026) -------------------------------------------
+    # cap ranking; Commit G added the live ASX 200 scrape, 20 Sep 2026) ----
     st.markdown("### Source health")
     st.caption(
         "Health checks for scanner_engine.py's live data fetches that "
-        "have last-known-good tracking: the ASX Listed Companies CSV "
-        "fetch_asx300()/fetch_allords() rank against, and the nightly "
-        "market-cap ranking built from it (the pricing pass that fills "
-        "out their tail past the live ASX 200 - now computed once "
-        "overnight, never on a visitor's request). A row-count guard "
-        "alone only proves a fetch is well-formed, not that it's current "
-        "- asx300list.com/allordslist.com both passed one for five years "
-        "while frozen on a 28 April 2021 snapshot, and a partial, "
-        "throttled market-cap pass would look just as well-formed while "
-        "silently mis-ranking or dropping names. 🔴 Stale means the "
-        "fresh attempt or one of its checks failed (cross-source/drift/"
-        "canary for the CSV; priced-ratio/row-count for the ranking), "
-        "and the site is serving the last known-good snapshot instead of "
-        "the fresh (bad) one - you'll also have gotten an email/push "
-        "about it the moment that first happened."
+        "have last-known-good tracking: the live ASX 200 (Wikipedia), "
+        "the ASX Listed Companies CSV fetch_asx300()/fetch_allords() rank "
+        "against, and the nightly market-cap ranking built from it (the "
+        "pricing pass that fills out their tail past the live ASX 200 - "
+        "computed once overnight, never on a visitor's request). Without "
+        "this, Wikipedia was a single point of failure for three "
+        "universes at once (ASX 200 directly, plus ASX 300/All "
+        "Ordinaries, which both derive their tail from it) with nothing "
+        "to fall back to. A row-count guard alone only proves a fetch is "
+        "well-formed, not that it's current - asx300list.com/"
+        "allordslist.com both passed one for five years while frozen on "
+        "a 28 April 2021 snapshot, and a partial, throttled market-cap "
+        "pass would look just as well-formed while silently mis-ranking "
+        "or dropping names. 🔴 Stale means the fresh attempt or one of "
+        "its checks failed (row-count/sector-coverage for ASX 200; "
+        "cross-source/drift/canary for the CSV; priced-ratio/row-count "
+        "for the ranking), and the site is serving the last known-good "
+        "snapshot instead of the fresh (bad) one - you'll also have "
+        "gotten an email/push about it the moment that first happened."
     )
     with st.container(border=True):
         import source_health_store
