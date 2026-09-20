@@ -532,6 +532,20 @@ def _run_nightly(cfg, log):
         log(f"[scheduler] alert prev-value snapshot failed: {e}")
         alert_prev_map = {}
 
+    # Commit D (20 Sep 2026): re-price the market-cap ranking (the tail
+    # fetch_asx300()/fetch_allords() slice from) BEFORE any universe is
+    # scanned tonight, so both AU universes that depend on it see this
+    # run's result rather than an earlier, in-process-cached fetch_
+    # asx300()/fetch_allords() answer built from yesterday's ranking. A
+    # failure here degrades to "tonight's AU scans use whatever ranking
+    # was already on file" (nightly_scan.refresh_market_cap_ranking()
+    # itself already fails open the same way scanner_engine's own fetch_
+    # asx_listed_companies() does), never blocks the scan loop below.
+    try:
+        nightly_scan.refresh_market_cap_ranking(log=log)
+    except Exception as e:
+        log(f"[scheduler] market-cap ranking refresh failed: {e}")
+
     # The "imported" virtual universe (screen_import_store's TradingView
     # CSV queue - see nightly_scan.run_imported_scan) always runs LAST,
     # after every configured index universe, regardless of where

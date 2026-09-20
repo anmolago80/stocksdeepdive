@@ -787,14 +787,16 @@ def fetch_asx200():
 
 
 _ASX_CSV_SOURCE_NAME = "ASX Listed Companies CSV"
+_MARKET_CAP_RANKING_SOURCE_NAME = "ASX market-cap ranking (non-ASX 200)"
 
 # Every source name that gets health-tracked via source_health_store -
 # single list the Admin Dashboard's "Source health" table (app.py's
 # page_admin_dashboard()) reads, so a future source added to this
-# tracking only needs listing here, not in app.py too. Only the ASX CSV
-# is wired in for Commit 2 - see that commit's own report for why the
-# other fetchers in this module weren't also brought under this system.
-TRACKED_HEALTH_SOURCES = [_ASX_CSV_SOURCE_NAME]
+# tracking only needs listing here, not in app.py too. Commit D (20 Sep
+# 2026) adds the market-cap ranking alongside the ASX CSV added in
+# Commit 2 - see that commit's own report for why the other fetchers in
+# this module weren't also brought under this system.
+TRACKED_HEALTH_SOURCES = [_ASX_CSV_SOURCE_NAME, _MARKET_CAP_RANKING_SOURCE_NAME]
 
 # +/-15% of last-known-good's own row count - wide enough that ASX's
 # normal daily churn (new listings, delistings, corporate actions) never
@@ -964,55 +966,286 @@ def fetch_asx_listed_companies():
     return source_health_store.last_good_dataframe(_ASX_CSV_SOURCE_NAME)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def _asx_non200_by_marketcap():
-    """Every fetch_asx_listed_companies() row NOT already in the live
-    Wikipedia ASX 200, ranked by market cap descending - the shared
-    ranking fetch_asx300()/fetch_allords() below both slice from, so the
-    (slow - one live lookup per candidate) pricing pass runs once a day,
-    not once per universe.
+# Commit D (20 Sep 2026): the market-cap ranking used to run its whole
+# ~2,300-lookup pricing pass inline, the first time any caller (a web
+# visitor picking ASX 300 on the Scanner page included) asked for it
+# after any cold start - st.cache_data's cache is per-process/in-memory,
+# so a Railway redeploy re-arms this every time. And a throttled pass
+# shipped a silently partial ranking: candidates[candidates["_cap"] > 0]
+# can't tell "this company genuinely has no market cap" from "yfinance
+# throttled me" - Commit 2's health checks validate the CSV, not what
+# gets built from it. Fixed the same way as Commit 2 fixed the CSV: all
+# pricing now happens ONLY in the nightly job
+# (_rebuild_market_cap_ranking(), called from nightly_scan.py before the
+# per-universe scan loop) and is persisted via source_health_store under
+# _MARKET_CAP_RANKING_SOURCE_NAME; _asx_non200_by_marketcap() below - the
+# function every web request still goes through, via fetch_asx300()/
+# fetch_allords() - is now a pure read of that file. See
+# _rebuild_market_cap_ranking()'s own docstring for the incremental
+# repricing / failure-handling design.
 
-    Reuses market_cap_engine.get_market_cap() - the SAME per-ticker
-    yfinance .info lookup app.py's own cache-warming pass already uses
-    elsewhere - rather than adding a new data source. Only priced for
-    candidates OUTSIDE the ASX 200 (~2,300 of the CSV's ~2,500 rows,
-    not all of them - the 200 are already known-in and need no cap
-    comparison to be included). Threaded at max_workers=8, the same
-    polite-to-yfinance cap app.py's own warm_cache pass uses, since this
-    is ~2,300 individual lookups rather than one bulk call - still a
-    genuinely slow cold pass (real first-call cost, not hidden), which
-    is exactly why this is its own ttl=86400 cached step: it runs once a
-    day, and fetch_asx300()/fetch_allords() both reuse the same cached
-    ranking rather than each re-pricing the same candidates.
+# A company ranked ~1,800th by market cap is not entering the ASX 300
+# tail (ranks ~201-300) overnight - only this band of ranks just outside
+# today's cut gets re-priced every night, on top of any ticker newly
+# added to the CSV since the last run. Wide enough either side of the
+# ~201-300/~301-500 cuts fetch_asx300()/fetch_allords() actually take to
+# absorb realistic night-to-night movement.
+_MARKET_CAP_BOUNDARY_LO = 150
+_MARKET_CAP_BOUNDARY_HI = 700
 
-    A candidate yfinance no longer recognises (delisted/renamed since
-    the CSV was last regenerated) prices at 0 and is dropped - nothing
-    to rank it by. Returns None if either source fetch failed; an empty
-    (but non-None) frame if the CSV loaded but every candidate somehow
-    priced at 0."""
+# Reject the whole nightly ranking (keep last-known-good) if fewer than
+# this fraction of the tickers actually due for pricing this run came
+# back with a real answer, even after one retry - publishing a ranking
+# built from a throttled minority would silently reorder or drop names
+# that never got a fresh price. Same generous-but-real-signal reasoning
+# as _ASX_CSV_DRIFT_BAND above.
+_MARKET_CAP_PRICED_RATIO_BAND = 0.90
+
+# Same +/-15% row-count drift guard as _ASX_CSV_DRIFT_BAND, applied to
+# the published ranking's own row count vs its last-known-good.
+_MARKET_CAP_ROW_COUNT_DRIFT_BAND = 0.15
+
+# Purely informational (see _rebuild_market_cap_ranking()'s own comment
+# on why this never gates accept/reject) - how many days old the
+# ranking being served is allowed to get before it's worth a look, given
+# the nightly cadence is meant to refresh it every single day.
+_MARKET_CAP_AGE_BAND_DAYS = 4
+
+
+def _price_tickers(tickers, log=None):
+    """Prices `tickers` via market_cap_engine.get_market_cap_checked(),
+    threaded at max_workers=8 (same polite-to-yfinance cap this module's
+    other bulk lookups use), with one retry pass over whatever failed
+    the first time - a single throttled response is often transient.
+
+    Returns (caps: {ticker: market_cap}, failed: set-of-tickers) -
+    `failed` holds only tickers whose lookup itself came back looking
+    throttled/empty on BOTH attempts (market_cap_engine.get_market_cap_
+    checked()'s ok=False) - a real, populated response reporting a
+    genuine zero market cap is NOT a failure and lands in `caps` like
+    any other result, exactly the distinction Commit D exists to make."""
+    _log_fn = log or (lambda msg: _log.info(msg))
+
+    def _lookup(ticker):
+        cap, ok = market_cap_engine.get_market_cap_checked(ticker)
+        return ticker, cap, ok
+
+    def _price_pass(ticker_list):
+        pass_caps, pass_failed = {}, set()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            for ticker, cap, ok in pool.map(_lookup, ticker_list):
+                if ok:
+                    pass_caps[ticker] = cap
+                else:
+                    pass_failed.add(ticker)
+        return pass_caps, pass_failed
+
+    start = time.time()
+    caps, failed = _price_pass(tickers)
+    if failed:
+        retry_caps, retry_failed = _price_pass(sorted(failed))
+        caps.update(retry_caps)
+        failed = retry_failed
+    _log_fn(
+        f"[scanner_engine] market-cap ranking: priced {len(tickers)} "
+        f"ticker(s) in {time.time() - start:.1f}s "
+        f"({len(tickers) - len(failed)} ok, {len(failed)} failed after retry)"
+    )
+    return caps, failed
+
+
+def _rebuild_market_cap_ranking(force_full=False, log=None):
+    """The ONLY place the market-cap ranking is priced - called once a
+    night from nightly_scan.py, before the per-universe scan loop that
+    depends on it. Never call this from a web request path.
+
+    Prices only: (a) candidates new to fetch_asx_listed_companies()
+    since the last run (never priced before, for any reason - new
+    listing, or newly dropped out of the live ASX 200), and (b) whatever
+    is currently ranked _MARKET_CAP_BOUNDARY_LO.._MARKET_CAP_BOUNDARY_HI
+    - the only band close enough to fetch_asx300()/fetch_allords()'s own
+    cuts for a night-to-night market move to plausibly matter.
+    force_full=True (or no persisted ranking yet at all) prices every
+    candidate instead. Every candidate NOT re-priced this run keeps its
+    previous market cap - carried forward, never re-derived or dropped.
+
+    Publishes through source_health_store exactly like fetch_asx_listed_
+    companies() does for the CSV: a clean pass (priced ratio and row-
+    count both within band) becomes the new last-known-good, clearing
+    any stale flag; a failed pass keeps serving whatever was already
+    there and alerts the owner once per new failure
+    (alert_engine.send_source_health_alert), never on every single day a
+    failure stays unresolved.
+
+    A ranking-age check is recorded on every run too, but is NEVER part
+    of the accept/reject decision - see the comment right above where
+    it's computed for why gating on it could permanently wedge the
+    ranking (a good fresh pass rejected because the OLD data happened to
+    be stale would mean last-known-good never advances, so it stays
+    stale forever).
+
+    Returns the DataFrame that ends up being served (freshly published,
+    or the retained last-known-good on a rejected/skipped run) - None
+    only if the CSV/live ASX 200 themselves are unavailable, exactly
+    like the old inline version's contract."""
+    _log_fn = log or (lambda msg: _log.info(msg))
     listed = fetch_asx_listed_companies()
     df200 = fetch_asx200()
     if listed is None or df200 is None:
+        _log_fn("[scanner_engine] market-cap ranking: CSV or live ASX 200 unavailable, skipping rebuild")
         return None
 
     candidates = listed[~listed["Ticker"].isin(set(df200["Ticker"]))].copy()
     if candidates.empty:
         return candidates
+    candidate_tickers = set(candidates["Ticker"])
+    company_by_ticker = dict(zip(candidates["Ticker"], candidates["Company"]))
+    sector_by_ticker = dict(zip(candidates["Ticker"], candidates["Sector"]))
 
-    caps = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        futures = {pool.submit(market_cap_engine.get_market_cap, t): t
-                  for t in candidates["Ticker"]}
-        for fut in concurrent.futures.as_completed(futures):
-            ticker = futures[fut]
-            try:
-                caps[ticker] = fut.result()
-            except Exception:
-                caps[ticker] = 0
+    prior = source_health_store.get(_MARKET_CAP_RANKING_SOURCE_NAME)
+    prior_rows = (prior or {}).get("last_good_rows") or []
+    prior_cap_by_ticker = {r["Ticker"]: r.get("MarketCap", 0) for r in prior_rows}
+    prior_rank_by_ticker = {r["Ticker"]: i + 1 for i, r in enumerate(prior_rows)}
 
-    candidates["_cap"] = candidates["Ticker"].map(caps).fillna(0)
-    candidates = candidates[candidates["_cap"] > 0]
-    return candidates.sort_values("_cap", ascending=False).drop(columns="_cap").reset_index(drop=True)
+    if force_full or not prior_rows:
+        to_price = sorted(candidate_tickers)
+        _log_fn(f"[scanner_engine] market-cap ranking: full pass, {len(to_price)} candidate(s)")
+    else:
+        new_tickers = candidate_tickers - set(prior_cap_by_ticker)
+        boundary = {
+            t for t, rank in prior_rank_by_ticker.items()
+            if _MARKET_CAP_BOUNDARY_LO <= rank <= _MARKET_CAP_BOUNDARY_HI and t in candidate_tickers
+        }
+        to_price = sorted(new_tickers | boundary)
+        _log_fn(
+            f"[scanner_engine] market-cap ranking: incremental pass, "
+            f"{len(to_price)} of {len(candidate_tickers)} candidate(s) due "
+            f"({len(new_tickers)} new, {len(boundary)} in boundary band "
+            f"{_MARKET_CAP_BOUNDARY_LO}-{_MARKET_CAP_BOUNDARY_HI})"
+        )
+
+    caps, failed = _price_tickers(to_price, log=_log_fn) if to_price else ({}, set())
+
+    # Every candidate's cap: freshly priced where it was due, carried
+    # over from last-known-good otherwise. A candidate that was due
+    # (new, never priced before) and still failed after retry is
+    # excluded entirely - there is no prior cap to fall back to and
+    # nothing to rank it by, same as the old inline version dropped an
+    # unpriced ticker.
+    final_caps = {}
+    for t in candidate_tickers:
+        if t in caps:
+            final_caps[t] = caps[t]
+        elif t in prior_cap_by_ticker:
+            final_caps[t] = prior_cap_by_ticker[t]
+    # A genuine zero (ok=True, cap=0) carries no ranking signal - same
+    # "nothing to rank it by" treatment the old version gave an unpriced
+    # ticker, but arrived at without conflating the two.
+    final_caps = {t: cap for t, cap in final_caps.items() if cap and cap > 0}
+
+    priced_ok_count = len(to_price) - len(failed)
+    priced_ratio = (priced_ok_count / len(to_price)) if to_price else 1.0
+    row_count = len(final_caps)
+    prior_row_count = len(prior_rows)
+
+    checks = {
+        "priced_ratio": {
+            "ok": priced_ratio >= _MARKET_CAP_PRICED_RATIO_BAND,
+            "detail": (
+                f"{priced_ok_count}/{len(to_price)} due lookup(s) ok "
+                f"({priced_ratio:.0%}, band >= {_MARKET_CAP_PRICED_RATIO_BAND:.0%})"
+                if to_price else "nothing was due for pricing this run"
+            ),
+        },
+    }
+    if prior_row_count:
+        lo = prior_row_count * (1 - _MARKET_CAP_ROW_COUNT_DRIFT_BAND)
+        hi = prior_row_count * (1 + _MARKET_CAP_ROW_COUNT_DRIFT_BAND)
+        checks["row_count"] = {
+            "ok": lo <= row_count <= hi,
+            "detail": f"{row_count} row(s) vs last-known-good {prior_row_count} (expected {int(lo)}-{int(hi)})",
+        }
+    else:
+        checks["row_count"] = {"ok": True, "detail": "skipped - no last-known-good on record yet"}
+
+    # Informational only - see this function's own docstring for why age
+    # never gates accept/reject.
+    prior_good_at = (prior or {}).get("last_good_at")
+    if prior_good_at:
+        try:
+            age_days = (
+                datetime.now(timezone.utc) - datetime.fromisoformat(prior_good_at)
+            ).total_seconds() / 86400
+            checks["age"] = {
+                "ok": age_days <= _MARKET_CAP_AGE_BAND_DAYS,
+                "detail": f"last-known-good was {age_days:.1f} day(s) old going into this run (band <= {_MARKET_CAP_AGE_BAND_DAYS})",
+            }
+        except ValueError:
+            checks["age"] = {"ok": True, "detail": "skipped - unreadable last-known-good timestamp"}
+    else:
+        checks["age"] = {"ok": True, "detail": "skipped - no last-known-good on record yet"}
+
+    all_ok = checks["priced_ratio"]["ok"] and checks["row_count"]["ok"]
+
+    ranked_df = pd.DataFrame(
+        {
+            "Ticker": t,
+            "Company": company_by_ticker.get(t),
+            "Sector": sector_by_ticker.get(t),
+            "MarketCap": final_caps[t],
+        }
+        for t in final_caps
+    )
+    if not ranked_df.empty:
+        ranked_df = ranked_df.sort_values("MarketCap", ascending=False).reset_index(drop=True)
+
+    if all_ok:
+        source_health_store.record_success(
+            _MARKET_CAP_RANKING_SOURCE_NAME, ranked_df.to_dict("records"), checks
+        )
+        _log_fn(f"[scanner_engine] market-cap ranking: published, {len(ranked_df)} row(s)")
+        return ranked_df
+
+    was_already_stale = bool(prior and prior.get("stale"))
+    reason = (
+        "priced ratio below band" if not checks["priced_ratio"]["ok"]
+        else "row-count drift vs last-known-good"
+    )
+    source_health_store.record_failure(_MARKET_CAP_RANKING_SOURCE_NAME, checks, reason)
+    if not was_already_stale:
+        try:
+            alert_engine.send_source_health_alert(_MARKET_CAP_RANKING_SOURCE_NAME, checks, reason)
+        except Exception:
+            _log.exception(
+                "scanner_engine: source-health alert send failed for %s",
+                _MARKET_CAP_RANKING_SOURCE_NAME,
+            )
+    _log_fn(
+        f"[scanner_engine] market-cap ranking: rejected ({reason}) - "
+        f"serving last-known-good instead"
+    )
+    return source_health_store.last_good_dataframe(_MARKET_CAP_RANKING_SOURCE_NAME)
+
+
+def _asx_non200_by_marketcap():
+    """Read-only web-path accessor. Every fetch_asx_listed_companies()
+    row NOT already in the live Wikipedia ASX 200, ranked by market cap
+    descending - the shared ranking fetch_asx300()/fetch_allords() below
+    both slice from.
+
+    Commit D (20 Sep 2026): no longer prices anything itself - see
+    _rebuild_market_cap_ranking() above, the nightly-only function that
+    does, and this function's own module-level comment block for why. A
+    plain file read via source_health_store, same convention as fetch_
+    asx_listed_companies() reading the CSV's own last-known-good: no
+    network call, no thread pool, nothing that can block a web request.
+
+    Returns the last-known-good ranking (stale or not - a stale flag
+    here means the LATEST nightly attempt was rejected, not that this
+    data is unusable; it's still the best real ranking on file), or None
+    if nothing has ever been published yet - callers already treat None
+    as "show unavailable" rather than hanging or guessing."""
+    return source_health_store.last_good_dataframe(_MARKET_CAP_RANKING_SOURCE_NAME)
 
 
 # ~300/~500 total once added to the live 200 - matches the real indices'

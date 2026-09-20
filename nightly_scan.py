@@ -454,6 +454,23 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     }
 
 
+def refresh_market_cap_ranking(log=print):
+    """Commit D (20 Sep 2026): the nightly-only entry point for
+    scanner_engine._rebuild_market_cap_ranking() - the market-cap
+    ranking fetch_asx300()/fetch_allords() both slice their tail from.
+    Called once, up front, from scheduler_engine._run_nightly() before
+    the per-universe scan loop starts, so both AU universes that depend
+    on it see this run's freshly (or incrementally) priced ranking
+    rather than a stale in-process cache. A web request never triggers
+    this - see scanner_engine._asx_non200_by_marketcap()'s own
+    docstring for the read-only path every visitor actually goes
+    through."""
+    try:
+        scanner_engine._rebuild_market_cap_ranking(log=log)
+    except Exception as e:
+        log(f"[nightly_scan] market-cap ranking refresh failed: {e}")
+
+
 def run_universe_scan(universe, max_tickers=None, log=print):
     """Scan every ticker in `universe` and persist the ranked result via
     scan_store. Returns the saved payload (or None if the universe couldn't

@@ -27751,21 +27751,26 @@ def page_admin_dashboard():
             unsafe_allow_html=True,
         )
 
-    # --- SOURCE HEALTH (Commit 2, 20 Sep 2026) --------------------------
+    # --- SOURCE HEALTH (Commit 2, 20 Sep 2026; Commit D added the market- --
+    # cap ranking, 20 Sep 2026) -------------------------------------------
     st.markdown("### Source health")
     st.caption(
         "Health checks for scanner_engine.py's live data fetches that "
-        "have last-known-good tracking (currently: the ASX Listed "
-        "Companies CSV fetch_asx300()/fetch_allords() rank against). A "
-        "row-count guard alone only proves a fetch is well-formed, not "
-        "that it's current - asx300list.com/allordslist.com both passed "
-        "one for five years while frozen on a 28 April 2021 snapshot. "
-        "🔴 Stale means the fresh fetch or one of its checks (cross-"
-        "source against the live ASX 200, row-count drift vs last-"
-        "known-good, or a known-recent-listing canary) failed, and the "
-        "site is serving the last known-good snapshot instead of the "
-        "fresh (bad) one - you'll also have gotten an email/push about "
-        "it the moment that first happened."
+        "have last-known-good tracking: the ASX Listed Companies CSV "
+        "fetch_asx300()/fetch_allords() rank against, and the nightly "
+        "market-cap ranking built from it (the pricing pass that fills "
+        "out their tail past the live ASX 200 - now computed once "
+        "overnight, never on a visitor's request). A row-count guard "
+        "alone only proves a fetch is well-formed, not that it's current "
+        "- asx300list.com/allordslist.com both passed one for five years "
+        "while frozen on a 28 April 2021 snapshot, and a partial, "
+        "throttled market-cap pass would look just as well-formed while "
+        "silently mis-ranking or dropping names. 🔴 Stale means the "
+        "fresh attempt or one of its checks failed (cross-source/drift/"
+        "canary for the CSV; priced-ratio/row-count for the ranking), "
+        "and the site is serving the last known-good snapshot instead of "
+        "the fresh (bad) one - you'll also have gotten an email/push "
+        "about it the moment that first happened."
     )
     with st.container(border=True):
         import source_health_store
