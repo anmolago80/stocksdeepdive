@@ -471,12 +471,19 @@ def refresh_market_cap_ranking(log=print):
         log(f"[nightly_scan] market-cap ranking refresh failed: {e}")
 
 
-def run_universe_scan(universe, max_tickers=None, log=print):
+def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     """Scan every ticker in `universe` and persist the ranked result via
     scan_store. Returns the saved payload (or None if the universe couldn't
     be resolved). Goes attention-lite only when the resolved universe is
     bigger than NIGHTLY_LITE_THRESHOLD (a real index like ASX 200/S&P 500
-    always will be; a hand-run scan of a small custom list won't)."""
+    always will be; a hand-run scan of a small custom list won't).
+
+    `run_night` (Commit H, 20 Sep 2026): the scheduled scan night this
+    call belongs to, threaded straight through to scan_store.save_scan()
+    and admin_metrics_store.bump_scan_calendar() - see save_scan()'s own
+    docstring for exactly why this exists and what it fixes. None (the
+    default) for a hand-run scan with no scheduler context; scheduler_
+    engine._run_nightly() always passes it."""
     # Services batch 2, Part 2 (2026-09-01): calls get_universe_pool()
     # directly (what resolve_tickers() itself calls internally) instead
     # of resolve_tickers() - same ticker list, same single fetch per
@@ -617,15 +624,21 @@ def run_universe_scan(universe, max_tickers=None, log=print):
             f"anyway, flagged degraded.")
 
     payload = scan_store.save_scan(universe, rows, source, attention_lite=attention_lite,
-                                    degraded=degraded)
+                                    degraded=degraded, run_night=run_night)
     # Part 53.1: one tiny marker for the Admin Dashboard's weekly scan
     # calendar - a full scan was just SAVED for this universe tonight.
-    # Wrapped in its own try/except, same must-never-break-the-scan
-    # convention as every other counting call site in this function
-    # (score_history.record below) - see bump_scan_calendar()'s own
-    # docstring for why this is a metrics write, not a second table.
+    # Commit H: credited to `run_night` (the night this run was scheduled
+    # for), not whatever calendar day it happens to be when this line
+    # executes - a universe queued after several smaller ones can finish
+    # past 00:00 UTC, and the OLD day-at-call-time behavior would then
+    # mark it on the wrong day, exactly the bug the admin calendar was
+    # showing for every weekday-pinned universe. Wrapped in its own
+    # try/except, same must-never-break-the-scan convention as every
+    # other counting call site in this function (score_history.record
+    # below) - see bump_scan_calendar()'s own docstring for why this is
+    # a metrics write, not a second table.
     try:
-        admin_metrics_store.bump_scan_calendar(universe, "scan")
+        admin_metrics_store.bump_scan_calendar(universe, "scan", day=run_night)
     except Exception as e:
         log(f"[nightly_scan] {universe}: scan-calendar record failed: {e}")
     _scan_elapsed = time.time() - _scan_start
@@ -1081,7 +1094,7 @@ def _reprice_download_chunk(tickers):
     return out
 
 
-def reprice_universe(universe, log=print):
+def reprice_universe(universe, log=print, run_night=None):
     """Part 34 addendum 34.7: refreshes ONE universe's stored scan rows
     in place with tonight's prices, via chunked batch downloads (never
     per-ticker loops) - see _reprice_row()'s own docstring for exactly
@@ -1092,6 +1105,11 @@ def reprice_universe(universe, log=print):
     prior scan on disk at all - a universe with nothing scanned yet has
     nothing for this pass to reprice; it gets its first real content
     from its own full-scan cadence instead.
+
+    `run_night` (Commit H, 20 Sep 2026): the scheduled scan night,
+    passed straight to the admin-calendar marker below - same reasoning
+    as run_universe_scan()'s own `run_night`, just for the "reprice"
+    marker instead of "scan".
 
     Processes one chunk's downloaded history at a time (never holds every
     universe's full history in memory at once - 34.8's memory guard) and
@@ -1157,7 +1175,7 @@ def reprice_universe(universe, log=print):
     # reaches here, so this only fires on a genuine reprice).
     if payload:
         try:
-            admin_metrics_store.bump_scan_calendar(universe, "reprice")
+            admin_metrics_store.bump_scan_calendar(universe, "reprice", day=run_night)
         except Exception as e:
             log(f"[nightly_scan] reprice {universe}: scan-calendar record failed: {e}")
     elapsed = time.time() - start

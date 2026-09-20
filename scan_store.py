@@ -34,18 +34,36 @@ def _path(universe):
     return os.path.join(_data_dir(), f"{_slug(universe)}.json")
 
 
-def save_scan(universe, rows, source_label, attention_lite=True, degraded=False):
+def save_scan(universe, rows, source_label, attention_lite=True, degraded=False, run_night=None):
     """`degraded` (audit fix 2.3): True when the caller (nightly_scan.
     run_universe_scan) completed for fewer tickers than its own
     completeness threshold - saved anyway only because no better prior
     scan existed to keep instead. Purely informational for now (not yet
     surfaced in the Scanner UI); the load-bearing part of the fix is
     run_universe_scan choosing not to overwrite a good prior scan with a
-    worse partial one in the first place."""
+    worse partial one in the first place.
+
+    `run_night` (Commit H, 20 Sep 2026): the 'YYYY-MM-DD' UTC date of the
+    scheduled scan NIGHT this run belongs to - captured once at the top
+    of scheduler_engine._run_nightly() and passed all the way down,
+    deliberately independent of `generated_at` (which stays real
+    wall-clock completion time, untouched, for every other reader that
+    means "how fresh is this data"). Only scheduler_engine.
+    _universes_missing_today() reads this field, to tell whether a
+    universe scanned tonight was truly credited to its scheduled night -
+    a large universe queued after several smaller ones can easily finish
+    after 00:00 UTC, and `generated_at` alone would then misattribute it
+    to the following day (see that function's own docstring for the
+    incident this fixes). None (the default) for a scan saved with no
+    scheduler context at all (a hand-run `python nightly_scan.py "X"`,
+    or any scan saved before this field existed) - _universes_missing_
+    today() falls back to generated_at's date in that case, exactly the
+    pre-Commit-H behavior."""
     payload = {
         "universe": universe,
         "source": source_label,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "run_night": run_night,
         "rows": rows,
         "attention_lite": attention_lite,
         "degraded": degraded,
