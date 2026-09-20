@@ -1077,6 +1077,22 @@ def _rebuild_market_cap_ranking(force_full=False, log=None):
     (alert_engine.send_source_health_alert), never on every single day a
     failure stays unresolved.
 
+    Bootstrap exemption (Commit F): when there's no last-known-good yet
+    at all, priced_ratio can't be allowed to reject the pass - rejecting
+    would mean nothing is ever published, so the NEXT run is cold again
+    too (same ~2,300-candidate full pass, same throttling exposure) and
+    can reject itself forever. On a first-ever pass the ranking publishes
+    regardless of priced_ratio - but a pass that only got there via this
+    exemption is published AND immediately marked stale (one alert, one
+    consecutive_failures tick), so it's visibly not-ok on the Source
+    health panel rather than silently reported healthy. A later run that
+    fills in the gaps left by this one is compared against that stale
+    baseline with the row-count drift check itself skipped (growth off
+    a known-partial baseline is expected, not drift) - so the very next
+    clean pass clears stale on its own, the normal way (a bare record_
+    success() with nothing layered after it), the moment priced_ratio
+    clears the band for real.
+
     A ranking-age check is recorded on every run too, but is NEVER part
     of the accept/reject decision - see the comment right above where
     it's computed for why gating on it could permanently wedge the
@@ -1158,12 +1174,28 @@ def _rebuild_market_cap_ranking(force_full=False, log=None):
             ),
         },
     }
-    if prior_row_count:
+    # Commit F: also skip the drift comparison when the last-known-good
+    # being compared against was ITSELF a bootstrap-partial publish
+    # (prior.stale) - that baseline is already known-incomplete (some
+    # candidates missing because they failed to price with no fallback
+    # available yet), so a later run successfully pricing those same
+    # candidates for the first time is expected, wanted growth, not
+    # drift. Without this, a bootstrap-partial's own recovery run would
+    # get rejected by this check for the "wrong" reason (row count
+    # legitimately going UP as gaps fill in), permanently keeping the
+    # source stale even once pricing recovers.
+    prior_was_stale = bool(prior and prior.get("stale"))
+    if prior_row_count and not prior_was_stale:
         lo = prior_row_count * (1 - _MARKET_CAP_ROW_COUNT_DRIFT_BAND)
         hi = prior_row_count * (1 + _MARKET_CAP_ROW_COUNT_DRIFT_BAND)
         checks["row_count"] = {
             "ok": lo <= row_count <= hi,
             "detail": f"{row_count} row(s) vs last-known-good {prior_row_count} (expected {int(lo)}-{int(hi)})",
+        }
+    elif prior_was_stale:
+        checks["row_count"] = {
+            "ok": True,
+            "detail": f"skipped - last-known-good ({prior_row_count} rows) was itself a stale/partial publish, growth is expected",
         }
     else:
         checks["row_count"] = {"ok": True, "detail": "skipped - no last-known-good on record yet"}
@@ -1187,6 +1219,28 @@ def _rebuild_market_cap_ranking(force_full=False, log=None):
 
     all_ok = checks["priced_ratio"]["ok"] and checks["row_count"]["ok"]
 
+    # Commit F (bootstrap exemption): row_count already skips itself (ok
+    # True) when there's no last-known-good to compare against; priced_
+    # ratio had no equivalent, so a cold first pass over ~2,300 tickers -
+    # exactly where yfinance throttling is most likely - could reject
+    # itself, leaving nothing published. The next night starts cold
+    # again (still no baseline), the cheap incremental path can never
+    # kick in, and the ranking is stuck rejecting itself forever. Once a
+    # baseline exists, priced_ratio still gates normally below - this
+    # only ever fires on the very first publish.
+    is_bootstrap = not prior_row_count
+    publish = all_ok or is_bootstrap
+    # A publish that only happened because of the bootstrap exemption,
+    # despite priced_ratio actually failing - published (so there's
+    # something on disk to serve at all) but still visibly not-ok, not
+    # silently folded into a clean pass. Handled below by publishing
+    # (record_success, since that's the only source_health_store
+    # function that writes last_good_rows at all) and then immediately
+    # marking the result stale (record_failure, which never touches
+    # last_good_rows) - decoupling "was something published" from "is
+    # the source reporting healthy", which all_ok alone can't express.
+    bootstrap_partial = is_bootstrap and not checks["priced_ratio"]["ok"]
+
     ranked_df = pd.DataFrame(
         {
             "Ticker": t,
@@ -1199,11 +1253,44 @@ def _rebuild_market_cap_ranking(force_full=False, log=None):
     if not ranked_df.empty:
         ranked_df = ranked_df.sort_values("MarketCap", ascending=False).reset_index(drop=True)
 
-    if all_ok:
+    if publish:
         source_health_store.record_success(
             _MARKET_CAP_RANKING_SOURCE_NAME, ranked_df.to_dict("records"), checks
         )
-        _log_fn(f"[scanner_engine] market-cap ranking: published, {len(ranked_df)} row(s)")
+        if bootstrap_partial:
+            # Composes the two existing source_health_store primitives
+            # rather than adding a third write path: record_success()
+            # just above already persisted the partial ranking as last-
+            # known-good (last_good_at/last_good_row_count/last_good_
+            # rows). record_failure() never touches those three fields -
+            # only stale/last_check_at/last_checks/last_failure_reason/
+            # consecutive_failures - so calling it immediately after
+            # layers "stale, one failure recorded" on top of the rows
+            # that were just published, without touching source_health_
+            # store.py at all. This is what makes the Source health
+            # panel show 🔴 Stale for a bootstrap-partial publish (not
+            # just a failing priced_ratio row inside an otherwise-green
+            # check), and what "next incremental run clears stale" (see
+            # this function's own docstring) actually refers to: the
+            # next run's own clean record_success() call, with no
+            # trailing record_failure(), is what clears it.
+            reason = "bootstrap publish below priced-ratio band - no prior baseline to fall back to"
+            source_health_store.record_failure(_MARKET_CAP_RANKING_SOURCE_NAME, checks, reason)
+            _log_fn(
+                f"[scanner_engine] market-cap ranking: bootstrap publish is "
+                f"PARTIAL ({checks['priced_ratio']['detail']}) - published "
+                f"anyway since no last-known-good existed to reject back to, "
+                f"marked stale"
+            )
+            try:
+                alert_engine.send_source_health_alert(_MARKET_CAP_RANKING_SOURCE_NAME, checks, reason)
+            except Exception:
+                _log.exception(
+                    "scanner_engine: source-health alert send failed for %s",
+                    _MARKET_CAP_RANKING_SOURCE_NAME,
+                )
+        else:
+            _log_fn(f"[scanner_engine] market-cap ranking: published, {len(ranked_df)} row(s)")
         return ranked_df
 
     was_already_stale = bool(prior and prior.get("stale"))

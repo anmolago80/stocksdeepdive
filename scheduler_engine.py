@@ -517,6 +517,7 @@ def _release_job_lock(job_name):
 
 def _run_nightly(cfg, log):
     import nightly_scan
+    import scanner_engine
 
     # Services batch, Part 1 (metric alerts): snapshot every alerted
     # ticker's LAST recorded value before any of tonight's scans touch
@@ -545,6 +546,25 @@ def _run_nightly(cfg, log):
         nightly_scan.refresh_market_cap_ranking(log=log)
     except Exception as e:
         log(f"[scheduler] market-cap ranking refresh failed: {e}")
+
+    # Commit F (time-critical fix): fetch_asx300()/fetch_allords()/fetch_
+    # asx_listed_companies() are st.cache_data(ttl=86400) - same process
+    # as this scheduler, so if a web visitor called any of them earlier
+    # today BEFORE tonight's refresh above (including catching a None
+    # when no ranking existed on disk yet), that stale/None answer stays
+    # cached for up to 24h regardless of the fresh file just written -
+    # the scan loop below would call get_universe_pool(), hit the same
+    # cached None, and tonight's ASX 300/All Ordinaries scans would
+    # produce nothing. Clearing these three right after the refresh
+    # forces the scan loop's own first call this run to read fresh.
+    # _asx_non200_by_marketcap() itself carries no cache decorator (a
+    # plain file read - see its own docstring) so it needs no clearing.
+    try:
+        scanner_engine.fetch_asx300.clear()
+        scanner_engine.fetch_allords.clear()
+        scanner_engine.fetch_asx_listed_companies.clear()
+    except Exception as e:
+        log(f"[scheduler] market-cap ranking cache clear failed: {e}")
 
     # The "imported" virtual universe (screen_import_store's TradingView
     # CSV queue - see nightly_scan.run_imported_scan) always runs LAST,
