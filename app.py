@@ -18216,6 +18216,12 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
     # own required caption says at the bottom of the section.
     with st.expander(_st_("newmoney_expander_title"), expanded=False):
         _nm_current_total = sum(weights.get(t, 0.0) for t in tickers)
+        # Commit C (20 Sep 2026): Mode C's own base - the SAME total the
+        # "You invested" column already sums itself to at the bottom of
+        # this table (see _total_row[_col_invested] below) - computed
+        # once here and reused in both places so the mode can never
+        # disagree with the column beside it.
+        _nm_invested_total = sum(costs.get(t, 0.0) for t in tickers)
 
         _nm_dep_col, _nm_mode_col = st.columns([1, 1.4])
         with _nm_dep_col:
@@ -18227,8 +18233,9 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
             st.write("")
             _nm_mode_a_label = _st_("newmoney_mode_a")
             _nm_mode_b_label = _st_("newmoney_mode_b")
+            _nm_mode_c_label = _st_("newmoney_mode_c")
             _nm_mode = st.segmented_control(
-                _st_("newmoney_mode_label"), [_nm_mode_a_label, _nm_mode_b_label],
+                _st_("newmoney_mode_label"), [_nm_mode_a_label, _nm_mode_b_label, _nm_mode_c_label],
                 default=_nm_mode_a_label, key=f"{_skey}_newmoney_mode",
                 label_visibility="collapsed",
             ) or _nm_mode_a_label
@@ -18279,146 +18286,247 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
             st.caption(_st_("newmoney_zero_caption"))
         else:
             _nm_is_mode_b = _nm_mode == _nm_mode_b_label
-            if _nm_is_mode_b:
-                # Mode B - "Top up toward mix": target_i = pct_i/100 *
-                # (current_total + deposit); shortfall_i = max(0,
-                # target_i - current_i). If the total shortfall can't be
-                # fully closed by this deposit, the cash is split
-                # PROPORTIONALLY to the shortfalls (the biggest gaps get
-                # the most, nothing is ever pushed past its own gap by
-                # this branch). Once every gap IS closed (including the
-                # trivial case where nothing was underweight to begin
-                # with), whatever cash is left over splits by mix % -
-                # exactly Mode A's own rule, reused via the same
-                # _largest_remainder_round(target=...) call so both
-                # modes allocate cents identically once there's no gap
-                # left to fill. A holding already at/above its target has
-                # shortfall 0 and therefore receives $0 here - this
-                # section only ever ADDS cash to a holding, it never
-                # removes any, so nothing is ever negative or a sell.
-                _nm_target = {
-                    t: (edited_pcts[t] / 100.0) * (_nm_current_total + _nm_deposit) for t in tickers
-                }
-                _nm_shortfall = {t: max(0.0, _nm_target[t] - weights.get(t, 0.0)) for t in tickers}
-                _nm_total_shortfall = sum(_nm_shortfall.values())
-                if _nm_total_shortfall >= _nm_deposit and _nm_total_shortfall > 0:
-                    _nm_buy = {
-                        t: _nm_deposit * (_nm_shortfall[t] / _nm_total_shortfall) for t in tickers
+            _nm_is_mode_c = _nm_mode == _nm_mode_c_label
+
+            # Commit C (20 Sep 2026), Mode C guard: a holding with no
+            # recorded cost basis would compute gap_i = target_i - 0 -
+            # i.e. get handed almost the entire deposit as though it
+            # were the single most under-invested holding, a confident
+            # WRONG number rather than a real shortfall. Warn-and-
+            # DISABLE rather than warn-and-continue: this mode's whole
+            # premise (the deposit lands your committed money on the
+            # mix) is meaningless for a holding it can't measure, and a
+            # partial table would need its own separate re-
+            # normalisation story nobody asked for. Modes A/B never
+            # read `costs` for their own arithmetic, so this only ever
+            # applies to Mode C.
+            _nm_missing_cost_basis = (
+                [t for t in tickers if costs.get(t, 0.0) <= 0] if _nm_is_mode_c else []
+            )
+            if _nm_is_mode_c and _nm_missing_cost_basis:
+                st.warning(_st_(
+                    "newmoney_missing_cost_basis_warning",
+                    tickers=", ".join(_nm_missing_cost_basis),
+                ))
+            else:
+                if _nm_is_mode_b:
+                    # Mode B - "Top up toward mix": target_i = pct_i/100 *
+                    # (current_total + deposit); shortfall_i = max(0,
+                    # target_i - current_i). If the total shortfall can't be
+                    # fully closed by this deposit, the cash is split
+                    # PROPORTIONALLY to the shortfalls (the biggest gaps get
+                    # the most, nothing is ever pushed past its own gap by
+                    # this branch). Once every gap IS closed (including the
+                    # trivial case where nothing was underweight to begin
+                    # with), whatever cash is left over splits by mix % -
+                    # exactly Mode A's own rule, reused via the same
+                    # _largest_remainder_round(target=...) call so both
+                    # modes allocate cents identically once there's no gap
+                    # left to fill. A holding already at/above its target has
+                    # shortfall 0 and therefore receives $0 here - this
+                    # section only ever ADDS cash to a holding, it never
+                    # removes any, so nothing is ever negative or a sell.
+                    _nm_target = {
+                        t: (edited_pcts[t] / 100.0) * (_nm_current_total + _nm_deposit) for t in tickers
                     }
-                else:
-                    _nm_remainder = _nm_deposit - _nm_total_shortfall
-                    _nm_remainder_split = _largest_remainder_round(
-                        {t: (edited_pcts[t] / 100.0) * _nm_remainder for t in tickers},
-                        decimals=2, target=_nm_remainder,
-                    )
-                    _nm_buy = {t: _nm_shortfall[t] + _nm_remainder_split[t] for t in tickers}
-            else:
-                # Mode A - "Split by mix %": exactly the current mix,
-                # largest-remainder rounded to the CENT (decimals=2, not
-                # this helper's usual 1-decimal-percent grid) so the
-                # column sums to the deposit exactly, never a few cents
-                # short/over from plain per-row rounding.
-                _nm_target = None
-                _nm_buy = _largest_remainder_round(
-                    {t: (edited_pcts[t] / 100.0) * _nm_deposit for t in tickers},
-                    decimals=2, target=_nm_deposit,
-                )
-
-            # Units are floored at the latest close - a fraction of a
-            # share can't actually be bought. A priceless ticker buys 0
-            # units; its whole allocation stays unallocated cash below
-            # rather than raising a divide-by-None.
-            _nm_units, _nm_spent = {}, {}
-            for t in tickers:
-                _p = _nm_prices.get(t)
-                if _p and _p > 0:
-                    _u = math.floor(_nm_buy[t] / _p)
-                    _nm_units[t] = _u
-                    _nm_spent[t] = _u * _p
-                else:
-                    _nm_units[t] = None
-                    _nm_spent[t] = 0.0
-
-            _nm_unallocated = _nm_deposit - sum(_nm_spent.values())
-            _nm_new_total = _nm_current_total + _nm_deposit
-
-            _col_holding, _col_mix, _col_invested, _col_hold_now, _col_target, _col_gap, _col_buys, _col_units, _col_weight = (
-                _st_("newmoney_col_holding"), _st_("newmoney_col_mix_pct"),
-                _st_("newmoney_col_invested"),
-                _st_("newmoney_col_hold_now"), _st_("newmoney_col_target"),
-                _st_("newmoney_col_gap"), _st_("newmoney_col_buys"),
-                _st_("newmoney_col_units"), _st_("newmoney_col_weight_after"),
-            )
-            _nm_rows = []
-            _nm_gain_signs = []  # parallel to _nm_rows (holding rows only) - >0/<0/None
-            for t in tickers:
-                _row = {_col_holding: t, _col_mix: f"{edited_pcts[t]:.1f}%"}
-                _cost = costs.get(t, 0.0)
-                if _cost > 0:
-                    _gain_pct = (weights.get(t, 0.0) - _cost) / _cost * 100.0
-                    _row[_col_invested] = f"{_fmt_aud(_cost)} ({_gain_pct:+.1f}%)"
-                    _nm_gain_signs.append(_gain_pct)
-                else:
-                    _row[_col_invested] = _fmt_aud(_cost) if _cost else _na
-                    _nm_gain_signs.append(None)
-                if _nm_target is not None:
-                    _gap = weights.get(t, 0.0) - _nm_target[t]
-                    _row[_col_hold_now] = _fmt_aud(weights.get(t, 0.0))
-                    _row[_col_target] = _fmt_aud(_nm_target[t])
-                    _row[_col_gap] = (
-                        _st_("newmoney_gap_over") if _gap >= 0 else f"-{_fmt_aud(abs(_gap))}"
-                    )
-                else:
-                    _row[_col_hold_now] = _fmt_aud(weights.get(t, 0.0))
-                _row[_col_buys] = _fmt_aud(_nm_buy[t])
-                _u = _nm_units[t]
-                _row[_col_units] = f"{_u:,.0f} @ {_fmt_aud(_nm_prices[t])}" if _u is not None else _na
-                _row[_col_weight] = (
-                    f"{(weights.get(t, 0.0) + _nm_spent[t]) / _nm_new_total * 100.0:.1f}%"
-                    if _nm_new_total > 0 else _na
-                )
-                _nm_rows.append(_row)
-
-            # Total footer row, matching the mock's own - no gain/loss % on
-            # the aggregate, same as the mockup left it.
-            _total_row = {_col_holding: _st_("newmoney_col_total"), _col_mix: f"{sum(edited_pcts.values()):.1f}%"}
-            _total_row[_col_invested] = _fmt_aud(sum(costs.get(t, 0.0) for t in tickers))
-            _nm_gain_signs.append(None)
-            if _nm_target is not None:
-                _total_row[_col_hold_now] = _fmt_aud(_nm_current_total)
-                _total_row[_col_target] = _fmt_aud(_nm_current_total + _nm_deposit)
-                _total_row[_col_gap] = _na
-            else:
-                _total_row[_col_hold_now] = _fmt_aud(_nm_current_total)
-            _total_row[_col_buys] = _fmt_aud(sum(_nm_buy.values()))
-            _total_row[_col_units] = _na
-            _total_row[_col_weight] = "100.0%" if _nm_new_total > 0 else _na
-            _nm_rows.append(_total_row)
-
-            _nm_df = pd.DataFrame(_nm_rows)
-
-            def _style_nm_buys(_):
-                styles = pd.DataFrame("", index=_nm_df.index, columns=_nm_df.columns)
-                styles[_col_buys] = "color: #34d399; font-weight: 600"
-                for _i, _sign in enumerate(_nm_gain_signs):
-                    if _sign is not None:
-                        styles.at[_nm_df.index[_i], _col_invested] = (
-                            "color: #34d399" if _sign >= 0 else "color: #fb7185"
+                    _nm_shortfall = {t: max(0.0, _nm_target[t] - weights.get(t, 0.0)) for t in tickers}
+                    _nm_total_shortfall = sum(_nm_shortfall.values())
+                    if _nm_total_shortfall >= _nm_deposit and _nm_total_shortfall > 0:
+                        _nm_buy = {
+                            t: _nm_deposit * (_nm_shortfall[t] / _nm_total_shortfall) for t in tickers
+                        }
+                    else:
+                        _nm_remainder = _nm_deposit - _nm_total_shortfall
+                        _nm_remainder_split = _largest_remainder_round(
+                            {t: (edited_pcts[t] / 100.0) * _nm_remainder for t in tickers},
+                            decimals=2, target=_nm_remainder,
                         )
-                return styles
+                        _nm_buy = {t: _nm_shortfall[t] + _nm_remainder_split[t] for t in tickers}
+                elif _nm_is_mode_c:
+                    # Mode C - "Target original allocation": mirrors Mode
+                    # B's structure exactly, base swapped from market value
+                    # (weights/_nm_current_total) to cost basis (costs/
+                    # _nm_invested_total) - target_i = pct_i/100 *
+                    # (invested_total + deposit); gap_i = max(0, target_i -
+                    # invested_i). Same gap-fills-first-then-mix-splits-the-
+                    # remainder rule, same _largest_remainder_round(target=)
+                    # call Mode B uses, so both behave predictably next to
+                    # each other. A holding at/above its cost-basis target
+                    # gets $0 here too - never negative, never a sell.
+                    _nm_target = {
+                        t: (edited_pcts[t] / 100.0) * (_nm_invested_total + _nm_deposit) for t in tickers
+                    }
+                    _nm_gap = {t: max(0.0, _nm_target[t] - costs.get(t, 0.0)) for t in tickers}
+                    _nm_total_gap = sum(_nm_gap.values())
+                    if _nm_total_gap >= _nm_deposit and _nm_total_gap > 0:
+                        _nm_buy = {
+                            t: _nm_deposit * (_nm_gap[t] / _nm_total_gap) for t in tickers
+                        }
+                    else:
+                        _nm_remainder = _nm_deposit - _nm_total_gap
+                        _nm_remainder_split = _largest_remainder_round(
+                            {t: (edited_pcts[t] / 100.0) * _nm_remainder for t in tickers},
+                            decimals=2, target=_nm_remainder,
+                        )
+                        _nm_buy = {t: _nm_gap[t] + _nm_remainder_split[t] for t in tickers}
+                else:
+                    # Mode A - "Split by mix %": exactly the current mix,
+                    # largest-remainder rounded to the CENT (decimals=2, not
+                    # this helper's usual 1-decimal-percent grid) so the
+                    # column sums to the deposit exactly, never a few cents
+                    # short/over from plain per-row rounding.
+                    _nm_target = None
+                    _nm_buy = _largest_remainder_round(
+                        {t: (edited_pcts[t] / 100.0) * _nm_deposit for t in tickers},
+                        decimals=2, target=_nm_deposit,
+                    )
 
-            st.dataframe(
-                _nm_df.style.apply(_style_nm_buys, axis=None),
-                hide_index=True, width='stretch',
-            )
-            st.caption(_st_("newmoney_unallocated_caption", amount=_fmt_aud(_nm_unallocated)))
-            st.caption(_st_("newmoney_invested_caption"))
-            if _nm_target is not None:
-                st.caption(_st_("newmoney_method_b_caption"))
-            st.caption(_st_(
-                "newmoney_disclosure_caption",
-                toll_tab=f"**{i18n.t('portfolio.tab_switch', lang)}**",
-            ))
+                # Units are floored at the latest close - a fraction of a
+                # share can't actually be bought. A priceless ticker buys 0
+                # units; its whole allocation stays unallocated cash below
+                # rather than raising a divide-by-None.
+                _nm_units, _nm_spent = {}, {}
+                for t in tickers:
+                    _p = _nm_prices.get(t)
+                    if _p and _p > 0:
+                        _u = math.floor(_nm_buy[t] / _p)
+                        _nm_units[t] = _u
+                        _nm_spent[t] = _u * _p
+                    else:
+                        _nm_units[t] = None
+                        _nm_spent[t] = 0.0
+
+                _nm_unallocated = _nm_deposit - sum(_nm_spent.values())
+                _nm_new_total = _nm_current_total + _nm_deposit
+
+                # Commit C: "Target after deposit"/"Gap" mean market VALUE
+                # in Mode B and cost in Mode C - swap the header text (same
+                # columns, same row-building code below) rather than
+                # holding four separate target/gap columns. Same idea for
+                # the weight-after column(s): Mode C gets two (invested vs
+                # market weight after), Modes A/B keep the existing one.
+                _col_holding, _col_mix, _col_invested, _col_hold_now, _col_buys, _col_units = (
+                    _st_("newmoney_col_holding"), _st_("newmoney_col_mix_pct"),
+                    _st_("newmoney_col_invested"), _st_("newmoney_col_hold_now"),
+                    _st_("newmoney_col_buys"), _st_("newmoney_col_units"),
+                )
+                if _nm_is_mode_c:
+                    _col_target = _st_("newmoney_col_target_invested")
+                    _col_gap = _st_("newmoney_col_gap_to_target")
+                    _col_invested_weight = _st_("newmoney_col_invested_weight_after")
+                    _col_market_weight = _st_("newmoney_col_market_weight_after")
+                else:
+                    _col_target = _st_("newmoney_col_target")
+                    _col_gap = _st_("newmoney_col_gap")
+                    _col_weight = _st_("newmoney_col_weight_after")
+
+                _nm_rows = []
+                _nm_gain_signs = []  # parallel to _nm_rows (holding rows only) - >0/<0/None
+                for t in tickers:
+                    _row = {_col_holding: t, _col_mix: f"{edited_pcts[t]:.1f}%"}
+                    _cost = costs.get(t, 0.0)
+                    if _cost > 0:
+                        _gain_pct = (weights.get(t, 0.0) - _cost) / _cost * 100.0
+                        _row[_col_invested] = f"{_fmt_aud(_cost)} ({_gain_pct:+.1f}%)"
+                        _nm_gain_signs.append(_gain_pct)
+                    else:
+                        _row[_col_invested] = _fmt_aud(_cost) if _cost else _na
+                        _nm_gain_signs.append(None)
+                    if _nm_target is not None:
+                        # Commit C: the gap is measured against cost
+                        # (costs.get) in Mode C, market value (weights.get)
+                        # in Mode B - everything else about this branch
+                        # (the "over" label, the display formatting) is
+                        # identical between the two.
+                        _gap_base = costs.get(t, 0.0) if _nm_is_mode_c else weights.get(t, 0.0)
+                        _gap = _gap_base - _nm_target[t]
+                        _row[_col_hold_now] = _fmt_aud(weights.get(t, 0.0))
+                        _row[_col_target] = _fmt_aud(_nm_target[t])
+                        _row[_col_gap] = (
+                            _st_("newmoney_gap_over") if _gap >= 0 else f"-{_fmt_aud(abs(_gap))}"
+                        )
+                    else:
+                        _row[_col_hold_now] = _fmt_aud(weights.get(t, 0.0))
+                    _row[_col_buys] = _fmt_aud(_nm_buy[t])
+                    _u = _nm_units[t]
+                    _row[_col_units] = f"{_u:,.0f} @ {_fmt_aud(_nm_prices[t])}" if _u is not None else _na
+                    if _nm_is_mode_c:
+                        # Invested weight after: target_i / (invested_total
+                        # + deposit) - lands EXACTLY on the mix % by
+                        # construction (target_i was built from that same
+                        # ratio). Market weight after: (current value_i +
+                        # actual spend_i) / (current total + deposit) -
+                        # will NOT land on the mix whenever a holding's
+                        # market value has drifted from its cost basis
+                        # (e.g. CSL up 37.7% on Andrew's data) - that
+                        # divergence is this mode's whole point, so both
+                        # numbers are shown rather than only the tidy one.
+                        _row[_col_invested_weight] = (
+                            f"{_nm_target[t] / (_nm_invested_total + _nm_deposit) * 100.0:.1f}%"
+                            if (_nm_invested_total + _nm_deposit) > 0 else _na
+                        )
+                        _row[_col_market_weight] = (
+                            f"{(weights.get(t, 0.0) + _nm_spent[t]) / _nm_new_total * 100.0:.1f}%"
+                            if _nm_new_total > 0 else _na
+                        )
+                    else:
+                        _row[_col_weight] = (
+                            f"{(weights.get(t, 0.0) + _nm_spent[t]) / _nm_new_total * 100.0:.1f}%"
+                            if _nm_new_total > 0 else _na
+                        )
+                    _nm_rows.append(_row)
+
+                # Total footer row, matching the mock's own - no gain/loss % on
+                # the aggregate, same as the mockup left it.
+                _total_row = {_col_holding: _st_("newmoney_col_total"), _col_mix: f"{sum(edited_pcts.values()):.1f}%"}
+                _total_row[_col_invested] = _fmt_aud(_nm_invested_total)
+                _nm_gain_signs.append(None)
+                if _nm_target is not None:
+                    _total_row[_col_hold_now] = _fmt_aud(_nm_current_total)
+                    _total_row[_col_target] = _fmt_aud(
+                        _nm_invested_total + _nm_deposit if _nm_is_mode_c
+                        else _nm_current_total + _nm_deposit
+                    )
+                    _total_row[_col_gap] = _na
+                else:
+                    _total_row[_col_hold_now] = _fmt_aud(_nm_current_total)
+                _total_row[_col_buys] = _fmt_aud(sum(_nm_buy.values()))
+                _total_row[_col_units] = _na
+                if _nm_is_mode_c:
+                    _total_row[_col_invested_weight] = (
+                        "100.0%" if (_nm_invested_total + _nm_deposit) > 0 else _na
+                    )
+                    _total_row[_col_market_weight] = "100.0%" if _nm_new_total > 0 else _na
+                else:
+                    _total_row[_col_weight] = "100.0%" if _nm_new_total > 0 else _na
+                _nm_rows.append(_total_row)
+
+                _nm_df = pd.DataFrame(_nm_rows)
+
+                def _style_nm_buys(_):
+                    styles = pd.DataFrame("", index=_nm_df.index, columns=_nm_df.columns)
+                    styles[_col_buys] = "color: #34d399; font-weight: 600"
+                    for _i, _sign in enumerate(_nm_gain_signs):
+                        if _sign is not None:
+                            styles.at[_nm_df.index[_i], _col_invested] = (
+                                "color: #34d399" if _sign >= 0 else "color: #fb7185"
+                            )
+                    return styles
+
+                st.dataframe(
+                    _nm_df.style.apply(_style_nm_buys, axis=None),
+                    hide_index=True, width='stretch',
+                )
+                st.caption(_st_("newmoney_unallocated_caption", amount=_fmt_aud(_nm_unallocated)))
+                st.caption(_st_("newmoney_invested_caption"))
+                if _nm_is_mode_b:
+                    st.caption(_st_("newmoney_method_b_caption"))
+                elif _nm_is_mode_c:
+                    st.caption(_st_("newmoney_method_c_caption"))
+                st.caption(_st_(
+                    "newmoney_disclosure_caption",
+                    toll_tab=f"**{i18n.t('portfolio.tab_switch', lang)}**",
+                ))
 
 
 def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):

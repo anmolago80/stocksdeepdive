@@ -2594,6 +2594,7 @@ EN = {
     "portfolio.stress.newmoney_mode_label": "Allocation mode",
     "portfolio.stress.newmoney_mode_a": "Split by mix %",
     "portfolio.stress.newmoney_mode_b": "Top up toward mix",
+    "portfolio.stress.newmoney_mode_c": "Target original allocation",
     "portfolio.stress.newmoney_mode_caption": (
         "Split by mix %: the amount is divided exactly by the percentages "
         "above. Top up toward mix: the amount goes preferentially to the "
@@ -2607,9 +2608,13 @@ EN = {
     "portfolio.stress.newmoney_col_hold_now": "You hold now",
     "portfolio.stress.newmoney_col_target": "Target after deposit",
     "portfolio.stress.newmoney_col_gap": "Gap",
+    "portfolio.stress.newmoney_col_target_invested": "Target invested",
+    "portfolio.stress.newmoney_col_gap_to_target": "Gap to target",
     "portfolio.stress.newmoney_col_buys": "This deposit buys",
     "portfolio.stress.newmoney_col_units": "≈ Units @ last close",
     "portfolio.stress.newmoney_col_weight_after": "Weight after",
+    "portfolio.stress.newmoney_col_invested_weight_after": "Invested weight after",
+    "portfolio.stress.newmoney_col_market_weight_after": "Market weight after",
     "portfolio.stress.newmoney_col_total": "Total",
     "portfolio.stress.newmoney_gap_over": "over",
     "portfolio.stress.newmoney_unallocated_caption": "Unallocated cash: {amount}",
@@ -2620,6 +2625,26 @@ EN = {
         "cash can't close every gap, the allocation is proportional to "
         "the remaining shortfalls. Holdings already at/above target "
         "receive nothing."
+    ),
+    "portfolio.stress.newmoney_method_c_caption": (
+        "Method: target invested per holding = mix % × (total already "
+        "invested + deposit). The deposit fills the gap between that "
+        "target and what you've actually put in, so your committed money "
+        "lands on the mix regardless of how each holding has performed. "
+        "Market-value weights will drift from the mix — the last two "
+        "columns show both. This mode leans harder on your recorded cost "
+        "basis than the other two: if \"You invested\" doesn't reflect "
+        "every purchase for a holding (see the note above), that "
+        "holding's target and gap will be off by exactly the same amount."
+    ),
+    "portfolio.stress.newmoney_missing_cost_basis_warning": (
+        "No recorded cost basis for: {tickers}. Target original "
+        "allocation needs a real \"You invested\" figure for every "
+        "holding - a $0 cost basis would make the whole deposit look "
+        "like pure gap and badly over-allocate to it. This mode is "
+        "switched off until a buy price/shares is saved for {tickers} on "
+        "the Holdings tab; use Split by mix % or Top up toward mix in "
+        "the meantime."
     ),
     "portfolio.stress.newmoney_disclosure_caption": (
         "units rounded down · brokerage not modelled (see {toll_tab} for "
@@ -5322,6 +5347,7 @@ ES = {
     "portfolio.stress.newmoney_mode_label": "Modo de asignación",
     "portfolio.stress.newmoney_mode_a": "Dividir por % de la combinación",
     "portfolio.stress.newmoney_mode_b": "Completar hacia la combinación",
+    "portfolio.stress.newmoney_mode_c": "Apuntar a la asignación original",
     "portfolio.stress.newmoney_mode_caption": (
         "Dividir por % de la combinación: el monto se divide exactamente "
         "según los porcentajes de arriba. Completar hacia la combinación: "
@@ -5335,9 +5361,13 @@ ES = {
     "portfolio.stress.newmoney_col_hold_now": "Tienes ahora",
     "portfolio.stress.newmoney_col_target": "Objetivo tras el depósito",
     "portfolio.stress.newmoney_col_gap": "Brecha",
+    "portfolio.stress.newmoney_col_target_invested": "Objetivo invertido",
+    "portfolio.stress.newmoney_col_gap_to_target": "Brecha al objetivo",
     "portfolio.stress.newmoney_col_buys": "Este depósito compra",
     "portfolio.stress.newmoney_col_units": "≈ Unidades @ último cierre",
     "portfolio.stress.newmoney_col_weight_after": "Ponderación después",
+    "portfolio.stress.newmoney_col_invested_weight_after": "Ponderación invertida después",
+    "portfolio.stress.newmoney_col_market_weight_after": "Ponderación de mercado después",
     "portfolio.stress.newmoney_col_total": "Total",
     "portfolio.stress.newmoney_gap_over": "por encima",
     "portfolio.stress.newmoney_unallocated_caption": "Efectivo sin asignar: {amount}",
@@ -5349,6 +5379,29 @@ ES = {
         "asignación es proporcional a las brechas restantes. Las "
         "posiciones que ya están en su objetivo o por encima no reciben "
         "nada."
+    ),
+    "portfolio.stress.newmoney_method_c_caption": (
+        "Método: el objetivo invertido por posición = % de la combinación "
+        "× (total ya invertido + depósito). El depósito llena la brecha "
+        "entre ese objetivo y lo que realmente has invertido, de modo que "
+        "tu dinero comprometido llega a la combinación sin importar cómo "
+        "se haya comportado cada posición. Las ponderaciones de mercado "
+        "se alejarán de la combinación — las últimas dos columnas "
+        "muestran ambas. Este modo depende más de tu costo base "
+        "registrado que los otros dos: si \"Invertiste\" no refleja cada "
+        "compra de una posición (ver la nota de arriba), el objetivo y la "
+        "brecha de esa posición estarán desviados exactamente en esa "
+        "misma medida."
+    ),
+    "portfolio.stress.newmoney_missing_cost_basis_warning": (
+        "Sin costo base registrado para: {tickers}. Apuntar a la "
+        "asignación original necesita una cifra real de \"Invertiste\" "
+        "para cada posición - un costo base de $0 haría que todo el "
+        "depósito pareciera brecha pura y asignaría demasiado a esa "
+        "posición. Este modo está desactivado hasta que se guarde un "
+        "precio de compra/acciones para {tickers} en la pestaña "
+        "Posiciones; mientras tanto usa Dividir por % de la combinación o "
+        "Completar hacia la combinación."
     ),
     "portfolio.stress.newmoney_disclosure_caption": (
         "unidades redondeadas hacia abajo · el corretaje no está modelado "
