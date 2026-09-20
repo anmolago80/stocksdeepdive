@@ -15,11 +15,21 @@ fixes round 2, 2026-08-31) a handful of DERIVED universes built by
 filtering an already-fetched parent pool rather than a scrape of their
 own (labeled as such in get_universe_pool's source string):
 
-  Australia: ASX 200, ASX 300, All Ordinaries, ASX Small Ordinaries
-             (derived), ASX 100, ASX 50, ASX 20, ASX All Technology
-             (derived)
+  Australia: ASX 200, ASX 300 (derived), All Ordinaries (derived),
+             ASX Small Ordinaries (derived), ASX 100, ASX 50, ASX 20,
+             ASX All Technology (derived)
   USA:       S&P 500, Nasdaq 100, Russell 2000, Small Caps (S&P SmallCap
              600), S&P 400 MidCap, Russell 1000, S&P 1500 (derived)
+
+Index containment (20 Sep 2026): ASX 300 and All Ordinaries used to be
+their own independent live scrapes (asx300list.com/allordslist.com) but
+those turned out to be a frozen 28 April 2021 snapshot each - verified
+live 20 Sep 2026 (both GQG.AX, listed since 2021, and GGP.AX were
+missing). Both are now DERIVED: the real, live Wikipedia ASX 200 plus a
+market-cap-ranked tail from the ASX's own official listed-companies CSV
+(fetch_asx_listed_companies()) - real, current membership for the first
+200, an honest approximation (not verified S&P index membership) past
+that. See fetch_asx300()/fetch_allords()'s own docstrings.
 
 Every non-derived fetcher is a live scrape (Wikipedia constituent tables,
 or an iShares ETF holdings export for Russell 2000/1000) cached for 24h
@@ -66,6 +76,7 @@ Part 52's own report for what was actually verified live before this
 shipped.
 """
 
+import concurrent.futures
 import io
 import logging
 import os
@@ -78,6 +89,7 @@ import requests
 import streamlit as st
 import yfinance as yf
 
+import market_cap_engine
 import sector_cache_store
 
 _log = logging.getLogger("sdd.scanner")
@@ -125,7 +137,6 @@ SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 SP600_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies"
 NASDAQ100_WIKI_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
 ASX200_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/ASX_200"
-ASX300_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/ASX_300"
 
 # Fix 8a, AI fixes round 2 (2026-08-31). Every URL below follows the
 # exact same "Wikipedia constituent table, or an iShares ETF holdings
@@ -159,13 +170,6 @@ ASX50_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/ASX_50"
 # later without hunting through the function body.
 ASX100_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/ASX_100"
 
-# allordslist.com mirrors asx300list.com's own naming/URL pattern (root
-# page IS the list, same as ASX300LIST_URL below) and was confirmed to
-# exist via web search during development ("All Ords List - Company
-# Data for All Ordinaries Index") but, per the caveat above, could not
-# be fetched and test-parsed directly - best-effort by direct analogy
-# to the already-working asx300list.com fetcher.
-ALLORDSLIST_URL = "https://www.allordslist.com/"
 
 # iShares Russell 1000 ETF (IWB) holdings export - same mechanism as
 # IWM_HOLDINGS_CSV_URL below (Russell 2000). iShares' shorter
@@ -197,12 +201,15 @@ RUSSELL1000_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_Russell_1000_compa
 # set with real headroom either side of that (not a guess).
 DIVIDEND_ARISTOCRATS_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P_500_Dividend_Aristocrats"
 
-# Wikipedia's own S&P/ASX 300 page does not carry a real ~300-row constituent
-# table (only a ~10-row "Top Ten Companies" table) - asx300list.com does, and
-# is used as the primary source; Wikipedia is kept only as a secondary
-# fallback (with a min_rows guard so that small "Top Ten" table can never be
-# silently mistaken for the real thing).
-ASX300LIST_URL = "https://www.asx300list.com/"
+# Index containment (20 Sep 2026): asx300list.com/allordslist.com - the
+# old ASX 300/All Ordinaries sources - turned out to be a frozen 28 April
+# 2021 snapshot (verified live 20 Sep 2026: both GQG.AX, listed since
+# 2021, and GGP.AX were absent from them). Replaced entirely by
+# fetch_asx_listed_companies() below - the ASX's own official CSV
+# directory of every listed company, ranked by market cap to fill out
+# the tail past Wikipedia's live ASX 200 - see fetch_asx300()/
+# fetch_allords()'s own comments for the new construction.
+ASX_LISTED_COMPANIES_CSV_URL = "https://www.asx.com.au/asx/research/ASXListedCompanies.csv"
 
 # iShares Russell 2000 ETF (IWM) public holdings export. Best-effort - iShares
 # occasionally changes this URL format.
@@ -778,55 +785,160 @@ def fetch_asx200():
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def fetch_asx300():
-    """
-    Primary source: asx300list.com (a real ~300+ row Code/Company table).
-    Wikipedia's own S&P/ASX 300 page is kept only as a secondary fallback -
-    it doesn't carry the full constituent table, only a ~10-row "Top Ten"
-    one, so the min_rows=100 guard makes sure that's never silently
-    accepted as if it were the whole universe.
+def fetch_asx_listed_companies():
+    """Every ASX-listed company, straight from the ASX's own official
+    directory (Company name / ASX code / GICS industry group) - NOT an
+    index, no membership tiering at all, just the full listed-company
+    register (~2,500 rows as of 20 Sep 2026). This is the replacement
+    source for everything past Wikipedia's live ASX 200 - see
+    fetch_asx300()/fetch_allords() below for why asx300list.com/
+    allordslist.com (a frozen 28 April 2021 snapshot, confirmed live 20
+    Sep 2026) are gone.
 
-    Neither source carries a Sector column for the full 300, so sector data
-    is merged in afterwards from fetch_asx200()'s live GICS sectors (covers
-    the ~200 largest names; the remaining ~100 names show Sector=None and
-    are only reachable via the "All" sector filter).
-
-    Index containment (20 Sep 2026): ASX 300's own source can be missing a
-    ticker the live ASX 200 source carries (see
-    _asx_backfill_missing_subset_tickers()'s own comment above for why,
-    and the module-level containment assertion at the bottom of this file
-    for the regression guard). Backfilled BEFORE the sector merge below,
-    so a backfilled row still gets a real GICS sector where fetch_asx200()
-    has one.
-    """
-    df = None
+    The file ships with a title/date line above the real header row
+    ("Company name,ASX code,GICS industry group") - located by content
+    rather than a fixed skiprows count, so the ASX adding/removing a
+    line above it can't silently break this. Sanity floor of 1,000 rows
+    (the real file is ~2,500) so a truncated download or an HTML error
+    page returned in place of the CSV can't be mistaken for the real
+    thing. Fails open to None on any error, same convention as every
+    other fetcher in this module."""
     try:
-        html = _get(ASX300LIST_URL)
-        df = _parse_table(html, ["code"], ["sector", "industry"], _normalize_asx_ticker, min_rows=100)
+        text = _get(ASX_LISTED_COMPANIES_CSV_URL)
     except Exception:
-        df = None
-
-    if df is None:
-        try:
-            html = _get(ASX300_WIKI_URL)
-            df = _parse_table(
-                html, ["code", "ticker", "symbol"], ["sector", "industry"], _normalize_asx_ticker, min_rows=100
-            )
-        except Exception:
-            df = None
-
-    if df is None:
+        return None
+    lines = text.splitlines()
+    header_idx = next(
+        (i for i, line in enumerate(lines) if line.strip().lower().startswith("company name")),
+        None,
+    )
+    if header_idx is None:
+        return None
+    try:
+        df = pd.read_csv(io.StringIO("\n".join(lines[header_idx:])))
+    except Exception:
         return None
 
+    company_col = _find_column(df.columns, ["company name", "company"])
+    ticker_col = _find_column(df.columns, ["asx code", "code"])
+    sector_col = _find_column(df.columns, ["gics industry group", "gics", "industry"])
+    if company_col is None or ticker_col is None:
+        return None
+
+    cols = [ticker_col, company_col] + ([sector_col] if sector_col else [])
+    out = df[cols].copy()
+    out.columns = ["Ticker", "Company"] + (["Sector"] if sector_col else [])
+    out = out.dropna(subset=["Ticker"])
+    if len(out) < 1000:
+        return None
+
+    out["Ticker"] = out["Ticker"].apply(_normalize_asx_ticker)
+    if "Sector" in out.columns:
+        out["Sector"] = out["Sector"].astype(str).str.strip()
+    else:
+        out["Sector"] = None
+    return out[["Ticker", "Company", "Sector"]]
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _asx_non200_by_marketcap():
+    """Every fetch_asx_listed_companies() row NOT already in the live
+    Wikipedia ASX 200, ranked by market cap descending - the shared
+    ranking fetch_asx300()/fetch_allords() below both slice from, so the
+    (slow - one live lookup per candidate) pricing pass runs once a day,
+    not once per universe.
+
+    Reuses market_cap_engine.get_market_cap() - the SAME per-ticker
+    yfinance .info lookup app.py's own cache-warming pass already uses
+    elsewhere - rather than adding a new data source. Only priced for
+    candidates OUTSIDE the ASX 200 (~2,300 of the CSV's ~2,500 rows,
+    not all of them - the 200 are already known-in and need no cap
+    comparison to be included). Threaded at max_workers=8, the same
+    polite-to-yfinance cap app.py's own warm_cache pass uses, since this
+    is ~2,300 individual lookups rather than one bulk call - still a
+    genuinely slow cold pass (real first-call cost, not hidden), which
+    is exactly why this is its own ttl=86400 cached step: it runs once a
+    day, and fetch_asx300()/fetch_allords() both reuse the same cached
+    ranking rather than each re-pricing the same candidates.
+
+    A candidate yfinance no longer recognises (delisted/renamed since
+    the CSV was last regenerated) prices at 0 and is dropped - nothing
+    to rank it by. Returns None if either source fetch failed; an empty
+    (but non-None) frame if the CSV loaded but every candidate somehow
+    priced at 0."""
+    listed = fetch_asx_listed_companies()
     df200 = fetch_asx200()
-    df = _asx_backfill_missing_subset_tickers(df, df200, "ASX 300", "ASX 200")
+    if listed is None or df200 is None:
+        return None
 
-    if df200 is not None:
-        sector_by_ticker = dict(zip(df200["Ticker"], df200["Sector"]))
-        df = df.copy()
-        df["Sector"] = df["Ticker"].map(sector_by_ticker).combine_first(df["Sector"])
+    candidates = listed[~listed["Ticker"].isin(set(df200["Ticker"]))].copy()
+    if candidates.empty:
+        return candidates
 
-    return df
+    caps = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(market_cap_engine.get_market_cap, t): t
+                  for t in candidates["Ticker"]}
+        for fut in concurrent.futures.as_completed(futures):
+            ticker = futures[fut]
+            try:
+                caps[ticker] = fut.result()
+            except Exception:
+                caps[ticker] = 0
+
+    candidates["_cap"] = candidates["Ticker"].map(caps).fillna(0)
+    candidates = candidates[candidates["_cap"] > 0]
+    return candidates.sort_values("_cap", ascending=False).drop(columns="_cap").reset_index(drop=True)
+
+
+# ~300/~500 total once added to the live 200 - matches the real indices'
+# own approximate sizes closely enough for a derived stand-in; see
+# fetch_asx300()/fetch_allords()'s own "label honestly" comments.
+_ASX300_TAIL_SIZE = 100
+_ALLORDS_TAIL_SIZE = 200
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_asx300():
+    """
+    Rebuilt (20 Sep 2026) as a nested slice of ONE ranking, not a
+    separate scrape: Wikipedia's live ASX 200 (authoritative, unchanged)
+    plus the next ~100 ASX-listed companies by market cap (see
+    _asx_non200_by_marketcap() above). The old primary source,
+    asx300list.com, turned out to be a frozen 28 April 2021 snapshot -
+    verified live 20 Sep 2026: both GQG.AX (listed since 2021) and
+    GGP.AX were missing from it - so it, its Wikipedia secondary
+    fallback, and both URLs are gone entirely.
+
+    DERIVED, not real S&P/ASX 300 index membership - a market-cap
+    ranking approximation past the real, live ASX 200. Labelled as such
+    everywhere this universe's source is surfaced (get_universe_pool()'s
+    own label string below).
+
+    Sector now comes straight from source for every row - Wikipedia's
+    own GICS sector for the 200, the ASX's own GICS industry group (a
+    finer-grained tier than "sector", but real and current) for the
+    rest - no separate sector-merge pass needed any more; the ~100
+    names that used to show Sector=None under the old source no longer
+    do.
+
+    _asx_backfill_missing_subset_tickers() is still called at the end as
+    belt-and-braces: containment is now structural (this IS the live
+    ASX 200 plus more, not a second independent fetch of it), so it
+    should never actually do anything, but a free defensive check
+    against the unexpected costs nothing - see
+    verify_au_index_containment() for the same reasoning applied as an
+    explicit regression guard.
+    """
+    df200 = fetch_asx200()
+    if df200 is None:
+        return None
+    ranked = _asx_non200_by_marketcap()
+    if ranked is None or ranked.empty:
+        return None
+    tail = ranked.head(_ASX300_TAIL_SIZE)[["Ticker", "Sector"]]
+    df = pd.concat([df200[["Ticker", "Sector"]], tail], ignore_index=True)
+    return _asx_backfill_missing_subset_tickers(df, df200, "ASX 300", "ASX 200")
 
 
 # -----------------------------------------------------------------
@@ -1019,35 +1131,37 @@ def _resolve_russell1000():
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_allords():
     """All Ordinaries (~500 names, effectively "every ASX company big
-    enough to be liquid"). Primary source allordslist.com, by direct
-    analogy to fetch_asx300()'s own asx300list.com fetcher (see
-    ALLORDSLIST_URL's comment for the verification caveat). Sector is
-    merged in afterwards from fetch_asx200()'s live GICS sectors, same
-    as fetch_asx300() does - neither the All Ords nor ASX 300 list
-    sources carry their own Sector column for the full membership.
+    enough to be liquid"). Rebuilt (20 Sep 2026) the same way
+    fetch_asx300() above is - a nested slice of the SAME
+    _asx_non200_by_marketcap() ranking, this time taking the next ~200
+    past fetch_asx300()'s own ~100 (so overall: live ASX 200, then ranks
+    201-300 in fetch_asx300(), then ranks 301-500 here). The old
+    allordslist.com source is gone for the same reason as
+    asx300list.com - see fetch_asx300()'s own comment for the verified
+    28 April 2021 snapshot / GQG.AX+GGP.AX finding.
 
-    Index containment (20 Sep 2026): backfilled against fetch_asx300()
-    before the sector merge - see _asx_backfill_missing_subset_tickers()'s
-    own comment above. All Ords is the top of the AU chain, so ASX 300 is
-    its only subset to enforce here."""
-    try:
-        html = _get(ALLORDSLIST_URL)
-        df = _parse_table(html, ["code"], ["sector", "industry"], _normalize_asx_ticker, min_rows=400)
-    except Exception:
-        df = None
+    DERIVED, not real All Ordinaries index membership - see
+    fetch_asx300()'s own "label honestly" note; same applies here, and
+    get_universe_pool()'s label string below says so.
 
-    if df is None:
+    Sector comes straight from fetch_asx300() (already source-sectored)
+    for the shared rows, and the ASX CSV's own GICS industry group for
+    the new ~200 - no separate sector-merge pass, same as fetch_asx300().
+
+    _asx_backfill_missing_subset_tickers() against fetch_asx300() is
+    kept as belt-and-braces - see fetch_asx300()'s own comment on why
+    this should never actually fire now that containment is structural."""
+    df300 = fetch_asx300()
+    if df300 is None:
         return None
-
-    df = _asx_backfill_missing_subset_tickers(df, fetch_asx300(), "All Ordinaries", "ASX 300")
-
-    df200 = fetch_asx200()
-    if df200 is not None:
-        sector_by_ticker = dict(zip(df200["Ticker"], df200["Sector"]))
-        df = df.copy()
-        df["Sector"] = df["Ticker"].map(sector_by_ticker).combine_first(df["Sector"])
-
-    return df
+    ranked = _asx_non200_by_marketcap()
+    if ranked is None or ranked.empty:
+        return None
+    already_in = set(df300["Ticker"])
+    remaining = ranked[~ranked["Ticker"].isin(already_in)]
+    tail = remaining.head(_ALLORDS_TAIL_SIZE)[["Ticker", "Sector"]]
+    df = pd.concat([df300[["Ticker", "Sector"]], tail], ignore_index=True)
+    return _asx_backfill_missing_subset_tickers(df, df300, "All Ordinaries", "ASX 300")
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -1405,7 +1519,11 @@ def get_universe_pool(country, universe):
     if universe == "ASX 300":
         df = fetch_asx300()
         if df is not None:
-            return df, "asx300list.com S&P/ASX 300 constituent list (live)"
+            # Index containment (20 Sep 2026): labelled "Derived", not
+            # "(live)" alone - this is Wikipedia's real ASX 200 plus a
+            # market-cap-ranked approximation past it, not verified S&P
+            # index membership. See fetch_asx300()'s own docstring.
+            return df, "Derived: Wikipedia ASX 200 (live) + next ~100 ASX-listed by market cap"
         df200 = fetch_asx200()
         if df200 is not None:
             return df200, "ASX 300 unavailable - showing ASX 200 (live) instead"
@@ -1454,7 +1572,9 @@ def get_universe_pool(country, universe):
     if universe == "All Ordinaries":
         df = fetch_allords()
         if df is not None:
-            return df, "allordslist.com All Ordinaries constituent list (live)"
+            # Index containment (20 Sep 2026): same "Derived" honesty as
+            # ASX 300 above - see fetch_allords()'s own docstring.
+            return df, "Derived: Wikipedia ASX 200 (live) + next ~300 ASX-listed by market cap"
         df300 = fetch_asx300()
         if df300 is not None:
             return df300, "All Ordinaries unavailable - showing ASX 300 (live) instead"
