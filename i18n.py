@@ -1481,8 +1481,26 @@ EN = {
     "tools.property_vs_index.sp500_return_label": "Capital gain (%/yr)",
     "tools.property_vs_index.sp500_dividend_label": "Dividend yield (%)",
     "tools.property_vs_index.total_return_caption": "Total return {total:.1f}%",
-    "tools.property_vs_index.marginal_rate_label": "Your marginal tax rate (%)",
-    "tools.property_vs_index.marginal_rate_help": "Your bracket rate + 2% Medicare levy",
+    # Commit B (20 Sep 2026): replaces marginal_rate_label/marginal_
+    # rate_help (deleted, now unused - real AU tax brackets compute the
+    # rate now, not a single number you'd have to already know).
+    "tools.property_vs_index.other_income_label": "Your taxable income (excluding this investment)",
+    "tools.property_vs_index.other_income_help": (
+        "Salary and any other taxable income, BEFORE this property or "
+        "index position - used to work out which tax bracket(s) each "
+        "dollar of rent, interest deduction, dividend, or capital gain "
+        "actually falls in."
+    ),
+    "tools.property_vs_index.marginal_rate_caption": (
+        "Marginal rate {rate:.0f}% ({bracket_rate:.0f}% + {medicare:.0f}% "
+        "Medicare) · {tax_year} rates"
+    ),
+    "tools.property_vs_index.negative_gearing_honesty_caption": (
+        "Assumes the rental loss is fully deductible against your other "
+        "income in the year it occurs, at 2026-27 resident rates. Real "
+        "outcomes vary with your structure, other deductions and any "
+        "carried-forward losses. Depreciation is not modelled."
+    ),
     "tools.property_vs_index.years_label": "Years",
     "tools.property_vs_index.buy_costs_label": "Buy costs ($)",
     "tools.property_vs_index.buy_costs_help": (
@@ -4377,8 +4395,25 @@ ES = {
     "tools.property_vs_index.sp500_return_label": "Ganancia de capital (%/año)",
     "tools.property_vs_index.sp500_dividend_label": "Rendimiento por dividendos (%)",
     "tools.property_vs_index.total_return_caption": "Retorno total {total:.1f}%",
-    "tools.property_vs_index.marginal_rate_label": "Tu tasa marginal de impuestos (%)",
-    "tools.property_vs_index.marginal_rate_help": "La tasa de tu tramo impositivo + 2% Medicare levy",
+    # Commit B (20 Sep 2026): ver la nota equivalente en el bloque EN.
+    "tools.property_vs_index.other_income_label": "Tu ingreso imponible (sin incluir esta inversión)",
+    "tools.property_vs_index.other_income_help": (
+        "Salario y cualquier otro ingreso imponible, ANTES de esta "
+        "propiedad o posición en el índice - se usa para saber en qué "
+        "tramo(s) impositivo(s) cae cada dólar de alquiler, deducción "
+        "de intereses, dividendo o ganancia de capital."
+    ),
+    "tools.property_vs_index.marginal_rate_caption": (
+        "Tasa marginal {rate:.0f}% ({bracket_rate:.0f}% + {medicare:.0f}% "
+        "Medicare) · tasas {tax_year}"
+    ),
+    "tools.property_vs_index.negative_gearing_honesty_caption": (
+        "Supone que la pérdida del alquiler es totalmente deducible "
+        "contra tu otro ingreso en el año en que ocurre, según las tasas "
+        "de residente 2026-27. Los resultados reales varían según tu "
+        "estructura, otras deducciones y pérdidas arrastradas. La "
+        "depreciación no está modelada."
+    ),
     "tools.property_vs_index.years_label": "Años",
     "tools.property_vs_index.buy_costs_label": "Costos de compra ($)",
     "tools.property_vs_index.buy_costs_help": (

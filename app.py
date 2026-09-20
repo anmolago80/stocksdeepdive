@@ -24430,18 +24430,62 @@ _PVI_STYLE = """
 """
 
 
+def _pvi_other_income_from_marginal_rate(marginal_rate_pct):
+    """Commit B (20 Sep 2026): a v2 scenario saved only a bare income-
+    tax-bracket rate (marginal_rate_pct, e.g. 37.0 - NOT including
+    Medicare, which the old model always added separately as its own
+    medicare_levy addend) with no taxable-income figure behind it at
+    all. Maps it to the ONE bracket in property_vs_index_engine.
+    BRACKETS whose own rate matches exactly, and returns that bracket's
+    midpoint (37% -> $162,500, the task's own example) - a real income
+    the same bracket rate would actually apply to, not a fabricated
+    one. The top (45%) bracket has no finite upper bound, so its own
+    lower bound ($190,000 - the income right at which 45% starts
+    applying) stands in for a midpoint there. Returns property_vs_
+    index_engine.DEFAULT_OTHER_INCOME if the stored rate doesn't
+    exactly match any bracket (a free-form value the old 0-60%/step 0.5
+    widget allowed, e.g. 25%) - per the task's own instruction, never
+    guess a salary from a rate that doesn't correspond to one. A
+    missing/None rate is exactly that case too - checked explicitly
+    (not folded into `or 0.0`), since a genuine 0% bracket rate is a
+    real, valid input (maps to the $9,100 midpoint) that a bare None
+    must never be confused with."""
+    if marginal_rate_pct is None:
+        return property_vs_index_engine.DEFAULT_OTHER_INCOME
+    try:
+        rate = float(marginal_rate_pct) / 100.0
+    except (TypeError, ValueError):
+        return property_vs_index_engine.DEFAULT_OTHER_INCOME
+    lower = 0.0
+    for upper, bracket_rate in property_vs_index_engine.BRACKETS:
+        if abs(bracket_rate - rate) < 1e-9:
+            return lower if upper == float("inf") else (lower + upper) / 2.0
+        lower = upper
+    return property_vs_index_engine.DEFAULT_OTHER_INCOME
+
+
 def _pvi_upgrade_saved_inputs(d):
     """Commit A (20 Sep 2026): v1 stored sp500_return_pct as TOTAL
     return, with sp500_dividend_pct carved out of it (property_vs_
     index_engine's OLD index_price_growth_rate(total_return,
     dividend_yield) = total_return - dividend_yield). v2 stores capital
     gain and dividend as independent, additive rates instead - see that
-    function's own new docstring. Upgrade in place, read-time only (no
-    DB migration - tools_store stores this as a free-form JSON dict, it
-    doesn't care about the shape), so a v1 scenario keeps producing the
-    SAME numbers it always did instead of silently gaining its own
-    dividend yield on top of what used to be its total return."""
-    if not d or d.get("pvi_schema") == 2:
+    function's own new docstring.
+
+    Commit B (20 Sep 2026): v2/earlier stored marginal_rate_pct (a flat
+    income-tax-bracket rate, + medicare_levy applied separately) - v3
+    stores other_income (taxable income excluding this investment)
+    instead, since the flat-rate tax_rate scalar is gone entirely (see
+    income_tax()/tax_on_extra() in property_vs_index_engine.py). A v2
+    dict's other_income is back-derived from whatever bracket its own
+    marginal_rate_pct implies - see _pvi_other_income_from_marginal_
+    rate()'s own docstring for exactly how (and when it can't).
+
+    Upgrade in place, read-time only (no DB migration - tools_store
+    stores this as a free-form JSON dict, it doesn't care about the
+    shape), so an older scenario keeps producing the SAME numbers it
+    always did instead of silently drifting."""
+    if not d or d.get("pvi_schema") == 3:
         return d
     d = dict(d)
     if "sp500_return_pct" in d and "sp500_capital_gain_pct" not in d:
@@ -24449,7 +24493,9 @@ def _pvi_upgrade_saved_inputs(d):
             float(d.get("sp500_return_pct") or 0.0)
             - float(d.get("sp500_dividend_pct") or 0.0)
         )
-    d["pvi_schema"] = 2
+    if "marginal_rate_pct" in d and "other_income" not in d:
+        d["other_income"] = _pvi_other_income_from_marginal_rate(d.get("marginal_rate_pct"))
+    d["pvi_schema"] = 3
     return d
 
 
@@ -24598,11 +24644,27 @@ def _render_property_vs_index_tool(email):
             st.caption(_sl(
                 "total_return_caption", total=sp500_capital_gain_pct + sp500_dividend_pct,
             ))
-            marginal_rate_pct = st.number_input(
-                _sl("marginal_rate_label"), min_value=0.0, max_value=60.0, step=0.5, format="%.1f",
-                help=_sl("marginal_rate_help"),
-                key=_seed("tools_pvi_marginal_rate_pct", _eng.DEFAULT_MARGINAL_RATE * 100),
+            # Commit B (20 Sep 2026): replaces the flat "Your marginal
+            # tax rate (%)" input - real AU brackets now compute the
+            # rate that actually applies to each dollar (property_vs_
+            # index_engine.income_tax()/tax_on_extra()), so this tool
+            # needs your taxable income, not a single rate you'd have
+            # to already know. Widget key renamed to match the new
+            # saved-schema field (_pvi_upgrade_saved_inputs() above
+            # back-derives it from an older scenario's own
+            # marginal_rate_pct where possible).
+            other_income = st.number_input(
+                _sl("other_income_label"), min_value=0.0, max_value=1_000_000.0, step=5000.0,
+                format="%.0f", help=_sl("other_income_help"),
+                key=_seed("tools_pvi_other_income", _eng.DEFAULT_OTHER_INCOME),
             )
+            _pvi_marginal_rate = _eng.marginal_rate_at(other_income)
+            st.caption(_sl(
+                "marginal_rate_caption",
+                rate=_pvi_marginal_rate * 100.0,
+                bracket_rate=(_pvi_marginal_rate - _eng.MEDICARE_LEVY) * 100.0,
+                medicare=_eng.MEDICARE_LEVY * 100.0, tax_year=_eng.TAX_YEAR,
+            ))
             years = st.number_input(
                 _sl("years_label"), min_value=_eng.MIN_YEARS, max_value=_eng.MAX_YEARS, step=1,
                 key=_seed("tools_pvi_years", _eng.DEFAULT_YEARS),
@@ -24632,13 +24694,23 @@ def _render_property_vs_index_tool(email):
         sp500_capital_gain=sp500_capital_gain_pct / 100.0,
         sp500_dividend_yield=sp500_dividend_pct / 100.0,
         io_period=io_period, term=loan_term,
-        marginal_rate=marginal_rate_pct / 100.0, medicare_levy=_eng.MEDICARE_LEVY,
+        other_income=other_income,
         years=int(years), buy_costs=buy_costs, sell_costs_pct=sell_costs_pct / 100.0,
     )
     _p = _r["property"]
     _idx = _r["index"]
     _years_i = _r["years"]
-    _tax_pct = _r["tax_rate"] * 100.0
+    # Commit B: there is no longer one flat tax rate - _tax_pct is now
+    # the rate your OWN NEXT dollar is taxed at (marginal_rate_at()),
+    # used only for the "taxed at ~X%" sub-captions below, which
+    # predate this commit and are an approximation until Commit C
+    # regroups this card (per the task's own phasing) - a stacked
+    # amount's REAL marginal rate can differ from this bare figure the
+    # moment it crosses a bracket boundary; the actual dollar totals
+    # above (_p/_idx) are always exact regardless, computed via the
+    # real per-line stacking (property_vs_index_engine.property_year_
+    # tax_legs()/index_year_tax_legs()), never off this single number.
+    _tax_pct = _r["marginal_rate_pct"]
 
     def _signed(v):
         # Backslash fix: plain _fmt_aud() - every call site below is
@@ -24710,6 +24782,11 @@ def _render_property_vs_index_tool(email):
     )
     _parts.append(
         f'<div class="pvi-sub">{html.escape(_sl("line_costs_sub", costs=_fmt_aud(holding_costs), years=_years_i, tax=_tax_pct))}</div>'
+    )
+    # B8 (required, not optional): the negative-gearing assumption this
+    # whole card rests on, stated plainly rather than left implicit.
+    _parts.append(
+        f'<div class="pvi-cap" style="margin-top:8px">{html.escape(_sl("negative_gearing_honesty_caption"))}</div>'
     )
     _parts.append('</div>')
 
@@ -24849,9 +24926,9 @@ def _render_property_vs_index_tool(email):
             # live input it used to be.
             "sp500_return_pct": sp500_capital_gain_pct + sp500_dividend_pct,
             "sp500_dividend_pct": sp500_dividend_pct,
-            "marginal_rate_pct": marginal_rate_pct, "years": years,
+            "other_income": other_income, "years": years,
             "io_period": io_period, "term": loan_term,
-            "pvi_schema": 2,
+            "pvi_schema": 3,
         })
         st.success(_sl("save_confirm"))
 
