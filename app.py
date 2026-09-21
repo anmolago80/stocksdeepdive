@@ -24426,6 +24426,10 @@ _PVI_STYLE = """
 .pvi-bar u{position:absolute;top:-4px;bottom:-4px;width:2px;background:#fbbf24}
 .pvi-cap{font-size:11px;color:#5b7290;margin-top:5px;line-height:1.55}
 .pvi-shortfall{font-size:12px;color:#c7d2e0;margin-top:8px}
+.pvi-grp-h{font-size:10.5px;color:#8aa0b8;letter-spacing:.06em;text-transform:uppercase;
+  margin:14px 0 6px;border-top:1px solid #1f3352;padding-top:11px;font-weight:700}
+.pvi-hl{background:rgba(148,163,184,.08);border-radius:6px;padding:4px 7px;margin:6px -7px}
+.pvi-weekly{font-size:12px;color:#c7d2e0;margin-top:6px;line-height:1.5}
 </style>
 """
 
@@ -24700,17 +24704,47 @@ def _render_property_vs_index_tool(email):
     _p = _r["property"]
     _idx = _r["index"]
     _years_i = _r["years"]
-    # Commit B: there is no longer one flat tax rate - _tax_pct is now
-    # the rate your OWN NEXT dollar is taxed at (marginal_rate_at()),
-    # used only for the "taxed at ~X%" sub-captions below, which
-    # predate this commit and are an approximation until Commit C
-    # regroups this card (per the task's own phasing) - a stacked
-    # amount's REAL marginal rate can differ from this bare figure the
-    # moment it crosses a bracket boundary; the actual dollar totals
-    # above (_p/_idx) are always exact regardless, computed via the
-    # real per-line stacking (property_vs_index_engine.property_year_
-    # tax_legs()/index_year_tax_legs()), never off this single number.
-    _tax_pct = _r["marginal_rate_pct"]
+
+    # Commit C (21 Sep 2026), adjustment #1: the six "taxed at ~X%"
+    # captions used to all share ONE approximate stand-in rate
+    # (marginal_rate_at(other_income), the rate your OWN NEXT dollar is
+    # taxed at - never exact for a stacked amount the moment it crosses
+    # a bracket boundary). Every remaining per-line rate below is now
+    # EXACT instead: that line's own tax divided by that line's own
+    # pretax amount, straight off the same numbers the dollar totals
+    # already use (property_year_tax_legs()/index_year_tax_legs() via
+    # property_breakdown()/index_breakdown()) - presentation only, no
+    # new arithmetic. A loss/zero pretax amount has no meaningful rate
+    # (property_year_tax_legs()'s own "$0 tax rather than a refund" rule
+    # for a capital loss) - shown as 0% rather than dividing by zero.
+    _growth_pretax = _p["growth"]["taxable_gain"]
+    _growth_rate_pct = (
+        (_growth_pretax - _p["growth"]["after_tax"]) / _growth_pretax * 100.0
+        if _growth_pretax > 0 else 0.0
+    )
+    _idx_growth_pretax = _eng.index_pretax_gain(cash, _idx["price_growth_rate"], _years_i)
+    _idx_growth_rate_pct = (
+        (_idx_growth_pretax - _idx["growth_after_cgt"]) / _idx_growth_pretax * 100.0
+        if _idx_growth_pretax > 0 else 0.0
+    )
+    _idx_dividends_pretax = _idx["dividends_pretax"]
+    _idx_dividends_rate_pct = (
+        (_idx_dividends_pretax - _idx["dividends_after_tax"]) / _idx_dividends_pretax * 100.0
+        if _idx_dividends_pretax > 0 else 0.0
+    )
+
+    # Commit C, C2/C3: the property card's RENTAL POSITION group - rent,
+    # interest, holding costs and their COMBINED tax effect (adjustment
+    # #2: one order-independent refund/bill figure for all three legs
+    # together, never a single leg's own delta - see property_rental_
+    # position()'s own docstring for why this is exact regardless of
+    # the rent -> interest -> holding order property_year_tax_legs()
+    # happens to use internally, including in the sale year).
+    _rental = _eng.property_rental_position(
+        loan, loan_rate_pct / 100.0, io_period, loan_term,
+        weekly_rent, int(vacancy_weeks), holding_costs, _years_i, other_income,
+    )
+    _rt = _rental["totals"]
 
     def _signed(v):
         # Backslash fix: plain _fmt_aud() - every call site below is
@@ -24745,44 +24779,85 @@ def _render_property_vs_index_tool(email):
         f'<span class="{_cls(_growth["after_tax"])}">{_signed(_growth["after_tax"])}</span></div>'
     )
     _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_growth_sub", price=_fmt_aud(_price), future_price=_fmt_aud(_growth["future_price"]), rate=_tax_pct))}</div>'
+        f'<div class="pvi-sub">{html.escape(_sl("line_growth_sub", price=_fmt_aud(_price), future_price=_fmt_aud(_growth["future_price"]), rate=_growth_rate_pct))}</div>'
+    )
+
+    # -- RENTAL POSITION group (Commit C, C2/C3) -------------------------
+    # Replaces the old flat "Rent after tax" / "Loan interest after
+    # deduction" / "Holding costs after deduction" lines - each of those
+    # used to carry its OWN "taxed at ~X%" caption off the single
+    # approximate _tax_pct stand-in (removed this commit). The refund/
+    # bill line below is the one COMBINED figure for all three legs
+    # together (adjustment #2) - see property_rental_position()'s own
+    # docstring for why it is exact and order-independent, including in
+    # the sale year.
+    _working_weeks = max(52 - int(vacancy_weeks), 0)
+    _net_pretax = _rt["net_pretax"]
+    _net_after_tax = _rt["net_after_tax"]
+    _geared_label = "rental_net_loss_label" if _net_pretax < 0 else "rental_net_profit_label"
+    _tax_label = "rental_tax_refund_label" if _rt["tax"] >= 0 else "rental_tax_bill_label"
+    _net_cost_label = "rental_net_cost_label" if _net_after_tax < 0 else "rental_net_profit_after_tax_label"
+    _parts.append(
+        f'<div class="pvi-grp-h">{html.escape(_sl("rental_position_group_label", years=_years_i))}</div>'
     )
     _parts.append(
-        f'<div class="pvi-line">{html.escape(_sl("line_rent_label"))} '
-        f'<span class="{_cls(_p["rent_after_tax"])}">{_signed(_p["rent_after_tax"])}</span></div>'
+        f'<div class="pvi-line">{html.escape(_sl("rental_rent_label"))} '
+        f'<span class="pvi-g">{_signed(_rt["rent"])}</span></div>'
     )
     _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_rent_sub", weekly_rent=_fmt_aud(weekly_rent), vacancy=int(vacancy_weeks), years=_years_i, rate=_tax_pct))}</div>'
+        f'<div class="pvi-sub">{html.escape(_sl("rental_rent_sub", weekly_rent=_fmt_aud(weekly_rent), weeks=_working_weeks))}</div>'
     )
     _parts.append(
-        f'<div class="pvi-line">{html.escape(_sl("line_interest_label"))} '
-        f'<span class="pvi-r">{_signed(-_p["interest_after_tax"])}</span></div>'
+        f'<div class="pvi-line">{html.escape(_sl("rental_interest_label"))} '
+        f'<span class="pvi-r">{_signed(-_rt["interest"])}</span></div>'
     )
-    if _r["two_phase_active"]:
-        # Two-phase (IO -> P&I) loan structure, task 19 Sep 2026 - the
-        # loan reaches its own P&I phase within this hold (years >
-        # io_period, and the loan's own design has a P&I phase at all).
-        _interest_sub_text = _sl(
-            "line_interest_sub_two_phase", io_period=_r["io_period"],
-            pi_years=_r["pi_phase_years_design"], term=_r["term"],
-            total_interest=_fmt_aud(_r["total_interest_pretax"]), tax=_tax_pct,
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl("rental_holding_label"))} '
+        f'<span class="pvi-r">{_signed(-_rt["holding"])}</span></div>'
+    )
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl(_geared_label))} '
+        f'<span class="{_cls(_net_pretax)}">{_signed(_net_pretax)}</span></div>'
+    )
+    _parts.append(
+        f'<div class="pvi-line pvi-hl">{html.escape(_sl(_tax_label))} '
+        f'<span class="{_cls(_rt["tax"])}">{_signed(_rt["tax"])}</span></div>'
+    )
+    # Adjustment #2 (required, not optional): the refund/bill figure
+    # above is computed with rent/interest/holding stacked FIRST and any
+    # capital gain (the sale year only) stacked LAST on top of them -
+    # stated plainly here, so a reader doesn't wonder why the sale
+    # year's own refund doesn't grow just because that year also has a
+    # big capital gain landing on the same return.
+    _parts.append(
+        f'<div class="pvi-cap">{html.escape(_sl("rental_stacking_caption"))}</div>'
+    )
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl(_net_cost_label))} '
+        f'<span class="{_cls(_net_after_tax)}">{_signed(_net_after_tax)}</span></div>'
+    )
+
+    # C4: the weekly cash gap before vs after the refund - "the whole
+    # case for the leverage" (task's own words) - year 1 vs the final
+    # year, inverted wording if the property is positively geared from
+    # year 1 onward.
+    if _rental["years"]:
+        _yr1 = _rental["years"][0]
+        _yrN = _rental["years"][-1]
+        _before1_wk = -_yr1["net_pretax"] / 52.0
+        _after1_wk = -_yr1["net_after_tax"] / 52.0
+        _afterN_wk = -_yrN["net_after_tax"] / 52.0
+        if _afterN_wk < _after1_wk - 0.5:
+            _trend = _sl("trend_easing")
+        elif _afterN_wk > _after1_wk + 0.5:
+            _trend = _sl("trend_rising")
+        else:
+            _trend = _sl("trend_flat")
+        _weekly_key = "rental_weekly_cost_caption" if _after1_wk >= 0 else "rental_weekly_profit_caption"
+        _parts.append(
+            f'<div class="pvi-weekly">{html.escape(_sl(_weekly_key, after1=_fmt_aud(abs(_after1_wk)), before1=_fmt_aud(abs(_before1_wk)), trend=_trend, afterN=_fmt_aud(abs(_afterN_wk)), years=_years_i))}</div>'
         )
-    else:
-        # Pure IO for the whole hold (io_period >= years, or the loan's
-        # own design has no P&I phase at all) - unchanged since before
-        # this task, the regression anchor's own copy.
-        _interest_sub_text = _sl(
-            "line_interest_sub", loan=_fmt_aud(loan), rate_pct=loan_rate_pct,
-            years=_years_i, tax=_tax_pct,
-        )
-    _parts.append(f'<div class="pvi-sub">{html.escape(_interest_sub_text)}</div>')
-    _parts.append(
-        f'<div class="pvi-line">{html.escape(_sl("line_costs_label"))} '
-        f'<span class="pvi-r">{_signed(-_p["costs_after_tax"])}</span></div>'
-    )
-    _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_costs_sub", costs=_fmt_aud(holding_costs), years=_years_i, tax=_tax_pct))}</div>'
-    )
+
     # B8 (required, not optional): the negative-gearing assumption this
     # whole card rests on, stated plainly rather than left implicit.
     _parts.append(
@@ -24808,14 +24883,14 @@ def _render_property_vs_index_tool(email):
         f'<span class="{_cls(_idx["growth_after_cgt"])}">{_signed(_idx["growth_after_cgt"])}</span></div>'
     )
     _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_index_growth_sub", cash=_fmt_aud(cash), rate=_idx["price_growth_rate"] * 100, tax=_tax_pct))}</div>'
+        f'<div class="pvi-sub">{html.escape(_sl("line_index_growth_sub", cash=_fmt_aud(cash), rate=_idx["price_growth_rate"] * 100, tax=_idx_growth_rate_pct))}</div>'
     )
     _parts.append(
         f'<div class="pvi-line">{html.escape(_sl("line_index_dividends_label"))} '
         f'<span class="{_cls(_idx["dividends_after_tax"])}">{_signed(_idx["dividends_after_tax"])}</span></div>'
     )
     _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_index_dividends_sub", yield_pct=sp500_dividend_pct, tax=_tax_pct))}</div>'
+        f'<div class="pvi-sub">{html.escape(_sl("line_index_dividends_sub", yield_pct=sp500_dividend_pct, tax=_idx_dividends_rate_pct))}</div>'
     )
     _parts.append('</div>')
     _parts.append('</div>')  # .pvi-cards
@@ -24907,6 +24982,47 @@ def _render_property_vs_index_tool(email):
     )
     sdd_plotly_chart(_fig)
     st.caption(_sl("chart_caption") if _crossover is not None else _sl("chart_no_crossover", years=_years_i))
+
+    # -- Year-by-year rental position table (Commit C, C5) - closed by --
+    # default, the property card's RENTAL POSITION group broken out one
+    # row per year (property_rental_position(), same figures the group's
+    # own totals already sum to).
+    with st.expander(_sl("year_by_year_expander_label"), expanded=False):
+        _table_rows = [{
+            _sl("table_col_year"): row["year"],
+            _sl("table_col_rent"): _fmt_aud(row["rent"]),
+            _sl("table_col_interest"): f"-{_fmt_aud(row['interest'])}",
+            _sl("table_col_holding"): f"-{_fmt_aud(row['holding'])}",
+            _sl("table_col_net_position"): _signed(row["net_pretax"]),
+            _sl("table_col_tax"): _signed(row["tax"]),
+            _sl("table_col_out_of_pocket"): _signed(-row["net_after_tax"]),
+        } for row in _rental["years"]]
+        _table_rows.append({
+            _sl("table_col_year"): _sl("table_totals_row_label"),
+            _sl("table_col_rent"): _fmt_aud(_rt["rent"]),
+            _sl("table_col_interest"): f"-{_fmt_aud(_rt['interest'])}",
+            _sl("table_col_holding"): f"-{_fmt_aud(_rt['holding'])}",
+            _sl("table_col_net_position"): _signed(_rt["net_pretax"]),
+            _sl("table_col_tax"): _signed(_rt["tax"]),
+            _sl("table_col_out_of_pocket"): _signed(-_rt["net_after_tax"]),
+        })
+        _table_df = pd.DataFrame(_table_rows)
+        _first_pos_year = _rental["first_positive_year"]
+
+        def _style_pvi_table(_):
+            styles = pd.DataFrame("", index=_table_df.index, columns=_table_df.columns)
+            styles.iloc[-1, :] = "font-weight:700;border-top:1px solid #334155"
+            if _first_pos_year is not None:
+                _row_i = _first_pos_year - 1
+                for col in _table_df.columns:
+                    styles.iloc[_row_i, styles.columns.get_loc(col)] += ";background:rgba(52,211,153,.12)"
+            return styles
+
+        st.dataframe(_table_df.style.apply(_style_pvi_table, axis=None), hide_index=True, width='stretch')
+        if _first_pos_year is not None:
+            st.caption(_sl("table_turns_positive_caption", year=_first_pos_year))
+        else:
+            st.caption(_sl("table_stays_negative_caption", years=_years_i))
 
     st.caption(_sl("honest_caption", price=_fmt_aud_md(_price), cash=_fmt_aud_md(cash)))
     st.caption(_sl("not_advice"))

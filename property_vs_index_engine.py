@@ -667,6 +667,106 @@ def property_breakdown(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
     }
 
 
+def property_rental_position(loan, loan_rate, io_period, term,
+                             weekly_rent, vacancy_weeks, holding_costs,
+                             years, other_income):
+    """Commit C (21 Sep 2026), C2: the property card's RENTAL POSITION
+    group - rent/interest/holding costs and their COMBINED tax effect,
+    one row per year, plus totals. Presentation-only (C7): every number
+    here is already computed by property_year_tax_legs()/property_loan_
+    schedule() above, this function just regroups and re-signs them for
+    the UI (no new arithmetic).
+
+    Each year's `tax` is property_year_tax_legs(rent, interest, holding,
+    capital_gain=None, other_income)["tax"], NEGATED. That "tax" field
+    is rent_tax + interest_tax + holding_tax - by the telescoping-sum
+    property (property_year_tax_legs()'s own docstring), this ALWAYS
+    equals the ONE combined tax_on_extra(other_income, net_pretax) call
+    on the net rental position, regardless of the rent -> interest ->
+    holding order property_year_tax_legs() happens to use internally -
+    i.e. it is already the order-independent "combined tax effect of
+    the three legs together" C's second adjustment asks for, not any
+    single leg's own delta. Negated so the SIGN on screen reads the way
+    an owner thinks about it: POSITIVE = a refund, NEGATIVE = a bill
+    (tax_on_extra()/property_year_tax_legs() themselves do the opposite
+    - positive = tax owed - since a refund is just a negative extra
+    landing the other way; this function is the one place that flips it
+    for display).
+
+    This holds in the SALE year exactly the same as every other year:
+    capital_gain is passed as None here deliberately, on every row,
+    including the last - the sale year's own capital gain is stacked
+    AFTER rent/interest/holding in property_year_tax_legs()'s own fixed
+    order (module docstring, TAX MODEL), so it never enters the running
+    income those three legs are taxed against and never changes this
+    row's own `tax` figure. That is the one existing convention (rent/
+    interest/holding first, capital gain stacked on top) the task's own
+    adjustment #2 asks to keep and CAPTION explicitly in the UI, rather
+    than silently - a reader who expects the sale year's big capital
+    gain to push the rental loss into a bigger refund (by taxing it at
+    a higher bracket) needs to be told that is NOT what this convention
+    does; app.py adds that caption.
+
+    RECONCILIATION (C6): summing every row's own after-tax total gives
+    EXACTLY property_breakdown(...)["rent_after_tax"] -
+    ["interest_after_tax"] - ["costs_after_tax"] at the same inputs (one
+    property_year_tax_legs(rent, interest, holding, None, other_income)
+    call per year, per-year against the flat other_income - not
+    cumulative - is exactly what _property_mark_to_market()'s own
+    "recurring_only" leg already computes and accumulates for every
+    year of the hold, this is just that same computation re-exposed
+    under this function's own row/sign shape) - so totals["net_after_
+    tax"] + property_breakdown(...)["growth"]["after_tax"] always equals
+    property_breakdown(...)["headline"] to the cent. Verified in this
+    commit's own test suite against the exact $353,100.51 reference-
+    scenario headline.
+
+    Returns {"years": [{"year", "rent", "interest", "holding",
+    "net_pretax", "tax", "net_after_tax"} for year = 1..years],
+    "totals": {same six keys, summed}, "first_positive_year": the first
+    year `net_after_tax` turns positive (the property starts paying for
+    itself after tax, not merely costing less), or None if it never
+    does within the hold}."""
+    other_income = other_income or 0.0
+    years = max(0, int(years or 0))
+    schedule = property_loan_schedule(loan, loan_rate, io_period, term, years)
+    working_weeks = max(WEEKS_PER_YEAR - (vacancy_weeks or 0), 0)
+    rent_per_year = (weekly_rent or 0.0) * working_weeks
+    holding_per_year = holding_costs or 0.0
+
+    rows = []
+    totals = {
+        "rent": 0.0, "interest": 0.0, "holding": 0.0,
+        "net_pretax": 0.0, "tax": 0.0, "net_after_tax": 0.0,
+    }
+    first_positive_year = None
+    for year in range(1, years + 1):
+        interest = schedule["interest_per_year"][year - 1]
+        net_pretax = rent_per_year - interest - holding_per_year
+        legs = property_year_tax_legs(rent_per_year, interest, holding_per_year, None, other_income)
+        tax = -legs["tax"]
+        net_after_tax = net_pretax + tax
+        rows.append({
+            "year": year,
+            "rent": rent_per_year,
+            "interest": interest,
+            "holding": holding_per_year,
+            "net_pretax": net_pretax,
+            "tax": tax,
+            "net_after_tax": net_after_tax,
+        })
+        if first_positive_year is None and net_after_tax > 0:
+            first_positive_year = year
+        totals["rent"] += rent_per_year
+        totals["interest"] += interest
+        totals["holding"] += holding_per_year
+        totals["net_pretax"] += net_pretax
+        totals["tax"] += tax
+        totals["net_after_tax"] += net_after_tax
+
+    return {"years": rows, "totals": totals, "first_positive_year": first_positive_year}
+
+
 # --------------------------------------------------------------------------- #
 # Index (S&P 500) side.
 # --------------------------------------------------------------------------- #
@@ -701,6 +801,7 @@ def _index_mark_to_market(cash, capital_gain, dividend_yield, years, other_incom
     out = []
     cumulative_after_tax = 0.0
     cumulative_dividend = 0.0
+    cumulative_dividend_pretax = 0.0
     for t in range(0, years + 1):
         pretax_gain = index_pretax_gain(cash, price_growth_rate, t)
         if t == 0:
@@ -716,6 +817,13 @@ def _index_mark_to_market(cash, capital_gain, dividend_yield, years, other_incom
             "year": t,
             "price_growth_rate": price_growth_rate,
             "dividend_after_tax_total": cumulative_dividend + legs["dividend_after_tax"],
+            # Commit C: pretax running total alongside the after-tax one
+            # above - dividend_t itself needs no tax_legs() call (it's
+            # the same number whether or not a capital gain also lands
+            # that year, exactly like the property side's rent/interest/
+            # holding legs - see property_rental_position()'s own
+            # docstring for why), so it's just summed directly.
+            "dividend_pretax_total": cumulative_dividend_pretax + dividend_t,
             "capital_gain_after_tax": legs["capital_gain_after_tax"],
             "tax": legs["tax"],
             "cumulative_after_tax": cumulative_after_tax + legs["after_tax_total"],
@@ -724,6 +832,7 @@ def _index_mark_to_market(cash, capital_gain, dividend_yield, years, other_incom
             recurring_only = index_year_tax_legs(dividend_t, None, other_income)
             cumulative_after_tax += recurring_only["after_tax_total"]
             cumulative_dividend += recurring_only["dividend_after_tax"]
+            cumulative_dividend_pretax += dividend_t
     return out
 
 
@@ -733,13 +842,24 @@ def index_breakdown(cash, capital_gain, dividend_yield, years, other_income):
     `dividend_yield` are independent, additive inputs. Commit B: tax_
     rate replaced by other_income - bracket-computed and stacked year
     by year (see _index_mark_to_market()'s own docstring), same
-    reasoning as property_breakdown()."""
+    reasoning as property_breakdown().
+
+    Commit C (21 Sep 2026): also exposes "dividends_pretax" (the total
+    dividend income BEFORE tax, across the whole hold) - a value
+    _index_mark_to_market() already accumulates internally but never
+    surfaced. Presentation-only addition (C7 - nothing here changes
+    what any figure IS): app.py's regrouped card needs it to show the
+    dividend line's own EXACT effective rate (this line's tax divided
+    by this line's own pretax amount), replacing the single approximate
+    marginal-rate stand-in every "taxed at ~X%" caption used before
+    this commit."""
     series = _index_mark_to_market(cash, capital_gain, dividend_yield, years, other_income)
     point = series[-1]
     return {
         "price_growth_rate": point["price_growth_rate"],
         "growth_after_cgt": point["capital_gain_after_tax"],
         "dividends_after_tax": point["dividend_after_tax_total"],
+        "dividends_pretax": point["dividend_pretax_total"],
         "headline": point["cumulative_after_tax"],
     }
 

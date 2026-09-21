@@ -1518,23 +1518,53 @@ EN = {
     "tools.property_vs_index.line_growth_sub": (
         "{price} → {future_price}; gain taxed with 50% discount at {rate:.0f}%"
     ),
-    "tools.property_vs_index.line_rent_label": "Rent after tax:",
-    "tools.property_vs_index.line_rent_sub": (
-        "{weekly_rent}/wk × (52 − {vacancy} wk vacancy) × {years}y, "
-        "taxed once at {rate:.0f}%"
+    # Commit C (21 Sep 2026): the old flat "Rent after tax" / "Loan
+    # interest after deduction" / "Holding costs after deduction" lines
+    # (each with its own approximate "taxed at ~X%" caption) are
+    # replaced by the RENTAL POSITION group below - one combined,
+    # order-independent refund/bill line instead of three separate
+    # approximate ones (task adjustment #2).
+    "tools.property_vs_index.rental_position_group_label": "Rental position · {years}y",
+    "tools.property_vs_index.rental_rent_label": "Rent collected",
+    "tools.property_vs_index.rental_rent_sub": "{weekly_rent}/wk × {weeks} working weeks/yr",
+    "tools.property_vs_index.rental_interest_label": "Loan interest",
+    "tools.property_vs_index.rental_holding_label": "Holding costs",
+    "tools.property_vs_index.rental_net_loss_label": "Net rental loss · negatively geared",
+    "tools.property_vs_index.rental_net_profit_label": "Net rental profit · positively geared",
+    "tools.property_vs_index.rental_tax_refund_label": "Tax refunded on the loss",
+    "tools.property_vs_index.rental_tax_bill_label": "Tax payable on the profit",
+    "tools.property_vs_index.rental_stacking_caption": (
+        "Rent, interest and holding costs are taxed first each year; in "
+        "the year of sale the capital gain is stacked on top of that, "
+        "not the other way round — so this refund reflects your income "
+        "before the sale, every year including the last."
     ),
-    "tools.property_vs_index.line_interest_label": "Loan interest after deduction:",
-    "tools.property_vs_index.line_interest_sub": (
-        "{loan} × {rate_pct:.2f}% × {years}y, deductible at {tax:.0f}% "
-        "(negative gearing)"
+    "tools.property_vs_index.rental_net_cost_label": "Net cost to hold, after refund",
+    "tools.property_vs_index.rental_net_profit_after_tax_label": "Net profit from holding, after tax",
+    "tools.property_vs_index.trend_easing": "easing to",
+    "tools.property_vs_index.trend_rising": "rising to",
+    "tools.property_vs_index.trend_flat": "holding steady at",
+    "tools.property_vs_index.rental_weekly_cost_caption": (
+        "Costs you {after1}/week in year 1 after the refund (before the "
+        "refund: {before1}/week) — {trend} {afterN}/week by year {years}."
     ),
-    "tools.property_vs_index.line_interest_sub_two_phase": (
-        "IO {io_period}y, then P&I over the remaining {pi_years}y of a "
-        "{term}y term — total interest {total_interest}, deductible at "
-        "{tax:.0f}%"
+    "tools.property_vs_index.rental_weekly_profit_caption": (
+        "Pays you {after1}/week in year 1 after tax (before tax: "
+        "{before1}/week) — {trend} {afterN}/week by year {years}."
     ),
-    "tools.property_vs_index.line_costs_label": "Holding costs after deduction:",
-    "tools.property_vs_index.line_costs_sub": "{costs}/yr × {years}y, deductible at {tax:.0f}%",
+    "tools.property_vs_index.year_by_year_expander_label": "Year-by-year rental position",
+    "tools.property_vs_index.table_col_year": "Year",
+    "tools.property_vs_index.table_col_rent": "Rent",
+    "tools.property_vs_index.table_col_interest": "Interest",
+    "tools.property_vs_index.table_col_holding": "Holding",
+    "tools.property_vs_index.table_col_net_position": "Net position",
+    "tools.property_vs_index.table_col_tax": "Tax refund/bill",
+    "tools.property_vs_index.table_col_out_of_pocket": "Out of pocket",
+    "tools.property_vs_index.table_totals_row_label": "Total",
+    "tools.property_vs_index.table_turns_positive_caption": "Turns positive in year {year}.",
+    "tools.property_vs_index.table_stays_negative_caption": (
+        "Stays negatively geared for the whole {years}-year hold on these numbers."
+    ),
     "tools.property_vs_index.line_index_growth_label": "Growth after CGT:",
     "tools.property_vs_index.line_index_growth_sub": (
         "{cash} compounding at {rate:.1f}% price growth, taxed with 50% "
@@ -4432,23 +4462,50 @@ ES = {
         "{price} → {future_price}; ganancia gravada con descuento del "
         "50% al {rate:.0f}%"
     ),
-    "tools.property_vs_index.line_rent_label": "Alquiler después de impuestos:",
-    "tools.property_vs_index.line_rent_sub": (
-        "{weekly_rent}/sem × (52 − {vacancy} sem de vacancia) × "
-        "{years} años, gravado una vez al {rate:.0f}%"
+    "tools.property_vs_index.rental_position_group_label": "Posición de alquiler · {years} años",
+    "tools.property_vs_index.rental_rent_label": "Alquiler recibido",
+    "tools.property_vs_index.rental_rent_sub": "{weekly_rent}/sem × {weeks} semanas hábiles/año",
+    "tools.property_vs_index.rental_interest_label": "Interés del préstamo",
+    "tools.property_vs_index.rental_holding_label": "Costos de mantención",
+    "tools.property_vs_index.rental_net_loss_label": "Pérdida neta de alquiler · negative gearing",
+    "tools.property_vs_index.rental_net_profit_label": "Ganancia neta de alquiler · positive gearing",
+    "tools.property_vs_index.rental_tax_refund_label": "Impuesto reembolsado por la pérdida",
+    "tools.property_vs_index.rental_tax_bill_label": "Impuesto a pagar por la ganancia",
+    "tools.property_vs_index.rental_stacking_caption": (
+        "El alquiler, el interés y los costos de mantención se gravan "
+        "primero cada año; en el año de venta la ganancia de capital se "
+        "suma después de eso, no al revés — así que este reembolso "
+        "refleja tu ingreso antes de la venta, todos los años incluido "
+        "el último."
     ),
-    "tools.property_vs_index.line_interest_label": "Interés del préstamo después de deducción:",
-    "tools.property_vs_index.line_interest_sub": (
-        "{loan} × {rate_pct:.2f}% × {years} años, deducible al "
-        "{tax:.0f}% (negative gearing)"
+    "tools.property_vs_index.rental_net_cost_label": "Costo neto de mantener, después del reembolso",
+    "tools.property_vs_index.rental_net_profit_after_tax_label": "Ganancia neta de mantener, después de impuestos",
+    "tools.property_vs_index.trend_easing": "bajando a",
+    "tools.property_vs_index.trend_rising": "subiendo a",
+    "tools.property_vs_index.trend_flat": "manteniéndose en",
+    "tools.property_vs_index.rental_weekly_cost_caption": (
+        "Te cuesta {after1}/sem en el año 1 después del reembolso "
+        "(antes del reembolso: {before1}/sem) — {trend} {afterN}/sem "
+        "para el año {years}."
     ),
-    "tools.property_vs_index.line_interest_sub_two_phase": (
-        "Solo interés {io_period} años, luego P&I durante los "
-        "{pi_years} años restantes de un plazo de {term} años — "
-        "interés total {total_interest}, deducible al {tax:.0f}%"
+    "tools.property_vs_index.rental_weekly_profit_caption": (
+        "Te paga {after1}/sem en el año 1 después de impuestos (antes "
+        "de impuestos: {before1}/sem) — {trend} {afterN}/sem para el "
+        "año {years}."
     ),
-    "tools.property_vs_index.line_costs_label": "Costos de mantención después de deducción:",
-    "tools.property_vs_index.line_costs_sub": "{costs}/año × {years} años, deducible al {tax:.0f}%",
+    "tools.property_vs_index.year_by_year_expander_label": "Posición de alquiler año por año",
+    "tools.property_vs_index.table_col_year": "Año",
+    "tools.property_vs_index.table_col_rent": "Alquiler",
+    "tools.property_vs_index.table_col_interest": "Interés",
+    "tools.property_vs_index.table_col_holding": "Mantención",
+    "tools.property_vs_index.table_col_net_position": "Posición neta",
+    "tools.property_vs_index.table_col_tax": "Reembolso/pago de impuesto",
+    "tools.property_vs_index.table_col_out_of_pocket": "De tu bolsillo",
+    "tools.property_vs_index.table_totals_row_label": "Total",
+    "tools.property_vs_index.table_turns_positive_caption": "Se vuelve positivo en el año {year}.",
+    "tools.property_vs_index.table_stays_negative_caption": (
+        "Se mantiene con negative gearing durante los {years} años completos con estos números."
+    ),
     "tools.property_vs_index.line_index_growth_label": "Crecimiento después de CGT:",
     "tools.property_vs_index.line_index_growth_sub": (
         "{cash} creciendo al {rate:.1f}% de crecimiento de precio, "
