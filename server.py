@@ -261,6 +261,15 @@ async def lifespan(app: FastAPI):
     # Fix 9 cleanup right above.
     with suppress(Exception):
         nightly_scan.cleanup_sector_universe_pollution()
+    # Commit O (21 Sep 2026, owner-verified): EBIT_FROM_PRETAX is a
+    # Railway env var, not a code change - see nightly_scan.check_ebit_
+    # switch_flip()'s own docstring for why flipping it needs a boot-time
+    # check (a redeploy from a Railway env var change IS a fresh boot,
+    # so this fires the same day the switch is flipped, not a day later
+    # behind the 24h moat_cache/auto_cv_sections TTL). Same "never
+    # allowed to stop the site serving" rule as the two cleanups above.
+    with suppress(Exception):
+        nightly_scan.check_ebit_switch_flip()
     _client = httpx.AsyncClient(
         base_url=UPSTREAM, timeout=httpx.Timeout(None, connect=10.0),
         follow_redirects=False, limits=httpx.Limits(max_connections=200),

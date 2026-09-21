@@ -60,10 +60,24 @@ def _conn():
     # and last_real_price_date() below, the one consumer that reads
     # this column back specifically (every other reader just passes it
     # straight through like valuation_label/moat_state already are).
+    # Commit O (21 Sep 2026): data_correction (0/NULL normally, 1 on the
+    # one nightly run right after EBIT_FROM_PRETAX flips ON) - see
+    # record()'s own comment for how it's set, and nightly_scan.
+    # check_ebit_switch_flip()/is_ebit_correction_pending() for how that
+    # one night is identified. A caller computing a "vs N days ago"/
+    # "vs a month ago" delta should treat a data_correction=1 row on
+    # either side of the comparison as a data-artifact jump, not an
+    # organic move - this column exists so a renderer CAN make that
+    # check; it is not itself filtered out of get()/series()/before_
+    # date()'s results (still real, still the ticker's own correct
+    # figure from that day onward) - only alert_engine.py's threshold-
+    # crossing send is actually suppressed for that one night (see
+    # send_batched_notifications()).
     for _col, _type in (
         ("quality", "REAL"), ("moat", "REAL"), ("mos_pct", "REAL"),
         ("intrinsic_value", "REAL"), ("valuation_label", "TEXT"),
         ("moat_state", "TEXT"), ("trading_status", "TEXT"),
+        ("data_correction", "INTEGER"),
     ):
         try:
             conn.execute(f"ALTER TABLE score_history ADD COLUMN {_col} {_type}")
@@ -92,8 +106,24 @@ def record(rows, day=None):
     "Trading Status" (Commit J, 21 Sep 2026) is read the same way - a
     caller that omits it (e.g. digest_engine's row shape) gets NULL,
     same as any other optional field here.
-    """
+
+    data_correction (Commit O, 21 Sep 2026) is set automatically, not
+    read from `rows` - every row `record()` writes is tagged 1 whenever
+    nightly_scan.is_ebit_correction_pending() says tonight is the one
+    nightly run right after EBIT_FROM_PRETAX flipped ON, 0/NULL
+    otherwise. Checked once per call (not per row) since it's the same
+    answer for the whole nightly job; a caller never needs to pass this
+    explicitly, so every existing call site (nightly_scan.py's own
+    universe/imported scans, alert_engine.run_extra_ticker_pass,
+    digest_engine, anything else that calls record()) is tagged
+    correctly with zero changes to that call site."""
     day = day or _today()
+    _correction = 0
+    try:
+        import nightly_scan
+        _correction = 1 if nightly_scan.is_ebit_correction_pending() else 0
+    except Exception:
+        _correction = 0
     with _conn() as conn:
         for r in rows:
             ticker = (r.get("Ticker") or "").strip().upper()
@@ -102,8 +132,9 @@ def record(rows, day=None):
             conn.execute(
                 """INSERT INTO score_history
                      (day, ticker, long_score, price, quality, moat, mos_pct,
-                      intrinsic_value, valuation_label, moat_state, trading_status)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      intrinsic_value, valuation_label, moat_state, trading_status,
+                      data_correction)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(day, ticker) DO UPDATE SET
                      long_score = excluded.long_score,
                      price = excluded.price,
@@ -113,10 +144,12 @@ def record(rows, day=None):
                      intrinsic_value = excluded.intrinsic_value,
                      valuation_label = excluded.valuation_label,
                      moat_state = excluded.moat_state,
-                     trading_status = excluded.trading_status""",
+                     trading_status = excluded.trading_status,
+                     data_correction = MAX(COALESCE(score_history.data_correction, 0), excluded.data_correction)""",
                 (day, ticker, r.get("Long Score"), r.get("Price"), r.get("Quality"),
                  r.get("Moat"), r.get("MOS %"), r.get("Intrinsic Value"),
-                 r.get("Valuation"), r.get("Moat Erosion"), r.get("Trading Status")),
+                 r.get("Valuation"), r.get("Moat Erosion"), r.get("Trading Status"),
+                 _correction),
             )
 
 
@@ -137,7 +170,7 @@ def get(ticker, days_ago):
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """SELECT day, long_score, price, quality, moat, mos_pct,
-                      intrinsic_value, valuation_label, moat_state, trading_status
+                      intrinsic_value, valuation_label, moat_state, trading_status, data_correction
                  FROM score_history
                  WHERE ticker = ? AND day <= ?
                  ORDER BY day DESC LIMIT 1""",
@@ -158,7 +191,7 @@ def latest(ticker):
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """SELECT day, long_score, price, quality, moat, mos_pct,
-                      intrinsic_value, valuation_label, moat_state, trading_status
+                      intrinsic_value, valuation_label, moat_state, trading_status, data_correction
                  FROM score_history
                  WHERE ticker = ? ORDER BY day DESC LIMIT 1""",
             (ticker.strip().upper(),),
@@ -190,7 +223,7 @@ def series(ticker, limit_days=730):
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """SELECT day, long_score, price, quality, moat, mos_pct,
-                      intrinsic_value, valuation_label, moat_state, trading_status
+                      intrinsic_value, valuation_label, moat_state, trading_status, data_correction
                  FROM score_history
                  WHERE ticker = ? AND day >= ?
                  ORDER BY day ASC""",
@@ -246,7 +279,7 @@ def before_date(ticker, target_day):
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """SELECT day, long_score, price, quality, moat, mos_pct,
-                      intrinsic_value, valuation_label, moat_state, trading_status
+                      intrinsic_value, valuation_label, moat_state, trading_status, data_correction
                  FROM score_history
                  WHERE ticker = ? AND day < ?
                  ORDER BY day DESC LIMIT 1""",

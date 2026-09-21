@@ -359,13 +359,47 @@ def _email_html(hits, site, lang="en"):
 def send_batched_notifications(log=print):
     """One email + one push per user, covering every hit queued tonight
     (across every universe scan and the extra pass) - then clears the
-    queue. Safe to call with nothing queued (no-op)."""
-    import push_send
+    queue. Safe to call with nothing queued (no-op).
+
+    Commit O (21 Sep 2026, owner-verified EBIT-from-pretax fix): on the
+    one nightly run right after EBIT_FROM_PRETAX flips ON (nightly_scan.
+    is_ebit_correction_pending()), every queued hit this call would
+    otherwise email/push is instead just logged - the Moat/ROIC jump
+    that formula change causes for an affected ticker is a genuine
+    number, but it's a data correction, not something that happened to
+    the business overnight, and a threshold-crossing alert firing on it
+    would misread it as real news. The pending queue is still cleared
+    (same as a real send) so nothing backs up or double-fires the
+    following night, and the correction marker is consumed here - the
+    LAST step of the nightly job - so only this one run is suppressed.
+
+    The marker is consumed here even when nothing was queued to suppress
+    (an empty night still ends the correction window) - checked BEFORE
+    the "nothing queued" early return below, deliberately: skipping that
+    check on an empty night would leave the marker stuck forever (every
+    later night's score_history rows kept getting tagged, and alerts
+    suppressed indefinitely) whenever the correction night itself
+    happened to have zero alert hits."""
+    import nightly_scan
 
     hits_by_email = alert_store.pending_hits_by_email()
+
+    if nightly_scan.is_ebit_correction_pending():
+        all_hit_ids = []
+        for email, hits in hits_by_email.items():
+            all_hit_ids.extend(h["hit_id"] for h in hits)
+            tickers = ", ".join(h["ticker"] for h in hits)
+            log(f"[alert_engine] EBIT data-correction night - suppressed, would have "
+                f"notified {email} of {len(hits)} hit(s): {tickers}")
+        if all_hit_ids:
+            alert_store.clear_pending_hits(all_hit_ids)
+        nightly_scan.consume_ebit_correction_marker(log=log)
+        return {"users_notified": 0, "suppressed_for_data_correction": len(hits_by_email)}
+
     if not hits_by_email:
         return {"users_notified": 0}
 
+    import push_send
     site = _cfg()["site"]
     email_configured = is_configured()
     push_configured = push_send.is_configured()

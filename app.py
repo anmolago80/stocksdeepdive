@@ -28288,6 +28288,78 @@ def page_admin_dashboard():
                     _ft_label += f" ({_ft['universe']})"
                 st.markdown(f"- {_ft_label}")
 
+    # --- OPERATING-INCOME AUDIT (Commit O, 21 Sep 2026, owner-verified) -
+    # Pure dry-run: reads through moat_engine.compute_moat_dry_run() and
+    # auto_compounder_engine.ebit_ttm(..., force_switch=...), neither of
+    # which ever reads/writes the 24h moat_cache or auto_cv_sections
+    # cache, or touches the EBIT_FROM_PRETAX module-level global - see
+    # compute_moat_dry_run()'s own comment for why a forced computation
+    # must never go anywhere near either cache on a live multi-user site.
+    # Nothing here changes until EBIT_FROM_PRETAX is actually set in
+    # Railway.
+    st.markdown("### Operating-income audit (dry-run)")
+    st.caption(
+        "Compares today's live figure (yfinance's own \"Operating "
+        "Income\" row) against the Pretax-Income-derived EBIT (Commit O) "
+        "for every non-financials ticker in the most recently saved ASX "
+        "200 and S&P 500 scans - a representative AU/US sample, not "
+        "every ticker on the site. Computed fresh in memory on each "
+        "click; nothing here is cached, written, or visible to any "
+        "other visitor. Quality is deliberately not shown - "
+        "quality_engine.py never reads operating income at all, so this "
+        "fix cannot move it, on any ticker."
+    )
+    with st.container(border=True):
+        if st.button("Run audit", key="admin_dash_ebit_audit_btn"):
+            with st.spinner("Computing old vs new EBIT/ROIC/Moat for the ASX 200 and S&P 500 samples - this can take a minute..."):
+                _audit_rows = []
+                for _uni, _country in (("ASX 200", "AU"), ("S&P 500", "US")):
+                    try:
+                        _scan_payload = scan_store.load_scan_raw(_uni)
+                    except Exception:
+                        _scan_payload = None
+                    _tix = [r.get("Ticker") for r in (_scan_payload or {}).get("rows", []) if r.get("Ticker")]
+                    for _tk in _tix:
+                        _old = moat_engine.compute_moat_dry_run(_tk, force_switch=False)
+                        _new = moat_engine.compute_moat_dry_run(_tk, force_switch=True)
+                        if not _old or not _new or _old.get("is_financials"):
+                            continue
+                        try:
+                            _bundle = fundamentals_data.get_bundle(_tk)
+                            _ebit_old, _ = auto_compounder_engine.ebit_ttm(_bundle, False, force_switch=False)
+                            _ebit_new, _ = auto_compounder_engine.ebit_ttm(_bundle, False, force_switch=True)
+                        except Exception:
+                            _ebit_old = _ebit_new = None
+                        _moat_old, _moat_new = _old.get("score"), _new.get("score")
+                        _moat_delta = (
+                            (_moat_new - _moat_old) if (_moat_old is not None and _moat_new is not None) else None
+                        )
+                        _audit_rows.append({
+                            "ticker": _tk, "country": _country,
+                            "ebit_old": _ebit_old, "ebit_new": _ebit_new,
+                            "roic_old": _old.get("ttm_return"), "roic_new": _new.get("ttm_return"),
+                            "moat_old": _moat_old, "moat_new": _moat_new,
+                            "moat_delta": _moat_delta,
+                        })
+                st.session_state["admin_dash_ebit_audit_rows"] = _audit_rows
+
+        _audit_rows = st.session_state.get("admin_dash_ebit_audit_rows")
+        if _audit_rows:
+            _audit_df = pd.DataFrame(_audit_rows)
+            _au_n = int((_audit_df["country"] == "AU").sum())
+            _us_n = int((_audit_df["country"] == "US").sum())
+            st.markdown(f"**{len(_audit_df)} non-financials tickers audited** — AU {_au_n} · US {_us_n}")
+            _movable = _audit_df.dropna(subset=["moat_delta"]).copy()
+            if not _movable.empty:
+                _movable["abs_delta"] = _movable["moat_delta"].abs()
+                _movers = _movable.sort_values("abs_delta", ascending=False).head(30).drop(columns="abs_delta")
+                st.markdown("**30 biggest Moat-score movers (old vs new):**")
+                st.dataframe(_movers, hide_index=True, width='stretch')
+            else:
+                st.caption("No ticker had both an old and a new Moat score to compare.")
+        elif "admin_dash_ebit_audit_rows" in st.session_state:
+            st.caption("No non-financials tickers found in the saved ASX 200 / S&P 500 scans.")
+
     # --- SYSTEM --------------------------------------------------------
     st.markdown("---")
     st.markdown("### System")

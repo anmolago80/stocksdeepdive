@@ -103,7 +103,14 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # 39->40 (2026-08-30): Capital Intensity Ratio's top band split in two
 # (0.40x-1.00x "Capital-heavy" / 1.00x+ "Very capital-heavy") - see that
 # metric's own comment in _build_fundamentals for why.
-ENGINE_VERSION = 40
+# 40->41 (Commit O, 2026-09-21): _build_fundamentals/_build_cost_of_capital
+# now read operating income through ebit_ttm()/ebit_series() instead of a
+# raw statement-row lookup - see those functions' own comments. Output is
+# unchanged while EBIT_FROM_PRETAX is unset (the default), but the
+# version bump exists so that flipping the switch on later invalidates
+# this cache immediately rather than waiting up to 24h for a stale entry
+# to expire.
+ENGINE_VERSION = 41
 
 
 # -----------------------------------
@@ -267,6 +274,12 @@ _ROW_ALIASES = {
     "pretax_income": ["Pretax Income", "Income Before Tax", "incomeBeforeTax"],
     "tax_provision": ["Tax Provision", "Income Tax Expense", "incomeTaxExpense"],
     "interest_expense": ["Interest Expense", "Interest Expense Non Operating", "interestExpense"],
+    # EBIT reconstruction (Commit O) - see ebit_year_rows() below for why
+    # these are read instead of trusting the "Operating Income" row alone.
+    "net_non_operating_interest": ["Net Non Operating Interest Income Expense"],
+    "other_income_expense": ["Other Income Expense"],
+    "total_unusual_items": ["Total Unusual Items", "Total Unusual Items Excluding Goodwill"],
+    "reconciled_depreciation": ["Reconciled Depreciation"],
     "basic_eps": ["Basic EPS", "Diluted EPS"],
     "total_assets": ["Total Assets", "totalAssets"],
     "current_assets": ["Current Assets", "Total Current Assets", "totalCurrentAssets"],
@@ -572,6 +585,199 @@ def _plausible_operating_income(candidate, revenue, info):
         if margin_close or ratio_close:
             return candidate, False
     return expected, True
+
+
+# -----------------------------------
+# EBIT reconstruction (Commit O, 21 Sep 2026, owner-verified against real
+# Yahoo Finance income statements for SUL.AX and JBH.AX).
+#
+# yfinance's own "Operating Income" row double-counts D&A in Operating
+# Expense for many ASX/IFRS filers. Confirmed by an exact reconciliation
+# identity on two independent tickers: Operating Income + Reconciled
+# Depreciation == Pretax Income - Net Non Operating Interest Income
+# Expense - Other Income Expense, to the cent, on both. SUL.AX FY23: 93.0
+# reported vs 422.4 real (barely-profitable vs solidly profitable - a
+# total misread, not a rounding difference). JBH.AX FY23: 543.5 vs 765.8,
+# understated by ~30% - a "below 50%" plausibility threshold would MISS
+# that gap entirely. AAPL's own Pretax already reconciles cleanly to its
+# Operating Income (no D&A gap for that filer's statement structure) -
+# this is systematic for a subset of filers (ASX/IFRS names confirmed so
+# far), not a rare-outlier fix, but also not one that moves every
+# ticker's number.
+#
+# yfinance's own "EBIT" row is not a substitute: it's Pretax + "Interest
+# Expense", and that "Interest Expense" row excludes lease interest
+# (SUL.AX: 4.2 vs a real net interest figure of 43.2). Invested capital
+# throughout this codebase (this module's own ROIC, moat_engine.py's
+# NOPAT/ROIC) already includes lease liabilities on the capital side, so
+# EBIT must add back the FULL net interest figure to stay consistent with
+# that capital base - the formula below, not yfinance's own EBIT row.
+#
+# Financials mode (banks/insurers) is excluded from this formula
+# entirely - interest income/expense IS a bank's business, not a
+# non-operating add-back. Callers pass is_financials=True to always get
+# the raw yfinance Operating Income back, regardless of the switch below.
+#
+# Switched by a Railway env var rather than a code change, so it can be
+# turned on/off without a redeploy - default OFF (unset), so nothing on
+# the live site changes until this is explicitly flipped. See this
+# module's own ENGINE_VERSION and moat_engine.MOAT_ENGINE_VERSION for the
+# cache-invalidation side, and nightly_scan.py's
+# _check_ebit_switch_flip() for the "takes effect same night" mechanics.
+# -----------------------------------
+
+EBIT_FROM_PRETAX = os.environ.get("EBIT_FROM_PRETAX") == "1"
+
+
+def _ac_is_financials(info):
+    """Mirrors moat_engine._is_financials(info) exactly (Financial
+    Services sector, or bank/insurance industry). Duplicated rather than
+    imported: moat_engine.py already imports this module as `_ace`, so
+    the reverse import would be circular. Both copies check the same two
+    `info` fields with the same logic - if one changes, change both."""
+    sector = (info.get("sector") or "").strip()
+    if sector == "Financial Services":
+        return True
+    industry = (info.get("industry") or "").lower()
+    return ("bank" in industry) or ("insurance" in industry)
+
+
+def ebit_year_rows(bundle, is_financials, force_switch=None):
+    """{year_label: {...}} for every year the income statement has a
+    Pretax Income figure for, newest-first insertion order. Always
+    computed in full (even when the EBIT_FROM_PRETAX switch is off, or
+    is_financials=True) so the moat diagnostics panel and the Admin
+    Dashboard audit tool can show old-vs-new for every ticker regardless
+    of the switch's current state - only the "ebit" field (the value that
+    actually feeds the rest of the site) depends on switch/mode.
+
+    `force_switch`: None (default) reads the live EBIT_FROM_PRETAX env
+    flag, exactly like every real site call path. True/False overrides it
+    for this call ONLY, without touching the module-level global - this
+    is what lets the Admin Dashboard's dry-run audit compute an "as if
+    switch were ON" result side-by-side with the real "as if switch were
+    OFF" result, safely, even while other concurrent Streamlit sessions
+    (this is a live multi-user site) are being served by this same
+    module's functions reading the real, unmutated global.
+
+    Fields per year:
+      pretax_income, net_interest, other_income, total_unusual_items -
+        the formula's own inputs, read as yfinance reports them (sign
+        convention as filed - net_interest is typically negative when
+        it's a net expense).
+      reconciled_depreciation - diagnostic only, NOT part of the formula;
+        kept only to verify the Operating Income + Reconciled
+        Depreciation == ebit_derived reconciliation identity this fix was
+        confirmed against.
+      ebit_derived - pretax_income - net_interest - other_income -
+        total_unusual_items (missing terms treated as 0, matching "if
+        present" in the spec). None when pretax_income itself is missing
+        for that year - never a guess.
+      operating_income_yf - yfinance's own "Operating Income" row,
+        unmodified, for comparison.
+      gap_pct - (ebit_derived - operating_income_yf) / abs(operating_income_yf);
+        None when either side is unavailable or yfinance's figure is 0.
+      ebit - the value callers should actually use: ebit_derived when the
+        EBIT_FROM_PRETAX switch is on AND is_financials is False AND a
+        derived value exists for that year; otherwise operating_income_yf
+        unchanged (byte-identical to the pre-Commit-O code path)."""
+    income = bundle.get("income")
+    if income is None or getattr(income, "empty", True):
+        return {}
+
+    op_yf_s = dict(_series(income, "operating_income"))
+    pretax_s = dict(_series(income, "pretax_income"))
+    interest_s = dict(_series(income, "net_non_operating_interest"))
+    other_s = dict(_series(income, "other_income_expense"))
+    unusual_s = dict(_series(income, "total_unusual_items"))
+    depr_s = dict(_series(income, "reconciled_depreciation"))
+
+    years = [y for y, _ in _series(income, "pretax_income")]
+    if not years:
+        years = [y for y, _ in _series(income, "operating_income")]
+
+    switch_on = EBIT_FROM_PRETAX if force_switch is None else force_switch
+    use_derived = bool(switch_on) and not is_financials
+
+    out = {}
+    for y in years:
+        pretax = pretax_s.get(y)
+        op_yf = op_yf_s.get(y)
+        net_interest = interest_s.get(y)
+        other_income = other_s.get(y)
+        unusual = unusual_s.get(y)
+        derived = None
+        if pretax is not None:
+            derived = pretax - (net_interest or 0.0) - (other_income or 0.0) - (unusual or 0.0)
+        gap_pct = None
+        if derived is not None and op_yf not in (None, 0):
+            gap_pct = (derived - op_yf) / abs(op_yf)
+        chosen = op_yf
+        if use_derived and derived is not None:
+            chosen = derived
+        out[y] = {
+            "pretax_income": pretax,
+            "net_interest": net_interest,
+            "other_income": other_income,
+            "total_unusual_items": unusual,
+            "reconciled_depreciation": depr_s.get(y),
+            "ebit_derived": derived,
+            "operating_income_yf": op_yf,
+            "gap_pct": gap_pct,
+            "ebit": chosen,
+        }
+    return out
+
+
+def ebit_series(bundle, is_financials, force_switch=None):
+    """[(year_label, ebit_or_None), ...] newest-first - drop-in
+    replacement for `_series(income, "operating_income")` at every NOPAT/
+    ROIC/margin call site in this module and moat_engine.py. Thin
+    wrapper over ebit_year_rows() returning just the "ebit" field.
+    `force_switch`: see ebit_year_rows()."""
+    return [(y, r["ebit"]) for y, r in ebit_year_rows(bundle, is_financials, force_switch=force_switch).items()]
+
+
+def ebit_ttm(bundle, is_financials, revenue=None, info=None, force_switch=None):
+    """(ebit_value_or_None, estimated) - the TTM figure every caller that
+    used to do `_plausible_operating_income(_latest(income,
+    "operating_income"), revenue, info)` should call instead.
+
+    When the EBIT_FROM_PRETAX switch is on, the ticker isn't financials,
+    and a derived value exists for the newest year that has one, that
+    value is used directly (estimated=False) - deliberately bypassing
+    _plausible_operating_income()'s own operatingMargins cross-check.
+    That check's "second source" (yfinance's operatingMargins info field)
+    is itself built from the same understated Operating Income row this
+    fix corrects, so running the derived (fixed) value back through a
+    plausibility band anchored on the buggy figure would flag the FIX as
+    implausible and silently replace it with the old wrong number -
+    confirmed shape of the failure: SUL.AX's real operating margin
+    (derived EBIT / revenue) sits roughly 4.5x yfinance's own
+    operatingMargins figure, miles outside _plausible_operating_income's
+    2x/25-point tolerance bands. That would defeat this fix for exactly
+    the tickers it targets.
+
+    Otherwise (switch off, financials, or no Pretax Income on file for
+    any year) falls through to the exact same
+    _latest(income,"operating_income") + _plausible_operating_income()
+    path this module has always used - so with the switch off, this
+    function's output is byte-identical to the pre-Commit-O code path.
+    `force_switch`: see ebit_year_rows()."""
+    income = bundle.get("income")
+    rows = ebit_year_rows(bundle, is_financials, force_switch=force_switch)
+    switch_on = EBIT_FROM_PRETAX if force_switch is None else force_switch
+    use_derived = bool(switch_on) and not is_financials
+    if use_derived:
+        for row in rows.values():
+            if row.get("ebit_derived") is not None:
+                return row["ebit_derived"], False
+    raw = _latest(income, "operating_income")
+    if revenue is None:
+        revenue = _latest(income, "revenue")
+    if info is None:
+        info = bundle.get("info")
+    return _plausible_operating_income(raw, revenue, info)
 
 
 def _statement_col_dates(df):
@@ -1113,10 +1319,8 @@ def _build_fundamentals(bundle, ticker, ref):
     if dual_class_mcap_fix:
         mcap = price * filed_shares
 
-    operating_income = _latest(income, "operating_income")
-    operating_income, operating_income_estimated = _plausible_operating_income(
-        operating_income, revenue, bundle.get("info")
-    )
+    is_financials = _ac_is_financials(bundle.get("info") or {})
+    operating_income, operating_income_estimated = ebit_ttm(bundle, is_financials, revenue, bundle.get("info"))
     pretax_income = _latest(income, "pretax_income")
     tax_provision = _latest(income, "tax_provision")
     interest_expense, interest_expense_flagged, interest_expense_estimated = _interest_expense_ttm(bundle)
@@ -2099,9 +2303,8 @@ def _build_cost_of_capital(bundle, ticker, ref):
     pretax_income = _latest(bundle["income"], "pretax_income")
     tax_provision = _latest(bundle["income"], "tax_provision")
     revenue = _latest(bundle["income"], "revenue")
-    operating_income, _operating_income_estimated = _plausible_operating_income(
-        _latest(bundle["income"], "operating_income"), revenue, info
-    )
+    is_financials = _ac_is_financials(info)
+    operating_income, _operating_income_estimated = ebit_ttm(bundle, is_financials, revenue, info)
     equity = _latest(bundle["balance"], "stockholders_equity")
     cash = _latest(bundle["balance"], "cash")
     tax_ttm = (tax_provision / pretax_income) if (tax_provision is not None and pretax_income) else 0.25
@@ -2120,7 +2323,7 @@ def _build_cost_of_capital(bundle, ticker, ref):
     ltd_by_year = dict(_series(bundle["balance"], "long_term_debt"))
     cash_by_year = dict(_series(bundle["balance"], "cash"))
     interest_by_year = dict(_series(bundle["income"], "interest_expense"))
-    op_income_by_year = dict(_series(bundle["income"], "operating_income"))
+    op_income_by_year = dict(ebit_series(bundle, is_financials))
     years_desc = [y for y, _ in _series(bundle["balance"], "stockholders_equity")]
     year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
 

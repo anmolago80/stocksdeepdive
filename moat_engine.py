@@ -77,7 +77,13 @@ import fundamentals_data
 # same discipline as auto_compounder_engine.ENGINE_VERSION, and for the
 # identical reason (see that constant's own comment for the cautionary
 # tale of a change shipping without a version bump).
-MOAT_ENGINE_VERSION = 1
+# 1->2 (Commit O, 2026-09-21): NOPAT/ROIC, the erosion overlay's operating
+# margin, and the pricing-power fallback now read operating income
+# through auto_compounder_engine.ebit_series() instead of a raw
+# statement-row lookup - see that function's own comment. Output is
+# unchanged while EBIT_FROM_PRETAX is unset (the default); the bump
+# exists so flipping the switch invalidates this cache immediately.
+MOAT_ENGINE_VERSION = 2
 
 _CACHE_DIR_NAME = "moat_cache"
 _CACHE_TTL_SECONDS = 24 * 3600
@@ -203,7 +209,7 @@ def moat_band(score):
 # Per-year return series (ROIC for a standard company, ROE for financials)
 # -----------------------------------
 
-def _year_return_series(bundle, info, is_financials):
+def _year_return_series(bundle, info, is_financials, force_switch=None):
     """[(year_label, return_value_or_None, extra), ...] newest-first,
     keyed off the balance sheet's own stockholders'-equity year list (the
     same anchor _avg_invested_capital_for_year already uses).
@@ -219,7 +225,12 @@ def _year_return_series(bundle, info, is_financials):
     Reinvestment does not apply (see _pillar_reinvestment).
 
     Financials mode: return_value is plain ROE = net income / that
-    year's own equity (no averaging - the ordinary ROE convention)."""
+    year's own equity (no averaging - the ordinary ROE convention).
+
+    `force_switch`: passed straight through to _ace.ebit_series() - see
+    that function's own docstring. None (default) for every real site
+    call path; True/False only from the Admin Dashboard's dry-run audit
+    (see compute_moat_dry_run() below), never from compute_moat()."""
     income, balance = bundle["income"], bundle["balance"]
     equity_s = dict(_ace._series(balance, "stockholders_equity"))
     years_desc = [y for y, _ in _ace._series(balance, "stockholders_equity")]
@@ -236,7 +247,7 @@ def _year_return_series(bundle, info, is_financials):
 
     debt_s = dict(_ace._series(balance, "total_debt"))
     cash_s = dict(_ace._series(balance, "cash"))
-    op_income_s = dict(_ace._series(income, "operating_income"))
+    op_income_s = dict(_ace.ebit_series(bundle, is_financials, force_switch=force_switch))
     pretax_s = dict(_ace._series(income, "pretax_income"))
     tax_s = dict(_ace._series(income, "tax_provision"))
     ttm_pretax, ttm_tax = pretax_s.get(years_desc[0]), tax_s.get(years_desc[0])
@@ -254,7 +265,7 @@ def _year_return_series(bundle, info, is_financials):
     return out
 
 
-def _operating_margin_series(bundle, years_desc):
+def _operating_margin_series(bundle, years_desc, is_financials, force_switch=None):
     """[operating_margin_or_None, ...] in the SAME order as years_desc
     (the return series' own year list) - looked up independently from
     the income statement's own year labels rather than assumed to line
@@ -264,10 +275,10 @@ def _operating_margin_series(bundle, years_desc):
     mismatch). A year with no match on either side is None here, and
     _erosion_overlay's caller filters those out positionally before
     windowing, so ROIC and operating margin never end up misaligned by
-    one year against each other."""
+    one year against each other. `force_switch`: see _year_return_series()."""
     income = bundle["income"]
     revenue_s = dict(_ace._series(income, "revenue"))
-    op_s = dict(_ace._series(income, "operating_income"))
+    op_s = dict(_ace.ebit_series(bundle, is_financials, force_switch=force_switch))
     out = []
     for y in years_desc:
         rev, op = revenue_s.get(y), op_s.get(y)
@@ -383,7 +394,7 @@ def _pillar_persistence(roic_list, is_financials, flags):
 # Pillar 3 - Pricing power (25 pts), on the gross-margin series
 # -----------------------------------
 
-def _pillar_pricing_power(bundle, flags):
+def _pillar_pricing_power(bundle, is_financials, flags, force_switch=None):
     income = bundle["income"]
     revenue_s = dict(_ace._series(income, "revenue"))
     years_desc = [y for y, _ in _ace._series(income, "revenue")]
@@ -393,7 +404,7 @@ def _pillar_pricing_power(bundle, flags):
 
     gp_row = _ace._find_row(income, ["Gross Profit"])
     used_fallback = gp_row is None
-    numerator_s = dict(_ace._series(income, "Gross Profit" if not used_fallback else "operating_income"))
+    numerator_s = dict(_ace._series(income, "Gross Profit")) if not used_fallback else dict(_ace.ebit_series(bundle, is_financials, force_switch=force_switch))
     margin_label = "operating margin" if used_fallback else "gross margin"
 
     gm_series = [(y, numerator_s.get(y) / revenue_s.get(y))
@@ -584,7 +595,14 @@ def _na_result(flags=None):
     return {"score": None, "components": [], "erosion": "none", "flags": flags or [], "years": 0, "mode": "na"}
 
 
-def _compute_moat_from_bundle(ticker, bundle, info):
+def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None):
+    """`force_switch`: None on every real call path (compute_moat()
+    never passes it - see that function). True/False only from
+    compute_moat_dry_run(), the Admin Dashboard audit's own entry point -
+    threaded down into every pillar call below so a dry-run "as if switch
+    were ON/OFF" comparison never has to touch the module-level
+    EBIT_FROM_PRETAX global (see auto_compounder_engine.ebit_year_rows()'s
+    own comment on why that matters on a live multi-user site)."""
     flags = []
 
     if _is_fund(info):
@@ -598,7 +616,7 @@ def _compute_moat_from_bundle(ticker, bundle, info):
     mode = "financials" if is_financials else "standard"
     basics = _ace._basics(bundle)
 
-    return_series = _year_return_series(bundle, info, is_financials)
+    return_series = _year_return_series(bundle, info, is_financials, force_switch=force_switch)
     years_desc = [y for y, _, _ in return_series]
     roic_list = [v for _, v, _ in return_series]
     usable_years = sum(1 for v in roic_list if v is not None)
@@ -618,7 +636,7 @@ def _compute_moat_from_bundle(ticker, bundle, info):
     if persistence_pts is not None:
         components.append({"pillar": "Persistence", "points": round(persistence_pts, 1), "max": 25})
 
-    pricing_pts = _pillar_pricing_power(bundle, flags)
+    pricing_pts = _pillar_pricing_power(bundle, is_financials, flags, force_switch=force_switch)
     if pricing_pts is not None:
         components.append({"pillar": "Pricing power", "points": round(pricing_pts, 1), "max": 25})
 
@@ -643,7 +661,7 @@ def _compute_moat_from_bundle(ticker, bundle, info):
             "neutral score"
         )
 
-    opm_list = _operating_margin_series(bundle, years_desc)
+    opm_list = _operating_margin_series(bundle, years_desc, is_financials, force_switch=force_switch)
     pairs = [(r, o) for r, o in zip(roic_list, opm_list) if r is not None and o is not None]
     erosion = _erosion_overlay([r for r, _ in pairs], [o for _, o in pairs], flags)
 
@@ -658,6 +676,7 @@ def _compute_moat_from_bundle(ticker, bundle, info):
         "flags": flags,
         "years": usable_years,
         "mode": mode,
+        "ttm_return": roic_list[0] if roic_list else None,
     }
 
 
@@ -704,6 +723,45 @@ def compute_moat(ticker, force_refresh=False):
     return result
 
 
+def compute_moat_dry_run(ticker, force_switch):
+    """Commit O (21 Sep 2026, owner-verified EBIT-from-pretax fix): the
+    Admin Dashboard's "Operating-income audit" reads through here, NEVER
+    through compute_moat() - this function never reads or writes the 24h
+    moat_cache at all, on either side of the comparison. That's
+    deliberate: compute_moat()'s cache has no room in its schema for "the
+    switch was forced to X for this one read" versus "the switch was
+    genuinely on/off site-wide", so a forced computation that touched
+    that cache would silently corrupt the real, live Moat Score for every
+    other visitor of this ticker until the 24h TTL expired - exactly the
+    kind of half-done, cache-poisoning bug CLAUDE.md's "verify before
+    pushing" discipline exists to catch before it ships, not after.
+
+    Bundle fetch still goes through fundamentals_data.get_bundle(), which
+    has its own independent 24h cache (unaffected by this call, and not
+    itself sensitive to force_switch - the raw statement rows it caches
+    are the same regardless of which EBIT formula reads them
+    afterwards).
+
+    Returns the same shape _compute_moat_from_bundle() always returns,
+    plus "ticker" and "is_financials", or None if the bundle can't be
+    fetched at all (caller should skip this ticker, not treat None as a
+    zero/na Moat)."""
+    ticker = (ticker or "").strip().upper()
+    if not ticker:
+        return None
+    try:
+        bundle = fundamentals_data.get_bundle(ticker)
+    except Exception:
+        return None
+    if not bundle:
+        return None
+    info = bundle.get("info") or {}
+    result = _compute_moat_from_bundle(ticker, bundle, info, force_switch=force_switch)
+    result["ticker"] = ticker
+    result["is_financials"] = _is_financials(info)
+    return result
+
+
 def compute_moat_diagnostics(ticker):
     """Commit M (21 Sep 2026, owner-reported): owner-only diagnostic view
     of compute_moat()'s own internal computation - exposes everything it
@@ -737,10 +795,15 @@ def compute_moat_diagnostics(ticker):
     ticker's own mode/data ever lets a given pillar apply), "year_rows"
     (newest-first list of per-year raw inputs - standard mode: year/
     revenue/gross_profit_or_fallback/gross_profit_is_fallback_operating_
-    income/operating_income/nopat/equity/total_debt/long_term_debt/cash/
-    invested_capital/roic; financials mode: year/equity/net_income/roe),
-    "ttm_return"/"ttm_return_metric" (ROIC or ROE), "ttm_cost_of_capital"/
-    "ttm_cost_of_capital_flagged", "spread"}."""
+    income/operating_income (the value that actually fed NOPAT/ROIC/
+    pricing-power - see Commit O)/pretax_income/net_interest/
+    other_income/reconciled_depreciation (diagnostic only, not part of
+    the formula)/ebit_derived/operating_income_yf/gap_pct (the EBIT
+    reconstruction's own reconciliation, added Commit O - see
+    auto_compounder_engine.ebit_year_rows())/nopat/equity/total_debt/
+    long_term_debt/cash/invested_capital/roic; financials mode: year/
+    equity/net_income/roe), "ttm_return"/"ttm_return_metric" (ROIC or
+    ROE), "ttm_cost_of_capital"/"ttm_cost_of_capital_flagged", "spread"}."""
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return None
@@ -779,7 +842,7 @@ def compute_moat_diagnostics(ticker):
     if persistence_pts is not None:
         components.append({"pillar": "Persistence", "points": round(persistence_pts, 1), "max": 25})
 
-    pricing_pts = _pillar_pricing_power(bundle, flags)
+    pricing_pts = _pillar_pricing_power(bundle, is_financials, flags)
     if pricing_pts is not None:
         components.append({"pillar": "Pricing power", "points": round(pricing_pts, 1), "max": 25})
 
@@ -799,18 +862,35 @@ def compute_moat_diagnostics(ticker):
         revenue_s = dict(_ace._series(income, "revenue"))
         gp_row = _ace._find_row(income, ["Gross Profit"])
         used_fallback = gp_row is None
-        gp_s = dict(_ace._series(income, "Gross Profit" if not used_fallback else "operating_income"))
-        op_income_s = dict(_ace._series(income, "operating_income"))
+        ebit_rows = _ace.ebit_year_rows(bundle, is_financials)
+        # "operating_income" is the value that actually fed NOPAT/ROIC/
+        # the pricing-power fallback below (return_series/_year_return_
+        # series and _pillar_pricing_power both now read through
+        # _ace.ebit_series(), which is this same switch-aware "ebit"
+        # field) - the new pretax_income/net_interest/other_income/
+        # reconciled_depreciation/ebit_derived/operating_income_yf/
+        # gap_pct columns below show the full reconciliation behind it
+        # (Commit O), never replacing this field, only explaining it.
+        op_income_s = {y: r["ebit"] for y, r in ebit_rows.items()}
+        gp_s = dict(_ace._series(income, "Gross Profit")) if not used_fallback else op_income_s
         debt_s = dict(_ace._series(balance, "total_debt"))
         long_term_debt_s = dict(_ace._series(balance, "long_term_debt"))
         cash_s = dict(_ace._series(balance, "cash"))
         for y, roic, extra in return_series:
+            ebit_row = ebit_rows.get(y, {})
             year_rows.append({
                 "year": y,
                 "revenue": revenue_s.get(y),
                 "gross_profit_or_fallback": gp_s.get(y),
                 "gross_profit_is_fallback_operating_income": used_fallback,
                 "operating_income": op_income_s.get(y),
+                "pretax_income": ebit_row.get("pretax_income"),
+                "net_interest": ebit_row.get("net_interest"),
+                "other_income": ebit_row.get("other_income"),
+                "reconciled_depreciation": ebit_row.get("reconciled_depreciation"),
+                "ebit_derived": ebit_row.get("ebit_derived"),
+                "operating_income_yf": ebit_row.get("operating_income_yf"),
+                "gap_pct": ebit_row.get("gap_pct"),
                 "nopat": extra.get("nopat"),
                 "equity": equity_s.get(y),
                 "total_debt": debt_s.get(y),

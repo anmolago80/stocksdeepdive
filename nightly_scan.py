@@ -1482,6 +1482,137 @@ def cleanup_sector_universe_pollution(log=print):
         log(f"[nightly_scan] commitL cleanup: could not write marker file: {e}")
 
 
+def _ebit_switch_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".ebit_from_pretax_switch_state")
+
+
+def check_ebit_switch_flip(log=print):
+    """Commit O (21 Sep 2026, owner-verified EBIT-from-pretax fix): the
+    EBIT_FROM_PRETAX switch (auto_compounder_engine.EBIT_FROM_PRETAX) is
+    a Railway env var, not a code change - flipping it does NOT bump
+    auto_compounder_engine.ENGINE_VERSION or moat_engine.MOAT_ENGINE_
+    VERSION (those bumped once, in the same deploy this function shipped
+    in, to invalidate whatever was cached under the OLD formula; they
+    have no way to know the switch itself later flips a second time on a
+    running deploy). Without this check, flipping the env var on Railway
+    would sit invisible behind each ticker's existing 24h moat_cache/
+    auto_cv_sections entry for up to 24h - "flip it on, wait up to a day
+    to see it" is exactly the "not a day later" the task this shipped
+    under ruled out.
+
+    Unlike cleanup_fix9_nan_data()/cleanup_sector_universe_pollution()
+    above, this is NOT a marker-file "ran once, never again" guard - the
+    marker here stores the LAST-OBSERVED switch state ("0"/"1"), compared
+    against the live env var on every call. Different -> the switch
+    genuinely flipped since the last check -> both caches this formula
+    change affects (moat_cache, auto_cv_sections) are wiped outright
+    (every *.json file in each directory removed, exactly like scan_
+    store.invalidate() removes a stale scan - "no cached entry" is a
+    state every reader already handles, a *wrong-formula* cached entry
+    is not). Same -> no-op. No marker file yet at all (first boot after
+    this shipped, or a fresh volume) -> just records the current state,
+    doesn't wipe anything - a brand-new deploy's caches were already
+    invalidated by the version bumps above, there's nothing stale here to
+    correct on day one.
+
+    A Railway env var change triggers a redeploy (a fresh boot), and this
+    is called unconditionally from server.py's lifespan() alongside the
+    other marker-guarded cleanups above - so a flip takes effect on that
+    same boot, before the next nightly run even starts, not "the next
+    time nightly_scan.py happens to run". Never allowed to stop the site
+    serving, same rule as every other lifespan cleanup."""
+    marker = _ebit_switch_marker_path()
+    current = "1" if auto_compounder_engine.EBIT_FROM_PRETAX else "0"
+    previous = None
+    try:
+        if os.path.exists(marker):
+            with open(marker) as f:
+                previous = f.read().strip()
+    except OSError as e:
+        log(f"[nightly_scan] ebit switch check: could not read marker file: {e}")
+
+    if previous is not None and previous == current:
+        return
+    if previous is None:
+        log(f"[nightly_scan] ebit switch check: no prior state on record - "
+            f"recording EBIT_FROM_PRETAX={current}, nothing to invalidate on a fresh deploy")
+    else:
+        log(f"[nightly_scan] ebit switch check: EBIT_FROM_PRETAX flipped "
+            f"{previous} -> {current} - clearing moat_cache and auto_cv_sections "
+            f"so the change takes effect immediately, not after their 24h TTL")
+        for cache_dir in (moat_engine._cache_dir(), os.path.join(auto_compounder_engine._data_dir(), auto_compounder_engine._CACHE_DIR_NAME)):
+            cleared = 0
+            try:
+                for fname in os.listdir(cache_dir):
+                    if fname.endswith(".json"):
+                        try:
+                            os.remove(os.path.join(cache_dir, fname))
+                            cleared += 1
+                        except OSError:
+                            pass
+            except OSError as e:
+                log(f"[nightly_scan] ebit switch check: could not list {cache_dir}: {e}")
+                continue
+            log(f"[nightly_scan] ebit switch check: cleared {cleared} cached file(s) from {cache_dir}")
+
+        # Only a genuine OFF -> ON flip needs alert suppression and a
+        # score_history data-correction tag - see is_ebit_correction_
+        # pending()/score_history.record()'s own comments. Flipping back
+        # OFF restores the old numbers (also a real jump, also worth not
+        # alerting on) but the task this shipped under only asked for
+        # this on the ON transition, so that's the one case handled here.
+        if previous == "0" and current == "1":
+            try:
+                with open(_ebit_correction_marker_path(), "w") as f:
+                    f.write(datetime.now(timezone.utc).isoformat())
+                log("[nightly_scan] ebit switch check: flagged the next nightly run as a "
+                    "data correction - its score_history rows will be tagged, and "
+                    "alert_engine.send_batched_notifications() will log (not send) whatever "
+                    "would have fired that night")
+            except OSError as e:
+                log(f"[nightly_scan] ebit switch check: could not write correction marker: {e}")
+
+    try:
+        with open(marker, "w") as f:
+            f.write(current)
+    except OSError as e:
+        log(f"[nightly_scan] ebit switch check: could not write marker file: {e}")
+
+
+def _ebit_correction_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".ebit_from_pretax_pending_correction")
+
+
+def is_ebit_correction_pending():
+    """True for every call made during the one nightly run right after
+    EBIT_FROM_PRETAX flips OFF -> ON (see check_ebit_switch_flip()) -
+    read by score_history.record() (tags that night's rows) and
+    alert_engine.send_batched_notifications() (suppresses the real send,
+    logs what would have fired instead). Stays True across that whole
+    nightly job (every universe scan's record() call, the extra alert
+    pass, and the final batched send all see the same answer) until
+    consume_ebit_correction_marker() clears it at the very end of that
+    job - so exactly one nightly run is affected, never a second one."""
+    return os.path.exists(_ebit_correction_marker_path())
+
+
+def consume_ebit_correction_marker(log=print):
+    """Deletes the pending-correction marker, ending the suppression
+    window - called once, by alert_engine.send_batched_notifications(),
+    as the last step of the nightly job that was flagged. A no-op if
+    nothing is pending (every other night)."""
+    marker = _ebit_correction_marker_path()
+    if not os.path.exists(marker):
+        return
+    try:
+        os.remove(marker)
+        log("[nightly_scan] ebit switch check: data-correction night complete - marker cleared")
+    except OSError as e:
+        log(f"[nightly_scan] ebit switch check: could not clear correction marker: {e}")
+
+
 if __name__ == "__main__":
     target = sys.argv[1] if len(sys.argv) > 1 else "ASX 200"
     if target == IMPORTED_UNIVERSE:
