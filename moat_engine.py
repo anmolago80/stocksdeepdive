@@ -479,6 +479,27 @@ def _pillar_reinvestment(year_series, flags):
         )
         return 16
 
+    if d_ic < 0:
+        # Commit N (21 Sep 2026, owner-reported): d_nopat < 0 is
+        # guaranteed here - the branch above already caught every
+        # d_ic <= 0 case where d_nopat >= 0, so reaching this point with
+        # d_ic < 0 means d_nopat < 0 too. Both capital AND profit fell -
+        # d_nopat/d_ic then divides two negatives and comes out
+        # POSITIVE, but it isn't a meaningful "incremental return on
+        # newly-deployed capital" (there was no new capital - capital
+        # was WITHDRAWN while profit also fell). It's profit lost per
+        # dollar of capital given up, where a HIGH value is actually BAD
+        # (the business shed profitable capital) - the exact opposite of
+        # how the >0.15/>=0.08/>=0.0 bands further down read a positive
+        # ratio. Dropped, not scored, and reweighted like any other
+        # missing pillar - never inventing a number for a ratio that
+        # doesn't mean what this pillar needs it to mean.
+        flags.append(
+            f"reinvestment: business shrank on both capital and profit "
+            f"({oldest_y}->{newest_y}) - incremental return not meaningful, pillar dropped"
+        )
+        return None
+
     if d_ic == 0:
         flags.append(f"reinvestment: invested capital unchanged {oldest_y}->{newest_y} - pillar dropped")
         return None
