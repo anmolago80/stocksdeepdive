@@ -24927,7 +24927,12 @@ def _render_property_vs_index_tool(email):
     # new arithmetic. A loss/zero pretax amount has no meaningful rate
     # (property_year_tax_legs()'s own "$0 tax rather than a refund" rule
     # for a capital loss) - shown as 0% rather than dividing by zero.
-    _growth_pretax = _p["growth"]["taxable_gain"]
+    # Bug fix (21 Sep 2026, owner-reported): "gain" (the ECONOMIC,
+    # unreduced pretax gain - what was actually paid vs actually
+    # received), not "taxable_gain" (Div-43-cost-base-reduced, CGT
+    # calculation only) - see property_capital_growth()'s own docstring
+    # for the double-counting bug this fixes.
+    _growth_pretax = _p["growth"]["gain"]
     _growth_rate_pct = (
         (_growth_pretax - _p["growth"]["after_tax"]) / _growth_pretax * 100.0
         if _growth_pretax > 0 else 0.0
@@ -24957,40 +24962,37 @@ def _render_property_vs_index_tool(email):
     )
     _rt = _rental["totals"]
 
-    # Commit U (21 Sep 2026, owner-reported): "extra CGT at sale" - how
-    # much MORE capital gains tax the Div 43 cost-base reduction causes,
-    # holding the sale year's own rent/interest/holding/depreciation
-    # (and hence the running income the capital gain leg lands on)
-    # fixed - isolates the cost-base effect specifically, separate from
-    # the "bigger refund" effect already shown on the depreciation/tax-
-    # refund lines above. Computed directly (tax_on_extra(), the same
-    # public primitive property_year_tax_legs() itself is built from)
-    # rather than re-running the whole engine a second time with
-    # building_cost=0 - the capital gain leg is stacked LAST (module
-    # docstring, TAX MODEL), so the running income it lands on is
-    # exactly what the sale year's own rental_position row (capital_
-    # gain=None, same rent/interest/holding/depreciation) already
-    # reaches by the end of its own stack.
+    # Bug fix (21 Sep 2026, owner-reported): the first cut of this
+    # caption ("extra CGT at sale") held the sale year's own running
+    # income FIXED (at its WITH-depreciation value) for both the "with"
+    # and "without" comparison - that's a different, smaller number
+    # ($23,500 for the $400k/Established/$170k/10y test) than the CGT
+    # delta a genuine no-depreciation scenario actually produces
+    # ($22,700), because the sale year's own depreciation claim also
+    # lowers the running income the capital gain leg lands on. Using
+    # the smaller, wrong figure was ALSO how Commit U's first cut ended
+    # up double-counting the $100,000 cost-base reduction as extra
+    # economic gain in the headline (property_capital_growth()'s own
+    # docstring covers that bug in full) - property_year_tax_legs() now
+    # keeps "gain" (economic, headline) and "taxable_gain" (CGT-only)
+    # strictly separate. Below re-runs property_breakdown() with
+    # building_cost/plant_value=0 to get the genuine no-depreciation
+    # gain_tax and diffs it against the actual (with-depreciation)
+    # gain_tax already on `_growth` - the two real numbers a with- vs
+    # without-depreciation scenario actually produce, so extra_refund -
+    # extra_cgt reproduces the headline's own net depreciation effect
+    # exactly (verified in this fix's own test suite).
     _growth = _p["growth"]
     _div43_claimed = _growth.get("div43_claimed") or 0.0
     _extra_cgt = 0.0
-    if _div43_claimed > 0 and _rental["years"]:
-        _sale_year_row = _rental["years"][-1]
-        _running_before_gain = (
-            other_income + _sale_year_row["rent"] - _sale_year_row["interest"]
-            - _sale_year_row["holding"] - _sale_year_row["depreciation"]
-        )
-        _taxable_gain_with_dep = _growth["taxable_gain"]
-        _taxable_gain_without_dep = _taxable_gain_with_dep - _div43_claimed
-        _gain_tax_with_dep = (
-            _eng.tax_on_extra(_running_before_gain, _taxable_gain_with_dep * 0.5)
-            if _taxable_gain_with_dep > 0 else 0.0
-        )
-        _gain_tax_without_dep = (
-            _eng.tax_on_extra(_running_before_gain, _taxable_gain_without_dep * 0.5)
-            if _taxable_gain_without_dep > 0 else 0.0
-        )
-        _extra_cgt = _gain_tax_with_dep - _gain_tax_without_dep
+    if _div43_claimed > 0:
+        _growth_no_dep = _eng.property_breakdown(
+            cash, loan, loan_rate_pct / 100.0, weekly_rent, int(vacancy_weeks),
+            holding_costs, property_growth_pct / 100.0, _years_i, buy_costs,
+            sell_costs_pct / 100.0, other_income, io_period, loan_term,
+            building_cost=0.0, plant_value=0.0, property_type=property_type,
+        )["growth"]
+        _extra_cgt = _growth["gain_tax"] - _growth_no_dep["gain_tax"]
 
     def _signed(v):
         # Backslash fix: plain _fmt_aud() - every call site below is

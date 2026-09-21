@@ -361,7 +361,8 @@ def tax_on_extra(other_income, extra):
     return income_tax(other_income + extra) - income_tax(other_income)
 
 
-def property_year_tax_legs(rent, interest, holding, capital_gain, other_income, depreciation=0.0):
+def property_year_tax_legs(rent, interest, holding, capital_gain, other_income, depreciation=0.0,
+                            taxable_capital_gain=None):
     """One year's after-tax property lines, sequentially stacked (B5):
     rent (income) -> interest (deduction) -> holding costs (deduction)
     -> depreciation (deduction, Commit U) -> capital gain (only in the
@@ -391,6 +392,24 @@ def property_year_tax_legs(rent, interest, holding, capital_gain, other_income, 
     total at its full (undiscounted) value, "$0 tax rather than a
     refund".
 
+    COST-BASE-REDUCED CGT vs ECONOMIC GAIN (Commit U bug fix, 21 Sep
+    2026, owner-reported): `capital_gain` is the ECONOMIC (pretax)
+    gain/loss - what actually landed in the owner's pocket, added to
+    after_tax_total after tax. `taxable_capital_gain` (defaults to
+    capital_gain itself, so an old caller that never had a Div 43 cost-
+    base reduction to worry about gets byte-identical output) is the
+    ATO's own taxable gain, computed off a cost base that may have been
+    reduced by depreciation already claimed (property_capital_growth()'s
+    own div43_claimed) - used ONLY to decide whether there's a taxable
+    gain at all and, if so, how much CGT is owed on it. The two can
+    disagree in sign at the margin (a small economic loss can still
+    carry a real taxable gain once the cost base has been reduced
+    enough by depreciation - a real ATO outcome, not a bug), in which
+    case capital_gain_after_tax = capital_gain - gain_tax still holds:
+    a real loss AND a real tax bill on top of it. Reducing the cost
+    base must never, on its own, look like extra sale proceeds - see
+    property_capital_growth()'s own docstring for the bug this fixes.
+
     DEPRECIATION (Commit U, 21 Sep 2026, owner-reported): a NON-CASH
     deduction - the building/fittings aren't being paid for again each
     year (see property_depreciation_for_year()'s own docstring). Unlike
@@ -409,10 +428,12 @@ def property_year_tax_legs(rent, interest, holding, capital_gain, other_income, 
     tax() convention this replaces), "holding_cost_after_tax" (same),
     "depreciation_tax" (signed tax_on_extra() delta for the
     depreciation leg alone - negative = bigger refund), "capital_gain_
-    after_tax" (0.0 when capital_gain is None), "tax" (total, all five
-    legs), "after_tax_total"} - after_tax_total always equals
-    rent_after_tax - interest_cost_after_tax - holding_cost_after_tax -
-    depreciation_tax + capital_gain_after_tax exactly."""
+    after_tax" (0.0 when capital_gain is None), "gain_tax" (the CGT
+    bill itself, computed on taxable_capital_gain - 0.0 when there's no
+    taxable gain), "tax" (total, all five legs), "after_tax_total"} -
+    after_tax_total always equals rent_after_tax - interest_cost_
+    after_tax - holding_cost_after_tax - depreciation_tax +
+    capital_gain_after_tax exactly."""
     other_income = other_income or 0.0
     rent = rent or 0.0
     interest = interest or 0.0
@@ -438,12 +459,17 @@ def property_year_tax_legs(rent, interest, holding, capital_gain, other_income, 
     capital_gain_after_tax = 0.0
     gain_tax = 0.0
     if capital_gain is not None:
-        if capital_gain > 0:
-            discounted = capital_gain * 0.5
+        # Bug fix (owner-reported): whether there's a taxable gain at
+        # all - and how much CGT is owed - is decided by the (possibly
+        # cost-base-reduced) taxable_capital_gain, never by the economic
+        # capital_gain itself. Defaults to capital_gain when not passed,
+        # so an old caller with no cost-base reduction to worry about
+        # gets byte-identical behavior to before this fix.
+        _taxable = capital_gain if taxable_capital_gain is None else taxable_capital_gain
+        if _taxable > 0:
+            discounted = _taxable * 0.5
             gain_tax = tax_on_extra(running, discounted)
-            capital_gain_after_tax = capital_gain - gain_tax
-        else:
-            capital_gain_after_tax = capital_gain
+        capital_gain_after_tax = capital_gain - gain_tax
 
     total_tax = rent_tax + interest_tax + holding_tax + depreciation_tax + gain_tax
     after_tax_total = (
@@ -456,6 +482,7 @@ def property_year_tax_legs(rent, interest, holding, capital_gain, other_income, 
         "holding_cost_after_tax": holding_cost_after_tax,
         "depreciation_tax": depreciation_tax,
         "capital_gain_after_tax": capital_gain_after_tax,
+        "gain_tax": gain_tax,
         "tax": total_tax,
         "after_tax_total": after_tax_total,
     }
@@ -635,40 +662,59 @@ def property_future_value(price, growth_rate, years):
 
 
 def property_capital_growth(price, growth_rate, years, buy_costs, sell_costs_pct, div43_claimed=0.0):
-    """{"future_price", "sell_costs_dollar", "cost_base", "div43_claimed",
-    "taxable_gain"} for the property sold at `years` - the ECONOMIC
-    (pretax) gain/loss only. Commit B (20 Sep 2026): renamed from
-    property_capital_growth_after_cgt and dropped the "after_tax" key it
-    used to compute directly - the tax treatment now depends on stacking
-    this gain against that year's own rental position and other_income
-    (B5's "must be computed together, not separately"), which this
-    function has no visibility into on its own. See property_year_tax_
-    legs() and _property_mark_to_market() below for where "after_tax" is
-    actually computed now. Nothing outside this module ever called the
-    old name (grepped before this commit), so no back-compat alias is
-    kept.
+    """{"future_price", "sell_costs_dollar", "cost_base", "taxable_cost_
+    base", "div43_claimed", "gain", "taxable_gain"} for the property
+    sold at `years`. Commit B (20 Sep 2026): renamed from property_
+    capital_growth_after_cgt and dropped the "after_tax" key it used to
+    compute directly - the tax treatment now depends on stacking this
+    gain against that year's own rental position and other_income (B5's
+    "must be computed together, not separately"), which this function
+    has no visibility into on its own. See property_year_tax_legs() and
+    _property_mark_to_market() below for where "after_tax" is actually
+    computed now. Nothing outside this module ever called the old name
+    (grepped before this commit), so no back-compat alias is kept.
 
     Commit U (21 Sep 2026, owner-reported): `div43_claimed` (cumulative
     Div 43 capital-works depreciation claimed by `years` - see
-    div43_cumulative_claim()) reduces the cost base dollar for dollar,
+    div43_cumulative_claim()) reduces the COST BASE USED FOR CGT ONLY,
     clawing it back through CGT at the discounted rate - the same
     "reduce the cost base" mechanic the real ATO rules use for capital
     works depreciation. Div 40 plant deliberately does NOT touch this
     cost base: this tool assumes the fittings sell at their own written-
     down value with no balancing adjustment (see div40_written_down_
     value()'s own docstring), so only div43_claimed ever appears here.
-    Defaults to 0.0 so every caller that doesn't pass it gets byte-
-    identical output to before this commit."""
+
+    Bug fix (21 Sep 2026, owner-reported): Commit U's first cut reduced
+    a single "cost_base" and used it for BOTH the economic (pretax)
+    gain AND the CGT calculation - so every dollar of Div 43 claimed
+    was counted twice: once as a bigger tax refund each year (correct)
+    and again as if the owner had sold the property for that much MORE
+    (wrong - a cost-base reduction is a tax-only bookkeeping entry, not
+    extra sale proceeds; a $400k building depreciated by $100k over 10
+    years does not mean the owner actually received $100k more for the
+    property at sale). `cost_base`/`gain` below are the UNREDUCED,
+    ACTUALLY-PAID figures (price + buy_costs, and proceeds minus that) -
+    what property_year_tax_legs() adds to the headline as the economic
+    capital_gain leg. `taxable_cost_base`/`taxable_gain` are the
+    Div-43-reduced figures, used ONLY to compute the CGT bill itself
+    (property_year_tax_legs()'s own taxable_capital_gain param) - never
+    added to the headline directly. Defaults to 0.0 so every caller
+    that doesn't pass div43_claimed gets byte-identical cost_base/gain/
+    taxable_gain (all equal, as before this fix) to before Commit U."""
     future_price = property_future_value(price, growth_rate, years)
     sell_costs_dollar = future_price * (sell_costs_pct or 0.0)
     proceeds = future_price - sell_costs_dollar
-    cost_base = price + (buy_costs or 0.0) - (div43_claimed or 0.0)
-    taxable_gain = proceeds - cost_base
+    cost_base = price + (buy_costs or 0.0)
+    taxable_cost_base = cost_base - (div43_claimed or 0.0)
+    gain = proceeds - cost_base
+    taxable_gain = proceeds - taxable_cost_base
     return {
         "future_price": future_price,
         "sell_costs_dollar": sell_costs_dollar,
         "cost_base": cost_base,
+        "taxable_cost_base": taxable_cost_base,
         "div43_claimed": div43_claimed,
+        "gain": gain,
         "taxable_gain": taxable_gain,
     }
 
@@ -719,9 +765,12 @@ def _property_mark_to_market(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
         occurs, sale year included.
       - The capital gain itself (property_capital_growth()) is computed
         with `div43_claimed` = cumulative Div 43 claimed through year t
-        (div43_cumulative_claim()) - clawing that depreciation back
-        through CGT at the discounted rate, per the ATO's own cost-base
-        reduction rule (property_capital_growth()'s own docstring)."""
+        (div43_cumulative_claim()), which property_capital_growth()
+        returns as two separate figures: "gain" (economic, unreduced -
+        what's actually added to the headline) and "taxable_gain"
+        (cost-base-reduced - passed to property_year_tax_legs() as
+        taxable_capital_gain, used ONLY to compute the CGT itself). See
+        both functions' own docstrings for the bug this split fixes."""
     price = property_price(cash, loan)
     schedule = property_loan_schedule(loan, loan_rate, io_period, term, years)
     working_weeks = max(WEEKS_PER_YEAR - (vacancy_weeks or 0), 0)
@@ -753,8 +802,8 @@ def _property_mark_to_market(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
             interest_t = schedule["interest_per_year"][t - 1]
             depreciation_t = property_depreciation_for_year(building_cost, plant_value, property_type, t)
         legs = property_year_tax_legs(
-            rent_t, interest_t, holding_per_year, growth["taxable_gain"], other_income,
-            depreciation=depreciation_t)
+            rent_t, interest_t, holding_per_year, growth["gain"], other_income,
+            depreciation=depreciation_t, taxable_capital_gain=growth["taxable_gain"])
         out.append({
             "year": t,
             "growth": growth,
@@ -764,6 +813,7 @@ def _property_mark_to_market(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
             "depreciation_total": cumulative_depreciation + depreciation_t,
             "depreciation_tax_total": cumulative_depreciation_tax + legs["depreciation_tax"],
             "capital_gain_after_tax": legs["capital_gain_after_tax"],
+            "gain_tax": legs["gain_tax"],
             "tax": legs["tax"],
             "cumulative_after_tax": cumulative_after_tax + legs["after_tax_total"],
         })
@@ -808,10 +858,14 @@ def property_breakdown(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
     Commit U (21 Sep 2026, owner-reported): building_cost/plant_value/
     property_type default to 0.0/0.0/"established" (zero depreciation
     either way - byte-identical to before this commit for any caller
-    that doesn't pass them). `growth` also carries "div43_claimed" now
-    (property_capital_growth()'s own new key), and this dict gains
-    "depreciation_total"/"depreciation_tax_total" - see _property_mark_
-    to_market()'s own docstring for what each means."""
+    that doesn't pass them). `growth` also carries "div43_claimed",
+    "gain" (economic) and "taxable_gain" (CGT-only) now (property_
+    capital_growth()'s own keys - see that function's docstring for the
+    "reduced cost base is not extra sale proceeds" bug fix), plus
+    "gain_tax" (the actual CGT bill, property_year_tax_legs()'s own new
+    key), and this dict gains "depreciation_total"/"depreciation_tax_
+    total" - see _property_mark_to_market()'s own docstring for what
+    each means."""
     series = _property_mark_to_market(
         cash, loan, loan_rate, weekly_rent, vacancy_weeks, holding_costs,
         growth_rate, years, buy_costs, sell_costs_pct, other_income, io_period, term,
@@ -820,6 +874,7 @@ def property_breakdown(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
     price = property_price(cash, loan)
     growth = dict(point["growth"])
     growth["after_tax"] = point["capital_gain_after_tax"]
+    growth["gain_tax"] = point["gain_tax"]
     return {
         "price": price,
         "growth": growth,
@@ -1143,22 +1198,25 @@ def property_cost_base_series(cash, loan, growth_rate, years, buy_costs,
                               sell_costs_pct, building_cost=0.0,
                               property_type=PROPERTY_TYPE_ESTABLISHED):
     """[{"year", "cost_base", "div43_claimed"} for year = 0..years] -
-    Commit U (21 Sep 2026, owner-reported): the property's own cost base
-    AS IF SOLD at each year, reduced by cumulative Div 43 capital-works
-    claimed up to that year (property_capital_growth()'s own docstring).
-    Pure and cheap - no tax stacking, no loan schedule - the year-by-
-    year table's "Cost base" column reads straight off this, alongside
-    property_rental_position() for the rent/interest/holding/
-    depreciation/tax columns (that function has no visibility into
-    `cash`/growth_rate/buy_costs/sell_costs_pct, so cost base can't be
-    computed there without a much bigger signature change - this is a
-    small, separate, single-purpose function instead)."""
+    Commit U (21 Sep 2026, owner-reported): the property's TAXABLE cost
+    base AS IF SOLD at each year, reduced by cumulative Div 43 capital-
+    works claimed up to that year (property_capital_growth()'s own
+    "taxable_cost_base" key, CGT purposes only - see that function's
+    docstring for why this must never be confused with the unreduced,
+    actually-paid cost base). Pure and cheap - no tax stacking, no loan
+    schedule - the year-by-year table's "Cost base" column reads
+    straight off this, alongside property_rental_position() for the
+    rent/interest/holding/depreciation/tax columns (that function has
+    no visibility into `cash`/growth_rate/buy_costs/sell_costs_pct, so
+    cost base can't be computed there without a much bigger signature
+    change - this is a small, separate, single-purpose function
+    instead)."""
     price = property_price(cash, loan)
     out = []
     for t in range(0, int(years or 0) + 1):
         div43_claimed = div43_cumulative_claim(building_cost, property_type, t)
         growth = property_capital_growth(price, growth_rate, t, buy_costs, sell_costs_pct, div43_claimed=div43_claimed)
-        out.append({"year": t, "cost_base": growth["cost_base"], "div43_claimed": div43_claimed})
+        out.append({"year": t, "cost_base": growth["taxable_cost_base"], "div43_claimed": div43_claimed})
     return out
 
 
