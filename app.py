@@ -28289,69 +28289,108 @@ def page_admin_dashboard():
                 st.markdown(f"- {_ft_label}")
 
     # --- OPERATING-INCOME AUDIT (Commit O, 21 Sep 2026; formula replaced
-    # by Commit Q, 21 Sep 2026, after this very audit tool caught Commit
-    # O's formula leaking one-off items into "EBIT" on real production
-    # tickers - see auto_compounder_engine.py's own "EBIT reconstruction"
-    # module comment for the full Commit O -> Commit Q history/rationale).
-    # Pure dry-run: reads through moat_engine.compute_moat_dry_run() and
-    # auto_compounder_engine.ebit_ttm()/ebit_year_rows()(...,
-    # force_switch=...), none of which ever read/write the 24h moat_cache
-    # or auto_cv_sections cache, or touch the EBIT_FROM_PRETAX module-
-    # level global - see compute_moat_dry_run()'s own comment for why a
-    # forced computation must never go anywhere near either cache on a
-    # live multi-user site. Nothing here changes until EBIT_FROM_PRETAX
-    # is actually set in Railway.
+    # by Commit Q, 21 Sep 2026; widened beyond ASX 200 + S&P 500 to every
+    # saved scan by Commit S, 21 Sep 2026, owner-reported - the EBIT
+    # correction is per-ticker and applies to every stock scored, not
+    # just the two flagship universes). Pure dry-run: reads through
+    # moat_engine.compute_moat_dry_run() and auto_compounder_engine.
+    # ebit_ttm()/ebit_year_rows()(..., force_switch=...), none of which
+    # ever read/write the 24h moat_cache or auto_cv_sections cache, or
+    # touch the EBIT_FROM_PRETAX module-level global - see compute_moat_
+    # dry_run()'s own comment for why a forced computation must never go
+    # anywhere near either cache on a live multi-user site. Nothing here
+    # changes until EBIT_FROM_PRETAX is actually set in Railway.
+    #
+    # Commit S also switched every bundle fetch here to fundamentals_
+    # data.peek_cached_bundle() (cache-only, ignores the 24h TTL, NEVER
+    # fetches live) instead of get_bundle() (which falls through to a
+    # live yfinance/EODHD call on a miss) - auditing ~2,000+ tickers is
+    # only fast enough to run from a button click because it's pure local
+    # cache reads; a ticker with nothing cached is skipped and listed,
+    # never fetched. Each ticker's bundle is fetched exactly ONCE and
+    # reused for both the old and new force_switch computations (see
+    # compute_moat_dry_run()'s own `bundle=` parameter).
     st.markdown("### Operating-income audit (dry-run)")
     st.caption(
         "Compares today's live figure (yfinance's own \"Operating "
         "Income\" row) against the Commit Q verify-then-correct EBIT for "
-        "every non-financials ticker in the most recently saved ASX 200 "
-        "and S&P 500 scans - a representative AU/US sample, not every "
-        "ticker on the site. Per ticker-year: P = Pretax Income - Net "
-        "Non Operating Interest Income Expense - Other Income Expense "
-        "(a test value only, never used as EBIT itself - that's what let "
-        "one-off items leak into Commit O's numbers). If P matches "
-        "yfinance's Operating Income within 3%, there's no bug. If it "
-        "instead matches Operating Income + Reconciled Depreciation "
-        "within 3%, the D&A double-count is confirmed for that year. A "
-        "ticker is only corrected if the newest year AND at least 2 "
-        "other years independently confirm the double-count - one "
-        "matching year could be coincidence, three is the filer's real "
-        "statement structure - and the correction then applies uniformly "
-        "to every year, never mixed (Commit P's principle). Computed "
-        "fresh in memory on each click; nothing here is cached, written, "
-        "or visible to any other visitor. Quality is deliberately not "
-        "shown - quality_engine.py never reads operating income at all, "
-        "so this fix cannot move it, on any ticker."
+        "every non-financials ticker in the selected universe(s), using "
+        "only already-cached fundamentals (never a live yfinance/EODHD "
+        "call - a ticker with nothing cached is skipped and listed "
+        "below). Per ticker-year: P = Pretax Income - Net Non Operating "
+        "Interest Income Expense - Other Income Expense (a test value "
+        "only, never used as EBIT itself - that's what let one-off "
+        "items leak into Commit O's numbers). If P matches yfinance's "
+        "Operating Income within 3%, there's no bug. If it instead "
+        "matches Operating Income + Reconciled Depreciation within 3%, "
+        "the D&A double-count is confirmed for that year. A ticker is "
+        "only corrected if the newest year AND at least 2 other years "
+        "independently confirm the double-count - one matching year "
+        "could be coincidence, three is the filer's real statement "
+        "structure - and the correction then applies uniformly to every "
+        "year, never mixed (Commit P's principle). A ticker scanned "
+        "under more than one universe is counted once in the totals "
+        "below (its own row lists every universe it appeared in) but "
+        "toward each universe's own per-universe count. Quality is "
+        "deliberately not shown - quality_engine.py never reads "
+        "operating income at all, so this fix cannot move it, on any "
+        "ticker."
     )
     with st.container(border=True):
+        _ebit_audit_candidate_universes = (
+            list(scanner_engine.AUSTRALIA_UNIVERSES) + list(scanner_engine.USA_UNIVERSES)
+            + [nightly_scan.IMPORTED_UNIVERSE]
+        )
+        _ebit_audit_saved_universes = sorted(
+            _u for _u in _ebit_audit_candidate_universes
+            if os.path.exists(scan_store._path(_u))
+        )
+        _ebit_audit_universe_choice = st.selectbox(
+            "Universe", ["All saved universes"] + _ebit_audit_saved_universes,
+            key="admin_dash_ebit_audit_universe",
+        )
         if st.button("Run audit", key="admin_dash_ebit_audit_btn"):
-            with st.spinner("Computing old vs new EBIT/ROIC/Moat for the ASX 200 and S&P 500 samples - this can take a minute..."):
-                _audit_rows = []
-                for _uni, _country in (("ASX 200", "AU"), ("S&P 500", "US")):
-                    try:
-                        _scan_payload = scan_store.load_scan_raw(_uni)
-                    except Exception:
-                        _scan_payload = None
-                    _tix = [r.get("Ticker") for r in (_scan_payload or {}).get("rows", []) if r.get("Ticker")]
-                    for _tk in _tix:
-                        _old = moat_engine.compute_moat_dry_run(_tk, force_switch=False)
-                        _new = moat_engine.compute_moat_dry_run(_tk, force_switch=True)
-                        if not _old or not _new or _old.get("is_financials"):
-                            continue
+            _target_universes = (
+                _ebit_audit_saved_universes if _ebit_audit_universe_choice == "All saved universes"
+                else [_ebit_audit_universe_choice]
+            )
+            # ticker -> {universe, ...} it was scanned under (dedup point -
+            # every ticker is computed exactly once below regardless of how
+            # many of these universes it appears in); universe -> [ticker,
+            # ...] as-scanned (NOT deduped - this is what the per-universe
+            # counts below tally against, so a multi-universe ticker counts
+            # toward each of its own universes, same as any per-universe
+            # metric would).
+            _ticker_universes, _universe_tickers = {}, {}
+            for _uni in _target_universes:
+                try:
+                    _scan_payload = scan_store.load_scan_raw(_uni)
+                except Exception:
+                    _scan_payload = None
+                _tix = [r.get("Ticker") for r in (_scan_payload or {}).get("rows", []) if r.get("Ticker")]
+                _universe_tickers[_uni] = _tix
+                for _tk in _tix:
+                    _ticker_universes.setdefault(_tk, set()).add(_uni)
+
+            _unique_tickers = sorted(_ticker_universes.keys())
+            _total = len(_unique_tickers)
+            _progress_bar = st.progress(0.0)
+            _progress_caption = st.empty()
+
+            _audit_rows = []
+            _skipped_no_cache = []
+            _CHUNK = 25
+            for _i, _tk in enumerate(_unique_tickers):
+                _bundle = fundamentals_data.peek_cached_bundle(_tk)
+                if _bundle is None:
+                    _skipped_no_cache.append(_tk)
+                else:
+                    _old = moat_engine.compute_moat_dry_run(_tk, force_switch=False, bundle=_bundle)
+                    _new = moat_engine.compute_moat_dry_run(_tk, force_switch=True, bundle=_bundle)
+                    if _old and _new and not _old.get("is_financials"):
                         try:
-                            _bundle = fundamentals_data.get_bundle(_tk)
                             _ebit_old, _ = auto_compounder_engine.ebit_ttm(_bundle, False, force_switch=False)
                             _ebit_new, _ = auto_compounder_engine.ebit_ttm(_bundle, False, force_switch=True)
-                            # Commit Q (21 Sep 2026, owner-reported): the
-                            # ticker-level verify-then-correct gate - see
-                            # auto_compounder_engine.ebit_year_rows()'s own
-                            # comment. force_switch=True here surfaces
-                            # exactly what would apply if the switch were
-                            # on, regardless of its real live state, same
-                            # forced-computation safety as compute_moat_
-                            # dry_run() above - never touches the
-                            # module-level global.
                             _q_rows = auto_compounder_engine.ebit_year_rows(_bundle, False, force_switch=True)
                             _ticker_corrected = bool(_q_rows) and next(iter(_q_rows.values()))["ticker_corrected"]
                             _unverified_years = [y for y, r in _q_rows.items() if r.get("year_status") == "unverified"]
@@ -28359,18 +28398,15 @@ def page_admin_dashboard():
                             _ebit_old = _ebit_new = None
                             _ticker_corrected = False
                             _unverified_years = []
-                        if _ticker_corrected:
-                            _status = "corrected"
-                        elif _unverified_years:
-                            _status = "unverified"
-                        else:
-                            _status = "unchanged"
+                        _status = "corrected" if _ticker_corrected else ("unverified" if _unverified_years else "unchanged")
                         _moat_old, _moat_new = _old.get("score"), _new.get("score")
                         _moat_delta = (
                             (_moat_new - _moat_old) if (_moat_old is not None and _moat_new is not None) else None
                         )
                         _audit_rows.append({
-                            "ticker": _tk, "country": _country,
+                            "ticker": _tk,
+                            "country": "AU" if _tk.upper().endswith(".AX") else "US",
+                            "universe": ", ".join(sorted(_ticker_universes[_tk])),
                             "ebit_old": _ebit_old, "ebit_new": _ebit_new,
                             "roic_old": _old.get("ttm_return"), "roic_new": _new.get("ttm_return"),
                             "moat_old": _moat_old, "moat_new": _moat_new,
@@ -28378,18 +28414,36 @@ def page_admin_dashboard():
                             "status": _status,
                             "unverified_years": ", ".join(_unverified_years) if _unverified_years else "",
                         })
-                st.session_state["admin_dash_ebit_audit_rows"] = _audit_rows
+                    # else: financials mode, or fewer than 2 usable
+                    # statement years - silently excluded, same as before
+                    # Commit S (not "skipped - no cache", which is only
+                    # for a ticker with nothing cached at all).
+                if (_i + 1) % _CHUNK == 0 or (_i + 1) == _total:
+                    _progress_bar.progress((_i + 1) / _total if _total else 1.0)
+                    _progress_caption.caption(f"Processed {_i + 1}/{_total} ticker(s) - {_tk}")
+
+            _progress_bar.empty()
+            _progress_caption.empty()
+
+            st.session_state["admin_dash_ebit_audit_rows"] = _audit_rows
+            st.session_state["admin_dash_ebit_audit_skipped"] = _skipped_no_cache
+            st.session_state["admin_dash_ebit_audit_universe_tickers"] = _universe_tickers
 
         _audit_rows = st.session_state.get("admin_dash_ebit_audit_rows")
+        _skipped_no_cache = st.session_state.get("admin_dash_ebit_audit_skipped") or []
+        _universe_tickers = st.session_state.get("admin_dash_ebit_audit_universe_tickers") or {}
+
+        if _skipped_no_cache:
+            with st.expander(f"{len(_skipped_no_cache)} ticker(s) skipped - no cached fundamentals on file"):
+                st.dataframe(pd.DataFrame({"ticker": _skipped_no_cache}), hide_index=True, width='stretch')
+
         if _audit_rows:
             _audit_df = pd.DataFrame(_audit_rows)
             _au_n = int((_audit_df["country"] == "AU").sum())
             _us_n = int((_audit_df["country"] == "US").sum())
-            st.markdown(f"**{len(_audit_df)} non-financials tickers audited** — AU {_au_n} · US {_us_n}")
+            st.markdown(f"**{len(_audit_df)} non-financials ticker(s) audited** (deduped across universes) — AU {_au_n} · US {_us_n}")
 
-            _status_counts = (
-                _audit_df.groupby(["status", "country"]).size().unstack(fill_value=0)
-            )
+            _status_counts = _audit_df.groupby(["status", "country"]).size().unstack(fill_value=0)
             for _c in ("AU", "US"):
                 if _c not in _status_counts.columns:
                     _status_counts[_c] = 0
@@ -28398,14 +28452,35 @@ def page_admin_dashboard():
                 _row_au = int(_status_counts.loc[_st_name, "AU"]) if _st_name in _status_counts.index else 0
                 _row_us = int(_status_counts.loc[_st_name, "US"]) if _st_name in _status_counts.index else 0
                 _status_lines.append(f"- **{_st_name}**: {_row_au + _row_us} (AU {_row_au} · US {_row_us})")
-            st.markdown("\n".join(_status_lines))
+            st.markdown("**Overall:**\n" + "\n".join(_status_lines))
+
+            if _universe_tickers:
+                _status_by_ticker = dict(zip(_audit_df["ticker"], _audit_df["status"]))
+                _per_universe_rows = []
+                for _uni, _tix in _universe_tickers.items():
+                    _counts = {"corrected": 0, "unverified": 0, "unchanged": 0, "skipped_or_financials": 0}
+                    for _tk in _tix:
+                        _counts[_status_by_ticker.get(_tk, "skipped_or_financials")] += 1
+                    _per_universe_rows.append({"universe": _uni, "tickers": len(_tix), **_counts})
+                st.markdown("**Per-universe counts:**")
+                st.dataframe(
+                    pd.DataFrame(_per_universe_rows).sort_values("universe"),
+                    hide_index=True, width='stretch',
+                )
 
             _unverified_df = _audit_df[_audit_df["unverified_years"] != ""]
             if not _unverified_df.empty:
                 st.markdown(f"**{len(_unverified_df)} ticker(s) with at least one unverified year** (kept at yfinance's Operating Income, not corrected):")
                 st.dataframe(
-                    _unverified_df[["ticker", "country", "status", "unverified_years"]],
+                    _unverified_df[["ticker", "country", "universe", "status", "unverified_years"]],
                     hide_index=True, width='stretch',
+                )
+                st.download_button(
+                    "Download unverified as CSV",
+                    _unverified_df.to_csv(index=False).encode("utf-8"),
+                    file_name="stocksdeepdive_ebit_audit_unverified.csv",
+                    mime="text/csv",
+                    key="admin_dash_download_ebit_audit_unverified",
                 )
             else:
                 st.caption("No ticker had an unverified year.")
@@ -28416,10 +28491,17 @@ def page_admin_dashboard():
                 _movers = _movable.sort_values("abs_delta", ascending=False).head(30).drop(columns="abs_delta")
                 st.markdown("**30 biggest Moat-score movers (old vs new):**")
                 st.dataframe(_movers, hide_index=True, width='stretch')
+                st.download_button(
+                    "Download movers as CSV",
+                    _movers.to_csv(index=False).encode("utf-8"),
+                    file_name="stocksdeepdive_ebit_audit_movers.csv",
+                    mime="text/csv",
+                    key="admin_dash_download_ebit_audit_movers",
+                )
             else:
                 st.caption("No ticker had both an old and a new Moat score to compare.")
         elif "admin_dash_ebit_audit_rows" in st.session_state:
-            st.caption("No non-financials tickers found in the saved ASX 200 / S&P 500 scans.")
+            st.caption("No non-financials tickers with cached fundamentals were found for the selected universe(s).")
 
     # --- SYSTEM --------------------------------------------------------
     st.markdown("---")

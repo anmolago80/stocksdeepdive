@@ -730,7 +730,7 @@ def compute_moat(ticker, force_refresh=False):
     return result
 
 
-def compute_moat_dry_run(ticker, force_switch):
+def compute_moat_dry_run(ticker, force_switch, bundle=None):
     """Commit O (21 Sep 2026, owner-verified EBIT-from-pretax fix): the
     Admin Dashboard's "Operating-income audit" reads through here, NEVER
     through compute_moat() - this function never reads or writes the 24h
@@ -743,23 +743,31 @@ def compute_moat_dry_run(ticker, force_switch):
     kind of half-done, cache-poisoning bug CLAUDE.md's "verify before
     pushing" discipline exists to catch before it ships, not after.
 
-    Bundle fetch still goes through fundamentals_data.get_bundle(), which
-    has its own independent 24h cache (unaffected by this call, and not
-    itself sensitive to force_switch - the raw statement rows it caches
-    are the same regardless of which EBIT formula reads them
-    afterwards).
+    `bundle`: None (default) fetches via fundamentals_data.get_bundle(),
+    which has its own independent 24h cache (unaffected by this call,
+    and not itself sensitive to force_switch) but WILL fall through to a
+    live yfinance/EODHD fetch on a cache miss/stale entry - fine for an
+    occasional single-ticker read. Commit S (21 Sep 2026, owner-
+    reported): the audit's "All saved universes" mode calls this twice
+    per ticker (once per force_switch value) across up to ~2,000+
+    tickers and must NEVER make a live fetch - that caller fetches once
+    via fundamentals_data.peek_cached_bundle() (cache-only, skips a
+    ticker with nothing cached rather than fetching) and passes the same
+    bundle into both calls here, bypassing this function's own get_
+    bundle() call entirely.
 
     Returns the same shape _compute_moat_from_bundle() always returns,
     plus "ticker" and "is_financials", or None if the bundle can't be
-    fetched at all (caller should skip this ticker, not treat None as a
-    zero/na Moat)."""
+    fetched/isn't given at all (caller should skip this ticker, not
+    treat None as a zero/na Moat)."""
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return None
-    try:
-        bundle = fundamentals_data.get_bundle(ticker)
-    except Exception:
-        return None
+    if bundle is None:
+        try:
+            bundle = fundamentals_data.get_bundle(ticker)
+        except Exception:
+            return None
     if not bundle:
         return None
     info = bundle.get("info") or {}
