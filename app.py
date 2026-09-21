@@ -28288,29 +28288,41 @@ def page_admin_dashboard():
                     _ft_label += f" ({_ft['universe']})"
                 st.markdown(f"- {_ft_label}")
 
-    # --- OPERATING-INCOME AUDIT (Commit O, 21 Sep 2026, owner-verified) -
+    # --- OPERATING-INCOME AUDIT (Commit O, 21 Sep 2026; formula replaced
+    # by Commit Q, 21 Sep 2026, after this very audit tool caught Commit
+    # O's formula leaking one-off items into "EBIT" on real production
+    # tickers - see auto_compounder_engine.py's own "EBIT reconstruction"
+    # module comment for the full Commit O -> Commit Q history/rationale).
     # Pure dry-run: reads through moat_engine.compute_moat_dry_run() and
-    # auto_compounder_engine.ebit_ttm(..., force_switch=...), neither of
-    # which ever reads/writes the 24h moat_cache or auto_cv_sections
-    # cache, or touches the EBIT_FROM_PRETAX module-level global - see
-    # compute_moat_dry_run()'s own comment for why a forced computation
-    # must never go anywhere near either cache on a live multi-user site.
-    # Nothing here changes until EBIT_FROM_PRETAX is actually set in
-    # Railway.
+    # auto_compounder_engine.ebit_ttm()/ebit_year_rows()(...,
+    # force_switch=...), none of which ever read/write the 24h moat_cache
+    # or auto_cv_sections cache, or touch the EBIT_FROM_PRETAX module-
+    # level global - see compute_moat_dry_run()'s own comment for why a
+    # forced computation must never go anywhere near either cache on a
+    # live multi-user site. Nothing here changes until EBIT_FROM_PRETAX
+    # is actually set in Railway.
     st.markdown("### Operating-income audit (dry-run)")
     st.caption(
         "Compares today's live figure (yfinance's own \"Operating "
-        "Income\" row) against the Pretax-Income-derived EBIT (Commit O) "
-        "for every non-financials ticker in the most recently saved ASX "
-        "200 and S&P 500 scans - a representative AU/US sample, not "
-        "every ticker on the site. Computed fresh in memory on each "
-        "click; nothing here is cached, written, or visible to any "
-        "other visitor. Quality is deliberately not shown - "
-        "quality_engine.py never reads operating income at all, so this "
-        "fix cannot move it, on any ticker. A ticker with a year missing "
-        "Pretax Income never mixes that year's raw yfinance figure into "
-        "an otherwise-derived series (Commit P) - such years are dropped "
-        "instead, listed separately below."
+        "Income\" row) against the Commit Q verify-then-correct EBIT for "
+        "every non-financials ticker in the most recently saved ASX 200 "
+        "and S&P 500 scans - a representative AU/US sample, not every "
+        "ticker on the site. Per ticker-year: P = Pretax Income - Net "
+        "Non Operating Interest Income Expense - Other Income Expense "
+        "(a test value only, never used as EBIT itself - that's what let "
+        "one-off items leak into Commit O's numbers). If P matches "
+        "yfinance's Operating Income within 3%, there's no bug. If it "
+        "instead matches Operating Income + Reconciled Depreciation "
+        "within 3%, the D&A double-count is confirmed for that year. A "
+        "ticker is only corrected if the newest year AND at least 2 "
+        "other years independently confirm the double-count - one "
+        "matching year could be coincidence, three is the filer's real "
+        "statement structure - and the correction then applies uniformly "
+        "to every year, never mixed (Commit P's principle). Computed "
+        "fresh in memory on each click; nothing here is cached, written, "
+        "or visible to any other visitor. Quality is deliberately not "
+        "shown - quality_engine.py never reads operating income at all, "
+        "so this fix cannot move it, on any ticker."
     )
     with st.container(border=True):
         if st.button("Run audit", key="admin_dash_ebit_audit_btn"):
@@ -28331,24 +28343,28 @@ def page_admin_dashboard():
                             _bundle = fundamentals_data.get_bundle(_tk)
                             _ebit_old, _ = auto_compounder_engine.ebit_ttm(_bundle, False, force_switch=False)
                             _ebit_new, _ = auto_compounder_engine.ebit_ttm(_bundle, False, force_switch=True)
-                            # Commit P (21 Sep 2026, owner-reported): a year
-                            # this ticker's own series can't derive (no
-                            # Pretax Income on file for that year) is
-                            # dropped, not filled with that year's raw
-                            # yfinance figure, whenever at least one OTHER
-                            # year in the series DOES derive - see auto_
-                            # compounder_engine.ebit_year_rows()'s own
-                            # "never mix sources" comment. force_switch=True
-                            # here surfaces exactly that set of years
-                            # (r["ebit"] is None) regardless of the live
-                            # switch's real state, same forced-computation
-                            # safety as compute_moat_dry_run() above - never
-                            # touches the module-level global.
-                            _dropped_rows = auto_compounder_engine.ebit_year_rows(_bundle, False, force_switch=True)
-                            _dropped_years = [y for y, r in _dropped_rows.items() if r.get("ebit") is None]
+                            # Commit Q (21 Sep 2026, owner-reported): the
+                            # ticker-level verify-then-correct gate - see
+                            # auto_compounder_engine.ebit_year_rows()'s own
+                            # comment. force_switch=True here surfaces
+                            # exactly what would apply if the switch were
+                            # on, regardless of its real live state, same
+                            # forced-computation safety as compute_moat_
+                            # dry_run() above - never touches the
+                            # module-level global.
+                            _q_rows = auto_compounder_engine.ebit_year_rows(_bundle, False, force_switch=True)
+                            _ticker_corrected = bool(_q_rows) and next(iter(_q_rows.values()))["ticker_corrected"]
+                            _unverified_years = [y for y, r in _q_rows.items() if r.get("year_status") == "unverified"]
                         except Exception:
                             _ebit_old = _ebit_new = None
-                            _dropped_years = []
+                            _ticker_corrected = False
+                            _unverified_years = []
+                        if _ticker_corrected:
+                            _status = "corrected"
+                        elif _unverified_years:
+                            _status = "unverified"
+                        else:
+                            _status = "unchanged"
                         _moat_old, _moat_new = _old.get("score"), _new.get("score")
                         _moat_delta = (
                             (_moat_new - _moat_old) if (_moat_old is not None and _moat_new is not None) else None
@@ -28359,7 +28375,8 @@ def page_admin_dashboard():
                             "roic_old": _old.get("ttm_return"), "roic_new": _new.get("ttm_return"),
                             "moat_old": _moat_old, "moat_new": _moat_new,
                             "moat_delta": _moat_delta,
-                            "dropped_years": ", ".join(_dropped_years) if _dropped_years else "",
+                            "status": _status,
+                            "unverified_years": ", ".join(_unverified_years) if _unverified_years else "",
                         })
                 st.session_state["admin_dash_ebit_audit_rows"] = _audit_rows
 
@@ -28369,21 +28386,30 @@ def page_admin_dashboard():
             _au_n = int((_audit_df["country"] == "AU").sum())
             _us_n = int((_audit_df["country"] == "US").sum())
             st.markdown(f"**{len(_audit_df)} non-financials tickers audited** — AU {_au_n} · US {_us_n}")
-            _dropped_df = _audit_df[_audit_df["dropped_years"] != ""]
-            if not _dropped_df.empty:
-                _dropped_au_n = int((_dropped_df["country"] == "AU").sum())
-                _dropped_us_n = int((_dropped_df["country"] == "US").sum())
-                st.markdown(
-                    f"**{len(_dropped_df)} ticker(s) with at least one dropped year** "
-                    f"(never mixed with raw yfinance data - Commit P) — "
-                    f"AU {_dropped_au_n} · US {_dropped_us_n}:"
-                )
+
+            _status_counts = (
+                _audit_df.groupby(["status", "country"]).size().unstack(fill_value=0)
+            )
+            for _c in ("AU", "US"):
+                if _c not in _status_counts.columns:
+                    _status_counts[_c] = 0
+            _status_lines = []
+            for _st_name in ("corrected", "unverified", "unchanged"):
+                _row_au = int(_status_counts.loc[_st_name, "AU"]) if _st_name in _status_counts.index else 0
+                _row_us = int(_status_counts.loc[_st_name, "US"]) if _st_name in _status_counts.index else 0
+                _status_lines.append(f"- **{_st_name}**: {_row_au + _row_us} (AU {_row_au} · US {_row_us})")
+            st.markdown("\n".join(_status_lines))
+
+            _unverified_df = _audit_df[_audit_df["unverified_years"] != ""]
+            if not _unverified_df.empty:
+                st.markdown(f"**{len(_unverified_df)} ticker(s) with at least one unverified year** (kept at yfinance's Operating Income, not corrected):")
                 st.dataframe(
-                    _dropped_df[["ticker", "country", "dropped_years"]],
+                    _unverified_df[["ticker", "country", "status", "unverified_years"]],
                     hide_index=True, width='stretch',
                 )
             else:
-                st.caption("No ticker had a dropped year - every derivable ticker's Pretax Income was on file for every statement year.")
+                st.caption("No ticker had an unverified year.")
+
             _movable = _audit_df.dropna(subset=["moat_delta"]).copy()
             if not _movable.empty:
                 _movable["abs_delta"] = _movable["moat_delta"].abs()

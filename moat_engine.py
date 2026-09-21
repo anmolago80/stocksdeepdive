@@ -803,14 +803,16 @@ def compute_moat_diagnostics(ticker):
     (newest-first list of per-year raw inputs - standard mode: year/
     revenue/gross_profit_or_fallback/gross_profit_is_fallback_operating_
     income/operating_income (the value that actually fed NOPAT/ROIC/
-    pricing-power - see Commit O)/pretax_income/net_interest/
-    other_income/reconciled_depreciation (diagnostic only, not part of
-    the formula)/ebit_derived/operating_income_yf/gap_pct (the EBIT
-    reconstruction's own reconciliation, added Commit O - see
-    auto_compounder_engine.ebit_year_rows())/nopat/equity/total_debt/
-    long_term_debt/cash/invested_capital/roic; financials mode: year/
-    equity/net_income/roe), "ttm_return"/"ttm_return_metric" (ROIC or
-    ROE), "ttm_cost_of_capital"/"ttm_cost_of_capital_flagged", "spread"}."""
+    pricing-power)/pretax_income/net_interest/other_income/
+    total_unusual_items (diagnostic only, not used in the formula as of
+    Commit Q)/reconciled_depreciation/operating_income_yf/p_test/
+    oi_plus_da/year_status ("matches_oi"|"matches_oi_plus_da"|
+    "unverified"|"no_data")/ticker_corrected (the Commit Q verify-then-
+    correct reconciliation - see auto_compounder_engine.ebit_year_rows())/
+    nopat/equity/total_debt/long_term_debt/cash/invested_capital/roic;
+    financials mode: year/equity/net_income/roe), "ttm_return"/
+    "ttm_return_metric" (ROIC or ROE), "ttm_cost_of_capital"/
+    "ttm_cost_of_capital_flagged", "spread"}."""
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return None
@@ -878,9 +880,10 @@ def compute_moat_diagnostics(ticker):
         # series and _pillar_pricing_power both now read through
         # _ace.ebit_series(), which is this same switch-aware "ebit"
         # field) - the new pretax_income/net_interest/other_income/
-        # reconciled_depreciation/ebit_derived/operating_income_yf/
-        # gap_pct columns below show the full reconciliation behind it
-        # (Commit O), never replacing this field, only explaining it.
+        # reconciled_depreciation/p_test/oi_plus_da/year_status/
+        # ticker_corrected columns below show the full Commit Q
+        # verify-then-correct reconciliation behind it, never replacing
+        # this field, only explaining it.
         op_income_s = {y: r["ebit"] for y, r in ebit_rows.items()}
         gp_s = dict(_ace._series(income, "Gross Profit")) if not used_fallback else op_income_s
         debt_s = dict(_ace._series(balance, "total_debt"))
@@ -897,10 +900,13 @@ def compute_moat_diagnostics(ticker):
                 "pretax_income": ebit_row.get("pretax_income"),
                 "net_interest": ebit_row.get("net_interest"),
                 "other_income": ebit_row.get("other_income"),
+                "total_unusual_items": ebit_row.get("total_unusual_items"),
                 "reconciled_depreciation": ebit_row.get("reconciled_depreciation"),
-                "ebit_derived": ebit_row.get("ebit_derived"),
                 "operating_income_yf": ebit_row.get("operating_income_yf"),
-                "gap_pct": ebit_row.get("gap_pct"),
+                "p_test": ebit_row.get("p_test"),
+                "oi_plus_da": ebit_row.get("oi_plus_da"),
+                "year_status": ebit_row.get("year_status"),
+                "ticker_corrected": ebit_row.get("ticker_corrected"),
                 "nopat": extra.get("nopat"),
                 "equity": equity_s.get(y),
                 "total_debt": debt_s.get(y),
