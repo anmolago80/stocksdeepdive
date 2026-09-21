@@ -1105,7 +1105,14 @@ EN = {
     "tools.hub.super_blurb": "Balance at retirement, with and without extra salary sacrifice — caps checked.",
     "tools.hub.super_teaser": 'e.g. +$200/mo sacrifice → <b>+$96k</b> at 60',
     "tools.hub.property_vs_index_blurb": "Buy an investment property, or put the same cash in the S&P 500? Both after tax, plus the break-even rent.",
-    "tools.hub.property_vs_index_teaser": 'e.g. $300k cash + $700k loan → <b>+$328k</b> property vs <b>+$300k</b> index over 10y',
+    # Commit C follow-up (21 Sep 2026): {property}/{index} placeholders,
+    # not a hardcoded pair - Commit B (real AU bracket tax) changed what
+    # the tool's own defaults actually produce, and this card kept
+    # advertising the OLD flat-tax figures ($328k/$300k) until this
+    # commit. Filled in from property_vs_index_engine.run() on defaults
+    # (app.py's _pvi_hub_teaser_amounts()) - the card can never drift
+    # out of sync with the engine again.
+    "tools.hub.property_vs_index_teaser": 'e.g. $300k cash + $700k loan → <b>+{property}</b> property vs <b>+{index}</b> index over 10y',
     "tools.hub.signin_cta": "Sign in free to use them",
 
     "tools.budget.title": "Budget Planner",
@@ -4055,7 +4062,7 @@ ES = {
     # ES DRAFT, not professionally reviewed (same convention as the rest
     # of this file's Spanish copy - see e.g. the News-tab block below).
     "tools.hub.property_vs_index_blurb": "¿Comprar una propiedad de inversión, o poner el mismo efectivo en el S&P 500? Ambos después de impuestos, más el alquiler de equilibrio.",
-    "tools.hub.property_vs_index_teaser": 'ej. $300k de efectivo + $700k de préstamo → <b>+$328k</b> propiedad vs <b>+$300k</b> índice en 10 años',
+    "tools.hub.property_vs_index_teaser": 'ej. $300k de efectivo + $700k de préstamo → <b>+{property}</b> propiedad vs <b>+{index}</b> índice en 10 años',
     "tools.hub.signin_cta": "Inicia sesión gratis para usarlas",
 
     "tools.budget.title": "Planificador de presupuesto",

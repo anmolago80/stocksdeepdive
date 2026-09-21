@@ -22866,10 +22866,16 @@ _TOOLS_HUB_STYLE = """
 </style>
 """
 
-# One blurb + one static "e.g." teaser key per registry id - the teaser is
-# a labelled, static example (never computed from a real user's inputs),
-# exactly the mock's own "STATIC example... not computed - zero new
-# engines" rule for these cards.
+# One blurb + one "e.g." teaser key per registry id - every teaser
+# except property_vs_index is a labelled, static example (never computed
+# from a real user's inputs), the mock's own "STATIC example... not
+# computed - zero new engines" rule for these cards. property_vs_index
+# is the one exception (Commit C follow-up, 21 Sep 2026, owner-
+# requested): its teaser used to be a hardcoded "+$328k property vs
+# +$300k index" pair that silently went stale the moment Commit B
+# changed what the tool's own defaults actually produce - see
+# _pvi_hub_teaser_amounts() below for why this one card's teaser is
+# computed instead of hardcoded.
 _TOOLS_HUB_CARD_COPY = {
     "budget_planner": ("budget_planner_blurb", "budget_planner_teaser"),
     "utilities": ("utilities_blurb", "utilities_teaser"),
@@ -22877,6 +22883,30 @@ _TOOLS_HUB_CARD_COPY = {
     "super": ("super_blurb", "super_teaser"),
     "property_vs_index": ("property_vs_index_blurb", "property_vs_index_teaser"),
 }
+
+
+def _pvi_hub_teaser_amounts():
+    """Commit C follow-up (21 Sep 2026): the Money Tools hub card's own
+    "e.g. ... → +$328k property vs +$300k index" teaser was a hardcoded
+    snapshot of what property_vs_index_engine.run() on its OWN defaults
+    used to produce, under the old flat marginal-rate tax model - Commit
+    B (real AU bracket tax) changed those defaults' real output to
+    $308,419 / $287,349 without this card's own copy ever being told, so
+    the live site kept advertising numbers the tool no longer produces.
+    Computed here from property_vs_index_engine.run() with every
+    argument left at its own default (property_vs_index_engine.DEFAULT_*
+    - exactly what a first-time visitor to the tool itself would see,
+    same $300k cash / $700k loan / 10y the teaser's own leading clause
+    already states) - rounded to the nearest $1k, matching the "+$Xk"
+    shape the teaser copy has always used. Returns ("$308k", "$287k")-
+    shaped strings, ready for i18n.t()'s {property}/{index}
+    placeholders - never a bare number, so it can never drift out of
+    sync with the engine again."""
+    _r = property_vs_index_engine.run()
+    return (
+        f"${_r['property']['headline'] / 1000:.0f}k",
+        f"${_r['index']['headline'] / 1000:.0f}k",
+    )
 
 # Grid fix (18 Sep 2026): matches emoji-range characters for stripping a
 # leftover mid-string icon from a hub-card title in _tools_hub_cards_html
@@ -22913,7 +22943,14 @@ def _tools_hub_cards_html(lang, linked):
         if not _copy_keys:
             continue  # a registry entry with no hub copy written yet is skipped, never a blank card
         _blurb = i18n.t(f"tools.hub.{_copy_keys[0]}", lang)
-        _teaser = i18n.t(f"tools.hub.{_copy_keys[1]}", lang)
+        if _t["id"] == "property_vs_index":
+            _pvi_property_amt, _pvi_index_amt = _pvi_hub_teaser_amounts()
+            _teaser = i18n.t(
+                f"tools.hub.{_copy_keys[1]}", lang,
+                property=_pvi_property_amt, index=_pvi_index_amt,
+            )
+        else:
+            _teaser = i18n.t(f"tools.hub.{_copy_keys[1]}", lang)
         _title = i18n.t(_t["title_key"], lang).strip()
         if _title.startswith(_t["icon"]):
             _title = _title[len(_t["icon"]):].strip()
