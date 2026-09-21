@@ -3193,6 +3193,15 @@ EN = {
     # standing rule for engine-output words (see snapshot_render.
     # _valuation_note()'s own docstring) - snapshot_render.py passes it
     # through unchanged regardless of which language string wraps it.
+    # Commit J (21 Sep 2026, owner-reported): the "not currently trading"
+    # banner for a ticker flagged "stale" by nightly_scan.analyze_ticker_
+    # lite()'s ghost-price guard - see snapshot_render._not_trading_
+    # banner()'s own docstring. {date} is the last day the price
+    # GENUINELY changed (score_history.last_real_price_date()), not the
+    # most recent scan date - a ghost-priced ticker is scanned (and
+    # shows the same frozen price) every night.
+    "snapshot.not_trading_banner": "Not currently trading — last price {date}. This ticker may be delisted, halted or merged; valuation figures are suppressed until it prices again.",
+    "snapshot.not_trading_banner_no_date": "Not currently trading. This ticker may be delisted, halted or merged; valuation figures are suppressed until it prices again.",
     "snapshot.faq.heading": "Common questions",
     "snapshot.faq.disclaimer": "This is a described calculation from public data, not a recommendation.",
     "snapshot.faq.undervalued_q": "Is {ticker} undervalued?",
@@ -5897,6 +5906,8 @@ ES = {
     # {valuation} stays whatever engine-output word snapshot_render.py
     # passes in, untranslated either way - see the EN block's own
     # comment for why.
+    "snapshot.not_trading_banner": "No cotiza actualmente — último precio {date}. Esta acción podría estar deslistada, suspendida o fusionada; las cifras de valoración se suprimen hasta que vuelva a cotizar.",
+    "snapshot.not_trading_banner_no_date": "No cotiza actualmente. Esta acción podría estar deslistada, suspendida o fusionada; las cifras de valoración se suprimen hasta que vuelva a cotizar.",
     "snapshot.faq.heading": "Preguntas frecuentes",
     "snapshot.faq.disclaimer": "Este es un cálculo descrito a partir de datos públicos, no una recomendación.",
     "snapshot.faq.undervalued_q": "¿Está {ticker} infravalorada?",

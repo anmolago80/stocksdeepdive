@@ -273,6 +273,21 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         # row from this; the caller (run_universe_scan/run_imported_scan)
         # already treats a None return as "ticker skipped".
         return None
+    # Commit J (21 Sep 2026, owner-reported): a delisted/halted/merged
+    # ticker still clears every check above cleanly - yfinance keeps
+    # returning rows, just the SAME row forever (QUB.AX/Qube, taken
+    # over: an exact 5.11 close every day from 2026-08-20 to
+    # 2026-09-17; LSF.AX/L1 Long Short Fund, merged into L1G.AX:
+    # unchanged across its last several scans too - both found live in
+    # a 2026-09-20 DB backup, still ranking - LSF at #12 in the ASX 200
+    # scanner table with mos_pct 95.2). Computed here, once, off the
+    # window this function already fetched - no second yfinance call -
+    # via scanner_engine.window_shows_no_trading()'s evidence rule
+    # (>=2 distinct closes, or any real volume, over the last 5 rows;
+    # fewer than 5 rows is inconclusive, never guessed at). Every
+    # ranking/valuation surface downstream is expected to skip a
+    # flagged row - see this row's own "Trading Status" field below.
+    stale_price = scanner_engine.window_shows_no_trading(window_3mo)
     current_price = float(close_series.iloc[-1])
     high_price = float(close_series.max())
     fear = ((high_price - current_price) / high_price) * 100 if high_price else 0.0
@@ -451,6 +466,12 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
             if dividend_ttm and current_price else None
         ),
         "Next Ex-Div Date": next_ex_date,
+        # Commit J: "stale" when window_shows_no_trading() found no
+        # evidence of real trading in the last 5 rows above - None
+        # (not "trading"/"active" - see this dict's own convention of
+        # None for "not applicable") otherwise. See snapshot_store.
+        # _PUBLIC_FIELD_MAP for how this reaches every public surface.
+        "Trading Status": "stale" if stale_price else None,
     }
 
 

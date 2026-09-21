@@ -1039,6 +1039,46 @@ def _fetch_asx_listed_companies_raw():
     return out[["Ticker", "Company", "Sector"]]
 
 
+def window_shows_no_trading(hist, min_rows=5):
+    """True only when a price/volume DataFrame `hist` (a "Close"/
+    "Volume" window, most recent row LAST - exactly what yf.Ticker(...).
+    history() returns) shows NO positive evidence of real trading over
+    its own last `min_rows` rows: fewer than two DISTINCT closes in
+    that window, AND zero/missing volume throughout it. Fewer than
+    `min_rows` rows at all is INCONCLUSIVE, not evidence of anything -
+    returns False (don't guess from too little data).
+
+    Commit I/J (21 Sep 2026): the GHOST-PRICE shape this specifically
+    catches - yfinance keeps serving the LAST real print for some
+    delisted/halted/merged names forever, as if the market were still
+    quoting them, found live in a 2026-09-20 DB backup: QUB.AX (Qube,
+    taken over) shows an exact 5.11 close on every single day from
+    2026-08-20 to 2026-09-17; LSF.AX (L1 Long Short Fund, merged into
+    L1G.AX) is unchanged across its last several scans too. A plain
+    "did history() return rows at all" check can't tell either apart
+    from genuine trading - a non-empty, flat, silent window passes that
+    one cleanly. Requiring actual evidence (a moving close, or any real
+    volume) is what catches it - a real quote moves, or trades, or
+    both; a ghost print does neither.
+
+    Extracted (Commit J) from what was _looks_delisted()'s own inline
+    evidence check (Commit I) so nightly_scan.py's per-ticker scan loop
+    - which already has a live-fetched price/volume window in hand at
+    the point it needs this - can call the SAME evidence rule without
+    triggering a second, redundant yfinance fetch per ticker (this
+    module's own _looks_delisted() below still does its own fetch,
+    since its caller - the ASX cross_source check - has no window of
+    its own already in hand)."""
+    if hist is None or len(hist) < min_rows:
+        return False
+    window = hist.tail(min_rows)
+    closes = window["Close"].dropna() if "Close" in window.columns else None
+    volumes = window["Volume"].dropna() if "Volume" in window.columns else None
+    has_distinct_closes = closes is not None and closes.nunique() >= 2
+    has_volume = volumes is not None and bool((volumes > 0).any())
+    return not (has_distinct_closes or has_volume)
+
+
 def _looks_delisted(ticker, trading_days=5):
     """True only when there is POSITIVE evidence `ticker` has genuinely
     stopped trading - False in every other case, INCLUDING a yfinance
@@ -1052,46 +1092,28 @@ def _looks_delisted(ticker, trading_days=5):
     versus the source genuinely missing a ticker that's still trading
     today (a real gap - the failure this whole check exists to catch).
 
-    Two failure shapes this specifically defends against, both found
-    against the SAME live evidence (a 20 Sep 2026 DB backup) while this
-    function was being written, not hypothetically:
-
-    - GHOST PRICES: yfinance keeps serving the LAST real print for some
-      delisted ASX names forever, as if the market were still quoting
-      it - QUB.AX's backup shows an exact 5.11 close on every single
-      day from 2026-08-20 to 2026-09-17, a dead giveaway once you see
-      it (a real quote moves) but indistinguishable from genuine
-      trading to a check that only asks "did history() return rows at
-      all". A period="5d" call against a ghost-priced ticker returns 5
-      rows and would have this function say "still trading" - exactly
-      backwards. Fixed by requiring actual EVIDENCE of trading, not
-      just a non-empty response: at least two DISTINCT closes in the
-      window, or non-zero volume on at least one of the trading days.
-      Neither is present in a flat, zero-volume replay of the same
-      close.
-    - LOOKUP FAILURE DIRECTION: a yfinance call that raises or times
-      out tells you NOTHING about whether the ticker is still trading -
-      it is not evidence of delisting. Returning True here on an
-      exception (as an earlier draft of this function did) would let a
-      yfinance OUTAGE masquerade as proof every missing ticker had been
-      delisted, silently waving a genuinely stale source through
-      cross_source with a clean bill of health it never earned. This
-      function therefore fails CLOSED (returns False, "not confirmed
-      delisted") on any lookup problem of its own - the caller then
-      treats an unconfirmed ticker as still trading, which is the
-      direction that BLAMES the source rather than excusing it, exactly
-      the fail-safe direction a health check needs."""
+    GHOST PRICES / LOOKUP FAILURE DIRECTION: see window_shows_no_
+    trading() above for the ghost-price evidence rule this delegates
+    to (fetched fresh here via a dedicated history() call, since this
+    function's own caller has no window already in hand - contrast
+    nightly_scan.py's own guard, which calls that function directly on
+    a window it already fetched). A yfinance call that raises or times
+    out tells you NOTHING about whether the ticker is still trading -
+    it is not evidence of delisting. Returning True here on an
+    exception (as an earlier draft of this function did) would let a
+    yfinance OUTAGE masquerade as proof every missing ticker had been
+    delisted, silently waving a genuinely stale source through
+    cross_source with a clean bill of health it never earned. This
+    function therefore fails CLOSED (returns False, "not confirmed
+    delisted") on any lookup problem of its own - the caller then
+    treats an unconfirmed ticker as still trading, which is the
+    direction that BLAMES the source rather than excusing it, exactly
+    the fail-safe direction a health check needs."""
     try:
         hist = yf.Ticker(ticker).history(period=f"{trading_days}d")
     except Exception:
         return False
-    if hist is None or hist.empty:
-        return True
-    closes = hist["Close"].dropna() if "Close" in hist.columns else None
-    volumes = hist["Volume"].dropna() if "Volume" in hist.columns else None
-    has_distinct_closes = closes is not None and closes.nunique() >= 2
-    has_volume = volumes is not None and bool((volumes > 0).any())
-    return not (has_distinct_closes or has_volume)
+    return window_shows_no_trading(hist, min_rows=1) if hist is not None and not hist.empty else True
 
 
 def _check_asx_listed_companies(df, df200):

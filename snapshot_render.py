@@ -17,6 +17,7 @@ appears on the public Scanner/Deep Dive pages.
 
 import html
 import re
+from datetime import datetime
 
 import blog_render
 import i18n
@@ -73,6 +74,36 @@ def _valuation_note(pub, lang="en"):
     if val and val != "N/A" and mos is not None:
         return f"{val} (MOS {mos:+.1f}%)"
     return val or "-"
+
+
+def _not_trading_banner(ticker, lang="en"):
+    """Commit J (21 Sep 2026, owner-reported): the "not currently
+    trading" banner for a ticker nightly_scan.analyze_ticker_lite()'s
+    ghost-price guard flagged "stale" - a delisted/halted/merged
+    company yfinance keeps quoting the last real print for, forever
+    (QUB.AX: an exact 5.11 close on every day from 2026-08-20 to
+    2026-09-17; LSF.AX: unchanged across its last several scans too -
+    both found live via a 2026-09-20 DB backup, LSF still ranking #12
+    in the ASX 200 scanner table with mos_pct 95.2 before this fix).
+
+    The last REAL trading date comes from score_history.
+    last_real_price_date(ticker) - the day the series' own price last
+    genuinely changed, not the most recent day this ticker happened to
+    be scanned (which, for a ghost-priced ticker, is every night,
+    always repeating the same frozen number) - see that function's own
+    docstring. None if there's no history to derive it from yet (a
+    brand-new flag with no accumulated series) - the no-date fallback
+    copy is used instead, never a fabricated date."""
+    day = score_history.last_real_price_date(ticker)
+    date_label = None
+    if day:
+        try:
+            date_label = datetime.strptime(day, "%Y-%m-%d").strftime("%d %b %Y")
+        except ValueError:
+            date_label = None
+    if date_label:
+        return i18n.t("snapshot.not_trading_banner", lang, date=date_label)
+    return i18n.t("snapshot.not_trading_banner_no_date", lang)
 
 
 def _stat_cells(pub, moat, lang="en"):
@@ -260,11 +291,15 @@ def _faq_items(ticker, data, pub, company_name, cite_date, lang="en"):
 
     # (1) "Is <TICKER> undervalued?" - needs price, intrinsic value, MOS%
     # and a real (non-"N/A") valuation label all at once, since the
-    # answer sentence references all four together.
+    # answer sentence references all four together. Commit J: never asked
+    # at all for a ticker flagged "stale" - a frozen ghost price can no
+    # longer honestly support an undervalued/expensive claim, same
+    # reasoning as render_snapshot()'s own lede override.
     price, intrinsic, mos, valn = (
         pub.get("price"), pub.get("intrinsic_value"), pub.get("mos_pct"), pub.get("valuation_label"),
     )
-    if price is not None and intrinsic is not None and mos is not None and valn and valn != "N/A":
+    if (price is not None and intrinsic is not None and mos is not None and valn and valn != "N/A"
+            and pub.get("trading_status") != "stale"):
         items.append({
             "question": i18n.t("snapshot.faq.undervalued_q", lang, ticker=ticker),
             # valn is an engine-output status word (e.g. "Undervalued") -
@@ -371,6 +406,7 @@ def _grid_css():
 .sdd-snap-table th{color:#8aa0b8;font-weight:600;font-size:13px}
 .sdd-snap-table a{color:#2dd4bf}
 .sdd-hist-line{color:#8aa0b8;font-size:14.5px;margin:-8px 0 18px}
+.lede.sdd-snap-stale{color:#fbbf24;font-weight:600;font-size:16.5px}
 .sdd-snap-pct{color:#8aa0b8;font-size:13.5px;margin:-20px 0 24px}
 .sdd-faq{margin:30px 0 10px}
 .sdd-faq h2{font-size:17px;margin:0 0 12px}
@@ -419,7 +455,12 @@ def _snapshot_copy_text(ticker, pub, moat, generated, universe, lede, base_url,
         if pub.get("model_growth_pct") is not None:
             _igl += f" (model assumes {pub['model_growth_pct']:+.1f}%)"
         lines.append(_igl)
-    if pub.get("valuation_label"):
+    # Commit J: suppress the valuation label for a ticker flagged
+    # "stale" - same reasoning as render_snapshot()'s own lede
+    # override right above this function's call site; `lede` itself
+    # already carries the "not currently trading" banner text in that
+    # case, appended below like any other lede.
+    if pub.get("valuation_label") and pub.get("trading_status") != "stale":
         lines.append(f"Valuation: {pub['valuation_label']}")
     if pub.get("value_score") is not None:
         lines.append(f"Value Score: {_fmt(pub.get('value_score'))}")
@@ -492,17 +533,38 @@ def render_snapshot(snap, base_url, lang="en", hreflang_alternates=None):
         for label, value, hint in cells
     )
 
-    valuation = _valuation_note(pub, lang)
-    if lang == "es":
-        lede = (f"{e(valuation)} &middot; Calidad {e(_fmt(pub.get('quality')))}/100"
-                if pub.get("valuation_label") else
-                "Puntajes calculados para esta acción, del mismo motor "
-                "detrás de Deep Dive y el Buscador del sitio.")
+    # Commit J (21 Sep 2026, owner-reported): a ticker flagged "stale"
+    # (see _not_trading_banner()'s own docstring) gets that banner as
+    # its lede INSTEAD OF the normal valuation-based one - the whole
+    # point being to suppress the "Undervalued"/"Expensive" claim a
+    # frozen ghost price can no longer honestly support. Everything
+    # else on the page (stat grid, Deep Dive link, API/MCP CTA) stays
+    # exactly as reachable as for any other ticker - only the lede and
+    # the FAQ's "Is TICKER undervalued?" question (see _faq_items())
+    # change.
+    is_stale = pub.get("trading_status") == "stale"
+    if is_stale:
+        valuation = None
+        # Plain escaped text, not wrapped in its own tag here - the CSS
+        # class that highlights it as a warning is applied to the <p>
+        # itself where `lede` is emitted into `body` below, so this
+        # string stays usable as-is for _snapshot_copy_text()'s plain-
+        # text payload too (which only strips a couple of known HTML
+        # ENTITIES out of `lede`, never arbitrary tags - see that
+        # function's own docstring).
+        lede = e(_not_trading_banner(ticker, lang))
     else:
-        lede = (f"{e(valuation)} &middot; Quality {e(_fmt(pub.get('quality')))}/100"
-                if pub.get("valuation_label") else
-                "Computed scores for this stock, from the same engine behind "
-                "the site's Deep Dive and Scanner pages.")
+        valuation = _valuation_note(pub, lang)
+        if lang == "es":
+            lede = (f"{e(valuation)} &middot; Calidad {e(_fmt(pub.get('quality')))}/100"
+                    if pub.get("valuation_label") else
+                    "Puntajes calculados para esta acción, del mismo motor "
+                    "detrás de Deep Dive y el Buscador del sitio.")
+        else:
+            lede = (f"{e(valuation)} &middot; Quality {e(_fmt(pub.get('quality')))}/100"
+                    if pub.get("valuation_label") else
+                    "Computed scores for this stock, from the same engine behind "
+                    "the site's Deep Dive and Scanner pages.")
 
     hist_line = _score_history_line(ticker, pub.get("value_score"), lang)
     hist_html = f'<p class="sdd-hist-line">{hist_line}</p>' if hist_line else ""
@@ -606,7 +668,7 @@ def render_snapshot(snap, base_url, lang="en", hreflang_alternates=None):
 <main><div class="wrap">
   <div class="kicker">{kicker_word} &middot; {e(universe)} &middot; generated {e(generated)} UTC</div>
   <h1>{e(display_name)}</h1>
-  <p class="lede">{lede}</p>
+  <p class="lede{' sdd-snap-stale' if is_stale else ''}">{lede}</p>
   {hist_html}
   {blog_render._copy_citation_html(citation_text)}
   {copy_html}

@@ -7341,6 +7341,12 @@ def _home_top5_by_country():
             continue
         if r.get("universe") not in _eligible_universes:
             continue
+        # Commit J (21 Sep 2026, owner-reported): a ticker flagged "stale"
+        # (nightly_scan.analyze_ticker_lite()'s ghost-price guard) never
+        # belongs in "Tonight's top 5" - see snapshot_store._PUBLIC_FIELD_
+        # MAP for where "trading_status" reaches this public row shape.
+        if r.get("trading_status") == "stale":
+            continue
         try:
             _gen = datetime.fromisoformat(r.get("generated_at") or "")
         except ValueError:
@@ -7388,6 +7394,10 @@ def _home_featured_top10_by_country():
         if "ETF" in (r.get("company_name") or "").upper():
             continue
         if r.get("universe") not in _eligible_universes:
+            continue
+        # Commit J: same stale-ticker exclusion as _home_top5_by_country
+        # above - see that function's own comment.
+        if r.get("trading_status") == "stale":
             continue
         try:
             _gen = datetime.fromisoformat(r.get("generated_at") or "")
@@ -11895,6 +11905,21 @@ def _render_overnight_scan_table(universe_label, overnight, show_market_pulse=Fa
     every existing universe gets the same convenience for free."""
     _on_lang = st.session_state.get("lang", "en")
     _score_label = "Value Score" if _factual() else "Long Score"
+    # Commit J (21 Sep 2026, owner-reported): a ticker flagged "stale"
+    # (nightly_scan.analyze_ticker_lite()'s ghost-price guard - a delisted/
+    # halted/merged company yfinance keeps quoting the last real print
+    # for, forever) is excluded from every ranking/valuation surface this
+    # whole function renders - the table itself, and (via the SAME
+    # `overnight` dict) the market-pulse tiles/score histogram/Value Map/
+    # standout pick _render_scanner_market_pulse() below reads - one
+    # filter here covers all of them, since none of those functions fetch
+    # their own copy of `rows`. A shallow copy, not an in-place mutation -
+    # this function's own two callers keep whatever `overnight` object
+    # they passed in untouched. Its Deep Dive page stays reachable
+    # regardless - see snapshot_render.py's own "not currently trading"
+    # banner for where that's handled.
+    overnight = dict(overnight)
+    overnight["rows"] = [r for r in (overnight.get("rows") or []) if r.get("Trading Status") != "stale"]
     _on_n = len(overnight["rows"])
 
     _title_col, _info_col = st.columns([12, 1], vertical_alignment="top")
@@ -28134,6 +28159,45 @@ def page_admin_dashboard():
                     for _cname, _cres in _checks.items():
                         _icon = "✅" if _cres.get("ok") else "❌"
                         st.write(f"{_icon} **{_cname}**: {_cres.get('detail')}")
+
+    # --- STALE-PRICED TICKERS (Commit J, 21 Sep 2026, owner-reported) --
+    # A per-TICKER condition, not a data-SOURCE health check - the
+    # source_health_store pass/fail pattern right above doesn't fit an
+    # open-ended, variable-length ticker list, so this uses the same
+    # plain bullet-list pattern the "Top pages"/"Top src" panels further
+    # down this page already use for their own open-ended lists.
+    st.markdown("### Stale-priced tickers")
+    st.caption(
+        "Tickers nightly_scan.py's ghost-price guard has flagged: no "
+        "evidence of real trading (neither a moving close nor any "
+        "volume) over their last 5 scanned trading days - yfinance kept "
+        "returning the SAME frozen price every night (QUB.AX/Qube, "
+        "taken over: an exact 5.11 close every day from 2026-08-20 to "
+        "2026-09-17; LSF.AX/L1 Long Short Fund, merged into L1G.AX: "
+        "unchanged across its last several scans too - both found live "
+        "in a 2026-09-20 DB backup, LSF still ranking #12 in the ASX "
+        "200 scanner table with mos_pct 95.2 before this fix). Excluded "
+        "from every ranking/valuation surface site-wide while flagged - "
+        "see nightly_scan.analyze_ticker_lite()'s own comment for the "
+        "full list of what reads this flag. Clears itself the next "
+        "night real trading evidence returns (a halt lifting, say) - "
+        "nothing here needs a manual reset."
+    )
+    with st.container(border=True):
+        try:
+            _flagged = snapshot_store.flagged_stale_tickers()
+        except Exception:
+            _flagged = []
+        if not _flagged:
+            st.caption("None currently flagged.")
+        else:
+            for _ft in _flagged:
+                _ft_label = f"{_ft['ticker']}"
+                if _ft.get("company_name"):
+                    _ft_label += f" — {_ft['company_name']}"
+                if _ft.get("universe"):
+                    _ft_label += f" ({_ft['universe']})"
+                st.markdown(f"- {_ft_label}")
 
     # --- SYSTEM --------------------------------------------------------
     st.markdown("---")

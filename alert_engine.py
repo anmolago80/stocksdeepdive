@@ -209,6 +209,15 @@ def check_universe_rows(rows, prev_map, log=print):
         ticker = (row.get("Ticker") or "").strip().upper()
         if not ticker:
             continue
+        # Commit J (21 Sep 2026, owner-reported): a ticker flagged "stale"
+        # (nightly_scan.analyze_ticker_lite()'s ghost-price guard) never
+        # evaluates any alert - a delisted/halted/merged company's frozen
+        # price/MOS% sitting past a plain >=/<= threshold would otherwise
+        # fire EVERY night it's scanned forever (crossing-detection only
+        # guards crosses_above/crosses_below below, not a flat threshold
+        # comparison against a value that's stopped moving).
+        if row.get("Trading Status") == "stale":
+            continue
         alerts = alert_store.active_alerts_for_ticker(ticker)
         if not alerts:
             continue
