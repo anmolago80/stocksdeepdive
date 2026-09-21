@@ -1039,31 +1039,59 @@ def _fetch_asx_listed_companies_raw():
     return out[["Ticker", "Company", "Sector"]]
 
 
-def _priced_recently(ticker, trading_days=5):
-    """True if yfinance has at least one priced bar for `ticker` within
-    its own last `trading_days` trading days - yf.Ticker.history(period=
-    "{n}d") already returns trading days only (it skips weekends/
-    holidays on its own, no calendar-day math needed here). False on any
-    lookup failure or an empty result.
-
-    Commit I (21 Sep 2026): used by _check_asx_listed_companies()'s
+def _looks_delisted(ticker, trading_days=5):
+    """True only when there is POSITIVE evidence `ticker` has genuinely
+    stopped trading - False in every other case, INCLUDING a yfinance
+    lookup that itself fails. Used by _check_asx_listed_companies()'s
     cross_source check to tell apart the two different reasons a live
     ASX 200 ticker can be missing from the listed-companies source:
     Wikipedia's own ASX 200 page still listing a name the market has
     actually stopped trading (a takeover delisting Wikipedia hasn't
-    caught up with yet - three of this commit's own 8 missing tickers,
+    caught up with yet - three of Commit I's own 8 missing tickers,
     IFL/QUB/NSR, are suspected takeover delistings, not source gaps),
     versus the source genuinely missing a ticker that's still trading
     today (a real gap - the failure this whole check exists to catch).
-    Fails CLOSED (returns False, "not confirmed still trading") on any
-    lookup problem of its own - a broken yfinance call must never
-    accidentally read as "Wikipedia-stale" and let a genuinely stale
-    source off the hook."""
+
+    Two failure shapes this specifically defends against, both found
+    against the SAME live evidence (a 20 Sep 2026 DB backup) while this
+    function was being written, not hypothetically:
+
+    - GHOST PRICES: yfinance keeps serving the LAST real print for some
+      delisted ASX names forever, as if the market were still quoting
+      it - QUB.AX's backup shows an exact 5.11 close on every single
+      day from 2026-08-20 to 2026-09-17, a dead giveaway once you see
+      it (a real quote moves) but indistinguishable from genuine
+      trading to a check that only asks "did history() return rows at
+      all". A period="5d" call against a ghost-priced ticker returns 5
+      rows and would have this function say "still trading" - exactly
+      backwards. Fixed by requiring actual EVIDENCE of trading, not
+      just a non-empty response: at least two DISTINCT closes in the
+      window, or non-zero volume on at least one of the trading days.
+      Neither is present in a flat, zero-volume replay of the same
+      close.
+    - LOOKUP FAILURE DIRECTION: a yfinance call that raises or times
+      out tells you NOTHING about whether the ticker is still trading -
+      it is not evidence of delisting. Returning True here on an
+      exception (as an earlier draft of this function did) would let a
+      yfinance OUTAGE masquerade as proof every missing ticker had been
+      delisted, silently waving a genuinely stale source through
+      cross_source with a clean bill of health it never earned. This
+      function therefore fails CLOSED (returns False, "not confirmed
+      delisted") on any lookup problem of its own - the caller then
+      treats an unconfirmed ticker as still trading, which is the
+      direction that BLAMES the source rather than excusing it, exactly
+      the fail-safe direction a health check needs."""
     try:
         hist = yf.Ticker(ticker).history(period=f"{trading_days}d")
     except Exception:
         return False
-    return hist is not None and not hist.empty
+    if hist is None or hist.empty:
+        return True
+    closes = hist["Close"].dropna() if "Close" in hist.columns else None
+    volumes = hist["Volume"].dropna() if "Volume" in hist.columns else None
+    has_distinct_closes = closes is not None and closes.nunique() >= 2
+    has_volume = volumes is not None and bool((volumes > 0).any())
+    return not (has_distinct_closes or has_volume)
 
 
 def _check_asx_listed_companies(df, df200):
@@ -1081,15 +1109,18 @@ def _check_asx_listed_companies(df, df200):
       version of this check blamed the wrong side whenever Wikipedia's
       own ASX 200 page was the stale one - e.g. still listing a takeover
       delisting - which would otherwise mark a perfectly current source
-      as stale forever, for a gap that was never its own). Fails only on
-      a missing ticker _priced_recently() confirms is still trading -
-      the genuine "this source has a real gap" shape.
+      as stale forever, for a gap that was never its own). Fails on
+      every missing ticker _looks_delisted() does NOT confirm as
+      delisted - i.e. "still trading" is the default whenever that
+      confirmation isn't there (a real gap, or an unconfirmed lookup
+      of its own - see _looks_delisted()'s own docstring for why a
+      yfinance failure must count as "still trading", not "delisted").
     - wikipedia_delistings: informational only, never gates (same
       "never gates accept/reject" convention _rebuild_market_cap_
-      ranking()'s own "age" check already uses) - names the missing-
-      but-not-recently-traded tickers cross_source excluded, so they're
-      still visible on the Admin Dashboard's Source health panel rather
-      than silently dropped from view.
+      ranking()'s own "age" check already uses) - names the missing
+      tickers _looks_delisted() DID confirm, so they're still visible
+      on the Admin Dashboard's Source health panel rather than silently
+      dropped from view.
     - drift: row count within _ASX_CSV_DRIFT_BAND of last-known-good.
     - canary: ANY of five tickers known to have been listed after the
       old (asx300list.com-era) sources' frozen date is present
@@ -1107,8 +1138,13 @@ def _check_asx_listed_companies(df, df200):
 
     if df200 is not None and not df200.empty:
         missing_200 = sorted(set(df200["Ticker"]) - set(df["Ticker"]))
-        still_trading = [t for t in missing_200 if _priced_recently(t)]
-        wikipedia_stale = [t for t in missing_200 if t not in still_trading]
+        # "still trading" is the DEFAULT for a missing ticker - only one
+        # confirmed delisted by _looks_delisted() moves to the other
+        # bucket. This is deliberate, not an oversight: it's what makes
+        # an unconfirmed lookup (a yfinance error) land on the side that
+        # blames the source, per that function's own docstring.
+        wikipedia_stale = [t for t in missing_200 if _looks_delisted(t)]
+        still_trading = [t for t in missing_200 if t not in wikipedia_stale]
         checks["cross_source"] = {
             "ok": not still_trading,
             "detail": (
