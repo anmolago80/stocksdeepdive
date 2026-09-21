@@ -38,6 +38,7 @@ import pandas as pd
 import yfinance as yf
 
 import admin_metrics_store
+import alert_engine
 import auto_compounder_engine
 import fundamentals_data
 import moat_engine
@@ -49,6 +50,7 @@ import scanner_engine
 import screen_import_store
 import sector_cache_store
 import snapshot_store
+import source_health_store
 import indicators_engine
 import social_engine
 import trade_filter_engine
@@ -528,8 +530,54 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     if universe == "All Ordinaries":
         scanner_engine.verify_au_index_containment(log=log)
     pool_df, source = scanner_engine.get_universe_pool(country, universe)
+    # Commit L (21 Sep 2026, owner-reported): sector-universe filter
+    # health, tracked here - nightly-only, never on a web request, since
+    # get_universe_pool() itself has no business writing health state on
+    # every page view (same reasoning every other health-tracked fetcher
+    # in scanner_engine.py already follows) - so a silently-empty match
+    # (the exact failure that let XRO.AX, a software company, get saved
+    # under "ASX A-REITs") shows up on the Admin Dashboard's Source
+    # health panel, not just a log line. get_universe_pool()'s own
+    # sector-universe branches (scanner_engine.py) never fall back to an
+    # unfiltered pool any more - see that function's own comment - so
+    # pool_df here is either a genuinely sector-filtered frame or None;
+    # there is no third, silently-wrong case left to catch.
+    _is_sector_universe = (
+        universe in scanner_engine._ASX_SECTOR_UNIVERSE_MAP
+        or universe in scanner_engine._US_SECTOR_UNIVERSE_MAP
+    )
+    if _is_sector_universe:
+        _sector_health_source = f"Sector universe: {universe}"
+        if pool_df is not None and not pool_df.empty:
+            source_health_store.record_success(
+                _sector_health_source, [],
+                {"filter_match": {"ok": True, "detail": f"{len(pool_df)} row(s) matched this sector"}},
+            )
+        else:
+            _reason = source or "sector filter failed"
+            _prior = source_health_store.get(_sector_health_source)
+            _was_already_stale = bool(_prior and _prior.get("stale"))
+            source_health_store.record_failure(
+                _sector_health_source, {"filter_match": {"ok": False, "detail": _reason}}, _reason,
+            )
+            if not _was_already_stale:
+                try:
+                    alert_engine.send_source_health_alert(
+                        _sector_health_source, {"filter_match": {"ok": False, "detail": _reason}}, _reason,
+                    )
+                except Exception as e:
+                    log(f"[nightly_scan] source-health alert send failed for {_sector_health_source}: {e}")
     if pool_df is None or pool_df.empty:
-        log(f"[nightly_scan] {universe}: no tickers resolved ({source})")
+        if _is_sector_universe:
+            # `source` is already shaped "sector filter matched N row(s)
+            # - skipped, serving last known-good scan" (or "<parent
+            # index> itself unavailable - ...") by get_universe_pool()
+            # itself - read that directly rather than re-deriving the
+            # count, so this log line can never disagree with the reason
+            # actually recorded above.
+            log(f"[nightly_scan] {universe}: {source}")
+        else:
+            log(f"[nightly_scan] {universe}: no tickers resolved ({source})")
         return None
     tickers = sorted(pool_df["Ticker"].dropna().unique().tolist())
     # Sanitised to real strings only (or absent -> .get() gives None) -
@@ -1333,6 +1381,87 @@ def cleanup_fix9_nan_data(log=print):
             f.write(f"fix9 cleanup ran {datetime.now(timezone.utc).isoformat()}\n")
     except OSError as e:
         log(f"[nightly_scan] fix9 cleanup: could not write marker file: {e}")
+
+
+def _commit_l_cleanup_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".commitL_sector_pollution_cleanup.done")
+
+
+def cleanup_sector_universe_pollution(log=print):
+    """One-off, idempotent, marker-file-guarded boot-time cleanup for
+    Commit L (21 Sep 2026, owner-reported) - same pattern as cleanup_
+    fix9_nan_data() above, for a different root cause: discards any
+    saved scan for one of the 12 sector universes (scanner_engine.
+    _ASX_SECTOR_UNIVERSE_MAP/_US_SECTOR_UNIVERSE_MAP) whose OWN rows
+    don't actually belong to that sector - the exact shape of pollution
+    get_universe_pool()'s OLD empty-sector-filter fallback could
+    produce (the whole unfiltered ~300/500-company parent pool, saved
+    under a sector universe's own name) - this is how XRO.AX, a
+    software company, ended up saved under "ASX A-REITs". See get_
+    universe_pool()'s own sector-universe branches (scanner_engine.py)
+    for the fix that stops this happening again; this function is the
+    one-off cleanup for whatever ALREADY got saved before that fix
+    existed.
+
+    A scan counts as polluted when FEWER THAN HALF its own saved rows'
+    "Sector" field is actually in that universe's own expected sector
+    set (scanner_engine._ASX_SECTOR_UNIVERSE_MAP[universe]/_US_SECTOR_
+    UNIVERSE_MAP[universe]) - a real, correctly-filtered sector scan
+    has ~100% of its rows match by construction; the old bug's own
+    failure mode (an entire unfiltered parent pool saved as-is) would
+    only have the genuinely-in-sector minority matching by chance,
+    nowhere near half - not a threshold chosen to be clever, just wide
+    enough either side of "obviously polluted" vs "obviously fine" that
+    it can't misfire on ordinary data.
+
+    Invalidates (deletes) a polluted scan outright via scan_store.
+    invalidate() - the scheduler's own "missing file = needs rescan"
+    logic (scan_store.load_scan() returning None) picks it up for a
+    fresh rescan on its next tick, the same mechanism cleanup_fix9_nan_
+    data() above already relies on - so a visitor sees "no data yet"
+    instead of the wrong data (Xero filed as a REIT) until a real,
+    correctly-filtered scan lands, rather than silently continuing to
+    serve pollution until its own 72h staleness cutoff happens to
+    expire on its own.
+
+    Guarded by a marker file, same convention as cleanup_fix9_nan_data()
+    above - this only ever needs to run once against whatever's already
+    on disk; every scan saved AFTER this deploy already goes through
+    the fixed get_universe_pool(), so a second run would correctly find
+    nothing left to clean but would still pay for 12 scan_store reads
+    on every boot forever without the marker.
+
+    Called unconditionally from server.py's lifespan(), wrapped in
+    `with suppress(Exception)` there - never allowed to stop the site
+    serving, same rule as cleanup_fix9_nan_data()."""
+    marker = _commit_l_cleanup_marker_path()
+    if os.path.exists(marker):
+        return
+    checked = []
+    invalidated = []
+    sector_universes = dict(scanner_engine._ASX_SECTOR_UNIVERSE_MAP)
+    sector_universes.update(scanner_engine._US_SECTOR_UNIVERSE_MAP)
+    for universe, expected_sectors in sector_universes.items():
+        checked.append(universe)
+        try:
+            payload = scan_store.load_scan_raw(universe)
+            if not payload or not payload.get("rows"):
+                continue
+            rows = payload["rows"]
+            matching = sum(1 for r in rows if r.get("Sector") in expected_sectors)
+            if matching < len(rows) / 2:
+                if scan_store.invalidate(universe):
+                    invalidated.append(f"{universe} ({matching}/{len(rows)} rows matched)")
+        except Exception as e:
+            log(f"[nightly_scan] commitL cleanup: {universe} check failed: {e}")
+    log(f"[nightly_scan] commitL cleanup: checked {len(checked)} sector universe(s), "
+        f"invalidated: {', '.join(invalidated) if invalidated else 'none'}")
+    try:
+        with open(marker, "w") as f:
+            f.write(f"commitL sector-pollution cleanup ran {datetime.now(timezone.utc).isoformat()}\n")
+    except OSError as e:
+        log(f"[nightly_scan] commitL cleanup: could not write marker file: {e}")
 
 
 if __name__ == "__main__":

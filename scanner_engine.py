@@ -960,6 +960,121 @@ _ASX_CSV_CANARY_TICKERS = ["GQG.AX", "GGP.AX", "RDX.AX", "NEM.AX", "ACL.AX"]
 _ASX_CSV_FRESHNESS_CANARY_PRESENT = ["DNL.AX", "L1G.AX"]
 _ASX_CSV_FRESHNESS_CANARY_ABSENT = ["IPL.AX", "SQ2.AX", "SVW.AX"]
 
+# Commit L (21 Sep 2026, owner-reported): fetch_asx300()'s own docstring
+# has said since it was first built (20 Sep 2026, Index containment) that
+# the ASX 300 tail's Sector column carries "the ASX's own GICS INDUSTRY
+# GROUP (a finer-grained tier than 'sector')" while the live-200 portion
+# carries Wikipedia's own GICS SECTOR - two different levels of the same
+# GICS hierarchy, genuinely different strings, on the SAME "Sector"
+# column. _ASX_SECTOR_UNIVERSE_MAP below filters on exact SECTOR-level
+# values - a tail row's own industry-group string (e.g. "Equity Real
+# Estate Investment Trusts (REITs)") never equals a sector name ("Real
+# Estate") by construction, so it can never match any sector universe's
+# filter, tail-wide, regardless of which vendor serves the CSV (Commit I
+# changed the URL/vendor, not this column's own granularity - grepped
+# both the old and new _fetch_asx_listed_companies_raw() bodies before
+# writing this comment: both read "gics industry group" as the sector-
+# column keyword, unchanged). GICS's own hierarchy (11 sectors, ~24
+# industry groups - the 2023 revision's naming, since that's what a
+# CURRENT feed is most likely to emit; both the pre-2023 and post-2023
+# names are listed below per sector where they differ, so an older-
+# vintage feed still normalizes correctly) is public and standardised,
+# not something this sandbox's own missing network access blocks
+# knowing - see this module's own standing "no live network route"
+# caveat for what IS blocked (confirming the file's ACTUAL live values
+# against this list, which _normalize_gics_sector()'s own fallback -
+# return the raw string unchanged, never silently drop the row - is
+# built to degrade safely under).
+_GICS_INDUSTRY_GROUP_TO_SECTOR = {
+    # Energy
+    "Energy Equipment & Services": "Energy",
+    "Oil, Gas & Consumable Fuels": "Energy",
+    # Materials
+    "Chemicals": "Materials",
+    "Construction Materials": "Materials",
+    "Containers & Packaging": "Materials",
+    "Metals & Mining": "Materials",
+    "Paper & Forest Products": "Materials",
+    # Industrials
+    "Capital Goods": "Industrials",
+    "Commercial & Professional Services": "Industrials",
+    "Transportation": "Industrials",
+    # Consumer Discretionary
+    "Automobiles & Components": "Consumer Discretionary",
+    "Consumer Durables & Apparel": "Consumer Discretionary",
+    "Consumer Services": "Consumer Discretionary",
+    "Consumer Discretionary Distribution & Retail": "Consumer Discretionary",  # 2023 name
+    "Retailing": "Consumer Discretionary",  # pre-2023 name
+    # Consumer Staples
+    "Consumer Staples Distribution & Retail": "Consumer Staples",  # 2023 name
+    "Food & Staples Retailing": "Consumer Staples",  # pre-2023 name
+    "Food, Beverage & Tobacco": "Consumer Staples",
+    "Household & Personal Products": "Consumer Staples",
+    # Health Care - "Healthcare" (one word) is this codebase's own AU
+    # convention (see _ASX_SECTOR_UNIVERSE_MAP's own comment on the AU/
+    # US spelling split) - normalizing TO that, not "Health Care".
+    "Health Care Equipment & Services": "Healthcare",
+    "Pharmaceuticals, Biotechnology & Life Sciences": "Healthcare",
+    # Financials
+    "Banks": "Financials",
+    "Financial Services": "Financials",  # 2023 name
+    "Diversified Financials": "Financials",  # pre-2023 name
+    "Insurance": "Financials",
+    # Information Technology
+    "Software & Services": "Information Technology",
+    "Technology Hardware & Equipment": "Information Technology",
+    "Semiconductors & Semiconductor Equipment": "Information Technology",
+    # Communication Services
+    "Telecommunication Services": "Communication Services",
+    "Media & Entertainment": "Communication Services",
+    # Utilities - the industry group and the sector share one name at
+    # this level of the GICS hierarchy (true for Utilities and Real
+    # Estate both) - included anyway so the lookup below needs no
+    # special case for the two sectors that happen not to subdivide.
+    "Utilities": "Utilities",
+    # Real Estate
+    "Equity Real Estate Investment Trusts (REITs)": "Real Estate",
+    "Real Estate Management & Development": "Real Estate",
+}
+
+# All 11 standard GICS sectors, AU spelling ("Healthcare" one word) -
+# independent of _ASX_SECTOR_UNIVERSE_MAP below (which only names the 6
+# this site currently derives a universe for) since a value already AT
+# sector granularity should be recognised and left alone regardless of
+# whether this site happens to offer a dedicated universe for it yet.
+_GICS_SECTOR_NAMES = frozenset({
+    "Energy", "Materials", "Industrials", "Consumer Discretionary",
+    "Consumer Staples", "Healthcare", "Financials", "Information Technology",
+    "Communication Services", "Utilities", "Real Estate",
+})
+
+
+def _normalize_gics_sector(raw):
+    """Commit L: maps a raw GICS INDUSTRY GROUP string (what the ASX
+    listed-companies CSV's own "Sector" column actually carries - see
+    _GICS_INDUSTRY_GROUP_TO_SECTOR's own comment) to its parent GICS
+    SECTOR name, so _ASX_SECTOR_UNIVERSE_MAP's exact-match filters see
+    the same granularity for every row, tail included, that Wikipedia's
+    live ASX 200 scrape already provides for the first 200.
+
+    Three outcomes, all safe:
+    - Already a real sector name (a company whose feed happens to
+      report sector-level directly, or a value that already survived a
+      prior normalization pass) - returned unchanged.
+    - A known industry group - mapped to its sector.
+    - Anything else (a genuinely unmapped/unexpected value, or blank/
+      None) - returned UNCHANGED, never dropped or blanked. The row
+      simply won't match any sector universe's filter, exactly like
+      today for a value this map doesn't cover - a silent drop would be
+      worse (a company disappearing from ASX 300/All Ordinaries
+      entirely, not just from one sector sub-view)."""
+    if not raw:
+        return raw
+    raw = str(raw).strip()
+    if raw in _GICS_SECTOR_NAMES:
+        return raw
+    return _GICS_INDUSTRY_GROUP_TO_SECTOR.get(raw, raw)
+
 
 def _fetch_asx_listed_companies_raw():
     """Fetch + parse only - no health check, no last-known-good
@@ -1033,7 +1148,16 @@ def _fetch_asx_listed_companies_raw():
 
     out["Ticker"] = out["Ticker"].apply(_normalize_asx_ticker)
     if "Sector" in out.columns:
-        out["Sector"] = out["Sector"].astype(str).str.strip()
+        # Commit L: this column is really "GICS industry group" (the
+        # source's own header name), one level finer-grained than the
+        # "Sector" name it's stored under - normalized to its parent
+        # GICS sector here, once, at the source, so every downstream
+        # reader (fetch_asx300()'s tail, the market-cap ranking, every
+        # sector-universe filter) sees real sector-level values, the
+        # same granularity Wikipedia's live ASX 200 scrape already
+        # provides for the first 200 - see _normalize_gics_sector()'s
+        # own docstring.
+        out["Sector"] = out["Sector"].astype(str).str.strip().apply(_normalize_gics_sector)
     else:
         out["Sector"] = None
     return out[["Ticker", "Company", "Sector"]]
@@ -2090,6 +2214,32 @@ _US_SECTOR_UNIVERSE_MAP = {
     "US Consumer": ["Consumer Staples", "Consumer Discretionary"],
 }
 
+# Commit L (21 Sep 2026, owner-reported): a sector universe's own filter
+# match, tracked exactly like every other source in source_health_store
+# so a silently-empty (or implausibly small) match shows up on the Admin
+# Dashboard's existing Source health panel instead of quietly falling
+# back to the whole unfiltered parent pool - see get_universe_pool()'s
+# own sector-universe branches below for where this is actually
+# recorded (from nightly_scan.run_universe_scan() only, never a web
+# request - get_universe_pool() itself has no business writing health
+# state on every page view, same reasoning every other health-tracked
+# fetcher in this module already follows). Appended to TRACKED_HEALTH_
+# SOURCES (defined near the top of this module, before these two maps
+# existed) rather than moved inline there.
+SECTOR_UNIVERSE_HEALTH_SOURCES = [
+    f"Sector universe: {u}" for u in list(_ASX_SECTOR_UNIVERSE_MAP) + list(_US_SECTOR_UNIVERSE_MAP)
+]
+TRACKED_HEALTH_SOURCES.extend(SECTOR_UNIVERSE_HEALTH_SOURCES)
+
+# "Implausibly small" (task's own phrase) - even the smallest sector
+# universe this site derives (ASX A-REITs) should carry several dozen
+# names in a real ~300-company pool; a match below this floor is far
+# more likely a granularity mismatch/broken filter (see _normalize_
+# gics_sector()'s own comment for the one already found and fixed) than
+# a genuinely tiny real sector, so it's treated the same as a zero
+# match - never good enough to serve, whatever caused it.
+_SECTOR_UNIVERSE_MIN_ROWS = 5
+
 
 def _asx_sector_df(universe_name):
     """One AU sector universe (34.1) - ASX 300 members whose Sector is in
@@ -2445,22 +2595,34 @@ def get_universe_pool(country, universe):
     # --- Part 34.1/34.2 (11 Sep 2026): AU + US sector universes ---
 
     if universe in _ASX_SECTOR_UNIVERSE_MAP:
+        # Commit L (21 Sep 2026, owner-reported): NEVER fall back to the
+        # unfiltered parent pool for a sector universe - that's exactly
+        # how XRO.AX (a software company) ended up saved under "ASX
+        # A-REITs": the old version of this branch treated a df300 that
+        # merely EXISTED as good enough to serve, whatever it actually
+        # contained. An empty match, or a match too small to be a real
+        # sector's worth of ASX 300 constituents (_SECTOR_UNIVERSE_MIN_
+        # ROWS - see that constant's own comment), returns None instead -
+        # run_universe_scan()'s own existing "pool_df is None -> keep
+        # last-known-good, log loudly, don't overwrite scan_store" path
+        # (nightly_scan.py) already does exactly what the task asks for,
+        # unchanged, once this stops handing it a plausible-looking but
+        # wrong 300-row pool to scan instead of None.
         df = _asx_sector_df(universe)
-        if df is not None and not df.empty:
+        if df is not None and len(df) >= _SECTOR_UNIVERSE_MIN_ROWS:
             return df, "Derived: ASX 300 filtered by sector (live)"
-        df300 = fetch_asx300()
-        if df300 is not None:
-            return df300, f"{universe} unavailable - showing ASX 300 (live) instead"
-        return _asx_fallback_df(), "Live scrape unavailable - local curated ASX 200 list instead"
+        if df is None:
+            return None, "ASX 300 itself unavailable - sector filter could not run, serving last known-good scan"
+        return None, f"sector filter matched {len(df)} row(s) - skipped, serving last known-good scan"
 
     if universe in _US_SECTOR_UNIVERSE_MAP:
+        # Same reasoning as the AU branch just above.
         df = _us_sector_df(universe)
-        if df is not None and not df.empty:
+        if df is not None and len(df) >= _SECTOR_UNIVERSE_MIN_ROWS:
             return df, "Derived: S&P 500 filtered by sector (live)"
-        df500 = fetch_sp500()
-        if df500 is not None:
-            return df500, f"{universe} unavailable - showing S&P 500 (live) instead"
-        return None, "Web scrape unavailable"
+        if df is None:
+            return None, "S&P 500 itself unavailable - sector filter could not run, serving last known-good scan"
+        return None, f"sector filter matched {len(df)} row(s) - skipped, serving last known-good scan"
 
     return None, "Unknown universe"
 

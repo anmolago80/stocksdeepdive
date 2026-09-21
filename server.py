@@ -251,6 +251,16 @@ async def lifespan(app: FastAPI):
     # serving" rule as backfill_primary_tickers() above.
     with suppress(Exception):
         nightly_scan.cleanup_fix9_nan_data()
+    # Commit L (21 Sep 2026, owner-reported): one-off, marker-file-
+    # guarded cleanup of any sector-universe scan (ASX A-REITs, ASX
+    # Financials, etc.) that was actually saved as the WHOLE unfiltered
+    # parent pool by get_universe_pool()'s old empty-filter fallback -
+    # see nightly_scan.cleanup_sector_universe_pollution()'s own
+    # docstring for how a polluted scan is detected and what happens to
+    # it. Same "never allowed to stop the site serving" rule as the
+    # Fix 9 cleanup right above.
+    with suppress(Exception):
+        nightly_scan.cleanup_sector_universe_pollution()
     _client = httpx.AsyncClient(
         base_url=UPSTREAM, timeout=httpx.Timeout(None, connect=10.0),
         follow_redirects=False, limits=httpx.Limits(max_connections=200),

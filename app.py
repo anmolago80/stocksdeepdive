@@ -13932,6 +13932,21 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 _close_series = window_3mo["Close"].dropna()
                 if _close_series.empty:
                     continue
+                # Commit L (21 Sep 2026, owner-reported): closes the gap
+                # Commit J's own report flagged - this live "Run Scan"
+                # path never went through nightly_scan.analyze_ticker_
+                # lite() (it has its own, separate get_price_history()
+                # fetch above), so a delisted/halted/merged ticker
+                # yfinance keeps quoting the last real print for slipped
+                # through here even after the nightly pipeline started
+                # excluding it. Same evidence rule, same window already
+                # in hand - no extra yfinance call - as nightly_scan.py's
+                # own guard; skipped here (never added to `stocks_data`
+                # below) rather than flagged-and-kept, matching this
+                # page's own existing "not real data for this scan"
+                # convention for df.empty/_close_series.empty above.
+                if scanner_engine.window_shows_no_trading(window_3mo):
+                    continue
                 current_price = float(_close_series.iloc[-1])
 
                 high_price = float(_close_series.max())
