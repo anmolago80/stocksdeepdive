@@ -20,16 +20,25 @@ DAILY vs WEEKLY, SIZE FALLBACK: every night (scheduled from
 scheduler_engine, after the scan window), a full VACUUM INTO copy is
 attempted and gzipped. If the gzipped size fits
 MAILGUN_ATTACHMENT_LIMIT_BYTES, it's emailed as
-stocksdeepdive_backup_YYYY-MM-DD.db.gz - every table, every night. If
-a full copy is ever too large for that limit, the job falls back
-automatically: a FULL backup only once a week (WEEKLY_FULL_WEEKDAY),
-and on every OTHER night a CRITICAL-TABLES-ONLY dump (CRITICAL_TABLES
-below - built by taking the same VACUUM INTO copy and dropping every
-table not on that list, then re-VACUUMing to actually shrink the
-file). Both paths are still real, ordinary .db.gz SQLite files - never
-a JSON/CSV re-encoding - so the restore steps in the mega-batch's
-final report are identical either way: gunzip, drop the file in as
-stocksdeepdive.db on a fresh volume, restart the service.
+stocksdeepdive_backup_YYYY-MM-DD.db.gz - every table (except
+EXCLUDED_FROM_EMAIL_TABLES below - see that constant's own comment),
+every night. If a full copy is ever too large for that limit, the job
+falls back automatically: a FULL backup only once a week
+(WEEKLY_FULL_WEEKDAY), and on every OTHER night a CRITICAL-TABLES-ONLY
+dump (CRITICAL_TABLES below - built by taking the same VACUUM INTO copy
+and dropping every table not on that list, then re-VACUUMing to
+actually shrink the file). Both paths are still real, ordinary .db.gz
+SQLite files - never a JSON/CSV re-encoding - so the restore steps in
+the mega-batch's final report are identical either way: gunzip, drop
+the file in as stocksdeepdive.db on a fresh volume, restart the
+service. Commit K (21 Sep 2026): a restore from the emailed copy now
+also signs every account out and clears every pending sign-in code -
+auth_sessions/auth_codes are two of the four tables EXCLUDED_FROM_
+EMAIL_TABLES deliberately never lets reach the email at all; each
+*_store.py module's own CREATE TABLE IF NOT EXISTS recreates them
+empty the moment the restored app first touches them, so nothing
+breaks - users just sign in again, exactly as if their session had
+simply expired.
 
 CRITICAL_TABLES is this module's own reading of the spec's "every
 account, portfolio, watchlist, alert, checklist and usage record" -
@@ -104,7 +113,7 @@ WEEKLY_FULL_WEEKDAY = 6  # UTC Sunday - its own slot, doesn't collide
                           # or the earnings refresh (Wednesday).
 
 CRITICAL_TABLES = [
-    "signups", "auth_codes", "auth_sessions",
+    "signups",
     "portfolios", "portfolio_holdings", "portfolio_settings",
     "iv_overrides", "portfolio_seed_log",
     "watchlist", "alerts", "alert_hits_pending", "alert_eval_log",
@@ -114,10 +123,39 @@ CRITICAL_TABLES = [
     # Mega-batch Part 36: the newsletter list is user-authored consent
     # data (an email + its confirmed/pending state), not a re-fetchable
     # cache - same "must survive the critical-tables-only fallback" bucket
-    # as signups/auth_codes/auth_sessions above. newsletter_sends (per-
-    # post send stats) is small and re-derivable-in-spirit, so it's left
-    # out here the same way e.g. metrics tables are.
+    # as signups above. newsletter_sends (per-post send stats) is small
+    # and re-derivable-in-spirit, so it's left out here the same way
+    # e.g. metrics tables are.
     "newsletter_subscribers",
+]
+
+# Commit K (21 Sep 2026, owner-reported): the emailed backup used to
+# carry the full DB unencrypted, including live session tokens
+# (auth_sessions) and pending sign-in codes (auth_codes) - anyone who
+# could read that email (a compromised inbox, a misdirected forward, a
+# Mailgun-side leak) could impersonate every currently-signed-in user
+# without ever needing a password. Restore needs none of these four - a
+# session token/sign-in code is only ever useful for the few minutes/
+# days it's genuinely live, and a user who's lost theirs simply signs in
+# again (email_auth.py's own _conn() recreates all four as empty tables
+# on next startup via its usual CREATE TABLE IF NOT EXISTS, the same
+# "guarded, in-place migration" convention every *_store.py module here
+# already uses - a restore from the emailed copy signs every account out
+# and forces a fresh sign-in code, which is the intended, safe outcome,
+# not a bug). auth_ip_sends/daily_signin_hashes are rate-limit/analytics
+# bookkeeping, not account state - same reasoning, lower stakes.
+#
+# auth_codes/auth_sessions are deliberately no longer in CRITICAL_TABLES
+# above - keeping them there implied the size-fallback trim was what
+# protected them, when it's actually _exclude_sensitive_tables() below,
+# which runs BEFORE that trim, unconditionally, on EVERY send path (full,
+# weekly-full-over-limit, critical-fallback alike) - not just the size-
+# fallback trim, which is a SIZE decision made only some nights, never a
+# privacy one, and previously left both of these two tables (and every
+# other table not in CRITICAL_TABLES) exposed on every ordinary full-
+# backup night, which is most nights.
+EXCLUDED_FROM_EMAIL_TABLES = [
+    "auth_sessions", "auth_codes", "auth_ip_sends", "daily_signin_hashes",
 ]
 
 
@@ -173,6 +211,35 @@ def _trim_to_critical_tables(db_path):
         ).fetchall()]
         for t in tables:
             if t not in CRITICAL_TABLES:
+                conn.execute(f'DROP TABLE IF EXISTS "{t}"')
+        conn.commit()
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
+
+
+def _exclude_sensitive_tables(db_path):
+    """Opens the (already-copied, so this never touches the live DB)
+    `db_path` and unconditionally drops every table in EXCLUDED_FROM_
+    EMAIL_TABLES, then VACUUMs it to actually shrink the file - same
+    DROP-and-VACUUM mechanics as _trim_to_critical_tables() above, but
+    an EXCLUSION list applied on EVERY send path (that one is an
+    INCLUSION list, applied only on the size-fallback path - a size
+    decision, not a privacy one). Called first, right after the VACUUM
+    INTO copy is made and before the full/weekly/fallback branch below
+    even decides which copy to send - see _run_backup()'s own call
+    site - so every later branch inherits the exclusion automatically;
+    nothing downstream has to remember to apply it a second time.
+    Raises on failure, same convention as _vacuum_into() - the caller
+    fails the WHOLE backup rather than risk sending an un-trimmed copy
+    if this step itself can't be trusted to have worked."""
+    conn = sqlite3.connect(db_path, timeout=30)
+    try:
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()]
+        for t in tables:
+            if t in EXCLUDED_FROM_EMAIL_TABLES:
                 conn.execute(f'DROP TABLE IF EXISTS "{t}"')
         conn.commit()
         conn.execute("VACUUM")
@@ -288,6 +355,15 @@ def _run_backup(log, force_full=False):
             _vacuum_into(full_copy_path)
         except Exception as e:
             return False, f"VACUUM INTO failed: {type(e).__name__}: {e}", {}
+
+        # Commit K: runs BEFORE the full/weekly/fallback branch below
+        # even decides which copy to send, so every path this function
+        # can take is covered by one call - see EXCLUDED_FROM_EMAIL_
+        # TABLES/_exclude_sensitive_tables()'s own comments for why.
+        try:
+            _exclude_sensitive_tables(full_copy_path)
+        except Exception as e:
+            return False, f"sensitive-table exclusion failed: {type(e).__name__}: {e}", {}
 
         full_gz_path = _gzip_file(full_copy_path)
         full_gz_size = os.path.getsize(full_gz_path)
