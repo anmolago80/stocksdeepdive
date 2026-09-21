@@ -28091,10 +28091,12 @@ def page_admin_dashboard():
         "pass would look just as well-formed while silently mis-ranking "
         "or dropping names. 🔴 Stale means the fresh attempt or one of "
         "its checks failed (row-count/sector-coverage for ASX 200; "
-        "cross-source/drift/canary for the CSV; priced-ratio/row-count "
-        "for the ranking), and the site is serving the last known-good "
-        "snapshot instead of the fresh (bad) one - you'll also have "
-        "gotten an email/push about it the moment that first happened."
+        "cross-source/drift/canary/freshness-canary for the CSV - "
+        "wikipedia-delistings is informational only, it never fails the "
+        "CSV on its own; priced-ratio/row-count for the ranking), and "
+        "the site is serving the last known-good snapshot instead of "
+        "the fresh (bad) one - you'll also have gotten an email/push "
+        "about it the moment that first happened."
     )
     with st.container(border=True):
         import source_health_store

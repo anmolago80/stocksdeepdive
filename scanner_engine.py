@@ -211,7 +211,28 @@ DIVIDEND_ARISTOCRATS_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P_500_Dividen
 # directory of every listed company, ranked by market cap to fill out
 # the tail past Wikipedia's live ASX 200 - see fetch_asx300()/
 # fetch_allords()'s own comments for the new construction.
-ASX_LISTED_COMPANIES_CSV_URL = "https://www.asx.com.au/asx/research/ASXListedCompanies.csv"
+#
+# Commit I (21 Sep 2026): that replacement - www.asx.com.au/asx/research/
+# ASXListedCompanies.csv - turned out to be the SAME failure mode one
+# level up: it never once passed _check_asx_listed_companies() (cross_
+# source: 8 live ASX 200 tickers missing, including DNL/Dyno Nobel and
+# SGH/Seven Group Holdings), and manual inspection showed the file's own
+# header carries the CURRENT date while its ROWS are frozen months
+# behind - still listing INCITEC PIVOT as IPL (renamed DNL), BLOCK INC.
+# as SQ2, SEVEN GROUP HOLDINGS as SVW (renamed SGH). A fresh timestamp
+# over stale content, not a dead endpoint - the row-count/canary/cross-
+# source checks below still do the real work; only the URL and its
+# column layout change here. Replaced by the file behind asx.com.au's
+# own company directory page (markitdigital, the vendor behind ASX's
+# market-data widgets) - unofficial (asx.com.au itself doesn't document
+# it as a public API), so every existing health check stays on it and
+# last-known-good keeps gating what actually gets served, exactly like
+# the source it replaces. Columns per the ASX's own directory page (live-
+# verified by the owner, not from this sandbox - see _fetch_asx_listed_
+# companies_raw()'s own docstring for the standing "no live network
+# route" caveat every fetcher in this module already carries): "ASX
+# code","Company name","GICs industry group","Listing date","Market Cap".
+ASX_LISTED_COMPANIES_CSV_URL = "https://asx.api.markitdigital.com/asx-research/1.0/companies/directory/file"
 
 # iShares Russell 2000 ETF (IWM) public holdings export. Best-effort - iShares
 # occasionally changes this URL format.
@@ -910,36 +931,84 @@ _ASX_CSV_DRIFT_BAND = 0.15
 # the failure mode a single-ticker canary is vulnerable to).
 _ASX_CSV_CANARY_TICKERS = ["GQG.AX", "GGP.AX", "RDX.AX", "NEM.AX", "ACL.AX"]
 
+# Commit I (21 Sep 2026): a SECOND, independent canary - the check class
+# that would have caught the failure mode _ASX_CSV_CANARY_TICKERS above
+# doesn't. That one only tests PRESENCE of names known to have existed
+# since 2021-2025; a source frozen any time AFTER all five of those
+# listing dates still carries every one of them and passes it cleanly,
+# even though its own content can be months stale RIGHT NOW - exactly
+# what was found live: ASXListedCompanies.csv's header carried TODAY's
+# date while its rows still listed INCITEC PIVOT as IPL (renamed Dyno
+# Nobel/DNL), BLOCK INC. as SQ2, and SEVEN GROUP HOLDINGS as SVW
+# (renamed SGH) - all three 2025 renames. A header date proves nothing;
+# this checks the ROWS two ways at once:
+#   - MUST be present: a code that only exists post-rename (DNL, L1G -
+#     L1 Group, another 2025 listing-identity change) - absent from
+#     ANY snapshot older than these renames, present in a genuinely
+#     current one.
+#   - MUST be absent: the OLD code each of those same renames retired
+#     (IPL, SQ2, SVW) - a source that still carries one of these is
+#     provably not current, whatever its header says.
+# Either direction failing on its own is enough to call the source
+# stale - a source could pass the "present" half by coincidence (it
+# happens to have added DNL/L1G as new rows without ever processing the
+# renames that retired IPL/SQ2/SVW, e.g. an append-only feed) while
+# still failing the "absent" half, and the reverse is just as possible.
+# Both together, verified independently, is what makes this the freshness
+# canary the OR-based one above cannot be - see _check_asx_listed_
+# companies()'s own "freshness_canary" check.
+_ASX_CSV_FRESHNESS_CANARY_PRESENT = ["DNL.AX", "L1G.AX"]
+_ASX_CSV_FRESHNESS_CANARY_ABSENT = ["IPL.AX", "SQ2.AX", "SVW.AX"]
+
 
 def _fetch_asx_listed_companies_raw():
     """Fetch + parse only - no health check, no last-known-good
     fallback (see fetch_asx_listed_companies() below, the public
     wrapper every other function in this module actually calls).
 
-    Every ASX-listed company, straight from the ASX's own official
-    directory (Company name / ASX code / GICS industry group) - NOT an
-    index, no membership tiering at all, just the full listed-company
-    register (~2,500 rows as of 20 Sep 2026). This is the replacement
-    source for everything past Wikipedia's live ASX 200 - see
-    fetch_asx300()/fetch_allords() below for why asx300list.com/
-    allordslist.com (a frozen 28 April 2021 snapshot, confirmed live 20
-    Sep 2026) are gone.
+    Every ASX-listed company - NOT an index, no membership tiering at
+    all, just the full listed-company register (~2,500 rows). This is
+    the replacement source for everything past Wikipedia's live ASX
+    200 - see fetch_asx300()/fetch_allords() below for why asx300list.
+    com/allordslist.com (a frozen 28 April 2021 snapshot, confirmed
+    live 20 Sep 2026) are gone.
 
-    The file ships with a title/date line above the real header row
-    ("Company name,ASX code,GICS industry group") - located by content
-    rather than a fixed skiprows count, so the ASX adding/removing a
-    line above it can't silently break this. Sanity floor of 1,000 rows
-    (the real file is ~2,500) so a truncated download or an HTML error
-    page returned in place of the CSV can't be mistaken for the real
-    thing. Fails open to None on any error, same convention as every
-    other fetcher in this module."""
+    Commit I (21 Sep 2026): the FIRST replacement for those
+    (ASX_LISTED_COMPANIES_CSV_URL's old target, www.asx.com.au/asx/
+    research/ASXListedCompanies.csv) turned out to be the exact same
+    failure mode one level up - see that constant's own comment for the
+    full finding (a header stamped with today's date, rows frozen
+    months behind: still IPL/SQ2/SVW, never once DNL/SGH). Now points
+    at the file behind asx.com.au's own company directory page instead
+    (markitdigital - unofficial, ASX doesn't document it as a public
+    API, so every check below still gates it exactly as before). Same
+    "Company name"/"ASX code"/"GICS industry group" fields this
+    function has always read (column NAMES match - see the constant's
+    own comment for the exact header this source ships), just a
+    different vendor serving them; also carries "Listing date"/"Market
+    Cap" columns this function doesn't read yet - see _check_asx_
+    listed_companies()'s new freshness_canary check (which DOES use
+    company identity, not these two) and the market-cap comparison
+    Commit I's own report covers separately (deliberately NOT wired
+    into _rebuild_market_cap_ranking() this commit - report only).
+
+    Header row located by CONTENT (matching on "asx code" AND "company
+    name" appearing together, not a fixed skiprows count or a strict
+    column order), same defensive discipline as before - a leading
+    title/date line, or the two columns swapping order, can't silently
+    break this. Sanity floor of 1,000 rows (the real register is
+    ~2,500) so a truncated download or an HTML error page returned in
+    place of the file can't be mistaken for the real thing. Fails open
+    to None on any error, same convention as every other fetcher in
+    this module."""
     try:
         text = _get(ASX_LISTED_COMPANIES_CSV_URL)
     except Exception:
         return None
     lines = text.splitlines()
     header_idx = next(
-        (i for i, line in enumerate(lines) if line.strip().lower().startswith("company name")),
+        (i for i, line in enumerate(lines)
+         if "asx code" in line.strip().lower() and "company name" in line.strip().lower()),
         None,
     )
     if header_idx is None:
@@ -970,36 +1039,100 @@ def _fetch_asx_listed_companies_raw():
     return out[["Ticker", "Company", "Sector"]]
 
 
+def _priced_recently(ticker, trading_days=5):
+    """True if yfinance has at least one priced bar for `ticker` within
+    its own last `trading_days` trading days - yf.Ticker.history(period=
+    "{n}d") already returns trading days only (it skips weekends/
+    holidays on its own, no calendar-day math needed here). False on any
+    lookup failure or an empty result.
+
+    Commit I (21 Sep 2026): used by _check_asx_listed_companies()'s
+    cross_source check to tell apart the two different reasons a live
+    ASX 200 ticker can be missing from the listed-companies source:
+    Wikipedia's own ASX 200 page still listing a name the market has
+    actually stopped trading (a takeover delisting Wikipedia hasn't
+    caught up with yet - three of this commit's own 8 missing tickers,
+    IFL/QUB/NSR, are suspected takeover delistings, not source gaps),
+    versus the source genuinely missing a ticker that's still trading
+    today (a real gap - the failure this whole check exists to catch).
+    Fails CLOSED (returns False, "not confirmed still trading") on any
+    lookup problem of its own - a broken yfinance call must never
+    accidentally read as "Wikipedia-stale" and let a genuinely stale
+    source off the hook."""
+    try:
+        hist = yf.Ticker(ticker).history(period=f"{trading_days}d")
+    except Exception:
+        return False
+    return hist is not None and not hist.empty
+
+
 def _check_asx_listed_companies(df, df200):
-    """Three checks (Commit 2, 20 Sep 2026) against a freshly-parsed
-    _fetch_asx_listed_companies_raw() frame - a row-count floor alone
-    already proved insufficient (asx300list.com/allordslist.com both
-    passed one for five years while frozen). Returns
-    {check_name: {"ok": bool, "detail": str}}; never raises.
+    """Five checks against a freshly-parsed _fetch_asx_listed_companies_
+    raw() frame - a row-count floor alone already proved insufficient
+    (asx300list.com/allordslist.com both passed one for five years while
+    frozen; ASXListedCompanies.csv then passed one too, header stamped
+    with today's date, rows months stale - see ASX_LISTED_COMPANIES_
+    CSV_URL's own comment). Returns {check_name: {"ok": bool, "detail":
+    str}}; never raises.
 
     - cross_source: every ticker in the LIVE Wikipedia ASX 200 must
-      appear in the CSV. A stale CSV is missing recent additions -
-      this is literally how GQG.AX exposed the 2021 freeze, and it
-      needs no publisher/third party to independently confirm it -
-      df200 already comes from a completely unrelated source.
+      appear in the source, UNLESS yfinance confirms it hasn't actually
+      traded in 5 trading days (Commit I, 21 Sep 2026: the ORIGINAL
+      version of this check blamed the wrong side whenever Wikipedia's
+      own ASX 200 page was the stale one - e.g. still listing a takeover
+      delisting - which would otherwise mark a perfectly current source
+      as stale forever, for a gap that was never its own). Fails only on
+      a missing ticker _priced_recently() confirms is still trading -
+      the genuine "this source has a real gap" shape.
+    - wikipedia_delistings: informational only, never gates (same
+      "never gates accept/reject" convention _rebuild_market_cap_
+      ranking()'s own "age" check already uses) - names the missing-
+      but-not-recently-traded tickers cross_source excluded, so they're
+      still visible on the Admin Dashboard's Source health panel rather
+      than silently dropped from view.
     - drift: row count within _ASX_CSV_DRIFT_BAND of last-known-good.
     - canary: ANY of five tickers known to have been listed after the
-      old sources' frozen date is present (_ASX_CSV_CANARY_TICKERS) -
-      OR, not AND, so one of the five being acquired/delisted/renamed
-      can't permanently fail this check on its own (see that constant's
-      own comment)."""
+      old (asx300list.com-era) sources' frozen date is present
+      (_ASX_CSV_CANARY_TICKERS) - OR, not AND, so one of the five being
+      acquired/delisted/renamed can't permanently fail this check on
+      its own (see that constant's own comment).
+    - freshness_canary (Commit I): the check class that would have
+      caught THIS source's own failure - a MUST-be-present pair (DNL,
+      L1G - identities that only exist after 2025's renames) AND a
+      MUST-be-absent trio (IPL, SQ2, SVW - the identities those renames
+      retired), both required - see _ASX_CSV_FRESHNESS_CANARY_PRESENT/
+      _ABSENT's own comment for why this, unlike `canary` above, is
+      immune to a merely-newer-than-2021 freeze."""
     checks = {}
 
     if df200 is not None and not df200.empty:
         missing_200 = sorted(set(df200["Ticker"]) - set(df["Ticker"]))
+        still_trading = [t for t in missing_200 if _priced_recently(t)]
+        wikipedia_stale = [t for t in missing_200 if t not in still_trading]
         checks["cross_source"] = {
-            "ok": not missing_200,
-            "detail": ("all live ASX 200 tickers present" if not missing_200 else
-                      f"{len(missing_200)} ASX 200 ticker(s) missing from the CSV: "
-                      + ", ".join(missing_200[:10]) + (", ..." if len(missing_200) > 10 else "")),
+            "ok": not still_trading,
+            "detail": (
+                "all live ASX 200 tickers present" if not missing_200 else
+                "all missing ASX 200 ticker(s) look Wikipedia-stale (not priced by "
+                "yfinance in 5 trading days), not a source gap - see wikipedia_delistings"
+                if not still_trading else
+                f"{len(still_trading)} ASX 200 ticker(s) missing from the source while "
+                f"still trading: " + ", ".join(still_trading[:10])
+                + (", ..." if len(still_trading) > 10 else "")
+            ),
+        }
+        checks["wikipedia_delistings"] = {
+            "ok": True,
+            "detail": (
+                "none" if not wikipedia_stale else
+                f"{len(wikipedia_stale)} ASX 200 ticker(s) missing from the source AND "
+                f"not priced by yfinance in 5 trading days - likely Wikipedia-stale "
+                f"delistings, not this source's own problem: " + ", ".join(wikipedia_stale)
+            ),
         }
     else:
         checks["cross_source"] = {"ok": True, "detail": "skipped - live ASX 200 itself unavailable"}
+        checks["wikipedia_delistings"] = {"ok": True, "detail": "skipped - live ASX 200 itself unavailable"}
 
     prior = source_health_store.get(_ASX_CSV_SOURCE_NAME)
     prior_count = (prior or {}).get("last_good_row_count")
@@ -1022,6 +1155,24 @@ def _check_asx_listed_companies(df, df200):
         "ok": bool(present_canary),
         "detail": (f"present: {', '.join(present_canary)}" if present_canary
                   else f"none present (checked: {', '.join(_ASX_CSV_CANARY_TICKERS)})"),
+    }
+
+    # Commit I: BOTH halves required - see _ASX_CSV_FRESHNESS_CANARY_
+    # PRESENT/_ABSENT's own comment for why this is AND, not OR, unlike
+    # `canary` above.
+    missing_present = [t for t in _ASX_CSV_FRESHNESS_CANARY_PRESENT if t not in have]
+    still_present_absent = [t for t in _ASX_CSV_FRESHNESS_CANARY_ABSENT if t in have]
+    checks["freshness_canary"] = {
+        "ok": not missing_present and not still_present_absent,
+        "detail": (
+            "current: all of " + ", ".join(_ASX_CSV_FRESHNESS_CANARY_PRESENT)
+            + " present, none of " + ", ".join(_ASX_CSV_FRESHNESS_CANARY_ABSENT) + " present"
+            if not missing_present and not still_present_absent else
+            "; ".join(filter(None, [
+                f"missing post-rename code(s): {', '.join(missing_present)}" if missing_present else "",
+                f"still carries retired code(s): {', '.join(still_present_absent)}" if still_present_absent else "",
+            ]))
+        ),
     }
 
     return checks
