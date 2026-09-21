@@ -209,7 +209,7 @@ def moat_band(score):
 # Per-year return series (ROIC for a standard company, ROE for financials)
 # -----------------------------------
 
-def _year_return_series(bundle, info, is_financials, force_switch=None):
+def _year_return_series(bundle, info, is_financials, force_switch=None, flags=None):
     """[(year_label, return_value_or_None, extra), ...] newest-first,
     keyed off the balance sheet's own stockholders'-equity year list (the
     same anchor _avg_invested_capital_for_year already uses).
@@ -227,10 +227,17 @@ def _year_return_series(bundle, info, is_financials, force_switch=None):
     Financials mode: return_value is plain ROE = net income / that
     year's own equity (no averaging - the ordinary ROE convention).
 
-    `force_switch`: passed straight through to _ace.ebit_series() - see
-    that function's own docstring. None (default) for every real site
-    call path; True/False only from the Admin Dashboard's dry-run audit
-    (see compute_moat_dry_run() below), never from compute_moat()."""
+    `force_switch`/`flags`: passed straight through to _ace.ebit_series()
+    - see that function's own docstring. `force_switch` is None (default)
+    for every real site call path; True/False only from the Admin
+    Dashboard's dry-run audit (see compute_moat_dry_run() below), never
+    from compute_moat(). `flags`, when given, gets Commit P's "year
+    dropped"/"TTM taken from an earlier year" lines - this is the ONE
+    call site in this module that passes it (the pricing-power fallback
+    and erosion-overlay margin series call the same underlying
+    ebit_series() for the same ticker too, but deliberately omit
+    `flags` there to avoid the identical line appearing two or three
+    times over for one ticker)."""
     income, balance = bundle["income"], bundle["balance"]
     equity_s = dict(_ace._series(balance, "stockholders_equity"))
     years_desc = [y for y, _ in _ace._series(balance, "stockholders_equity")]
@@ -247,7 +254,7 @@ def _year_return_series(bundle, info, is_financials, force_switch=None):
 
     debt_s = dict(_ace._series(balance, "total_debt"))
     cash_s = dict(_ace._series(balance, "cash"))
-    op_income_s = dict(_ace.ebit_series(bundle, is_financials, force_switch=force_switch))
+    op_income_s = dict(_ace.ebit_series(bundle, is_financials, force_switch=force_switch, flags=flags))
     pretax_s = dict(_ace._series(income, "pretax_income"))
     tax_s = dict(_ace._series(income, "tax_provision"))
     ttm_pretax, ttm_tax = pretax_s.get(years_desc[0]), tax_s.get(years_desc[0])
@@ -616,7 +623,7 @@ def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None):
     mode = "financials" if is_financials else "standard"
     basics = _ace._basics(bundle)
 
-    return_series = _year_return_series(bundle, info, is_financials, force_switch=force_switch)
+    return_series = _year_return_series(bundle, info, is_financials, force_switch=force_switch, flags=flags)
     years_desc = [y for y, _, _ in return_series]
     roic_list = [v for _, v, _ in return_series]
     usable_years = sum(1 for v in roic_list if v is not None)
@@ -824,14 +831,17 @@ def compute_moat_diagnostics(ticker):
     mode = "financials" if is_financials else "standard"
     basics = _ace._basics(bundle)
 
-    return_series = _year_return_series(bundle, info, is_financials)
+    # flags created here, BEFORE _year_return_series() rather than after
+    # (as this function's earlier versions had it) - Commit P's "year
+    # dropped"/"TTM from an earlier year" lines are appended inside that
+    # call, so the list has to exist first.
+    flags = []
+    return_series = _year_return_series(bundle, info, is_financials, flags=flags)
     years_desc = [y for y, _, _ in return_series]
     roic_list = [v for _, v, _ in return_series]
     usable_years = sum(1 for v in roic_list if v is not None)
     if usable_years < 2:
         return None
-
-    flags = []
     components = []
 
     spread_pts = _pillar_spread(bundle, basics, is_financials, roic_list, flags)

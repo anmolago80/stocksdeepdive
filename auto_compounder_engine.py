@@ -642,7 +642,7 @@ def _ac_is_financials(info):
     return ("bank" in industry) or ("insurance" in industry)
 
 
-def ebit_year_rows(bundle, is_financials, force_switch=None):
+def ebit_year_rows(bundle, is_financials, force_switch=None, flags=None):
     """{year_label: {...}} for every year the income statement has a
     Pretax Income figure for, newest-first insertion order. Always
     computed in full (even when the EBIT_FROM_PRETAX switch is off, or
@@ -659,6 +659,14 @@ def ebit_year_rows(bundle, is_financials, force_switch=None):
     OFF" result, safely, even while other concurrent Streamlit sessions
     (this is a live multi-user site) are being served by this same
     module's functions reading the real, unmutated global.
+
+    `flags`: None (default) - no side effects, safe for any caller that
+    doesn't keep a free-text flags list (this module's own
+    _build_fundamentals/_build_cost_of_capital, for instance). Pass a
+    list (e.g. moat_engine.py's own `flags` accumulator) to have a
+    human-readable line appended for every year dropped under the
+    "never mix sources" rule below - the caller decides whether that's
+    worth surfacing, this function never assumes.
 
     Fields per year:
       pretax_income, net_interest, other_income, total_unusual_items -
@@ -677,10 +685,33 @@ def ebit_year_rows(bundle, is_financials, force_switch=None):
         unmodified, for comparison.
       gap_pct - (ebit_derived - operating_income_yf) / abs(operating_income_yf);
         None when either side is unavailable or yfinance's figure is 0.
-      ebit - the value callers should actually use: ebit_derived when the
-        EBIT_FROM_PRETAX switch is on AND is_financials is False AND a
-        derived value exists for that year; otherwise operating_income_yf
-        unchanged (byte-identical to the pre-Commit-O code path)."""
+      ebit - the value callers should actually use. Commit P (21 Sep
+        2026, owner-reported): NEVER mixes sources within one ticker's
+        series - a year missing Pretax Income used to silently fall
+        back to that year's raw yfinance Operating Income while OTHER
+        years in the same series used the derived figure, and since
+        yfinance's row is understated by D&A for exactly the ASX/IFRS
+        filers this fix targets (SUL.AX FY23: 93m raw vs 422m derived),
+        that mix fabricates a jump or fall in the series that isn't
+        real - inflating Reinvestment (which reads oldest-vs-newest
+        NOPAT), and distorting the erosion overlay/margin trend (both
+        read the whole multi-year run). Two cases only, decided ONCE
+        per ticker/bundle, never per year:
+          - At least one year in this series has a derivable EBIT (the
+            switch is on, not financials, and >=1 year has Pretax
+            Income) -> every year uses ebit_derived, no exceptions. A
+            year that itself is missing Pretax Income gets ebit=None
+            (dropped, exactly like any other missing year - see
+            _pillar_reinvestment/_pillar_persistence's own "a pillar
+            that can't be computed is dropped, never defaulted"
+            convention) - it is NEVER filled with that year's raw
+            operating_income_yf. `flags` (if given) gets one line per
+            dropped year.
+          - Not one single year is derivable (switch off, financials,
+            or Pretax Income missing for every year on file) -> the
+            WHOLE ticker uses operating_income_yf for every year,
+            exactly as it did before Commit O - the old path,
+            untouched, not a special case of the new one."""
     income = bundle.get("income")
     if income is None or getattr(income, "empty", True):
         return {}
@@ -699,7 +730,7 @@ def ebit_year_rows(bundle, is_financials, force_switch=None):
     switch_on = EBIT_FROM_PRETAX if force_switch is None else force_switch
     use_derived = bool(switch_on) and not is_financials
 
-    out = {}
+    raw_per_year = {}
     for y in years:
         pretax = pretax_s.get(y)
         op_yf = op_yf_s.get(y)
@@ -712,10 +743,7 @@ def ebit_year_rows(bundle, is_financials, force_switch=None):
         gap_pct = None
         if derived is not None and op_yf not in (None, 0):
             gap_pct = (derived - op_yf) / abs(op_yf)
-        chosen = op_yf
-        if use_derived and derived is not None:
-            chosen = derived
-        out[y] = {
+        raw_per_year[y] = {
             "pretax_income": pretax,
             "net_interest": net_interest,
             "other_income": other_income,
@@ -724,54 +752,85 @@ def ebit_year_rows(bundle, is_financials, force_switch=None):
             "ebit_derived": derived,
             "operating_income_yf": op_yf,
             "gap_pct": gap_pct,
-            "ebit": chosen,
         }
+
+    # Decided ONCE for the whole ticker - never per year - see the
+    # docstring above for why a per-year fallback would mix sources.
+    any_derivable = use_derived and any(r["ebit_derived"] is not None for r in raw_per_year.values())
+
+    out = {}
+    for y in years:
+        r = raw_per_year[y]
+        if not use_derived or not any_derivable:
+            chosen = r["operating_income_yf"]
+        elif r["ebit_derived"] is not None:
+            chosen = r["ebit_derived"]
+        else:
+            chosen = None
+            if flags is not None:
+                flags.append(
+                    f"EBIT: {y} dropped - no Pretax Income on file for that year, and this "
+                    f"ticker has other years that DO derive - never mixing a raw yfinance "
+                    f"Operating Income figure into an otherwise EBIT_FROM_PRETAX-derived series"
+                )
+        out[y] = {**r, "ebit": chosen}
     return out
 
 
-def ebit_series(bundle, is_financials, force_switch=None):
+def ebit_series(bundle, is_financials, force_switch=None, flags=None):
     """[(year_label, ebit_or_None), ...] newest-first - drop-in
     replacement for `_series(income, "operating_income")` at every NOPAT/
     ROIC/margin call site in this module and moat_engine.py. Thin
     wrapper over ebit_year_rows() returning just the "ebit" field.
-    `force_switch`: see ebit_year_rows()."""
-    return [(y, r["ebit"]) for y, r in ebit_year_rows(bundle, is_financials, force_switch=force_switch).items()]
+    `force_switch`/`flags`: see ebit_year_rows()."""
+    return [(y, r["ebit"]) for y, r in ebit_year_rows(bundle, is_financials, force_switch=force_switch, flags=flags).items()]
 
 
-def ebit_ttm(bundle, is_financials, revenue=None, info=None, force_switch=None):
+def ebit_ttm(bundle, is_financials, revenue=None, info=None, force_switch=None, flags=None):
     """(ebit_value_or_None, estimated) - the TTM figure every caller that
     used to do `_plausible_operating_income(_latest(income,
     "operating_income"), revenue, info)` should call instead.
 
-    When the EBIT_FROM_PRETAX switch is on, the ticker isn't financials,
-    and a derived value exists for the newest year that has one, that
-    value is used directly (estimated=False) - deliberately bypassing
-    _plausible_operating_income()'s own operatingMargins cross-check.
-    That check's "second source" (yfinance's operatingMargins info field)
-    is itself built from the same understated Operating Income row this
-    fix corrects, so running the derived (fixed) value back through a
-    plausibility band anchored on the buggy figure would flag the FIX as
-    implausible and silently replace it with the old wrong number -
-    confirmed shape of the failure: SUL.AX's real operating margin
-    (derived EBIT / revenue) sits roughly 4.5x yfinance's own
-    operatingMargins figure, miles outside _plausible_operating_income's
-    2x/25-point tolerance bands. That would defeat this fix for exactly
-    the tickers it targets.
+    When at least one year in this series is derivable (see
+    ebit_year_rows() - the switch is on, not financials, and >=1 year
+    has Pretax Income), the TTM figure is the NEWEST year that has a
+    non-None "ebit" (walking past any dropped year - see Commit P) -
+    deliberately bypassing _plausible_operating_income()'s own
+    operatingMargins cross-check for that value. That check's "second
+    source" (yfinance's operatingMargins info field) is itself built
+    from the same understated Operating Income row this fix corrects,
+    so running the derived (fixed) value back through a plausibility
+    band anchored on the buggy figure would flag the FIX as implausible
+    and silently replace it with the old wrong number - confirmed shape
+    of the failure: SUL.AX's real operating margin (derived EBIT /
+    revenue) sits roughly 4.5x yfinance's own operatingMargins figure,
+    miles outside _plausible_operating_income's 2x/25-point tolerance
+    bands. That would defeat this fix for exactly the tickers it
+    targets. If the picked year isn't the newest year in the series,
+    `flags` (if given) gets a line naming which year TTM actually came
+    from and why.
 
     Otherwise (switch off, financials, or no Pretax Income on file for
     any year) falls through to the exact same
     _latest(income,"operating_income") + _plausible_operating_income()
     path this module has always used - so with the switch off, this
     function's output is byte-identical to the pre-Commit-O code path.
-    `force_switch`: see ebit_year_rows()."""
+    `force_switch`/`flags`: see ebit_year_rows()."""
     income = bundle.get("income")
-    rows = ebit_year_rows(bundle, is_financials, force_switch=force_switch)
+    rows = ebit_year_rows(bundle, is_financials, force_switch=force_switch, flags=flags)
     switch_on = EBIT_FROM_PRETAX if force_switch is None else force_switch
     use_derived = bool(switch_on) and not is_financials
-    if use_derived:
-        for row in rows.values():
-            if row.get("ebit_derived") is not None:
-                return row["ebit_derived"], False
+    any_derivable = use_derived and any(r.get("ebit_derived") is not None for r in rows.values())
+    if any_derivable:
+        years_desc = list(rows.keys())  # newest-first, insertion order matches ebit_year_rows()
+        for y in years_desc:
+            if rows[y]["ebit"] is not None:
+                if y != years_desc[0] and flags is not None:
+                    flags.append(
+                        f"EBIT: TTM figure taken from {y}, not the newest year {years_desc[0]} "
+                        f"- {years_desc[0]} is missing Pretax Income"
+                    )
+                return rows[y]["ebit"], False
     raw = _latest(income, "operating_income")
     if revenue is None:
         revenue = _latest(income, "revenue")
