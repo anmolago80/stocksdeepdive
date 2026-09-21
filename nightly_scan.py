@@ -1425,6 +1425,12 @@ def cleanup_sector_universe_pollution(log=print):
     serve pollution until its own 72h staleness cutoff happens to
     expire on its own.
 
+    Owner-requested (21 Sep 2026): logs one line PER UNIVERSE, every
+    run - rows checked, rows matched, and the outcome (kept / no saved
+    scan / INVALIDATED) - not just the trailing one-line summary, so
+    exactly what this did is readable straight from the Railway logs
+    without reading the code.
+
     Guarded by a marker file, same convention as cleanup_fix9_nan_data()
     above - this only ever needs to run once against whatever's already
     on disk; every scan saved AFTER this deploy already goes through
@@ -1447,12 +1453,24 @@ def cleanup_sector_universe_pollution(log=print):
         try:
             payload = scan_store.load_scan_raw(universe)
             if not payload or not payload.get("rows"):
+                # Owner-requested (21 Sep 2026): a per-universe log line
+                # every run, not just when something gets invalidated -
+                # so tomorrow's Railway logs show exactly what this
+                # checked, not just a one-line summary.
+                log(f"[nightly_scan] commitL cleanup: {universe}: no saved scan on file - nothing to check")
                 continue
             rows = payload["rows"]
             matching = sum(1 for r in rows if r.get("Sector") in expected_sectors)
             if matching < len(rows) / 2:
-                if scan_store.invalidate(universe):
+                was_invalidated = scan_store.invalidate(universe)
+                if was_invalidated:
                     invalidated.append(f"{universe} ({matching}/{len(rows)} rows matched)")
+                log(f"[nightly_scan] commitL cleanup: {universe}: checked {len(rows)} row(s), "
+                    f"{matching} matched expected sector(s) {expected_sectors} - "
+                    f"{'INVALIDATED' if was_invalidated else 'below threshold but nothing on disk to invalidate'}")
+            else:
+                log(f"[nightly_scan] commitL cleanup: {universe}: checked {len(rows)} row(s), "
+                    f"{matching} matched expected sector(s) {expected_sectors} - kept, not polluted")
         except Exception as e:
             log(f"[nightly_scan] commitL cleanup: {universe} check failed: {e}")
     log(f"[nightly_scan] commitL cleanup: checked {len(checked)} sector universe(s), "
