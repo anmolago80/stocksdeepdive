@@ -683,6 +683,156 @@ def compute_moat(ticker, force_refresh=False):
     return result
 
 
+def compute_moat_diagnostics(ticker):
+    """Commit M (21 Sep 2026, owner-reported): owner-only diagnostic view
+    of compute_moat()'s own internal computation - exposes everything it
+    computes internally but never returns, so "is this pillar's zero a
+    genuine result or bad input data" is answerable without re-deriving
+    the formula by hand from a live DB dump. Reuses the exact same
+    pillar functions/helpers compute_moat() itself calls (never a second,
+    slightly different reimplementation) - the numbers this returns are
+    guaranteed to be the SAME ones that produced the site's own Moat
+    score for this ticker, not a parallel recomputation that could
+    silently drift from it.
+
+    Deliberately NOT cached (unlike compute_moat(), 24h on the volume) -
+    this is a debugging tool an owner opens occasionally, not a display
+    path every visitor's page load needs to stay cheap; always a fresh
+    fundamentals_data.get_bundle() call (that module's OWN cache still
+    applies - this doesn't force a live re-fetch of the underlying
+    statements, just re-runs the Moat math itself fresh every call).
+
+    Returns None if the ticker is a fund, has no usable bundle, or has
+    fewer than 2 usable statement years - the same gate compute_moat()
+    itself uses; callers should fall back to whatever compute_moat()/
+    get_cached_moat() already say in that case (this function adds
+    detail, it never replaces the site's own real Moat computation).
+
+    Returns {"ticker", "mode" ("standard"|"financials"), "years_usable",
+    "flags" (every line, verbatim, in the exact order compute_moat()
+    generates them), "components" (the pillars that DID score, same
+    shape as compute_moat()'s own "components"), "pillar_status" ({pillar
+    name: "computed"|"dropped"} for all four, regardless of whether this
+    ticker's own mode/data ever lets a given pillar apply), "year_rows"
+    (newest-first list of per-year raw inputs - standard mode: year/
+    revenue/gross_profit_or_fallback/gross_profit_is_fallback_operating_
+    income/operating_income/nopat/equity/total_debt/long_term_debt/cash/
+    invested_capital/roic; financials mode: year/equity/net_income/roe),
+    "ttm_return"/"ttm_return_metric" (ROIC or ROE), "ttm_cost_of_capital"/
+    "ttm_cost_of_capital_flagged", "spread"}."""
+    ticker = (ticker or "").strip().upper()
+    if not ticker:
+        return None
+    try:
+        bundle = fundamentals_data.get_bundle(ticker)
+    except Exception:
+        return None
+    if not bundle:
+        return None
+    info = bundle.get("info") or {}
+    if _is_fund(info):
+        return None
+    income, balance = bundle.get("income"), bundle.get("balance")
+    if income is None or balance is None or getattr(income, "empty", True) or getattr(balance, "empty", True):
+        return None
+
+    is_financials = _is_financials(info)
+    mode = "financials" if is_financials else "standard"
+    basics = _ace._basics(bundle)
+
+    return_series = _year_return_series(bundle, info, is_financials)
+    years_desc = [y for y, _, _ in return_series]
+    roic_list = [v for _, v, _ in return_series]
+    usable_years = sum(1 for v in roic_list if v is not None)
+    if usable_years < 2:
+        return None
+
+    flags = []
+    components = []
+
+    spread_pts = _pillar_spread(bundle, basics, is_financials, roic_list, flags)
+    if spread_pts is not None:
+        components.append({"pillar": "Excess-return spread", "points": round(spread_pts, 1), "max": 30})
+
+    persistence_pts = _pillar_persistence(roic_list, is_financials, flags)
+    if persistence_pts is not None:
+        components.append({"pillar": "Persistence", "points": round(persistence_pts, 1), "max": 25})
+
+    pricing_pts = _pillar_pricing_power(bundle, flags)
+    if pricing_pts is not None:
+        components.append({"pillar": "Pricing power", "points": round(pricing_pts, 1), "max": 25})
+
+    reinvest_pts = _pillar_reinvestment(return_series, flags)
+    if reinvest_pts is not None:
+        components.append({"pillar": "Reinvestment", "points": round(reinvest_pts, 1), "max": 20})
+
+    equity_s = dict(_ace._series(balance, "stockholders_equity"))
+    year_rows = []
+    if is_financials:
+        net_income_s = dict(_ace._series(income, "net_income"))
+        for y, roe, _extra in return_series:
+            year_rows.append({
+                "year": y, "equity": equity_s.get(y), "net_income": net_income_s.get(y), "roe": roe,
+            })
+    else:
+        revenue_s = dict(_ace._series(income, "revenue"))
+        gp_row = _ace._find_row(income, ["Gross Profit"])
+        used_fallback = gp_row is None
+        gp_s = dict(_ace._series(income, "Gross Profit" if not used_fallback else "operating_income"))
+        op_income_s = dict(_ace._series(income, "operating_income"))
+        debt_s = dict(_ace._series(balance, "total_debt"))
+        long_term_debt_s = dict(_ace._series(balance, "long_term_debt"))
+        cash_s = dict(_ace._series(balance, "cash"))
+        for y, roic, extra in return_series:
+            year_rows.append({
+                "year": y,
+                "revenue": revenue_s.get(y),
+                "gross_profit_or_fallback": gp_s.get(y),
+                "gross_profit_is_fallback_operating_income": used_fallback,
+                "operating_income": op_income_s.get(y),
+                "nopat": extra.get("nopat"),
+                "equity": equity_s.get(y),
+                "total_debt": debt_s.get(y),
+                "long_term_debt": long_term_debt_s.get(y),
+                "cash": cash_s.get(y),
+                "invested_capital": extra.get("invested_capital"),
+                "roic": roic,
+            })
+
+    if is_financials:
+        ce_result = _ace._safe(capm_engine.resolve_discount_rate, info, basics["currency"])
+        ttm_cost_of_capital, _ce_meta = ce_result if ce_result else (None, {})
+        ttm_cost_of_capital_flagged = bool((_ce_meta or {}).get("defaulted") or (_ce_meta or {}).get("floored"))
+    else:
+        ttm_cost_of_capital, ttm_cost_of_capital_flagged = _ttm_wacc(bundle, basics)
+
+    ttm_return = roic_list[0] if roic_list else None
+    spread = (
+        (ttm_return - ttm_cost_of_capital)
+        if (ttm_return is not None and ttm_cost_of_capital is not None) else None
+    )
+
+    return {
+        "ticker": ticker,
+        "mode": mode,
+        "years_usable": usable_years,
+        "flags": flags,
+        "components": components,
+        "pillar_status": {
+            "Excess-return spread": "computed" if spread_pts is not None else "dropped",
+            "Persistence": "computed" if persistence_pts is not None else "dropped",
+            "Pricing power": "computed" if pricing_pts is not None else "dropped",
+            "Reinvestment": "computed" if reinvest_pts is not None else "dropped",
+        },
+        "year_rows": year_rows,
+        "ttm_return": ttm_return,
+        "ttm_return_metric": "ROE" if is_financials else "ROIC",
+        "ttm_cost_of_capital": ttm_cost_of_capital,
+        "ttm_cost_of_capital_flagged": ttm_cost_of_capital_flagged,
+        "spread": spread,
+    }
+
+
 def moat_contributions(components):
     """Ordered {pillar_label: points} for the "What's driving Moat" bar
     chart (_dd_contrib_chart's own input shape) - only pillars that were

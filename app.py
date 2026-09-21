@@ -11223,6 +11223,80 @@ def page_deep_dive():
 
         _dd_moat()
 
+        # Commit M (21 Sep 2026, owner-reported): owner-only Moat
+        # diagnostics - "is this pillar's zero a genuine result or bad
+        # input data" for the ticker currently on screen. Gated the exact
+        # same way page_admin_dashboard() gates itself
+        # (ai_gate.is_owner(paywall_engine.current_user_email()), never
+        # the shared ?admin=/RC-view key a non-owner co-admin could also
+        # hold) - never rendered, never even checked, for a visitor.
+        # Recomputes fresh (moat_engine.compute_moat_diagnostics() is
+        # deliberately NOT part of the 24h moat_cache - see its own
+        # docstring), so it's behind a button rather than run
+        # unconditionally on every owner page view, same "don't pay for
+        # it unless actually opened" convention the Admin Dashboard's own
+        # "Show email list" checkbox already uses.
+        if ai_gate.is_owner(paywall_engine.current_user_email()):
+            with st.expander("🔧 Moat diagnostics (owner only)", expanded=False):
+                st.caption(
+                    "Recomputes fresh from the fundamentals bundle - not the "
+                    "24h Moat cache - so this always reflects the current data."
+                )
+                if st.button("Load diagnostics", key=f"dd_moat_diag_btn_{_dd['ticker']}"):
+                    try:
+                        _moat_diag = moat_engine.compute_moat_diagnostics(_dd["ticker"])
+                    except Exception as e:
+                        _moat_diag = None
+                        st.error(f"Diagnostics failed: {e}")
+                    if _moat_diag is None:
+                        st.caption(
+                            "No diagnostics available for this ticker (fund, no "
+                            "fundamentals bundle, or fewer than 2 usable statement years)."
+                        )
+                    else:
+                        st.markdown(
+                            f"**Mode:** {_moat_diag['mode']} &middot; "
+                            f"**Usable years:** {_moat_diag['years_usable']}"
+                        )
+
+                        st.markdown("**Flags (verbatim, moat_engine's own order):**")
+                        if _moat_diag["flags"]:
+                            for _mf in _moat_diag["flags"]:
+                                st.write(f"- {_mf}")
+                        else:
+                            st.caption("No flags recorded.")
+
+                        st.markdown("**Pillar status:**")
+                        _mf_points = {c["pillar"]: c["points"] for c in _moat_diag["components"]}
+                        for _pname, _pstatus in _moat_diag["pillar_status"].items():
+                            _pscore = _mf_points.get(_pname)
+                            st.write(
+                                f"- {_pname}: {_pstatus}"
+                                + (f" - {_pscore} pts" if _pscore is not None else "")
+                            )
+
+                        st.markdown(
+                            f"**TTM {_moat_diag['ttm_return_metric']}:** "
+                            + (f"{_moat_diag['ttm_return']:.1%}" if _moat_diag["ttm_return"] is not None else "n/a")
+                        )
+                        st.markdown(
+                            "**TTM cost of capital:** "
+                            + (f"{_moat_diag['ttm_cost_of_capital']:.1%}" if _moat_diag["ttm_cost_of_capital"] is not None else "n/a")
+                            + (" _(flagged: defaulted/estimated input)_" if _moat_diag.get("ttm_cost_of_capital_flagged") else "")
+                        )
+                        st.markdown(
+                            "**Spread:** "
+                            + (f"{_moat_diag['spread']:+.1%}" if _moat_diag["spread"] is not None else "n/a")
+                        )
+
+                        st.markdown("**Per-year raw series (newest first):**")
+                        if _moat_diag["year_rows"]:
+                            st.dataframe(
+                                pd.DataFrame(_moat_diag["year_rows"]), hide_index=True, width='stretch',
+                            )
+                        else:
+                            st.caption("No per-year data available.")
+
         # Services batch 2, Part 2 (2026-09-01): peer context - directly
         # under the score gauges above, before Margin of Safety, per spec.
         _render_peer_context(_dd)
