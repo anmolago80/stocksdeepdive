@@ -212,6 +212,91 @@ MIN_YEARS = 1
 MAX_YEARS = 30
 WEEKS_PER_YEAR = 52
 
+# --------------------------------------------------------------------------- #
+# Depreciation (Commit U, 21 Sep 2026, owner-reported): the property side
+# used to ignore depreciation entirely - a major deduction for a real
+# investment property. Two ATO divisions, simplified deliberately (see
+# each rate's own comment):
+#   Div 43 (capital works) - the BUILDING itself (construction cost,
+#   excluding land - land is never depreciable). Flat 2.5%/yr of that
+#   cost, available for a New build or an Established property built
+#   AFTER 15 Sep 1987 (the date Div 43 started) - $0 for a pre-1987
+#   property, whose construction cost was never eligible at all.
+#   Div 40 (plant & equipment) - fittings (carpets, appliances, blinds),
+#   New build only: since 2017, a buyer of an ESTABLISHED property can no
+#   longer claim depreciation on second-hand plant they didn't install
+#   themselves (Treasury Laws Amendment (Housing Tax Integrity) Act
+#   2017) - so this claim only exists at all when the fittings were
+#   bought new, by this owner, which this tool takes to mean "New build".
+#   Diminishing value at 20%/yr, assuming a 10-year effective life (the
+#   ATO's own DV formula is 200%/effective_life for an asset acquired
+#   after 10 May 2006 - 200%/10 = 20%/yr, stated directly here rather
+#   than re-derived, since a real quantity surveyor's schedule is the
+#   only source of a REAL effective life per asset).
+# Both are entered by the user (a quantity surveyor's own depreciation
+# schedule, not modelled from the property price) - see the "Property
+# type"/"Building cost"/"New plant & equipment value" inputs in app.py.
+# --------------------------------------------------------------------------- #
+
+PROPERTY_TYPE_NEW = "new"
+PROPERTY_TYPE_ESTABLISHED = "established"
+PROPERTY_TYPE_PRE_1987 = "pre_1987"
+
+DIV43_RATE = 0.025  # capital works, 2.5%/yr of building cost
+DIV40_RATE = 0.20   # plant & equipment, diminishing value, assumes a 10-year effective life
+
+
+def div43_cumulative_claim(building_cost, property_type, years):
+    """Cumulative Div 43 capital-works claim after `years` full years of
+    ownership - flat 2.5%/yr of building_cost for New build/Established-
+    after-1987, $0 for pre_1987 (the property's construction predates
+    Div 43 itself), capped at building_cost - a building can never be
+    depreciated past 100% of what was actually spent constructing it
+    (land is never depreciable, hence "excl. land" on the input)."""
+    if property_type == PROPERTY_TYPE_PRE_1987 or not building_cost:
+        return 0.0
+    return min(DIV43_RATE * (building_cost or 0.0) * max(years, 0), building_cost)
+
+
+def div43_annual_claim(building_cost, property_type, year):
+    """One year's OWN Div 43 claim (year is 1-indexed within the hold) -
+    the delta between this year's and last year's cumulative claim, so
+    the building_cost cap above applies smoothly: a partial claim in
+    whichever year crosses the cap, $0 in every year after."""
+    return (div43_cumulative_claim(building_cost, property_type, year)
+            - div43_cumulative_claim(building_cost, property_type, year - 1))
+
+
+def div40_written_down_value(plant_value, property_type, years):
+    """Div 40 plant's written-down value after `years` full years of 20%/
+    yr diminishing-value depreciation - New build only ($0 for
+    Established/pre_1987, see the module comment above on the 2017
+    second-hand-fittings rule). At sale, this tool assumes the fittings
+    sell at exactly this figure (no balancing adjustment - see
+    property_capital_growth()'s own docstring for why Div 40 never
+    touches the property's own cost base/CGT, unlike Div 43)."""
+    if property_type != PROPERTY_TYPE_NEW or not plant_value:
+        return 0.0
+    return (plant_value or 0.0) * (1 - DIV40_RATE) ** max(years, 0)
+
+
+def div40_annual_claim(plant_value, property_type, year):
+    """One year's own Div 40 claim (year is 1-indexed) - 20% of the
+    WRITTEN-DOWN value at the START of that year (i.e. after `year - 1`
+    years of prior claims), the standard diminishing-value formula."""
+    if property_type != PROPERTY_TYPE_NEW or not plant_value:
+        return 0.0
+    return div40_written_down_value(plant_value, property_type, year - 1) * DIV40_RATE
+
+
+def property_depreciation_for_year(building_cost, plant_value, property_type, year):
+    """One year's TOTAL depreciation deduction (Div 43 + Div 40 combined)
+    - a NON-CASH tax deduction (see property_year_tax_legs()'s own
+    docstring for how this stacks with rent/interest/holding, and why it
+    never appears as a cash outflow anywhere in this model)."""
+    return (div43_annual_claim(building_cost, property_type, year)
+            + div40_annual_claim(plant_value, property_type, year))
+
 
 # --------------------------------------------------------------------------- #
 # Bracket-tax primitives (Commit B, 20 Sep 2026). Replace the old flat
@@ -276,20 +361,21 @@ def tax_on_extra(other_income, extra):
     return income_tax(other_income + extra) - income_tax(other_income)
 
 
-def property_year_tax_legs(rent, interest, holding, capital_gain, other_income):
+def property_year_tax_legs(rent, interest, holding, capital_gain, other_income, depreciation=0.0):
     """One year's after-tax property lines, sequentially stacked (B5):
     rent (income) -> interest (deduction) -> holding costs (deduction)
-    -> capital gain (only in the sale year - `capital_gain` is None for
-    every other year). Each leg is its OWN tax_on_extra() call against
-    the RUNNING cumulative income left by the legs before it, in this
-    fixed order - rent first, deductions next, capital gain stacked
-    LAST on top of the net rental position, exactly matching B5's own
-    "extra = net_rental_position + discounted_capital_gain" (net
-    rental position settled first, gain stacked on top).
+    -> depreciation (deduction, Commit U) -> capital gain (only in the
+    sale year - `capital_gain` is None for every other year). Each leg
+    is its OWN tax_on_extra() call against the RUNNING cumulative income
+    left by the legs before it, in this fixed order - rent first,
+    deductions next, capital gain stacked LAST on top of the net rental
+    position, exactly matching B5's own "extra = net_rental_position +
+    discounted_capital_gain" (net rental position settled first, gain
+    stacked on top).
 
-    This is a TELESCOPING SUM: summing the four legs' own after-tax
-    deltas always reproduces the exact combined bracket-correct total
-    for ANY fixed order chosen - income_tax(x1)-income_tax(x0) +
+    This is a TELESCOPING SUM: summing the legs' own after-tax deltas
+    always reproduces the exact combined bracket-correct total for ANY
+    fixed order chosen - income_tax(x1)-income_tax(x0) +
     income_tax(x2)-income_tax(x1) + ... collapses to income_tax(xN)-
     income_tax(x0) regardless of where the intermediate steps fall.
     The order only decides which LINE "gets" a bracket boundary a
@@ -305,17 +391,33 @@ def property_year_tax_legs(rent, interest, holding, capital_gain, other_income):
     total at its full (undiscounted) value, "$0 tax rather than a
     refund".
 
+    DEPRECIATION (Commit U, 21 Sep 2026, owner-reported): a NON-CASH
+    deduction - the building/fittings aren't being paid for again each
+    year (see property_depreciation_for_year()'s own docstring). Unlike
+    interest/holding, whose "_after_tax" key IS a real after-tax cash
+    cost that after_tax_total deliberately subtracts, depreciation's
+    only real effect is a BIGGER REFUND (or smaller bill) - so only its
+    TAX DELTA (`depreciation_tax`, negative when it widens the loss -
+    same sign convention as interest_tax/holding_tax) feeds
+    after_tax_total; the raw depreciation amount itself is never
+    subtracted as if it were cash spent. Defaults to 0.0 so every
+    caller that passes only the original five positional args gets
+    byte-identical output to before this commit.
+
     Returns {"rent_after_tax", "interest_cost_after_tax" (a POSITIVE
     after-tax COST, to be SUBTRACTED - the property_interest_after_
     tax() convention this replaces), "holding_cost_after_tax" (same),
-    "capital_gain_after_tax" (0.0 when capital_gain is None), "tax"
-    (total, all four legs), "after_tax_total"} - after_tax_total always
-    equals rent_after_tax - interest_cost_after_tax -
-    holding_cost_after_tax + capital_gain_after_tax exactly."""
+    "depreciation_tax" (signed tax_on_extra() delta for the
+    depreciation leg alone - negative = bigger refund), "capital_gain_
+    after_tax" (0.0 when capital_gain is None), "tax" (total, all five
+    legs), "after_tax_total"} - after_tax_total always equals
+    rent_after_tax - interest_cost_after_tax - holding_cost_after_tax -
+    depreciation_tax + capital_gain_after_tax exactly."""
     other_income = other_income or 0.0
     rent = rent or 0.0
     interest = interest or 0.0
     holding = holding or 0.0
+    depreciation = depreciation or 0.0
     running = other_income
 
     rent_tax = tax_on_extra(running, rent)
@@ -330,6 +432,9 @@ def property_year_tax_legs(rent, interest, holding, capital_gain, other_income):
     running += -holding
     holding_cost_after_tax = holding + holding_tax
 
+    depreciation_tax = tax_on_extra(running, -depreciation)
+    running += -depreciation
+
     capital_gain_after_tax = 0.0
     gain_tax = 0.0
     if capital_gain is not None:
@@ -340,15 +445,16 @@ def property_year_tax_legs(rent, interest, holding, capital_gain, other_income):
         else:
             capital_gain_after_tax = capital_gain
 
-    total_tax = rent_tax + interest_tax + holding_tax + gain_tax
+    total_tax = rent_tax + interest_tax + holding_tax + depreciation_tax + gain_tax
     after_tax_total = (
         rent_after_tax - interest_cost_after_tax - holding_cost_after_tax
-        + capital_gain_after_tax
+        - depreciation_tax + capital_gain_after_tax
     )
     return {
         "rent_after_tax": rent_after_tax,
         "interest_cost_after_tax": interest_cost_after_tax,
         "holding_cost_after_tax": holding_cost_after_tax,
+        "depreciation_tax": depreciation_tax,
         "capital_gain_after_tax": capital_gain_after_tax,
         "tax": total_tax,
         "after_tax_total": after_tax_total,
@@ -528,27 +634,41 @@ def property_future_value(price, growth_rate, years):
     return price * (1 + (growth_rate or 0.0)) ** years
 
 
-def property_capital_growth(price, growth_rate, years, buy_costs, sell_costs_pct):
-    """{"future_price", "sell_costs_dollar", "cost_base", "taxable_gain"}
-    for the property sold at `years` - the ECONOMIC (pretax) gain/loss
-    only. Commit B (20 Sep 2026): renamed from property_capital_growth_
-    after_cgt and dropped the "after_tax" key it used to compute
-    directly - the tax treatment now depends on stacking this gain
-    against that year's own rental position and other_income (B5's
-    "must be computed together, not separately"), which this function
-    has no visibility into on its own. See property_year_tax_legs() and
-    _property_mark_to_market() below for where "after_tax" is actually
-    computed now. Nothing outside this module ever called the old name
-    (grepped before this commit), so no back-compat alias is kept."""
+def property_capital_growth(price, growth_rate, years, buy_costs, sell_costs_pct, div43_claimed=0.0):
+    """{"future_price", "sell_costs_dollar", "cost_base", "div43_claimed",
+    "taxable_gain"} for the property sold at `years` - the ECONOMIC
+    (pretax) gain/loss only. Commit B (20 Sep 2026): renamed from
+    property_capital_growth_after_cgt and dropped the "after_tax" key it
+    used to compute directly - the tax treatment now depends on stacking
+    this gain against that year's own rental position and other_income
+    (B5's "must be computed together, not separately"), which this
+    function has no visibility into on its own. See property_year_tax_
+    legs() and _property_mark_to_market() below for where "after_tax" is
+    actually computed now. Nothing outside this module ever called the
+    old name (grepped before this commit), so no back-compat alias is
+    kept.
+
+    Commit U (21 Sep 2026, owner-reported): `div43_claimed` (cumulative
+    Div 43 capital-works depreciation claimed by `years` - see
+    div43_cumulative_claim()) reduces the cost base dollar for dollar,
+    clawing it back through CGT at the discounted rate - the same
+    "reduce the cost base" mechanic the real ATO rules use for capital
+    works depreciation. Div 40 plant deliberately does NOT touch this
+    cost base: this tool assumes the fittings sell at their own written-
+    down value with no balancing adjustment (see div40_written_down_
+    value()'s own docstring), so only div43_claimed ever appears here.
+    Defaults to 0.0 so every caller that doesn't pass it gets byte-
+    identical output to before this commit."""
     future_price = property_future_value(price, growth_rate, years)
     sell_costs_dollar = future_price * (sell_costs_pct or 0.0)
     proceeds = future_price - sell_costs_dollar
-    cost_base = price + (buy_costs or 0.0)
+    cost_base = price + (buy_costs or 0.0) - (div43_claimed or 0.0)
     taxable_gain = proceeds - cost_base
     return {
         "future_price": future_price,
         "sell_costs_dollar": sell_costs_dollar,
         "cost_base": cost_base,
+        "div43_claimed": div43_claimed,
         "taxable_gain": taxable_gain,
     }
 
@@ -559,9 +679,12 @@ def property_interest_per_year(loan, loan_rate):
 
 def _property_mark_to_market(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
                              holding_costs, growth_rate, years, buy_costs,
-                             sell_costs_pct, other_income, io_period, term):
+                             sell_costs_pct, other_income, io_period, term,
+                             building_cost=0.0, plant_value=0.0,
+                             property_type=PROPERTY_TYPE_ESTABLISHED):
     """[{"year", "growth", "rent_after_tax", "interest_cost_after_tax",
-    "holding_cost_after_tax", "capital_gain_after_tax", "tax",
+    "holding_cost_after_tax", "depreciation_total",
+    "depreciation_tax_total", "capital_gain_after_tax", "tax",
     "cumulative_after_tax"} for year = 0..years] - Commit B's year-by-
     year, bracket-tax-stacked mark-to-market series (module docstring's
     "YEAR-BY-YEAR" section + B5/B6). Shared by property_breakdown()
@@ -572,16 +695,33 @@ def _property_mark_to_market(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
     keeping two copies in sync by hand.
 
     At every point t, years 1..t-1 are taxed as pure recurring cash
-    flow (rent/interest/holding, no capital gain - B5's "years 1..N-1"),
-    and year t ITSELF is taxed as the sale year - its own recurring
-    cash flow stacked together with the capital gain from selling at
-    year t (B5's "Year N" rule) - exactly what mark-to-market means:
-    "if sold at year t". `other_income` is the SAME every year (not
-    cumulative across years - B5's "both sides are computed against
+    flow (rent/interest/holding/depreciation, no capital gain - B5's
+    "years 1..N-1"), and year t ITSELF is taxed as the sale year - its
+    own recurring cash flow stacked together with the capital gain from
+    selling at year t (B5's "Year N" rule) - exactly what mark-to-market
+    means: "if sold at year t". `other_income` is the SAME every year
+    (not cumulative across years - B5's "both sides are computed against
     the SAME other_income, independently"), so years 1..t-1's own
     recurring-only after-tax total is identical regardless of which t
     is being evaluated - computed once per year and carried forward as
-    a running sum (O(years) total, not O(years^2))."""
+    a running sum (O(years) total, not O(years^2)).
+
+    DEPRECIATION (Commit U, 21 Sep 2026, owner-reported): building_cost/
+    plant_value/property_type default to 0.0/0.0/"established" - a
+    property_type of "established" with building_cost=0.0 claims
+    exactly $0 of depreciation either way, so a caller that doesn't pass
+    these three gets byte-identical output to before this commit. Two
+    depreciation-specific things happen at each point t:
+      - Year t's OWN depreciation claim (property_depreciation_for_
+        year()) is passed into property_year_tax_legs() as a 5th
+        deduction leg, for BOTH the sale-year-stacked call and the
+        recurring-only call - it's a real deduction every year it
+        occurs, sale year included.
+      - The capital gain itself (property_capital_growth()) is computed
+        with `div43_claimed` = cumulative Div 43 claimed through year t
+        (div43_cumulative_claim()) - clawing that depreciation back
+        through CGT at the discounted rate, per the ATO's own cost-base
+        reduction rule (property_capital_growth()'s own docstring)."""
     price = property_price(cash, loan)
     schedule = property_loan_schedule(loan, loan_rate, io_period, term, years)
     working_weeks = max(WEEKS_PER_YEAR - (vacancy_weeks or 0), 0)
@@ -601,36 +741,50 @@ def _property_mark_to_market(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
     cumulative_rent = 0.0
     cumulative_interest = 0.0
     cumulative_holding = 0.0
+    cumulative_depreciation = 0.0
+    cumulative_depreciation_tax = 0.0
     for t in range(0, years + 1):
-        growth = property_capital_growth(price, growth_rate, t, buy_costs, sell_costs_pct)
+        div43_claimed_t = div43_cumulative_claim(building_cost, property_type, t)
+        growth = property_capital_growth(price, growth_rate, t, buy_costs, sell_costs_pct, div43_claimed=div43_claimed_t)
         if t == 0:
-            rent_t, interest_t = 0.0, 0.0
+            rent_t, interest_t, depreciation_t = 0.0, 0.0, 0.0
         else:
             rent_t = rent_per_year
             interest_t = schedule["interest_per_year"][t - 1]
-        legs = property_year_tax_legs(rent_t, interest_t, holding_per_year, growth["taxable_gain"], other_income)
+            depreciation_t = property_depreciation_for_year(building_cost, plant_value, property_type, t)
+        legs = property_year_tax_legs(
+            rent_t, interest_t, holding_per_year, growth["taxable_gain"], other_income,
+            depreciation=depreciation_t)
         out.append({
             "year": t,
             "growth": growth,
             "rent_after_tax_total": cumulative_rent + legs["rent_after_tax"],
             "interest_cost_after_tax_total": cumulative_interest + legs["interest_cost_after_tax"],
             "holding_cost_after_tax_total": cumulative_holding + legs["holding_cost_after_tax"],
+            "depreciation_total": cumulative_depreciation + depreciation_t,
+            "depreciation_tax_total": cumulative_depreciation_tax + legs["depreciation_tax"],
             "capital_gain_after_tax": legs["capital_gain_after_tax"],
             "tax": legs["tax"],
             "cumulative_after_tax": cumulative_after_tax + legs["after_tax_total"],
         })
         if t >= 1:
-            recurring_only = property_year_tax_legs(rent_t, interest_t, holding_per_year, None, other_income)
+            recurring_only = property_year_tax_legs(
+                rent_t, interest_t, holding_per_year, None, other_income,
+                depreciation=depreciation_t)
             cumulative_after_tax += recurring_only["after_tax_total"]
             cumulative_rent += recurring_only["rent_after_tax"]
             cumulative_interest += recurring_only["interest_cost_after_tax"]
             cumulative_holding += recurring_only["holding_cost_after_tax"]
+            cumulative_depreciation += depreciation_t
+            cumulative_depreciation_tax += recurring_only["depreciation_tax"]
     return out
 
 
 def property_breakdown(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
                        holding_costs, growth_rate, years, buy_costs,
-                       sell_costs_pct, other_income, io_period, term):
+                       sell_costs_pct, other_income, io_period, term,
+                       building_cost=0.0, plant_value=0.0,
+                       property_type=PROPERTY_TYPE_ESTABLISHED):
     """The property card's full breakdown at `years` - the four lines
     (module docstring) plus "headline". io_period/term describe the
     loan's own two-phase structure (module docstring, LOAN STRUCTURE).
@@ -649,10 +803,19 @@ def property_breakdown(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
     is a display-allocation convention - property_year_tax_legs()'s own
     docstring explains why the total is exact regardless, even though
     the individual split depends on the (documented, fixed) order
-    chosen."""
+    chosen.
+
+    Commit U (21 Sep 2026, owner-reported): building_cost/plant_value/
+    property_type default to 0.0/0.0/"established" (zero depreciation
+    either way - byte-identical to before this commit for any caller
+    that doesn't pass them). `growth` also carries "div43_claimed" now
+    (property_capital_growth()'s own new key), and this dict gains
+    "depreciation_total"/"depreciation_tax_total" - see _property_mark_
+    to_market()'s own docstring for what each means."""
     series = _property_mark_to_market(
         cash, loan, loan_rate, weekly_rent, vacancy_weeks, holding_costs,
-        growth_rate, years, buy_costs, sell_costs_pct, other_income, io_period, term)
+        growth_rate, years, buy_costs, sell_costs_pct, other_income, io_period, term,
+        building_cost=building_cost, plant_value=plant_value, property_type=property_type)
     point = series[-1]
     price = property_price(cash, loan)
     growth = dict(point["growth"])
@@ -663,13 +826,16 @@ def property_breakdown(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
         "rent_after_tax": point["rent_after_tax_total"],
         "interest_after_tax": point["interest_cost_after_tax_total"],
         "costs_after_tax": point["holding_cost_after_tax_total"],
+        "depreciation_total": point["depreciation_total"],
+        "depreciation_tax_total": point["depreciation_tax_total"],
         "headline": point["cumulative_after_tax"],
     }
 
 
 def property_rental_position(loan, loan_rate, io_period, term,
                              weekly_rent, vacancy_weeks, holding_costs,
-                             years, other_income):
+                             years, other_income, building_cost=0.0,
+                             plant_value=0.0, property_type=PROPERTY_TYPE_ESTABLISHED):
     """Commit C (21 Sep 2026), C2: the property card's RENTAL POSITION
     group - rent/interest/holding costs and their COMBINED tax effect,
     one row per year, plus totals. Presentation-only (C7): every number
@@ -722,11 +888,30 @@ def property_rental_position(loan, loan_rate, io_period, term,
     scenario headline.
 
     Returns {"years": [{"year", "rent", "interest", "holding",
-    "net_pretax", "tax", "net_after_tax"} for year = 1..years],
-    "totals": {same six keys, summed}, "first_positive_year": the first
-    year `net_after_tax` turns positive (the property starts paying for
-    itself after tax, not merely costing less), or None if it never
-    does within the hold}."""
+    "depreciation", "net_pretax", "taxable_loss", "tax", "net_after_tax"}
+    for year = 1..years], "totals": {same eight keys, summed},
+    "first_positive_year": the first year `net_after_tax` turns positive
+    (the property starts paying for itself after tax, not merely costing
+    less), or None if it never does within the hold}.
+
+    DEPRECIATION (Commit U, 21 Sep 2026, owner-reported): building_cost/
+    plant_value/property_type default to 0.0/0.0/"established" (zero
+    depreciation either way - byte-identical to before this commit for
+    any caller that doesn't pass them). Two new per-row fields:
+    "depreciation" (that year's own non-cash claim - see property_
+    depreciation_for_year()) and "taxable_loss" (net_pretax minus
+    depreciation - the figure actually used for the refund, DISTINCT
+    from net_pretax which stays cash-only, per the task's own "cash
+    out-of-pocket ... stay cash-based" requirement). "tax" is unchanged
+    in SHAPE (still the one combined refund/bill for the whole stack,
+    negated for display) but is now bigger (a bigger refund) whenever
+    depreciation applies, since it's computed via property_year_tax_
+    legs()'s now-five-leg stack. "net_after_tax" = net_pretax + tax
+    still holds exactly (property_year_tax_legs()'s after_tax_total
+    already embeds the depreciation tax effect, never the raw
+    depreciation amount as if it were cash - see that function's own
+    docstring) - the RECONCILIATION identity above is unaffected,
+    verified in this commit's own test suite too."""
     other_income = other_income or 0.0
     years = max(0, int(years or 0))
     schedule = property_loan_schedule(loan, loan_rate, io_period, term, years)
@@ -736,14 +921,18 @@ def property_rental_position(loan, loan_rate, io_period, term,
 
     rows = []
     totals = {
-        "rent": 0.0, "interest": 0.0, "holding": 0.0,
-        "net_pretax": 0.0, "tax": 0.0, "net_after_tax": 0.0,
+        "rent": 0.0, "interest": 0.0, "holding": 0.0, "depreciation": 0.0,
+        "net_pretax": 0.0, "taxable_loss": 0.0, "tax": 0.0, "net_after_tax": 0.0,
     }
     first_positive_year = None
     for year in range(1, years + 1):
         interest = schedule["interest_per_year"][year - 1]
+        depreciation = property_depreciation_for_year(building_cost, plant_value, property_type, year)
         net_pretax = rent_per_year - interest - holding_per_year
-        legs = property_year_tax_legs(rent_per_year, interest, holding_per_year, None, other_income)
+        taxable_loss = net_pretax - depreciation
+        legs = property_year_tax_legs(
+            rent_per_year, interest, holding_per_year, None, other_income,
+            depreciation=depreciation)
         tax = -legs["tax"]
         net_after_tax = net_pretax + tax
         rows.append({
@@ -751,7 +940,9 @@ def property_rental_position(loan, loan_rate, io_period, term,
             "rent": rent_per_year,
             "interest": interest,
             "holding": holding_per_year,
+            "depreciation": depreciation,
             "net_pretax": net_pretax,
+            "taxable_loss": taxable_loss,
             "tax": tax,
             "net_after_tax": net_after_tax,
         })
@@ -760,7 +951,9 @@ def property_rental_position(loan, loan_rate, io_period, term,
         totals["rent"] += rent_per_year
         totals["interest"] += interest
         totals["holding"] += holding_per_year
+        totals["depreciation"] += depreciation
         totals["net_pretax"] += net_pretax
+        totals["taxable_loss"] += taxable_loss
         totals["tax"] += tax
         totals["net_after_tax"] += net_after_tax
 
@@ -918,7 +1111,9 @@ def after_tax_weekly_shortfall(loan, loan_rate, holding_costs, weekly_rent,
 
 def property_series(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
                     holding_costs, growth_rate, years, buy_costs,
-                    sell_costs_pct, other_income, io_period, term):
+                    sell_costs_pct, other_income, io_period, term,
+                    building_cost=0.0, plant_value=0.0,
+                    property_type=PROPERTY_TYPE_ESTABLISHED):
     """[headline-if-sold-at-t for t = 0..years] - property, mark-to-
     market (module docstring, YEAR-BY-YEAR section). series[years] is
     exactly property_breakdown(...)["headline"] at the same inputs (B6:
@@ -927,11 +1122,44 @@ def property_series(cash, loan, loan_rate, weekly_rent, vacancy_weeks,
     Commit B: tax_rate replaced by other_income - each point t is
     bracket-computed and stacked using B5's "Year N" rule for t itself
     (years before t stay recurring-only) - see _property_mark_to_
-    market()'s own docstring."""
+    market()'s own docstring.
+
+    Commit U (21 Sep 2026, owner-reported): building_cost/plant_value/
+    property_type threaded through to _property_mark_to_market() so the
+    crossover chart's own curve reflects the exact same depreciation-
+    adjusted headline property_breakdown() computes - defaults to zero
+    depreciation, byte-identical to before this commit, for any caller
+    that doesn't pass them (the same B6 identity this function's own
+    docstring describes would otherwise silently break: the chart
+    plotting one model while the card headline used another)."""
     series = _property_mark_to_market(
         cash, loan, loan_rate, weekly_rent, vacancy_weeks, holding_costs,
-        growth_rate, years, buy_costs, sell_costs_pct, other_income, io_period, term)
+        growth_rate, years, buy_costs, sell_costs_pct, other_income, io_period, term,
+        building_cost=building_cost, plant_value=plant_value, property_type=property_type)
     return [point["cumulative_after_tax"] for point in series]
+
+
+def property_cost_base_series(cash, loan, growth_rate, years, buy_costs,
+                              sell_costs_pct, building_cost=0.0,
+                              property_type=PROPERTY_TYPE_ESTABLISHED):
+    """[{"year", "cost_base", "div43_claimed"} for year = 0..years] -
+    Commit U (21 Sep 2026, owner-reported): the property's own cost base
+    AS IF SOLD at each year, reduced by cumulative Div 43 capital-works
+    claimed up to that year (property_capital_growth()'s own docstring).
+    Pure and cheap - no tax stacking, no loan schedule - the year-by-
+    year table's "Cost base" column reads straight off this, alongside
+    property_rental_position() for the rent/interest/holding/
+    depreciation/tax columns (that function has no visibility into
+    `cash`/growth_rate/buy_costs/sell_costs_pct, so cost base can't be
+    computed there without a much bigger signature change - this is a
+    small, separate, single-purpose function instead)."""
+    price = property_price(cash, loan)
+    out = []
+    for t in range(0, int(years or 0) + 1):
+        div43_claimed = div43_cumulative_claim(building_cost, property_type, t)
+        growth = property_capital_growth(price, growth_rate, t, buy_costs, sell_costs_pct, div43_claimed=div43_claimed)
+        out.append({"year": t, "cost_base": growth["cost_base"], "div43_claimed": div43_claimed})
+    return out
 
 
 def index_series(cash, capital_gain, dividend_yield, years, other_income):
@@ -981,7 +1209,8 @@ def run(cash=DEFAULT_CASH, loan=DEFAULT_LOAN, loan_rate=DEFAULT_LOAN_RATE,
        other_income=DEFAULT_OTHER_INCOME,
        years=DEFAULT_YEARS, buy_costs=DEFAULT_BUY_COSTS,
        sell_costs_pct=DEFAULT_SELL_COSTS_PCT,
-       io_period=DEFAULT_IO_PERIOD, term=DEFAULT_LOAN_TERM):
+       io_period=DEFAULT_IO_PERIOD, term=DEFAULT_LOAN_TERM,
+       property_type=PROPERTY_TYPE_ESTABLISHED, building_cost=0.0, plant_value=0.0):
     """One call, everything the UI needs: both cards' breakdowns, the
     break-even rent + coverage + shortfall, the year-by-year series for
     the crossover chart (+ its crossover year), and the loan's own
@@ -995,16 +1224,31 @@ def run(cash=DEFAULT_CASH, loan=DEFAULT_LOAN, loan_rate=DEFAULT_LOAN_RATE,
     computed together, not separately"). io_period/term are defensively
     clamped here too (never trust the caller): io_period <= years, term
     >= io_period - the same constraint the UI enforces on its own two
-    inputs."""
+    inputs.
+
+    Commit U (21 Sep 2026, owner-reported): property_type/building_cost/
+    plant_value default to "established"/0.0/0.0 - $0 depreciation
+    either way, byte-identical to before this commit for any caller that
+    doesn't pass them. Threaded into property_breakdown(), property_
+    series() (so the crossover chart matches the card headline exactly)
+    and property_cost_base_series() (a new key on the returned dict, for
+    the year-by-year table's own "Cost base" column) -
+    property_rental_position() is called separately by the UI layer, not
+    from inside this function (matches the existing pre-Commit-U
+    architecture - see app.py's own call site)."""
     years = max(MIN_YEARS, min(int(years), MAX_YEARS))
     io_period = max(0, min(int(io_period if io_period is not None else years), years))
     term = max(io_period, int(term if term is not None else io_period))
     other_income = other_income or 0.0
+    building_cost = building_cost or 0.0
+    plant_value = plant_value or 0.0
+    property_type = property_type or PROPERTY_TYPE_ESTABLISHED
 
     property_bd = property_breakdown(
         cash, loan, loan_rate, weekly_rent, vacancy_weeks, holding_costs,
         property_growth, years, buy_costs, sell_costs_pct, other_income,
-        io_period, term)
+        io_period, term, building_cost=building_cost, plant_value=plant_value,
+        property_type=property_type)
     index_bd = index_breakdown(cash, sp500_capital_gain, sp500_dividend_yield, years, other_income)
 
     be_rent = break_even_weekly_rent(loan, loan_rate, holding_costs, vacancy_weeks)
@@ -1017,9 +1261,14 @@ def run(cash=DEFAULT_CASH, loan=DEFAULT_LOAN, loan_rate=DEFAULT_LOAN_RATE,
     prop_series = property_series(
         cash, loan, loan_rate, weekly_rent, vacancy_weeks, holding_costs,
         property_growth, years, buy_costs, sell_costs_pct, other_income,
-        io_period, term)
+        io_period, term, building_cost=building_cost, plant_value=plant_value,
+        property_type=property_type)
     idx_series = index_series(cash, sp500_capital_gain, sp500_dividend_yield, years, other_income)
     crossover_year = find_crossover_year(prop_series, idx_series)
+
+    cost_base_series = property_cost_base_series(
+        cash, loan, property_growth, years, buy_costs, sell_costs_pct,
+        building_cost=building_cost, property_type=property_type)
 
     winner = "property" if property_bd["headline"] >= index_bd["headline"] else "index"
 
@@ -1043,6 +1292,10 @@ def run(cash=DEFAULT_CASH, loan=DEFAULT_LOAN, loan_rate=DEFAULT_LOAN_RATE,
         "property_series": prop_series,
         "index_series": idx_series,
         "crossover_year": crossover_year,
+        "property_cost_base_series": cost_base_series,
+        "property_type": property_type,
+        "building_cost": building_cost,
+        "plant_value": plant_value,
         "interest_per_year": property_interest_per_year(loan, loan_rate),
         # -- two-phase (IO -> P&I) loan structure - module docstring, LOAN STRUCTURE --
         "io_period": io_period,

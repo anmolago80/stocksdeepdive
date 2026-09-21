@@ -24644,11 +24644,23 @@ def _pvi_upgrade_saved_inputs(d):
     marginal_rate_pct implies - see _pvi_other_income_from_marginal_
     rate()'s own docstring for exactly how (and when it can't).
 
+    Commit U (21 Sep 2026, owner-reported): v3/earlier never asked about
+    depreciation at all - v4 adds property_type/building_cost/
+    plant_value. A v3 (or earlier) dict simply has none of these three
+    fields, which is exactly what _seed()'s own default-value mechanics
+    already handle for every OTHER input on this tool (falls back to the
+    _eng.DEFAULT_* the widget itself passes) - so, unlike the v1->v2/
+    v2->v3 upgrades above, there is no value to back-derive here, only
+    the schema marker itself needs bumping (an old scenario's own
+    numbers must keep reproducing exactly what they always did, i.e.
+    zero depreciation, until the owner explicitly fills these new inputs
+    in and re-saves).
+
     Upgrade in place, read-time only (no DB migration - tools_store
     stores this as a free-form JSON dict, it doesn't care about the
     shape), so an older scenario keeps producing the SAME numbers it
     always did instead of silently drifting."""
-    if not d or d.get("pvi_schema") == 3:
+    if not d or d.get("pvi_schema") == 4:
         return d
     d = dict(d)
     if "sp500_return_pct" in d and "sp500_capital_gain_pct" not in d:
@@ -24658,7 +24670,7 @@ def _pvi_upgrade_saved_inputs(d):
         )
     if "marginal_rate_pct" in d and "other_income" not in d:
         d["other_income"] = _pvi_other_income_from_marginal_rate(d.get("marginal_rate_pct"))
-    d["pvi_schema"] = 3
+    d["pvi_schema"] = 4
     return d
 
 
@@ -24775,6 +24787,44 @@ def _render_property_vs_index_tool(email):
                 help=_sl("buy_costs_help"),
                 key=_seed("tools_pvi_buy_costs", _eng.DEFAULT_BUY_COSTS),
             )
+            # Commit U (21 Sep 2026, owner-reported): depreciation inputs
+            # - a quantity surveyor's schedule, not modelled from the
+            # property price (property_vs_index_engine.py's own
+            # "Depreciation" module comment for the Div 43/Div 40 rules
+            # these feed). Options are the engine's own PROPERTY_TYPE_*
+            # constants, never re-derived here - format_func only
+            # supplies the translated label.
+            _pvi_property_type_labels = {
+                _eng.PROPERTY_TYPE_NEW: _sl("property_type_option_new"),
+                _eng.PROPERTY_TYPE_ESTABLISHED: _sl("property_type_option_established"),
+                _eng.PROPERTY_TYPE_PRE_1987: _sl("property_type_option_pre_1987"),
+            }
+            property_type = st.selectbox(
+                _sl("property_type_label"),
+                [_eng.PROPERTY_TYPE_NEW, _eng.PROPERTY_TYPE_ESTABLISHED, _eng.PROPERTY_TYPE_PRE_1987],
+                format_func=lambda pt: _pvi_property_type_labels[pt],
+                key=_seed("tools_pvi_property_type", _eng.PROPERTY_TYPE_ESTABLISHED),
+            )
+            building_cost = st.number_input(
+                _sl("building_cost_label"), min_value=0.0, step=5000.0, format="%.0f",
+                help=_sl("building_cost_help"),
+                key=_seed("tools_pvi_building_cost", 0.0),
+            )
+            # New plant & equipment (Div 40) only exists as a claim for a
+            # New build (2017 second-hand-fittings rule - see the input's
+            # own help text) - hidden entirely for Established/pre_1987
+            # rather than shown-but-disabled, so there's no ambiguity
+            # about whether a value left over from switching property
+            # type still counts (it doesn't - `plant_value` stays 0.0
+            # here whenever this widget isn't rendered this run).
+            plant_value = 0.0
+            if property_type == _eng.PROPERTY_TYPE_NEW:
+                plant_value = st.number_input(
+                    _sl("plant_value_label"), min_value=0.0, step=1000.0, format="%.0f",
+                    help=_sl("plant_value_help"),
+                    key=_seed("tools_pvi_plant_value", 0.0),
+                )
+                st.caption(_sl("plant_value_caption"))
         with _c2:
             sell_costs_pct = st.number_input(
                 _sl("sell_costs_label"), min_value=0.0, max_value=10.0, step=0.1, format="%.1f",
@@ -24859,6 +24909,7 @@ def _render_property_vs_index_tool(email):
         io_period=io_period, term=loan_term,
         other_income=other_income,
         years=int(years), buy_costs=buy_costs, sell_costs_pct=sell_costs_pct / 100.0,
+        property_type=property_type, building_cost=building_cost, plant_value=plant_value,
     )
     _p = _r["property"]
     _idx = _r["index"]
@@ -24902,8 +24953,44 @@ def _render_property_vs_index_tool(email):
     _rental = _eng.property_rental_position(
         loan, loan_rate_pct / 100.0, io_period, loan_term,
         weekly_rent, int(vacancy_weeks), holding_costs, _years_i, other_income,
+        building_cost=building_cost, plant_value=plant_value, property_type=property_type,
     )
     _rt = _rental["totals"]
+
+    # Commit U (21 Sep 2026, owner-reported): "extra CGT at sale" - how
+    # much MORE capital gains tax the Div 43 cost-base reduction causes,
+    # holding the sale year's own rent/interest/holding/depreciation
+    # (and hence the running income the capital gain leg lands on)
+    # fixed - isolates the cost-base effect specifically, separate from
+    # the "bigger refund" effect already shown on the depreciation/tax-
+    # refund lines above. Computed directly (tax_on_extra(), the same
+    # public primitive property_year_tax_legs() itself is built from)
+    # rather than re-running the whole engine a second time with
+    # building_cost=0 - the capital gain leg is stacked LAST (module
+    # docstring, TAX MODEL), so the running income it lands on is
+    # exactly what the sale year's own rental_position row (capital_
+    # gain=None, same rent/interest/holding/depreciation) already
+    # reaches by the end of its own stack.
+    _growth = _p["growth"]
+    _div43_claimed = _growth.get("div43_claimed") or 0.0
+    _extra_cgt = 0.0
+    if _div43_claimed > 0 and _rental["years"]:
+        _sale_year_row = _rental["years"][-1]
+        _running_before_gain = (
+            other_income + _sale_year_row["rent"] - _sale_year_row["interest"]
+            - _sale_year_row["holding"] - _sale_year_row["depreciation"]
+        )
+        _taxable_gain_with_dep = _growth["taxable_gain"]
+        _taxable_gain_without_dep = _taxable_gain_with_dep - _div43_claimed
+        _gain_tax_with_dep = (
+            _eng.tax_on_extra(_running_before_gain, _taxable_gain_with_dep * 0.5)
+            if _taxable_gain_with_dep > 0 else 0.0
+        )
+        _gain_tax_without_dep = (
+            _eng.tax_on_extra(_running_before_gain, _taxable_gain_without_dep * 0.5)
+            if _taxable_gain_without_dep > 0 else 0.0
+        )
+        _extra_cgt = _gain_tax_with_dep - _gain_tax_without_dep
 
     def _signed(v):
         # Backslash fix: plain _fmt_aud() - every call site below is
@@ -24932,14 +25019,31 @@ def _render_property_vs_index_tool(email):
     )
     _parts.append(f'<div class="pvi-big {_cls(_p["headline"])}">{_signed(_p["headline"])}</div>')
 
-    _growth = _p["growth"]
     _parts.append(
         f'<div class="pvi-line">{html.escape(_sl("line_growth_label"))} '
         f'<span class="{_cls(_growth["after_tax"])}">{_signed(_growth["after_tax"])}</span></div>'
     )
+    _growth_tax_amount = _growth_pretax - _growth["after_tax"] if _growth_pretax > 0 else 0.0
     _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_growth_sub", price=_fmt_aud(_price), future_price=_fmt_aud(_growth["future_price"]), rate=_growth_rate_pct))}</div>'
+        f'<div class="pvi-sub">{html.escape(_sl("line_growth_sub", price=_fmt_aud(_price), future_price=_fmt_aud(_growth["future_price"]), tax_amount=_fmt_aud(_growth_tax_amount), gain=_fmt_aud(_growth_pretax), rate=_growth_rate_pct))}</div>'
     )
+    # Commit U (21 Sep 2026, owner-reported): only shown when this
+    # property type actually claims Div 43 (New build/Established-
+    # after-1987) AND building_cost > 0 - a pre_1987 property or one
+    # with no building cost entered has nothing to reduce the cost base
+    # with, so no caption to show.
+    if _div43_claimed > 0:
+        _parts.append(
+            f'<div class="pvi-cap">{html.escape(_sl("line_growth_cost_base_caption", reduction=_fmt_aud(_div43_claimed), extra_cgt=_fmt_aud(_extra_cgt)))}</div>'
+        )
+    # Commit U: Div 40 plant & equipment has no cost-base/CGT clawback at
+    # all (property_vs_index_engine.div40_written_down_value()'s own
+    # docstring) - only shown when this property actually has a plant
+    # claim to disclose the assumption for.
+    if property_type == _eng.PROPERTY_TYPE_NEW and (plant_value or 0.0) > 0:
+        _parts.append(
+            f'<div class="pvi-cap">{html.escape(_sl("plant_value_sale_caption"))}</div>'
+        )
 
     # -- RENTAL POSITION group (Commit C, C2/C3) -------------------------
     # Replaces the old flat "Rent after tax" / "Loan interest after
@@ -24954,6 +25058,8 @@ def _render_property_vs_index_tool(email):
     _net_pretax = _rt["net_pretax"]
     _net_after_tax = _rt["net_after_tax"]
     _geared_label = "rental_net_loss_label" if _net_pretax < 0 else "rental_net_profit_label"
+    _taxable_loss = _rt["taxable_loss"]
+    _taxable_label = "rental_taxable_loss_label" if _taxable_loss < 0 else "rental_taxable_profit_label"
     _tax_label = "rental_tax_refund_label" if _rt["tax"] >= 0 else "rental_tax_bill_label"
     _net_cost_label = "rental_net_cost_label" if _net_after_tax < 0 else "rental_net_profit_after_tax_label"
     _parts.append(
@@ -24977,6 +25083,21 @@ def _render_property_vs_index_tool(email):
     _parts.append(
         f'<div class="pvi-line">{html.escape(_sl(_geared_label))} '
         f'<span class="{_cls(_net_pretax)}">{_signed(_net_pretax)}</span></div>'
+    )
+    # Commit U (21 Sep 2026, owner-reported): Depreciation is a NON-CASH
+    # deduction - always shown as a subtracted (negative) figure, since
+    # it's a deduction amount, never a "profit" the way net_pretax can
+    # flip sign. "Taxable rental loss" is the figure the refund below is
+    # ACTUALLY computed on (net_pretax minus depreciation) - deliberately
+    # distinct from "Net cash loss" above it, which stays cash-only per
+    # the task's own "cash out-of-pocket ... stay cash-based" rule.
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl("rental_depreciation_label"))} '
+        f'<span class="pvi-r">{_signed(-_rt["depreciation"])}</span></div>'
+    )
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl(_taxable_label))} '
+        f'<span class="{_cls(_taxable_loss)}">{_signed(_taxable_loss)}</span></div>'
     )
     _parts.append(
         f'<div class="pvi-line pvi-hl">{html.escape(_sl(_tax_label))} '
@@ -25042,7 +25163,7 @@ def _render_property_vs_index_tool(email):
         f'<span class="{_cls(_idx["growth_after_cgt"])}">{_signed(_idx["growth_after_cgt"])}</span></div>'
     )
     _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_index_growth_sub", cash=_fmt_aud(cash), rate=_idx["price_growth_rate"] * 100, tax=_idx_growth_rate_pct))}</div>'
+        f'<div class="pvi-sub">{html.escape(_sl("line_index_growth_sub", cash=_fmt_aud(cash), rate=_idx["price_growth_rate"] * 100, tax_amount=_fmt_aud(_idx_growth_pretax - _idx["growth_after_cgt"]) if _idx_growth_pretax > 0 else _fmt_aud(0.0), gain=_fmt_aud(_idx_growth_pretax), tax_rate=_idx_growth_rate_pct))}</div>'
     )
     _parts.append(
         f'<div class="pvi-line">{html.escape(_sl("line_index_dividends_label"))} '
@@ -25147,23 +25268,35 @@ def _render_property_vs_index_tool(email):
     # row per year (property_rental_position(), same figures the group's
     # own totals already sum to).
     with st.expander(_sl("year_by_year_expander_label"), expanded=False):
+        # Commit U (21 Sep 2026, owner-reported): "Cost base" comes from
+        # property_cost_base_series() (run()'s own new key), NOT property_
+        # rental_position() - that function has no visibility into
+        # cash/growth_rate/buy_costs/sell_costs_pct, only rent/interest/
+        # holding/depreciation (see that function's own Commit U comment).
+        # Keyed by year so it lines up with _rental["years"]'s own rows
+        # even though the two come from different engine calls.
+        _cost_base_by_year = {pt["year"]: pt["cost_base"] for pt in _r["property_cost_base_series"]}
         _table_rows = [{
             _sl("table_col_year"): row["year"],
             _sl("table_col_rent"): _fmt_aud(row["rent"]),
             _sl("table_col_interest"): f"-{_fmt_aud(row['interest'])}",
             _sl("table_col_holding"): f"-{_fmt_aud(row['holding'])}",
+            _sl("table_col_depreciation"): f"-{_fmt_aud(row['depreciation'])}",
             _sl("table_col_net_position"): _signed(row["net_pretax"]),
             _sl("table_col_tax"): _signed(row["tax"]),
             _sl("table_col_out_of_pocket"): _signed(-row["net_after_tax"]),
+            _sl("table_col_cost_base"): _fmt_aud(_cost_base_by_year.get(row["year"], _price)),
         } for row in _rental["years"]]
         _table_rows.append({
             _sl("table_col_year"): _sl("table_totals_row_label"),
             _sl("table_col_rent"): _fmt_aud(_rt["rent"]),
             _sl("table_col_interest"): f"-{_fmt_aud(_rt['interest'])}",
             _sl("table_col_holding"): f"-{_fmt_aud(_rt['holding'])}",
+            _sl("table_col_depreciation"): f"-{_fmt_aud(_rt['depreciation'])}",
             _sl("table_col_net_position"): _signed(_rt["net_pretax"]),
             _sl("table_col_tax"): _signed(_rt["tax"]),
             _sl("table_col_out_of_pocket"): _signed(-_rt["net_after_tax"]),
+            _sl("table_col_cost_base"): _fmt_aud(_cost_base_by_year.get(_years_i, _price)),
         })
         _table_df = pd.DataFrame(_table_rows)
         _first_pos_year = _rental["first_positive_year"]
@@ -25203,7 +25336,9 @@ def _render_property_vs_index_tool(email):
             "sp500_dividend_pct": sp500_dividend_pct,
             "other_income": other_income, "years": years,
             "io_period": io_period, "term": loan_term,
-            "pvi_schema": 3,
+            "property_type": property_type, "building_cost": building_cost,
+            "plant_value": plant_value,
+            "pvi_schema": 4,
         })
         st.success(_sl("save_confirm"))
 

@@ -1506,13 +1506,39 @@ EN = {
         "Assumes the rental loss is fully deductible against your other "
         "income in the year it occurs, at 2026-27 resident rates. Real "
         "outcomes vary with your structure, other deductions and any "
-        "carried-forward losses. Depreciation is not modelled."
+        "carried-forward losses. Depreciation uses simplified ATO rules; "
+        "use your quantity surveyor's schedule for real figures."
     ),
     "tools.property_vs_index.years_label": "Years",
     "tools.property_vs_index.buy_costs_label": "Buy costs ($)",
     "tools.property_vs_index.buy_costs_help": (
         "Stamp duty + legals — paid out of your cash at purchase, never "
         "financed."
+    ),
+    # Commit U (21 Sep 2026, owner-reported): depreciation inputs - a
+    # quantity surveyor's depreciation schedule, not modelled from the
+    # property price (property_vs_index_engine.py's own "Depreciation"
+    # module comment for the Div 43/Div 40 rules these feed).
+    "tools.property_vs_index.property_type_label": "Property type",
+    "tools.property_vs_index.property_type_option_new": "New build",
+    "tools.property_vs_index.property_type_option_established": "Established (built after 15 Sep 1987)",
+    "tools.property_vs_index.property_type_option_pre_1987": "Built before 15 Sep 1987",
+    "tools.property_vs_index.building_cost_label": "Building (construction) cost, excl. land ($)",
+    "tools.property_vs_index.building_cost_help": (
+        "From a quantity surveyor's depreciation schedule. Land is "
+        "never depreciable."
+    ),
+    "tools.property_vs_index.plant_value_label": "New plant & equipment value ($)",
+    "tools.property_vs_index.plant_value_help": (
+        "Fittings like carpets, appliances, blinds. Since 2017, "
+        "second-hand fittings in an established home can't be claimed."
+    ),
+    "tools.property_vs_index.plant_value_caption": (
+        "Diminishing value at 20%/yr, assuming a 10-year effective life."
+    ),
+    "tools.property_vs_index.plant_value_sale_caption": (
+        "At sale, plant & equipment is assumed to sell at its written-down "
+        "value — no balancing adjustment is modelled."
     ),
     "tools.property_vs_index.sell_costs_label": "Sell costs (%)",
     "tools.property_vs_index.card_property_title": "🏠 Investment property",
@@ -1522,8 +1548,23 @@ EN = {
     "tools.property_vs_index.winner_badge": "🏆 Ahead on these numbers",
     "tools.property_vs_index.after_tax_position_label": "After-tax position after {years}y",
     "tools.property_vs_index.line_growth_label": "Capital growth after CGT:",
+    # Commit U (21 Sep 2026, owner-reported): reworded - the old text
+    # ("gain taxed with 50% discount at {rate:.0f}%") read as if {rate}
+    # were the tax rate applied AFTER the 50% discount already happened
+    # (e.g. "23%" looking like the discounted rate), when {rate} is
+    # actually the EFFECTIVE rate on the WHOLE (undiscounted) gain - the
+    # dollar figures make that unambiguous instead of relying on the
+    # reader parsing the sentence just right.
     "tools.property_vs_index.line_growth_sub": (
-        "{price} → {future_price}; gain taxed with 50% discount at {rate:.0f}%"
+        "{price} → {future_price}; tax {tax_amount} on a {gain} gain — "
+        "effective {rate:.0f}% after the 50% discount"
+    ),
+    # Commit U: only shown when building_cost > 0 and this property type
+    # actually claims Div 43 (New build or Established-after-1987) -
+    # app.py's own gate.
+    "tools.property_vs_index.line_growth_cost_base_caption": (
+        "Cost base reduced by {reduction} of building depreciation — "
+        "adds {extra_cgt} CGT at sale."
     ),
     # Commit C (21 Sep 2026): the old flat "Rent after tax" / "Loan
     # interest after deduction" / "Holding costs after deduction" lines
@@ -1536,8 +1577,17 @@ EN = {
     "tools.property_vs_index.rental_rent_sub": "{weekly_rent}/wk × {weeks} working weeks/yr",
     "tools.property_vs_index.rental_interest_label": "Loan interest",
     "tools.property_vs_index.rental_holding_label": "Holding costs",
-    "tools.property_vs_index.rental_net_loss_label": "Net rental loss · negatively geared",
-    "tools.property_vs_index.rental_net_profit_label": "Net rental profit · positively geared",
+    # Commit U (21 Sep 2026, owner-reported): "Net rental" -> "Net cash" -
+    # this line is the CASH-only pretax position (rent - interest -
+    # holding), now sitting right above the new non-cash Depreciation/
+    # Taxable rental loss lines below it - "cash" disambiguates it from
+    # "taxable", which is exactly the distinction depreciation makes real
+    # for the first time on this page.
+    "tools.property_vs_index.rental_net_loss_label": "Net cash loss · negatively geared",
+    "tools.property_vs_index.rental_net_profit_label": "Net cash profit · positively geared",
+    "tools.property_vs_index.rental_depreciation_label": "Depreciation (non-cash, tax only)",
+    "tools.property_vs_index.rental_taxable_loss_label": "Taxable rental loss",
+    "tools.property_vs_index.rental_taxable_profit_label": "Taxable rental profit",
     "tools.property_vs_index.rental_tax_refund_label": "Tax refunded on the loss",
     "tools.property_vs_index.rental_tax_bill_label": "Tax payable on the profit",
     "tools.property_vs_index.rental_stacking_caption": (
@@ -1564,18 +1614,25 @@ EN = {
     "tools.property_vs_index.table_col_rent": "Rent",
     "tools.property_vs_index.table_col_interest": "Interest",
     "tools.property_vs_index.table_col_holding": "Holding",
+    "tools.property_vs_index.table_col_depreciation": "Depreciation",
     "tools.property_vs_index.table_col_net_position": "Net position",
     "tools.property_vs_index.table_col_tax": "Tax refund/bill",
     "tools.property_vs_index.table_col_out_of_pocket": "Out of pocket",
+    "tools.property_vs_index.table_col_cost_base": "Cost base",
     "tools.property_vs_index.table_totals_row_label": "Total",
     "tools.property_vs_index.table_turns_positive_caption": "Turns positive in year {year}.",
     "tools.property_vs_index.table_stays_negative_caption": (
         "Stays negatively geared for the whole {years}-year hold on these numbers."
     ),
     "tools.property_vs_index.line_index_growth_label": "Growth after CGT:",
+    # Commit U (21 Sep 2026, owner-reported): reworded to match the
+    # property side's own line_growth_sub - see that key's comment for
+    # why. {rate} keeps its OLD meaning here (price growth rate, e.g.
+    # 7.7%) - {tax_rate} is the new effective-tax-rate-on-the-whole-gain
+    # figure the old {tax} param used to carry.
     "tools.property_vs_index.line_index_growth_sub": (
-        "{cash} compounding at {rate:.1f}% price growth, taxed with 50% "
-        "discount at {tax:.0f}%"
+        "{cash} compounding at {rate:.1f}% price growth; tax {tax_amount} "
+        "on a {gain} gain — effective {tax_rate:.0f}% after the 50% discount"
     ),
     "tools.property_vs_index.line_index_dividends_label": "Dividends after tax:",
     "tools.property_vs_index.line_index_dividends_sub": (
@@ -4458,13 +4515,37 @@ ES = {
         "contra tu otro ingreso en el año en que ocurre, según las tasas "
         "de residente 2026-27. Los resultados reales varían según tu "
         "estructura, otras deducciones y pérdidas arrastradas. La "
-        "depreciación no está modelada."
+        "depreciación usa reglas simplificadas del ATO; usa el informe "
+        "de tu quantity surveyor para las cifras reales."
     ),
     "tools.property_vs_index.years_label": "Años",
     "tools.property_vs_index.buy_costs_label": "Costos de compra ($)",
     "tools.property_vs_index.buy_costs_help": (
         "Impuesto de sello + legales — pagados de tu efectivo al "
         "comprar, nunca financiados."
+    ),
+    "tools.property_vs_index.property_type_label": "Tipo de propiedad",
+    "tools.property_vs_index.property_type_option_new": "Construcción nueva",
+    "tools.property_vs_index.property_type_option_established": "Establecida (construida después del 15 sep 1987)",
+    "tools.property_vs_index.property_type_option_pre_1987": "Construida antes del 15 sep 1987",
+    "tools.property_vs_index.building_cost_label": "Costo de construcción, excl. terreno ($)",
+    "tools.property_vs_index.building_cost_help": (
+        "De un informe de depreciación de un quantity surveyor. El "
+        "terreno nunca es depreciable."
+    ),
+    "tools.property_vs_index.plant_value_label": "Valor de mobiliario y equipos nuevos ($)",
+    "tools.property_vs_index.plant_value_help": (
+        "Elementos como alfombras, electrodomésticos, persianas. Desde "
+        "2017, no se puede reclamar depreciación de mobiliario de "
+        "segunda mano en una propiedad establecida."
+    ),
+    "tools.property_vs_index.plant_value_caption": (
+        "Valor decreciente al 20%/año, asumiendo una vida útil efectiva "
+        "de 10 años."
+    ),
+    "tools.property_vs_index.plant_value_sale_caption": (
+        "Al vender, se asume que el mobiliario y equipos se venden a su "
+        "valor residual — no se modela un ajuste de saldo."
     ),
     "tools.property_vs_index.sell_costs_label": "Costos de venta (%)",
     "tools.property_vs_index.card_property_title": "🏠 Propiedad de inversión",
@@ -4475,16 +4556,24 @@ ES = {
     "tools.property_vs_index.after_tax_position_label": "Posición después de impuestos a los {years} años",
     "tools.property_vs_index.line_growth_label": "Crecimiento de capital después de CGT:",
     "tools.property_vs_index.line_growth_sub": (
-        "{price} → {future_price}; ganancia gravada con descuento del "
-        "50% al {rate:.0f}%"
+        "{price} → {future_price}; impuesto de {tax_amount} sobre una "
+        "ganancia de {gain} — {rate:.0f}% efectivo después del "
+        "descuento del 50%"
+    ),
+    "tools.property_vs_index.line_growth_cost_base_caption": (
+        "La base de costo se reduce en {reduction} por depreciación "
+        "del edificio — agrega {extra_cgt} de CGT en la venta."
     ),
     "tools.property_vs_index.rental_position_group_label": "Posición de alquiler · {years} años",
     "tools.property_vs_index.rental_rent_label": "Alquiler recibido",
     "tools.property_vs_index.rental_rent_sub": "{weekly_rent}/sem × {weeks} semanas hábiles/año",
     "tools.property_vs_index.rental_interest_label": "Interés del préstamo",
     "tools.property_vs_index.rental_holding_label": "Costos de mantención",
-    "tools.property_vs_index.rental_net_loss_label": "Pérdida neta de alquiler · negative gearing",
-    "tools.property_vs_index.rental_net_profit_label": "Ganancia neta de alquiler · positive gearing",
+    "tools.property_vs_index.rental_net_loss_label": "Pérdida neta en efectivo · negative gearing",
+    "tools.property_vs_index.rental_net_profit_label": "Ganancia neta en efectivo · positive gearing",
+    "tools.property_vs_index.rental_depreciation_label": "Depreciación (no es efectivo, solo impuestos)",
+    "tools.property_vs_index.rental_taxable_loss_label": "Pérdida imponible del alquiler",
+    "tools.property_vs_index.rental_taxable_profit_label": "Ganancia imponible del alquiler",
     "tools.property_vs_index.rental_tax_refund_label": "Impuesto reembolsado por la pérdida",
     "tools.property_vs_index.rental_tax_bill_label": "Impuesto a pagar por la ganancia",
     "tools.property_vs_index.rental_stacking_caption": (
@@ -4514,9 +4603,11 @@ ES = {
     "tools.property_vs_index.table_col_rent": "Alquiler",
     "tools.property_vs_index.table_col_interest": "Interés",
     "tools.property_vs_index.table_col_holding": "Mantención",
+    "tools.property_vs_index.table_col_depreciation": "Depreciación",
     "tools.property_vs_index.table_col_net_position": "Posición neta",
     "tools.property_vs_index.table_col_tax": "Reembolso/pago de impuesto",
     "tools.property_vs_index.table_col_out_of_pocket": "De tu bolsillo",
+    "tools.property_vs_index.table_col_cost_base": "Base de costo",
     "tools.property_vs_index.table_totals_row_label": "Total",
     "tools.property_vs_index.table_turns_positive_caption": "Se vuelve positivo en el año {year}.",
     "tools.property_vs_index.table_stays_negative_caption": (
@@ -4524,8 +4615,9 @@ ES = {
     ),
     "tools.property_vs_index.line_index_growth_label": "Crecimiento después de CGT:",
     "tools.property_vs_index.line_index_growth_sub": (
-        "{cash} creciendo al {rate:.1f}% de crecimiento de precio, "
-        "gravado con descuento del 50% al {tax:.0f}%"
+        "{cash} creciendo al {rate:.1f}% de crecimiento de precio; "
+        "impuesto de {tax_amount} sobre una ganancia de {gain} — "
+        "{tax_rate:.0f}% efectivo después del descuento del 50%"
     ),
     "tools.property_vs_index.line_index_dividends_label": "Dividendos después de impuestos:",
     "tools.property_vs_index.line_index_dividends_sub": (
