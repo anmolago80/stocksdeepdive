@@ -11225,18 +11225,26 @@ def page_deep_dive():
 
         # Commit M (21 Sep 2026, owner-reported): owner-only Moat
         # diagnostics - "is this pillar's zero a genuine result or bad
-        # input data" for the ticker currently on screen. Gated the exact
-        # same way page_admin_dashboard() gates itself
-        # (ai_gate.is_owner(paywall_engine.current_user_email()), never
+        # input data" for the ticker currently on screen. Gated on BOTH
+        # ai_gate.is_owner(paywall_engine.current_user_email()) (never
         # the shared ?admin=/RC-view key a non-owner co-admin could also
-        # hold) - never rendered, never even checked, for a visitor.
+        # hold - never rendered, never even checked, for a visitor) AND
+        # full_view_unlocked (Commit T, 21 Sep 2026, owner-reported: the
+        # is_owner-only check originally here left this panel showing
+        # even after the owner exits to normal view - full_view_unlocked
+        # is the same "is this session currently in RC/unlocked view"
+        # flag every other admin-only Deep Dive control on this page
+        # already gates on, e.g. the insider "Force refresh" button
+        # above). Combining both is strictly narrower than either alone,
+        # so this doesn't reopen the non-owner-co-admin concern the
+        # is_owner check exists for.
         # Recomputes fresh (moat_engine.compute_moat_diagnostics() is
         # deliberately NOT part of the 24h moat_cache - see its own
         # docstring), so it's behind a button rather than run
         # unconditionally on every owner page view, same "don't pay for
         # it unless actually opened" convention the Admin Dashboard's own
         # "Show email list" checkbox already uses.
-        if ai_gate.is_owner(paywall_engine.current_user_email()):
+        if ai_gate.is_owner(paywall_engine.current_user_email()) and st.session_state.get("full_view_unlocked"):
             with st.expander("🔧 Moat diagnostics (owner only)", expanded=False):
                 st.caption(
                     "Recomputes fresh from the fundamentals bundle - not the "
