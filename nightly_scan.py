@@ -1759,6 +1759,56 @@ def check_moat_pricing_level_switch_flip(log=print):
         log(f"[nightly_scan] moat pricing-level switch check: could not write marker file: {e}")
 
 
+def _moat_tangible_roic_switch_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".moat_tangible_roic_switch_state")
+
+
+def check_moat_tangible_roic_switch_flip(log=print):
+    """Commit 4 (23 Sep 2026): same problem, same fix, as check_moat_
+    pricing_level_switch_flip() right above, for MOAT_TANGIBLE_ROIC -
+    changes only moat_engine's own Persistence pillar, so only moat_cache
+    is cleared here, same reasoning throughout."""
+    marker = _moat_tangible_roic_switch_marker_path()
+    current = "1" if moat_engine.MOAT_TANGIBLE_ROIC else "0"
+    previous = None
+    try:
+        if os.path.exists(marker):
+            with open(marker) as f:
+                previous = f.read().strip()
+    except OSError as e:
+        log(f"[nightly_scan] moat tangible-roic switch check: could not read marker file: {e}")
+
+    if previous is not None and previous == current:
+        return
+    if previous is None:
+        log(f"[nightly_scan] moat tangible-roic switch check: no prior state on record - "
+            f"recording MOAT_TANGIBLE_ROIC={current}, nothing to invalidate on a fresh deploy")
+    else:
+        log(f"[nightly_scan] moat tangible-roic switch check: MOAT_TANGIBLE_ROIC flipped "
+            f"{previous} -> {current} - clearing moat_cache so the change takes effect "
+            f"immediately, not after its 24h TTL")
+        cache_dir = moat_engine._cache_dir()
+        cleared = 0
+        try:
+            for fname in os.listdir(cache_dir):
+                if fname.endswith(".json"):
+                    try:
+                        os.remove(os.path.join(cache_dir, fname))
+                        cleared += 1
+                    except OSError:
+                        pass
+            log(f"[nightly_scan] moat tangible-roic switch check: cleared {cleared} cached file(s) from {cache_dir}")
+        except OSError as e:
+            log(f"[nightly_scan] moat tangible-roic switch check: could not list {cache_dir}: {e}")
+
+    try:
+        with open(marker, "w") as f:
+            f.write(current)
+    except OSError as e:
+        log(f"[nightly_scan] moat tangible-roic switch check: could not write marker file: {e}")
+
+
 def _ebit_correction_marker_path():
     base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
     return os.path.join(base, ".ebit_from_pretax_pending_correction")

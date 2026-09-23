@@ -286,6 +286,11 @@ async def lifespan(app: FastAPI):
     # scan.check_moat_pricing_level_switch_flip()'s own docstring.
     with suppress(Exception):
         nightly_scan.check_moat_pricing_level_switch_flip()
+    # Commit 4 (23 Sep 2026, owner-reported): same reason, for
+    # MOAT_TANGIBLE_ROIC - see nightly_scan.check_moat_tangible_roic_
+    # switch_flip()'s own docstring.
+    with suppress(Exception):
+        nightly_scan.check_moat_tangible_roic_switch_flip()
     _client = httpx.AsyncClient(
         base_url=UPSTREAM, timeout=httpx.Timeout(None, connect=10.0),
         follow_redirects=False, limits=httpx.Limits(max_connections=200),

@@ -16,7 +16,12 @@ Four pillars, 0-100 total:
      the cost of capital.
   2. Persistence (25 pts) - fraction of available fiscal years the
      business cleared a 12% return threshold. Capped at 20/25 while
-     fewer than 8 years of statement history are on file.
+     fewer than 8 years of statement history are on file. Behind
+     MOAT_TANGIBLE_ROIC (env var, unset = off - see moat_engine.
+     MOAT_TANGIBLE_ROIC), a year also counts if it clears 20% return on
+     TANGIBLE capital (ROIC/ROE's own invested-capital base, net of
+     goodwill and acquired intangibles) even if it misses the 12% ROIC
+     bar - see _pillar_persistence()'s own comment.
   3. Pricing power (25 pts) - the gross-margin trend (falls back to
      operating margin, flagged, when no Gross Profit row exists):
      held/expanded, stability, growth-without-discounting. Behind
@@ -90,7 +95,12 @@ import fundamentals_data
 # component behind MOAT_PRICING_LEVEL (env var, unset = off) - see
 # _pillar_pricing_power()'s own comment. Output is unchanged while the
 # switch is unset; the bump exists for the same reason as 1->2 above.
-MOAT_ENGINE_VERSION = 3
+# 3->4 (Commit 4, 2026-09-23): persistence gains an OR-with-ROTC test
+# behind MOAT_TANGIBLE_ROIC (env var, unset = off) - see _pillar_
+# persistence()'s own comment. Output (score/components - the only
+# things compute_moat() actually caches) is unchanged while the switch
+# is unset; the bump exists for the same reason as 1->2 above.
+MOAT_ENGINE_VERSION = 4
 
 _CACHE_DIR_NAME = "moat_cache"
 _CACHE_TTL_SECONDS = 24 * 3600
@@ -136,6 +146,18 @@ MOAT_PRICING_LEVEL = os.environ.get("MOAT_PRICING_LEVEL") == "1"
 _PRICING_LEVEL_MIN_YEARS = 3
 _PRICING_LEVEL_BANDS_GROSS = ((0.60, 10), (0.40, 6), (0.25, 3))       # median gross margin; below 25% -> 0
 _PRICING_LEVEL_BANDS_OPERATING = ((0.25, 10), (0.12, 6), (0.05, 3))  # median operating margin (fallback path); below 5% -> 0
+
+# Commit 4 (23 Sep 2026): return on TANGIBLE capital, alongside ROIC - an
+# acquirer carries the purchase price (goodwill + acquired intangibles)
+# in invested capital, so ROIC understates the operating business for a
+# serial acquirer (XRO/Melio, CAR.AX/Trader Interactive+Webmotors are the
+# named cases). ROTC is computed ALWAYS (see _year_return_series()'s own
+# comment) so it shows up in diagnostics whether or not this switch is
+# set; the switch only controls whether _pillar_persistence() lets a
+# year that clears ROTC (but not ROIC) count. OFF by default (byte-
+# identical scoring to today until set).
+MOAT_TANGIBLE_ROIC = os.environ.get("MOAT_TANGIBLE_ROIC") == "1"
+TANGIBLE_ROIC_THRESHOLD = 0.20
 
 
 # -----------------------------------
@@ -247,6 +269,24 @@ def moat_band(score):
 # Per-year return series (ROIC for a standard company, ROE for financials)
 # -----------------------------------
 
+def _avg_two_point(value_by_year, years_desc, target_year):
+    """Average of value_by_year across target_year and the year
+    immediately prior in years_desc - the exact same "average over the
+    period" convention auto_compounder_engine._avg_invested_capital_
+    for_year() uses for equity+debt, generalised here to a single series
+    (goodwill and other intangibles) so Commit 4's tangible-capital
+    denominator nets out an acquirer's purchase price the same way the
+    ROIC invested-capital base above it is averaged. None if neither
+    year has a value on file."""
+    if target_year not in years_desc:
+        return None
+    idx = years_desc.index(target_year)
+    points = [value_by_year[y] for y in years_desc[idx:idx + 2] if value_by_year.get(y) is not None]
+    if not points:
+        return None
+    return sum(points) / len(points)
+
+
 def _year_return_series(bundle, info, is_financials, force_switch=None, flags=None):
     """[(year_label, return_value_or_None, extra), ...] newest-first,
     keyed off the balance sheet's own stockholders'-equity year list (the
@@ -262,8 +302,27 @@ def _year_return_series(bundle, info, is_financials, force_switch=None, flags=No
     not recomputed a second time; {} in financials mode, where
     Reinvestment does not apply (see _pillar_reinvestment).
 
+    Commit 4 (23 Sep 2026): `extra` also carries "rotc" - NOPAT / average
+    (invested capital - goodwill and other intangibles), read via the
+    SAME goodwill_and_intangibles row auto_compounder_engine.py's own
+    tangible-book-value calc already uses (never a second, differently-
+    sourced "tangible" figure). Computed UNCONDITIONALLY, standard mode
+    only, regardless of MOAT_TANGIBLE_ROIC - only _pillar_persistence()'s
+    USE of it is switch-gated (see that function's own comment); this
+    function always reports it so compute_moat_diagnostics() can show
+    ROIC and ROTC side by side whether or not the switch is set. None
+    when the goodwill/intangibles row isn't on file for the relevant
+    year(s), OR when the resulting tangible capital base is zero/negative
+    (a heavy-M&A balance sheet where goodwill+intangibles exceeds
+    invested capital - see auto_compounder_engine.py's own "Negative
+    tangible equity" comment for a real case of this) - either way,
+    "not meaningfully computable", never a fabricated/sign-flipped ratio.
+
     Financials mode: return_value is plain ROE = net income / that
-    year's own equity (no averaging - the ordinary ROE convention).
+    year's own equity (no averaging - the ordinary ROE convention). ROTC
+    does not apply here (this module has no "invested capital" concept
+    for financials - see _pillar_reinvestment's own comment on the same
+    gap) - `extra` stays {}.
 
     `force_switch`/`flags`: passed straight through to _ace.ebit_series()
     - see that function's own docstring. `force_switch` is None (default)
@@ -292,6 +351,7 @@ def _year_return_series(bundle, info, is_financials, force_switch=None, flags=No
 
     debt_s = dict(_ace._series(balance, "total_debt"))
     cash_s = dict(_ace._series(balance, "cash"))
+    gwi_s = dict(_ace._series(balance, "goodwill_and_intangibles"))
     op_income_s = dict(_ace.ebit_series(bundle, is_financials, force_switch=force_switch, flags=flags))
     pretax_s = dict(_ace._series(income, "pretax_income"))
     tax_s = dict(_ace._series(income, "tax_provision"))
@@ -306,7 +366,10 @@ def _year_return_series(bundle, info, is_financials, force_switch=None, flags=No
             out.append((y, None, {}))
             continue
         nopat = op_inc * (1 - tax_rate)
-        out.append((y, nopat / ic, {"nopat": nopat, "invested_capital": ic}))
+        avg_gwi = _avg_two_point(gwi_s, years_desc, y)
+        tangible_ic = (ic - avg_gwi) if avg_gwi is not None else None
+        rotc = (nopat / tangible_ic) if (tangible_ic is not None and tangible_ic > 0) else None
+        out.append((y, nopat / ic, {"nopat": nopat, "invested_capital": ic, "rotc": rotc}))
     return out
 
 
@@ -382,6 +445,18 @@ def _spread_points(spread):
 
 
 def _pillar_spread(bundle, basics, is_financials, roic_list, flags):
+    """Commit 4 (23 Sep 2026): deliberately keeps using ROIC (roic_list)
+    alone here, switch or not - MOAT_TANGIBLE_ROIC never reaches this
+    pillar. Paying for an acquisition is a REAL cost of capital that
+    already sits in the market cap/WACC this spread is measured against;
+    swapping in ROTC here (or OR-ing it in like _pillar_persistence()
+    does) would waive that cost twice - once by excluding goodwill from
+    the return calculation, and again by not charging for it in the
+    spread. _pillar_persistence()'s OR test is a narrower claim (this
+    business COULD sustain a strong return on the capital actually
+    deployed in the operations, even though the acquisition premium
+    hasn't been earned back yet) - excess-return spread makes no such
+    allowance."""
     if not roic_list or roic_list[0] is None:
         flags.append("excess-return spread: TTM return could not be computed - pillar dropped")
         return None
@@ -413,17 +488,58 @@ def _pillar_spread(bundle, basics, is_financials, roic_list, flags):
 # Pillar 2 - Persistence (25 pts)
 # -----------------------------------
 
-def _pillar_persistence(roic_list, is_financials, flags):
-    usable = [v for v in roic_list if v is not None]
-    n = len(usable)
+def _pillar_persistence(roic_list, is_financials, flags, rotc_list=None, force_tangible_roic=None):
+    """`rotc_list`: same length/order as roic_list (None entries where
+    ROTC isn't computable - see _year_return_series()'s own comment);
+    None (default) treated as "no ROTC data" - unaffected either way
+    when the switch is off.
+    `force_tangible_roic`: None (default) reads the live MOAT_TANGIBLE_
+    ROIC env var; True/False overrides it for a single call, same
+    never-touch-the-live-env-var/never-touch-moat_cache contract as
+    force_switch/force_pricing_level - only compute_moat_dry_run() ever
+    passes non-None here.
+
+    Commit 4 (23 Sep 2026), switch ON only: a year counts toward
+    persistence if ROIC > 12% OR ROTC > 20% - an acquirer's purchase
+    price sits in ROIC's invested-capital base but not ROTC's (see
+    _year_return_series()'s own comment), so a year the acquisition
+    premium alone is dragging below the ROIC bar can still show the
+    operating business is a strong, persistent compounder on the capital
+    actually deployed in it. Switch OFF reproduces today's ROIC-only
+    test exactly - no rotc_list read, no flags shape change."""
+    tangible_switch_on = MOAT_TANGIBLE_ROIC if force_tangible_roic is None else force_tangible_roic
+    usable_idx = [i for i, v in enumerate(roic_list) if v is not None]
+    n = len(usable_idx)
     if n == 0:
         flags.append("persistence: no usable years - pillar dropped")
         return None
 
-    hits = sum(1 for v in usable if v > PERSISTENCE_ROIC_THRESHOLD)
-    points = (hits / n) * 25
     metric_name = "ROE" if is_financials else "ROIC"
-    flags.append(f"persistence: {hits}/{n} year(s) with {metric_name} > 12% ({n} year(s) of statement data available)")
+
+    if tangible_switch_on and rotc_list:
+        hits = 0
+        for i in usable_idx:
+            roic_v = roic_list[i]
+            rotc_v = rotc_list[i] if i < len(rotc_list) else None
+            roic_pass = roic_v > PERSISTENCE_ROIC_THRESHOLD
+            rotc_pass = rotc_v is not None and rotc_v > TANGIBLE_ROIC_THRESHOLD
+            if not (roic_pass or rotc_pass):
+                continue
+            hits += 1
+            which = "ROIC" if roic_pass and not rotc_pass else ("ROTC" if rotc_pass and not roic_pass else "ROIC and ROTC")
+            flags.append(
+                f"persistence: year {i + 1} of {n} counts via {which} - {metric_name} "
+                f"{roic_v:.1%}" + (f", ROTC {rotc_v:.1%}" if rotc_v is not None else "")
+            )
+        flags.append(
+            f"persistence: {hits}/{n} year(s) cleared {metric_name} > 12% or ROTC > 20% "
+            f"({n} year(s) of statement data available)"
+        )
+    else:
+        hits = sum(1 for v in [roic_list[i] for i in usable_idx] if v > PERSISTENCE_ROIC_THRESHOLD)
+        flags.append(f"persistence: {hits}/{n} year(s) with {metric_name} > 12% ({n} year(s) of statement data available)")
+
+    points = (hits / n) * 25
     if n < MIN_YEARS_FOR_FULL_PERSISTENCE:
         points = min(points, PERSISTENCE_CAP_BELOW_MIN_YEARS)
         flags.append(
@@ -722,7 +838,7 @@ def _na_result(flags=None):
     return {"score": None, "components": [], "erosion": "none", "flags": flags or [], "years": 0, "mode": "na"}
 
 
-def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None, force_pricing_level=None, pricing_detail=None):
+def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None, force_pricing_level=None, pricing_detail=None, force_tangible_roic=None):
     """`force_switch`: None on every real call path (compute_moat()
     never passes it - see that function). True/False only from
     compute_moat_dry_run(), the Admin Dashboard audit's own entry point -
@@ -734,7 +850,9 @@ def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None, force_pri
     _pillar_pricing_power()'s own comment.
     `pricing_detail`: optional dict, passed straight through to
     _pillar_pricing_power()'s own `detail` parameter - see that
-    function's docstring."""
+    function's docstring.
+    `force_tangible_roic`: same contract, for MOAT_TANGIBLE_ROIC - see
+    _pillar_persistence()'s own comment."""
     flags = []
 
     if _is_fund(info):
@@ -751,6 +869,7 @@ def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None, force_pri
     return_series = _year_return_series(bundle, info, is_financials, force_switch=force_switch, flags=flags)
     years_desc = [y for y, _, _ in return_series]
     roic_list = [v for _, v, _ in return_series]
+    rotc_list = [e.get("rotc") for _, _, e in return_series]
     usable_years = sum(1 for v in roic_list if v is not None)
     if usable_years < 2:
         return {
@@ -764,7 +883,7 @@ def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None, force_pri
     if spread_pts is not None:
         components.append({"pillar": "Excess-return spread", "points": round(spread_pts, 1), "max": 30})
 
-    persistence_pts = _pillar_persistence(roic_list, is_financials, flags)
+    persistence_pts = _pillar_persistence(roic_list, is_financials, flags, rotc_list=rotc_list, force_tangible_roic=force_tangible_roic)
     if persistence_pts is not None:
         components.append({"pillar": "Persistence", "points": round(persistence_pts, 1), "max": 25})
 
@@ -810,6 +929,12 @@ def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None, force_pri
         "years": usable_years,
         "mode": mode,
         "ttm_return": roic_list[0] if roic_list else None,
+        # Commit 4 (23 Sep 2026): TTM ROTC alongside TTM ROIC, ALWAYS -
+        # None in financials mode or wherever the goodwill/intangibles
+        # row isn't on file (see _year_return_series()'s own comment).
+        # Purely informational here; MOAT_TANGIBLE_ROIC only changes
+        # "score"/"components" above, never this field.
+        "ttm_rotc": rotc_list[0] if rotc_list else None,
     }
 
 
@@ -856,7 +981,7 @@ def compute_moat(ticker, force_refresh=False):
     return result
 
 
-def compute_moat_dry_run(ticker, force_switch, bundle=None, force_pricing_level=None, pricing_detail=None):
+def compute_moat_dry_run(ticker, force_switch, bundle=None, force_pricing_level=None, pricing_detail=None, force_tangible_roic=None):
     """`force_pricing_level`/`pricing_detail`: Commit 3 (23 Sep 2026) -
     same never-touch-the-live-env-var/never-touch-moat_cache contract as
     `force_switch`, for MOAT_PRICING_LEVEL; `pricing_detail`, when given
@@ -864,6 +989,12 @@ def compute_moat_dry_run(ticker, force_switch, bundle=None, force_pricing_level=
     _pillar_pricing_power()'s own `detail` parameter) - the Admin
     Dashboard's "Pricing power - level dry-run" panel reads it to report
     the real median-margin distribution/movers without parsing `flags`.
+
+    `force_tangible_roic`: Commit 4 (23 Sep 2026) - same contract, for
+    MOAT_TANGIBLE_ROIC (see _pillar_persistence()'s own comment). Note
+    ROTC itself (the returned dict's "ttm_rotc") is computed unconditionally
+    regardless of this parameter - only whether persistence USES it is
+    switch-gated.
 
     Commit O (21 Sep 2026, owner-verified EBIT-from-pretax fix): the
     Admin Dashboard's "Operating-income audit" reads through here, NEVER
@@ -908,6 +1039,7 @@ def compute_moat_dry_run(ticker, force_switch, bundle=None, force_pricing_level=
     result = _compute_moat_from_bundle(
         ticker, bundle, info, force_switch=force_switch,
         force_pricing_level=force_pricing_level, pricing_detail=pricing_detail,
+        force_tangible_roic=force_tangible_roic,
     )
     result["ticker"] = ticker
     result["is_financials"] = _is_financials(info)
@@ -955,8 +1087,12 @@ def compute_moat_diagnostics(ticker):
     "unverified"|"no_data")/ticker_corrected (Commit 2's per-YEAR verify-
     then-correct reconciliation, this field now a derived reporting flag
     only - see auto_compounder_engine.ebit_year_rows())/
-    nopat/equity/total_debt/long_term_debt/cash/invested_capital/roic;
-    financials mode: year/equity/net_income/roe), "ttm_return"/
+    nopat/equity/total_debt/long_term_debt/cash/invested_capital/roic/
+    rotc (Commit 4, 23 Sep 2026: NOPAT / average tangible invested
+    capital, shown ALWAYS regardless of MOAT_TANGIBLE_ROIC - None
+    wherever the goodwill/intangibles row isn't on file, see
+    _year_return_series()'s own comment); financials mode: year/equity/
+    net_income/roe - ROTC does not apply in financials mode), "ttm_return"/
     "ttm_return_metric" (ROIC or ROE), "ttm_cost_of_capital"/
     "ttm_cost_of_capital_flagged", "spread", "pricing_power_detail"
     (Commit 3, 23 Sep 2026: {"used_fallback", "margin_label", "level_
@@ -964,7 +1100,11 @@ def compute_moat_diagnostics(ticker):
     median), "level_years", "level_points" (None if dropped or the
     switch is off), "switch_on"} - see _pillar_pricing_power()'s own
     `detail` parameter; reads the LIVE MOAT_PRICING_LEVEL switch, same
-    as every other figure this function reports)}."""
+    as every other figure this function reports), "ttm_rotc" (Commit 4,
+    23 Sep 2026: ROTC alongside "ttm_return"/ROIC, ALWAYS - see
+    _year_return_series()'s own comment; this function's Persistence
+    pillar/"components" figure still reads the LIVE MOAT_TANGIBLE_ROIC
+    switch to decide whether it's USED, same as pricing power above)}."""
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return None
@@ -993,6 +1133,7 @@ def compute_moat_diagnostics(ticker):
     return_series = _year_return_series(bundle, info, is_financials, flags=flags)
     years_desc = [y for y, _, _ in return_series]
     roic_list = [v for _, v, _ in return_series]
+    rotc_list = [e.get("rotc") for _, _, e in return_series]
     usable_years = sum(1 for v in roic_list if v is not None)
     if usable_years < 2:
         return None
@@ -1002,7 +1143,11 @@ def compute_moat_diagnostics(ticker):
     if spread_pts is not None:
         components.append({"pillar": "Excess-return spread", "points": round(spread_pts, 1), "max": 30})
 
-    persistence_pts = _pillar_persistence(roic_list, is_financials, flags)
+    # Reads the LIVE MOAT_TANGIBLE_ROIC switch (force_tangible_roic=None)
+    # - this diagnostics view never forces a switch, same as every other
+    # figure it shows; the Admin Dashboard dry-run tool is the one that
+    # previews "as if ON/OFF".
+    persistence_pts = _pillar_persistence(roic_list, is_financials, flags, rotc_list=rotc_list)
     if persistence_pts is not None:
         components.append({"pillar": "Persistence", "points": round(persistence_pts, 1), "max": 25})
 
@@ -1068,6 +1213,9 @@ def compute_moat_diagnostics(ticker):
                 "cash": cash_s.get(y),
                 "invested_capital": extra.get("invested_capital"),
                 "roic": roic,
+                # Commit 4 (23 Sep 2026): shown ALWAYS, switch or not -
+                # see _year_return_series()'s own comment.
+                "rotc": extra.get("rotc"),
             })
 
     if is_financials:
@@ -1102,6 +1250,11 @@ def compute_moat_diagnostics(ticker):
         "ttm_cost_of_capital_flagged": ttm_cost_of_capital_flagged,
         "spread": spread,
         "pricing_power_detail": pricing_detail,
+        # Commit 4 (23 Sep 2026): ROIC and ROTC side by side, ALWAYS -
+        # None in financials mode or wherever goodwill/intangibles isn't
+        # on file. This is the "judge whether to turn MOAT_TANGIBLE_ROIC
+        # on" panel the task's own spec calls for.
+        "ttm_rotc": rotc_list[0] if rotc_list else None,
     }
 
 

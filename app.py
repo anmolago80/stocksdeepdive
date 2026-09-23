@@ -11357,6 +11357,15 @@ def page_deep_dive():
                             f"**TTM {_moat_diag['ttm_return_metric']}:** "
                             + (f"{_moat_diag['ttm_return']:.1%}" if _moat_diag["ttm_return"] is not None else "n/a")
                         )
+                        # Commit 4 (23 Sep 2026): ROTC alongside ROIC,
+                        # ALWAYS (n/a in financials mode or wherever the
+                        # goodwill/intangibles row isn't on file) - the
+                        # task's own "judge whether to turn MOAT_TANGIBLE_
+                        # ROIC on" panel.
+                        st.markdown(
+                            "**TTM ROTC (return on tangible capital):** "
+                            + (f"{_moat_diag['ttm_rotc']:.1%}" if _moat_diag.get("ttm_rotc") is not None else "n/a")
+                        )
                         st.markdown(
                             "**TTM cost of capital:** "
                             + (f"{_moat_diag['ttm_cost_of_capital']:.1%}" if _moat_diag["ttm_cost_of_capital"] is not None else "n/a")
@@ -29089,6 +29098,158 @@ def page_admin_dashboard():
                 key="admin_dash_download_pricing_level_full",
             )
         elif "admin_dash_pricing_level_rows" in st.session_state:
+            st.caption("No tickers with cached fundamentals were found for the selected universe(s).")
+
+    # --- RETURN ON TANGIBLE CAPITAL DRY-RUN (Commit 4, 23 Sep 2026,
+    # owner-reported): same pure dry-run contract as the two panels
+    # above - reads through moat_engine.compute_moat_dry_run(force_
+    # tangible_roic=...), never touches the live MOAT_TANGIBLE_ROIC env
+    # var or the 24h moat_cache. ROTC itself is computed unconditionally
+    # by moat_engine (see _year_return_series()'s own comment) and is
+    # ALSO shown, always, in the per-ticker Moat diagnostics expander
+    # above on the Deep Dive page - this panel is specifically the
+    # "count of tickers whose ROTC exceeds ROIC by 5+ points, AU vs US"
+    # report this commit's own task asks for, across a whole saved
+    # universe rather than one ticker at a time.
+    st.markdown("### Return on tangible capital - dry-run (MOAT_TANGIBLE_ROIC preview)")
+    st.caption(
+        "ROTC = NOPAT / (average invested capital - goodwill and other "
+        "intangibles) - the same invested-capital base ROIC already "
+        "uses, minus what an acquisition premium added to it. Computed "
+        "for every ticker regardless of the switch (None wherever the "
+        "goodwill/intangibles row isn't on file). MOAT_TANGIBLE_ROIC, "
+        "when set, only changes the Persistence pillar: a year counts if "
+        "ROIC > 12% OR ROTC > 20% (Excess-return spread keeps using ROIC "
+        "alone either way - paying for an acquisition is a real cost of "
+        "capital and isn't waived there). \"Exceeds ROIC by 5+pts\" below "
+        "compares each ticker's own TTM figures."
+    )
+    with st.container(border=True):
+        _tr_candidate_universes = (
+            list(scanner_engine.AUSTRALIA_UNIVERSES) + list(scanner_engine.USA_UNIVERSES)
+            + [nightly_scan.IMPORTED_UNIVERSE]
+        )
+        _tr_saved_universes = sorted(
+            _u for _u in _tr_candidate_universes
+            if os.path.exists(scan_store._path(_u))
+        )
+        _tr_universe_choice = st.selectbox(
+            "Universe", ["All saved universes"] + _tr_saved_universes,
+            key="admin_dash_tangible_roic_universe",
+        )
+        if st.button("Run tangible-ROIC dry run", key="admin_dash_tangible_roic_btn"):
+            _tr_target_universes = (
+                _tr_saved_universes if _tr_universe_choice == "All saved universes"
+                else [_tr_universe_choice]
+            )
+            _tr_ticker_universes, _tr_universe_tickers = {}, {}
+            for _uni in _tr_target_universes:
+                try:
+                    _scan_payload = scan_store.load_scan_raw(_uni)
+                except Exception:
+                    _scan_payload = None
+                _tix = [r.get("Ticker") for r in (_scan_payload or {}).get("rows", []) if r.get("Ticker")]
+                _tr_universe_tickers[_uni] = _tix
+                for _tk in _tix:
+                    _tr_ticker_universes.setdefault(_tk, set()).add(_uni)
+
+            _tr_unique_tickers = sorted(_tr_ticker_universes.keys())
+            _tr_total = len(_tr_unique_tickers)
+            _tr_progress_bar = st.progress(0.0)
+            _tr_progress_caption = st.empty()
+
+            def _tr_points(_result):
+                for _c in (_result or {}).get("components") or []:
+                    if _c.get("pillar") == "Persistence":
+                        return _c.get("points")
+                return None
+
+            _tr_rows = []
+            _tr_skipped_no_cache = []
+            _CHUNK = 25
+            for _i, _tk in enumerate(_tr_unique_tickers):
+                _bundle = fundamentals_data.peek_cached_bundle(_tk)
+                if _bundle is None:
+                    _tr_skipped_no_cache.append(_tk)
+                else:
+                    _old = moat_engine.compute_moat_dry_run(_tk, force_switch=None, bundle=_bundle, force_tangible_roic=False)
+                    _new = moat_engine.compute_moat_dry_run(_tk, force_switch=None, bundle=_bundle, force_tangible_roic=True)
+                    if _old and _new:
+                        _ttm_roic, _ttm_rotc = _old.get("ttm_return"), _old.get("ttm_rotc")
+                        _exceeds_5pt = (
+                            _ttm_roic is not None and _ttm_rotc is not None
+                            and (_ttm_rotc - _ttm_roic) >= 0.05
+                        )
+                        _persistence_old, _persistence_new = _tr_points(_old), _tr_points(_new)
+                        _moat_old, _moat_new = _old.get("score"), _new.get("score")
+                        _tr_rows.append({
+                            "ticker": _tk,
+                            "country": "AU" if _tk.upper().endswith(".AX") else "US",
+                            "universe": ", ".join(sorted(_tr_ticker_universes[_tk])),
+                            "ttm_roic": _ttm_roic,
+                            "ttm_rotc": _ttm_rotc,
+                            "rotc_minus_roic": (
+                                round(_ttm_rotc - _ttm_roic, 4) if (_ttm_roic is not None and _ttm_rotc is not None) else None
+                            ),
+                            "exceeds_5pt": _exceeds_5pt,
+                            "persistence_old": _persistence_old,
+                            "persistence_new": _persistence_new,
+                            "moat_old": _moat_old,
+                            "moat_new": _moat_new,
+                            "moat_delta": (
+                                round(_moat_new - _moat_old, 1)
+                                if (_moat_old is not None and _moat_new is not None) else None
+                            ),
+                        })
+                if (_i + 1) % _CHUNK == 0 or (_i + 1) == _tr_total:
+                    _tr_progress_bar.progress((_i + 1) / _tr_total if _tr_total else 1.0)
+                    _tr_progress_caption.caption(f"Processed {_i + 1}/{_tr_total} ticker(s) - {_tk}")
+
+            _tr_progress_bar.empty()
+            _tr_progress_caption.empty()
+
+            st.session_state["admin_dash_tangible_roic_rows"] = _tr_rows
+            st.session_state["admin_dash_tangible_roic_skipped"] = _tr_skipped_no_cache
+
+        _tr_rows = st.session_state.get("admin_dash_tangible_roic_rows")
+        _tr_skipped_no_cache = st.session_state.get("admin_dash_tangible_roic_skipped") or []
+
+        if _tr_skipped_no_cache:
+            with st.expander(f"{len(_tr_skipped_no_cache)} ticker(s) skipped - no cached fundamentals on file"):
+                st.dataframe(pd.DataFrame({"ticker": _tr_skipped_no_cache}), hide_index=True, width='stretch')
+
+        if _tr_rows:
+            _tr_df = pd.DataFrame(_tr_rows)
+            st.markdown(f"**{len(_tr_df)} ticker(s) audited** (deduped across universes)")
+
+            _tr_exceed_df = _tr_df[_tr_df["exceeds_5pt"] == True]  # noqa: E712
+            _tr_au = int((_tr_exceed_df["country"] == "AU").sum())
+            _tr_us = int((_tr_exceed_df["country"] == "US").sum())
+            st.markdown(
+                f"**ROTC exceeds ROIC by 5+ points (TTM):** {len(_tr_exceed_df)} "
+                f"ticker(s) - AU {_tr_au} · US {_tr_us}"
+            )
+            if not _tr_exceed_df.empty:
+                st.dataframe(
+                    _tr_exceed_df.sort_values("rotc_minus_roic", ascending=False),
+                    hide_index=True, width='stretch',
+                )
+
+            _tr_movable = _tr_df.dropna(subset=["moat_delta"]).copy()
+            if not _tr_movable.empty:
+                _tr_movable["abs_delta"] = _tr_movable["moat_delta"].abs()
+                _tr_movers = _tr_movable.sort_values("abs_delta", ascending=False).head(10).drop(columns="abs_delta")
+                st.markdown("**10 biggest Moat-score movers (old vs new):**")
+                st.dataframe(_tr_movers, hide_index=True, width='stretch')
+
+            st.download_button(
+                "Download full tangible-ROIC dry-run as CSV",
+                _tr_df.to_csv(index=False).encode("utf-8"),
+                file_name="stocksdeepdive_tangible_roic_dryrun.csv",
+                mime="text/csv",
+                key="admin_dash_download_tangible_roic_full",
+            )
+        elif "admin_dash_tangible_roic_rows" in st.session_state:
             st.caption("No tickers with cached fundamentals were found for the selected universe(s).")
 
     # --- SYSTEM --------------------------------------------------------
