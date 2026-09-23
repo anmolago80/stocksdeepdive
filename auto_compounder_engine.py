@@ -103,7 +103,14 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # 39->40 (2026-08-30): Capital Intensity Ratio's top band split in two
 # (0.40x-1.00x "Capital-heavy" / 1.00x+ "Very capital-heavy") - see that
 # metric's own comment in _build_fundamentals for why.
-ENGINE_VERSION = 40
+# 40->41 (Commit O, 2026-09-21): _build_fundamentals/_build_cost_of_capital
+# now read operating income through ebit_ttm()/ebit_series() instead of a
+# raw statement-row lookup - see those functions' own comments. Output is
+# unchanged while EBIT_FROM_PRETAX is unset (the default), but the
+# version bump exists so that flipping the switch on later invalidates
+# this cache immediately rather than waiting up to 24h for a stale entry
+# to expire.
+ENGINE_VERSION = 41
 
 
 # -----------------------------------
@@ -267,6 +274,12 @@ _ROW_ALIASES = {
     "pretax_income": ["Pretax Income", "Income Before Tax", "incomeBeforeTax"],
     "tax_provision": ["Tax Provision", "Income Tax Expense", "incomeTaxExpense"],
     "interest_expense": ["Interest Expense", "Interest Expense Non Operating", "interestExpense"],
+    # EBIT reconstruction (Commit O) - see ebit_year_rows() below for why
+    # these are read instead of trusting the "Operating Income" row alone.
+    "net_non_operating_interest": ["Net Non Operating Interest Income Expense"],
+    "other_income_expense": ["Other Income Expense"],
+    "total_unusual_items": ["Total Unusual Items", "Total Unusual Items Excluding Goodwill"],
+    "reconciled_depreciation": ["Reconciled Depreciation"],
     "basic_eps": ["Basic EPS", "Diluted EPS"],
     "total_assets": ["Total Assets", "totalAssets"],
     "current_assets": ["Current Assets", "Total Current Assets", "totalCurrentAssets"],
@@ -572,6 +585,336 @@ def _plausible_operating_income(candidate, revenue, info):
         if margin_close or ratio_close:
             return candidate, False
     return expected, True
+
+
+# -----------------------------------
+# EBIT reconstruction (Commit O, 21 Sep 2026; replaced by Commit Q, 21 Sep
+# 2026, owner-reported, after the dry-run audit tool Commit O itself
+# shipped was run against real production data).
+#
+# Commit O's original formula (EBIT = Pretax - Net Non Operating Interest
+# Income Expense - Other Income Expense - Total Unusual Items) was
+# confirmed correct on SUL.AX/JBH.AX but proved UNSAFE at scale once
+# audited against real tickers: one-off items leaked straight into
+# "EBIT" (ECHO -91m -> 17.4bn; ORA.AX 63m -> 1.0bn; KHC 4.6bn -> 14.0bn;
+# CNC -312m -> 5.4bn), plausible-looking US names moved even though their
+# Operating Income was already correct (JNJ, DAL, SPG, WDC), and some
+# results were outright impossible (CSL.AX 4.35bn -> 16.7bn; LITE ROIC
+# 159%). Working theory: yfinance's "Other Income Expense" row can
+# already CONTAIN "Total Unusual Items" for some filers, so subtracting
+# both independently double-counted a write-down/one-off, inflating the
+# "derived" figure by exactly that amount.
+#
+# Commit Q's fix: never subtract Total Unusual Items at all, and never
+# trust the Pretax-based arithmetic as EBIT directly - use it only to
+# VERIFY which of two independently-reported figures (yfinance's own
+# Operating Income, or that + Reconciled Depreciation) is the real one,
+# then use THAT reported figure as EBIT. Per ticker-year:
+#   P = Pretax Income - Net Non Operating Interest Income Expense -
+#       Other Income Expense   (a TEST value only - never used as EBIT
+#       itself, which is exactly what let one-off items leak into
+#       Commit O's numbers)
+#   OI = yfinance's own "Operating Income" row
+#   DA = "Reconciled Depreciation" row
+#   - |P - OI| <= 3% of |P| -> no bug this year -> EBIT = OI.
+#   - |P - (OI + DA)| <= 3% of |P| -> the D&A double-count is confirmed
+#     for this year -> EBIT = OI + DA. OI and DA are both themselves
+#     operating figures with no one-off/asset-sale/write-down content,
+#     so a P-vs-(OI+DA) match can't be produced by a one-off leaking in
+#     the way P-vs-OI-alone could - the reconciliation TEST catches the
+#     real bug (SUL.AX FY23: 93.0+329.4=422.4, JBH.AX FY23:
+#     543.5+222.3=765.8) without ever adopting P's own arithmetic
+#     (which is what let ECHO/ORA/KHC/CNC's one-offs through under
+#     Commit O).
+#   - Neither -> EBIT = OI unchanged, flagged "operating income
+#     unverified - no correction applied" - this is the honest,
+#     conservative default for a year Commit Q can't explain, rather
+#     than guessing.
+#
+# Ticker-level gate (never per year - see ebit_year_rows()): the OI+DA
+# correction is only ever applied to a ticker if the match holds for
+# BOTH the newest year AND at least 2 other years - a single matching
+# year could be coincidence; three independent years matching the exact
+# same reconciliation identity is the filer's real statement structure,
+# not noise. A ticker that doesn't clear this bar keeps OI for every
+# year, uniformly - never a per-year mix (same principle Commit P
+# established, now the ONLY branching rule left, since a "some years
+# derivable, some not" case no longer exists under this formula).
+#
+# yfinance's own "EBIT" row is still not a substitute for OI+DA: it's
+# Pretax + "Interest Expense", and that "Interest Expense" row excludes
+# lease interest (SUL.AX: 4.2 vs a real net interest figure of 43.2) -
+# inconsistent with invested capital elsewhere in this codebase, which
+# already includes lease liabilities.
+#
+# Financials mode (banks/insurers) is excluded from this formula
+# entirely - interest income/expense IS a bank's business, not a
+# non-operating add-back. Callers pass is_financials=True to always get
+# the raw yfinance Operating Income back, regardless of the switch below.
+#
+# Switched by a Railway env var rather than a code change, so it can be
+# turned on/off without a redeploy - default OFF (unset), so nothing on
+# the live site changes until this is explicitly flipped. See this
+# module's own ENGINE_VERSION and moat_engine.MOAT_ENGINE_VERSION for the
+# cache-invalidation side, and nightly_scan.py's
+# check_ebit_switch_flip() for the "takes effect same night" mechanics.
+# -----------------------------------
+
+EBIT_FROM_PRETAX = os.environ.get("EBIT_FROM_PRETAX") == "1"
+
+# 3% of |P| - see the module comment above. Applied identically to both
+# the "matches OI" and "matches OI+DA" comparisons.
+_EBIT_VERIFY_TOLERANCE_PCT = 0.03
+
+# Newest year + at least this many OTHER years must independently show
+# the OI+DA match before a ticker's whole series gets corrected.
+_EBIT_MIN_OTHER_MATCHING_YEARS = 2
+
+
+def _ac_is_financials(info):
+    """Mirrors moat_engine._is_financials(info) exactly (Financial
+    Services sector, or bank/insurance industry). Duplicated rather than
+    imported: moat_engine.py already imports this module as `_ace`, so
+    the reverse import would be circular. Both copies check the same two
+    `info` fields with the same logic - if one changes, change both."""
+    sector = (info.get("sector") or "").strip()
+    if sector == "Financial Services":
+        return True
+    industry = (info.get("industry") or "").lower()
+    return ("bank" in industry) or ("insurance" in industry)
+
+
+def _matches_within_tolerance(p_test, candidate):
+    """True if |p_test - candidate| <= _EBIT_VERIFY_TOLERANCE_PCT * |p_test|.
+    Tolerance is always relative to p_test's own magnitude (the TEST
+    anchor), per Commit Q's spec, on both the "matches OI" and "matches
+    OI+DA" comparisons. False (never a match) if either side is None, or
+    if p_test is 0 (a 3%-of-zero tolerance can only ever match candidate
+    exactly, which is a fine, unsurprising outcome to fall out of the
+    same formula rather than a special case worth branching on)."""
+    if p_test is None or candidate is None:
+        return False
+    return abs(p_test - candidate) <= _EBIT_VERIFY_TOLERANCE_PCT * abs(p_test)
+
+
+def ebit_year_rows(bundle, is_financials, force_switch=None, flags=None):
+    """{year_label: {...}} for every year the income statement has a
+    Pretax Income figure for, newest-first insertion order. Always
+    computed in full (even when the EBIT_FROM_PRETAX switch is off, or
+    is_financials=True) so the moat diagnostics panel and the Admin
+    Dashboard audit tool can show old-vs-new for every ticker regardless
+    of the switch's current state - only the "ebit" field (the value that
+    actually feeds the rest of the site) depends on switch/mode.
+
+    `force_switch`: None (default) reads the live EBIT_FROM_PRETAX env
+    flag, exactly like every real site call path. True/False overrides it
+    for this call ONLY, without touching the module-level global - this
+    is what lets the Admin Dashboard's dry-run audit compute an "as if
+    switch were ON" result side-by-side with the real "as if switch were
+    OFF" result, safely, even while other concurrent Streamlit sessions
+    (this is a live multi-user site) are being served by this same
+    module's functions reading the real, unmutated global.
+
+    `flags`: None (default) - no side effects, safe for any caller that
+    doesn't keep a free-text flags list (this module's own
+    _build_fundamentals/_build_cost_of_capital, for instance). Pass a
+    list (e.g. moat_engine.py's own `flags` accumulator) to have a
+    human-readable line appended for every year whose own P-vs-OI and
+    P-vs-(OI+DA) tests both miss ("unverified") - the caller decides
+    whether that's worth surfacing, this function never assumes.
+
+    Fields per year (see the module comment above for the full formula
+    and its Commit O -> Commit Q history):
+      pretax_income, net_interest, other_income - the test formula's own
+        inputs, read as yfinance reports them (sign convention as filed
+        - net_interest is typically negative when it's a net expense).
+      total_unusual_items - diagnostic only, NOT used anywhere in the
+        formula as of Commit Q (the working theory for Commit O's false
+        positives was exactly that this row's content can already be
+        embedded in other_income for some filers - subtracting it a
+        second time is what leaked one-offs into "EBIT"). Kept here only
+        so the owner can still eyeball it against a flagged/unverified
+        year in the diagnostics panel.
+      reconciled_depreciation - the D&A add-back; part of the OI+DA
+        candidate this year's own p_test is checked against (see below),
+        no longer diagnostic-only as it was under Commit P.
+      operating_income_yf - yfinance's own "Operating Income" row,
+        unmodified.
+      p_test - pretax_income - net_interest - other_income. A TEST value
+        ONLY, per Commit Q - never itself used as ebit (that's exactly
+        what let one-off items leak into Commit O's numbers). None when
+        pretax_income is missing for that year.
+      oi_plus_da - operating_income_yf + reconciled_depreciation, or
+        None if either is unavailable that year.
+      year_status - "matches_oi" (p_test agrees with operating_income_yf
+        within 3% - no bug this year), "matches_oi_plus_da" (p_test
+        agrees with oi_plus_da within 3% - the D&A double-count is
+        confirmed for this specific year), "unverified" (p_test could be
+        computed but matches neither - flagged, EBIT stays at OI for
+        this year), or "no_data" (p_test itself couldn't be computed -
+        no Pretax Income on file for this year).
+      ticker_corrected - one bool, the SAME value on every year's row
+        for this ticker (see the ticker-level gate below) - whether the
+        OI+DA correction is actually being applied to this ticker's
+        series, for transparency in the diagnostics panel/audit.
+      ebit - the value callers should actually use. Decided ONCE per
+        ticker/bundle (never per year - Commit P's "no mixing" principle,
+        which Commit Q keeps as the only remaining branching rule):
+          - ticker_corrected is True (the newest year AND at least
+            _EBIT_MIN_OTHER_MATCHING_YEARS other years each
+            independently show year_status == "matches_oi_plus_da") ->
+            every year uses oi_plus_da, uniformly - INCLUDING a year
+            whose own year_status isn't "matches_oi_plus_da" (e.g. one
+            "unverified" year sitting inside an otherwise 5-year run
+            that clears the 3-year bar) - the ticker-level decision
+            governs the whole series, not each year's own individual
+            test result, exactly so this never becomes a second form of
+            per-year mixing. A year missing operating_income_yf or
+            reconciled_depreciation itself (so oi_plus_da is None) gets
+            ebit=None (dropped, same "drop rather than guess"
+            convention as any other unavailable year) - never a
+            fallback to that one year's raw operating_income_yf, which
+            would silently reintroduce a level shift into an otherwise-
+            corrected series.
+          - ticker_corrected is False (the 3-year bar isn't cleared) ->
+            the WHOLE ticker uses operating_income_yf for every year,
+            uniformly - the untouched original path, not a special case
+            of the new one."""
+    income = bundle.get("income")
+    if income is None or getattr(income, "empty", True):
+        return {}
+
+    op_yf_s = dict(_series(income, "operating_income"))
+    pretax_s = dict(_series(income, "pretax_income"))
+    interest_s = dict(_series(income, "net_non_operating_interest"))
+    other_s = dict(_series(income, "other_income_expense"))
+    unusual_s = dict(_series(income, "total_unusual_items"))
+    depr_s = dict(_series(income, "reconciled_depreciation"))
+
+    years = [y for y, _ in _series(income, "pretax_income")]
+    if not years:
+        years = [y for y, _ in _series(income, "operating_income")]
+
+    switch_on = EBIT_FROM_PRETAX if force_switch is None else force_switch
+    verify_enabled = bool(switch_on) and not is_financials
+
+    raw_per_year = {}
+    for y in years:
+        pretax = pretax_s.get(y)
+        op_yf = op_yf_s.get(y)
+        net_interest = interest_s.get(y)
+        other_income = other_s.get(y)
+        da = depr_s.get(y)
+
+        p_test = None
+        if pretax is not None:
+            p_test = pretax - (net_interest or 0.0) - (other_income or 0.0)
+
+        oi_plus_da = (op_yf + da) if (op_yf is not None and da is not None) else None
+
+        if p_test is None:
+            year_status = "no_data"
+        elif _matches_within_tolerance(p_test, op_yf):
+            year_status = "matches_oi"
+        elif _matches_within_tolerance(p_test, oi_plus_da):
+            year_status = "matches_oi_plus_da"
+        else:
+            year_status = "unverified"
+
+        raw_per_year[y] = {
+            "pretax_income": pretax,
+            "net_interest": net_interest,
+            "other_income": other_income,
+            "total_unusual_items": unusual_s.get(y),
+            "reconciled_depreciation": da,
+            "operating_income_yf": op_yf,
+            "p_test": p_test,
+            "oi_plus_da": oi_plus_da,
+            "year_status": year_status,
+        }
+
+    # Ticker-level gate - decided ONCE, never per year (see the docstring
+    # above). The newest year specifically, plus at least
+    # _EBIT_MIN_OTHER_MATCHING_YEARS other years, must independently
+    # confirm the OI+DA identity - a single matching year could be
+    # coincidence, three is the filer's real statement structure.
+    matching_years = [y for y in years if raw_per_year[y]["year_status"] == "matches_oi_plus_da"]
+    newest = years[0] if years else None
+    ticker_corrected = bool(
+        verify_enabled
+        and newest is not None
+        and raw_per_year[newest]["year_status"] == "matches_oi_plus_da"
+        and len(matching_years) >= 1 + _EBIT_MIN_OTHER_MATCHING_YEARS
+    )
+
+    out = {}
+    for y in years:
+        r = raw_per_year[y]
+        if ticker_corrected:
+            chosen = r["oi_plus_da"]
+        else:
+            chosen = r["operating_income_yf"]
+        if verify_enabled and r["year_status"] == "unverified" and flags is not None:
+            flags.append(
+                f"EBIT: {y} operating income unverified - no correction applied "
+                f"(matches neither yfinance's Operating Income nor Operating Income + "
+                f"Reconciled Depreciation within {_EBIT_VERIFY_TOLERANCE_PCT:.0%} of the "
+                f"Pretax-based test value)"
+            )
+        out[y] = {**r, "ticker_corrected": ticker_corrected, "ebit": chosen}
+    return out
+
+
+def ebit_series(bundle, is_financials, force_switch=None, flags=None):
+    """[(year_label, ebit_or_None), ...] newest-first - drop-in
+    replacement for `_series(income, "operating_income")` at every NOPAT/
+    ROIC/margin call site in this module and moat_engine.py. Thin
+    wrapper over ebit_year_rows() returning just the "ebit" field.
+    `force_switch`/`flags`: see ebit_year_rows()."""
+    return [(y, r["ebit"]) for y, r in ebit_year_rows(bundle, is_financials, force_switch=force_switch, flags=flags).items()]
+
+
+def ebit_ttm(bundle, is_financials, revenue=None, info=None, force_switch=None, flags=None):
+    """(ebit_value_or_None, estimated) - the TTM figure every caller that
+    used to do `_plausible_operating_income(_latest(income,
+    "operating_income"), revenue, info)` should call instead.
+
+    Walks ebit_year_rows()'s per-year "ebit" field newest-first and
+    returns the first non-None value (estimated=False) - since Commit Q
+    applies one formula uniformly across a ticker's whole series (either
+    every year uses OI+DA, or every year uses OI - see ebit_year_rows()),
+    this never needs to reason about switch/mode/verification itself; it
+    only needs to skip a year whose OWN raw inputs happen to be missing
+    (e.g. no Reconciled Depreciation on file for the newest year of an
+    otherwise-corrected ticker). If the picked year isn't the newest,
+    `flags` (if given) gets a line naming which year TTM actually came
+    from and why - this can still happen on the OI-unchanged path too
+    (yfinance's Operating Income row itself missing for the newest year),
+    not just the corrected path.
+
+    If no year has a usable "ebit" at all (no income statement, or the
+    raw Operating Income row is missing for every year on file), falls
+    through to the exact same _latest(income,"operating_income") +
+    _plausible_operating_income() path this module used before the
+    EBIT_FROM_PRETAX feature existed at all.
+    `force_switch`/`flags`: see ebit_year_rows()."""
+    income = bundle.get("income")
+    rows = ebit_year_rows(bundle, is_financials, force_switch=force_switch, flags=flags)
+    years_desc = list(rows.keys())  # newest-first, insertion order matches ebit_year_rows()
+    for y in years_desc:
+        if rows[y]["ebit"] is not None:
+            if y != years_desc[0] and flags is not None:
+                flags.append(
+                    f"EBIT: TTM figure taken from {y}, not the newest year {years_desc[0]} "
+                    f"- {years_desc[0]}'s own Operating Income/Reconciled Depreciation figure is missing"
+                )
+            return rows[y]["ebit"], False
+    raw = _latest(income, "operating_income")
+    if revenue is None:
+        revenue = _latest(income, "revenue")
+    if info is None:
+        info = bundle.get("info")
+    return _plausible_operating_income(raw, revenue, info)
 
 
 def _statement_col_dates(df):
@@ -1113,10 +1456,8 @@ def _build_fundamentals(bundle, ticker, ref):
     if dual_class_mcap_fix:
         mcap = price * filed_shares
 
-    operating_income = _latest(income, "operating_income")
-    operating_income, operating_income_estimated = _plausible_operating_income(
-        operating_income, revenue, bundle.get("info")
-    )
+    is_financials = _ac_is_financials(bundle.get("info") or {})
+    operating_income, operating_income_estimated = ebit_ttm(bundle, is_financials, revenue, bundle.get("info"))
     pretax_income = _latest(income, "pretax_income")
     tax_provision = _latest(income, "tax_provision")
     interest_expense, interest_expense_flagged, interest_expense_estimated = _interest_expense_ttm(bundle)
@@ -2099,9 +2440,8 @@ def _build_cost_of_capital(bundle, ticker, ref):
     pretax_income = _latest(bundle["income"], "pretax_income")
     tax_provision = _latest(bundle["income"], "tax_provision")
     revenue = _latest(bundle["income"], "revenue")
-    operating_income, _operating_income_estimated = _plausible_operating_income(
-        _latest(bundle["income"], "operating_income"), revenue, info
-    )
+    is_financials = _ac_is_financials(info)
+    operating_income, _operating_income_estimated = ebit_ttm(bundle, is_financials, revenue, info)
     equity = _latest(bundle["balance"], "stockholders_equity")
     cash = _latest(bundle["balance"], "cash")
     tax_ttm = (tax_provision / pretax_income) if (tax_provision is not None and pretax_income) else 0.25
@@ -2120,7 +2460,7 @@ def _build_cost_of_capital(bundle, ticker, ref):
     ltd_by_year = dict(_series(bundle["balance"], "long_term_debt"))
     cash_by_year = dict(_series(bundle["balance"], "cash"))
     interest_by_year = dict(_series(bundle["income"], "interest_expense"))
-    op_income_by_year = dict(_series(bundle["income"], "operating_income"))
+    op_income_by_year = dict(ebit_series(bundle, is_financials))
     years_desc = [y for y, _ in _series(bundle["balance"], "stockholders_equity")]
     year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
 

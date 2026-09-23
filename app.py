@@ -52,6 +52,7 @@ import screen_import_store
 import nightly_scan
 import snapshot_store
 import snapshot_render
+import quote_snapshot_store
 import moat_engine
 import portfolio_store
 import portfolio_health_engine
@@ -356,6 +357,45 @@ def get_price_history(ticker):
         lambda: yf.Ticker(ticker).history(period="6mo"), ticker, "get_price_history",
         fallback=pd.DataFrame(), is_empty=lambda df: df is None or df.empty,
     )
+
+
+def _price_history_rows_for_trading_cost(ticker):
+    """Trading Cost tab, Commit 3: converts get_price_history(ticker)'s
+    yfinance OHLCV DataFrame - the SAME cache every other Deep Dive/Swing
+    calculation already reads, no new fetch - into trading_cost_engine's
+    own plain-row shape ([{"date","high","low","close","volume"}, ...]),
+    since that module (and compounder_ui.py, which calls it) deliberately
+    takes no pandas/Streamlit/network dependency of its own - see
+    trading_cost_engine.trading_cost_series()'s own docstring. The one
+    place this conversion happens; both Trading Cost tab call sites
+    (the Deep Dive auto view below, and page_research()'s own tab loop)
+    use this instead of duplicating the DataFrame -> list-of-dicts
+    logic. A row with a missing/NaN High, Low or Close is skipped
+    outright (trading_cost_engine's own Corwin-Schultz estimator needs a
+    real high/low for every day it uses); a missing Volume alone is
+    kept with volume=None (only the "avg daily value traded" figure
+    needs it, and that figure already skips a None volume day - see
+    that function's own docstring). Never raises - returns [] on any
+    conversion error, which render_trading_cost_tab() already handles
+    gracefully as "no price data"."""
+    try:
+        df = get_price_history(ticker)
+        if df is None or df.empty:
+            return []
+        rows = []
+        for idx, row in df.iterrows():
+            high, low, close = row.get("High"), row.get("Low"), row.get("Close")
+            if not (pd.notna(high) and pd.notna(low) and pd.notna(close)):
+                continue
+            volume = row.get("Volume")
+            rows.append({
+                "date": idx.strftime("%Y-%m-%d"),
+                "high": float(high), "low": float(low), "close": float(close),
+                "volume": float(volume) if pd.notna(volume) else None,
+            })
+        return rows
+    except Exception:
+        return []
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -4580,13 +4620,37 @@ _CP_HML_POLARITY_FIX = {"Insights": "good_high", "Market Activity": "good_high"}
 # you'd rather it read the other way.
 _CP_CHECK_COLOR = {"yes": "green", "no": "red", "medium": "amber"}
 
+# Fix (prose-valued ratings breaking the chip grid, 19 Sep 2026): the
+# small vocabulary this renderer actually knows how to turn into a chip -
+# every value _CP_HML_COLOR/_CP_CHECK_COLOR above color-code, derived from
+# those two dicts rather than hand-listed again so this can never drift
+# out of sync with them. A workbook cell for a Low/Medium/High-labelled
+# rating (e.g. "Market Activity") sometimes holds a full written note
+# instead (seen live on CPRT) - the field NAME doesn't reliably predict
+# this (another ticker's "Market Activity" can be a real H/M/L call), so
+# the check has to be on the VALUE, not the label.
+_CP_KNOWN_CHIP_VALUES = (
+    {v for _color_map in _CP_HML_COLOR.values() for v in _color_map}
+    | set(_CP_CHECK_COLOR)
+)
+
 
 def _cp_render_hml_ratings(ratings, extra_checks=None):
+    """Renders the two-column chip grid, then - fix, prose-valued ratings -
+    any rating/check whose value ISN'T one of _CP_KNOWN_CHIP_VALUES below
+    it, full-width, as a "Notes from the research" subsection instead of
+    cramming the raw paragraph into a chip. Source order preserved:
+    ratings are scanned before extra_checks, each in its own original
+    order - same order multiple prose fields would appear in the sheet."""
     st.markdown("##### Ratings (called directly from your Low/Medium/High cells)")
     html_parts = []
+    notes = []
     for r in ratings:
-        _pol = _CP_HML_POLARITY_FIX.get(r["label"], r["polarity"])
         _val = r["value"].strip().lower()
+        if _val not in _CP_KNOWN_CHIP_VALUES:
+            notes.append(r)
+            continue
+        _pol = _CP_HML_POLARITY_FIX.get(r["label"], r["polarity"])
         color_key = _CP_HML_COLOR.get(_pol, {}).get(_val)
         if color_key is None and _pol in ("good_high", "good_low"):
             # Yes/No answers sometimes live in these columns too (e.g.
@@ -4599,6 +4663,9 @@ def _cp_render_hml_ratings(ratings, extra_checks=None):
         )
     for c in (extra_checks or []):
         _val = c["value"].strip().lower()
+        if _val not in _CP_KNOWN_CHIP_VALUES:
+            notes.append(c)
+            continue
         color_key = _CP_CHECK_COLOR.get(_val)
         html_parts.append(
             f"<div style='margin-bottom:6px;'><span style='font-size:13px;color:#aebfd4;'>"
@@ -4611,6 +4678,22 @@ def _cp_render_hml_ratings(ratings, extra_checks=None):
         st.markdown("".join(html_parts[:half]), unsafe_allow_html=True)
     with col2:
         st.markdown("".join(html_parts[half:]), unsafe_allow_html=True)
+
+    if notes:
+        _cp_render_ratings_notes(notes)
+
+
+def _cp_render_ratings_notes(notes):
+    """The prose-valued ratings/checks _cp_render_hml_ratings pulled out of
+    the chip grid (see its own docstring/fix comment above) - full-width,
+    below the grid, in the same quiet boxed style _cp_render_text_groups
+    uses for the written analysis (a bordered container, bold label,
+    compounder_ui._cp_note() prose)."""
+    st.markdown("##### Notes from the research")
+    with st.container(border=True):
+        for n in notes:
+            st.markdown(f"**{_md_safe(n['label'])}**")
+            compounder_ui._cp_note(n["value"].strip())
 
 
 # _cp_note now lives in compounder_ui.py (imported above as
@@ -6981,13 +7064,20 @@ def _render_research_detail(ticker, data, section_order, lang="en"):
     # Deep Dive auto view's compounder_ui.render_tabs() uses, so News
     # always lands in the same place on both views and both render it
     # through the exact same compounder_ui.render_news_tab() component.
+    # 💱 Trading Cost tab (Commit 3): same reasoning, one step further -
+    # compounder_ui.with_trading_cost_tab() inserts it right after News,
+    # only when compounder_ui.TRADING_COST_ENABLED is on (a no-op
+    # otherwise, so _cp_section_order is byte-identical to today until
+    # that switch flips).
     # This page builds its own st.tabs() (rather than calling
     # compounder_ui.render_tabs() directly) because it also has to
     # interleave "Company Potential", which has no compounder_ui.py
     # computed-section equivalent at all - see that module's own
     # top-of-file docstring.
-    _cp_section_order = compounder_ui.with_news_tab(section_order, lang=lang)
+    _cp_section_order = compounder_ui.with_trading_cost_tab(
+        compounder_ui.with_news_tab(section_order, lang=lang), lang=lang)
     _cp_news_label = compounder_ui.news_tab_label(lang)
+    _cp_trading_cost_label = compounder_ui.trading_cost_tab_label(lang)
     _cp_tab_labels = [
         (f"🔒 {s}" if s in _cp_gated and paywall_engine.PAYWALL_ENABLED
          and not paywall_engine.is_subscribed(paywall_engine.current_user_email())
@@ -6998,7 +7088,8 @@ def _render_research_detail(ticker, data, section_order, lang="en"):
     # label passed to st.tabs()'s `default` has to be the (possibly 🔒-
     # prefixed) tab label actually in _cp_tab_labels, not the bare section
     # name, so the lookup below maps back through _cp_section_order's index
-    # (News included, since with_news_tab() above already folded it in).
+    # (News/Trading Cost included, since with_news_tab()/with_trading_
+    # cost_tab() above already folded them in).
     _cp_default_idx = 0
     _qp_section = (st.query_params.get("section") or "").strip().lower()
     if _qp_section:
@@ -7012,6 +7103,9 @@ def _render_research_detail(ticker, data, section_order, lang="en"):
         with _cp_tab:
             if _cp_label == _cp_news_label:
                 compounder_ui.render_news_tab(ticker, lang=lang)
+            elif _cp_label == _cp_trading_cost_label:
+                compounder_ui.render_trading_cost_tab(
+                    ticker, _price_history_rows_for_trading_cost(ticker), lang=lang)
             else:
                 st.markdown(f"### {ticker} - {_cp_label}")
                 _render_cp_section(ticker, _cp_label, data)
@@ -7298,6 +7392,12 @@ def _home_top5_by_country():
             continue
         if r.get("universe") not in _eligible_universes:
             continue
+        # Commit J (21 Sep 2026, owner-reported): a ticker flagged "stale"
+        # (nightly_scan.analyze_ticker_lite()'s ghost-price guard) never
+        # belongs in "Tonight's top 5" - see snapshot_store._PUBLIC_FIELD_
+        # MAP for where "trading_status" reaches this public row shape.
+        if r.get("trading_status") == "stale":
+            continue
         try:
             _gen = datetime.fromisoformat(r.get("generated_at") or "")
         except ValueError:
@@ -7345,6 +7445,10 @@ def _home_featured_top10_by_country():
         if "ETF" in (r.get("company_name") or "").upper():
             continue
         if r.get("universe") not in _eligible_universes:
+            continue
+        # Commit J: same stale-ticker exclusion as _home_top5_by_country
+        # above - see that function's own comment.
+        if r.get("trading_status") == "stale":
             continue
         try:
             _gen = datetime.fromisoformat(r.get("generated_at") or "")
@@ -11103,6 +11207,15 @@ def page_deep_dive():
                     _acv_sections, _dd["ticker"], _acv_section_order,
                     key_prefix=f"acv_{_dd['ticker']}", gates=_acv_gates,
                     lang=st.session_state.get("lang", "en"),
+                    # Guarded (not called unconditionally) so the site is
+                    # a true no-op when ENABLE_TRADING_COST is off - the
+                    # Trading Cost tab itself already wouldn't render in
+                    # that case (compounder_ui.with_trading_cost_tab()'s
+                    # own gate), but this avoids the conversion work too.
+                    price_history=(
+                        _price_history_rows_for_trading_cost(_dd["ticker"])
+                        if compounder_ui.TRADING_COST_ENABLED else None
+                    ),
                 )
                 _acv_meta = _acv_sections.get("_meta", {}) or {}
                 _acv_years = _acv_meta.get("statement_years")
@@ -11169,6 +11282,88 @@ def page_deep_dive():
         _dd_discovery()
 
         _dd_moat()
+
+        # Commit M (21 Sep 2026, owner-reported): owner-only Moat
+        # diagnostics - "is this pillar's zero a genuine result or bad
+        # input data" for the ticker currently on screen. Gated on BOTH
+        # ai_gate.is_owner(paywall_engine.current_user_email()) (never
+        # the shared ?admin=/RC-view key a non-owner co-admin could also
+        # hold - never rendered, never even checked, for a visitor) AND
+        # full_view_unlocked (Commit T, 21 Sep 2026, owner-reported: the
+        # is_owner-only check originally here left this panel showing
+        # even after the owner exits to normal view - full_view_unlocked
+        # is the same "is this session currently in RC/unlocked view"
+        # flag every other admin-only Deep Dive control on this page
+        # already gates on, e.g. the insider "Force refresh" button
+        # above). Combining both is strictly narrower than either alone,
+        # so this doesn't reopen the non-owner-co-admin concern the
+        # is_owner check exists for.
+        # Recomputes fresh (moat_engine.compute_moat_diagnostics() is
+        # deliberately NOT part of the 24h moat_cache - see its own
+        # docstring), so it's behind a button rather than run
+        # unconditionally on every owner page view, same "don't pay for
+        # it unless actually opened" convention the Admin Dashboard's own
+        # "Show email list" checkbox already uses.
+        if ai_gate.is_owner(paywall_engine.current_user_email()) and st.session_state.get("full_view_unlocked"):
+            with st.expander("🔧 Moat diagnostics (owner only)", expanded=False):
+                st.caption(
+                    "Recomputes fresh from the fundamentals bundle - not the "
+                    "24h Moat cache - so this always reflects the current data."
+                )
+                if st.button("Load diagnostics", key=f"dd_moat_diag_btn_{_dd['ticker']}"):
+                    try:
+                        _moat_diag = moat_engine.compute_moat_diagnostics(_dd["ticker"])
+                    except Exception as e:
+                        _moat_diag = None
+                        st.error(f"Diagnostics failed: {e}")
+                    if _moat_diag is None:
+                        st.caption(
+                            "No diagnostics available for this ticker (fund, no "
+                            "fundamentals bundle, or fewer than 2 usable statement years)."
+                        )
+                    else:
+                        st.markdown(
+                            f"**Mode:** {_moat_diag['mode']} &middot; "
+                            f"**Usable years:** {_moat_diag['years_usable']}"
+                        )
+
+                        st.markdown("**Flags (verbatim, moat_engine's own order):**")
+                        if _moat_diag["flags"]:
+                            for _mf in _moat_diag["flags"]:
+                                st.write(f"- {_mf}")
+                        else:
+                            st.caption("No flags recorded.")
+
+                        st.markdown("**Pillar status:**")
+                        _mf_points = {c["pillar"]: c["points"] for c in _moat_diag["components"]}
+                        for _pname, _pstatus in _moat_diag["pillar_status"].items():
+                            _pscore = _mf_points.get(_pname)
+                            st.write(
+                                f"- {_pname}: {_pstatus}"
+                                + (f" - {_pscore} pts" if _pscore is not None else "")
+                            )
+
+                        st.markdown(
+                            f"**TTM {_moat_diag['ttm_return_metric']}:** "
+                            + (f"{_moat_diag['ttm_return']:.1%}" if _moat_diag["ttm_return"] is not None else "n/a")
+                        )
+                        st.markdown(
+                            "**TTM cost of capital:** "
+                            + (f"{_moat_diag['ttm_cost_of_capital']:.1%}" if _moat_diag["ttm_cost_of_capital"] is not None else "n/a")
+                            + (" _(flagged: defaulted/estimated input)_" if _moat_diag.get("ttm_cost_of_capital_flagged") else "")
+                        )
+                        st.markdown(
+                            "**Spread:** "
+                            + (f"{_moat_diag['spread']:+.1%}" if _moat_diag["spread"] is not None else "n/a")
+                        )
+
+                        st.markdown("**Per-year raw series (newest first):**")
+                        if _moat_diag["year_rows"]:
+                            st.dataframe(
+                                pd.DataFrame(_moat_diag["year_rows"]), hide_index=True, width='stretch',
+                            )
+                        else:
+                            st.caption("No per-year data available.")
 
         # Services batch 2, Part 2 (2026-09-01): peer context - directly
         # under the score gauges above, before Margin of Safety, per spec.
@@ -11852,6 +12047,21 @@ def _render_overnight_scan_table(universe_label, overnight, show_market_pulse=Fa
     every existing universe gets the same convenience for free."""
     _on_lang = st.session_state.get("lang", "en")
     _score_label = "Value Score" if _factual() else "Long Score"
+    # Commit J (21 Sep 2026, owner-reported): a ticker flagged "stale"
+    # (nightly_scan.analyze_ticker_lite()'s ghost-price guard - a delisted/
+    # halted/merged company yfinance keeps quoting the last real print
+    # for, forever) is excluded from every ranking/valuation surface this
+    # whole function renders - the table itself, and (via the SAME
+    # `overnight` dict) the market-pulse tiles/score histogram/Value Map/
+    # standout pick _render_scanner_market_pulse() below reads - one
+    # filter here covers all of them, since none of those functions fetch
+    # their own copy of `rows`. A shallow copy, not an in-place mutation -
+    # this function's own two callers keep whatever `overnight` object
+    # they passed in untouched. Its Deep Dive page stays reachable
+    # regardless - see snapshot_render.py's own "not currently trading"
+    # banner for where that's handled.
+    overnight = dict(overnight)
+    overnight["rows"] = [r for r in (overnight.get("rows") or []) if r.get("Trading Status") != "stale"]
     _on_n = len(overnight["rows"])
 
     _title_col, _info_col = st.columns([12, 1], vertical_alignment="top")
@@ -13863,6 +14073,21 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 # close/volume instead, and skip the ticker if none exist.
                 _close_series = window_3mo["Close"].dropna()
                 if _close_series.empty:
+                    continue
+                # Commit L (21 Sep 2026, owner-reported): closes the gap
+                # Commit J's own report flagged - this live "Run Scan"
+                # path never went through nightly_scan.analyze_ticker_
+                # lite() (it has its own, separate get_price_history()
+                # fetch above), so a delisted/halted/merged ticker
+                # yfinance keeps quoting the last real print for slipped
+                # through here even after the nightly pipeline started
+                # excluding it. Same evidence rule, same window already
+                # in hand - no extra yfinance call - as nightly_scan.py's
+                # own guard; skipped here (never added to `stocks_data`
+                # below) rather than flagged-and-kept, matching this
+                # page's own existing "not real data for this scan"
+                # convention for df.empty/_close_series.empty above.
+                if scanner_engine.window_shows_no_trading(window_3mo):
                     continue
                 current_price = float(_close_series.iloc[-1])
 
@@ -18173,6 +18398,12 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
     # own required caption says at the bottom of the section.
     with st.expander(_st_("newmoney_expander_title"), expanded=False):
         _nm_current_total = sum(weights.get(t, 0.0) for t in tickers)
+        # Commit C (20 Sep 2026): Mode C's own base - the SAME total the
+        # "You invested" column already sums itself to at the bottom of
+        # this table (see _total_row[_col_invested] below) - computed
+        # once here and reused in both places so the mode can never
+        # disagree with the column beside it.
+        _nm_invested_total = sum(costs.get(t, 0.0) for t in tickers)
 
         _nm_dep_col, _nm_mode_col = st.columns([1, 1.4])
         with _nm_dep_col:
@@ -18184,8 +18415,9 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
             st.write("")
             _nm_mode_a_label = _st_("newmoney_mode_a")
             _nm_mode_b_label = _st_("newmoney_mode_b")
+            _nm_mode_c_label = _st_("newmoney_mode_c")
             _nm_mode = st.segmented_control(
-                _st_("newmoney_mode_label"), [_nm_mode_a_label, _nm_mode_b_label],
+                _st_("newmoney_mode_label"), [_nm_mode_a_label, _nm_mode_b_label, _nm_mode_c_label],
                 default=_nm_mode_a_label, key=f"{_skey}_newmoney_mode",
                 label_visibility="collapsed",
             ) or _nm_mode_a_label
@@ -18236,146 +18468,289 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
             st.caption(_st_("newmoney_zero_caption"))
         else:
             _nm_is_mode_b = _nm_mode == _nm_mode_b_label
-            if _nm_is_mode_b:
-                # Mode B - "Top up toward mix": target_i = pct_i/100 *
-                # (current_total + deposit); shortfall_i = max(0,
-                # target_i - current_i). If the total shortfall can't be
-                # fully closed by this deposit, the cash is split
-                # PROPORTIONALLY to the shortfalls (the biggest gaps get
-                # the most, nothing is ever pushed past its own gap by
-                # this branch). Once every gap IS closed (including the
-                # trivial case where nothing was underweight to begin
-                # with), whatever cash is left over splits by mix % -
-                # exactly Mode A's own rule, reused via the same
-                # _largest_remainder_round(target=...) call so both
-                # modes allocate cents identically once there's no gap
-                # left to fill. A holding already at/above its target has
-                # shortfall 0 and therefore receives $0 here - this
-                # section only ever ADDS cash to a holding, it never
-                # removes any, so nothing is ever negative or a sell.
-                _nm_target = {
-                    t: (edited_pcts[t] / 100.0) * (_nm_current_total + _nm_deposit) for t in tickers
-                }
-                _nm_shortfall = {t: max(0.0, _nm_target[t] - weights.get(t, 0.0)) for t in tickers}
-                _nm_total_shortfall = sum(_nm_shortfall.values())
-                if _nm_total_shortfall >= _nm_deposit and _nm_total_shortfall > 0:
-                    _nm_buy = {
-                        t: _nm_deposit * (_nm_shortfall[t] / _nm_total_shortfall) for t in tickers
+            _nm_is_mode_c = _nm_mode == _nm_mode_c_label
+
+            # Commit C (20 Sep 2026), Mode C guard: a holding with no
+            # recorded cost basis would compute gap_i = target_i - 0 -
+            # i.e. get handed almost the entire deposit as though it
+            # were the single most under-invested holding, a confident
+            # WRONG number rather than a real shortfall. Warn-and-
+            # DISABLE rather than warn-and-continue: this mode's whole
+            # premise (the deposit lands your committed money on the
+            # mix) is meaningless for a holding it can't measure, and a
+            # partial table would need its own separate re-
+            # normalisation story nobody asked for. Modes A/B never
+            # read `costs` for their own arithmetic, so this only ever
+            # applies to Mode C.
+            _nm_missing_cost_basis = (
+                [t for t in tickers if costs.get(t, 0.0) <= 0] if _nm_is_mode_c else []
+            )
+            if _nm_is_mode_c and _nm_missing_cost_basis:
+                st.warning(_st_(
+                    "newmoney_missing_cost_basis_warning",
+                    tickers=", ".join(_nm_missing_cost_basis),
+                ))
+            else:
+                if _nm_is_mode_b:
+                    # Mode B - "Top up toward mix": target_i = pct_i/100 *
+                    # (current_total + deposit); shortfall_i = max(0,
+                    # target_i - current_i). If the total shortfall can't be
+                    # fully closed by this deposit, the cash is split
+                    # PROPORTIONALLY to the shortfalls (the biggest gaps get
+                    # the most, nothing is ever pushed past its own gap by
+                    # this branch). Once every gap IS closed (including the
+                    # trivial case where nothing was underweight to begin
+                    # with), whatever cash is left over splits by mix % -
+                    # exactly Mode A's own rule, reused via the same
+                    # _largest_remainder_round(target=...) call so both
+                    # modes allocate cents identically once there's no gap
+                    # left to fill. A holding already at/above its target has
+                    # shortfall 0 and therefore receives $0 here - this
+                    # section only ever ADDS cash to a holding, it never
+                    # removes any, so nothing is ever negative or a sell.
+                    _nm_target = {
+                        t: (edited_pcts[t] / 100.0) * (_nm_current_total + _nm_deposit) for t in tickers
                     }
-                else:
-                    _nm_remainder = _nm_deposit - _nm_total_shortfall
-                    _nm_remainder_split = _largest_remainder_round(
-                        {t: (edited_pcts[t] / 100.0) * _nm_remainder for t in tickers},
-                        decimals=2, target=_nm_remainder,
-                    )
-                    _nm_buy = {t: _nm_shortfall[t] + _nm_remainder_split[t] for t in tickers}
-            else:
-                # Mode A - "Split by mix %": exactly the current mix,
-                # largest-remainder rounded to the CENT (decimals=2, not
-                # this helper's usual 1-decimal-percent grid) so the
-                # column sums to the deposit exactly, never a few cents
-                # short/over from plain per-row rounding.
-                _nm_target = None
-                _nm_buy = _largest_remainder_round(
-                    {t: (edited_pcts[t] / 100.0) * _nm_deposit for t in tickers},
-                    decimals=2, target=_nm_deposit,
-                )
-
-            # Units are floored at the latest close - a fraction of a
-            # share can't actually be bought. A priceless ticker buys 0
-            # units; its whole allocation stays unallocated cash below
-            # rather than raising a divide-by-None.
-            _nm_units, _nm_spent = {}, {}
-            for t in tickers:
-                _p = _nm_prices.get(t)
-                if _p and _p > 0:
-                    _u = math.floor(_nm_buy[t] / _p)
-                    _nm_units[t] = _u
-                    _nm_spent[t] = _u * _p
-                else:
-                    _nm_units[t] = None
-                    _nm_spent[t] = 0.0
-
-            _nm_unallocated = _nm_deposit - sum(_nm_spent.values())
-            _nm_new_total = _nm_current_total + _nm_deposit
-
-            _col_holding, _col_mix, _col_invested, _col_hold_now, _col_target, _col_gap, _col_buys, _col_units, _col_weight = (
-                _st_("newmoney_col_holding"), _st_("newmoney_col_mix_pct"),
-                _st_("newmoney_col_invested"),
-                _st_("newmoney_col_hold_now"), _st_("newmoney_col_target"),
-                _st_("newmoney_col_gap"), _st_("newmoney_col_buys"),
-                _st_("newmoney_col_units"), _st_("newmoney_col_weight_after"),
-            )
-            _nm_rows = []
-            _nm_gain_signs = []  # parallel to _nm_rows (holding rows only) - >0/<0/None
-            for t in tickers:
-                _row = {_col_holding: t, _col_mix: f"{edited_pcts[t]:.1f}%"}
-                _cost = costs.get(t, 0.0)
-                if _cost > 0:
-                    _gain_pct = (weights.get(t, 0.0) - _cost) / _cost * 100.0
-                    _row[_col_invested] = f"{_fmt_aud(_cost)} ({_gain_pct:+.1f}%)"
-                    _nm_gain_signs.append(_gain_pct)
-                else:
-                    _row[_col_invested] = _fmt_aud(_cost) if _cost else _na
-                    _nm_gain_signs.append(None)
-                if _nm_target is not None:
-                    _gap = weights.get(t, 0.0) - _nm_target[t]
-                    _row[_col_hold_now] = _fmt_aud(weights.get(t, 0.0))
-                    _row[_col_target] = _fmt_aud(_nm_target[t])
-                    _row[_col_gap] = (
-                        _st_("newmoney_gap_over") if _gap >= 0 else f"-{_fmt_aud(abs(_gap))}"
-                    )
-                else:
-                    _row[_col_hold_now] = _fmt_aud(weights.get(t, 0.0))
-                _row[_col_buys] = _fmt_aud(_nm_buy[t])
-                _u = _nm_units[t]
-                _row[_col_units] = f"{_u:,.0f} @ {_fmt_aud(_nm_prices[t])}" if _u is not None else _na
-                _row[_col_weight] = (
-                    f"{(weights.get(t, 0.0) + _nm_spent[t]) / _nm_new_total * 100.0:.1f}%"
-                    if _nm_new_total > 0 else _na
-                )
-                _nm_rows.append(_row)
-
-            # Total footer row, matching the mock's own - no gain/loss % on
-            # the aggregate, same as the mockup left it.
-            _total_row = {_col_holding: _st_("newmoney_col_total"), _col_mix: f"{sum(edited_pcts.values()):.1f}%"}
-            _total_row[_col_invested] = _fmt_aud(sum(costs.get(t, 0.0) for t in tickers))
-            _nm_gain_signs.append(None)
-            if _nm_target is not None:
-                _total_row[_col_hold_now] = _fmt_aud(_nm_current_total)
-                _total_row[_col_target] = _fmt_aud(_nm_current_total + _nm_deposit)
-                _total_row[_col_gap] = _na
-            else:
-                _total_row[_col_hold_now] = _fmt_aud(_nm_current_total)
-            _total_row[_col_buys] = _fmt_aud(sum(_nm_buy.values()))
-            _total_row[_col_units] = _na
-            _total_row[_col_weight] = "100.0%" if _nm_new_total > 0 else _na
-            _nm_rows.append(_total_row)
-
-            _nm_df = pd.DataFrame(_nm_rows)
-
-            def _style_nm_buys(_):
-                styles = pd.DataFrame("", index=_nm_df.index, columns=_nm_df.columns)
-                styles[_col_buys] = "color: #34d399; font-weight: 600"
-                for _i, _sign in enumerate(_nm_gain_signs):
-                    if _sign is not None:
-                        styles.at[_nm_df.index[_i], _col_invested] = (
-                            "color: #34d399" if _sign >= 0 else "color: #fb7185"
+                    _nm_shortfall = {t: max(0.0, _nm_target[t] - weights.get(t, 0.0)) for t in tickers}
+                    _nm_total_shortfall = sum(_nm_shortfall.values())
+                    if _nm_total_shortfall >= _nm_deposit and _nm_total_shortfall > 0:
+                        _nm_buy = {
+                            t: _nm_deposit * (_nm_shortfall[t] / _nm_total_shortfall) for t in tickers
+                        }
+                    else:
+                        _nm_remainder = _nm_deposit - _nm_total_shortfall
+                        _nm_remainder_split = _largest_remainder_round(
+                            {t: (edited_pcts[t] / 100.0) * _nm_remainder for t in tickers},
+                            decimals=2, target=_nm_remainder,
                         )
-                return styles
+                        _nm_buy = {t: _nm_shortfall[t] + _nm_remainder_split[t] for t in tickers}
+                elif _nm_is_mode_c:
+                    # Mode C - "Target original allocation": mirrors Mode
+                    # B's structure exactly, base swapped from market value
+                    # (weights/_nm_current_total) to cost basis (costs/
+                    # _nm_invested_total) - target_i = pct_i/100 *
+                    # (invested_total + deposit); gap_i = max(0, target_i -
+                    # invested_i). Same gap-fills-first-then-mix-splits-the-
+                    # remainder rule, same _largest_remainder_round(target=)
+                    # call Mode B uses, so both behave predictably next to
+                    # each other. A holding at/above its cost-basis target
+                    # gets $0 here too - never negative, never a sell.
+                    #
+                    # Commit G correction: a clamped-to-$0 holding (one
+                    # already at/above its cost-basis target) does NOT make
+                    # the else (remainder-split) branch below reachable -
+                    # verified both algebraically and by a 500,000-trial
+                    # randomized stress test (including holdings clamped by
+                    # large amounts) before writing this comment. Clamping a
+                    # negative raw gap to 0 REMOVES a negative term from the
+                    # sum rather than subtracting from it, which can only
+                    # push total_gap UP relative to deposit, never down -
+                    # every trial with edited_pcts summing to exactly 100%
+                    # had total_gap >= deposit, so the `if` branch above
+                    # always fired regardless of how far over target a
+                    # holding was. The else branch's real, verified trigger
+                    # is upstream of this Mode entirely: this whole section
+                    # only renders once edited_pcts sums within +/-0.5 of
+                    # 100% (the `abs(total_edit - 100.0) > 0.5: return` gate
+                    # well above), not exactly 100% - target_i's sum is
+                    # (edited total %)/100 * (invested_total + deposit), so
+                    # a total sitting under 100% (allowed by that tolerance)
+                    # makes target_i's sum, and therefore total_gap, come in
+                    # under deposit for real. Confirmed in the same stress
+                    # test: reachable in ~4% of trials when total_edit was
+                    # allowed to vary within that +/-0.5 band, and in every
+                    # one of those cases total_edit was under 100% - never
+                    # once with total_edit >= 100%, however far over target
+                    # a holding was. Do not delete this branch as
+                    # unreachable - it is real, just not for the reason a
+                    # "holding over target" framing suggests.
+                    #
+                    # Note (flagged for Andrew, not fixed here without a
+                    # decision): as written, the remainder in this branch
+                    # still splits by mix % across ALL tickers, including
+                    # one already over its cost-basis target - pushing it
+                    # further over and against Mode C's own "lands on the
+                    # mix" premise for committed money. Mode B has the
+                    # identical behavior and the original spec said to
+                    # mirror Mode B's structure exactly, so this is correct-
+                    # to-spec, not a bug - but restricting the remainder
+                    # split to only the tickers still under target would be
+                    # more faithful to what Mode C promises. Left as spec'd
+                    # pending Andrew's call.
+                    _nm_target = {
+                        t: (edited_pcts[t] / 100.0) * (_nm_invested_total + _nm_deposit) for t in tickers
+                    }
+                    _nm_gap = {t: max(0.0, _nm_target[t] - costs.get(t, 0.0)) for t in tickers}
+                    _nm_total_gap = sum(_nm_gap.values())
+                    if _nm_total_gap >= _nm_deposit and _nm_total_gap > 0:
+                        _nm_buy = {
+                            t: _nm_deposit * (_nm_gap[t] / _nm_total_gap) for t in tickers
+                        }
+                    else:
+                        _nm_remainder = _nm_deposit - _nm_total_gap
+                        _nm_remainder_split = _largest_remainder_round(
+                            {t: (edited_pcts[t] / 100.0) * _nm_remainder for t in tickers},
+                            decimals=2, target=_nm_remainder,
+                        )
+                        _nm_buy = {t: _nm_gap[t] + _nm_remainder_split[t] for t in tickers}
+                else:
+                    # Mode A - "Split by mix %": exactly the current mix,
+                    # largest-remainder rounded to the CENT (decimals=2, not
+                    # this helper's usual 1-decimal-percent grid) so the
+                    # column sums to the deposit exactly, never a few cents
+                    # short/over from plain per-row rounding.
+                    _nm_target = None
+                    _nm_buy = _largest_remainder_round(
+                        {t: (edited_pcts[t] / 100.0) * _nm_deposit for t in tickers},
+                        decimals=2, target=_nm_deposit,
+                    )
 
-            st.dataframe(
-                _nm_df.style.apply(_style_nm_buys, axis=None),
-                hide_index=True, width='stretch',
-            )
-            st.caption(_st_("newmoney_unallocated_caption", amount=_fmt_aud(_nm_unallocated)))
-            st.caption(_st_("newmoney_invested_caption"))
-            if _nm_target is not None:
-                st.caption(_st_("newmoney_method_b_caption"))
-            st.caption(_st_(
-                "newmoney_disclosure_caption",
-                toll_tab=f"**{i18n.t('portfolio.tab_switch', lang)}**",
-            ))
+                # Units are floored at the latest close - a fraction of a
+                # share can't actually be bought. A priceless ticker buys 0
+                # units; its whole allocation stays unallocated cash below
+                # rather than raising a divide-by-None.
+                _nm_units, _nm_spent = {}, {}
+                for t in tickers:
+                    _p = _nm_prices.get(t)
+                    if _p and _p > 0:
+                        _u = math.floor(_nm_buy[t] / _p)
+                        _nm_units[t] = _u
+                        _nm_spent[t] = _u * _p
+                    else:
+                        _nm_units[t] = None
+                        _nm_spent[t] = 0.0
+
+                _nm_unallocated = _nm_deposit - sum(_nm_spent.values())
+                _nm_new_total = _nm_current_total + _nm_deposit
+
+                # Commit C: "Target after deposit"/"Gap" mean market VALUE
+                # in Mode B and cost in Mode C - swap the header text (same
+                # columns, same row-building code below) rather than
+                # holding four separate target/gap columns. Same idea for
+                # the weight-after column(s): Mode C gets two (invested vs
+                # market weight after), Modes A/B keep the existing one.
+                _col_holding, _col_mix, _col_invested, _col_hold_now, _col_buys, _col_units = (
+                    _st_("newmoney_col_holding"), _st_("newmoney_col_mix_pct"),
+                    _st_("newmoney_col_invested"), _st_("newmoney_col_hold_now"),
+                    _st_("newmoney_col_buys"), _st_("newmoney_col_units"),
+                )
+                if _nm_is_mode_c:
+                    _col_target = _st_("newmoney_col_target_invested")
+                    _col_gap = _st_("newmoney_col_gap_to_target")
+                    _col_invested_weight = _st_("newmoney_col_invested_weight_after")
+                    _col_market_weight = _st_("newmoney_col_market_weight_after")
+                else:
+                    _col_target = _st_("newmoney_col_target")
+                    _col_gap = _st_("newmoney_col_gap")
+                    _col_weight = _st_("newmoney_col_weight_after")
+
+                _nm_rows = []
+                _nm_gain_signs = []  # parallel to _nm_rows (holding rows only) - >0/<0/None
+                for t in tickers:
+                    _row = {_col_holding: t, _col_mix: f"{edited_pcts[t]:.1f}%"}
+                    _cost = costs.get(t, 0.0)
+                    if _cost > 0:
+                        _gain_pct = (weights.get(t, 0.0) - _cost) / _cost * 100.0
+                        _row[_col_invested] = f"{_fmt_aud(_cost)} ({_gain_pct:+.1f}%)"
+                        _nm_gain_signs.append(_gain_pct)
+                    else:
+                        _row[_col_invested] = _fmt_aud(_cost) if _cost else _na
+                        _nm_gain_signs.append(None)
+                    if _nm_target is not None:
+                        # Commit C: the gap is measured against cost
+                        # (costs.get) in Mode C, market value (weights.get)
+                        # in Mode B - everything else about this branch
+                        # (the "over" label, the display formatting) is
+                        # identical between the two.
+                        _gap_base = costs.get(t, 0.0) if _nm_is_mode_c else weights.get(t, 0.0)
+                        _gap = _gap_base - _nm_target[t]
+                        _row[_col_hold_now] = _fmt_aud(weights.get(t, 0.0))
+                        _row[_col_target] = _fmt_aud(_nm_target[t])
+                        _row[_col_gap] = (
+                            _st_("newmoney_gap_over") if _gap >= 0 else f"-{_fmt_aud(abs(_gap))}"
+                        )
+                    else:
+                        _row[_col_hold_now] = _fmt_aud(weights.get(t, 0.0))
+                    _row[_col_buys] = _fmt_aud(_nm_buy[t])
+                    _u = _nm_units[t]
+                    _row[_col_units] = f"{_u:,.0f} @ {_fmt_aud(_nm_prices[t])}" if _u is not None else _na
+                    if _nm_is_mode_c:
+                        # Invested weight after: target_i / (invested_total
+                        # + deposit) - lands EXACTLY on the mix % by
+                        # construction (target_i was built from that same
+                        # ratio). Market weight after: (current value_i +
+                        # actual spend_i) / (current total + deposit) -
+                        # will NOT land on the mix whenever a holding's
+                        # market value has drifted from its cost basis
+                        # (e.g. CSL up 37.7% on Andrew's data) - that
+                        # divergence is this mode's whole point, so both
+                        # numbers are shown rather than only the tidy one.
+                        _row[_col_invested_weight] = (
+                            f"{_nm_target[t] / (_nm_invested_total + _nm_deposit) * 100.0:.1f}%"
+                            if (_nm_invested_total + _nm_deposit) > 0 else _na
+                        )
+                        _row[_col_market_weight] = (
+                            f"{(weights.get(t, 0.0) + _nm_spent[t]) / _nm_new_total * 100.0:.1f}%"
+                            if _nm_new_total > 0 else _na
+                        )
+                    else:
+                        _row[_col_weight] = (
+                            f"{(weights.get(t, 0.0) + _nm_spent[t]) / _nm_new_total * 100.0:.1f}%"
+                            if _nm_new_total > 0 else _na
+                        )
+                    _nm_rows.append(_row)
+
+                # Total footer row, matching the mock's own - no gain/loss % on
+                # the aggregate, same as the mockup left it.
+                _total_row = {_col_holding: _st_("newmoney_col_total"), _col_mix: f"{sum(edited_pcts.values()):.1f}%"}
+                _total_row[_col_invested] = _fmt_aud(_nm_invested_total)
+                _nm_gain_signs.append(None)
+                if _nm_target is not None:
+                    _total_row[_col_hold_now] = _fmt_aud(_nm_current_total)
+                    _total_row[_col_target] = _fmt_aud(
+                        _nm_invested_total + _nm_deposit if _nm_is_mode_c
+                        else _nm_current_total + _nm_deposit
+                    )
+                    _total_row[_col_gap] = _na
+                else:
+                    _total_row[_col_hold_now] = _fmt_aud(_nm_current_total)
+                _total_row[_col_buys] = _fmt_aud(sum(_nm_buy.values()))
+                _total_row[_col_units] = _na
+                if _nm_is_mode_c:
+                    _total_row[_col_invested_weight] = (
+                        "100.0%" if (_nm_invested_total + _nm_deposit) > 0 else _na
+                    )
+                    _total_row[_col_market_weight] = "100.0%" if _nm_new_total > 0 else _na
+                else:
+                    _total_row[_col_weight] = "100.0%" if _nm_new_total > 0 else _na
+                _nm_rows.append(_total_row)
+
+                _nm_df = pd.DataFrame(_nm_rows)
+
+                def _style_nm_buys(_):
+                    styles = pd.DataFrame("", index=_nm_df.index, columns=_nm_df.columns)
+                    styles[_col_buys] = "color: #34d399; font-weight: 600"
+                    for _i, _sign in enumerate(_nm_gain_signs):
+                        if _sign is not None:
+                            styles.at[_nm_df.index[_i], _col_invested] = (
+                                "color: #34d399" if _sign >= 0 else "color: #fb7185"
+                            )
+                    return styles
+
+                st.dataframe(
+                    _nm_df.style.apply(_style_nm_buys, axis=None),
+                    hide_index=True, width='stretch',
+                )
+                st.caption(_st_("newmoney_unallocated_caption", amount=_fmt_aud(_nm_unallocated)))
+                st.caption(_st_("newmoney_invested_caption"))
+                if _nm_is_mode_b:
+                    st.caption(_st_("newmoney_method_b_caption"))
+                elif _nm_is_mode_c:
+                    st.caption(_st_("newmoney_method_c_caption"))
+                st.caption(_st_(
+                    "newmoney_disclosure_caption",
+                    toll_tab=f"**{i18n.t('portfolio.tab_switch', lang)}**",
+                ))
 
 
 def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
@@ -22673,10 +23048,16 @@ _TOOLS_HUB_STYLE = """
 </style>
 """
 
-# One blurb + one static "e.g." teaser key per registry id - the teaser is
-# a labelled, static example (never computed from a real user's inputs),
-# exactly the mock's own "STATIC example... not computed - zero new
-# engines" rule for these cards.
+# One blurb + one "e.g." teaser key per registry id - every teaser
+# except property_vs_index is a labelled, static example (never computed
+# from a real user's inputs), the mock's own "STATIC example... not
+# computed - zero new engines" rule for these cards. property_vs_index
+# is the one exception (Commit C follow-up, 21 Sep 2026, owner-
+# requested): its teaser used to be a hardcoded "+$328k property vs
+# +$300k index" pair that silently went stale the moment Commit B
+# changed what the tool's own defaults actually produce - see
+# _pvi_hub_teaser_amounts() below for why this one card's teaser is
+# computed instead of hardcoded.
 _TOOLS_HUB_CARD_COPY = {
     "budget_planner": ("budget_planner_blurb", "budget_planner_teaser"),
     "utilities": ("utilities_blurb", "utilities_teaser"),
@@ -22684,6 +23065,30 @@ _TOOLS_HUB_CARD_COPY = {
     "super": ("super_blurb", "super_teaser"),
     "property_vs_index": ("property_vs_index_blurb", "property_vs_index_teaser"),
 }
+
+
+def _pvi_hub_teaser_amounts():
+    """Commit C follow-up (21 Sep 2026): the Money Tools hub card's own
+    "e.g. ... → +$328k property vs +$300k index" teaser was a hardcoded
+    snapshot of what property_vs_index_engine.run() on its OWN defaults
+    used to produce, under the old flat marginal-rate tax model - Commit
+    B (real AU bracket tax) changed those defaults' real output to
+    $308,419 / $287,349 without this card's own copy ever being told, so
+    the live site kept advertising numbers the tool no longer produces.
+    Computed here from property_vs_index_engine.run() with every
+    argument left at its own default (property_vs_index_engine.DEFAULT_*
+    - exactly what a first-time visitor to the tool itself would see,
+    same $300k cash / $700k loan / 10y the teaser's own leading clause
+    already states) - rounded to the nearest $1k, matching the "+$Xk"
+    shape the teaser copy has always used. Returns ("$308k", "$287k")-
+    shaped strings, ready for i18n.t()'s {property}/{index}
+    placeholders - never a bare number, so it can never drift out of
+    sync with the engine again."""
+    _r = property_vs_index_engine.run()
+    return (
+        f"${_r['property']['headline'] / 1000:.0f}k",
+        f"${_r['index']['headline'] / 1000:.0f}k",
+    )
 
 # Grid fix (18 Sep 2026): matches emoji-range characters for stripping a
 # leftover mid-string icon from a hub-card title in _tools_hub_cards_html
@@ -22720,7 +23125,14 @@ def _tools_hub_cards_html(lang, linked):
         if not _copy_keys:
             continue  # a registry entry with no hub copy written yet is skipped, never a blank card
         _blurb = i18n.t(f"tools.hub.{_copy_keys[0]}", lang)
-        _teaser = i18n.t(f"tools.hub.{_copy_keys[1]}", lang)
+        if _t["id"] == "property_vs_index":
+            _pvi_property_amt, _pvi_index_amt = _pvi_hub_teaser_amounts()
+            _teaser = i18n.t(
+                f"tools.hub.{_copy_keys[1]}", lang,
+                property=_pvi_property_amt, index=_pvi_index_amt,
+            )
+        else:
+            _teaser = i18n.t(f"tools.hub.{_copy_keys[1]}", lang)
         _title = i18n.t(_t["title_key"], lang).strip()
         if _title.startswith(_t["icon"]):
             _title = _title[len(_t["icon"]):].strip()
@@ -24233,8 +24645,93 @@ _PVI_STYLE = """
 .pvi-bar u{position:absolute;top:-4px;bottom:-4px;width:2px;background:#fbbf24}
 .pvi-cap{font-size:11px;color:#5b7290;margin-top:5px;line-height:1.55}
 .pvi-shortfall{font-size:12px;color:#c7d2e0;margin-top:8px}
+.pvi-grp-h{font-size:10.5px;color:#8aa0b8;letter-spacing:.06em;text-transform:uppercase;
+  margin:14px 0 6px;border-top:1px solid #1f3352;padding-top:11px;font-weight:700}
+.pvi-hl{background:rgba(148,163,184,.08);border-radius:6px;padding:4px 7px;margin:6px -7px}
+.pvi-weekly{font-size:12px;color:#c7d2e0;margin-top:6px;line-height:1.5}
 </style>
 """
+
+
+def _pvi_other_income_from_marginal_rate(marginal_rate_pct):
+    """Commit B (20 Sep 2026): a v2 scenario saved only a bare income-
+    tax-bracket rate (marginal_rate_pct, e.g. 37.0 - NOT including
+    Medicare, which the old model always added separately as its own
+    medicare_levy addend) with no taxable-income figure behind it at
+    all. Maps it to the ONE bracket in property_vs_index_engine.
+    BRACKETS whose own rate matches exactly, and returns that bracket's
+    midpoint (37% -> $162,500, the task's own example) - a real income
+    the same bracket rate would actually apply to, not a fabricated
+    one. The top (45%) bracket has no finite upper bound, so its own
+    lower bound ($190,000 - the income right at which 45% starts
+    applying) stands in for a midpoint there. Returns property_vs_
+    index_engine.DEFAULT_OTHER_INCOME if the stored rate doesn't
+    exactly match any bracket (a free-form value the old 0-60%/step 0.5
+    widget allowed, e.g. 25%) - per the task's own instruction, never
+    guess a salary from a rate that doesn't correspond to one. A
+    missing/None rate is exactly that case too - checked explicitly
+    (not folded into `or 0.0`), since a genuine 0% bracket rate is a
+    real, valid input (maps to the $9,100 midpoint) that a bare None
+    must never be confused with."""
+    if marginal_rate_pct is None:
+        return property_vs_index_engine.DEFAULT_OTHER_INCOME
+    try:
+        rate = float(marginal_rate_pct) / 100.0
+    except (TypeError, ValueError):
+        return property_vs_index_engine.DEFAULT_OTHER_INCOME
+    lower = 0.0
+    for upper, bracket_rate in property_vs_index_engine.BRACKETS:
+        if abs(bracket_rate - rate) < 1e-9:
+            return lower if upper == float("inf") else (lower + upper) / 2.0
+        lower = upper
+    return property_vs_index_engine.DEFAULT_OTHER_INCOME
+
+
+def _pvi_upgrade_saved_inputs(d):
+    """Commit A (20 Sep 2026): v1 stored sp500_return_pct as TOTAL
+    return, with sp500_dividend_pct carved out of it (property_vs_
+    index_engine's OLD index_price_growth_rate(total_return,
+    dividend_yield) = total_return - dividend_yield). v2 stores capital
+    gain and dividend as independent, additive rates instead - see that
+    function's own new docstring.
+
+    Commit B (20 Sep 2026): v2/earlier stored marginal_rate_pct (a flat
+    income-tax-bracket rate, + medicare_levy applied separately) - v3
+    stores other_income (taxable income excluding this investment)
+    instead, since the flat-rate tax_rate scalar is gone entirely (see
+    income_tax()/tax_on_extra() in property_vs_index_engine.py). A v2
+    dict's other_income is back-derived from whatever bracket its own
+    marginal_rate_pct implies - see _pvi_other_income_from_marginal_
+    rate()'s own docstring for exactly how (and when it can't).
+
+    Commit U (21 Sep 2026, owner-reported): v3/earlier never asked about
+    depreciation at all - v4 adds property_type/building_cost/
+    plant_value. A v3 (or earlier) dict simply has none of these three
+    fields, which is exactly what _seed()'s own default-value mechanics
+    already handle for every OTHER input on this tool (falls back to the
+    _eng.DEFAULT_* the widget itself passes) - so, unlike the v1->v2/
+    v2->v3 upgrades above, there is no value to back-derive here, only
+    the schema marker itself needs bumping (an old scenario's own
+    numbers must keep reproducing exactly what they always did, i.e.
+    zero depreciation, until the owner explicitly fills these new inputs
+    in and re-saves).
+
+    Upgrade in place, read-time only (no DB migration - tools_store
+    stores this as a free-form JSON dict, it doesn't care about the
+    shape), so an older scenario keeps producing the SAME numbers it
+    always did instead of silently drifting."""
+    if not d or d.get("pvi_schema") == 4:
+        return d
+    d = dict(d)
+    if "sp500_return_pct" in d and "sp500_capital_gain_pct" not in d:
+        d["sp500_capital_gain_pct"] = (
+            float(d.get("sp500_return_pct") or 0.0)
+            - float(d.get("sp500_dividend_pct") or 0.0)
+        )
+    if "marginal_rate_pct" in d and "other_income" not in d:
+        d["other_income"] = _pvi_other_income_from_marginal_rate(d.get("marginal_rate_pct"))
+    d["pvi_schema"] = 4
+    return d
 
 
 def _render_property_vs_index_tool(email):
@@ -24286,6 +24783,7 @@ def _render_property_vs_index_tool(email):
     )
     _saved = tools_store.get_property_vs_index_scenario(email, _active) or {}
     _saved_inputs = _saved.get("inputs") or {}
+    _saved_inputs = _pvi_upgrade_saved_inputs(_saved_inputs)
 
     def _seed(key, default):
         _skey = _tools_plan_key(_active, key)
@@ -24349,6 +24847,44 @@ def _render_property_vs_index_tool(email):
                 help=_sl("buy_costs_help"),
                 key=_seed("tools_pvi_buy_costs", _eng.DEFAULT_BUY_COSTS),
             )
+            # Commit U (21 Sep 2026, owner-reported): depreciation inputs
+            # - a quantity surveyor's schedule, not modelled from the
+            # property price (property_vs_index_engine.py's own
+            # "Depreciation" module comment for the Div 43/Div 40 rules
+            # these feed). Options are the engine's own PROPERTY_TYPE_*
+            # constants, never re-derived here - format_func only
+            # supplies the translated label.
+            _pvi_property_type_labels = {
+                _eng.PROPERTY_TYPE_NEW: _sl("property_type_option_new"),
+                _eng.PROPERTY_TYPE_ESTABLISHED: _sl("property_type_option_established"),
+                _eng.PROPERTY_TYPE_PRE_1987: _sl("property_type_option_pre_1987"),
+            }
+            property_type = st.selectbox(
+                _sl("property_type_label"),
+                [_eng.PROPERTY_TYPE_NEW, _eng.PROPERTY_TYPE_ESTABLISHED, _eng.PROPERTY_TYPE_PRE_1987],
+                format_func=lambda pt: _pvi_property_type_labels[pt],
+                key=_seed("tools_pvi_property_type", _eng.PROPERTY_TYPE_ESTABLISHED),
+            )
+            building_cost = st.number_input(
+                _sl("building_cost_label"), min_value=0.0, step=5000.0, format="%.0f",
+                help=_sl("building_cost_help"),
+                key=_seed("tools_pvi_building_cost", 0.0),
+            )
+            # New plant & equipment (Div 40) only exists as a claim for a
+            # New build (2017 second-hand-fittings rule - see the input's
+            # own help text) - hidden entirely for Established/pre_1987
+            # rather than shown-but-disabled, so there's no ambiguity
+            # about whether a value left over from switching property
+            # type still counts (it doesn't - `plant_value` stays 0.0
+            # here whenever this widget isn't rendered this run).
+            plant_value = 0.0
+            if property_type == _eng.PROPERTY_TYPE_NEW:
+                plant_value = st.number_input(
+                    _sl("plant_value_label"), min_value=0.0, step=1000.0, format="%.0f",
+                    help=_sl("plant_value_help"),
+                    key=_seed("tools_pvi_plant_value", 0.0),
+                )
+                st.caption(_sl("plant_value_caption"))
         with _c2:
             sell_costs_pct = st.number_input(
                 _sl("sell_costs_label"), min_value=0.0, max_value=10.0, step=0.1, format="%.1f",
@@ -24358,19 +24894,50 @@ def _render_property_vs_index_tool(email):
                 _sl("property_growth_label"), min_value=0.0, max_value=15.0, step=0.1, format="%.1f",
                 key=_seed("tools_pvi_property_growth_pct", _eng.DEFAULT_PROPERTY_GROWTH * 100),
             )
-            sp500_return_pct = st.number_input(
+            # Commit A (20 Sep 2026): renamed from sp500_return_pct -
+            # capital gain and dividend yield are now independent,
+            # additive inputs, not a total split into two parts (see
+            # property_vs_index_engine.index_price_growth_rate()'s own
+            # docstring). Widget key renamed to match so _seed() looks
+            # up the new "sp500_capital_gain_pct" saved-dict field
+            # (_pvi_upgrade_saved_inputs() above backfills it from any
+            # older v1 scenario).
+            sp500_capital_gain_pct = st.number_input(
                 _sl("sp500_return_label"), min_value=0.0, max_value=15.0, step=0.1, format="%.1f",
-                key=_seed("tools_pvi_sp500_return_pct", _eng.DEFAULT_SP500_TOTAL_RETURN * 100),
+                key=_seed("tools_pvi_sp500_capital_gain_pct", _eng.DEFAULT_SP500_CAPITAL_GAIN * 100),
             )
             sp500_dividend_pct = st.number_input(
                 _sl("sp500_dividend_label"), min_value=0.0, max_value=10.0, step=0.1, format="%.1f",
                 key=_seed("tools_pvi_sp500_dividend_pct", _eng.DEFAULT_SP500_DIVIDEND_YIELD * 100),
             )
-            marginal_rate_pct = st.number_input(
-                _sl("marginal_rate_label"), min_value=0.0, max_value=60.0, step=0.5, format="%.1f",
-                help=_sl("marginal_rate_help"),
-                key=_seed("tools_pvi_marginal_rate_pct", _eng.DEFAULT_MARGINAL_RATE * 100),
+            # Commit A: live, so nothing about the derived total is
+            # hidden - capital gain and dividend are independent
+            # additive inputs now, this is their sum, purely for
+            # display (never fed back into the engine as an input).
+            st.caption(_sl(
+                "total_return_caption", total=sp500_capital_gain_pct + sp500_dividend_pct,
+            ))
+            # Commit B (20 Sep 2026): replaces the flat "Your marginal
+            # tax rate (%)" input - real AU brackets now compute the
+            # rate that actually applies to each dollar (property_vs_
+            # index_engine.income_tax()/tax_on_extra()), so this tool
+            # needs your taxable income, not a single rate you'd have
+            # to already know. Widget key renamed to match the new
+            # saved-schema field (_pvi_upgrade_saved_inputs() above
+            # back-derives it from an older scenario's own
+            # marginal_rate_pct where possible).
+            other_income = st.number_input(
+                _sl("other_income_label"), min_value=0.0, max_value=1_000_000.0, step=5000.0,
+                format="%.0f", help=_sl("other_income_help"),
+                key=_seed("tools_pvi_other_income", _eng.DEFAULT_OTHER_INCOME),
             )
+            _pvi_marginal_rate = _eng.marginal_rate_at(other_income)
+            st.caption(_sl(
+                "marginal_rate_caption",
+                rate=_pvi_marginal_rate * 100.0,
+                bracket_rate=(_pvi_marginal_rate - _eng.MEDICARE_LEVY) * 100.0,
+                medicare=_eng.MEDICARE_LEVY * 100.0, tax_year=_eng.TAX_YEAR,
+            ))
             years = st.number_input(
                 _sl("years_label"), min_value=_eng.MIN_YEARS, max_value=_eng.MAX_YEARS, step=1,
                 key=_seed("tools_pvi_years", _eng.DEFAULT_YEARS),
@@ -24397,16 +24964,95 @@ def _render_property_vs_index_tool(email):
         cash=cash, loan=loan, loan_rate=loan_rate_pct / 100.0,
         weekly_rent=weekly_rent, vacancy_weeks=int(vacancy_weeks),
         holding_costs=holding_costs, property_growth=property_growth_pct / 100.0,
-        sp500_total_return=sp500_return_pct / 100.0,
+        sp500_capital_gain=sp500_capital_gain_pct / 100.0,
         sp500_dividend_yield=sp500_dividend_pct / 100.0,
         io_period=io_period, term=loan_term,
-        marginal_rate=marginal_rate_pct / 100.0, medicare_levy=_eng.MEDICARE_LEVY,
+        other_income=other_income,
         years=int(years), buy_costs=buy_costs, sell_costs_pct=sell_costs_pct / 100.0,
+        property_type=property_type, building_cost=building_cost, plant_value=plant_value,
     )
     _p = _r["property"]
     _idx = _r["index"]
     _years_i = _r["years"]
-    _tax_pct = _r["tax_rate"] * 100.0
+
+    # Commit C (21 Sep 2026), adjustment #1: the six "taxed at ~X%"
+    # captions used to all share ONE approximate stand-in rate
+    # (marginal_rate_at(other_income), the rate your OWN NEXT dollar is
+    # taxed at - never exact for a stacked amount the moment it crosses
+    # a bracket boundary). Every remaining per-line rate below is now
+    # EXACT instead: that line's own tax divided by that line's own
+    # pretax amount, straight off the same numbers the dollar totals
+    # already use (property_year_tax_legs()/index_year_tax_legs() via
+    # property_breakdown()/index_breakdown()) - presentation only, no
+    # new arithmetic. A loss/zero pretax amount has no meaningful rate
+    # (property_year_tax_legs()'s own "$0 tax rather than a refund" rule
+    # for a capital loss) - shown as 0% rather than dividing by zero.
+    # Bug fix (21 Sep 2026, owner-reported): "gain" (the ECONOMIC,
+    # unreduced pretax gain - what was actually paid vs actually
+    # received), not "taxable_gain" (Div-43-cost-base-reduced, CGT
+    # calculation only) - see property_capital_growth()'s own docstring
+    # for the double-counting bug this fixes.
+    _growth_pretax = _p["growth"]["gain"]
+    _growth_rate_pct = (
+        (_growth_pretax - _p["growth"]["after_tax"]) / _growth_pretax * 100.0
+        if _growth_pretax > 0 else 0.0
+    )
+    _idx_growth_pretax = _eng.index_pretax_gain(cash, _idx["price_growth_rate"], _years_i)
+    _idx_growth_rate_pct = (
+        (_idx_growth_pretax - _idx["growth_after_cgt"]) / _idx_growth_pretax * 100.0
+        if _idx_growth_pretax > 0 else 0.0
+    )
+    _idx_dividends_pretax = _idx["dividends_pretax"]
+    _idx_dividends_rate_pct = (
+        (_idx_dividends_pretax - _idx["dividends_after_tax"]) / _idx_dividends_pretax * 100.0
+        if _idx_dividends_pretax > 0 else 0.0
+    )
+
+    # Commit C, C2/C3: the property card's RENTAL POSITION group - rent,
+    # interest, holding costs and their COMBINED tax effect (adjustment
+    # #2: one order-independent refund/bill figure for all three legs
+    # together, never a single leg's own delta - see property_rental_
+    # position()'s own docstring for why this is exact regardless of
+    # the rent -> interest -> holding order property_year_tax_legs()
+    # happens to use internally, including in the sale year).
+    _rental = _eng.property_rental_position(
+        loan, loan_rate_pct / 100.0, io_period, loan_term,
+        weekly_rent, int(vacancy_weeks), holding_costs, _years_i, other_income,
+        building_cost=building_cost, plant_value=plant_value, property_type=property_type,
+    )
+    _rt = _rental["totals"]
+
+    # Bug fix (21 Sep 2026, owner-reported): the first cut of this
+    # caption ("extra CGT at sale") held the sale year's own running
+    # income FIXED (at its WITH-depreciation value) for both the "with"
+    # and "without" comparison - that's a different, smaller number
+    # ($23,500 for the $400k/Established/$170k/10y test) than the CGT
+    # delta a genuine no-depreciation scenario actually produces
+    # ($22,700), because the sale year's own depreciation claim also
+    # lowers the running income the capital gain leg lands on. Using
+    # the smaller, wrong figure was ALSO how Commit U's first cut ended
+    # up double-counting the $100,000 cost-base reduction as extra
+    # economic gain in the headline (property_capital_growth()'s own
+    # docstring covers that bug in full) - property_year_tax_legs() now
+    # keeps "gain" (economic, headline) and "taxable_gain" (CGT-only)
+    # strictly separate. Below re-runs property_breakdown() with
+    # building_cost/plant_value=0 to get the genuine no-depreciation
+    # gain_tax and diffs it against the actual (with-depreciation)
+    # gain_tax already on `_growth` - the two real numbers a with- vs
+    # without-depreciation scenario actually produce, so extra_refund -
+    # extra_cgt reproduces the headline's own net depreciation effect
+    # exactly (verified in this fix's own test suite).
+    _growth = _p["growth"]
+    _div43_claimed = _growth.get("div43_claimed") or 0.0
+    _extra_cgt = 0.0
+    if _div43_claimed > 0:
+        _growth_no_dep = _eng.property_breakdown(
+            cash, loan, loan_rate_pct / 100.0, weekly_rent, int(vacancy_weeks),
+            holding_costs, property_growth_pct / 100.0, _years_i, buy_costs,
+            sell_costs_pct / 100.0, other_income, io_period, loan_term,
+            building_cost=0.0, plant_value=0.0, property_type=property_type,
+        )["growth"]
+        _extra_cgt = _growth["gain_tax"] - _growth_no_dep["gain_tax"]
 
     def _signed(v):
         # Backslash fix: plain _fmt_aud() - every call site below is
@@ -24435,49 +25081,129 @@ def _render_property_vs_index_tool(email):
     )
     _parts.append(f'<div class="pvi-big {_cls(_p["headline"])}">{_signed(_p["headline"])}</div>')
 
-    _growth = _p["growth"]
     _parts.append(
         f'<div class="pvi-line">{html.escape(_sl("line_growth_label"))} '
         f'<span class="{_cls(_growth["after_tax"])}">{_signed(_growth["after_tax"])}</span></div>'
     )
+    _growth_tax_amount = _growth_pretax - _growth["after_tax"] if _growth_pretax > 0 else 0.0
     _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_growth_sub", price=_fmt_aud(_price), future_price=_fmt_aud(_growth["future_price"]), rate=_tax_pct))}</div>'
+        f'<div class="pvi-sub">{html.escape(_sl("line_growth_sub", price=_fmt_aud(_price), future_price=_fmt_aud(_growth["future_price"]), tax_amount=_fmt_aud(_growth_tax_amount), gain=_fmt_aud(_growth_pretax), rate=_growth_rate_pct))}</div>'
     )
-    _parts.append(
-        f'<div class="pvi-line">{html.escape(_sl("line_rent_label"))} '
-        f'<span class="{_cls(_p["rent_after_tax"])}">{_signed(_p["rent_after_tax"])}</span></div>'
-    )
-    _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_rent_sub", weekly_rent=_fmt_aud(weekly_rent), vacancy=int(vacancy_weeks), years=_years_i, rate=_tax_pct))}</div>'
-    )
-    _parts.append(
-        f'<div class="pvi-line">{html.escape(_sl("line_interest_label"))} '
-        f'<span class="pvi-r">{_signed(-_p["interest_after_tax"])}</span></div>'
-    )
-    if _r["two_phase_active"]:
-        # Two-phase (IO -> P&I) loan structure, task 19 Sep 2026 - the
-        # loan reaches its own P&I phase within this hold (years >
-        # io_period, and the loan's own design has a P&I phase at all).
-        _interest_sub_text = _sl(
-            "line_interest_sub_two_phase", io_period=_r["io_period"],
-            pi_years=_r["pi_phase_years_design"], term=_r["term"],
-            total_interest=_fmt_aud(_r["total_interest_pretax"]), tax=_tax_pct,
+    # Commit U (21 Sep 2026, owner-reported): only shown when this
+    # property type actually claims Div 43 (New build/Established-
+    # after-1987) AND building_cost > 0 - a pre_1987 property or one
+    # with no building cost entered has nothing to reduce the cost base
+    # with, so no caption to show.
+    if _div43_claimed > 0:
+        _parts.append(
+            f'<div class="pvi-cap">{html.escape(_sl("line_growth_cost_base_caption", reduction=_fmt_aud(_div43_claimed), extra_cgt=_fmt_aud(_extra_cgt)))}</div>'
         )
-    else:
-        # Pure IO for the whole hold (io_period >= years, or the loan's
-        # own design has no P&I phase at all) - unchanged since before
-        # this task, the regression anchor's own copy.
-        _interest_sub_text = _sl(
-            "line_interest_sub", loan=_fmt_aud(loan), rate_pct=loan_rate_pct,
-            years=_years_i, tax=_tax_pct,
+    # Commit U: Div 40 plant & equipment has no cost-base/CGT clawback at
+    # all (property_vs_index_engine.div40_written_down_value()'s own
+    # docstring) - only shown when this property actually has a plant
+    # claim to disclose the assumption for.
+    if property_type == _eng.PROPERTY_TYPE_NEW and (plant_value or 0.0) > 0:
+        _parts.append(
+            f'<div class="pvi-cap">{html.escape(_sl("plant_value_sale_caption"))}</div>'
         )
-    _parts.append(f'<div class="pvi-sub">{html.escape(_interest_sub_text)}</div>')
+
+    # -- RENTAL POSITION group (Commit C, C2/C3) -------------------------
+    # Replaces the old flat "Rent after tax" / "Loan interest after
+    # deduction" / "Holding costs after deduction" lines - each of those
+    # used to carry its OWN "taxed at ~X%" caption off the single
+    # approximate _tax_pct stand-in (removed this commit). The refund/
+    # bill line below is the one COMBINED figure for all three legs
+    # together (adjustment #2) - see property_rental_position()'s own
+    # docstring for why it is exact and order-independent, including in
+    # the sale year.
+    _working_weeks = max(52 - int(vacancy_weeks), 0)
+    _net_pretax = _rt["net_pretax"]
+    _net_after_tax = _rt["net_after_tax"]
+    _geared_label = "rental_net_loss_label" if _net_pretax < 0 else "rental_net_profit_label"
+    _taxable_loss = _rt["taxable_loss"]
+    _taxable_label = "rental_taxable_loss_label" if _taxable_loss < 0 else "rental_taxable_profit_label"
+    _tax_label = "rental_tax_refund_label" if _rt["tax"] >= 0 else "rental_tax_bill_label"
+    _net_cost_label = "rental_net_cost_label" if _net_after_tax < 0 else "rental_net_profit_after_tax_label"
     _parts.append(
-        f'<div class="pvi-line">{html.escape(_sl("line_costs_label"))} '
-        f'<span class="pvi-r">{_signed(-_p["costs_after_tax"])}</span></div>'
+        f'<div class="pvi-grp-h">{html.escape(_sl("rental_position_group_label", years=_years_i))}</div>'
     )
     _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_costs_sub", costs=_fmt_aud(holding_costs), years=_years_i, tax=_tax_pct))}</div>'
+        f'<div class="pvi-line">{html.escape(_sl("rental_rent_label"))} '
+        f'<span class="pvi-g">{_signed(_rt["rent"])}</span></div>'
+    )
+    _parts.append(
+        f'<div class="pvi-sub">{html.escape(_sl("rental_rent_sub", weekly_rent=_fmt_aud(weekly_rent), weeks=_working_weeks))}</div>'
+    )
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl("rental_interest_label"))} '
+        f'<span class="pvi-r">{_signed(-_rt["interest"])}</span></div>'
+    )
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl("rental_holding_label"))} '
+        f'<span class="pvi-r">{_signed(-_rt["holding"])}</span></div>'
+    )
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl(_geared_label))} '
+        f'<span class="{_cls(_net_pretax)}">{_signed(_net_pretax)}</span></div>'
+    )
+    # Commit U (21 Sep 2026, owner-reported): Depreciation is a NON-CASH
+    # deduction - always shown as a subtracted (negative) figure, since
+    # it's a deduction amount, never a "profit" the way net_pretax can
+    # flip sign. "Taxable rental loss" is the figure the refund below is
+    # ACTUALLY computed on (net_pretax minus depreciation) - deliberately
+    # distinct from "Net cash loss" above it, which stays cash-only per
+    # the task's own "cash out-of-pocket ... stay cash-based" rule.
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl("rental_depreciation_label"))} '
+        f'<span class="pvi-r">{_signed(-_rt["depreciation"])}</span></div>'
+    )
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl(_taxable_label))} '
+        f'<span class="{_cls(_taxable_loss)}">{_signed(_taxable_loss)}</span></div>'
+    )
+    _parts.append(
+        f'<div class="pvi-line pvi-hl">{html.escape(_sl(_tax_label))} '
+        f'<span class="{_cls(_rt["tax"])}">{_signed(_rt["tax"])}</span></div>'
+    )
+    # Adjustment #2 (required, not optional): the refund/bill figure
+    # above is computed with rent/interest/holding stacked FIRST and any
+    # capital gain (the sale year only) stacked LAST on top of them -
+    # stated plainly here, so a reader doesn't wonder why the sale
+    # year's own refund doesn't grow just because that year also has a
+    # big capital gain landing on the same return.
+    _parts.append(
+        f'<div class="pvi-cap">{html.escape(_sl("rental_stacking_caption"))}</div>'
+    )
+    _parts.append(
+        f'<div class="pvi-line">{html.escape(_sl(_net_cost_label))} '
+        f'<span class="{_cls(_net_after_tax)}">{_signed(_net_after_tax)}</span></div>'
+    )
+
+    # C4: the weekly cash gap before vs after the refund - "the whole
+    # case for the leverage" (task's own words) - year 1 vs the final
+    # year, inverted wording if the property is positively geared from
+    # year 1 onward.
+    if _rental["years"]:
+        _yr1 = _rental["years"][0]
+        _yrN = _rental["years"][-1]
+        _before1_wk = -_yr1["net_pretax"] / 52.0
+        _after1_wk = -_yr1["net_after_tax"] / 52.0
+        _afterN_wk = -_yrN["net_after_tax"] / 52.0
+        if _afterN_wk < _after1_wk - 0.5:
+            _trend = _sl("trend_easing")
+        elif _afterN_wk > _after1_wk + 0.5:
+            _trend = _sl("trend_rising")
+        else:
+            _trend = _sl("trend_flat")
+        _weekly_key = "rental_weekly_cost_caption" if _after1_wk >= 0 else "rental_weekly_profit_caption"
+        _parts.append(
+            f'<div class="pvi-weekly">{html.escape(_sl(_weekly_key, after1=_fmt_aud(abs(_after1_wk)), before1=_fmt_aud(abs(_before1_wk)), trend=_trend, afterN=_fmt_aud(abs(_afterN_wk)), years=_years_i))}</div>'
+        )
+
+    # B8 (required, not optional): the negative-gearing assumption this
+    # whole card rests on, stated plainly rather than left implicit.
+    _parts.append(
+        f'<div class="pvi-cap" style="margin-top:8px">{html.escape(_sl("negative_gearing_honesty_caption"))}</div>'
     )
     _parts.append('</div>')
 
@@ -24499,14 +25225,14 @@ def _render_property_vs_index_tool(email):
         f'<span class="{_cls(_idx["growth_after_cgt"])}">{_signed(_idx["growth_after_cgt"])}</span></div>'
     )
     _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_index_growth_sub", cash=_fmt_aud(cash), rate=_idx["price_growth_rate"] * 100, tax=_tax_pct))}</div>'
+        f'<div class="pvi-sub">{html.escape(_sl("line_index_growth_sub", cash=_fmt_aud(cash), rate=_idx["price_growth_rate"] * 100, tax_amount=_fmt_aud(_idx_growth_pretax - _idx["growth_after_cgt"]) if _idx_growth_pretax > 0 else _fmt_aud(0.0), gain=_fmt_aud(_idx_growth_pretax), tax_rate=_idx_growth_rate_pct))}</div>'
     )
     _parts.append(
         f'<div class="pvi-line">{html.escape(_sl("line_index_dividends_label"))} '
         f'<span class="{_cls(_idx["dividends_after_tax"])}">{_signed(_idx["dividends_after_tax"])}</span></div>'
     )
     _parts.append(
-        f'<div class="pvi-sub">{html.escape(_sl("line_index_dividends_sub", yield_pct=sp500_dividend_pct, tax=_tax_pct))}</div>'
+        f'<div class="pvi-sub">{html.escape(_sl("line_index_dividends_sub", yield_pct=sp500_dividend_pct, tax=_idx_dividends_rate_pct))}</div>'
     )
     _parts.append('</div>')
     _parts.append('</div>')  # .pvi-cards
@@ -24599,6 +25325,59 @@ def _render_property_vs_index_tool(email):
     sdd_plotly_chart(_fig)
     st.caption(_sl("chart_caption") if _crossover is not None else _sl("chart_no_crossover", years=_years_i))
 
+    # -- Year-by-year rental position table (Commit C, C5) - closed by --
+    # default, the property card's RENTAL POSITION group broken out one
+    # row per year (property_rental_position(), same figures the group's
+    # own totals already sum to).
+    with st.expander(_sl("year_by_year_expander_label"), expanded=False):
+        # Commit U (21 Sep 2026, owner-reported): "Cost base" comes from
+        # property_cost_base_series() (run()'s own new key), NOT property_
+        # rental_position() - that function has no visibility into
+        # cash/growth_rate/buy_costs/sell_costs_pct, only rent/interest/
+        # holding/depreciation (see that function's own Commit U comment).
+        # Keyed by year so it lines up with _rental["years"]'s own rows
+        # even though the two come from different engine calls.
+        _cost_base_by_year = {pt["year"]: pt["cost_base"] for pt in _r["property_cost_base_series"]}
+        _table_rows = [{
+            _sl("table_col_year"): row["year"],
+            _sl("table_col_rent"): _fmt_aud(row["rent"]),
+            _sl("table_col_interest"): f"-{_fmt_aud(row['interest'])}",
+            _sl("table_col_holding"): f"-{_fmt_aud(row['holding'])}",
+            _sl("table_col_depreciation"): f"-{_fmt_aud(row['depreciation'])}",
+            _sl("table_col_net_position"): _signed(row["net_pretax"]),
+            _sl("table_col_tax"): _signed(row["tax"]),
+            _sl("table_col_out_of_pocket"): _signed(-row["net_after_tax"]),
+            _sl("table_col_cost_base"): _fmt_aud(_cost_base_by_year.get(row["year"], _price)),
+        } for row in _rental["years"]]
+        _table_rows.append({
+            _sl("table_col_year"): _sl("table_totals_row_label"),
+            _sl("table_col_rent"): _fmt_aud(_rt["rent"]),
+            _sl("table_col_interest"): f"-{_fmt_aud(_rt['interest'])}",
+            _sl("table_col_holding"): f"-{_fmt_aud(_rt['holding'])}",
+            _sl("table_col_depreciation"): f"-{_fmt_aud(_rt['depreciation'])}",
+            _sl("table_col_net_position"): _signed(_rt["net_pretax"]),
+            _sl("table_col_tax"): _signed(_rt["tax"]),
+            _sl("table_col_out_of_pocket"): _signed(-_rt["net_after_tax"]),
+            _sl("table_col_cost_base"): _fmt_aud(_cost_base_by_year.get(_years_i, _price)),
+        })
+        _table_df = pd.DataFrame(_table_rows)
+        _first_pos_year = _rental["first_positive_year"]
+
+        def _style_pvi_table(_):
+            styles = pd.DataFrame("", index=_table_df.index, columns=_table_df.columns)
+            styles.iloc[-1, :] = "font-weight:700;border-top:1px solid #334155"
+            if _first_pos_year is not None:
+                _row_i = _first_pos_year - 1
+                for col in _table_df.columns:
+                    styles.iloc[_row_i, styles.columns.get_loc(col)] += ";background:rgba(52,211,153,.12)"
+            return styles
+
+        st.dataframe(_table_df.style.apply(_style_pvi_table, axis=None), hide_index=True, width='stretch')
+        if _first_pos_year is not None:
+            st.caption(_sl("table_turns_positive_caption", year=_first_pos_year))
+        else:
+            st.caption(_sl("table_stays_negative_caption", years=_years_i))
+
     st.caption(_sl("honest_caption", price=_fmt_aud_md(_price), cash=_fmt_aud_md(cash)))
     st.caption(_sl("not_advice"))
 
@@ -24608,9 +25387,20 @@ def _render_property_vs_index_tool(email):
             "weekly_rent": weekly_rent, "vacancy_weeks": vacancy_weeks,
             "holding_costs": holding_costs, "buy_costs": buy_costs,
             "sell_costs_pct": sell_costs_pct, "property_growth_pct": property_growth_pct,
-            "sp500_return_pct": sp500_return_pct, "sp500_dividend_pct": sp500_dividend_pct,
-            "marginal_rate_pct": marginal_rate_pct, "years": years,
+            "sp500_capital_gain_pct": sp500_capital_gain_pct,
+            # Commit A: kept as the DERIVED total (capital gain +
+            # dividend) for one release, same "read-time upgrade, no DB
+            # migration" reasoning as _pvi_upgrade_saved_inputs() above -
+            # anything still reading sp500_return_pct expecting a total
+            # return figure keeps getting one, just no longer as the
+            # live input it used to be.
+            "sp500_return_pct": sp500_capital_gain_pct + sp500_dividend_pct,
+            "sp500_dividend_pct": sp500_dividend_pct,
+            "other_income": other_income, "years": years,
             "io_period": io_period, "term": loan_term,
+            "property_type": property_type, "building_cost": building_cost,
+            "plant_value": plant_value,
+            "pvi_schema": 4,
         })
         st.success(_sl("save_confirm"))
 
@@ -27599,6 +28389,371 @@ def page_admin_dashboard():
             _render_scan_calendar_html(_cal, _cadence, _cal_day_list),
             unsafe_allow_html=True,
         )
+
+    # --- SOURCE HEALTH (Commit 2, 20 Sep 2026; Commit D added the market- --
+    # cap ranking; Commit G added the live ASX 200 scrape, 20 Sep 2026) ----
+    st.markdown("### Source health")
+    st.caption(
+        "Health checks for scanner_engine.py's live data fetches that "
+        "have last-known-good tracking: the live ASX 200 (Wikipedia), "
+        "the ASX Listed Companies CSV fetch_asx300()/fetch_allords() rank "
+        "against, and the nightly market-cap ranking built from it (the "
+        "pricing pass that fills out their tail past the live ASX 200 - "
+        "computed once overnight, never on a visitor's request). Without "
+        "this, Wikipedia was a single point of failure for three "
+        "universes at once (ASX 200 directly, plus ASX 300/All "
+        "Ordinaries, which both derive their tail from it) with nothing "
+        "to fall back to. A row-count guard alone only proves a fetch is "
+        "well-formed, not that it's current - asx300list.com/"
+        "allordslist.com both passed one for five years while frozen on "
+        "a 28 April 2021 snapshot, and a partial, throttled market-cap "
+        "pass would look just as well-formed while silently mis-ranking "
+        "or dropping names. 🔴 Stale means the fresh attempt or one of "
+        "its checks failed (row-count/sector-coverage for ASX 200; "
+        "cross-source/drift/canary/freshness-canary for the CSV - "
+        "wikipedia-delistings is informational only, it never fails the "
+        "CSV on its own; priced-ratio/row-count for the ranking), and "
+        "the site is serving the last known-good snapshot instead of "
+        "the fresh (bad) one - you'll also have gotten an email/push "
+        "about it the moment that first happened."
+    )
+    with st.container(border=True):
+        import source_health_store
+        try:
+            _health = source_health_store.list_all(scanner_engine.TRACKED_HEALTH_SOURCES)
+        except Exception:
+            _health = {}
+        if not _health:
+            st.caption("No tracked sources.")
+        for _i, (_src, _rec) in enumerate(_health.items()):
+            if _i:
+                st.markdown("---")
+            if not _rec:
+                st.markdown(f"**{_src}**")
+                st.caption("Never checked yet")
+                continue
+            _stale = bool(_rec.get("stale"))
+            _hc1, _hc2, _hc3 = st.columns([3, 2, 5])
+            with _hc1:
+                st.markdown(f"**{_src}**")
+                st.caption("🔴 Stale - serving last-known-good" if _stale else "🟢 Healthy")
+                if _stale:
+                    st.caption(f"{_rec.get('consecutive_failures', 0)} consecutive failure(s)")
+            with _hc2:
+                _last_good = _rec.get("last_good_at")
+                st.caption("Last good fetch")
+                st.write(_last_good[:19].replace("T", " ") + " UTC" if _last_good else "never")
+                st.caption(f"{_rec.get('last_good_row_count', '-')} rows")
+            with _hc3:
+                st.caption("Last check results")
+                _checks = _rec.get("last_checks") or {}
+                if not _checks:
+                    st.write("-")
+                else:
+                    for _cname, _cres in _checks.items():
+                        _icon = "✅" if _cres.get("ok") else "❌"
+                        st.write(f"{_icon} **{_cname}**: {_cres.get('detail')}")
+
+    # --- STALE-PRICED TICKERS (Commit J, 21 Sep 2026, owner-reported) --
+    # A per-TICKER condition, not a data-SOURCE health check - the
+    # source_health_store pass/fail pattern right above doesn't fit an
+    # open-ended, variable-length ticker list, so this uses the same
+    # plain bullet-list pattern the "Top pages"/"Top src" panels further
+    # down this page already use for their own open-ended lists.
+    st.markdown("### Stale-priced tickers")
+    st.caption(
+        "Tickers nightly_scan.py's ghost-price guard has flagged: no "
+        "evidence of real trading (neither a moving close nor any "
+        "volume) over their last 5 scanned trading days - yfinance kept "
+        "returning the SAME frozen price every night (QUB.AX/Qube, "
+        "taken over: an exact 5.11 close every day from 2026-08-20 to "
+        "2026-09-17; LSF.AX/L1 Long Short Fund, merged into L1G.AX: "
+        "unchanged across its last several scans too - both found live "
+        "in a 2026-09-20 DB backup, LSF still ranking #12 in the ASX "
+        "200 scanner table with mos_pct 95.2 before this fix). Excluded "
+        "from every ranking/valuation surface site-wide while flagged - "
+        "see nightly_scan.analyze_ticker_lite()'s own comment for the "
+        "full list of what reads this flag. Clears itself the next "
+        "night real trading evidence returns (a halt lifting, say) - "
+        "nothing here needs a manual reset."
+    )
+    with st.container(border=True):
+        try:
+            _flagged = snapshot_store.flagged_stale_tickers()
+        except Exception:
+            _flagged = []
+        if not _flagged:
+            st.caption("None currently flagged.")
+        else:
+            for _ft in _flagged:
+                _ft_label = f"{_ft['ticker']}"
+                if _ft.get("company_name"):
+                    _ft_label += f" — {_ft['company_name']}"
+                if _ft.get("universe"):
+                    _ft_label += f" ({_ft['universe']})"
+                st.markdown(f"- {_ft_label}")
+
+    # --- QUOTE SNAPSHOTS (Trading Cost tab, Commit 1) - read-only view
+    # into quote_snapshot_store.py, the twice-daily (ASX-local/US-local)
+    # mid-session bid/ask recorder wired into scheduler_engine.py. This
+    # is how the owner confirms the recorder is actually working before
+    # anything built on top of it (Commit 2's estimator, Commit 3's tab)
+    # ships - the recorder itself runs regardless of ENABLE_TRADING_COST,
+    # so this panel can show real data well before that switch is on.
+    st.markdown("### Quote snapshots")
+    st.caption(
+        "The Trading Cost tab's daily real-quote recorder (quote_"
+        "recorder.py) - one bid/ask sample per ticker per day, taken "
+        "mid-session (13:00 local, ASX/US separately) so it's never "
+        "Yahoo's after-hours snapshot. Runs regardless of the Trading "
+        "Cost tab's own on/off switch."
+    )
+    with st.container(border=True):
+        try:
+            _qs_rows_per_day = quote_snapshot_store.rows_per_day(days=14)
+        except Exception:
+            _qs_rows_per_day = []
+        st.markdown("**Rows captured per day (last 14 days)**")
+        if not _qs_rows_per_day:
+            st.caption("No snapshots captured yet.")
+        else:
+            st.dataframe(pd.DataFrame(_qs_rows_per_day), width='stretch', hide_index=True)
+
+        try:
+            _qs_rejections = quote_snapshot_store.rejection_counts(days=14)
+        except Exception:
+            _qs_rejections = {}
+        st.markdown("**Rejection counts by reason (last 14 days)**")
+        if not _qs_rejections or not any(_qs_rejections.values()):
+            st.caption("No rejections logged.")
+        else:
+            _qs_rej_rows = [{"reason": k, "count": v} for k, v in _qs_rejections.items()]
+            st.dataframe(pd.DataFrame(_qs_rej_rows), width='stretch', hide_index=True)
+
+        try:
+            _qs_recent = quote_snapshot_store.recent_rows(limit=20)
+        except Exception:
+            _qs_recent = []
+        st.markdown("**20 most recent rows**")
+        if not _qs_recent:
+            st.caption("No snapshots captured yet.")
+        else:
+            st.dataframe(pd.DataFrame(_qs_recent), width='stretch', hide_index=True)
+
+    # --- OPERATING-INCOME AUDIT (Commit O, 21 Sep 2026; formula replaced
+    # by Commit Q, 21 Sep 2026; widened beyond ASX 200 + S&P 500 to every
+    # saved scan by Commit S, 21 Sep 2026, owner-reported - the EBIT
+    # correction is per-ticker and applies to every stock scored, not
+    # just the two flagship universes). Pure dry-run: reads through
+    # moat_engine.compute_moat_dry_run() and auto_compounder_engine.
+    # ebit_ttm()/ebit_year_rows()(..., force_switch=...), none of which
+    # ever read/write the 24h moat_cache or auto_cv_sections cache, or
+    # touch the EBIT_FROM_PRETAX module-level global - see compute_moat_
+    # dry_run()'s own comment for why a forced computation must never go
+    # anywhere near either cache on a live multi-user site. Nothing here
+    # changes until EBIT_FROM_PRETAX is actually set in Railway.
+    #
+    # Commit S also switched every bundle fetch here to fundamentals_
+    # data.peek_cached_bundle() (cache-only, ignores the 24h TTL, NEVER
+    # fetches live) instead of get_bundle() (which falls through to a
+    # live yfinance/EODHD call on a miss) - auditing ~2,000+ tickers is
+    # only fast enough to run from a button click because it's pure local
+    # cache reads; a ticker with nothing cached is skipped and listed,
+    # never fetched. Each ticker's bundle is fetched exactly ONCE and
+    # reused for both the old and new force_switch computations (see
+    # compute_moat_dry_run()'s own `bundle=` parameter).
+    st.markdown("### Operating-income audit (dry-run)")
+    st.caption(
+        "Compares today's live figure (yfinance's own \"Operating "
+        "Income\" row) against the Commit Q verify-then-correct EBIT for "
+        "every non-financials ticker in the selected universe(s), using "
+        "only already-cached fundamentals (never a live yfinance/EODHD "
+        "call - a ticker with nothing cached is skipped and listed "
+        "below). Per ticker-year: P = Pretax Income - Net Non Operating "
+        "Interest Income Expense - Other Income Expense (a test value "
+        "only, never used as EBIT itself - that's what let one-off "
+        "items leak into Commit O's numbers). If P matches yfinance's "
+        "Operating Income within 3%, there's no bug. If it instead "
+        "matches Operating Income + Reconciled Depreciation within 3%, "
+        "the D&A double-count is confirmed for that year. A ticker is "
+        "only corrected if the newest year AND at least 2 other years "
+        "independently confirm the double-count - one matching year "
+        "could be coincidence, three is the filer's real statement "
+        "structure - and the correction then applies uniformly to every "
+        "year, never mixed (Commit P's principle). A ticker scanned "
+        "under more than one universe is counted once in the totals "
+        "below (its own row lists every universe it appeared in) but "
+        "toward each universe's own per-universe count. Quality is "
+        "deliberately not shown - quality_engine.py never reads "
+        "operating income at all, so this fix cannot move it, on any "
+        "ticker."
+    )
+    with st.container(border=True):
+        _ebit_audit_candidate_universes = (
+            list(scanner_engine.AUSTRALIA_UNIVERSES) + list(scanner_engine.USA_UNIVERSES)
+            + [nightly_scan.IMPORTED_UNIVERSE]
+        )
+        _ebit_audit_saved_universes = sorted(
+            _u for _u in _ebit_audit_candidate_universes
+            if os.path.exists(scan_store._path(_u))
+        )
+        _ebit_audit_universe_choice = st.selectbox(
+            "Universe", ["All saved universes"] + _ebit_audit_saved_universes,
+            key="admin_dash_ebit_audit_universe",
+        )
+        if st.button("Run audit", key="admin_dash_ebit_audit_btn"):
+            _target_universes = (
+                _ebit_audit_saved_universes if _ebit_audit_universe_choice == "All saved universes"
+                else [_ebit_audit_universe_choice]
+            )
+            # ticker -> {universe, ...} it was scanned under (dedup point -
+            # every ticker is computed exactly once below regardless of how
+            # many of these universes it appears in); universe -> [ticker,
+            # ...] as-scanned (NOT deduped - this is what the per-universe
+            # counts below tally against, so a multi-universe ticker counts
+            # toward each of its own universes, same as any per-universe
+            # metric would).
+            _ticker_universes, _universe_tickers = {}, {}
+            for _uni in _target_universes:
+                try:
+                    _scan_payload = scan_store.load_scan_raw(_uni)
+                except Exception:
+                    _scan_payload = None
+                _tix = [r.get("Ticker") for r in (_scan_payload or {}).get("rows", []) if r.get("Ticker")]
+                _universe_tickers[_uni] = _tix
+                for _tk in _tix:
+                    _ticker_universes.setdefault(_tk, set()).add(_uni)
+
+            _unique_tickers = sorted(_ticker_universes.keys())
+            _total = len(_unique_tickers)
+            _progress_bar = st.progress(0.0)
+            _progress_caption = st.empty()
+
+            _audit_rows = []
+            _skipped_no_cache = []
+            _CHUNK = 25
+            for _i, _tk in enumerate(_unique_tickers):
+                _bundle = fundamentals_data.peek_cached_bundle(_tk)
+                if _bundle is None:
+                    _skipped_no_cache.append(_tk)
+                else:
+                    _old = moat_engine.compute_moat_dry_run(_tk, force_switch=False, bundle=_bundle)
+                    _new = moat_engine.compute_moat_dry_run(_tk, force_switch=True, bundle=_bundle)
+                    if _old and _new and not _old.get("is_financials"):
+                        try:
+                            _ebit_old, _ = auto_compounder_engine.ebit_ttm(_bundle, False, force_switch=False)
+                            _ebit_new, _ = auto_compounder_engine.ebit_ttm(_bundle, False, force_switch=True)
+                            _q_rows = auto_compounder_engine.ebit_year_rows(_bundle, False, force_switch=True)
+                            _ticker_corrected = bool(_q_rows) and next(iter(_q_rows.values()))["ticker_corrected"]
+                            _unverified_years = [y for y, r in _q_rows.items() if r.get("year_status") == "unverified"]
+                        except Exception:
+                            _ebit_old = _ebit_new = None
+                            _ticker_corrected = False
+                            _unverified_years = []
+                        _status = "corrected" if _ticker_corrected else ("unverified" if _unverified_years else "unchanged")
+                        _moat_old, _moat_new = _old.get("score"), _new.get("score")
+                        _moat_delta = (
+                            (_moat_new - _moat_old) if (_moat_old is not None and _moat_new is not None) else None
+                        )
+                        _audit_rows.append({
+                            "ticker": _tk,
+                            "country": "AU" if _tk.upper().endswith(".AX") else "US",
+                            "universe": ", ".join(sorted(_ticker_universes[_tk])),
+                            "ebit_old": _ebit_old, "ebit_new": _ebit_new,
+                            "roic_old": _old.get("ttm_return"), "roic_new": _new.get("ttm_return"),
+                            "moat_old": _moat_old, "moat_new": _moat_new,
+                            "moat_delta": _moat_delta,
+                            "status": _status,
+                            "unverified_years": ", ".join(_unverified_years) if _unverified_years else "",
+                        })
+                    # else: financials mode, or fewer than 2 usable
+                    # statement years - silently excluded, same as before
+                    # Commit S (not "skipped - no cache", which is only
+                    # for a ticker with nothing cached at all).
+                if (_i + 1) % _CHUNK == 0 or (_i + 1) == _total:
+                    _progress_bar.progress((_i + 1) / _total if _total else 1.0)
+                    _progress_caption.caption(f"Processed {_i + 1}/{_total} ticker(s) - {_tk}")
+
+            _progress_bar.empty()
+            _progress_caption.empty()
+
+            st.session_state["admin_dash_ebit_audit_rows"] = _audit_rows
+            st.session_state["admin_dash_ebit_audit_skipped"] = _skipped_no_cache
+            st.session_state["admin_dash_ebit_audit_universe_tickers"] = _universe_tickers
+
+        _audit_rows = st.session_state.get("admin_dash_ebit_audit_rows")
+        _skipped_no_cache = st.session_state.get("admin_dash_ebit_audit_skipped") or []
+        _universe_tickers = st.session_state.get("admin_dash_ebit_audit_universe_tickers") or {}
+
+        if _skipped_no_cache:
+            with st.expander(f"{len(_skipped_no_cache)} ticker(s) skipped - no cached fundamentals on file"):
+                st.dataframe(pd.DataFrame({"ticker": _skipped_no_cache}), hide_index=True, width='stretch')
+
+        if _audit_rows:
+            _audit_df = pd.DataFrame(_audit_rows)
+            _au_n = int((_audit_df["country"] == "AU").sum())
+            _us_n = int((_audit_df["country"] == "US").sum())
+            st.markdown(f"**{len(_audit_df)} non-financials ticker(s) audited** (deduped across universes) — AU {_au_n} · US {_us_n}")
+
+            _status_counts = _audit_df.groupby(["status", "country"]).size().unstack(fill_value=0)
+            for _c in ("AU", "US"):
+                if _c not in _status_counts.columns:
+                    _status_counts[_c] = 0
+            _status_lines = []
+            for _st_name in ("corrected", "unverified", "unchanged"):
+                _row_au = int(_status_counts.loc[_st_name, "AU"]) if _st_name in _status_counts.index else 0
+                _row_us = int(_status_counts.loc[_st_name, "US"]) if _st_name in _status_counts.index else 0
+                _status_lines.append(f"- **{_st_name}**: {_row_au + _row_us} (AU {_row_au} · US {_row_us})")
+            st.markdown("**Overall:**\n" + "\n".join(_status_lines))
+
+            if _universe_tickers:
+                _status_by_ticker = dict(zip(_audit_df["ticker"], _audit_df["status"]))
+                _per_universe_rows = []
+                for _uni, _tix in _universe_tickers.items():
+                    _counts = {"corrected": 0, "unverified": 0, "unchanged": 0, "skipped_or_financials": 0}
+                    for _tk in _tix:
+                        _counts[_status_by_ticker.get(_tk, "skipped_or_financials")] += 1
+                    _per_universe_rows.append({"universe": _uni, "tickers": len(_tix), **_counts})
+                st.markdown("**Per-universe counts:**")
+                st.dataframe(
+                    pd.DataFrame(_per_universe_rows).sort_values("universe"),
+                    hide_index=True, width='stretch',
+                )
+
+            _unverified_df = _audit_df[_audit_df["unverified_years"] != ""]
+            if not _unverified_df.empty:
+                st.markdown(f"**{len(_unverified_df)} ticker(s) with at least one unverified year** (kept at yfinance's Operating Income, not corrected):")
+                st.dataframe(
+                    _unverified_df[["ticker", "country", "universe", "status", "unverified_years"]],
+                    hide_index=True, width='stretch',
+                )
+                st.download_button(
+                    "Download unverified as CSV",
+                    _unverified_df.to_csv(index=False).encode("utf-8"),
+                    file_name="stocksdeepdive_ebit_audit_unverified.csv",
+                    mime="text/csv",
+                    key="admin_dash_download_ebit_audit_unverified",
+                )
+            else:
+                st.caption("No ticker had an unverified year.")
+
+            _movable = _audit_df.dropna(subset=["moat_delta"]).copy()
+            if not _movable.empty:
+                _movable["abs_delta"] = _movable["moat_delta"].abs()
+                _movers = _movable.sort_values("abs_delta", ascending=False).head(30).drop(columns="abs_delta")
+                st.markdown("**30 biggest Moat-score movers (old vs new):**")
+                st.dataframe(_movers, hide_index=True, width='stretch')
+                st.download_button(
+                    "Download movers as CSV",
+                    _movers.to_csv(index=False).encode("utf-8"),
+                    file_name="stocksdeepdive_ebit_audit_movers.csv",
+                    mime="text/csv",
+                    key="admin_dash_download_ebit_audit_movers",
+                )
+            else:
+                st.caption("No ticker had both an old and a new Moat score to compare.")
+        elif "admin_dash_ebit_audit_rows" in st.session_state:
+            st.caption("No non-financials tickers with cached fundamentals were found for the selected universe(s).")
 
     # --- SYSTEM --------------------------------------------------------
     st.markdown("---")

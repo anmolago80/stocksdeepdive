@@ -39,6 +39,20 @@ A tiny in-process scheduler for the background jobs this site needs:
                                  bounded retention pruning. Its own hour
                                  (VOLUME_CHECK_UTC_HOUR), its own lock -
                                  see that constant's own docstring.)
+  8. TWICE-DAILY quote sampler -> quote_recorder.run_asx_recorder()/
+                                 run_us_recorder() (Trading Cost tab,
+                                 Commit 1 - one real bid/ask quote per
+                                 ticker per day, sampled while each
+                                 market is genuinely open. The ONE job
+                                 in this file that fires by LOCAL market
+                                 time, not a UTC hour - see quote_
+                                 recorder.is_due_now()'s own docstring
+                                 for why every other job's UTC-hour
+                                 check can't express that. Runs
+                                 regardless of ENABLE_TRADING_COST; its
+                                 own retention prune runs alongside the
+                                 volume monitor above, in _run_volume_
+                                 check().)
 
 WHY IN-PROCESS, NOT A SEPARATE RAILWAY CRON SERVICE: Railway volumes
 attach to exactly ONE service, and the web app needs the volume (for the
@@ -154,6 +168,20 @@ try:
 except Exception:
     newsletter_store = None
 
+# Trading Cost tab, Commit 1: imported at module level (not deferred
+# inside a _run_* function like the other job modules) because _loop()
+# below calls quote_recorder.is_due_now() on EVERY 60s tick, not once a
+# day - that's a pure, cheap function with no network I/O of its own
+# (importing the module itself doesn't touch yfinance's network layer,
+# only `import`s the package), so there's no "don't slow every tick"
+# cost to defer here. Same guarded-import shape as admin_metrics_store/
+# newsletter_store above either way, so a broken quote_recorder.py can
+# never take the whole scheduler down.
+try:
+    import quote_recorder
+except Exception:
+    quote_recorder = None
+
 
 def _data_dir():
     return os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
@@ -241,12 +269,25 @@ _DEFAULT_NIGHTLY_UNIVERSES = (
 
 _WEEKDAY_ABBR = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
-# Rough constituent-count table, ONLY used to order tonight's due
-# universes smallest-first (8b's own verify step: "order the nightly
-# run smallest-first so the daily ones always finish") - not used for
-# anything else, so an approximate/stale count here is harmless; an
-# unlisted universe sorts last (safest assumption - never lets an
-# unknown-size universe jump the queue ahead of a known-small one).
+# Rough constituent-count table, used to order tonight's due universes -
+# not used for anything else, so an approximate/stale count here is
+# harmless; an unlisted universe sorts last within its own group (safest
+# assumption - never lets an unknown-size universe jump the queue ahead
+# of a known-small one in that group).
+#
+# Commit H correction (20 Sep 2026): the ORIGINAL comment here read
+# "order the nightly run smallest-first so the daily ones always
+# finish" (8b's own verify step) - true as far as it went, but backwards
+# for a weekday-pinned universe (mon..sun cadence). A daily universe
+# missing a night gets another attempt in ~20h; a weekday-pinned one
+# gets exactly one shot a week. Sorting purely smallest-first put every
+# weekday-pinned universe LAST every single time (they're always the
+# largest - see the table below), which combined with NIGHTLY_SCAN_UTC_
+# HOUR starting only 4 hours before the UTC date boundary meant the one
+# universe that could least afford to be interrupted or pushed past
+# midnight was the one most likely to be. _scan_priority_key() below
+# now sorts pinned universes AHEAD of dailies (smallest-first within
+# each group still applies) - see its own docstring.
 _APPROX_UNIVERSE_SIZE = {
     "ASX 20": 20, "Dow Jones 30": 30, "ASX 50": 50,
     "ASX Financials": 40, "ASX Materials & Mining": 45,
@@ -261,6 +302,23 @@ _APPROX_UNIVERSE_SIZE = {
     "Russell 1000": 1000, "S&P 1500": 1500, "Russell 2000": 2000,
     "Russell 3000": 3000,
 }
+
+
+def _scan_priority_key(u, cadence_map):
+    """Sort key for tonight's due/missing universe list (Commit H): a
+    weekday-pinned universe (cadence in _WEEKDAY_ABBR) sorts AHEAD of
+    every daily/bare-weekly one, smallest-first within each group. A
+    daily universe that misses tonight is due again in ~20h; a weekday-
+    pinned one only comes due again in a week, so if tonight's run gets
+    cut short (a restart, the catch-up window closing, the run simply
+    taking longer than the hours left before midnight), it's the pinned
+    universe that must go first - the dailies can afford to wait one
+    more cycle, the pinned one effectively can't. Used by both
+    _universes_needing_scan (the regular due-scan check) and
+    _universes_missing_today (the catch-up check) so the same priority
+    protects a truncated run either way."""
+    is_pinned = cadence_map.get(u) in _WEEKDAY_ABBR
+    return (0 if is_pinned else 1, _APPROX_UNIVERSE_SIZE.get(u, 9999))
 
 
 def _parse_nightly_universes(raw):
@@ -515,8 +573,42 @@ def _release_job_lock(job_name):
         pass
 
 
-def _run_nightly(cfg, log):
+def _run_nightly(cfg, log, run_night=None):
     import nightly_scan
+    import scanner_engine
+
+    # Commit H (20 Sep 2026): captured ONCE, here, before any universe is
+    # touched - this is what every universe scanned/repriced during this
+    # call gets credited to (scan_store's own run_night field, and the
+    # admin calendar's bump_scan_calendar day), regardless of how long
+    # the run actually takes or what real wall-clock date it's IN
+    # PROGRESS at wherever it happens to be right now. Root-caused
+    # incident (14-20 Sep 2026): the regular due-scan block starts a run
+    # at NIGHTLY_SCAN_UTC_HOUR (20:00 UTC default), and _universes_
+    # needing_scan sorts smallest-first, so the largest universe due that
+    # night - always the weekday-pinned one, by design - runs LAST. A
+    # run that starts at 20:00 UTC and works through several smaller
+    # daily universes before reaching a 500-600-ticker weekly-pinned one
+    # can easily cross 00:00 UTC by the time that one finishes; the OLD
+    # code stamped its admin-calendar marker (and the only "was this
+    # scanned tonight" signal _universes_missing_today read) with
+    # whatever the wall-clock date was AT THE MOMENT the marker was
+    # written - the day AFTER the run started - so a scan that genuinely
+    # ran on its scheduled night was recorded as missing, every single
+    # week, for every weekday-pinned universe (see H2 below for the
+    # other half of why it was always the LARGEST universes hitting
+    # this).
+    #
+    # `run_night` is a parameter, not always self-computed, specifically
+    # for the catch-up call site below in _loop(): a catch-up run for a
+    # universe missing FROM LAST NIGHT starts executing tonight (or past
+    # midnight), but must still be credited to the night it's catching
+    # up, not the night it happens to run - so that call site passes its
+    # own already-correct `ref_night` in explicitly. The regular due-scan
+    # call site passes nothing, so this defaults to "now" at the moment
+    # THIS run starts - which is exactly right for it, since a regular
+    # run's own start time IS its scheduled night.
+    run_night = run_night or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     # Services batch, Part 1 (metric alerts): snapshot every alerted
     # ticker's LAST recorded value before any of tonight's scans touch
@@ -531,6 +623,39 @@ def _run_nightly(cfg, log):
     except Exception as e:
         log(f"[scheduler] alert prev-value snapshot failed: {e}")
         alert_prev_map = {}
+
+    # Commit D (20 Sep 2026): re-price the market-cap ranking (the tail
+    # fetch_asx300()/fetch_allords() slice from) BEFORE any universe is
+    # scanned tonight, so both AU universes that depend on it see this
+    # run's result rather than an earlier, in-process-cached fetch_
+    # asx300()/fetch_allords() answer built from yesterday's ranking. A
+    # failure here degrades to "tonight's AU scans use whatever ranking
+    # was already on file" (nightly_scan.refresh_market_cap_ranking()
+    # itself already fails open the same way scanner_engine's own fetch_
+    # asx_listed_companies() does), never blocks the scan loop below.
+    try:
+        nightly_scan.refresh_market_cap_ranking(log=log)
+    except Exception as e:
+        log(f"[scheduler] market-cap ranking refresh failed: {e}")
+
+    # Commit F (time-critical fix): fetch_asx300()/fetch_allords()/fetch_
+    # asx_listed_companies() are st.cache_data(ttl=86400) - same process
+    # as this scheduler, so if a web visitor called any of them earlier
+    # today BEFORE tonight's refresh above (including catching a None
+    # when no ranking existed on disk yet), that stale/None answer stays
+    # cached for up to 24h regardless of the fresh file just written -
+    # the scan loop below would call get_universe_pool(), hit the same
+    # cached None, and tonight's ASX 300/All Ordinaries scans would
+    # produce nothing. Clearing these three right after the refresh
+    # forces the scan loop's own first call this run to read fresh.
+    # _asx_non200_by_marketcap() itself carries no cache decorator (a
+    # plain file read - see its own docstring) so it needs no clearing.
+    try:
+        scanner_engine.fetch_asx300.clear()
+        scanner_engine.fetch_allords.clear()
+        scanner_engine.fetch_asx_listed_companies.clear()
+    except Exception as e:
+        log(f"[scheduler] market-cap ranking cache clear failed: {e}")
 
     # The "imported" virtual universe (screen_import_store's TradingView
     # CSV queue - see nightly_scan.run_imported_scan) always runs LAST,
@@ -559,7 +684,7 @@ def _run_nightly(cfg, log):
             if universe == nightly_scan.IMPORTED_UNIVERSE:
                 payload = nightly_scan.run_imported_scan(log=log)
             else:
-                payload = nightly_scan.run_universe_scan(universe, log=log)
+                payload = nightly_scan.run_universe_scan(universe, log=log, run_night=run_night)
             # AI-readiness Phase 1 (AI_ROADMAP_stocksdeepdive.md): build the
             # public /s/<TICKER> snapshot + /api/v1 data for this universe
             # right after its scan lands - re-shapes rows the scan just
@@ -675,7 +800,7 @@ def _run_nightly(cfg, log):
                 f"tonight ({', '.join(to_reprice)})")
             for universe in to_reprice:
                 try:
-                    nightly_scan.reprice_universe(universe, log=log)
+                    nightly_scan.reprice_universe(universe, log=log, run_night=run_night)
                 except Exception as e:
                     log(f"[scheduler] reprice {universe} failed: {e}")
         else:
@@ -808,6 +933,32 @@ def _run_watchdog(log):
     portfolio_watchdog_engine.run_nightly_watchdog(log=log)
 
 
+def _run_quote_recorder_asx(log):
+    """Trading Cost tab, Commit 1: the ASX-local mid-session quote
+    sampler - see quote_recorder.py's own module docstring for what it
+    records, why (Yahoo's after-hours bid/ask snapshot is junk), and
+    the four rejection rules. Deferred import, same shape as every
+    other _run_* job above. Runs regardless of ENABLE_TRADING_COST -
+    this only writes to quote_snapshot_store's own table, nothing a
+    visitor sees changes.
+
+    Lets the exception propagate (same "let it raise" contract as
+    _run_watchdog/_run_backup above) so the _loop() guard's retry-cap
+    only marks the day done on a genuine success - a bad ticker inside
+    the run is already handled without raising (quote_recorder.py's own
+    per-ticker try/except), so an exception escaping this far means the
+    run as a whole broke, not just one ticker."""
+    import quote_recorder
+    quote_recorder.run_asx_recorder(log=log)
+
+
+def _run_quote_recorder_us(log):
+    """US-local mid-session quote sampler - see _run_quote_recorder_asx
+    above, same contract, same module."""
+    import quote_recorder
+    quote_recorder.run_us_recorder(log=log)
+
+
 def _run_earnings_refresh(log):
     """Services batch, Part 4, WEEKLY job: refresh the earnings calendar
     for every ticker this site has ever scanned or that anyone follows -
@@ -916,6 +1067,15 @@ def _run_volume_check(log):
             newsletter_store.prune_stale_unconfirmed(log=log)
         except Exception as e:
             log(f"[scheduler] newsletter prune failed: {e}")
+    # Trading Cost tab, Commit 1: same nightly slot, same contract - see
+    # quote_snapshot_store.prune_old()'s own docstring (400-day
+    # retention on both its tables). Deferred import, same "don't slow
+    # every scheduler tick" reasoning as every job above.
+    try:
+        import quote_snapshot_store
+        quote_snapshot_store.prune_old(log=log)
+    except Exception as e:
+        log(f"[scheduler] quote snapshot prune failed: {e}")
 
 
 # 17 Sep 2026 (restart-resilience fix): how long after the scan hour a
@@ -963,11 +1123,11 @@ def _catchup_reference_night(cfg, now):
 def _universes_missing_today(cfg, ref_day):
     """Universes that were SCHEDULED for the `ref_day` ('YYYY-MM-DD' UTC
     date - see _catchup_reference_night above) scan night but have no
-    scan_store entry whose own generated_at date matches - i.e. never
-    got a full scan saved that night, whether because a restart killed
-    the run before reaching them or (17 Sep 2026 fix, see the due-scan
-    block in _loop() below) a lock-contention tick burned an attempt
-    without ever starting one.
+    scan_store entry credited to that night - i.e. never got a full scan
+    saved for it, whether because a restart killed the run before
+    reaching them or (17 Sep 2026 fix, see the due-scan block in _loop()
+    below) a lock-contention tick burned an attempt without ever
+    starting one.
 
     "Scheduled" mirrors _render_scan_calendar_html's (app.py) own admin-
     calendar convention exactly: "daily" is scheduled every night; a
@@ -983,21 +1143,38 @@ def _universes_missing_today(cfg, ref_day):
     to flag this): the admin calendar's own "Scheduled"/"missing" grid
     (admin_metrics_store.bump_scan_calendar / scan_calendar_grid) is
     actually driven by a separate pulse-counter event log, not by
-    scan_store's generated_at directly. This function reads
-    scan_store.load_scan_raw()'s generated_at instead - the more
-    authoritative underlying source for "was a real scan for this
-    universe saved today" - while matching the calendar's SCHEDULING
-    convention (daily / pinned-weekday / bare-weekly) exactly. Uses
-    load_scan_raw() rather than load_scan() so a scan generated exactly
-    on ref_day still counts even were it to have since aged past
-    load_scan()'s 72h display cutoff - not realistic given this only
-    ever runs within a few hours of ref_day, but it's the correct/
-    authoritative accessor regardless (see that function's own
+    scan_store directly. This function reads scan_store.load_scan_raw()
+    instead - the more authoritative underlying source for "was a real
+    scan for this universe saved for this night" - while matching the
+    calendar's SCHEDULING convention (daily / pinned-weekday / bare-
+    weekly) exactly. Uses load_scan_raw() rather than load_scan() so a
+    scan credited to ref_day still counts even were it to have since
+    aged past load_scan()'s 72h display cutoff - not realistic given
+    this only ever runs within a few hours of ref_day, but it's the
+    correct/authoritative accessor regardless (see that function's own
     docstring in scan_store.py).
 
-    Sorted smallest-first, same _APPROX_UNIVERSE_SIZE convention as
-    _universes_needing_scan below, so a catch-up run that's interrupted
-    again still finishes as much as it can."""
+    Commit H (20 Sep 2026): checks the payload's own `run_night` field
+    first - the scheduled night scheduler_engine._run_nightly() captured
+    at the START of the run that saved it (see save_scan()'s own
+    docstring) - falling back to generated_at's date only for an older
+    payload saved before this field existed, or one saved with no
+    scheduler context at all (a hand-run scan). Checking generated_at
+    ALONE (the pre-Commit-H behavior) was the root cause of a real
+    incident: a weekday-pinned universe is always the LARGEST one due
+    that night (see _scan_priority_key's own comment) and used to be
+    scanned dead last, so a run starting at NIGHTLY_SCAN_UTC_HOUR could
+    easily still be working through it after the UTC date rolled over -
+    generated_at (real wall-clock completion time) then landed on the
+    FOLLOWING day, so a scan that genuinely ran on its scheduled night
+    was recorded as missing here every single week, for every weekday-
+    pinned universe, with no generated_at-based check ever able to tell
+    a late-finishing real scan apart from one that never happened.
+
+    Sorted by _scan_priority_key (Commit H: pinned universes first, then
+    smallest-first within each group - see that function's own
+    docstring), so a catch-up run that's interrupted again still gets to
+    the universe that can least afford another missed week."""
     import scan_store
     ref_date = datetime.strptime(ref_day, "%Y-%m-%d").date()
     ref_weekday = ref_date.weekday()
@@ -1010,15 +1187,17 @@ def _universes_missing_today(cfg, ref_day):
             continue  # no pinned day - left to the general due-scan check
         # cadence == "daily" falls through: scheduled every night
         payload = scan_store.load_scan_raw(u)
-        gen_date = None
+        credited_day = None
         if payload:
-            try:
-                gen_date = datetime.fromisoformat(payload["generated_at"]).date().strftime("%Y-%m-%d")
-            except (KeyError, ValueError):
-                gen_date = None
-        if gen_date != ref_day:
+            credited_day = payload.get("run_night")
+            if not credited_day:
+                try:
+                    credited_day = datetime.fromisoformat(payload["generated_at"]).date().strftime("%Y-%m-%d")
+                except (KeyError, ValueError):
+                    credited_day = None
+        if credited_day != ref_day:
             missing.append(u)
-    missing.sort(key=lambda u: _APPROX_UNIVERSE_SIZE.get(u, 9999))
+    missing.sort(key=lambda u: _scan_priority_key(u, cfg["universe_cadence"]))
     return missing
 
 
@@ -1040,10 +1219,14 @@ def _universes_needing_scan(cfg):
     day) has no such restriction - simply due whenever its 6 days are
     up, on whichever night that falls.
 
-    Result is sorted smallest-first (8b's own verify step) using the
-    rough _APPROX_UNIVERSE_SIZE table above, so on a night with a mix
-    of small daily and one large weekly universe due, the small ones
-    finish first even if the run gets cut short."""
+    Commit H (20 Sep 2026): result is sorted by _scan_priority_key - a
+    weekday-pinned universe first, then dailies, smallest-first within
+    each group (see that function's own docstring for why this order,
+    not the reverse: a daily universe missing tonight is due again in
+    ~20h; a weekday-pinned one gets exactly one chance a week, so if a
+    night's run is cut short - or simply doesn't finish before the UTC
+    date rolls over - it's the pinned universe, not a daily one, that
+    can't afford to be the one left out)."""
     import scan_store
     today_weekday = datetime.now(timezone.utc).weekday()  # Monday=0..Sunday=6
     due = []
@@ -1054,7 +1237,7 @@ def _universes_needing_scan(cfg):
         payload = scan_store.load_scan(u)
         if payload is None or payload.get("age_hours", 999) > threshold_hours:
             due.append(u)
-    due.sort(key=lambda u: _APPROX_UNIVERSE_SIZE.get(u, 9999))
+    due.sort(key=lambda u: _scan_priority_key(u, cfg["universe_cadence"]))
     return due
 
 
@@ -1264,9 +1447,18 @@ def _loop(log):
                                     log(f"[scheduler] catch-up scan for {ref_night} "
                                         f"({', '.join(missing)}) "
                                         f"[attempt {n_today + 1}/3 today]")
+                                    # Commit H: explicitly credited to
+                                    # ref_night (the night being caught
+                                    # up), not to "now" - this run is
+                                    # starting well after that night's own
+                                    # scan hour, possibly past midnight
+                                    # itself, so _run_nightly's own default
+                                    # (today's date at the moment IT
+                                    # starts) would be wrong here.
                                     _record_job(
                                         "nightly", log,
-                                        lambda lg: _run_nightly({**cfg, "universes": missing}, lg),
+                                        lambda lg: _run_nightly(
+                                            {**cfg, "universes": missing}, lg, run_night=ref_night),
                                     )
                                 finally:
                                     _release_job_lock("nightly")
@@ -1316,6 +1508,73 @@ def _loop(log):
                                 _release_job_lock("watchdog")
                         else:
                             log("[scheduler] portfolio watchdog skipped - another process "
+                                "already holds the lock")
+
+                # Trading Cost tab, Commit 1: the two mid-session quote-
+                # recorder slots - one per market, each firing in ITS
+                # OWN local time (quote_recorder.is_due_now() converts
+                # `now` to Australia/Sydney or America/New_York
+                # internally; every other job in this file checks a
+                # single UTC hour, which can't express "13:00 in two
+                # different timezones that drift relative to UTC across
+                # DST" - see that function's own docstring). Same one-
+                # calendar-day-per-run guard, same persist-only-on-
+                # success contract, as the watchdog block above -
+                # `today` here is still the UTC calendar day (same
+                # `today` the rest of this loop iteration uses), which
+                # is fine as a once-per-day guard key even though the
+                # due CHECK itself is local-time: the local sampling
+                # window (13:00-16:00) never spans a UTC-midnight
+                # boundary for either market, so one UTC-dated guard per
+                # local calendar day is exact, not approximate.
+                if (quote_recorder is not None
+                        and quote_recorder.is_due_now(quote_recorder.MARKET_ASX, now=now)
+                        and state.get("last_quote_recorder_asx_date") != today):
+                    attempts = state.get("quote_recorder_asx_attempts", {})
+                    n_today = attempts.get(today, 0)
+                    if n_today < _DAILY_JOB_RETRY_CAP:
+                        if _acquire_job_lock("quote_recorder_asx", log):
+                            try:
+                                state = _load_state()
+                                state["quote_recorder_asx_attempts"] = {today: n_today + 1}
+                                _save_state(state)
+                                log(f"[scheduler] starting ASX quote recorder "
+                                    f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
+                                _record_job("quote_recorder_asx", log, _run_quote_recorder_asx)
+                                state = _load_state()
+                                state["last_quote_recorder_asx_date"] = today
+                                _save_state(state)
+                            except Exception as e:
+                                log(f"[scheduler] ASX quote recorder failed: {e}")
+                            finally:
+                                _release_job_lock("quote_recorder_asx")
+                        else:
+                            log("[scheduler] ASX quote recorder skipped - another process "
+                                "already holds the lock")
+
+                if (quote_recorder is not None
+                        and quote_recorder.is_due_now(quote_recorder.MARKET_US, now=now)
+                        and state.get("last_quote_recorder_us_date") != today):
+                    attempts = state.get("quote_recorder_us_attempts", {})
+                    n_today = attempts.get(today, 0)
+                    if n_today < _DAILY_JOB_RETRY_CAP:
+                        if _acquire_job_lock("quote_recorder_us", log):
+                            try:
+                                state = _load_state()
+                                state["quote_recorder_us_attempts"] = {today: n_today + 1}
+                                _save_state(state)
+                                log(f"[scheduler] starting US quote recorder "
+                                    f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
+                                _record_job("quote_recorder_us", log, _run_quote_recorder_us)
+                                state = _load_state()
+                                state["last_quote_recorder_us_date"] = today
+                                _save_state(state)
+                            except Exception as e:
+                                log(f"[scheduler] US quote recorder failed: {e}")
+                            finally:
+                                _release_job_lock("quote_recorder_us")
+                        else:
+                            log("[scheduler] US quote recorder skipped - another process "
                                 "already holds the lock")
 
                 # Mega-batch Part 10: nightly off-site DB backup - same

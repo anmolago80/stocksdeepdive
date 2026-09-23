@@ -258,6 +258,25 @@ async def lifespan(app: FastAPI):
     # serving" rule as backfill_primary_tickers() above.
     with suppress(Exception):
         nightly_scan.cleanup_fix9_nan_data()
+    # Commit L (21 Sep 2026, owner-reported): one-off, marker-file-
+    # guarded cleanup of any sector-universe scan (ASX A-REITs, ASX
+    # Financials, etc.) that was actually saved as the WHOLE unfiltered
+    # parent pool by get_universe_pool()'s old empty-filter fallback -
+    # see nightly_scan.cleanup_sector_universe_pollution()'s own
+    # docstring for how a polluted scan is detected and what happens to
+    # it. Same "never allowed to stop the site serving" rule as the
+    # Fix 9 cleanup right above.
+    with suppress(Exception):
+        nightly_scan.cleanup_sector_universe_pollution()
+    # Commit O (21 Sep 2026, owner-verified): EBIT_FROM_PRETAX is a
+    # Railway env var, not a code change - see nightly_scan.check_ebit_
+    # switch_flip()'s own docstring for why flipping it needs a boot-time
+    # check (a redeploy from a Railway env var change IS a fresh boot,
+    # so this fires the same day the switch is flipped, not a day later
+    # behind the 24h moat_cache/auto_cv_sections TTL). Same "never
+    # allowed to stop the site serving" rule as the two cleanups above.
+    with suppress(Exception):
+        nightly_scan.check_ebit_switch_flip()
     _client = httpx.AsyncClient(
         base_url=UPSTREAM, timeout=httpx.Timeout(None, connect=10.0),
         follow_redirects=False, limits=httpx.Limits(max_connections=200),
@@ -2021,6 +2040,16 @@ machine-readable schema at [{base}/api/v1/openapi.json]({base}/api/v1/openapi.js
 - `GET /api/v1/scan/{{universe}}` - the ranked overnight scan for a whole
   index, e.g. [{base}/api/v1/scan/asx-200]({base}/api/v1/scan/asx-200).
   Universe slugs: {universes}
+- `GET /api/v1/research` - every published Rational Compounder research
+  company (slug, ticker, company name, last updated, EN/ES availability),
+  e.g. [{base}/api/v1/research]({base}/api/v1/research)
+- `GET /api/v1/research/{{slug}}` - one research company's public sections
+  (both languages), exactly what a signed-out visitor sees on
+  `/s/research/{{slug}}` - never the News tab or anything gated.
+- `GET /api/v1/blog` - every published blog post (title, date, language),
+  e.g. [{base}/api/v1/blog]({base}/api/v1/blog)
+- `GET /api/v1/blog/{{slug}}` - one published post's body, split into
+  sections in source order.
 
 ### Coverage & update cadence
 

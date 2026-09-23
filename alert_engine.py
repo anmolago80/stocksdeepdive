@@ -35,17 +35,23 @@ user into ONE email + ONE push per night" per Part 1's spec, regardless of
 how many universes or the extra ticker pass contributed hits.
 """
 
+import html
 import os
 
 import requests
 
+import ai_gate  # owner_email() ONLY - a plain settings getter, not the AI
+# usage-gating machinery; this module still never calls the Anthropic
+# API itself (AI_FEATURE = None below still holds).
 import alert_store
 import email_auth
 import i18n
 
 AI_FEATURE = None  # this module never calls the Anthropic API - explicit,
 # so a reviewer grepping for ai_gate/ai_client usage across the batch's
-# five new modules finds nothing here and can move on immediately.
+# five new modules finds nothing here and can move on immediately (the
+# one ai_gate import above is its plain owner_email() getter, not an AI
+# feature call - see that import's own comment).
 
 
 # --------------------------------------------------------------------
@@ -203,6 +209,15 @@ def check_universe_rows(rows, prev_map, log=print):
         ticker = (row.get("Ticker") or "").strip().upper()
         if not ticker:
             continue
+        # Commit J (21 Sep 2026, owner-reported): a ticker flagged "stale"
+        # (nightly_scan.analyze_ticker_lite()'s ghost-price guard) never
+        # evaluates any alert - a delisted/halted/merged company's frozen
+        # price/MOS% sitting past a plain >=/<= threshold would otherwise
+        # fire EVERY night it's scanned forever (crossing-detection only
+        # guards crosses_above/crosses_below below, not a flat threshold
+        # comparison against a value that's stopped moving).
+        if row.get("Trading Status") == "stale":
+            continue
         alerts = alert_store.active_alerts_for_ticker(ticker)
         if not alerts:
             continue
@@ -344,13 +359,47 @@ def _email_html(hits, site, lang="en"):
 def send_batched_notifications(log=print):
     """One email + one push per user, covering every hit queued tonight
     (across every universe scan and the extra pass) - then clears the
-    queue. Safe to call with nothing queued (no-op)."""
-    import push_send
+    queue. Safe to call with nothing queued (no-op).
+
+    Commit O (21 Sep 2026, owner-verified EBIT-from-pretax fix): on the
+    one nightly run right after EBIT_FROM_PRETAX flips ON (nightly_scan.
+    is_ebit_correction_pending()), every queued hit this call would
+    otherwise email/push is instead just logged - the Moat/ROIC jump
+    that formula change causes for an affected ticker is a genuine
+    number, but it's a data correction, not something that happened to
+    the business overnight, and a threshold-crossing alert firing on it
+    would misread it as real news. The pending queue is still cleared
+    (same as a real send) so nothing backs up or double-fires the
+    following night, and the correction marker is consumed here - the
+    LAST step of the nightly job - so only this one run is suppressed.
+
+    The marker is consumed here even when nothing was queued to suppress
+    (an empty night still ends the correction window) - checked BEFORE
+    the "nothing queued" early return below, deliberately: skipping that
+    check on an empty night would leave the marker stuck forever (every
+    later night's score_history rows kept getting tagged, and alerts
+    suppressed indefinitely) whenever the correction night itself
+    happened to have zero alert hits."""
+    import nightly_scan
 
     hits_by_email = alert_store.pending_hits_by_email()
+
+    if nightly_scan.is_ebit_correction_pending():
+        all_hit_ids = []
+        for email, hits in hits_by_email.items():
+            all_hit_ids.extend(h["hit_id"] for h in hits)
+            tickers = ", ".join(h["ticker"] for h in hits)
+            log(f"[alert_engine] EBIT data-correction night - suppressed, would have "
+                f"notified {email} of {len(hits)} hit(s): {tickers}")
+        if all_hit_ids:
+            alert_store.clear_pending_hits(all_hit_ids)
+        nightly_scan.consume_ebit_correction_marker(log=log)
+        return {"users_notified": 0, "suppressed_for_data_correction": len(hits_by_email)}
+
     if not hits_by_email:
         return {"users_notified": 0}
 
+    import push_send
     site = _cfg()["site"]
     email_configured = is_configured()
     push_configured = push_send.is_configured()
@@ -387,3 +436,49 @@ def send_batched_notifications(log=print):
 
     alert_store.clear_pending_hits(all_hit_ids)
     return {"users_notified": notified}
+
+
+# --------------------------------------------------------------------
+# Source-health alerting (Commit 2, 20 Sep 2026) - scanner_engine.py's
+# fetchers used to fail open in total silence (a bad/stale source just
+# quietly degraded to a fallback, or to None); a data-source failure now
+# reaches the owner "like a price alert" - same delivery channels
+# (Mailgun email via _send() above, web push via push_send) this module
+# already uses, just addressed to the owner and sent immediately rather
+# than queued through alert_store: a source-health event isn't
+# ticker-shaped, so it doesn't fit that table's per-user/per-ticker
+# schema or cooldown model. Dedup against repeating the same alert every
+# day a source stays down is the CALLER's job (see source_health_store.
+# record_failure()'s own docstring) - check the prior record's `stale`
+# flag before calling this, and only call it on a fresh False -> True
+# transition.
+# --------------------------------------------------------------------
+
+def send_source_health_alert(source, checks, reason, log=print):
+    """Immediate email + push to the site owner (ai_gate.owner_email())
+    reporting a scanner_engine.py data source that just failed its
+    health check. Never raises - a failure to send the ALERT about a
+    failure must never itself break the fetch path that's already
+    degrading gracefully to last-known-good."""
+    owner = ai_gate.owner_email()
+    subject = f"[StocksDeepDive] Data source unhealthy: {source}"
+    failed_lines = [
+        f"{name}: {c.get('detail')}" for name, c in (checks or {}).items()
+        if not c.get("ok")
+    ]
+    body_lines = [reason] + failed_lines
+    body_text = "\n".join(body_lines)
+
+    if is_configured():
+        try:
+            body_html = "<br>".join(html.escape(line) for line in body_lines)
+            _send(owner, subject, f"<p style='font-family:monospace'>{body_html}</p>")
+        except Exception as e:
+            log(f"[alert_engine] source-health email to {owner} failed: {e}")
+
+    try:
+        import push_send
+        if push_send.is_configured():
+            push_send.send_to_email(owner, subject, body_text[:180], url="/admin-dashboard")
+    except Exception as e:
+        log(f"[alert_engine] source-health push to {owner} failed: {e}")

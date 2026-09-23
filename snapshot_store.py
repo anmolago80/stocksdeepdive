@@ -96,6 +96,21 @@ def save_snapshot(ticker, universe, row, moat=None):
         for key, value in row.items():
             if value is not None:
                 merged_row[key] = value
+        # Commit J (21 Sep 2026): "Trading Status" is the one field
+        # where a fresh None is genuine new information ("this scan
+        # found real trading evidence again"), not "wasn't computed
+        # this run" - the merge rule above would otherwise leave a
+        # ticker stuck flagged "stale" forever the moment a halt lifts
+        # or it resumes trading, since a real nightly scan always sets
+        # this key (never omits it - nightly_scan.analyze_ticker_
+        # lite()'s own return dict always has it, "stale" or None), so
+        # it's always present in `row` even when the new value is
+        # None. A no-op on the live-view hook's own partial row, which
+        # never sets this key at all - only ever present when a real
+        # nightly scan (or the alert-only extra pass, which reuses the
+        # same function) actually determined it.
+        if "Trading Status" in row:
+            merged_row["Trading Status"] = row["Trading Status"]
         row = merged_row
         if universe == "live" and existing.get("universe"):
             universe = existing["universe"]
@@ -210,6 +225,34 @@ def all_public_rows():
     return out
 
 
+def flagged_stale_tickers():
+    """Commit J (21 Sep 2026, owner-reported): every currently-flagged
+    ticker (trading_status == "stale" - nightly_scan.analyze_ticker_
+    lite()'s ghost-price guard) across the whole snapshots table, for
+    the Admin Dashboard's Source health panel. A thin filter over
+    all_public_rows() rather than its own query - this table is still
+    SQLite-cheap even at a few thousand rows (same reasoning that
+    function's own docstring already gives), and a second, separate
+    query here would just be one more way for the two to drift apart.
+
+    Returns [{"ticker", "company_name", "universe", "generated_at"},
+    ...] sorted by ticker - a plain list, not a source_health_store-
+    style pass/fail record (this isn't a data-SOURCE health check, it's
+    a per-TICKER condition; see app.py's own Source health panel
+    comment for why a bullet list, not another boolean row, is the
+    right shape here)."""
+    return [
+        {
+            "ticker": r["ticker"],
+            "company_name": r.get("company_name"),
+            "universe": r.get("universe"),
+            "generated_at": r.get("generated_at"),
+        }
+        for r in all_public_rows()
+        if r.get("trading_status") == "stale"
+    ]
+
+
 def delete_snapshot(ticker):
     """Permanently removes one ticker's stored snapshot. Fix 9 (2026-09-01):
     used by nightly_scan.cleanup_fix9_nan_data(), the one-off boot-time
@@ -289,6 +332,16 @@ _PUBLIC_FIELD_MAP = {
     "Dividend Yield %": "dividend_yield_pct",
     "Payout Ratio %": "payout_ratio_pct",
     "Next Ex-Div Date": "next_ex_date",
+    # Commit J (21 Sep 2026, owner-reported): "stale" when nightly_scan.
+    # analyze_ticker_lite()'s ghost-price guard found no real trading
+    # evidence (a delisted/halted/merged company yfinance keeps quoting
+    # the last real print for, forever) - absent/None otherwise, same
+    # "omit rather than fabricate" convention as every other field here.
+    # The single choke point every public surface (the /s/<ticker> page,
+    # /api/v1/scan and /api/v1/deep-dive, MCP) reads this through - see
+    # snapshot_render.py's "not currently trading" banner for the one
+    # place it changes what's SHOWN, not just what's exposed.
+    "Trading Status": "trading_status",
 }
 
 

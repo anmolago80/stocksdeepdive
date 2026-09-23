@@ -223,6 +223,43 @@ def peek_cached_market_cap(ticker):
         return None
 
 
+def peek_cached_bundle(ticker):
+    """Read-only, NO-FETCH peek at whatever fundamentals bundle already
+    happens to be cached for this ticker on disk - Commit S (21 Sep
+    2026, owner-reported): the Admin Dashboard's operating-income audit
+    must never make a live yfinance/EODHD call (auditing 2,000+ tickers
+    live would be far too slow, and would hammer external services for
+    a read-only diagnostic tool that already has no business fetching
+    anything).
+
+    Unlike get_bundle()/_read_cache(), this ignores the 24h TTL - a
+    slightly stale cached bundle is still exactly as useful for
+    comparing EBIT formulas against, same reasoning as peek_cached_
+    market_cap() above. It still checks BUNDLE_VERSION, though (unlike
+    that function): a bundle cached under an old schema could be
+    missing rows or shaped differently, which is a real risk of
+    silently wrong output for a numeric reconciliation tool like this
+    one - not just a single scalar market-cap read.
+
+    Returns None if this ticker has never had a bundle cached at all,
+    its cache file is corrupt, or it was cached under a different
+    BUNDLE_VERSION - NEVER triggers a fetch of its own. Callers (the
+    audit tool) should treat None as "skip this ticker, list it as
+    having no cache" rather than falling back to get_bundle()."""
+    path = _cache_path(ticker)
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            obj = json.load(f)
+        cache_meta = obj.get("meta") or {}
+        if cache_meta.get("bundle_version") != BUNDLE_VERSION:
+            return None
+        return _bundle_from_cache(obj)
+    except Exception:
+        return None
+
+
 def _write_cache(ticker, bundle):
     """Atomic write (tmp file + os.replace) so a crash mid-write never
     leaves a corrupt cache file behind. Best-effort - a write failure just

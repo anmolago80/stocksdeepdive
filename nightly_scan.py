@@ -38,6 +38,7 @@ import pandas as pd
 import yfinance as yf
 
 import admin_metrics_store
+import alert_engine
 import auto_compounder_engine
 import fundamentals_data
 import moat_engine
@@ -49,6 +50,7 @@ import scanner_engine
 import screen_import_store
 import sector_cache_store
 import snapshot_store
+import source_health_store
 import indicators_engine
 import social_engine
 import trade_filter_engine
@@ -273,6 +275,21 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         # row from this; the caller (run_universe_scan/run_imported_scan)
         # already treats a None return as "ticker skipped".
         return None
+    # Commit J (21 Sep 2026, owner-reported): a delisted/halted/merged
+    # ticker still clears every check above cleanly - yfinance keeps
+    # returning rows, just the SAME row forever (QUB.AX/Qube, taken
+    # over: an exact 5.11 close every day from 2026-08-20 to
+    # 2026-09-17; LSF.AX/L1 Long Short Fund, merged into L1G.AX:
+    # unchanged across its last several scans too - both found live in
+    # a 2026-09-20 DB backup, still ranking - LSF at #12 in the ASX 200
+    # scanner table with mos_pct 95.2). Computed here, once, off the
+    # window this function already fetched - no second yfinance call -
+    # via scanner_engine.window_shows_no_trading()'s evidence rule
+    # (>=2 distinct closes, or any real volume, over the last 5 rows;
+    # fewer than 5 rows is inconclusive, never guessed at). Every
+    # ranking/valuation surface downstream is expected to skip a
+    # flagged row - see this row's own "Trading Status" field below.
+    stale_price = scanner_engine.window_shows_no_trading(window_3mo)
     current_price = float(close_series.iloc[-1])
     high_price = float(close_series.max())
     fear = ((high_price - current_price) / high_price) * 100 if high_price else 0.0
@@ -451,15 +468,45 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
             if dividend_ttm and current_price else None
         ),
         "Next Ex-Div Date": next_ex_date,
+        # Commit J: "stale" when window_shows_no_trading() found no
+        # evidence of real trading in the last 5 rows above - None
+        # (not "trading"/"active" - see this dict's own convention of
+        # None for "not applicable") otherwise. See snapshot_store.
+        # _PUBLIC_FIELD_MAP for how this reaches every public surface.
+        "Trading Status": "stale" if stale_price else None,
     }
 
 
-def run_universe_scan(universe, max_tickers=None, log=print):
+def refresh_market_cap_ranking(log=print):
+    """Commit D (20 Sep 2026): the nightly-only entry point for
+    scanner_engine._rebuild_market_cap_ranking() - the market-cap
+    ranking fetch_asx300()/fetch_allords() both slice their tail from.
+    Called once, up front, from scheduler_engine._run_nightly() before
+    the per-universe scan loop starts, so both AU universes that depend
+    on it see this run's freshly (or incrementally) priced ranking
+    rather than a stale in-process cache. A web request never triggers
+    this - see scanner_engine._asx_non200_by_marketcap()'s own
+    docstring for the read-only path every visitor actually goes
+    through."""
+    try:
+        scanner_engine._rebuild_market_cap_ranking(log=log)
+    except Exception as e:
+        log(f"[nightly_scan] market-cap ranking refresh failed: {e}")
+
+
+def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     """Scan every ticker in `universe` and persist the ranked result via
     scan_store. Returns the saved payload (or None if the universe couldn't
     be resolved). Goes attention-lite only when the resolved universe is
     bigger than NIGHTLY_LITE_THRESHOLD (a real index like ASX 200/S&P 500
-    always will be; a hand-run scan of a small custom list won't)."""
+    always will be; a hand-run scan of a small custom list won't).
+
+    `run_night` (Commit H, 20 Sep 2026): the scheduled scan night this
+    call belongs to, threaded straight through to scan_store.save_scan()
+    and admin_metrics_store.bump_scan_calendar() - see save_scan()'s own
+    docstring for exactly why this exists and what it fixes. None (the
+    default) for a hand-run scan with no scheduler context; scheduler_
+    engine._run_nightly() always passes it."""
     # Services batch 2, Part 2 (2026-09-01): calls get_universe_pool()
     # directly (what resolve_tickers() itself calls internally) instead
     # of resolve_tickers() - same ticker list, same single fetch per
@@ -473,9 +520,64 @@ def run_universe_scan(universe, max_tickers=None, log=print):
     # see the final log line below for the "N tickers in Xm Ys" format.
     _scan_start = time.time()
     country = "Australia" if universe in scanner_engine.AUSTRALIA_UNIVERSES else "USA"
+    # Index containment regression guard (20 Sep 2026): "All Ordinaries"
+    # is the top of the AU nesting chain (ASX 20 subset ... subset ASX 300
+    # subset All Ordinaries - see scanner_engine.py's own comment above
+    # _AU_CONTAINMENT_CHAIN), so its scan is the natural point at which the
+    # whole chain has just been exercised for the night. Fail-open by
+    # design (verify_au_index_containment() never raises) - a violation
+    # only logs a warning here, it never blocks this or any other scan.
+    if universe == "All Ordinaries":
+        scanner_engine.verify_au_index_containment(log=log)
     pool_df, source = scanner_engine.get_universe_pool(country, universe)
+    # Commit L (21 Sep 2026, owner-reported): sector-universe filter
+    # health, tracked here - nightly-only, never on a web request, since
+    # get_universe_pool() itself has no business writing health state on
+    # every page view (same reasoning every other health-tracked fetcher
+    # in scanner_engine.py already follows) - so a silently-empty match
+    # (the exact failure that let XRO.AX, a software company, get saved
+    # under "ASX A-REITs") shows up on the Admin Dashboard's Source
+    # health panel, not just a log line. get_universe_pool()'s own
+    # sector-universe branches (scanner_engine.py) never fall back to an
+    # unfiltered pool any more - see that function's own comment - so
+    # pool_df here is either a genuinely sector-filtered frame or None;
+    # there is no third, silently-wrong case left to catch.
+    _is_sector_universe = (
+        universe in scanner_engine._ASX_SECTOR_UNIVERSE_MAP
+        or universe in scanner_engine._US_SECTOR_UNIVERSE_MAP
+    )
+    if _is_sector_universe:
+        _sector_health_source = f"Sector universe: {universe}"
+        if pool_df is not None and not pool_df.empty:
+            source_health_store.record_success(
+                _sector_health_source, [],
+                {"filter_match": {"ok": True, "detail": f"{len(pool_df)} row(s) matched this sector"}},
+            )
+        else:
+            _reason = source or "sector filter failed"
+            _prior = source_health_store.get(_sector_health_source)
+            _was_already_stale = bool(_prior and _prior.get("stale"))
+            source_health_store.record_failure(
+                _sector_health_source, {"filter_match": {"ok": False, "detail": _reason}}, _reason,
+            )
+            if not _was_already_stale:
+                try:
+                    alert_engine.send_source_health_alert(
+                        _sector_health_source, {"filter_match": {"ok": False, "detail": _reason}}, _reason,
+                    )
+                except Exception as e:
+                    log(f"[nightly_scan] source-health alert send failed for {_sector_health_source}: {e}")
     if pool_df is None or pool_df.empty:
-        log(f"[nightly_scan] {universe}: no tickers resolved ({source})")
+        if _is_sector_universe:
+            # `source` is already shaped "sector filter matched N row(s)
+            # - skipped, serving last known-good scan" (or "<parent
+            # index> itself unavailable - ...") by get_universe_pool()
+            # itself - read that directly rather than re-deriving the
+            # count, so this log line can never disagree with the reason
+            # actually recorded above.
+            log(f"[nightly_scan] {universe}: {source}")
+        else:
+            log(f"[nightly_scan] {universe}: no tickers resolved ({source})")
         return None
     tickers = sorted(pool_df["Ticker"].dropna().unique().tolist())
     # Sanitised to real strings only (or absent -> .get() gives None) -
@@ -591,15 +693,21 @@ def run_universe_scan(universe, max_tickers=None, log=print):
             f"anyway, flagged degraded.")
 
     payload = scan_store.save_scan(universe, rows, source, attention_lite=attention_lite,
-                                    degraded=degraded)
+                                    degraded=degraded, run_night=run_night)
     # Part 53.1: one tiny marker for the Admin Dashboard's weekly scan
     # calendar - a full scan was just SAVED for this universe tonight.
-    # Wrapped in its own try/except, same must-never-break-the-scan
-    # convention as every other counting call site in this function
-    # (score_history.record below) - see bump_scan_calendar()'s own
-    # docstring for why this is a metrics write, not a second table.
+    # Commit H: credited to `run_night` (the night this run was scheduled
+    # for), not whatever calendar day it happens to be when this line
+    # executes - a universe queued after several smaller ones can finish
+    # past 00:00 UTC, and the OLD day-at-call-time behavior would then
+    # mark it on the wrong day, exactly the bug the admin calendar was
+    # showing for every weekday-pinned universe. Wrapped in its own
+    # try/except, same must-never-break-the-scan convention as every
+    # other counting call site in this function (score_history.record
+    # below) - see bump_scan_calendar()'s own docstring for why this is
+    # a metrics write, not a second table.
     try:
-        admin_metrics_store.bump_scan_calendar(universe, "scan")
+        admin_metrics_store.bump_scan_calendar(universe, "scan", day=run_night)
     except Exception as e:
         log(f"[nightly_scan] {universe}: scan-calendar record failed: {e}")
     _scan_elapsed = time.time() - _scan_start
@@ -1055,7 +1163,7 @@ def _reprice_download_chunk(tickers):
     return out
 
 
-def reprice_universe(universe, log=print):
+def reprice_universe(universe, log=print, run_night=None):
     """Part 34 addendum 34.7: refreshes ONE universe's stored scan rows
     in place with tonight's prices, via chunked batch downloads (never
     per-ticker loops) - see _reprice_row()'s own docstring for exactly
@@ -1066,6 +1174,11 @@ def reprice_universe(universe, log=print):
     prior scan on disk at all - a universe with nothing scanned yet has
     nothing for this pass to reprice; it gets its first real content
     from its own full-scan cadence instead.
+
+    `run_night` (Commit H, 20 Sep 2026): the scheduled scan night,
+    passed straight to the admin-calendar marker below - same reasoning
+    as run_universe_scan()'s own `run_night`, just for the "reprice"
+    marker instead of "scan".
 
     Processes one chunk's downloaded history at a time (never holds every
     universe's full history in memory at once - 34.8's memory guard) and
@@ -1131,7 +1244,7 @@ def reprice_universe(universe, log=print):
     # reaches here, so this only fires on a genuine reprice).
     if payload:
         try:
-            admin_metrics_store.bump_scan_calendar(universe, "reprice")
+            admin_metrics_store.bump_scan_calendar(universe, "reprice", day=run_night)
         except Exception as e:
             log(f"[nightly_scan] reprice {universe}: scan-calendar record failed: {e}")
     elapsed = time.time() - start
@@ -1268,6 +1381,236 @@ def cleanup_fix9_nan_data(log=print):
             f.write(f"fix9 cleanup ran {datetime.now(timezone.utc).isoformat()}\n")
     except OSError as e:
         log(f"[nightly_scan] fix9 cleanup: could not write marker file: {e}")
+
+
+def _commit_l_cleanup_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".commitL_sector_pollution_cleanup.done")
+
+
+def cleanup_sector_universe_pollution(log=print):
+    """One-off, idempotent, marker-file-guarded boot-time cleanup for
+    Commit L (21 Sep 2026, owner-reported) - same pattern as cleanup_
+    fix9_nan_data() above, for a different root cause: discards any
+    saved scan for one of the 12 sector universes (scanner_engine.
+    _ASX_SECTOR_UNIVERSE_MAP/_US_SECTOR_UNIVERSE_MAP) whose OWN rows
+    don't actually belong to that sector - the exact shape of pollution
+    get_universe_pool()'s OLD empty-sector-filter fallback could
+    produce (the whole unfiltered ~300/500-company parent pool, saved
+    under a sector universe's own name) - this is how XRO.AX, a
+    software company, ended up saved under "ASX A-REITs". See get_
+    universe_pool()'s own sector-universe branches (scanner_engine.py)
+    for the fix that stops this happening again; this function is the
+    one-off cleanup for whatever ALREADY got saved before that fix
+    existed.
+
+    A scan counts as polluted when FEWER THAN HALF its own saved rows'
+    "Sector" field is actually in that universe's own expected sector
+    set (scanner_engine._ASX_SECTOR_UNIVERSE_MAP[universe]/_US_SECTOR_
+    UNIVERSE_MAP[universe]) - a real, correctly-filtered sector scan
+    has ~100% of its rows match by construction; the old bug's own
+    failure mode (an entire unfiltered parent pool saved as-is) would
+    only have the genuinely-in-sector minority matching by chance,
+    nowhere near half - not a threshold chosen to be clever, just wide
+    enough either side of "obviously polluted" vs "obviously fine" that
+    it can't misfire on ordinary data.
+
+    Invalidates (deletes) a polluted scan outright via scan_store.
+    invalidate() - the scheduler's own "missing file = needs rescan"
+    logic (scan_store.load_scan() returning None) picks it up for a
+    fresh rescan on its next tick, the same mechanism cleanup_fix9_nan_
+    data() above already relies on - so a visitor sees "no data yet"
+    instead of the wrong data (Xero filed as a REIT) until a real,
+    correctly-filtered scan lands, rather than silently continuing to
+    serve pollution until its own 72h staleness cutoff happens to
+    expire on its own.
+
+    Owner-requested (21 Sep 2026): logs one line PER UNIVERSE, every
+    run - rows checked, rows matched, and the outcome (kept / no saved
+    scan / INVALIDATED) - not just the trailing one-line summary, so
+    exactly what this did is readable straight from the Railway logs
+    without reading the code.
+
+    Guarded by a marker file, same convention as cleanup_fix9_nan_data()
+    above - this only ever needs to run once against whatever's already
+    on disk; every scan saved AFTER this deploy already goes through
+    the fixed get_universe_pool(), so a second run would correctly find
+    nothing left to clean but would still pay for 12 scan_store reads
+    on every boot forever without the marker.
+
+    Called unconditionally from server.py's lifespan(), wrapped in
+    `with suppress(Exception)` there - never allowed to stop the site
+    serving, same rule as cleanup_fix9_nan_data()."""
+    marker = _commit_l_cleanup_marker_path()
+    if os.path.exists(marker):
+        return
+    checked = []
+    invalidated = []
+    sector_universes = dict(scanner_engine._ASX_SECTOR_UNIVERSE_MAP)
+    sector_universes.update(scanner_engine._US_SECTOR_UNIVERSE_MAP)
+    for universe, expected_sectors in sector_universes.items():
+        checked.append(universe)
+        try:
+            payload = scan_store.load_scan_raw(universe)
+            if not payload or not payload.get("rows"):
+                # Owner-requested (21 Sep 2026): a per-universe log line
+                # every run, not just when something gets invalidated -
+                # so tomorrow's Railway logs show exactly what this
+                # checked, not just a one-line summary.
+                log(f"[nightly_scan] commitL cleanup: {universe}: no saved scan on file - nothing to check")
+                continue
+            rows = payload["rows"]
+            matching = sum(1 for r in rows if r.get("Sector") in expected_sectors)
+            if matching < len(rows) / 2:
+                was_invalidated = scan_store.invalidate(universe)
+                if was_invalidated:
+                    invalidated.append(f"{universe} ({matching}/{len(rows)} rows matched)")
+                log(f"[nightly_scan] commitL cleanup: {universe}: checked {len(rows)} row(s), "
+                    f"{matching} matched expected sector(s) {expected_sectors} - "
+                    f"{'INVALIDATED' if was_invalidated else 'below threshold but nothing on disk to invalidate'}")
+            else:
+                log(f"[nightly_scan] commitL cleanup: {universe}: checked {len(rows)} row(s), "
+                    f"{matching} matched expected sector(s) {expected_sectors} - kept, not polluted")
+        except Exception as e:
+            log(f"[nightly_scan] commitL cleanup: {universe} check failed: {e}")
+    log(f"[nightly_scan] commitL cleanup: checked {len(checked)} sector universe(s), "
+        f"invalidated: {', '.join(invalidated) if invalidated else 'none'}")
+    try:
+        with open(marker, "w") as f:
+            f.write(f"commitL sector-pollution cleanup ran {datetime.now(timezone.utc).isoformat()}\n")
+    except OSError as e:
+        log(f"[nightly_scan] commitL cleanup: could not write marker file: {e}")
+
+
+def _ebit_switch_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".ebit_from_pretax_switch_state")
+
+
+def check_ebit_switch_flip(log=print):
+    """Commit O (21 Sep 2026, owner-verified EBIT-from-pretax fix): the
+    EBIT_FROM_PRETAX switch (auto_compounder_engine.EBIT_FROM_PRETAX) is
+    a Railway env var, not a code change - flipping it does NOT bump
+    auto_compounder_engine.ENGINE_VERSION or moat_engine.MOAT_ENGINE_
+    VERSION (those bumped once, in the same deploy this function shipped
+    in, to invalidate whatever was cached under the OLD formula; they
+    have no way to know the switch itself later flips a second time on a
+    running deploy). Without this check, flipping the env var on Railway
+    would sit invisible behind each ticker's existing 24h moat_cache/
+    auto_cv_sections entry for up to 24h - "flip it on, wait up to a day
+    to see it" is exactly the "not a day later" the task this shipped
+    under ruled out.
+
+    Unlike cleanup_fix9_nan_data()/cleanup_sector_universe_pollution()
+    above, this is NOT a marker-file "ran once, never again" guard - the
+    marker here stores the LAST-OBSERVED switch state ("0"/"1"), compared
+    against the live env var on every call. Different -> the switch
+    genuinely flipped since the last check -> both caches this formula
+    change affects (moat_cache, auto_cv_sections) are wiped outright
+    (every *.json file in each directory removed, exactly like scan_
+    store.invalidate() removes a stale scan - "no cached entry" is a
+    state every reader already handles, a *wrong-formula* cached entry
+    is not). Same -> no-op. No marker file yet at all (first boot after
+    this shipped, or a fresh volume) -> just records the current state,
+    doesn't wipe anything - a brand-new deploy's caches were already
+    invalidated by the version bumps above, there's nothing stale here to
+    correct on day one.
+
+    A Railway env var change triggers a redeploy (a fresh boot), and this
+    is called unconditionally from server.py's lifespan() alongside the
+    other marker-guarded cleanups above - so a flip takes effect on that
+    same boot, before the next nightly run even starts, not "the next
+    time nightly_scan.py happens to run". Never allowed to stop the site
+    serving, same rule as every other lifespan cleanup."""
+    marker = _ebit_switch_marker_path()
+    current = "1" if auto_compounder_engine.EBIT_FROM_PRETAX else "0"
+    previous = None
+    try:
+        if os.path.exists(marker):
+            with open(marker) as f:
+                previous = f.read().strip()
+    except OSError as e:
+        log(f"[nightly_scan] ebit switch check: could not read marker file: {e}")
+
+    if previous is not None and previous == current:
+        return
+    if previous is None:
+        log(f"[nightly_scan] ebit switch check: no prior state on record - "
+            f"recording EBIT_FROM_PRETAX={current}, nothing to invalidate on a fresh deploy")
+    else:
+        log(f"[nightly_scan] ebit switch check: EBIT_FROM_PRETAX flipped "
+            f"{previous} -> {current} - clearing moat_cache and auto_cv_sections "
+            f"so the change takes effect immediately, not after their 24h TTL")
+        for cache_dir in (moat_engine._cache_dir(), os.path.join(auto_compounder_engine._data_dir(), auto_compounder_engine._CACHE_DIR_NAME)):
+            cleared = 0
+            try:
+                for fname in os.listdir(cache_dir):
+                    if fname.endswith(".json"):
+                        try:
+                            os.remove(os.path.join(cache_dir, fname))
+                            cleared += 1
+                        except OSError:
+                            pass
+            except OSError as e:
+                log(f"[nightly_scan] ebit switch check: could not list {cache_dir}: {e}")
+                continue
+            log(f"[nightly_scan] ebit switch check: cleared {cleared} cached file(s) from {cache_dir}")
+
+        # Only a genuine OFF -> ON flip needs alert suppression and a
+        # score_history data-correction tag - see is_ebit_correction_
+        # pending()/score_history.record()'s own comments. Flipping back
+        # OFF restores the old numbers (also a real jump, also worth not
+        # alerting on) but the task this shipped under only asked for
+        # this on the ON transition, so that's the one case handled here.
+        if previous == "0" and current == "1":
+            try:
+                with open(_ebit_correction_marker_path(), "w") as f:
+                    f.write(datetime.now(timezone.utc).isoformat())
+                log("[nightly_scan] ebit switch check: flagged the next nightly run as a "
+                    "data correction - its score_history rows will be tagged, and "
+                    "alert_engine.send_batched_notifications() will log (not send) whatever "
+                    "would have fired that night")
+            except OSError as e:
+                log(f"[nightly_scan] ebit switch check: could not write correction marker: {e}")
+
+    try:
+        with open(marker, "w") as f:
+            f.write(current)
+    except OSError as e:
+        log(f"[nightly_scan] ebit switch check: could not write marker file: {e}")
+
+
+def _ebit_correction_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".ebit_from_pretax_pending_correction")
+
+
+def is_ebit_correction_pending():
+    """True for every call made during the one nightly run right after
+    EBIT_FROM_PRETAX flips OFF -> ON (see check_ebit_switch_flip()) -
+    read by score_history.record() (tags that night's rows) and
+    alert_engine.send_batched_notifications() (suppresses the real send,
+    logs what would have fired instead). Stays True across that whole
+    nightly job (every universe scan's record() call, the extra alert
+    pass, and the final batched send all see the same answer) until
+    consume_ebit_correction_marker() clears it at the very end of that
+    job - so exactly one nightly run is affected, never a second one."""
+    return os.path.exists(_ebit_correction_marker_path())
+
+
+def consume_ebit_correction_marker(log=print):
+    """Deletes the pending-correction marker, ending the suppression
+    window - called once, by alert_engine.send_batched_notifications(),
+    as the last step of the nightly job that was flagged. A no-op if
+    nothing is pending (every other night)."""
+    marker = _ebit_correction_marker_path()
+    if not os.path.exists(marker):
+        return
+    try:
+        os.remove(marker)
+        log("[nightly_scan] ebit switch check: data-correction night complete - marker cleared")
+    except OSError as e:
+        log(f"[nightly_scan] ebit switch check: could not clear correction marker: {e}")
 
 
 if __name__ == "__main__":

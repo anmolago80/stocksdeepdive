@@ -1105,7 +1105,14 @@ EN = {
     "tools.hub.super_blurb": "Balance at retirement, with and without extra salary sacrifice — caps checked.",
     "tools.hub.super_teaser": 'e.g. +$200/mo sacrifice → <b>+$96k</b> at 60',
     "tools.hub.property_vs_index_blurb": "Buy an investment property, or put the same cash in the S&P 500? Both after tax, plus the break-even rent.",
-    "tools.hub.property_vs_index_teaser": 'e.g. $300k cash + $700k loan → <b>+$328k</b> property vs <b>+$300k</b> index over 10y',
+    # Commit C follow-up (21 Sep 2026): {property}/{index} placeholders,
+    # not a hardcoded pair - Commit B (real AU bracket tax) changed what
+    # the tool's own defaults actually produce, and this card kept
+    # advertising the OLD flat-tax figures ($328k/$300k) until this
+    # commit. Filled in from property_vs_index_engine.run() on defaults
+    # (app.py's _pvi_hub_teaser_amounts()) - the card can never drift
+    # out of sync with the engine again.
+    "tools.hub.property_vs_index_teaser": 'e.g. $300k cash + $700k loan → <b>+{property}</b> property vs <b>+{index}</b> index over 10y',
     "tools.hub.signin_cta": "Sign in free to use them",
 
     "tools.budget.title": "Budget Planner",
@@ -1473,15 +1480,65 @@ EN = {
         "yearly number."
     ),
     "tools.property_vs_index.property_growth_label": "Property growth (%/yr)",
-    "tools.property_vs_index.sp500_return_label": "S&P 500 total return (%/yr)",
-    "tools.property_vs_index.sp500_dividend_label": "…of which dividend yield (%)",
-    "tools.property_vs_index.marginal_rate_label": "Your marginal tax rate (%)",
-    "tools.property_vs_index.marginal_rate_help": "Your bracket rate + 2% Medicare levy",
+    # Commit A (20 Sep 2026): relabelled - capital gain and dividend
+    # yield are now independent, additive inputs, not a total split
+    # into two parts (property_vs_index_engine.index_price_growth_
+    # rate()'s own docstring). Key names unchanged (only the displayed
+    # text moved) so no other code needs to know about the relabel.
+    "tools.property_vs_index.sp500_return_label": "Capital gain (%/yr)",
+    "tools.property_vs_index.sp500_dividend_label": "Dividend yield (%)",
+    "tools.property_vs_index.total_return_caption": "Total return {total:.1f}%",
+    # Commit B (20 Sep 2026): replaces marginal_rate_label/marginal_
+    # rate_help (deleted, now unused - real AU tax brackets compute the
+    # rate now, not a single number you'd have to already know).
+    "tools.property_vs_index.other_income_label": "Your taxable income (excluding this investment)",
+    "tools.property_vs_index.other_income_help": (
+        "Salary and any other taxable income, BEFORE this property or "
+        "index position - used to work out which tax bracket(s) each "
+        "dollar of rent, interest deduction, dividend, or capital gain "
+        "actually falls in."
+    ),
+    "tools.property_vs_index.marginal_rate_caption": (
+        "Marginal rate {rate:.0f}% ({bracket_rate:.0f}% + {medicare:.0f}% "
+        "Medicare) · {tax_year} rates"
+    ),
+    "tools.property_vs_index.negative_gearing_honesty_caption": (
+        "Assumes the rental loss is fully deductible against your other "
+        "income in the year it occurs, at 2026-27 resident rates. Real "
+        "outcomes vary with your structure, other deductions and any "
+        "carried-forward losses. Depreciation uses simplified ATO rules; "
+        "use your quantity surveyor's schedule for real figures."
+    ),
     "tools.property_vs_index.years_label": "Years",
     "tools.property_vs_index.buy_costs_label": "Buy costs ($)",
     "tools.property_vs_index.buy_costs_help": (
         "Stamp duty + legals — paid out of your cash at purchase, never "
         "financed."
+    ),
+    # Commit U (21 Sep 2026, owner-reported): depreciation inputs - a
+    # quantity surveyor's depreciation schedule, not modelled from the
+    # property price (property_vs_index_engine.py's own "Depreciation"
+    # module comment for the Div 43/Div 40 rules these feed).
+    "tools.property_vs_index.property_type_label": "Property type",
+    "tools.property_vs_index.property_type_option_new": "New build",
+    "tools.property_vs_index.property_type_option_established": "Established (built after 15 Sep 1987)",
+    "tools.property_vs_index.property_type_option_pre_1987": "Built before 15 Sep 1987",
+    "tools.property_vs_index.building_cost_label": "Building (construction) cost, excl. land ($)",
+    "tools.property_vs_index.building_cost_help": (
+        "From a quantity surveyor's depreciation schedule. Land is "
+        "never depreciable."
+    ),
+    "tools.property_vs_index.plant_value_label": "New plant & equipment value ($)",
+    "tools.property_vs_index.plant_value_help": (
+        "Fittings like carpets, appliances, blinds. Since 2017, "
+        "second-hand fittings in an established home can't be claimed."
+    ),
+    "tools.property_vs_index.plant_value_caption": (
+        "Diminishing value at 20%/yr, assuming a 10-year effective life."
+    ),
+    "tools.property_vs_index.plant_value_sale_caption": (
+        "At sale, plant & equipment is assumed to sell at its written-down "
+        "value — no balancing adjustment is modelled."
     ),
     "tools.property_vs_index.sell_costs_label": "Sell costs (%)",
     "tools.property_vs_index.card_property_title": "🏠 Investment property",
@@ -1491,30 +1548,91 @@ EN = {
     "tools.property_vs_index.winner_badge": "🏆 Ahead on these numbers",
     "tools.property_vs_index.after_tax_position_label": "After-tax position after {years}y",
     "tools.property_vs_index.line_growth_label": "Capital growth after CGT:",
+    # Commit U (21 Sep 2026, owner-reported): reworded - the old text
+    # ("gain taxed with 50% discount at {rate:.0f}%") read as if {rate}
+    # were the tax rate applied AFTER the 50% discount already happened
+    # (e.g. "23%" looking like the discounted rate), when {rate} is
+    # actually the EFFECTIVE rate on the WHOLE (undiscounted) gain - the
+    # dollar figures make that unambiguous instead of relying on the
+    # reader parsing the sentence just right.
     "tools.property_vs_index.line_growth_sub": (
-        "{price} → {future_price}; gain taxed with 50% discount at {rate:.0f}%"
+        "{price} → {future_price}; tax {tax_amount} on a {gain} gain — "
+        "effective {rate:.0f}% after the 50% discount"
     ),
-    "tools.property_vs_index.line_rent_label": "Rent after tax:",
-    "tools.property_vs_index.line_rent_sub": (
-        "{weekly_rent}/wk × (52 − {vacancy} wk vacancy) × {years}y, "
-        "taxed once at {rate:.0f}%"
+    # Commit U: only shown when building_cost > 0 and this property type
+    # actually claims Div 43 (New build or Established-after-1987) -
+    # app.py's own gate.
+    "tools.property_vs_index.line_growth_cost_base_caption": (
+        "Cost base reduced by {reduction} of building depreciation — "
+        "adds {extra_cgt} CGT at sale."
     ),
-    "tools.property_vs_index.line_interest_label": "Loan interest after deduction:",
-    "tools.property_vs_index.line_interest_sub": (
-        "{loan} × {rate_pct:.2f}% × {years}y, deductible at {tax:.0f}% "
-        "(negative gearing)"
+    # Commit C (21 Sep 2026): the old flat "Rent after tax" / "Loan
+    # interest after deduction" / "Holding costs after deduction" lines
+    # (each with its own approximate "taxed at ~X%" caption) are
+    # replaced by the RENTAL POSITION group below - one combined,
+    # order-independent refund/bill line instead of three separate
+    # approximate ones (task adjustment #2).
+    "tools.property_vs_index.rental_position_group_label": "Rental position · {years}y",
+    "tools.property_vs_index.rental_rent_label": "Rent collected",
+    "tools.property_vs_index.rental_rent_sub": "{weekly_rent}/wk × {weeks} working weeks/yr",
+    "tools.property_vs_index.rental_interest_label": "Loan interest",
+    "tools.property_vs_index.rental_holding_label": "Holding costs",
+    # Commit U (21 Sep 2026, owner-reported): "Net rental" -> "Net cash" -
+    # this line is the CASH-only pretax position (rent - interest -
+    # holding), now sitting right above the new non-cash Depreciation/
+    # Taxable rental loss lines below it - "cash" disambiguates it from
+    # "taxable", which is exactly the distinction depreciation makes real
+    # for the first time on this page.
+    "tools.property_vs_index.rental_net_loss_label": "Net cash loss · negatively geared",
+    "tools.property_vs_index.rental_net_profit_label": "Net cash profit · positively geared",
+    "tools.property_vs_index.rental_depreciation_label": "Depreciation (non-cash, tax only)",
+    "tools.property_vs_index.rental_taxable_loss_label": "Taxable rental loss",
+    "tools.property_vs_index.rental_taxable_profit_label": "Taxable rental profit",
+    "tools.property_vs_index.rental_tax_refund_label": "Tax refunded on the loss",
+    "tools.property_vs_index.rental_tax_bill_label": "Tax payable on the profit",
+    "tools.property_vs_index.rental_stacking_caption": (
+        "Rent, interest and holding costs are taxed first each year; in "
+        "the year of sale the capital gain is stacked on top of that, "
+        "not the other way round — so this refund reflects your income "
+        "before the sale, every year including the last."
     ),
-    "tools.property_vs_index.line_interest_sub_two_phase": (
-        "IO {io_period}y, then P&I over the remaining {pi_years}y of a "
-        "{term}y term — total interest {total_interest}, deductible at "
-        "{tax:.0f}%"
+    "tools.property_vs_index.rental_net_cost_label": "Net cost to hold, after refund",
+    "tools.property_vs_index.rental_net_profit_after_tax_label": "Net profit from holding, after tax",
+    "tools.property_vs_index.trend_easing": "easing to",
+    "tools.property_vs_index.trend_rising": "rising to",
+    "tools.property_vs_index.trend_flat": "holding steady at",
+    "tools.property_vs_index.rental_weekly_cost_caption": (
+        "Costs you {after1}/week in year 1 after the refund (before the "
+        "refund: {before1}/week) — {trend} {afterN}/week by year {years}."
     ),
-    "tools.property_vs_index.line_costs_label": "Holding costs after deduction:",
-    "tools.property_vs_index.line_costs_sub": "{costs}/yr × {years}y, deductible at {tax:.0f}%",
+    "tools.property_vs_index.rental_weekly_profit_caption": (
+        "Pays you {after1}/week in year 1 after tax (before tax: "
+        "{before1}/week) — {trend} {afterN}/week by year {years}."
+    ),
+    "tools.property_vs_index.year_by_year_expander_label": "Year-by-year rental position",
+    "tools.property_vs_index.table_col_year": "Year",
+    "tools.property_vs_index.table_col_rent": "Rent",
+    "tools.property_vs_index.table_col_interest": "Interest",
+    "tools.property_vs_index.table_col_holding": "Holding",
+    "tools.property_vs_index.table_col_depreciation": "Depreciation",
+    "tools.property_vs_index.table_col_net_position": "Net position",
+    "tools.property_vs_index.table_col_tax": "Tax refund/bill",
+    "tools.property_vs_index.table_col_out_of_pocket": "Out of pocket",
+    "tools.property_vs_index.table_col_cost_base": "Cost base",
+    "tools.property_vs_index.table_totals_row_label": "Total",
+    "tools.property_vs_index.table_turns_positive_caption": "Turns positive in year {year}.",
+    "tools.property_vs_index.table_stays_negative_caption": (
+        "Stays negatively geared for the whole {years}-year hold on these numbers."
+    ),
     "tools.property_vs_index.line_index_growth_label": "Growth after CGT:",
+    # Commit U (21 Sep 2026, owner-reported): reworded to match the
+    # property side's own line_growth_sub - see that key's comment for
+    # why. {rate} keeps its OLD meaning here (price growth rate, e.g.
+    # 7.7%) - {tax_rate} is the new effective-tax-rate-on-the-whole-gain
+    # figure the old {tax} param used to carry.
     "tools.property_vs_index.line_index_growth_sub": (
-        "{cash} compounding at {rate:.1f}% price growth, taxed with 50% "
-        "discount at {tax:.0f}%"
+        "{cash} compounding at {rate:.1f}% price growth; tax {tax_amount} "
+        "on a {gain} gain — effective {tax_rate:.0f}% after the 50% discount"
     ),
     "tools.property_vs_index.line_index_dividends_label": "Dividends after tax:",
     "tools.property_vs_index.line_index_dividends_sub": (
@@ -2594,6 +2712,7 @@ EN = {
     "portfolio.stress.newmoney_mode_label": "Allocation mode",
     "portfolio.stress.newmoney_mode_a": "Split by mix %",
     "portfolio.stress.newmoney_mode_b": "Top up toward mix",
+    "portfolio.stress.newmoney_mode_c": "Target original allocation",
     "portfolio.stress.newmoney_mode_caption": (
         "Split by mix %: the amount is divided exactly by the percentages "
         "above. Top up toward mix: the amount goes preferentially to the "
@@ -2607,9 +2726,13 @@ EN = {
     "portfolio.stress.newmoney_col_hold_now": "You hold now",
     "portfolio.stress.newmoney_col_target": "Target after deposit",
     "portfolio.stress.newmoney_col_gap": "Gap",
+    "portfolio.stress.newmoney_col_target_invested": "Target invested",
+    "portfolio.stress.newmoney_col_gap_to_target": "Gap to target",
     "portfolio.stress.newmoney_col_buys": "This deposit buys",
     "portfolio.stress.newmoney_col_units": "≈ Units @ last close",
     "portfolio.stress.newmoney_col_weight_after": "Weight after",
+    "portfolio.stress.newmoney_col_invested_weight_after": "Invested weight after",
+    "portfolio.stress.newmoney_col_market_weight_after": "Market weight after",
     "portfolio.stress.newmoney_col_total": "Total",
     "portfolio.stress.newmoney_gap_over": "over",
     "portfolio.stress.newmoney_unallocated_caption": "Unallocated cash: {amount}",
@@ -2620,6 +2743,26 @@ EN = {
         "cash can't close every gap, the allocation is proportional to "
         "the remaining shortfalls. Holdings already at/above target "
         "receive nothing."
+    ),
+    "portfolio.stress.newmoney_method_c_caption": (
+        "Method: target invested per holding = mix % × (total already "
+        "invested + deposit). The deposit fills the gap between that "
+        "target and what you've actually put in, so your committed money "
+        "lands on the mix regardless of how each holding has performed. "
+        "Market-value weights will drift from the mix — the last two "
+        "columns show both. This mode leans harder on your recorded cost "
+        "basis than the other two: if \"You invested\" doesn't reflect "
+        "every purchase for a holding (see the note above), that "
+        "holding's target and gap will be off by exactly the same amount."
+    ),
+    "portfolio.stress.newmoney_missing_cost_basis_warning": (
+        "No recorded cost basis for: {tickers}. Target original "
+        "allocation needs a real \"You invested\" figure for every "
+        "holding - a $0 cost basis would make the whole deposit look "
+        "like pure gap and badly over-allocate to it. This mode is "
+        "switched off until a buy price/shares is saved for {tickers} on "
+        "the Holdings tab; use Split by mix % or Top up toward mix in "
+        "the meantime."
     ),
     "portfolio.stress.newmoney_disclosure_caption": (
         "units rounded down · brokerage not modelled (see {toll_tab} for "
@@ -3076,6 +3219,71 @@ EN = {
         "above. Headlines judged unrelated to the company are never "
         "counted."
     ),
+    # Trading Cost tab (Commit 3, 23 Sep 2026, owner-requested): bid/ask
+    # spread - one real recorded quote a day (quote_recorder.py, Commit
+    # 1) plus a Corwin-Schultz high-low estimate for every other day
+    # (trading_cost_engine.py, Commit 2). Gated behind ENABLE_TRADING_
+    # COST (compounder_ui.TRADING_COST_ENABLED) - these keys exist site-
+    # wide the moment this file deploys, same as every other feature's
+    # own strings, but the tab itself only appears once that switch is on.
+    "compounder.trading_cost.tab_label": "\U0001F4B1 Trading Cost",
+    "compounder.trading_cost.why_matters": (
+        "Bid-ask spread is a real cost of trading, on top of any "
+        "brokerage fee — wider spreads mean a bigger gap between what "
+        "you'd pay to buy and what you'd get selling right back out."
+    ),
+    "compounder.trading_cost.tile_spread_recorded": "Spread recorded",
+    "compounder.trading_cost.tile_spread_recorded_comment": (
+        "Median of the real bid/ask spreads this site has actually "
+        "recorded mid-session for this stock, as a percentage of the "
+        "midpoint price."
+    ),
+    "compounder.trading_cost.tile_spread_estimated": "Spread estimated (30d)",
+    "compounder.trading_cost.tile_spread_estimated_comment": (
+        "Average of the last 30 days' Corwin-Schultz spread estimate — "
+        "computed from daily high/low prices alone, no bid/ask data "
+        "needed, so it covers every day including before real recording "
+        "began."
+    ),
+    "compounder.trading_cost.tile_value_traded": "Value traded (30d avg)",
+    "compounder.trading_cost.tile_bid_ask_now": "Bid/ask now",
+    "compounder.trading_cost.bid_ask_now_snapshot_label": "recorded {datetime}",
+    "compounder.trading_cost.bid_ask_now_stale_label": "last recorded {date}",
+    "compounder.trading_cost.bid_ask_now_no_data": "No snapshot recorded yet",
+    "compounder.trading_cost.chart_bid_ask_title": "Bid & ask",
+    "compounder.trading_cost.chart_spread_title": "Spread, % of price",
+    "compounder.trading_cost.recording_started_label": "Recording started {date}",
+    "compounder.trading_cost.recording_not_started_label": (
+        "Recording hasn't started yet for this stock — the chart below "
+        "shows the estimated spread only; real bid/ask recording begins "
+        "the next time this stock is sampled mid-session."
+    ),
+    "compounder.trading_cost.legend_bid": "Bid",
+    "compounder.trading_cost.legend_ask": "Ask",
+    "compounder.trading_cost.legend_estimated": "Estimated",
+    "compounder.trading_cost.legend_recorded": "Recorded",
+    "compounder.trading_cost.wide_threshold_label": "Wide, above 1.5%",
+    "compounder.trading_cost.table_title": "Day by day",
+    "compounder.trading_cost.table_col_date": "Date",
+    "compounder.trading_cost.table_col_close": "Close",
+    "compounder.trading_cost.table_col_recorded_bid": "Recorded bid",
+    "compounder.trading_cost.table_col_recorded_ask": "Recorded ask",
+    "compounder.trading_cost.table_col_recorded_spread": "Recorded spread %",
+    "compounder.trading_cost.table_col_estimated_spread": "Estimated spread %",
+    "compounder.trading_cost.footnote": (
+        "Estimated spreads use the Corwin & Schultz (2012) high-low "
+        "method and are approximate, not a real quote. Recorded spreads "
+        "(dots) are real mid-session bid/ask quotes, sampled once a day "
+        "— never an after-hours snapshot. Neither figure includes "
+        "brokerage fees, market impact on a larger order, or off-market "
+        "trades."
+    ),
+    "compounder.trading_cost.no_price_data": (
+        "No price history available for {ticker} right now."
+    ),
+    "compounder.trading_cost.band_tight": "Tight",
+    "compounder.trading_cost.band_moderate": "Moderate",
+    "compounder.trading_cost.band_wide": "Wide",
     # Company description (17 Sep 2026), Deep Dive page only, Option A:
     # a one-liner under the title row (first sentence of the provider's
     # own business summary, truncated ~140 chars) that opens into a full
@@ -3107,6 +3315,15 @@ EN = {
     # standing rule for engine-output words (see snapshot_render.
     # _valuation_note()'s own docstring) - snapshot_render.py passes it
     # through unchanged regardless of which language string wraps it.
+    # Commit J (21 Sep 2026, owner-reported): the "not currently trading"
+    # banner for a ticker flagged "stale" by nightly_scan.analyze_ticker_
+    # lite()'s ghost-price guard - see snapshot_render._not_trading_
+    # banner()'s own docstring. {date} is the last day the price
+    # GENUINELY changed (score_history.last_real_price_date()), not the
+    # most recent scan date - a ghost-priced ticker is scanned (and
+    # shows the same frozen price) every night.
+    "snapshot.not_trading_banner": "Not currently trading — last price {date}. This ticker may be delisted, halted or merged; valuation figures are suppressed until it prices again.",
+    "snapshot.not_trading_banner_no_date": "Not currently trading. This ticker may be delisted, halted or merged; valuation figures are suppressed until it prices again.",
     "snapshot.faq.heading": "Common questions",
     "snapshot.faq.disclaimer": "This is a described calculation from public data, not a recommendation.",
     "snapshot.faq.undervalued_q": "Is {ticker} undervalued?",
@@ -3976,7 +4193,7 @@ ES = {
     # ES DRAFT, not professionally reviewed (same convention as the rest
     # of this file's Spanish copy - see e.g. the News-tab block below).
     "tools.hub.property_vs_index_blurb": "¿Comprar una propiedad de inversión, o poner el mismo efectivo en el S&P 500? Ambos después de impuestos, más el alquiler de equilibrio.",
-    "tools.hub.property_vs_index_teaser": 'ej. $300k de efectivo + $700k de préstamo → <b>+$328k</b> propiedad vs <b>+$300k</b> índice en 10 años',
+    "tools.hub.property_vs_index_teaser": 'ej. $300k de efectivo + $700k de préstamo → <b>+{property}</b> propiedad vs <b>+{index}</b> índice en 10 años',
     "tools.hub.signin_cta": "Inicia sesión gratis para usarlas",
 
     "tools.budget.title": "Planificador de presupuesto",
@@ -4340,15 +4557,60 @@ ES = {
         "propiedad, un número anual."
     ),
     "tools.property_vs_index.property_growth_label": "Crecimiento de la propiedad (%/año)",
-    "tools.property_vs_index.sp500_return_label": "Retorno total del S&P 500 (%/año)",
-    "tools.property_vs_index.sp500_dividend_label": "…del cual dividendo (%)",
-    "tools.property_vs_index.marginal_rate_label": "Tu tasa marginal de impuestos (%)",
-    "tools.property_vs_index.marginal_rate_help": "La tasa de tu tramo impositivo + 2% Medicare levy",
+    # Commit A (20 Sep 2026): ver la nota equivalente en el bloque EN -
+    # ganancia de capital y rendimiento por dividendos son ahora
+    # entradas independientes y aditivas, no un total dividido en dos.
+    "tools.property_vs_index.sp500_return_label": "Ganancia de capital (%/año)",
+    "tools.property_vs_index.sp500_dividend_label": "Rendimiento por dividendos (%)",
+    "tools.property_vs_index.total_return_caption": "Retorno total {total:.1f}%",
+    # Commit B (20 Sep 2026): ver la nota equivalente en el bloque EN.
+    "tools.property_vs_index.other_income_label": "Tu ingreso imponible (sin incluir esta inversión)",
+    "tools.property_vs_index.other_income_help": (
+        "Salario y cualquier otro ingreso imponible, ANTES de esta "
+        "propiedad o posición en el índice - se usa para saber en qué "
+        "tramo(s) impositivo(s) cae cada dólar de alquiler, deducción "
+        "de intereses, dividendo o ganancia de capital."
+    ),
+    "tools.property_vs_index.marginal_rate_caption": (
+        "Tasa marginal {rate:.0f}% ({bracket_rate:.0f}% + {medicare:.0f}% "
+        "Medicare) · tasas {tax_year}"
+    ),
+    "tools.property_vs_index.negative_gearing_honesty_caption": (
+        "Supone que la pérdida del alquiler es totalmente deducible "
+        "contra tu otro ingreso en el año en que ocurre, según las tasas "
+        "de residente 2026-27. Los resultados reales varían según tu "
+        "estructura, otras deducciones y pérdidas arrastradas. La "
+        "depreciación usa reglas simplificadas del ATO; usa el informe "
+        "de tu quantity surveyor para las cifras reales."
+    ),
     "tools.property_vs_index.years_label": "Años",
     "tools.property_vs_index.buy_costs_label": "Costos de compra ($)",
     "tools.property_vs_index.buy_costs_help": (
         "Impuesto de sello + legales — pagados de tu efectivo al "
         "comprar, nunca financiados."
+    ),
+    "tools.property_vs_index.property_type_label": "Tipo de propiedad",
+    "tools.property_vs_index.property_type_option_new": "Construcción nueva",
+    "tools.property_vs_index.property_type_option_established": "Establecida (construida después del 15 sep 1987)",
+    "tools.property_vs_index.property_type_option_pre_1987": "Construida antes del 15 sep 1987",
+    "tools.property_vs_index.building_cost_label": "Costo de construcción, excl. terreno ($)",
+    "tools.property_vs_index.building_cost_help": (
+        "De un informe de depreciación de un quantity surveyor. El "
+        "terreno nunca es depreciable."
+    ),
+    "tools.property_vs_index.plant_value_label": "Valor de mobiliario y equipos nuevos ($)",
+    "tools.property_vs_index.plant_value_help": (
+        "Elementos como alfombras, electrodomésticos, persianas. Desde "
+        "2017, no se puede reclamar depreciación de mobiliario de "
+        "segunda mano en una propiedad establecida."
+    ),
+    "tools.property_vs_index.plant_value_caption": (
+        "Valor decreciente al 20%/año, asumiendo una vida útil efectiva "
+        "de 10 años."
+    ),
+    "tools.property_vs_index.plant_value_sale_caption": (
+        "Al vender, se asume que el mobiliario y equipos se venden a su "
+        "valor residual — no se modela un ajuste de saldo."
     ),
     "tools.property_vs_index.sell_costs_label": "Costos de venta (%)",
     "tools.property_vs_index.card_property_title": "🏠 Propiedad de inversión",
@@ -4359,30 +4621,68 @@ ES = {
     "tools.property_vs_index.after_tax_position_label": "Posición después de impuestos a los {years} años",
     "tools.property_vs_index.line_growth_label": "Crecimiento de capital después de CGT:",
     "tools.property_vs_index.line_growth_sub": (
-        "{price} → {future_price}; ganancia gravada con descuento del "
-        "50% al {rate:.0f}%"
+        "{price} → {future_price}; impuesto de {tax_amount} sobre una "
+        "ganancia de {gain} — {rate:.0f}% efectivo después del "
+        "descuento del 50%"
     ),
-    "tools.property_vs_index.line_rent_label": "Alquiler después de impuestos:",
-    "tools.property_vs_index.line_rent_sub": (
-        "{weekly_rent}/sem × (52 − {vacancy} sem de vacancia) × "
-        "{years} años, gravado una vez al {rate:.0f}%"
+    "tools.property_vs_index.line_growth_cost_base_caption": (
+        "La base de costo se reduce en {reduction} por depreciación "
+        "del edificio — agrega {extra_cgt} de CGT en la venta."
     ),
-    "tools.property_vs_index.line_interest_label": "Interés del préstamo después de deducción:",
-    "tools.property_vs_index.line_interest_sub": (
-        "{loan} × {rate_pct:.2f}% × {years} años, deducible al "
-        "{tax:.0f}% (negative gearing)"
+    "tools.property_vs_index.rental_position_group_label": "Posición de alquiler · {years} años",
+    "tools.property_vs_index.rental_rent_label": "Alquiler recibido",
+    "tools.property_vs_index.rental_rent_sub": "{weekly_rent}/sem × {weeks} semanas hábiles/año",
+    "tools.property_vs_index.rental_interest_label": "Interés del préstamo",
+    "tools.property_vs_index.rental_holding_label": "Costos de mantención",
+    "tools.property_vs_index.rental_net_loss_label": "Pérdida neta en efectivo · negative gearing",
+    "tools.property_vs_index.rental_net_profit_label": "Ganancia neta en efectivo · positive gearing",
+    "tools.property_vs_index.rental_depreciation_label": "Depreciación (no es efectivo, solo impuestos)",
+    "tools.property_vs_index.rental_taxable_loss_label": "Pérdida imponible del alquiler",
+    "tools.property_vs_index.rental_taxable_profit_label": "Ganancia imponible del alquiler",
+    "tools.property_vs_index.rental_tax_refund_label": "Impuesto reembolsado por la pérdida",
+    "tools.property_vs_index.rental_tax_bill_label": "Impuesto a pagar por la ganancia",
+    "tools.property_vs_index.rental_stacking_caption": (
+        "El alquiler, el interés y los costos de mantención se gravan "
+        "primero cada año; en el año de venta la ganancia de capital se "
+        "suma después de eso, no al revés — así que este reembolso "
+        "refleja tu ingreso antes de la venta, todos los años incluido "
+        "el último."
     ),
-    "tools.property_vs_index.line_interest_sub_two_phase": (
-        "Solo interés {io_period} años, luego P&I durante los "
-        "{pi_years} años restantes de un plazo de {term} años — "
-        "interés total {total_interest}, deducible al {tax:.0f}%"
+    "tools.property_vs_index.rental_net_cost_label": "Costo neto de mantener, después del reembolso",
+    "tools.property_vs_index.rental_net_profit_after_tax_label": "Ganancia neta de mantener, después de impuestos",
+    "tools.property_vs_index.trend_easing": "bajando a",
+    "tools.property_vs_index.trend_rising": "subiendo a",
+    "tools.property_vs_index.trend_flat": "manteniéndose en",
+    "tools.property_vs_index.rental_weekly_cost_caption": (
+        "Te cuesta {after1}/sem en el año 1 después del reembolso "
+        "(antes del reembolso: {before1}/sem) — {trend} {afterN}/sem "
+        "para el año {years}."
     ),
-    "tools.property_vs_index.line_costs_label": "Costos de mantención después de deducción:",
-    "tools.property_vs_index.line_costs_sub": "{costs}/año × {years} años, deducible al {tax:.0f}%",
+    "tools.property_vs_index.rental_weekly_profit_caption": (
+        "Te paga {after1}/sem en el año 1 después de impuestos (antes "
+        "de impuestos: {before1}/sem) — {trend} {afterN}/sem para el "
+        "año {years}."
+    ),
+    "tools.property_vs_index.year_by_year_expander_label": "Posición de alquiler año por año",
+    "tools.property_vs_index.table_col_year": "Año",
+    "tools.property_vs_index.table_col_rent": "Alquiler",
+    "tools.property_vs_index.table_col_interest": "Interés",
+    "tools.property_vs_index.table_col_holding": "Mantención",
+    "tools.property_vs_index.table_col_depreciation": "Depreciación",
+    "tools.property_vs_index.table_col_net_position": "Posición neta",
+    "tools.property_vs_index.table_col_tax": "Reembolso/pago de impuesto",
+    "tools.property_vs_index.table_col_out_of_pocket": "De tu bolsillo",
+    "tools.property_vs_index.table_col_cost_base": "Base de costo",
+    "tools.property_vs_index.table_totals_row_label": "Total",
+    "tools.property_vs_index.table_turns_positive_caption": "Se vuelve positivo en el año {year}.",
+    "tools.property_vs_index.table_stays_negative_caption": (
+        "Se mantiene con negative gearing durante los {years} años completos con estos números."
+    ),
     "tools.property_vs_index.line_index_growth_label": "Crecimiento después de CGT:",
     "tools.property_vs_index.line_index_growth_sub": (
-        "{cash} creciendo al {rate:.1f}% de crecimiento de precio, "
-        "gravado con descuento del 50% al {tax:.0f}%"
+        "{cash} creciendo al {rate:.1f}% de crecimiento de precio; "
+        "impuesto de {tax_amount} sobre una ganancia de {gain} — "
+        "{tax_rate:.0f}% efectivo después del descuento del 50%"
     ),
     "tools.property_vs_index.line_index_dividends_label": "Dividendos después de impuestos:",
     "tools.property_vs_index.line_index_dividends_sub": (
@@ -5322,6 +5622,7 @@ ES = {
     "portfolio.stress.newmoney_mode_label": "Modo de asignación",
     "portfolio.stress.newmoney_mode_a": "Dividir por % de la combinación",
     "portfolio.stress.newmoney_mode_b": "Completar hacia la combinación",
+    "portfolio.stress.newmoney_mode_c": "Apuntar a la asignación original",
     "portfolio.stress.newmoney_mode_caption": (
         "Dividir por % de la combinación: el monto se divide exactamente "
         "según los porcentajes de arriba. Completar hacia la combinación: "
@@ -5335,9 +5636,13 @@ ES = {
     "portfolio.stress.newmoney_col_hold_now": "Tienes ahora",
     "portfolio.stress.newmoney_col_target": "Objetivo tras el depósito",
     "portfolio.stress.newmoney_col_gap": "Brecha",
+    "portfolio.stress.newmoney_col_target_invested": "Objetivo invertido",
+    "portfolio.stress.newmoney_col_gap_to_target": "Brecha al objetivo",
     "portfolio.stress.newmoney_col_buys": "Este depósito compra",
     "portfolio.stress.newmoney_col_units": "≈ Unidades @ último cierre",
     "portfolio.stress.newmoney_col_weight_after": "Ponderación después",
+    "portfolio.stress.newmoney_col_invested_weight_after": "Ponderación invertida después",
+    "portfolio.stress.newmoney_col_market_weight_after": "Ponderación de mercado después",
     "portfolio.stress.newmoney_col_total": "Total",
     "portfolio.stress.newmoney_gap_over": "por encima",
     "portfolio.stress.newmoney_unallocated_caption": "Efectivo sin asignar: {amount}",
@@ -5349,6 +5654,29 @@ ES = {
         "asignación es proporcional a las brechas restantes. Las "
         "posiciones que ya están en su objetivo o por encima no reciben "
         "nada."
+    ),
+    "portfolio.stress.newmoney_method_c_caption": (
+        "Método: el objetivo invertido por posición = % de la combinación "
+        "× (total ya invertido + depósito). El depósito llena la brecha "
+        "entre ese objetivo y lo que realmente has invertido, de modo que "
+        "tu dinero comprometido llega a la combinación sin importar cómo "
+        "se haya comportado cada posición. Las ponderaciones de mercado "
+        "se alejarán de la combinación — las últimas dos columnas "
+        "muestran ambas. Este modo depende más de tu costo base "
+        "registrado que los otros dos: si \"Invertiste\" no refleja cada "
+        "compra de una posición (ver la nota de arriba), el objetivo y la "
+        "brecha de esa posición estarán desviados exactamente en esa "
+        "misma medida."
+    ),
+    "portfolio.stress.newmoney_missing_cost_basis_warning": (
+        "Sin costo base registrado para: {tickers}. Apuntar a la "
+        "asignación original necesita una cifra real de \"Invertiste\" "
+        "para cada posición - un costo base de $0 haría que todo el "
+        "depósito pareciera brecha pura y asignaría demasiado a esa "
+        "posición. Este modo está desactivado hasta que se guarde un "
+        "precio de compra/acciones para {tickers} en la pestaña "
+        "Posiciones; mientras tanto usa Dividir por % de la combinación o "
+        "Completar hacia la combinación."
     ),
     "portfolio.stress.newmoney_disclosure_caption": (
         "unidades redondeadas hacia abajo · el corretaje no está modelado "
@@ -5715,6 +6043,69 @@ ES = {
         "anteriores. Los titulares considerados no relacionados con la "
         "empresa nunca se cuentan."
     ),
+    # Pestaña Costo de Operar (Commit 3, 23 Sep 2026, solicitado por el
+    # propietario) - ver el bloque EN paralelo para el contexto completo.
+    "compounder.trading_cost.tab_label": "\U0001F4B1 Costo de Operar",
+    "compounder.trading_cost.why_matters": (
+        "El spread entre compra y venta es un costo real de operar, "
+        "además de cualquier comisión — un spread más amplio significa "
+        "una brecha mayor entre lo que pagarías al comprar y lo que "
+        "recibirías al vender de inmediato."
+    ),
+    "compounder.trading_cost.tile_spread_recorded": "Spread registrado",
+    "compounder.trading_cost.tile_spread_recorded_comment": (
+        "Mediana de los spreads reales de compra/venta que este sitio "
+        "ha registrado en horario de mercado para esta acción, como "
+        "porcentaje del precio medio."
+    ),
+    "compounder.trading_cost.tile_spread_estimated": "Spread estimado (30d)",
+    "compounder.trading_cost.tile_spread_estimated_comment": (
+        "Promedio de la estimación Corwin-Schultz del spread en los "
+        "últimos 30 días — calculada solo a partir de los máximos/"
+        "mínimos diarios, sin datos de compra/venta, por lo que cubre "
+        "todos los días, incluso antes de que comenzara el registro real."
+    ),
+    "compounder.trading_cost.tile_value_traded": "Valor operado (prom. 30d)",
+    "compounder.trading_cost.tile_bid_ask_now": "Compra/venta ahora",
+    "compounder.trading_cost.bid_ask_now_snapshot_label": "registrado {datetime}",
+    "compounder.trading_cost.bid_ask_now_stale_label": "último registro: {date}",
+    "compounder.trading_cost.bid_ask_now_no_data": "Aún no hay captura registrada",
+    "compounder.trading_cost.chart_bid_ask_title": "Compra y venta",
+    "compounder.trading_cost.chart_spread_title": "Spread, % del precio",
+    "compounder.trading_cost.recording_started_label": "El registro comenzó el {date}",
+    "compounder.trading_cost.recording_not_started_label": (
+        "El registro aún no ha comenzado para esta acción — el gráfico "
+        "de abajo muestra solo el spread estimado; el registro real de "
+        "compra/venta comenzará la próxima vez que se capture esta "
+        "acción en horario de mercado."
+    ),
+    "compounder.trading_cost.legend_bid": "Compra",
+    "compounder.trading_cost.legend_ask": "Venta",
+    "compounder.trading_cost.legend_estimated": "Estimado",
+    "compounder.trading_cost.legend_recorded": "Registrado",
+    "compounder.trading_cost.wide_threshold_label": "Amplio, por encima de 1.5%",
+    "compounder.trading_cost.table_title": "Día a día",
+    "compounder.trading_cost.table_col_date": "Fecha",
+    "compounder.trading_cost.table_col_close": "Cierre",
+    "compounder.trading_cost.table_col_recorded_bid": "Compra registrada",
+    "compounder.trading_cost.table_col_recorded_ask": "Venta registrada",
+    "compounder.trading_cost.table_col_recorded_spread": "Spread registrado %",
+    "compounder.trading_cost.table_col_estimated_spread": "Spread estimado %",
+    "compounder.trading_cost.footnote": (
+        "Los spreads estimados usan el método de máximos-mínimos de "
+        "Corwin & Schultz (2012) y son aproximados, no una cotización "
+        "real. Los spreads registrados (puntos) son cotizaciones reales "
+        "de compra/venta en horario de mercado, tomadas una vez al día "
+        "— nunca una captura fuera de horario. Ninguna de las dos cifras "
+        "incluye comisiones, impacto de mercado de una orden grande, ni "
+        "operaciones fuera del mercado."
+    ),
+    "compounder.trading_cost.no_price_data": (
+        "No hay historial de precios disponible para {ticker} en este momento."
+    ),
+    "compounder.trading_cost.band_tight": "Ajustado",
+    "compounder.trading_cost.band_moderate": "Moderado",
+    "compounder.trading_cost.band_wide": "Amplio",
     # Descripción de la empresa (17 Sep 2026) - ES DRAFT, not
     # professionally reviewed (same convention as every other ES batch
     # in this file). The company summary text itself is never
@@ -5735,6 +6126,8 @@ ES = {
     # {valuation} stays whatever engine-output word snapshot_render.py
     # passes in, untranslated either way - see the EN block's own
     # comment for why.
+    "snapshot.not_trading_banner": "No cotiza actualmente — último precio {date}. Esta acción podría estar deslistada, suspendida o fusionada; las cifras de valoración se suprimen hasta que vuelva a cotizar.",
+    "snapshot.not_trading_banner_no_date": "No cotiza actualmente. Esta acción podría estar deslistada, suspendida o fusionada; las cifras de valoración se suprimen hasta que vuelva a cotizar.",
     "snapshot.faq.heading": "Preguntas frecuentes",
     "snapshot.faq.disclaimer": "Este es un cálculo descrito a partir de datos públicos, no una recomendación.",
     "snapshot.faq.undervalued_q": "¿Está {ticker} infravalorada?",

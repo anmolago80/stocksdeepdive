@@ -15,11 +15,21 @@ fixes round 2, 2026-08-31) a handful of DERIVED universes built by
 filtering an already-fetched parent pool rather than a scrape of their
 own (labeled as such in get_universe_pool's source string):
 
-  Australia: ASX 200, ASX 300, All Ordinaries, ASX Small Ordinaries
-             (derived), ASX 100, ASX 50, ASX 20, ASX All Technology
-             (derived)
+  Australia: ASX 200, ASX 300 (derived), All Ordinaries (derived),
+             ASX Small Ordinaries (derived), ASX 100, ASX 50, ASX 20,
+             ASX All Technology (derived)
   USA:       S&P 500, Nasdaq 100, Russell 2000, Small Caps (S&P SmallCap
              600), S&P 400 MidCap, Russell 1000, S&P 1500 (derived)
+
+Index containment (20 Sep 2026): ASX 300 and All Ordinaries used to be
+their own independent live scrapes (asx300list.com/allordslist.com) but
+those turned out to be a frozen 28 April 2021 snapshot each - verified
+live 20 Sep 2026 (both GQG.AX, listed since 2021, and GGP.AX were
+missing). Both are now DERIVED: the real, live Wikipedia ASX 200 plus a
+market-cap-ranked tail from the ASX's own official listed-companies CSV
+(fetch_asx_listed_companies()) - real, current membership for the first
+200, an honest approximation (not verified S&P index membership) past
+that. See fetch_asx300()/fetch_allords()'s own docstrings.
 
 Every non-derived fetcher is a live scrape (Wikipedia constituent tables,
 or an iShares ETF holdings export for Russell 2000/1000) cached for 24h
@@ -66,7 +76,9 @@ Part 52's own report for what was actually verified live before this
 shipped.
 """
 
+import concurrent.futures
 import io
+import logging
 import os
 import time
 from collections import defaultdict
@@ -77,7 +89,12 @@ import requests
 import streamlit as st
 import yfinance as yf
 
+import alert_engine
+import market_cap_engine
 import sector_cache_store
+import source_health_store
+
+_log = logging.getLogger("sdd.scanner")
 
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StocksDeepDiveBot/1.0; +https://stocksdeepdive.com)"}
 
@@ -122,7 +139,6 @@ SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 SP600_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies"
 NASDAQ100_WIKI_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
 ASX200_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/ASX_200"
-ASX300_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/ASX_300"
 
 # Fix 8a, AI fixes round 2 (2026-08-31). Every URL below follows the
 # exact same "Wikipedia constituent table, or an iShares ETF holdings
@@ -156,13 +172,6 @@ ASX50_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/ASX_50"
 # later without hunting through the function body.
 ASX100_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/ASX_100"
 
-# allordslist.com mirrors asx300list.com's own naming/URL pattern (root
-# page IS the list, same as ASX300LIST_URL below) and was confirmed to
-# exist via web search during development ("All Ords List - Company
-# Data for All Ordinaries Index") but, per the caveat above, could not
-# be fetched and test-parsed directly - best-effort by direct analogy
-# to the already-working asx300list.com fetcher.
-ALLORDSLIST_URL = "https://www.allordslist.com/"
 
 # iShares Russell 1000 ETF (IWB) holdings export - same mechanism as
 # IWM_HOLDINGS_CSV_URL below (Russell 2000). iShares' shorter
@@ -194,12 +203,36 @@ RUSSELL1000_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_Russell_1000_compa
 # set with real headroom either side of that (not a guess).
 DIVIDEND_ARISTOCRATS_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P_500_Dividend_Aristocrats"
 
-# Wikipedia's own S&P/ASX 300 page does not carry a real ~300-row constituent
-# table (only a ~10-row "Top Ten Companies" table) - asx300list.com does, and
-# is used as the primary source; Wikipedia is kept only as a secondary
-# fallback (with a min_rows guard so that small "Top Ten" table can never be
-# silently mistaken for the real thing).
-ASX300LIST_URL = "https://www.asx300list.com/"
+# Index containment (20 Sep 2026): asx300list.com/allordslist.com - the
+# old ASX 300/All Ordinaries sources - turned out to be a frozen 28 April
+# 2021 snapshot (verified live 20 Sep 2026: both GQG.AX, listed since
+# 2021, and GGP.AX were absent from them). Replaced entirely by
+# fetch_asx_listed_companies() below - the ASX's own official CSV
+# directory of every listed company, ranked by market cap to fill out
+# the tail past Wikipedia's live ASX 200 - see fetch_asx300()/
+# fetch_allords()'s own comments for the new construction.
+#
+# Commit I (21 Sep 2026): that replacement - www.asx.com.au/asx/research/
+# ASXListedCompanies.csv - turned out to be the SAME failure mode one
+# level up: it never once passed _check_asx_listed_companies() (cross_
+# source: 8 live ASX 200 tickers missing, including DNL/Dyno Nobel and
+# SGH/Seven Group Holdings), and manual inspection showed the file's own
+# header carries the CURRENT date while its ROWS are frozen months
+# behind - still listing INCITEC PIVOT as IPL (renamed DNL), BLOCK INC.
+# as SQ2, SEVEN GROUP HOLDINGS as SVW (renamed SGH). A fresh timestamp
+# over stale content, not a dead endpoint - the row-count/canary/cross-
+# source checks below still do the real work; only the URL and its
+# column layout change here. Replaced by the file behind asx.com.au's
+# own company directory page (markitdigital, the vendor behind ASX's
+# market-data widgets) - unofficial (asx.com.au itself doesn't document
+# it as a public API), so every existing health check stays on it and
+# last-known-good keeps gating what actually gets served, exactly like
+# the source it replaces. Columns per the ASX's own directory page (live-
+# verified by the owner, not from this sandbox - see _fetch_asx_listed_
+# companies_raw()'s own docstring for the standing "no live network
+# route" caveat every fetcher in this module already carries): "ASX
+# code","Company name","GICs industry group","Listing date","Market Cap".
+ASX_LISTED_COMPANIES_CSV_URL = "https://asx.api.markitdigital.com/asx-research/1.0/companies/directory/file"
 
 # iShares Russell 2000 ETF (IWM) public holdings export. Best-effort - iShares
 # occasionally changes this URL format.
@@ -713,8 +746,70 @@ def _resolve_russell2000():
     return None, "Web scrape unavailable"
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def fetch_asx200():
+# -----------------------------------------------------------------
+# Index containment (20 Sep 2026): the AU universes form a strict chain -
+# ASX 20 subset ASX 50 subset ASX 100 subset ASX 200 subset ASX 300 subset
+# All Ordinaries - so every ticker in a smaller index MUST also appear in
+# every larger one. Each fetcher above scrapes its own INDEPENDENT source
+# (a different Wikipedia page or third-party list per universe), so
+# there's no structural guarantee two adjacent sources agree - one can
+# simply be a stale/incomplete snapshot relative to the other (e.g.
+# GQG.AX present in the live ASX 300 source but absent from the ASX 200
+# one, or vice versa, depending on which page is currently more current).
+# The existing sector-merge steps below only ever ANNOTATE rows that are
+# already present; they never add a missing row, so a gap like that
+# persisted silently through to the scan/plot output.
+#
+# _asx_backfill_missing_subset_tickers() below fixes this at the source:
+# called from every fetch_* function that has a smaller sibling in the
+# chain, right after that function's own source fetch (and, where one
+# exists, before the sector-merge step - sector-merge still runs
+# afterward for the whole frame, backfilled rows included). One shared
+# helper rather than five copies of the same union logic.
+# -----------------------------------------------------------------
+
+def _asx_backfill_missing_subset_tickers(superset_df, subset_df, superset_label, subset_label):
+    """Enforces `subset_label` subset `superset_label` by unioning any
+    ticker `subset_df` has that `superset_df` is missing into
+    `superset_df` - carrying the ticker's own Sector across. A caller's
+    later sector-merge step (fetch_asx300/fetch_allords) can still
+    overwrite that Sector with a more authoritative source; this only
+    guarantees the ticker itself is present.
+
+    Returns `superset_df` unchanged (including None) if either frame is
+    None/empty or nothing is actually missing - never raises, same
+    fail-open convention as every other fetcher in this module. Logs one
+    INFO line with the backfilled count whenever it does something, so a
+    growing number of missing constituents is visible in the logs
+    instead of silently accumulating."""
+    if superset_df is None or subset_df is None or subset_df.empty:
+        return superset_df
+    missing = subset_df[~subset_df["Ticker"].isin(set(superset_df["Ticker"]))]
+    if missing.empty:
+        return superset_df
+    _log.info(
+        "scanner_engine: %s was missing %d ticker(s) that %s contains - "
+        "backfilled: %s",
+        superset_label, len(missing), subset_label, ", ".join(sorted(missing["Ticker"])),
+    )
+    return pd.concat([superset_df, missing[["Ticker", "Sector"]]], ignore_index=True)
+
+
+_ASX200_SOURCE_NAME = "ASX 200 (Wikipedia)"
+
+# Same +/-15% drift convention as _ASX_CSV_DRIFT_BAND/_MARKET_CAP_ROW_
+# COUNT_DRIFT_BAND below - wide enough for ordinary index reconstitution,
+# narrow enough to catch a collapsed or broken scrape.
+_ASX200_DRIFT_BAND = 0.15
+
+
+def _fetch_asx200_raw():
+    """Fetch + parse only - no health check, no last-known-good fallback
+    (see fetch_asx200() below, the public wrapper every other function
+    in this module actually calls). Same fail-open contract this always
+    had: None on any fetch/parse failure, or if the parsed table came
+    back with not one single row carrying a Sector (the shape-changed-
+    entirely case a plain row-count floor wouldn't catch)."""
     try:
         html = _get(ASX200_WIKI_URL)
     except Exception:
@@ -725,46 +820,1006 @@ def fetch_asx200():
     return df
 
 
+def _check_asx200(df):
+    """Commit G (20 Sep 2026): row_count (drift vs last-known-good) and
+    sector_coverage (a structurally-valid-but-content-broken scrape can
+    still clear the row-count floor - e.g. Wikipedia keeps the table
+    shape but drops the Sector column's real values). Same {check_name:
+    {"ok":, "detail":}} shape as _check_asx_listed_companies() /
+    _rebuild_market_cap_ranking()'s own checks; never raises."""
+    checks = {}
+    prior = source_health_store.get(_ASX200_SOURCE_NAME)
+    prior_count = (prior or {}).get("last_good_row_count")
+    if prior_count:
+        lo, hi = prior_count * (1 - _ASX200_DRIFT_BAND), prior_count * (1 + _ASX200_DRIFT_BAND)
+        ok = lo <= len(df) <= hi
+        checks["row_count"] = {
+            "ok": ok,
+            "detail": f"{len(df)} row(s) vs last-known-good {prior_count} (expected {int(lo)}-{int(hi)})",
+        }
+    else:
+        checks["row_count"] = {"ok": True, "detail": "skipped - no last-known-good on record yet"}
+
+    have_sector = int(df["Sector"].notna().sum())
+    coverage = (have_sector / len(df)) if len(df) else 0.0
+    checks["sector_coverage"] = {
+        "ok": coverage >= 0.5,
+        "detail": f"{have_sector}/{len(df)} row(s) carry a Sector ({coverage:.0%}, band >= 50%)",
+    }
+    return checks
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_asx200():
+    """Public wrapper - every OTHER function in this module (and
+    _AU_CONTAINMENT_CHAIN below) calls this, never _fetch_asx200_raw()
+    directly. Commit G (20 Sep 2026): Wikipedia used to be a single
+    point of failure for THREE universes - this one directly, plus ASX
+    300/All Ordinaries, which both derive their tail from
+    _asx_non200_by_marketcap() past whatever this function returns (see
+    that function's own comment) - with the old asx300list.com/
+    allordslist.com independent fallback sources gone entirely (see this
+    module's header comment), one Wikipedia outage or page-structure
+    change emptied all three together, with nothing to fall back to.
+
+    Same last-known-good pattern as fetch_asx_listed_companies() (Commit
+    2) and _rebuild_market_cap_ranking() (Commit D/F): a clean pass (no
+    parse failure, every _check_asx200() check ok) backfills in ASX 100
+    (unchanged from the original behavior) and becomes the new last-
+    known-good; a failed pass falls back to the last-known-good snapshot
+    instead - already backfilled, from when IT was saved - and alerts
+    the owner once per new failure, not on every day it stays down."""
+    df = _fetch_asx200_raw()
+    checks = (_check_asx200(df) if df is not None
+             else {"parse": {"ok": False, "detail": "fetch or parse failed entirely"}})
+    all_ok = df is not None and all(c["ok"] for c in checks.values())
+
+    if all_ok:
+        merged = _asx_backfill_missing_subset_tickers(df, fetch_asx100(), "ASX 200", "ASX 100")
+        source_health_store.record_success(_ASX200_SOURCE_NAME, merged.to_dict("records"), checks)
+        return merged
+
+    prior = source_health_store.get(_ASX200_SOURCE_NAME)
+    was_already_stale = bool(prior and prior.get("stale"))
+    reason = "fetch/parse failed" if df is None else "failed health check(s)"
+    source_health_store.record_failure(_ASX200_SOURCE_NAME, checks, reason)
+    if not was_already_stale:
+        try:
+            alert_engine.send_source_health_alert(_ASX200_SOURCE_NAME, checks, reason)
+        except Exception:
+            _log.exception("scanner_engine: source-health alert send failed for %s", _ASX200_SOURCE_NAME)
+    _log.warning("scanner_engine: %s failed health check (%s) - serving last-known-good instead",
+                _ASX200_SOURCE_NAME, reason)
+    return source_health_store.last_good_dataframe(_ASX200_SOURCE_NAME)
+
+
+_ASX_CSV_SOURCE_NAME = "ASX Listed Companies CSV"
+_MARKET_CAP_RANKING_SOURCE_NAME = "ASX market-cap ranking (non-ASX 200)"
+
+# Every source name that gets health-tracked via source_health_store -
+# single list the Admin Dashboard's "Source health" table (app.py's
+# page_admin_dashboard()) reads, so a future source added to this
+# tracking only needs listing here, not in app.py too. Commit D (20 Sep
+# 2026) added the market-cap ranking alongside the ASX CSV added in
+# Commit 2; Commit G (20 Sep 2026) adds the live ASX 200 Wikipedia
+# scrape - Wikipedia was a single point of failure for THREE universes
+# (ASX 200 directly, plus ASX 300/All Ordinaries which both derive their
+# tail from it) with nothing to fall back to.
+TRACKED_HEALTH_SOURCES = [_ASX200_SOURCE_NAME, _ASX_CSV_SOURCE_NAME, _MARKET_CAP_RANKING_SOURCE_NAME]
+
+# +/-15% of last-known-good's own row count - wide enough that ASX's
+# normal daily churn (new listings, delistings, corporate actions) never
+# trips it, narrow enough to catch the two failure shapes the task's own
+# "Why" names: a collapse (~2,500 -> a dozen rows) or an HTML error page
+# that happens to parse as some other, much smaller, valid-shaped table.
+_ASX_CSV_DRIFT_BAND = 0.15
+
+# Tickers known to have been listed AFTER the old asx300list.com/
+# allordslist.com sources' own frozen date (28 April 2021) - exactly the
+# fact that exposed the freeze in the first place (see fetch_asx300()'s
+# own comment). Present in a genuinely current CSV; absent from anything
+# still stuck on or before that date. Commit G (20 Sep 2026): widened
+# from a single ticker (GQG.AX) to five, spanning 2021-2025 listing
+# dates, and the check below now passes if ANY of them are present, not
+# all - a single hardcoded canary means an acquisition, delisting, or
+# rename of that ONE company (GQG itself, say) would mark this source
+# permanently stale and alert forever, for a reason that has nothing to
+# do with whether the CSV is actually current. All five verified live
+# via web search as still ASX-listed as of 20 Sep 2026 (one candidate,
+# Arcadium Lithium/LTM.AX, was deliberately excluded after search
+# confirmed Rio Tinto's acquisition delisted it in March 2025 - exactly
+# the failure mode a single-ticker canary is vulnerable to).
+_ASX_CSV_CANARY_TICKERS = ["GQG.AX", "GGP.AX", "RDX.AX", "NEM.AX", "ACL.AX"]
+
+# Commit I (21 Sep 2026): a SECOND, independent canary - the check class
+# that would have caught the failure mode _ASX_CSV_CANARY_TICKERS above
+# doesn't. That one only tests PRESENCE of names known to have existed
+# since 2021-2025; a source frozen any time AFTER all five of those
+# listing dates still carries every one of them and passes it cleanly,
+# even though its own content can be months stale RIGHT NOW - exactly
+# what was found live: ASXListedCompanies.csv's header carried TODAY's
+# date while its rows still listed INCITEC PIVOT as IPL (renamed Dyno
+# Nobel/DNL), BLOCK INC. as SQ2, and SEVEN GROUP HOLDINGS as SVW
+# (renamed SGH) - all three 2025 renames. A header date proves nothing;
+# this checks the ROWS two ways at once:
+#   - MUST be present: a code that only exists post-rename (DNL, L1G -
+#     L1 Group, another 2025 listing-identity change) - absent from
+#     ANY snapshot older than these renames, present in a genuinely
+#     current one.
+#   - MUST be absent: the OLD code each of those same renames retired
+#     (IPL, SQ2, SVW) - a source that still carries one of these is
+#     provably not current, whatever its header says.
+# Either direction failing on its own is enough to call the source
+# stale - a source could pass the "present" half by coincidence (it
+# happens to have added DNL/L1G as new rows without ever processing the
+# renames that retired IPL/SQ2/SVW, e.g. an append-only feed) while
+# still failing the "absent" half, and the reverse is just as possible.
+# Both together, verified independently, is what makes this the freshness
+# canary the OR-based one above cannot be - see _check_asx_listed_
+# companies()'s own "freshness_canary" check.
+_ASX_CSV_FRESHNESS_CANARY_PRESENT = ["DNL.AX", "L1G.AX"]
+_ASX_CSV_FRESHNESS_CANARY_ABSENT = ["IPL.AX", "SQ2.AX", "SVW.AX"]
+
+# Commit L (21 Sep 2026, owner-reported): fetch_asx300()'s own docstring
+# has said since it was first built (20 Sep 2026, Index containment) that
+# the ASX 300 tail's Sector column carries "the ASX's own GICS INDUSTRY
+# GROUP (a finer-grained tier than 'sector')" while the live-200 portion
+# carries Wikipedia's own GICS SECTOR - two different levels of the same
+# GICS hierarchy, genuinely different strings, on the SAME "Sector"
+# column. _ASX_SECTOR_UNIVERSE_MAP below filters on exact SECTOR-level
+# values - a tail row's own industry-group string (e.g. "Equity Real
+# Estate Investment Trusts (REITs)") never equals a sector name ("Real
+# Estate") by construction, so it can never match any sector universe's
+# filter, tail-wide, regardless of which vendor serves the CSV (Commit I
+# changed the URL/vendor, not this column's own granularity - grepped
+# both the old and new _fetch_asx_listed_companies_raw() bodies before
+# writing this comment: both read "gics industry group" as the sector-
+# column keyword, unchanged). GICS's own hierarchy (11 sectors, ~24
+# industry groups - the 2023 revision's naming, since that's what a
+# CURRENT feed is most likely to emit; both the pre-2023 and post-2023
+# names are listed below per sector where they differ, so an older-
+# vintage feed still normalizes correctly) is public and standardised,
+# not something this sandbox's own missing network access blocks
+# knowing - see this module's own standing "no live network route"
+# caveat for what IS blocked (confirming the file's ACTUAL live values
+# against this list, which _normalize_gics_sector()'s own fallback -
+# return the raw string unchanged, never silently drop the row - is
+# built to degrade safely under).
+_GICS_INDUSTRY_GROUP_TO_SECTOR = {
+    # Energy
+    "Energy Equipment & Services": "Energy",
+    "Oil, Gas & Consumable Fuels": "Energy",
+    # Materials
+    "Chemicals": "Materials",
+    "Construction Materials": "Materials",
+    "Containers & Packaging": "Materials",
+    "Metals & Mining": "Materials",
+    "Paper & Forest Products": "Materials",
+    # Industrials
+    "Capital Goods": "Industrials",
+    "Commercial & Professional Services": "Industrials",
+    "Transportation": "Industrials",
+    # Consumer Discretionary
+    "Automobiles & Components": "Consumer Discretionary",
+    "Consumer Durables & Apparel": "Consumer Discretionary",
+    "Consumer Services": "Consumer Discretionary",
+    "Consumer Discretionary Distribution & Retail": "Consumer Discretionary",  # 2023 name
+    "Retailing": "Consumer Discretionary",  # pre-2023 name
+    # Consumer Staples
+    "Consumer Staples Distribution & Retail": "Consumer Staples",  # 2023 name
+    "Food & Staples Retailing": "Consumer Staples",  # pre-2023 name
+    "Food, Beverage & Tobacco": "Consumer Staples",
+    "Household & Personal Products": "Consumer Staples",
+    # Health Care - "Healthcare" (one word) is this codebase's own AU
+    # convention (see _ASX_SECTOR_UNIVERSE_MAP's own comment on the AU/
+    # US spelling split) - normalizing TO that, not "Health Care".
+    "Health Care Equipment & Services": "Healthcare",
+    "Pharmaceuticals, Biotechnology & Life Sciences": "Healthcare",
+    # Financials
+    "Banks": "Financials",
+    "Financial Services": "Financials",  # 2023 name
+    "Diversified Financials": "Financials",  # pre-2023 name
+    "Insurance": "Financials",
+    # Information Technology
+    "Software & Services": "Information Technology",
+    "Technology Hardware & Equipment": "Information Technology",
+    "Semiconductors & Semiconductor Equipment": "Information Technology",
+    # Communication Services
+    "Telecommunication Services": "Communication Services",
+    "Media & Entertainment": "Communication Services",
+    # Utilities - the industry group and the sector share one name at
+    # this level of the GICS hierarchy (true for Utilities and Real
+    # Estate both) - included anyway so the lookup below needs no
+    # special case for the two sectors that happen not to subdivide.
+    "Utilities": "Utilities",
+    # Real Estate
+    "Equity Real Estate Investment Trusts (REITs)": "Real Estate",
+    "Real Estate Management & Development": "Real Estate",
+}
+
+# All 11 standard GICS sectors, AU spelling ("Healthcare" one word) -
+# independent of _ASX_SECTOR_UNIVERSE_MAP below (which only names the 6
+# this site currently derives a universe for) since a value already AT
+# sector granularity should be recognised and left alone regardless of
+# whether this site happens to offer a dedicated universe for it yet.
+_GICS_SECTOR_NAMES = frozenset({
+    "Energy", "Materials", "Industrials", "Consumer Discretionary",
+    "Consumer Staples", "Healthcare", "Financials", "Information Technology",
+    "Communication Services", "Utilities", "Real Estate",
+})
+
+
+def _normalize_gics_sector(raw):
+    """Commit L: maps a raw GICS INDUSTRY GROUP string (what the ASX
+    listed-companies CSV's own "Sector" column actually carries - see
+    _GICS_INDUSTRY_GROUP_TO_SECTOR's own comment) to its parent GICS
+    SECTOR name, so _ASX_SECTOR_UNIVERSE_MAP's exact-match filters see
+    the same granularity for every row, tail included, that Wikipedia's
+    live ASX 200 scrape already provides for the first 200.
+
+    Three outcomes, all safe:
+    - Already a real sector name (a company whose feed happens to
+      report sector-level directly, or a value that already survived a
+      prior normalization pass) - returned unchanged.
+    - A known industry group - mapped to its sector.
+    - Anything else (a genuinely unmapped/unexpected value, or blank/
+      None) - returned UNCHANGED, never dropped or blanked. The row
+      simply won't match any sector universe's filter, exactly like
+      today for a value this map doesn't cover - a silent drop would be
+      worse (a company disappearing from ASX 300/All Ordinaries
+      entirely, not just from one sector sub-view)."""
+    if not raw:
+        return raw
+    raw = str(raw).strip()
+    if raw in _GICS_SECTOR_NAMES:
+        return raw
+    return _GICS_INDUSTRY_GROUP_TO_SECTOR.get(raw, raw)
+
+
+def _fetch_asx_listed_companies_raw():
+    """Fetch + parse only - no health check, no last-known-good
+    fallback (see fetch_asx_listed_companies() below, the public
+    wrapper every other function in this module actually calls).
+
+    Every ASX-listed company - NOT an index, no membership tiering at
+    all, just the full listed-company register (~2,500 rows). This is
+    the replacement source for everything past Wikipedia's live ASX
+    200 - see fetch_asx300()/fetch_allords() below for why asx300list.
+    com/allordslist.com (a frozen 28 April 2021 snapshot, confirmed
+    live 20 Sep 2026) are gone.
+
+    Commit I (21 Sep 2026): the FIRST replacement for those
+    (ASX_LISTED_COMPANIES_CSV_URL's old target, www.asx.com.au/asx/
+    research/ASXListedCompanies.csv) turned out to be the exact same
+    failure mode one level up - see that constant's own comment for the
+    full finding (a header stamped with today's date, rows frozen
+    months behind: still IPL/SQ2/SVW, never once DNL/SGH). Now points
+    at the file behind asx.com.au's own company directory page instead
+    (markitdigital - unofficial, ASX doesn't document it as a public
+    API, so every check below still gates it exactly as before). Same
+    "Company name"/"ASX code"/"GICS industry group" fields this
+    function has always read (column NAMES match - see the constant's
+    own comment for the exact header this source ships), just a
+    different vendor serving them; also carries "Listing date"/"Market
+    Cap" columns this function doesn't read yet - see _check_asx_
+    listed_companies()'s new freshness_canary check (which DOES use
+    company identity, not these two) and the market-cap comparison
+    Commit I's own report covers separately (deliberately NOT wired
+    into _rebuild_market_cap_ranking() this commit - report only).
+
+    Header row located by CONTENT (matching on "asx code" AND "company
+    name" appearing together, not a fixed skiprows count or a strict
+    column order), same defensive discipline as before - a leading
+    title/date line, or the two columns swapping order, can't silently
+    break this. Sanity floor of 1,000 rows (the real register is
+    ~2,500) so a truncated download or an HTML error page returned in
+    place of the file can't be mistaken for the real thing. Fails open
+    to None on any error, same convention as every other fetcher in
+    this module."""
+    try:
+        text = _get(ASX_LISTED_COMPANIES_CSV_URL)
+    except Exception:
+        return None
+    lines = text.splitlines()
+    header_idx = next(
+        (i for i, line in enumerate(lines)
+         if "asx code" in line.strip().lower() and "company name" in line.strip().lower()),
+        None,
+    )
+    if header_idx is None:
+        return None
+    try:
+        df = pd.read_csv(io.StringIO("\n".join(lines[header_idx:])))
+    except Exception:
+        return None
+
+    company_col = _find_column(df.columns, ["company name", "company"])
+    ticker_col = _find_column(df.columns, ["asx code", "code"])
+    sector_col = _find_column(df.columns, ["gics industry group", "gics", "industry"])
+    if company_col is None or ticker_col is None:
+        return None
+
+    cols = [ticker_col, company_col] + ([sector_col] if sector_col else [])
+    out = df[cols].copy()
+    out.columns = ["Ticker", "Company"] + (["Sector"] if sector_col else [])
+    out = out.dropna(subset=["Ticker"])
+    if len(out) < 1000:
+        return None
+
+    out["Ticker"] = out["Ticker"].apply(_normalize_asx_ticker)
+    if "Sector" in out.columns:
+        # Commit L: this column is really "GICS industry group" (the
+        # source's own header name), one level finer-grained than the
+        # "Sector" name it's stored under - normalized to its parent
+        # GICS sector here, once, at the source, so every downstream
+        # reader (fetch_asx300()'s tail, the market-cap ranking, every
+        # sector-universe filter) sees real sector-level values, the
+        # same granularity Wikipedia's live ASX 200 scrape already
+        # provides for the first 200 - see _normalize_gics_sector()'s
+        # own docstring.
+        out["Sector"] = out["Sector"].astype(str).str.strip().apply(_normalize_gics_sector)
+    else:
+        out["Sector"] = None
+    return out[["Ticker", "Company", "Sector"]]
+
+
+def window_shows_no_trading(hist, min_rows=5):
+    """True only when a price/volume DataFrame `hist` (a "Close"/
+    "Volume" window, most recent row LAST - exactly what yf.Ticker(...).
+    history() returns) shows NO positive evidence of real trading over
+    its own last `min_rows` rows: fewer than two DISTINCT closes in
+    that window, AND zero/missing volume throughout it. Fewer than
+    `min_rows` rows at all is INCONCLUSIVE, not evidence of anything -
+    returns False (don't guess from too little data).
+
+    Commit I/J (21 Sep 2026): the GHOST-PRICE shape this specifically
+    catches - yfinance keeps serving the LAST real print for some
+    delisted/halted/merged names forever, as if the market were still
+    quoting them, found live in a 2026-09-20 DB backup: QUB.AX (Qube,
+    taken over) shows an exact 5.11 close on every single day from
+    2026-08-20 to 2026-09-17; LSF.AX (L1 Long Short Fund, merged into
+    L1G.AX) is unchanged across its last several scans too. A plain
+    "did history() return rows at all" check can't tell either apart
+    from genuine trading - a non-empty, flat, silent window passes that
+    one cleanly. Requiring actual evidence (a moving close, or any real
+    volume) is what catches it - a real quote moves, or trades, or
+    both; a ghost print does neither.
+
+    Extracted (Commit J) from what was _looks_delisted()'s own inline
+    evidence check (Commit I) so nightly_scan.py's per-ticker scan loop
+    - which already has a live-fetched price/volume window in hand at
+    the point it needs this - can call the SAME evidence rule without
+    triggering a second, redundant yfinance fetch per ticker (this
+    module's own _looks_delisted() below still does its own fetch,
+    since its caller - the ASX cross_source check - has no window of
+    its own already in hand)."""
+    if hist is None or len(hist) < min_rows:
+        return False
+    window = hist.tail(min_rows)
+    closes = window["Close"].dropna() if "Close" in window.columns else None
+    volumes = window["Volume"].dropna() if "Volume" in window.columns else None
+    has_distinct_closes = closes is not None and closes.nunique() >= 2
+    has_volume = volumes is not None and bool((volumes > 0).any())
+    return not (has_distinct_closes or has_volume)
+
+
+def _looks_delisted(ticker, trading_days=5):
+    """True only when there is POSITIVE evidence `ticker` has genuinely
+    stopped trading - False in every other case, INCLUDING a yfinance
+    lookup that itself fails. Used by _check_asx_listed_companies()'s
+    cross_source check to tell apart the two different reasons a live
+    ASX 200 ticker can be missing from the listed-companies source:
+    Wikipedia's own ASX 200 page still listing a name the market has
+    actually stopped trading (a takeover delisting Wikipedia hasn't
+    caught up with yet - three of Commit I's own 8 missing tickers,
+    IFL/QUB/NSR, are suspected takeover delistings, not source gaps),
+    versus the source genuinely missing a ticker that's still trading
+    today (a real gap - the failure this whole check exists to catch).
+
+    GHOST PRICES / LOOKUP FAILURE DIRECTION: see window_shows_no_
+    trading() above for the ghost-price evidence rule this delegates
+    to (fetched fresh here via a dedicated history() call, since this
+    function's own caller has no window already in hand - contrast
+    nightly_scan.py's own guard, which calls that function directly on
+    a window it already fetched). A yfinance call that raises or times
+    out tells you NOTHING about whether the ticker is still trading -
+    it is not evidence of delisting. Returning True here on an
+    exception (as an earlier draft of this function did) would let a
+    yfinance OUTAGE masquerade as proof every missing ticker had been
+    delisted, silently waving a genuinely stale source through
+    cross_source with a clean bill of health it never earned. This
+    function therefore fails CLOSED (returns False, "not confirmed
+    delisted") on any lookup problem of its own - the caller then
+    treats an unconfirmed ticker as still trading, which is the
+    direction that BLAMES the source rather than excusing it, exactly
+    the fail-safe direction a health check needs."""
+    try:
+        hist = yf.Ticker(ticker).history(period=f"{trading_days}d")
+    except Exception:
+        return False
+    return window_shows_no_trading(hist, min_rows=1) if hist is not None and not hist.empty else True
+
+
+def _check_asx_listed_companies(df, df200):
+    """Five checks against a freshly-parsed _fetch_asx_listed_companies_
+    raw() frame - a row-count floor alone already proved insufficient
+    (asx300list.com/allordslist.com both passed one for five years while
+    frozen; ASXListedCompanies.csv then passed one too, header stamped
+    with today's date, rows months stale - see ASX_LISTED_COMPANIES_
+    CSV_URL's own comment). Returns {check_name: {"ok": bool, "detail":
+    str}}; never raises.
+
+    - cross_source: every ticker in the LIVE Wikipedia ASX 200 must
+      appear in the source, UNLESS yfinance confirms it hasn't actually
+      traded in 5 trading days (Commit I, 21 Sep 2026: the ORIGINAL
+      version of this check blamed the wrong side whenever Wikipedia's
+      own ASX 200 page was the stale one - e.g. still listing a takeover
+      delisting - which would otherwise mark a perfectly current source
+      as stale forever, for a gap that was never its own). Fails on
+      every missing ticker _looks_delisted() does NOT confirm as
+      delisted - i.e. "still trading" is the default whenever that
+      confirmation isn't there (a real gap, or an unconfirmed lookup
+      of its own - see _looks_delisted()'s own docstring for why a
+      yfinance failure must count as "still trading", not "delisted").
+    - wikipedia_delistings: informational only, never gates (same
+      "never gates accept/reject" convention _rebuild_market_cap_
+      ranking()'s own "age" check already uses) - names the missing
+      tickers _looks_delisted() DID confirm, so they're still visible
+      on the Admin Dashboard's Source health panel rather than silently
+      dropped from view.
+    - drift: row count within _ASX_CSV_DRIFT_BAND of last-known-good.
+    - canary: ANY of five tickers known to have been listed after the
+      old (asx300list.com-era) sources' frozen date is present
+      (_ASX_CSV_CANARY_TICKERS) - OR, not AND, so one of the five being
+      acquired/delisted/renamed can't permanently fail this check on
+      its own (see that constant's own comment).
+    - freshness_canary (Commit I): the check class that would have
+      caught THIS source's own failure - a MUST-be-present pair (DNL,
+      L1G - identities that only exist after 2025's renames) AND a
+      MUST-be-absent trio (IPL, SQ2, SVW - the identities those renames
+      retired), both required - see _ASX_CSV_FRESHNESS_CANARY_PRESENT/
+      _ABSENT's own comment for why this, unlike `canary` above, is
+      immune to a merely-newer-than-2021 freeze."""
+    checks = {}
+
+    if df200 is not None and not df200.empty:
+        missing_200 = sorted(set(df200["Ticker"]) - set(df["Ticker"]))
+        # "still trading" is the DEFAULT for a missing ticker - only one
+        # confirmed delisted by _looks_delisted() moves to the other
+        # bucket. This is deliberate, not an oversight: it's what makes
+        # an unconfirmed lookup (a yfinance error) land on the side that
+        # blames the source, per that function's own docstring.
+        wikipedia_stale = [t for t in missing_200 if _looks_delisted(t)]
+        still_trading = [t for t in missing_200 if t not in wikipedia_stale]
+        checks["cross_source"] = {
+            "ok": not still_trading,
+            "detail": (
+                "all live ASX 200 tickers present" if not missing_200 else
+                "all missing ASX 200 ticker(s) look Wikipedia-stale (not priced by "
+                "yfinance in 5 trading days), not a source gap - see wikipedia_delistings"
+                if not still_trading else
+                f"{len(still_trading)} ASX 200 ticker(s) missing from the source while "
+                f"still trading: " + ", ".join(still_trading[:10])
+                + (", ..." if len(still_trading) > 10 else "")
+            ),
+        }
+        checks["wikipedia_delistings"] = {
+            "ok": True,
+            "detail": (
+                "none" if not wikipedia_stale else
+                f"{len(wikipedia_stale)} ASX 200 ticker(s) missing from the source AND "
+                f"not priced by yfinance in 5 trading days - likely Wikipedia-stale "
+                f"delistings, not this source's own problem: " + ", ".join(wikipedia_stale)
+            ),
+        }
+    else:
+        checks["cross_source"] = {"ok": True, "detail": "skipped - live ASX 200 itself unavailable"}
+        checks["wikipedia_delistings"] = {"ok": True, "detail": "skipped - live ASX 200 itself unavailable"}
+
+    prior = source_health_store.get(_ASX_CSV_SOURCE_NAME)
+    prior_count = (prior or {}).get("last_good_row_count")
+    if prior_count:
+        lo, hi = prior_count * (1 - _ASX_CSV_DRIFT_BAND), prior_count * (1 + _ASX_CSV_DRIFT_BAND)
+        ok = lo <= len(df) <= hi
+        checks["drift"] = {
+            "ok": ok,
+            "detail": f"{len(df)} row(s) vs last-known-good {prior_count} "
+                     f"(expected {int(lo)}-{int(hi)})",
+        }
+    else:
+        checks["drift"] = {"ok": True, "detail": "skipped - no last-known-good on record yet"}
+
+    # Commit G: passes if ANY canary ticker is present, not all - see
+    # _ASX_CSV_CANARY_TICKERS' own comment for why this is OR, not AND.
+    have = set(df["Ticker"])
+    present_canary = [t for t in _ASX_CSV_CANARY_TICKERS if t in have]
+    checks["canary"] = {
+        "ok": bool(present_canary),
+        "detail": (f"present: {', '.join(present_canary)}" if present_canary
+                  else f"none present (checked: {', '.join(_ASX_CSV_CANARY_TICKERS)})"),
+    }
+
+    # Commit I: BOTH halves required - see _ASX_CSV_FRESHNESS_CANARY_
+    # PRESENT/_ABSENT's own comment for why this is AND, not OR, unlike
+    # `canary` above.
+    missing_present = [t for t in _ASX_CSV_FRESHNESS_CANARY_PRESENT if t not in have]
+    still_present_absent = [t for t in _ASX_CSV_FRESHNESS_CANARY_ABSENT if t in have]
+    checks["freshness_canary"] = {
+        "ok": not missing_present and not still_present_absent,
+        "detail": (
+            "current: all of " + ", ".join(_ASX_CSV_FRESHNESS_CANARY_PRESENT)
+            + " present, none of " + ", ".join(_ASX_CSV_FRESHNESS_CANARY_ABSENT) + " present"
+            if not missing_present and not still_present_absent else
+            "; ".join(filter(None, [
+                f"missing post-rename code(s): {', '.join(missing_present)}" if missing_present else "",
+                f"still carries retired code(s): {', '.join(still_present_absent)}" if still_present_absent else "",
+            ]))
+        ),
+    }
+
+    return checks
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_asx_listed_companies():
+    """Public wrapper around _fetch_asx_listed_companies_raw() - every
+    OTHER function in this module calls this, never the raw fetcher
+    directly. Runs _check_asx_listed_companies() against the fresh
+    parse before trusting it:
+
+    - Parse failed, or every check passed: fresh data flows through as
+      normal. A clean pass ALSO becomes the new source_health_store
+      last-known-good and clears any stale flag - a source that was
+      down and has recovered goes back to reporting healthy with no
+      manual reset needed.
+    - Parse failed, or any check failed: does NOT return the bad data
+      (or None, the way a plain row-count guard used to silently
+      degrade) - falls back to source_health_store's last-known-good
+      snapshot instead, and marks the source stale. Alerts the owner
+      (alert_engine.send_source_health_alert) exactly once per NEW
+      failure - a source already marked stale from a prior check
+      doesn't re-alert every single day it stays down, same
+      alert-fatigue reasoning as a real price alert's own cooldown."""
+    df = _fetch_asx_listed_companies_raw()
+    checks = (_check_asx_listed_companies(df, fetch_asx200()) if df is not None
+             else {"parse": {"ok": False, "detail": "fetch or parse failed entirely"}})
+    all_ok = df is not None and all(c["ok"] for c in checks.values())
+
+    if all_ok:
+        source_health_store.record_success(_ASX_CSV_SOURCE_NAME, df.to_dict("records"), checks)
+        return df
+
+    prior = source_health_store.get(_ASX_CSV_SOURCE_NAME)
+    was_already_stale = bool(prior and prior.get("stale"))
+    reason = "fetch/parse failed" if df is None else "failed health check(s)"
+    source_health_store.record_failure(_ASX_CSV_SOURCE_NAME, checks, reason)
+    if not was_already_stale:
+        try:
+            alert_engine.send_source_health_alert(_ASX_CSV_SOURCE_NAME, checks, reason)
+        except Exception:
+            _log.exception("scanner_engine: source-health alert send failed for %s", _ASX_CSV_SOURCE_NAME)
+    _log.warning("scanner_engine: %s failed health check (%s) - serving last-known-good instead",
+                _ASX_CSV_SOURCE_NAME, reason)
+    return source_health_store.last_good_dataframe(_ASX_CSV_SOURCE_NAME)
+
+
+# Commit D (20 Sep 2026): the market-cap ranking used to run its whole
+# ~2,300-lookup pricing pass inline, the first time any caller (a web
+# visitor picking ASX 300 on the Scanner page included) asked for it
+# after any cold start - st.cache_data's cache is per-process/in-memory,
+# so a Railway redeploy re-arms this every time. And a throttled pass
+# shipped a silently partial ranking: candidates[candidates["_cap"] > 0]
+# can't tell "this company genuinely has no market cap" from "yfinance
+# throttled me" - Commit 2's health checks validate the CSV, not what
+# gets built from it. Fixed the same way as Commit 2 fixed the CSV: all
+# pricing now happens ONLY in the nightly job
+# (_rebuild_market_cap_ranking(), called from nightly_scan.py before the
+# per-universe scan loop) and is persisted via source_health_store under
+# _MARKET_CAP_RANKING_SOURCE_NAME; _asx_non200_by_marketcap() below - the
+# function every web request still goes through, via fetch_asx300()/
+# fetch_allords() - is now a pure read of that file. See
+# _rebuild_market_cap_ranking()'s own docstring for the incremental
+# repricing / failure-handling design.
+
+# A company ranked ~1,800th by market cap is not entering the ASX 300
+# tail (ranks ~201-300) overnight - only this band of ranks just outside
+# today's cut gets re-priced every night, on top of any ticker newly
+# added to the CSV since the last run. Wide enough either side of the
+# ~201-300/~301-500 cuts fetch_asx300()/fetch_allords() actually take to
+# absorb realistic night-to-night movement.
+_MARKET_CAP_BOUNDARY_LO = 150
+_MARKET_CAP_BOUNDARY_HI = 700
+
+# Reject the whole nightly ranking (keep last-known-good) if fewer than
+# this fraction of the tickers actually due for pricing this run came
+# back with a real answer, even after one retry - publishing a ranking
+# built from a throttled minority would silently reorder or drop names
+# that never got a fresh price. Same generous-but-real-signal reasoning
+# as _ASX_CSV_DRIFT_BAND above.
+_MARKET_CAP_PRICED_RATIO_BAND = 0.90
+
+# Same +/-15% row-count drift guard as _ASX_CSV_DRIFT_BAND, applied to
+# the published ranking's own row count vs its last-known-good.
+_MARKET_CAP_ROW_COUNT_DRIFT_BAND = 0.15
+
+# Purely informational (see _rebuild_market_cap_ranking()'s own comment
+# on why this never gates accept/reject) - how many days old the
+# ranking being served is allowed to get before it's worth a look, given
+# the nightly cadence is meant to refresh it every single day.
+_MARKET_CAP_AGE_BAND_DAYS = 4
+
+
+def _price_tickers(tickers, log=None):
+    """Prices `tickers` via market_cap_engine.get_market_cap_checked(),
+    threaded at max_workers=8 (same polite-to-yfinance cap this module's
+    other bulk lookups use), with one retry pass over whatever failed
+    the first time - a single throttled response is often transient.
+
+    Returns (caps: {ticker: market_cap}, failed: set-of-tickers) -
+    `failed` holds only tickers whose lookup itself came back looking
+    throttled/empty on BOTH attempts (market_cap_engine.get_market_cap_
+    checked()'s ok=False) - a real, populated response reporting a
+    genuine zero market cap is NOT a failure and lands in `caps` like
+    any other result, exactly the distinction Commit D exists to make."""
+    _log_fn = log or (lambda msg: _log.info(msg))
+
+    def _lookup(ticker):
+        cap, ok = market_cap_engine.get_market_cap_checked(ticker)
+        return ticker, cap, ok
+
+    def _price_pass(ticker_list):
+        pass_caps, pass_failed = {}, set()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            for ticker, cap, ok in pool.map(_lookup, ticker_list):
+                if ok:
+                    pass_caps[ticker] = cap
+                else:
+                    pass_failed.add(ticker)
+        return pass_caps, pass_failed
+
+    start = time.time()
+    caps, failed = _price_pass(tickers)
+    if failed:
+        retry_caps, retry_failed = _price_pass(sorted(failed))
+        caps.update(retry_caps)
+        failed = retry_failed
+    _log_fn(
+        f"[scanner_engine] market-cap ranking: priced {len(tickers)} "
+        f"ticker(s) in {time.time() - start:.1f}s "
+        f"({len(tickers) - len(failed)} ok, {len(failed)} failed after retry)"
+    )
+    return caps, failed
+
+
+def _rebuild_market_cap_ranking(force_full=False, log=None):
+    """The ONLY place the market-cap ranking is priced - called once a
+    night from nightly_scan.py, before the per-universe scan loop that
+    depends on it. Never call this from a web request path.
+
+    Prices only: (a) candidates new to fetch_asx_listed_companies()
+    since the last run (never priced before, for any reason - new
+    listing, or newly dropped out of the live ASX 200), and (b) whatever
+    is currently ranked _MARKET_CAP_BOUNDARY_LO.._MARKET_CAP_BOUNDARY_HI
+    - the only band close enough to fetch_asx300()/fetch_allords()'s own
+    cuts for a night-to-night market move to plausibly matter.
+    force_full=True (or no persisted ranking yet at all) prices every
+    candidate instead. Every candidate NOT re-priced this run keeps its
+    previous market cap - carried forward, never re-derived or dropped.
+
+    Publishes through source_health_store exactly like fetch_asx_listed_
+    companies() does for the CSV: a clean pass (priced ratio and row-
+    count both within band) becomes the new last-known-good, clearing
+    any stale flag; a failed pass keeps serving whatever was already
+    there and alerts the owner once per new failure
+    (alert_engine.send_source_health_alert), never on every single day a
+    failure stays unresolved.
+
+    Bootstrap exemption (Commit F): when there's no last-known-good yet
+    at all, priced_ratio can't be allowed to reject the pass - rejecting
+    would mean nothing is ever published, so the NEXT run is cold again
+    too (same ~2,300-candidate full pass, same throttling exposure) and
+    can reject itself forever. On a first-ever pass the ranking publishes
+    regardless of priced_ratio - but a pass that only got there via this
+    exemption is published AND immediately marked stale (one alert, one
+    consecutive_failures tick), so it's visibly not-ok on the Source
+    health panel rather than silently reported healthy. A later run that
+    fills in the gaps left by this one is compared against that stale
+    baseline with the row-count drift check itself skipped (growth off
+    a known-partial baseline is expected, not drift) - so the very next
+    clean pass clears stale on its own, the normal way (a bare record_
+    success() with nothing layered after it), the moment priced_ratio
+    clears the band for real.
+
+    A ranking-age check is recorded on every run too, but is NEVER part
+    of the accept/reject decision - see the comment right above where
+    it's computed for why gating on it could permanently wedge the
+    ranking (a good fresh pass rejected because the OLD data happened to
+    be stale would mean last-known-good never advances, so it stays
+    stale forever).
+
+    Returns the DataFrame that ends up being served (freshly published,
+    or the retained last-known-good on a rejected/skipped run) - None
+    only if the CSV/live ASX 200 themselves are unavailable, exactly
+    like the old inline version's contract."""
+    _log_fn = log or (lambda msg: _log.info(msg))
+    listed = fetch_asx_listed_companies()
+    df200 = fetch_asx200()
+    if listed is None or df200 is None:
+        _log_fn("[scanner_engine] market-cap ranking: CSV or live ASX 200 unavailable, skipping rebuild")
+        return None
+
+    candidates = listed[~listed["Ticker"].isin(set(df200["Ticker"]))].copy()
+    if candidates.empty:
+        return candidates
+    candidate_tickers = set(candidates["Ticker"])
+    company_by_ticker = dict(zip(candidates["Ticker"], candidates["Company"]))
+    sector_by_ticker = dict(zip(candidates["Ticker"], candidates["Sector"]))
+
+    prior = source_health_store.get(_MARKET_CAP_RANKING_SOURCE_NAME)
+    prior_rows = (prior or {}).get("last_good_rows") or []
+    prior_cap_by_ticker = {r["Ticker"]: r.get("MarketCap", 0) for r in prior_rows}
+    prior_rank_by_ticker = {r["Ticker"]: i + 1 for i, r in enumerate(prior_rows)}
+
+    if force_full or not prior_rows:
+        to_price = sorted(candidate_tickers)
+        _log_fn(f"[scanner_engine] market-cap ranking: full pass, {len(to_price)} candidate(s)")
+    else:
+        new_tickers = candidate_tickers - set(prior_cap_by_ticker)
+        boundary = {
+            t for t, rank in prior_rank_by_ticker.items()
+            if _MARKET_CAP_BOUNDARY_LO <= rank <= _MARKET_CAP_BOUNDARY_HI and t in candidate_tickers
+        }
+        to_price = sorted(new_tickers | boundary)
+        _log_fn(
+            f"[scanner_engine] market-cap ranking: incremental pass, "
+            f"{len(to_price)} of {len(candidate_tickers)} candidate(s) due "
+            f"({len(new_tickers)} new, {len(boundary)} in boundary band "
+            f"{_MARKET_CAP_BOUNDARY_LO}-{_MARKET_CAP_BOUNDARY_HI})"
+        )
+
+    caps, failed = _price_tickers(to_price, log=_log_fn) if to_price else ({}, set())
+
+    # Every candidate's cap: freshly priced where it was due, carried
+    # over from last-known-good otherwise. A candidate that was due
+    # (new, never priced before) and still failed after retry is
+    # excluded entirely - there is no prior cap to fall back to and
+    # nothing to rank it by, same as the old inline version dropped an
+    # unpriced ticker.
+    final_caps = {}
+    for t in candidate_tickers:
+        if t in caps:
+            final_caps[t] = caps[t]
+        elif t in prior_cap_by_ticker:
+            final_caps[t] = prior_cap_by_ticker[t]
+    # A genuine zero (ok=True, cap=0) carries no ranking signal - same
+    # "nothing to rank it by" treatment the old version gave an unpriced
+    # ticker, but arrived at without conflating the two.
+    final_caps = {t: cap for t, cap in final_caps.items() if cap and cap > 0}
+
+    priced_ok_count = len(to_price) - len(failed)
+    priced_ratio = (priced_ok_count / len(to_price)) if to_price else 1.0
+    row_count = len(final_caps)
+    prior_row_count = len(prior_rows)
+
+    checks = {
+        "priced_ratio": {
+            "ok": priced_ratio >= _MARKET_CAP_PRICED_RATIO_BAND,
+            "detail": (
+                f"{priced_ok_count}/{len(to_price)} due lookup(s) ok "
+                f"({priced_ratio:.0%}, band >= {_MARKET_CAP_PRICED_RATIO_BAND:.0%})"
+                if to_price else "nothing was due for pricing this run"
+            ),
+        },
+    }
+    # Commit F: also skip the drift comparison when the last-known-good
+    # being compared against was ITSELF a bootstrap-partial publish
+    # (prior.stale) - that baseline is already known-incomplete (some
+    # candidates missing because they failed to price with no fallback
+    # available yet), so a later run successfully pricing those same
+    # candidates for the first time is expected, wanted growth, not
+    # drift. Without this, a bootstrap-partial's own recovery run would
+    # get rejected by this check for the "wrong" reason (row count
+    # legitimately going UP as gaps fill in), permanently keeping the
+    # source stale even once pricing recovers.
+    prior_was_stale = bool(prior and prior.get("stale"))
+    if prior_row_count and not prior_was_stale:
+        lo = prior_row_count * (1 - _MARKET_CAP_ROW_COUNT_DRIFT_BAND)
+        hi = prior_row_count * (1 + _MARKET_CAP_ROW_COUNT_DRIFT_BAND)
+        checks["row_count"] = {
+            "ok": lo <= row_count <= hi,
+            "detail": f"{row_count} row(s) vs last-known-good {prior_row_count} (expected {int(lo)}-{int(hi)})",
+        }
+    elif prior_was_stale:
+        checks["row_count"] = {
+            "ok": True,
+            "detail": f"skipped - last-known-good ({prior_row_count} rows) was itself a stale/partial publish, growth is expected",
+        }
+    else:
+        checks["row_count"] = {"ok": True, "detail": "skipped - no last-known-good on record yet"}
+
+    # Informational only - see this function's own docstring for why age
+    # never gates accept/reject.
+    prior_good_at = (prior or {}).get("last_good_at")
+    if prior_good_at:
+        try:
+            age_days = (
+                datetime.now(timezone.utc) - datetime.fromisoformat(prior_good_at)
+            ).total_seconds() / 86400
+            checks["age"] = {
+                "ok": age_days <= _MARKET_CAP_AGE_BAND_DAYS,
+                "detail": f"last-known-good was {age_days:.1f} day(s) old going into this run (band <= {_MARKET_CAP_AGE_BAND_DAYS})",
+            }
+        except ValueError:
+            checks["age"] = {"ok": True, "detail": "skipped - unreadable last-known-good timestamp"}
+    else:
+        checks["age"] = {"ok": True, "detail": "skipped - no last-known-good on record yet"}
+
+    all_ok = checks["priced_ratio"]["ok"] and checks["row_count"]["ok"]
+
+    # Commit F (bootstrap exemption): row_count already skips itself (ok
+    # True) when there's no last-known-good to compare against; priced_
+    # ratio had no equivalent, so a cold first pass over ~2,300 tickers -
+    # exactly where yfinance throttling is most likely - could reject
+    # itself, leaving nothing published. The next night starts cold
+    # again (still no baseline), the cheap incremental path can never
+    # kick in, and the ranking is stuck rejecting itself forever. Once a
+    # baseline exists, priced_ratio still gates normally below - this
+    # only ever fires on the very first publish.
+    is_bootstrap = not prior_row_count
+    publish = all_ok or is_bootstrap
+    # A publish that only happened because of the bootstrap exemption,
+    # despite priced_ratio actually failing - published (so there's
+    # something on disk to serve at all) but still visibly not-ok, not
+    # silently folded into a clean pass. Handled below by publishing
+    # (record_success, since that's the only source_health_store
+    # function that writes last_good_rows at all) and then immediately
+    # marking the result stale (record_failure, which never touches
+    # last_good_rows) - decoupling "was something published" from "is
+    # the source reporting healthy", which all_ok alone can't express.
+    bootstrap_partial = is_bootstrap and not checks["priced_ratio"]["ok"]
+
+    ranked_df = pd.DataFrame(
+        {
+            "Ticker": t,
+            "Company": company_by_ticker.get(t),
+            "Sector": sector_by_ticker.get(t),
+            "MarketCap": final_caps[t],
+        }
+        for t in final_caps
+    )
+    if not ranked_df.empty:
+        ranked_df = ranked_df.sort_values("MarketCap", ascending=False).reset_index(drop=True)
+
+    if publish:
+        source_health_store.record_success(
+            _MARKET_CAP_RANKING_SOURCE_NAME, ranked_df.to_dict("records"), checks
+        )
+        if bootstrap_partial:
+            # Composes the two existing source_health_store primitives
+            # rather than adding a third write path: record_success()
+            # just above already persisted the partial ranking as last-
+            # known-good (last_good_at/last_good_row_count/last_good_
+            # rows). record_failure() never touches those three fields -
+            # only stale/last_check_at/last_checks/last_failure_reason/
+            # consecutive_failures - so calling it immediately after
+            # layers "stale, one failure recorded" on top of the rows
+            # that were just published, without touching source_health_
+            # store.py at all. This is what makes the Source health
+            # panel show 🔴 Stale for a bootstrap-partial publish (not
+            # just a failing priced_ratio row inside an otherwise-green
+            # check), and what "next incremental run clears stale" (see
+            # this function's own docstring) actually refers to: the
+            # next run's own clean record_success() call, with no
+            # trailing record_failure(), is what clears it.
+            reason = "bootstrap publish below priced-ratio band - no prior baseline to fall back to"
+            source_health_store.record_failure(_MARKET_CAP_RANKING_SOURCE_NAME, checks, reason)
+            _log_fn(
+                f"[scanner_engine] market-cap ranking: bootstrap publish is "
+                f"PARTIAL ({checks['priced_ratio']['detail']}) - published "
+                f"anyway since no last-known-good existed to reject back to, "
+                f"marked stale"
+            )
+            try:
+                alert_engine.send_source_health_alert(_MARKET_CAP_RANKING_SOURCE_NAME, checks, reason)
+            except Exception:
+                _log.exception(
+                    "scanner_engine: source-health alert send failed for %s",
+                    _MARKET_CAP_RANKING_SOURCE_NAME,
+                )
+        else:
+            _log_fn(f"[scanner_engine] market-cap ranking: published, {len(ranked_df)} row(s)")
+        return ranked_df
+
+    was_already_stale = bool(prior and prior.get("stale"))
+    reason = (
+        "priced ratio below band" if not checks["priced_ratio"]["ok"]
+        else "row-count drift vs last-known-good"
+    )
+    source_health_store.record_failure(_MARKET_CAP_RANKING_SOURCE_NAME, checks, reason)
+    if not was_already_stale:
+        try:
+            alert_engine.send_source_health_alert(_MARKET_CAP_RANKING_SOURCE_NAME, checks, reason)
+        except Exception:
+            _log.exception(
+                "scanner_engine: source-health alert send failed for %s",
+                _MARKET_CAP_RANKING_SOURCE_NAME,
+            )
+    _log_fn(
+        f"[scanner_engine] market-cap ranking: rejected ({reason}) - "
+        f"serving last-known-good instead"
+    )
+    return source_health_store.last_good_dataframe(_MARKET_CAP_RANKING_SOURCE_NAME)
+
+
+def _asx_non200_by_marketcap():
+    """Read-only web-path accessor. Every fetch_asx_listed_companies()
+    row NOT already in the live Wikipedia ASX 200, ranked by market cap
+    descending - the shared ranking fetch_asx300()/fetch_allords() below
+    both slice from.
+
+    Commit D (20 Sep 2026): no longer prices anything itself - see
+    _rebuild_market_cap_ranking() above, the nightly-only function that
+    does, and this function's own module-level comment block for why. A
+    plain file read via source_health_store, same convention as fetch_
+    asx_listed_companies() reading the CSV's own last-known-good: no
+    network call, no thread pool, nothing that can block a web request.
+
+    Returns the last-known-good ranking (stale or not - a stale flag
+    here means the LATEST nightly attempt was rejected, not that this
+    data is unusable; it's still the best real ranking on file), or None
+    if nothing has ever been published yet - callers already treat None
+    as "show unavailable" rather than hanging or guessing."""
+    return source_health_store.last_good_dataframe(_MARKET_CAP_RANKING_SOURCE_NAME)
+
+
+# ~300/~500 total once added to the live 200 - matches the real indices'
+# own approximate sizes closely enough for a derived stand-in; see
+# fetch_asx300()/fetch_allords()'s own "label honestly" comments.
+_ASX300_TAIL_SIZE = 100
+_ALLORDS_TAIL_SIZE = 200
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_asx300():
     """
-    Primary source: asx300list.com (a real ~300+ row Code/Company table).
-    Wikipedia's own S&P/ASX 300 page is kept only as a secondary fallback -
-    it doesn't carry the full constituent table, only a ~10-row "Top Ten"
-    one, so the min_rows=100 guard makes sure that's never silently
-    accepted as if it were the whole universe.
+    Rebuilt (20 Sep 2026) as a nested slice of ONE ranking, not a
+    separate scrape: Wikipedia's live ASX 200 (authoritative, unchanged)
+    plus the next ~100 ASX-listed companies by market cap (see
+    _asx_non200_by_marketcap() above). The old primary source,
+    asx300list.com, turned out to be a frozen 28 April 2021 snapshot -
+    verified live 20 Sep 2026: both GQG.AX (listed since 2021) and
+    GGP.AX were missing from it - so it, its Wikipedia secondary
+    fallback, and both URLs are gone entirely.
 
-    Neither source carries a Sector column for the full 300, so sector data
-    is merged in afterwards from fetch_asx200()'s live GICS sectors (covers
-    the ~200 largest names; the remaining ~100 names show Sector=None and
-    are only reachable via the "All" sector filter).
+    DERIVED, not real S&P/ASX 300 index membership - a market-cap
+    ranking approximation past the real, live ASX 200. Labelled as such
+    everywhere this universe's source is surfaced (get_universe_pool()'s
+    own label string below).
+
+    Sector now comes straight from source for every row - Wikipedia's
+    own GICS sector for the 200, the ASX's own GICS industry group (a
+    finer-grained tier than "sector", but real and current) for the
+    rest - no separate sector-merge pass needed any more; the ~100
+    names that used to show Sector=None under the old source no longer
+    do.
+
+    _asx_backfill_missing_subset_tickers() is still called at the end as
+    belt-and-braces: containment is now structural (this IS the live
+    ASX 200 plus more, not a second independent fetch of it), so it
+    should never actually do anything, but a free defensive check
+    against the unexpected costs nothing - see
+    verify_au_index_containment() for the same reasoning applied as an
+    explicit regression guard.
     """
-    df = None
-    try:
-        html = _get(ASX300LIST_URL)
-        df = _parse_table(html, ["code"], ["sector", "industry"], _normalize_asx_ticker, min_rows=100)
-    except Exception:
-        df = None
-
-    if df is None:
-        try:
-            html = _get(ASX300_WIKI_URL)
-            df = _parse_table(
-                html, ["code", "ticker", "symbol"], ["sector", "industry"], _normalize_asx_ticker, min_rows=100
-            )
-        except Exception:
-            df = None
-
-    if df is None:
-        return None
-
     df200 = fetch_asx200()
-    if df200 is not None:
-        sector_by_ticker = dict(zip(df200["Ticker"], df200["Sector"]))
-        df = df.copy()
-        df["Sector"] = df["Ticker"].map(sector_by_ticker).combine_first(df["Sector"])
-
-    return df
+    if df200 is None:
+        return None
+    ranked = _asx_non200_by_marketcap()
+    if ranked is None or ranked.empty:
+        return None
+    tail = ranked.head(_ASX300_TAIL_SIZE)[["Ticker", "Sector"]]
+    df = pd.concat([df200[["Ticker", "Sector"]], tail], ignore_index=True)
+    return _asx_backfill_missing_subset_tickers(df, df200, "ASX 300", "ASX 200")
 
 
 # -----------------------------------------------------------------
@@ -957,28 +2012,37 @@ def _resolve_russell1000():
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_allords():
     """All Ordinaries (~500 names, effectively "every ASX company big
-    enough to be liquid"). Primary source allordslist.com, by direct
-    analogy to fetch_asx300()'s own asx300list.com fetcher (see
-    ALLORDSLIST_URL's comment for the verification caveat). Sector is
-    merged in afterwards from fetch_asx200()'s live GICS sectors, same
-    as fetch_asx300() does - neither the All Ords nor ASX 300 list
-    sources carry their own Sector column for the full membership."""
-    try:
-        html = _get(ALLORDSLIST_URL)
-        df = _parse_table(html, ["code"], ["sector", "industry"], _normalize_asx_ticker, min_rows=400)
-    except Exception:
-        df = None
+    enough to be liquid"). Rebuilt (20 Sep 2026) the same way
+    fetch_asx300() above is - a nested slice of the SAME
+    _asx_non200_by_marketcap() ranking, this time taking the next ~200
+    past fetch_asx300()'s own ~100 (so overall: live ASX 200, then ranks
+    201-300 in fetch_asx300(), then ranks 301-500 here). The old
+    allordslist.com source is gone for the same reason as
+    asx300list.com - see fetch_asx300()'s own comment for the verified
+    28 April 2021 snapshot / GQG.AX+GGP.AX finding.
 
-    if df is None:
+    DERIVED, not real All Ordinaries index membership - see
+    fetch_asx300()'s own "label honestly" note; same applies here, and
+    get_universe_pool()'s label string below says so.
+
+    Sector comes straight from fetch_asx300() (already source-sectored)
+    for the shared rows, and the ASX CSV's own GICS industry group for
+    the new ~200 - no separate sector-merge pass, same as fetch_asx300().
+
+    _asx_backfill_missing_subset_tickers() against fetch_asx300() is
+    kept as belt-and-braces - see fetch_asx300()'s own comment on why
+    this should never actually fire now that containment is structural."""
+    df300 = fetch_asx300()
+    if df300 is None:
         return None
-
-    df200 = fetch_asx200()
-    if df200 is not None:
-        sector_by_ticker = dict(zip(df200["Ticker"], df200["Sector"]))
-        df = df.copy()
-        df["Sector"] = df["Ticker"].map(sector_by_ticker).combine_first(df["Sector"])
-
-    return df
+    ranked = _asx_non200_by_marketcap()
+    if ranked is None or ranked.empty:
+        return None
+    already_in = set(df300["Ticker"])
+    remaining = ranked[~ranked["Ticker"].isin(already_in)]
+    tail = remaining.head(_ALLORDS_TAIL_SIZE)[["Ticker", "Sector"]]
+    df = pd.concat([df300[["Ticker", "Sector"]], tail], ignore_index=True)
+    return _asx_backfill_missing_subset_tickers(df, df300, "All Ordinaries", "ASX 300")
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -997,8 +2061,9 @@ def fetch_asx50():
         html = _get(ASX50_WIKI_URL)
     except Exception:
         return None
-    return _parse_table(html, ["symbol", "code"], ["sector", "industry"],
-                         _normalize_asx_ticker, min_rows=40, max_rows=55)
+    df = _parse_table(html, ["symbol", "code"], ["sector", "industry"],
+                      _normalize_asx_ticker, min_rows=40, max_rows=55)
+    return _asx_backfill_missing_subset_tickers(df, fetch_asx20(), "ASX 50", "ASX 20")
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -1007,13 +2072,75 @@ def fetch_asx100():
     this one (see ASX100_WIKI_URL's comment) - tried anyway since it's
     free to attempt and harmless on failure; get_universe_pool() falls
     back to ASX 200 (live) if this returns None, exactly like ASX 300's
-    own existing fallback chain."""
+    own existing fallback chain.
+
+    Index containment (20 Sep 2026): backfilled against fetch_asx50() -
+    see _asx_backfill_missing_subset_tickers()'s own comment above."""
     try:
         html = _get(ASX100_WIKI_URL)
     except Exception:
         return None
-    return _parse_table(html, ["symbol", "code", "ticker"], ["sector", "industry"],
-                         _normalize_asx_ticker, min_rows=80, max_rows=110)
+    df = _parse_table(html, ["symbol", "code", "ticker"], ["sector", "industry"],
+                      _normalize_asx_ticker, min_rows=80, max_rows=110)
+    return _asx_backfill_missing_subset_tickers(df, fetch_asx50(), "ASX 100", "ASX 50")
+
+
+# Smallest to largest - the standing nesting order this module's docstring
+# describes (ASX 20 subset ASX 50 subset ASX 100 subset ASX 200 subset ASX
+# 300 subset All Ordinaries). Named here as one list, not spread across
+# five separate backfill call sites, so the regression guard below can't
+# silently drift out of sync with which pair actually belongs together if
+# another AU universe is ever added to the chain.
+_AU_CONTAINMENT_CHAIN = [
+    ("ASX 20", fetch_asx20),
+    ("ASX 50", fetch_asx50),
+    ("ASX 100", fetch_asx100),
+    ("ASX 200", fetch_asx200),
+    ("ASX 300", fetch_asx300),
+    ("All Ordinaries", fetch_allords),
+]
+
+
+def verify_au_index_containment(log=None):
+    """Index containment regression guard (20 Sep 2026): re-checks every
+    adjacent pair in _AU_CONTAINMENT_CHAIN and reports any subset index
+    still holding a ticker its parent doesn't - the exact GQG.AX-shaped
+    bug the backfill in fetch_asx200()/fetch_asx300()/fetch_asx50()/
+    fetch_asx100()/fetch_allords() above fixes. Should never fire given
+    that backfill, but each of those functions unions in whatever ITS OWN
+    subset fetch currently returns - a live source going stale, changing
+    shape, or being swapped later could still reopen a gap here, which is
+    exactly the silent-drift this guard exists to catch instead of
+    absorbing quietly.
+
+    Never raises - same fail-open convention as every fetcher in this
+    module. Returns a list of (subset_name, superset_name, missing_
+    tickers) violation tuples (empty = all clear); a caller that wants a
+    hard failure (a CI check, say) should assert not
+    verify_au_index_containment() itself rather than expecting this to
+    raise on its own.
+
+    `log`: an optional log(str) callable - nightly_scan.run_universe_
+    scan()'s own convention (defaults to `print` there). Falls back to
+    this module's own `_log.warning` when omitted, so this is equally
+    callable from a plain script or the Python console."""
+    _log_fn = log or (lambda msg: _log.warning(msg))
+    frames = {name: fetch() for name, fetch in _AU_CONTAINMENT_CHAIN}
+    violations = []
+    chain_pairs = zip(_AU_CONTAINMENT_CHAIN, _AU_CONTAINMENT_CHAIN[1:])
+    for (subset_name, _), (superset_name, _) in chain_pairs:
+        subset_df, superset_df = frames[subset_name], frames[superset_name]
+        if subset_df is None or superset_df is None:
+            continue
+        missing = sorted(set(subset_df["Ticker"]) - set(superset_df["Ticker"]))
+        if missing:
+            violations.append((subset_name, superset_name, missing))
+            _log_fn(
+                f"[scanner_engine] CONTAINMENT VIOLATION: {subset_name} has "
+                f"{len(missing)} ticker(s) that {superset_name} is missing: "
+                f"{', '.join(missing)}"
+            )
+    return violations
 
 
 def _asx_small_ords_df():
@@ -1086,6 +2213,32 @@ _US_SECTOR_UNIVERSE_MAP = {
     "US Industrials": ["Industrials"],
     "US Consumer": ["Consumer Staples", "Consumer Discretionary"],
 }
+
+# Commit L (21 Sep 2026, owner-reported): a sector universe's own filter
+# match, tracked exactly like every other source in source_health_store
+# so a silently-empty (or implausibly small) match shows up on the Admin
+# Dashboard's existing Source health panel instead of quietly falling
+# back to the whole unfiltered parent pool - see get_universe_pool()'s
+# own sector-universe branches below for where this is actually
+# recorded (from nightly_scan.run_universe_scan() only, never a web
+# request - get_universe_pool() itself has no business writing health
+# state on every page view, same reasoning every other health-tracked
+# fetcher in this module already follows). Appended to TRACKED_HEALTH_
+# SOURCES (defined near the top of this module, before these two maps
+# existed) rather than moved inline there.
+SECTOR_UNIVERSE_HEALTH_SOURCES = [
+    f"Sector universe: {u}" for u in list(_ASX_SECTOR_UNIVERSE_MAP) + list(_US_SECTOR_UNIVERSE_MAP)
+]
+TRACKED_HEALTH_SOURCES.extend(SECTOR_UNIVERSE_HEALTH_SOURCES)
+
+# "Implausibly small" (task's own phrase) - even the smallest sector
+# universe this site derives (ASX A-REITs) should carry several dozen
+# names in a real ~300-company pool; a match below this floor is far
+# more likely a granularity mismatch/broken filter (see _normalize_
+# gics_sector()'s own comment for the one already found and fixed) than
+# a genuinely tiny real sector, so it's treated the same as a zero
+# match - never good enough to serve, whatever caused it.
+_SECTOR_UNIVERSE_MIN_ROWS = 5
 
 
 def _asx_sector_df(universe_name):
@@ -1273,7 +2426,11 @@ def get_universe_pool(country, universe):
     if universe == "ASX 300":
         df = fetch_asx300()
         if df is not None:
-            return df, "asx300list.com S&P/ASX 300 constituent list (live)"
+            # Index containment (20 Sep 2026): labelled "Derived", not
+            # "(live)" alone - this is Wikipedia's real ASX 200 plus a
+            # market-cap-ranked approximation past it, not verified S&P
+            # index membership. See fetch_asx300()'s own docstring.
+            return df, "Derived: Wikipedia ASX 200 (live) + next ~100 ASX-listed by market cap"
         df200 = fetch_asx200()
         if df200 is not None:
             return df200, "ASX 300 unavailable - showing ASX 200 (live) instead"
@@ -1322,7 +2479,9 @@ def get_universe_pool(country, universe):
     if universe == "All Ordinaries":
         df = fetch_allords()
         if df is not None:
-            return df, "allordslist.com All Ordinaries constituent list (live)"
+            # Index containment (20 Sep 2026): same "Derived" honesty as
+            # ASX 300 above - see fetch_allords()'s own docstring.
+            return df, "Derived: Wikipedia ASX 200 (live) + next ~300 ASX-listed by market cap"
         df300 = fetch_asx300()
         if df300 is not None:
             return df300, "All Ordinaries unavailable - showing ASX 300 (live) instead"
@@ -1436,22 +2595,34 @@ def get_universe_pool(country, universe):
     # --- Part 34.1/34.2 (11 Sep 2026): AU + US sector universes ---
 
     if universe in _ASX_SECTOR_UNIVERSE_MAP:
+        # Commit L (21 Sep 2026, owner-reported): NEVER fall back to the
+        # unfiltered parent pool for a sector universe - that's exactly
+        # how XRO.AX (a software company) ended up saved under "ASX
+        # A-REITs": the old version of this branch treated a df300 that
+        # merely EXISTED as good enough to serve, whatever it actually
+        # contained. An empty match, or a match too small to be a real
+        # sector's worth of ASX 300 constituents (_SECTOR_UNIVERSE_MIN_
+        # ROWS - see that constant's own comment), returns None instead -
+        # run_universe_scan()'s own existing "pool_df is None -> keep
+        # last-known-good, log loudly, don't overwrite scan_store" path
+        # (nightly_scan.py) already does exactly what the task asks for,
+        # unchanged, once this stops handing it a plausible-looking but
+        # wrong 300-row pool to scan instead of None.
         df = _asx_sector_df(universe)
-        if df is not None and not df.empty:
+        if df is not None and len(df) >= _SECTOR_UNIVERSE_MIN_ROWS:
             return df, "Derived: ASX 300 filtered by sector (live)"
-        df300 = fetch_asx300()
-        if df300 is not None:
-            return df300, f"{universe} unavailable - showing ASX 300 (live) instead"
-        return _asx_fallback_df(), "Live scrape unavailable - local curated ASX 200 list instead"
+        if df is None:
+            return None, "ASX 300 itself unavailable - sector filter could not run, serving last known-good scan"
+        return None, f"sector filter matched {len(df)} row(s) - skipped, serving last known-good scan"
 
     if universe in _US_SECTOR_UNIVERSE_MAP:
+        # Same reasoning as the AU branch just above.
         df = _us_sector_df(universe)
-        if df is not None and not df.empty:
+        if df is not None and len(df) >= _SECTOR_UNIVERSE_MIN_ROWS:
             return df, "Derived: S&P 500 filtered by sector (live)"
-        df500 = fetch_sp500()
-        if df500 is not None:
-            return df500, f"{universe} unavailable - showing S&P 500 (live) instead"
-        return None, "Web scrape unavailable"
+        if df is None:
+            return None, "S&P 500 itself unavailable - sector filter could not run, serving last known-good scan"
+        return None, f"sector filter matched {len(df)} row(s) - skipped, serving last known-good scan"
 
     return None, "Unknown universe"
 

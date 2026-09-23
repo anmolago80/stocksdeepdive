@@ -77,7 +77,13 @@ import fundamentals_data
 # same discipline as auto_compounder_engine.ENGINE_VERSION, and for the
 # identical reason (see that constant's own comment for the cautionary
 # tale of a change shipping without a version bump).
-MOAT_ENGINE_VERSION = 1
+# 1->2 (Commit O, 2026-09-21): NOPAT/ROIC, the erosion overlay's operating
+# margin, and the pricing-power fallback now read operating income
+# through auto_compounder_engine.ebit_series() instead of a raw
+# statement-row lookup - see that function's own comment. Output is
+# unchanged while EBIT_FROM_PRETAX is unset (the default); the bump
+# exists so flipping the switch invalidates this cache immediately.
+MOAT_ENGINE_VERSION = 2
 
 _CACHE_DIR_NAME = "moat_cache"
 _CACHE_TTL_SECONDS = 24 * 3600
@@ -203,7 +209,7 @@ def moat_band(score):
 # Per-year return series (ROIC for a standard company, ROE for financials)
 # -----------------------------------
 
-def _year_return_series(bundle, info, is_financials):
+def _year_return_series(bundle, info, is_financials, force_switch=None, flags=None):
     """[(year_label, return_value_or_None, extra), ...] newest-first,
     keyed off the balance sheet's own stockholders'-equity year list (the
     same anchor _avg_invested_capital_for_year already uses).
@@ -219,7 +225,19 @@ def _year_return_series(bundle, info, is_financials):
     Reinvestment does not apply (see _pillar_reinvestment).
 
     Financials mode: return_value is plain ROE = net income / that
-    year's own equity (no averaging - the ordinary ROE convention)."""
+    year's own equity (no averaging - the ordinary ROE convention).
+
+    `force_switch`/`flags`: passed straight through to _ace.ebit_series()
+    - see that function's own docstring. `force_switch` is None (default)
+    for every real site call path; True/False only from the Admin
+    Dashboard's dry-run audit (see compute_moat_dry_run() below), never
+    from compute_moat(). `flags`, when given, gets Commit P's "year
+    dropped"/"TTM taken from an earlier year" lines - this is the ONE
+    call site in this module that passes it (the pricing-power fallback
+    and erosion-overlay margin series call the same underlying
+    ebit_series() for the same ticker too, but deliberately omit
+    `flags` there to avoid the identical line appearing two or three
+    times over for one ticker)."""
     income, balance = bundle["income"], bundle["balance"]
     equity_s = dict(_ace._series(balance, "stockholders_equity"))
     years_desc = [y for y, _ in _ace._series(balance, "stockholders_equity")]
@@ -236,7 +254,7 @@ def _year_return_series(bundle, info, is_financials):
 
     debt_s = dict(_ace._series(balance, "total_debt"))
     cash_s = dict(_ace._series(balance, "cash"))
-    op_income_s = dict(_ace._series(income, "operating_income"))
+    op_income_s = dict(_ace.ebit_series(bundle, is_financials, force_switch=force_switch, flags=flags))
     pretax_s = dict(_ace._series(income, "pretax_income"))
     tax_s = dict(_ace._series(income, "tax_provision"))
     ttm_pretax, ttm_tax = pretax_s.get(years_desc[0]), tax_s.get(years_desc[0])
@@ -254,7 +272,7 @@ def _year_return_series(bundle, info, is_financials):
     return out
 
 
-def _operating_margin_series(bundle, years_desc):
+def _operating_margin_series(bundle, years_desc, is_financials, force_switch=None):
     """[operating_margin_or_None, ...] in the SAME order as years_desc
     (the return series' own year list) - looked up independently from
     the income statement's own year labels rather than assumed to line
@@ -264,10 +282,10 @@ def _operating_margin_series(bundle, years_desc):
     mismatch). A year with no match on either side is None here, and
     _erosion_overlay's caller filters those out positionally before
     windowing, so ROIC and operating margin never end up misaligned by
-    one year against each other."""
+    one year against each other. `force_switch`: see _year_return_series()."""
     income = bundle["income"]
     revenue_s = dict(_ace._series(income, "revenue"))
-    op_s = dict(_ace._series(income, "operating_income"))
+    op_s = dict(_ace.ebit_series(bundle, is_financials, force_switch=force_switch))
     out = []
     for y in years_desc:
         rev, op = revenue_s.get(y), op_s.get(y)
@@ -383,7 +401,7 @@ def _pillar_persistence(roic_list, is_financials, flags):
 # Pillar 3 - Pricing power (25 pts), on the gross-margin series
 # -----------------------------------
 
-def _pillar_pricing_power(bundle, flags):
+def _pillar_pricing_power(bundle, is_financials, flags, force_switch=None):
     income = bundle["income"]
     revenue_s = dict(_ace._series(income, "revenue"))
     years_desc = [y for y, _ in _ace._series(income, "revenue")]
@@ -393,7 +411,7 @@ def _pillar_pricing_power(bundle, flags):
 
     gp_row = _ace._find_row(income, ["Gross Profit"])
     used_fallback = gp_row is None
-    numerator_s = dict(_ace._series(income, "Gross Profit" if not used_fallback else "operating_income"))
+    numerator_s = dict(_ace._series(income, "Gross Profit")) if not used_fallback else dict(_ace.ebit_series(bundle, is_financials, force_switch=force_switch))
     margin_label = "operating margin" if used_fallback else "gross margin"
 
     gm_series = [(y, numerator_s.get(y) / revenue_s.get(y))
@@ -479,6 +497,27 @@ def _pillar_reinvestment(year_series, flags):
         )
         return 16
 
+    if d_ic < 0:
+        # Commit N (21 Sep 2026, owner-reported): d_nopat < 0 is
+        # guaranteed here - the branch above already caught every
+        # d_ic <= 0 case where d_nopat >= 0, so reaching this point with
+        # d_ic < 0 means d_nopat < 0 too. Both capital AND profit fell -
+        # d_nopat/d_ic then divides two negatives and comes out
+        # POSITIVE, but it isn't a meaningful "incremental return on
+        # newly-deployed capital" (there was no new capital - capital
+        # was WITHDRAWN while profit also fell). It's profit lost per
+        # dollar of capital given up, where a HIGH value is actually BAD
+        # (the business shed profitable capital) - the exact opposite of
+        # how the >0.15/>=0.08/>=0.0 bands further down read a positive
+        # ratio. Dropped, not scored, and reweighted like any other
+        # missing pillar - never inventing a number for a ratio that
+        # doesn't mean what this pillar needs it to mean.
+        flags.append(
+            f"reinvestment: business shrank on both capital and profit "
+            f"({oldest_y}->{newest_y}) - incremental return not meaningful, pillar dropped"
+        )
+        return None
+
     if d_ic == 0:
         flags.append(f"reinvestment: invested capital unchanged {oldest_y}->{newest_y} - pillar dropped")
         return None
@@ -563,7 +602,14 @@ def _na_result(flags=None):
     return {"score": None, "components": [], "erosion": "none", "flags": flags or [], "years": 0, "mode": "na"}
 
 
-def _compute_moat_from_bundle(ticker, bundle, info):
+def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None):
+    """`force_switch`: None on every real call path (compute_moat()
+    never passes it - see that function). True/False only from
+    compute_moat_dry_run(), the Admin Dashboard audit's own entry point -
+    threaded down into every pillar call below so a dry-run "as if switch
+    were ON/OFF" comparison never has to touch the module-level
+    EBIT_FROM_PRETAX global (see auto_compounder_engine.ebit_year_rows()'s
+    own comment on why that matters on a live multi-user site)."""
     flags = []
 
     if _is_fund(info):
@@ -577,7 +623,7 @@ def _compute_moat_from_bundle(ticker, bundle, info):
     mode = "financials" if is_financials else "standard"
     basics = _ace._basics(bundle)
 
-    return_series = _year_return_series(bundle, info, is_financials)
+    return_series = _year_return_series(bundle, info, is_financials, force_switch=force_switch, flags=flags)
     years_desc = [y for y, _, _ in return_series]
     roic_list = [v for _, v, _ in return_series]
     usable_years = sum(1 for v in roic_list if v is not None)
@@ -597,7 +643,7 @@ def _compute_moat_from_bundle(ticker, bundle, info):
     if persistence_pts is not None:
         components.append({"pillar": "Persistence", "points": round(persistence_pts, 1), "max": 25})
 
-    pricing_pts = _pillar_pricing_power(bundle, flags)
+    pricing_pts = _pillar_pricing_power(bundle, is_financials, flags, force_switch=force_switch)
     if pricing_pts is not None:
         components.append({"pillar": "Pricing power", "points": round(pricing_pts, 1), "max": 25})
 
@@ -622,7 +668,7 @@ def _compute_moat_from_bundle(ticker, bundle, info):
             "neutral score"
         )
 
-    opm_list = _operating_margin_series(bundle, years_desc)
+    opm_list = _operating_margin_series(bundle, years_desc, is_financials, force_switch=force_switch)
     pairs = [(r, o) for r, o in zip(roic_list, opm_list) if r is not None and o is not None]
     erosion = _erosion_overlay([r for r, _ in pairs], [o for _, o in pairs], flags)
 
@@ -637,6 +683,7 @@ def _compute_moat_from_bundle(ticker, bundle, info):
         "flags": flags,
         "years": usable_years,
         "mode": mode,
+        "ttm_return": roic_list[0] if roic_list else None,
     }
 
 
@@ -681,6 +728,234 @@ def compute_moat(ticker, force_refresh=False):
     result = _compute_moat_from_bundle(ticker, bundle, bundle.get("info") or {})
     _write_cache(ticker, result)
     return result
+
+
+def compute_moat_dry_run(ticker, force_switch, bundle=None):
+    """Commit O (21 Sep 2026, owner-verified EBIT-from-pretax fix): the
+    Admin Dashboard's "Operating-income audit" reads through here, NEVER
+    through compute_moat() - this function never reads or writes the 24h
+    moat_cache at all, on either side of the comparison. That's
+    deliberate: compute_moat()'s cache has no room in its schema for "the
+    switch was forced to X for this one read" versus "the switch was
+    genuinely on/off site-wide", so a forced computation that touched
+    that cache would silently corrupt the real, live Moat Score for every
+    other visitor of this ticker until the 24h TTL expired - exactly the
+    kind of half-done, cache-poisoning bug CLAUDE.md's "verify before
+    pushing" discipline exists to catch before it ships, not after.
+
+    `bundle`: None (default) fetches via fundamentals_data.get_bundle(),
+    which has its own independent 24h cache (unaffected by this call,
+    and not itself sensitive to force_switch) but WILL fall through to a
+    live yfinance/EODHD fetch on a cache miss/stale entry - fine for an
+    occasional single-ticker read. Commit S (21 Sep 2026, owner-
+    reported): the audit's "All saved universes" mode calls this twice
+    per ticker (once per force_switch value) across up to ~2,000+
+    tickers and must NEVER make a live fetch - that caller fetches once
+    via fundamentals_data.peek_cached_bundle() (cache-only, skips a
+    ticker with nothing cached rather than fetching) and passes the same
+    bundle into both calls here, bypassing this function's own get_
+    bundle() call entirely.
+
+    Returns the same shape _compute_moat_from_bundle() always returns,
+    plus "ticker" and "is_financials", or None if the bundle can't be
+    fetched/isn't given at all (caller should skip this ticker, not
+    treat None as a zero/na Moat)."""
+    ticker = (ticker or "").strip().upper()
+    if not ticker:
+        return None
+    if bundle is None:
+        try:
+            bundle = fundamentals_data.get_bundle(ticker)
+        except Exception:
+            return None
+    if not bundle:
+        return None
+    info = bundle.get("info") or {}
+    result = _compute_moat_from_bundle(ticker, bundle, info, force_switch=force_switch)
+    result["ticker"] = ticker
+    result["is_financials"] = _is_financials(info)
+    return result
+
+
+def compute_moat_diagnostics(ticker):
+    """Commit M (21 Sep 2026, owner-reported): owner-only diagnostic view
+    of compute_moat()'s own internal computation - exposes everything it
+    computes internally but never returns, so "is this pillar's zero a
+    genuine result or bad input data" is answerable without re-deriving
+    the formula by hand from a live DB dump. Reuses the exact same
+    pillar functions/helpers compute_moat() itself calls (never a second,
+    slightly different reimplementation) - the numbers this returns are
+    guaranteed to be the SAME ones that produced the site's own Moat
+    score for this ticker, not a parallel recomputation that could
+    silently drift from it.
+
+    Deliberately NOT cached (unlike compute_moat(), 24h on the volume) -
+    this is a debugging tool an owner opens occasionally, not a display
+    path every visitor's page load needs to stay cheap; always a fresh
+    fundamentals_data.get_bundle() call (that module's OWN cache still
+    applies - this doesn't force a live re-fetch of the underlying
+    statements, just re-runs the Moat math itself fresh every call).
+
+    Returns None if the ticker is a fund, has no usable bundle, or has
+    fewer than 2 usable statement years - the same gate compute_moat()
+    itself uses; callers should fall back to whatever compute_moat()/
+    get_cached_moat() already say in that case (this function adds
+    detail, it never replaces the site's own real Moat computation).
+
+    Returns {"ticker", "mode" ("standard"|"financials"), "years_usable",
+    "flags" (every line, verbatim, in the exact order compute_moat()
+    generates them), "components" (the pillars that DID score, same
+    shape as compute_moat()'s own "components"), "pillar_status" ({pillar
+    name: "computed"|"dropped"} for all four, regardless of whether this
+    ticker's own mode/data ever lets a given pillar apply), "year_rows"
+    (newest-first list of per-year raw inputs - standard mode: year/
+    revenue/gross_profit_or_fallback/gross_profit_is_fallback_operating_
+    income/operating_income (the value that actually fed NOPAT/ROIC/
+    pricing-power)/pretax_income/net_interest/other_income/
+    total_unusual_items (diagnostic only, not used in the formula as of
+    Commit Q)/reconciled_depreciation/operating_income_yf/p_test/
+    oi_plus_da/year_status ("matches_oi"|"matches_oi_plus_da"|
+    "unverified"|"no_data")/ticker_corrected (the Commit Q verify-then-
+    correct reconciliation - see auto_compounder_engine.ebit_year_rows())/
+    nopat/equity/total_debt/long_term_debt/cash/invested_capital/roic;
+    financials mode: year/equity/net_income/roe), "ttm_return"/
+    "ttm_return_metric" (ROIC or ROE), "ttm_cost_of_capital"/
+    "ttm_cost_of_capital_flagged", "spread"}."""
+    ticker = (ticker or "").strip().upper()
+    if not ticker:
+        return None
+    try:
+        bundle = fundamentals_data.get_bundle(ticker)
+    except Exception:
+        return None
+    if not bundle:
+        return None
+    info = bundle.get("info") or {}
+    if _is_fund(info):
+        return None
+    income, balance = bundle.get("income"), bundle.get("balance")
+    if income is None or balance is None or getattr(income, "empty", True) or getattr(balance, "empty", True):
+        return None
+
+    is_financials = _is_financials(info)
+    mode = "financials" if is_financials else "standard"
+    basics = _ace._basics(bundle)
+
+    # flags created here, BEFORE _year_return_series() rather than after
+    # (as this function's earlier versions had it) - Commit P's "year
+    # dropped"/"TTM from an earlier year" lines are appended inside that
+    # call, so the list has to exist first.
+    flags = []
+    return_series = _year_return_series(bundle, info, is_financials, flags=flags)
+    years_desc = [y for y, _, _ in return_series]
+    roic_list = [v for _, v, _ in return_series]
+    usable_years = sum(1 for v in roic_list if v is not None)
+    if usable_years < 2:
+        return None
+    components = []
+
+    spread_pts = _pillar_spread(bundle, basics, is_financials, roic_list, flags)
+    if spread_pts is not None:
+        components.append({"pillar": "Excess-return spread", "points": round(spread_pts, 1), "max": 30})
+
+    persistence_pts = _pillar_persistence(roic_list, is_financials, flags)
+    if persistence_pts is not None:
+        components.append({"pillar": "Persistence", "points": round(persistence_pts, 1), "max": 25})
+
+    pricing_pts = _pillar_pricing_power(bundle, is_financials, flags)
+    if pricing_pts is not None:
+        components.append({"pillar": "Pricing power", "points": round(pricing_pts, 1), "max": 25})
+
+    reinvest_pts = _pillar_reinvestment(return_series, flags)
+    if reinvest_pts is not None:
+        components.append({"pillar": "Reinvestment", "points": round(reinvest_pts, 1), "max": 20})
+
+    equity_s = dict(_ace._series(balance, "stockholders_equity"))
+    year_rows = []
+    if is_financials:
+        net_income_s = dict(_ace._series(income, "net_income"))
+        for y, roe, _extra in return_series:
+            year_rows.append({
+                "year": y, "equity": equity_s.get(y), "net_income": net_income_s.get(y), "roe": roe,
+            })
+    else:
+        revenue_s = dict(_ace._series(income, "revenue"))
+        gp_row = _ace._find_row(income, ["Gross Profit"])
+        used_fallback = gp_row is None
+        ebit_rows = _ace.ebit_year_rows(bundle, is_financials)
+        # "operating_income" is the value that actually fed NOPAT/ROIC/
+        # the pricing-power fallback below (return_series/_year_return_
+        # series and _pillar_pricing_power both now read through
+        # _ace.ebit_series(), which is this same switch-aware "ebit"
+        # field) - the new pretax_income/net_interest/other_income/
+        # reconciled_depreciation/p_test/oi_plus_da/year_status/
+        # ticker_corrected columns below show the full Commit Q
+        # verify-then-correct reconciliation behind it, never replacing
+        # this field, only explaining it.
+        op_income_s = {y: r["ebit"] for y, r in ebit_rows.items()}
+        gp_s = dict(_ace._series(income, "Gross Profit")) if not used_fallback else op_income_s
+        debt_s = dict(_ace._series(balance, "total_debt"))
+        long_term_debt_s = dict(_ace._series(balance, "long_term_debt"))
+        cash_s = dict(_ace._series(balance, "cash"))
+        for y, roic, extra in return_series:
+            ebit_row = ebit_rows.get(y, {})
+            year_rows.append({
+                "year": y,
+                "revenue": revenue_s.get(y),
+                "gross_profit_or_fallback": gp_s.get(y),
+                "gross_profit_is_fallback_operating_income": used_fallback,
+                "operating_income": op_income_s.get(y),
+                "pretax_income": ebit_row.get("pretax_income"),
+                "net_interest": ebit_row.get("net_interest"),
+                "other_income": ebit_row.get("other_income"),
+                "total_unusual_items": ebit_row.get("total_unusual_items"),
+                "reconciled_depreciation": ebit_row.get("reconciled_depreciation"),
+                "operating_income_yf": ebit_row.get("operating_income_yf"),
+                "p_test": ebit_row.get("p_test"),
+                "oi_plus_da": ebit_row.get("oi_plus_da"),
+                "year_status": ebit_row.get("year_status"),
+                "ticker_corrected": ebit_row.get("ticker_corrected"),
+                "nopat": extra.get("nopat"),
+                "equity": equity_s.get(y),
+                "total_debt": debt_s.get(y),
+                "long_term_debt": long_term_debt_s.get(y),
+                "cash": cash_s.get(y),
+                "invested_capital": extra.get("invested_capital"),
+                "roic": roic,
+            })
+
+    if is_financials:
+        ce_result = _ace._safe(capm_engine.resolve_discount_rate, info, basics["currency"])
+        ttm_cost_of_capital, _ce_meta = ce_result if ce_result else (None, {})
+        ttm_cost_of_capital_flagged = bool((_ce_meta or {}).get("defaulted") or (_ce_meta or {}).get("floored"))
+    else:
+        ttm_cost_of_capital, ttm_cost_of_capital_flagged = _ttm_wacc(bundle, basics)
+
+    ttm_return = roic_list[0] if roic_list else None
+    spread = (
+        (ttm_return - ttm_cost_of_capital)
+        if (ttm_return is not None and ttm_cost_of_capital is not None) else None
+    )
+
+    return {
+        "ticker": ticker,
+        "mode": mode,
+        "years_usable": usable_years,
+        "flags": flags,
+        "components": components,
+        "pillar_status": {
+            "Excess-return spread": "computed" if spread_pts is not None else "dropped",
+            "Persistence": "computed" if persistence_pts is not None else "dropped",
+            "Pricing power": "computed" if pricing_pts is not None else "dropped",
+            "Reinvestment": "computed" if reinvest_pts is not None else "dropped",
+        },
+        "year_rows": year_rows,
+        "ttm_return": ttm_return,
+        "ttm_return_metric": "ROE" if is_financials else "ROIC",
+        "ttm_cost_of_capital": ttm_cost_of_capital,
+        "ttm_cost_of_capital_flagged": ttm_cost_of_capital_flagged,
+        "spread": spread,
+    }
 
 
 def moat_contributions(components):

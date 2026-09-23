@@ -176,22 +176,46 @@ def bump_many(counts):
             )
 
 
-def bump_scan_calendar(universe, kind):
+def bump_scan_calendar(universe, kind, day=None):
     """Part 53.1: one tiny per-night marker (universe, day, kind) for the
     Admin Dashboard's weekly scan calendar - deliberately reuses
     pulse_counters (day, key, count) above rather than a new table, keyed
     as 'scancal:{kind}:{universe}'. This gets the same 90-day prune for
     free (prune_old_counters already deletes every pulse_counters row by
-    day regardless of key, so no new pruning code is needed) and the same
-    fail-open bump() underneath. `kind` is 'scan' (nightly_scan just
-    SAVED a full scan for this universe - see run_universe_scan()'s own
-    call site) or 'reprice' (the reprice pass just refreshed it in place
-    - see reprice_universe()'s own call site). Callers wrap this in
-    try/except, same convention as every other counting call site in
-    nightly_scan.py - a metrics write must never take a real scan down."""
+    day regardless of key, so no new pruning code is needed). `kind` is
+    'scan' (nightly_scan just SAVED a full scan for this universe - see
+    run_universe_scan()'s own call site) or 'reprice' (the reprice pass
+    just refreshed it in place - see reprice_universe()'s own call
+    site). Callers wrap this in try/except, same convention as every
+    other counting call site in nightly_scan.py - a metrics write must
+    never take a real scan down.
+
+    `day` (Commit H, 20 Sep 2026): the 'YYYY-MM-DD' UTC date this marker
+    is credited to - defaults to _today() (the moment this call
+    executes) for back-compat, but a caller that knows which SCHEDULED
+    NIGHT the scan belongs to (nightly_scan.run_universe_scan()'s/
+    reprice_universe()'s own `run_night`, threaded from scheduler_
+    engine._run_nightly()) should always pass it explicitly. A scan that
+    crosses UTC midnight and only calls this function AFTER midnight
+    must still land on the night it was scheduled for, not the night it
+    happened to finish on - the exact bug that had every weekday-pinned
+    universe (the largest ones, scanned last) showing as missing all
+    week on the admin calendar even on nights they genuinely ran. Does
+    its own direct UPSERT (the same pulse_counters statement bump()
+    uses) rather than calling bump() itself, since bump() always writes
+    under _today() and has plenty of unrelated callers elsewhere in the
+    codebase that must keep doing exactly that - this function is the
+    only one that ever needs a backdated/forward-dated day."""
     if not universe or kind not in ("scan", "reprice"):
         return
-    bump(f"scancal:{kind}:{universe}")
+    key = f"scancal:{kind}:{universe}"
+    day = day or _today()
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO pulse_counters (day, key, count) VALUES (?, ?, 1)
+               ON CONFLICT(day, key) DO UPDATE SET count = count + 1""",
+            (day, key),
+        )
 
 
 def scan_calendar_grid(days=7):
