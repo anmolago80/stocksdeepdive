@@ -51,16 +51,73 @@ TRADABILITY_SPREAD_THRESHOLD_PCT = 1.0
 
 _SCORE_BAND_COLOR = {1: "red", 2: "red", 3: "amber", 4: "green", 5: "green"}
 
+# v2 amendment: sentiment 3-way collapse of the site's own real per-
+# ticker "Psychology" number (nightly_scan.py's fear-greed-fomo score,
+# now carried onto the pool row - see top100_engine.select_top100_
+# pool()'s own comment). Boundaries are the SAME ones deep_dive_engine.
+# analyze()'s own 5-state classification already uses (>20 FEARFUL,
+# 5..20 CALM, -5..5 NEUTRAL, -20..-5 GREEDY, <-20 OVERHEATED) merged
+# down to the task's own requested 3 states: CALM and NEUTRAL both
+# read as "neutral" here, GREEDY and OVERHEATED both read as "greedy" -
+# deep_dive_engine.py itself is not imported (a heavy module with its
+# own side effects at import time in some paths - not worth the
+# coupling for three comparisons against a number already on the row).
+_SENTIMENT_FEARFUL_MIN = 20
+_SENTIMENT_GREEDY_MAX = -5
+
+
+def _sentiment_bucket(psychology):
+    """None if there's no Psychology reading at all (never guessed);
+    otherwise "fearful"/"neutral"/"greedy"."""
+    if psychology is None:
+        return None
+    if psychology > _SENTIMENT_FEARFUL_MIN:
+        return "fearful"
+    if psychology < _SENTIMENT_GREEDY_MAX:
+        return "greedy"
+    return "neutral"
+
+
+_SENTIMENT_COLOR = {"fearful": "blue", "neutral": None, "greedy": "amber"}
+_SEVERITY_ALERT_MIN = 4
+
 
 def _t(key, lang, **fmt):
     return i18n.t(f"top100.{key}", lang, **fmt)
 
 
-def _score_chip_html(label, score):
+def _dimension_tooltip_text(key, dim, lang):
+    """The hover title= text for one dimension chip (task's own "full
+    name, anchor meaning, justification with source period" - native
+    HTML title attribute, same mechanism app.py's own earnings-word
+    track chip already uses for a hover tooltip on custom HTML, no JS
+    needed). Also the ONE place the tap-expand detail below reuses for
+    its own per-dimension heading, so the two surfaces never drift."""
+    label = _t(f"dim_{key}", lang)
+    anchor = _t(f"dim_anchor_{key}", lang)
+    lines = [label, anchor]
+    if dim:
+        score = dim.get("score")
+        just = dim.get("justification")
+        period = dim.get("source_period")
+        if just:
+            score_text = str(score) if score is not None else "—"
+            period_text = f" ({period})" if period else ""
+            lines.append(f"{_t('col_your_score', lang)}: {score_text}{period_text} — {just}")
+    return "\n".join(lines)
+
+
+def _score_chip_html(key, score, dim, lang):
     """One dimension chip - the score number colour-banded (1-2 red,
     3 amber, 4-5 green - the task's own "colour-banded per the mock"),
     a muted grey "—" chip when the dimension itself is null (never a
-    fabricated colour for a reading that doesn't exist)."""
+    fabricated colour for a reading that doesn't exist), with a native
+    hover tooltip (title=) carrying the full name, the anchor meaning,
+    and this company's own justification + source period - "no
+    justification may be unreachable" is also satisfied on phones (no
+    hover) by the row's own tap-expand detail below, which shows the
+    exact same text."""
+    label = _t(f"dim_{key}", lang)
     if score is None:
         color, bg, text = "#5b7290", "#1a2332", "—"
     else:
@@ -68,12 +125,38 @@ def _score_chip_html(label, score):
         color = compounder_ui._CP_COLOR_TEXT[band]
         bg = compounder_ui._CP_COLOR_FILL[band]
         text = str(score)
+    tooltip = html.escape(_dimension_tooltip_text(key, dim, lang))
     return (
-        "<span style='display:inline-flex;align-items:center;gap:4px;border-radius:8px;"
+        "<span title='" + tooltip + "' "
+        "style='display:inline-flex;align-items:center;gap:4px;border-radius:8px;"
         f"padding:3px 8px;margin:2px 4px 2px 0;font-size:11px;background:{bg};color:{color};"
-        "font-weight:700;'>"
+        "font-weight:700;cursor:help;'>"
         f"{html.escape(label)} <span style='font-family:ui-monospace,Menlo,SFMono-Regular,monospace;'>"
         f"{html.escape(text)}</span></span>"
+    )
+
+
+def _sentiment_chip_html(psychology, lang):
+    """Free display chip (task's own words: "never scored") - the
+    site's own real Psychology reading collapsed to fearful/neutral/
+    greedy. Neutral gets no colour tint at all (the site's own visual
+    convention for "nothing notable" - see _CP_COLOR_TEXT's own
+    red/amber/green/blue vocabulary, which has no neutral entry by
+    design); fearful/greedy reuse the existing blue/amber tokens."""
+    bucket = _sentiment_bucket(psychology)
+    if bucket is None:
+        return ""
+    band = _SENTIMENT_COLOR[bucket]
+    if band:
+        color = compounder_ui._CP_COLOR_TEXT[band]
+        bg = compounder_ui._CP_COLOR_FILL[band]
+        border = f"border:1px solid {color};"
+    else:
+        color, bg, border = "#8aa0b8", "#141d30", "border:1px solid #263654;"
+    return (
+        "<span style='display:inline-flex;align-items:center;border-radius:999px;padding:2px 9px;"
+        f"margin-left:6px;font-size:11px;font-weight:700;background:{bg};{border}color:{color};'>"
+        f"{html.escape(_t(f'sentiment_{bucket}', lang))}</span>"
     )
 
 
@@ -105,13 +188,54 @@ def _tradability_spread_pct(ticker):
     return trading_cost_engine._recorded_spread_pct(latest["bid"], latest["ask"])
 
 
+def _inversion_line_html(score_row, lang):
+    """"⚠ Inversion: {scenario} — severity {n}/5" (task's own exact
+    wording) - severities 1-3 muted grey, 4-5 in the site's red alert
+    styling (_CP_COLOR_TEXT/_CP_COLOR_FILL['red'], same tokens the
+    tradability chip already uses). "" for a NOT RATED row or one with
+    no inversion data at all - "nothing invented" (top100_engine's own
+    server-side null-enforcement is the real guarantee; this is a
+    second, display-layer check on top of it)."""
+    if not score_row or score_row.get("not_rated"):
+        return ""
+    scenario = score_row.get("inversion_scenario")
+    severity = score_row.get("inversion_severity")
+    if not scenario or severity is None:
+        return ""
+    text = html.escape(_t("inversion_line", lang, scenario=scenario, severity=severity))
+    if severity >= _SEVERITY_ALERT_MIN:
+        color, bg = compounder_ui._CP_COLOR_TEXT["red"], compounder_ui._CP_COLOR_FILL["red"]
+        style = f"color:{color};background:{bg};border:1px solid {color};"
+    else:
+        style = "color:#8aa0b8;background:transparent;border:1px solid #263654;"
+    return (
+        f"<div style='{style}border-radius:8px;padding:6px 10px;margin-top:8px;font-size:12px;'>"
+        f"{text}</div>"
+    )
+
+
+def _row_edge_accent_style(score_row):
+    """The mock's own "red row-edge accent" for a severity 4-5
+    inversion (XRO/OCL rows) - a coloured left border on the row card
+    itself, so the alert is visible without opening anything."""
+    if not score_row or score_row.get("not_rated"):
+        return ""
+    severity = score_row.get("inversion_severity")
+    if severity is not None and severity >= _SEVERITY_ALERT_MIN:
+        return f"border-left:4px solid {compounder_ui._CP_COLOR_TEXT['red']};"
+    return ""
+
+
 def _render_row(rank, row, lang):
-    """One company row - rank/ticker(linked)/Value Score/MOS/composite,
-    the ten dimension chips, a tradability chip when its latest
-    recorded spread is wide, and a "why it's here / what to check"
-    note in an expander (also where the ten chips' own justifications
-    + source periods live, one expander per row rather than ten, so a
-    100-row tab stays light)."""
+    """One company row - rank/ticker(linked)/Value Score AND Research
+    Score side by side (task's own "sharp divergence is intended and
+    visible"), the ten dimension chips (each with a hover tooltip),
+    free sentiment/tradability chips, the inversion line (severity-
+    styled, replacing v1's "what to check" note), and a row-level
+    details toggle that expands every one of the ten justifications
+    stacked - the SAME text the hover tooltips carry, so a phone
+    (no hover) or a "read everything" desktop visit never leaves a
+    justification unreachable."""
     ticker = row["ticker"]
     score_row = row.get("score_row")
     composite = row.get("composite")
@@ -135,9 +259,15 @@ def _render_row(rank, row, lang):
             f"<span style='color:#8aa0b8;font-size:12px;'>{html.escape(_t('col_mos', lang))}: "
             f"<b style='color:#e6edf5;'>{row['mos_pct']:.1f}%</b></span>"
         )
+    # Both scores side by side, always: Value Score above (the site's
+    # own numeric measurement) already rendered; Research Score here
+    # (the AI-weighted analytical judgment) shows only when the
+    # company has one - a NOT RATED row shows Value Score alone plus
+    # the NOT RATED chip below, the "sharp divergence" the task's own
+    # OCL example is about.
     if composite is not None:
         header_bits.append(
-            f"<span style='color:#8aa0b8;font-size:12px;'>{html.escape(_t('col_composite', lang))}: "
+            f"<span style='color:#8aa0b8;font-size:12px;'>{html.escape(_t('col_research_score', lang))}: "
             f"<b style='color:#34d399;'>{composite:.1f}</b></span>"
         )
     if not_rated:
@@ -147,35 +277,33 @@ def _render_row(rank, row, lang):
     tradable_chip = ""
     if spread_pct is not None and spread_pct > TRADABILITY_SPREAD_THRESHOLD_PCT:
         tradable_chip = _tradability_chip_html(spread_pct, lang)
+    sentiment_chip = _sentiment_chip_html(row.get("psychology"), lang)
 
     st.markdown(
-        "<div style='background:#0b1526;border:1px solid #1a2b4a;border-radius:10px;"
-        "padding:10px 14px;margin-bottom:8px;'>"
+        f"<div style='background:#0b1526;border:1px solid #1a2b4a;{_row_edge_accent_style(score_row)}"
+        "border-radius:10px;padding:10px 14px;margin-bottom:8px;'>"
         "<div style='display:flex;flex-wrap:wrap;align-items:center;gap:12px;'>"
-        + "".join(header_bits) + tradable_chip +
+        + "".join(header_bits) + tradable_chip + sentiment_chip +
         "</div>"
         "<div style='margin-top:8px;'>"
         + "".join(
-            _score_chip_html(_t(f"dim_{key}", lang), (score_row["dims"].get(key) or {}).get("score")
-                              if score_row else None)
+            _score_chip_html(key, (score_row["dims"].get(key) or {}).get("score") if score_row else None,
+                              (score_row["dims"].get(key) if score_row else None), lang)
             for key in top100_engine.DIMENSION_KEYS
         )
         + "</div>"
+        + _inversion_line_html(score_row, lang) +
         "</div>",
         unsafe_allow_html=True,
     )
 
-    # v2 amendment, Commit 1 compatibility note: `summary` no longer
-    # exists on a score row (top100_engine's v2 response schema dropped
-    # it - see that module's docstring). Commit 2 replaces this whole
-    # note with the inversion line; until it lands, a rated company
-    # simply gets no caption here rather than the actively-misleading
-    # "insufficient public record" text a naive `or` fallback would
-    # show for a company that in fact IS fully rated.
-    note = _t("not_rated_note", lang) if not_rated else None
+    # Row-level details toggle (task's own words) - the tap-expand path
+    # for phones (no hover) AND the desktop "read everything" path.
+    # NOT RATED gets the honest not_rated_note instead of ten empty
+    # dimensions.
     with st.expander(f"{ticker} — {_t('why_here_label', lang)}", expanded=False):
-        if note:
-            st.caption(note)
+        if not_rated:
+            st.caption(_t("not_rated_note", lang))
         if score_row:
             for key in top100_engine.DIMENSION_KEYS:
                 dim = score_row["dims"].get(key) or {}
@@ -253,6 +381,63 @@ def _changes_strip(enriched, lang):
         st.caption(f"• {line}")
 
 
+def _is_owner_for_refresh():
+    """Deferred, FAIL-CLOSED owner check for the Refresh all control -
+    same shape as compounder_ui.py's own Trading Cost diagnostics gate
+    (deferred ai_gate/paywall_engine import, since this module has no
+    top-level dependency on either) and page_admin_dashboard()'s own
+    independent ai_gate.is_owner() check. ANY exception here (import
+    failure, no signed-in email, anything) resolves to "not owner" -
+    never the other way around."""
+    try:
+        import ai_gate
+        import paywall_engine
+        return bool(ai_gate.is_owner(paywall_engine.current_user_email()))
+    except Exception:
+        return False
+
+
+def _handle_refresh_all_click(lang):
+    """The Refresh all button's own click handler - kept as a separate,
+    directly-callable function (rather than inlined into the button's
+    `if st.button(...):` block) specifically so it can be unit-tested
+    on its own, bypassing the button widget entirely, proving the
+    SERVER-SIDE re-check refuses a non-owner even when this is reached
+    directly (a forged session-state click, a stale rerun, or any other
+    path that skips _render_refresh_all_control()'s own is-owner check
+    before getting here). This re-check is independent of that one -
+    it does not trust having already been gated by the caller. Returns
+    the submitted batch id, or None (nothing to refresh, or refused)."""
+    if not _is_owner_for_refresh():
+        st.error("This action isn't available.")
+        return None
+    with st.spinner(_t("refresh_all_running", lang)):
+        batch_id = top100_engine.refresh_all()
+    if batch_id:
+        st.success(_t("refresh_all_submitted", lang, batch_id=batch_id))
+    else:
+        st.info(_t("refresh_all_nothing", lang))
+    return batch_id
+
+
+def _render_refresh_all_control(lang):
+    """Owner-only "Refresh all" button - top100_engine.refresh_all()'s
+    own UI trigger (Commit 1 of the original Top 100 task built the
+    engine function; nothing ever called it from the page until now).
+    Two INDEPENDENT checks, on purpose: this one, before the button is
+    even rendered - a non-owner sees NOTHING here at all, not a
+    disabled button, not an error, no trace - and a second one inside
+    _handle_refresh_all_click() itself, so a non-owner who somehow
+    triggers the click callback without this render check having run
+    still gets refused server-side before top100_engine.refresh_all()
+    - which spends real Claude API cost - is ever called. No visitor-
+    reachable path can reach refresh_all() without passing BOTH."""
+    if not _is_owner_for_refresh():
+        return
+    if st.button(_t("refresh_all_button", lang), key="top100_refresh_all_btn"):
+        _handle_refresh_all_click(lang)
+
+
 def render_top100_page(lang="en"):
     """The Top 100 page's full content - app.py's page_top100() calls
     this after its own owner/TOP100_PUBLIC gate (see that function's
@@ -265,12 +450,17 @@ def render_top100_page(lang="en"):
     )
 
     with st.expander(_t("methodology_heading", lang), expanded=False):
+        st.markdown(f"**{_t('subtitle', lang, model=top100_engine.MODEL_TOP100, date=today)}**")
+        st.markdown(_t("methodology_pipeline", lang))
         st.markdown(_t("methodology_body", lang))
+        st.markdown(_t("methodology_decircularisation", lang))
         st.markdown(f"**{_t('methodology_weights_heading', lang)}**")
-        weight_lines = [f"- {_t('col_composite', lang)} ({_t('methodology_return_label', lang)}): {top100_engine.WEIGHT_RETURN}"]
+        weight_lines = [f"- {_t('col_research_score', lang)} ({_t('methodology_return_label', lang)}): {top100_engine.WEIGHT_RETURN}"]
         for key, label, weight in top100_engine.DIMENSIONS:
             weight_lines.append(f"- {_t(f'dim_{key}', lang)}: {weight}")
         st.markdown("\n".join(weight_lines))
+
+    _render_refresh_all_control(lang)
 
     pool = top100_store.current_pool()
     if not pool:
