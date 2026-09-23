@@ -19,7 +19,10 @@ Four pillars, 0-100 total:
      fewer than 8 years of statement history are on file.
   3. Pricing power (25 pts) - the gross-margin trend (falls back to
      operating margin, flagged, when no Gross Profit row exists):
-     held/expanded, stability, growth-without-discounting.
+     held/expanded, stability, growth-without-discounting. Behind
+     MOAT_PRICING_LEVEL (env var, unset = off - see moat_engine.
+     MOAT_PRICING_LEVEL), also the absolute LEVEL of that margin -
+     see _pillar_pricing_power()'s own comment.
   4. Reinvestment (20 pts) - incremental return on newly-deployed
      capital, newest available year vs oldest.
 
@@ -83,7 +86,11 @@ import fundamentals_data
 # statement-row lookup - see that function's own comment. Output is
 # unchanged while EBIT_FROM_PRETAX is unset (the default); the bump
 # exists so flipping the switch invalidates this cache immediately.
-MOAT_ENGINE_VERSION = 2
+# 2->3 (Commit 3, 2026-09-23): pricing power gains a "level" sub-
+# component behind MOAT_PRICING_LEVEL (env var, unset = off) - see
+# _pillar_pricing_power()'s own comment. Output is unchanged while the
+# switch is unset; the bump exists for the same reason as 1->2 above.
+MOAT_ENGINE_VERSION = 3
 
 _CACHE_DIR_NAME = "moat_cache"
 _CACHE_TTL_SECONDS = 24 * 3600
@@ -98,6 +105,37 @@ PERSISTENCE_CAP_BELOW_MIN_YEARS = 20  # out of the pillar's 25
 # that check this flag) - built now, left off, per the owner's explicit
 # instruction not to enable it yet.
 MOAT_IN_VALUE_SCORE = os.environ.get("MOAT_IN_VALUE_SCORE") == "1"
+
+# Commit 3 (23 Sep 2026): pricing power's "level" sub-component - a
+# business sustaining a high margin for years currently scores the same
+# as one at a low-but-flat margin, since the pillar only ever measured
+# direction/variability/growth. OFF by default (byte-identical to today
+# until set) - see _pillar_pricing_power()'s own comment for the full
+# mechanics.
+MOAT_PRICING_LEVEL = os.environ.get("MOAT_PRICING_LEVEL") == "1"
+
+# Level bands: a MEDIAN-margin threshold ladder (median, not mean/latest,
+# so one odd year can't swing it), banded SEPARATELY for the gross-margin
+# path and the operating-margin fallback path - an operating margin sits
+# structurally lower than a gross margin on the same business, so reusing
+# the gross bands on the fallback path would systematically zero out
+# every fallback-path ticker.
+#
+# PROPOSAL, not yet checked against a real distribution: this sandbox has
+# no live or cached fundamentals data to compute one (same "never
+# fabricate a figure" constraint every commit in this project runs
+# under). These are standard equity-research margin tiers (>=60% gross /
+# >=25% operating reads as strong structural pricing power; <25% gross /
+# <5% operating reads as effectively none), not a measured percentile
+# split. Before setting MOAT_PRICING_LEVEL=1 in Railway, run the Admin
+# Dashboard's "Pricing power - level dry-run" panel against a saved
+# universe - it reports the REAL median-margin distribution for both
+# paths, plus the resulting up/down/flat counts and biggest movers. If
+# that distribution doesn't support these cut points, edit the two
+# tuples below (and only these two) before flipping the switch on.
+_PRICING_LEVEL_MIN_YEARS = 3
+_PRICING_LEVEL_BANDS_GROSS = ((0.60, 10), (0.40, 6), (0.25, 3))       # median gross margin; below 25% -> 0
+_PRICING_LEVEL_BANDS_OPERATING = ((0.25, 10), (0.12, 6), (0.05, 3))  # median operating margin (fallback path); below 5% -> 0
 
 
 # -----------------------------------
@@ -401,7 +439,26 @@ def _pillar_persistence(roic_list, is_financials, flags):
 # Pillar 3 - Pricing power (25 pts), on the gross-margin series
 # -----------------------------------
 
-def _pillar_pricing_power(bundle, is_financials, flags, force_switch=None):
+def _pillar_pricing_power(bundle, is_financials, flags, force_switch=None, force_pricing_level=None, detail=None):
+    """`force_switch`: EBIT_FROM_PRETAX only - see _year_return_series().
+    `force_pricing_level`: None (default) reads the live MOAT_PRICING_
+    LEVEL env var; True/False overrides it for a single call, same
+    never-touch-the-live-env-var/never-touch-moat_cache contract as
+    force_switch - only compute_moat_dry_run() ever passes non-None here.
+    `detail`: optional dict the caller passes in to receive this pillar's
+    own structured inputs (which margin path, the median used, the level
+    points) beyond what `flags` carries as prose - the Admin dry-run
+    tool's "Pricing power - level dry-run" panel reads this; every other
+    caller leaves it None and gets nothing extra.
+
+    Returns None if the whole pillar is dropped (no usable margin
+    series), else (points, pillar_max) - pillar_max is 25 whenever the
+    level component applies or the switch is off (today's max, held
+    constant per Commit 3's own requirement), 15 when the level
+    component alone is dropped for lacking enough years to form a
+    median (reweighted like any other dropped component)."""
+    level_switch_on = MOAT_PRICING_LEVEL if force_pricing_level is None else force_pricing_level
+
     income = bundle["income"]
     revenue_s = dict(_ace._series(income, "revenue"))
     years_desc = [y for y, _ in _ace._series(income, "revenue")]
@@ -429,11 +486,21 @@ def _pillar_pricing_power(bundle, is_financials, flags, force_switch=None):
     recent_avg, prior_avg = sum(recent_half) / len(recent_half), sum(prior_half) / len(prior_half)
     change_half_pts = (recent_avg - prior_avg) * 100
 
+    # held/stability/growth are rescaled when the level component is in
+    # play, so the pillar's OWN max stays at 25 either way (10 level + 8
+    # held + 4 stability + 3 growth == 25 == today's 10 held + 10
+    # stability + 5 growth - Commit 3's own "do not let the pillar total
+    # inflate" requirement). Switch off keeps today's exact bands.
+    if level_switch_on:
+        held_full, held_mid, stab_full, stab_mid, grow_full, grow_mid = 8, 4, 4, 2, 3, 1
+    else:
+        held_full, held_mid, stab_full, stab_mid, grow_full, grow_mid = 10, 5, 10, 5, 5, 2
+
     if change_half_pts >= -1:
-        held_points = 10
+        held_points = held_full
         held_desc = "held/expanded"
     elif change_half_pts >= -3:
-        held_points = 5
+        held_points = held_mid
         held_desc = "down 1-3pts"
     else:
         held_points = 0
@@ -442,9 +509,9 @@ def _pillar_pricing_power(bundle, is_financials, flags, force_switch=None):
     mean_v = sum(values) / n
     stdev_pts = ((sum((v - mean_v) ** 2 for v in values) / n) ** 0.5) * 100
     if stdev_pts < 2:
-        stability_points = 10
+        stability_points = stab_full
     elif stdev_pts <= 5:
-        stability_points = 5
+        stability_points = stab_mid
     else:
         stability_points = 0
 
@@ -461,7 +528,7 @@ def _pillar_pricing_power(bundle, is_financials, flags, force_switch=None):
     gm_change_full_pts = (values[0] - values[-1]) * 100
 
     if gm_change_full_pts >= -1:
-        growth_points = 5 if (revenue_cagr is not None and revenue_cagr >= 0.05) else 2
+        growth_points = grow_full if (revenue_cagr is not None and revenue_cagr >= 0.05) else grow_mid
     else:
         growth_points = 0
 
@@ -469,7 +536,60 @@ def _pillar_pricing_power(bundle, is_financials, flags, force_switch=None):
         f"pricing power: {margin_label} {held_desc} ({change_half_pts:+.1f}pt half-over-half), "
         f"stdev {stdev_pts:.1f}pt across {n} year(s)"
     )
-    return held_points + stability_points + growth_points
+
+    points = held_points + stability_points + growth_points
+    pillar_max = held_full + stab_full + grow_full
+
+    if not level_switch_on:
+        if detail is not None:
+            detail.update({
+                "used_fallback": used_fallback, "margin_label": margin_label,
+                "level_median": None, "level_years": n, "level_points": None,
+                "switch_on": False,
+            })
+        return (points, pillar_max)
+
+    # Level component: MEDIAN of ALL usable years (not just the recent
+    # half above), so one odd year can't swing it. Needs at least
+    # _PRICING_LEVEL_MIN_YEARS usable years to be meaningful; fewer than
+    # that drops JUST the level component (never scores it 0) and
+    # reweights the pillar down to its remaining max - same drop-and-
+    # reweight convention every other pillar/component already follows.
+    if n >= _PRICING_LEVEL_MIN_YEARS:
+        sorted_vals = sorted(values)
+        mid = n // 2
+        median_margin = sorted_vals[mid] if n % 2 else (sorted_vals[mid - 1] + sorted_vals[mid]) / 2
+        bands = _PRICING_LEVEL_BANDS_OPERATING if used_fallback else _PRICING_LEVEL_BANDS_GROSS
+        level_points = 0
+        for threshold, band_points in bands:
+            if median_margin >= threshold:
+                level_points = band_points
+                break
+        flags.append(
+            f"pricing power: level - median {margin_label} {median_margin:.1%} across "
+            f"{n} year(s) -> {level_points}/10"
+        )
+        points += level_points
+        pillar_max += 10
+        if detail is not None:
+            detail.update({
+                "used_fallback": used_fallback, "margin_label": margin_label,
+                "level_median": median_margin, "level_years": n,
+                "level_points": level_points, "switch_on": True,
+            })
+    else:
+        flags.append(
+            f"pricing power: fewer than {_PRICING_LEVEL_MIN_YEARS} years of {margin_label} "
+            f"data for the level component - dropped, pillar scored out of {pillar_max}"
+        )
+        if detail is not None:
+            detail.update({
+                "used_fallback": used_fallback, "margin_label": margin_label,
+                "level_median": None, "level_years": n, "level_points": None,
+                "switch_on": True,
+            })
+
+    return (points, pillar_max)
 
 
 # -----------------------------------
@@ -602,14 +722,19 @@ def _na_result(flags=None):
     return {"score": None, "components": [], "erosion": "none", "flags": flags or [], "years": 0, "mode": "na"}
 
 
-def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None):
+def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None, force_pricing_level=None, pricing_detail=None):
     """`force_switch`: None on every real call path (compute_moat()
     never passes it - see that function). True/False only from
     compute_moat_dry_run(), the Admin Dashboard audit's own entry point -
     threaded down into every pillar call below so a dry-run "as if switch
     were ON/OFF" comparison never has to touch the module-level
     EBIT_FROM_PRETAX global (see auto_compounder_engine.ebit_year_rows()'s
-    own comment on why that matters on a live multi-user site)."""
+    own comment on why that matters on a live multi-user site).
+    `force_pricing_level`: same contract, for MOAT_PRICING_LEVEL - see
+    _pillar_pricing_power()'s own comment.
+    `pricing_detail`: optional dict, passed straight through to
+    _pillar_pricing_power()'s own `detail` parameter - see that
+    function's docstring."""
     flags = []
 
     if _is_fund(info):
@@ -643,9 +768,10 @@ def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None):
     if persistence_pts is not None:
         components.append({"pillar": "Persistence", "points": round(persistence_pts, 1), "max": 25})
 
-    pricing_pts = _pillar_pricing_power(bundle, is_financials, flags, force_switch=force_switch)
-    if pricing_pts is not None:
-        components.append({"pillar": "Pricing power", "points": round(pricing_pts, 1), "max": 25})
+    pricing_result = _pillar_pricing_power(bundle, is_financials, flags, force_switch=force_switch, force_pricing_level=force_pricing_level, detail=pricing_detail)
+    pricing_pts = pricing_result[0] if pricing_result is not None else None
+    if pricing_result is not None:
+        components.append({"pillar": "Pricing power", "points": round(pricing_result[0], 1), "max": pricing_result[1]})
 
     reinvest_pts = _pillar_reinvestment(return_series, flags)
     if reinvest_pts is not None:
@@ -730,8 +856,16 @@ def compute_moat(ticker, force_refresh=False):
     return result
 
 
-def compute_moat_dry_run(ticker, force_switch, bundle=None):
-    """Commit O (21 Sep 2026, owner-verified EBIT-from-pretax fix): the
+def compute_moat_dry_run(ticker, force_switch, bundle=None, force_pricing_level=None, pricing_detail=None):
+    """`force_pricing_level`/`pricing_detail`: Commit 3 (23 Sep 2026) -
+    same never-touch-the-live-env-var/never-touch-moat_cache contract as
+    `force_switch`, for MOAT_PRICING_LEVEL; `pricing_detail`, when given
+    a dict, is filled in with this one call's pricing-power inputs (see
+    _pillar_pricing_power()'s own `detail` parameter) - the Admin
+    Dashboard's "Pricing power - level dry-run" panel reads it to report
+    the real median-margin distribution/movers without parsing `flags`.
+
+    Commit O (21 Sep 2026, owner-verified EBIT-from-pretax fix): the
     Admin Dashboard's "Operating-income audit" reads through here, NEVER
     through compute_moat() - this function never reads or writes the 24h
     moat_cache at all, on either side of the comparison. That's
@@ -771,7 +905,10 @@ def compute_moat_dry_run(ticker, force_switch, bundle=None):
     if not bundle:
         return None
     info = bundle.get("info") or {}
-    result = _compute_moat_from_bundle(ticker, bundle, info, force_switch=force_switch)
+    result = _compute_moat_from_bundle(
+        ticker, bundle, info, force_switch=force_switch,
+        force_pricing_level=force_pricing_level, pricing_detail=pricing_detail,
+    )
     result["ticker"] = ticker
     result["is_financials"] = _is_financials(info)
     return result
@@ -821,7 +958,13 @@ def compute_moat_diagnostics(ticker):
     nopat/equity/total_debt/long_term_debt/cash/invested_capital/roic;
     financials mode: year/equity/net_income/roe), "ttm_return"/
     "ttm_return_metric" (ROIC or ROE), "ttm_cost_of_capital"/
-    "ttm_cost_of_capital_flagged", "spread"}."""
+    "ttm_cost_of_capital_flagged", "spread", "pricing_power_detail"
+    (Commit 3, 23 Sep 2026: {"used_fallback", "margin_label", "level_
+    median" (None if the level component didn't apply/couldn't form a
+    median), "level_years", "level_points" (None if dropped or the
+    switch is off), "switch_on"} - see _pillar_pricing_power()'s own
+    `detail` parameter; reads the LIVE MOAT_PRICING_LEVEL switch, same
+    as every other figure this function reports)}."""
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return None
@@ -863,9 +1006,11 @@ def compute_moat_diagnostics(ticker):
     if persistence_pts is not None:
         components.append({"pillar": "Persistence", "points": round(persistence_pts, 1), "max": 25})
 
-    pricing_pts = _pillar_pricing_power(bundle, is_financials, flags)
-    if pricing_pts is not None:
-        components.append({"pillar": "Pricing power", "points": round(pricing_pts, 1), "max": 25})
+    pricing_detail = {}
+    pricing_result = _pillar_pricing_power(bundle, is_financials, flags, detail=pricing_detail)
+    pricing_pts = pricing_result[0] if pricing_result is not None else None
+    if pricing_result is not None:
+        components.append({"pillar": "Pricing power", "points": round(pricing_result[0], 1), "max": pricing_result[1]})
 
     reinvest_pts = _pillar_reinvestment(return_series, flags)
     if reinvest_pts is not None:
@@ -956,6 +1101,7 @@ def compute_moat_diagnostics(ticker):
         "ttm_cost_of_capital": ttm_cost_of_capital,
         "ttm_cost_of_capital_flagged": ttm_cost_of_capital_flagged,
         "spread": spread,
+        "pricing_power_detail": pricing_detail,
     }
 
 

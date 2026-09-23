@@ -1697,6 +1697,68 @@ def check_ebit_switch_flip(log=print):
         log(f"[nightly_scan] ebit switch check: could not write marker file: {e}")
 
 
+def _moat_pricing_level_switch_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".moat_pricing_level_switch_state")
+
+
+def check_moat_pricing_level_switch_flip(log=print):
+    """Commit 3 (23 Sep 2026): same problem, same fix, as check_ebit_
+    switch_flip() right above - MOAT_PRICING_LEVEL is a Railway env var,
+    not a code change, so flipping it does NOT itself bump moat_engine.
+    MOAT_ENGINE_VERSION a second time on a running deploy; without this
+    check the flip would sit invisible behind each ticker's existing 24h
+    moat_cache entry for up to a day. Same marker-holds-last-observed-
+    state comparison, same "first boot records, doesn't wipe" case, same
+    "never allowed to stop the site serving" rule as every lifespan
+    cleanup in this module - only the blast radius differs: this switch
+    only ever changes moat_engine's own pricing-power pillar, never
+    auto_compounder_engine's EBIT figure, so only moat_cache is cleared
+    here (auto_cv_sections is untouched - it has nothing to do with
+    Moat). Moat is Phase-1 display-only (MOAT_IN_VALUE_SCORE is off),
+    so unlike check_ebit_switch_flip() there is no alert-suppression or
+    score_history correction tag to set on the flip - nothing downstream
+    of Moat currently alerts on it."""
+    marker = _moat_pricing_level_switch_marker_path()
+    current = "1" if moat_engine.MOAT_PRICING_LEVEL else "0"
+    previous = None
+    try:
+        if os.path.exists(marker):
+            with open(marker) as f:
+                previous = f.read().strip()
+    except OSError as e:
+        log(f"[nightly_scan] moat pricing-level switch check: could not read marker file: {e}")
+
+    if previous is not None and previous == current:
+        return
+    if previous is None:
+        log(f"[nightly_scan] moat pricing-level switch check: no prior state on record - "
+            f"recording MOAT_PRICING_LEVEL={current}, nothing to invalidate on a fresh deploy")
+    else:
+        log(f"[nightly_scan] moat pricing-level switch check: MOAT_PRICING_LEVEL flipped "
+            f"{previous} -> {current} - clearing moat_cache so the change takes effect "
+            f"immediately, not after its 24h TTL")
+        cache_dir = moat_engine._cache_dir()
+        cleared = 0
+        try:
+            for fname in os.listdir(cache_dir):
+                if fname.endswith(".json"):
+                    try:
+                        os.remove(os.path.join(cache_dir, fname))
+                        cleared += 1
+                    except OSError:
+                        pass
+            log(f"[nightly_scan] moat pricing-level switch check: cleared {cleared} cached file(s) from {cache_dir}")
+        except OSError as e:
+            log(f"[nightly_scan] moat pricing-level switch check: could not list {cache_dir}: {e}")
+
+    try:
+        with open(marker, "w") as f:
+            f.write(current)
+    except OSError as e:
+        log(f"[nightly_scan] moat pricing-level switch check: could not write marker file: {e}")
+
+
 def _ebit_correction_marker_path():
     base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
     return os.path.join(base, ".ebit_from_pretax_pending_correction")

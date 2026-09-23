@@ -281,6 +281,11 @@ async def lifespan(app: FastAPI):
     # allowed to stop the site serving" rule as the two cleanups above.
     with suppress(Exception):
         nightly_scan.check_ebit_switch_flip()
+    # Commit 3 (23 Sep 2026, owner-reported): same reason as check_ebit_
+    # switch_flip() right above, for MOAT_PRICING_LEVEL - see nightly_
+    # scan.check_moat_pricing_level_switch_flip()'s own docstring.
+    with suppress(Exception):
+        nightly_scan.check_moat_pricing_level_switch_flip()
     _client = httpx.AsyncClient(
         base_url=UPSTREAM, timeout=httpx.Timeout(None, connect=10.0),
         follow_redirects=False, limits=httpx.Limits(max_connections=200),

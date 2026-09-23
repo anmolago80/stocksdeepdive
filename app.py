@@ -11367,6 +11367,26 @@ def page_deep_dive():
                             + (f"{_moat_diag['spread']:+.1%}" if _moat_diag["spread"] is not None else "n/a")
                         )
 
+                        # Commit 3 (23 Sep 2026): pricing power's "level"
+                        # sub-component - reads the LIVE MOAT_PRICING_LEVEL
+                        # switch, same as every other figure this panel
+                        # shows (this diagnostics view never forces a
+                        # switch - that's the Admin Dashboard dry-run
+                        # tool's own job).
+                        _pp_detail = _moat_diag.get("pricing_power_detail") or {}
+                        if _pp_detail:
+                            st.markdown(
+                                "**Pricing power - level (MOAT_PRICING_LEVEL):** "
+                                + ("ON" if _pp_detail.get("switch_on") else "OFF (today's live behaviour)")
+                                + f" &middot; path: {_pp_detail.get('margin_label', 'n/a')}"
+                                + (
+                                    f" &middot; median {_pp_detail['level_median']:.1%} across "
+                                    f"{_pp_detail.get('level_years')} yr(s) -> {_pp_detail.get('level_points')}/10"
+                                    if _pp_detail.get("level_median") is not None
+                                    else " &middot; level not computed (switch off, or fewer than 3 usable years)"
+                                )
+                            )
+
                         st.markdown("**Per-year raw series (newest first):**")
                         if _moat_diag["year_rows"]:
                             st.dataframe(
@@ -28882,6 +28902,194 @@ def page_admin_dashboard():
                 st.caption("No ticker had both an old and a new Moat score to compare.")
         elif "admin_dash_ebit_audit_rows" in st.session_state:
             st.caption("No non-financials tickers with cached fundamentals were found for the selected universe(s).")
+
+    # --- PRICING POWER - LEVEL DRY-RUN (Commit 3, 23 Sep 2026, owner-
+    # reported): same pure dry-run contract as the Operating-income
+    # audit above - reads through moat_engine.compute_moat_dry_run(
+    # force_pricing_level=...), never touches the live MOAT_PRICING_
+    # LEVEL env var or the 24h moat_cache (see that function's own
+    # comment). Reuses fundamentals_data.peek_cached_bundle() the same
+    # way and for the same reason (auditing a whole saved universe from
+    # a button click has to stay pure local-cache reads, never a live
+    # yfinance/EODHD call). This is the tool Commit 3's own report
+    # leans on for the REAL median-margin distribution the proposed
+    # level bands (moat_engine._PRICING_LEVEL_BANDS_GROSS/_OPERATING)
+    # should be checked against before MOAT_PRICING_LEVEL is ever set
+    # in Railway - unlike the EBIT audit above, this one is NOT
+    # restricted to non-financials, since the pricing-power pillar
+    # applies in financials mode too.
+    st.markdown("### Pricing power - level dry-run (MOAT_PRICING_LEVEL preview)")
+    st.caption(
+        "Compares today's Pricing power pillar (held/stability/growth "
+        "only, 25 pts) against the Commit 3 version with a \"level\" "
+        "sub-component added: the MEDIAN of the same margin series the "
+        "pillar already uses (gross margin, or operating margin on the "
+        "documented no-Gross-Profit-row fallback path), banded "
+        "separately per path, worth 10 of the pillar's 25 points - "
+        "held/stability/growth rescale to 8/4/3 so the pillar's own "
+        "max is unchanged. Proposed bands (a starting proposal, NOT "
+        "yet checked against a real distribution - see moat_engine."
+        "_PRICING_LEVEL_BANDS_GROSS/_OPERATING's own comment): gross "
+        "median >=60%/40-60%/25-40%/<25% -> 10/6/3/0 pts; operating "
+        "median >=25%/12-25%/5-12%/<5% -> 10/6/3/0 pts (operating "
+        "margins sit structurally lower than gross margins, hence the "
+        "separate ladder). Fewer than 3 usable years of margin data "
+        "drops the level component only (never scores it 0) and "
+        "reweights the pillar to /15. This panel reports the real "
+        "median-margin distribution for both paths across the selected "
+        "universe(s), plus up/down/flat counts and the biggest Moat-"
+        "score movers, so the bands above can be confirmed or adjusted "
+        "before the switch is ever set."
+    )
+    with st.container(border=True):
+        _pl_candidate_universes = (
+            list(scanner_engine.AUSTRALIA_UNIVERSES) + list(scanner_engine.USA_UNIVERSES)
+            + [nightly_scan.IMPORTED_UNIVERSE]
+        )
+        _pl_saved_universes = sorted(
+            _u for _u in _pl_candidate_universes
+            if os.path.exists(scan_store._path(_u))
+        )
+        _pl_universe_choice = st.selectbox(
+            "Universe", ["All saved universes"] + _pl_saved_universes,
+            key="admin_dash_pricing_level_universe",
+        )
+        if st.button("Run pricing-level dry run", key="admin_dash_pricing_level_btn"):
+            _pl_target_universes = (
+                _pl_saved_universes if _pl_universe_choice == "All saved universes"
+                else [_pl_universe_choice]
+            )
+            _pl_ticker_universes, _pl_universe_tickers = {}, {}
+            for _uni in _pl_target_universes:
+                try:
+                    _scan_payload = scan_store.load_scan_raw(_uni)
+                except Exception:
+                    _scan_payload = None
+                _tix = [r.get("Ticker") for r in (_scan_payload or {}).get("rows", []) if r.get("Ticker")]
+                _pl_universe_tickers[_uni] = _tix
+                for _tk in _tix:
+                    _pl_ticker_universes.setdefault(_tk, set()).add(_uni)
+
+            _pl_unique_tickers = sorted(_pl_ticker_universes.keys())
+            _pl_total = len(_pl_unique_tickers)
+            _pl_progress_bar = st.progress(0.0)
+            _pl_progress_caption = st.empty()
+
+            def _pp_points(_result):
+                for _c in (_result or {}).get("components") or []:
+                    if _c.get("pillar") == "Pricing power":
+                        return _c.get("points")
+                return None
+
+            _pl_rows = []
+            _pl_skipped_no_cache = []
+            _CHUNK = 25
+            for _i, _tk in enumerate(_pl_unique_tickers):
+                _bundle = fundamentals_data.peek_cached_bundle(_tk)
+                if _bundle is None:
+                    _pl_skipped_no_cache.append(_tk)
+                else:
+                    _old_detail, _new_detail = {}, {}
+                    _old = moat_engine.compute_moat_dry_run(
+                        _tk, force_switch=None, bundle=_bundle,
+                        force_pricing_level=False, pricing_detail=_old_detail,
+                    )
+                    _new = moat_engine.compute_moat_dry_run(
+                        _tk, force_switch=None, bundle=_bundle,
+                        force_pricing_level=True, pricing_detail=_new_detail,
+                    )
+                    if _old and _new:
+                        _pp_old, _pp_new = _pp_points(_old), _pp_points(_new)
+                        if _pp_old is not None and _pp_new is not None:
+                            _path = "operating (fallback)" if _new_detail.get("used_fallback") else "gross"
+                            _delta = round(_pp_new - _pp_old, 1)
+                            _direction = "up" if _delta > 0.05 else ("down" if _delta < -0.05 else "flat")
+                            _moat_old, _moat_new = _old.get("score"), _new.get("score")
+                            _pl_rows.append({
+                                "ticker": _tk,
+                                "country": "AU" if _tk.upper().endswith(".AX") else "US",
+                                "universe": ", ".join(sorted(_pl_ticker_universes[_tk])),
+                                "path": _path,
+                                "pricing_power_old": _pp_old,
+                                "pricing_power_new": _pp_new,
+                                "direction": _direction,
+                                "level_median": _new_detail.get("level_median"),
+                                "level_years": _new_detail.get("level_years"),
+                                "level_points": _new_detail.get("level_points"),
+                                "moat_old": _moat_old,
+                                "moat_new": _moat_new,
+                                "moat_delta": (
+                                    round(_moat_new - _moat_old, 1)
+                                    if (_moat_old is not None and _moat_new is not None) else None
+                                ),
+                            })
+                if (_i + 1) % _CHUNK == 0 or (_i + 1) == _pl_total:
+                    _pl_progress_bar.progress((_i + 1) / _pl_total if _pl_total else 1.0)
+                    _pl_progress_caption.caption(f"Processed {_i + 1}/{_pl_total} ticker(s) - {_tk}")
+
+            _pl_progress_bar.empty()
+            _pl_progress_caption.empty()
+
+            st.session_state["admin_dash_pricing_level_rows"] = _pl_rows
+            st.session_state["admin_dash_pricing_level_skipped"] = _pl_skipped_no_cache
+
+        _pl_rows = st.session_state.get("admin_dash_pricing_level_rows")
+        _pl_skipped_no_cache = st.session_state.get("admin_dash_pricing_level_skipped") or []
+
+        if _pl_skipped_no_cache:
+            with st.expander(f"{len(_pl_skipped_no_cache)} ticker(s) skipped - no cached fundamentals on file"):
+                st.dataframe(pd.DataFrame({"ticker": _pl_skipped_no_cache}), hide_index=True, width='stretch')
+
+        if _pl_rows:
+            _pl_df = pd.DataFrame(_pl_rows)
+            st.markdown(f"**{len(_pl_df)} ticker(s) audited** (deduped across universes)")
+
+            for _path_name in ("gross", "operating (fallback)"):
+                _path_df = _pl_df[_pl_df["path"] == _path_name]
+                if _path_df.empty:
+                    continue
+                _up = int((_path_df["direction"] == "up").sum())
+                _down = int((_path_df["direction"] == "down").sum())
+                _flat = int((_path_df["direction"] == "flat").sum())
+                st.markdown(f"**{_path_name} path** ({len(_path_df)} ticker(s)): up {_up} · down {_down} · flat {_flat}")
+
+                _medians = _path_df["level_median"].dropna()
+                if not _medians.empty:
+                    _q = _medians.quantile([0.10, 0.25, 0.5, 0.75, 0.90])
+                    st.caption(
+                        f"Median-margin distribution ({len(_medians)} ticker(s) with "
+                        f">=3 usable years): p10 {_q[0.10]:.1%} · p25 {_q[0.25]:.1%} "
+                        f"· median {_q[0.5]:.1%} · p75 {_q[0.75]:.1%} · "
+                        f"p90 {_q[0.90]:.1%}"
+                    )
+                else:
+                    st.caption("No ticker on this path had >=3 usable years to form a median.")
+
+            _pl_movable = _pl_df.dropna(subset=["moat_delta"]).copy()
+            if not _pl_movable.empty:
+                _pl_movable["abs_delta"] = _pl_movable["moat_delta"].abs()
+                _pl_movers = _pl_movable.sort_values("abs_delta", ascending=False).head(10).drop(columns="abs_delta")
+                st.markdown("**10 biggest Moat-score movers (old vs new):**")
+                st.dataframe(_pl_movers, hide_index=True, width='stretch')
+                st.download_button(
+                    "Download pricing-level movers as CSV",
+                    _pl_movers.to_csv(index=False).encode("utf-8"),
+                    file_name="stocksdeepdive_pricing_level_movers.csv",
+                    mime="text/csv",
+                    key="admin_dash_download_pricing_level_movers",
+                )
+            else:
+                st.caption("No ticker had both an old and a new Moat score to compare.")
+
+            st.download_button(
+                "Download full pricing-level dry-run as CSV",
+                _pl_df.to_csv(index=False).encode("utf-8"),
+                file_name="stocksdeepdive_pricing_level_dryrun.csv",
+                mime="text/csv",
+                key="admin_dash_download_pricing_level_full",
+            )
+        elif "admin_dash_pricing_level_rows" in st.session_state:
+            st.caption("No tickers with cached fundamentals were found for the selected universe(s).")
 
     # --- SYSTEM --------------------------------------------------------
     st.markdown("---")
