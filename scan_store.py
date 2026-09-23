@@ -141,6 +141,38 @@ def load_scan_raw(universe):
     return payload
 
 
+def list_saved_universes():
+    """Every universe with a saved overnight scan on disk right now -
+    the Top 100 tab's own "merge every universe's stored scan rows"
+    selection step (top100_engine.py) reads this rather than a
+    hardcoded universe list, so it always matches whatever NIGHTLY_
+    UNIVERSES currently produces without needing a second, separately-
+    maintained copy of that list here.
+
+    Read from each file's own "universe" field (never re-derived from
+    its filename slug via _slug() above, which is lossy/one-way - e.g.
+    "S&P 500" and "S and P 500" would collide) - a corrupt/unreadable
+    file is skipped rather than failing the whole listing, matching
+    load_scan_raw()'s own fail-soft convention for a single bad file."""
+    out = []
+    try:
+        entries = os.listdir(_data_dir())
+    except OSError:
+        return out
+    for fn in entries:
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(_data_dir(), fn)) as f:
+                payload = json.load(f)
+        except (OSError, ValueError):
+            continue
+        universe = payload.get("universe")
+        if universe:
+            out.append(universe)
+    return sorted(out)
+
+
 def reprice_scan(universe, rows, repriced_count=None, kept_stale_count=None):
     """Part 34 addendum 34.7 (11 Sep 2026): persists a repriced version of
     `universe`'s stored scan - same file, `rows` replaced with the

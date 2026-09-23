@@ -369,6 +369,10 @@ def _cfg():
         "earnings_refresh_hour": int(os.environ.get("EARNINGS_REFRESH_UTC_HOUR", "19")),
         "backup_hour": int(os.environ.get("BACKUP_UTC_HOUR", "23")),
         "volume_check_hour": int(os.environ.get("VOLUME_CHECK_UTC_HOUR", "23")),
+        # Top 100 tab, Commit 1: same "after the nightly scan" hour as
+        # backup/volume_check above - own lock, so it never collides
+        # with either even though all three default to the same hour.
+        "top100_hour": int(os.environ.get("TOP100_UTC_HOUR", "23")),
     }
 
 
@@ -957,6 +961,23 @@ def _run_quote_recorder_us(log):
     above, same contract, same module."""
     import quote_recorder
     quote_recorder.run_us_recorder(log=log)
+
+
+def _run_top100(log):
+    """Top 100 tab, Commit 1: the nightly Top 100 selection/scoring
+    pass - see top100_engine.run_nightly()'s own docstring for the
+    three stages (re-select the pool, poll any in-flight AI-scoring
+    Batch API submission, then submit a new one for whatever's still
+    unscored). Import deferred, same shape as every other _run_* job
+    above. Lets the exception propagate (same "let it raise" contract
+    as _run_backup/_run_watchdog above) so the _loop() guard's retry-
+    cap only marks the day done on a genuine success - top100_engine's
+    own per-stage guarding (a bad universe file skipped, a bad batch
+    result skipped, a submission failure leaving prior scores intact)
+    already means an exception escaping this far is a real problem
+    with the run as a whole, not a single ticker."""
+    import top100_engine
+    top100_engine.run_nightly(log=log)
 
 
 def _run_earnings_refresh(log):
@@ -1639,6 +1660,26 @@ def _loop(log):
                             _release_job_lock("volume_check")
                     else:
                         log("[scheduler] volume check skipped - another process "
+                            "already holds the lock")
+
+                # Top 100 tab, Commit 1: nightly selection + AI-scoring
+                # batch poll/submit - same one-calendar-day-per-run
+                # guard, its own hour/lock (defaults to the same hour
+                # as backup/volume_check above, never colliding since
+                # each job has its own lock).
+                if (now.hour >= cfg["top100_hour"]
+                        and state.get("last_top100_date") != today):
+                    state = _load_state()
+                    state["last_top100_date"] = today
+                    _save_state(state)
+                    if _acquire_job_lock("top100", log):
+                        try:
+                            log("[scheduler] starting Top 100 selection + AI-scoring batch")
+                            _record_job("top100", log, _run_top100)
+                        finally:
+                            _release_job_lock("top100")
+                    else:
+                        log("[scheduler] Top 100 job skipped - another process "
                             "already holds the lock")
 
                 # Services batch, Part 4: earnings-calendar refresh -
