@@ -155,6 +155,89 @@ def _median(values):
     return (s[mid - 1] + s[mid]) / 2.0
 
 
+def _mean(values):
+    return sum(values) / len(values) if values else None
+
+
+# Header-meter redesign: once this many recorded sessions exist inside
+# the SAME `days` window trading_cost_series() already reports via
+# recorded_days_count, "recorded" leads the header (primary meter) and
+# the estimator demotes to a secondary "for comparison" figure - see
+# compounder_ui.render_trading_cost_tab()'s own docstring for the UI
+# side of this flip. Named (not an inline "5") so the UI reads the same
+# number this module's own docstring documents, never a second,
+# hand-typed copy that could drift.
+RECORDED_LEADS_MIN_DAYS = 5
+
+# The "Bid & ask now" rail/chip (redesign task, Sep 2026) uses its OWN
+# tight/noticeable/wide classification, DELIBERATELY DIFFERENT from
+# spread_band()/TIGHT_THRESHOLD_PCT/WIDE_THRESHOLD_PCT above: spread_
+# band() still feeds the history chart's "wide above 1.5%" threshold
+# line and must not move. This second scale is for a live-snapshot
+# read, with its own wider "wide" cutoff (>2%, not >1.5%) and its own
+# middle label ("noticeable", not "moderate") - a separate function on
+# purpose, not a bug, so the two are never accidentally conflated.
+NOW_TIGHT = "tight"
+NOW_NOTICEABLE = "noticeable"
+NOW_WIDE = "wide"
+NOW_TIGHT_THRESHOLD_PCT = 0.5
+NOW_WIDE_THRESHOLD_PCT = 2.0
+
+
+def now_spread_classification(spread_pct):
+    """"tight" (<=0.5%), "noticeable" (0.5%-2% inclusive), "wide" (>2%)
+    for the live "Bid & ask now" rail/chip - see the module-level note
+    above for why this is a second, deliberately different scale from
+    spread_band(). None in, None out."""
+    if spread_pct is None:
+        return None
+    if spread_pct <= NOW_TIGHT_THRESHOLD_PCT:
+        return NOW_TIGHT
+    if spread_pct <= NOW_WIDE_THRESHOLD_PCT:
+        return NOW_NOTICEABLE
+    return NOW_WIDE
+
+
+# "What crossing it costs you" block: a flat brokerage assumption has
+# to be stated on the page (task's own instruction) rather than baked
+# in silently - named here so the UI's own copy reads this number
+# rather than a second hand-typed literal.
+DEFAULT_BROKERAGE_FLAT = 40.0
+DEFAULT_ORDER_SIZES = (5000.0, 10000.0, 25000.0)
+
+
+def crossing_cost(spread_pct, order_sizes=DEFAULT_ORDER_SIZES, brokerage_flat=DEFAULT_BROKERAGE_FLAT):
+    """[{"order_size","cost_each_way","round_trip","brokerage_flat",
+    "round_trip_vs_brokerage_multiple"}, ...], one row per `order_sizes`
+    entry - the dollar cost of crossing a spread of `spread_pct` (this
+    module's own percentage unit) on each order size, assuming a fill
+    at the bid/ask (stated on the page, per the task).
+
+    cost_each_way = order_size * (spread_pct/100) / 2 - i.e. the
+    HALF-spread from the midpoint (crossing from mid to bid, or mid to
+    ask, is half the full bid-ask gap; the task's own instruction:
+    "order × spread% ÷ 2, i.e. half-spread from mid"). round_trip is
+    simply cost_each_way * 2 (buy then sell, both crossing the spread).
+
+    None in (no spread to price) -> None out, never a fabricated 0."""
+    if spread_pct is None:
+        return None
+    out = []
+    for size in order_sizes:
+        each_way = size * (spread_pct / 100.0) / 2.0
+        round_trip = each_way * 2.0
+        out.append({
+            "order_size": size,
+            "cost_each_way": each_way,
+            "round_trip": round_trip,
+            "brokerage_flat": brokerage_flat,
+            "round_trip_vs_brokerage_multiple": (
+                round_trip / brokerage_flat if brokerage_flat else None
+            ),
+        })
+    return out
+
+
 def trading_cost_series(ticker, price_history, snapshots, days=30):
     """The Trading Cost tab's per-ticker data, entirely from what the
     caller already has cached/stored - see this module's own docstring
@@ -184,6 +267,15 @@ def trading_cost_series(ticker, price_history, snapshots, days=30):
     "recorded_ask","recorded_spread_pct","estimated_spread_pct"}, ...]
     (ascending by date, length = min(days, len(price_history))),
     "median_recorded_spread_pct", "average_estimated_spread_pct",
+    "average_recorded_spread_pct" (mean, not median, of the SAME
+    recorded_spread_pct values median_recorded_spread_pct already
+    covers - the header-meter redesign's "rolling average of recorded
+    sessions" needs a mean specifically, kept as a second field rather
+    than replacing the existing median one that other callers may still
+    read), "tracking_offset_pct" (mean of estimated_spread_pct minus
+    recorded_spread_pct, over only the days that have BOTH a recorded
+    and an estimated value - None if there's no such overlap day - the
+    header meter's "tracking {+-X.X}pt vs measured" line),
     "recording_start_date" (None if `snapshots` is empty),
     "recorded_days_count",
     "avg_daily_value_traded_30d" (close*volume, averaged over the SAME
@@ -197,6 +289,8 @@ def trading_cost_series(ticker, price_history, snapshots, days=30):
             "ticker": ticker, "days": [],
             "median_recorded_spread_pct": None,
             "average_estimated_spread_pct": None,
+            "average_recorded_spread_pct": None,
+            "tracking_offset_pct": None,
             "recording_start_date": recording_start_date,
             "recorded_days_count": 0,
             "avg_daily_value_traded_30d": None,
@@ -234,6 +328,10 @@ def trading_cost_series(ticker, price_history, snapshots, days=30):
 
     recorded_spreads = [r["recorded_spread_pct"] for r in rows if r["recorded_spread_pct"] is not None]
     estimated_spreads = [r["estimated_spread_pct"] for r in rows if r["estimated_spread_pct"] is not None]
+    overlap_diffs = [
+        r["estimated_spread_pct"] - r["recorded_spread_pct"] for r in rows
+        if r["estimated_spread_pct"] is not None and r["recorded_spread_pct"] is not None
+    ]
     values_traded = [
         row["close"] * row["volume"] for row in window
         if isinstance(row.get("close"), (int, float)) and isinstance(row.get("volume"), (int, float))
@@ -243,9 +341,9 @@ def trading_cost_series(ticker, price_history, snapshots, days=30):
         "ticker": ticker,
         "days": rows,
         "median_recorded_spread_pct": _median(recorded_spreads),
-        "average_estimated_spread_pct": (
-            sum(estimated_spreads) / len(estimated_spreads) if estimated_spreads else None
-        ),
+        "average_estimated_spread_pct": _mean(estimated_spreads),
+        "average_recorded_spread_pct": _mean(recorded_spreads),
+        "tracking_offset_pct": _mean(overlap_diffs),
         "recording_start_date": recording_start_date,
         "recorded_days_count": len(recorded_spreads),
         "avg_daily_value_traded_30d": (

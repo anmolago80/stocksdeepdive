@@ -3232,37 +3232,99 @@ EN = {
         "brokerage fee — wider spreads mean a bigger gap between what "
         "you'd pay to buy and what you'd get selling right back out."
     ),
-    "compounder.trading_cost.tile_spread_recorded": "Spread recorded",
-    "compounder.trading_cost.tile_spread_recorded_comment": (
-        "Median of the real bid/ask spreads this site has actually "
-        "recorded mid-session for this stock, as a percentage of the "
-        "midpoint price."
+    # Section 1 — header meters (redesign, Sep 2026): "recorded" leads
+    # once trading_cost_engine.RECORDED_LEADS_MIN_DAYS real sessions
+    # exist in the window, demoting the estimate to a secondary "for
+    # comparison" figure — see compounder_ui.render_trading_cost_tab().
+    "compounder.trading_cost.meter_recorded_label": "Spread — recorded",
+    "compounder.trading_cost.meter_recorded_caption": "latest recorded {datetime}",
+    "compounder.trading_cost.meter_recorded_comment": (
+        "Average of the real bid/ask spreads this site has recorded "
+        "mid-session for this stock, as a percentage of the midpoint "
+        "price. Recorded once per trading day, sampled 1pm-4pm "
+        "market-local time, only when the market is confirmed open "
+        "with real volume and the quote isn't frozen from the previous "
+        "snapshot — a rejected or holiday day is skipped, never filled "
+        "in with an estimate."
     ),
+    "compounder.trading_cost.meter_estimate_secondary_label": "model estimate · for comparison",
+    "compounder.trading_cost.meter_tracking_line": "tracking {offset} vs measured",
+    "compounder.trading_cost.meter_recorded_progress": "{count} of {min_count} recorded sessions so far",
     "compounder.trading_cost.tile_spread_estimated": "Spread estimated (30d)",
     "compounder.trading_cost.tile_spread_estimated_comment": (
-        "Average of the last 30 days' Corwin-Schultz spread estimate — "
-        "computed from daily high/low prices alone, no bid/ask data "
-        "needed, so it covers every day including before real recording "
-        "began."
+        "Average of the last 30 days' Corwin & Schultz (2012) high-low "
+        "estimate — each day's figure is derived from that day and the "
+        "day before it, from price alone, no bid/ask data needed, so "
+        "it covers every day including before real recording began."
     ),
-    "compounder.trading_cost.tile_value_traded": "Value traded (30d avg)",
-    "compounder.trading_cost.tile_bid_ask_now": "Bid/ask now",
     "compounder.trading_cost.bid_ask_now_snapshot_label": "recorded {datetime}",
     "compounder.trading_cost.bid_ask_now_stale_label": "last recorded {date}",
     "compounder.trading_cost.bid_ask_now_no_data": "No snapshot recorded yet",
-    "compounder.trading_cost.chart_bid_ask_title": "Bid & ask",
-    "compounder.trading_cost.chart_spread_title": "Spread, % of price",
-    "compounder.trading_cost.recording_started_label": "Recording started {date}",
-    "compounder.trading_cost.recording_not_started_label": (
-        "Recording hasn't started yet for this stock — the chart below "
-        "shows the estimated spread only; real bid/ask recording begins "
-        "the next time this stock is sampled mid-session."
+
+    # Section 2 — "What crossing it costs you" (Option B).
+    "compounder.trading_cost.cost_heading": "What crossing it costs you",
+    "compounder.trading_cost.cost_headline": (
+        "Crossing the spread costs about {amount} each way on a "
+        "{order} order of {ticker}."
     ),
-    "compounder.trading_cost.legend_bid": "Bid",
-    "compounder.trading_cost.legend_ask": "Ask",
-    "compounder.trading_cost.legend_estimated": "Estimated",
-    "compounder.trading_cost.legend_recorded": "Recorded",
+    "compounder.trading_cost.cost_card_title": "{order} order",
+    "compounder.trading_cost.cost_card_each_way": "{amount} each way",
+    "compounder.trading_cost.cost_card_detail": (
+        "round trip {round_trip} · ≈{multiple}× typical brokerage ({brokerage})"
+    ),
+    "compounder.trading_cost.cost_source_recorded": "the recorded spread",
+    "compounder.trading_cost.cost_source_estimated": "the estimated spread ({days}-day average)",
+    "compounder.trading_cost.cost_tip": (
+        "A limit order at the mid ({mid}) — instead of hitting the "
+        "ask — would roughly halve this cost if it fills. On thin "
+        "stocks patience is a fee discount. Described calculations "
+        "from {source}, not a recommendation."
+    ),
+    "compounder.trading_cost.cost_caption_suffix": (
+        "assumes filling at bid/ask; real fills vary with order size and depth."
+    ),
+    "compounder.trading_cost.cost_no_data": (
+        "No spread available yet to price a trade for {ticker}."
+    ),
+
+    # Section 3 — "Bid & ask now" (Option A rail + Option C tiles).
+    "compounder.trading_cost.bid_ask_now_title": "Bid & ask now",
+    "compounder.trading_cost.rail_bid_label": "BID — sellers get",
+    "compounder.trading_cost.rail_ask_label": "ASK — buyers pay",
+    "compounder.trading_cost.rail_last_label": "last trade",
+    "compounder.trading_cost.rail_spread_label": "spread",
+    "compounder.trading_cost.rail_not_live_note": "sampled once per trading day — not a live quote.",
+    "compounder.trading_cost.chip_tight": "TIGHT SPREAD",
+    "compounder.trading_cost.chip_noticeable": "NOTICEABLE SPREAD",
+    "compounder.trading_cost.chip_wide": "WIDE SPREAD",
+    "compounder.trading_cost.tile_bid": "Bid",
+    "compounder.trading_cost.tile_ask": "Ask",
+    "compounder.trading_cost.tile_mid": "Mid",
+    "compounder.trading_cost.tile_spread_dollar": "Spread",
+    "compounder.trading_cost.tile_spread_pct": "Spread %",
+
+    # Section 4 — history chart: fact vs estimate by shape/texture, not
+    # colour alone (recorded_vs_estimated mock's own grammar).
+    "compounder.trading_cost.chart_spread_title": "Spread, % of price",
+    "compounder.trading_cost.legend_estimated": "Estimated — from daily prices",
+    "compounder.trading_cost.legend_recorded": "Recorded — measured mid-session",
+    "compounder.trading_cost.recording_began_zone_label": "RECORDING BEGAN {date}",
     "compounder.trading_cost.wide_threshold_label": "Wide, above 1.5%",
+    "compounder.trading_cost.hover_both": "recorded {recorded}% ({time}) · estimated {estimated}% · gap {gap}pt",
+    "compounder.trading_cost.hover_recorded_only": "recorded {recorded}% ({time})",
+    "compounder.trading_cost.hover_estimated_only": "estimated {estimated}%",
+    "compounder.trading_cost.chart_description": (
+        "Muted, diagonally hatched bars are the estimated spread for "
+        "every day, from price alone. Solid bright dots with a dark "
+        "ring are real recorded spreads, always drawn on top of the "
+        "bars. The soft tinted zone marks the period since recording "
+        "began — a day inside it with no dot simply wasn't sampled "
+        "that day (rejected, a holiday, or a miss), never filled in "
+        "with an estimate standing in for a real quote. The dashed "
+        "line marks the wide-spread threshold."
+    ),
+
+    # Section 5 — day-by-day table (structure unchanged).
     "compounder.trading_cost.table_title": "Day by day",
     "compounder.trading_cost.table_col_date": "Date",
     "compounder.trading_cost.table_col_close": "Close",
@@ -3281,9 +3343,6 @@ EN = {
     "compounder.trading_cost.no_price_data": (
         "No price history available for {ticker} right now."
     ),
-    "compounder.trading_cost.band_tight": "Tight",
-    "compounder.trading_cost.band_moderate": "Moderate",
-    "compounder.trading_cost.band_wide": "Wide",
     # Company description (17 Sep 2026), Deep Dive page only, Option A:
     # a one-liner under the title row (first sentence of the provider's
     # own business summary, truncated ~140 chars) that opens into a full
@@ -6052,38 +6111,102 @@ ES = {
         "una brecha mayor entre lo que pagarías al comprar y lo que "
         "recibirías al vender de inmediato."
     ),
-    "compounder.trading_cost.tile_spread_recorded": "Spread registrado",
-    "compounder.trading_cost.tile_spread_recorded_comment": (
-        "Mediana de los spreads reales de compra/venta que este sitio "
+    # Sección 1 — medidores del encabezado (rediseño, sep 2026).
+    "compounder.trading_cost.meter_recorded_label": "Spread — registrado",
+    "compounder.trading_cost.meter_recorded_caption": "último registro: {datetime}",
+    "compounder.trading_cost.meter_recorded_comment": (
+        "Promedio de los spreads reales de compra/venta que este sitio "
         "ha registrado en horario de mercado para esta acción, como "
-        "porcentaje del precio medio."
+        "porcentaje del precio medio. Se registra una vez por día de "
+        "mercado, entre la 1pm y las 4pm hora local del mercado, solo "
+        "cuando el mercado está confirmado abierto con volumen real y "
+        "la cotización no está congelada respecto a la anterior — un "
+        "día rechazado o feriado se omite, nunca se rellena con una "
+        "estimación."
     ),
+    "compounder.trading_cost.meter_estimate_secondary_label": "estimación del modelo · para comparar",
+    "compounder.trading_cost.meter_tracking_line": "diferencia de {offset} vs. lo medido",
+    "compounder.trading_cost.meter_recorded_progress": "{count} de {min_count} sesiones registradas hasta ahora",
     "compounder.trading_cost.tile_spread_estimated": "Spread estimado (30d)",
     "compounder.trading_cost.tile_spread_estimated_comment": (
-        "Promedio de la estimación Corwin-Schultz del spread en los "
-        "últimos 30 días — calculada solo a partir de los máximos/"
-        "mínimos diarios, sin datos de compra/venta, por lo que cubre "
-        "todos los días, incluso antes de que comenzara el registro real."
+        "Promedio de la estimación Corwin & Schultz (2012) del spread "
+        "en los últimos 30 días — cada cifra diaria se calcula a "
+        "partir de ese día y el anterior, solo con el precio, sin "
+        "datos de compra/venta, por lo que cubre todos los días, "
+        "incluso antes de que comenzara el registro real."
     ),
-    "compounder.trading_cost.tile_value_traded": "Valor operado (prom. 30d)",
-    "compounder.trading_cost.tile_bid_ask_now": "Compra/venta ahora",
     "compounder.trading_cost.bid_ask_now_snapshot_label": "registrado {datetime}",
     "compounder.trading_cost.bid_ask_now_stale_label": "último registro: {date}",
     "compounder.trading_cost.bid_ask_now_no_data": "Aún no hay captura registrada",
-    "compounder.trading_cost.chart_bid_ask_title": "Compra y venta",
-    "compounder.trading_cost.chart_spread_title": "Spread, % del precio",
-    "compounder.trading_cost.recording_started_label": "El registro comenzó el {date}",
-    "compounder.trading_cost.recording_not_started_label": (
-        "El registro aún no ha comenzado para esta acción — el gráfico "
-        "de abajo muestra solo el spread estimado; el registro real de "
-        "compra/venta comenzará la próxima vez que se capture esta "
-        "acción en horario de mercado."
+
+    # Sección 2 — "Lo que te cuesta cruzar el spread" (Opción B).
+    "compounder.trading_cost.cost_heading": "Lo que te cuesta cruzar el spread",
+    "compounder.trading_cost.cost_headline": (
+        "Cruzar el spread cuesta aproximadamente {amount} por lado "
+        "en una orden de {order} de {ticker}."
     ),
-    "compounder.trading_cost.legend_bid": "Compra",
-    "compounder.trading_cost.legend_ask": "Venta",
-    "compounder.trading_cost.legend_estimated": "Estimado",
-    "compounder.trading_cost.legend_recorded": "Registrado",
+    "compounder.trading_cost.cost_card_title": "orden de {order}",
+    "compounder.trading_cost.cost_card_each_way": "{amount} por lado",
+    "compounder.trading_cost.cost_card_detail": (
+        "ida y vuelta {round_trip} · ≈{multiple}× la comisión típica ({brokerage})"
+    ),
+    "compounder.trading_cost.cost_source_recorded": "el spread registrado",
+    "compounder.trading_cost.cost_source_estimated": "el spread estimado (promedio de {days} días)",
+    "compounder.trading_cost.cost_tip": (
+        "Una orden límite al precio medio ({mid}) — en lugar de tomar "
+        "el precio de venta — reduciría aproximadamente a la mitad "
+        "este costo si se ejecuta. En acciones poco líquidas, la "
+        "paciencia es un descuento en comisiones. Cálculos descritos a "
+        "partir de {source}, no una recomendación."
+    ),
+    "compounder.trading_cost.cost_caption_suffix": (
+        "asume ejecución al precio de compra/venta; el resultado real varía "
+        "según el tamaño de la orden y la profundidad del mercado."
+    ),
+    "compounder.trading_cost.cost_no_data": (
+        "Aún no hay spread disponible para calcular una orden de {ticker}."
+    ),
+
+    # Sección 3 — "Compra/venta ahora" (Opción A + Opción C).
+    "compounder.trading_cost.bid_ask_now_title": "Compra/venta ahora",
+    "compounder.trading_cost.rail_bid_label": "COMPRA — el vendedor recibe",
+    "compounder.trading_cost.rail_ask_label": "VENTA — el comprador paga",
+    "compounder.trading_cost.rail_last_label": "última operación",
+    "compounder.trading_cost.rail_spread_label": "spread",
+    "compounder.trading_cost.rail_not_live_note": "una muestra por día de mercado — no es una cotización en vivo.",
+    "compounder.trading_cost.chip_tight": "SPREAD AJUSTADO",
+    "compounder.trading_cost.chip_noticeable": "SPREAD NOTABLE",
+    "compounder.trading_cost.chip_wide": "SPREAD AMPLIO",
+    "compounder.trading_cost.tile_bid": "Compra",
+    "compounder.trading_cost.tile_ask": "Venta",
+    "compounder.trading_cost.tile_mid": "Medio",
+    "compounder.trading_cost.tile_spread_dollar": "Spread",
+    "compounder.trading_cost.tile_spread_pct": "Spread %",
+
+    # Sección 4 — gráfico histórico: hecho vs. estimación por forma y
+    # textura, nunca solo por color (gramática del mock recorded_vs_
+    # estimated).
+    "compounder.trading_cost.chart_spread_title": "Spread, % del precio",
+    "compounder.trading_cost.legend_estimated": "Estimado — a partir de precios diarios",
+    "compounder.trading_cost.legend_recorded": "Registrado — medido en sesión",
+    "compounder.trading_cost.recording_began_zone_label": "REGISTRO INICIADO {date}",
     "compounder.trading_cost.wide_threshold_label": "Amplio, por encima de 1.5%",
+    "compounder.trading_cost.hover_both": "registrado {recorded}% ({time}) · estimado {estimated}% · diferencia {gap}pt",
+    "compounder.trading_cost.hover_recorded_only": "registrado {recorded}% ({time})",
+    "compounder.trading_cost.hover_estimated_only": "estimado {estimated}%",
+    "compounder.trading_cost.chart_description": (
+        "Las barras tenues con trama diagonal son el spread estimado "
+        "de cada día, calculado solo a partir del precio. Los puntos "
+        "sólidos y brillantes con anillo oscuro son spreads realmente "
+        "registrados, siempre dibujados sobre las barras. La zona con "
+        "tinte suave marca el período desde que comenzó el registro — "
+        "un día dentro de esa zona sin punto simplemente no se "
+        "muestreó ese día (rechazado, feriado o una falla), nunca se "
+        "rellena con una estimación en lugar de una cotización real. "
+        "La línea punteada marca el umbral de spread amplio."
+    ),
+
+    # Sección 5 — tabla día a día (estructura sin cambios).
     "compounder.trading_cost.table_title": "Día a día",
     "compounder.trading_cost.table_col_date": "Fecha",
     "compounder.trading_cost.table_col_close": "Cierre",
@@ -6103,9 +6226,6 @@ ES = {
     "compounder.trading_cost.no_price_data": (
         "No hay historial de precios disponible para {ticker} en este momento."
     ),
-    "compounder.trading_cost.band_tight": "Ajustado",
-    "compounder.trading_cost.band_moderate": "Moderado",
-    "compounder.trading_cost.band_wide": "Amplio",
     # Descripción de la empresa (17 Sep 2026) - ES DRAFT, not
     # professionally reviewed (same convention as every other ES batch
     # in this file). The company summary text itself is never

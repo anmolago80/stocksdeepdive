@@ -35,6 +35,7 @@ import math
 import os
 import re
 
+import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -1617,41 +1618,153 @@ def render_tabs(sections, ticker, section_order, key_prefix, gates=None, lang="e
 # trading_cost_tab() above for the on/off switch and tab placement.
 # -----------------------------------
 
-def _pct_to_fraction(value_pct):
-    """trading_cost_engine's own unit (a percentage, e.g. 0.42 = 0.42%)
-    -> band_gauge()'s expected unit (a fraction, since its "pct" format
-    does value*100 - see _cp_format() above). None passes straight
-    through (band_gauge already renders "N/A" for a None value)."""
-    return value_pct / 100.0 if value_pct is not None else None
+def _currency_symbol_for_ticker(ticker):
+    """"A$" for an ASX ticker (".AX" suffix), "US$" otherwise - the
+    Trading Cost tab serves both AUD (ASX) and USD (US) tickers, and a
+    bare "$" would be ambiguous rather than informative (same reasoning
+    _fmt_value_traded() below already applies to its own figure). Same
+    ticker-suffix convention _market_tz_for_ticker() below already
+    uses - never a second, independently-derived market check."""
+    return "A$" if ticker.upper().endswith(".AX") else "US$"
 
 
-def _spread_band_thresholds(lang):
-    """band_gauge() thresholds for a trading-cost spread tile, on
-    band_gauge's own fraction scale - built fresh per `lang` since the
-    verdict word itself (band_gauge's 4th tuple element) has to be
-    translated. Sourced from trading_cost_engine.TIGHT_THRESHOLD_PCT/
-    WIDE_THRESHOLD_PCT (never a second, hand-typed copy of 0.5/1.5) so
-    the tile's own pill can never disagree with trading_cost_engine.
-    spread_band()'s own classification of the SAME value - verified in
-    this commit's own test suite.
+def _fmt_money(value, symbol, decimals=2):
+    """"{symbol}12,345.67" - "-" for None. Used throughout the
+    redesigned tab's cost-to-cross cards and bid/ask rail/tiles, always
+    with the caller's own `symbol` from _currency_symbol_for_ticker()
+    above, never a hardcoded "$"."""
+    return f"{symbol}{value:,.{decimals}f}" if value is not None else "—"
 
-    The moderate band's own upper bound is nudged by a tiny epsilon:
-    band_gauge's threshold engine (_cp_band above) is right-EXCLUSIVE
-    (value < hi), but the spec's own bands are "moderate 0.5-1.5%
-    inclusive, wide >1.5% exclusive" - i.e. a value of EXACTLY 1.5%
-    must land in moderate, not wide. Without the nudge, band_gauge's
-    generic engine would put exactly 1.5% in "wide" instead, silently
-    disagreeing with trading_cost_engine.spread_band(1.5) == "moderate"."""
-    tight = i18n.t("compounder.trading_cost.band_tight", lang)
-    moderate = i18n.t("compounder.trading_cost.band_moderate", lang)
-    wide = i18n.t("compounder.trading_cost.band_wide", lang)
-    tight_hi = trading_cost_engine.TIGHT_THRESHOLD_PCT / 100.0
-    wide_lo = trading_cost_engine.WIDE_THRESHOLD_PCT / 100.0
-    return [
-        (None, tight_hi, "green", tight),
-        (tight_hi, wide_lo + 1e-9, "amber", moderate),
-        (wide_lo, None, "red", wide),
-    ]
+
+def _fmt_pct1(value):
+    """"2.4%" (one decimal, this tab's own display precision) - "-" for
+    None. _fmt_pct_diag() below stays a separate, higher-precision
+    (3dp) formatter for the owner-only diagnostics expander; this one
+    is for the visitor-facing meters/tiles."""
+    return f"{value:.1f}%" if value is not None else "—"
+
+
+def _fmt_signed_pt(value):
+    """"+0.3"/"-1.2"/"0.0" - always signed, one decimal - the header
+    meter's own "tracking {offset}pt vs measured" line. None -> None
+    (caller skips the line entirely rather than showing a meaningless
+    "tracking nonept")."""
+    return f"{value:+.1f}" if value is not None else None
+
+
+# The "Bid & ask now" rail/chip's own classification word+colour -
+# trading_cost_engine.now_spread_classification()'s tight/noticeable/
+# wide (see that function's own docstring for why this is a SECOND,
+# deliberately different scale from spread_band()/band_gauge above).
+_NOW_CHIP_STYLE = {
+    trading_cost_engine.NOW_TIGHT: ("#34d399", "#10312d", "#14532d", "chip_tight"),
+    trading_cost_engine.NOW_NOTICEABLE: ("#fbbf24", "#2a2413", "#7f5a14", "chip_noticeable"),
+    trading_cost_engine.NOW_WIDE: ("#fb7185", "#2d1420", "#7f1d3a", "chip_wide"),
+}
+
+
+def _now_chip_html(classification, spread_pct, lang):
+    """The rail's classification chip - colour AND a written word
+    together ("the word always written, never colour alone" - the
+    task's own instruction), from now_spread_classification() above."""
+    if classification not in _NOW_CHIP_STYLE:
+        return ""
+    text_color, bg, border, key = _NOW_CHIP_STYLE[classification]
+    label = i18n.t(f"compounder.trading_cost.{key}", lang)
+    pct_text = f" · {spread_pct:.1f}%" if spread_pct is not None else ""
+    return (
+        "<span style='display:inline-flex;align-items:center;gap:5px;border-radius:999px;"
+        f"padding:2px 10px;font-size:11px;font-weight:700;background:{bg};"
+        f"border:1px solid {border};color:{text_color};'>"
+        f"{html.escape(label)}{html.escape(pct_text)}</span>"
+    )
+
+
+def _price_rail_html(bid, ask, last_price, currency_symbol, spread_dollar, lang):
+    """Option A: bid and ask as two points on a horizontal price line,
+    the gap between them hatched (the "dead ground" a crossing order
+    pays to cross), last trade marked below - see debea530-ask_bid_
+    tab_mock.html's own OPTION A section, the acceptance bar for this
+    layout's grammar (its numbers are fake, never copied)."""
+    values = [v for v in (bid, ask, last_price) if v is not None]
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or (abs(hi) * 0.02 or 1.0)
+    pad = span * 0.3
+    axis_lo, axis_hi = lo - pad, hi + pad
+
+    def _pos(v):
+        return max(0.0, min(100.0, (v - axis_lo) / (axis_hi - axis_lo) * 100.0))
+
+    bid_pct, ask_pct = _pos(bid), _pos(ask)
+    gap_left, gap_right = min(bid_pct, ask_pct), max(bid_pct, ask_pct)
+
+    _t = lambda key, **fmt: i18n.t(f"compounder.trading_cost.{key}", lang, **fmt)
+
+    last_html = ""
+    if last_price is not None:
+        last_pct = _pos(last_price)
+        last_html = (
+            f"<span style='position:absolute;left:{last_pct:.2f}%;top:37px;width:12px;height:12px;"
+            "border-radius:50%;background:#e6edf5;border:2px solid #0b1220;transform:translateX(-50%);'></span>"
+            f"<span style='position:absolute;left:{last_pct:.2f}%;top:56px;font-size:11px;"
+            "transform:translateX(-50%);text-align:center;line-height:1.4;color:#c7d2e0;'>"
+            f"<b style='display:block;font-size:14px;'>{html.escape(_fmt_money(last_price, currency_symbol))}</b>"
+            f"{html.escape(_t('rail_last_label'))}</span>"
+        )
+
+    # Vertical layout: two-line "above" labels (bold price + word label,
+    # ~30px tall) sit ABOVE the rail with enough clearance that they
+    # never collide with the bid/ask circles sitting ON the rail line -
+    # a real layout bug in an earlier pass here, caught by this
+    # redesign's own Playwright screenshot check (labels top:-4px vs
+    # circles top:22px left only an 18px gap for a ~30px-tall label
+    # block). Circles now at top:34px (was 22px), "above" labels at
+    # top:-18px (was -4px) - a full label height of clearance either
+    # side of the rail line at top:42px (was 30px).
+    return (
+        "<div style='position:relative;height:76px;margin:30px 8px 6px;'>"
+        "<div style='position:absolute;top:42px;left:0;right:0;height:2px;background:#1f3352;'></div>"
+        f"<div style='position:absolute;top:38px;height:10px;left:{gap_left:.2f}%;"
+        f"width:{max(gap_right - gap_left, 1.0):.2f}%;border-radius:5px;"
+        "background:repeating-linear-gradient(45deg,#7f1d3a,#7f1d3a 4px,#3a0f1f 4px,#3a0f1f 8px);'></div>"
+        f"<span style='position:absolute;left:{bid_pct:.2f}%;top:34px;width:18px;height:18px;border-radius:50%;"
+        "background:#0b1220;border:2px solid #2dd4bf;transform:translateX(-50%);'></span>"
+        f"<span style='position:absolute;left:{ask_pct:.2f}%;top:34px;width:18px;height:18px;border-radius:50%;"
+        "background:#0b1220;border:2px solid #fb7185;transform:translateX(-50%);'></span>"
+        f"<span style='position:absolute;left:{bid_pct:.2f}%;top:-18px;font-size:11px;"
+        "transform:translateX(-50%);text-align:center;line-height:1.4;color:#c7d2e0;'>"
+        f"<b style='display:block;font-size:14px;color:#2dd4bf;'>{html.escape(_fmt_money(bid, currency_symbol))}</b>"
+        f"{html.escape(_t('rail_bid_label'))}</span>"
+        f"<span style='position:absolute;left:{ask_pct:.2f}%;top:-18px;font-size:11px;"
+        "transform:translateX(-50%);text-align:center;line-height:1.4;color:#c7d2e0;'>"
+        f"<b style='display:block;font-size:14px;color:#fb7185;'>{html.escape(_fmt_money(ask, currency_symbol))}</b>"
+        f"{html.escape(_t('rail_ask_label'))}</span>"
+        + last_html +
+        "<span style='position:absolute;left:97%;top:56px;font-size:11px;transform:translateX(-100%);"
+        "text-align:right;line-height:1.4;color:#8aa0b8;'>"
+        f"{html.escape(_t('rail_spread_label'))}<br>"
+        f"<b style='color:#fbbf24;'>{html.escape(_fmt_money(spread_dollar, currency_symbol))}</b></span>"
+        "</div>"
+    )
+
+
+def _styled_day_table(days_rows, lang):
+    """The day-by-day table (structure unchanged from the original
+    Commit 3 layout) with its Estimated spread % column subtly muted
+    (pandas Styler, since st.dataframe's own column_config has no
+    per-column text-colour option) so the recorded columns read as
+    primary - the redesign's own section 5 instruction."""
+    _t = lambda key, **fmt: i18n.t(f"compounder.trading_cost.{key}", lang, **fmt)
+    col_espread = _t("table_col_estimated_spread")
+    df = pd.DataFrame([{
+        _t("table_col_date"): row["date"],
+        _t("table_col_close"): row["close"],
+        _t("table_col_recorded_bid"): row["recorded_bid"],
+        _t("table_col_recorded_ask"): row["recorded_ask"],
+        _t("table_col_recorded_spread"): row["recorded_spread_pct"],
+        col_espread: row["estimated_spread_pct"],
+    } for row in days_rows])
+    return df.style.set_properties(subset=[col_espread], **{"color": "#5b7290"})
 
 
 def _fmt_value_traded(value):
@@ -1782,95 +1895,97 @@ def _plain_tile(label, value_text, caption=None):
     )
 
 
-def _trading_cost_bid_ask_chart(days_rows, recording_start_date, lang="en"):
-    """"Bid & Ask" chart: recorded bid/ask lines with the gap shaded
-    between them (fill="tonexty" between the two line traces - the
-    market's own gap, not a stand-alone shape). connectgaps=False on
-    both traces: a day with no recorded snapshot (recorded_bid/ask is
-    None) is a genuine gap in the data, never visually bridged over by
-    a straight line to the next real point, which would imply a
-    quote that was never actually captured. The region before
-    recording began (or, if recording hasn't reached this window's
-    first visible day at all, the WHOLE window) is shaded via
-    add_vrect and labelled "Recording started <date>", per the spec."""
+def _trading_cost_spread_chart(days_rows, recording_start_date, snap_times, ticker, lang="en"):
+    """"Spread, % of price" chart, redesigned to read fact vs estimate
+    by SHAPE AND TEXTURE, never colour alone - matching 45e2b786-
+    recorded_vs_estimated_mock.html's own grammar (the acceptance bar
+    for this layout - its numbers are fake, never copied): estimated
+    days are muted, diagonally hatched background bars (plotly's own
+    marker_pattern, always present for every day); recorded days are
+    solid bright dots with a dark ring, always drawn on top (a second
+    trace, so z-order is "last trace wins" - already true here since
+    it's added after the bars); a soft tinted zone (add_vrect) marks
+    the period since real recording began, labelled "RECORDING BEGAN
+    <date>"; the wide-spread threshold line's own label gets a dark
+    backing (annotation_bgcolor) so it can't blend into a bar or dot
+    it happens to sit near. ONE y-axis - both traces share it.
+
+    `snap_times`: {"YYYY-MM-DD": snap_at_utc} from quote_snapshot_
+    store.snapshot_times_for_ticker() - the recorded sample TIME shown
+    in each recorded day's own hover text (a plain trace name/legend
+    can't carry per-point custom text like this without either a
+    hovertemplate+customdata array or, simpler for two independent
+    traces sharing the same per-day text, the hovertext list used
+    here)."""
     _t = lambda key, **fmt: i18n.t(f"compounder.trading_cost.{key}", lang, **fmt)
-    dates = [r["date"] for r in days_rows]
-    bids = [r["recorded_bid"] for r in days_rows]
-    asks = [r["recorded_ask"] for r in days_rows]
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=dates, y=bids, mode="lines", name=_t("legend_bid"),
-        line=dict(color=_CP_COLOR_TEXT["blue"], width=1.6), connectgaps=False,
-    ))
-    fig.add_trace(go.Scatter(
-        x=dates, y=asks, mode="lines", name=_t("legend_ask"),
-        line=dict(color=_CP_COLOR_TEXT["green"], width=1.6),
-        fill="tonexty", fillcolor="rgba(94,211,240,0.12)", connectgaps=False,
-    ))
-
-    if dates:
-        if recording_start_date and recording_start_date > dates[-1]:
-            shade_x0, shade_x1 = dates[0], dates[-1]
-        elif recording_start_date and recording_start_date > dates[0]:
-            shade_x0, shade_x1 = dates[0], recording_start_date
-        else:
-            shade_x0, shade_x1 = None, None
-        if shade_x0 is not None:
-            fig.add_vrect(
-                x0=shade_x0, x1=shade_x1,
-                fillcolor="rgba(138,160,184,0.08)", line_width=0,
-                annotation_text=_t("recording_started_label", date=recording_start_date),
-                annotation_position="top left",
-                annotation_font_size=11, annotation_font_color="#8aa0b8",
-            )
-
-    fig.update_layout(
-        title=_t("chart_bid_ask_title"),
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#c7d2e0"),
-        margin=dict(l=10, r=10, t=40, b=10), height=280,
-        xaxis=dict(gridcolor="rgba(138,160,184,0.15)"),
-        yaxis=dict(gridcolor="rgba(138,160,184,0.15)"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    return fig
-
-
-def _trading_cost_spread_chart(days_rows, lang="en"):
-    """"Spread, % of price" chart: estimated spread as a bar for every
-    day (always available), recorded spread as a dot on the days we
-    have one (a marker trace with None for every other day - plotly
-    simply skips those points, leaving the dot series sparse without a
-    second, filtered x-axis to keep in sync), one legend, a dashed
-    "wide" threshold line at trading_cost_engine.WIDE_THRESHOLD_PCT.
-    ONE y-axis - both traces share it, never a secondary scale."""
-    _t = lambda key, **fmt: i18n.t(f"compounder.trading_cost.{key}", lang, **fmt)
+    tz = _market_tz_for_ticker(ticker)
     dates = [r["date"] for r in days_rows]
     estimated = [r["estimated_spread_pct"] for r in days_rows]
     recorded = [r["recorded_spread_pct"] for r in days_rows]
 
+    def _snap_time_str(date_str):
+        snap_iso = snap_times.get(date_str)
+        if not snap_iso:
+            return "—"
+        dt_local = _dt.datetime.fromisoformat(snap_iso).astimezone(tz)
+        tz_abbr = dt_local.tzname() or ""
+        return f"{_format_clock_time(dt_local)} {tz_abbr}".strip()
+
+    def _hover_for(row):
+        est, rec = row["estimated_spread_pct"], row["recorded_spread_pct"]
+        if rec is not None and est is not None:
+            gap = rec - est
+            return _t("hover_both", recorded=f"{rec:.1f}", time=_snap_time_str(row["date"]),
+                       estimated=f"{est:.1f}", gap=f"{gap:+.1f}")
+        if rec is not None:
+            return _t("hover_recorded_only", recorded=f"{rec:.1f}", time=_snap_time_str(row["date"]))
+        if est is not None:
+            return _t("hover_estimated_only", estimated=f"{est:.1f}")
+        return ""
+
+    hover_text = [_hover_for(r) for r in days_rows]
+
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=dates, y=estimated, name=_t("legend_estimated"),
-        marker_color="rgba(94,211,240,0.55)",
+        marker=dict(
+            color="rgba(94,211,240,0.30)",
+            pattern=dict(shape="/", fgcolor="rgba(94,211,240,0.65)", size=6, solidity=0.3),
+        ),
+        hovertext=hover_text, hoverinfo="text",
     ))
     fig.add_trace(go.Scatter(
         x=dates, y=recorded, mode="markers", name=_t("legend_recorded"),
-        marker=dict(color=_CP_COLOR_TEXT["green"], size=7),
+        marker=dict(color=_CP_COLOR_TEXT["green"], size=9, line=dict(color="#0b1220", width=2)),
+        hovertext=hover_text, hoverinfo="text",
     ))
+
+    if dates and recording_start_date and recording_start_date <= dates[-1]:
+        zone_x0 = max(recording_start_date, dates[0])
+        fig.add_vrect(
+            x0=zone_x0, x1=dates[-1],
+            fillcolor="rgba(52,211,153,0.08)", line_width=0, layer="below",
+        )
+        fig.add_annotation(
+            x=zone_x0, y=1.0, yref="paper", xanchor="left", yanchor="bottom",
+            text=_t("recording_began_zone_label", date=recording_start_date),
+            showarrow=False, font=dict(size=10, color="#34d399"),
+            bgcolor="rgba(11,18,32,0.85)", borderpad=3,
+        )
+
     fig.add_hline(
         y=trading_cost_engine.WIDE_THRESHOLD_PCT, line_dash="dash",
         line_color=_CP_COLOR_TEXT["red"],
         annotation_text=_t("wide_threshold_label"),
-        annotation_position="top right",
+        annotation_position="bottom right",
         annotation_font_size=11, annotation_font_color=_CP_COLOR_TEXT["red"],
+        annotation_bgcolor="rgba(11,18,32,0.85)",
     )
     fig.update_layout(
         title=_t("chart_spread_title"),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#c7d2e0"),
-        margin=dict(l=10, r=10, t=40, b=10), height=280,
+        margin=dict(l=10, r=10, t=40, b=10), height=300,
         xaxis=dict(gridcolor="rgba(138,160,184,0.15)"),
         yaxis=dict(gridcolor="rgba(138,160,184,0.15)", ticksuffix="%"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -1932,65 +2047,193 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
         return
 
     latest = quote_snapshot_store.latest_snapshot(ticker)
-    _c1, _c2, _c3, _c4 = st.columns(4)
-    with _c1:
-        band_gauge(
-            _t("tile_spread_recorded"),
-            _pct_to_fraction(series["median_recorded_spread_pct"]),
-            "pct", _spread_band_thresholds(lang),
-            comment=_t("tile_spread_recorded_comment"),
+    currency_symbol = _currency_symbol_for_ticker(ticker)
+    tz = _market_tz_for_ticker(ticker)
+
+    latest_dt_local = None
+    latest_caption = None
+    now_spread_pct = None
+    if latest and latest.get("snap_at_utc"):
+        latest_dt_local = _dt.datetime.fromisoformat(latest["snap_at_utc"]).astimezone(tz)
+        days_old = _trading_days_since(latest["snap_date"], tz)
+        latest_caption = (
+            _t("bid_ask_now_stale_label", date=_format_date_only(latest_dt_local, lang))
+            if days_old > _STALE_SNAPSHOT_TRADING_DAYS
+            else _t("bid_ask_now_snapshot_label", datetime=_format_snapshot_datetime(latest_dt_local, lang))
         )
-    with _c2:
-        band_gauge(
-            _t("tile_spread_estimated"),
-            _pct_to_fraction(series["average_estimated_spread_pct"]),
-            "pct", _spread_band_thresholds(lang),
-            comment=_t("tile_spread_estimated_comment"),
-        )
-    with _c3:
-        _plain_tile(_t("tile_value_traded"), _fmt_value_traded(series["avg_daily_value_traded_30d"]))
-    with _c4:
-        if latest and latest.get("bid") is not None and latest.get("ask") is not None and latest.get("snap_at_utc"):
-            _tz = _market_tz_for_ticker(ticker)
-            _snap_dt_local = _dt.datetime.fromisoformat(latest["snap_at_utc"]).astimezone(_tz)
-            _days_old = _trading_days_since(latest["snap_date"], _tz)
-            _caption = (
-                _t("bid_ask_now_stale_label", date=_format_date_only(_snap_dt_local, lang))
-                if _days_old > _STALE_SNAPSHOT_TRADING_DAYS
-                else _t("bid_ask_now_snapshot_label", datetime=_format_snapshot_datetime(_snap_dt_local, lang))
-            )
+    if latest and latest.get("bid") is not None and latest.get("ask") is not None:
+        now_spread_pct = trading_cost_engine._recorded_spread_pct(latest["bid"], latest["ask"])
+
+    recorded_leads = series["recorded_days_count"] >= trading_cost_engine.RECORDED_LEADS_MIN_DAYS
+
+    # ---- Section 1: header meters - "recorded" leads once >=
+    # RECORDED_LEADS_MIN_DAYS real sessions exist in the window,
+    # demoting the estimate to a secondary "for comparison" figure
+    # with its own tracking line. Below that count, the estimate stays
+    # primary (today's launch-day state, and every ticker's state
+    # until enough real snapshots accumulate). ----
+    _m1, _m2 = st.columns(2)
+    if recorded_leads:
+        with _m1:
             _plain_tile(
-                _t("tile_bid_ask_now"),
-                f"{latest['bid']:,.2f} / {latest['ask']:,.2f}",
-                caption=_caption,
+                _t("meter_recorded_label"),
+                _fmt_pct1(series["average_recorded_spread_pct"]),
+                caption=_t("meter_recorded_caption", datetime=_format_snapshot_datetime(latest_dt_local, lang))
+                if latest_dt_local else None,
             )
-        else:
-            _plain_tile(_t("tile_bid_ask_now"), "—", caption=_t("bid_ask_now_no_data"))
-
-    st.markdown('<div style="margin-top:18px;"></div>', unsafe_allow_html=True)
-    if series["recording_start_date"]:
-        sdd_plotly_chart(_trading_cost_bid_ask_chart(series["days"], series["recording_start_date"], lang=lang))
+            with st.expander("What this measures", expanded=False):
+                st.caption(_t("meter_recorded_comment"))
+        with _m2:
+            _offset = _fmt_signed_pt(series["tracking_offset_pct"])
+            _plain_tile(
+                _t("meter_estimate_secondary_label"),
+                _fmt_pct1(series["average_estimated_spread_pct"]),
+                caption=_t("meter_tracking_line", offset=f"{_offset}pt") if _offset else None,
+            )
+            with st.expander("What this measures", expanded=False):
+                st.caption(_t("tile_spread_estimated_comment"))
     else:
-        # No snapshots recorded at all yet - the launch-day state. Never
-        # an empty/broken chart area: a plain caption instead, exactly
-        # as the spec asks ("the bid/ask chart says recording hasn't
-        # started"), and the spread chart right below still renders in
-        # full (the estimator needs no recorded quotes at all).
-        st.markdown(f"**{_t('chart_bid_ask_title')}**")
-        st.caption(_t("recording_not_started_label"))
+        with _m1:
+            _plain_tile(_t("tile_spread_estimated"), _fmt_pct1(series["average_estimated_spread_pct"]))
+            with st.expander("What this measures", expanded=False):
+                st.caption(_t("tile_spread_estimated_comment"))
+        with _m2:
+            if series["recorded_days_count"] > 0:
+                _progress_caption = _t(
+                    "meter_recorded_progress",
+                    count=series["recorded_days_count"],
+                    min_count=trading_cost_engine.RECORDED_LEADS_MIN_DAYS,
+                )
+            else:
+                _progress_caption = _t("bid_ask_now_no_data")
+            _plain_tile(
+                _t("meter_recorded_label"),
+                _fmt_pct1(series["average_recorded_spread_pct"]),
+                caption=_progress_caption,
+            )
+            with st.expander("What this measures", expanded=False):
+                st.caption(_t("meter_recorded_comment"))
 
-    sdd_plotly_chart(_trading_cost_spread_chart(series["days"], lang=lang))
+    # ---- Section 2: "What crossing it costs you" (Option B) -
+    # directly under the meters. Prices off the LATEST recorded
+    # snapshot's own spread when one exists (a live-crossing-cost
+    # question is a "right now" question), else the 30-day estimate -
+    # the same `now_spread_pct` also drives section 3's rail/chip
+    # below, so both sections always agree on which spread is "now". ----
+    st.markdown(f"#### {_t('cost_heading')}")
+    _cost_spread = now_spread_pct if now_spread_pct is not None else series["average_estimated_spread_pct"]
+    if _cost_spread is None:
+        st.info(_t("cost_no_data", ticker=ticker))
+    else:
+        _cost_rows = trading_cost_engine.crossing_cost(_cost_spread)
+        _headline_row = _cost_rows[1]  # the $10,000 card, per the spec's own headline sentence
+        # Streamlit trap (CLAUDE.md): a plain st.markdown() with two
+        # "$"-prefixed amounts in the same string gets KaTeX-mangled -
+        # paired "$...$" is read as LaTeX math, not two dollar
+        # amounts. Rendered as raw HTML instead (like every other
+        # money figure in this section), never plain markdown.
+        _headline_text = _t(
+            "cost_headline",
+            amount=_fmt_money(_headline_row["cost_each_way"], currency_symbol, decimals=0),
+            order=_fmt_money(_headline_row["order_size"], currency_symbol, decimals=0),
+            ticker=ticker,
+        )
+        st.markdown(
+            "<div style='font-size:19px;font-weight:800;line-height:1.4;margin:2px 0 12px;color:#e6edf5;'>"
+            f"{html.escape(_headline_text)}</div>",
+            unsafe_allow_html=True,
+        )
 
+        _mid_price = None
+        if now_spread_pct is not None:
+            _mid_price = (latest["bid"] + latest["ask"]) / 2.0
+        elif price_history:
+            _last_row = sorted(price_history, key=lambda r: r["date"])[-1]
+            _mid_price = _last_row.get("close")
+
+        _cost_cols = st.columns(3)
+        for _col, _row in zip(_cost_cols, _cost_rows):
+            with _col:
+                _order_label = _fmt_money(_row["order_size"], currency_symbol, decimals=0)
+                _each_way_label = _fmt_money(_row["cost_each_way"], currency_symbol, decimals=0)
+                _detail_label = _t(
+                    "cost_card_detail",
+                    round_trip=_fmt_money(_row["round_trip"], currency_symbol, decimals=0),
+                    multiple=f"{_row['round_trip_vs_brokerage_multiple']:.1f}",
+                    brokerage=_fmt_money(_row["brokerage_flat"], currency_symbol, decimals=0),
+                )
+                st.markdown(
+                    "<div style='background:#0b1526;border:1px solid #1a2b4a;border-radius:10px;padding:11px 14px;'>"
+                    "<div style='color:#8aa0b8;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;'>"
+                    f"{html.escape(_t('cost_card_title', order=_order_label))}</div>"
+                    "<div style='font-size:17px;font-weight:800;margin:3px 0 1px;color:#e6edf5;'>"
+                    f"{html.escape(_t('cost_card_each_way', amount=_each_way_label))}</div>"
+                    f"<div style='font-size:11px;color:#5b7290;line-height:1.5;'>{html.escape(_detail_label)}</div>"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+
+        _cost_source = _t("cost_source_recorded") if now_spread_pct is not None else _t("cost_source_estimated", days=30)
+        st.markdown(
+            "<div style='border:1px dashed #1f3352;border-radius:10px;padding:9px 13px;font-size:12px;"
+            "color:#c7d2e0;margin-top:11px;line-height:1.55;'>"
+            f"{html.escape(_t('cost_tip', mid=_fmt_money(_mid_price, currency_symbol), source=_cost_source))}</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            (f"{latest_caption} · " if now_spread_pct is not None and latest_caption else "")
+            + _t("cost_caption_suffix")
+        )
+
+    # ---- Section 3: "Bid & ask now" (Option A rail + Option C tiles) ----
+    st.markdown(f"#### {_t('bid_ask_now_title')}")
+    if latest and latest.get("bid") is not None and latest.get("ask") is not None:
+        _bid, _ask = latest["bid"], latest["ask"]
+        _last_price = latest.get("last_price")
+        _spread_dollar = _ask - _bid
+        _classification = trading_cost_engine.now_spread_classification(now_spread_pct)
+
+        _h1, _h2 = st.columns([3, 2])
+        with _h1:
+            st.markdown(f"**{ticker}**")
+        with _h2:
+            st.markdown(_now_chip_html(_classification, now_spread_pct, lang), unsafe_allow_html=True)
+
+        st.markdown(
+            _price_rail_html(_bid, _ask, _last_price, currency_symbol, _spread_dollar, lang),
+            unsafe_allow_html=True,
+        )
+
+        _tl1, _tl2, _tl3, _tl4, _tl5 = st.columns(5)
+        with _tl1:
+            _plain_tile(_t("tile_bid"), _fmt_money(_bid, currency_symbol))
+        with _tl2:
+            _plain_tile(_t("tile_ask"), _fmt_money(_ask, currency_symbol))
+        with _tl3:
+            _plain_tile(_t("tile_mid"), _fmt_money((_bid + _ask) / 2.0, currency_symbol))
+        with _tl4:
+            _plain_tile(_t("tile_spread_dollar"), _fmt_money(_spread_dollar, currency_symbol))
+        with _tl5:
+            _plain_tile(_t("tile_spread_pct"), _fmt_pct1(now_spread_pct))
+
+        _exact_dt = _format_snapshot_datetime(latest_dt_local, lang) if latest_dt_local else ""
+        st.caption(_t("bid_ask_now_snapshot_label", datetime=_exact_dt) + " · " + _t("rail_not_live_note"))
+    else:
+        st.markdown("—")
+        st.caption(_t("bid_ask_now_no_data"))
+
+    # ---- Section 4: history chart ----
+    st.markdown('<div style="margin-top:18px;"></div>', unsafe_allow_html=True)
+    snap_times = quote_snapshot_store.snapshot_times_for_ticker(ticker)
+    sdd_plotly_chart(
+        _trading_cost_spread_chart(series["days"], series["recording_start_date"], snap_times, ticker, lang=lang),
+        text_description=_t("chart_description"),
+    )
+
+    # ---- Section 5: day-by-day table (structure unchanged, estimated
+    # column muted so recorded reads as primary) ----
     st.markdown(f"**{_t('table_title')}**")
-    _table_rows = [{
-        _t("table_col_date"): row["date"],
-        _t("table_col_close"): row["close"],
-        _t("table_col_recorded_bid"): row["recorded_bid"],
-        _t("table_col_recorded_ask"): row["recorded_ask"],
-        _t("table_col_recorded_spread"): row["recorded_spread_pct"],
-        _t("table_col_estimated_spread"): row["estimated_spread_pct"],
-    } for row in series["days"]]
-    st.dataframe(_table_rows, width='stretch', hide_index=True)
+    st.dataframe(_styled_day_table(series["days"], lang), width='stretch', hide_index=True)
 
     st.caption(_t("footnote"))
 
@@ -2024,9 +2267,14 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
             )
             st.markdown(
                 f"**Median recorded spread:** {_fmt_pct_diag(series['median_recorded_spread_pct'])}  \n"
+                f"**Average recorded spread:** {_fmt_pct_diag(series['average_recorded_spread_pct'])}  \n"
                 f"**Average estimated spread (30d):** {_fmt_pct_diag(series['average_estimated_spread_pct'])}  \n"
+                f"**Tracking offset (est - recorded, overlap days):** {_fmt_pct_diag(series['tracking_offset_pct'])}  \n"
                 f"**Recording start date:** {series['recording_start_date'] or 'n/a'}  \n"
                 f"**Recorded days count:** {series['recorded_days_count']}  \n"
+                f"**Recorded leads header (>= {trading_cost_engine.RECORDED_LEADS_MIN_DAYS} days):** "
+                f"{series['recorded_days_count'] >= trading_cost_engine.RECORDED_LEADS_MIN_DAYS}  \n"
+                f"**Now spread % (latest snapshot):** {_fmt_pct_diag(now_spread_pct)}  \n"
                 f"**Avg daily value traded (30d):** {_fmt_value_traded(series['avg_daily_value_traded_30d'])}"
             )
             st.markdown("**Per-day rows (raw engine output):**")

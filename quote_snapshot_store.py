@@ -257,6 +257,28 @@ def snapshots_for_ticker(ticker):
         return []
 
 
+def snapshot_times_for_ticker(ticker):
+    """{"YYYY-MM-DD": "<snap_at_utc ISO string>", ...} for every stored
+    snapshot of `ticker` - the Trading Cost tab's history chart
+    (redesign, Sep 2026) needs each recorded day's own EXACT sample
+    time for its hover text ("recorded 2.1% (1:12pm AEST)"), which
+    snapshots_for_ticker() above doesn't carry (it only returns bid/
+    ask, the one thing trading_cost_series() itself needs). A second,
+    small read rather than widening that function's own return shape -
+    every other caller of snapshots_for_ticker()/trading_cost_series()
+    is untouched. Never raises - returns {} on any read error."""
+    try:
+        with _conn() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT snap_date, snap_at_utc FROM quote_snapshots WHERE ticker = ?",
+                (ticker,),
+            ).fetchall()
+        return {r["snap_date"]: r["snap_at_utc"] for r in rows}
+    except Exception:
+        return {}
+
+
 def latest_snapshot(ticker):
     """{"bid","ask","last_price","snap_date","snap_at_utc"} for the most
     recently stored snapshot of `ticker` (any date - not necessarily
