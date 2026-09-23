@@ -36,26 +36,41 @@ throttle constant.
 
 REJECTION (reject junk rather than store it - "a missing day is fine,
 a wrong day is not"): a quote is rejected, never stored, when:
-  - bid or ask is missing, zero, or negative   -> REJECT_MISSING
+  - marketState is present and isn't "REGULAR"  -> REJECT_MARKET_NOT_REGULAR
+  - marketState is ABSENT and there's no volume -> REJECT_NO_VOLUME
+  - bid or ask is missing, zero, or negative    -> REJECT_MISSING
   - ask <= bid                                  -> REJECT_ASK_LE_BID
   - spread > 10% of the midpoint                -> REJECT_WIDE_SPREAD
-  - last trade price > 5% from the midpoint      -> REJECT_PRICE_OFF_MID
+  - last trade price > 5% from the midpoint     -> REJECT_PRICE_OFF_MID
+  - bid/ask/last all equal the ticker's own
+    previous stored snapshot                    -> REJECT_FROZEN_QUOTE
 Every rejection is counted by reason and the count is persisted via
 quote_snapshot_store.record_run_summary() (the Admin Dashboard's
 rejection panel reads it back - a rejected quote itself leaves no row
 anywhere else, by design).
 
-TRADING-DAY GATE: local weekday only (Mon-Fri in the target market's
-own timezone) - there is no market-holiday calendar anywhere in this
-codebase (grepped; no pandas_market_calendars/exchange_calendars/
-holidays dependency, no existing helper) and adding one is out of
-scope for this commit. A public holiday that falls on a weekday is NOT
-filtered out here - it is a known gap, flagged rather than silently
-assumed away; see this commit's own report to the owner. In practice a
-holiday's Yahoo response is often the previous close's bid/ask
-replayed, which can still look superficially valid (bid < ask, a
-normal-looking spread) and slip past the four checks above - this is
-the one scenario those checks are not guaranteed to catch.
+TRADING-DAY GATE: local weekday (Mon-Fri in the target market's own
+timezone) as a first, cheap filter, PLUS the market-state/volume/
+frozen-quote checks above as the real gate - closing the holiday gap
+the weekday check alone leaves open, WITHOUT a market-holiday calendar
+(there still isn't one anywhere in this codebase - grepped; no
+pandas_market_calendars/exchange_calendars/holidays dependency, no
+existing helper - and none is needed): yfinance's own .info dict
+already carries the market's real state.
+  1. marketState ("REGULAR"/"CLOSED"/"PRE"/"POST"/"POSTPOST", when
+     present) is the authoritative signal - only a "REGULAR" quote is
+     ever stored.
+  2. When marketState is absent (yfinance doesn't always return it),
+     fall back to that day's volume (regularMarketVolume, or volume) -
+     zero or missing means nothing has traded today, holiday or not.
+  3. Belt and braces, in case a rare response reports "REGULAR" with
+     real volume but Yahoo actually just replayed the exact prior
+     session's numbers unchanged (seen in the wild often enough to
+     guard against directly rather than trust 1/2 alone): reject when
+     bid, ask AND last price are all identical to the ticker's own
+     previously stored snapshot (quote_snapshot_store.latest_snapshot)
+     - a quote that hasn't moved a single cent from the last real one
+       is a replay, not a second independent trading session.
 
 FAIL-OPEN: every per-ticker fetch is individually try/except-guarded
 (one bad ticker never stops the rest of the run, same convention as
@@ -92,9 +107,14 @@ REJECT_MISSING = "rejected_missing_or_nonpositive"
 REJECT_ASK_LE_BID = "rejected_ask_le_bid"
 REJECT_WIDE_SPREAD = "rejected_wide_spread"
 REJECT_PRICE_OFF_MID = "rejected_price_off_mid"
+REJECT_MARKET_NOT_REGULAR = "rejected_market_not_regular"
+REJECT_NO_VOLUME = "rejected_no_volume"
+REJECT_FROZEN_QUOTE = "rejected_frozen_quote"
 
 _MAX_SPREAD_PCT_OF_MID = 0.10
 _MAX_PRICE_OFFSET_PCT_OF_MID = 0.05
+
+_REGULAR_MARKET_STATE = "REGULAR"
 
 # Mid-session sampling window, in the target market's OWN local time -
 # 13:00 is the spec's own chosen instant; the upper bound (16:00) is a
@@ -168,6 +188,43 @@ def _classify(bid, ask, last_price):
     return None, midpoint
 
 
+def _classify_market_state(market_state, volume):
+    """Holiday-gap follow-up: reject_reason_or_None from yfinance's own
+    market-state/volume signals, checked BEFORE the four bid/ask rules
+    above (there's no point classifying a spread that was never sampled
+    during real trading). Pure - no I/O.
+
+    marketState present and not "REGULAR" -> REJECT_MARKET_NOT_REGULAR
+    (a holiday's own response is typically "CLOSED", same as any
+    regular after-hours check - this one signal covers both).
+    marketState absent -> fall back to the day's volume; zero/missing
+    -> REJECT_NO_VOLUME. marketState present and "REGULAR" -> volume is
+    not re-checked here (a thin, low-liquidity ticker can legitimately
+    have very low volume during a real regular session; the point of
+    this fallback is only to stand in for marketState when Yahoo
+    doesn't supply it)."""
+    if market_state is not None:
+        if market_state != _REGULAR_MARKET_STATE:
+            return REJECT_MARKET_NOT_REGULAR
+        return None
+    if not (isinstance(volume, (int, float)) and volume > 0):
+        return REJECT_NO_VOLUME
+    return None
+
+
+def _is_frozen(bid, ask, last_price, prev):
+    """Holiday-gap follow-up, belt and braces: True if bid/ask/last_
+    price are ALL identical to `prev` (a {"bid","ask","last_price"}
+    dict from quote_snapshot_store.latest_snapshot(), or None if this
+    ticker has no earlier snapshot at all - never frozen with nothing
+    to compare against). Pure - `prev` is passed in rather than looked
+    up here, so this stays testable without touching the DB."""
+    if not prev:
+        return False
+    return (bid == prev.get("bid") and ask == prev.get("ask")
+            and last_price == prev.get("last_price"))
+
+
 def _record_market(market, log=print):
     """The actual recording pass for one market - every per-ticker step
     individually guarded (a bad ticker is logged and skipped, never
@@ -184,7 +241,11 @@ def _record_market(market, log=print):
     currency_fallback = _MARKET_CURRENCY_FALLBACK[market]
 
     captured = 0
-    counts = {REJECT_MISSING: 0, REJECT_ASK_LE_BID: 0, REJECT_WIDE_SPREAD: 0, REJECT_PRICE_OFF_MID: 0}
+    counts = {
+        REJECT_MISSING: 0, REJECT_ASK_LE_BID: 0, REJECT_WIDE_SPREAD: 0,
+        REJECT_PRICE_OFF_MID: 0, REJECT_MARKET_NOT_REGULAR: 0,
+        REJECT_NO_VOLUME: 0, REJECT_FROZEN_QUOTE: 0,
+    }
 
     log(f"[quote_recorder] {market}: sampling {len(tickers)} ticker(s) for {local_date}")
     for i, ticker in enumerate(tickers):
@@ -193,7 +254,16 @@ def _record_market(market, log=print):
             bid = _get_info_field(info, "bid")
             ask = _get_info_field(info, "ask")
             last_price = _get_info_field(info, "regularMarketPrice", "currentPrice")
-            reason, _midpoint = _classify(bid, ask, last_price)
+            market_state = _get_info_field(info, "marketState")
+            volume = _get_info_field(info, "regularMarketVolume", "volume")
+
+            reason = _classify_market_state(market_state, volume)
+            if reason is None:
+                reason, _midpoint = _classify(bid, ask, last_price)
+            if reason is None and _is_frozen(
+                    bid, ask, last_price, quote_snapshot_store.latest_snapshot(ticker)):
+                reason = REJECT_FROZEN_QUOTE
+
             if reason is not None:
                 counts[reason] += 1
             else:
