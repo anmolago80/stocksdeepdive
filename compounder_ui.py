@@ -39,6 +39,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import i18n
+import quote_recorder
 import quote_snapshot_store
 import trading_cost_engine
 from simple_view_copy import SECTION_WHY_CAPTIONS, SECTION_WHY_CAPTIONS_ES
@@ -1672,6 +1673,95 @@ def _fmt_pct_diag(value):
     return f"{value:.3f}%" if value is not None else "n/a"
 
 
+# "Bid/ask now" caption (task feedback, 23 Sep 2026, owner-reported):
+# the tile must never read as live - its caption always names the
+# snapshot's own recorded date/time (or, once stale, just its date),
+# so nobody mistakes a recorded snapshot for a live quote. Hand-built
+# weekday/month abbreviation tables (not strftime's locale machinery,
+# and never locale.setlocale() - that mutates process-wide state, which
+# would corrupt every OTHER concurrent Streamlit session's own
+# formatting on a shared multi-tenant server) so EN/ES both render
+# correctly without any shared/global state.
+_WEEKDAY_ABBR = {
+    "en": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    "es": ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"],
+}
+_MONTH_ABBR = {
+    "en": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+    "es": ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"],
+}
+
+
+def _market_tz_for_ticker(ticker):
+    """quote_recorder.py's own _MARKET_TZ, keyed off the same ".AX"
+    suffix check this codebase already uses everywhere else to tell AU
+    from US tickers (app.py has a dozen call sites doing exactly this -
+    grepped rather than inventing a second convention)."""
+    market = quote_recorder.MARKET_ASX if ticker.upper().endswith(".AX") else quote_recorder.MARKET_US
+    return quote_recorder._MARKET_TZ[market]
+
+
+def _format_clock_time(dt_local):
+    """"1:00pm"/"4:47pm" - 12-hour, no leading zero, lowercase am/pm.
+    Deliberately NOT a fixed "1:00pm" literal: quote_recorder.py's own
+    sampling window is 13:00-16:00 local (whichever tick inside that
+    window actually fires, not always exactly 13:00 - see is_due_now()'s
+    own docstring), so the real recorded time can genuinely be later
+    than 1pm. Showing the EXACT recorded time rather than a hardcoded
+    "1:00pm" is the honest choice - this whole feature exists to stop
+    showing a plausible-looking but wrong number."""
+    hour12 = dt_local.hour % 12 or 12
+    ampm = "am" if dt_local.hour < 12 else "pm"
+    return f"{hour12}:{dt_local.minute:02d}{ampm}"
+
+
+def _format_snapshot_datetime(dt_local, lang):
+    """"Tue 23 Sep, 1:00pm AEST" (or the local equivalent) - weekday,
+    day, month, recorded clock time, and the market's own timezone
+    abbreviation (tzname() on an aware datetime already resolves to the
+    correct one - "AEST"/"AEDT" for Sydney, "EST"/"EDT" for New York -
+    DST-correct automatically, same zoneinfo objects quote_recorder.py
+    itself samples with)."""
+    wd = _WEEKDAY_ABBR[lang][dt_local.weekday()]
+    mo = _MONTH_ABBR[lang][dt_local.month - 1]
+    tz_abbr = dt_local.tzname() or ""
+    return f"{wd} {dt_local.day} {mo}, {_format_clock_time(dt_local)} {tz_abbr}".strip()
+
+
+def _format_date_only(dt_local, lang):
+    """"23 Sep 2026" - the "last recorded <date>" wording for a
+    snapshot too old to show a clock time for (see _trading_days_since()
+    below) - a bare date reads as "this is old", which is the point;
+    attaching a specific time to a 2-week-old quote would look more
+    current than it is."""
+    mo = _MONTH_ABBR[lang][dt_local.month - 1]
+    return f"{dt_local.day} {mo} {dt_local.year}"
+
+
+_STALE_SNAPSHOT_TRADING_DAYS = 3
+
+
+def _trading_days_since(snap_date_str, market_tz):
+    """How many Mon-Fri days have passed between `snap_date_str`
+    ("YYYY-MM-DD") and today, in `market_tz` - 0 if snap_date is today.
+    Same weekday-only simplification as quote_recorder.is_due_now() -
+    there is still no market-holiday calendar anywhere in this codebase
+    (Commit 1's own report) - so a long weekend or a public holiday can
+    undercount slightly; this is a "is this tile roughly stale" check,
+    not a precise trading-calendar computation."""
+    snap_date = _dt.datetime.strptime(snap_date_str, "%Y-%m-%d").date()
+    today_local = _dt.datetime.now(_dt.timezone.utc).astimezone(market_tz).date()
+    if snap_date >= today_local:
+        return 0
+    count = 0
+    d = snap_date
+    while d < today_local:
+        d += _dt.timedelta(days=1)
+        if d.weekday() < 5:
+            count += 1
+    return count
+
+
 def _plain_tile(label, value_text, caption=None):
     """A "value + optional caption" tile, no band pill - for the two
     Trading Cost tiles that aren't a tight/moderate/wide metric (Value
@@ -1860,11 +1950,19 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
     with _c3:
         _plain_tile(_t("tile_value_traded"), _fmt_value_traded(series["avg_daily_value_traded_30d"]))
     with _c4:
-        if latest and latest.get("bid") is not None and latest.get("ask") is not None:
+        if latest and latest.get("bid") is not None and latest.get("ask") is not None and latest.get("snap_at_utc"):
+            _tz = _market_tz_for_ticker(ticker)
+            _snap_dt_local = _dt.datetime.fromisoformat(latest["snap_at_utc"]).astimezone(_tz)
+            _days_old = _trading_days_since(latest["snap_date"], _tz)
+            _caption = (
+                _t("bid_ask_now_stale_label", date=_format_date_only(_snap_dt_local, lang))
+                if _days_old > _STALE_SNAPSHOT_TRADING_DAYS
+                else _t("bid_ask_now_snapshot_label", datetime=_format_snapshot_datetime(_snap_dt_local, lang))
+            )
             _plain_tile(
                 _t("tile_bid_ask_now"),
                 f"{latest['bid']:,.2f} / {latest['ask']:,.2f}",
-                caption=_t("bid_ask_now_snapshot_label", date=latest.get("snap_date") or ""),
+                caption=_caption,
             )
         else:
             _plain_tile(_t("tile_bid_ask_now"), "—", caption=_t("bid_ask_now_no_data"))

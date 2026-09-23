@@ -258,22 +258,22 @@ def snapshots_for_ticker(ticker):
 
 
 def latest_snapshot(ticker):
-    """{"bid","ask","last_price","snap_date"} for the most recently
-    stored snapshot of `ticker` (any date - not necessarily "yesterday",
-    if a day was skipped), or None if none exists yet. Two callers:
-    quote_recorder.py's belt-and-braces frozen-quote check (Holiday-gap
-    follow-up - only ever reads bid/ask/last_price) and the Trading Cost
-    tab's own "Bid/ask now" tile (Commit 3 - needs snap_date too, to
-    label the figure with the date/session it's actually from, never
-    just show a bare number with no "as of" - see compounder_ui.
-    render_trading_cost_tab()'s own docstring for why this tile never
-    attempts a live fetch at all). Never raises - returns None on any
-    read error."""
+    """{"bid","ask","last_price","snap_date","snap_at_utc"} for the most
+    recently stored snapshot of `ticker` (any date - not necessarily
+    "yesterday", if a day was skipped), or None if none exists yet. Two
+    callers: quote_recorder.py's belt-and-braces frozen-quote check
+    (Holiday-gap follow-up - only ever reads bid/ask/last_price) and the
+    Trading Cost tab's own "Bid/ask now" tile (Commit 3, widened again
+    per owner feedback - needs snap_at_utc too, so the tile's own
+    caption can name the EXACT recorded time, never just a bare date -
+    see compounder_ui.render_trading_cost_tab()'s own docstring for why
+    this tile never attempts a live fetch at all). Never raises -
+    returns None on any read error."""
     try:
         with _conn() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
-                "SELECT bid, ask, last_price, snap_date FROM quote_snapshots "
+                "SELECT bid, ask, last_price, snap_date, snap_at_utc FROM quote_snapshots "
                 "WHERE ticker = ? ORDER BY snap_date DESC LIMIT 1",
                 (ticker,),
             ).fetchone()
