@@ -10,11 +10,14 @@ all be quietly broken for days before anyone notices. This module adds:
   1. A nightly usage check (shutil.disk_usage on the volume mount path,
      same _data_dir() convention as every other *_store.py/*_engine.py
      module on this site) - a monthly email alert (same Mailgun path as
-     db_backup_engine.py) once usage crosses WARNING_THRESHOLD_PCT, plus
-     a loud admin-panel warning; at CRITICAL_THRESHOLD_PCT the warning
-     names which features will actually start failing (anything that
-     writes to stocksdeepdive.db: sign-ups, portfolio/watchlist/alert/
-     checklist saves, the nightly backup, this very monitor's own state
+     db_backup_engine.py) once usage crosses EARLY_WARNING_THRESHOLD_PCT
+     (70%, a soft heads-up with current GB figures and the largest few
+     items on the volume - Commit 5, Sep 2026), plus a loud admin-panel
+     warning; at WARNING_THRESHOLD_PCT (80%) the wording firms up, and
+     at CRITICAL_THRESHOLD_PCT (95%) it names which features will
+     actually start failing (anything that writes to stocksdeepdive.db:
+     sign-ups, portfolio/watchlist/alert/checklist saves, the nightly
+     backup, this very monitor's own state
      file).
   2. Bounded, conservative retention pruning - the ONLY two categories
      the instruction names:
@@ -69,6 +72,13 @@ STATE_PATH = os.path.join(_data_dir(), "volume_monitor_state.json")
 
 WARNING_THRESHOLD_PCT = 80.0
 CRITICAL_THRESHOLD_PCT = 95.0
+
+# Trading Cost tab task, Commit 5 (Sep 2026): a lower, earlier tier
+# than WARNING_THRESHOLD_PCT above - see _maybe_send_monthly_alert()'s
+# own docstring for exactly what changes at this threshold vs the
+# existing 80%/95% ones (unchanged).
+EARLY_WARNING_THRESHOLD_PCT = 70.0
+_EARLY_WARNING_TOP_N = 5
 
 # A cache row/file is pruned once it's this many times its OWN normal
 # TTL old - generous on purpose (this is retention hygiene, not an
@@ -203,12 +213,26 @@ def _send_alert_email(subject, text_body):
 
 
 def _maybe_send_monthly_alert(usage, log=print):
-    """"At >=80% used, ONE email alert to the owner per month" - tracked
+    """"At >=70% used, ONE email alert to the owner per month" - tracked
     by year-month string in state, so this fires at most once even if
     the nightly check runs every night while usage stays above the
     threshold, and fires again (once) the following calendar month if
-    it's still above threshold then."""
-    if usage["pct_used"] < WARNING_THRESHOLD_PCT:
+    it's still above threshold then. Below WARNING_THRESHOLD_PCT (80%)
+    is silent, exactly as before.
+
+    Commit 5 (Sep 2026, the task's own words: "above 70% used, add a
+    clear warning line to the owner's existing digest/alert email with
+    current GB figures and the largest few files/tables; below 70%,
+    silent"): the trigger floor moved from WARNING_THRESHOLD_PCT (80%)
+    down to EARLY_WARNING_THRESHOLD_PCT (70%) - the SAME email, same
+    monthly dedup, same Mailgun path, same subject-line style, just
+    starting one tier earlier. Between 70% and WARNING_THRESHOLD_PCT
+    the body gets one EXTRA, softer-worded section (current GB used/
+    total plus usage_breakdown()'s largest items) that the 80%/95%
+    tiers below don't need (their own existing wording already implies
+    urgency); at or above WARNING_THRESHOLD_PCT/CRITICAL_THRESHOLD_PCT
+    the message is completely unchanged from before this commit."""
+    if usage["pct_used"] < EARLY_WARNING_THRESHOLD_PCT:
         return
     state = _load_state()
     month_key = datetime.now(timezone.utc).strftime("%Y-%m")
@@ -221,6 +245,22 @@ def _maybe_send_monthly_alert(usage, log=print):
         f"The StocksDeepDive Volume is at {pct:.0f}% used "
         f"({used_mb:,.0f} MB of {total_mb:,.0f} MB).",
     ]
+    if pct < WARNING_THRESHOLD_PCT:
+        used_gb = usage["used_bytes"] / (1024 ** 3)
+        total_gb = usage["total_bytes"] / (1024 ** 3)
+        lines.append("")
+        lines.append(
+            f"This is above the {EARLY_WARNING_THRESHOLD_PCT:.0f}% early-"
+            f"warning line (below the {WARNING_THRESHOLD_PCT:.0f}% threshold "
+            "that names which features would actually start failing) - "
+            "nothing urgent yet, worth a look if it keeps climbing."
+        )
+        lines.append(f"Current usage: {used_gb:,.2f} GB of {total_gb:,.2f} GB.")
+        lines.append("")
+        lines.append("Largest items under the data volume right now:")
+        for row in usage_breakdown(top_n=_EARLY_WARNING_TOP_N):
+            row_gb = row["bytes"] / (1024 ** 3)
+            lines.append(f"  - {row['name']}: {row_gb:,.2f} GB")
     if pct >= CRITICAL_THRESHOLD_PCT:
         lines.append("")
         lines.append(
@@ -232,8 +272,9 @@ def _maybe_send_monthly_alert(usage, log=print):
     lines.append("")
     lines.append("Check the admin panel's Volume gauge for the current figure.")
     try:
+        _subject_prefix = "⚠ " if pct >= WARNING_THRESHOLD_PCT else ""
         sent = _send_alert_email(
-            f"⚠ StocksDeepDive Volume at {pct:.0f}% used", "\n".join(lines),
+            f"{_subject_prefix}StocksDeepDive Volume at {pct:.0f}% used", "\n".join(lines),
         )
         if sent:
             state["last_alert_month"] = month_key
