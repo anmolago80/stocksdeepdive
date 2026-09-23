@@ -3483,16 +3483,26 @@ EN = {
     "top100.not_rated_note": "insufficient public record - unscreened; Value Score still applies",
     "top100.why_here_label": "why it's here / what to check",
     "top100.tradability_chip": "⚠ wide spread · {pct}% - costly to trade",
-    "top100.dim_moat": "Moat",
-    "top100.dim_pricing_power": "Pricing power",
-    "top100.dim_inflation_exposure": "Inflation exposure",
+    # v2 amendment (Sep 2026), Commit 1's minimal render-compatibility
+    # patch: dim_moat/dim_regulatory/dim_balance_sheet_resilience/
+    # dim_inflation_exposure renamed/retired to match top100_engine.
+    # DIMENSIONS' new v2 key set (dim_inflation_exposure has no
+    # replacement key - folded into dim_pricing_power, see that
+    # module's own docstring). Commit 2 adds the hover-tooltip anchor
+    # text, the inversion-line copy, the refresh-all button copy, and
+    # rewrites methodology_body's prose for the new pipeline - this
+    # commit only keeps the already-live page's dimension CHIPS/LABELS
+    # correct against the new engine constants.
     "top100.dim_ai_exposure": "AI exposure",
-    "top100.dim_regulatory": "Regulatory",
+    "top100.dim_competitive_position": "Competitive position",
+    "top100.dim_regulatory_legal": "Regulatory & legal",
     "top100.dim_customer_concentration": "Customer concentration",
+    "top100.dim_pricing_power": "Pricing power & cost pass-through",
     "top100.dim_accounting_quality": "Accounting quality",
+    "top100.dim_balance_sheet_fixed_charges": "Balance sheet & fixed charges",
+    "top100.dim_management": "Management quality",
     "top100.dim_capital_allocation": "Capital allocation",
     "top100.dim_reinvestment_runway": "Reinvestment runway",
-    "top100.dim_balance_sheet_resilience": "Balance-sheet resilience",
 }
 
 ES = {
@@ -6438,16 +6448,16 @@ ES = {
     "top100.not_rated_note": "registro público insuficiente - sin evaluar; el Value Score aún aplica",
     "top100.why_here_label": "por qué está aquí / qué revisar",
     "top100.tradability_chip": "⚠ spread amplio · {pct}% - costoso de operar",
-    "top100.dim_moat": "Foso competitivo",
-    "top100.dim_pricing_power": "Poder de fijación de precios",
-    "top100.dim_inflation_exposure": "Exposición a la inflación",
     "top100.dim_ai_exposure": "Exposición a la IA",
-    "top100.dim_regulatory": "Regulatorio",
+    "top100.dim_competitive_position": "Posición competitiva",
+    "top100.dim_regulatory_legal": "Regulatorio y legal",
     "top100.dim_customer_concentration": "Concentración de clientes",
+    "top100.dim_pricing_power": "Poder de fijación de precios y traspaso de costos",
     "top100.dim_accounting_quality": "Calidad contable",
+    "top100.dim_balance_sheet_fixed_charges": "Balance y cargos fijos",
+    "top100.dim_management": "Calidad de la gestión",
     "top100.dim_capital_allocation": "Asignación de capital",
     "top100.dim_reinvestment_runway": "Margen de reinversión",
-    "top100.dim_balance_sheet_resilience": "Resiliencia del balance",
 }
 
 

@@ -14,12 +14,20 @@ hand-rolled JSON file):
                    with the reason) can diff the two most recent
                    selections - a single current-only row would have
                    nothing to diff against.
-  top100_scores  - one row per (ticker, quarter, model): the AI
-                   qualitative score, cached so a nightly run only
-                   pays for genuinely unscored entrants (top100_
-                   engine.py's own cache/cadence rule). Stores the
-                   FULL prompt and raw response text per ticker for
-                   reproducibility, per the task's own instruction.
+  top100_scores  - one row per (ticker, quarter, model, rubric_
+                   version): the AI qualitative score, cached so a
+                   nightly run only pays for genuinely unscored
+                   entrants (top100_engine.py's own cache/cadence
+                   rule). rubric_version (top100_engine.RUBRIC_
+                   VERSION) joined the primary key in the v2 amendment
+                   (Sep 2026) so a scoring-rubric change invalidates
+                   the cache cleanly - see _migrate_scores_schema_v2()
+                   below for the rebuild that added it and why a
+                   simple ALTER TABLE ADD COLUMN wasn't enough (it
+                   changes the PK, which SQLite can't do in place).
+                   Stores the FULL prompt and raw response text per
+                   ticker for reproducibility, per the task's own
+                   instruction.
   top100_batch_state - a SINGLETON row (id=1) tracking at most one
                    in-flight Batch API submission at a time - see
                    top100_engine.py's own two-phase submit/poll
@@ -47,6 +55,76 @@ DB_PATH = os.path.join(_data_dir(), "stocksdeepdive.db")
 POOL_SNAPSHOT_RETENTION = 10
 
 
+def _table_columns(conn, table):
+    return [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+
+
+def _migrate_scores_schema_v2(conn):
+    """One-time, idempotent rebuild of top100_scores for the v2 rubric
+    (Top 100 amendment v2, Sep 2026) - same rename/rebuild/copy/drop
+    shape portfolio_store.py's own _migrate_legacy_schema() already
+    established for this codebase's "no migration framework, changing
+    a PRIMARY KEY needs a real rebuild" situations (a guarded ALTER
+    TABLE ADD COLUMN, used everywhere else in this codebase for a
+    purely additive column, can't change a PK).
+
+    WHY the PK has to change: top100_engine.RUBRIC_VERSION is now part
+    of the score-cache key (the task's own explicit instruction) - a
+    ticker scored under the retired v1 rubric must never be read back
+    as if it answered v2's different questions (different dimension
+    set entirely: moat/regulatory/balance_sheet_resilience/inflation_
+    exposure are gone, competitive_position/regulatory_legal/balance_
+    sheet_fixed_charges/management are new). Old PK was (ticker,
+    quarter, model); new PK adds rubric_version, so a v1 row and a v2
+    row for the same ticker/quarter/model coexist rather than one
+    silently overwriting the other.
+
+    Every pre-existing row is copied across untouched, backfilled with
+    rubric_version='v1' (the retired, unversioned scheme's own implicit
+    name) - never rewritten, never deleted. Two other v2 additions ride
+    the same rebuild rather than a separate ALTER TABLE pass, since
+    they're new in the same rubric bump: inversion_scenario/inversion_
+    severity (the inversion synthesis, task (f)) replace the old
+    `summary` column, which v2 no longer asks the model for (see
+    top100_engine._response_schema()'s own docstring) - old rows'
+    `summary` values are simply not carried forward (that field is
+    retired, not migrated) and old rows get inversion_scenario/
+    inversion_severity = NULL (v1 never asked the model for them)."""
+    cols = _table_columns(conn, "top100_scores")
+    if not cols or "rubric_version" in cols:
+        return
+    conn.execute("ALTER TABLE top100_scores RENAME TO top100_scores_pre_v2")
+    conn.execute(
+        """CREATE TABLE top100_scores (
+            ticker TEXT NOT NULL,
+            quarter TEXT NOT NULL,
+            model TEXT NOT NULL,
+            rubric_version TEXT NOT NULL,
+            dims_json TEXT NOT NULL,
+            not_rated INTEGER NOT NULL,
+            inversion_scenario TEXT,
+            inversion_severity INTEGER,
+            prompt TEXT,
+            raw_response TEXT,
+            scored_at TEXT NOT NULL,
+            PRIMARY KEY (ticker, quarter, model, rubric_version)
+        )"""
+    )
+    old_cols = _table_columns(conn, "top100_scores_pre_v2")
+    old_rows = conn.execute(f"SELECT {', '.join(old_cols)} FROM top100_scores_pre_v2").fetchall()
+    for row in old_rows:
+        d = dict(zip(old_cols, row))
+        conn.execute(
+            "INSERT OR IGNORE INTO top100_scores "
+            "(ticker, quarter, model, rubric_version, dims_json, not_rated, "
+            "inversion_scenario, inversion_severity, prompt, raw_response, scored_at) "
+            "VALUES (?, ?, ?, 'v1', ?, ?, NULL, NULL, ?, ?, ?)",
+            (d["ticker"], d["quarter"], d["model"], d["dims_json"], d["not_rated"],
+             d["prompt"], d["raw_response"], d["scored_at"]),
+        )
+    conn.execute("DROP TABLE top100_scores_pre_v2")
+
+
 def _conn():
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -64,20 +142,33 @@ def _conn():
             PRIMARY KEY (as_of, ticker)
         )"""
     )
+    # v2 amendment: the pooled row's own raw "Psychology" number (see
+    # top100_engine.select_top100_pool()'s own comment) - purely
+    # additive, no PK change needed, so a guarded ALTER TABLE (this
+    # codebase's own standard pattern for exactly this shape of change,
+    # e.g. blog_store.py's primary_ticker column) is enough here, unlike
+    # top100_scores below.
+    try:
+        conn.execute("ALTER TABLE top100_pool ADD COLUMN psychology REAL")
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
         """CREATE TABLE IF NOT EXISTS top100_scores (
             ticker TEXT NOT NULL,
             quarter TEXT NOT NULL,
             model TEXT NOT NULL,
+            rubric_version TEXT NOT NULL,
             dims_json TEXT NOT NULL,
             not_rated INTEGER NOT NULL,
-            summary TEXT,
+            inversion_scenario TEXT,
+            inversion_severity INTEGER,
             prompt TEXT,
             raw_response TEXT,
             scored_at TEXT NOT NULL,
-            PRIMARY KEY (ticker, quarter, model)
+            PRIMARY KEY (ticker, quarter, model, rubric_version)
         )"""
     )
+    _migrate_scores_schema_v2(conn)
     conn.execute(
         """CREATE TABLE IF NOT EXISTS top100_batch_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -98,15 +189,16 @@ def _conn():
 def save_pool(rows, as_of):
     """Upserts one full pool snapshot - `rows`: [{"ticker",
     "company_name", "universe", "value_score", "mos_pct", "price",
-    "intrinsic_value", "currency"}, ...], `as_of`: "YYYY-MM-DD". Also
-    prunes snapshots beyond POOL_SNAPSHOT_RETENTION in the same call,
-    so callers never have to remember to prune separately."""
+    "intrinsic_value", "currency", "psychology"}, ...], `as_of`:
+    "YYYY-MM-DD". Also prunes snapshots beyond POOL_SNAPSHOT_RETENTION
+    in the same call, so callers never have to remember to prune
+    separately."""
     with _conn() as conn:
         conn.executemany(
             """INSERT INTO top100_pool
                  (as_of, ticker, company_name, universe, value_score,
-                  mos_pct, price, intrinsic_value, currency)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  mos_pct, price, intrinsic_value, currency, psychology)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(as_of, ticker) DO UPDATE SET
                  company_name = excluded.company_name,
                  universe = excluded.universe,
@@ -114,11 +206,12 @@ def save_pool(rows, as_of):
                  mos_pct = excluded.mos_pct,
                  price = excluded.price,
                  intrinsic_value = excluded.intrinsic_value,
-                 currency = excluded.currency""",
+                 currency = excluded.currency,
+                 psychology = excluded.psychology""",
             [
                 (as_of, r["ticker"], r.get("company_name"), r.get("universe"),
                  r.get("value_score"), r.get("mos_pct"), r.get("price"),
-                 r.get("intrinsic_value"), r.get("currency"))
+                 r.get("intrinsic_value"), r.get("currency"), r.get("psychology"))
                 for r in rows
             ],
         )
@@ -181,42 +274,57 @@ def previous_pool():
 # Scores (AI qualitative scoring cache).
 # -----------------------------------------------------------------
 
-def save_score(ticker, quarter, model, dims, not_rated, summary, prompt, raw_response):
-    """Upserts one ticker's AI score for (quarter, model). `dims`: a
-    plain dict {"moat": {"score": int_or_None, "justification": str,
-    "source_period": str}, ...} for all ten dimensions - stored as
-    JSON, read back exactly as given. `not_rated`: bool, True when
-    >=3 dimensions came back null (top100_engine.py's own rule - see
-    that module's docstring). `prompt`/`raw_response`: the FULL text
-    sent/received, for reproducibility (the task's own instruction) -
-    never truncated."""
+def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
+                inversion_scenario, inversion_severity, prompt, raw_response):
+    """Upserts one ticker's AI score for (quarter, model,
+    rubric_version) - rubric_version (top100_engine.RUBRIC_VERSION) is
+    part of the cache key/PK (see _migrate_scores_schema_v2()'s own
+    docstring for why) so a rubric bump never reads an old rubric's
+    row back as if it answered the new questions. `dims`: a plain dict
+    {"ai_exposure": {"score": int_or_None, "justification": str,
+    "source_period": str}, ...} for all ten CURRENT-rubric dimension
+    keys - stored as JSON, read back exactly as given. `not_rated`:
+    bool, True when >=3 dimensions came back null (top100_engine.py's
+    own rule - see that module's docstring). `inversion_scenario`/
+    `inversion_severity`: the one-sentence damaging-scenario synthesis
+    + 1-5 severity (task's own "inversion synthesis" instruction) -
+    both None for a NOT RATED company (top100_engine._parse_response_
+    json() enforces this server-side before it ever reaches here).
+    `prompt`/`raw_response`: the FULL text sent/received, for
+    reproducibility (the task's own instruction) - never truncated."""
     with _conn() as conn:
         conn.execute(
             """INSERT INTO top100_scores
-                 (ticker, quarter, model, dims_json, not_rated, summary,
-                  prompt, raw_response, scored_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(ticker, quarter, model) DO UPDATE SET
+                 (ticker, quarter, model, rubric_version, dims_json, not_rated,
+                  inversion_scenario, inversion_severity, prompt, raw_response, scored_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(ticker, quarter, model, rubric_version) DO UPDATE SET
                  dims_json = excluded.dims_json,
                  not_rated = excluded.not_rated,
-                 summary = excluded.summary,
+                 inversion_scenario = excluded.inversion_scenario,
+                 inversion_severity = excluded.inversion_severity,
                  prompt = excluded.prompt,
                  raw_response = excluded.raw_response,
                  scored_at = excluded.scored_at""",
-            (ticker, quarter, model, json.dumps(dims), int(bool(not_rated)), summary,
+            (ticker, quarter, model, rubric_version, json.dumps(dims), int(bool(not_rated)),
+             inversion_scenario, inversion_severity,
              prompt, raw_response, datetime.now(timezone.utc).isoformat()),
         )
 
 
-def get_score(ticker, quarter, model):
-    """{"ticker","quarter","model","dims","not_rated","summary",
-    "prompt","raw_response","scored_at"} for one ticker, or None if
-    it hasn't been scored yet for this (quarter, model)."""
+def get_score(ticker, quarter, model, rubric_version):
+    """{"ticker","quarter","model","rubric_version","dims","not_rated",
+    "inversion_scenario","inversion_severity","prompt","raw_response",
+    "scored_at"} for one ticker, or None if it hasn't been scored yet
+    for this exact (quarter, model, rubric_version) - a row cached
+    under a DIFFERENT rubric_version (e.g. a retired "v1") is never
+    returned here, by design."""
     with _conn() as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT * FROM top100_scores WHERE ticker = ? AND quarter = ? AND model = ?",
-            (ticker, quarter, model),
+            "SELECT * FROM top100_scores WHERE ticker = ? AND quarter = ? "
+            "AND model = ? AND rubric_version = ?",
+            (ticker, quarter, model, rubric_version),
         ).fetchone()
     if not row:
         return None
@@ -226,15 +334,20 @@ def get_score(ticker, quarter, model):
     return out
 
 
-def scores_for_quarter_model(quarter, model):
+def scores_for_quarter_model(quarter, model, rubric_version):
     """{ticker: score_dict, ...} for every ticker already scored this
-    (quarter, model) - the nightly job's own "only unscored entrants
-    go to the API" check reads this to know what's already cached."""
+    exact (quarter, model, rubric_version) - the nightly job's own
+    "only unscored entrants go to the API" check (top100_engine.
+    _unscored_tickers()) reads this to know what's already cached
+    UNDER THE CURRENT RUBRIC; a ticker's old-rubric row never
+    satisfies this lookup, so a rubric bump makes every pooled ticker
+    "unscored" again for one full re-score, per the task's own
+    instruction."""
     with _conn() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT * FROM top100_scores WHERE quarter = ? AND model = ?",
-            (quarter, model),
+            "SELECT * FROM top100_scores WHERE quarter = ? AND model = ? AND rubric_version = ?",
+            (quarter, model, rubric_version),
         ).fetchall()
     out = {}
     for r in rows:

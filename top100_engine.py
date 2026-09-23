@@ -102,8 +102,8 @@ def select_top100_pool(log=print):
     POOL_SIZE by Value Score, and persists the result via top100_
     store.save_pool(as_of=today's UTC date). Returns the saved pool -
     [{"ticker","company_name","universe","value_score","mos_pct",
-    "price","intrinsic_value","currency"}, ...], Value Score
-    descending. Never raises - a single bad universe file is skipped
+    "price","intrinsic_value","currency","psychology"}, ...], Value
+    Score descending. Never raises - a single bad universe file is skipped
     (scan_store.load_scan_raw() itself already returns None on any
     read error), and an empty result (no saved scans yet) simply
     persists/returns an empty pool rather than crashing."""
@@ -132,6 +132,16 @@ def select_top100_pool(log=print):
                     "price": row.get("Price"),
                     "intrinsic_value": row.get("Intrinsic Value"),
                     "currency": "AUD" if ticker.endswith(".AX") else "USD",
+                    # v2 amendment: the raw scan row's own "Psychology"
+                    # number (nightly_scan.py's fear-greed-fomo score,
+                    # same field snapshot_store._PUBLIC_FIELD_MAP already
+                    # exposes publicly) - carried through so the page can
+                    # show a free, NEVER-SCORED sentiment chip (fearful/
+                    # neutral/greedy) without re-deriving or re-fetching
+                    # anything. Never fed into composite_score() - purely
+                    # a display read, same "display flag only" status as
+                    # the tradability chip's own spread%.
+                    "psychology": row.get("Psychology"),
                 }
 
     pool = sorted(best_by_ticker.values(), key=lambda r: r["value_score"], reverse=True)[:POOL_SIZE]
@@ -185,24 +195,42 @@ def pool_changes(current=None, previous=None):
 # AI scoring: dimensions, weights, prompt.
 # -----------------------------------------------------------------
 
-# (key, label, weight) - the nine AI-SCORED dimensions. The tenth
-# composite component, "return", is Python-computed (see composite_
-# score() below) and carries WEIGHT_RETURN, not a model-scored
-# dimension - kept in this same block purely so every weight in the
-# composite lives in ONE place, per the task's own "all weights in one
-# constants block for easy tuning" instruction.
-WEIGHT_RETURN = 18
+# (key, label, weight) - the ten AI-SCORED dimensions (v2 rubric). The
+# eleventh composite component, "return", is Python-computed (see
+# composite_score() below, publicly labelled "Research Score" on the
+# page) and carries WEIGHT_RETURN, not a model-scored dimension - kept
+# in this same block purely so every weight lives in ONE place, per
+# the task's own "all weights in one constants block for easy tuning"
+# instruction.
+#
+# v2 amendment (Top 100 amendment v2, Sep 2026) replaced v1's 18+10
+# scheme (moat/regulatory/balance_sheet_resilience/inflation_exposure,
+# WEIGHT_RETURN=18) with this 17+83 one: "moat" -> "competitive
+# position" (profitability re-scoring explicitly forbidden - the
+# site's own numeric Quality factor already measures it, see the
+# DE-CIRCULARISATION PRINCIPLE in _SYSTEM_PROMPT below and this
+# commit's own report for the exact Quality-factor input list),
+# "regulatory" -> "regulatory & legal" (litigation folded in),
+# "balance_sheet_resilience" -> "balance_sheet_fixed_charges"
+# (operating fixed-cost rigidity folded in, not just financial
+# leverage), "inflation_exposure" DROPPED as a standalone dimension
+# (folded into pricing_power, now "pricing power & cost pass-
+# through"), and "management" ADDED (new - integrity/candour/
+# execution record, distinct from deal outcomes). See RUBRIC_VERSION
+# below for why this is a cache-invalidating change, not an in-place
+# edit.
+WEIGHT_RETURN = 17
 DIMENSIONS = [
-    ("ai_exposure", "AI exposure", 13),
-    ("regulatory", "Regulatory", 10),
-    ("moat", "Moat", 10),
+    ("ai_exposure", "AI exposure", 12),
+    ("competitive_position", "Competitive position", 10),
+    ("regulatory_legal", "Regulatory & legal", 10),
     ("customer_concentration", "Customer concentration", 10),
+    ("pricing_power", "Pricing power & cost pass-through", 10),
     ("accounting_quality", "Accounting quality", 8),
-    ("balance_sheet_resilience", "Balance-sheet resilience", 8),
-    ("pricing_power", "Pricing power", 8),
-    ("capital_allocation", "Capital allocation", 6),
-    ("reinvestment_runway", "Reinvestment runway", 5),
-    ("inflation_exposure", "Inflation exposure", 4),
+    ("balance_sheet_fixed_charges", "Balance sheet & fixed charges", 8),
+    ("management", "Management quality", 6),
+    ("capital_allocation", "Capital allocation", 5),
+    ("reinvestment_runway", "Reinvestment runway", 4),
 ]
 assert WEIGHT_RETURN + sum(w for _k, _l, w in DIMENSIONS) == 100
 
@@ -214,6 +242,19 @@ DIMENSION_LABEL = {k: l for k, l, _w in DIMENSIONS}
 # own rule, named here rather than an inline "3" so it reads the same
 # in the prompt text, the scoring parser, and the page.
 NOT_RATED_MIN_NULLS = 3
+
+# Cache-key version tag for the SCORING RUBRIC (dimension set, weights,
+# anchors, prompt wording - not the Claude model, which already has
+# its own cache-key component). Bumped whenever the rubric itself
+# changes meaning, so old scores under a retired rubric are never
+# silently read back as if they answered the new questions - see
+# top100_store.save_score()/get_score()/scores_for_quarter_model()'s
+# own rubric_version parameter and _migrate_scores_schema_v2()'s
+# migration docstring for the mechanics. "v1" is the implicit,
+# unversioned scheme every score was cached under before this constant
+# existed - the migration backfills exactly that label for old rows,
+# it is never written by new code.
+RUBRIC_VERSION = "v2"
 
 MODEL_TOP100 = "claude-opus-5-5"
 
@@ -234,56 +275,64 @@ _SYSTEM_PROMPT = """You are screening publicly-listed companies for a factual, d
 
 For each dimension also give a ONE-LINE justification naming the specific source period it is based on (e.g. "FY25 annual report", "Q2 2026 investor call", "the company's own FY24 10-K risk factors section").
 
-HONESTY RULE, the single most important instruction in this prompt: output a null score (not a number, and never a middle value like 3 to "play it safe") for ANY dimension you do not have confident, specific, public-record knowledge of for THIS company. Guessing a plausible-sounding score is worse than admitting you don't know - a null is the honest answer, a fabricated 3 is not. If three or more of your ten scores end up null, that is expected and correct for a company with a thin public record - do not distort your other scores to avoid it.
+HONESTY RULE, the single most important instruction in this prompt: output a null score (not a number, and never a middle value like 3 to "play it safe") for ANY dimension you do not have confident, specific, public-record knowledge of for THIS company. Guessing a plausible-sounding score is worse than admitting you don't know - a null is the honest answer, a fabricated 3 is not. If three or more of your ten scores end up null, that is expected and correct for a company with a thin public record - do not distort your other scores to avoid it. This applies especially to MANAGEMENT QUALITY (dimension 8 below): null it freely whenever the people running the company aren't publicly well known - most companies have no public record of their management's integrity, candour or execution track record, and that is the honest, expected answer, not a failure.
+
+DE-CIRCULARISATION PRINCIPLE - read this before scoring anything: this site separately computes a purely NUMERIC "Quality" factor straight from public financial-statement data (return on equity, net profit margin, return on invested capital, revenue growth, earnings growth, free cash flow sign, and the debt-to-equity ratio). Your job is to add judgment that numeric pipeline CANNOT see - never to restate what it already measures. Concretely, for five of the ten dimensions below:
+  - Competitive position: do NOT score whether the company is currently profitable or how profitable it is (the numeric pipeline already has that) - score only the DURABILITY of its edge relative to named peers.
+  - Pricing power & cost pass-through: do NOT score today's margin level (already measured) - score the forward-looking ability to raise prices or pass through cost increases without losing volume.
+  - Balance sheet & fixed charges: do NOT score the raw debt-to-equity ratio alone (already measured) - score net debt/EBITDA, interest coverage, the maturity wall, and fixed operating-cost rigidity, none of which the numeric pipeline sees.
+  - Capital allocation: do NOT score the company's current return-on-invested-capital LEVEL (already measured) - score the quality of its INCREMENTAL capital-deployment decisions: recent M&A returns, and buybacks versus stock-based-compensation dilution.
+  - Reinvestment runway: do NOT score the recent growth RATE (already measured) - score how much runway remains for capital to keep compounding at high returns going FORWARD.
+The other five dimensions (AI exposure, regulatory & legal, customer concentration, accounting quality, management quality) aren't touched by the numeric pipeline at all - score those fully on their own terms.
 
 THE TEN DIMENSIONS AND THEIR ANCHORS (1 = worst for a holder, 5 = best for a holder):
 
-1. MOAT - durable competitive advantage.
-   5: a wide, structurally durable moat (network effects, high switching costs, a regulatory licence, genuine pricing power from brand or scale) with clear multi-year evidence it has persisted.
-   1: no discernible moat - a commodity business competing purely on price.
-
-2. PRICING POWER.
-   5: has repeatedly raised prices at or above inflation without losing meaningful volume.
-   1: a price-taker in a commoditised market; margins are compressed by competition, not defended by pricing.
-
-3. INFLATION EXPOSURE.
-   5: revenue and margins are naturally inflation-linked or hedged (e.g. CPI-escalated contracts, real-asset backing, ability to pass costs through immediately).
-   1: fixed-price, long-duration contracts or high fixed input costs with no pass-through mechanism - margins erode directly as inflation rises.
-
-4. AI EXPOSURE.
+1. AI EXPOSURE - substitution risk vs strengthening.
    5: immune to AI disruption, or a clear beneficiary - AI increases demand for what it sells, or the company's own use of AI is a structural cost or product advantage.
    1: the core product or service is directly substitutable by an AI tool at a fraction of the cost.
-   Calibration: "INTU regulatory 2 - IRS Direct File: a live, political, existential threat to TurboTax consumer" (this example is about REGULATORY, listed under dimension 5 below, not AI - included here only to show HOW SPECIFIC and HOW HONEST a low score's justification should be).
 
-5. REGULATORY.
+2. COMPETITIVE POSITION - advantage versus 2-3 NAMED direct competitors: the profitability GAP and its DURABILITY (see the de-circularisation principle above - never re-score absolute profitability itself).
+   5: structurally more profitable than its named peers for a durable reason (network effects, high switching costs, a regulatory licence, genuine brand/scale pricing power) with clear multi-year evidence it has persisted.
+   1: undifferentiated among stronger rivals - no discernible edge, competing purely on price.
+   REQUIRED justification format: "vs {named peers}: {comparison}, {durability reason}".
+
+3. REGULATORY & LEGAL - regulation AND litigation exposure together.
    5: regulation is a tailwind that compels purchase of the company's product, or forms a protective moat around it.
-   1: an existential political or procurement risk - a plausible single regulatory or policy change could eliminate a large share of revenue.
-   Calibration: "PAYX regulatory 4 - payroll complexity only ever increases; each new rule adds compliance demand." "INTU regulatory 2 - IRS Direct File: a live, political, existential threat to TurboTax consumer."
+   1: an existential political or procurement risk, or a major litigation overhang - a plausible single regulatory/policy change or court outcome could eliminate a large share of revenue.
+   Calibration: "PAYX regulatory & legal 4 - payroll complexity only ever increases; each new rule adds compliance demand." "INTU regulatory & legal 2 - IRS Direct File: a live, political, existential threat to TurboTax consumer."
 
-6. CUSTOMER CONCENTRATION.
+4. CUSTOMER CONCENTRATION.
    5: thousands of small, individually-replaceable customers; no single customer is material to revenue.
-   1: one customer is more than 30% of revenue, or a small handful of customers collectively dominate it.
+   1: one customer is more than roughly 30% of revenue, or a small handful of customers collectively dominate it.
    Calibration: "OCL.AX customer concentration 1 - effectively all revenue is government procurement; the Defence loss was this risk."
 
-7. ACCOUNTING QUALITY (capitalisation rate + cash conversion).
+5. PRICING POWER & COST PASS-THROUGH (absorbs inflation exposure - see the de-circularisation principle above, never re-score today's margin level).
+   5: has repeatedly raised prices above inflation without losing meaningful volume, and can pass through cost increases (including inflationary ones) quickly.
+   1: a pure price-taker in a commoditised market with no pass-through mechanism - margins erode directly as costs or inflation rise.
+
+6. ACCOUNTING QUALITY (capitalisation rate + cash conversion).
    5: free cash flow conversion of roughly 80-120% of net income, with minimal capitalisation of what are effectively normal operating costs (e.g. R&D, software development) onto the balance sheet.
    1: aggressive capitalisation of operating-like costs materially inflates reported free cash flow; cash conversion sits far below net income.
    Calibration: "OCL.AX accounting 2 - capitalises 52% of R&D, which inflated screener FCF by 56%."
 
-8. CAPITAL ALLOCATION (explicitly including stock-based compensation dilution vs buybacks).
-   5: a disciplined reinvestment/M&A track record; buybacks genuinely reduce the share count net of SBC dilution; no pattern of value-destroying write-downs.
+7. BALANCE SHEET & FIXED CHARGES - financial AND operating rigidity together (see the de-circularisation principle above, never re-score the raw debt-to-equity ratio alone).
+   5: net cash or low net debt/EBITDA, high interest coverage, no concentrated near-term refinancing wall, and a flexible (largely variable) cost structure that can flex down in a downturn.
+   1: high leverage, thin interest coverage, a concentrated debt maturity wall in the next 1-2 years, and/or a heavy fixed-cost base that cannot flex down when revenue falls.
+
+8. MANAGEMENT QUALITY - the integrity, candour and execution record of the PEOPLE running the company, distinct from the outcome of any one deal. Null freely where the record isn't publicly known (see the honesty rule above) - most companies have no such record.
+   5: a long public record of doing what they said they would do - candid in setbacks, disciplined in guidance, no credibility problems.
+   1: a credibility problem - a pattern of over-promising, evasive communication, or conduct that has damaged investor trust.
+
+9. CAPITAL ALLOCATION - incremental ROIC on recent major deployments; buybacks vs SBC dilution (see the de-circularisation principle above, never re-score the company's current ROIC level).
+   5: a disciplined, accretive incremental-ROIC record on recent major deployments (M&A, capex); buybacks genuinely reduce the share count net of stock-based-compensation dilution; no pattern of value-destroying write-downs.
    1: a pattern of value-destroying acquisitions or repeated impairments, or buybacks that merely offset SBC dilution without shrinking the real share count.
-   Calibration: "SEK.AX capital allocation 2 - repeated impairments on Zhaobin, OCC and Brasil Online aren't bad luck; they're the record."
+   Calibration: "SEK.AX capital allocation 2 - repeated impairments on Zhaopin, OCC and Brasil Online aren't bad luck; they're the record."
 
-9. REINVESTMENT RUNWAY.
-   5: a long runway of high-return reinvestment opportunities still ahead (an expanding or under-penetrated market) at returns well above the cost of capital.
-   1: a mature, saturated market with few remaining high-return reinvestment options - excess cash is likely to be misallocated, or simply returned because there is nowhere better to put it.
+10. REINVESTMENT RUNWAY - can incremental capital still deploy at current returns (see the de-circularisation principle above, never re-score the recent growth rate).
+    5: a long runway of high-return reinvestment opportunities still ahead (an expanding or under-penetrated market) at returns well above the cost of capital.
+    1: a mature, saturated market with few remaining high-return reinvestment options - excess cash is likely to be misallocated, or simply returned because there is nowhere better to put it.
 
-10. BALANCE-SHEET RESILIENCE (net debt/EBITDA, interest coverage, maturity wall).
-    5: low net debt/EBITDA, high interest coverage, no concentrated near-term refinancing wall.
-    1: high leverage, thin interest coverage, and/or a concentrated debt maturity wall in the next 1-2 years creating real refinancing risk.
-
-Also write ONE short "summary" - the company's single strongest dimension and the ONE thing a reader should verify for themselves before relying on this screen. Frame it as homework, never as a recommendation to buy or hold - this is a description of what the data and your knowledge show, not investment advice."""
+INVERSION SYNTHESIS - after scoring all ten dimensions, write ONE sentence naming the single most plausible scenario that could seriously damage this company, plus a severity from 1 (minor) to 5 (plausibly breaks the company). This is a separate analytical synthesis, not a dimension score - it has ZERO effect on any of the ten scores above, on this company's ranking, or on its Top-20 eligibility. If three or more of your ten dimension scores are null (this company will be marked NOT RATED), output null for both the inversion scenario and its severity too - do not invent a damaging scenario for a company you don't know well enough to score in the first place."""
 
 
 def _user_prompt(ticker, company_name):
@@ -291,7 +340,7 @@ def _user_prompt(ticker, company_name):
     return (
         f"Company: {name} (ticker: {ticker})\n\n"
         "Score this company on all ten dimensions per your instructions, "
-        "then write the one-line summary."
+        "then write the one-sentence inversion synthesis (scenario + severity)."
     )
 
 
@@ -309,12 +358,20 @@ def _dimension_schema():
 
 
 def _response_schema():
+    """v2: the ten dimension objects plus the inversion synthesis pair
+    (inversion_scenario/inversion_severity) at the top level - no more
+    "summary" (v1's "strongest dimension + what to check" note), since
+    the page now shows the inversion line in its place (Commit 2's own
+    "replacing the what to check note" instruction) and all ten
+    justifications directly (the tap-expand detail), leaving no reader
+    of the response who still needs a separate summary field."""
     props = {key: _dimension_schema() for key in DIMENSION_KEYS}
-    props["summary"] = {"type": "string"}
+    props["inversion_scenario"] = {"type": ["string", "null"]}
+    props["inversion_severity"] = {"type": ["integer", "null"], "minimum": 1, "maximum": 5}
     return {
         "type": "object",
         "properties": props,
-        "required": DIMENSION_KEYS + ["summary"],
+        "required": DIMENSION_KEYS + ["inversion_scenario", "inversion_severity"],
         "additionalProperties": False,
     }
 
@@ -342,11 +399,21 @@ def current_quarter(today=None):
 
 def _parse_response_json(text):
     """Parses one company's structured-output JSON text into
-    (dims_dict, not_rated, summary). `dims_dict`: {key: {"score",
-    "justification","source_period"}, ...} for all ten keys. Raises
-    ValueError on malformed JSON or a missing dimension - the caller
-    (poll_and_ingest_batch) treats that exactly like any other per-
-    ticker failure: logged, skipped, prior cache untouched."""
+    (dims_dict, not_rated, inversion_scenario, inversion_severity).
+    `dims_dict`: {key: {"score","justification","source_period"}, ...}
+    for all ten keys. Raises ValueError on malformed JSON or a missing
+    dimension - the caller (poll_and_ingest_batch) treats that exactly
+    like any other per-ticker failure: logged, skipped, prior cache
+    untouched.
+
+    Belt-and-braces honesty enforcement (task's own explicit rule,
+    "NOT-RATED rows: no inversion line, nothing invented"): a NOT
+    RATED result has its inversion fields forced to None here,
+    server-side, regardless of what the model actually returned - the
+    _SYSTEM_PROMPT already instructs the model to null them itself for
+    a NOT RATED company, but this is the second, code-enforced layer
+    that can't be defeated by the model simply not following that
+    instruction."""
     data = json.loads(text)
     dims = {}
     null_count = 0
@@ -365,8 +432,16 @@ def _parse_response_json(text):
             "source_period": d.get("source_period"),
         }
     not_rated = null_count >= NOT_RATED_MIN_NULLS
-    summary = data.get("summary") or ""
-    return dims, not_rated, summary
+
+    inversion_scenario = data.get("inversion_scenario")
+    inversion_severity = data.get("inversion_severity")
+    if inversion_severity is not None and not isinstance(inversion_severity, int):
+        inversion_severity = int(inversion_severity)
+    if not_rated:
+        inversion_scenario = None
+        inversion_severity = None
+
+    return dims, not_rated, inversion_scenario, inversion_severity
 
 
 # -----------------------------------------------------------------
@@ -374,7 +449,13 @@ def _parse_response_json(text):
 # -----------------------------------------------------------------
 
 def _unscored_tickers(pool, quarter, model):
-    already = top100_store.scores_for_quarter_model(quarter, model)
+    """Which pooled rows still need an API call for (quarter, model,
+    RUBRIC_VERSION) - rubric_version is folded into the cache key here
+    (not just at the storage layer) so a rubric bump makes every
+    pooled ticker "unscored" again for the new rubric, even though its
+    old-rubric row is still sitting in the DB untouched (see
+    top100_store's own schema/migration docstring)."""
+    already = top100_store.scores_for_quarter_model(quarter, model, RUBRIC_VERSION)
     return [r for r in pool if r["ticker"] not in already]
 
 
@@ -424,14 +505,15 @@ def poll_and_ingest_batch(log=print):
             text = next((b.text for b in msg.content if b.type == "text"), "")
             prompt_params = _request_params(ticker, ticker)
             try:
-                dims, not_rated, summary = _parse_response_json(text)
+                dims, not_rated, inversion_scenario, inversion_severity = _parse_response_json(text)
             except Exception as e:
                 failed += 1
                 log(f"[top100] {ticker}: could not parse batch result, skipped ({e})")
                 continue
             top100_store.save_score(
                 ticker=ticker, quarter=state["quarter"], model=state["model"],
-                dims=dims, not_rated=not_rated, summary=summary,
+                rubric_version=RUBRIC_VERSION, dims=dims, not_rated=not_rated,
+                inversion_scenario=inversion_scenario, inversion_severity=inversion_severity,
                 prompt=json.dumps(prompt_params), raw_response=text,
             )
             saved += 1
@@ -523,28 +605,30 @@ def run_single_test_call(ticker, company_name=None):
     via top100_store.save_score() under the CURRENT quarter/model, same
     as a real batch result would, so the test call's own result is
     immediately visible on the page rather than thrown away. Returns
-    {"ticker","dims","not_rated","summary","input_tokens",
-    "output_tokens","cost_usd"} - standard, non-batch pricing (this
-    call does not go through the Batches API), reported honestly as
-    such."""
+    {"ticker","dims","not_rated","inversion_scenario","inversion_
+    severity","input_tokens","output_tokens","cost_usd"} - standard,
+    non-batch pricing (this call does not go through the Batches API),
+    reported honestly as such."""
     import anthropic
     client = anthropic.Anthropic()
     params = _request_params(ticker, company_name)
     resp = client.messages.create(**params)
     text = next((b.text for b in resp.content if b.type == "text"), "")
-    dims, not_rated, summary = _parse_response_json(text)
+    dims, not_rated, inversion_scenario, inversion_severity = _parse_response_json(text)
     input_tokens = getattr(resp.usage, "input_tokens", 0) or 0
     output_tokens = getattr(resp.usage, "output_tokens", 0) or 0
     cost = (input_tokens / 1_000_000) * TOP100_INPUT_USD_PER_MTOK + \
         (output_tokens / 1_000_000) * TOP100_OUTPUT_USD_PER_MTOK
     quarter = current_quarter()
     top100_store.save_score(
-        ticker=ticker, quarter=quarter, model=MODEL_TOP100,
-        dims=dims, not_rated=not_rated, summary=summary,
+        ticker=ticker, quarter=quarter, model=MODEL_TOP100, rubric_version=RUBRIC_VERSION,
+        dims=dims, not_rated=not_rated,
+        inversion_scenario=inversion_scenario, inversion_severity=inversion_severity,
         prompt=json.dumps(params), raw_response=text,
     )
     return {
-        "ticker": ticker, "dims": dims, "not_rated": not_rated, "summary": summary,
+        "ticker": ticker, "dims": dims, "not_rated": not_rated,
+        "inversion_scenario": inversion_scenario, "inversion_severity": inversion_severity,
         "input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost,
     }
 
@@ -599,10 +683,11 @@ def _normalize_mos(mos_pct, pool_mos_values):
 
 
 def composite_score(score_row, mos_pct, pool_mos_values):
-    """The 0-100 composite for one company - None for a NOT RATED
-    company (score_row is None, or score_row["not_rated"] is True) or
-    one with no MOS% at all (mos_pct is None - can't price its own
-    "return" component, 18% of the total weight).
+    """The 0-100 "Research Score" (the page's own public name for this
+    number) for one company - None for a NOT RATED company (score_row
+    is None, or score_row["not_rated"] is True) or one with no MOS% at
+    all (mos_pct is None - can't price its own "return" component,
+    WEIGHT_RETURN% of the total weight).
 
     composite = WEIGHT_RETURN * normalized_MOS
               + sum over each NON-NULL AI dimension of

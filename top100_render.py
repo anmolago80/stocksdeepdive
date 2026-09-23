@@ -165,12 +165,17 @@ def _render_row(rank, row, lang):
         unsafe_allow_html=True,
     )
 
-    if not_rated and score_row is None:
-        note = _t("not_rated_note", lang)
-    else:
-        note = (score_row or {}).get("summary") or _t("not_rated_note", lang)
+    # v2 amendment, Commit 1 compatibility note: `summary` no longer
+    # exists on a score row (top100_engine's v2 response schema dropped
+    # it - see that module's docstring). Commit 2 replaces this whole
+    # note with the inversion line; until it lands, a rated company
+    # simply gets no caption here rather than the actively-misleading
+    # "insufficient public record" text a naive `or` fallback would
+    # show for a company that in fact IS fully rated.
+    note = _t("not_rated_note", lang) if not_rated else None
     with st.expander(f"{ticker} — {_t('why_here_label', lang)}", expanded=False):
-        st.caption(note)
+        if note:
+            st.caption(note)
         if score_row:
             for key in top100_engine.DIMENSION_KEYS:
                 dim = score_row["dims"].get(key) or {}
@@ -192,7 +197,8 @@ def _enriched_pool():
     tab can never compute composite differently from each other."""
     pool = top100_store.current_pool()
     quarter = top100_engine.current_quarter()
-    scores = top100_store.scores_for_quarter_model(quarter, top100_engine.MODEL_TOP100)
+    scores = top100_store.scores_for_quarter_model(
+        quarter, top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
     pool_mos_values = [r["mos_pct"] for r in pool if r.get("mos_pct") is not None]
     out = []
     for row in pool:
