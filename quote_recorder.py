@@ -16,12 +16,24 @@ table (quote_snapshot_store.py) and never changes anything a visitor
 sees. History needs to start building now so there's something to show
 once the tab itself ships (Commit 3).
 
-SCOPE: every ticker in the "ASX 200"/"S&P 500" saved scans (scan_store.
-load_scan_raw), deduped within each market. Reusing the saved-scan
-ticker list (rather than re-fetching scanner_engine.fetch_asx200()/
-fetch_sp500() from Wikipedia a second time) means this job costs
+SCOPE (widened, Sep 2026 - tiered roster): the ROSTER (every ticker
+eligible to ever be recorded - see roster_tickers() below) is every
+ticker in the "ASX 200"/"S&P 500" saved scans (scan_store.
+load_scan_raw, deduped within each market - reusing the saved-scan
+ticker list, rather than re-fetching scanner_engine.fetch_asx200()/
+fetch_sp500() from Wikipedia a second time, means this job costs
 nothing extra against Wikipedia and always matches exactly what the
-site already scans nightly.
+site already scans nightly) PLUS every hand-covered Research ticker
+(blog_render._covered_tickers()) and every ticker the author currently
+holds a disclosed position in (positions_store.all_positions(),
+status == "holds"). A single recording RUN doesn't sample the whole
+roster every day, though: it samples today_roster_tickers(market) -
+the DAILY tier (every research/held ticker, plus any roster ticker
+whose most recent recorded spread exceeded 1%, so a wide reading self-
+promotes it starting the very next run) union today's own rotating
+1/5th slice of the WEEKLY tier (everything else) - see daily_tier_
+tickers()/weekly_tier_tickers()/today_weekly_slice() below for the
+full tiering logic.
 
 CALL COST (rewritten, Sep 2026 - batch optimisation): Ticker.fast_info
 (the cheap batched-friendly path market_cap_engine.py already prefers)
@@ -109,6 +121,7 @@ from zoneinfo import ZoneInfo
 
 import quote_snapshot_store
 import scan_store
+import trading_cost_engine
 
 MARKET_ASX = "ASX"
 MARKET_US = "US"
@@ -199,19 +212,61 @@ def tickers_for_market(market):
     return sorted(tickers)
 
 
+def _research_and_position_tickers():
+    """Hand-covered Research tickers (blog_render._covered_tickers() -
+    reused as-is, this codebase's own established precedent for
+    "a private-by-convention function already has the exact logic
+    needed, import and reuse it" - it already reads compounder_data.
+    json's own "tickers" dict, fail-open to an empty set) UNIONED with
+    the author's own CURRENT positions (positions_store.all_positions(),
+    status == "holds" only - "never"/"closed" rows are disclosures
+    about NOT currently holding something, not a reason to prioritise
+    its quote recording). Deferred imports: neither blog_render nor
+    positions_store is a circular import here, but neither needs to be
+    a hard top-level dependency of this module either (same reasoning
+    compounder_ui.py already applies to its own paywall_engine/ai_gate
+    imports). Fails open to whatever half succeeded - a broken
+    positions_store read never means blog_render's own tickers are
+    lost too, and vice versa."""
+    tickers = set()
+    try:
+        import blog_render
+        tickers |= blog_render._covered_tickers()
+    except Exception:
+        pass
+    try:
+        import positions_store
+        tickers |= {
+            t.strip().upper() for t, row in positions_store.all_positions().items()
+            if (row.get("status") or "").lower() == "holds"
+        }
+    except Exception:
+        pass
+    return tickers
+
+
 def roster_tickers(market=None):
     """The ticker set currently eligible for daily quote recording -
-    for now (before Commit 4's tiered roster) this is exactly
-    tickers_for_market()'s own scanned-universe list, unioned across
-    both markets when `market` is omitted. `market`: MARKET_ASX/
-    MARKET_US for one market's own roster, or None (default) for the
-    combined roster the Trading Cost tab's own per-ticker honesty
-    check (compounder_ui.render_trading_cost_tab(), Commit 2) reads.
-    A SET (not the sorted list tickers_for_market() returns) - this
-    function exists for fast membership checks, not display."""
+    tickers_for_market()'s own scanned-universe list UNIONED with
+    _research_and_position_tickers() above (Commit 4's own words:
+    "Roster = every scanned universe member plus ALL hand-covered
+    Research tickers and author-position tickers"). `market`:
+    MARKET_ASX/MARKET_US for one market's own SCANNED-UNIVERSE roster
+    only (the research/position addition isn't market-scoped, so it's
+    never added here - a caller wanting the true combined roster for
+    one market's own recording pass uses today_roster_tickers() below,
+    not this with a `market` argument), or None (default) for the
+    full combined roster the Trading Cost tab's own per-ticker honesty
+    check (compounder_ui.render_trading_cost_tab(), Commit 2) reads -
+    that check widening automatically, with no code change on its own
+    side, is exactly why Commit 2's own non-roster message now only
+    ever appears for a ticker genuinely outside every universe. A SET
+    (not the sorted list tickers_for_market() returns) - this function
+    exists for fast membership checks, not display."""
     if market is not None:
         return set(tickers_for_market(market))
-    return set(tickers_for_market(MARKET_ASX)) | set(tickers_for_market(MARKET_US))
+    universe = set(tickers_for_market(MARKET_ASX)) | set(tickers_for_market(MARKET_US))
+    return universe | _research_and_position_tickers()
 
 
 def is_in_roster(ticker):
@@ -224,6 +279,79 @@ def is_in_roster(ticker):
     if not ticker:
         return False
     return ticker.strip().upper() in {t.upper() for t in roster_tickers()}
+
+
+# Tiered roster (Commit 4, Sep 2026): the DAILY tier is every research/
+# held ticker (regardless of its own spread) plus any OTHER roster
+# ticker whose most recently RECORDED spread exceeded this threshold -
+# a wide reading is exactly the case this whole feature exists to
+# track closely, so it earns daily sampling from the very next run.
+# Everything else is the WEEKLY tier, sampled via a rotating 1/5th
+# per trading day (_WEEKDAY_ROTATION_SIZE) rather than daily.
+DAILY_MIN_SPREAD_PCT = 1.0
+_WEEKDAY_ROTATION_SIZE = 5
+
+
+def daily_tier_tickers(market=None):
+    """Tickers sampled EVERY trading day: every research/held ticker
+    (_research_and_position_tickers(), regardless of market - the task
+    's own words: "Daily tier: research/held tickers plus...") that is
+    ALSO on this market's own roster, plus any roster ticker whose most
+    recent quote_snapshot_store.latest_snapshot() spread exceeded
+    DAILY_MIN_SPREAD_PCT. Recomputed from STORED snapshots on every
+    call, never a separately persisted "is daily" flag - a single wide
+    recording self-promotes a ticker to daily starting the very next
+    run this function is called from, and a ticker that started wide
+    and has since tightened simply stops qualifying on its own, no
+    separate "demote" step needed. `market`: MARKET_ASX/MARKET_US to
+    scope to one market's roster, or None for the combined roster."""
+    roster = roster_tickers(market)
+    tier = _research_and_position_tickers() & roster
+    for ticker in roster - tier:
+        latest = quote_snapshot_store.latest_snapshot(ticker)
+        if not latest or latest.get("bid") is None or latest.get("ask") is None:
+            continue
+        spread_pct = trading_cost_engine._recorded_spread_pct(latest["bid"], latest["ask"])
+        if spread_pct is not None and spread_pct > DAILY_MIN_SPREAD_PCT:
+            tier.add(ticker)
+    return tier
+
+
+def weekly_tier_tickers(market=None):
+    """Every roster ticker NOT in the daily tier - see daily_tier_
+    tickers() above. Sampled via today_weekly_slice() below's rotating
+    1/5th-per-trading-day, never all at once, never daily."""
+    roster = roster_tickers(market)
+    return roster - daily_tier_tickers(market)
+
+
+def today_weekly_slice(market=None, today=None):
+    """This trading day's own 1/5th slice of the weekly tier - a
+    stable, deterministic rotation keyed off each ticker's own sorted
+    position in the CURRENT weekly tier and today's ISO weekday
+    (Monday=0 ... Sunday=6, taken mod _WEEKDAY_ROTATION_SIZE so this
+    stays well-defined even called on a weekend, though the scheduler
+    itself only ever runs this on a trading day). Recomputed fresh
+    from the current weekly tier on every call, exactly like the daily
+    tier above - a ticker that self-promotes to daily simply stops
+    appearing in this rotation from its very next run, no separate
+    bookkeeping to keep in sync. `today`: override for tests (a
+    date instance); defaults to today's UTC date."""
+    weekly = sorted(weekly_tier_tickers(market))
+    if not weekly:
+        return set()
+    day = today if today is not None else datetime.now(timezone.utc).date()
+    slot = day.weekday() % _WEEKDAY_ROTATION_SIZE
+    return {t for i, t in enumerate(weekly) if i % _WEEKDAY_ROTATION_SIZE == slot}
+
+
+def today_roster_tickers(market, today=None):
+    """The full set of tickers _record_market() below actually samples
+    TODAY for `market`: its own daily tier (every day) union today's
+    own rotating weekly slice - daily_tier_tickers()/today_weekly_
+    slice() above's own combination, the one place that decides what
+    a single recording run covers."""
+    return daily_tier_tickers(market) | today_weekly_slice(market, today=today)
 
 
 def _classify(bid, ask, last_price):
@@ -418,8 +546,15 @@ def _record_market(market, log=print):
     (quote_snapshot_store.record_snapshot) are untouched, called from
     the same one place (_process_one() below) on both the first pass
     and the one retry pass, exactly as they were called inline here
-    before this commit."""
-    tickers = tickers_for_market(market)
+    before this commit.
+
+    Tiered roster (Commit 4, Sep 2026): samples today_roster_tickers(
+    market) - the market's own daily tier (research/held tickers plus
+    any recently-wide ticker) union today's rotating 1/5th slice of
+    the weekly tier - rather than every scanned-universe ticker every
+    single day. See today_roster_tickers()/daily_tier_tickers()/
+    today_weekly_slice() above for the full tiering logic."""
+    tickers = sorted(today_roster_tickers(market))
     now_utc = datetime.now(timezone.utc)
     local_date = now_utc.astimezone(_MARKET_TZ[market]).strftime("%Y-%m-%d")
     currency_fallback = _MARKET_CURRENCY_FALLBACK[market]
