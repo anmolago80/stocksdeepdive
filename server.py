@@ -261,6 +261,17 @@ async def lifespan(app: FastAPI):
     # Fix 9 cleanup right above.
     with suppress(Exception):
         nightly_scan.cleanup_sector_universe_pollution()
+    # Commit 1 (23 Sep 2026, owner-reported): one-off, marker-file-
+    # guarded cleanup of any ASX containment-chain/derived-universe
+    # scan (All Ordinaries/ASX 300/200/100/50/20/ASX Small Ordinaries)
+    # that fails scanner_engine.verify_universe_before_save() - see
+    # nightly_scan.cleanup_universe_integrity_pollution()'s own
+    # docstring for the root cause (ASX Small Ordinaries stuck on a
+    # 79-ticker pre-Commit-I scan) and what happens to a failing scan.
+    # Same "never allowed to stop the site serving" rule as the two
+    # cleanups above.
+    with suppress(Exception):
+        nightly_scan.cleanup_universe_integrity_pollution()
     # Commit O (21 Sep 2026, owner-verified): EBIT_FROM_PRETAX is a
     # Railway env var, not a code change - see nightly_scan.check_ebit_
     # switch_flip()'s own docstring for why flipping it needs a boot-time

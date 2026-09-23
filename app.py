@@ -28493,6 +28493,55 @@ def page_admin_dashboard():
                         _icon = "✅" if _cres.get("ok") else "❌"
                         st.write(f"{_icon} **{_cname}**: {_cres.get('detail')}")
 
+    # --- UNIVERSE SCAN SIZES (Commit 1, 23 Sep 2026, owner-reported) ---
+    # A direct read of what's CURRENTLY on disk for the 7 ASX
+    # containment-chain/derived universes, independent of whether a
+    # Source health check has ever run against it - the "Universe
+    # integrity: X" rows in the panel above only show up once a scan
+    # or the boot-time cleanup has actually evaluated one; this table
+    # answers "what does the site have right now" directly, every
+    # load, which is what actually caught the ASX Small Ordinaries
+    # bug in the first place (a 79-ticker scan from 20 Sep 2026 that
+    # should have self-corrected and hadn't - see scanner_engine.
+    # verify_universe_before_save()'s own docstring for the guard this
+    # table's own "guard" column re-runs live, right here, so this
+    # table is never stale itself - it always reflects THIS load).
+    st.markdown("### Universe scan sizes")
+    st.caption(
+        "What's currently saved for each ASX containment-chain/derived "
+        "universe - row count, when it was generated, and a live "
+        "re-check of scanner_engine.verify_universe_before_save() "
+        "against those exact stored tickers (not a cached verdict)."
+    )
+    with st.container(border=True):
+        for _uname in scanner_engine.UNIVERSE_INTEGRITY_TRACKED_UNIVERSES:
+            try:
+                _upayload = scan_store.load_scan_raw(_uname)
+            except Exception:
+                _upayload = None
+            _urows = (_upayload or {}).get("rows") or []
+            _ugen = (_upayload or {}).get("generated_at")
+            _uc1, _uc2, _uc3 = st.columns([3, 3, 6])
+            with _uc1:
+                st.markdown(f"**{_uname}**")
+            with _uc2:
+                if _ugen:
+                    st.write(f"{_ugen[:19].replace('T', ' ')} UTC")
+                else:
+                    st.write("no saved scan")
+                st.caption(f"{len(_urows)} row(s)")
+            with _uc3:
+                if not _urows:
+                    st.write("-")
+                else:
+                    try:
+                        _utickers = [r.get("Ticker") for r in _urows if r.get("Ticker")]
+                        _uok, _ureason = scanner_engine.verify_universe_before_save(_uname, _utickers)
+                        _uicon = "✅" if _uok else "❌"
+                        st.write(f"{_uicon} {_ureason}")
+                    except Exception as e:
+                        st.write(f"check failed: {e}")
+
     # --- STALE-PRICED TICKERS (Commit J, 21 Sep 2026, owner-reported) --
     # A per-TICKER condition, not a data-SOURCE health check - the
     # source_health_store pass/fail pattern right above doesn't fit an

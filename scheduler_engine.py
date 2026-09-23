@@ -894,6 +894,49 @@ def _build_derived_universes(log):
                 continue
             rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
 
+            # Commit 1 (23 Sep 2026, owner-reported): same integrity
+            # guard nightly_scan.run_universe_scan() applies to the
+            # independently-scanned chain members - see scanner_
+            # engine.verify_universe_before_save()'s own docstring.
+            # Only the tracked universes among this function's own
+            # derived set (Small Ordinaries/100/50/20 - sector
+            # universes and Russell 3000/S&P 1500 aren't chain
+            # members, so this is a no-op for them). A failing
+            # universe is NOT saved - whatever was already on disk
+            # stays put, same as the "no membership resolved"/"none
+            # of its members have a scanned parent row yet" skips
+            # just above.
+            if universe in scanner_engine.UNIVERSE_INTEGRITY_TRACKED_UNIVERSES:
+                import source_health_store
+                import alert_engine
+                _integrity_source = f"Universe integrity: {universe}"
+                _integrity_ok, _integrity_reason = scanner_engine.verify_universe_before_save(
+                    universe, [r.get("Ticker") for r in rows], log=log)
+                if not _integrity_ok:
+                    _integrity_prior = source_health_store.get(_integrity_source)
+                    _integrity_was_stale = bool(_integrity_prior and _integrity_prior.get("stale"))
+                    source_health_store.record_failure(
+                        _integrity_source,
+                        {"containment": {"ok": False, "detail": _integrity_reason}},
+                        _integrity_reason,
+                    )
+                    if not _integrity_was_stale:
+                        try:
+                            alert_engine.send_source_health_alert(
+                                _integrity_source,
+                                {"containment": {"ok": False, "detail": _integrity_reason}},
+                                _integrity_reason,
+                            )
+                        except Exception as e:
+                            log(f"[scheduler] derived universe integrity alert failed for {universe}: {e}")
+                    log(f"[scheduler] derived universe {universe}: integrity guard FAILED - "
+                        f"{_integrity_reason} - NOT saving; keeping last known good.")
+                    continue
+                source_health_store.record_success(
+                    _integrity_source, [],
+                    {"containment": {"ok": True, "detail": _integrity_reason}},
+                )
+
             scan_store.save_scan(universe, rows, f"Derived from {'/'.join(parents)} ({source})")
             snapshot_store.build_snapshots_from_scan(universe, rows, log=log)
             log(f"[scheduler] derived universe {universe}: {len(rows)}/{len(wanted)} "

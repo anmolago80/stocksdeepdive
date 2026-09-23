@@ -692,6 +692,47 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
             f"({completeness:.0%}, below threshold) but no prior scan exists yet - saving "
             f"anyway, flagged degraded.")
 
+    # Commit 1 (23 Sep 2026, owner-reported): index containment/size
+    # guard for the AU containment-chain universes independently
+    # scanned here (ASX 200/300/All Ordinaries) - ASX Small Ordinaries/
+    # 100/50/20 are derived nightly instead, see scheduler_engine.
+    # _build_derived_universes()'s own matching guard. Same shape as
+    # Commit L's sector-universe guard further up this function:
+    # source_health_store tracking, alert once per NEW failure streak,
+    # log loudly either way. A universe failing this is NOT served -
+    # the save below is skipped entirely and whatever was already on
+    # disk stays put, exactly like the completeness guard just above.
+    if universe in scanner_engine.UNIVERSE_INTEGRITY_TRACKED_UNIVERSES:
+        _integrity_source = f"Universe integrity: {universe}"
+        _integrity_ok, _integrity_reason = scanner_engine.verify_universe_before_save(
+            universe, [r.get("Ticker") for r in rows], log=log)
+        if _integrity_ok:
+            source_health_store.record_success(
+                _integrity_source, [],
+                {"containment": {"ok": True, "detail": _integrity_reason}},
+            )
+            log(f"[nightly_scan] {universe}: integrity guard OK - {_integrity_reason}")
+        else:
+            _integrity_prior = source_health_store.get(_integrity_source)
+            _integrity_was_stale = bool(_integrity_prior and _integrity_prior.get("stale"))
+            source_health_store.record_failure(
+                _integrity_source, {"containment": {"ok": False, "detail": _integrity_reason}},
+                _integrity_reason,
+            )
+            if not _integrity_was_stale:
+                try:
+                    alert_engine.send_source_health_alert(
+                        _integrity_source,
+                        {"containment": {"ok": False, "detail": _integrity_reason}},
+                        _integrity_reason,
+                    )
+                except Exception as e:
+                    log(f"[nightly_scan] integrity alert send failed for {universe}: {e}")
+            _integrity_prior_rows = len((scan_store.load_scan(universe) or {}).get("rows") or [])
+            log(f"[nightly_scan] {universe}: integrity guard FAILED - {_integrity_reason} - "
+                f"NOT saving this scan; keeping last known good ({_integrity_prior_rows} row(s)).")
+            return None
+
     payload = scan_store.save_scan(universe, rows, source, attention_lite=attention_lite,
                                     degraded=degraded, run_night=run_night)
     # Part 53.1: one tiny marker for the Admin Dashboard's weekly scan
@@ -1480,6 +1521,82 @@ def cleanup_sector_universe_pollution(log=print):
             f.write(f"commitL sector-pollution cleanup ran {datetime.now(timezone.utc).isoformat()}\n")
     except OSError as e:
         log(f"[nightly_scan] commitL cleanup: could not write marker file: {e}")
+
+
+def _commit1_universe_integrity_cleanup_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".commit1_universe_integrity_cleanup.done")
+
+
+def cleanup_universe_integrity_pollution(log=print):
+    """One-off, idempotent, marker-file-guarded boot-time cleanup
+    (23 Sep 2026, owner-reported) - same pattern as cleanup_sector_
+    universe_pollution() above, for a different root cause: ASX Small
+    Ordinaries was found still serving a scan saved before scanner_
+    engine.py's Commit I source repair (21 Sep 2026) - 79 tickers
+    against a real ~200-ticker index, last generated 20 Sep 2026,
+    21:14 UTC, days after it should have self-corrected on the next
+    nightly run. scan_store.load_scan()'s own 72h staleness cutoff
+    doesn't catch this kind of bug - it only checks AGE, never whether
+    the data is actually the right SHAPE, so a wrong-shaped scan can
+    sit there "technically fresh enough" indefinitely without this.
+
+    Checks every universe in scanner_engine.UNIVERSE_INTEGRITY_TRACKED_
+    UNIVERSES (All Ordinaries/ASX 300/ASX 200/ASX 100/ASX 50/ASX 20/ASX
+    Small Ordinaries) against scanner_engine.verify_universe_before_
+    save() - the SAME check run_universe_scan()/scheduler_engine.
+    _build_derived_universes() now run before EVERY future save,
+    applied here retroactively to whatever's already on disk. A scan
+    that fails is invalidated (deleted) via scan_store.invalidate(), so
+    the scheduler's own "missing file = needs rescan" logic picks it up
+    fresh on its next tick and the site shows "no data yet" instead of
+    a wrong-shaped index in the meantime.
+
+    Owner-requested (matching Commit L's own cleanup): logs one line
+    PER universe, every run - rows checked and the outcome (kept /
+    no saved scan / INVALIDATED with the reason) - not just a trailing
+    one-line summary.
+
+    Guarded by a marker file, same convention as every other one-off
+    cleanup in this module - this only ever needs to run once against
+    whatever's already on disk; every scan saved AFTER this deploy
+    already goes through the guard above. Called unconditionally from
+    server.py's lifespan(), wrapped in `with suppress(Exception)`
+    there - never allowed to stop the site serving."""
+    marker = _commit1_universe_integrity_cleanup_marker_path()
+    if os.path.exists(marker):
+        return
+    checked = []
+    invalidated = []
+    for universe in scanner_engine.UNIVERSE_INTEGRITY_TRACKED_UNIVERSES:
+        checked.append(universe)
+        try:
+            payload = scan_store.load_scan_raw(universe)
+            if not payload or not payload.get("rows"):
+                log(f"[nightly_scan] commit1 cleanup: {universe}: no saved scan on file - nothing to check")
+                continue
+            rows = payload["rows"]
+            tickers = [r.get("Ticker") for r in rows if r.get("Ticker")]
+            ok, reason = scanner_engine.verify_universe_before_save(universe, tickers, log=log)
+            if not ok:
+                was_invalidated = scan_store.invalidate(universe)
+                if was_invalidated:
+                    invalidated.append(f"{universe} ({reason})")
+                log(f"[nightly_scan] commit1 cleanup: {universe}: checked {len(rows)} row(s) - "
+                    f"{reason} - "
+                    f"{'INVALIDATED' if was_invalidated else 'failed check but nothing on disk to invalidate'}")
+            else:
+                log(f"[nightly_scan] commit1 cleanup: {universe}: checked {len(rows)} row(s) - "
+                    f"{reason} - kept")
+        except Exception as e:
+            log(f"[nightly_scan] commit1 cleanup: {universe} check failed: {e}")
+    log(f"[nightly_scan] commit1 cleanup: checked {len(checked)} universe(s), "
+        f"invalidated: {', '.join(invalidated) if invalidated else 'none'}")
+    try:
+        with open(marker, "w") as f:
+            f.write(f"commit1 universe-integrity cleanup ran {datetime.now(timezone.utc).isoformat()}\n")
+    except OSError as e:
+        log(f"[nightly_scan] commit1 cleanup: could not write marker file: {e}")
 
 
 def _ebit_switch_marker_path():

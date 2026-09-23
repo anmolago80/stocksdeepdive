@@ -2143,6 +2143,151 @@ def verify_au_index_containment(log=None):
     return violations
 
 
+# Commit 1 (23 Sep 2026, owner-reported): verify_au_index_containment()
+# above only WARNS - it never stops a bad scan from being saved and
+# served. ASX Small Ordinaries was found still serving a 79-ticker scan
+# saved 20 Sep 2026 (before Commit I's source repair) days after it
+# should have self-corrected on the next nightly run; the real index is
+# ~200 names. verify_universe_before_save() below is the actual GATE:
+# nightly_scan.run_universe_scan() (the independently-scanned chain
+# members - ASX 200/300/All Ordinaries) and scheduler_engine._build_
+# derived_universes() (the derived-only ones - ASX Small Ordinaries/100/
+# 50/20) both call this right before their own scan_store.save_scan(),
+# and skip the save entirely (keeping whatever was already on disk)
+# when it fails - the whole point being that scan_store.load_scan()'s
+# own 72h staleness cutoff only checks AGE, never whether the data is
+# actually the right SHAPE, so a wrong-shaped scan can sit there
+# "technically fresh" indefinitely without this.
+#
+# Floors are owner-specified, not invented here - only these four
+# universes get one. ASX 100/50/20 need no floor of their own: a
+# genuine fallback-to-parent (see e.g. the "ASX 100 unavailable -
+# showing ASX 200 (live) instead" branch below) always produces an
+# EXACT match to that parent, not a strict subset, which the
+# containment check below already rejects on its own.
+_UNIVERSE_SIZE_FLOOR = {
+    "ASX Small Ordinaries": 120,
+    "All Ordinaries": 400,
+    "ASX 300": 250,
+    "ASX 200": 170,
+}
+
+# subset -> its required STRICT superset, one adjacent pair per entry in
+# _AU_CONTAINMENT_CHAIN above - derived from that same list (never a
+# second hand-typed copy) so the two can't silently drift apart if
+# another AU universe is ever added to the chain. All Ordinaries (the
+# top) has no parent here - only its floor above applies to it.
+_UNIVERSE_CONTAINMENT_PARENT = dict(zip(
+    (name for name, _ in _AU_CONTAINMENT_CHAIN),
+    (name for name, _ in _AU_CONTAINMENT_CHAIN[1:]),
+))
+
+# The universes this whole guard (and its Source health tracking, and
+# the one-off cleanup for whatever's already on disk - see nightly_
+# scan.cleanup_universe_integrity_pollution()) applies to - exactly the
+# 7 the task named: the containment chain plus ASX Small Ordinaries
+# (a sibling relationship, not a chain member - see the special case
+# in verify_universe_before_save() below).
+UNIVERSE_INTEGRITY_TRACKED_UNIVERSES = [
+    "All Ordinaries", "ASX 300", "ASX 200", "ASX 100", "ASX 50", "ASX 20",
+    "ASX Small Ordinaries",
+]
+UNIVERSE_INTEGRITY_HEALTH_SOURCES = [
+    f"Universe integrity: {u}" for u in UNIVERSE_INTEGRITY_TRACKED_UNIVERSES
+]
+TRACKED_HEALTH_SOURCES.extend(UNIVERSE_INTEGRITY_HEALTH_SOURCES)
+
+
+def verify_universe_before_save(universe, tickers, log=None):
+    """The actual gate (see the comment block above) - `tickers`: the
+    set of tickers about to be saved for `universe`, checked against
+    ITS OWN freshly-fetched parent/sibling pool(s) (never a possibly-
+    stale saved scan, so this never itself depends on some OTHER
+    universe having already been correctly rescanned tonight - every
+    fetcher here is st.cache_data(ttl=86400)-cached, so a repeat call
+    within the same day costs nothing extra).
+
+    Checks, for `universe` in UNIVERSE_INTEGRITY_TRACKED_UNIVERSES:
+      1. Floor (_UNIVERSE_SIZE_FLOOR), if this universe has one.
+      2. ASX Small Ordinaries specifically (not a chain member - a
+         SIBLING split of ASX 300, "membership, not just count" per
+         the task's own instruction): every ticker must be in ASX 300,
+         and NONE may also be in ASX 100 (Small Ordinaries = ASX 300
+         minus ASX 100 - see _asx_small_ords_df()'s own docstring for
+         why that's "the standard definition", not All Ordinaries
+         minus ASX 100 as an earlier draft of this task assumed -
+         flagged explicitly in this commit's own report).
+      3. Every other tracked universe: must be a STRICT subset (task's
+         own word, "strictly") of its _UNIVERSE_CONTAINMENT_PARENT -
+         not just a subset, since an exact match to the parent is
+         exactly what a silent "show the parent instead" fallback
+         looks like (e.g. ASX 100 degrading to ASX 200's own full
+         list), and that must be rejected too, not served as if it
+         were genuinely ASX 100.
+
+    Returns (ok, reason). Fails OPEN (ok=True) on any internal error a
+    fetch inside this check itself throwing, or a reference universe's
+    own pool being unavailable right now - "inconclusive" always
+    passes, the same convention verify_au_index_containment() above
+    already uses, so a transient hiccup in the GUARD itself never
+    blocks an otherwise-good scan. An ACTUAL computed violation (a
+    floor breach, or a ticker strictly outside where it should be) is
+    a hard fail - that's the whole reason this function exists.
+    `log` is accepted (unused directly here) purely so call sites can
+    pass their own logger through without a lint warning; every actual
+    log line is written by the CALLER, since the wording differs
+    between a fresh-scan save and the one-off cleanup pass."""
+    try:
+        if universe not in UNIVERSE_INTEGRITY_TRACKED_UNIVERSES:
+            return True, "not a tracked universe - no check defined"
+
+        tickers = set(t for t in tickers if t)
+        floor = _UNIVERSE_SIZE_FLOOR.get(universe)
+        if floor is not None and len(tickers) < floor:
+            return False, f"only {len(tickers)} ticker(s), below the {floor} floor for {universe}"
+
+        if universe == "ASX Small Ordinaries":
+            df300 = fetch_asx300()
+            if df300 is None or df300.empty:
+                return True, "inconclusive: ASX 300 (reference) unavailable"
+            asx300 = set(df300["Ticker"])
+            outside = tickers - asx300
+            if outside:
+                return False, (
+                    f"{len(outside)} ticker(s) not in ASX 300: "
+                    f"{', '.join(sorted(outside)[:10])}"
+                )
+            df100 = fetch_asx100()
+            if df100 is not None and not df100.empty:
+                overlap = tickers & set(df100["Ticker"])
+                if overlap:
+                    return False, (
+                        f"{len(overlap)} ticker(s) also in ASX 100 (Small Ordinaries "
+                        f"= ASX 300 minus ASX 100): {', '.join(sorted(overlap)[:10])}"
+                    )
+            return True, f"{len(tickers)} ticker(s), in ASX 300 and outside ASX 100"
+
+        parent = _UNIVERSE_CONTAINMENT_PARENT.get(universe)
+        if parent is None:
+            return True, f"{len(tickers)} ticker(s), floor OK (no parent to check - top of chain)"
+        country = "Australia" if universe in AUSTRALIA_UNIVERSES else "USA"
+        parent_df, parent_source = get_universe_pool(country, parent)
+        if parent_df is None or parent_df.empty:
+            return True, f"inconclusive: parent {parent} unavailable ({parent_source})"
+        parent_tickers = set(parent_df["Ticker"])
+        if tickers == parent_tickers:
+            return False, f"identical to {parent} ({len(tickers)} ticker(s)) - not a genuine {universe} list"
+        outside = tickers - parent_tickers
+        if outside:
+            return False, (
+                f"{len(outside)} ticker(s) not in {parent}: "
+                f"{', '.join(sorted(outside)[:10])}"
+            )
+        return True, f"{len(tickers)} ticker(s), strict subset of {parent} ({len(parent_tickers)} ticker(s))"
+    except Exception as e:
+        return True, f"inconclusive: check itself failed ({e})"
+
+
 def _asx_small_ords_df():
     """ASX Small Ordinaries = ASX 300 minus ASX 100 (the standard
     definition) - derived from the two pools already fetched above, no
