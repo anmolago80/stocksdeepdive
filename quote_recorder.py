@@ -23,16 +23,37 @@ fetch_sp500() from Wikipedia a second time) means this job costs
 nothing extra against Wikipedia and always matches exactly what the
 site already scans nightly.
 
-CALL COST: yfinance has no batched call that returns bid/ask -
-Ticker.fast_info (the cheap batched-friendly path market_cap_engine.py
-already prefers) does NOT carry bid/ask at all, and yf.download()
-(this codebase's own batched OHLCV path, nightly_scan.py's reprice
-pass) only returns price bars, never a quote. Ticker(...).info is the
-only yfinance source with bid/ask/bidSize/askSize, so this is
-necessarily one .info call per ticker - same per-ticker-network-call
-shape as nightly_scan.py's own sector/attention top-up passes, reusing
-their PER_TICKER_SLEEP pacing (0.5s) rather than inventing a new
-throttle constant.
+CALL COST (rewritten, Sep 2026 - batch optimisation): Ticker.fast_info
+(the cheap batched-friendly path market_cap_engine.py already prefers)
+still does NOT carry bid/ask at all, and yf.download() (this
+codebase's own batched OHLCV path, nightly_scan.py's reprice pass)
+still only returns price bars, never a quote - both of those earlier
+findings still hold. What changed: this job no longer calls
+Ticker(...).info (the HEAVY per-ticker quoteSummary endpoint) at all.
+It now hits Yahoo's own light multi-symbol quote endpoint (v7/finance/
+quote - the SAME light bid/ask/last/volume/marketState fields
+Ticker.info's own bid/ask ultimately come from, just without the rest
+of quoteSummary's heavy payload) in chunks of up to _BULK_CHUNK_SIZE
+(100) symbols per request - see _fetch_quotes_bulk() below. A symbol
+the bulk response doesn't cover falls back to one INDIVIDUAL request
+against the SAME light endpoint (_fetch_quote_single()) - never back
+to the heavy .info call this whole change exists to get away from.
+Every ticker a quality gate rejects on its first pass gets exactly one
+retry, later in the same run (see _record_market()'s own retry pass) -
+conditions inside the sampling window can genuinely shift (a market
+that just opened, a momentarily frozen quote).
+
+Implementation note, flagged rather than silently relied on: the
+bulk/individual fetchers both go through yfinance.data.YfData - that
+library's own internal cookie/crumb-handling session, the same
+machinery Ticker.info itself uses under the hood (a bare unauthenticated
+requests.get() gets rejected by Yahoo). This is yfinance's PRIVATE
+implementation detail, not its public Ticker/download() API surface,
+and could move or rename between yfinance releases - both fetchers
+fail open (caught, logged, treated as "no quote for this ticker" - see
+_fetch_quotes_bulk()'s own docstring) rather than raising, so a future
+yfinance internals change degrades this job to "nothing captured that
+run", never a crash.
 
 REJECTION (reject junk rather than store it - "a missing day is fine,
 a wrong day is not"): a quote is rejected, never stored, when:
@@ -86,8 +107,6 @@ import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-import yfinance as yf
-
 import quote_snapshot_store
 import scan_store
 
@@ -99,9 +118,22 @@ _MARKET_TZ = {MARKET_ASX: ZoneInfo("Australia/Sydney"), MARKET_US: ZoneInfo("Ame
 _MARKET_CURRENCY_FALLBACK = {MARKET_ASX: "AUD", MARKET_US: "USD"}
 
 # Same pacing as nightly_scan.py's own sector/attention top-up passes -
-# no reason for this job's per-ticker .info calls to hit Yahoo any
-# harder than every other per-ticker loop already does.
+# reused for the two remaining PER-TICKER loops this job still has
+# (the individual-fallback pass for a symbol bulk didn't cover, and
+# the same fallback inside the one retry pass) - no reason for either
+# to hit Yahoo any harder than every other per-ticker loop already does.
 PER_TICKER_SLEEP = 0.5
+
+# Batch optimisation (Sep 2026): Yahoo's own practical cap on symbols
+# per v7/finance/quote request - comfortably covers a full ASX 200/
+# S&P 500 pass in 2-3 requests instead of 200-500 individual .info
+# calls. _BULK_REQUEST_PAUSE is the polite pause BETWEEN those chunk
+# requests (replacing the old per-ticker sleep at the chunk level, now
+# that most tickers travel in the same request) and also doubles as
+# the pause before the one retry pass below starts.
+_BULK_CHUNK_SIZE = 100
+_BULK_REQUEST_PAUSE = 1.0
+_QUOTE_ENDPOINT_PATH = "/v7/finance/quote"
 
 REJECT_MISSING = "rejected_missing_or_nonpositive"
 REJECT_ASK_LE_BID = "rejected_ask_le_bid"
@@ -252,6 +284,120 @@ def _is_frozen(bid, ask, last_price, prev):
             and last_price == prev.get("last_price"))
 
 
+def _chunked(seq, size):
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
+def _quote_light_dict(raw):
+    """One Yahoo v7/finance/quote result row -> the SAME field-name
+    shape _get_info_field()/_classify()/_classify_market_state()/
+    _is_frozen() above already read from a yf.Ticker(...).info dict -
+    bid/ask/regularMarketPrice/regularMarketVolume/marketState/
+    bidSize/askSize/currency. Yahoo's quote endpoint and .info's own
+    quoteSummary both ultimately source these particular fields from
+    the same underlying Yahoo data, so no renaming/translation layer
+    is needed - every existing quality-gate function reads this
+    exactly as it always read an .info dict, byte-for-byte unchanged."""
+    return {
+        "bid": raw.get("bid"),
+        "ask": raw.get("ask"),
+        "regularMarketPrice": raw.get("regularMarketPrice"),
+        "regularMarketVolume": raw.get("regularMarketVolume"),
+        "marketState": raw.get("marketState"),
+        "bidSize": raw.get("bidSize"),
+        "askSize": raw.get("askSize"),
+        "currency": raw.get("currency"),
+    }
+
+
+def _yf_data_get(params, log=print):
+    """One request against Yahoo's light quote endpoint via yfinance's
+    own internal session (yfinance.data.YfData - see this module's own
+    docstring, CALL COST section, for why: a bare unauthenticated
+    request gets rejected by Yahoo, and this is the same cookie/
+    crumb-handling machinery Ticker.info itself relies on). Returns the
+    parsed JSON's "quoteResponse.result" list, or [] on ANY failure
+    (import, network, auth, malformed JSON) - fails open, never raises,
+    so a problem here degrades to "treat every symbol in this request
+    as uncovered", handled entirely by the caller."""
+    try:
+        from yfinance.data import YfData
+        from yfinance.const import _QUERY1_URL_
+        resp = YfData().get(f"{_QUERY1_URL_}{_QUOTE_ENDPOINT_PATH}", params=params)
+        payload = resp.json()
+        return ((payload.get("quoteResponse") or {}).get("result")) or []
+    except Exception as e:
+        log(f"[quote_recorder] light quote request failed: {e}")
+        return []
+
+
+def _fetch_quotes_bulk(tickers, log=print):
+    """Yahoo's multi-symbol light quote endpoint, _BULK_CHUNK_SIZE
+    symbols per request, replacing one HEAVY yf.Ticker(t).info call per
+    ticker with a handful of light requests for the whole market.
+    Returns (quotes: {ticker: light_info_dict, ...}, missing:
+    [ticker, ...]) - `missing` is every ticker whose symbol the
+    endpoint's response simply didn't include (a symbol it doesn't
+    cover) OR whose whole chunk request failed outright (_yf_data_get()
+    already logged why) - either way, the caller falls back to one
+    INDIVIDUAL light request per missing ticker (_fetch_quote_single()
+    below), never the heavy .info call this whole change exists to get
+    away from."""
+    quotes = {}
+    missing = []
+    chunks = list(_chunked(tickers, _BULK_CHUNK_SIZE))
+    for i, chunk in enumerate(chunks):
+        rows = _yf_data_get({"symbols": ",".join(chunk)}, log=log)
+        seen = set()
+        for row in rows:
+            sym = row.get("symbol")
+            if sym:
+                quotes[sym] = _quote_light_dict(row)
+                seen.add(sym)
+        missing.extend(t for t in chunk if t not in seen)
+        if i + 1 < len(chunks):
+            time.sleep(_BULK_REQUEST_PAUSE)
+    return quotes, missing
+
+
+def _fetch_quote_single(ticker, log=print):
+    """One ticker through the SAME light quote endpoint
+    _fetch_quotes_bulk() above uses, individually - the fallback for a
+    symbol the bulk endpoint's response didn't cover. Deliberately NOT
+    yf.Ticker(ticker).info (the heavy quoteSummary call this whole
+    change exists to get away from) - "fast_info-class" in the task's
+    own words: a fast, light call, even though yfinance's own actual
+    FastInfo object has no bid/ask property at all (checked directly
+    against this environment's installed yfinance 1.7.0 -
+    yfinance/scrapers/quote.py's own FastInfo class) and so could never
+    serve this job regardless of which call this fallback used. None
+    on any failure or a response with no matching symbol - the caller
+    already treats a None quote as "still missing" (REJECT_MISSING, the
+    same gate every other ticker goes through, never a special case)."""
+    rows = _yf_data_get({"symbols": ticker}, log=log)
+    for row in rows:
+        if row.get("symbol") == ticker:
+            return _quote_light_dict(row)
+    return None
+
+
+def _fetch_quotes_individually(tickers, log=print):
+    """`tickers` through _fetch_quote_single() above, one at a time,
+    PER_TICKER_SLEEP between requests (this job's existing per-ticker
+    pacing, reused rather than a second throttle constant) - the
+    fallback loop both _record_market()'s first pass and its one retry
+    pass call for whatever _fetch_quotes_bulk() left uncovered."""
+    quotes = {}
+    for i, ticker in enumerate(tickers):
+        q = _fetch_quote_single(ticker, log=log)
+        if q is not None:
+            quotes[ticker] = q
+        if i + 1 < len(tickers):
+            time.sleep(PER_TICKER_SLEEP)
+    return quotes
+
+
 def _record_market(market, log=print):
     """The actual recording pass for one market - every per-ticker step
     individually guarded (a bad ticker is logged and skipped, never
@@ -261,7 +407,18 @@ def _record_market(market, log=print):
     engine.py's retry-cap wants to see as a real failure. Returns
     (captured_count, rejection_counts dict) and persists both a
     quote_snapshot_runs summary row and, per accepted ticker, a
-    quote_snapshots row."""
+    quote_snapshots row.
+
+    Batch optimisation (Sep 2026): fetches quotes for every ticker up
+    front via _fetch_quotes_bulk()/_fetch_quotes_individually() (see
+    those functions' own docstrings, and this module's own CALL COST
+    section) instead of one yf.Ticker(t).info call per ticker inside
+    this loop - the per-ticker QUALITY GATES themselves
+    (_classify_market_state/_classify/_is_frozen) and the storage call
+    (quote_snapshot_store.record_snapshot) are untouched, called from
+    the same one place (_process_one() below) on both the first pass
+    and the one retry pass, exactly as they were called inline here
+    before this commit."""
     tickers = tickers_for_market(market)
     now_utc = datetime.now(timezone.utc)
     local_date = now_utc.astimezone(_MARKET_TZ[market]).strftime("%Y-%m-%d")
@@ -274,43 +431,87 @@ def _record_market(market, log=print):
         REJECT_NO_VOLUME: 0, REJECT_FROZEN_QUOTE: 0,
     }
 
+    def _process_one(ticker, info):
+        """One ticker through the SAME quality gates this loop always
+        used, unchanged - only `info`'s SOURCE differs from before this
+        commit (now a light bulk/individual quote dict, not a
+        Ticker.info dict.) Returns the rejection reason, or None once
+        the quote is stored."""
+        bid = _get_info_field(info, "bid")
+        ask = _get_info_field(info, "ask")
+        last_price = _get_info_field(info, "regularMarketPrice", "currentPrice")
+        market_state = _get_info_field(info, "marketState")
+        volume = _get_info_field(info, "regularMarketVolume", "volume")
+
+        reason = _classify_market_state(market_state, volume)
+        if reason is None:
+            reason, _midpoint = _classify(bid, ask, last_price)
+        if reason is None and _is_frozen(
+                bid, ask, last_price, quote_snapshot_store.latest_snapshot(ticker)):
+            reason = REJECT_FROZEN_QUOTE
+        if reason is None:
+            quote_snapshot_store.record_snapshot(
+                ticker=ticker,
+                snap_date=local_date,
+                snap_at_utc=now_utc.isoformat(),
+                bid=float(bid),
+                ask=float(ask),
+                bid_size=_get_info_field(info, "bidSize"),
+                ask_size=_get_info_field(info, "askSize"),
+                last_price=float(last_price) if isinstance(last_price, (int, float)) else None,
+                currency=_get_info_field(info, "currency") or currency_fallback,
+                source="yfinance.quote_bulk",
+            )
+        return reason
+
     log(f"[quote_recorder] {market}: sampling {len(tickers)} ticker(s) for {local_date}")
-    for i, ticker in enumerate(tickers):
+
+    quotes, missing = _fetch_quotes_bulk(tickers, log=log)
+    if missing:
+        log(f"[quote_recorder] {market}: {len(missing)} ticker(s) not covered by the "
+            f"bulk quote endpoint, fetching individually")
+        quotes.update(_fetch_quotes_individually(missing, log=log))
+    _covered = len(tickers) - len(missing)
+    log(f"[quote_recorder] {market}: {_covered} ticker(s) covered by bulk requests, "
+        f"{len(missing)} via individual fallback")
+
+    pending_retry = []  # [(ticker, first_pass_reason), ...]
+    for ticker in tickers:
         try:
-            info = yf.Ticker(ticker).info or {}
-            bid = _get_info_field(info, "bid")
-            ask = _get_info_field(info, "ask")
-            last_price = _get_info_field(info, "regularMarketPrice", "currentPrice")
-            market_state = _get_info_field(info, "marketState")
-            volume = _get_info_field(info, "regularMarketVolume", "volume")
-
-            reason = _classify_market_state(market_state, volume)
-            if reason is None:
-                reason, _midpoint = _classify(bid, ask, last_price)
-            if reason is None and _is_frozen(
-                    bid, ask, last_price, quote_snapshot_store.latest_snapshot(ticker)):
-                reason = REJECT_FROZEN_QUOTE
-
-            if reason is not None:
-                counts[reason] += 1
-            else:
-                quote_snapshot_store.record_snapshot(
-                    ticker=ticker,
-                    snap_date=local_date,
-                    snap_at_utc=now_utc.isoformat(),
-                    bid=float(bid),
-                    ask=float(ask),
-                    bid_size=_get_info_field(info, "bidSize"),
-                    ask_size=_get_info_field(info, "askSize"),
-                    last_price=float(last_price) if isinstance(last_price, (int, float)) else None,
-                    currency=_get_info_field(info, "currency") or currency_fallback,
-                    source="yfinance.info",
-                )
-                captured += 1
+            info = quotes.get(ticker)
+            reason = _process_one(ticker, info) if info is not None else REJECT_MISSING
         except Exception as e:
             log(f"[quote_recorder] {market}/{ticker}: failed, skipped ({e})")
-        if i + 1 < len(tickers):
-            time.sleep(PER_TICKER_SLEEP)
+            continue
+        if reason is None:
+            captured += 1
+        else:
+            pending_retry.append((ticker, reason))
+
+    # One retry pass, later in the SAME run, for every ticker a
+    # quality gate rejected on the first pass - conditions inside the
+    # sampling window can genuinely shift (a market that had just
+    # opened, a momentarily frozen quote). Never for a ticker the
+    # first pass simply couldn't fetch/process at all (a real
+    # exception - already logged and skipped above, no second guess).
+    if pending_retry:
+        retry_tickers = [t for t, _r in pending_retry]
+        log(f"[quote_recorder] {market}: retrying {len(retry_tickers)} gate-rejected ticker(s)")
+        time.sleep(_BULK_REQUEST_PAUSE)
+        retry_quotes, retry_missing = _fetch_quotes_bulk(retry_tickers, log=log)
+        if retry_missing:
+            retry_quotes.update(_fetch_quotes_individually(retry_missing, log=log))
+        for ticker, first_reason in pending_retry:
+            try:
+                info = retry_quotes.get(ticker)
+                reason = _process_one(ticker, info) if info is not None else first_reason
+            except Exception as e:
+                log(f"[quote_recorder] {market}/{ticker}: retry failed, skipped ({e})")
+                reason = first_reason
+            if reason is None:
+                captured += 1
+            else:
+                counts[reason] += 1
 
     total_rejected = sum(counts.values())
     _reasons = ", ".join(f"{k}={v}" for k, v in counts.items() if v)
