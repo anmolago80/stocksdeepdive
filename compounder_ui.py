@@ -32,13 +32,36 @@ import datetime as _dt
 import hashlib
 import html
 import math
+import os
 import re
 
 import plotly.graph_objects as go
 import streamlit as st
 
 import i18n
+import quote_snapshot_store
+import trading_cost_engine
 from simple_view_copy import SECTION_WHY_CAPTIONS, SECTION_WHY_CAPTIONS_ES
+
+# -----------------------------------
+# Trading Cost tab (Commit 3) - master switch. Same _truthy()/env-var
+# shape as paywall_engine.PAYWALL_ENABLED - the recorder (quote_
+# recorder.py, Commit 1) and the estimator (trading_cost_engine.py,
+# Commit 2) both run/compute regardless of this flag; it only gates
+# whether the TAB ITSELF appears. Neither quote_snapshot_store nor
+# trading_cost_engine import anything from this module or app.py, so
+# importing both here at module level (rather than deferred inside a
+# function, like this file's own paywall_engine import) is safe - no
+# circular import risk, and neither does network/heavy work at import
+# time (quote_snapshot_store only opens a SQLite connection on demand;
+# trading_cost_engine is pure Python with zero I/O of its own).
+# -----------------------------------
+
+def _truthy(v):
+    return (v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+TRADING_COST_ENABLED = _truthy(os.environ.get("ENABLE_TRADING_COST"))
 
 # -----------------------------------
 # Colour vocabulary (moved from app.py, verbatim)
@@ -1515,29 +1538,406 @@ def with_news_tab(section_order, lang="en"):
     return out
 
 
-def render_tabs(sections, ticker, section_order, key_prefix, gates=None, lang="en"):
+def trading_cost_tab_label(lang="en"):
+    """The 💱 Trading Cost tab's own localized display text - same
+    "function, not a constant" reasoning as news_tab_label() above (both
+    render_tabs() and the Research page's own tab loop use this SAME
+    function to build the label AND identify the tab in their render
+    loop). Only meaningful when TRADING_COST_ENABLED - see with_
+    trading_cost_tab() below, the one place that actually decides
+    whether the tab exists at all."""
+    return i18n.t("compounder.trading_cost.tab_label", lang)
+
+
+def with_trading_cost_tab(section_order, lang="en"):
+    """`section_order` (already including News, via with_news_tab()
+    above) with the Trading Cost tab's own label inserted immediately
+    after News - or returned UNCHANGED when TRADING_COST_ENABLED is
+    off, so the tab bar is byte-identical to today's on every page for
+    every visitor until the owner turns the switch on. Shared by
+    render_tabs() below and the Research page's own tab loop, same
+    "News always lands in the same place on both views" reasoning
+    with_news_tab() itself already documents."""
+    if not TRADING_COST_ENABLED:
+        return section_order
+    out = list(section_order)
+    news_label = news_tab_label(lang)
+    label = trading_cost_tab_label(lang)
+    if news_label in out:
+        out.insert(out.index(news_label) + 1, label)
+    else:
+        out.append(label)
+    return out
+
+
+def render_tabs(sections, ticker, section_order, key_prefix, gates=None, lang="en",
+                 price_history=None):
     """Renders `st.tabs(section_order)` and calls render_section() in each
     tab - the same navigation mechanism the Research page already uses
     (see page_research()), reused as-is for the Deep Dive auto view so
     both callers share one nav mechanism, not just one section renderer.
     Always appends a 📰 News tab after "Fair Value" (see with_news_tab()
     above) - page-level content, not part of `sections`, rendered via
-    render_news_tab() instead of render_section().
+    render_news_tab() instead of render_section(). A 💱 Trading Cost tab
+    follows News (see with_trading_cost_tab() above) whenever
+    TRADING_COST_ENABLED is on.
 
     gates: optional {section_label: (title, teaser, key_prefix)} - only
         the sections present here are gated; every other section renders
-        openly. Never applies to the News tab - it isn't gated.
+        openly. Never applies to the News or Trading Cost tabs - neither
+        is gated.
     lang: "en"/"es" (Español instruction, Part 1) - passed straight
         through to each tab's render_section() call, and used to pick
-        the News tab's own localized label.
+        the News/Trading Cost tabs' own localized labels.
+    price_history: Trading Cost tab's own [{"date","high","low","close",
+        "volume"}, ...] for `ticker` (the caller's own get_price_history()
+        cache, converted - see render_trading_cost_tab()'s own docstring
+        for why this module never fetches it itself). None is fine when
+        the tab is off or the caller has nothing to pass - render_
+        trading_cost_tab() treats it exactly like an empty list.
     """
     gates = gates or {}
-    tab_labels = with_news_tab(section_order, lang=lang)
+    tab_labels = with_trading_cost_tab(with_news_tab(section_order, lang=lang), lang=lang)
     news_label = news_tab_label(lang)
+    tc_label = trading_cost_tab_label(lang)
     tabs = st.tabs(tab_labels, key=key_prefix)
     for label, tab in zip(tab_labels, tabs):
         with tab:
             if label == news_label:
                 render_news_tab(ticker, lang=lang)
+            elif label == tc_label:
+                render_trading_cost_tab(ticker, price_history, lang=lang)
             else:
                 render_section(sections, ticker, label, gate=gates.get(label), lang=lang)
+
+
+# -----------------------------------
+# 💱 Trading Cost tab (Commit 3) - see TRADING_COST_ENABLED/with_
+# trading_cost_tab() above for the on/off switch and tab placement.
+# -----------------------------------
+
+def _pct_to_fraction(value_pct):
+    """trading_cost_engine's own unit (a percentage, e.g. 0.42 = 0.42%)
+    -> band_gauge()'s expected unit (a fraction, since its "pct" format
+    does value*100 - see _cp_format() above). None passes straight
+    through (band_gauge already renders "N/A" for a None value)."""
+    return value_pct / 100.0 if value_pct is not None else None
+
+
+def _spread_band_thresholds(lang):
+    """band_gauge() thresholds for a trading-cost spread tile, on
+    band_gauge's own fraction scale - built fresh per `lang` since the
+    verdict word itself (band_gauge's 4th tuple element) has to be
+    translated. Sourced from trading_cost_engine.TIGHT_THRESHOLD_PCT/
+    WIDE_THRESHOLD_PCT (never a second, hand-typed copy of 0.5/1.5) so
+    the tile's own pill can never disagree with trading_cost_engine.
+    spread_band()'s own classification of the SAME value - verified in
+    this commit's own test suite.
+
+    The moderate band's own upper bound is nudged by a tiny epsilon:
+    band_gauge's threshold engine (_cp_band above) is right-EXCLUSIVE
+    (value < hi), but the spec's own bands are "moderate 0.5-1.5%
+    inclusive, wide >1.5% exclusive" - i.e. a value of EXACTLY 1.5%
+    must land in moderate, not wide. Without the nudge, band_gauge's
+    generic engine would put exactly 1.5% in "wide" instead, silently
+    disagreeing with trading_cost_engine.spread_band(1.5) == "moderate"."""
+    tight = i18n.t("compounder.trading_cost.band_tight", lang)
+    moderate = i18n.t("compounder.trading_cost.band_moderate", lang)
+    wide = i18n.t("compounder.trading_cost.band_wide", lang)
+    tight_hi = trading_cost_engine.TIGHT_THRESHOLD_PCT / 100.0
+    wide_lo = trading_cost_engine.WIDE_THRESHOLD_PCT / 100.0
+    return [
+        (None, tight_hi, "green", tight),
+        (tight_hi, wide_lo + 1e-9, "amber", moderate),
+        (wide_lo, None, "red", wide),
+    ]
+
+
+def _fmt_value_traded(value):
+    """A dollar value-traded figure, abbreviated (K/M/B) - "—" for None.
+    No currency symbol prefix by design: the ticker's own currency
+    varies (AUD for ASX, USD for US - quote_snapshot_store's own
+    "currency" column), and this tile has no single figure's currency
+    attached to check, so a bare "$" would be ambiguous rather than
+    informative."""
+    if value is None:
+        return "—"
+    for threshold, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if abs(value) >= threshold:
+            return f"{value / threshold:,.2f}{suffix}"
+    return f"{value:,.0f}"
+
+
+def _fmt_pct_diag(value):
+    return f"{value:.3f}%" if value is not None else "n/a"
+
+
+def _plain_tile(label, value_text, caption=None):
+    """A "value + optional caption" tile, no band pill - for the two
+    Trading Cost tiles that aren't a tight/moderate/wide metric (Value
+    traded, Bid/ask now). Same label/value colour and font choices as
+    band_gauge() above for visual consistency, deliberately WITHOUT
+    that function's colour-banded strip or verdict pill, which wouldn't
+    mean anything for either of these two figures."""
+    st.markdown(
+        "<div style='margin-bottom:2px;'>"
+        f"<div style='font-size:13px;font-weight:600;color:#aebfd4;'>{html.escape(str(label))}</div>"
+        "<div style='height:16px;'></div>"
+        "<div style='font-family:ui-monospace,Menlo,SFMono-Regular,monospace;"
+        f"font-size:14px;font-weight:700;color:#e6edf5;'>{html.escape(str(value_text))}</div>"
+        + (f"<div style='font-size:11px;color:#8aa0b8;margin-top:3px;'>{html.escape(str(caption))}</div>"
+           if caption else "")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _trading_cost_bid_ask_chart(days_rows, recording_start_date, lang="en"):
+    """"Bid & Ask" chart: recorded bid/ask lines with the gap shaded
+    between them (fill="tonexty" between the two line traces - the
+    market's own gap, not a stand-alone shape). connectgaps=False on
+    both traces: a day with no recorded snapshot (recorded_bid/ask is
+    None) is a genuine gap in the data, never visually bridged over by
+    a straight line to the next real point, which would imply a
+    quote that was never actually captured. The region before
+    recording began (or, if recording hasn't reached this window's
+    first visible day at all, the WHOLE window) is shaded via
+    add_vrect and labelled "Recording started <date>", per the spec."""
+    _t = lambda key, **fmt: i18n.t(f"compounder.trading_cost.{key}", lang, **fmt)
+    dates = [r["date"] for r in days_rows]
+    bids = [r["recorded_bid"] for r in days_rows]
+    asks = [r["recorded_ask"] for r in days_rows]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates, y=bids, mode="lines", name=_t("legend_bid"),
+        line=dict(color=_CP_COLOR_TEXT["blue"], width=1.6), connectgaps=False,
+    ))
+    fig.add_trace(go.Scatter(
+        x=dates, y=asks, mode="lines", name=_t("legend_ask"),
+        line=dict(color=_CP_COLOR_TEXT["green"], width=1.6),
+        fill="tonexty", fillcolor="rgba(94,211,240,0.12)", connectgaps=False,
+    ))
+
+    if dates:
+        if recording_start_date and recording_start_date > dates[-1]:
+            shade_x0, shade_x1 = dates[0], dates[-1]
+        elif recording_start_date and recording_start_date > dates[0]:
+            shade_x0, shade_x1 = dates[0], recording_start_date
+        else:
+            shade_x0, shade_x1 = None, None
+        if shade_x0 is not None:
+            fig.add_vrect(
+                x0=shade_x0, x1=shade_x1,
+                fillcolor="rgba(138,160,184,0.08)", line_width=0,
+                annotation_text=_t("recording_started_label", date=recording_start_date),
+                annotation_position="top left",
+                annotation_font_size=11, annotation_font_color="#8aa0b8",
+            )
+
+    fig.update_layout(
+        title=_t("chart_bid_ask_title"),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#c7d2e0"),
+        margin=dict(l=10, r=10, t=40, b=10), height=280,
+        xaxis=dict(gridcolor="rgba(138,160,184,0.15)"),
+        yaxis=dict(gridcolor="rgba(138,160,184,0.15)"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+def _trading_cost_spread_chart(days_rows, lang="en"):
+    """"Spread, % of price" chart: estimated spread as a bar for every
+    day (always available), recorded spread as a dot on the days we
+    have one (a marker trace with None for every other day - plotly
+    simply skips those points, leaving the dot series sparse without a
+    second, filtered x-axis to keep in sync), one legend, a dashed
+    "wide" threshold line at trading_cost_engine.WIDE_THRESHOLD_PCT.
+    ONE y-axis - both traces share it, never a secondary scale."""
+    _t = lambda key, **fmt: i18n.t(f"compounder.trading_cost.{key}", lang, **fmt)
+    dates = [r["date"] for r in days_rows]
+    estimated = [r["estimated_spread_pct"] for r in days_rows]
+    recorded = [r["recorded_spread_pct"] for r in days_rows]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=dates, y=estimated, name=_t("legend_estimated"),
+        marker_color="rgba(94,211,240,0.55)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=dates, y=recorded, mode="markers", name=_t("legend_recorded"),
+        marker=dict(color=_CP_COLOR_TEXT["green"], size=7),
+    ))
+    fig.add_hline(
+        y=trading_cost_engine.WIDE_THRESHOLD_PCT, line_dash="dash",
+        line_color=_CP_COLOR_TEXT["red"],
+        annotation_text=_t("wide_threshold_label"),
+        annotation_position="top right",
+        annotation_font_size=11, annotation_font_color=_CP_COLOR_TEXT["red"],
+    )
+    fig.update_layout(
+        title=_t("chart_spread_title"),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#c7d2e0"),
+        margin=dict(l=10, r=10, t=40, b=10), height=280,
+        xaxis=dict(gridcolor="rgba(138,160,184,0.15)"),
+        yaxis=dict(gridcolor="rgba(138,160,184,0.15)", ticksuffix="%"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        barmode="overlay",
+    )
+    return fig
+
+
+def render_trading_cost_tab(ticker, price_history, lang="en"):
+    """Renders the 💱 Trading Cost tab's full content for `ticker` - see
+    TRADING_COST_ENABLED/with_trading_cost_tab() above for when this
+    tab exists at all.
+
+    `price_history`: the caller's own get_price_history(ticker) cache
+    (app.py), already converted to trading_cost_engine's own
+    [{"date","high","low","close","volume"}, ...] row shape - see that
+    module's docstring for why it takes plain data rather than
+    fetching anything itself. None/[] is handled gracefully below (an
+    info message, never a broken/empty tab) - this is exactly the
+    state the tab launches in for a ticker with no cached price
+    history yet, and (separately) the state EVERY ticker's snapshot
+    history is in on day one, before ENABLE_TRADING_COST has been on
+    long enough to have real quote_snapshots rows.
+
+    quote_snapshot_store.snapshots_for_ticker()/latest_snapshot() are
+    called directly from here, not passed in - neither is a circular
+    import (this module already imports quote_snapshot_store at the
+    top of the file), so app.py's own two call sites only need to pass
+    `ticker` and `price_history`.
+
+    "Bid/ask now" (the 4th tile) NEVER attempts a live "right now"
+    fetch of its own - only ever shows quote_snapshot_store.
+    latest_snapshot(ticker), labelled with its own recorded date. A
+    live fetch would need to know whether the market is CURRENTLY open
+    to avoid exactly the after-hours-junk problem this whole feature
+    exists to fix (see quote_recorder.py's own module docstring for the
+    OCL.AX example) - and Commit 1's own report already established
+    there is no market-hours/holiday-calendar helper anywhere in this
+    codebase to answer that reliably. Always showing the latest
+    RECORDED (already quote_recorder.py-verified) snapshot instead is
+    simpler and can never show Yahoo's raw after-hours quote, by
+    construction - which is also exactly what the spec's own "never
+    Yahoo's after-hours quote" instruction asks for, just achieved by
+    never attempting the live read at all rather than by time-gating
+    one."""
+    _t = lambda key, **fmt: i18n.t(f"compounder.trading_cost.{key}", lang, **fmt)
+
+    snapshots = quote_snapshot_store.snapshots_for_ticker(ticker)
+    series = trading_cost_engine.trading_cost_series(ticker, price_history or [], snapshots, days=30)
+
+    st.markdown(
+        f'<div style="color:#8aa0b8;font-size:12.5px;margin-bottom:10px;">'
+        f'{html.escape(_t("why_matters"))}</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not series["days"]:
+        st.info(_t("no_price_data", ticker=ticker))
+        return
+
+    latest = quote_snapshot_store.latest_snapshot(ticker)
+    _c1, _c2, _c3, _c4 = st.columns(4)
+    with _c1:
+        band_gauge(
+            _t("tile_spread_recorded"),
+            _pct_to_fraction(series["median_recorded_spread_pct"]),
+            "pct", _spread_band_thresholds(lang),
+            comment=_t("tile_spread_recorded_comment"),
+        )
+    with _c2:
+        band_gauge(
+            _t("tile_spread_estimated"),
+            _pct_to_fraction(series["average_estimated_spread_pct"]),
+            "pct", _spread_band_thresholds(lang),
+            comment=_t("tile_spread_estimated_comment"),
+        )
+    with _c3:
+        _plain_tile(_t("tile_value_traded"), _fmt_value_traded(series["avg_daily_value_traded_30d"]))
+    with _c4:
+        if latest and latest.get("bid") is not None and latest.get("ask") is not None:
+            _plain_tile(
+                _t("tile_bid_ask_now"),
+                f"{latest['bid']:,.2f} / {latest['ask']:,.2f}",
+                caption=_t("bid_ask_now_snapshot_label", date=latest.get("snap_date") or ""),
+            )
+        else:
+            _plain_tile(_t("tile_bid_ask_now"), "—", caption=_t("bid_ask_now_no_data"))
+
+    st.markdown('<div style="margin-top:18px;"></div>', unsafe_allow_html=True)
+    if series["recording_start_date"]:
+        sdd_plotly_chart(_trading_cost_bid_ask_chart(series["days"], series["recording_start_date"], lang=lang))
+    else:
+        # No snapshots recorded at all yet - the launch-day state. Never
+        # an empty/broken chart area: a plain caption instead, exactly
+        # as the spec asks ("the bid/ask chart says recording hasn't
+        # started"), and the spread chart right below still renders in
+        # full (the estimator needs no recorded quotes at all).
+        st.markdown(f"**{_t('chart_bid_ask_title')}**")
+        st.caption(_t("recording_not_started_label"))
+
+    sdd_plotly_chart(_trading_cost_spread_chart(series["days"], lang=lang))
+
+    st.markdown(f"**{_t('table_title')}**")
+    _table_rows = [{
+        _t("table_col_date"): row["date"],
+        _t("table_col_close"): row["close"],
+        _t("table_col_recorded_bid"): row["recorded_bid"],
+        _t("table_col_recorded_ask"): row["recorded_ask"],
+        _t("table_col_recorded_spread"): row["recorded_spread_pct"],
+        _t("table_col_estimated_spread"): row["estimated_spread_pct"],
+    } for row in series["days"]]
+    st.dataframe(_table_rows, width='stretch', hide_index=True)
+
+    st.caption(_t("footnote"))
+
+    # Owner-only diagnostics (task addition, 23 Sep 2026, owner-
+    # requested): raw trading_cost_series() output on screen - the
+    # exact numbers behind every tile/chart above, for the owner to
+    # read real per-ticker figures off a live deploy (no live network
+    # access existed in the sandbox this was built in - see Commit 2's
+    # own report). Same gating shape as the Deep Dive page's own Moat
+    # diagnostics expander (Commit M/T): ai_gate.is_owner(...) AND
+    # st.session_state.get("full_view_unlocked") - never rendered, never
+    # even checked, for a non-owner visitor or an owner who has exited
+    # to normal view. Deferred imports, same reason paywall_engine is
+    # already deferred-imported elsewhere in this file: this module has
+    # no top-level dependency on either.
+    try:
+        import ai_gate
+        import paywall_engine
+        _tc_owner_full_view = bool(
+            ai_gate.is_owner(paywall_engine.current_user_email())
+            and st.session_state.get("full_view_unlocked")
+        )
+    except Exception:
+        _tc_owner_full_view = False
+
+    if _tc_owner_full_view:
+        with st.expander("🔧 Trading Cost diagnostics (owner only)", expanded=False):
+            st.caption(
+                f"Raw trading_cost_engine.trading_cost_series() output for "
+                f"{ticker} - the exact numbers the tiles/charts above are built from."
+            )
+            st.markdown(
+                f"**Median recorded spread:** {_fmt_pct_diag(series['median_recorded_spread_pct'])}  \n"
+                f"**Average estimated spread (30d):** {_fmt_pct_diag(series['average_estimated_spread_pct'])}  \n"
+                f"**Recording start date:** {series['recording_start_date'] or 'n/a'}  \n"
+                f"**Recorded days count:** {series['recorded_days_count']}  \n"
+                f"**Avg daily value traded (30d):** {_fmt_value_traded(series['avg_daily_value_traded_30d'])}"
+            )
+            st.markdown("**Per-day rows (raw engine output):**")
+            st.dataframe(
+                [{
+                    "date": row["date"], "close": row["close"],
+                    "recorded_bid": row["recorded_bid"], "recorded_ask": row["recorded_ask"],
+                    "recorded_spread_pct": row["recorded_spread_pct"],
+                    "estimated_spread_pct": row["estimated_spread_pct"],
+                } for row in series["days"]],
+                width='stretch', hide_index=True,
+            )

@@ -78,6 +78,13 @@ BAND_TIGHT = "tight"
 BAND_MODERATE = "moderate"
 BAND_WIDE = "wide"
 
+# Named (not inline-literal) so Commit 3's own "wide above X%" dashed
+# threshold line on the spread chart reads these directly rather than
+# duplicating the numbers - the chart and spread_band() can never drift
+# apart out of sync.
+TIGHT_THRESHOLD_PCT = 0.5
+WIDE_THRESHOLD_PCT = 1.5
+
 _K = 3 - 2 * math.sqrt(2)
 
 
@@ -117,9 +124,9 @@ def spread_band(spread_pct):
     own percentage unit. None in, None out (nothing to band)."""
     if spread_pct is None:
         return None
-    if spread_pct < 0.5:
+    if spread_pct < TIGHT_THRESHOLD_PCT:
         return BAND_TIGHT
-    if spread_pct <= 1.5:
+    if spread_pct <= WIDE_THRESHOLD_PCT:
         return BAND_MODERATE
     return BAND_WIDE
 

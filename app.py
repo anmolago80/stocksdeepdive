@@ -359,6 +359,45 @@ def get_price_history(ticker):
     )
 
 
+def _price_history_rows_for_trading_cost(ticker):
+    """Trading Cost tab, Commit 3: converts get_price_history(ticker)'s
+    yfinance OHLCV DataFrame - the SAME cache every other Deep Dive/Swing
+    calculation already reads, no new fetch - into trading_cost_engine's
+    own plain-row shape ([{"date","high","low","close","volume"}, ...]),
+    since that module (and compounder_ui.py, which calls it) deliberately
+    takes no pandas/Streamlit/network dependency of its own - see
+    trading_cost_engine.trading_cost_series()'s own docstring. The one
+    place this conversion happens; both Trading Cost tab call sites
+    (the Deep Dive auto view below, and page_research()'s own tab loop)
+    use this instead of duplicating the DataFrame -> list-of-dicts
+    logic. A row with a missing/NaN High, Low or Close is skipped
+    outright (trading_cost_engine's own Corwin-Schultz estimator needs a
+    real high/low for every day it uses); a missing Volume alone is
+    kept with volume=None (only the "avg daily value traded" figure
+    needs it, and that figure already skips a None volume day - see
+    that function's own docstring). Never raises - returns [] on any
+    conversion error, which render_trading_cost_tab() already handles
+    gracefully as "no price data"."""
+    try:
+        df = get_price_history(ticker)
+        if df is None or df.empty:
+            return []
+        rows = []
+        for idx, row in df.iterrows():
+            high, low, close = row.get("High"), row.get("Low"), row.get("Close")
+            if not (pd.notna(high) and pd.notna(low) and pd.notna(close)):
+                continue
+            volume = row.get("Volume")
+            rows.append({
+                "date": idx.strftime("%Y-%m-%d"),
+                "high": float(high), "low": float(low), "close": float(close),
+                "volume": float(volume) if pd.notna(volume) else None,
+            })
+        return rows
+    except Exception:
+        return []
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_cashflow_df(ticker):
     """
@@ -7025,13 +7064,20 @@ def _render_research_detail(ticker, data, section_order, lang="en"):
     # Deep Dive auto view's compounder_ui.render_tabs() uses, so News
     # always lands in the same place on both views and both render it
     # through the exact same compounder_ui.render_news_tab() component.
+    # 💱 Trading Cost tab (Commit 3): same reasoning, one step further -
+    # compounder_ui.with_trading_cost_tab() inserts it right after News,
+    # only when compounder_ui.TRADING_COST_ENABLED is on (a no-op
+    # otherwise, so _cp_section_order is byte-identical to today until
+    # that switch flips).
     # This page builds its own st.tabs() (rather than calling
     # compounder_ui.render_tabs() directly) because it also has to
     # interleave "Company Potential", which has no compounder_ui.py
     # computed-section equivalent at all - see that module's own
     # top-of-file docstring.
-    _cp_section_order = compounder_ui.with_news_tab(section_order, lang=lang)
+    _cp_section_order = compounder_ui.with_trading_cost_tab(
+        compounder_ui.with_news_tab(section_order, lang=lang), lang=lang)
     _cp_news_label = compounder_ui.news_tab_label(lang)
+    _cp_trading_cost_label = compounder_ui.trading_cost_tab_label(lang)
     _cp_tab_labels = [
         (f"🔒 {s}" if s in _cp_gated and paywall_engine.PAYWALL_ENABLED
          and not paywall_engine.is_subscribed(paywall_engine.current_user_email())
@@ -7042,7 +7088,8 @@ def _render_research_detail(ticker, data, section_order, lang="en"):
     # label passed to st.tabs()'s `default` has to be the (possibly 🔒-
     # prefixed) tab label actually in _cp_tab_labels, not the bare section
     # name, so the lookup below maps back through _cp_section_order's index
-    # (News included, since with_news_tab() above already folded it in).
+    # (News/Trading Cost included, since with_news_tab()/with_trading_
+    # cost_tab() above already folded them in).
     _cp_default_idx = 0
     _qp_section = (st.query_params.get("section") or "").strip().lower()
     if _qp_section:
@@ -7056,6 +7103,9 @@ def _render_research_detail(ticker, data, section_order, lang="en"):
         with _cp_tab:
             if _cp_label == _cp_news_label:
                 compounder_ui.render_news_tab(ticker, lang=lang)
+            elif _cp_label == _cp_trading_cost_label:
+                compounder_ui.render_trading_cost_tab(
+                    ticker, _price_history_rows_for_trading_cost(ticker), lang=lang)
             else:
                 st.markdown(f"### {ticker} - {_cp_label}")
                 _render_cp_section(ticker, _cp_label, data)
@@ -11157,6 +11207,15 @@ def page_deep_dive():
                     _acv_sections, _dd["ticker"], _acv_section_order,
                     key_prefix=f"acv_{_dd['ticker']}", gates=_acv_gates,
                     lang=st.session_state.get("lang", "en"),
+                    # Guarded (not called unconditionally) so the site is
+                    # a true no-op when ENABLE_TRADING_COST is off - the
+                    # Trading Cost tab itself already wouldn't render in
+                    # that case (compounder_ui.with_trading_cost_tab()'s
+                    # own gate), but this avoids the conversion work too.
+                    price_history=(
+                        _price_history_rows_for_trading_cost(_dd["ticker"])
+                        if compounder_ui.TRADING_COST_ENABLED else None
+                    ),
                 )
                 _acv_meta = _acv_sections.get("_meta", {}) or {}
                 _acv_years = _acv_meta.get("statement_years")

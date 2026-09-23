@@ -3219,6 +3219,70 @@ EN = {
         "above. Headlines judged unrelated to the company are never "
         "counted."
     ),
+    # Trading Cost tab (Commit 3, 23 Sep 2026, owner-requested): bid/ask
+    # spread - one real recorded quote a day (quote_recorder.py, Commit
+    # 1) plus a Corwin-Schultz high-low estimate for every other day
+    # (trading_cost_engine.py, Commit 2). Gated behind ENABLE_TRADING_
+    # COST (compounder_ui.TRADING_COST_ENABLED) - these keys exist site-
+    # wide the moment this file deploys, same as every other feature's
+    # own strings, but the tab itself only appears once that switch is on.
+    "compounder.trading_cost.tab_label": "\U0001F4B1 Trading Cost",
+    "compounder.trading_cost.why_matters": (
+        "Bid-ask spread is a real cost of trading, on top of any "
+        "brokerage fee — wider spreads mean a bigger gap between what "
+        "you'd pay to buy and what you'd get selling right back out."
+    ),
+    "compounder.trading_cost.tile_spread_recorded": "Spread recorded",
+    "compounder.trading_cost.tile_spread_recorded_comment": (
+        "Median of the real bid/ask spreads this site has actually "
+        "recorded mid-session for this stock, as a percentage of the "
+        "midpoint price."
+    ),
+    "compounder.trading_cost.tile_spread_estimated": "Spread estimated (30d)",
+    "compounder.trading_cost.tile_spread_estimated_comment": (
+        "Average of the last 30 days' Corwin-Schultz spread estimate — "
+        "computed from daily high/low prices alone, no bid/ask data "
+        "needed, so it covers every day including before real recording "
+        "began."
+    ),
+    "compounder.trading_cost.tile_value_traded": "Value traded (30d avg)",
+    "compounder.trading_cost.tile_bid_ask_now": "Bid/ask now",
+    "compounder.trading_cost.bid_ask_now_snapshot_label": "As of the {date} 1:00pm snapshot",
+    "compounder.trading_cost.bid_ask_now_no_data": "No snapshot recorded yet",
+    "compounder.trading_cost.chart_bid_ask_title": "Bid & ask",
+    "compounder.trading_cost.chart_spread_title": "Spread, % of price",
+    "compounder.trading_cost.recording_started_label": "Recording started {date}",
+    "compounder.trading_cost.recording_not_started_label": (
+        "Recording hasn't started yet for this stock — the chart below "
+        "shows the estimated spread only; real bid/ask recording begins "
+        "the next time this stock is sampled mid-session."
+    ),
+    "compounder.trading_cost.legend_bid": "Bid",
+    "compounder.trading_cost.legend_ask": "Ask",
+    "compounder.trading_cost.legend_estimated": "Estimated",
+    "compounder.trading_cost.legend_recorded": "Recorded",
+    "compounder.trading_cost.wide_threshold_label": "Wide, above 1.5%",
+    "compounder.trading_cost.table_title": "Day by day",
+    "compounder.trading_cost.table_col_date": "Date",
+    "compounder.trading_cost.table_col_close": "Close",
+    "compounder.trading_cost.table_col_recorded_bid": "Recorded bid",
+    "compounder.trading_cost.table_col_recorded_ask": "Recorded ask",
+    "compounder.trading_cost.table_col_recorded_spread": "Recorded spread %",
+    "compounder.trading_cost.table_col_estimated_spread": "Estimated spread %",
+    "compounder.trading_cost.footnote": (
+        "Estimated spreads use the Corwin & Schultz (2012) high-low "
+        "method and are approximate, not a real quote. Recorded spreads "
+        "(dots) are real mid-session bid/ask quotes, sampled once a day "
+        "— never an after-hours snapshot. Neither figure includes "
+        "brokerage fees, market impact on a larger order, or off-market "
+        "trades."
+    ),
+    "compounder.trading_cost.no_price_data": (
+        "No price history available for {ticker} right now."
+    ),
+    "compounder.trading_cost.band_tight": "Tight",
+    "compounder.trading_cost.band_moderate": "Moderate",
+    "compounder.trading_cost.band_wide": "Wide",
     # Company description (17 Sep 2026), Deep Dive page only, Option A:
     # a one-liner under the title row (first sentence of the provider's
     # own business summary, truncated ~140 chars) that opens into a full
@@ -5978,6 +6042,68 @@ ES = {
         "anteriores. Los titulares considerados no relacionados con la "
         "empresa nunca se cuentan."
     ),
+    # Pestaña Costo de Operar (Commit 3, 23 Sep 2026, solicitado por el
+    # propietario) - ver el bloque EN paralelo para el contexto completo.
+    "compounder.trading_cost.tab_label": "\U0001F4B1 Costo de Operar",
+    "compounder.trading_cost.why_matters": (
+        "El spread entre compra y venta es un costo real de operar, "
+        "además de cualquier comisión — un spread más amplio significa "
+        "una brecha mayor entre lo que pagarías al comprar y lo que "
+        "recibirías al vender de inmediato."
+    ),
+    "compounder.trading_cost.tile_spread_recorded": "Spread registrado",
+    "compounder.trading_cost.tile_spread_recorded_comment": (
+        "Mediana de los spreads reales de compra/venta que este sitio "
+        "ha registrado en horario de mercado para esta acción, como "
+        "porcentaje del precio medio."
+    ),
+    "compounder.trading_cost.tile_spread_estimated": "Spread estimado (30d)",
+    "compounder.trading_cost.tile_spread_estimated_comment": (
+        "Promedio de la estimación Corwin-Schultz del spread en los "
+        "últimos 30 días — calculada solo a partir de los máximos/"
+        "mínimos diarios, sin datos de compra/venta, por lo que cubre "
+        "todos los días, incluso antes de que comenzara el registro real."
+    ),
+    "compounder.trading_cost.tile_value_traded": "Valor operado (prom. 30d)",
+    "compounder.trading_cost.tile_bid_ask_now": "Compra/venta ahora",
+    "compounder.trading_cost.bid_ask_now_snapshot_label": "Según la captura de la 1:00pm del {date}",
+    "compounder.trading_cost.bid_ask_now_no_data": "Aún no hay captura registrada",
+    "compounder.trading_cost.chart_bid_ask_title": "Compra y venta",
+    "compounder.trading_cost.chart_spread_title": "Spread, % del precio",
+    "compounder.trading_cost.recording_started_label": "El registro comenzó el {date}",
+    "compounder.trading_cost.recording_not_started_label": (
+        "El registro aún no ha comenzado para esta acción — el gráfico "
+        "de abajo muestra solo el spread estimado; el registro real de "
+        "compra/venta comenzará la próxima vez que se capture esta "
+        "acción en horario de mercado."
+    ),
+    "compounder.trading_cost.legend_bid": "Compra",
+    "compounder.trading_cost.legend_ask": "Venta",
+    "compounder.trading_cost.legend_estimated": "Estimado",
+    "compounder.trading_cost.legend_recorded": "Registrado",
+    "compounder.trading_cost.wide_threshold_label": "Amplio, por encima de 1.5%",
+    "compounder.trading_cost.table_title": "Día a día",
+    "compounder.trading_cost.table_col_date": "Fecha",
+    "compounder.trading_cost.table_col_close": "Cierre",
+    "compounder.trading_cost.table_col_recorded_bid": "Compra registrada",
+    "compounder.trading_cost.table_col_recorded_ask": "Venta registrada",
+    "compounder.trading_cost.table_col_recorded_spread": "Spread registrado %",
+    "compounder.trading_cost.table_col_estimated_spread": "Spread estimado %",
+    "compounder.trading_cost.footnote": (
+        "Los spreads estimados usan el método de máximos-mínimos de "
+        "Corwin & Schultz (2012) y son aproximados, no una cotización "
+        "real. Los spreads registrados (puntos) son cotizaciones reales "
+        "de compra/venta en horario de mercado, tomadas una vez al día "
+        "— nunca una captura fuera de horario. Ninguna de las dos cifras "
+        "incluye comisiones, impacto de mercado de una orden grande, ni "
+        "operaciones fuera del mercado."
+    ),
+    "compounder.trading_cost.no_price_data": (
+        "No hay historial de precios disponible para {ticker} en este momento."
+    ),
+    "compounder.trading_cost.band_tight": "Ajustado",
+    "compounder.trading_cost.band_moderate": "Moderado",
+    "compounder.trading_cost.band_wide": "Amplio",
     # Descripción de la empresa (17 Sep 2026) - ES DRAFT, not
     # professionally reviewed (same convention as every other ES batch
     # in this file). The company summary text itself is never
