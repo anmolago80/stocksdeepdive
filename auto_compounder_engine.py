@@ -611,9 +611,9 @@ def _plausible_operating_income(candidate, revenue, info):
 # Operating Income, or that + Reconciled Depreciation) is the real one,
 # then use THAT reported figure as EBIT. Per ticker-year:
 #   P = Pretax Income - Net Non Operating Interest Income Expense -
-#       Other Income Expense   (a TEST value only - never used as EBIT
-#       itself, which is exactly what let one-off items leak into
-#       Commit O's numbers)
+#       Other Income Expense   (a TEST value only under Commit Q - never
+#       used as EBIT itself there, which is exactly what let one-off
+#       items leak into Commit O's numbers; Commit 2 below changes this)
 #   OI = yfinance's own "Operating Income" row
 #   DA = "Reconciled Depreciation" row
 #   - |P - OI| <= 3% of |P| -> no bug this year -> EBIT = OI.
@@ -631,15 +631,44 @@ def _plausible_operating_income(candidate, revenue, info):
 #     conservative default for a year Commit Q can't explain, rather
 #     than guessing.
 #
-# Ticker-level gate (never per year - see ebit_year_rows()): the OI+DA
-# correction is only ever applied to a ticker if the match holds for
-# BOTH the newest year AND at least 2 other years - a single matching
-# year could be coincidence; three independent years matching the exact
-# same reconciliation identity is the filer's real statement structure,
-# not noise. A ticker that doesn't clear this bar keeps OI for every
-# year, uniformly - never a per-year mix (same principle Commit P
-# established, now the ONLY branching rule left, since a "some years
-# derivable, some not" case no longer exists under this formula).
+# Commit Q's own ticker-level gate (owner-reported, 23 Sep 2026, REMOVED
+# by Commit 2 - see ebit_year_rows()'s own docstring for the replacement
+# per-year rule): Commit Q only ever applied the OI+DA correction to a
+# ticker if the match held for BOTH the newest year AND at least 2
+# other years, on the theory that a single matching year could be
+# coincidence. That bar is exactly what rejected XRO.AX: yfinance only
+# begins reporting Cost of Revenue for XRO from FY2025, so the
+# statement's own SHAPE changes mid-history and the OI+DA identity can
+# only ever appear in the years AFTER that change (FY2026/FY2025) - two
+# years, not three, so Commit Q's gate kept XRO's whole series on raw
+# OI, including FY2026's OI of -15.39m for a company that actually
+# earned ~304m at the operating line (P = 283.30+55.96-35.46=303.80,
+# matching FY2026's own OI+DA of 303.80 exactly) - driving XRO's ROIC to
+# -0.2% and its Moat score to 0.
+#
+# Commit 2's fix: move the decision from per-TICKER to per-YEAR. Every
+# year stands on its own reconciliation test again its OWN pretax
+# income - a year that matches EITHER identity uses P directly as EBIT
+# (not OI or OI+DA separately - a match means P, OI and OI+DA are all
+# within 3% of each other by construction, so there is nothing left to
+# choose between; P is simply the actual reconciled figure). A year
+# that matches neither still uses raw OI, unchanged, exactly as Commit Q
+# already did - the honest, conservative default for a year this can't
+# explain. Commit P's original "never mix a verified figure with a raw
+# one within the same ticker" principle still holds exactly as written -
+# an unverified year is NEVER promoted to use P, whatever its neighbours
+# did - but the corollary Commit Q layered on top of it (a ticker must
+# clear a 3-year bar before ANY year gets to use its own verified
+# figure) is gone: mixing two VERIFIED years that happened to match
+# DIFFERENT identities (one year via matches_oi, another via matches_
+# oi_plus_da) is safe, because each was independently reconciled against
+# its own year's pretax income - it was never the kind of verified/raw
+# mixing Commit P's rule was written to prevent. XRO's four years now
+# read: FY2026 matches_oi_plus_da (P=303.80), FY2025 matches_oi_plus_da
+# (P=325.92), FY2024 matches_oi (P=237.32, ~= OI 237.31), FY2023
+# matches_oi (P=74.36, ~= OI 74.37) - all four verify, on two different
+# identities, and Commit 2's per-year rule lets every one of them use
+# its own reconciled P.
 #
 # yfinance's own "EBIT" row is still not a substitute for OI+DA: it's
 # Pretax + "Interest Expense", and that "Interest Expense" row excludes
@@ -666,9 +695,13 @@ EBIT_FROM_PRETAX = os.environ.get("EBIT_FROM_PRETAX") == "1"
 # the "matches OI" and "matches OI+DA" comparisons.
 _EBIT_VERIFY_TOLERANCE_PCT = 0.03
 
-# Newest year + at least this many OTHER years must independently show
-# the OI+DA match before a ticker's whole series gets corrected.
-_EBIT_MIN_OTHER_MATCHING_YEARS = 2
+# Commit 2: a separate, TIGHTER bar than the 3% verify tolerance above -
+# used only to derive ticker_corrected (see ebit_year_rows()'s own
+# docstring), which answers "did the correction move a real number",
+# not "did a year verify at all" (a year can verify via matches_oi
+# while already numerically equal to OI, in which case nothing actually
+# changed for it and it shouldn't count as "corrected").
+_EBIT_MATERIALITY_TOLERANCE_PCT = 0.01
 
 
 def _ac_is_financials(info):
@@ -724,26 +757,27 @@ def ebit_year_rows(bundle, is_financials, force_switch=None, flags=None):
     whether that's worth surfacing, this function never assumes.
 
     Fields per year (see the module comment above for the full formula
-    and its Commit O -> Commit Q history):
+    and its Commit O -> Commit Q -> Commit 2 history):
       pretax_income, net_interest, other_income - the test formula's own
         inputs, read as yfinance reports them (sign convention as filed
         - net_interest is typically negative when it's a net expense).
       total_unusual_items - diagnostic only, NOT used anywhere in the
-        formula as of Commit Q (the working theory for Commit O's false
+        formula since Commit Q (the working theory for Commit O's false
         positives was exactly that this row's content can already be
         embedded in other_income for some filers - subtracting it a
         second time is what leaked one-offs into "EBIT"). Kept here only
         so the owner can still eyeball it against a flagged/unverified
         year in the diagnostics panel.
       reconciled_depreciation - the D&A add-back; part of the OI+DA
-        candidate this year's own p_test is checked against (see below),
-        no longer diagnostic-only as it was under Commit P.
+        candidate this year's own p_test is checked against (see below).
       operating_income_yf - yfinance's own "Operating Income" row,
         unmodified.
-      p_test - pretax_income - net_interest - other_income. A TEST value
-        ONLY, per Commit Q - never itself used as ebit (that's exactly
-        what let one-off items leak into Commit O's numbers). None when
-        pretax_income is missing for that year.
+      p_test - pretax_income - net_interest - other_income. The RECONCILED
+        figure once a year's own test confirms it (see "ebit" below) -
+        "p_test" (not renamed to something like "reconciled_ebit") purely
+        so every earlier commit's own comments referencing this field by
+        name stay accurate. None when pretax_income is missing for that
+        year.
       oi_plus_da - operating_income_yf + reconciled_depreciation, or
         None if either is unavailable that year.
       year_status - "matches_oi" (p_test agrees with operating_income_yf
@@ -752,34 +786,38 @@ def ebit_year_rows(bundle, is_financials, force_switch=None, flags=None):
         confirmed for this specific year), "unverified" (p_test could be
         computed but matches neither - flagged, EBIT stays at OI for
         this year), or "no_data" (p_test itself couldn't be computed -
-        no Pretax Income on file for this year).
-      ticker_corrected - one bool, the SAME value on every year's row
-        for this ticker (see the ticker-level gate below) - whether the
-        OI+DA correction is actually being applied to this ticker's
-        series, for transparency in the diagnostics panel/audit.
-      ebit - the value callers should actually use. Decided ONCE per
-        ticker/bundle (never per year - Commit P's "no mixing" principle,
-        which Commit Q keeps as the only remaining branching rule):
-          - ticker_corrected is True (the newest year AND at least
-            _EBIT_MIN_OTHER_MATCHING_YEARS other years each
-            independently show year_status == "matches_oi_plus_da") ->
-            every year uses oi_plus_da, uniformly - INCLUDING a year
-            whose own year_status isn't "matches_oi_plus_da" (e.g. one
-            "unverified" year sitting inside an otherwise 5-year run
-            that clears the 3-year bar) - the ticker-level decision
-            governs the whole series, not each year's own individual
-            test result, exactly so this never becomes a second form of
-            per-year mixing. A year missing operating_income_yf or
-            reconciled_depreciation itself (so oi_plus_da is None) gets
-            ebit=None (dropped, same "drop rather than guess"
-            convention as any other unavailable year) - never a
-            fallback to that one year's raw operating_income_yf, which
-            would silently reintroduce a level shift into an otherwise-
-            corrected series.
-          - ticker_corrected is False (the 3-year bar isn't cleared) ->
-            the WHOLE ticker uses operating_income_yf for every year,
-            uniformly - the untouched original path, not a special case
-            of the new one."""
+        no Pretax Income on file for this year; EBIT also stays at OI,
+        same as "unverified" - there's simply nothing to test it with).
+      ticker_corrected - Commit 2 (23 Sep 2026, owner-reported): DERIVED,
+        for reporting only - it no longer gates anything (see below for
+        why the ticker-level gate itself is gone). The SAME value on
+        every year's row for this ticker: True when at least one year
+        verified (year_status is "matches_oi" or "matches_oi_plus_da")
+        AND at least one of those verified years' own ebit differs from
+        its own operating_income_yf by more than 1% - i.e. the
+        correction actually moved a real number, not just "a year
+        happened to verify while already agreeing with OI to begin
+        with". Kept under this field name (not renamed) so the Admin
+        Dashboard audit and the moat diagnostics panel, both built
+        against Commit Q's shape, keep reading it unchanged.
+      ebit - the value callers should actually use, decided PER YEAR
+        (Commit 2 - see the module comment above for why Commit Q's own
+        ticker-level "3 years must match" gate is gone):
+          - year_status is "matches_oi" or "matches_oi_plus_da" -> ebit
+            = p_test. Both branches assign the SAME expression
+            (p_test), not operating_income_yf/oi_plus_da separately -
+            by construction, a match means p_test is already within 3%
+            of whichever one it matched, so there is nothing left to
+            choose between; p_test is simply the actual reconciled
+            figure for that year.
+          - year_status is "unverified" or "no_data" -> ebit =
+            operating_income_yf, unchanged (None if that row itself
+            isn't on file for this year - dropped, never guessed).
+        Verification is only ever applied when the switch is genuinely
+        enabled (EBIT_FROM_PRETAX on and not is_financials); with it
+        off, every year's ebit is operating_income_yf regardless of
+        year_status - byte-identical to pre-Commit-O behaviour, exactly
+        as when the switch was off under Commit Q."""
     income = bundle.get("income")
     if income is None or getattr(income, "empty", True):
         return {}
@@ -798,7 +836,7 @@ def ebit_year_rows(bundle, is_financials, force_switch=None, flags=None):
     switch_on = EBIT_FROM_PRETAX if force_switch is None else force_switch
     verify_enabled = bool(switch_on) and not is_financials
 
-    raw_per_year = {}
+    out = {}
     for y in years:
         pretax = pretax_s.get(y)
         op_yf = op_yf_s.get(y)
@@ -821,7 +859,23 @@ def ebit_year_rows(bundle, is_financials, force_switch=None, flags=None):
         else:
             year_status = "unverified"
 
-        raw_per_year[y] = {
+        # Commit 2: per-YEAR decision - both matching statuses use
+        # p_test (identical by construction, see the docstring above);
+        # an unverified/no_data year keeps raw OI, exactly as Commit Q
+        # already did for any year it couldn't explain.
+        if verify_enabled and year_status in ("matches_oi", "matches_oi_plus_da"):
+            ebit = p_test
+        else:
+            ebit = op_yf
+            if verify_enabled and year_status == "unverified" and flags is not None:
+                flags.append(
+                    f"EBIT: {y} operating income unverified - no correction applied "
+                    f"(matches neither yfinance's Operating Income nor Operating Income + "
+                    f"Reconciled Depreciation within {_EBIT_VERIFY_TOLERANCE_PCT:.0%} of the "
+                    f"Pretax-based test value)"
+                )
+
+        out[y] = {
             "pretax_income": pretax,
             "net_interest": net_interest,
             "other_income": other_income,
@@ -831,37 +885,34 @@ def ebit_year_rows(bundle, is_financials, force_switch=None, flags=None):
             "p_test": p_test,
             "oi_plus_da": oi_plus_da,
             "year_status": year_status,
+            "ebit": ebit,
         }
 
-    # Ticker-level gate - decided ONCE, never per year (see the docstring
-    # above). The newest year specifically, plus at least
-    # _EBIT_MIN_OTHER_MATCHING_YEARS other years, must independently
-    # confirm the OI+DA identity - a single matching year could be
-    # coincidence, three is the filer's real statement structure.
-    matching_years = [y for y in years if raw_per_year[y]["year_status"] == "matches_oi_plus_da"]
-    newest = years[0] if years else None
-    ticker_corrected = bool(
-        verify_enabled
-        and newest is not None
-        and raw_per_year[newest]["year_status"] == "matches_oi_plus_da"
-        and len(matching_years) >= 1 + _EBIT_MIN_OTHER_MATCHING_YEARS
-    )
+    # Commit 2: ticker_corrected is now DERIVED for reporting only (see
+    # the docstring above) - at least one year verified, AND at least
+    # one of those verified years' ebit materially differs (>1%) from
+    # its own raw operating_income_yf. 1% here is deliberately tighter
+    # than the 3% VERIFY tolerance above - this is answering "did the
+    # correction move a real number", not "did a year verify at all"
+    # (a year can verify via matches_oi while already equal to OI, in
+    # which case nothing actually changed for it).
+    ticker_corrected = False
+    if verify_enabled:
+        for y in years:
+            r = out[y]
+            if r["year_status"] not in ("matches_oi", "matches_oi_plus_da"):
+                continue
+            oi, ebit = r["operating_income_yf"], r["ebit"]
+            if oi is None or ebit is None:
+                continue
+            differs = (ebit != 0) if oi == 0 else (abs(ebit - oi) > _EBIT_MATERIALITY_TOLERANCE_PCT * abs(oi))
+            if differs:
+                ticker_corrected = True
+                break
 
-    out = {}
     for y in years:
-        r = raw_per_year[y]
-        if ticker_corrected:
-            chosen = r["oi_plus_da"]
-        else:
-            chosen = r["operating_income_yf"]
-        if verify_enabled and r["year_status"] == "unverified" and flags is not None:
-            flags.append(
-                f"EBIT: {y} operating income unverified - no correction applied "
-                f"(matches neither yfinance's Operating Income nor Operating Income + "
-                f"Reconciled Depreciation within {_EBIT_VERIFY_TOLERANCE_PCT:.0%} of the "
-                f"Pretax-based test value)"
-            )
-        out[y] = {**r, "ticker_corrected": ticker_corrected, "ebit": chosen}
+        out[y]["ticker_corrected"] = ticker_corrected
+
     return out
 
 
@@ -880,17 +931,21 @@ def ebit_ttm(bundle, is_financials, revenue=None, info=None, force_switch=None, 
     "operating_income"), revenue, info)` should call instead.
 
     Walks ebit_year_rows()'s per-year "ebit" field newest-first and
-    returns the first non-None value (estimated=False) - since Commit Q
-    applies one formula uniformly across a ticker's whole series (either
-    every year uses OI+DA, or every year uses OI - see ebit_year_rows()),
-    this never needs to reason about switch/mode/verification itself; it
-    only needs to skip a year whose OWN raw inputs happen to be missing
-    (e.g. no Reconciled Depreciation on file for the newest year of an
-    otherwise-corrected ticker). If the picked year isn't the newest,
-    `flags` (if given) gets a line naming which year TTM actually came
-    from and why - this can still happen on the OI-unchanged path too
-    (yfinance's Operating Income row itself missing for the newest year),
-    not just the corrected path.
+    returns the first non-None value (estimated=False). Since Commit 2
+    decides ebit per YEAR (see ebit_year_rows()), the newest year almost
+    always has a usable ebit - a verified year's ebit is p_test, which
+    can only be None if pretax_income itself is missing (year_status
+    "no_data"), and an unverified/no_data year's ebit is raw
+    operating_income_yf, which is None only when that row itself isn't
+    on file. So this only ever needs to skip forward past a newest year
+    whose OWN raw inputs are missing, exactly as before Commit 2. If the
+    picked year isn't the newest, `flags` (if given) gets a line naming
+    which year TTM actually came from and why - Commit 2 additionally
+    names the newest year's own year_status when it's "unverified" or
+    "no_data" (the situation that actually forces this fallback under
+    the new per-year rule - a verified newest year's ebit is never None
+    in the first place), so the reader isn't left thinking a year that
+    genuinely reconciled somehow still went missing.
 
     If no year has a usable "ebit" at all (no income statement, or the
     raw Operating Income row is missing for every year on file), falls
@@ -904,9 +959,26 @@ def ebit_ttm(bundle, is_financials, revenue=None, info=None, force_switch=None, 
     for y in years_desc:
         if rows[y]["ebit"] is not None:
             if y != years_desc[0] and flags is not None:
+                # Commit 2: under the per-year rule, a VERIFIED year's
+                # ebit is p_test, which is only None when pretax_income
+                # itself is missing - but that's exactly year_status
+                # "no_data", not "matches_oi"/"matches_oi_plus_da". So
+                # the newest year is skipped here ONLY when it's
+                # unverified/no_data AND its own raw Operating Income is
+                # ALSO missing - a verified newest year's ebit can never
+                # be None in the first place. Named explicitly so the
+                # reader isn't left thinking a year that genuinely
+                # reconciled somehow still went missing.
+                newest = years_desc[0]
+                status_note = (
+                    "is unverified - matches neither identity"
+                    if rows[newest]["year_status"] == "unverified"
+                    else "has no Pretax Income on file to test against"
+                )
                 flags.append(
-                    f"EBIT: TTM figure taken from {y}, not the newest year {years_desc[0]} "
-                    f"- {years_desc[0]}'s own Operating Income/Reconciled Depreciation figure is missing"
+                    f"EBIT: TTM figure taken from {y}, not the newest year {newest} - "
+                    f"{newest} {status_note}, and its own Operating Income figure is "
+                    f"also missing"
                 )
             return rows[y]["ebit"], False
     raw = _latest(income, "operating_income")

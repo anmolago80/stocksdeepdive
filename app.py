@@ -28631,8 +28631,10 @@ def page_admin_dashboard():
     # --- OPERATING-INCOME AUDIT (Commit O, 21 Sep 2026; formula replaced
     # by Commit Q, 21 Sep 2026; widened beyond ASX 200 + S&P 500 to every
     # saved scan by Commit S, 21 Sep 2026, owner-reported - the EBIT
-    # correction is per-ticker and applies to every stock scored, not
-    # just the two flagship universes). Pure dry-run: reads through
+    # correction applies to every stock scored, not just the two
+    # flagship universes; Commit Q's per-ticker gate replaced by Commit
+    # 2's per-YEAR one, 23 Sep 2026, owner-reported - see auto_
+    # compounder_engine.ebit_year_rows()'s own docstring). Pure dry-run: reads through
     # moat_engine.compute_moat_dry_run() and auto_compounder_engine.
     # ebit_ttm()/ebit_year_rows()(..., force_switch=...), none of which
     # ever read/write the 24h moat_cache or auto_cv_sections cache, or
@@ -28653,28 +28655,37 @@ def page_admin_dashboard():
     st.markdown("### Operating-income audit (dry-run)")
     st.caption(
         "Compares today's live figure (yfinance's own \"Operating "
-        "Income\" row) against the Commit Q verify-then-correct EBIT for "
-        "every non-financials ticker in the selected universe(s), using "
-        "only already-cached fundamentals (never a live yfinance/EODHD "
-        "call - a ticker with nothing cached is skipped and listed "
-        "below). Per ticker-year: P = Pretax Income - Net Non Operating "
-        "Interest Income Expense - Other Income Expense (a test value "
-        "only, never used as EBIT itself - that's what let one-off "
-        "items leak into Commit O's numbers). If P matches yfinance's "
-        "Operating Income within 3%, there's no bug. If it instead "
-        "matches Operating Income + Reconciled Depreciation within 3%, "
-        "the D&A double-count is confirmed for that year. A ticker is "
-        "only corrected if the newest year AND at least 2 other years "
-        "independently confirm the double-count - one matching year "
-        "could be coincidence, three is the filer's real statement "
-        "structure - and the correction then applies uniformly to every "
-        "year, never mixed (Commit P's principle). A ticker scanned "
-        "under more than one universe is counted once in the totals "
-        "below (its own row lists every universe it appeared in) but "
-        "toward each universe's own per-universe count. Quality is "
-        "deliberately not shown - quality_engine.py never reads "
-        "operating income at all, so this fix cannot move it, on any "
-        "ticker."
+        "Income\" row) against the Commit 2 per-YEAR verify-then-correct "
+        "EBIT for every non-financials ticker in the selected "
+        "universe(s), using only already-cached fundamentals (never a "
+        "live yfinance/EODHD call - a ticker with nothing cached is "
+        "skipped and listed below). Per ticker-year: P = Pretax Income - "
+        "Net Non Operating Interest Income Expense - Other Income "
+        "Expense. If P matches yfinance's Operating Income within 3%, "
+        "there's no bug that year and EBIT = P (~= Operating Income "
+        "already). If it instead matches Operating Income + Reconciled "
+        "Depreciation within 3%, the D&A double-count is confirmed for "
+        "that year and EBIT = P (~= Operating Income + Reconciled "
+        "Depreciation). Neither -> EBIT stays at raw Operating Income, "
+        "flagged unverified. Each year stands on its own reconciliation "
+        "test now (Commit 2 removed the old ticker-level \"newest year "
+        "AND 2 others must match the SAME identity\" gate, which is what "
+        "rejected XRO.AX - its early years only ever verify via the "
+        "plain Operating Income match, its later years only via "
+        "Operating Income + Reconciled Depreciation, so no 3 years ever "
+        "shared one identity) - mixing two independently-verified years "
+        "is safe since each reconciled against its own year's pretax "
+        "income; an unverified year is still never mixed in. \"status\" "
+        "below: corrected = at least one verified year's EBIT actually "
+        "moved (>1% from its own raw Operating Income); unverified = not "
+        "corrected, but at least one year matched neither identity; "
+        "unchanged = every year already agreed with Operating Income (or "
+        "had no Pretax Income to test against). A ticker scanned under "
+        "more than one universe is counted once in the totals below (its "
+        "own row lists every universe it appeared in) but toward each "
+        "universe's own per-universe count. Quality is deliberately not "
+        "shown - quality_engine.py never reads operating income at all, "
+        "so this fix cannot move it, on any ticker."
     )
     with st.container(border=True):
         _ebit_audit_candidate_universes = (
@@ -28717,6 +28728,18 @@ def page_admin_dashboard():
             _progress_bar = st.progress(0.0)
             _progress_caption = st.empty()
 
+            # Commit 2 (23 Sep 2026, owner-reported): per-pillar old/new
+            # points, not just the Moat total - reads compute_moat_dry_
+            # run()'s own "components" list (the SAME pillar functions
+            # compute_moat() itself calls, never a second reimplementation)
+            # - None for a pillar that didn't score at all for this
+            # ticker (dropped/not applicable), never a fabricated 0.
+            def _pillar_points(_result, _name):
+                for _c in (_result or {}).get("components") or []:
+                    if _c.get("pillar") == _name:
+                        return _c.get("points")
+                return None
+
             _audit_rows = []
             _skipped_no_cache = []
             _CHUNK = 25
@@ -28743,6 +28766,15 @@ def page_admin_dashboard():
                         _moat_delta = (
                             (_moat_new - _moat_old) if (_moat_old is not None and _moat_new is not None) else None
                         )
+                        # Commit 2 (23 Sep 2026, owner-reported): per-
+                        # pillar old/new, not just the Moat total - every
+                        # moat-affecting commit's own report needs "all
+                        # four pillar scores" per ticker, and pillar-
+                        # level detail was previously only visible one
+                        # ticker at a time via the Moat diagnostics panel
+                        # below, not across a whole audited universe here
+                        # (see _pillar_points()'s own definition above the
+                        # loop).
                         _audit_rows.append({
                             "ticker": _tk,
                             "country": "AU" if _tk.upper().endswith(".AX") else "US",
@@ -28751,6 +28783,14 @@ def page_admin_dashboard():
                             "roic_old": _old.get("ttm_return"), "roic_new": _new.get("ttm_return"),
                             "moat_old": _moat_old, "moat_new": _moat_new,
                             "moat_delta": _moat_delta,
+                            "spread_old": _pillar_points(_old, "Excess-return spread"),
+                            "spread_new": _pillar_points(_new, "Excess-return spread"),
+                            "persistence_old": _pillar_points(_old, "Persistence"),
+                            "persistence_new": _pillar_points(_new, "Persistence"),
+                            "pricing_power_old": _pillar_points(_old, "Pricing power"),
+                            "pricing_power_new": _pillar_points(_new, "Pricing power"),
+                            "reinvestment_old": _pillar_points(_old, "Reinvestment"),
+                            "reinvestment_new": _pillar_points(_new, "Reinvestment"),
                             "status": _status,
                             "unverified_years": ", ".join(_unverified_years) if _unverified_years else "",
                         })

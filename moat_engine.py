@@ -812,11 +812,12 @@ def compute_moat_diagnostics(ticker):
     revenue/gross_profit_or_fallback/gross_profit_is_fallback_operating_
     income/operating_income (the value that actually fed NOPAT/ROIC/
     pricing-power)/pretax_income/net_interest/other_income/
-    total_unusual_items (diagnostic only, not used in the formula as of
+    total_unusual_items (diagnostic only, not used in the formula since
     Commit Q)/reconciled_depreciation/operating_income_yf/p_test/
     oi_plus_da/year_status ("matches_oi"|"matches_oi_plus_da"|
-    "unverified"|"no_data")/ticker_corrected (the Commit Q verify-then-
-    correct reconciliation - see auto_compounder_engine.ebit_year_rows())/
+    "unverified"|"no_data")/ticker_corrected (Commit 2's per-YEAR verify-
+    then-correct reconciliation, this field now a derived reporting flag
+    only - see auto_compounder_engine.ebit_year_rows())/
     nopat/equity/total_debt/long_term_debt/cash/invested_capital/roic;
     financials mode: year/equity/net_income/roe), "ttm_return"/
     "ttm_return_metric" (ROIC or ROE), "ttm_cost_of_capital"/
@@ -889,9 +890,9 @@ def compute_moat_diagnostics(ticker):
         # _ace.ebit_series(), which is this same switch-aware "ebit"
         # field) - the new pretax_income/net_interest/other_income/
         # reconciled_depreciation/p_test/oi_plus_da/year_status/
-        # ticker_corrected columns below show the full Commit Q
-        # verify-then-correct reconciliation behind it, never replacing
-        # this field, only explaining it.
+        # ticker_corrected columns below show the full Commit 2
+        # per-year verify-then-correct reconciliation behind it, never
+        # replacing this field, only explaining it.
         op_income_s = {y: r["ebit"] for y, r in ebit_rows.items()}
         gp_s = dict(_ace._series(income, "Gross Profit")) if not used_fallback else op_income_s
         debt_s = dict(_ace._series(balance, "total_debt"))
