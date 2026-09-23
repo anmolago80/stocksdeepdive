@@ -68,6 +68,7 @@ import blog_store
 import blog_render
 import compounder_ui
 from compounder_ui import sdd_plotly_chart
+import top100_render
 from simple_view_copy import SECTION_WHY_CAPTIONS, SECTION_WHY_CAPTIONS_ES
 import stress_etf_help_copy
 import switch_analyzer_engine
@@ -3484,6 +3485,12 @@ def _render_app_nav_items(lang, current=None, key_prefix="nav", layout="row"):
         # below) - remove by flipping that one constant, no markup to
         # touch here.
         ("tools", i18n.t("nav.tools", lang), PG_TOOLS),
+        # Top 100 (Commit 2 of the Top 100 task): open/ungated for now -
+        # visible in this same primary row to everyone. Commit 3 adds the
+        # TOP100_PUBLIC gate; until that lands this item (and the page
+        # itself) is reachable by anyone who finds the URL, same interim
+        # state PG_TOP100 already sits in inside st.navigation([...]).
+        ("top100", i18n.t("nav.top100", lang), PG_TOP100),
     ]
     # 3rd Amendment to Part 5: order is Results Calendar, Track record,
     # Methodology, About (the amendment's own verbatim order - was
@@ -22727,6 +22734,21 @@ def _content_page_shell(title, current=None, show_search=True):
     st.markdown(f"## {title}")
 
 
+def page_top100():
+    """Top 100 tab, Commit 2: the quality-shortlist page. Rendering
+    itself lives in top100_render.py (same "*_render.py/*_ui.py owns
+    markup, app.py owns the page function" split compounder_ui.py's
+    own Trading Cost tab already established) - this function is only
+    the page shell + view-count bump + language selection. Commit 3
+    adds the owner-only-unless-TOP100_PUBLIC gate here (mirroring
+    page_admin_dashboard()'s own independent, page-function-level
+    check) - this commit ships the page itself, reachable by anyone,
+    exactly like every other content page until that gate lands."""
+    _content_page_shell("\U0001F3C6 Top 100", current="top100")
+    _bump_page_view("top100")
+    top100_render.render_top100_page(lang=st.session_state.get("lang", "en"))
+
+
 def page_methodology():
     _content_page_shell("How the scores work", current="methodology")
     _bump_page_view("methodology")
@@ -28935,6 +28957,12 @@ PG_PORTFOLIO = st.Page(page_portfolio, title="My Portfolio", url_path="portfolio
 # Mega-batch Part 18: the 🧰 Tools hub - its own primary-row nav tab,
 # between Portfolio and Blog (owner's "seventh-tab" choice).
 PG_TOOLS = st.Page(page_tools, title="Money Tools", url_path="tools")
+# Top 100 tab, Commit 2: registered like every other content page -
+# reachable by URL like PG_ADMIN_DASHBOARD below, whose own comment
+# explains why an access check has to live inside the page function
+# itself rather than only in whether a nav button to it is shown.
+# Commit 3 adds that check to page_top100() itself.
+PG_TOP100 = st.Page(page_top100, title="Top 100", url_path="top-100")
 PG_METHODOLOGY = st.Page(page_methodology, title="How the scores work", url_path="methodology")
 PG_ABOUT = st.Page(page_about, title="About", url_path="about")
 PG_MODEL_HISTORY = st.Page(page_model_history, title="Model history", url_path="model-history")
@@ -28956,7 +28984,7 @@ PG_ADMIN_DASHBOARD = st.Page(page_admin_dashboard, title="Admin dashboard",
 
 _nav = st.navigation(
     [PG_HOME, PG_DEEP_DIVE, PG_COMPARISON, PG_RESEARCH, PG_SCANNER,
-     PG_RESULTS_CALENDAR, PG_PORTFOLIO, PG_TOOLS, PG_METHODOLOGY, PG_ABOUT,
+     PG_RESULTS_CALENDAR, PG_PORTFOLIO, PG_TOOLS, PG_TOP100, PG_METHODOLOGY, PG_ABOUT,
      PG_MODEL_HISTORY, PG_PRIVACY, PG_HOW_AI_IS_USED, PG_BLOG_ADMIN,
      PG_ADMIN_DASHBOARD],
     position="hidden",
