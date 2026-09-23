@@ -235,6 +235,28 @@ def rejection_counts(days=14):
         return zero
 
 
+def snapshots_for_ticker(ticker):
+    """[{"snap_date","bid","ask"}, ...] ascending by date, EVERY
+    snapshot ever recorded for `ticker` - trading_cost_engine.
+    trading_cost_series()'s own `snapshots` input (app.py, Commit 3, is
+    the one caller). Deliberately NOT pre-windowed to any recent range:
+    that function's own "recording_start_date" needs the true earliest
+    date, which a pre-truncated list would get wrong once a ticker has
+    been recorded for longer than the tab's own display window. Never
+    raises - returns [] on any read error."""
+    try:
+        with _conn() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT snap_date, bid, ask FROM quote_snapshots "
+                "WHERE ticker = ? ORDER BY snap_date",
+                (ticker,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
 def latest_snapshot(ticker):
     """{"bid","ask","last_price"} for the most recently stored snapshot
     of `ticker` (any date - not necessarily "yesterday", if a day was
