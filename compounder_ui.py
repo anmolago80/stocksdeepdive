@@ -2011,7 +2011,8 @@ def _plain_tile(label, value_text, caption=None):
     )
 
 
-def _trading_cost_spread_chart(days_rows, recording_start_date, snap_times, ticker, lang="en"):
+def _trading_cost_spread_chart(days_rows, recording_start_date, snap_times, ticker, lang="en",
+                                show_recorded=True):
     """"Spread, % of price" chart, redesigned to read fact vs estimate
     by SHAPE AND TEXTURE, never colour alone - matching 45e2b786-
     recorded_vs_estimated_mock.html's own grammar (the acceptance bar
@@ -2032,7 +2033,14 @@ def _trading_cost_spread_chart(days_rows, recording_start_date, snap_times, tick
     can't carry per-point custom text like this without either a
     hovertemplate+customdata array or, simpler for two independent
     traces sharing the same per-day text, the hovertext list used
-    here)."""
+    here).
+
+    `show_recorded` (Commit 2, per-ticker honesty): False for a ticker
+    outside the daily recording roster - omits the "Recorded" trace/
+    legend entry and the "RECORDING BEGAN" zone entirely (never just
+    an empty trace sitting in the legend for a ticker that will never
+    have a recorded point), since a non-roster ticker's history is
+    always ALL-estimated."""
     _t = lambda key, **fmt: i18n.t(f"compounder.trading_cost.{key}", lang, **fmt)
     tz = _market_tz_for_ticker(ticker)
     dates = [r["date"] for r in days_rows]
@@ -2070,13 +2078,14 @@ def _trading_cost_spread_chart(days_rows, recording_start_date, snap_times, tick
         ),
         hovertext=hover_text, hoverinfo="text",
     ))
-    fig.add_trace(go.Scatter(
-        x=dates, y=recorded, mode="markers", name=_t("legend_recorded"),
-        marker=dict(color=_CP_COLOR_TEXT["green"], size=9, line=dict(color="#0b1220", width=2)),
-        hovertext=hover_text, hoverinfo="text",
-    ))
+    if show_recorded:
+        fig.add_trace(go.Scatter(
+            x=dates, y=recorded, mode="markers", name=_t("legend_recorded"),
+            marker=dict(color=_CP_COLOR_TEXT["green"], size=9, line=dict(color="#0b1220", width=2)),
+            hovertext=hover_text, hoverinfo="text",
+        ))
 
-    if dates and recording_start_date and recording_start_date <= dates[-1]:
+    if show_recorded and dates and recording_start_date and recording_start_date <= dates[-1]:
         zone_x0 = max(recording_start_date, dates[0])
         fig.add_vrect(
             x0=zone_x0, x1=dates[-1],
@@ -2162,9 +2171,28 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
         st.info(_t("no_price_data", ticker=ticker))
         return
 
-    latest = quote_snapshot_store.latest_snapshot(ticker)
     currency_symbol = _currency_symbol_for_ticker(ticker)
     tz = _market_tz_for_ticker(ticker)
+
+    # Per-ticker honesty (Commit 2, Sep 2026): a ticker outside the
+    # daily recording roster will NEVER get a real snapshot, today or
+    # any future day - showing it a "recorded" meter, a "Bid & ask
+    # now" section, or any wording implying recording is pending would
+    # be misleading, not just premature. quote_recorder.is_in_roster()
+    # is the one source of truth for roster membership (today: scanned-
+    # universe membership; Commit 4 widens it to also cover hand-
+    # covered Research/author-position tickers - this check picks that
+    # widening up automatically, no change needed here). Computed
+    # BEFORE reading the latest snapshot below and used to force
+    # `latest`/`now_spread_pct` to their "nothing recorded" values for
+    # a non-roster ticker even if a stray snapshot somehow exists for
+    # it (e.g. it was recorded in the past and later dropped from the
+    # roster) - the cost block below must never cite "the recorded
+    # spread" or a "recorded <datetime>" caption for a ticker this tab
+    # is telling the visitor isn't recorded.
+    _in_roster = quote_recorder.is_in_roster(ticker)
+
+    latest = quote_snapshot_store.latest_snapshot(ticker) if _in_roster else None
 
     latest_dt_local = None
     latest_caption = None
@@ -2187,9 +2215,18 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
     # demoting the estimate to a secondary "for comparison" figure
     # with its own tracking line. Below that count, the estimate stays
     # primary (today's launch-day state, and every ticker's state
-    # until enough real snapshots accumulate). ----
-    _m1, _m2 = st.columns(2)
-    if recorded_leads:
+    # until enough real snapshots accumulate). A non-roster ticker
+    # skips this flip entirely - see _in_roster above - and shows only
+    # the estimate meter, full width, plus one quiet honesty note. ----
+    if not _in_roster:
+        st.markdown(_spread_meter_html(
+            _t("tile_spread_estimated"), series["average_estimated_spread_pct"], lang,
+        ), unsafe_allow_html=True)
+        with st.expander("What this measures", expanded=False):
+            st.caption(_t("tile_spread_estimated_comment"))
+        st.caption(_t("not_in_roster_note"))
+    elif recorded_leads:
+        _m1, _m2 = st.columns(2)
         with _m1:
             st.markdown(_spread_meter_html(
                 _t("meter_recorded_label"),
@@ -2211,6 +2248,7 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
             with st.expander("What this measures", expanded=False):
                 st.caption(_t("tile_spread_estimated_comment"))
     else:
+        _m1, _m2 = st.columns(2)
         with _m1:
             st.markdown(_spread_meter_html(
                 _t("tile_spread_estimated"), series["average_estimated_spread_pct"], lang,
@@ -2338,48 +2376,60 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
             unsafe_allow_html=True,
         )
 
-    # ---- Section 3: "Bid & ask now" (Option A rail + Option C tiles) ----
-    st.markdown(_accent_heading_html(_t("bid_ask_now_title")), unsafe_allow_html=True)
-    if latest and latest.get("bid") is not None and latest.get("ask") is not None:
-        _bid, _ask = latest["bid"], latest["ask"]
-        _last_price = latest.get("last_price")
-        _spread_dollar = _ask - _bid
-        _classification = trading_cost_engine.now_spread_classification(now_spread_pct)
+    # ---- Section 3: "Bid & ask now" (Option A rail + Option C tiles) -
+    # a non-roster ticker never gets a real snapshot at all, so this
+    # whole section is skipped for it (per-ticker honesty, Commit 2) -
+    # not just its content dashed out, the heading too. ----
+    if _in_roster:
+        st.markdown(_accent_heading_html(_t("bid_ask_now_title")), unsafe_allow_html=True)
+        if latest and latest.get("bid") is not None and latest.get("ask") is not None:
+            _bid, _ask = latest["bid"], latest["ask"]
+            _last_price = latest.get("last_price")
+            _spread_dollar = _ask - _bid
+            _classification = trading_cost_engine.now_spread_classification(now_spread_pct)
 
-        _h1, _h2 = st.columns([3, 2])
-        with _h1:
-            st.markdown(f"**{ticker}**")
-        with _h2:
-            st.markdown(_now_chip_html(_classification, now_spread_pct, lang), unsafe_allow_html=True)
+            _h1, _h2 = st.columns([3, 2])
+            with _h1:
+                st.markdown(f"**{ticker}**")
+            with _h2:
+                st.markdown(_now_chip_html(_classification, now_spread_pct, lang), unsafe_allow_html=True)
 
-        st.markdown(
-            _price_rail_html(_bid, _ask, _last_price, currency_symbol, _spread_dollar, lang),
-            unsafe_allow_html=True,
-        )
+            st.markdown(
+                _price_rail_html(_bid, _ask, _last_price, currency_symbol, _spread_dollar, lang),
+                unsafe_allow_html=True,
+            )
 
-        _tl1, _tl2, _tl3, _tl4, _tl5 = st.columns(5)
-        with _tl1:
-            _plain_tile(_t("tile_bid"), _fmt_money(_bid, currency_symbol))
-        with _tl2:
-            _plain_tile(_t("tile_ask"), _fmt_money(_ask, currency_symbol))
-        with _tl3:
-            _plain_tile(_t("tile_mid"), _fmt_money((_bid + _ask) / 2.0, currency_symbol))
-        with _tl4:
-            _plain_tile(_t("tile_spread_dollar"), _fmt_money(_spread_dollar, currency_symbol))
-        with _tl5:
-            _plain_tile(_t("tile_spread_pct"), _fmt_pct1(now_spread_pct))
+            _tl1, _tl2, _tl3, _tl4, _tl5 = st.columns(5)
+            with _tl1:
+                _plain_tile(_t("tile_bid"), _fmt_money(_bid, currency_symbol))
+            with _tl2:
+                _plain_tile(_t("tile_ask"), _fmt_money(_ask, currency_symbol))
+            with _tl3:
+                _plain_tile(_t("tile_mid"), _fmt_money((_bid + _ask) / 2.0, currency_symbol))
+            with _tl4:
+                _plain_tile(_t("tile_spread_dollar"), _fmt_money(_spread_dollar, currency_symbol))
+            with _tl5:
+                _plain_tile(_t("tile_spread_pct"), _fmt_pct1(now_spread_pct))
 
-        _exact_dt = _format_snapshot_datetime(latest_dt_local, lang) if latest_dt_local else ""
-        st.caption(_t("bid_ask_now_snapshot_label", datetime=_exact_dt) + " · " + _t("rail_not_live_note"))
-    else:
-        st.markdown("—")
-        st.caption(_t("bid_ask_now_no_data"))
+            _exact_dt = _format_snapshot_datetime(latest_dt_local, lang) if latest_dt_local else ""
+            st.caption(_t("bid_ask_now_snapshot_label", datetime=_exact_dt) + " · " + _t("rail_not_live_note"))
+        else:
+            st.markdown("—")
+            st.caption(_t("bid_ask_now_no_data"))
 
-    # ---- Section 4: history chart ----
+    # ---- Section 4: history chart - the "Recorded" legend/dots/zone
+    # only ever appear for a roster ticker (show_recorded=_in_roster) -
+    # a non-roster ticker will never have a recorded point to plot, and
+    # the legend entry itself is part of the "hide all recorded-related
+    # UI" instruction (Commit 2), not just the dots it would otherwise
+    # sit empty for. ----
     st.markdown('<div style="margin-top:18px;"></div>', unsafe_allow_html=True)
     snap_times = quote_snapshot_store.snapshot_times_for_ticker(ticker)
     sdd_plotly_chart(
-        _trading_cost_spread_chart(series["days"], series["recording_start_date"], snap_times, ticker, lang=lang),
+        _trading_cost_spread_chart(
+            series["days"], series["recording_start_date"], snap_times, ticker, lang=lang,
+            show_recorded=_in_roster,
+        ),
         text_description=_t("chart_description"),
     )
 

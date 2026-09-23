@@ -3346,6 +3346,10 @@ EN = {
     "compounder.trading_cost.no_price_data": (
         "No price history available for {ticker} right now."
     ),
+    "compounder.trading_cost.not_in_roster_note": (
+        "This stock isn't in the daily bid/ask recording set — figures "
+        "here are model estimates from its daily prices."
+    ),
     # Company description (17 Sep 2026), Deep Dive page only, Option A:
     # a one-liner under the title row (first sentence of the provider's
     # own business summary, truncated ~140 chars) that opens into a full
@@ -6231,6 +6235,11 @@ ES = {
     ),
     "compounder.trading_cost.no_price_data": (
         "No hay historial de precios disponible para {ticker} en este momento."
+    ),
+    "compounder.trading_cost.not_in_roster_note": (
+        "Esta acción no está en el conjunto de registro diario de compra/"
+        "venta — las cifras aquí son estimaciones del modelo a partir de "
+        "sus precios diarios."
     ),
     # Descripción de la empresa (17 Sep 2026) - ES DRAFT, not
     # professionally reviewed (same convention as every other ES batch

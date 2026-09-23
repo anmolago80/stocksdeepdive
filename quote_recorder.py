@@ -167,6 +167,33 @@ def tickers_for_market(market):
     return sorted(tickers)
 
 
+def roster_tickers(market=None):
+    """The ticker set currently eligible for daily quote recording -
+    for now (before Commit 4's tiered roster) this is exactly
+    tickers_for_market()'s own scanned-universe list, unioned across
+    both markets when `market` is omitted. `market`: MARKET_ASX/
+    MARKET_US for one market's own roster, or None (default) for the
+    combined roster the Trading Cost tab's own per-ticker honesty
+    check (compounder_ui.render_trading_cost_tab(), Commit 2) reads.
+    A SET (not the sorted list tickers_for_market() returns) - this
+    function exists for fast membership checks, not display."""
+    if market is not None:
+        return set(tickers_for_market(market))
+    return set(tickers_for_market(MARKET_ASX)) | set(tickers_for_market(MARKET_US))
+
+
+def is_in_roster(ticker):
+    """True if `ticker` is (or will be, from the next run) sampled by
+    the daily quote recorder - see roster_tickers() above. Matched
+    case-insensitively (tickers_for_market()'s own stored casing is
+    whatever the scan itself used - never assumed to already match the
+    caller's own casing). False for an empty/None ticker, never a
+    lookup error."""
+    if not ticker:
+        return False
+    return ticker.strip().upper() in {t.upper() for t in roster_tickers()}
+
+
 def _classify(bid, ask, last_price):
     """(reject_reason_or_None, midpoint_or_None) for one ticker's raw
     .info fields, against the four rejection rules in this module's own
