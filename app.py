@@ -52,6 +52,7 @@ import screen_import_store
 import nightly_scan
 import snapshot_store
 import snapshot_render
+import quote_snapshot_store
 import moat_engine
 import portfolio_store
 import portfolio_health_engine
@@ -28432,6 +28433,53 @@ def page_admin_dashboard():
                 if _ft.get("universe"):
                     _ft_label += f" ({_ft['universe']})"
                 st.markdown(f"- {_ft_label}")
+
+    # --- QUOTE SNAPSHOTS (Trading Cost tab, Commit 1) - read-only view
+    # into quote_snapshot_store.py, the twice-daily (ASX-local/US-local)
+    # mid-session bid/ask recorder wired into scheduler_engine.py. This
+    # is how the owner confirms the recorder is actually working before
+    # anything built on top of it (Commit 2's estimator, Commit 3's tab)
+    # ships - the recorder itself runs regardless of ENABLE_TRADING_COST,
+    # so this panel can show real data well before that switch is on.
+    st.markdown("### Quote snapshots")
+    st.caption(
+        "The Trading Cost tab's daily real-quote recorder (quote_"
+        "recorder.py) - one bid/ask sample per ticker per day, taken "
+        "mid-session (13:00 local, ASX/US separately) so it's never "
+        "Yahoo's after-hours snapshot. Runs regardless of the Trading "
+        "Cost tab's own on/off switch."
+    )
+    with st.container(border=True):
+        try:
+            _qs_rows_per_day = quote_snapshot_store.rows_per_day(days=14)
+        except Exception:
+            _qs_rows_per_day = []
+        st.markdown("**Rows captured per day (last 14 days)**")
+        if not _qs_rows_per_day:
+            st.caption("No snapshots captured yet.")
+        else:
+            st.dataframe(pd.DataFrame(_qs_rows_per_day), width='stretch', hide_index=True)
+
+        try:
+            _qs_rejections = quote_snapshot_store.rejection_counts(days=14)
+        except Exception:
+            _qs_rejections = {}
+        st.markdown("**Rejection counts by reason (last 14 days)**")
+        if not _qs_rejections or not any(_qs_rejections.values()):
+            st.caption("No rejections logged.")
+        else:
+            _qs_rej_rows = [{"reason": k, "count": v} for k, v in _qs_rejections.items()]
+            st.dataframe(pd.DataFrame(_qs_rej_rows), width='stretch', hide_index=True)
+
+        try:
+            _qs_recent = quote_snapshot_store.recent_rows(limit=20)
+        except Exception:
+            _qs_recent = []
+        st.markdown("**20 most recent rows**")
+        if not _qs_recent:
+            st.caption("No snapshots captured yet.")
+        else:
+            st.dataframe(pd.DataFrame(_qs_recent), width='stretch', hide_index=True)
 
     # --- OPERATING-INCOME AUDIT (Commit O, 21 Sep 2026; formula replaced
     # by Commit Q, 21 Sep 2026; widened beyond ASX 200 + S&P 500 to every

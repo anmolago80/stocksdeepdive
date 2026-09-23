@@ -39,6 +39,20 @@ A tiny in-process scheduler for the background jobs this site needs:
                                  bounded retention pruning. Its own hour
                                  (VOLUME_CHECK_UTC_HOUR), its own lock -
                                  see that constant's own docstring.)
+  8. TWICE-DAILY quote sampler -> quote_recorder.run_asx_recorder()/
+                                 run_us_recorder() (Trading Cost tab,
+                                 Commit 1 - one real bid/ask quote per
+                                 ticker per day, sampled while each
+                                 market is genuinely open. The ONE job
+                                 in this file that fires by LOCAL market
+                                 time, not a UTC hour - see quote_
+                                 recorder.is_due_now()'s own docstring
+                                 for why every other job's UTC-hour
+                                 check can't express that. Runs
+                                 regardless of ENABLE_TRADING_COST; its
+                                 own retention prune runs alongside the
+                                 volume monitor above, in _run_volume_
+                                 check().)
 
 WHY IN-PROCESS, NOT A SEPARATE RAILWAY CRON SERVICE: Railway volumes
 attach to exactly ONE service, and the web app needs the volume (for the
@@ -153,6 +167,20 @@ try:
     import newsletter_store
 except Exception:
     newsletter_store = None
+
+# Trading Cost tab, Commit 1: imported at module level (not deferred
+# inside a _run_* function like the other job modules) because _loop()
+# below calls quote_recorder.is_due_now() on EVERY 60s tick, not once a
+# day - that's a pure, cheap function with no network I/O of its own
+# (importing the module itself doesn't touch yfinance's network layer,
+# only `import`s the package), so there's no "don't slow every tick"
+# cost to defer here. Same guarded-import shape as admin_metrics_store/
+# newsletter_store above either way, so a broken quote_recorder.py can
+# never take the whole scheduler down.
+try:
+    import quote_recorder
+except Exception:
+    quote_recorder = None
 
 
 def _data_dir():
@@ -905,6 +933,32 @@ def _run_watchdog(log):
     portfolio_watchdog_engine.run_nightly_watchdog(log=log)
 
 
+def _run_quote_recorder_asx(log):
+    """Trading Cost tab, Commit 1: the ASX-local mid-session quote
+    sampler - see quote_recorder.py's own module docstring for what it
+    records, why (Yahoo's after-hours bid/ask snapshot is junk), and
+    the four rejection rules. Deferred import, same shape as every
+    other _run_* job above. Runs regardless of ENABLE_TRADING_COST -
+    this only writes to quote_snapshot_store's own table, nothing a
+    visitor sees changes.
+
+    Lets the exception propagate (same "let it raise" contract as
+    _run_watchdog/_run_backup above) so the _loop() guard's retry-cap
+    only marks the day done on a genuine success - a bad ticker inside
+    the run is already handled without raising (quote_recorder.py's own
+    per-ticker try/except), so an exception escaping this far means the
+    run as a whole broke, not just one ticker."""
+    import quote_recorder
+    quote_recorder.run_asx_recorder(log=log)
+
+
+def _run_quote_recorder_us(log):
+    """US-local mid-session quote sampler - see _run_quote_recorder_asx
+    above, same contract, same module."""
+    import quote_recorder
+    quote_recorder.run_us_recorder(log=log)
+
+
 def _run_earnings_refresh(log):
     """Services batch, Part 4, WEEKLY job: refresh the earnings calendar
     for every ticker this site has ever scanned or that anyone follows -
@@ -1013,6 +1067,15 @@ def _run_volume_check(log):
             newsletter_store.prune_stale_unconfirmed(log=log)
         except Exception as e:
             log(f"[scheduler] newsletter prune failed: {e}")
+    # Trading Cost tab, Commit 1: same nightly slot, same contract - see
+    # quote_snapshot_store.prune_old()'s own docstring (400-day
+    # retention on both its tables). Deferred import, same "don't slow
+    # every scheduler tick" reasoning as every job above.
+    try:
+        import quote_snapshot_store
+        quote_snapshot_store.prune_old(log=log)
+    except Exception as e:
+        log(f"[scheduler] quote snapshot prune failed: {e}")
 
 
 # 17 Sep 2026 (restart-resilience fix): how long after the scan hour a
@@ -1445,6 +1508,73 @@ def _loop(log):
                                 _release_job_lock("watchdog")
                         else:
                             log("[scheduler] portfolio watchdog skipped - another process "
+                                "already holds the lock")
+
+                # Trading Cost tab, Commit 1: the two mid-session quote-
+                # recorder slots - one per market, each firing in ITS
+                # OWN local time (quote_recorder.is_due_now() converts
+                # `now` to Australia/Sydney or America/New_York
+                # internally; every other job in this file checks a
+                # single UTC hour, which can't express "13:00 in two
+                # different timezones that drift relative to UTC across
+                # DST" - see that function's own docstring). Same one-
+                # calendar-day-per-run guard, same persist-only-on-
+                # success contract, as the watchdog block above -
+                # `today` here is still the UTC calendar day (same
+                # `today` the rest of this loop iteration uses), which
+                # is fine as a once-per-day guard key even though the
+                # due CHECK itself is local-time: the local sampling
+                # window (13:00-16:00) never spans a UTC-midnight
+                # boundary for either market, so one UTC-dated guard per
+                # local calendar day is exact, not approximate.
+                if (quote_recorder is not None
+                        and quote_recorder.is_due_now(quote_recorder.MARKET_ASX, now=now)
+                        and state.get("last_quote_recorder_asx_date") != today):
+                    attempts = state.get("quote_recorder_asx_attempts", {})
+                    n_today = attempts.get(today, 0)
+                    if n_today < _DAILY_JOB_RETRY_CAP:
+                        if _acquire_job_lock("quote_recorder_asx", log):
+                            try:
+                                state = _load_state()
+                                state["quote_recorder_asx_attempts"] = {today: n_today + 1}
+                                _save_state(state)
+                                log(f"[scheduler] starting ASX quote recorder "
+                                    f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
+                                _record_job("quote_recorder_asx", log, _run_quote_recorder_asx)
+                                state = _load_state()
+                                state["last_quote_recorder_asx_date"] = today
+                                _save_state(state)
+                            except Exception as e:
+                                log(f"[scheduler] ASX quote recorder failed: {e}")
+                            finally:
+                                _release_job_lock("quote_recorder_asx")
+                        else:
+                            log("[scheduler] ASX quote recorder skipped - another process "
+                                "already holds the lock")
+
+                if (quote_recorder is not None
+                        and quote_recorder.is_due_now(quote_recorder.MARKET_US, now=now)
+                        and state.get("last_quote_recorder_us_date") != today):
+                    attempts = state.get("quote_recorder_us_attempts", {})
+                    n_today = attempts.get(today, 0)
+                    if n_today < _DAILY_JOB_RETRY_CAP:
+                        if _acquire_job_lock("quote_recorder_us", log):
+                            try:
+                                state = _load_state()
+                                state["quote_recorder_us_attempts"] = {today: n_today + 1}
+                                _save_state(state)
+                                log(f"[scheduler] starting US quote recorder "
+                                    f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
+                                _record_job("quote_recorder_us", log, _run_quote_recorder_us)
+                                state = _load_state()
+                                state["last_quote_recorder_us_date"] = today
+                                _save_state(state)
+                            except Exception as e:
+                                log(f"[scheduler] US quote recorder failed: {e}")
+                            finally:
+                                _release_job_lock("quote_recorder_us")
+                        else:
+                            log("[scheduler] US quote recorder skipped - another process "
                                 "already holds the lock")
 
                 # Mega-batch Part 10: nightly off-site DB backup - same
