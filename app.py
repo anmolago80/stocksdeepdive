@@ -3485,13 +3485,16 @@ def _render_app_nav_items(lang, current=None, key_prefix="nav", layout="row"):
         # below) - remove by flipping that one constant, no markup to
         # touch here.
         ("tools", i18n.t("nav.tools", lang), PG_TOOLS),
-        # Top 100 (Commit 2 of the Top 100 task): open/ungated for now -
-        # visible in this same primary row to everyone. Commit 3 adds the
-        # TOP100_PUBLIC gate; until that lands this item (and the page
-        # itself) is reachable by anyone who finds the URL, same interim
-        # state PG_TOP100 already sits in inside st.navigation([...]).
-        ("top100", i18n.t("nav.top100", lang), PG_TOP100),
     ]
+    # Top 100 Commit 3: the nav item's own visibility must match
+    # page_top100()'s gate exactly - TOP100_PUBLIC true shows it to
+    # everyone, otherwise only to the owner (ai_gate.is_owner()) so a
+    # non-owner never sees a tab that 404s/errors for them. Appended
+    # after _primary_items is built (rather than folded into the
+    # literal list above) so it lands last, same "between Portfolio
+    # and Blog" position "tools" itself documents just above.
+    if top100_render.TOP100_PUBLIC or ai_gate.is_owner(paywall_engine.current_user_email()):
+        _primary_items.append(("top100", i18n.t("nav.top100", lang), PG_TOP100))
     # 3rd Amendment to Part 5: order is Results Calendar, Track record,
     # Methodology, About (the amendment's own verbatim order - was
     # Calendar/Methodology/About with Track record tacked on separately).
@@ -22735,17 +22738,31 @@ def _content_page_shell(title, current=None, show_search=True):
 
 
 def page_top100():
-    """Top 100 tab, Commit 2: the quality-shortlist page. Rendering
+    """Top 100 tab, Commit 3: the quality-shortlist page. Rendering
     itself lives in top100_render.py (same "*_render.py/*_ui.py owns
-    markup, app.py owns the page function" split compounder_ui.py's
-    own Trading Cost tab already established) - this function is only
-    the page shell + view-count bump + language selection. Commit 3
-    adds the owner-only-unless-TOP100_PUBLIC gate here (mirroring
-    page_admin_dashboard()'s own independent, page-function-level
-    check) - this commit ships the page itself, reachable by anyone,
-    exactly like every other content page until that gate lands."""
+    markup, app.py owns the page function/owner gate" split compounder_
+    ui.py's own Trading Cost tab already established) - this function
+    is the page shell + view-count bump + language selection + the
+    TOP100_PUBLIC rollout gate.
+
+    Gate mirrors page_admin_dashboard()'s own independent, page-
+    function-level ai_gate.is_owner() check (never only whether a nav
+    button is shown - see PG_ADMIN_DASHBOARD's own comment, and
+    _render_app_nav_items()'s matching top100 visibility check) so a
+    direct URL/state-manipulation attempt still hits this exact check.
+    top100_render.TOP100_PUBLIC false/unset (the default, per the
+    task's own instruction) means owner-only, until the owner has
+    reviewed several nights of real scores and flips TOP100_PUBLIC to
+    true to open the page to everyone."""
     _content_page_shell("\U0001F3C6 Top 100", current="top100")
     _bump_page_view("top100")
+
+    if not top100_render.TOP100_PUBLIC:
+        _owner_ok = ai_gate.is_owner(paywall_engine.current_user_email())
+        if not _owner_ok:
+            st.error("This page isn't available.")
+            return
+
     top100_render.render_top100_page(lang=st.session_state.get("lang", "en"))
 
 
@@ -28957,11 +28974,11 @@ PG_PORTFOLIO = st.Page(page_portfolio, title="My Portfolio", url_path="portfolio
 # Mega-batch Part 18: the 🧰 Tools hub - its own primary-row nav tab,
 # between Portfolio and Blog (owner's "seventh-tab" choice).
 PG_TOOLS = st.Page(page_tools, title="Money Tools", url_path="tools")
-# Top 100 tab, Commit 2: registered like every other content page -
-# reachable by URL like PG_ADMIN_DASHBOARD below, whose own comment
-# explains why an access check has to live inside the page function
-# itself rather than only in whether a nav button to it is shown.
-# Commit 3 adds that check to page_top100() itself.
+# Top 100 tab: registered like every other content page - reachable by
+# URL like PG_ADMIN_DASHBOARD below, whose own comment explains why an
+# access check has to live inside the page function itself rather than
+# only in whether a nav button to it is shown. page_top100() carries
+# that check (Commit 3): owner-only unless TOP100_PUBLIC is set.
 PG_TOP100 = st.Page(page_top100, title="Top 100", url_path="top-100")
 PG_METHODOLOGY = st.Page(page_methodology, title="How the scores work", url_path="methodology")
 PG_ABOUT = st.Page(page_about, title="About", url_path="about")

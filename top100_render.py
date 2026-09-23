@@ -11,6 +11,7 @@ that module) and top100_engine.py for the pure composite/changes math.
 
 import datetime as _dt
 import html
+import os
 
 import streamlit as st
 
@@ -20,6 +21,24 @@ import quote_snapshot_store
 import top100_engine
 import top100_store
 import trading_cost_engine
+
+
+def _truthy(v):
+    return (v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# Commit 3 rollout flag - same {"1","true","yes","on"} truthy convention
+# and same "module-level flag on the feature's own *_render.py/*_ui.py
+# module" placement as compounder_ui.TRADING_COST_ENABLED, but the
+# SEMANTICS are inverted from that precedent: TRADING_COST_ENABLED
+# unset/false means the tab doesn't exist at all for anyone, whereas
+# TOP100_PUBLIC unset/false means the page exists but is owner-only
+# (page_top100() in app.py checks ai_gate.is_owner() when this is
+# False - same independent, page-function-level check page_admin_
+# dashboard() itself uses) so the owner can review several nights of
+# real scores before flipping this to true and opening the page to
+# everyone. Default false is deliberate per the task's own instruction.
+TOP100_PUBLIC = _truthy(os.environ.get("TOP100_PUBLIC"))
 
 # Tradability chip threshold (task's own words: "any name whose latest
 # recorded spread exceeds 1%") - a DIFFERENT number from trading_cost_
