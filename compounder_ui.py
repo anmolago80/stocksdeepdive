@@ -1680,6 +1680,122 @@ def _now_chip_html(classification, spread_pct, lang):
     )
 
 
+def _spread_meter_thresholds(lang):
+    """band-strip thresholds for the header meters' gauge, on this
+    tab's own "now" percentage scale - trading_cost_engine.
+    now_spread_classification()'s tight(<=0.5)/noticeable(<=2.0)/
+    wide(>2.0), the SAME scale the rail/chip above already uses, so a
+    meter and the rail can never disagree about the same number's
+    classification. The upper bound of "noticeable" is nudged by a
+    tiny epsilon for the same reason _spread_band_thresholds() (this
+    tab's earlier, now-removed helper) nudged its own moderate band:
+    _cp_band() is right-EXCLUSIVE (value < hi) but now_spread_
+    classification() is right-INCLUSIVE at 2.0 (<=2.0 is "noticeable",
+    not "wide") - without the nudge the two would silently disagree at
+    exactly 2.0%."""
+    tight_hi = trading_cost_engine.NOW_TIGHT_THRESHOLD_PCT
+    wide_lo = trading_cost_engine.NOW_WIDE_THRESHOLD_PCT
+    return [
+        (None, tight_hi, "green", i18n.t("compounder.trading_cost.meter_band_tight", lang)),
+        (tight_hi, wide_lo + 1e-9, "amber", i18n.t("compounder.trading_cost.meter_band_noticeable", lang)),
+        (wide_lo, None, "red", i18n.t("compounder.trading_cost.meter_band_wide", lang)),
+    ]
+
+
+def _spread_meter_html(label, value_pct, lang, caption=None):
+    """A header meter: the green->amber->red gauge strip + position
+    marker (band_gauge()'s own visual language above, restored here
+    after an earlier redesign pass accidentally dropped it - task
+    feedback, Sep 2026: "the deployed tab renders almost entirely
+    white-on-dark and lost the old gauge strips"), plus the
+    classification word written next to the value, coloured to match -
+    "coloured AND written", never colour alone, the task's own
+    instruction. Not band_gauge() itself (that function is shared with
+    every OTHER compounder section and must keep its own generic
+    fraction-unit/comment-expander contract) - a small dedicated
+    twin instead, on this tab's own percentage unit and with one extra
+    state band_gauge() has no notion of: a None value (the recorded
+    meter before ANY snapshot exists) draws a flat GREY strip with no
+    marker and no word, since a coloured band for a reading that
+    doesn't exist yet would be actively misleading, not just unhelpful."""
+    value_text = _fmt_pct1(value_pct)
+    if value_pct is None:
+        strip_html = "<div style='position:absolute;left:0;right:0;top:0;bottom:0;background:#26334a;'></div>"
+        verdict_html = "<span></span>"
+    else:
+        thresholds = _spread_meter_thresholds(lang)
+        axis_min, axis_max = 0.0, max(trading_cost_engine.NOW_WIDE_THRESHOLD_PCT * 1.5, value_pct * 1.15)
+
+        def _pos(v):
+            return max(0.0, min(100.0, (v - axis_min) / (axis_max - axis_min) * 100.0))
+
+        segments = []
+        for lo, hi, color, _lbl in thresholds:
+            seg_lo = _pos(lo if lo is not None else axis_min)
+            seg_hi = _pos(hi if hi is not None else axis_max)
+            if seg_hi <= seg_lo:
+                continue
+            segments.append(
+                f"<div style='position:absolute;left:{seg_lo:.2f}%;width:{seg_hi - seg_lo:.2f}%;"
+                f"top:0;bottom:0;background:{_CP_COLOR_FILL.get(color, '#26334a')};'></div>"
+            )
+        marker_pct = max(2.0, min(98.0, _pos(value_pct)))
+        strip_html = "".join(segments) + (
+            f"<div style='position:absolute;left:{marker_pct:.2f}%;top:-1px;bottom:-1px;"
+            "width:3px;margin-left:-1.5px;background:#ffffff;'></div>"
+        )
+        band = _cp_band(value_pct, thresholds)
+        band_color, band_label = band if band else (None, None)
+        verdict_html = (
+            f"<span style='font-size:12px;font-weight:600;color:{_CP_COLOR_TEXT.get(band_color, '#aebfd4')};'>"
+            f"{html.escape(band_label)}</span>" if band_label else "<span></span>"
+        )
+
+    return (
+        "<div style='margin-bottom:2px;'>"
+        f"<div style='font-size:13px;font-weight:600;color:#aebfd4;'>{html.escape(str(label))}</div>"
+        "<div style='position:relative;height:10px;border-radius:5px;overflow:hidden;"
+        f"background:#1a2740;margin:6px 0 5px;'>{strip_html}</div>"
+        "<div style='display:flex;justify-content:space-between;align-items:baseline;'>"
+        "<span style='font-family:ui-monospace,Menlo,SFMono-Regular,monospace;"
+        f"font-size:14px;font-weight:700;color:#e6edf5;'>{html.escape(value_text)}</span>"
+        f"{verdict_html}</div>"
+        + (f"<div style='font-size:11px;color:#8aa0b8;margin-top:3px;'>{html.escape(str(caption))}</div>"
+           if caption else "")
+        + "</div>"
+    )
+
+
+def _brokerage_multiple_color(multiple):
+    """Colour for the cost card's own brokerage-comparison ratio -
+    "colour only the brokerage-comparison line by meaning (green below
+    ~1x typical brokerage, amber ~1-2x, red above 2x)", the task's own
+    instruction. A separate, small 2-boundary scale from the spread%
+    classifications above - this one bands a MULTIPLE, not a percent,
+    and has no None/"empty" state (crossing_cost() only ever produces
+    real rows for a real spread, never a None multiple)."""
+    if multiple < 1.0:
+        return _CP_COLOR_TEXT["green"]
+    if multiple <= 2.0:
+        return _CP_COLOR_TEXT["amber"]
+    return _CP_COLOR_TEXT["red"]
+
+
+def _accent_heading_html(text):
+    """A section heading with this tab's own teal accent colour -
+    "section headings match the accent treatment other tabs use", the
+    task's own instruction (colour-restoration commit, Sep 2026).
+    Reuses _CP_COLOR_TEXT["blue"] (#5ed3f0, visually teal - see that
+    dict's own comment) rather than a fresh literal, the same accent
+    the cost block's own tip box below now carries too, so the two
+    read as one deliberate colour family instead of two unrelated
+    "teal"s."""
+    return (
+        f"<div style='font-size:16px;font-weight:700;margin:18px 0 6px;"
+        f"color:{_CP_COLOR_TEXT['blue']};'>{html.escape(str(text))}</div>"
+    )
+
+
 def _price_rail_html(bid, ask, last_price, currency_symbol, spread_dollar, lang):
     """Option A: bid and ask as two points on a horizontal price line,
     the gap between them hatched (the "dead ground" a crossing order
@@ -2075,26 +2191,30 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
     _m1, _m2 = st.columns(2)
     if recorded_leads:
         with _m1:
-            _plain_tile(
+            st.markdown(_spread_meter_html(
                 _t("meter_recorded_label"),
-                _fmt_pct1(series["average_recorded_spread_pct"]),
+                series["average_recorded_spread_pct"],
+                lang,
                 caption=_t("meter_recorded_caption", datetime=_format_snapshot_datetime(latest_dt_local, lang))
                 if latest_dt_local else None,
-            )
+            ), unsafe_allow_html=True)
             with st.expander("What this measures", expanded=False):
                 st.caption(_t("meter_recorded_comment"))
         with _m2:
             _offset = _fmt_signed_pt(series["tracking_offset_pct"])
-            _plain_tile(
+            st.markdown(_spread_meter_html(
                 _t("meter_estimate_secondary_label"),
-                _fmt_pct1(series["average_estimated_spread_pct"]),
+                series["average_estimated_spread_pct"],
+                lang,
                 caption=_t("meter_tracking_line", offset=f"{_offset}pt") if _offset else None,
-            )
+            ), unsafe_allow_html=True)
             with st.expander("What this measures", expanded=False):
                 st.caption(_t("tile_spread_estimated_comment"))
     else:
         with _m1:
-            _plain_tile(_t("tile_spread_estimated"), _fmt_pct1(series["average_estimated_spread_pct"]))
+            st.markdown(_spread_meter_html(
+                _t("tile_spread_estimated"), series["average_estimated_spread_pct"], lang,
+            ), unsafe_allow_html=True)
             with st.expander("What this measures", expanded=False):
                 st.caption(_t("tile_spread_estimated_comment"))
         with _m2:
@@ -2106,11 +2226,12 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
                 )
             else:
                 _progress_caption = _t("bid_ask_now_no_data")
-            _plain_tile(
+            st.markdown(_spread_meter_html(
                 _t("meter_recorded_label"),
-                _fmt_pct1(series["average_recorded_spread_pct"]),
+                series["average_recorded_spread_pct"],
+                lang,
                 caption=_progress_caption,
-            )
+            ), unsafe_allow_html=True)
             with st.expander("What this measures", expanded=False):
                 st.caption(_t("meter_recorded_comment"))
 
@@ -2120,8 +2241,17 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
     # question is a "right now" question), else the 30-day estimate -
     # the same `now_spread_pct` also drives section 3's rail/chip
     # below, so both sections always agree on which spread is "now". ----
-    st.markdown(f"#### {_t('cost_heading')}")
     _cost_spread = now_spread_pct if now_spread_pct is not None else series["average_estimated_spread_pct"]
+    _cost_classification = trading_cost_engine.now_spread_classification(_cost_spread)
+    _heading_col1, _heading_col2 = st.columns([3, 2])
+    with _heading_col1:
+        st.markdown(_accent_heading_html(_t("cost_heading")), unsafe_allow_html=True)
+    with _heading_col2:
+        if _cost_classification is not None:
+            st.markdown(
+                f"<div style='margin-top:20px;'>{_now_chip_html(_cost_classification, _cost_spread, lang)}</div>",
+                unsafe_allow_html=True,
+            )
     if _cost_spread is None:
         st.info(_t("cost_no_data", ticker=ticker))
     else:
@@ -2156,11 +2286,26 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
             with _col:
                 _order_label = _fmt_money(_row["order_size"], currency_symbol, decimals=0)
                 _each_way_label = _fmt_money(_row["cost_each_way"], currency_symbol, decimals=0)
+                # "colour only the brokerage-comparison line by meaning
+                # ...; dollar values stay in standard bright ink" - only
+                # the multiple itself carries a meaning colour (via a
+                # pre-built HTML span passed through i18n as one
+                # placeholder), the round-trip/brokerage dollar figures
+                # around it keep the line's own base ink colour. Not
+                # html.escape()'d below - this one label deliberately
+                # carries real, fully-trusted HTML (every piece is a
+                # number this function itself formatted, never external
+                # text), same reasoning the cost headline fix above
+                # documents for the KaTeX trap.
+                _multiple = _row["round_trip_vs_brokerage_multiple"]
+                _multiple_span = (
+                    f"<span style='color:{_brokerage_multiple_color(_multiple)};'>≈{_multiple:.1f}×</span>"
+                )
                 _detail_label = _t(
                     "cost_card_detail",
-                    round_trip=_fmt_money(_row["round_trip"], currency_symbol, decimals=0),
-                    multiple=f"{_row['round_trip_vs_brokerage_multiple']:.1f}",
-                    brokerage=_fmt_money(_row["brokerage_flat"], currency_symbol, decimals=0),
+                    round_trip=html.escape(_fmt_money(_row["round_trip"], currency_symbol, decimals=0)),
+                    multiple_span=_multiple_span,
+                    brokerage=html.escape(_fmt_money(_row["brokerage_flat"], currency_symbol, decimals=0)),
                 )
                 st.markdown(
                     "<div style='background:#0b1526;border:1px solid #1a2b4a;border-radius:10px;padding:11px 14px;'>"
@@ -2168,25 +2313,33 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
                     f"{html.escape(_t('cost_card_title', order=_order_label))}</div>"
                     "<div style='font-size:17px;font-weight:800;margin:3px 0 1px;color:#e6edf5;'>"
                     f"{html.escape(_t('cost_card_each_way', amount=_each_way_label))}</div>"
-                    f"<div style='font-size:11px;color:#5b7290;line-height:1.5;'>{html.escape(_detail_label)}</div>"
+                    f"<div style='font-size:11px;color:#c7d2e0;line-height:1.5;'>{_detail_label}</div>"
                     "</div>",
                     unsafe_allow_html=True,
                 )
 
+        # Teal-accented tip box (this tab's own accent, see
+        # _accent_heading_html() above) with the "assumes filling at
+        # bid/ask..." caption ATTACHED directly beneath it in the SAME
+        # markdown call, rather than a separate st.caption() (Streamlit's
+        # own block spacing made that read as a stray, floating line -
+        # task feedback, Sep 2026) - one visually attached unit instead.
         _cost_source = _t("cost_source_recorded") if now_spread_pct is not None else _t("cost_source_estimated", days=30)
-        st.markdown(
-            "<div style='border:1px dashed #1f3352;border-radius:10px;padding:9px 13px;font-size:12px;"
-            "color:#c7d2e0;margin-top:11px;line-height:1.55;'>"
-            f"{html.escape(_t('cost_tip', mid=_fmt_money(_mid_price, currency_symbol), source=_cost_source))}</div>",
-            unsafe_allow_html=True,
-        )
-        st.caption(
+        _cost_caption_text = (
             (f"{latest_caption} · " if now_spread_pct is not None and latest_caption else "")
             + _t("cost_caption_suffix")
         )
+        st.markdown(
+            "<div style='border:1px dashed rgba(94,211,240,0.45);background:rgba(94,211,240,0.05);"
+            "border-radius:10px;padding:9px 13px;font-size:12px;color:#c7d2e0;margin-top:11px;line-height:1.55;'>"
+            f"{html.escape(_t('cost_tip', mid=_fmt_money(_mid_price, currency_symbol), source=_cost_source))}"
+            f"<div style='font-size:11px;color:#5b7290;margin-top:8px;'>{html.escape(_cost_caption_text)}</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
 
     # ---- Section 3: "Bid & ask now" (Option A rail + Option C tiles) ----
-    st.markdown(f"#### {_t('bid_ask_now_title')}")
+    st.markdown(_accent_heading_html(_t("bid_ask_now_title")), unsafe_allow_html=True)
     if latest and latest.get("bid") is not None and latest.get("ask") is not None:
         _bid, _ask = latest["bid"], latest["ask"]
         _last_price = latest.get("last_price")

@@ -3250,6 +3250,9 @@ EN = {
     "compounder.trading_cost.meter_estimate_secondary_label": "model estimate · for comparison",
     "compounder.trading_cost.meter_tracking_line": "tracking {offset} vs measured",
     "compounder.trading_cost.meter_recorded_progress": "{count} of {min_count} recorded sessions so far",
+    "compounder.trading_cost.meter_band_tight": "Tight",
+    "compounder.trading_cost.meter_band_noticeable": "Noticeable",
+    "compounder.trading_cost.meter_band_wide": "Wide",
     "compounder.trading_cost.tile_spread_estimated": "Spread estimated (30d)",
     "compounder.trading_cost.tile_spread_estimated_comment": (
         "Average of the last 30 days' Corwin & Schultz (2012) high-low "
@@ -3270,13 +3273,13 @@ EN = {
     "compounder.trading_cost.cost_card_title": "{order} order",
     "compounder.trading_cost.cost_card_each_way": "{amount} each way",
     "compounder.trading_cost.cost_card_detail": (
-        "round trip {round_trip} · ≈{multiple}× typical brokerage ({brokerage})"
+        "round trip {round_trip} · {multiple_span} typical brokerage ({brokerage})"
     ),
     "compounder.trading_cost.cost_source_recorded": "the recorded spread",
     "compounder.trading_cost.cost_source_estimated": "the estimated spread ({days}-day average)",
     "compounder.trading_cost.cost_tip": (
-        "A limit order at the mid ({mid}) — instead of hitting the "
-        "ask — would roughly halve this cost if it fills. On thin "
+        "\U0001F4A1 A limit order at the mid ({mid}) — instead of hitting "
+        "the ask — would roughly halve this cost if it fills. On thin "
         "stocks patience is a fee discount. Described calculations "
         "from {source}, not a recommendation."
     ),
@@ -6127,6 +6130,9 @@ ES = {
     "compounder.trading_cost.meter_estimate_secondary_label": "estimación del modelo · para comparar",
     "compounder.trading_cost.meter_tracking_line": "diferencia de {offset} vs. lo medido",
     "compounder.trading_cost.meter_recorded_progress": "{count} de {min_count} sesiones registradas hasta ahora",
+    "compounder.trading_cost.meter_band_tight": "Ajustado",
+    "compounder.trading_cost.meter_band_noticeable": "Notable",
+    "compounder.trading_cost.meter_band_wide": "Amplio",
     "compounder.trading_cost.tile_spread_estimated": "Spread estimado (30d)",
     "compounder.trading_cost.tile_spread_estimated_comment": (
         "Promedio de la estimación Corwin & Schultz (2012) del spread "
@@ -6148,13 +6154,13 @@ ES = {
     "compounder.trading_cost.cost_card_title": "orden de {order}",
     "compounder.trading_cost.cost_card_each_way": "{amount} por lado",
     "compounder.trading_cost.cost_card_detail": (
-        "ida y vuelta {round_trip} · ≈{multiple}× la comisión típica ({brokerage})"
+        "ida y vuelta {round_trip} · {multiple_span} la comisión típica ({brokerage})"
     ),
     "compounder.trading_cost.cost_source_recorded": "el spread registrado",
     "compounder.trading_cost.cost_source_estimated": "el spread estimado (promedio de {days} días)",
     "compounder.trading_cost.cost_tip": (
-        "Una orden límite al precio medio ({mid}) — en lugar de tomar "
-        "el precio de venta — reduciría aproximadamente a la mitad "
+        "\U0001F4A1 Una orden límite al precio medio ({mid}) — en lugar de "
+        "tomar el precio de venta — reduciría aproximadamente a la mitad "
         "este costo si se ejecuta. En acciones poco líquidas, la "
         "paciencia es un descuento en comisiones. Cálculos descritos a "
         "partir de {source}, no una recomendación."
