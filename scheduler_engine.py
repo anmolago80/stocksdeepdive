@@ -1370,6 +1370,33 @@ def heartbeat_age_seconds():
     return time.time() - _last_heartbeat
 
 
+# URGENT Commit 3 (24 Sep 2026, owner-reported): per-job hard timeout
+# ceiling, keyed by job_name (see _record_job()'s own comment) - the
+# fix for the earnings-calendar refresh hanging on a network call with
+# no timeout at all and wedging this single scheduler thread for ~3h,
+# blocking every other job behind it (scan, digest, watchdog, backup,
+# top100) until a redeploy freed it. Generous enough that no legitimate
+# run should ever hit it - "nightly" in particular can genuinely run
+# over an hour on a big universe, now with retry backoff on top (see
+# nightly_scan.py's own crumb-retry fix) - but bounded, so a genuinely
+# wedged call can never again block indefinitely. "earnings_refresh"
+# is deliberately tight: EARNINGS_WEEKLY_CAP already caps it to a small
+# per-run batch, so a run anywhere near this ceiling IS the hang, not
+# normal variance.
+_JOB_HARD_TIMEOUT_SECONDS = {
+    "nightly": 4 * 3600,
+    "watchdog": 10 * 60,
+    "quote_recorder_asx": 15 * 60,
+    "quote_recorder_us": 15 * 60,
+    "backup": 30 * 60,
+    "volume_check": 5 * 60,
+    "top100": 10 * 60,
+    "earnings_refresh": 15 * 60,
+    "digest": 15 * 60,
+}
+_JOB_HARD_TIMEOUT_DEFAULT_SECONDS = 15 * 60
+
+
 def _record_job(job_name, log, run_fn):
     """Times run_fn(wrapped_log) and records the result to
     admin_metrics_store's job_status table for the Admin Dashboard's
@@ -1403,7 +1430,26 @@ def _record_job(job_name, log, run_fn):
     through this same wrapped log function, so this fires on every
     line a running job logs - at least as often as nightly_scan.py's
     25-ticker progress lines, usually far more often (every per-ticker
-    error too) - with no new plumbing into nightly_scan.py itself."""
+    error too) - with no new plumbing into nightly_scan.py itself.
+
+    URGENT Commit 3 (24 Sep 2026, owner-reported): run_fn now executes
+    on a SEPARATE worker thread, and THIS thread (the scheduler's own
+    single processing thread) joins it with a hard per-job-type ceiling
+    (_JOB_HARD_TIMEOUT_SECONDS) instead of calling run_fn directly -
+    exactly the fix for the earnings-calendar refresh hanging on a
+    network call with no timeout of its own and wedging this thread for
+    ~3h, blocking every other job behind it until a redeploy freed it.
+    On a timeout: logs loudly, records result "timeout" (a new bucket
+    alongside ok/warn/error) to admin_metrics_store, and raises
+    TimeoutError - same "log then re-raise, let the existing job-lock
+    finally and outer loop error handling see it" contract every other
+    failure already gets below, so nothing downstream needs to know
+    timeouts are a new case. The worker thread itself is left running,
+    as a daemon - Python has no safe way to force-kill a thread stuck in
+    a blocking C-level network call - but it can never again hold up
+    THIS thread past the ceiling, which is the actual guarantee this
+    exists to make; a daemon thread is killed outright when the process
+    exits, so nothing lingers past a redeploy either."""
     fail_count = [0]
 
     def _tracking_log(msg):
@@ -1412,15 +1458,37 @@ def _record_job(job_name, log, run_fn):
         _refresh_job_lock_heartbeat(job_name)
         log(msg)
 
+    timeout_seconds = _JOB_HARD_TIMEOUT_SECONDS.get(job_name, _JOB_HARD_TIMEOUT_DEFAULT_SECONDS)
+    run_exc = [None]
+
+    def _target():
+        try:
+            run_fn(_tracking_log)
+        except BaseException as e:
+            run_exc[0] = e
+
     t0 = time.time()
     result, detail = "ok", ""
     try:
-        run_fn(_tracking_log)
+        worker = threading.Thread(target=_target, name=f"scheduler-job-{job_name}", daemon=True)
+        worker.start()
+        worker.join(timeout_seconds)
+        if worker.is_alive():
+            elapsed = time.time() - t0
+            result = "timeout"
+            detail = f"exceeded {timeout_seconds}s hard timeout - abandoned, still running in background"
+            log(f"[scheduler] {job_name}: TIMED OUT after {elapsed:.0f}s (hard limit "
+                f"{timeout_seconds}s) - logging and moving on, not waiting any further; "
+                f"the stuck call is abandoned, never force-killed")
+            raise TimeoutError(f"{job_name} exceeded its {timeout_seconds}s hard timeout")
+        if run_exc[0] is not None:
+            raise run_exc[0]
         if fail_count[0]:
             result = "warn"
             detail = f"{fail_count[0]} step(s) logged a failure - see server logs"
     except Exception as e:
-        result, detail = "error", str(e)[:200]
+        if result != "timeout":  # don't clobber the more specific bucket set above
+            result, detail = "error", str(e)[:200]
         raise
     finally:
         if admin_metrics_store is not None:

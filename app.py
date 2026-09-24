@@ -28393,7 +28393,7 @@ def page_admin_dashboard():
         if _jobs:
             _job_rows = []
             for _j in _jobs:
-                _icon = {"ok": "✓ ok", "warn": "⚠ warn", "error": "✗ error"}.get(
+                _icon = {"ok": "✓ ok", "warn": "⚠ warn", "error": "✗ error", "timeout": "⏱ timeout"}.get(
                     _j["result"], _j["result"])
                 _job_rows.append({
                     "Job": _ADMIN_JOB_LABELS.get(_j["job"], _j["job"]),

@@ -485,10 +485,12 @@ def signins_by_account(limit=50):
 
 
 def record_job_result(job, result, detail="", duration_seconds=None):
-    """result: 'ok' | 'warn' | 'error'. Called from scheduler_engine.py
-    right after each nightly/weekly job finishes (see that module's
-    _record_job wrapper). Callers wrap this in try/except - a metrics
-    write must never take a real job down."""
+    """result: 'ok' | 'warn' | 'error' | 'timeout' (URGENT Commit 3, 24
+    Sep 2026 - a job that exceeded its hard per-job-type ceiling, see
+    scheduler_engine._JOB_HARD_TIMEOUT_SECONDS). Called from scheduler_
+    engine.py right after each nightly/weekly job finishes (see that
+    module's _record_job wrapper). Callers wrap this in try/except - a
+    metrics write must never take a real job down."""
     with _conn() as conn:
         conn.execute(
             """INSERT INTO job_status (job, last_run_at, result, detail, duration_seconds)
