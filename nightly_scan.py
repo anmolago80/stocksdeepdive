@@ -816,10 +816,38 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
                     )
                 except Exception as e:
                     log(f"[nightly_scan] integrity alert send failed for {universe}: {e}")
-            _integrity_prior_rows = len((scan_store.load_scan(universe) or {}).get("rows") or [])
-            log(f"[nightly_scan] {universe}: integrity guard FAILED - {_integrity_reason} - "
-                f"NOT saving this scan; keeping last known good ({_integrity_prior_rows} row(s)).")
-            return None
+            # URGENT (24 Sep 2026, owner-reported): this guard's own
+            # failure mode used to be worse than the bug it exists to
+            # catch - it always skipped the save on a failure,
+            # regardless of whether there was anything SERVABLE already
+            # on disk to fall back to. The night this fired for real, a
+            # boot cleanup had just deleted the prior ASX 300/All
+            # Ordinaries/ASX 50/ASX Small Ordinaries scans (see
+            # cleanup_universe_integrity_pollution()'s own comment,
+            # below, for why that invalidate() call is gone too), then
+            # every rescan came back 0/N valid rows (yfinance crumb
+            # 429s) - a floor breach this guard correctly detects - so
+            # it kept refusing to save the replacement all night, with
+            # NOTHING left to fall back to: the site served a blank
+            # page for hours. scan_store.load_scan(universe) applies
+            # the exact same "servable" test load_scan() itself defines
+            # (no file, or aged past its 72h freshness cutoff, both
+            # return None) - mirrors the completeness guard immediately
+            # above (see its own "no prior scan exists yet - saving
+            # anyway, flagged degraded" branch): a wrong-shaped universe
+            # still beats an empty one.
+            _integrity_prior_scan = scan_store.load_scan(universe)
+            _integrity_prior_rows = len((_integrity_prior_scan or {}).get("rows") or [])
+            if _integrity_prior_scan is None:
+                log(f"[nightly_scan] {universe}: integrity guard FAILED - {_integrity_reason} - "
+                    f"but nothing servable is on disk (no prior scan, or it's past the 72h "
+                    f"freshness cutoff) - saving this scan anyway, flagged degraded, rather "
+                    f"than leaving the page blank.")
+                degraded = True
+            else:
+                log(f"[nightly_scan] {universe}: integrity guard FAILED - {_integrity_reason} - "
+                    f"NOT saving this scan; keeping last known good ({_integrity_prior_rows} row(s)).")
+                return None
 
     payload = scan_store.save_scan(universe, rows, source, attention_lite=attention_lite,
                                     degraded=degraded, run_night=run_night)
@@ -1634,15 +1662,34 @@ def cleanup_universe_integrity_pollution(log=print):
     Small Ordinaries) against scanner_engine.verify_universe_before_
     save() - the SAME check run_universe_scan()/scheduler_engine.
     _build_derived_universes() now run before EVERY future save,
-    applied here retroactively to whatever's already on disk. A scan
-    that fails is invalidated (deleted) via scan_store.invalidate(), so
-    the scheduler's own "missing file = needs rescan" logic picks it up
-    fresh on its next tick and the site shows "no data yet" instead of
-    a wrong-shaped index in the meantime.
+    applied here retroactively to whatever's already on disk.
+
+    URGENT (24 Sep 2026, owner-reported): a scan that fails this check
+    is now FLAGGED, never deleted. It used to be invalidated (deleted)
+    via scan_store.invalidate(), on the theory that the scheduler's own
+    "missing file = needs rescan" logic would pick it up fresh on its
+    next tick - but a one-off boot cleanup has no way to know whether
+    that next rescan will actually succeed, and the night this fired
+    for real it didn't (yfinance crumb 429s produced 0 valid rows for
+    hours), so this deleted the only copy of real, servable data and
+    replaced it with nothing at all - the site went from "a wrong-
+    shaped list" to "a blank page" for several universes, which is
+    strictly worse. A one-off cleanup must never destroy the only copy
+    of data it cannot itself regenerate. The wrong-shaped scan now
+    stays on disk exactly as it was, flagged instead: logged per
+    universe below, AND recorded to source_health_store under this
+    same "Universe integrity: X" source every other check against this
+    universe already reports through (scanner_engine.
+    UNIVERSE_INTEGRITY_HEALTH_SOURCES) - so it shows up in the Admin
+    Dashboard's Source health panel exactly like a failure found during
+    a real scan would, without needing its own separate display logic.
+    verify_universe_before_save() itself still gates every FUTURE save
+    (the guard above, in run_universe_scan()/_build_derived_universes())
+    - this cleanup only audits what's already there.
 
     Owner-requested (matching Commit L's own cleanup): logs one line
     PER universe, every run - rows checked and the outcome (kept /
-    no saved scan / INVALIDATED with the reason) - not just a trailing
+    no saved scan / FLAGGED with the reason) - not just a trailing
     one-line summary.
 
     Guarded by a marker file, same convention as every other one-off
@@ -1655,9 +1702,10 @@ def cleanup_universe_integrity_pollution(log=print):
     if os.path.exists(marker):
         return
     checked = []
-    invalidated = []
+    flagged = []
     for universe in scanner_engine.UNIVERSE_INTEGRITY_TRACKED_UNIVERSES:
         checked.append(universe)
+        _integrity_source = f"Universe integrity: {universe}"
         try:
             payload = scan_store.load_scan_raw(universe)
             if not payload or not payload.get("rows"):
@@ -1667,19 +1715,23 @@ def cleanup_universe_integrity_pollution(log=print):
             tickers = [r.get("Ticker") for r in rows if r.get("Ticker")]
             ok, reason = scanner_engine.verify_universe_before_save(universe, tickers, log=log)
             if not ok:
-                was_invalidated = scan_store.invalidate(universe)
-                if was_invalidated:
-                    invalidated.append(f"{universe} ({reason})")
+                flagged.append(f"{universe} ({reason})")
+                source_health_store.record_failure(
+                    _integrity_source, {"containment": {"ok": False, "detail": reason}}, reason,
+                )
                 log(f"[nightly_scan] commit1 cleanup: {universe}: checked {len(rows)} row(s) - "
-                    f"{reason} - "
-                    f"{'INVALIDATED' if was_invalidated else 'failed check but nothing on disk to invalidate'}")
+                    f"{reason} - FLAGGED (kept on disk, still servable - see Admin Dashboard "
+                    f"Source health)")
             else:
+                source_health_store.record_success(
+                    _integrity_source, [], {"containment": {"ok": True, "detail": reason}},
+                )
                 log(f"[nightly_scan] commit1 cleanup: {universe}: checked {len(rows)} row(s) - "
                     f"{reason} - kept")
         except Exception as e:
             log(f"[nightly_scan] commit1 cleanup: {universe} check failed: {e}")
     log(f"[nightly_scan] commit1 cleanup: checked {len(checked)} universe(s), "
-        f"invalidated: {', '.join(invalidated) if invalidated else 'none'}")
+        f"flagged: {', '.join(flagged) if flagged else 'none'}")
     try:
         with open(marker, "w") as f:
             f.write(f"commit1 universe-integrity cleanup ran {datetime.now(timezone.utc).isoformat()}\n")
