@@ -29252,6 +29252,175 @@ def page_admin_dashboard():
         elif "admin_dash_tangible_roic_rows" in st.session_state:
             st.caption("No tickers with cached fundamentals were found for the selected universe(s).")
 
+    # --- SLIDING-SCALE SCORING DRY-RUN (Commit 5, 24 Sep 2026, owner-
+    # reported): same pure dry-run contract as the three panels above -
+    # reads through moat_engine.compute_moat_dry_run(force_sliding=...),
+    # never touches the live MOAT_SLIDING env var or the 24h moat_cache.
+    # This is the "distribution of Moat scores before/after, 30 biggest
+    # movers in each direction, flag any ticker moving 30+ points" report
+    # this commit's own task asks for - the single most compute-heavy
+    # preview of the five (it recomputes a per-year cost of capital for
+    # every ticker, see _year_cost_of_capital_series()'s own comment), so
+    # it's the most worth running against a smaller universe first.
+    st.markdown("### Sliding-scale scoring - dry-run (MOAT_SLIDING preview)")
+    st.caption(
+        "Replaces Excess-return spread's 0/10/20/30 steps with a "
+        "straight line (0 at spread -2%, 30 at spread +15%) and "
+        "Persistence's flat 12% ROIC cliff with a per-year fractional "
+        "score (0% at that year's own cost of capital minus 2 points, "
+        "100% at +6 points, linear between - falls back to the flat 12% "
+        "cliff for a year with no cost-of-capital reference on file, "
+        "flagged). When MOAT_TANGIBLE_ROIC is also on, a year still gets "
+        "full persistence credit if ROTC clears its own flat 20% test - "
+        "that test is unsoftened; only the ROIC leg slides. Only Spread "
+        "and Persistence are affected; Pricing power and Reinvestment "
+        "are unchanged by this switch."
+    )
+    with st.container(border=True):
+        _sl_candidate_universes = (
+            list(scanner_engine.AUSTRALIA_UNIVERSES) + list(scanner_engine.USA_UNIVERSES)
+            + [nightly_scan.IMPORTED_UNIVERSE]
+        )
+        _sl_saved_universes = sorted(
+            _u for _u in _sl_candidate_universes
+            if os.path.exists(scan_store._path(_u))
+        )
+        _sl_universe_choice = st.selectbox(
+            "Universe", ["All saved universes"] + _sl_saved_universes,
+            key="admin_dash_sliding_universe",
+        )
+        if st.button("Run sliding-scale dry run", key="admin_dash_sliding_btn"):
+            _sl_target_universes = (
+                _sl_saved_universes if _sl_universe_choice == "All saved universes"
+                else [_sl_universe_choice]
+            )
+            _sl_ticker_universes, _sl_universe_tickers = {}, {}
+            for _uni in _sl_target_universes:
+                try:
+                    _scan_payload = scan_store.load_scan_raw(_uni)
+                except Exception:
+                    _scan_payload = None
+                _tix = [r.get("Ticker") for r in (_scan_payload or {}).get("rows", []) if r.get("Ticker")]
+                _sl_universe_tickers[_uni] = _tix
+                for _tk in _tix:
+                    _sl_ticker_universes.setdefault(_tk, set()).add(_uni)
+
+            _sl_unique_tickers = sorted(_sl_ticker_universes.keys())
+            _sl_total = len(_sl_unique_tickers)
+            _sl_progress_bar = st.progress(0.0)
+            _sl_progress_caption = st.empty()
+
+            def _sl_pillar(_result, _name):
+                for _c in (_result or {}).get("components") or []:
+                    if _c.get("pillar") == _name:
+                        return _c.get("points")
+                return None
+
+            def _sl_band(_score):
+                if _score is None:
+                    return "N/A"
+                _b = min(int(_score // 10) * 10, 90)
+                return f"{_b}-{_b + 9}"
+
+            _sl_rows = []
+            _sl_skipped_no_cache = []
+            _CHUNK = 25
+            for _i, _tk in enumerate(_sl_unique_tickers):
+                _bundle = fundamentals_data.peek_cached_bundle(_tk)
+                if _bundle is None:
+                    _sl_skipped_no_cache.append(_tk)
+                else:
+                    _old = moat_engine.compute_moat_dry_run(_tk, force_switch=None, bundle=_bundle, force_sliding=False)
+                    _new = moat_engine.compute_moat_dry_run(_tk, force_switch=None, bundle=_bundle, force_sliding=True)
+                    if _old and _new:
+                        _moat_old, _moat_new = _old.get("score"), _new.get("score")
+                        _sl_rows.append({
+                            "ticker": _tk,
+                            "country": "AU" if _tk.upper().endswith(".AX") else "US",
+                            "universe": ", ".join(sorted(_sl_ticker_universes[_tk])),
+                            "moat_old": _moat_old,
+                            "moat_new": _moat_new,
+                            "moat_delta": (
+                                round(_moat_new - _moat_old, 1)
+                                if (_moat_old is not None and _moat_new is not None) else None
+                            ),
+                            "band_old": _sl_band(_moat_old),
+                            "band_new": _sl_band(_moat_new),
+                            "spread_old": _sl_pillar(_old, "Excess-return spread"),
+                            "spread_new": _sl_pillar(_new, "Excess-return spread"),
+                            "persistence_old": _sl_pillar(_old, "Persistence"),
+                            "persistence_new": _sl_pillar(_new, "Persistence"),
+                            "pricing_power_old": _sl_pillar(_old, "Pricing power"),
+                            "pricing_power_new": _sl_pillar(_new, "Pricing power"),
+                            "reinvestment_old": _sl_pillar(_old, "Reinvestment"),
+                            "reinvestment_new": _sl_pillar(_new, "Reinvestment"),
+                        })
+                if (_i + 1) % _CHUNK == 0 or (_i + 1) == _sl_total:
+                    _sl_progress_bar.progress((_i + 1) / _sl_total if _sl_total else 1.0)
+                    _sl_progress_caption.caption(f"Processed {_i + 1}/{_sl_total} ticker(s) - {_tk}")
+
+            _sl_progress_bar.empty()
+            _sl_progress_caption.empty()
+
+            st.session_state["admin_dash_sliding_rows"] = _sl_rows
+            st.session_state["admin_dash_sliding_skipped"] = _sl_skipped_no_cache
+
+        _sl_rows = st.session_state.get("admin_dash_sliding_rows")
+        _sl_skipped_no_cache = st.session_state.get("admin_dash_sliding_skipped") or []
+
+        if _sl_skipped_no_cache:
+            with st.expander(f"{len(_sl_skipped_no_cache)} ticker(s) skipped - no cached fundamentals on file"):
+                st.dataframe(pd.DataFrame({"ticker": _sl_skipped_no_cache}), hide_index=True, width='stretch')
+
+        if _sl_rows:
+            _sl_df = pd.DataFrame(_sl_rows)
+            st.markdown(f"**{len(_sl_df)} ticker(s) audited** (deduped across universes)")
+
+            _sl_scored = _sl_df.dropna(subset=["moat_old"])
+            _sl_band_order = [f"{b}-{b + 9}" for b in range(0, 100, 10)] + ["N/A"]
+            _sl_before_counts = _sl_df["band_old"].value_counts().reindex(_sl_band_order, fill_value=0)
+            _sl_after_counts = _sl_df["band_new"].value_counts().reindex(_sl_band_order, fill_value=0)
+            st.markdown("**Moat score distribution, before vs after (10-point bands):**")
+            st.dataframe(
+                pd.DataFrame({"band": _sl_band_order, "before": _sl_before_counts.values, "after": _sl_after_counts.values}),
+                hide_index=True, width='stretch',
+            )
+
+            _sl_movable = _sl_df.dropna(subset=["moat_delta"]).copy()
+            if not _sl_movable.empty:
+                st.markdown("**30 biggest gainers:**")
+                st.dataframe(
+                    _sl_movable.sort_values("moat_delta", ascending=False).head(30),
+                    hide_index=True, width='stretch',
+                )
+                st.markdown("**30 biggest decliners:**")
+                st.dataframe(
+                    _sl_movable.sort_values("moat_delta", ascending=True).head(30),
+                    hide_index=True, width='stretch',
+                )
+
+                _sl_large = _sl_movable[_sl_movable["moat_delta"].abs() > 30]
+                if not _sl_large.empty:
+                    st.markdown(f"**{len(_sl_large)} ticker(s) moved more than 30 points (per-pillar breakdown):**")
+                    st.dataframe(
+                        _sl_large.sort_values("moat_delta", key=lambda s: s.abs(), ascending=False),
+                        hide_index=True, width='stretch',
+                    )
+                else:
+                    st.caption("No ticker moved more than 30 points either way.")
+            else:
+                st.caption("No ticker had both an old and a new Moat score to compare.")
+
+            st.download_button(
+                "Download full sliding-scale dry-run as CSV",
+                _sl_df.to_csv(index=False).encode("utf-8"),
+                file_name="stocksdeepdive_sliding_dryrun.csv",
+                mime="text/csv",
+                key="admin_dash_download_sliding_full",
+            )
+        elif "admin_dash_sliding_rows" in st.session_state:
+            st.caption("No tickers with cached fundamentals were found for the selected universe(s).")
+
     # --- SYSTEM --------------------------------------------------------
     st.markdown("---")
     st.markdown("### System")

@@ -13,7 +13,10 @@ snapshot; Moat owns the multi-year trend behind it.
 
 Four pillars, 0-100 total:
   1. Excess-return spread (30 pts) - TTM ROIC (ROE for financials) minus
-     the cost of capital.
+     the cost of capital. Steps 0/10/20/30 by default; behind MOAT_
+     SLIDING (env var, unset = off - see moat_engine.MOAT_SLIDING),
+     a straight line instead - see _spread_points_sliding()'s own
+     comment.
   2. Persistence (25 pts) - fraction of available fiscal years the
      business cleared a 12% return threshold. Capped at 20/25 while
      fewer than 8 years of statement history are on file. Behind
@@ -21,7 +24,9 @@ Four pillars, 0-100 total:
      MOAT_TANGIBLE_ROIC), a year also counts if it clears 20% return on
      TANGIBLE capital (ROIC/ROE's own invested-capital base, net of
      goodwill and acquired intangibles) even if it misses the 12% ROIC
-     bar - see _pillar_persistence()'s own comment.
+     bar. Behind MOAT_SLIDING, each year scores fractionally against its
+     own cost of capital instead of an all-or-nothing 12% cliff - see
+     _pillar_persistence()'s own comment for both.
   3. Pricing power (25 pts) - the gross-margin trend (falls back to
      operating margin, flagged, when no Gross Profit row exists):
      held/expanded, stability, growth-without-discounting. Behind
@@ -100,7 +105,12 @@ import fundamentals_data
 # persistence()'s own comment. Output (score/components - the only
 # things compute_moat() actually caches) is unchanged while the switch
 # is unset; the bump exists for the same reason as 1->2 above.
-MOAT_ENGINE_VERSION = 4
+# 4->5 (Commit 5, 2026-09-24): spread and persistence gain sliding-
+# scale scoring behind MOAT_SLIDING (env var, unset = off), replacing
+# their step-function cliffs - see _spread_points_sliding()/_pillar_
+# persistence()'s own comments. Output is unchanged while the switch is
+# unset; the bump exists for the same reason as 1->2 above.
+MOAT_ENGINE_VERSION = 5
 
 _CACHE_DIR_NAME = "moat_cache"
 _CACHE_TTL_SECONDS = 24 * 3600
@@ -158,6 +168,18 @@ _PRICING_LEVEL_BANDS_OPERATING = ((0.25, 10), (0.12, 6), (0.05, 3))  # median op
 # identical scoring to today until set).
 MOAT_TANGIBLE_ROIC = os.environ.get("MOAT_TANGIBLE_ROIC") == "1"
 TANGIBLE_ROIC_THRESHOLD = 0.20
+
+# Commit 5 (24 Sep 2026): replace persistence's and spread's step-
+# function cliffs with sliding scales - a year at 11.9% ROIC currently
+# scores zero on persistence while 12.1% scores in full, and a spread
+# one basis point below zero scores 0/30. Near-misses read as outright
+# failures. OFF by default (byte-identical scoring to today until set) -
+# see _spread_points_sliding()/_pillar_persistence()'s own comments.
+MOAT_SLIDING = os.environ.get("MOAT_SLIDING") == "1"
+_SLIDING_SPREAD_LO = -0.02   # spread <= this -> 0/30
+_SLIDING_SPREAD_HI = 0.15    # spread >= this -> 30/30, linear between
+_SLIDING_PERSISTENCE_LO_OFFSET = 0.02  # ROIC <= coc - this -> 0% credit for the year
+_SLIDING_PERSISTENCE_HI_OFFSET = 0.06  # ROIC >= coc + this -> 100% credit, linear between
 
 
 # -----------------------------------
@@ -434,6 +456,75 @@ def _ttm_wacc(bundle, basics):
     return wacc, flagged
 
 
+def _year_cost_of_capital_series(bundle, basics, is_financials, years_desc):
+    """[(coc_value_or_None, used_ttm_fallback), ...] in years_desc order -
+    Commit 5's "use that year's own cost of capital where available, else
+    the TTM figure, and flag which" input to the sliding-scale
+    persistence pillar. Only computed when MOAT_SLIDING is in play (see
+    _compute_moat_from_bundle()/compute_moat_diagnostics()) - this calls
+    capm_engine.resolve_discount_rate like _ttm_wacc() does, so it's
+    real work, skipped entirely while the switch is off.
+
+    Financials mode: cost of capital is a CAPM cost-of-equity estimate
+    (capm_engine.resolve_discount_rate, sourced from `info`'s CURRENT
+    beta/market data) - there's no historical per-year variant this
+    codebase can derive (no historical beta series on file), so every
+    year falls back to the same TTM figure, flagged.
+
+    Standard mode: reproduces _ttm_wacc()'s exact formula, but with that
+    YEAR's own total_debt/long_term_debt (balance sheet) and that YEAR's
+    own net_non_operating_interest driving the cost-of-debt leg - the
+    SAME per-year interest row auto_compounder_engine.ebit_year_rows()
+    already reads for the EBIT reconciliation, never a second,
+    differently-sourced interest figure. Cost of equity and the equity/
+    debt WEIGHTING still use today's market cap/CAPM estimate - there's
+    no historical market cap or beta series in this codebase either - so
+    this varies the debt leg per year, not a full historical WACC.
+    Flagged as a TTM fallback only when that year's own debt or interest
+    figure isn't on file at all (the debt-leg estimate can't be formed),
+    not merely because the equity leg is necessarily today's."""
+    info, mcap, ccy = basics["info"], basics["market_cap"], basics["currency"]
+    balance, income = bundle["balance"], bundle["income"]
+
+    if is_financials:
+        ce_result = _ace._safe(capm_engine.resolve_discount_rate, info, ccy)
+        ttm_coc, _ce_meta = ce_result if ce_result else (None, {})
+        return [(ttm_coc, True) for _ in years_desc]
+
+    ttm_coc, _ttm_flagged = _ttm_wacc(bundle, basics)
+    if ttm_coc is None:
+        return [(None, True) for _ in years_desc]
+
+    debt_s = dict(_ace._series(balance, "total_debt"))
+    ltd_s = dict(_ace._series(balance, "long_term_debt"))
+    interest_s = dict(_ace._series(income, "net_non_operating_interest"))
+    pretax_s = dict(_ace._series(income, "pretax_income"))
+    tax_s = dict(_ace._series(income, "tax_provision"))
+
+    ce_result = _ace._safe(capm_engine.resolve_discount_rate, info, ccy)
+    cost_of_equity, _ce_meta = ce_result if ce_result else (None, {})
+
+    out = []
+    for y in years_desc:
+        total_debt, long_term_debt = debt_s.get(y), ltd_s.get(y)
+        ltd = long_term_debt if long_term_debt is not None else total_debt
+        interest_expense = interest_s.get(y)
+        if ltd is None or interest_expense is None or cost_of_equity is None or mcap is None:
+            out.append((ttm_coc, True))
+            continue
+        if not ltd:
+            out.append((cost_of_equity, False))
+            continue
+        pretax_income, tax_provision = pretax_s.get(y), tax_s.get(y)
+        tax_rate = (tax_provision / pretax_income) if (tax_provision is not None and pretax_income) else TAX_RATE_DEFAULT
+        weight_e = mcap / (mcap + ltd)
+        weight_d = ltd / (mcap + ltd)
+        cost_of_debt = (abs(interest_expense) / ltd) * (1 - tax_rate)
+        wacc_y = weight_e * cost_of_equity + weight_d * cost_of_debt
+        out.append((wacc_y, False))
+    return out
+
+
 def _spread_points(spread):
     if spread <= 0:
         return 0
@@ -444,7 +535,20 @@ def _spread_points(spread):
     return 30
 
 
-def _pillar_spread(bundle, basics, is_financials, roic_list, flags):
+def _spread_points_sliding(spread):
+    """Commit 5 (24 Sep 2026), MOAT_SLIDING ON only: replaces the
+    0/10/20/30 steps with a straight line - 0 at spread = -2%, 30 at
+    spread = +15%, clamped at both ends. A spread one basis point below
+    zero used to score 0/30, identically to a spread of -10%; this
+    reads a near-miss as a near-miss, not an outright failure."""
+    if spread <= _SLIDING_SPREAD_LO:
+        return 0.0
+    if spread >= _SLIDING_SPREAD_HI:
+        return 30.0
+    return (spread - _SLIDING_SPREAD_LO) / (_SLIDING_SPREAD_HI - _SLIDING_SPREAD_LO) * 30.0
+
+
+def _pillar_spread(bundle, basics, is_financials, roic_list, flags, force_sliding=None):
     """Commit 4 (23 Sep 2026): deliberately keeps using ROIC (roic_list)
     alone here, switch or not - MOAT_TANGIBLE_ROIC never reaches this
     pillar. Paying for an acquisition is a REAL cost of capital that
@@ -456,7 +560,13 @@ def _pillar_spread(bundle, basics, is_financials, roic_list, flags):
     business COULD sustain a strong return on the capital actually
     deployed in the operations, even though the acquisition premium
     hasn't been earned back yet) - excess-return spread makes no such
-    allowance."""
+    allowance.
+
+    `force_sliding`: Commit 5 (24 Sep 2026) - same never-touch-the-live-
+    env-var contract as the other force_* params, for MOAT_SLIDING. None
+    (default) reads the live switch; only compute_moat_dry_run() ever
+    passes non-None."""
+    sliding_on = MOAT_SLIDING if force_sliding is None else force_sliding
     if not roic_list or roic_list[0] is None:
         flags.append("excess-return spread: TTM return could not be computed - pillar dropped")
         return None
@@ -481,14 +591,14 @@ def _pillar_spread(bundle, basics, is_financials, roic_list, flags):
     spread = ttm_return - cost_of_capital
     metric_name = "ROE" if is_financials else "ROIC"
     flags.append(f"excess-return spread: TTM {metric_name} {ttm_return:.1%} minus cost of capital {cost_of_capital:.1%} = {spread:+.1%}")
-    return _spread_points(spread)
+    return _spread_points_sliding(spread) if sliding_on else _spread_points(spread)
 
 
 # -----------------------------------
 # Pillar 2 - Persistence (25 pts)
 # -----------------------------------
 
-def _pillar_persistence(roic_list, is_financials, flags, rotc_list=None, force_tangible_roic=None):
+def _pillar_persistence(roic_list, is_financials, flags, rotc_list=None, force_tangible_roic=None, coc_series=None, force_sliding=None):
     """`rotc_list`: same length/order as roic_list (None entries where
     ROTC isn't computable - see _year_return_series()'s own comment);
     None (default) treated as "no ROTC data" - unaffected either way
@@ -506,8 +616,25 @@ def _pillar_persistence(roic_list, is_financials, flags, rotc_list=None, force_t
     premium alone is dragging below the ROIC bar can still show the
     operating business is a strong, persistent compounder on the capital
     actually deployed in it. Switch OFF reproduces today's ROIC-only
-    test exactly - no rotc_list read, no flags shape change."""
+    test exactly - no rotc_list read, no flags shape change.
+
+    `coc_series`/`force_sliding`: Commit 5 (24 Sep 2026) - `coc_series`
+    is _year_cost_of_capital_series()'s own output (same order as
+    roic_list); `force_sliding` is the same never-touch-the-live-env-var
+    contract as force_tangible_roic, for MOAT_SLIDING. Switch ON: each
+    year scores FRACTIONALLY - 0% at ROIC = that year's cost of capital
+    minus 2 points, 100% at +6 points, linear between, clamped; no cost-
+    of-capital reference on file for a year falls back to the flat 12%
+    cliff for JUST that year (flagged), never silently dropped. Averaged
+    across usable years, scaled to 25. Combines with MOAT_TANGIBLE_ROIC
+    (when also on) by taking the BETTER of a year's sliding-ROIC
+    fraction and full credit if ROTC clears its own flat 20% bar -
+    Commit 5 never specified a slide for ROTC's threshold, so that test
+    stays exactly as Commit 4 shipped it, only the ROIC leg gets
+    softened. Switch OFF reproduces the exact Commit-4-or-earlier step
+    functions - no coc_series read, no flags shape change."""
     tangible_switch_on = MOAT_TANGIBLE_ROIC if force_tangible_roic is None else force_tangible_roic
+    sliding_on = MOAT_SLIDING if force_sliding is None else force_sliding
     usable_idx = [i for i, v in enumerate(roic_list) if v is not None]
     n = len(usable_idx)
     if n == 0:
@@ -516,7 +643,37 @@ def _pillar_persistence(roic_list, is_financials, flags, rotc_list=None, force_t
 
     metric_name = "ROE" if is_financials else "ROIC"
 
-    if tangible_switch_on and rotc_list:
+    if sliding_on:
+        total_fraction = 0.0
+        for i in usable_idx:
+            roic_v = roic_list[i]
+            coc_v, coc_is_ttm = coc_series[i] if (coc_series and i < len(coc_series)) else (None, True)
+            if coc_v is None:
+                year_fraction = 1.0 if roic_v > PERSISTENCE_ROIC_THRESHOLD else 0.0
+                coc_desc = f"no cost-of-capital reference on file - flat {PERSISTENCE_ROIC_THRESHOLD:.0%} {metric_name} threshold used instead"
+            else:
+                lo, hi = coc_v - _SLIDING_PERSISTENCE_LO_OFFSET, coc_v + _SLIDING_PERSISTENCE_HI_OFFSET
+                if roic_v <= lo:
+                    year_fraction = 0.0
+                elif roic_v >= hi:
+                    year_fraction = 1.0
+                else:
+                    year_fraction = (roic_v - lo) / (hi - lo)
+                coc_label = "TTM" if coc_is_ttm else "this year's own"
+                coc_desc = f"{coc_label} cost of capital {coc_v:.1%}"
+            if tangible_switch_on and rotc_list:
+                rotc_v = rotc_list[i] if i < len(rotc_list) else None
+                if rotc_v is not None and rotc_v > TANGIBLE_ROIC_THRESHOLD and year_fraction < 1.0:
+                    year_fraction = 1.0
+                    coc_desc += f" - overridden to full credit, ROTC {rotc_v:.1%} clears the flat 20% test"
+            total_fraction += year_fraction
+            flags.append(
+                f"persistence: year {i + 1} of {n} scores {year_fraction:.0%} - {metric_name} "
+                f"{roic_v:.1%} vs {coc_desc}"
+            )
+        points = (total_fraction / n) * 25
+        flags.append(f"persistence: sliding-scale average {total_fraction:.2f}/{n} year(s) -> {points:.1f}/25")
+    elif tangible_switch_on and rotc_list:
         hits = 0
         for i in usable_idx:
             roic_v = roic_list[i]
@@ -535,11 +692,12 @@ def _pillar_persistence(roic_list, is_financials, flags, rotc_list=None, force_t
             f"persistence: {hits}/{n} year(s) cleared {metric_name} > 12% or ROTC > 20% "
             f"({n} year(s) of statement data available)"
         )
+        points = (hits / n) * 25
     else:
         hits = sum(1 for v in [roic_list[i] for i in usable_idx] if v > PERSISTENCE_ROIC_THRESHOLD)
         flags.append(f"persistence: {hits}/{n} year(s) with {metric_name} > 12% ({n} year(s) of statement data available)")
+        points = (hits / n) * 25
 
-    points = (hits / n) * 25
     if n < MIN_YEARS_FOR_FULL_PERSISTENCE:
         points = min(points, PERSISTENCE_CAP_BELOW_MIN_YEARS)
         flags.append(
@@ -838,7 +996,7 @@ def _na_result(flags=None):
     return {"score": None, "components": [], "erosion": "none", "flags": flags or [], "years": 0, "mode": "na"}
 
 
-def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None, force_pricing_level=None, pricing_detail=None, force_tangible_roic=None):
+def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None, force_pricing_level=None, pricing_detail=None, force_tangible_roic=None, force_sliding=None):
     """`force_switch`: None on every real call path (compute_moat()
     never passes it - see that function). True/False only from
     compute_moat_dry_run(), the Admin Dashboard audit's own entry point -
@@ -852,7 +1010,9 @@ def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None, force_pri
     _pillar_pricing_power()'s own `detail` parameter - see that
     function's docstring.
     `force_tangible_roic`: same contract, for MOAT_TANGIBLE_ROIC - see
-    _pillar_persistence()'s own comment."""
+    _pillar_persistence()'s own comment.
+    `force_sliding`: same contract, for MOAT_SLIDING - see
+    _pillar_spread()/_pillar_persistence()'s own comments."""
     flags = []
 
     if _is_fund(info):
@@ -879,11 +1039,19 @@ def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None, force_pri
 
     components = []
 
-    spread_pts = _pillar_spread(bundle, basics, is_financials, roic_list, flags)
+    spread_pts = _pillar_spread(bundle, basics, is_financials, roic_list, flags, force_sliding=force_sliding)
     if spread_pts is not None:
         components.append({"pillar": "Excess-return spread", "points": round(spread_pts, 1), "max": 30})
 
-    persistence_pts = _pillar_persistence(roic_list, is_financials, flags, rotc_list=rotc_list, force_tangible_roic=force_tangible_roic)
+    # coc_series is real work (calls capm_engine.resolve_discount_rate) -
+    # only built when sliding is actually in play for this call, per
+    # _year_cost_of_capital_series()'s own comment.
+    _sliding_for_coc = MOAT_SLIDING if force_sliding is None else force_sliding
+    coc_series = _year_cost_of_capital_series(bundle, basics, is_financials, years_desc) if _sliding_for_coc else None
+    persistence_pts = _pillar_persistence(
+        roic_list, is_financials, flags, rotc_list=rotc_list, force_tangible_roic=force_tangible_roic,
+        coc_series=coc_series, force_sliding=force_sliding,
+    )
     if persistence_pts is not None:
         components.append({"pillar": "Persistence", "points": round(persistence_pts, 1), "max": 25})
 
@@ -981,7 +1149,7 @@ def compute_moat(ticker, force_refresh=False):
     return result
 
 
-def compute_moat_dry_run(ticker, force_switch, bundle=None, force_pricing_level=None, pricing_detail=None, force_tangible_roic=None):
+def compute_moat_dry_run(ticker, force_switch, bundle=None, force_pricing_level=None, pricing_detail=None, force_tangible_roic=None, force_sliding=None):
     """`force_pricing_level`/`pricing_detail`: Commit 3 (23 Sep 2026) -
     same never-touch-the-live-env-var/never-touch-moat_cache contract as
     `force_switch`, for MOAT_PRICING_LEVEL; `pricing_detail`, when given
@@ -995,6 +1163,10 @@ def compute_moat_dry_run(ticker, force_switch, bundle=None, force_pricing_level=
     ROTC itself (the returned dict's "ttm_rotc") is computed unconditionally
     regardless of this parameter - only whether persistence USES it is
     switch-gated.
+
+    `force_sliding`: Commit 5 (24 Sep 2026) - same contract, for
+    MOAT_SLIDING (see _pillar_spread()/_pillar_persistence()'s own
+    comments).
 
     Commit O (21 Sep 2026, owner-verified EBIT-from-pretax fix): the
     Admin Dashboard's "Operating-income audit" reads through here, NEVER
@@ -1039,7 +1211,7 @@ def compute_moat_dry_run(ticker, force_switch, bundle=None, force_pricing_level=
     result = _compute_moat_from_bundle(
         ticker, bundle, info, force_switch=force_switch,
         force_pricing_level=force_pricing_level, pricing_detail=pricing_detail,
-        force_tangible_roic=force_tangible_roic,
+        force_tangible_roic=force_tangible_roic, force_sliding=force_sliding,
     )
     result["ticker"] = ticker
     result["is_financials"] = _is_financials(info)
@@ -1139,15 +1311,21 @@ def compute_moat_diagnostics(ticker):
         return None
     components = []
 
+    # Reads the LIVE MOAT_SLIDING switch, same reasoning as the
+    # MOAT_TANGIBLE_ROIC comment right below - only built when the
+    # switch is actually on, since it's real work (see _year_cost_of_
+    # capital_series()'s own comment).
+    coc_series = _year_cost_of_capital_series(bundle, basics, is_financials, years_desc) if MOAT_SLIDING else None
+
     spread_pts = _pillar_spread(bundle, basics, is_financials, roic_list, flags)
     if spread_pts is not None:
         components.append({"pillar": "Excess-return spread", "points": round(spread_pts, 1), "max": 30})
 
-    # Reads the LIVE MOAT_TANGIBLE_ROIC switch (force_tangible_roic=None)
-    # - this diagnostics view never forces a switch, same as every other
-    # figure it shows; the Admin Dashboard dry-run tool is the one that
-    # previews "as if ON/OFF".
-    persistence_pts = _pillar_persistence(roic_list, is_financials, flags, rotc_list=rotc_list)
+    # Reads the LIVE MOAT_TANGIBLE_ROIC/MOAT_SLIDING switches (force_
+    # tangible_roic/force_sliding=None) - this diagnostics view never
+    # forces a switch, same as every other figure it shows; the Admin
+    # Dashboard dry-run tool is the one that previews "as if ON/OFF".
+    persistence_pts = _pillar_persistence(roic_list, is_financials, flags, rotc_list=rotc_list, coc_series=coc_series)
     if persistence_pts is not None:
         components.append({"pillar": "Persistence", "points": round(persistence_pts, 1), "max": 25})
 
