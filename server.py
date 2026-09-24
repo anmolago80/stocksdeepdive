@@ -80,6 +80,7 @@ import push_send
 import push_store
 import scheduler_engine
 import site_content
+import top100_engine
 
 # AI-readiness roadmap Phase 1 (AI_ROADMAP_stocksdeepdive.md): the public
 # snapshot pages + read-only JSON API. See api_v1.py / snapshot_render.py.
@@ -296,6 +297,14 @@ async def lifespan(app: FastAPI):
     # own docstring.
     with suppress(Exception):
         nightly_scan.check_moat_sliding_switch_flip()
+    # URGENT Commit 1 (24 Sep 2026, owner-reported): one-off, marker-
+    # guarded diagnostic retrieving tonight's 100%-errored Top 100 batch
+    # (msgbatch_01XA46gE4evNBqLnZdy2EACR) directly and logging its real
+    # errors verbatim - see top100_engine.diagnose_batch_01xa_once()'s
+    # own docstring. Same "never allowed to stop the site serving" rule
+    # as every other one-off cleanup above.
+    with suppress(Exception):
+        top100_engine.diagnose_batch_01xa_once()
     _client = httpx.AsyncClient(
         base_url=UPSTREAM, timeout=httpx.Timeout(None, connect=10.0),
         follow_redirects=False, limits=httpx.Limits(max_connections=200),

@@ -60,11 +60,18 @@ wrote):
 """
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 
 import scan_store
 import top100_store
+
+# Commit 1 (24 Sep 2026, owner-reported): first 5 errored batch results
+# per ingest run get their real Anthropic error logged verbatim (type +
+# message, never the request content); the rest are counted by error
+# type in one summary line - see poll_and_ingest_batch()'s own comment.
+_ERRORED_DETAIL_LIMIT = 5
 
 # -----------------------------------------------------------------
 # Universe selection.
@@ -492,10 +499,30 @@ def poll_and_ingest_batch(log=print):
     custom_id_map = state["custom_id_map"]
     saved, failed = 0, 0
     total_input_tokens, total_output_tokens = 0, 0
+    errored_count = 0
+    errored_rest_type_counts = {}
     try:
         for result in client.messages.batches.results(state["batch_id"]):
             ticker = custom_id_map.get(result.custom_id)
             if not ticker:
+                continue
+            if result.result.type == "errored":
+                # Commit 1 (24 Sep 2026, owner-reported): the real
+                # Anthropic error was never logged before this - only
+                # "errored, skipped", which made tonight's 100%-errored
+                # batch unexplainable from the logs. Verbatim (error
+                # type + message only - never the request content) for
+                # the first _ERRORED_DETAIL_LIMIT, then one summary line
+                # for the rest, counted by error type.
+                failed += 1
+                errored_count += 1
+                err = getattr(result.result, "error", None)
+                err_type = getattr(err, "type", "unknown") if err else "unknown"
+                err_message = getattr(err, "message", "") if err else ""
+                if errored_count <= _ERRORED_DETAIL_LIMIT:
+                    log(f"[top100] {ticker}: batch result errored - {err_type}: {err_message}")
+                else:
+                    errored_rest_type_counts[err_type] = errored_rest_type_counts.get(err_type, 0) + 1
                 continue
             if result.result.type != "succeeded":
                 failed += 1
@@ -521,6 +548,13 @@ def poll_and_ingest_batch(log=print):
             total_output_tokens += getattr(msg.usage, "output_tokens", 0) or 0
     except Exception as e:
         log(f"[top100] batch result retrieval failed partway through: {e}")
+
+    if errored_rest_type_counts:
+        breakdown = ", ".join(f"{t}: {c}" for t, c in sorted(errored_rest_type_counts.items()))
+        log(
+            f"[top100] {sum(errored_rest_type_counts.values())} more errored result(s) "
+            f"beyond the first {_ERRORED_DETAIL_LIMIT} shown above, by error type - {breakdown}"
+        )
 
     top100_store.clear_batch_state()
     cost = estimate_batch_cost_usd(total_input_tokens, total_output_tokens)
@@ -583,6 +617,62 @@ def submit_nightly_batch(pool=None, quarter=None, model=MODEL_TOP100, log=print)
     log(f"[top100] submitted batch {batch.id}: {len(entrants)} compan{'y' if len(entrants) == 1 else 'ies'} "
         f"for {quarter}/{model}")
     return batch.id
+
+
+_BATCH_01XA_DIAGNOSTIC_TARGET = "msgbatch_01XA46gE4evNBqLnZdy2EACR"
+
+
+def _batch_01xa_diagnostic_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".top100_batch_01xa_diagnostic_done")
+
+
+def diagnose_batch_01xa_once(log=print):
+    """One-off, marker-guarded boot diagnostic (24 Sep 2026, owner-
+    reported): tonight's first real Top 100 batch
+    (msgbatch_01XA46gE4evNBqLnZdy2EACR) came back 100% errored, and
+    poll_and_ingest_batch()'s own per-ticker log line never carried the
+    actual error - only "errored, skipped" - so the root cause was
+    invisible in production. Anthropic stores batch results for 29 days
+    (see the Batches API's own "Key Facts"), so this retrieves that
+    SPECIFIC batch directly, logs the first 3 errored results' errors
+    VERBATIM (error type + message - never the request content), then
+    writes the marker so this never runs again. Same marker-guarded,
+    read-the-marker-first, "never allowed to stop the site serving"
+    pattern as nightly_scan.py's own one-off cleanup functions (see
+    server.py's lifespan() for where this is wired in) - this gets the
+    real cause into Railway logs on the very next deploy, instead of
+    waiting a full night for a fresh batch to error the same way."""
+    marker = _batch_01xa_diagnostic_marker_path()
+    if os.path.exists(marker):
+        return
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+        shown = 0
+        for result in client.messages.batches.results(_BATCH_01XA_DIAGNOSTIC_TARGET):
+            if result.result.type != "errored":
+                continue
+            err = getattr(result.result, "error", None)
+            err_type = getattr(err, "type", "unknown") if err else "unknown"
+            err_message = getattr(err, "message", "") if err else ""
+            log(f"[top100] one-off diagnostic {_BATCH_01XA_DIAGNOSTIC_TARGET} "
+                f"error #{shown + 1}: {err_type}: {err_message}")
+            shown += 1
+            if shown >= 3:
+                break
+        if shown == 0:
+            log(f"[top100] one-off diagnostic {_BATCH_01XA_DIAGNOSTIC_TARGET}: "
+                f"no errored results found (results may have expired past Anthropic's "
+                f"29-day retention, or this batch didn't actually error)")
+    except Exception as e:
+        log(f"[top100] one-off diagnostic {_BATCH_01XA_DIAGNOSTIC_TARGET} failed: {e}")
+
+    try:
+        with open(marker, "w") as f:
+            f.write(datetime.now(timezone.utc).isoformat())
+    except OSError as e:
+        log(f"[top100] one-off diagnostic: could not write marker file: {e}")
 
 
 def run_nightly(log=print):
