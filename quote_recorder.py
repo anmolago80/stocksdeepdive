@@ -47,13 +47,18 @@ quote - the SAME light bid/ask/last/volume/marketState fields
 Ticker.info's own bid/ask ultimately come from, just without the rest
 of quoteSummary's heavy payload) in chunks of up to _BULK_CHUNK_SIZE
 (100) symbols per request - see _fetch_quotes_bulk() below. A symbol
-the bulk response doesn't cover falls back to one INDIVIDUAL request
-against the SAME light endpoint (_fetch_quote_single()) - never back
-to the heavy .info call this whole change exists to get away from.
-Every ticker a quality gate rejects on its first pass gets exactly one
-retry, later in the same run (see _record_market()'s own retry pass) -
-conditions inside the sampling window can genuinely shift (a market
-that just opened, a momentarily frozen quote).
+the bulk response doesn't cover, OR one it names but returns with no
+usable (positive) bid/ask - a gap seen often for US symbols, see
+_bulk_row_needs_bid_ask_fallback()'s own docstring for the owner-
+reported numbers - falls back to one INDIVIDUAL request against the
+SAME light endpoint (_fetch_quote_single(), routed via
+_fetch_quotes_with_bid_ask_fallback()) - never back to the heavy .info
+call this whole change exists to get away from. Every ticker a
+quality gate rejects on its first pass gets exactly one retry, later
+in the same run (see _record_market()'s own retry pass) - conditions
+inside the sampling window can genuinely shift (a market that just
+opened, a momentarily frozen quote); that retry pass also goes through
+the same bid/ask fallback, not just the plain bulk fetch.
 
 Implementation note, flagged rather than silently relied on: the
 bulk/individual fetchers both go through yfinance.data.YfData - that
@@ -526,6 +531,56 @@ def _fetch_quotes_individually(tickers, log=print):
     return quotes
 
 
+def _bulk_row_needs_bid_ask_fallback(quote):
+    """True when a bulk quote dict IS present for a ticker but its own
+    bid/ask isn't yet usable (missing, zero, or negative) - the exact
+    condition _classify() itself treats as REJECT_MISSING. Owner-
+    reported gap (URGENT, Sep 2026): in one US run, 101 tickers were
+    fetched via the bulk endpoint in ~3s but only 17 were captured - 67
+    were rejected for missing/non-positive bid/ask, because the bulk
+    v7/finance/quote response omits bid/ask for many US symbols even
+    though the SAME symbol, queried individually through the identical
+    light endpoint, usually returns a real one. _fetch_quotes_bulk()'s
+    own `missing` list only catches a symbol the response left out
+    entirely - it does not catch this case, a symbol the response DID
+    name but without a usable quote. This function flags exactly that
+    second case so the caller can route it through the same individual
+    fallback a bulk-omitted symbol already gets, BEFORE the quality
+    gates (_classify() et al) ever see it - never a live-request path,
+    since this only classifies a dict already returned above."""
+    if quote is None:
+        return False
+    bid = quote.get("bid")
+    ask = quote.get("ask")
+    return not (isinstance(bid, (int, float)) and isinstance(ask, (int, float))
+                and bid > 0 and ask > 0)
+
+
+def _fetch_quotes_with_bid_ask_fallback(tickers, market, log=print):
+    """_fetch_quotes_bulk() above, plus: also routes a ticker whose
+    bulk row IS present but fails _bulk_row_needs_bid_ask_fallback()
+    through the SAME per-ticker _fetch_quotes_individually() fallback a
+    bulk-omitted ticker already gets - see that function's own
+    docstring for the exact gap this closes. Used by both
+    _record_market()'s first pass and its one retry pass, so both get
+    the fix identically; every one-shot fallback still happens BEFORE
+    _process_one()/_classify() ever runs on that ticker, exactly like
+    the existing bulk-omitted case."""
+    quotes, missing = _fetch_quotes_bulk(tickers, log=log)
+    needs_fallback = [t for t in tickers if t not in missing
+                      and _bulk_row_needs_bid_ask_fallback(quotes.get(t))]
+    fallback_tickers = missing + needs_fallback
+    if fallback_tickers:
+        log(f"[quote_recorder] {market}: {len(missing)} ticker(s) not covered by the "
+            f"bulk quote endpoint, {len(needs_fallback)} covered but missing a usable "
+            f"bid/ask - fetching {len(fallback_tickers)} individually")
+        quotes.update(_fetch_quotes_individually(fallback_tickers, log=log))
+    _covered = len(tickers) - len(fallback_tickers)
+    log(f"[quote_recorder] {market}: {_covered} ticker(s) covered by bulk requests with a "
+        f"usable bid/ask, {len(fallback_tickers)} via individual fallback")
+    return quotes
+
+
 def _record_market(market, log=print):
     """The actual recording pass for one market - every per-ticker step
     individually guarded (a bad ticker is logged and skipped, never
@@ -601,14 +656,7 @@ def _record_market(market, log=print):
 
     log(f"[quote_recorder] {market}: sampling {len(tickers)} ticker(s) for {local_date}")
 
-    quotes, missing = _fetch_quotes_bulk(tickers, log=log)
-    if missing:
-        log(f"[quote_recorder] {market}: {len(missing)} ticker(s) not covered by the "
-            f"bulk quote endpoint, fetching individually")
-        quotes.update(_fetch_quotes_individually(missing, log=log))
-    _covered = len(tickers) - len(missing)
-    log(f"[quote_recorder] {market}: {_covered} ticker(s) covered by bulk requests, "
-        f"{len(missing)} via individual fallback")
+    quotes = _fetch_quotes_with_bid_ask_fallback(tickers, market, log=log)
 
     pending_retry = []  # [(ticker, first_pass_reason), ...]
     for ticker in tickers:
@@ -633,9 +681,7 @@ def _record_market(market, log=print):
         retry_tickers = [t for t, _r in pending_retry]
         log(f"[quote_recorder] {market}: retrying {len(retry_tickers)} gate-rejected ticker(s)")
         time.sleep(_BULK_REQUEST_PAUSE)
-        retry_quotes, retry_missing = _fetch_quotes_bulk(retry_tickers, log=log)
-        if retry_missing:
-            retry_quotes.update(_fetch_quotes_individually(retry_missing, log=log))
+        retry_quotes = _fetch_quotes_with_bid_ask_fallback(retry_tickers, market, log=log)
         for ticker, first_reason in pending_retry:
             try:
                 info = retry_quotes.get(ticker)
