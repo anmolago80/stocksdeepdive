@@ -73,6 +73,18 @@ import top100_store
 # type in one summary line - see poll_and_ingest_batch()'s own comment.
 _ERRORED_DETAIL_LIMIT = 5
 
+# Commit 1 follow-up (24 Sep 2026, owner-reported): the boot diagnostic
+# printed "error #1: error: " (blank) - result.result.error is an
+# ErrorResponse WRAPPER whose own .type is always the literal "error"
+# and which has no top-level .message at all; the real type/message
+# live on its INNER .error object, which the original attribute-
+# picking code never reached. _ERROR_LOG_CHAR_LIMIT bounds the full
+# serialized error payload logged per result (see
+# _serialize_batch_result_error() below) - generous enough to carry
+# a real Anthropic error body, bounded so one pathological result
+# can't flood the log.
+_ERROR_LOG_CHAR_LIMIT = 500
+
 # -----------------------------------------------------------------
 # Universe selection.
 # -----------------------------------------------------------------
@@ -466,6 +478,51 @@ def _unscored_tickers(pool, quarter, model):
     return [r for r in pool if r["ticker"] not in already]
 
 
+def _serialize_batch_result_error(result_error):
+    """Full serialized payload for one errored batch result's
+    result.result.error, truncated to _ERROR_LOG_CHAR_LIMIT chars -
+    fixes the blank "error: " log line: that field is an ErrorResponse
+    WRAPPER (its own .type is always the literal "error", and it has
+    no top-level .message at all) whose INNER .error object carries
+    the real Anthropic type/message. Rather than keep picking specific
+    attributes (the exact bug here - the previous code picked the
+    WRONG level), this logs the whole thing: model_dump_json() first
+    (pydantic's own serialization, matches the SDK's real wire shape
+    byte for byte), falling back to json.dumps(..., default=str) for
+    anything that isn't a pydantic model. Never raises - a serialization
+    failure itself becomes the logged string, never a lost result."""
+    if result_error is None:
+        return "null"
+    try:
+        return result_error.model_dump_json()[:_ERROR_LOG_CHAR_LIMIT]
+    except Exception:
+        pass
+    try:
+        return json.dumps(result_error, default=str)[:_ERROR_LOG_CHAR_LIMIT]
+    except Exception:
+        pass
+    try:
+        return repr(result_error)[:_ERROR_LOG_CHAR_LIMIT]
+    except Exception:
+        return "<unserializable batch result error>"
+
+
+def _batch_result_error_type(result_error):
+    """Best-effort error TYPE for the by-type summary count only (the
+    full detail is _serialize_batch_result_error() above) -
+    result_error's own INNER .error.type when present (the real
+    Anthropic error type, e.g. "invalid_request_error",
+    "overloaded_error"), falling back to the outer wrapper's own
+    .type ("error", literal - see _serialize_batch_result_error()'s
+    own docstring for why that's not the real type) only when the
+    inner object is missing entirely."""
+    if result_error is None:
+        return "unknown"
+    inner = getattr(result_error, "error", None)
+    inner_type = getattr(inner, "type", None) if inner is not None else None
+    return inner_type or getattr(result_error, "type", "unknown")
+
+
 def poll_and_ingest_batch(log=print):
     """Phase 1 of every nightly run: if a batch is in flight (top100_
     store.get_batch_state() is not None), checks its status.
@@ -510,17 +567,21 @@ def poll_and_ingest_batch(log=print):
                 # Commit 1 (24 Sep 2026, owner-reported): the real
                 # Anthropic error was never logged before this - only
                 # "errored, skipped", which made tonight's 100%-errored
-                # batch unexplainable from the logs. Verbatim (error
-                # type + message only - never the request content) for
-                # the first _ERRORED_DETAIL_LIMIT, then one summary line
-                # for the rest, counted by error type.
+                # batch unexplainable from the logs. Commit 1 follow-up
+                # (same day): that first fix itself logged a BLANK
+                # error ("error: ") - result.result.error is an
+                # ErrorResponse wrapper, not the error itself; see
+                # _serialize_batch_result_error()'s own docstring. Now
+                # logs the FULL serialized error (truncated) for the
+                # first _ERRORED_DETAIL_LIMIT results, then one summary
+                # line for the rest, counted by (inner) error type.
                 failed += 1
                 errored_count += 1
                 err = getattr(result.result, "error", None)
-                err_type = getattr(err, "type", "unknown") if err else "unknown"
-                err_message = getattr(err, "message", "") if err else ""
+                err_type = _batch_result_error_type(err)
                 if errored_count <= _ERRORED_DETAIL_LIMIT:
-                    log(f"[top100] {ticker}: batch result errored - {err_type}: {err_message}")
+                    detail = _serialize_batch_result_error(err)
+                    log(f"[top100] {ticker}: batch result errored #{errored_count} - {detail}")
                 else:
                     errored_rest_type_counts[err_type] = errored_rest_type_counts.get(err_type, 0) + 1
                 continue
@@ -623,8 +684,17 @@ _BATCH_01XA_DIAGNOSTIC_TARGET = "msgbatch_01XA46gE4evNBqLnZdy2EACR"
 
 
 def _batch_01xa_diagnostic_marker_path():
+    # v2 (24 Sep 2026, owner-reported): the v1 diagnostic's own marker
+    # name, bumped so this re-runs once more on the next boot even
+    # though a v1 marker is already on disk from the earlier deploy -
+    # v1 logged the error WRAPPER, not the error itself (blank "error:
+    # " - see _serialize_batch_result_error()'s own docstring), so its
+    # run didn't actually get the real cause into the logs. A distinct
+    # marker filename, not deleting/rewriting the v1 one, keeps this
+    # the same "one-off, never re-run once its own marker exists"
+    # pattern for THIS (v2) diagnostic specifically.
     base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
-    return os.path.join(base, ".top100_batch_01xa_diagnostic_done")
+    return os.path.join(base, ".top100_batch_01xa_diagnostic_v2_done")
 
 
 def diagnose_batch_01xa_once(log=print):
@@ -636,13 +706,23 @@ def diagnose_batch_01xa_once(log=print):
     invisible in production. Anthropic stores batch results for 29 days
     (see the Batches API's own "Key Facts"), so this retrieves that
     SPECIFIC batch directly, logs the first 3 errored results' errors
-    VERBATIM (error type + message - never the request content), then
-    writes the marker so this never runs again. Same marker-guarded,
-    read-the-marker-first, "never allowed to stop the site serving"
-    pattern as nightly_scan.py's own one-off cleanup functions (see
-    server.py's lifespan() for where this is wired in) - this gets the
-    real cause into Railway logs on the very next deploy, instead of
-    waiting a full night for a fresh batch to error the same way."""
+    (the FULL serialized error, truncated - never the request content),
+    then writes the v2 marker so this never runs again. Same marker-
+    guarded, read-the-marker-first, "never allowed to stop the site
+    serving" pattern as nightly_scan.py's own one-off cleanup functions
+    (see server.py's lifespan() for where this is wired in) - this gets
+    the real cause into Railway logs on the very next deploy, instead of
+    waiting a full night for a fresh batch to error the same way.
+
+    v2 (same day): v1 of this diagnostic logged result.result.error's
+    own .type/.message directly and printed a BLANK error ("error: ")
+    for every result - result.result.error is an ErrorResponse wrapper
+    (its own .type is always the literal "error", no top-level
+    .message at all); the real detail lives on its INNER .error object.
+    See _serialize_batch_result_error()'s own docstring. This version
+    logs the whole serialized error object instead of picking
+    attributes, and runs under a NEW marker file so it fires again on
+    the next boot even though v1 already wrote its own marker."""
     marker = _batch_01xa_diagnostic_marker_path()
     if os.path.exists(marker):
         return
@@ -654,10 +734,9 @@ def diagnose_batch_01xa_once(log=print):
             if result.result.type != "errored":
                 continue
             err = getattr(result.result, "error", None)
-            err_type = getattr(err, "type", "unknown") if err else "unknown"
-            err_message = getattr(err, "message", "") if err else ""
+            detail = _serialize_batch_result_error(err)
             log(f"[top100] one-off diagnostic {_BATCH_01XA_DIAGNOSTIC_TARGET} "
-                f"error #{shown + 1}: {err_type}: {err_message}")
+                f"error #{shown + 1}: {detail}")
             shown += 1
             if shown >= 3:
                 break
