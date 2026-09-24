@@ -364,10 +364,22 @@ def _user_prompt(ticker, company_name):
 
 
 def _dimension_schema():
+    # 24 Sep 2026 (owner-reported, root cause confirmed from production
+    # logs): every batch request was rejected with "output_config.
+    # format.schema: For 'integer' type, properties maximum, minimum
+    # are not supported" - Claude's structured-outputs JSON Schema
+    # subset does not support numerical constraints (minimum/maximum/
+    # multipleOf) on ANY type, integer included (confirmed against the
+    # claude-api skill's current documented schema limitations, not
+    # assumed from the one reported keyword pair). The 1-5 range is
+    # now stated in "description" only and enforced server-side in
+    # _parse_response_json() below - the schema itself no longer
+    # claims a range the API can't actually validate.
     return {
         "type": "object",
         "properties": {
-            "score": {"type": ["integer", "null"], "minimum": 1, "maximum": 5},
+            "score": {"type": ["integer", "null"],
+                      "description": "Integer 1-5 (5=best for a holder, 1=worst), or null if not confidently known - see the honesty rule."},
             "justification": {"type": "string"},
             "source_period": {"type": ["string", "null"]},
         },
@@ -386,7 +398,11 @@ def _response_schema():
     of the response who still needs a separate summary field."""
     props = {key: _dimension_schema() for key in DIMENSION_KEYS}
     props["inversion_scenario"] = {"type": ["string", "null"]}
-    props["inversion_severity"] = {"type": ["integer", "null"], "minimum": 1, "maximum": 5}
+    # See _dimension_schema()'s own comment: minimum/maximum removed
+    # (unsupported by the structured-outputs schema subset for ANY
+    # type), range stated in description, enforced server-side below.
+    props["inversion_severity"] = {"type": ["integer", "null"],
+                                    "description": "Integer 1-5 severity (1=minor, 5=plausibly breaks the company), or null when the company is NOT RATED."}
     return {
         "type": "object",
         "properties": props,
@@ -432,7 +448,23 @@ def _parse_response_json(text):
     _SYSTEM_PROMPT already instructs the model to null them itself for
     a NOT RATED company, but this is the second, code-enforced layer
     that can't be defeated by the model simply not following that
-    instruction."""
+    instruction.
+
+    Range enforcement (24 Sep 2026, owner-reported): the structured-
+    outputs schema (_dimension_schema()/_response_schema() above) can
+    no longer declare "1-5" via minimum/maximum - Claude's structured-
+    outputs JSON Schema subset doesn't support numerical constraints on
+    ANY type - so the 1-5 range is enforced HERE instead, server-side,
+    the same "belt and braces, code-enforced, can't be defeated by the
+    model not following the prompt" layer as the NOT-RATED inversion
+    scrub just above. A dimension score outside 1-5 is treated exactly
+    like a null score (honesty-rule violation, not a crash) - it counts
+    toward the >=NOT_RATED_MIN_NULLS NOT RATED rule same as a genuine
+    null. inversion_severity outside 1-5 is CLAMPED to the nearest
+    bound instead (1 or 5) - it's a synthesis severity rating, not a
+    per-dimension honesty signal, so an out-of-range value is far more
+    likely to be an off-by-one from the model than evidence the whole
+    synthesis should be discarded."""
     data = json.loads(text)
     dims = {}
     null_count = 0
@@ -443,6 +475,8 @@ def _parse_response_json(text):
         score = d.get("score")
         if score is not None and not isinstance(score, int):
             score = int(score)
+        if score is not None and not (1 <= score <= 5):
+            score = None
         if score is None:
             null_count += 1
         dims[key] = {
@@ -456,6 +490,8 @@ def _parse_response_json(text):
     inversion_severity = data.get("inversion_severity")
     if inversion_severity is not None and not isinstance(inversion_severity, int):
         inversion_severity = int(inversion_severity)
+    if inversion_severity is not None:
+        inversion_severity = max(1, min(5, inversion_severity))
     if not_rated:
         inversion_scenario = None
         inversion_severity = None
