@@ -1,5 +1,5 @@
 streamlit>=1.42
-yfinance>=0.2.40
+yfinance>=1.7.0
 pandas>=2.0
 trendspy>=0.1.4
 newsapi-python>=0.2.7

@@ -170,8 +170,75 @@ def _attach_dividend_payout(row, ticker, log=print):
         log(f"[nightly_scan] {ticker}: dividend payout ratio failed: {e}")
 
 
+# URGENT Commit 2 (24 Sep 2026, owner-reported): scans have produced
+# 0/N valid rows in every universe since Sep 22 - yfinance's own
+# "Crumb fetch rate-limited (HTTP 429)" warning, and the completeness
+# guard (SCAN_COMPLETENESS_THRESHOLD above) is correctly refusing to
+# save those degraded runs. Root cause, read directly out of the
+# installed yfinance 1.7.0 source (yfinance/data.py): YfData is a
+# process-wide singleton (SingletonMeta) that already reuses ONE
+# session/crumb across every yf.Ticker(...) call with no session= kwarg
+# passed - which is every call site in this codebase - but
+# _get_crumb_basic() sets self._crumb to the raw 429 response body
+# BEFORE checking the status code, and never resets it back to None on
+# a YFRateLimitError. Once ANY crumb fetch in the process gets 429'd,
+# every LATER call sees self._crumb is not None and silently reuses
+# that poisoned garbage crumb forever - no further retry, no further
+# warning - which is exactly why one early rate-limit turns into 0/N
+# for the WHOLE universe rather than a handful of tickers near the
+# start.
+_YF_RETRY_ATTEMPTS = 4
+_YF_RETRY_BASE_DELAY_SECONDS = 2.0  # doubles each attempt: 2s, 4s, 8s
+
+
+def _yf_looks_rate_limited(exc):
+    msg = str(exc).lower()
+    return "429" in msg or "rate" in msg or "crumb" in msg or "too many requests" in msg
+
+
+def _reset_poisoned_yf_crumb():
+    """Clears yfinance's own process-wide YfData singleton's cached
+    crumb - see the module comment above _YF_RETRY_ATTEMPTS for why this
+    is necessary before a retry can ever succeed (yfinance itself never
+    self-heals from a poisoned crumb within one process's lifetime).
+    Never raises - a yfinance internals change that breaks this
+    reflection is a retry that behaves like today's un-patched code, not
+    a new failure."""
+    try:
+        import yfinance.data as _yf_data
+        _yf_data.YfData()._crumb = None
+    except Exception:
+        pass
+
+
+def _yf_call_with_retry(fn, log, ticker, label, attempts=_YF_RETRY_ATTEMPTS):
+    """Retries ONE yfinance call with exponential backoff - the "add
+    retry with backoff on crumb acquisition" fix. Resets yfinance's own
+    poisoned crumb state (see _reset_poisoned_yf_crumb) before any retry
+    that looks rate-limit-related, so the retry actually attempts a
+    fresh crumb fetch instead of replaying the same garbage. Mirrors
+    app.py's own _fetch_with_retry() shape (this codebase's established
+    pattern for transient yfinance failures), adapted for a background/
+    non-Streamlit caller that takes its own `log`. Returns fn()'s result,
+    or None if every attempt failed (logged once, at the end)."""
+    last_exc = None
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if _yf_looks_rate_limited(e):
+                _reset_poisoned_yf_crumb()
+            if attempt < attempts - 1:
+                delay = _YF_RETRY_BASE_DELAY_SECONDS * (2 ** attempt)
+                log(f"[nightly_scan] {ticker}: {label} failed (attempt {attempt + 1}/{attempts}) - {e} - retrying in {delay:.0f}s")
+                time.sleep(delay)
+    log(f"[nightly_scan] {ticker}: {label} failed after {attempts} attempt(s) - {last_exc}")
+    return None
+
+
 def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
-                         perpetual_rate=None, growth_rate=None, manual_fcf=None):
+                         perpetual_rate=None, growth_rate=None, manual_fcf=None, log=print):
     """Core value/quality/psychology scoring for one ticker - the same
     resolvers and Long Score the site uses. Returns a plain dict, or None
     if no usable price data. Also used by digest_engine for the weekly
@@ -199,21 +266,19 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     fetch_snapshot()) can pass them so this ticker's Intrinsic Value/MOS
     here actually matches what the Deep Dive page shows for the same
     ticker under the same settings, instead of always being pure-auto
-    regardless of what the user has configured."""
+    regardless of what the user has configured.
+
+    `log` (URGENT Commit 2, 24 Sep 2026): defaults to print, same as
+    every other log= parameter in this module - only used to surface
+    _yf_call_with_retry()'s own retry/failure lines for this ticker's
+    yfinance calls, never anything else about the row itself."""
     tk = yf.Ticker(ticker)
-    try:
-        df = tk.history(period="6mo")
-    except Exception:
-        return None
+    df = _yf_call_with_retry(lambda: tk.history(period="6mo"), log, ticker, "history")
     if df is None or df.empty:
         return None
-    try:
-        info = tk.info or {}
-    except Exception:
-        info = {}
-    try:
-        cashflow_df = tk.cashflow
-    except Exception:
+    info = _yf_call_with_retry(lambda: tk.info, log, ticker, "info") or {}
+    cashflow_df = _yf_call_with_retry(lambda: tk.cashflow, log, ticker, "cashflow")
+    if cashflow_df is None:
         cashflow_df = pd.DataFrame()
 
     # Services batch 3, Part A1: dividend headline numbers for the
@@ -599,11 +664,26 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     log(f"[nightly_scan] {universe}: scanning {len(tickers)} tickers ({source}), "
         f"attention_lite={attention_lite}")
 
+    # URGENT Commit 2 (24 Sep 2026, owner-reported): "reuse ONE
+    # authenticated session per scan run instead of re-fetching the
+    # crumb per ticker" - yfinance's own YfData singleton already
+    # reuses one session/crumb across every yf.Ticker(...) call with no
+    # session= kwarg (every call site in this codebase), so this warm-up
+    # call establishes (or repairs, via _yf_call_with_retry's crumb-
+    # reset-on-429 logic) a single valid crumb ONCE, here, before the
+    # per-ticker loop starts - not a new session object, since yfinance
+    # already gives us that reuse for free; what it doesn't give us for
+    # free is recovering from a poisoned crumb, which is what this and
+    # the per-ticker retries below actually fix. .fast_info is the
+    # cheapest yfinance call that still exercises the crumb.
+    if tickers:
+        _yf_call_with_retry(lambda: yf.Ticker(tickers[0]).fast_info, log, tickers[0], "crumb warm-up")
+
     rows = []
     skipped_no_price = 0
     for i, t in enumerate(tickers):
         try:
-            row = analyze_ticker_lite(t, attention_lite=attention_lite)
+            row = analyze_ticker_lite(t, attention_lite=attention_lite, log=log)
             if row:
                 # Fix 9 item 2 (2026-09-01): hard backstop, on top of item
                 # 1's fix inside analyze_ticker_lite() itself - a row can
@@ -677,6 +757,14 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     # and it's clearly flagged as degraded either way.
     completeness = (len(rows) / len(tickers)) if tickers else 0.0
     degraded = completeness < SCAN_COMPLETENESS_THRESHOLD
+    # URGENT Commit 2 (24 Sep 2026, owner-reported): one clear cause
+    # line on a 0%-valid run, additive only - does not change
+    # `completeness`/`degraded` or the save/skip decision below at all.
+    if degraded and len(rows) == 0 and len(tickers) > 0:
+        log(f"[nightly_scan] {universe}: 0/{len(tickers)} valid rows - almost always a "
+            f"yfinance crumb/rate-limit failure (see the crumb warm-up and any per-ticker "
+            f"retry lines above this one for the underlying cause), not a universe-resolution "
+            f"problem - {tickers[0]} onward all failed the same way")
     if degraded:
         prior = scan_store.load_scan(universe)
         prior_rows = len(prior.get("rows") or []) if prior else 0
@@ -962,7 +1050,7 @@ def run_imported_scan(max_tickers=IMPORTED_NIGHTLY_BATCH, log=print):
 
     for i, t in enumerate(pending):
         try:
-            row = analyze_ticker_lite(t, attention_lite=attention_lite)
+            row = analyze_ticker_lite(t, attention_lite=attention_lite, log=log)
             if row:
                 # Fix 9 item 2: same hard price backstop as
                 # run_universe_scan() - see that function's comment.
