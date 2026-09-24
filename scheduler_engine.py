@@ -1184,6 +1184,37 @@ def _catchup_reference_night(cfg, now):
     return None
 
 
+def nightly_scan_window_active(now=None):
+    """Commit 6 (24 Sep 2026, owner-reported): True if `now` (UTC,
+    defaults to the current time) falls within the nightly scan's own
+    operating window - reuses _catchup_reference_night()'s exact
+    scan_hour..scan_hour+CATCHUP_WINDOW_HOURS logic (including its own
+    UTC-midnight-crossing handling), the same "is this a valid moment
+    for the nightly scan to be running" test the scheduler's own catch-
+    up path already relies on - rather than a second, naive fixed-hour
+    check living in a second place. Also true if the "nightly" job lock
+    is held with a fresh heartbeat, in case an unusually long-running
+    scan is still going slightly outside that window.
+
+    Read-only: never acquires, refreshes, or releases the lock, and
+    never blocks. Added for the Admin Dashboard's consolidated Moat-
+    preview export (moat_export.py), which must refuse to run - and
+    stop adding load that competes for the same cached-bundle reads -
+    during this window, rather than hand-roll a fixed-hour check of its
+    own."""
+    now = now or datetime.now(timezone.utc)
+    if _catchup_reference_night(_cfg(), now) is not None:
+        return True
+    payload = _read_lock_payload(_lock_path("nightly"))
+    if payload is None:
+        return False
+    try:
+        age = time.time() - float(payload.get("heartbeat", 0))
+    except (TypeError, ValueError):
+        return False
+    return age <= _JOB_LOCK_HEARTBEAT_STALE_SECONDS
+
+
 def _universes_missing_today(cfg, ref_day):
     """Universes that were SCHEDULED for the `ref_day` ('YYYY-MM-DD' UTC
     date - see _catchup_reference_night above) scan night but have no

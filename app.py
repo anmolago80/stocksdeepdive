@@ -29421,6 +29421,95 @@ def page_admin_dashboard():
         elif "admin_dash_sliding_rows" in st.session_state:
             st.caption("No tickers with cached fundamentals were found for the selected universe(s).")
 
+    # --- CONSOLIDATED MOAT PREVIEW EXPORT (Commit 6, 24 Sep 2026, owner-
+    # reported): reporting only - no scoring path changes, no switch
+    # changes, nothing user-facing. Runs the same computation as the
+    # four dry-run panels above (moat_export.py reuses their exact
+    # engine calls, cached-bundle-only, never-touch-the-live-switch/
+    # moat_cache contract) in one pass over one selected universe, and
+    # packages the result as a single downloadable ZIP - see moat_
+    # export.build_export_bundle()'s own docstring for the full
+    # contract, and its own inertness test (running this with all three
+    # switches unset changes no cached score, no rendered output).
+    st.markdown("### Consolidated Moat preview export (Commit 6)")
+    st.caption(
+        "Runs all four Moat dry-run previews above (Operating-income "
+        "audit, Pricing power level, Tangible capital, Sliding-scale "
+        "scoring) plus universe/quote-snapshot infrastructure stats in "
+        "one pass, and packages the result as a downloadable ZIP - one "
+        "CSV per section, plus a summary.json with every aggregate "
+        "figure - so the numbers needed to finish Commits 3b/4b/5b "
+        "don't have to be copied out of four separate panels by hand. "
+        "Refuses to run during the nightly scan window (or its catch-up "
+        "window). The sliding-scale section is the expensive part (a "
+        "per-year cost of capital for every ticker) - the picker "
+        "defaults to the smallest saved universe for that reason."
+    )
+    with st.container(border=True):
+        import moat_export
+        _mx_universe_sizes = moat_export.saved_universe_sizes()
+        _mx_saved_universes = sorted(_mx_universe_sizes.keys())
+        _mx_options = ["All saved universes"] + _mx_saved_universes
+        if _mx_saved_universes:
+            _mx_default_universe = min(_mx_saved_universes, key=lambda u: _mx_universe_sizes[u])
+            _mx_default_idx = _mx_options.index(_mx_default_universe)
+        else:
+            _mx_default_idx = 0
+        _mx_universe_choice = st.selectbox(
+            "Universe", _mx_options, index=_mx_default_idx, key="admin_dash_export_universe",
+        )
+        if _mx_saved_universes:
+            st.caption(
+                "Universe sizes: " + ", ".join(f"{u} ({_mx_universe_sizes[u]})" for u in _mx_saved_universes)
+            )
+
+        if st.button("Run consolidated export", key="admin_dash_export_btn"):
+            _mx_target_universes = (
+                _mx_saved_universes if _mx_universe_choice == "All saved universes"
+                else [_mx_universe_choice]
+            )
+            _mx_tickers_by_universe, _mx_ticker_sector = {}, {}
+            for _uni in _mx_target_universes:
+                try:
+                    _scan_payload = scan_store.load_scan_raw(_uni)
+                except Exception:
+                    _scan_payload = None
+                _rows = (_scan_payload or {}).get("rows", [])
+                _mx_tickers_by_universe[_uni] = [r.get("Ticker") for r in _rows if r.get("Ticker")]
+                for _r in _rows:
+                    _tk = _r.get("Ticker")
+                    if _tk and _r.get("Sector"):
+                        _mx_ticker_sector[_tk] = _r.get("Sector")
+
+            _mx_progress_caption = st.empty()
+            try:
+                _mx_result = moat_export.build_export_bundle(
+                    _mx_tickers_by_universe, ticker_sector=_mx_ticker_sector,
+                    log=lambda _msg: _mx_progress_caption.caption(_msg),
+                )
+            except moat_export.NightlyScanWindowActive as e:
+                _mx_progress_caption.empty()
+                st.error(str(e))
+            else:
+                _mx_progress_caption.empty()
+                st.session_state["admin_dash_export_result"] = _mx_result
+
+        _mx_result = st.session_state.get("admin_dash_export_result")
+        if _mx_result:
+            st.success(
+                f"Export ready - {_mx_result['summary']['tickers_analyzed']} ticker(s) analyzed, "
+                f"{_mx_result['summary']['tickers_skipped_no_cache']} skipped (no cached fundamentals)."
+            )
+            st.download_button(
+                "Download consolidated export (ZIP)",
+                _mx_result["zip_bytes"],
+                file_name=_mx_result["filename"],
+                mime="application/zip",
+                key="admin_dash_download_export",
+            )
+            with st.expander("Summary (same figures as summary.json inside the ZIP)"):
+                st.json(_mx_result["summary"])
+
     # --- SYSTEM --------------------------------------------------------
     st.markdown("---")
     st.markdown("### System")
