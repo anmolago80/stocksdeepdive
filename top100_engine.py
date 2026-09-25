@@ -290,11 +290,11 @@ BATCH_DISCOUNT = 0.5
 
 MAX_NIGHTLY_SCORES = 120
 
-_SYSTEM_PROMPT = """You are screening publicly-listed companies for a factual, descriptive "Top 100" quality shortlist on an investing research site. You are given one company's ticker and name. Score it on TEN qualitative dimensions, each as an integer from 1 to 5 - 5 is ALWAYS the good outcome for a long-term holder of the stock, 1 is ALWAYS the bad outcome, on every dimension, no exceptions.
+_SYSTEM_PROMPT = """You are screening publicly-listed companies for a factual, descriptive "Top 100" quality shortlist on an investing research site. You are given one company's ticker and name. Score it on TEN qualitative dimensions, each as an integer from 1 to 5 - 5 is ALWAYS the good outcome for a long-term holder of the stock, 1 is ALWAYS the bad outcome, on every dimension, no exceptions. Your response format has NO null/blank values anywhere - every field below names the exact SENTINEL value that stands in for "no value" wherever one is needed.
 
-For each dimension also give a ONE-LINE justification naming the specific source period it is based on (e.g. "FY25 annual report", "Q2 2026 investor call", "the company's own FY24 10-K risk factors section").
+For each dimension also give a ONE-LINE justification naming the specific source period it is based on (e.g. "FY25 annual report", "Q2 2026 investor call", "the company's own FY24 10-K risk factors section") - or an empty string "" for source_period if the dimension's score is 0 (see the honesty rule).
 
-HONESTY RULE, the single most important instruction in this prompt: output a null score (not a number, and never a middle value like 3 to "play it safe") for ANY dimension you do not have confident, specific, public-record knowledge of for THIS company. Guessing a plausible-sounding score is worse than admitting you don't know - a null is the honest answer, a fabricated 3 is not. If three or more of your ten scores end up null, that is expected and correct for a company with a thin public record - do not distort your other scores to avoid it. This applies especially to MANAGEMENT QUALITY (dimension 8 below): null it freely whenever the people running the company aren't publicly well known - most companies have no public record of their management's integrity, candour or execution track record, and that is the honest, expected answer, not a failure.
+HONESTY RULE, the single most important instruction in this prompt: output 0 for a dimension's score (not a number 1-5, and never a middle value like 3 to "play it safe") for ANY dimension you do not have confident, specific, public-record knowledge of for THIS company. 0 is not a real score - it is the sentinel meaning "cannot score honestly". Guessing a plausible-sounding score is worse than admitting you don't know - a 0 is the honest answer, a fabricated 3 is not. If three or more of your ten scores end up 0, that is expected and correct for a company with a thin public record - do not distort your other scores to avoid it. This applies especially to MANAGEMENT QUALITY (dimension 8 below): score it 0 freely whenever the people running the company aren't publicly well known - most companies have no public record of their management's integrity, candour or execution track record, and that is the honest, expected answer, not a failure.
 
 DE-CIRCULARISATION PRINCIPLE - read this before scoring anything: this site separately computes a purely NUMERIC "Quality" factor straight from public financial-statement data (return on equity, net profit margin, return on invested capital, revenue growth, earnings growth, free cash flow sign, and the debt-to-equity ratio). Your job is to add judgment that numeric pipeline CANNOT see - never to restate what it already measures. Concretely, for five of the ten dimensions below:
   - Competitive position: do NOT score whether the company is currently profitable or how profitable it is (the numeric pipeline already has that) - score only the DURABILITY of its edge relative to named peers.
@@ -338,7 +338,7 @@ THE TEN DIMENSIONS AND THEIR ANCHORS (1 = worst for a holder, 5 = best for a hol
    5: net cash or low net debt/EBITDA, high interest coverage, no concentrated near-term refinancing wall, and a flexible (largely variable) cost structure that can flex down in a downturn.
    1: high leverage, thin interest coverage, a concentrated debt maturity wall in the next 1-2 years, and/or a heavy fixed-cost base that cannot flex down when revenue falls.
 
-8. MANAGEMENT QUALITY - the integrity, candour and execution record of the PEOPLE running the company, distinct from the outcome of any one deal. Null freely where the record isn't publicly known (see the honesty rule above) - most companies have no such record.
+8. MANAGEMENT QUALITY - the integrity, candour and execution record of the PEOPLE running the company, distinct from the outcome of any one deal. Score 0 freely where the record isn't publicly known (see the honesty rule above) - most companies have no such record.
    5: a long public record of doing what they said they would do - candid in setbacks, disciplined in guidance, no credibility problems.
    1: a credibility problem - a pattern of over-promising, evasive communication, or conduct that has damaged investor trust.
 
@@ -351,7 +351,7 @@ THE TEN DIMENSIONS AND THEIR ANCHORS (1 = worst for a holder, 5 = best for a hol
     5: a long runway of high-return reinvestment opportunities still ahead (an expanding or under-penetrated market) at returns well above the cost of capital.
     1: a mature, saturated market with few remaining high-return reinvestment options - excess cash is likely to be misallocated, or simply returned because there is nowhere better to put it.
 
-INVERSION SYNTHESIS - after scoring all ten dimensions, write ONE sentence naming the single most plausible scenario that could seriously damage this company, plus a severity from 1 (minor) to 5 (plausibly breaks the company). This is a separate analytical synthesis, not a dimension score - it has ZERO effect on any of the ten scores above, on this company's ranking, or on its Top-20 eligibility. If three or more of your ten dimension scores are null (this company will be marked NOT RATED), output null for both the inversion scenario and its severity too - do not invent a damaging scenario for a company you don't know well enough to score in the first place."""
+INVERSION SYNTHESIS - after scoring all ten dimensions, write ONE sentence naming the single most plausible scenario that could seriously damage this company, plus a severity from 1 (minor) to 5 (plausibly breaks the company). This is a separate analytical synthesis, not a dimension score - it has ZERO effect on any of the ten scores above, on this company's ranking, or on its Top-20 eligibility. If three or more of your ten dimension scores are 0 (this company will be marked NOT RATED), output the sentinel values instead - an empty string "" for the inversion scenario and 0 for its severity - do not invent a damaging scenario for a company you don't know well enough to score in the first place."""
 
 
 def _user_prompt(ticker, company_name):
@@ -364,24 +364,33 @@ def _user_prompt(ticker, company_name):
 
 
 def _dimension_schema():
-    # 24 Sep 2026 (owner-reported, root cause confirmed from production
-    # logs): every batch request was rejected with "output_config.
-    # format.schema: For 'integer' type, properties maximum, minimum
-    # are not supported" - Claude's structured-outputs JSON Schema
-    # subset does not support numerical constraints (minimum/maximum/
-    # multipleOf) on ANY type, integer included (confirmed against the
-    # claude-api skill's current documented schema limitations, not
-    # assumed from the one reported keyword pair). The 1-5 range is
-    # now stated in "description" only and enforced server-side in
-    # _parse_response_json() below - the schema itself no longer
-    # claims a range the API can't actually validate.
+    # v3 (25 Sep 2026, owner-reported, root cause confirmed from
+    # production logs): every batch request was STILL rejected after
+    # the v2 fix, now with "Schemas contains too many parameters with
+    # union types (22 parameters with type arrays or anyOf)...limit:
+    # 16" - Claude's structured-outputs schema caps how many
+    # properties across the WHOLE schema may use a union type (type as
+    # an array, or anyOf/oneOf), and v2's ten {"score","source_period"}
+    # nullable pairs plus the two top-level inversion fields added up
+    # to exactly 22 (10*2 + 2). Every field is now a PLAIN type with a
+    # SENTINEL standing in for "no value" instead of a nullable type:
+    # score 0 = "cannot score honestly" (the honesty rule's own null
+    # case - real scores are always 1-5), source_period "" = no
+    # specific source cited. Both sentinels are mapped back to Python
+    # None in _parse_response_json() below, so every consumer
+    # downstream of that function (composite_score(), the >=3-nulls
+    # NOT RATED rule, the page's own rendering) sees exactly the same
+    # values it always did - only the WIRE shape changed, never the
+    # meaning. _SYSTEM_PROMPT's own honesty-rule wording is updated to
+    # name these sentinels explicitly (below).
     return {
         "type": "object",
         "properties": {
-            "score": {"type": ["integer", "null"],
-                      "description": "Integer 1-5 (5=best for a holder, 1=worst), or null if not confidently known - see the honesty rule."},
+            "score": {"type": "integer",
+                      "description": "Integer 1-5 (5=best for a holder, 1=worst), or 0 if not confidently known - see the honesty rule. 0 is NOT a real score; it means \"cannot score honestly\"."},
             "justification": {"type": "string"},
-            "source_period": {"type": ["string", "null"]},
+            "source_period": {"type": "string",
+                               "description": "The specific source period this score is based on (e.g. \"FY25 annual report\"), or an empty string \"\" if score is 0 (no source applies to a score you didn't give)."},
         },
         "required": ["score", "justification", "source_period"],
         "additionalProperties": False,
@@ -395,14 +404,20 @@ def _response_schema():
     the page now shows the inversion line in its place (Commit 2's own
     "replacing the what to check note" instruction) and all ten
     justifications directly (the tap-expand detail), leaving no reader
-    of the response who still needs a separate summary field."""
+    of the response who still needs a separate summary field.
+
+    v3 (25 Sep 2026): see _dimension_schema()'s own comment - every
+    property here is a plain type with a sentinel, zero union types
+    anywhere in this schema (the whole point of this rewrite)."""
     props = {key: _dimension_schema() for key in DIMENSION_KEYS}
-    props["inversion_scenario"] = {"type": ["string", "null"]}
-    # See _dimension_schema()'s own comment: minimum/maximum removed
-    # (unsupported by the structured-outputs schema subset for ANY
-    # type), range stated in description, enforced server-side below.
-    props["inversion_severity"] = {"type": ["integer", "null"],
-                                    "description": "Integer 1-5 severity (1=minor, 5=plausibly breaks the company), or null when the company is NOT RATED."}
+    props["inversion_scenario"] = {
+        "type": "string",
+        "description": "One-sentence inversion scenario, or an empty string \"\" if this company is NOT RATED (see the honesty rule) - never invent a scenario for a company you don't know well enough to score.",
+    }
+    props["inversion_severity"] = {
+        "type": "integer",
+        "description": "Severity 1 (minor) to 5 (plausibly breaks the company), or 0 if this company is NOT RATED. 0 is NOT a real severity.",
+    }
     return {
         "type": "object",
         "properties": props,
@@ -464,7 +479,16 @@ def _parse_response_json(text):
     bound instead (1 or 5) - it's a synthesis severity rating, not a
     per-dimension honesty signal, so an out-of-range value is far more
     likely to be an off-by-one from the model than evidence the whole
-    synthesis should be discarded."""
+    synthesis should be discarded.
+
+    Sentinel mapping (25 Sep 2026, owner-reported, v3 schema): the wire
+    schema no longer has nullable fields at all (see _dimension_
+    schema()'s own comment - a union-type parameter cap forced this).
+    Score 0 and inversion_severity 0 both mean the same thing the old
+    None did ("cannot score honestly" / "NOT RATED") and are mapped to
+    None right here, in the SAME spot the old out-of-range check
+    already lived - every line below this comment, and everything that
+    reads dims_dict/not_rated/inversion_* afterward, is unchanged."""
     data = json.loads(text)
     dims = {}
     null_count = 0
@@ -475,22 +499,31 @@ def _parse_response_json(text):
         score = d.get("score")
         if score is not None and not isinstance(score, int):
             score = int(score)
-        if score is not None and not (1 <= score <= 5):
+        if score == 0:
+            score = None
+        elif score is not None and not (1 <= score <= 5):
             score = None
         if score is None:
             null_count += 1
+        source_period = d.get("source_period")
+        if source_period == "":
+            source_period = None
         dims[key] = {
             "score": score,
             "justification": d.get("justification") or "",
-            "source_period": d.get("source_period"),
+            "source_period": source_period,
         }
     not_rated = null_count >= NOT_RATED_MIN_NULLS
 
     inversion_scenario = data.get("inversion_scenario")
+    if inversion_scenario == "":
+        inversion_scenario = None
     inversion_severity = data.get("inversion_severity")
     if inversion_severity is not None and not isinstance(inversion_severity, int):
         inversion_severity = int(inversion_severity)
-    if inversion_severity is not None:
+    if inversion_severity == 0:
+        inversion_severity = None
+    elif inversion_severity is not None:
         inversion_severity = max(1, min(5, inversion_severity))
     if not_rated:
         inversion_scenario = None
