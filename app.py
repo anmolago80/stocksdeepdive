@@ -69,6 +69,7 @@ import blog_render
 import compounder_ui
 from compounder_ui import sdd_plotly_chart
 import top100_render
+import currency_risk_render
 from simple_view_copy import SECTION_WHY_CAPTIONS, SECTION_WHY_CAPTIONS_ES
 import stress_etf_help_copy
 import switch_analyzer_engine
@@ -22884,6 +22885,27 @@ def page_top100():
     top100_render.render_top100_page(lang=st.session_state.get("lang", "en"))
 
 
+def page_currency_risk():
+    """💱 Currency Risk tab (25 Sep 2026, owner-approved mock, "headwind_
+    and_currency_risk_mock.html", section ②): a public, free, described-
+    data page - pure Python, no AI calls, no sign-in gate (unlike the
+    Money Tools registry, which requires sign-in for every entry - this
+    is a research/analysis page, closer in kind to Top 100 than to a
+    personal-finance calculator, so it gets its own standalone page
+    rather than a TOOLS_REGISTRY tab). Rendering lives in currency_risk_
+    render.py (same "*_render.py owns markup, app.py owns the page
+    shell" split top100_render.py already established). Cross-linked
+    from the Top 100 page's own "N of these priced in USD" caption
+    (top100.currency_banner) and from a plain link on the Money Tools
+    hub (both signed-in and signed-out variants) for "nav entry under
+    Tools" discoverability, without requiring TOOLS_REGISTRY's sign-in
+    wall for a page that needs none."""
+    _content_page_shell(i18n.t("currency_risk.page_title", st.session_state.get("lang", "en")),
+                         current="currency_risk")
+    _bump_page_view("currency_risk")
+    currency_risk_render.render_currency_risk_page(lang=st.session_state.get("lang", "en"))
+
+
 def page_methodology():
     _content_page_shell("How the scores work", current="methodology")
     _bump_page_view("methodology")
@@ -23319,6 +23341,13 @@ def _render_tools_hub(lang):
         unsafe_allow_html=True,
     )
     st.markdown(_tools_hub_cards_html(lang, linked=True), unsafe_allow_html=True)
+    # Currency Risk (25 Sep 2026, owner-approved mock): a plain link, not
+    # a TOOLS_REGISTRY card - that page needs no sign-in and lives at its
+    # own standalone URL (see page_currency_risk()'s own docstring for
+    # why), so it can't be a "?tool=<id>" deep-link card like the four
+    # calculators above it. This satisfies "nav entry under Tools"
+    # without pulling a sign-in-gated page into a sign-in-free feature.
+    st.caption(i18n.t("tools.currency_risk_link", lang))
 
 
 def _render_tools_signedout_hub(lang):
@@ -23338,6 +23367,10 @@ def _render_tools_signedout_hub(lang):
         unsafe_allow_html=True,
     )
     st.markdown(_tools_hub_cards_html(lang, linked=False), unsafe_allow_html=True)
+    # Currency Risk (25 Sep 2026, owner-approved mock): same plain link
+    # as the signed-in hub above - that page needs no sign-in, so it's
+    # shown here too rather than behind this hub's own sign-in CTA.
+    st.caption(i18n.t("tools.currency_risk_link", lang))
     # Button-doesn't-work fix, round 4 (19 Sep 2026) - the raw-HTML CTA
     # (rounds 1-3, all in this function's own git history) is gone.
     # Round 3 diagnosed - correctly - that Streamlit's st.markdown(
@@ -29912,6 +29945,10 @@ PG_TOOLS = st.Page(page_tools, title="Money Tools", url_path="tools")
 # only in whether a nav button to it is shown. page_top100() carries
 # that check (Commit 3): owner-only unless TOP100_PUBLIC is set.
 PG_TOP100 = st.Page(page_top100, title="Top 100", url_path="top-100")
+# Currency Risk (25 Sep 2026, owner-approved mock): registered like Top
+# 100 above - a real, directly-linkable page, public (no sign-in, no
+# owner gate - page_currency_risk() itself carries no such check).
+PG_CURRENCY_RISK = st.Page(page_currency_risk, title="Currency Risk", url_path="currency-risk")
 PG_METHODOLOGY = st.Page(page_methodology, title="How the scores work", url_path="methodology")
 PG_ABOUT = st.Page(page_about, title="About", url_path="about")
 PG_MODEL_HISTORY = st.Page(page_model_history, title="Model history", url_path="model-history")
@@ -29933,8 +29970,8 @@ PG_ADMIN_DASHBOARD = st.Page(page_admin_dashboard, title="Admin dashboard",
 
 _nav = st.navigation(
     [PG_HOME, PG_DEEP_DIVE, PG_COMPARISON, PG_RESEARCH, PG_SCANNER,
-     PG_RESULTS_CALENDAR, PG_PORTFOLIO, PG_TOOLS, PG_TOP100, PG_METHODOLOGY, PG_ABOUT,
-     PG_MODEL_HISTORY, PG_PRIVACY, PG_HOW_AI_IS_USED, PG_BLOG_ADMIN,
+     PG_RESULTS_CALENDAR, PG_PORTFOLIO, PG_TOOLS, PG_TOP100, PG_CURRENCY_RISK, PG_METHODOLOGY,
+     PG_ABOUT, PG_MODEL_HISTORY, PG_PRIVACY, PG_HOW_AI_IS_USED, PG_BLOG_ADMIN,
      PG_ADMIN_DASHBOARD],
     position="hidden",
 )

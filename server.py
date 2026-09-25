@@ -1142,6 +1142,13 @@ async def sitemap(request: Request):
     if top100_render.TOP100_PUBLIC and _renders_html("/top-100"):
         extra += (f'\n  <url><loc>{_xml_escape(base)}/top-100</loc>'
                   f'<changefreq>daily</changefreq><priority>0.6</priority></url>')
+    # Currency Risk (25 Sep 2026, owner-approved mock): same Streamlit-
+    # proxied/_renders_html() convention as /top-100 above - no separate
+    # visibility flag needed, this page is always public (page_currency_
+    # risk() carries no owner/sign-in gate).
+    if _renders_html("/currency-risk"):
+        extra += (f'\n  <url><loc>{_xml_escape(base)}/currency-risk</loc>'
+                  f'<changefreq>weekly</changefreq><priority>0.5</priority></url>')
     xml = xml.replace("</urlset>", extra + "\n</urlset>\n")
     return Response(xml, media_type="application/xml",
                     headers={"Cache-Control": "public, max-age=60"})

@@ -1097,6 +1097,7 @@ EN = {
     # property" phrasing already exists just above; flagged in the
     # report in case the longer form is wanted here too.
     "tools.signin_prompt": "Five free calculators — free account, no card, no spam.",
+    "tools.currency_risk_link": "Also see: [\U0001F4B1 Currency Risk](/currency-risk) — no sign-in needed",
     "tools.registry_stat": "{count} tool &middot; more coming",
     # Fix round 10 #1: per-tool error card - shown in place of a tool
     # whose render raised an exception, so one broken tool doesn't take
@@ -3439,6 +3440,7 @@ EN = {
     # of nav.* near the top of this dict; kept here instead purely to
     # keep this whole feature's EN copy in one place to review/edit.
     "nav.top100": "\U0001F3C6 Top 100",
+    "nav.currency_risk": "\U0001F4B1 Currency Risk",
     # v2 amendment (Sep 2026): subtitle carries the task's own EXACT
     # disclosure sentence, shown both as the page's own top banner AND
     # (bolded, first) inside the methodology expander - "prominently"
@@ -3555,7 +3557,8 @@ EN = {
         "{count} of these {total} companies are priced in USD. Over 5 years, "
         "currency movement can matter more to an AUD return than which stock "
         "was picked - that's a position-sizing question, not a quality one, "
-        "and it is never part of the Research Score above."
+        "and it is never part of the Research Score above. "
+        "[See how much currency risk that carries →](/currency-risk)"
     ),
     "top100.changes_heading": "What changed since the last selection",
     "top100.changes_none": "No changes since the last selection.",
@@ -3637,6 +3640,92 @@ EN = {
     "top100.dim_anchor_management": "5 = a long record of doing what they said; 1 = a credibility problem (null freely if not publicly known)",
     "top100.dim_anchor_capital_allocation": "5 = a disciplined, accretive incremental-ROIC record; 1 = repeated value-destroying impairments",
     "top100.dim_anchor_reinvestment_runway": "5 = a long runway to redeploy capital at current high returns; 1 = dominant with nowhere left to put the money",
+
+    # -----------------------------------------------------------------
+    # Currency Risk page (25 Sep 2026, owner-approved mock, "headwind_
+    # and_currency_risk_mock.html", section ②) - pure Python, no AI
+    # calls, $0 ongoing beyond one cached-daily yfinance history call.
+    # -----------------------------------------------------------------
+    "currency_risk.page_title": "\U0001F4B1 Currency Risk",
+    "currency_risk.subtitle": "How much your currency, not your stocks, can move an unhedged position.",
+    "currency_risk.disclaimer": (
+        "Described data, computed fresh from cached daily exchange-rate history - not "
+        "advice, and not a forecast. Mean reversion is a tendency, not a promise."
+    ),
+    "currency_risk.base_label": "From",
+    "currency_risk.quote_label": "To",
+    "currency_risk.range_label": "Range:",
+    "currency_risk.range_5y": "5y",
+    "currency_risk.range_10y": "10y",
+    "currency_risk.range_20y": "20y",
+    "currency_risk.range_max": "Max",
+    "currency_risk.hero_caption": "{quote} per {base} · today",
+    "currency_risk.same_currency_warning": "Pick two different currencies to compare.",
+    "currency_risk.no_data": "No exchange-rate history is available for {base}/{quote} right now.",
+    "currency_risk.stale_warning": (
+        "Showing the last successfully cached rate history - today's live refresh didn't "
+        "come through, so this may be a day or more old."
+    ),
+    "currency_risk.band_label": "±1σ band",
+    "currency_risk.avg_line_label": "period average {average}",
+    "currency_risk.section_a_heading": "A — Where the rate sits in its own history",
+    "currency_risk.section_a_why": (
+        "The dashed line is the period average; the shaded band is ±1 standard deviation "
+        "of the daily rate around it - a simple read on whether today's rate is rich or "
+        "cheap relative to its own recent history."
+    ),
+    "currency_risk.section_a_caption": (
+        "Percentile is today's rate's own rank within this window's daily closes (100th = "
+        "the highest close in the window). Annualised volatility is the standard day-to-day "
+        "measure (stdev of daily log returns × √252) - a different number from the level's "
+        "own ±1σ band above it."
+    ),
+    "currency_risk.tile_today": "Today",
+    "currency_risk.tile_average": "Period average",
+    "currency_risk.tile_vs_average": "vs average",
+    "currency_risk.tile_range": "Period range",
+    "currency_risk.tile_percentile": "Percentile",
+    "currency_risk.tile_vol": "Annualised vol",
+    "currency_risk.percentile_value_en": "{n}{suffix}",
+    "currency_risk.percentile_value_es": "{n}",
+    "currency_risk.section_b_heading": "B — Holding-period risk: what one year of FX has done historically",
+    "currency_risk.section_b_why": (
+        "Every rolling 12-month change in this window, bucketed. Red = the base currency "
+        "strengthened over that year (a drag on a foreign holding); green = it weakened (a "
+        "tailwind). Bars carry their own count, never colour alone."
+    ),
+    "currency_risk.section_b_caption": (
+        "The honest sizing question: over any single year, currency alone has historically "
+        "moved an unhedged foreign holding by the \"worst 12m\" figure below - often more "
+        "than a stock-picking edge is worth."
+    ),
+    "currency_risk.bucket_y_axis": "share of rolling 12-month windows",
+    "currency_risk.bucket_lt_m10": "< −10%",
+    "currency_risk.bucket_m10_m5": "−10 to −5%",
+    "currency_risk.bucket_m5_0": "−5 to 0%",
+    "currency_risk.bucket_0_p5": "0 to +5%",
+    "currency_risk.bucket_p5_p10": "+5 to +10%",
+    "currency_risk.bucket_gt_p10": "> +10%",
+    "currency_risk.tile_worst": "Worst 12m move",
+    "currency_risk.tile_best": "Best 12m move",
+    "currency_risk.tile_swing": "Typical 12m swing (±1σ)",
+    "currency_risk.not_enough_data_for_distribution": (
+        "Not enough history in this range yet to compute a rolling 12-month distribution - "
+        "try a longer range."
+    ),
+    "currency_risk.section_c_heading": "C — What it means for YOUR position",
+    "currency_risk.section_c_why": (
+        "Enter a position size and the three scenarios below price the FX leg alone - before "
+        "any movement in the underlying asset itself."
+    ),
+    "currency_risk.section_c_caption": (
+        "Described calculations, not advice - the position-sizing companion to the Top 100's "
+        "own currency-exposure caption."
+    ),
+    "currency_risk.position_label": "Position size ({base})",
+    "currency_risk.scenario_average_label": "If {base} reverts to the period average ({rate})",
+    "currency_risk.scenario_plus_1sigma_label": "If {base} reaches +1σ ({rate})",
+    "currency_risk.scenario_minus_1sigma_label": "If {base} falls to −1σ ({rate})",
 }
 
 ES = {
@@ -4480,6 +4569,7 @@ ES = {
     # Grid-fix follow-up (19 Sep 2026): "Cuatro" -> "Cinco" - see the EN
     # block's own comment above this same key.
     "tools.signin_prompt": "Cinco calculadoras gratuitas — cuenta gratis, sin tarjeta, sin spam.",
+    "tools.currency_risk_link": "También: [\U0001F4B1 Riesgo cambiario](/currency-risk) — sin necesidad de iniciar sesión",
     "tools.registry_stat": "{count} herramienta &middot; más próximamente",
     "tools.tool_error": "{tool} tuvo un error y no se pudo cargar &mdash; las demás herramientas siguen funcionando. Ha quedado registrado; inténtalo de nuevo en breve.",
 
@@ -6531,6 +6621,7 @@ ES = {
     # Top 100 - ES DRAFT, not professionally reviewed (same convention
     # as every other ES batch in this file).
     "nav.top100": "\U0001F3C6 Top 100",
+    "nav.currency_risk": "\U0001F4B1 Riesgo cambiario",
     "top100.subtitle": (
         "Las puntuaciones cualitativas y los escenarios de inversión son "
         "generados por Claude ({model}, {date}) - juicios analíticos "
@@ -6653,7 +6744,8 @@ ES = {
         "{count} de estas {total} empresas cotizan en USD. En 5 años, el "
         "movimiento cambiario puede importar más para un retorno en AUD que "
         "la acción elegida - eso es una cuestión de tamaño de posición, no de "
-        "calidad, y nunca forma parte de la Puntuación de Investigación anterior."
+        "calidad, y nunca forma parte de la Puntuación de Investigación anterior. "
+        "[Ver cuánto riesgo cambiario implica eso →](/currency-risk)"
     ),
     "top100.changes_heading": "Qué cambió desde la última selección",
     "top100.changes_none": "Sin cambios desde la última selección.",
@@ -6730,6 +6822,95 @@ ES = {
     "top100.dim_anchor_management": "5 = un largo historial de cumplir lo prometido; 1 = un problema de credibilidad (dejar en blanco libremente si no se conoce públicamente)",
     "top100.dim_anchor_capital_allocation": "5 = un historial disciplinado y acretivo de ROIC incremental; 1 = deterioros repetidos que destruyen valor",
     "top100.dim_anchor_reinvestment_runway": "5 = un largo margen para redesplegar capital a los retornos actuales altos; 1 = dominante sin dónde poner el dinero",
+
+    # -----------------------------------------------------------------
+    # Currency Risk page - ES DRAFT, not professionally reviewed (same
+    # convention as every other ES batch in this file).
+    # -----------------------------------------------------------------
+    "currency_risk.page_title": "\U0001F4B1 Riesgo cambiario",
+    "currency_risk.subtitle": "Cuánto puede mover tu moneda - no tus acciones - una posición sin cobertura.",
+    "currency_risk.disclaimer": (
+        "Datos descritos, calculados en el momento a partir del historial cambiario "
+        "guardado en caché diariamente - no es asesoramiento ni una predicción. La "
+        "reversión a la media es una tendencia, no una promesa."
+    ),
+    "currency_risk.base_label": "Desde",
+    "currency_risk.quote_label": "Hasta",
+    "currency_risk.range_label": "Rango:",
+    "currency_risk.range_5y": "5a",
+    "currency_risk.range_10y": "10a",
+    "currency_risk.range_20y": "20a",
+    "currency_risk.range_max": "Máx.",
+    "currency_risk.hero_caption": "{quote} por {base} · hoy",
+    "currency_risk.same_currency_warning": "Elige dos monedas distintas para comparar.",
+    "currency_risk.no_data": "No hay historial cambiario disponible para {base}/{quote} en este momento.",
+    "currency_risk.stale_warning": (
+        "Mostrando el último historial guardado en caché con éxito - la actualización de "
+        "hoy no llegó, así que esto puede tener un día o más de antigüedad."
+    ),
+    "currency_risk.band_label": "banda ±1σ",
+    "currency_risk.avg_line_label": "promedio del período {average}",
+    "currency_risk.section_a_heading": "A — Dónde se ubica el tipo de cambio en su propio historial",
+    "currency_risk.section_a_why": (
+        "La línea punteada es el promedio del período; la banda sombreada es ±1 desviación "
+        "estándar del tipo de cambio diario a su alrededor - una lectura simple de si el "
+        "tipo de cambio actual está caro o barato respecto a su propio historial reciente."
+    ),
+    "currency_risk.section_a_caption": (
+        "El percentil es la posición del tipo de cambio actual dentro de los cierres "
+        "diarios de esta ventana (percentil 100 = el cierre más alto de la ventana). La "
+        "volatilidad anualizada es la medida estándar día a día (desviación estándar de "
+        "los retornos logarítmicos diarios × √252) - un número distinto de la banda ±1σ "
+        "del nivel de arriba."
+    ),
+    "currency_risk.tile_today": "Hoy",
+    "currency_risk.tile_average": "Promedio del período",
+    "currency_risk.tile_vs_average": "vs promedio",
+    "currency_risk.tile_range": "Rango del período",
+    "currency_risk.tile_percentile": "Percentil",
+    "currency_risk.tile_vol": "Vol. anualizada",
+    "currency_risk.percentile_value_en": "{n}{suffix}",
+    "currency_risk.percentile_value_es": "{n}",
+    "currency_risk.section_b_heading": "B — Riesgo del período de tenencia: lo que ha hecho el FX en un año, históricamente",
+    "currency_risk.section_b_why": (
+        "Cada cambio en ventanas móviles de 12 meses en este rango, agrupado. Rojo = la "
+        "moneda base se fortaleció durante ese año (un lastre para una tenencia extranjera); "
+        "verde = se debilitó (un viento a favor). Las barras llevan su propio conteo, nunca "
+        "solo el color."
+    ),
+    "currency_risk.section_b_caption": (
+        "La pregunta honesta de dimensionamiento: en un solo año, la moneda por sí sola ha "
+        "movido históricamente una tenencia extranjera sin cobertura en la cifra de \"peor "
+        "12 meses\" de abajo - a menudo más de lo que vale una ventaja de selección de "
+        "acciones."
+    ),
+    "currency_risk.bucket_y_axis": "proporción de ventanas móviles de 12 meses",
+    "currency_risk.bucket_lt_m10": "< −10%",
+    "currency_risk.bucket_m10_m5": "−10 a −5%",
+    "currency_risk.bucket_m5_0": "−5 a 0%",
+    "currency_risk.bucket_0_p5": "0 a +5%",
+    "currency_risk.bucket_p5_p10": "+5 a +10%",
+    "currency_risk.bucket_gt_p10": "> +10%",
+    "currency_risk.tile_worst": "Peor movimiento 12m",
+    "currency_risk.tile_best": "Mejor movimiento 12m",
+    "currency_risk.tile_swing": "Variación típica 12m (±1σ)",
+    "currency_risk.not_enough_data_for_distribution": (
+        "Aún no hay suficiente historial en este rango para calcular una distribución "
+        "móvil de 12 meses - prueba con un rango más largo."
+    ),
+    "currency_risk.section_c_heading": "C — Qué significa para TU posición",
+    "currency_risk.section_c_why": (
+        "Ingresa un tamaño de posición y los tres escenarios de abajo cotizan solo el "
+        "tramo cambiario - antes de cualquier movimiento del activo subyacente."
+    ),
+    "currency_risk.section_c_caption": (
+        "Cálculos descritos, no asesoramiento - el complemento de dimensionamiento de "
+        "posición de la propia leyenda de exposición cambiaria del Top 100."
+    ),
+    "currency_risk.position_label": "Tamaño de la posición ({base})",
+    "currency_risk.scenario_average_label": "Si {base} revierte al promedio del período ({rate})",
+    "currency_risk.scenario_plus_1sigma_label": "Si {base} alcanza +1σ ({rate})",
+    "currency_risk.scenario_minus_1sigma_label": "Si {base} cae a −1σ ({rate})",
 }
 
 
