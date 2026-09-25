@@ -22896,8 +22896,9 @@ def page_currency_risk():
     render.py (same "*_render.py owns markup, app.py owns the page
     shell" split top100_render.py already established). Cross-linked
     from the Top 100 page's own "N of these priced in USD" caption
-    (top100.currency_banner) and from a plain link on the Money Tools
-    hub (both signed-in and signed-out variants) for "nav entry under
+    (top100.currency_banner) and, as a real sixth card in the Money
+    Tools grid (_currency_risk_hub_card_html(), 25 Sep 2026 tile fix -
+    shown in both signed-in and signed-out hubs), for "nav entry under
     Tools" discoverability, without requiring TOOLS_REGISTRY's sign-in
     wall for a page that needs none."""
     _content_page_shell(i18n.t("currency_risk.page_title", st.session_state.get("lang", "en")),
@@ -23224,6 +23225,13 @@ _TOOLS_HUB_STYLE = """
 [class*="st-key-tools_hub_signin_cta"] button:hover{
   background:#2dd4bf !important;border-color:#2dd4bf !important;color:#04211d !important}
 .sdd-tools-signin-inline{margin-top:10px}
+/* Currency Risk hub tile (25 Sep 2026, owner-approved mock,
+   "currency_tile_mock_1.html"): the "FREE · NO SIGN-IN" badge beside
+   that one card's title - same pill shape/colours as the mock's own
+   .free class. */
+.sdd-tools-free-badge{display:inline-block;margin-left:6px;background:#0e2a26;
+  border:1px solid #14532d;color:#34d399;border-radius:999px;padding:1px 8px;
+  font-size:10px;font-weight:700;vertical-align:middle}
 </style>
 """
 
@@ -23294,10 +23302,51 @@ def _tools_card_href(tool_id, lang):
     return f"/tools?{_qs}"
 
 
+def _currency_risk_hub_card_href(lang):
+    """/currency-risk[?lang=es] - a real, direct page link, not the
+    "?tool=<id>" deep-link shape _tools_card_href() builds for
+    TOOLS_REGISTRY entries (that page has its own standalone URL and no
+    ?tool= routing to preserve)."""
+    return "/currency-risk?lang=es" if lang == "es" else "/currency-risk"
+
+
+def _currency_risk_hub_card_html(lang):
+    """The Money Tools grid's sixth, always-linked card (25 Sep 2026,
+    owner-approved mock, "currency_tile_mock_1.html"): Currency Risk
+    graduates from the old "Also see" footnote (now removed) into a
+    real card, reusing the same .sdd-tools-card markup/styling as the
+    five TOOLS_REGISTRY cards above it - but built here rather than
+    added to TOOLS_REGISTRY itself, since that registry's own
+    page_tools() gates every entry behind paywall_engine.is_logged_in()
+    and this page needs no sign-in at all (see page_currency_risk()'s
+    own docstring). Unlike the registry cards, this one links directly
+    to /currency-risk and is ALWAYS an <a> (never dimmed/static), in
+    BOTH _render_tools_hub() and _render_tools_signedout_hub() - the
+    mock's own "the one tool without the sign-in gate" framing."""
+    title = html.escape(i18n.t("tools.hub.currency_risk_title", lang))
+    badge = html.escape(i18n.t("tools.hub.currency_risk_badge", lang))
+    blurb = html.escape(i18n.t("tools.hub.currency_risk_blurb", lang))
+    teaser = i18n.t("tools.hub.currency_risk_teaser", lang)
+    body = (
+        '<div class="ic">\U0001F4B1</div>'
+        f'<div class="n">{title} <span class="sdd-tools-free-badge">{badge}</span></div>'
+        f'<div class="p">{blurb}</div>'
+        f'<div class="out">{teaser}</div>'
+    )
+    return (
+        f'<a class="sdd-tools-card linked" href="{_currency_risk_hub_card_href(lang)}" '
+        f'target="_self">{body}</a>'
+    )
+
+
 def _tools_hub_cards_html(lang, linked):
-    """One card per TOOLS_REGISTRY entry. linked=True -> Option A (each
-    card is a real deep link into that tool); linked=False -> Option C
-    (display-only, no href, matching the mock's signed-out treatment)."""
+    """One card per TOOLS_REGISTRY entry, plus the always-linked
+    Currency Risk card appended last (see _currency_risk_hub_card_html()
+    - that one ignores `linked`, since it carries no sign-in gate to
+    respect either way). linked=True -> Option A (each registry card is
+    a real deep link into that tool); linked=False -> Option C (those
+    five display-only, no href, matching the mock's signed-out
+    treatment)."""
     _parts = []
     for _t in TOOLS_REGISTRY:
         _copy_keys = _TOOLS_HUB_CARD_COPY.get(_t["id"])
@@ -23330,6 +23379,7 @@ def _tools_hub_cards_html(lang, linked):
             )
         else:
             _parts.append(f'<div class="sdd-tools-card static">{_body}</div>')
+    _parts.append(_currency_risk_hub_card_html(lang))
     return f'<div class="sdd-tools-grid">{"".join(_parts)}</div>'
 
 
@@ -23340,14 +23390,12 @@ def _render_tools_hub(lang):
         f'<div class="sdd-tools-tagline">{html.escape(i18n.t("tools.page_subtitle", lang))}</div>',
         unsafe_allow_html=True,
     )
+    # Currency Risk (25 Sep 2026, owner-approved mock,
+    # "currency_tile_mock_1.html"): now a real sixth card inside this
+    # same grid (_currency_risk_hub_card_html(), appended by
+    # _tools_hub_cards_html() itself) - the old standalone "Also see"
+    # caption line this function used to render below the grid is gone.
     st.markdown(_tools_hub_cards_html(lang, linked=True), unsafe_allow_html=True)
-    # Currency Risk (25 Sep 2026, owner-approved mock): a plain link, not
-    # a TOOLS_REGISTRY card - that page needs no sign-in and lives at its
-    # own standalone URL (see page_currency_risk()'s own docstring for
-    # why), so it can't be a "?tool=<id>" deep-link card like the four
-    # calculators above it. This satisfies "nav entry under Tools"
-    # without pulling a sign-in-gated page into a sign-in-free feature.
-    st.caption(i18n.t("tools.currency_risk_link", lang))
 
 
 def _render_tools_signedout_hub(lang):
@@ -23366,11 +23414,12 @@ def _render_tools_signedout_hub(lang):
         f'<div class="sdd-tools-tagline">{html.escape(i18n.t("tools.signin_prompt", lang))}</div>',
         unsafe_allow_html=True,
     )
+    # Currency Risk (25 Sep 2026, owner-approved mock): its card (last in
+    # the grid) is always the real <a> _currency_risk_hub_card_html()
+    # builds, even here in the signed-out/display-only hub - that page
+    # carries no sign-in gate, so it's never dimmed to .static like the
+    # five TOOLS_REGISTRY cards above it.
     st.markdown(_tools_hub_cards_html(lang, linked=False), unsafe_allow_html=True)
-    # Currency Risk (25 Sep 2026, owner-approved mock): same plain link
-    # as the signed-in hub above - that page needs no sign-in, so it's
-    # shown here too rather than behind this hub's own sign-in CTA.
-    st.caption(i18n.t("tools.currency_risk_link", lang))
     # Button-doesn't-work fix, round 4 (19 Sep 2026) - the raw-HTML CTA
     # (rounds 1-3, all in this function's own git history) is gone.
     # Round 3 diagnosed - correctly - that Streamlit's st.markdown(

@@ -1082,7 +1082,7 @@ EN = {
     # real file with the old four-tool wording while genuinely adding its
     # own new FAQ keys elsewhere in this file. Re-applied verbatim; see
     # this task's own report for the root cause.
-    "tools.page_subtitle": "Free calculators for the money around your investing — budget, bills, offset, super and property. Described calculations from your own inputs, never advice.",
+    "tools.page_subtitle": "Free calculators for the money around your investing — budget, bills, offset, super, property and currency. Described calculations from your own inputs, never advice.",
     # Part 45: repurposed for the Option C (signed-out) hub tagline (was
     # the old single-line "sign in to use" info text this replaces).
     # Verbatim from the mock's Option C frame. Literal "—", same
@@ -1097,8 +1097,24 @@ EN = {
     # property" phrasing already exists just above; flagged in the
     # report in case the longer form is wanted here too.
     "tools.signin_prompt": "Five free calculators — free account, no card, no spam.",
-    "tools.currency_risk_link": "Also see: [\U0001F4B1 Currency Risk](/currency-risk) — no sign-in needed",
     "tools.registry_stat": "{count} tool &middot; more coming",
+    # Currency Risk hub tile (25 Sep 2026, owner-approved mock,
+    # "currency_tile_mock_1.html"): the sixth Money Tools card - built
+    # separately from TOOLS_REGISTRY's own _TOOLS_HUB_CARD_COPY dict
+    # since this tile is never gated/deep-linked like the other five
+    # (see _currency_risk_hub_card_html()'s own docstring). Replaces the
+    # old "tools.currency_risk_link" caption-line key, now removed.
+    "tools.hub.currency_risk_title": "Currency Risk",
+    "tools.hub.currency_risk_badge": "FREE · NO SIGN-IN",
+    "tools.hub.currency_risk_blurb": (
+        "How much your currency — not your stocks — can move an unhedged "
+        "position. 10-year view, average, volatility, and your position "
+        "in dollars."
+    ),
+    "tools.hub.currency_risk_teaser": (
+        'e.g. AUD at the 31st percentile of its decade → reversion ≈ '
+        '<b style="color:#fb7185">−4.9%</b> on USD holdings'
+    ),
     # Fix round 10 #1: per-tool error card - shown in place of a tool
     # whose render raised an exception, so one broken tool doesn't take
     # the whole Tools page down; the other tabs keep working.
@@ -3558,7 +3574,7 @@ EN = {
         "currency movement can matter more to an AUD return than which stock "
         "was picked - that's a position-sizing question, not a quality one, "
         "and it is never part of the Research Score above. "
-        "[See how much currency risk that carries →](/currency-risk)"
+        "[\U0001F4B1 See how much currency risk that carries →](/currency-risk)"
     ),
     "top100.changes_heading": "What changed since the last selection",
     "top100.changes_none": "No changes since the last selection.",
@@ -4564,13 +4580,26 @@ ES = {
     # this string is html.escape()'d before going into raw HTML).
     # RESTORED 19 Sep 2026 (grid-fix follow-up) - see the EN block's own
     # comment above this same key for the root cause.
-    "tools.page_subtitle": "Calculadoras gratuitas para el dinero alrededor de tu inversión — presupuesto, facturas, offset, super y propiedad. Cálculos descritos a partir de tus datos, nunca son un consejo.",
+    "tools.page_subtitle": "Calculadoras gratuitas para el dinero alrededor de tu inversión — presupuesto, facturas, offset, super, propiedad y divisas. Cálculos descritos a partir de tus datos, nunca son un consejo.",
     # Part 45: repurposed for the Option C (signed-out) hub tagline.
     # Grid-fix follow-up (19 Sep 2026): "Cuatro" -> "Cinco" - see the EN
     # block's own comment above this same key.
     "tools.signin_prompt": "Cinco calculadoras gratuitas — cuenta gratis, sin tarjeta, sin spam.",
-    "tools.currency_risk_link": "También: [\U0001F4B1 Riesgo cambiario](/currency-risk) — sin necesidad de iniciar sesión",
     "tools.registry_stat": "{count} herramienta &middot; más próximamente",
+    # Currency Risk hub tile - ES DRAFT, not professionally reviewed (same
+    # convention as every other ES batch in this file). See the EN block's
+    # own comment above these same keys.
+    "tools.hub.currency_risk_title": "Riesgo cambiario",
+    "tools.hub.currency_risk_badge": "GRATIS · SIN INICIO DE SESIÓN",
+    "tools.hub.currency_risk_blurb": (
+        "Cuánto puede mover tu moneda — no tus acciones — una posición sin "
+        "cobertura. Vista a 10 años, promedio, volatilidad y tu posición "
+        "en dólares."
+    ),
+    "tools.hub.currency_risk_teaser": (
+        'ej. el AUD en el percentil 31 de su década → reversión ≈ '
+        '<b style="color:#fb7185">−4,9%</b> en tenencias en USD'
+    ),
     "tools.tool_error": "{tool} tuvo un error y no se pudo cargar &mdash; las demás herramientas siguen funcionando. Ha quedado registrado; inténtalo de nuevo en breve.",
 
     # Part 45 (Money Tools landing rework, Options A + C) - see the EN
@@ -6745,7 +6774,7 @@ ES = {
         "movimiento cambiario puede importar más para un retorno en AUD que "
         "la acción elegida - eso es una cuestión de tamaño de posición, no de "
         "calidad, y nunca forma parte de la Puntuación de Investigación anterior. "
-        "[Ver cuánto riesgo cambiario implica eso →](/currency-risk)"
+        "[\U0001F4B1 Ver cuánto riesgo cambiario implica eso →](/currency-risk)"
     ),
     "top100.changes_heading": "Qué cambió desde la última selección",
     "top100.changes_none": "Sin cambios desde la última selección.",
