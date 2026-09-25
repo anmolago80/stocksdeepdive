@@ -3516,6 +3516,20 @@ EN = {
         "never re-scores the recent growth rate (only how much runway "
         "remains going forward)."
     ),
+    "top100.methodology_headwind": (
+        "**Headwind vs inversion.** Two different questions, easy to "
+        "confuse: the inversion is hypothetical - the single most "
+        "plausible scenario that COULD seriously damage the company. "
+        "The current headwind is present and factual - the actual, "
+        "standing reason the market is discounting the stock right now "
+        "(demand, margins, competition, regulation, sentiment), as at "
+        "the analysis date shown on the line itself. Refreshed "
+        "quarterly with the rest of the score, never on a live feed; "
+        "\"no clearly identifiable headwind\" is a permitted, honest "
+        "answer and simply shows no line."
+    ),
+    "top100.headwind_label": "Current headwind:",
+    "top100.headwind_date_caption": "read {date}",
     "top100.methodology_weights_heading": "Research Score weights (out of 100)",
     "top100.sort_heading": "Sort views",
     "top100.sort_label": "Rank by:",
@@ -6599,6 +6613,21 @@ ES = {
         "margen de reinversión nunca vuelve a puntuar la tasa de "
         "crecimiento reciente (solo cuánto margen queda hacia adelante)."
     ),
+    "top100.methodology_headwind": (
+        "**Viento en contra vs inversión.** Dos preguntas distintas, "
+        "fáciles de confundir: la inversión es hipotética - el "
+        "escenario individual más plausible que PODRÍA dañar "
+        "seriamente a la empresa. El viento en contra actual es "
+        "presente y factual - la razón real y vigente por la que el "
+        "mercado está descontando la acción ahora mismo (demanda, "
+        "márgenes, competencia, regulación, sentimiento), a la fecha "
+        "de análisis que se muestra en la propia línea. Se actualiza "
+        "trimestralmente junto con el resto de la puntuación, nunca en "
+        "vivo; \"sin viento en contra claramente identificable\" es una "
+        "respuesta honesta y permitida, y simplemente no muestra línea."
+    ),
+    "top100.headwind_label": "Viento en contra actual:",
+    "top100.headwind_date_caption": "leído {date}",
     "top100.methodology_weights_heading": "Ponderaciones de la Puntuación de Investigación (sobre 100)",
     "top100.sort_heading": "Opciones de orden",
     "top100.sort_label": "Ordenar por:",

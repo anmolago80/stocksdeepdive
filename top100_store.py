@@ -195,6 +195,20 @@ def _conn():
         )"""
     )
     _migrate_scores_schema_v2(conn)
+    # RUBRIC_VERSION v3 (25 Sep 2026, owner-approved mock, "headwind_
+    # and_currency_risk_mock.html") - Claude's one-line "why is the
+    # market discounting this company right now" answer. Purely
+    # additive (nullable, no PK change - unlike the v1->v2 bump, this
+    # one needs no _migrate_scores_schema_v3() rebuild at all, since
+    # rubric_version already sits in the PK for exactly this reason,
+    # see _migrate_scores_schema_v2()'s own docstring). Every existing
+    # v1/v2 row simply reads NULL here, which top100_render.py already
+    # treats as "no headwind line" - the same status a genuinely-empty
+    # ("no clearly identifiable headwind") v3 answer gets.
+    try:
+        conn.execute("ALTER TABLE top100_scores ADD COLUMN current_headwind TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
         """CREATE TABLE IF NOT EXISTS top100_batch_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -336,7 +350,8 @@ def current_asx_extension():
 # -----------------------------------------------------------------
 
 def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
-                inversion_scenario, inversion_severity, prompt, raw_response):
+                inversion_scenario, inversion_severity, prompt, raw_response,
+                current_headwind=None):
     """Upserts one ticker's AI score for (quarter, model,
     rubric_version) - rubric_version (top100_engine.RUBRIC_VERSION) is
     part of the cache key/PK (see _migrate_scores_schema_v2()'s own
@@ -351,33 +366,41 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
     + 1-5 severity (task's own "inversion synthesis" instruction) -
     both None for a NOT RATED company (top100_engine._parse_response_
     json() enforces this server-side before it ever reaches here).
+    `current_headwind` (RUBRIC_VERSION v3, 25 Sep 2026): the one-line
+    "why is the market discounting this company right now" answer,
+    same None-for-NOT-RATED / None-for-"no clearly identifiable
+    headwind" treatment as the inversion fields - defaults to None so
+    a caller passing the old (v1/v2-era) argument list still works.
     `prompt`/`raw_response`: the FULL text sent/received, for
     reproducibility (the task's own instruction) - never truncated."""
     with _conn() as conn:
         conn.execute(
             """INSERT INTO top100_scores
                  (ticker, quarter, model, rubric_version, dims_json, not_rated,
-                  inversion_scenario, inversion_severity, prompt, raw_response, scored_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  inversion_scenario, inversion_severity, current_headwind,
+                  prompt, raw_response, scored_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(ticker, quarter, model, rubric_version) DO UPDATE SET
                  dims_json = excluded.dims_json,
                  not_rated = excluded.not_rated,
                  inversion_scenario = excluded.inversion_scenario,
                  inversion_severity = excluded.inversion_severity,
+                 current_headwind = excluded.current_headwind,
                  prompt = excluded.prompt,
                  raw_response = excluded.raw_response,
                  scored_at = excluded.scored_at""",
             (ticker, quarter, model, rubric_version, json.dumps(dims), int(bool(not_rated)),
-             inversion_scenario, inversion_severity,
+             inversion_scenario, inversion_severity, current_headwind,
              prompt, raw_response, datetime.now(timezone.utc).isoformat()),
         )
 
 
 def get_score(ticker, quarter, model, rubric_version):
     """{"ticker","quarter","model","rubric_version","dims","not_rated",
-    "inversion_scenario","inversion_severity","prompt","raw_response",
-    "scored_at"} for one ticker, or None if it hasn't been scored yet
-    for this exact (quarter, model, rubric_version) - a row cached
+    "inversion_scenario","inversion_severity","current_headwind",
+    "prompt","raw_response","scored_at"} for one ticker, or None if it
+    hasn't been scored yet for this exact (quarter, model,
+    rubric_version) - a row cached
     under a DIFFERENT rubric_version (e.g. a retired "v1") is never
     returned here, by design."""
     with _conn() as conn:

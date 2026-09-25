@@ -333,7 +333,22 @@ NOT_RATED_MIN_NULLS = 3
 # unversioned scheme every score was cached under before this constant
 # existed - the migration backfills exactly that label for old rows,
 # it is never written by new code.
-RUBRIC_VERSION = "v2"
+#
+# v2 -> v3 (25 Sep 2026, owner-approved mock, "headwind_and_currency_
+# risk_mock.html"): current_headwind added to the response schema (see
+# _response_schema()'s own comment) - a new question the model answers,
+# so every pooled company is "unscored" under v3 until the next nightly
+# run re-scores it. This IS the delivery mechanism, not a side effect:
+# no schema migration needed (rubric_version was already part of the
+# top100_scores PK, exactly for this kind of bump - see
+# _migrate_scores_schema_v2()'s own docstring), the current_headwind
+# column is a purely additive ALTER TABLE (top100_store.py), and v2
+# rows stay preserved under their own key, untouched. Weights,
+# DIMENSIONS, max_tokens and the cache-key STRUCTURE are all otherwise
+# unchanged by this bump - see composite_score()'s own docstring for
+# why a headwind, like the inversion synthesis, has zero effect on any
+# score or ranking (display-only, same status as the inversion line).
+RUBRIC_VERSION = "v3"
 
 MODEL_TOP100 = "claude-opus-5-5"
 
@@ -411,7 +426,9 @@ THE TEN DIMENSIONS AND THEIR ANCHORS (1 = worst for a holder, 5 = best for a hol
     5: a long runway of high-return reinvestment opportunities still ahead (an expanding or under-penetrated market) at returns well above the cost of capital.
     1: a mature, saturated market with few remaining high-return reinvestment options - excess cash is likely to be misallocated, or simply returned because there is nowhere better to put it.
 
-INVERSION SYNTHESIS - after scoring all ten dimensions, write ONE sentence naming the single most plausible scenario that could seriously damage this company, plus a severity from 1 (minor) to 5 (plausibly breaks the company). This is a separate analytical synthesis, not a dimension score - it has ZERO effect on any of the ten scores above, on this company's ranking, or on its Top-20 eligibility. If three or more of your ten dimension scores are 0 (this company will be marked NOT RATED), output the sentinel values instead - an empty string "" for the inversion scenario and 0 for its severity - do not invent a damaging scenario for a company you don't know well enough to score in the first place."""
+INVERSION SYNTHESIS - after scoring all ten dimensions, write ONE sentence naming the single most plausible scenario that could seriously damage this company, plus a severity from 1 (minor) to 5 (plausibly breaks the company). This is a separate analytical synthesis, not a dimension score - it has ZERO effect on any of the ten scores above, on this company's ranking, or on its Top-20 eligibility. If three or more of your ten dimension scores are 0 (this company will be marked NOT RATED), output the sentinel values instead - an empty string "" for the inversion scenario and 0 for its severity - do not invent a damaging scenario for a company you don't know well enough to score in the first place.
+
+CURRENT HEADWIND - a separate field from the inversion above, and easy to confuse with it, so read this carefully: the inversion is HYPOTHETICAL (the worst plausible future scenario); the headwind is ACTUAL and PRESENT (why the market is discounting this company right now, as of your knowledge). In at most 40 words, state the actual, present reason the market is discounting this company - the standing headwind (demand, margins, competition, regulation, sentiment), as of your knowledge. This is what IS weighing on the stock, distinct from the inversion's hypothetical worst case. If no clearly identifiable headwind exists, output an empty string "" - never invent one. Same honesty rule as everywhere else in this prompt: a company you don't know a specific, current headwind for gets the empty-string sentinel, not a guessed one. NOT RATED companies (three or more null dimensions) get the empty-string sentinel here too, same as the inversion fields."""
 
 
 def _user_prompt(ticker, company_name):
@@ -419,7 +436,8 @@ def _user_prompt(ticker, company_name):
     return (
         f"Company: {name} (ticker: {ticker})\n\n"
         "Score this company on all ten dimensions per your instructions, "
-        "then write the one-sentence inversion synthesis (scenario + severity)."
+        "then write the one-sentence inversion synthesis (scenario + severity) "
+        "and the current headwind (at most 40 words, or an empty string)."
     )
 
 
@@ -468,7 +486,15 @@ def _response_schema():
 
     v3 (25 Sep 2026): see _dimension_schema()'s own comment - every
     property here is a plain type with a sentinel, zero union types
-    anywhere in this schema (the whole point of this rewrite)."""
+    anywhere in this schema (the whole point of this rewrite).
+
+    RUBRIC_VERSION v3 (25 Sep 2026, owner-approved mock, "headwind_
+    and_currency_risk_mock.html"): added current_headwind, a PLAIN
+    string (no union type, no minLength/maxLength - both unsupported
+    by structured outputs, same constraint every other field here
+    already respects) with the SAME "" -> null sentinel convention as
+    inversion_scenario just above - "no clearly identifiable headwind"
+    is a permitted, honest answer, never guessed."""
     props = {key: _dimension_schema() for key in DIMENSION_KEYS}
     props["inversion_scenario"] = {
         "type": "string",
@@ -478,10 +504,14 @@ def _response_schema():
         "type": "integer",
         "description": "Severity 1 (minor) to 5 (plausibly breaks the company), or 0 if this company is NOT RATED. 0 is NOT a real severity.",
     }
+    props["current_headwind"] = {
+        "type": "string",
+        "description": "At most 40 words: the actual, present reason the market is discounting this company - distinct from the hypothetical inversion scenario above. An empty string \"\" if no clearly identifiable headwind exists, or if this company is NOT RATED - never invent one.",
+    }
     return {
         "type": "object",
         "properties": props,
-        "required": DIMENSION_KEYS + ["inversion_scenario", "inversion_severity"],
+        "required": DIMENSION_KEYS + ["inversion_scenario", "inversion_severity", "current_headwind"],
         "additionalProperties": False,
     }
 
@@ -520,12 +550,20 @@ def current_quarter(today=None):
 
 def _parse_response_json(text):
     """Parses one company's structured-output JSON text into
-    (dims_dict, not_rated, inversion_scenario, inversion_severity).
-    `dims_dict`: {key: {"score","justification","source_period"}, ...}
-    for all ten keys. Raises ValueError on malformed JSON or a missing
-    dimension - the caller (poll_and_ingest_batch) treats that exactly
-    like any other per-ticker failure: logged, skipped, prior cache
-    untouched.
+    (dims_dict, not_rated, inversion_scenario, inversion_severity,
+    current_headwind). `dims_dict`: {key: {"score","justification",
+    "source_period"}, ...} for all ten keys. Raises ValueError on
+    malformed JSON or a missing dimension - the caller (poll_and_
+    ingest_batch) treats that exactly like any other per-ticker
+    failure: logged, skipped, prior cache untouched.
+
+    current_headwind (RUBRIC_VERSION v3, 25 Sep 2026, owner-approved
+    mock): the model's one-line, present-tense "why is the market
+    discounting this company right now" answer - same "" -> None
+    sentinel mapping and same NOT-RATED force-null belt-and-braces
+    layer as inversion_scenario/inversion_severity below, added in the
+    SAME spot for the SAME reason (never trust the model alone to null
+    it for a NOT RATED company).
 
     Belt-and-braces honesty enforcement (task's own explicit rule,
     "NOT-RATED rows: no inversion line, nothing invented"): a NOT
@@ -596,11 +634,16 @@ def _parse_response_json(text):
         inversion_severity = None
     elif inversion_severity is not None:
         inversion_severity = max(1, min(5, inversion_severity))
+    current_headwind = data.get("current_headwind")
+    if current_headwind == "":
+        current_headwind = None
+
     if not_rated:
         inversion_scenario = None
         inversion_severity = None
+        current_headwind = None
 
-    return dims, not_rated, inversion_scenario, inversion_severity
+    return dims, not_rated, inversion_scenario, inversion_severity, current_headwind
 
 
 # -----------------------------------------------------------------
@@ -733,7 +776,8 @@ def poll_and_ingest_batch(log=print):
             text = next((b.text for b in msg.content if b.type == "text"), "")
             prompt_params = _request_params(ticker, ticker)
             try:
-                dims, not_rated, inversion_scenario, inversion_severity = _parse_response_json(text)
+                dims, not_rated, inversion_scenario, inversion_severity, current_headwind = \
+                    _parse_response_json(text)
             except Exception as e:
                 failed += 1
                 log(f"[top100] {ticker}: could not parse batch result, skipped ({e})")
@@ -742,6 +786,7 @@ def poll_and_ingest_batch(log=print):
                 ticker=ticker, quarter=state["quarter"], model=state["model"],
                 rubric_version=RUBRIC_VERSION, dims=dims, not_rated=not_rated,
                 inversion_scenario=inversion_scenario, inversion_severity=inversion_severity,
+                current_headwind=current_headwind,
                 prompt=json.dumps(prompt_params), raw_response=text,
             )
             saved += 1
@@ -952,15 +997,16 @@ def run_single_test_call(ticker, company_name=None):
     as a real batch result would, so the test call's own result is
     immediately visible on the page rather than thrown away. Returns
     {"ticker","dims","not_rated","inversion_scenario","inversion_
-    severity","input_tokens","output_tokens","cost_usd"} - standard,
-    non-batch pricing (this call does not go through the Batches API),
-    reported honestly as such."""
+    severity","current_headwind","input_tokens","output_tokens",
+    "cost_usd"} - standard, non-batch pricing (this call does not go
+    through the Batches API), reported honestly as such."""
     import anthropic
     client = anthropic.Anthropic()
     params = _request_params(ticker, company_name)
     resp = client.messages.create(**params)
     text = next((b.text for b in resp.content if b.type == "text"), "")
-    dims, not_rated, inversion_scenario, inversion_severity = _parse_response_json(text)
+    dims, not_rated, inversion_scenario, inversion_severity, current_headwind = \
+        _parse_response_json(text)
     input_tokens = getattr(resp.usage, "input_tokens", 0) or 0
     output_tokens = getattr(resp.usage, "output_tokens", 0) or 0
     cost = (input_tokens / 1_000_000) * TOP100_INPUT_USD_PER_MTOK + \
@@ -970,11 +1016,13 @@ def run_single_test_call(ticker, company_name=None):
         ticker=ticker, quarter=quarter, model=MODEL_TOP100, rubric_version=RUBRIC_VERSION,
         dims=dims, not_rated=not_rated,
         inversion_scenario=inversion_scenario, inversion_severity=inversion_severity,
+        current_headwind=current_headwind,
         prompt=json.dumps(params), raw_response=text,
     )
     return {
         "ticker": ticker, "dims": dims, "not_rated": not_rated,
         "inversion_scenario": inversion_scenario, "inversion_severity": inversion_severity,
+        "current_headwind": current_headwind,
         "input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost,
     }
 

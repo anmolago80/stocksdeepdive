@@ -434,6 +434,43 @@ def _inversion_line_html(score_row, lang):
     )
 
 
+def _headwind_line_html(score_row, lang):
+    """"📉 Current headwind: {text} · read {date}" (RUBRIC_VERSION v3,
+    25 Sep 2026, owner-approved mock, "headwind_and_currency_risk_
+    mock.html") - sits directly under the inversion box, blue-toned to
+    visually separate "is happening" (the headwind) from the
+    inversion's "could happen". "" for a NOT RATED row, a row with no
+    headwind at all (score_row.get("current_headwind") is None - "no
+    clearly identifiable headwind" is a permitted, honestly-empty
+    answer, or the row predates RUBRIC_VERSION v3 entirely and the
+    column is simply NULL - same rendering either way), or a row with
+    a headwind but no scored_at timestamp (never renders today's date
+    for an old score - exact task requirement)."""
+    if not score_row or score_row.get("not_rated"):
+        return ""
+    headwind = score_row.get("current_headwind")
+    if not headwind:
+        return ""
+    scored_at = score_row.get("scored_at")
+    date_html = ""
+    if scored_at:
+        try:
+            scored_dt = _dt.datetime.fromisoformat(scored_at)
+        except ValueError:
+            scored_dt = None
+        if scored_dt:
+            date_text = i18n.format_date_dmy(scored_dt, lang)
+            date_caption = html.escape(_t("headwind_date_caption", lang, date=date_text))
+            date_html = f" <span style='color:#5b7290;'>· {date_caption}</span>"
+    label = html.escape(_t("headwind_label", lang))
+    text = html.escape(headwind)
+    return (
+        "<div style='color:#9fb8d4;background:#0d1b2e;border:1px solid #1e3a5f;"
+        "border-radius:9px;padding:8px 12px;margin-top:7px;font-size:12px;line-height:1.55;'>"
+        f"📉 <b style='color:#7dd3fc;'>{label}</b> {text}{date_html}</div>"
+    )
+
+
 def _row_edge_accent_style(score_row):
     """The mock's own "red row-edge accent" for a severity 4-5
     inversion (XRO/OCL rows) - a coloured left border on the row card
@@ -519,7 +556,8 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
             for key in top100_engine.DIMENSION_KEYS
         )
         + "</div>"
-        + _inversion_line_html(score_row, lang) +
+        + _inversion_line_html(score_row, lang)
+        + _headwind_line_html(score_row, lang) +
         "</div>",
         unsafe_allow_html=True,
     )
@@ -941,6 +979,7 @@ def render_top100_page(lang="en"):
         st.markdown(_t("methodology_pipeline", lang))
         st.markdown(_t("methodology_body", lang))
         st.markdown(_t("methodology_decircularisation", lang))
+        st.markdown(_t("methodology_headwind", lang))
         st.markdown(f"**{_t('methodology_weights_heading', lang)}**")
         # Top 100 Ranking Rework: each dimension's own weight (sums to
         # top100_engine.DIMENSION_WEIGHT_TOTAL, 83 today), rescaled onto
