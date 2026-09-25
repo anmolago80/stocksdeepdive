@@ -86,6 +86,133 @@ def _t(key, lang, **fmt):
     return i18n.t(f"top100.{key}", lang, **fmt)
 
 
+# -----------------------------------------------------------------
+# Top 100 Ranking Rework (25 Sep 2026, owner-approved mock, "top100_
+# research_ranking_mock_2.html"): the four-way sort bar above the
+# tabs. All display-layer - reads the same "composite"/"score_row"
+# _enriched_pool() already computes, never re-derives a score.
+# -----------------------------------------------------------------
+
+SORT_RESEARCH = "research"
+SORT_VALUE_TODAY = "value_today"
+SORT_VALUE_SCORE = "value_score"
+SORT_SEVERITY = "severity"
+
+# Order matches the task's own a/b/c/d listing - also the sort bar's
+# own left-to-right option order and the methodology panel's own
+# per-view explanation order.
+SORT_MODES = [SORT_RESEARCH, SORT_VALUE_TODAY, SORT_VALUE_SCORE, SORT_SEVERITY]
+
+# "Best value today" gate (task's own words: "Research Score >= 70") -
+# rows below this are not reordered, they are not shown in that view
+# at all.
+VALUE_TODAY_GATE = 70
+
+# Sentinel sort keys for a missing numeric field, so a tie-break or a
+# primary sort key never crashes on None - always sorts LAST among its
+# peers (a missing MOS/severity is never treated as "best").
+_MISSING_MOS_KEY = -1_000_000
+_MISSING_SEVERITY_KEY = -1
+
+
+def _key_research(row):
+    """Point 2a: Research Score desc, ties by higher MOS, then ticker
+    A-Z. Only ever called on rated rows (composite is not None)."""
+    mos = row.get("mos_pct")
+    return (-row["composite"], -(mos if mos is not None else _MISSING_MOS_KEY), row["ticker"])
+
+
+def _key_value_today(row):
+    """Point 2b: live MOS desc (the gate itself is applied by the
+    caller before sorting) - ticker A-Z breaks a tie."""
+    mos = row.get("mos_pct")
+    return (-(mos if mos is not None else _MISSING_MOS_KEY), row["ticker"])
+
+
+def _key_value_score(row):
+    """Point 2c: the site's own numeric ordering, unchanged semantics -
+    Value Score desc, ticker A-Z breaks a tie (the tie-break itself is
+    new, purely for a deterministic render; the ordering it breaks
+    ties within is untouched)."""
+    return (-row["value_score"], row["ticker"])
+
+
+def _key_severity(row):
+    """Point 2d: inversion severity desc (5 first), sub-sorted by
+    Research Score desc within each severity band. A rated row that
+    somehow has no inversion severity (the model can, in principle,
+    return one even when not NOT RATED) sorts after severity 1, never
+    treated as the worst-case top of the list."""
+    score_row = row.get("score_row") or {}
+    severity = score_row.get("inversion_severity")
+    return (-(severity if severity is not None else _MISSING_SEVERITY_KEY), -row["composite"], row["ticker"])
+
+
+def _sort_and_gate_rated(rows, sort_mode):
+    """Every RATED row (composite is not None), gated and sorted per
+    the active sort mode. Point 3's bottom-shelf rows (composite is
+    None) are never returned here - callers add the shelf separately
+    (Full 100 tab only; the Top 20 tabs never show it at all, per the
+    task's own "excluded from Top-20 tabs entirely" instruction).
+
+    Interleave choice for point 3's "under the Value Score view they
+    may instead interleave normally... implementer's choice" clause:
+    this codebase keeps unrated companies shelved under EVERY sort
+    view, Value Score included - one consistent code path rather than
+    a special case, reported as such in this task's own commit
+    message."""
+    rated = [r for r in rows if r["composite"] is not None]
+    if sort_mode == SORT_VALUE_TODAY:
+        rated = [r for r in rated if r["composite"] >= VALUE_TODAY_GATE]
+        return sorted(rated, key=_key_value_today)
+    if sort_mode == SORT_VALUE_SCORE:
+        return sorted(rated, key=_key_value_score)
+    if sort_mode == SORT_SEVERITY:
+        return sorted(rated, key=_key_severity)
+    return sorted(rated, key=_key_research)
+
+
+def _leading_metric(row, sort_mode, lang):
+    """(label, value_text) for the row header's leading, sort-defining
+    number - the mock's own "the leading number on each row is the one
+    doing the sorting" rule."""
+    if sort_mode == SORT_VALUE_TODAY:
+        mos = row.get("mos_pct")
+        return _t("col_mos", lang), (f"{mos:.1f}%" if mos is not None else "—")
+    if sort_mode == SORT_VALUE_SCORE:
+        return _t("col_value_score", lang), f"{row['value_score']:.1f}"
+    if sort_mode == SORT_SEVERITY:
+        score_row = row.get("score_row") or {}
+        severity = score_row.get("inversion_severity")
+        return _t("col_severity", lang), (f"{severity}/5" if severity is not None else "—")
+    return _t("col_research_score", lang), f"{row['composite']:.1f}"
+
+
+def _leading_metric_html(row, sort_mode, lang):
+    label, value = _leading_metric(row, sort_mode, lang)
+    return (
+        "<span style='margin-left:auto;font-size:14px;color:#34d399;font-weight:800;'>"
+        f"{html.escape(label)} {html.escape(value)}</span>"
+    )
+
+
+def _secondary_metrics_html(row, sort_mode, lang):
+    """The other stat(s) next to the leading number - whichever of
+    Value Score / MOS / Research Score ISN'T already the leading
+    metric for this sort mode, same "MOS · Value Score" / "Research ·
+    Value Score" pairing the mock shows."""
+    parts = []
+    if sort_mode != SORT_VALUE_SCORE:
+        parts.append(f"{html.escape(_t('col_value_score', lang))}: <b style='color:#e6edf5;'>{row['value_score']:.1f}</b>")
+    if sort_mode != SORT_VALUE_TODAY and row.get("mos_pct") is not None:
+        parts.append(f"{html.escape(_t('col_mos', lang))}: <b style='color:#e6edf5;'>{row['mos_pct']:.1f}%</b>")
+    if sort_mode != SORT_RESEARCH:
+        parts.append(f"{html.escape(_t('col_research_score', lang))}: <b style='color:#e6edf5;'>{row['composite']:.1f}</b>")
+    if not parts:
+        return ""
+    return f"<span style='color:#8aa0b8;font-size:12px;'>{' · '.join(parts)}</span>"
+
+
 def _dimension_tooltip_text(key, dim, lang):
     """The hover title= text for one dimension chip (task's own "full
     name, anchor meaning, justification with source period" - native
@@ -169,11 +296,14 @@ def _tradability_chip_html(spread_pct, lang):
     )
 
 
-def _not_rated_chip_html(lang):
+def _shelf_chip_html(text, bg, border, color):
+    """One bottom-shelf chip (point 3) - two distinct variants, exact
+    hex values from the owner-approved mock's own .chipn (AWAITING)
+    and .chipw (NOT RATED) classes."""
     return (
-        "<span style='display:inline-flex;align-items:center;border-radius:999px;padding:2px 9px;"
-        "font-size:11px;font-weight:700;background:#241a10;border:1px solid #7a4a12;color:#fbbf24;'>"
-        f"{html.escape(_t('not_rated', lang))}</span>"
+        "<span style='display:inline-flex;align-items:center;border-radius:999px;padding:1px 9px;"
+        f"font-size:10.5px;font-weight:700;background:{bg};border:1px solid {border};color:{color};'>"
+        f"{html.escape(text)}</span>"
     )
 
 
@@ -277,16 +407,24 @@ def _row_edge_accent_style(score_row):
     return ""
 
 
-def _render_row(rank, row, lang, finer_industry=None):
-    """One company row - rank/ticker(linked)/Value Score AND Research
-    Score side by side (task's own "sharp divergence is intended and
-    visible"), the ten dimension chips (each with a hover tooltip),
-    free sentiment/tradability chips, the inversion line (severity-
-    styled, replacing v1's "what to check" note), and a row-level
-    details toggle that expands every one of the ten justifications
-    stacked - the SAME text the hover tooltips carry, so a phone
-    (no hover) or a "read everything" desktop visit never leaves a
-    justification unreachable.
+def _render_row(rank, row, lang, finer_industry, sort_mode):
+    """One RATED company row - rank/ticker(linked), the leading number
+    for the active sort (task's own "the leading number on each row is
+    the one doing the sorting"), the other stats next to it, the ten
+    dimension chips (each with a hover tooltip), free sentiment/
+    tradability chips, the inversion line (severity-styled), and a
+    row-level details toggle that expands every one of the ten
+    justifications stacked - the SAME text the hover tooltips carry,
+    so a phone (no hover) or a "read everything" desktop visit never
+    leaves a justification unreachable.
+
+    PRECONDITION (Top 100 Ranking Rework): only ever called for a
+    RATED row - composite is not None, score_row is not None and not
+    not_rated. Both callers (_render_top20_tab, _render_full100_tab)
+    already filter to that via _sort_and_gate_rated() before reaching
+    here; an unrated company lives in the bottom shelf instead
+    (_shelf_row_html), which has no dimension chips or Research Score
+    to show.
 
     `finer_industry` (Top 100 Commit 5, 25 Sep 2026, owner-reported,
     industry mock): this ticker's compounder_data.json industry string
@@ -295,9 +433,7 @@ def _render_row(rank, row, lang, finer_industry=None):
     combined with row["sector"] into the industry tag right after the
     company name, present on normal and red-alert rows alike."""
     ticker = row["ticker"]
-    score_row = row.get("score_row")
-    composite = row.get("composite")
-    not_rated = score_row is None or score_row.get("not_rated")
+    score_row = row["score_row"]
 
     header_bits = [
         f"<span style='color:#5b7290;font-family:ui-monospace,Menlo,SFMono-Regular,monospace;"
@@ -311,28 +447,10 @@ def _render_row(rank, row, lang, finer_industry=None):
     industry_tag = _industry_tag_html(row.get("sector"), finer_industry)
     if industry_tag:
         header_bits.append(industry_tag)
-    header_bits.append(
-        f"<span style='color:#8aa0b8;font-size:12px;'>{html.escape(_t('col_value_score', lang))}: "
-        f"<b style='color:#e6edf5;'>{row['value_score']:.1f}</b></span>"
-    )
-    if row.get("mos_pct") is not None:
-        header_bits.append(
-            f"<span style='color:#8aa0b8;font-size:12px;'>{html.escape(_t('col_mos', lang))}: "
-            f"<b style='color:#e6edf5;'>{row['mos_pct']:.1f}%</b></span>"
-        )
-    # Both scores side by side, always: Value Score above (the site's
-    # own numeric measurement) already rendered; Research Score here
-    # (the AI-weighted analytical judgment) shows only when the
-    # company has one - a NOT RATED row shows Value Score alone plus
-    # the NOT RATED chip below, the "sharp divergence" the task's own
-    # OCL example is about.
-    if composite is not None:
-        header_bits.append(
-            f"<span style='color:#8aa0b8;font-size:12px;'>{html.escape(_t('col_research_score', lang))}: "
-            f"<b style='color:#34d399;'>{composite:.1f}</b></span>"
-        )
-    if not_rated:
-        header_bits.append(_not_rated_chip_html(lang))
+    header_bits.append(_leading_metric_html(row, sort_mode, lang))
+    secondary_html = _secondary_metrics_html(row, sort_mode, lang)
+    if secondary_html:
+        header_bits.append(secondary_html)
 
     spread_pct = _tradability_spread_pct(ticker)
     tradable_chip = ""
@@ -348,8 +466,8 @@ def _render_row(rank, row, lang, finer_industry=None):
         "</div>"
         "<div style='margin-top:8px;'>"
         + "".join(
-            _score_chip_html(key, (score_row["dims"].get(key) or {}).get("score") if score_row else None,
-                              (score_row["dims"].get(key) if score_row else None), lang)
+            _score_chip_html(key, (score_row["dims"].get(key) or {}).get("score"),
+                              score_row["dims"].get(key), lang)
             for key in top100_engine.DIMENSION_KEYS
         )
         + "</div>"
@@ -360,22 +478,17 @@ def _render_row(rank, row, lang, finer_industry=None):
 
     # Row-level details toggle (task's own words) - the tap-expand path
     # for phones (no hover) AND the desktop "read everything" path.
-    # NOT RATED gets the honest not_rated_note instead of ten empty
-    # dimensions.
     with st.expander(f"{ticker} — {_t('why_here_label', lang)}", expanded=False):
-        if not_rated:
-            st.caption(_t("not_rated_note", lang))
-        if score_row:
-            for key in top100_engine.DIMENSION_KEYS:
-                dim = score_row["dims"].get(key) or {}
-                if dim.get("score") is None and not dim.get("justification"):
-                    continue
-                score_text = str(dim["score"]) if dim.get("score") is not None else "—"
-                period = f" ({dim['source_period']})" if dim.get("source_period") else ""
-                st.markdown(
-                    f"**{html.escape(_t(f'dim_{key}', lang))} — {html.escape(score_text)}**"
-                    f"{html.escape(period)}  \n{html.escape(dim.get('justification') or '')}"
-                )
+        for key in top100_engine.DIMENSION_KEYS:
+            dim = score_row["dims"].get(key) or {}
+            if dim.get("score") is None and not dim.get("justification"):
+                continue
+            score_text = str(dim["score"]) if dim.get("score") is not None else "—"
+            period = f" ({dim['source_period']})" if dim.get("source_period") else ""
+            st.markdown(
+                f"**{html.escape(_t(f'dim_{key}', lang))} — {html.escape(score_text)}**"
+                f"{html.escape(period)}  \n{html.escape(dim.get('justification') or '')}"
+            )
 
 
 def _enriched_pool():
@@ -388,31 +501,114 @@ def _enriched_pool():
     quarter = top100_engine.current_quarter()
     scores = top100_store.scores_for_quarter_model(
         quarter, top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
-    pool_mos_values = [r["mos_pct"] for r in pool if r.get("mos_pct") is not None]
     out = []
     for row in pool:
         score_row = scores.get(row["ticker"])
-        composite = top100_engine.composite_score(score_row, row.get("mos_pct"), pool_mos_values)
+        composite = top100_engine.composite_score(score_row)
         out.append({**row, "score_row": score_row, "composite": composite})
     return out
 
 
-def _render_top20_tab(enriched, lang, finer_industry, currency=None):
-    rows = [r for r in enriched if r["composite"] is not None]
+def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None):
+    """Top 20 by the active sort (point 2, "applying to every tab
+    including Full 100"). Point 3: unrated companies are excluded from
+    the Top 20 tabs entirely - never shown here, not even in a shelf -
+    which falls straight out of _sort_and_gate_rated() only ever
+    returning rated rows."""
+    rows = _sort_and_gate_rated(enriched, sort_mode)
     if currency:
         rows = [r for r in rows if r["currency"] == currency]
-    rows = sorted(rows, key=lambda r: r["composite"], reverse=True)[:20]
+    rows = rows[:20]
     if not rows:
         st.caption(_t("empty_tab", lang))
         return
     for i, row in enumerate(rows, start=1):
-        _render_row(i, row, lang, finer_industry.get(row["ticker"]))
+        _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode)
 
 
-def _render_full100_tab(enriched, lang, finer_industry):
-    rows = sorted(enriched, key=lambda r: r["value_score"], reverse=True)
-    for i, row in enumerate(rows, start=1):
-        _render_row(i, row, lang, finer_industry.get(row["ticker"]))
+def _render_full100_tab(enriched, lang, finer_industry, sort_mode):
+    """Full 100: the rated companies under the active sort, then
+    (point 3) a labelled bottom shelf of unrated companies ordered by
+    Value Score among themselves - shown under every sort view except
+    "Best value today" (the >=70 gate excludes an unrated company from
+    that view exactly as it excludes any rated company that misses the
+    cut, so a company with no Research Score at all has nothing to
+    show there either)."""
+    rows = _sort_and_gate_rated(enriched, sort_mode)
+    if not rows:
+        st.caption(_t("empty_tab", lang))
+    else:
+        for i, row in enumerate(rows, start=1):
+            _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode)
+
+    if sort_mode != SORT_VALUE_TODAY:
+        shelf_rows = sorted(
+            (r for r in enriched if r["composite"] is None),
+            key=_key_value_score,
+        )
+        _render_bottom_shelf(shelf_rows, lang)
+
+
+# Bottom-shelf chip colours (point 3) - exact hex values from the mock's
+# own .chipn (AWAITING - neutral grey-blue) and .chipw (NOT RATED -
+# amber "insufficient record" warning) classes.
+_SHELF_CHIP_AWAITING = ("#1a2333", "#2a3f63", "#7f95b3")
+_SHELF_CHIP_NOT_RATED = ("#2a2413", "#7c5e10", "#fbbf24")
+
+
+def _shelf_row_html(row, lang):
+    """One bottom-shelf row (point 3) - a compact chip+ticker+stats
+    line, never the full dimension-chip card _render_row() draws
+    (there are no dimensions to show). Two distinct chip variants:
+    "⏳ AWAITING" when score_row is None entirely (never submitted/
+    ingested - a genuine newcomer), "◇ NOT RATED" when score_row
+    exists but the model declined to score it (>= NOT_RATED_MIN_NULLS
+    null dimensions) - the task's own explicit distinction."""
+    score_row = row.get("score_row")
+    if score_row is None:
+        chip = _shelf_chip_html(_t("shelf_chip_awaiting", lang), *_SHELF_CHIP_AWAITING)
+        caption = _t("shelf_caption_awaiting", lang)
+    else:
+        chip = _shelf_chip_html(_t("shelf_chip_not_rated", lang), *_SHELF_CHIP_NOT_RATED)
+        caption = _t("shelf_caption_not_rated", lang)
+    ticker = row["ticker"]
+    mos_html = ""
+    if row.get("mos_pct") is not None:
+        mos_html = (
+            f" · {html.escape(_t('col_mos', lang))}: "
+            f"<b style='color:#e6edf5;'>{row['mos_pct']:.1f}%</b>"
+        )
+    return (
+        "<div style='display:flex;gap:10px;align-items:baseline;font-size:12.5px;"
+        "padding:4px 0;color:#8aa0b8;flex-wrap:wrap;'>"
+        + chip +
+        f"<a href='/deep-dive?ticker={html.escape(ticker)}' target='_self' "
+        "style='color:#2dd4bf;font-weight:800;font-size:13px;text-decoration:none;'>"
+        f"{html.escape(ticker)}</a>"
+        f"<span>{html.escape(_t('col_value_score', lang))}: "
+        f"<b style='color:#e6edf5;'>{row['value_score']:.1f}</b>{mos_html}</span>"
+        f"<span style='color:#5b7290;font-size:11px;'>{html.escape(caption)}</span>"
+        "</div>"
+    )
+
+
+def _render_bottom_shelf(shelf_rows, lang):
+    """Full 100's labelled bottom-shelf section (point 3) - companies
+    with no Research Score can't be interleaved with rated ones, so
+    they sit here, ordered by Value Score among themselves (already
+    the caller's own sort key). Renders nothing when there's nothing
+    to shelve (a fully-scored pool)."""
+    if not shelf_rows:
+        return
+    rows_html = "".join(_shelf_row_html(r, lang) for r in shelf_rows)
+    st.markdown(
+        "<div style='border:1px dashed #2a3f63;border-radius:12px;padding:12px 16px;margin-top:16px;'>"
+        "<h3 style='margin:0 0 8px;font-size:12px;color:#8aa0b8;letter-spacing:.05em;"
+        f"text-transform:uppercase;'>{html.escape(_t('shelf_heading', lang))}</h3>"
+        + rows_html +
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 # Top 100 Commit 5 (25 Sep 2026, owner-reported, industry mock): a
@@ -586,6 +782,28 @@ def _render_refresh_all_control(lang):
         _handle_refresh_all_click(lang)
 
 
+def _render_sort_bar(lang):
+    """Point 2's four-way sort bar, above the tabs, applying to every
+    tab - one shared selection (st.segmented_control's own key= gives
+    it session-state persistence across reruns), same widget/pattern
+    app.py's own language picker and "new money" mode picker already
+    use (st.segmented_control(...) or default_label, since the widget
+    can return None if a user deselects it). Returns the active sort
+    mode constant (SORT_RESEARCH by default)."""
+    labels = {m: _t(f"sort_option_{m}", lang) for m in SORT_MODES}
+    options = [labels[m] for m in SORT_MODES]
+    default_label = labels[SORT_RESEARCH]
+    st.caption(_t("sort_label", lang))
+    choice_label = st.segmented_control(
+        _t("sort_label", lang), options, default=default_label,
+        key="top100_sort_bar", label_visibility="collapsed",
+    ) or default_label
+    label_to_mode = {v: k for k, v in labels.items()}
+    sort_mode = label_to_mode.get(choice_label, SORT_RESEARCH)
+    st.caption(_t(f"sort_caption_{sort_mode}", lang))
+    return sort_mode
+
+
 def render_top100_page(lang="en"):
     """The Top 100 page's full content - app.py's page_top100() calls
     this after its own owner/TOP100_PUBLIC gate (see that function's
@@ -603,10 +821,25 @@ def render_top100_page(lang="en"):
         st.markdown(_t("methodology_body", lang))
         st.markdown(_t("methodology_decircularisation", lang))
         st.markdown(f"**{_t('methodology_weights_heading', lang)}**")
-        weight_lines = [f"- {_t('col_research_score', lang)} ({_t('methodology_return_label', lang)}): {top100_engine.WEIGHT_RETURN}"]
-        for key, label, weight in top100_engine.DIMENSIONS:
-            weight_lines.append(f"- {_t(f'dim_{key}', lang)}: {weight}")
+        # Top 100 Ranking Rework: each dimension's own weight (sums to
+        # top100_engine.DIMENSION_WEIGHT_TOTAL, 83 today), rescaled onto
+        # a 0-100 feel the same way composite_score() itself does -
+        # simple integer rounding lands on exactly 100 for the current
+        # ten weights (14+12+12+12+12+10+10+7+6+5), so the table the
+        # task asked for ("the ten dimensions summing to 100") is
+        # exact, not approximate, for today's weights.
+        weight_lines = [
+            f"- {_t(f'dim_{key}', lang)}: "
+            f"{round(weight * 100.0 / top100_engine.DIMENSION_WEIGHT_TOTAL)}"
+            for key, _label, weight in top100_engine.DIMENSIONS
+        ]
         st.markdown("\n".join(weight_lines))
+        st.markdown(f"**{_t('sort_heading', lang)}**")
+        sort_lines = [
+            f"- **{_t(f'sort_option_{m}', lang)}** — {_t(f'sort_caption_{m}', lang)}"
+            for m in SORT_MODES
+        ]
+        st.markdown("\n".join(sort_lines))
 
     _render_refresh_all_control(lang)
 
@@ -629,14 +862,16 @@ def render_top100_page(lang="en"):
 
     _changes_strip(enriched, lang)
 
+    sort_mode = _render_sort_bar(lang)
+
     tabs = st.tabs([
         _t("tab_mixed", lang), _t("tab_au", lang), _t("tab_us", lang), _t("tab_full", lang),
     ])
     with tabs[0]:
-        _render_top20_tab(enriched, lang, finer_industry)
+        _render_top20_tab(enriched, lang, finer_industry, sort_mode)
     with tabs[1]:
-        _render_top20_tab(enriched, lang, finer_industry, currency="AUD")
+        _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency="AUD")
     with tabs[2]:
-        _render_top20_tab(enriched, lang, finer_industry, currency="USD")
+        _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency="USD")
     with tabs[3]:
-        _render_full100_tab(enriched, lang, finer_industry)
+        _render_full100_tab(enriched, lang, finer_industry, sort_mode)

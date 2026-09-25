@@ -3452,12 +3452,15 @@ EN = {
     ),
     "top100.methodology_heading": "Methodology",
     "top100.methodology_pipeline": (
-        "**Two stages.** The numbers pick the 100; the analysis ranks "
-        "them. Selection and the Value Score are pure arithmetic over "
-        "this site's own scanned fundamentals - no AI judgment anywhere "
-        "near which 100 companies make the pool. Only ranking WITHIN "
-        "that pool (the Research Score, and which names surface in the "
-        "Top 20 tabs) draws on Claude's qualitative analysis."
+        "**Two stages.** The numbers pick the 100; the analysis alone "
+        "ranks them; price sorts, never scores. Selection and the "
+        "Value Score are pure arithmetic over this site's own scanned "
+        "fundamentals - no AI judgment anywhere near which 100 "
+        "companies make the pool. Ranking WITHIN that pool (the "
+        "Research Score, and which names surface in the Top 20 tabs) "
+        "draws purely on Claude's qualitative analysis; price (margin "
+        "of safety, Value Score) never enters that number - it's a "
+        "sort option instead, see below."
     ),
     "top100.methodology_body": (
         "**Selection.** After the nightly scan, every saved public universe's "
@@ -3479,12 +3482,15 @@ EN = {
         "1-5 - purely descriptive, with zero effect on any score or "
         "ranking.\n\n"
         "**Research Score.** Computed in plain arithmetic, never by the "
-        "model: 17% of the Research Score is this site's own margin of "
-        "safety (intrinsic value vs price), rescaled across the current "
-        "100 companies so it sits on the same 0-100 scale as everything "
-        "else - not the Value Score, which would double-count quality "
-        "already priced into the selection. The remaining 83% is the ten "
-        "AI-scored dimensions, weighted as below.\n\n"
+        "model: the ten AI-scored dimensions alone, weighted as below, "
+        "summed and rescaled onto a 0-100 feel so the number reads on the "
+        "same scale as everything else on the page. Margin of safety "
+        "contributes nothing to it - MOS already decides which companies "
+        "enter the pool at all (via the Value Score), so folding it into "
+        "the Research Score too would double-count valuation and let "
+        "ordinary day-to-day price movement distort what's meant to be a "
+        "pure read of the business. MOS stays on every row as information, "
+        "and is its own sort option below (\"Best value today\").\n\n"
         "**Cache and cadence.** A score is cached per ticker, calendar "
         "quarter, model and rubric version - only newly-entered, unscored "
         "companies are sent to the API on an ordinary night (capped at 120 "
@@ -3511,7 +3517,17 @@ EN = {
         "remains going forward)."
     ),
     "top100.methodology_weights_heading": "Research Score weights (out of 100)",
-    "top100.methodology_return_label": "margin of safety, normalised",
+    "top100.sort_heading": "Sort views",
+    "top100.sort_label": "Rank by:",
+    "top100.sort_option_research": "Research Score",
+    "top100.sort_option_value_today": "Best value today",
+    "top100.sort_option_value_score": "Value Score",
+    "top100.sort_option_severity": "Inversion severity",
+    "top100.sort_caption_research": "Claude's ten-dimension analytical read, highest first.",
+    "top100.sort_caption_value_today": "companies rated 70+ only, cheapest first",
+    "top100.sort_caption_value_score": "the site's own numeric ordering, unchanged.",
+    "top100.sort_caption_severity": "worst plausible scenarios first.",
+    "top100.col_severity": "Inversion severity",
     "top100.no_data": "No Top 100 selection has run yet - check back after the next nightly scan.",
     "top100.currency_banner": (
         "{count} of these {total} companies are priced in USD. Over 5 years, "
@@ -3550,8 +3566,11 @@ EN = {
     "top100.col_mos": "MOS",
     "top100.col_research_score": "Research Score",
     "top100.col_your_score": "This company's score",
-    "top100.not_rated": "NOT RATED",
-    "top100.not_rated_note": "insufficient public record - unscreened; Value Score still applies",
+    "top100.shelf_heading": "Awaiting score / not rated",
+    "top100.shelf_chip_awaiting": "⏳ AWAITING",
+    "top100.shelf_caption_awaiting": "scored automatically at the next nightly run",
+    "top100.shelf_chip_not_rated": "◇ NOT RATED",
+    "top100.shelf_caption_not_rated": "insufficient public record — Claude declined to score; retried each quarter",
     "top100.why_here_label": "full dimension detail",
     "top100.tradability_chip": "⚠ wide spread · {pct}% - costly to trade",
     "top100.sentiment_fearful": "Fearful",
@@ -6491,13 +6510,16 @@ ES = {
     ),
     "top100.methodology_heading": "Metodología",
     "top100.methodology_pipeline": (
-        "**Dos etapas.** Los números eligen a las 100; el análisis las "
-        "ordena. La selección y el Value Score son aritmética pura sobre "
-        "los datos fundamentales ya escaneados por este sitio - ningún "
-        "juicio de IA interviene en qué 100 empresas forman el conjunto. "
-        "Solo el orden DENTRO de ese conjunto (la Puntuación de "
-        "Investigación, y qué nombres aparecen en las pestañas Top 20) "
-        "se basa en el análisis cualitativo de Claude."
+        "**Dos etapas.** Los números eligen a las 100; solo el análisis "
+        "las ordena; el precio ordena, nunca puntúa. La selección y el "
+        "Value Score son aritmética pura sobre los datos fundamentales "
+        "ya escaneados por este sitio - ningún juicio de IA interviene "
+        "en qué 100 empresas forman el conjunto. El orden DENTRO de ese "
+        "conjunto (la Puntuación de Investigación, y qué nombres "
+        "aparecen en las pestañas Top 20) se basa únicamente en el "
+        "análisis cualitativo de Claude; el precio (margen de "
+        "seguridad, Value Score) nunca entra en ese número - es una "
+        "opción de orden en su lugar, ver más abajo."
     ),
     "top100.methodology_body": (
         "**Selección.** Después del escaneo nocturno, se combinan las filas de "
@@ -6522,13 +6544,17 @@ ES = {
         "la empresa, más una severidad de 1 a 5 - puramente descriptiva, "
         "sin ningún efecto sobre ninguna puntuación u orden.\n\n"
         "**Puntuación de Investigación.** Calculada con aritmética simple, "
-        "nunca por el modelo: el 17% de la Puntuación de Investigación es "
-        "el margen de seguridad propio de este sitio (valor intrínseco "
-        "frente al precio), reescalado entre las 100 empresas actuales "
-        "para que quede en la misma escala de 0 a 100 que el resto - no "
-        "el Value Score, que contaría dos veces la calidad ya incorporada "
-        "en la selección. El 83% restante son las diez dimensiones "
-        "evaluadas por IA, ponderadas como se indica abajo.\n\n"
+        "nunca por el modelo: solo las diez dimensiones evaluadas por IA, "
+        "ponderadas como se indica abajo, sumadas y reescaladas a una "
+        "escala de 0 a 100 para que el número se lea en la misma escala "
+        "que el resto de la página. El margen de seguridad no aporta "
+        "nada a este número - el MOS ya decide qué empresas entran al "
+        "conjunto (a través del Value Score), así que incorporarlo "
+        "también en la Puntuación de Investigación contaría dos veces la "
+        "valoración y dejaría que el movimiento diario del precio "
+        "distorsionara lo que debe ser una lectura pura del negocio. El "
+        "MOS se sigue mostrando en cada fila como información, y es su "
+        "propia opción de orden más abajo (\"Mejor valor hoy\").\n\n"
         "**Caché y periodicidad.** Una puntuación se guarda en caché por "
         "acción, trimestre calendario, modelo y versión de rúbrica - solo "
         "las empresas nuevas y aún sin puntuar se envían a la API en una "
@@ -6559,7 +6585,17 @@ ES = {
         "crecimiento reciente (solo cuánto margen queda hacia adelante)."
     ),
     "top100.methodology_weights_heading": "Ponderaciones de la Puntuación de Investigación (sobre 100)",
-    "top100.methodology_return_label": "margen de seguridad, normalizado",
+    "top100.sort_heading": "Opciones de orden",
+    "top100.sort_label": "Ordenar por:",
+    "top100.sort_option_research": "Puntuación de Investigación",
+    "top100.sort_option_value_today": "Mejor valor hoy",
+    "top100.sort_option_value_score": "Value Score",
+    "top100.sort_option_severity": "Severidad de inversión",
+    "top100.sort_caption_research": "la lectura analítica de diez dimensiones de Claude, de mayor a menor.",
+    "top100.sort_caption_value_today": "solo empresas evaluadas con 70+, de más barata a más cara",
+    "top100.sort_caption_value_score": "el orden numérico propio del sitio, sin cambios.",
+    "top100.sort_caption_severity": "primero los escenarios más graves.",
+    "top100.col_severity": "Severidad de inversión",
     "top100.no_data": "Aún no se ha ejecutado ninguna selección del Top 100 - vuelve a mirar después del próximo escaneo nocturno.",
     "top100.currency_banner": (
         "{count} de estas {total} empresas cotizan en USD. En 5 años, el "
@@ -6596,8 +6632,11 @@ ES = {
     "top100.col_mos": "MOS",
     "top100.col_research_score": "Puntuación de Investigación",
     "top100.col_your_score": "Puntuación de esta empresa",
-    "top100.not_rated": "NO EVALUADA",
-    "top100.not_rated_note": "registro público insuficiente - sin evaluar; el Value Score aún aplica",
+    "top100.shelf_heading": "Esperando puntuación / no evaluadas",
+    "top100.shelf_chip_awaiting": "⏳ EN ESPERA",
+    "top100.shelf_caption_awaiting": "se puntúa automáticamente en la próxima ejecución nocturna",
+    "top100.shelf_chip_not_rated": "◇ NO EVALUADA",
+    "top100.shelf_caption_not_rated": "registro público insuficiente — Claude no la puntuó; se reintenta cada trimestre",
     "top100.why_here_label": "detalle completo por dimensión",
     "top100.tradability_chip": "⚠ spread amplio · {pct}% - costoso de operar",
     "top100.sentiment_fearful": "Temeroso",

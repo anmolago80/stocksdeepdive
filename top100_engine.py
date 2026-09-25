@@ -265,6 +265,15 @@ DIMENSION_KEYS = [k for k, _l, _w in DIMENSIONS]
 DIMENSION_WEIGHT = {k: w for k, _l, w in DIMENSIONS}
 DIMENSION_LABEL = {k: l for k, l, _w in DIMENSIONS}
 
+# Top 100 Research Score rework (25 Sep 2026, owner-approved mock): the
+# ten AI dimensions' own weights (83 today, since WEIGHT_RETURN=17 and
+# the two sum to 100 per the assert above) - the denominator composite_
+# score() rescales a fully-scored company's analytical total against,
+# and the same number top100_render.py's methodology panel divides by
+# to display each dimension's weight rescaled onto a 0-100 feel. A
+# derived constant, not a new tunable - DIMENSIONS itself is untouched.
+DIMENSION_WEIGHT_TOTAL = sum(w for _k, _l, w in DIMENSIONS)
+
 # >= this many null dimensions (out of ten) -> NOT RATED. The task's
 # own rule, named here rather than an inline "3" so it reads the same
 # in the prompt text, the scoring parser, and the page.
@@ -965,37 +974,40 @@ def refresh_all(log=print):
 # Composite (Python-computed, never by the model).
 # -----------------------------------------------------------------
 
-def _normalize_mos(mos_pct, pool_mos_values):
-    """MOS% linearly rescaled to 0..1 across the CURRENT pool's own
-    min/max ("normalised across the 100" - the task's own words) -
-    never the raw MOS% itself, which has no natural 0..1 range (it can
-    be negative for an overvalued name, or well above 100% for a
-    deeply undervalued one). A pool with only one distinct MOS value
-    (degenerate - e.g. a tiny test fixture) maps everyone to the
-    midpoint (0.5) rather than dividing by zero."""
-    if mos_pct is None or not pool_mos_values:
-        return None
-    lo, hi = min(pool_mos_values), max(pool_mos_values)
-    if hi == lo:
-        return 0.5
-    return max(0.0, min(1.0, (mos_pct - lo) / (hi - lo)))
-
-
-def composite_score(score_row, mos_pct, pool_mos_values):
+def composite_score(score_row):
     """The 0-100 "Research Score" (the page's own public name for this
     number) for one company - None for a NOT RATED company (score_row
-    is None, or score_row["not_rated"] is True) or one with no MOS% at
-    all (mos_pct is None - can't price its own "return" component,
-    WEIGHT_RETURN% of the total weight).
+    is None, or score_row["not_rated"] is True).
 
-    composite = WEIGHT_RETURN * normalized_MOS
-              + sum over each NON-NULL AI dimension of
+    Top 100 Research Score rework (25 Sep 2026, owner-approved mock,
+    "top100_research_ranking_mock_2.html"): PURE Claude analytical
+    judgment now - no margin-of-safety component. Previously this
+    function also blended WEIGHT_RETURN% (17) of MOS, normalised
+    across the pool, into the total; that's removed. MOS already
+    selects which 100 companies are even in the pool (via the Value
+    Score), so pricing it into the Research Score a second time
+    double-counted valuation and let day-to-day price wobble distort
+    what was meant to be a pure analytical ranking. MOS stays
+    displayed on every row as information, and is now its own sort
+    option (top100_render.py's four-way sort bar, "Best value today")
+    rather than a scoring input. WEIGHT_RETURN itself is untouched
+    (still asserted to sum with DIMENSIONS to 100 above) - it's simply
+    no longer read by this function.
+
+    composite = sum over each NON-NULL AI dimension of
                 weight_i * (score_i - 1) / 4
-                RESCALED so the AI-dimension portion still sums to
-                (100 - WEIGHT_RETURN) even when 1-2 dimensions are
-                null (a NOT-RATED company, >= NOT_RATED_MIN_NULLS
-                null, returns None entirely rather than reaching this
-                rescale at all - see above).
+              RESCALED (x 100 / available_weight) so the total sits on
+              a 0-100 scale while every dimension's weight keeps its
+              exact relative proportion - a fully-scored company (all
+              ten dimensions non-null, available_weight ==
+              DIMENSION_WEIGHT_TOTAL == 83) is exactly the task's own
+              "multiply the analytical total by 100/83" instruction; a
+              company with 1-2 null dimensions (not yet NOT RATED,
+              which requires >= NOT_RATED_MIN_NULLS null) keeps the
+              same "rescale to fill the full weight" treatment this
+              formula always gave a partially-scored company, now
+              carried through to the 100-point scale instead of
+              stopping at 83.
 
     (score - 1) / 4 maps the 1-5 scale onto 0..1 linearly (1 -> 0.0,
     5 -> 1.0) - a true fraction-of-the-dimension's-own-weight, not the
@@ -1004,11 +1016,7 @@ def composite_score(score_row, mos_pct, pool_mos_values):
     possible reading on a dimension)."""
     if score_row is None or score_row.get("not_rated"):
         return None
-    mos_norm = _normalize_mos(mos_pct, pool_mos_values)
-    if mos_norm is None:
-        return None
 
-    ai_weight_total = 100 - WEIGHT_RETURN
     available_weight = 0.0
     ai_component = 0.0
     for key in DIMENSION_KEYS:
@@ -1021,6 +1029,5 @@ def composite_score(score_row, mos_pct, pool_mos_values):
         ai_component += weight * (score - 1) / 4.0
     if available_weight <= 0:
         return None
-    scaled_ai_component = ai_component * (ai_weight_total / available_weight)
 
-    return round(WEIGHT_RETURN * mos_norm + scaled_ai_component, 2)
+    return round(ai_component * (100.0 / available_weight), 2)
