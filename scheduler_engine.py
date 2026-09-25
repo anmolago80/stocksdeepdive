@@ -450,8 +450,46 @@ def nightly_universe_cadence():
 # very first acquisition attempt after this fix ships, with no manual
 # step. That is exactly the shape of the lock stuck in production
 # right now, so deploying this fix is itself what clears the incident.
+#
+# URGENT Commit 3 (25 Sep 2026, owner-reported): the "quicker reclaim"
+# comment two lines up turned out to have a real gap. This module is
+# legitimately imported and its own scheduler thread started by BOTH
+# server.py's FastAPI process AND the separate app.py Streamlit
+# subprocess (see start()'s own docstring) - two different boot_ids
+# by design, coordinated ONLY by this file lock. The heartbeat was
+# ONLY ever refreshed by _tracking_log, i.e. only when the running job
+# itself logged a line - the design assumed nightly_scan.py's own
+# per-25-ticker progress lines (plus every per-ticker retry line)
+# would always keep that well under _JOB_LOCK_FOREIGN_BOOT_STALE_
+# SECONDS. The night this fired for real, Railway logs show: "[nightly
+# _scan] reclaimed stale scan lock held by <boot_id> (different
+# process), heartbeat 175s old" - the FIRST process's catch-up scan
+# was still genuinely alive (mid-run, between universes - almost
+# certainly a quiet stretch with no per-ticker line at all, e.g.
+# resolving the next universe's own ticker list) when the SECOND
+# process's own tick saw a 175s-old heartbeat, past the 120s foreign-
+# boot threshold, and correctly-by-its-own-logic reclaimed a lock that
+# was not actually abandoned - then started its OWN full catch-up scan
+# of the same universe list, racing the first one on every yfinance
+# call for the rest of the run (doubling load, worsening the same
+# night's crumb 429s, and both writing scan_store saves for the same
+# universes). The fix (see _record_job() below) stops coupling
+# heartbeat freshness to the job's own logging cadence at all - a
+# periodic refresh, tied only to wall-clock time, now runs regardless
+# of whether the job has logged anything, which provably keeps the
+# heartbeat under _JOB_LOCK_ACTIVE_REFRESH_SECONDS old for as long as
+# the job's worker thread is alive, full stop - not "usually every 10-
+# 25 tickers, until it isn't."
 _JOB_LOCK_HEARTBEAT_STALE_SECONDS = 10 * 60
 _JOB_LOCK_FOREIGN_BOOT_STALE_SECONDS = 2 * 60
+
+# URGENT Commit 3 (25 Sep 2026, owner-reported): _record_job()'s own
+# periodic heartbeat-refresh cadence - independent of job logging, see
+# the comment above. Comfortably under _JOB_LOCK_FOREIGN_BOOT_STALE_
+# SECONDS (120s) with a wide margin (4x), so a genuinely-alive job's
+# lock can never again drift into "looks abandoned to a different
+# process" territory purely because it went quiet for a while.
+_JOB_LOCK_ACTIVE_REFRESH_SECONDS = 30
 
 # Generated once when this module is first imported (i.e. once per
 # process boot) - identifies THIS process's lifetime across every lock
@@ -1465,7 +1503,7 @@ _JOB_HARD_TIMEOUT_SECONDS = {
 _JOB_HARD_TIMEOUT_DEFAULT_SECONDS = 15 * 60
 
 
-def _record_job(job_name, log, run_fn):
+def _record_job(job_name, log, run_fn, lock_name=None):
     """Times run_fn(wrapped_log) and records the result to
     admin_metrics_store's job_status table for the Admin Dashboard's
     NIGHTLY JOBS table - WITHOUT changing any _run_* function's own
@@ -1490,24 +1528,46 @@ def _record_job(job_name, log, run_fn):
     real job down.
 
     18 Sep 2026 heartbeat fix: this same wrapper is also the natural
-    place to refresh job_name's scan-lock heartbeat (see
-    _refresh_job_lock_heartbeat's own docstring) - job_name here is
-    always the exact same string used as the lock name at every
-    _acquire_job_lock/_release_job_lock call site (e.g. "nightly"),
-    and every _run_* job already routes ALL of its progress logging
-    through this same wrapped log function, so this fires on every
-    line a running job logs - at least as often as nightly_scan.py's
-    25-ticker progress lines, usually far more often (every per-ticker
-    error too) - with no new plumbing into nightly_scan.py itself.
+    place to refresh the job lock's heartbeat (see
+    _refresh_job_lock_heartbeat's own docstring). `lock_name` (URGENT
+    Commit 3, 25 Sep 2026) is the string used at the matching
+    _acquire_job_lock/_release_job_lock call site - defaults to
+    job_name, true for every call site except the hourly Top 100 poll
+    (see _loop()'s own comment there for why that one legitimately
+    differs: it shares the nightly job's "top100" lock but reports
+    under its own "top100_poll" name for admin-metrics purposes).
 
-    URGENT Commit 3 (24 Sep 2026, owner-reported): run_fn now executes
-    on a SEPARATE worker thread, and THIS thread (the scheduler's own
-    single processing thread) joins it with a hard per-job-type ceiling
+    URGENT Commit 3 (25 Sep 2026, owner-reported): heartbeat refresh
+    used to happen ONLY inside _tracking_log, i.e. only when the
+    running job itself logged a line - the original design assumed
+    that would always be frequent enough. It wasn't: Railway logs from
+    the night this fired for real show a genuinely-alive catch-up scan
+    (mid-run, between universes) losing its lock to a SECOND process
+    (server.py's and app.py's own independent scheduler threads - see
+    start()'s own docstring for why both legitimately exist) after its
+    heartbeat sat unrefreshed for 175s - past _JOB_LOCK_FOREIGN_BOOT_
+    STALE_SECONDS (120s), simply because nothing it did happened to log
+    a line for that stretch (most likely resolving the next universe's
+    own ticker list). The second process then ran its own full scan of
+    the same universes concurrently with the first, doubling yfinance
+    load for the rest of the run. Fix: heartbeat refresh is now ALSO
+    driven by wall-clock time alone, via the join-loop below - a job
+    that logs constantly and a job that logs nothing for minutes both
+    get their heartbeat refreshed at least every _JOB_LOCK_ACTIVE_
+    REFRESH_SECONDS, provably keeping it well under the reclaim
+    thresholds for as long as its worker thread is actually alive. See
+    module-level comment above _JOB_LOCK_HEARTBEAT_STALE_SECONDS for
+    the full incident writeup.
+
+    run_fn executes on a SEPARATE worker thread (unrelated to the
+    heartbeat fix above - this dates to the same-day EARLIER hard-
+    timeout fix), and THIS thread (the scheduler's own single
+    processing thread) joins it with a hard per-job-type ceiling
     (_JOB_HARD_TIMEOUT_SECONDS) instead of calling run_fn directly -
-    exactly the fix for the earnings-calendar refresh hanging on a
-    network call with no timeout of its own and wedging this thread for
-    ~3h, blocking every other job behind it until a redeploy freed it.
-    On a timeout: logs loudly, records result "timeout" (a new bucket
+    the fix for the earnings-calendar refresh hanging on a network call
+    with no timeout of its own and wedging this thread for ~3h,
+    blocking every other job behind it until a redeploy freed it. On a
+    timeout: logs loudly, records result "timeout" (a new bucket
     alongside ok/warn/error) to admin_metrics_store, and raises
     TimeoutError - same "log then re-raise, let the existing job-lock
     finally and outer loop error handling see it" contract every other
@@ -1518,12 +1578,13 @@ def _record_job(job_name, log, run_fn):
     THIS thread past the ceiling, which is the actual guarantee this
     exists to make; a daemon thread is killed outright when the process
     exits, so nothing lingers past a redeploy either."""
+    lock_name = lock_name or job_name
     fail_count = [0]
 
     def _tracking_log(msg):
         if "failed" in str(msg):
             fail_count[0] += 1
-        _refresh_job_lock_heartbeat(job_name)
+        _refresh_job_lock_heartbeat(lock_name)
         log(msg)
 
     timeout_seconds = _JOB_HARD_TIMEOUT_SECONDS.get(job_name, _JOB_HARD_TIMEOUT_DEFAULT_SECONDS)
@@ -1540,7 +1601,23 @@ def _record_job(job_name, log, run_fn):
     try:
         worker = threading.Thread(target=_target, name=f"scheduler-job-{job_name}", daemon=True)
         worker.start()
-        worker.join(timeout_seconds)
+        # URGENT Commit 3: short joins in a loop instead of one big
+        # worker.join(timeout_seconds) - refreshes lock_name's heartbeat
+        # on every iteration REGARDLESS of whether run_fn has logged
+        # anything, so a genuinely-alive job's lock can never again go
+        # stale purely from a quiet stretch (see this function's own
+        # docstring for the incident this closes). Same total wait
+        # bound (timeout_seconds) and same is_alive()-after check as
+        # before - only how the wait is broken up changed.
+        while True:
+            elapsed = time.time() - t0
+            remaining = timeout_seconds - elapsed
+            if remaining <= 0:
+                break
+            worker.join(min(_JOB_LOCK_ACTIVE_REFRESH_SECONDS, remaining))
+            if not worker.is_alive():
+                break
+            _refresh_job_lock_heartbeat(lock_name)
         if worker.is_alive():
             elapsed = time.time() - t0
             result = "timeout"
@@ -1918,7 +1995,11 @@ def _loop(log):
                 # itself still uses the distinct "top100_poll" name
                 # (own hard-timeout ceiling, own Admin Dashboard row) so
                 # this frequent, usually-uneventful poll never overwrites
-                # the nightly job's own last-run status.
+                # the nightly job's own last-run status - lock_name=
+                # "top100" is passed explicitly (URGENT Commit 3) so its
+                # own periodic heartbeat refresh keeps touching the lock
+                # ACTUALLY held ("top100"), not a phantom "top100_poll"
+                # lock file nothing else ever checks.
                 _this_hour = now.strftime("%Y-%m-%dT%H")
                 if (top100_store is not None
                         and state.get("last_top100_poll_hour") != _this_hour
@@ -1926,7 +2007,7 @@ def _loop(log):
                     if _acquire_job_lock("top100", log):
                         try:
                             log("[scheduler] starting hourly Top 100 batch poll")
-                            _record_job("top100_poll", log, _run_top100_poll)
+                            _record_job("top100_poll", log, _run_top100_poll, lock_name="top100")
                             state = _load_state()
                             state["last_top100_poll_hour"] = _this_hour
                             _save_state(state)
