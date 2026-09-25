@@ -253,6 +253,58 @@ def render_blog_card(title):
     return _to_png_bytes(img)
 
 
+def render_research_ticker_card(ticker, company_name, fair_value, generated_at=None):
+    """The hand-covered Rational Compounder research card
+    (`/og/research/{ticker}.png`) - a DELIBERATELY DIFFERENT layout from
+    render_ticker_card() above, not that function with different
+    numbers spliced in. render_ticker_card()'s valuation-label badge,
+    value score, quality, and margin-of-safety bar are all outputs of
+    the AUTOMATED nightly-scan valuation model (resolver_engine's
+    intrinsic value) - they have no hand-built equivalent, and showing
+    them next to a hand-built research fair value would misrepresent
+    what this page's content actually is (see server.py's own
+    _research_ticker_lookup() docstring for the bug this fixes: a
+    research page must never advertise the automated model's numbers).
+    This card shows only what the hand-built workbook itself can
+    support: identity (ticker, company) and its own Fair Value "DCF"
+    figure, tagged RESEARCH rather than a cheap/expensive judgement the
+    workbook doesn't make in that form.
+
+    `fair_value` is None for a hand-covered ticker with no Fair Value
+    entry in the workbook yet - per the task's own instruction, the
+    card then renders WITHOUT a fair value at all (the stat block is
+    omitted entirely, not shown as an em-dash placeholder standing in
+    for a number - there's a real difference between "not modelled" and
+    "briefly unavailable" and this card should never blur the two)."""
+    img, d = _base_card()
+
+    stamp = f"data: {_fmt_date(generated_at)}" if generated_at else ""
+    if stamp:
+        _sw = d.textlength(stamp, font=_font(22))
+        d.text((CARD_W - 56 - _sw, 56), stamp, font=_font(22), fill=_FAINT)
+
+    d.text((56, 148), ticker, font=_font(88), fill=_TEXT)
+
+    if company_name:
+        d.text((56, 256), company_name, font=_font(30), fill=_MUTED)
+
+    badge_text = "RESEARCH"
+    _bf = _font(36)
+    _bw = d.textlength(badge_text, font=_bf)
+    bx1 = CARD_W - 56
+    bx0 = bx1 - _bw - 44
+    by0, by1 = 168, 168 + 56
+    d.rounded_rectangle((bx0, by0, bx1, by1), radius=14, outline=_TEAL_DARK, width=4, fill=_BADGE_BG)
+    d.text((bx0 + 22, by0 + 10), badge_text, font=_bf, fill=_TEAL)
+
+    if isinstance(fair_value, (int, float)):
+        d.text((56, 340), "Fair value (hand-built research)", font=_font(24), fill=_MUTED)
+        d.text((56, 366), _fmt_money(fair_value), font=_font(64), fill=_TEAL)
+
+    d.text((56, CARD_H - 46), FOOTER_TEXT, font=_font(22), fill=_FAINT)
+    return _to_png_bytes(img)
+
+
 def render_default_card():
     """The site-default card: used for the site's own default share
     preview, an unknown/never-scanned ticker, AND as the universal

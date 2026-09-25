@@ -1892,6 +1892,46 @@ async def og_ticker_card(ticker: str):
     return Response(png, media_type="image/png", headers={"Cache-Control": _OG_CACHE_HEADERS})
 
 
+@app.get("/og/research/{ticker}.png", include_in_schema=False)
+async def og_research_ticker_card(ticker: str):
+    """The hand-covered Rational Compounder research card - a SEPARATE
+    route/image from /og/{ticker}.png above, because one image per
+    ticker can't correctly serve both /research (hand-built figures)
+    and /deep-dive (automated figures) - see _research_ticker_lookup()'s
+    own docstring for the defect this whole route exists to fix.
+
+    A ticker that isn't hand-covered (or has no compounder_data.json
+    available at all) gets the site-default card, HTTP 200 - same
+    never-a-404/500-on-a-share-preview rule og_ticker_card() above
+    already follows, and the same behaviour page_research() itself has
+    for that ticker (no per-ticker content, shelf only)."""
+    ticker = ticker.strip().upper()
+    try:
+        if not _TICKER_RE.match(ticker):
+            png = _og_default_png()
+        else:
+            covered, fair_value = _research_ticker_lookup(ticker)
+            if not covered:
+                png = _og_default_png()
+            else:
+                company_name = research_snapshot_render._company_name(ticker)
+                data = research_snapshot_render._load_research_data()
+                generated_at = (data or {}).get("generated_at")
+
+                def _render(_ticker=ticker, _name=company_name, _fv=fair_value, _gen=generated_at):
+                    return og_card_render.render_research_ticker_card(_ticker, _name, _fv, _gen)
+
+                png = _og_read_or_render(f"research__{_og_safe_name(ticker)}", _render)
+    except Exception:
+        log.exception("research OG card render failed for ticker=%s", ticker)
+        try:
+            png = og_card_render.render_default_card()
+        except Exception:
+            log.exception("even the default OG card failed to render for ticker=%s", ticker)
+            return Response(status_code=204)
+    return Response(png, media_type="image/png", headers={"Cache-Control": _OG_CACHE_HEADERS})
+
+
 # -----------------------------------
 # AI-readiness roadmap Phase 4 (AI_ROADMAP_stocksdeepdive.md): citation
 # helpers. /track-record has no Streamlit equivalent (see
@@ -2369,6 +2409,60 @@ _SITE_DEFAULT_OG_DESCRIPTION = (
 _OG_TICKER_PATHS = {"/research", "/deep-dive"}
 
 
+def _research_ticker_lookup(ticker):
+    """(is_covered, fair_value) for a HAND-COVERED Rational Compounder
+    research ticker - the fix for a real defect (owner-reported, 25 Sep
+    2026): both _social_meta_tags_for_request() and _plain_seo_tags_
+    for_request() used to read snapshot_store.public_view()["intrinsic_
+    value"] - the AUTOMATED nightly-scan valuation - for /research
+    exactly as they do for /deep-dive, keyed on ticker alone with no
+    regard for which page was actually requested. So a hand-covered
+    ticker's /research page advertised the automated model's fair value
+    instead of Andrew's own hand-built one, and /research?ticker=X and
+    /deep-dive?ticker=X produced identical share cards. This function is
+    the correct source instead: compounder_data.json's own hand-built
+    Fair Value "DCF" figure - the SAME figure app.py's own
+    _switch_get_iv() reads first (sections["Fair Value"][
+    "valuation_methods"][ticker]["dcf"]), before ITS OWN separate
+    auto_compounder_engine fallback (irrelevant here - a research
+    surface must never show the automated number, full stop, not even
+    as a fallback).
+
+    `is_covered` mirrors app.py's own page_research() ticker-resolution
+    check EXACTLY (a raw key in compounder_data.json's own "tickers"
+    dict - see that function's `if _qp_ticker and _qp_ticker in
+    tickers` line): a ticker /research itself would silently drop and
+    fall through to the shelf for (never rendering ANY per-ticker
+    content) is never "covered" here either, so it never gets a
+    per-ticker card - see the call site below for why that's correct.
+
+    Reuses research_snapshot_render._load_research_data() (the exact
+    same compounder_data.json read blog_render.py's own _covered_
+    tickers() and research_snapshot_render.py itself already use) rather
+    than a third copy of that file-read - this FastAPI process can't
+    import app.py itself (a Streamlit entrypoint - see research_
+    snapshot_render.py's own module docstring for why), so the tiny
+    "walk to the Fair Value dcf" piece below is duplicated from _switch_
+    get_iv()'s hand-built branch by hand, same convention that module
+    already documents for its own small duplicated pieces.
+
+    fair_value is None when covered but not yet valued in the workbook.
+    Never raises: (False, None) on any lookup failure."""
+    try:
+        data = research_snapshot_render._load_research_data()
+        if not data:
+            return False, None
+        if ticker not in (data.get("tickers") or {}):
+            return False, None
+        methods = ((data.get("sections") or {}).get("Fair Value") or {}).get("valuation_methods") or {}
+        fair_value = (methods.get(ticker) or {}).get("dcf")
+        if not isinstance(fair_value, (int, float)):
+            fair_value = None
+        return True, fair_value
+    except Exception:
+        return False, None
+
+
 def _social_meta_tags_for_request(request: Request, base_url: str) -> str:
     """Part 39 (13 Sep 2026): og:title / og:description / og:image /
     og:url / twitter:card for a PROXIED Streamlit page - the real gap
@@ -2401,33 +2495,74 @@ def _social_meta_tags_for_request(request: Request, base_url: str) -> str:
     canonical = f"{base_url}{request.url.path}"
 
     if path in _OG_TICKER_PATHS and ticker and _TICKER_RE.match(ticker):
-        try:
-            snap = snapshot_store.get_snapshot(ticker)
-        except Exception:
-            snap = None
-        if snap:
+        if path == "/research":
+            # Hand-built figures only - see _research_ticker_lookup()'s
+            # own docstring for the defect this fixes. A ticker that
+            # ISN'T hand-covered gets no per-ticker card at all: title/
+            # description/image/canonical all stay at the site-default
+            # already set above, because page_research() itself shows no
+            # per-ticker content for an uncovered ticker either (the
+            # ?ticker= is silently dropped and the shelf renders
+            # instead) - a ticker-specific card here would claim content
+            # the real page doesn't have.
             try:
-                pub = snapshot_store.public_view(snap.get("data") or {})
-                company_name = pub.get("company_name")
+                covered, fair_value = _research_ticker_lookup(ticker)
+            except Exception:
+                covered, fair_value = False, None
+            if covered:
+                try:
+                    snap = snapshot_store.get_snapshot(ticker)
+                except Exception:
+                    snap = None
+                company_name = None
+                if snap:
+                    try:
+                        company_name = snapshot_store.public_view(snap.get("data") or {}).get("company_name")
+                    except Exception:
+                        company_name = None
                 title = (f"{ticker} — {company_name} | StocksDeepDive" if company_name
                          else f"{ticker} | StocksDeepDive")
-                _bits = []
-                if isinstance(pub.get("intrinsic_value"), (int, float)):
-                    _bits.append(f"fair value ${pub['intrinsic_value']:,.2f}")
-                if pub.get("valuation_label"):
-                    _bits.append(str(pub["valuation_label"]).lower())
-                if isinstance(pub.get("quality"), (int, float)):
-                    _bits.append(f"quality {pub['quality']:.0f}")
-                description = (
-                    (f"{company_name or ticker}: " + ", ".join(_bits) + " — every input "
-                     "shown, described calculations, not advice.")
-                    if _bits else
-                    f"{company_name or ticker}: every input shown, described calculations, not advice."
-                )
-                image = f"{base_url}/og/{ticker}.png"
+                if fair_value is not None:
+                    description = (
+                        f"{company_name or ticker}: hand-covered Rational Compounder research "
+                        f"— fair value ${fair_value:,.2f} — every input shown, described "
+                        "calculations, not advice."
+                    )
+                else:
+                    description = (
+                        f"{company_name or ticker}: hand-covered Rational Compounder research "
+                        "— every input shown, described calculations, not advice."
+                    )
+                image = f"{base_url}/og/research/{ticker}.png"
                 canonical = f"{base_url}{path}?ticker={ticker}"
+        else:
+            try:
+                snap = snapshot_store.get_snapshot(ticker)
             except Exception:
-                pass  # snapshot found but malformed - falls through with the site-default already set above
+                snap = None
+            if snap:
+                try:
+                    pub = snapshot_store.public_view(snap.get("data") or {})
+                    company_name = pub.get("company_name")
+                    title = (f"{ticker} — {company_name} | StocksDeepDive" if company_name
+                             else f"{ticker} | StocksDeepDive")
+                    _bits = []
+                    if isinstance(pub.get("intrinsic_value"), (int, float)):
+                        _bits.append(f"fair value ${pub['intrinsic_value']:,.2f}")
+                    if pub.get("valuation_label"):
+                        _bits.append(str(pub["valuation_label"]).lower())
+                    if isinstance(pub.get("quality"), (int, float)):
+                        _bits.append(f"quality {pub['quality']:.0f}")
+                    description = (
+                        (f"{company_name or ticker}: " + ", ".join(_bits) + " — every input "
+                         "shown, described calculations, not advice.")
+                        if _bits else
+                        f"{company_name or ticker}: every input shown, described calculations, not advice."
+                    )
+                    image = f"{base_url}/og/{ticker}.png"
+                    canonical = f"{base_url}{path}?ticker={ticker}"
+                except Exception:
+                    pass  # snapshot found but malformed - falls through with the site-default already set above
 
     return "\n".join([
         f'<meta property="og:title" content="{e(title)}">',
@@ -2498,32 +2633,69 @@ def _plain_seo_tags_for_request(request: Request, base_url: str) -> dict:
     canonical = f"{base_url}{request.url.path}"
 
     if path in _OG_TICKER_PATHS and ticker and _TICKER_RE.match(ticker):
-        try:
-            snap = snapshot_store.get_snapshot(ticker)
-        except Exception:
-            snap = None
-        if snap:
+        if path == "/research":
+            # Same fix, same reasoning as _social_meta_tags_for_
+            # request()'s own /research branch just above in this file -
+            # see _research_ticker_lookup()'s docstring. Deliberately a
+            # SEPARATE lookup, not shared with that function (this
+            # module's own standing convention - see this function's own
+            # docstring for why).
             try:
-                pub = snapshot_store.public_view(snap.get("data") or {})
-                company_name = pub.get("company_name")
+                covered, fair_value = _research_ticker_lookup(ticker)
+            except Exception:
+                covered, fair_value = False, None
+            if covered:
+                try:
+                    snap = snapshot_store.get_snapshot(ticker)
+                except Exception:
+                    snap = None
+                company_name = None
+                if snap:
+                    try:
+                        company_name = snapshot_store.public_view(snap.get("data") or {}).get("company_name")
+                    except Exception:
+                        company_name = None
                 title = (f"{ticker} — {company_name} | StocksDeepDive" if company_name
                          else f"{ticker} | StocksDeepDive")
-                _bits = []
-                if isinstance(pub.get("intrinsic_value"), (int, float)):
-                    _bits.append(f"fair value ${pub['intrinsic_value']:,.2f}")
-                if pub.get("valuation_label"):
-                    _bits.append(str(pub["valuation_label"]).lower())
-                if isinstance(pub.get("quality"), (int, float)):
-                    _bits.append(f"quality {pub['quality']:.0f}")
-                description = (
-                    (f"{company_name or ticker}: " + ", ".join(_bits) + " — every input "
-                     "shown, described calculations, not advice.")
-                    if _bits else
-                    f"{company_name or ticker}: every input shown, described calculations, not advice."
-                )
+                if fair_value is not None:
+                    description = (
+                        f"{company_name or ticker}: hand-covered Rational Compounder research "
+                        f"— fair value ${fair_value:,.2f} — every input shown, described "
+                        "calculations, not advice."
+                    )
+                else:
+                    description = (
+                        f"{company_name or ticker}: hand-covered Rational Compounder research "
+                        "— every input shown, described calculations, not advice."
+                    )
                 canonical = f"{base_url}{path}?ticker={ticker}"
+        else:
+            try:
+                snap = snapshot_store.get_snapshot(ticker)
             except Exception:
-                pass  # snapshot found but malformed - falls through with the site-default already set above
+                snap = None
+            if snap:
+                try:
+                    pub = snapshot_store.public_view(snap.get("data") or {})
+                    company_name = pub.get("company_name")
+                    title = (f"{ticker} — {company_name} | StocksDeepDive" if company_name
+                             else f"{ticker} | StocksDeepDive")
+                    _bits = []
+                    if isinstance(pub.get("intrinsic_value"), (int, float)):
+                        _bits.append(f"fair value ${pub['intrinsic_value']:,.2f}")
+                    if pub.get("valuation_label"):
+                        _bits.append(str(pub["valuation_label"]).lower())
+                    if isinstance(pub.get("quality"), (int, float)):
+                        _bits.append(f"quality {pub['quality']:.0f}")
+                    description = (
+                        (f"{company_name or ticker}: " + ", ".join(_bits) + " — every input "
+                         "shown, described calculations, not advice.")
+                        if _bits else
+                        f"{company_name or ticker}: every input shown, described calculations, not advice."
+                    )
+                    canonical = f"{base_url}{path}?ticker={ticker}"
+                except Exception:
+                    pass  # snapshot found but malformed - falls through with the site-default already set above
 
     e = html.escape
     return {
