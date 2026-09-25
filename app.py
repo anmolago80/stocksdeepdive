@@ -604,19 +604,28 @@ def _dcf_overrides_for(ticker):
 # 18 Sep 2026 boot-time fix: server.py's FastAPI startup (lifespan()) now
 # also calls scheduler_engine.start() directly, at container boot -
 # before this Streamlit script has ever run, since a browser session has
-# to connect first. This call stays as a fallback/second call site (e.g.
-# local dev running `streamlit run app.py` directly, without server.py in
-# front of it) - scheduler_engine.start() is idempotent per process (see
-# its own docstring), so once server.py has already started it in this
-# process, this is a no-op that returns the same thread.
+# to connect first. This call site still matters on every container
+# boot, not just local dev without server.py in front - server.py's own
+# call starts a thread in ITS OS process (the FastAPI process); this
+# Streamlit script runs in a genuinely SEPARATE OS process (the
+# subprocess server.py's own _start_streamlit() launches), so it needs
+# its own call to actually get a ticking _loop() thread in THIS process.
+# scheduler_engine.start() is idempotent PER PROCESS (see its own
+# docstring) - only a second call in the SAME process is a no-op.
+#
+# CRITICAL (25 Sep 2026, owner-reported): `except Exception: return None`
+# used to mean a start() failure here (thread creation itself raising)
+# was cached by st.cache_resource as a "successful" None result with
+# zero trace anywhere - indistinguishable from a healthy scheduler that
+# simply has nothing due yet. scheduler_engine.start_with_retry() logs
+# every failed attempt loudly (full traceback) and retries with backoff
+# on its own short-lived thread, so this still can't block Streamlit's
+# script execution/page load - see its own docstring.
 # -----------------------------------
 @st.cache_resource(show_spinner=False)
 def _start_background_scheduler():
-    try:
-        import scheduler_engine
-        return scheduler_engine.start()
-    except Exception:
-        return None
+    import scheduler_engine
+    scheduler_engine.start_with_retry(log=print)
 
 
 _start_background_scheduler()

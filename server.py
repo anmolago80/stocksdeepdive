@@ -236,8 +236,17 @@ async def lifespan(app: FastAPI):
     # Never allowed to stop the site serving, same rule as every other
     # startup step below - starting a background thread essentially can't
     # fail, but there's no reason to risk it.
-    with suppress(Exception):
-        scheduler_engine.start()
+    #
+    # CRITICAL (25 Sep 2026, owner-reported): `with suppress(Exception):`
+    # was itself the single most likely place for "the scheduler isn't
+    # running" to happen with zero trace anywhere - a start() failure
+    # (not a tick failure inside the thread; the synchronous call here
+    # creating the thread) vanished completely, indistinguishable in the
+    # logs from a healthy, idle scheduler. start_with_retry() logs every
+    # failed attempt loudly (full traceback) and retries with backoff on
+    # its own short-lived thread, so it still can't block this lifespan
+    # or fail startup - see its own docstring.
+    scheduler_engine.start_with_retry(log=log.error)
     blog_store.ensure_media_dir()
     # One-time-per-post inference for posts that predate primary_ticker
     # (P3.2) - deterministic given the same title, so safe on every

@@ -146,8 +146,10 @@ CONFIG (Railway environment variables, all optional):
 
 import json
 import os
+import sys
 import threading
 import time
+import traceback
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -1460,6 +1462,19 @@ _last_heartbeat = None
 # fresh False and thus its own fresh immediate attempt.
 _top100_boot_poll_attempted = False
 
+# CRITICAL (25 Sep 2026, owner-reported): wall-clock time of the last
+# "[scheduler] alive" heartbeat LOG line (distinct from _last_heartbeat
+# above, which is an in-process timestamp _record_job/heartbeat_age_
+# seconds() reads, but is never itself visible in the logs unless some
+# job happens to log something that tick). A container can boot, tick
+# silently for hours doing nothing wrong (nothing due yet that hour),
+# and be indistinguishable in the logs from a container whose loop
+# thread died on tick 1 - this week's three outages were each invisible
+# for hours for exactly that reason. Plain module global, same
+# process-local reasoning as _last_heartbeat/_top100_boot_poll_attempted
+# above - nothing to persist across a restart.
+_last_heartbeat_log_at = None
+
 
 def heartbeat_age_seconds():
     """Seconds since the scheduler loop last ticked, or None if it has
@@ -1520,6 +1535,13 @@ _JOB_HARD_TIMEOUT_DEFAULT_SECONDS = 15 * 60
 # attempt still advances it and the interval still holds, rather than
 # retrying every single tick on a persistent failure.
 _TOP100_POLL_MIN_INTERVAL_SECONDS = 60 * 60
+
+# CRITICAL (25 Sep 2026, owner-reported): how often _loop() logs an
+# unconditional "[scheduler] alive" heartbeat line, regardless of
+# whether any job was due that tick - see _last_heartbeat_log_at's own
+# docstring for why silence alone is not distinguishable from a dead
+# loop without this.
+_HEARTBEAT_LOG_INTERVAL_SECONDS = 30 * 60
 
 
 def _record_job(job_name, log, run_fn, lock_name=None):
@@ -1650,7 +1672,29 @@ def _record_job(job_name, log, run_fn, lock_name=None):
         if fail_count[0]:
             result = "warn"
             detail = f"{fail_count[0]} step(s) logged a failure - see server logs"
-    except Exception as e:
+    except BaseException as e:
+        # CRITICAL (25 Sep 2026, owner-reported): BaseException, not
+        # Exception - _target() above deliberately catches BaseException
+        # from run_fn (line ~1637: "except BaseException as e: run_exc[0]
+        # = e") and this block re-raises it via `raise run_exc[0]`
+        # (line ~1671). Before this fix, THIS except was narrower
+        # (Exception only) than what it re-raises, so a run_fn that
+        # raised something outside Exception (SystemExit/
+        # KeyboardInterrupt/GeneratorExit, or asyncio.CancelledError,
+        # which stopped inheriting from Exception in Python 3.8) would
+        # both (a) skip the `result, detail = "error", ...` assignment
+        # just below, so admin_metrics_store's job_status row would
+        # have logged this job as "ok" - the initial default - despite
+        # it having actually failed, and (b) propagate straight past
+        # this function's own try/except entirely uncaught, up to
+        # whichever _loop() dispatch block called it (also only
+        # `except Exception` at every one of those call sites) and from
+        # there to the tick-level try/except - which, before this same
+        # commit's fix there, was ALSO `except Exception`, meaning nothing
+        # in the whole chain would have stopped it from killing the
+        # scheduler thread outright. This function's own docstring already
+        # calls _loop()'s tick-level try/except "one more outer safety
+        # net" for exactly this case - it needs to actually be one.
         if result != "timeout":  # don't clobber the more specific bucket set above
             result, detail = "error", str(e)[:200]
         raise
@@ -1663,10 +1707,60 @@ def _record_job(job_name, log, run_fn, lock_name=None):
                 pass
 
 
+def _process_role():
+    """Returns "streamlit" (this process is app.py's own Streamlit
+    subprocess) or "fastapi" (server.py's process) - purely for the
+    boot/heartbeat
+    log lines below, so a Railway log line can be told apart between
+    the two processes that legitimately each run their own _loop()
+    thread (see start()'s own docstring). Only app.py ever imports
+    streamlit, so its presence in sys.modules is a reliable, zero-
+    config way to tell the two apart without server.py/app.py having
+    to pass an explicit role flag down to this module."""
+    return "streamlit" if "streamlit" in sys.modules else "fastapi"
+
+
+def _top100_poll_status_for_heartbeat():
+    """Cheap, best-effort summary of the hourly Top 100 poll's own
+    dispatch condition (see _loop()'s own comment on that block, and
+    _TOP100_POLL_MIN_INTERVAL_SECONDS/_top100_boot_poll_attempted's
+    docstrings) for the heartbeat log line - deliberately never lets an
+    exception escape (a heartbeat must never itself become a new way
+    for the loop to die), since it runs every single tick, not just
+    the hourly ones the real dispatch block already guards this way."""
+    try:
+        if top100_store is None:
+            return "n/a (top100_store unavailable)"
+        if top100_store.get_batch_state() is None:
+            return "n/a (nothing pending)"
+        if not _top100_boot_poll_attempted:
+            return "due now (boot attempt not yet made)"
+        last_attempt = _load_state().get("last_top100_poll_attempt_at")
+        if last_attempt is None:
+            return "due now"
+        remaining = _TOP100_POLL_MIN_INTERVAL_SECONDS - (time.time() - last_attempt)
+        return "due now" if remaining <= 0 else f"in {int(remaining)}s"
+    except Exception as e:
+        return f"unknown ({e})"
+
+
 def _loop(log):
-    global _last_heartbeat, _top100_boot_poll_attempted
+    global _last_heartbeat, _top100_boot_poll_attempted, _last_heartbeat_log_at
+    # CRITICAL (25 Sep 2026, owner-reported): unconditional, first line
+    # of the function, before any work at all - a container boot with
+    # NO line like this in its logs means this thread never even
+    # reached here (start() itself raised, or was never called - see
+    # start_with_retry()'s own docstring for the call-site half of this
+    # fix), as distinct from a thread that reached here and is simply
+    # idle because nothing happens to be due yet.
+    log(f"[scheduler] loop started (pid={os.getpid()}, role={_process_role()})")
     while True:
         _last_heartbeat = time.time()
+        if (_last_heartbeat_log_at is None
+                or (_last_heartbeat - _last_heartbeat_log_at) >= _HEARTBEAT_LOG_INTERVAL_SECONDS):
+            _last_heartbeat_log_at = _last_heartbeat
+            log(f"[scheduler] alive, next due: top100 poll "
+                f"{_top100_poll_status_for_heartbeat()}")
         try:
             cfg = _cfg()
             if cfg["enabled"]:
@@ -2135,8 +2229,35 @@ def _loop(log):
                     else:
                         log("[scheduler] weekly digest skipped - another process "
                             "already holds the lock")
-        except Exception as e:
-            log(f"[scheduler] loop error: {e}")
+        except BaseException as e:
+            # CRITICAL (25 Sep 2026, owner-reported): BaseException, not
+            # Exception - this tick's try block calls out to real
+            # network clients (poll_and_ingest_batch's Anthropic client
+            # among them) whose async internals can raise
+            # asyncio.CancelledError, which has inherited directly from
+            # BaseException (not Exception) since Python 3.8 and would
+            # otherwise slip straight past this handler and kill this
+            # daemon thread on the spot - silently, since a background
+            # thread's default uncaught-exception behavior is a stderr
+            # traceback with no "[scheduler]" prefix, easy to miss in a
+            # log search for that prefix (exactly what this task
+            # reported: 80+ minutes, zero scheduler/poll/job lines).
+            # Safe to catch this broadly here specifically because this
+            # is a daemon thread (see start()'s Thread(..., daemon=True))
+            # - the only two BaseException subclasses that would ever
+            # legitimately want to end this loop, SystemExit and
+            # KeyboardInterrupt, are raised by the interpreter in the
+            # MAIN thread during shutdown, never delivered into this
+            # thread's own call stack, so there is nothing here that
+            # SHOULD end the loop early; process exit already kills a
+            # daemon thread regardless of what it's doing. Full
+            # traceback, not just str(e), so the next incident's actual
+            # exception type/site is visible without needing to
+            # reproduce it - str(e) alone was already useless for this
+            # exact incident when the user asked "what was the tick-1
+            # exception": this log line had never once fired.
+            log(f"[scheduler] loop error (tick continues): {e!r}\n"
+                f"{traceback.format_exc()}")
         time.sleep(_CHECK_EVERY_SECONDS)
 
 
@@ -2183,3 +2304,45 @@ def start(log=print):
             target=_loop, args=(log,), daemon=True, name="sdd-scheduler")
         _scheduler_thread.start()
         return _scheduler_thread
+
+
+def start_with_retry(log=print, initial_delay_seconds=5, max_delay_seconds=300):
+    """Like start(), but for the two real call sites (server.py's
+    FastAPI lifespan, app.py's own Streamlit script execution) that
+    used to guard this call with `with suppress(Exception):` /
+    `except Exception: return None` - CRITICAL (25 Sep 2026,
+    owner-reported): either pattern means a `start()` failure (thread
+    creation itself raising, not a tick inside the thread - this
+    function's job lock/state file open, thread-count exhaustion, etc.)
+    produces ZERO trace anywhere: no exception, no log line, nothing -
+    completely indistinguishable from a healthy, idle scheduler. This
+    is the single most likely place for "the scheduler isn't running"
+    to happen invisibly, since it's the one call in the whole chain
+    that ran with NO logging at all on failure, in either process.
+
+    Retries start() with exponential backoff (capped at
+    max_delay_seconds) on a short-lived daemon thread of its own -
+    separate from the actual scheduler "sdd-scheduler" thread start()
+    itself creates - so the caller (server.py's async lifespan, which
+    must not block other startup steps; app.py's own script execution,
+    which must not block page load for every session) is never blocked
+    waiting on it. Logs every single failed attempt loudly, with a full
+    traceback, before retrying - never silently gives up. Once start()
+    succeeds this thread's job is done and it exits; start() itself is
+    still the one guarding against starting a second "sdd-scheduler"
+    thread in the same process (see its own docstring)."""
+    def _attempt():
+        delay = initial_delay_seconds
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                start(log=log)
+                return
+            except Exception:
+                log(f"[scheduler] start() failed (attempt {attempt}), "
+                    f"retrying in {delay}s:\n{traceback.format_exc()}")
+                time.sleep(delay)
+                delay = min(delay * 2, max_delay_seconds)
+
+    threading.Thread(target=_attempt, daemon=True, name="sdd-scheduler-starter").start()
