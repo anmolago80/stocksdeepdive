@@ -3528,6 +3528,14 @@ EN = {
     "top100.sort_caption_value_score": "the site's own numeric ordering, unchanged.",
     "top100.sort_caption_severity": "worst plausible scenarios first.",
     "top100.col_severity": "Inversion severity",
+    "top100.methodology_au_extension": (
+        "**Top 20 · Australia** always fields a full twenty: when the global "
+        "100 alone has fewer than 20 Australians, the next-best ASX "
+        "companies by Value Score are added as an \"ASX extension\" and "
+        "scored identically - they appear ONLY on that tab, and never "
+        "affect the Full 100, Top 20 · Mixed, Top 20 · USA, or any other "
+        "list on this site."
+    ),
     "top100.no_data": "No Top 100 selection has run yet - check back after the next nightly scan.",
     "top100.currency_banner": (
         "{count} of these {total} companies are priced in USD. Over 5 years, "
@@ -3571,6 +3579,13 @@ EN = {
     "top100.shelf_caption_awaiting": "scored automatically at the next nightly run",
     "top100.shelf_chip_not_rated": "◇ NOT RATED",
     "top100.shelf_caption_not_rated": "insufficient public record — Claude declined to score; retried each quarter",
+    "top100.origin_pool_badge": "🌐 TOP 100 · #{rank}",
+    "top100.origin_pool_tooltip": "In the global Top 100 by Value Score — global rank #{rank}.",
+    "top100.origin_extension_badge": "＋ ASX EXTENSION",
+    "top100.origin_extension_tooltip": (
+        "Outside the global Top 100 — added from the ASX scans so Australia "
+        "always fields a full twenty; scored identically."
+    ),
     "top100.why_here_label": "full dimension detail",
     "top100.tradability_chip": "⚠ wide spread · {pct}% - costly to trade",
     "top100.sentiment_fearful": "Fearful",
@@ -6596,6 +6611,14 @@ ES = {
     "top100.sort_caption_value_score": "el orden numérico propio del sitio, sin cambios.",
     "top100.sort_caption_severity": "primero los escenarios más graves.",
     "top100.col_severity": "Severidad de inversión",
+    "top100.methodology_au_extension": (
+        "**Top 20 · Australia** siempre presenta veinte completas: cuando "
+        "las 100 globales por sí solas tienen menos de 20 australianas, se "
+        "agregan las siguientes mejores empresas ASX por Value Score como "
+        "una \"extensión ASX\" y se puntúan de forma idéntica - aparecen "
+        "SOLO en esa pestaña, y nunca afectan las 100 completas, el Top 20 "
+        "· Mixto, el Top 20 · EE. UU. ni ninguna otra lista de este sitio."
+    ),
     "top100.no_data": "Aún no se ha ejecutado ninguna selección del Top 100 - vuelve a mirar después del próximo escaneo nocturno.",
     "top100.currency_banner": (
         "{count} de estas {total} empresas cotizan en USD. En 5 años, el "
@@ -6637,6 +6660,14 @@ ES = {
     "top100.shelf_caption_awaiting": "se puntúa automáticamente en la próxima ejecución nocturna",
     "top100.shelf_chip_not_rated": "◇ NO EVALUADA",
     "top100.shelf_caption_not_rated": "registro público insuficiente — Claude no la puntuó; se reintenta cada trimestre",
+    "top100.origin_pool_badge": "🌐 TOP 100 · #{rank}",
+    "top100.origin_pool_tooltip": "En el Top 100 global por Value Score — puesto global #{rank}.",
+    "top100.origin_extension_badge": "＋ EXTENSIÓN ASX",
+    "top100.origin_extension_tooltip": (
+        "Fuera del Top 100 global — agregada desde los escaneos ASX para que "
+        "Australia siempre presente veinte completas; puntuada de forma "
+        "idéntica."
+    ),
     "top100.why_here_label": "detalle completo por dimensión",
     "top100.tradability_chip": "⚠ spread amplio · {pct}% - costoso de operar",
     "top100.sentiment_fearful": "Temeroso",

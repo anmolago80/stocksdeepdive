@@ -163,6 +163,21 @@ def _conn():
         conn.execute("ALTER TABLE top100_pool ADD COLUMN sector TEXT")
     except sqlite3.OperationalError:
         pass
+    # Top 20 Australia guaranteed-twenty (25 Sep 2026, owner-approved
+    # mock, "top20_australia_extended_mock.html") - True for an "ASX
+    # extension" row (top100_engine.select_top100_pool()'s own
+    # next-best-ASX-by-Value-Score top-up, added only when the global
+    # pool's own .AX members fall short of 20). Same guarded-ALTER-
+    # TABLE, purely-additive-column pattern as psychology/sector above,
+    # NOT NULL DEFAULT 0 so every pre-existing row (all genuine pool
+    # members) reads unambiguously False rather than NULL. current_
+    # pool()/previous_pool() both filter this out unconditionally (see
+    # _pool_for_as_of() below) - every existing reader of those two
+    # functions is therefore untouched by this column's existence.
+    try:
+        conn.execute("ALTER TABLE top100_pool ADD COLUMN asx_extension INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
         """CREATE TABLE IF NOT EXISTS top100_scores (
             ticker TEXT NOT NULL,
@@ -200,16 +215,20 @@ def _conn():
 def save_pool(rows, as_of):
     """Upserts one full pool snapshot - `rows`: [{"ticker",
     "company_name", "universe", "value_score", "mos_pct", "price",
-    "intrinsic_value", "currency", "psychology", "sector"}, ...],
-    `as_of`: "YYYY-MM-DD". Also prunes snapshots beyond
-    POOL_SNAPSHOT_RETENTION in the same call, so callers never have to
-    remember to prune separately."""
+    "intrinsic_value", "currency", "psychology", "sector",
+    "asx_extension"}, ...], `as_of`: "YYYY-MM-DD". `asx_extension`
+    (Top 20 Australia guaranteed-twenty) defaults to False when a row
+    doesn't carry it - every caller before this feature existed passes
+    plain pool rows and keeps working unchanged. Also prunes snapshots
+    beyond POOL_SNAPSHOT_RETENTION in the same call, so callers never
+    have to remember to prune separately."""
     with _conn() as conn:
         conn.executemany(
             """INSERT INTO top100_pool
                  (as_of, ticker, company_name, universe, value_score,
-                  mos_pct, price, intrinsic_value, currency, psychology, sector)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  mos_pct, price, intrinsic_value, currency, psychology, sector,
+                  asx_extension)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(as_of, ticker) DO UPDATE SET
                  company_name = excluded.company_name,
                  universe = excluded.universe,
@@ -219,12 +238,13 @@ def save_pool(rows, as_of):
                  intrinsic_value = excluded.intrinsic_value,
                  currency = excluded.currency,
                  psychology = excluded.psychology,
-                 sector = excluded.sector""",
+                 sector = excluded.sector,
+                 asx_extension = excluded.asx_extension""",
             [
                 (as_of, r["ticker"], r.get("company_name"), r.get("universe"),
                  r.get("value_score"), r.get("mos_pct"), r.get("price"),
                  r.get("intrinsic_value"), r.get("currency"), r.get("psychology"),
-                 r.get("sector"))
+                 r.get("sector"), int(bool(r.get("asx_extension"))))
                 for r in rows
             ],
         )
@@ -249,10 +269,14 @@ def _distinct_as_of_dates(limit=2):
 
 
 def _pool_for_as_of(as_of):
+    """GLOBAL pool rows only (asx_extension = 0) - current_pool()'s and
+    previous_pool()'s shared read, unchanged in contract since before
+    the ASX extension existed. current_asx_extension() below is the
+    only reader of the OTHER rows."""
     with _conn() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT * FROM top100_pool WHERE as_of = ? ORDER BY value_score DESC",
+            "SELECT * FROM top100_pool WHERE as_of = ? AND asx_extension = 0 ORDER BY value_score DESC",
             (as_of,),
         ).fetchall()
     return [dict(r) for r in rows]
@@ -281,6 +305,30 @@ def previous_pool():
     selection after a fresh deploy with no prior history)."""
     dates = _distinct_as_of_dates(limit=2)
     return _pool_for_as_of(dates[1]) if len(dates) > 1 else []
+
+
+def current_asx_extension():
+    """Top 20 Australia guaranteed-twenty (25 Sep 2026, owner-approved
+    mock): the ASX EXTENSION rows only (asx_extension = 1) for the
+    latest as_of - [{"ticker", ...}, ...] shaped exactly like current_
+    pool()'s own rows, Value Score descending. [] once the pool alone
+    already has >= top100_engine.TOP20_AU_TARGET Australians (nothing
+    to extend with) or no selection has run yet. NEVER returned by
+    current_pool()/previous_pool() - this is the only reader of these
+    rows; every other Top 100 surface (Full 100, Mixed, USA, the
+    homepage teaser, the changes strip) reads current_pool()/previous_
+    pool() alone and is therefore unaffected by this function's
+    existence."""
+    as_of = latest_as_of()
+    if not as_of:
+        return []
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM top100_pool WHERE as_of = ? AND asx_extension = 1 ORDER BY value_score DESC",
+            (as_of,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # -----------------------------------------------------------------

@@ -100,6 +100,12 @@ IMPORTED_UNIVERSE = "imported"
 
 POOL_SIZE = 100
 
+# Top 20 Australia guaranteed-twenty (25 Sep 2026, owner-approved mock,
+# "top20_australia_extended_mock.html") - the ASX EXTENSION's own target
+# count. select_top100_pool() tops up rated Australians to this many
+# whenever the global pool alone has fewer.
+TOP20_AU_TARGET = 20
+
 
 def _is_flagged_stale(row):
     """True if this raw scan row is the "not currently trading" ghost-
@@ -119,13 +125,31 @@ def select_top100_pool(log=print):
     ticker keeping each ticker's MAXIMUM "Long Score" (Value Score),
     excludes any currently-flagged/non-trading row, keeps the top
     POOL_SIZE by Value Score, and persists the result via top100_
-    store.save_pool(as_of=today's UTC date). Returns the saved pool -
-    [{"ticker","company_name","universe","value_score","mos_pct",
-    "price","intrinsic_value","currency","psychology","sector"}, ...],
-    Value Score descending. Never raises - a single bad universe file is skipped
-    (scan_store.load_scan_raw() itself already returns None on any
-    read error), and an empty result (no saved scans yet) simply
-    persists/returns an empty pool rather than crashing."""
+    store.save_pool(as_of=today's UTC date). Returns the saved GLOBAL
+    pool only (unchanged contract - the ASX extension below is never
+    part of this return value) - [{"ticker","company_name","universe",
+    "value_score","mos_pct","price","intrinsic_value","currency",
+    "psychology","sector"}, ...], Value Score descending. Never raises -
+    a single bad universe file is skipped (scan_store.load_scan_raw()
+    itself already returns None on any read error), and an empty
+    result (no saved scans yet) simply persists/returns an empty pool
+    rather than crashing.
+
+    ASX EXTENSION (Top 20 Australia guaranteed-twenty, 25 Sep 2026,
+    owner-approved mock): the global pool/selection above is otherwise
+    completely untouched - pure global merit, exactly as before. After
+    it's computed, if the pool's own .AX members fall short of
+    TOP20_AU_TARGET, the next-best ASX companies by Value Score (same
+    dedupe/exclusion rules, drawn from the same `best_by_ticker`
+    candidate set, excluding anything already in the pool) are
+    persisted ALONGSIDE it with asx_extension=True - a purely additive
+    top100_pool column (top100_store's own guarded-ALTER-TABLE
+    convention, same as psychology/sector). top100_store.current_pool()/
+    previous_pool() both filter asx_extension out unconditionally, so
+    every existing reader (Full 100, Mixed, USA, the homepage teaser,
+    the changes strip, any exactly-100 assertion) is unaffected by its
+    existence - only top100_store.current_asx_extension() and
+    top100_render.py's own Australia-tab code ever read it."""
     best_by_ticker = {}
     for universe in scan_store.list_saved_universes():
         if universe == IMPORTED_UNIVERSE:
@@ -173,10 +197,29 @@ def select_top100_pool(log=print):
 
     pool = sorted(best_by_ticker.values(), key=lambda r: r["value_score"], reverse=True)[:POOL_SIZE]
     as_of = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    top100_store.save_pool(pool, as_of)
+
+    pool_tickers = {r["ticker"] for r in pool}
+    for row in pool:
+        row["asx_extension"] = False
+
+    au_in_pool = sum(1 for t in pool_tickers if t.endswith(".AX"))
+    extension = []
+    if au_in_pool < TOP20_AU_TARGET:
+        needed = TOP20_AU_TARGET - au_in_pool
+        au_candidates = sorted(
+            (r for t, r in best_by_ticker.items() if t.endswith(".AX") and t not in pool_tickers),
+            key=lambda r: r["value_score"], reverse=True,
+        )[:needed]
+        for row in au_candidates:
+            row["asx_extension"] = True
+        extension = au_candidates
+
+    top100_store.save_pool(pool + extension, as_of)
     log(f"[top100] selected {len(pool)} companies for {as_of} "
         f"(from {len(best_by_ticker)} deduped candidates across "
-        f"{len([u for u in scan_store.list_saved_universes() if u != IMPORTED_UNIVERSE])} universes)")
+        f"{len([u for u in scan_store.list_saved_universes() if u != IMPORTED_UNIVERSE])} universes); "
+        f"ASX extension: {len(extension)} added ({au_in_pool} pool Australians -> "
+        f"{au_in_pool + len(extension)} total for Top 20 Australia)")
     return pool
 
 
@@ -764,8 +807,16 @@ def submit_nightly_batch(pool=None, quarter=None, model=MODEL_TOP100, log=print,
     directly to the plain quarter key loses none of the "a failed
     refresh never destroys a prior good score" protection the old
     suffix trick was ALSO providing - that protection came from
-    save_score()'s own gating, not from the separate cache key."""
-    pool = top100_store.current_pool() if pool is None else pool
+    save_score()'s own gating, not from the separate cache key.
+
+    ASX extension (Top 20 Australia guaranteed-twenty, 25 Sep 2026):
+    when `pool` isn't explicitly passed, the default now ALSO includes
+    top100_store.current_asx_extension() - so an ordinary nightly run
+    (run_nightly() calls this with no `pool` arg) scores extension
+    members exactly like pool members, same rubric/cache keys, no
+    special-casing anywhere below this line. A caller that passes its
+    own `pool` (refresh_all() does) controls this explicitly instead."""
+    pool = (top100_store.current_pool() + top100_store.current_asx_extension()) if pool is None else pool
     quarter = quarter or current_quarter()
     if not pool:
         return None
@@ -965,9 +1016,17 @@ def refresh_all(log=print):
     UPSERT already only ever touches a ticker that actually SUCCEEDED
     in the batch (see submit_nightly_batch()'s own force= docstring) -
     that guarantee never came from the suffix. Returns the submitted
-    batch id, or None."""
+    batch id, or None.
+
+    ASX extension (Top 20 Australia guaranteed-twenty, 25 Sep 2026):
+    re-selecting also re-selects the extension (select_top100_pool()'s
+    own job), so this explicitly folds top100_store.current_asx_
+    extension() into the submitted pool too - "Refresh all" refreshes
+    Australia's guaranteed twenty exactly as thoroughly as the global
+    100, not just the tickers that happen to already be in the 100."""
     pool = select_top100_pool(log=log)
-    return submit_nightly_batch(pool=pool, quarter=current_quarter(), model=MODEL_TOP100, log=log, force=True)
+    extension = top100_store.current_asx_extension()
+    return submit_nightly_batch(pool=pool + extension, quarter=current_quarter(), model=MODEL_TOP100, log=log, force=True)
 
 
 # -----------------------------------------------------------------

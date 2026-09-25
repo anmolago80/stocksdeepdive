@@ -358,6 +358,45 @@ def _industry_tag_html(sector, finer_industry):
     )
 
 
+# -----------------------------------------------------------------
+# Top 20 Australia guaranteed-twenty (25 Sep 2026, owner-approved
+# mock, "top20_australia_extended_mock.html") - origin badges. Exact
+# colour tokens from the mock's own .src.pool (teal) and .src.ext
+# (violet) classes.
+# -----------------------------------------------------------------
+
+def _global_value_score_ranks(pool):
+    """{ticker: 1-based rank} by Value Score descending across the
+    FULL global pool (all 100, currency-agnostic) - the number the
+    teal "TOP 100 · #<n>" badge shows (point 3's own "global rank
+    #<n>" wording), independent of whatever sort view the Australia
+    tab itself is currently using."""
+    ranked = sorted(pool, key=lambda r: (-(r["value_score"] or 0), r["ticker"]))
+    return {r["ticker"]: i for i, r in enumerate(ranked, start=1)}
+
+
+def _origin_pool_badge_html(rank, lang):
+    tooltip = html.escape(_t("origin_pool_tooltip", lang, rank=rank))
+    label = html.escape(_t("origin_pool_badge", lang, rank=rank))
+    return (
+        f"<span title='{tooltip}' style='display:inline-flex;align-items:center;gap:5px;"
+        "border-radius:999px;padding:1px 10px;font-size:10.5px;font-weight:700;cursor:default;"
+        "background:#0e2a26;border:1px solid #14532d;color:#34d399;'>"
+        f"{label}</span>"
+    )
+
+
+def _origin_extension_badge_html(lang):
+    tooltip = html.escape(_t("origin_extension_tooltip", lang))
+    label = html.escape(_t("origin_extension_badge", lang))
+    return (
+        f"<span title='{tooltip}' style='display:inline-flex;align-items:center;gap:5px;"
+        "border-radius:999px;padding:1px 10px;font-size:10.5px;font-weight:700;cursor:default;"
+        "background:#1d1530;border:1px solid #5b3fa8;color:#b7a3f0;'>"
+        f"{label}</span>"
+    )
+
+
 def _tradability_spread_pct(ticker):
     """None if there's no recorded snapshot for `ticker`, or its
     latest recorded spread% otherwise - display-flag only (the task's
@@ -407,7 +446,7 @@ def _row_edge_accent_style(score_row):
     return ""
 
 
-def _render_row(rank, row, lang, finer_industry, sort_mode):
+def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=None):
     """One RATED company row - rank/ticker(linked), the leading number
     for the active sort (task's own "the leading number on each row is
     the one doing the sorting"), the other stats next to it, the ten
@@ -431,7 +470,14 @@ def _render_row(rank, row, lang, finer_industry, sort_mode):
     (or None), looked up ONCE per page render by the caller (_finer_
     industry_by_ticker()) rather than re-reading that file per row -
     combined with row["sector"] into the industry tag right after the
-    company name, present on normal and red-alert rows alike."""
+    company name, present on normal and red-alert rows alike.
+
+    `origin_badge_html` (Top 20 Australia guaranteed-twenty, 25 Sep
+    2026, owner-approved mock): the teal "TOP 100 · #<n>" / violet
+    "ASX EXTENSION" badge HTML (or None - every other tab passes
+    nothing, unaffected) - Top 20 Australia's own caller (_render_
+    top20_australia_tab()) computes this fresh per row, right after
+    the industry tag, matching the mock's own DOM order."""
     ticker = row["ticker"]
     score_row = row["score_row"]
 
@@ -447,6 +493,8 @@ def _render_row(rank, row, lang, finer_industry, sort_mode):
     industry_tag = _industry_tag_html(row.get("sector"), finer_industry)
     if industry_tag:
         header_bits.append(industry_tag)
+    if origin_badge_html:
+        header_bits.append(origin_badge_html)
     header_bits.append(_leading_metric_html(row, sort_mode, lang))
     secondary_html = _secondary_metrics_html(row, sort_mode, lang)
     if secondary_html:
@@ -509,6 +557,25 @@ def _enriched_pool():
     return out
 
 
+def _enriched_asx_extension():
+    """top100_store.current_asx_extension() rows, augmented with score_
+    row/composite exactly like _enriched_pool() does for the global
+    pool - Top 20 Australia's own guaranteed-twenty supplement. NEVER
+    read by any other tab, the homepage teaser, or the changes strip -
+    they all read _enriched_pool() (i.e. top100_store.current_pool())
+    alone, which never includes an extension row."""
+    extension = top100_store.current_asx_extension()
+    quarter = top100_engine.current_quarter()
+    scores = top100_store.scores_for_quarter_model(
+        quarter, top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
+    out = []
+    for row in extension:
+        score_row = scores.get(row["ticker"])
+        composite = top100_engine.composite_score(score_row)
+        out.append({**row, "score_row": score_row, "composite": composite})
+    return out
+
+
 def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None):
     """Top 20 by the active sort (point 2, "applying to every tab
     including Full 100"). Point 3: unrated companies are excluded from
@@ -549,6 +616,50 @@ def _render_full100_tab(enriched, lang, finer_industry, sort_mode):
         _render_bottom_shelf(shelf_rows, lang)
 
 
+def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode):
+    """Top 20 · Australia guaranteed-twenty (25 Sep 2026, owner-
+    approved mock, "top20_australia_extended_mock.html") - a GUARANTEED
+    twenty: every AUD pool row plus (point 1) the ASX extension's own
+    next-best-by-Value-Score Australians. Ranked by the active sort +
+    bottom-shelf rules exactly like every other tab (point 3), with an
+    origin badge on every row: teal "TOP 100 · #<n>" (point 3, re-
+    derived HERE from the live global pool's own Value Score ordering -
+    never the stored asx_extension flag - so a company graduating
+    into/out of the global 100 flips the badge automatically) or
+    violet "ASX EXTENSION". The global tabs (Mixed/USA/Full 100), the
+    homepage teaser and the changes strip are all UNTOUCHED - they
+    read `enriched` (i.e. _enriched_pool()) alone, which never
+    contains an extension row; this function is the only one that also
+    reads _enriched_asx_extension()."""
+    pool_au = [r for r in enriched if r["currency"] == "AUD"]
+    extension = _enriched_asx_extension()
+    combined = pool_au + extension
+
+    global_pool_tickers = {r["ticker"] for r in enriched}
+    global_ranks = _global_value_score_ranks(enriched)
+
+    def origin_badge(row):
+        ticker = row["ticker"]
+        if ticker in global_pool_tickers:
+            return _origin_pool_badge_html(global_ranks[ticker], lang)
+        return _origin_extension_badge_html(lang)
+
+    rows = _sort_and_gate_rated(combined, sort_mode)
+    if not rows:
+        st.caption(_t("empty_tab", lang))
+    else:
+        for i, row in enumerate(rows, start=1):
+            _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode,
+                        origin_badge_html=origin_badge(row))
+
+    if sort_mode != SORT_VALUE_TODAY:
+        shelf_rows = sorted(
+            (r for r in combined if r["composite"] is None),
+            key=_key_value_score,
+        )
+        _render_bottom_shelf(shelf_rows, lang, origin_badge_fn=origin_badge)
+
+
 # Bottom-shelf chip colours (point 3) - exact hex values from the mock's
 # own .chipn (AWAITING - neutral grey-blue) and .chipw (NOT RATED -
 # amber "insufficient record" warning) classes.
@@ -556,14 +667,17 @@ _SHELF_CHIP_AWAITING = ("#1a2333", "#2a3f63", "#7f95b3")
 _SHELF_CHIP_NOT_RATED = ("#2a2413", "#7c5e10", "#fbbf24")
 
 
-def _shelf_row_html(row, lang):
+def _shelf_row_html(row, lang, origin_badge_html=None):
     """One bottom-shelf row (point 3) - a compact chip+ticker+stats
     line, never the full dimension-chip card _render_row() draws
     (there are no dimensions to show). Two distinct chip variants:
     "⏳ AWAITING" when score_row is None entirely (never submitted/
     ingested - a genuine newcomer), "◇ NOT RATED" when score_row
     exists but the model declined to score it (>= NOT_RATED_MIN_NULLS
-    null dimensions) - the task's own explicit distinction."""
+    null dimensions) - the task's own explicit distinction.
+    `origin_badge_html` (Top 20 Australia guaranteed-twenty): None on
+    every other tab; Australia's own caller passes its badge so even
+    an unrated extension member is clearly marked."""
     score_row = row.get("score_row")
     if score_row is None:
         chip = _shelf_chip_html(_t("shelf_chip_awaiting", lang), *_SHELF_CHIP_AWAITING)
@@ -572,6 +686,7 @@ def _shelf_row_html(row, lang):
         chip = _shelf_chip_html(_t("shelf_chip_not_rated", lang), *_SHELF_CHIP_NOT_RATED)
         caption = _t("shelf_caption_not_rated", lang)
     ticker = row["ticker"]
+    badge_html = origin_badge_html or ""
     mos_html = ""
     if row.get("mos_pct") is not None:
         mos_html = (
@@ -585,6 +700,7 @@ def _shelf_row_html(row, lang):
         f"<a href='/deep-dive?ticker={html.escape(ticker)}' target='_self' "
         "style='color:#2dd4bf;font-weight:800;font-size:13px;text-decoration:none;'>"
         f"{html.escape(ticker)}</a>"
+        + badge_html +
         f"<span>{html.escape(_t('col_value_score', lang))}: "
         f"<b style='color:#e6edf5;'>{row['value_score']:.1f}</b>{mos_html}</span>"
         f"<span style='color:#5b7290;font-size:11px;'>{html.escape(caption)}</span>"
@@ -592,15 +708,20 @@ def _shelf_row_html(row, lang):
     )
 
 
-def _render_bottom_shelf(shelf_rows, lang):
-    """Full 100's labelled bottom-shelf section (point 3) - companies
-    with no Research Score can't be interleaved with rated ones, so
-    they sit here, ordered by Value Score among themselves (already
-    the caller's own sort key). Renders nothing when there's nothing
-    to shelve (a fully-scored pool)."""
+def _render_bottom_shelf(shelf_rows, lang, origin_badge_fn=None):
+    """Full 100's (and Australia's own) labelled bottom-shelf section
+    (point 3) - companies with no Research Score can't be interleaved
+    with rated ones, so they sit here, ordered by Value Score among
+    themselves (already the caller's own sort key). Renders nothing
+    when there's nothing to shelve. `origin_badge_fn` (Top 20 Australia
+    guaranteed-twenty): None on Full 100; Australia's own caller passes
+    a row->badge-html function."""
     if not shelf_rows:
         return
-    rows_html = "".join(_shelf_row_html(r, lang) for r in shelf_rows)
+    rows_html = "".join(
+        _shelf_row_html(r, lang, origin_badge_html=(origin_badge_fn(r) if origin_badge_fn else None))
+        for r in shelf_rows
+    )
     st.markdown(
         "<div style='border:1px dashed #2a3f63;border-radius:12px;padding:12px 16px;margin-top:16px;'>"
         "<h3 style='margin:0 0 8px;font-size:12px;color:#8aa0b8;letter-spacing:.05em;"
@@ -840,6 +961,7 @@ def render_top100_page(lang="en"):
             for m in SORT_MODES
         ]
         st.markdown("\n".join(sort_lines))
+        st.markdown(_t("methodology_au_extension", lang))
 
     _render_refresh_all_control(lang)
 
@@ -870,7 +992,7 @@ def render_top100_page(lang="en"):
     with tabs[0]:
         _render_top20_tab(enriched, lang, finer_industry, sort_mode)
     with tabs[1]:
-        _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency="AUD")
+        _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode)
     with tabs[2]:
         _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency="USD")
     with tabs[3]:
