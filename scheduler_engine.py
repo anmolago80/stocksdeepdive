@@ -1092,12 +1092,11 @@ def _run_top100(log):
 
 
 def _run_top100_poll(log):
-    """Top 100 Commit 2 (25 Sep 2026, owner-reported): poll-ONLY entry
-    point for the hourly check in _loop() below - calls top100_engine.
-    poll_and_ingest_batch() directly and NOTHING else: never select_
-    top100_pool(), never submit_nightly_batch(). Selection/submission
-    stay exclusively the nightly "top100" job's job (_run_top100 above,
-    still the only caller of run_nightly()).
+    """Top 100 Commit 2 (25 Sep 2026, owner-reported): hourly check in
+    _loop() below - calls top100_engine.poll_and_ingest_batch()
+    directly, and NEVER calls select_top100_pool() (pool re-selection
+    stays exclusively the nightly "top100" job's job - _run_top100
+    above, still the only caller of run_nightly()).
 
     Why this exists: poll_and_ingest_batch() otherwise only ever ran
     inside that once-a-day nightly job, so a batch that finished (or
@@ -1110,9 +1109,51 @@ def _run_top100_poll(log):
     successful batch's scores reach the page within about an hour
     instead of up to a day, and a FAILED batch (e.g. one submitted
     under an old, since-fixed request shape) gets its batch-state row
-    cleared within about an hour too, so the very next nightly job's
-    own submit_nightly_batch() call goes out fresh rather than waiting
-    behind a stale failure it hadn't even looked at yet.
+    cleared within about an hour too.
+
+    URGENT COMMIT 1 (25 Sep 2026, owner-reported) - auto-resubmit added
+    here: this used to stop at "cleared", leaving the pipeline idle
+    until the NEXT scheduled nightly run even when a batch had just
+    finished and there was still unscored pool left. Production
+    evidence for the exact incident this closes, confirmed directly
+    from Railway logs (NOT the "poll reads a different store" theory
+    this task's own evidence line proposed - that theory does not hold
+    up: top100_store.get_batch_state()/save_batch_state()/
+    clear_batch_state() are one function each, one DB_PATH, called
+    identically by every caller, no divergent path exists anywhere in
+    this codebase): batch msgbatch_01KJS4d7oHUZyGLYMX4xLyNw (submitted
+    24 Sep 23:00:12 UTC, the night before the v3 schema fix landed) WAS
+    already ingested - at 25 Sep 01:18:36 UTC, by this same hourly
+    poll, under an EARLIER deploy of it - "batch msgbatch_
+    01KJS4d7oHUZyGLYMX4xLyNw ingested: 0 scored, 100 failed" (all 100
+    under the pre-fix union-type schema error, since the batch had been
+    SUBMITTED before that fix existed - ingesting it couldn't retroactively
+    fix an already-in-flight request). That poll correctly cleared the
+    batch-state row and - because it never resubmitted - the pipeline
+    then sat genuinely idle for the 5+ hours since, exactly matching
+    "the owner's first scored list is blocked": nothing was pending
+    (true), but nothing was submitting a replacement either. Now: right
+    after a poll that just ingested-and-cleared a batch, if the
+    pipeline is genuinely idle (no new batch already pending - checked
+    defensively even though clear_batch_state() just ran, in case a
+    future change to poll_and_ingest_batch() ever leaves something
+    behind) and there's still unscored pool for the current quarter,
+    submit a fresh batch immediately under the CURRENT schema rather
+    than waiting for tomorrow's scheduled nightly run -
+    submit_nightly_batch() already no-ops cleanly ("nothing to submit")
+    when the pool is fully scored, so this is safe to call
+    unconditionally whenever the ingest-then-check-idle condition
+    holds. Deliberately NOT added inside poll_and_ingest_batch() itself
+    - run_nightly() (the nightly job) already calls poll_and_ingest_
+    batch() followed by its own explicit submit_nightly_batch() as a
+    separate phase; baking auto-resubmit into poll_and_ingest_batch()
+    itself would make the nightly job double-submit (once from inside
+    poll's own new auto-resubmit, once from run_nightly()'s own
+    existing phase 3), silently orphaning the first of the two batches
+    (top100_store's batch-state row is a NEW-overwrites-OLD singleton).
+    Confining the auto-resubmit to this hourly-only entry point avoids
+    that entirely - run_nightly()'s own three-phase sequence is
+    completely untouched.
 
     Let the exception propagate (same "let it raise" contract as
     _run_top100 above) - poll_and_ingest_batch() already guards its own
@@ -1121,7 +1162,9 @@ def _run_top100_poll(log):
     THIS far means something is wrong with the poll as a whole (e.g.
     the Anthropic client itself failing to construct), not one result."""
     import top100_engine
-    top100_engine.poll_and_ingest_batch(log=log)
+    result = top100_engine.poll_and_ingest_batch(log=log)
+    if result is not None and top100_engine.top100_store.get_batch_state() is None:
+        top100_engine.submit_nightly_batch(log=log)
 
 
 def _run_earnings_refresh(log):
@@ -1710,14 +1753,53 @@ def _record_job(job_name, log, run_fn, lock_name=None):
 def _process_role():
     """Returns "streamlit" (this process is app.py's own Streamlit
     subprocess) or "fastapi" (server.py's process) - purely for the
-    boot/heartbeat
-    log lines below, so a Railway log line can be told apart between
-    the two processes that legitimately each run their own _loop()
-    thread (see start()'s own docstring). Only app.py ever imports
-    streamlit, so its presence in sys.modules is a reliable, zero-
-    config way to tell the two apart without server.py/app.py having
-    to pass an explicit role flag down to this module."""
-    return "streamlit" if "streamlit" in sys.modules else "fastapi"
+    boot/heartbeat log lines below, so a Railway log line can be told
+    apart between the two processes that legitimately each run their
+    own _loop() thread (see start()'s own docstring).
+
+    URGENT COMMIT 1 fix (25 Sep 2026, owner-reported): the original
+    check here was `"streamlit" in sys.modules`, on the assumption only
+    app.py ever imports streamlit - WRONG, confirmed directly from a
+    real production log line ("[scheduler] loop started (pid=1,
+    role=streamlit)" - pid 1 is server.py's own process, Railway's
+    configured start command is literally "python server.py", so
+    server.py IS the container's own entrypoint and cannot be pid 1 AND
+    the genuinely separate subprocess.Popen()-spawned Streamlit
+    process at the same time). server.py imports api_v1, mcp_server
+    and nightly_scan at module level, and all three import
+    scanner_engine, which itself does `import streamlit as st` (for
+    its own @st.cache_data/@st.cache_resource decorators, used by
+    rendering code shared between the interactive app and server.py's
+    own server-rendered pages) - so "streamlit" was ALWAYS in sys.
+    modules for server.py's process too, misreporting every one of its
+    own heartbeat/boot lines as role=streamlit. Fixed by checking
+    sys.argv[0] instead: the Streamlit subprocess is launched via
+    `python -m streamlit run app.py` (server.py's own _start_streamlit()),
+    and `-m` resolves sys.argv[0] to that module's own file path (e.g.
+    ".../site-packages/streamlit/__main__.py") - genuinely unique to
+    that one process, never something an ordinary `import streamlit`
+    anywhere else could produce."""
+    return "streamlit" if "streamlit" in sys.argv[0] else "fastapi"
+
+
+def _top100_pending_batch_id():
+    """Single source of truth for "is a Top 100 AI-scoring batch
+    currently pending" - the pending batch's id, or None if nothing is
+    pending. top100_store.get_batch_state()/save_batch_state()/
+    clear_batch_state() were already each a single function reading/
+    writing one DB_PATH/table (verified directly - no divergent code
+    path exists anywhere in this codebase; the currently-pending-batch
+    incident this task's own evidence cited turned out to have a
+    different real cause - see _run_top100_poll's own docstring). This
+    helper exists so the hourly-poll dispatch gate (below, in _loop())
+    and the heartbeat's own "next due" line are structurally guaranteed
+    to keep asking the exact same question the exact same way going
+    forward, rather than two call sites that merely happen to agree
+    today - URGENT COMMIT 1's own explicit ask."""
+    if top100_store is None:
+        return None
+    state = top100_store.get_batch_state()
+    return state["batch_id"] if state else None
 
 
 def _top100_poll_status_for_heartbeat():
@@ -1727,19 +1809,28 @@ def _top100_poll_status_for_heartbeat():
     docstrings) for the heartbeat log line - deliberately never lets an
     exception escape (a heartbeat must never itself become a new way
     for the loop to die), since it runs every single tick, not just
-    the hourly ones the real dispatch block already guards this way."""
+    the hourly ones the real dispatch block already guards this way.
+
+    URGENT COMMIT 1 (25 Sep 2026, owner-reported): now names the actual
+    pending batch id when one exists, instead of just "due now"/"in
+    Ns" - so a Railway log search for that literal batch id (the way
+    this task's own investigation started) finds this heartbeat line
+    directly, without having to cross-reference a separate ingest/
+    submit log line first."""
     try:
         if top100_store is None:
             return "n/a (top100_store unavailable)"
-        if top100_store.get_batch_state() is None:
+        batch_id = _top100_pending_batch_id()
+        if batch_id is None:
             return "n/a (nothing pending)"
         if not _top100_boot_poll_attempted:
-            return "due now (boot attempt not yet made)"
+            return f"due now (boot attempt not yet made) - batch {batch_id}"
         last_attempt = _load_state().get("last_top100_poll_attempt_at")
         if last_attempt is None:
-            return "due now"
+            return f"due now - batch {batch_id}"
         remaining = _TOP100_POLL_MIN_INTERVAL_SECONDS - (time.time() - last_attempt)
-        return "due now" if remaining <= 0 else f"in {int(remaining)}s"
+        when = "due now" if remaining <= 0 else f"in {int(remaining)}s"
+        return f"{when} - batch {batch_id}"
     except Exception as e:
         return f"unknown ({e})"
 
@@ -2159,7 +2250,7 @@ def _loop(log):
                 )
                 if (top100_store is not None
                         and _top100_poll_due
-                        and top100_store.get_batch_state() is not None):
+                        and _top100_pending_batch_id() is not None):
                     if _acquire_job_lock("top100", log):
                         try:
                             _top100_boot_poll_attempted = True
