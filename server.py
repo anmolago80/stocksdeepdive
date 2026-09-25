@@ -137,6 +137,18 @@ try:
 except Exception:
     admin_metrics_store = None
 
+# Admin Dashboard Analytics Commit 1 (26 Sep 2026): per-request traffic
+# classification (human/known_crawler/automated_unknown/vuln_scanner) -
+# see visitor_classify.py's own module docstring for the full design and
+# why it wires into _pulse_counting_middleware below rather than
+# _count_view(). Same defensive-import convention as every other
+# optional analytics module on this page - a broken import here must
+# never stop the site serving.
+try:
+    import visitor_classify
+except Exception:
+    visitor_classify = None
+
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("sdd.server")
@@ -463,12 +475,30 @@ async def _pulse_counting_middleware(request: Request, call_next):
     _pulse_counts for the full design. The try/except around the
     counting itself (not around call_next) means a bug here can never
     turn into a 500 for a real visitor and never changes the response
-    that _proxy/every other route already produced."""
+    that _proxy/every other route already produced.
+
+    Admin Dashboard Analytics Commit 1 (26 Sep 2026): also classifies
+    this request (visitor_classify.classify_request - see that module's
+    own docstring for the full design) and bumps a SEPARATE new
+    "req_class:<label>" counter alongside "requests" - the existing
+    "requests" bump above is completely untouched (same key, same
+    unconditional every-request increment it's always had), and the
+    four new req_class:* keys are additive series, never a redefinition
+    of anything that already existed. Classification never touches
+    disk/DB itself - see that module's own docstring - it just returns
+    a short label string that this same in-memory pulse-counter path
+    (already flushed periodically by _pulse_flush_once(), never
+    per-request) eventually persists as an aggregate count, exactly
+    like every other pulse counter here."""
     response = await call_next(request)
     try:
         _pulse_bump("requests")
         if response.status_code >= 500:
             _pulse_bump("requests_5xx")
+        if visitor_classify is not None:
+            label = visitor_classify.classify_request(
+                request.headers.get("user-agent", ""), _client_ip(request), request.url.path)
+            _pulse_bump(f"req_class:{label}")
         src = _pulse_sanitize_src(request.query_params.get("src") or "")
         if src:
             _pulse_bump(_pulse_src_key(src))
