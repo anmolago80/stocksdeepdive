@@ -28112,6 +28112,123 @@ def _render_scan_calendar_html(cal, cadence, day_list):
     return _sdd_table(_headers, _rows_html)
 
 
+def _is_owner_for_rescan():
+    """Deferred, FAIL-CLOSED owner check for the Rescan now control -
+    same shape as top100_render.py's own _is_owner_for_refresh() (the
+    Top 100 "Refresh all" control's own gate). ANY exception here
+    (import failure, no signed-in email, anything) resolves to "not
+    owner" - never the other way around."""
+    try:
+        return bool(ai_gate.is_owner(paywall_engine.current_user_email()))
+    except Exception:
+        return False
+
+
+def _handle_rescan_now_click(universes):
+    """URGENT COMMIT 3 (25 Sep 2026, owner-reported): the Rescan now
+    button's own click handler - kept separate from the button's
+    `if st.button(...):` block, same reasoning as top100_render.py's
+    own _handle_refresh_all_click(): directly callable/testable on its
+    own, bypassing the widget entirely, proving the SERVER-SIDE
+    re-check refuses a non-owner even when this is reached directly (a
+    forged session-state click, a stale rerun, or any other path that
+    skips _render_rescan_now_control()'s own is-owner check before
+    getting here) - independent of that render-time check, does not
+    trust having already been gated by the caller.
+
+    Runs nightly_scan.run_universe_scan() for each selected universe,
+    through the SAME "nightly" job lock scheduled/catch-up scans use
+    (scheduler_engine._acquire_job_lock/_release_job_lock - this
+    codebase's own precedent for reusing a private-by-convention
+    helper when the exact logic already lives there, e.g. server.py
+    calling api_v1._resolve_universe()), so a manual rescan can never
+    run concurrently with a scheduled nightly scan or a catch-up scan -
+    it either gets the lock and runs, or is refused outright (never
+    waits/blocks for the lock to free up; the owner can just try again
+    once whatever's running finishes). run_night=None (this function's
+    own default) - a manual rescan is a "hand-run scan" per that
+    function's own docstring, not credited to any particular scheduled
+    night. This is the manual override for exactly the incident this
+    task's own COMMIT 2 fixed automatically for the "nothing servable"
+    case - so a universe stuck for ANY reason (not just "nothing
+    servable", also merely stale, or the owner just wants it fresh
+    right now) never again has to wait on the scheduler's own clock."""
+    if not _is_owner_for_rescan():
+        st.error("This action isn't available.")
+        return
+    if not universes:
+        st.info("Select at least one universe to rescan.")
+        return
+    import scheduler_engine
+    if not scheduler_engine._acquire_job_lock("nightly", print):
+        st.warning(
+            "A scan is already running (scheduled, catch-up, or another "
+            "rescan) - try again in a few minutes."
+        )
+        return
+    try:
+        failed = []
+        for _u in universes:
+            with st.spinner(f"Rescanning {_u}..."):
+                try:
+                    saved = nightly_scan.run_universe_scan(_u, log=print, run_night=None)
+                    if saved is None:
+                        failed.append(_u)
+                except Exception as e:
+                    failed.append(f"{_u} ({e})")
+        if failed:
+            st.warning(f"Rescanned {len(universes) - len(failed)}/{len(universes)} - "
+                       f"failed: {', '.join(failed)}. Check the server logs for detail.")
+        else:
+            st.success(f"Rescanned: {', '.join(universes)}")
+    finally:
+        scheduler_engine._release_job_lock("nightly")
+
+
+def _render_rescan_now_control():
+    """Owner-only "Rescan now" control - a universe picker + button that
+    runs nightly_scan.run_universe_scan() for the selected universe(s)
+    immediately, bypassing the scheduler's own once-a-day/hourly clock
+    entirely. Two INDEPENDENT checks, on purpose, same as top100_
+    render.py's own _render_refresh_all_control(): this one, before
+    anything is even rendered - a non-owner sees NOTHING here at all,
+    not a disabled control, not an error, no trace - and a second one
+    inside _handle_rescan_now_click() itself, so a non-owner who
+    somehow triggers the click callback without this render check
+    having run still gets refused server-side before run_universe_scan()
+    - a real yfinance-backed scan, not free - is ever called for even
+    one universe. No visitor-reachable path can reach a rescan without
+    passing BOTH. Picker is scheduler_engine._cfg()['universe_cadence']
+    - the real, directly-scannable NIGHTLY_UNIVERSES entries (what
+    run_universe_scan() is actually built to handle) - not the
+    ASX containment-chain DERIVED universes (ASX 100/50/20/Small
+    Ordinaries), which are computed by _build_derived_universes() from
+    a parent scan, not scanned on their own; out of scope for this
+    control, which mirrors the task's own literal "runs
+    run_universe_scan()" instruction."""
+    if not _is_owner_for_rescan():
+        return
+    import scheduler_engine
+    try:
+        _rescan_choices = sorted(scheduler_engine._cfg()["universe_cadence"].keys())
+    except Exception:
+        _rescan_choices = []
+    st.markdown("### Rescan now (owner)")
+    st.caption(
+        "Manually rescan one or more universes right now, bypassing the "
+        "scheduler's own clock entirely - the fix for exactly today's "
+        "situation, so a stuck universe never again has to wait for the "
+        "scheduler. Runs through the same job lock as a scheduled scan, "
+        "so it refuses rather than colliding if one is already running. "
+        "Expect roughly 1 minute per 25 tickers in the universe(s) you pick."
+    )
+    _rescan_selected = st.multiselect(
+        "Universe(s) to rescan", _rescan_choices, key="admin_rescan_universes",
+    )
+    if st.button("Rescan now", key="admin_rescan_now_btn"):
+        _handle_rescan_now_click(_rescan_selected)
+
+
 def page_admin_dashboard():
     """Mega-batch Part 35.2: the owner Admin Dashboard - matches the
     owner-approved mock at mocks/admin_dashboard_mock.html. Replaces the
@@ -28579,6 +28696,16 @@ def page_admin_dashboard():
                         st.write(f"{_uicon} {_ureason}")
                     except Exception as e:
                         st.write(f"check failed: {e}")
+
+    # --- RESCAN NOW (URGENT COMMIT 3, 25 Sep 2026, owner-reported) -----
+    # The manual override for exactly today's situation (see COMMIT 2
+    # right above this in the same task - the automatic "nothing
+    # servable bypasses the daily cap" fix): a universe picker + button
+    # so a stuck universe never again has to wait on the scheduler's own
+    # clock, whatever the reason it's stuck. Placed right after the
+    # "Universe scan sizes" table above, which already shows exactly
+    # which universes need this.
+    _render_rescan_now_control()
 
     # --- STALE-PRICED TICKERS (Commit J, 21 Sep 2026, owner-reported) --
     # A per-TICKER condition, not a data-SOURCE health check - the
