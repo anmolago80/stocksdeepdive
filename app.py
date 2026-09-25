@@ -3482,6 +3482,18 @@ def _render_app_nav_items(lang, current=None, key_prefix="nav", layout="row"):
         ("deep_dive", i18n.t("nav.deep_dive", lang), PG_DEEP_DIVE),
         ("research", i18n.t("nav.research", lang), PG_RESEARCH),
         ("scanner", i18n.t("nav.scanner", lang), PG_SCANNER),
+    ]
+    # Top 100 Commit 4 (25 Sep 2026, owner-reported): TOP100_PUBLIC is
+    # now live - moved from the tail of _primary_items (previously
+    # appended after Tools, see git history) to right after Scanner, so
+    # a now-public feature is positioned prominently instead of being
+    # the very last tab. Same visibility gate as page_top100() itself,
+    # unchanged: TOP100_PUBLIC true shows it to everyone, otherwise only
+    # the owner (ai_gate.is_owner()) sees it, so a non-owner never sees
+    # a tab that errors for them.
+    if top100_render.TOP100_PUBLIC or ai_gate.is_owner(paywall_engine.current_user_email()):
+        _primary_items.append(("top100", i18n.t("nav.top100", lang), PG_TOP100))
+    _primary_items += [
         ("comparison", i18n.t("nav.comparison", lang), PG_COMPARISON),
         ("portfolio", i18n.t("nav.portfolio", lang), PG_PORTFOLIO),
         # Mega-batch Part 18: Tools gets its own primary-row tab (the
@@ -3495,15 +3507,6 @@ def _render_app_nav_items(lang, current=None, key_prefix="nav", layout="row"):
         # touch here.
         ("tools", i18n.t("nav.tools", lang), PG_TOOLS),
     ]
-    # Top 100 Commit 3: the nav item's own visibility must match
-    # page_top100()'s gate exactly - TOP100_PUBLIC true shows it to
-    # everyone, otherwise only to the owner (ai_gate.is_owner()) so a
-    # non-owner never sees a tab that 404s/errors for them. Appended
-    # after _primary_items is built (rather than folded into the
-    # literal list above) so it lands last, same "between Portfolio
-    # and Blog" position "tools" itself documents just above.
-    if top100_render.TOP100_PUBLIC or ai_gate.is_owner(paywall_engine.current_user_email()):
-        _primary_items.append(("top100", i18n.t("nav.top100", lang), PG_TOP100))
     # 3rd Amendment to Part 5: order is Results Calendar, Track record,
     # Methodology, About (the amendment's own verbatim order - was
     # Calendar/Methodology/About with Track record tacked on separately).
@@ -7928,6 +7931,83 @@ def page_home():
             ),
             unsafe_allow_html=True,
         )
+
+    # ---- Top 100 teaser (Top 100 Commit 4, 25 Sep 2026, owner-reported:
+    # TOP100_PUBLIC is now live - this is the homepage discoverability
+    # piece) - a compact top-5-by-Research-Score card, right after
+    # Tonight's top 5. Reuses top100_render._enriched_pool() - the exact
+    # same data path render_top100_page() itself calls - so this is
+    # read-only, no new query beyond what the real Top 100 page already
+    # runs. Gated on TOP100_PUBLIC alone (not also an owner-preview
+    # case like the nav tab): the caption links to /top-100, and
+    # page_top100() itself only serves that page to non-owners when
+    # TOP100_PUBLIC is true, so showing this teaser to a random visitor
+    # while it's false would link them to a page that errors for them.
+    # Hides ENTIRELY (no empty shell) when nothing is scored yet -
+    # same "no empty box" convention Tonight's top 5 above follows for
+    # a country with zero eligible rows - e.g. a fresh deploy before
+    # the first nightly Top 100 batch has ingested any scores.
+    if top100_render.TOP100_PUBLIC:
+        try:
+            _t100_enriched = top100_render._enriched_pool()
+        except Exception:
+            _t100_enriched = []
+        _t100_top5 = sorted(
+            (r for r in _t100_enriched if r.get("composite") is not None),
+            key=lambda r: r["composite"], reverse=True,
+        )[:5]
+        if _t100_top5:
+            st.markdown(
+                f"<div class='sdd-kicker' style='margin-top:40px;'>"
+                f"{i18n.t('home.top100_teaser.kicker', _home_lang)}</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                "<div class='sdd-h2' style='font-size:20px;'>"
+                f"{i18n.t('home.top100_teaser.heading', _home_lang)}"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            _t100_html = []
+            for _t100_rank, _t100_row in enumerate(_t100_top5, start=1):
+                _t100_ticker = _t100_row.get("ticker") or "-"
+                _t100_ticker_cell = (
+                    f"<a href='/deep-dive?ticker={_t100_ticker}' target='_self' "
+                    "style='color:inherit;text-decoration:underline;'><b>"
+                    f"{_t100_ticker}</b></a>" if _t100_ticker != "-" else "<b>-</b>"
+                )
+                _t100_name = html.escape(_t100_row.get("company_name") or "")
+                _t100_score_html = f"<b style='color:#34d399;'>{_t100_row['composite']:.1f}</b>"
+                _t100_sentiment_html = top100_render._sentiment_chip_html(
+                    _t100_row.get("psychology"), _home_lang)
+                _t100_html.append(
+                    "<tr>"
+                    + _td(f"#{_t100_rank}", minw=30)
+                    + _td(_t100_ticker_cell)
+                    + _td(_t100_name)
+                    + _td(_t100_score_html)
+                    + _td(_t100_sentiment_html)
+                    + "</tr>"
+                )
+            st.markdown(
+                _sdd_table(
+                    [i18n.t("home.top100_teaser.col_rank", _home_lang),
+                     i18n.t("home.top100_teaser.col_ticker", _home_lang),
+                     i18n.t("home.top100_teaser.col_company", _home_lang),
+                     i18n.t("home.top100_teaser.col_score", _home_lang),
+                     i18n.t("home.top100_teaser.col_sentiment", _home_lang)],
+                    _t100_html,
+                ),
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                i18n.t(
+                    "home.top100_teaser.caption", _home_lang,
+                    link=(f"<a href='/top-100' target='_self' style='color:inherit;'>"
+                          f"{i18n.t('home.top100_teaser.cta', _home_lang)} &rarr;</a>"),
+                ),
+                unsafe_allow_html=True,
+            )
 
     # Mega-batch Part 36: once on the home page, right after Tonight's
     # top 5 - per the instruction's own explicit placement - and before

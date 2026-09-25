@@ -81,6 +81,7 @@ import push_store
 import scheduler_engine
 import site_content
 import top100_engine
+import top100_render
 
 # AI-readiness roadmap Phase 1 (AI_ROADMAP_stocksdeepdive.md): the public
 # snapshot pages + read-only JSON API. See api_v1.py / snapshot_render.py.
@@ -1125,6 +1126,22 @@ async def sitemap(request: Request):
                       f'<changefreq>weekly</changefreq><priority>0.5</priority></url>')
             extra += (f'\n  <url><loc>{_xml_escape(base)}/es/s/research/{_slug}</loc>'
                       f'<changefreq>weekly</changefreq><priority>0.5</priority></url>')
+    # Top 100 Commit 4 (25 Sep 2026, owner-reported): /top-100 is a
+    # Streamlit-proxied page (st.Page url_path="top-100" in app.py, not
+    # one of server.py's own server-rendered HTML routes like
+    # /track-record above), so it follows the SAME _renders_html()/
+    # INDEXABLE_PAGES opt-in convention every other Streamlit-shell page
+    # in the sitemap already goes through (blog_render.APP_PATHS' own
+    # /scanner entry, for one) - AND is further gated on top100_render.
+    # TOP100_PUBLIC specifically, since indexing this page while that
+    # flag is false would send crawlers to a URL that errors for every
+    # non-owner visitor (page_top100()'s own gate in app.py). Both
+    # conditions must hold, same "combined gate, standalone conditional
+    # block" shape as the universe-slug loop above (api_v1._resolve_
+    # universe() there).
+    if top100_render.TOP100_PUBLIC and _renders_html("/top-100"):
+        extra += (f'\n  <url><loc>{_xml_escape(base)}/top-100</loc>'
+                  f'<changefreq>daily</changefreq><priority>0.6</priority></url>')
     xml = xml.replace("</urlset>", extra + "\n</urlset>\n")
     return Response(xml, media_type="application/xml",
                     headers={"Cache-Control": "public, max-age=60"})

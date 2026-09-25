@@ -807,6 +807,23 @@ EN = {
     "home.top5.no_scan": "No overnight scan yet for {country}.",
     "home.top5.as_of": "as of {day}",
 
+    # Top 100 Commit 4 (25 Sep 2026, owner-reported): homepage teaser
+    # for the now-public Top 100 page - same key-naming/structure as
+    # home.top5.* right above, just a different section.
+    "home.top100_teaser.kicker": "AI-SCORED QUALITY SHORTLIST",
+    "home.top100_teaser.heading": "Top 100 — today's top 5 by Research Score",
+    "home.top100_teaser.col_rank": "#",
+    "home.top100_teaser.col_ticker": "Ticker",
+    "home.top100_teaser.col_company": "Company",
+    "home.top100_teaser.col_score": "Research Score",
+    "home.top100_teaser.col_sentiment": "Sentiment",
+    "home.top100_teaser.caption": (
+        "AI-assisted qualitative scoring across ten quality dimensions, "
+        "combined with valuation — a sort result from described "
+        "calculations, not a recommendation. {link}"
+    ),
+    "home.top100_teaser.cta": "See the full Top 100",
+
     # Next-batch instruction, Part 1: full home-page ES coverage - the
     # hero, toolkit cards, "how it works" steps, results-day/calendar
     # strips, compounder-coverage section, blog section, CTA band, and the
@@ -4164,6 +4181,23 @@ ES = {
     # otherwise double up with the sentence's.
     "home.top5.no_scan": "No hay un escaneo nocturno reciente para {country} todavía.",
     "home.top5.as_of": "al {day}",
+
+    # Top 100 Commit 4 (25 Sep 2026, owner-reported): homepage teaser
+    # for the now-public Top 100 page - matches the EN keys above.
+    "home.top100_teaser.kicker": "LISTA DE CALIDAD PUNTUADA POR IA",
+    "home.top100_teaser.heading": "Top 100 — el top 5 de hoy por Research Score",
+    "home.top100_teaser.col_rank": "#",
+    "home.top100_teaser.col_ticker": "Ticker",
+    "home.top100_teaser.col_company": "Empresa",
+    "home.top100_teaser.col_score": "Research Score",
+    "home.top100_teaser.col_sentiment": "Sentimiento",
+    "home.top100_teaser.caption": (
+        "Puntuación cualitativa asistida por IA en diez dimensiones de "
+        "calidad, combinada con la valoración — un resultado de "
+        "ordenamiento a partir de cálculos descritos, no una "
+        "recomendación. {link}"
+    ),
+    "home.top100_teaser.cta": "Ver el Top 100 completo",
 
     # Next-batch instruction, Part 1: ES translations matching the EN keys
     # added above, term for term against the live EN copy.
