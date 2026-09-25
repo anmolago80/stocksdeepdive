@@ -3520,13 +3520,27 @@ EN = {
         "and it is never part of the Research Score above."
     ),
     "top100.changes_heading": "What changed since the last selection",
-    "top100.changes_new": "New this selection: {tickers}",
-    "top100.changes_dropped": "Dropped - {ticker}: {reason}",
-    "top100.changes_would_rank": (
-        "{ticker} would rank in the top 20 by Value Score, but has no AI "
-        "quality score yet - see the Full 100 tab."
-    ),
     "top100.changes_none": "No changes since the last selection.",
+    # Top 100 Commit 5 (25 Sep 2026, owner-reported, industry mock): the
+    # compact 3-row changes strip, replacing the old bullet-list keys
+    # (changes_new/changes_dropped/changes_would_rank, removed - their
+    # only caller, top100_render._changes_strip(), no longer exists in
+    # that shape).
+    "top100.changes_strip_new_label": "▲ New ({n})",
+    "top100.changes_strip_dropped_label": "▼ Dropped ({n})",
+    "top100.changes_strip_awaiting_label": "⏳ Awaiting first score ({n})",
+    "top100.changes_strip_reason_cutoff": (
+        "still scanned, but its Value Score fell outside the top 100"
+    ),
+    "top100.changes_strip_reason_delisted": "no longer appears in any scanned universe",
+    "top100.changes_strip_awaiting_tooltip": (
+        "would rank in the top 20 by Value Score — scored automatically "
+        "at the next nightly run"
+    ),
+    "top100.changes_strip_caption": (
+        "hover for reasons · newcomers scored at the next nightly run "
+        "· dropped companies keep their cached scores all quarter."
+    ),
     "top100.tab_mixed": "Top 20 · Mixed",
     "top100.tab_au": "Top 20 · Australia",
     "top100.tab_us": "Top 20 · USA",
@@ -6554,13 +6568,25 @@ ES = {
         "calidad, y nunca forma parte de la Puntuación de Investigación anterior."
     ),
     "top100.changes_heading": "Qué cambió desde la última selección",
-    "top100.changes_new": "Nuevas en esta selección: {tickers}",
-    "top100.changes_dropped": "Salió - {ticker}: {reason}",
-    "top100.changes_would_rank": (
-        "{ticker} estaría en el top 20 por Value Score, pero aún no tiene "
-        "puntuación de calidad de IA - ver la pestaña Las 100."
-    ),
     "top100.changes_none": "Sin cambios desde la última selección.",
+    # Top 100 Commit 5 (25 Sep 2026, owner-reported, industry mock):
+    # matches the EN keys above.
+    "top100.changes_strip_new_label": "▲ Nuevas ({n})",
+    "top100.changes_strip_dropped_label": "▼ Salieron ({n})",
+    "top100.changes_strip_awaiting_label": "⏳ Esperando primera puntuación ({n})",
+    "top100.changes_strip_reason_cutoff": (
+        "sigue escaneada, pero su Value Score quedó fuera del top 100"
+    ),
+    "top100.changes_strip_reason_delisted": "ya no aparece en ningún universo escaneado",
+    "top100.changes_strip_awaiting_tooltip": (
+        "estaría en el top 20 por Value Score — se puntúa automáticamente "
+        "en la próxima ejecución nocturna"
+    ),
+    "top100.changes_strip_caption": (
+        "pase el cursor para ver los motivos · las nuevas se puntúan en la "
+        "próxima ejecución nocturna · las empresas que salieron conservan "
+        "su puntuación guardada todo el trimestre."
+    ),
     "top100.tab_mixed": "Top 20 · Mixto",
     "top100.tab_au": "Top 20 · Australia",
     "top100.tab_us": "Top 20 · EE. UU.",

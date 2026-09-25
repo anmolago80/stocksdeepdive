@@ -152,6 +152,17 @@ def _conn():
         conn.execute("ALTER TABLE top100_pool ADD COLUMN psychology REAL")
     except sqlite3.OperationalError:
         pass
+    # Top 100 Commit 5 (25 Sep 2026, owner-reported, industry mock): the
+    # pooled row's own "Sector" string, same guarded-ALTER-TABLE pattern
+    # as psychology just above (purely additive, no PK change) - so the
+    # page can show a display-only industry tag without any new query
+    # beyond what select_top100_pool() already reads from the scan row.
+    # Never fed into composite_score() - same "display flag only"
+    # status as psychology.
+    try:
+        conn.execute("ALTER TABLE top100_pool ADD COLUMN sector TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
         """CREATE TABLE IF NOT EXISTS top100_scores (
             ticker TEXT NOT NULL,
@@ -189,16 +200,16 @@ def _conn():
 def save_pool(rows, as_of):
     """Upserts one full pool snapshot - `rows`: [{"ticker",
     "company_name", "universe", "value_score", "mos_pct", "price",
-    "intrinsic_value", "currency", "psychology"}, ...], `as_of`:
-    "YYYY-MM-DD". Also prunes snapshots beyond POOL_SNAPSHOT_RETENTION
-    in the same call, so callers never have to remember to prune
-    separately."""
+    "intrinsic_value", "currency", "psychology", "sector"}, ...],
+    `as_of`: "YYYY-MM-DD". Also prunes snapshots beyond
+    POOL_SNAPSHOT_RETENTION in the same call, so callers never have to
+    remember to prune separately."""
     with _conn() as conn:
         conn.executemany(
             """INSERT INTO top100_pool
                  (as_of, ticker, company_name, universe, value_score,
-                  mos_pct, price, intrinsic_value, currency, psychology)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  mos_pct, price, intrinsic_value, currency, psychology, sector)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(as_of, ticker) DO UPDATE SET
                  company_name = excluded.company_name,
                  universe = excluded.universe,
@@ -207,11 +218,13 @@ def save_pool(rows, as_of):
                  price = excluded.price,
                  intrinsic_value = excluded.intrinsic_value,
                  currency = excluded.currency,
-                 psychology = excluded.psychology""",
+                 psychology = excluded.psychology,
+                 sector = excluded.sector""",
             [
                 (as_of, r["ticker"], r.get("company_name"), r.get("universe"),
                  r.get("value_score"), r.get("mos_pct"), r.get("price"),
-                 r.get("intrinsic_value"), r.get("currency"), r.get("psychology"))
+                 r.get("intrinsic_value"), r.get("currency"), r.get("psychology"),
+                 r.get("sector"))
                 for r in rows
             ],
         )
@@ -255,8 +268,8 @@ def latest_as_of():
 def current_pool():
     """The most recent pool snapshot - [{"ticker", "company_name",
     "universe", "value_score", "mos_pct", "price", "intrinsic_value",
-    "currency"}, ...], Value Score descending. [] if no selection has
-    ever run."""
+    "currency", "psychology", "sector"}, ...], Value Score descending.
+    [] if no selection has ever run."""
     as_of = latest_as_of()
     return _pool_for_as_of(as_of) if as_of else []
 

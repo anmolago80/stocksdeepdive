@@ -177,6 +177,57 @@ def _not_rated_chip_html(lang):
     )
 
 
+def _finer_industry_by_ticker():
+    """{ticker: industry_string} from compounder_data.json's own hand-
+    researched coverage (build_compounder_data.py) - Andrew's finer-
+    grained industry classification where he's covered a ticker, read
+    the SAME way research_snapshot_render._load_research_data() and
+    app.py's own coverage-industry lookups (e.g. app.py's Research page
+    opener card) already do: a cached JSON file on the Railway Volume,
+    no live fetch, direct ticker-string lookup with no case-forcing
+    (matching every existing caller of this data). {} when the file
+    doesn't exist yet (a fresh volume before the first admin rebuild)
+    or is malformed - never raises, a ticker simply gets no finer-
+    industry refinement rather than an error."""
+    try:
+        import research_snapshot_render
+        data = research_snapshot_render._load_research_data()
+        tickers = (data or {}).get("tickers") or {}
+        return {t: (info or {}).get("industry") for t, info in tickers.items()}
+    except Exception:
+        return {}
+
+
+def _industry_tag_html(sector, finer_industry):
+    """Top 100 Commit 5 (25 Sep 2026, owner-reported, industry mock):
+    the small uppercase muted-slate industry tag - `sector` from the
+    pool row (top100_engine.select_top100_pool()'s own "Sector" read,
+    ultimately the nightly scan's cached value), refined with `finer_
+    industry` (compounder_data.json's own hand-researched value, or
+    None where Andrew hasn't covered this ticker) when both are known
+    and actually differ. Cached data only - no live fetch, and never
+    enters composite_score() or any dimension - display-only, same
+    status as the sentiment/tradability chips. Returns "" (renders
+    nothing) when NEITHER is known, per the task's own explicit "a
+    ticker with no sector on file simply shows no tag" instruction."""
+    sector = (sector or "").strip()
+    finer_industry = (finer_industry or "").strip()
+    if finer_industry and sector and finer_industry.lower() != sector.lower():
+        label = f"{sector} — {finer_industry}"
+    elif finer_industry:
+        label = finer_industry
+    elif sector:
+        label = sector
+    else:
+        return ""
+    return (
+        "<span style='display:inline-block;background:#0e1930;border:1px solid #2a3f63;"
+        "color:#7f95b3;border-radius:6px;padding:1px 9px;font-size:10.5px;"
+        "letter-spacing:.05em;text-transform:uppercase;font-weight:600;'>"
+        f"{html.escape(label)}</span>"
+    )
+
+
 def _tradability_spread_pct(ticker):
     """None if there's no recorded snapshot for `ticker`, or its
     latest recorded spread% otherwise - display-flag only (the task's
@@ -226,7 +277,7 @@ def _row_edge_accent_style(score_row):
     return ""
 
 
-def _render_row(rank, row, lang):
+def _render_row(rank, row, lang, finer_industry=None):
     """One company row - rank/ticker(linked)/Value Score AND Research
     Score side by side (task's own "sharp divergence is intended and
     visible"), the ten dimension chips (each with a hover tooltip),
@@ -235,7 +286,14 @@ def _render_row(rank, row, lang):
     details toggle that expands every one of the ten justifications
     stacked - the SAME text the hover tooltips carry, so a phone
     (no hover) or a "read everything" desktop visit never leaves a
-    justification unreachable."""
+    justification unreachable.
+
+    `finer_industry` (Top 100 Commit 5, 25 Sep 2026, owner-reported,
+    industry mock): this ticker's compounder_data.json industry string
+    (or None), looked up ONCE per page render by the caller (_finer_
+    industry_by_ticker()) rather than re-reading that file per row -
+    combined with row["sector"] into the industry tag right after the
+    company name, present on normal and red-alert rows alike."""
     ticker = row["ticker"]
     score_row = row.get("score_row")
     composite = row.get("composite")
@@ -250,6 +308,9 @@ def _render_row(rank, row, lang):
     ]
     if row.get("company_name"):
         header_bits.append(f"<span style='color:#8aa0b8;font-size:12px;'>{html.escape(row['company_name'])}</span>")
+    industry_tag = _industry_tag_html(row.get("sector"), finer_industry)
+    if industry_tag:
+        header_bits.append(industry_tag)
     header_bits.append(
         f"<span style='color:#8aa0b8;font-size:12px;'>{html.escape(_t('col_value_score', lang))}: "
         f"<b style='color:#e6edf5;'>{row['value_score']:.1f}</b></span>"
@@ -336,7 +397,7 @@ def _enriched_pool():
     return out
 
 
-def _render_top20_tab(enriched, lang, currency=None):
+def _render_top20_tab(enriched, lang, finer_industry, currency=None):
     rows = [r for r in enriched if r["composite"] is not None]
     if currency:
         rows = [r for r in rows if r["currency"] == currency]
@@ -345,16 +406,84 @@ def _render_top20_tab(enriched, lang, currency=None):
         st.caption(_t("empty_tab", lang))
         return
     for i, row in enumerate(rows, start=1):
-        _render_row(i, row, lang)
+        _render_row(i, row, lang, finer_industry.get(row["ticker"]))
 
 
-def _render_full100_tab(enriched, lang):
+def _render_full100_tab(enriched, lang, finer_industry):
     rows = sorted(enriched, key=lambda r: r["value_score"], reverse=True)
     for i, row in enumerate(rows, start=1):
-        _render_row(i, row, lang)
+        _render_row(i, row, lang, finer_industry.get(row["ticker"]))
+
+
+# Top 100 Commit 5 (25 Sep 2026, owner-reported, industry mock): a
+# dropped ticker's "reason" (top100_engine.pool_changes()'s own two
+# fixed strings - NOT changed by this commit, display-only) mapped to
+# an i18n key so the compact strip's tooltip is genuinely localized in
+# Spanish, rather than interpolating the raw English reason string
+# into an otherwise-translated sentence (the old bullet-list's own
+# behaviour). An unrecognized reason (pool_changes() wording changed
+# without this map being updated) falls back to the raw string rather
+# than crashing or showing a blank tooltip.
+_DROPPED_REASON_I18N_KEYS = {
+    "still scanned, but its Value Score fell outside the top 100": "changes_strip_reason_cutoff",
+    "no longer appears in any scanned universe": "changes_strip_reason_delisted",
+}
+
+
+def _dropped_reason_text(reason, lang):
+    key = _DROPPED_REASON_I18N_KEYS.get(reason)
+    return _t(key, lang) if key else reason
+
+
+def _changes_chip_html(text, variant, tooltip=None):
+    """One ticker chip for the compact changes strip - variant is
+    "new"/"drop"/"wait", exact color tokens from the owner-approved
+    mock (top100_changes_industry_mock.html)."""
+    colors = {
+        "new": ("#10312d", "#14532d", "#34d399"),
+        "drop": ("#101a2e", "#1f3352", "#8aa0b8"),
+        "wait": ("#2a2413", "#7c5e10", "#fbbf24"),
+    }
+    bg, border, color = colors[variant]
+    title_attr = f" title='{html.escape(tooltip)}'" if tooltip else ""
+    return (
+        "<span style='display:inline-block;border-radius:999px;padding:2px 10px;"
+        f"font-size:11.5px;font-weight:700;cursor:default;background:{bg};"
+        f"border:1px solid {border};color:{color};'{title_attr}>{html.escape(text)}</span>"
+    )
+
+
+def _changes_row_html(label_text, label_variant, chips_html, is_last):
+    """One label+chips row of the compact strip - the label column is a
+    fixed-width uppercase caption (mock: flex:0 0 150px), chips wrap
+    freely next to it. No bottom border on the strip's last row (mock's
+    own .chg-row:last-child rule - inline styles can't select
+    ":last-child", so the caller tells us)."""
+    label_colors = {"new": "#34d399", "drop": "#8aa0b8", "wait": "#fbbf24"}
+    border = "" if is_last else "border-bottom:1px solid #14243d;"
+    return (
+        f"<div style='display:flex;align-items:flex-start;gap:10px;padding:7px 0;{border}'>"
+        f"<span style='flex:0 0 150px;font-size:11.5px;font-weight:700;letter-spacing:.04em;"
+        f"text-transform:uppercase;padding-top:3px;color:{label_colors[label_variant]};'>"
+        f"{html.escape(label_text)}</span>"
+        f"<span style='display:flex;flex-wrap:wrap;gap:6px;'>{chips_html}</span>"
+        "</div>"
+    )
 
 
 def _changes_strip(enriched, lang):
+    """Top 100 Commit 5 (25 Sep 2026, owner-reported, industry mock):
+    "What changed" collapsed from a ~14-line bullet list into one
+    compact 3-row chip strip - New (green) / Dropped (grey, hover for
+    reason) / Awaiting first score (amber, hover explains why). Purely
+    a rendering change: reuses top100_engine.pool_changes() and the
+    exact same top-20-by-Value-Score "would_rank" computation
+    unchanged (see this function's own git history for the original,
+    identical bullet-list version of this logic) - zero touch to
+    _SYSTEM_PROMPT, DIMENSIONS, weights, RUBRIC_VERSION or any cache
+    key, so no existing score is invalidated or resubmitted and this
+    costs nothing in API spend. Rows with zero entries are omitted
+    entirely (never an empty "New (0)" row)."""
     changes = top100_engine.pool_changes()
     new, dropped = changes["new"], changes["dropped"]
 
@@ -368,17 +497,36 @@ def _changes_strip(enriched, lang):
         st.caption(_t("changes_none", lang))
         return
 
-    lines = []
-    if new:
-        lines.append(_t("changes_new", lang, tickers=", ".join(new)))
-    for d in dropped:
-        lines.append(_t("changes_dropped", lang, ticker=d["ticker"], reason=d["reason"]))
-    for ticker in would_rank:
-        lines.append(_t("changes_would_rank", lang, ticker=ticker))
-
     st.markdown(f"**{_t('changes_heading', lang)}**")
-    for line in lines:
-        st.caption(f"• {line}")
+
+    rows = []
+    if new:
+        chips = "".join(_changes_chip_html(t, "new") for t in new)
+        rows.append((_t("changes_strip_new_label", lang, n=len(new)), "new", chips))
+    if dropped:
+        chips = "".join(
+            _changes_chip_html(d["ticker"], "drop", tooltip=_dropped_reason_text(d["reason"], lang))
+            for d in dropped
+        )
+        rows.append((_t("changes_strip_dropped_label", lang, n=len(dropped)), "drop", chips))
+    if would_rank:
+        tooltip = _t("changes_strip_awaiting_tooltip", lang)
+        chips = "".join(_changes_chip_html(t, "wait", tooltip=tooltip) for t in would_rank)
+        rows.append((_t("changes_strip_awaiting_label", lang, n=len(would_rank)), "wait", chips))
+
+    rows_html = "".join(
+        _changes_row_html(label, variant, chips, is_last=(i == len(rows) - 1))
+        for i, (label, variant, chips) in enumerate(rows)
+    )
+    st.markdown(
+        "<div style='background:#0e1930;border:1px solid #1f3352;border-radius:12px;"
+        "padding:16px 20px;margin-bottom:8px;'>"
+        + rows_html
+        + "<div style='color:#5b7290;font-size:11px;margin-top:9px;line-height:1.55;'>"
+        + html.escape(_t("changes_strip_caption", lang)) + "</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def _is_owner_for_refresh():
@@ -468,6 +616,13 @@ def render_top100_page(lang="en"):
         return
 
     enriched = _enriched_pool()
+    # Top 100 Commit 5 (25 Sep 2026, owner-reported, industry mock):
+    # loaded ONCE per page render, not once per row - a plain JSON file
+    # read (no live fetch), cheap enough to always compute even when
+    # every ticker's tag ends up sector-only (a ticker missing from
+    # this dict just gets sector alone, or no tag at all - see _industry_
+    # tag_html()'s own docstring).
+    finer_industry = _finer_industry_by_ticker()
 
     usd_count = sum(1 for r in pool if r["currency"] == "USD")
     st.caption(_t("currency_banner", lang, count=usd_count, total=len(pool)))
@@ -478,10 +633,10 @@ def render_top100_page(lang="en"):
         _t("tab_mixed", lang), _t("tab_au", lang), _t("tab_us", lang), _t("tab_full", lang),
     ])
     with tabs[0]:
-        _render_top20_tab(enriched, lang)
+        _render_top20_tab(enriched, lang, finer_industry)
     with tabs[1]:
-        _render_top20_tab(enriched, lang, currency="AUD")
+        _render_top20_tab(enriched, lang, finer_industry, currency="AUD")
     with tabs[2]:
-        _render_top20_tab(enriched, lang, currency="USD")
+        _render_top20_tab(enriched, lang, finer_industry, currency="USD")
     with tabs[3]:
-        _render_full100_tab(enriched, lang)
+        _render_full100_tab(enriched, lang, finer_industry)

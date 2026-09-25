@@ -121,8 +121,8 @@ def select_top100_pool(log=print):
     POOL_SIZE by Value Score, and persists the result via top100_
     store.save_pool(as_of=today's UTC date). Returns the saved pool -
     [{"ticker","company_name","universe","value_score","mos_pct",
-    "price","intrinsic_value","currency","psychology"}, ...], Value
-    Score descending. Never raises - a single bad universe file is skipped
+    "price","intrinsic_value","currency","psychology","sector"}, ...],
+    Value Score descending. Never raises - a single bad universe file is skipped
     (scan_store.load_scan_raw() itself already returns None on any
     read error), and an empty result (no saved scans yet) simply
     persists/returns an empty pool rather than crashing."""
@@ -161,6 +161,14 @@ def select_top100_pool(log=print):
                     # a display read, same "display flag only" status as
                     # the tradability chip's own spread%.
                     "psychology": row.get("Psychology"),
+                    # Top 100 Commit 5 (25 Sep 2026, owner-reported,
+                    # industry mock): the raw scan row's own "Sector"
+                    # string, same "carried through for a display-only
+                    # tag, never fed into composite_score()" status as
+                    # psychology just above - the page refines it with
+                    # the Deep Dive's own finer industry string where
+                    # cached (top100_render._finer_industry_by_ticker()).
+                    "sector": row.get("Sector"),
                 }
 
     pool = sorted(best_by_ticker.values(), key=lambda r: r["value_score"], reverse=True)[:POOL_SIZE]
