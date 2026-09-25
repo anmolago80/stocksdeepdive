@@ -1925,9 +1925,13 @@ def _loop(log):
                 # "nightly" job lock and the SAME persisted scan_attempts
                 # budget as the due-scan block immediately above (not a
                 # separate counter) - together they cap this process at 3
-                # real nightly-scan attempts per UTC day, catch-up or not,
-                # surviving any number of restarts in between since
-                # scan_attempts lives in scheduler_state.json on the
+                # real nightly-scan attempts per UTC day for a universe
+                # that still has SOMETHING servable, catch-up or not
+                # (URGENT COMMIT 2, 25 Sep 2026, owner-reported: a
+                # universe with NOTHING servable right now is exempt
+                # from this cap entirely - see that block's own comment
+                # below), surviving any number of restarts in between
+                # since scan_attempts lives in scheduler_state.json on the
                 # Railway Volume. Only fires within CATCHUP_WINDOW_HOURS of
                 # the scan-hour instant it's catching up for (see
                 # _catchup_reference_night's own docstring for the UTC-
@@ -1947,18 +1951,63 @@ def _loop(log):
                 if ref_night is not None:
                     missing = _universes_missing_today(cfg, ref_night)
                     if missing:
+                        # URGENT COMMIT 2 (25 Sep 2026, owner-reported):
+                        # a universe with NOTHING servable right now -
+                        # scan_store.load_scan(u) is None, the exact
+                        # same "would the Scanner page actually serve
+                        # something right now" test the universe-
+                        # integrity guard's own callers already use
+                        # (nightly_scan.run_universe_scan(),
+                        # _build_derived_universes() above - see the
+                        # URGENT fix that added that check for the
+                        # full reasoning) - is exempt from the shared
+                        # 3/day scan_attempts cap below. Incident this
+                        # closes: a deploy killed the ASX 200 scan at
+                        # 175/200 rows, then three FURTHER deploys each
+                        # killed a catch-up attempt before it could
+                        # finish, exhausting the cap by 3 burned
+                        # attempts with zero completed scans - ASX 200,
+                        # ASX 300, All Ordinaries and Dow Jones 30 then
+                        # served nothing and vanished from the Scanner's
+                        # universe options until tomorrow's scheduled
+                        # scan, with the cap itself now blocking the
+                        # very recovery it should never have needed to
+                        # allow. A universe that still has a servable
+                        # (even if stale) scan is NOT this emergency -
+                        # the cap stays exactly as it was for those,
+                        # so a persistently failing universe still can't
+                        # hammer the lock indefinitely.
+                        import scan_store
+                        nothing_servable = [u for u in missing if scan_store.load_scan(u) is None]
+                        capped_missing = [u for u in missing if u not in nothing_servable]
+
                         state = _load_state()
                         attempts = state.get("scan_attempts", {})
                         n_today = attempts.get(today, 0)
-                        if n_today < 3:
+                        cap_available = n_today < 3
+
+                        # Only bundle the capped (servable-but-stale)
+                        # universes into THIS run when the cap still
+                        # allows it - a nothing-servable-only run must
+                        # never consume the capped cohort's own budget
+                        # (see the scan_attempts write below), and must
+                        # never be blocked by it either.
+                        eligible = nothing_servable + (capped_missing if cap_available else [])
+                        counts_against_cap = cap_available and bool(capped_missing)
+
+                        if eligible:
                             if _acquire_job_lock("nightly", log):
                                 try:
-                                    state["scan_attempts"] = {today: n_today + 1}
+                                    if counts_against_cap:
+                                        state["scan_attempts"] = {today: n_today + 1}
                                     state["last_scan_date"] = today
                                     _save_state(state)
+                                    attempt_note = (
+                                        f"[attempt {n_today + 1}/3 today]" if counts_against_cap
+                                        else "[nothing servable - uncapped]"
+                                    )
                                     log(f"[scheduler] catch-up scan for {ref_night} "
-                                        f"({', '.join(missing)}) "
-                                        f"[attempt {n_today + 1}/3 today]")
+                                        f"({', '.join(eligible)}) {attempt_note}")
                                     # Commit H: explicitly credited to
                                     # ref_night (the night being caught
                                     # up), not to "now" - this run is
@@ -1970,7 +2019,7 @@ def _loop(log):
                                     _record_job(
                                         "nightly", log,
                                         lambda lg: _run_nightly(
-                                            {**cfg, "universes": missing}, lg, run_night=ref_night),
+                                            {**cfg, "universes": eligible}, lg, run_night=ref_night),
                                     )
                                 finally:
                                     _release_job_lock("nightly")
