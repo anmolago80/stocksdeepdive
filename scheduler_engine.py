@@ -1449,6 +1449,17 @@ def _universes_needing_scan(cfg):
 # nothing to gain from persisting it across a restart.
 _last_heartbeat = None
 
+# Top 100 Commit 2 follow-up (25 Sep 2026, owner-reported): True once
+# THIS process's own _loop() has made (or is making) its one boot-time
+# immediate attempt at the hourly Top 100 poll - see that block's own
+# comment for why a fresh boot needs an immediate shot at a pending
+# batch regardless of the persisted inter-poll interval. Same "plain
+# module global, not persisted" reasoning as _last_heartbeat above -
+# this is specifically about THIS process's own boot, so there is
+# nothing to persist across a restart; a NEW process gets its own
+# fresh False and thus its own fresh immediate attempt.
+_top100_boot_poll_attempted = False
+
 
 def heartbeat_age_seconds():
     """Seconds since the scheduler loop last ticked, or None if it has
@@ -1501,6 +1512,14 @@ _JOB_HARD_TIMEOUT_SECONDS = {
     "digest": 15 * 60,
 }
 _JOB_HARD_TIMEOUT_DEFAULT_SECONDS = 15 * 60
+
+# URGENT (25 Sep 2026, owner-reported): minimum spacing between hourly
+# Top 100 poll ATTEMPTS (see _loop()'s own comment on its dispatch
+# block) - deliberately named "attempt", not "success": the timestamp
+# is persisted before _record_job() runs, so a failed/timed-out
+# attempt still advances it and the interval still holds, rather than
+# retrying every single tick on a persistent failure.
+_TOP100_POLL_MIN_INTERVAL_SECONDS = 60 * 60
 
 
 def _record_job(job_name, log, run_fn, lock_name=None):
@@ -1645,7 +1664,7 @@ def _record_job(job_name, log, run_fn, lock_name=None):
 
 
 def _loop(log):
-    global _last_heartbeat
+    global _last_heartbeat, _top100_boot_poll_attempted
     while True:
         _last_heartbeat = time.time()
         try:
@@ -1974,14 +1993,11 @@ def _loop(log):
                 # the once-a-day job above - see _run_top100_poll's own
                 # docstring for why (a batch otherwise sits un-ingested
                 # for up to 24h, and blocks the next night's submission
-                # the whole time it does). Hour-scoped guard (state key
-                # stores "YYYY-MM-DDTHH", not just the date - fires
-                # roughly once per UTC hour, on top of the once-a-day
-                # guard above). Cheap when nothing is pending at all -
-                # top100_store.get_batch_state() is a single sqlite
-                # read, checked BEFORE taking any lock, so an idle
-                # Top 100 pipeline (the common case once the backlog is
-                # cleared) never even attempts the lock every hour.
+                # the whole time it does). Cheap when nothing is pending
+                # at all - top100_store.get_batch_state() is a single
+                # sqlite read, checked BEFORE taking any lock, so an
+                # idle Top 100 pipeline (the common case once the
+                # backlog is cleared) never even attempts the lock.
                 # Uses the SAME "top100" lock as the nightly job above
                 # (deliberately NOT a separate lock name) - both jobs
                 # read/write the identical top100_batch_state row and
@@ -2000,17 +2016,64 @@ def _loop(log):
                 # own periodic heartbeat refresh keeps touching the lock
                 # ACTUALLY held ("top100"), not a phantom "top100_poll"
                 # lock file nothing else ever checks.
-                _this_hour = now.strftime("%Y-%m-%dT%H")
+                #
+                # URGENT (25 Sep 2026, owner-reported): the original
+                # "has the wall-clock hour STRING changed since the last
+                # successful poll" gate never fired once in production
+                # across a stable 3+ hour window despite a genuinely
+                # pending batch and an otherwise healthy scheduler (the
+                # ASX quote recorder ran normally in that same window).
+                # A clean multi-hour simulation of the OLD condition in
+                # isolation fires correctly every hour, so no reproducible
+                # logic bug was found by tracing it alone - but the
+                # design itself has two real weaknesses regardless of
+                # the exact production mechanism: (1) it only advances
+                # by comparing to the LAST SUCCESSFUL poll, so any
+                # single tick where _record_job() raised/timed out (or
+                # never even ran, e.g. a lock held by a long-running
+                # nightly job blocking this SAME thread for a while)
+                # left no record that an ATTEMPT happened, and (2) nothing
+                # about it ever forces an IMMEDIATE check right after a
+                # fresh boot - recovery after a deploy could always be
+                # gated behind however much of the current hour had
+                # already elapsed. Replaced with two independent checks,
+                # either of which is enough to poll:
+                #   - _top100_poll_due(): >=_TOP100_POLL_MIN_INTERVAL_
+                #     SECONDS (60min) since the last poll ATTEMPT
+                #     (successful or not - the timestamp is persisted
+                #     BEFORE _record_job runs, not after, so a failed/
+                #     timed-out attempt still counts and the interval
+                #     still advances rather than hammering every tick),
+                #     stored in scheduler_state.json so it survives a
+                #     restart (never reset by boot, per the task's own
+                #     explicit requirement).
+                #   - `not _top100_boot_poll_attempted` (a plain, non-
+                #     persisted module global - see its own docstring):
+                #     True until THIS process's own _loop() has made one
+                #     attempt, so a fresh boot/deploy always gets an
+                #     immediate shot at a pending batch within the next
+                #     tick (<=60s), regardless of how recently a
+                #     PREVIOUS boot happened to poll - exactly what
+                #     collects the currently-pending batch right after
+                #     this fix deploys, without waiting on the 60-minute
+                #     interval or any wall-clock alignment at all.
+                _last_top100_poll_attempt = state.get("last_top100_poll_attempt_at")
+                _top100_poll_due = (
+                    _last_top100_poll_attempt is None
+                    or (time.time() - _last_top100_poll_attempt) >= _TOP100_POLL_MIN_INTERVAL_SECONDS
+                    or not _top100_boot_poll_attempted
+                )
                 if (top100_store is not None
-                        and state.get("last_top100_poll_hour") != _this_hour
+                        and _top100_poll_due
                         and top100_store.get_batch_state() is not None):
                     if _acquire_job_lock("top100", log):
                         try:
+                            _top100_boot_poll_attempted = True
+                            state = _load_state()
+                            state["last_top100_poll_attempt_at"] = time.time()
+                            _save_state(state)
                             log("[scheduler] starting hourly Top 100 batch poll")
                             _record_job("top100_poll", log, _run_top100_poll, lock_name="top100")
-                            state = _load_state()
-                            state["last_top100_poll_hour"] = _this_hour
-                            _save_state(state)
                         except Exception as e:
                             log(f"[scheduler] hourly Top 100 batch poll failed: {e}")
                         finally:
