@@ -49,6 +49,7 @@ DEFAULT_OG_IMAGE                absolute URL used as the social card image
 """
 
 import asyncio
+import hashlib
 import hmac
 import html
 import logging
@@ -1814,6 +1815,37 @@ def _og_read_or_render(name, render_fn):
     return png
 
 
+def _og_read_or_render_content_keyed(name, render_fn):
+    """A content-addressed variant of _og_read_or_render() above, for
+    cards whose `name` already encodes a hash of the exact content
+    render_fn() would produce (see _research_card_context()'s own
+    "token" field). Unlike that function's once-a-day mtime check, a
+    cache HIT here needs no freshness check at all and is correct
+    forever BY CONSTRUCTION: identical name means identical rendered
+    bytes, so there is nothing to go stale. The flip side: a revision
+    (a new token) is simply a cache MISS under its own new name - the
+    old file for the old token is left on disk untouched (never
+    actively read again, since nothing computes that old token anymore)
+    rather than deleted - unbounded disk growth from years of revisions
+    is a real, acknowledged tradeoff of this approach, not a gap in it;
+    flagged in this commit's own report rather than solved here, since
+    nothing asked for cache pruning and it's a separate concern from
+    correctness."""
+    path = _og_cache_path(name)
+    if os.path.exists(path):
+        log.info("og card cache HIT (content-addressed): %s", name)
+        with open(path, "rb") as f:
+            return f.read()
+    log.info("og card cache MISS (content-addressed, rendering): %s", name)
+    png = render_fn()
+    try:
+        with open(path, "wb") as f:
+            f.write(png)
+    except OSError:
+        log.warning("og card cache write failed for %s - serving uncached this request", name)
+    return png
+
+
 def _og_default_png():
     return _og_read_or_render("_default", og_card_render.render_default_card)
 
@@ -1893,35 +1925,58 @@ async def og_ticker_card(ticker: str):
 
 
 @app.get("/og/research/{ticker}.png", include_in_schema=False)
-async def og_research_ticker_card(ticker: str):
+async def og_research_ticker_card(ticker: str, request: Request):
     """The hand-covered Rational Compounder research card - a SEPARATE
     route/image from /og/{ticker}.png above, because one image per
     ticker can't correctly serve both /research (hand-built figures)
-    and /deep-dive (automated figures) - see _research_ticker_lookup()'s
+    and /deep-dive (automated figures) - see _research_card_context()'s
     own docstring for the defect this whole route exists to fix.
+
+    Content-versioned (follow-up, 25 Sep 2026, owner-reported): the URL
+    itself carries a `?v=<token>` derived from exactly what the card
+    would render (_research_card_context()'s own "token" field) - a
+    request with no `?v=` at all, or a `?v=` that no longer matches
+    (Andrew has since revised the workbook), gets a 302 to the CURRENT
+    canonical `?v=` URL rather than ever being served directly. This is
+    what makes a revision actually reach an already-shared link: a
+    social platform (X in particular) caches an og:image by the exact
+    URL it first crawled and will not re-fetch it for a link that's
+    already been posted, no matter what Cache-Control says - the only
+    way a stale image ever gets replaced in an already-live share is a
+    URL that changes, which is exactly what `?v=` gives it. The
+    redirect itself only matters for a DIRECT re-fetch (a browser, a
+    crawler, a monitoring tool) - a platform that has already cached the
+    old, now-redirecting URL will simply never issue that re-fetch, per
+    the same caching behaviour this fix works around; that's expected,
+    not a gap this route could close from its own end.
 
     A ticker that isn't hand-covered (or has no compounder_data.json
     available at all) gets the site-default card, HTTP 200 - same
     never-a-404/500-on-a-share-preview rule og_ticker_card() above
     already follows, and the same behaviour page_research() itself has
-    for that ticker (no per-ticker content, shelf only)."""
+    for that ticker (no per-ticker content, shelf only) - no `?v=`
+    handling applies to it at all, since there's no per-ticker content
+    to version."""
     ticker = ticker.strip().upper()
     try:
         if not _TICKER_RE.match(ticker):
             png = _og_default_png()
         else:
-            covered, fair_value = _research_ticker_lookup(ticker)
-            if not covered:
+            ctx = _research_card_context(ticker)
+            if not ctx["covered"]:
                 png = _og_default_png()
             else:
-                company_name = research_snapshot_render._company_name(ticker)
-                data = research_snapshot_render._load_research_data()
-                generated_at = (data or {}).get("generated_at")
+                requested_v = request.query_params.get("v")
+                if requested_v != ctx["token"]:
+                    return RedirectResponse(
+                        f"/og/research/{ticker}.png?v={ctx['token']}", status_code=302)
 
-                def _render(_ticker=ticker, _name=company_name, _fv=fair_value, _gen=generated_at):
+                def _render(_ticker=ticker, _name=ctx["company_name"],
+                            _fv=ctx["fair_value"], _gen=ctx["generated_at"]):
                     return og_card_render.render_research_ticker_card(_ticker, _name, _fv, _gen)
 
-                png = _og_read_or_render(f"research__{_og_safe_name(ticker)}", _render)
+                png = _og_read_or_render_content_keyed(
+                    f"research__{_og_safe_name(ticker)}__{ctx['token']}", _render)
     except Exception:
         log.exception("research OG card render failed for ticker=%s", ticker)
         try:
@@ -2409,58 +2464,95 @@ _SITE_DEFAULT_OG_DESCRIPTION = (
 _OG_TICKER_PATHS = {"/research", "/deep-dive"}
 
 
-def _research_ticker_lookup(ticker):
-    """(is_covered, fair_value) for a HAND-COVERED Rational Compounder
-    research ticker - the fix for a real defect (owner-reported, 25 Sep
-    2026): both _social_meta_tags_for_request() and _plain_seo_tags_
-    for_request() used to read snapshot_store.public_view()["intrinsic_
-    value"] - the AUTOMATED nightly-scan valuation - for /research
-    exactly as they do for /deep-dive, keyed on ticker alone with no
-    regard for which page was actually requested. So a hand-covered
-    ticker's /research page advertised the automated model's fair value
-    instead of Andrew's own hand-built one, and /research?ticker=X and
-    /deep-dive?ticker=X produced identical share cards. This function is
-    the correct source instead: compounder_data.json's own hand-built
-    Fair Value "DCF" figure - the SAME figure app.py's own
-    _switch_get_iv() reads first (sections["Fair Value"][
-    "valuation_methods"][ticker]["dcf"]), before ITS OWN separate
-    auto_compounder_engine fallback (irrelevant here - a research
-    surface must never show the automated number, full stop, not even
-    as a fallback).
+_RESEARCH_CARD_UNCOVERED_CONTEXT = {
+    "covered": False, "company_name": None, "fair_value": None,
+    "generated_at": None, "token": None,
+}
 
-    `is_covered` mirrors app.py's own page_research() ticker-resolution
+
+def _research_card_context(ticker):
+    """Everything /research's OG/share-card machinery needs for `ticker`,
+    fetched once: is it HAND-COVERED, its hand-built Fair Value figure,
+    its company name, compounder_data.json's own generated_at, and a
+    short content `token` derived from exactly those rendered fields.
+
+    Originally this was just (is_covered, fair_value) - the fix for a
+    real defect (owner-reported, 25 Sep 2026): both _social_meta_tags_
+    for_request() and _plain_seo_tags_for_request() used to read
+    snapshot_store.public_view()["intrinsic_value"] - the AUTOMATED
+    nightly-scan valuation - for /research exactly as they do for
+    /deep-dive, keyed on ticker alone with no regard for which page was
+    actually requested. So a hand-covered ticker's /research page
+    advertised the automated model's fair value instead of Andrew's own
+    hand-built one. fair_value here is the correct source instead:
+    compounder_data.json's own hand-built Fair Value "DCF" figure - the
+    SAME figure app.py's own _switch_get_iv() reads first (sections[
+    "Fair Value"]["valuation_methods"][ticker]["dcf"]), before ITS OWN
+    separate auto_compounder_engine fallback (irrelevant here - a
+    research surface must never show the automated number, full stop,
+    not even as a fallback).
+
+    `covered` mirrors app.py's own page_research() ticker-resolution
     check EXACTLY (a raw key in compounder_data.json's own "tickers"
     dict - see that function's `if _qp_ticker and _qp_ticker in
     tickers` line): a ticker /research itself would silently drop and
     fall through to the shelf for (never rendering ANY per-ticker
     content) is never "covered" here either, so it never gets a
-    per-ticker card - see the call site below for why that's correct.
+    per-ticker card - see each call site for why that's correct.
 
-    Reuses research_snapshot_render._load_research_data() (the exact
-    same compounder_data.json read blog_render.py's own _covered_
-    tickers() and research_snapshot_render.py itself already use) rather
-    than a third copy of that file-read - this FastAPI process can't
-    import app.py itself (a Streamlit entrypoint - see research_
-    snapshot_render.py's own module docstring for why), so the tiny
-    "walk to the Fair Value dcf" piece below is duplicated from _switch_
-    get_iv()'s hand-built branch by hand, same convention that module
-    already documents for its own small duplicated pieces.
+    `token` (follow-up, 25 Sep 2026, owner-reported): a short sha256
+    prefix of exactly the fields render_research_ticker_card() draws
+    (ticker/company_name/fair_value/generated_at). It changes precisely
+    when a revision in compounder_data.json would change what the card
+    renders, and nothing else - so it's used BOTH as the disk-cache key
+    (via _og_read_or_render_content_keyed() - a revision can never be
+    served from a stale cache entry, because the entry it would need is
+    itself new) AND as the /og/research/{ticker}.png?v= query token (a
+    revision produces a genuinely new URL, which is what makes a social
+    platform that has already cached the OLD url-as-shared re-fetch the
+    image at all - see og_research_ticker_card()'s own docstring for
+    the mechanics). Before this, the disk cache alone was keyed on
+    ticker only and refreshed once per calendar day regardless of
+    content - a same-day revision could still serve the pre-revision
+    PNG for up to ~24h, and even once that cache expired, the STABLE
+    /og/research/{ticker}.png URL meant a platform that had already
+    fetched and cached that exact URL for a previously-shared link would
+    never re-fetch it at all, so the stale image could persist in a
+    live share indefinitely - the same provenance error this whole
+    commit exists to fix, just delayed rather than prevented.
 
-    fair_value is None when covered but not yet valued in the workbook.
-    Never raises: (False, None) on any lookup failure."""
+    Reuses research_snapshot_render._load_research_data() and
+    _company_name() (the exact same compounder_data.json/snapshot_store
+    reads blog_render.py's own _covered_tickers() and research_
+    snapshot_render.py itself already use) rather than a third copy of
+    either - this FastAPI process can't import app.py itself (a
+    Streamlit entrypoint - see research_snapshot_render.py's own module
+    docstring for why), so the tiny "walk to the Fair Value dcf" piece
+    below is duplicated from _switch_get_iv()'s hand-built branch by
+    hand, same convention that module already documents for its own
+    small duplicated pieces.
+
+    Returns _RESEARCH_CARD_UNCOVERED_CONTEXT (covered=False, every other
+    field None) when the ticker isn't hand-covered, compounder_data.json
+    isn't available, or any lookup fails - never raises."""
     try:
         data = research_snapshot_render._load_research_data()
-        if not data:
-            return False, None
-        if ticker not in (data.get("tickers") or {}):
-            return False, None
+        if not data or ticker not in (data.get("tickers") or {}):
+            return _RESEARCH_CARD_UNCOVERED_CONTEXT
         methods = ((data.get("sections") or {}).get("Fair Value") or {}).get("valuation_methods") or {}
         fair_value = (methods.get(ticker) or {}).get("dcf")
         if not isinstance(fair_value, (int, float)):
             fair_value = None
-        return True, fair_value
+        generated_at = data.get("generated_at")
+        company_name = research_snapshot_render._company_name(ticker)
+        raw = f"{ticker}|{company_name or ''}|{fair_value if fair_value is not None else ''}|{generated_at or ''}"
+        token = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:10]
+        return {
+            "covered": True, "company_name": company_name, "fair_value": fair_value,
+            "generated_at": generated_at, "token": token,
+        }
     except Exception:
-        return False, None
+        return _RESEARCH_CARD_UNCOVERED_CONTEXT
 
 
 def _social_meta_tags_for_request(request: Request, base_url: str) -> str:
@@ -2496,7 +2588,7 @@ def _social_meta_tags_for_request(request: Request, base_url: str) -> str:
 
     if path in _OG_TICKER_PATHS and ticker and _TICKER_RE.match(ticker):
         if path == "/research":
-            # Hand-built figures only - see _research_ticker_lookup()'s
+            # Hand-built figures only - see _research_card_context()'s
             # own docstring for the defect this fixes. A ticker that
             # ISN'T hand-covered gets no per-ticker card at all: title/
             # description/image/canonical all stay at the site-default
@@ -2505,27 +2597,15 @@ def _social_meta_tags_for_request(request: Request, base_url: str) -> str:
             # ?ticker= is silently dropped and the shelf renders
             # instead) - a ticker-specific card here would claim content
             # the real page doesn't have.
-            try:
-                covered, fair_value = _research_ticker_lookup(ticker)
-            except Exception:
-                covered, fair_value = False, None
-            if covered:
-                try:
-                    snap = snapshot_store.get_snapshot(ticker)
-                except Exception:
-                    snap = None
-                company_name = None
-                if snap:
-                    try:
-                        company_name = snapshot_store.public_view(snap.get("data") or {}).get("company_name")
-                    except Exception:
-                        company_name = None
+            ctx = _research_card_context(ticker)
+            if ctx["covered"]:
+                company_name = ctx["company_name"]
                 title = (f"{ticker} — {company_name} | StocksDeepDive" if company_name
                          else f"{ticker} | StocksDeepDive")
-                if fair_value is not None:
+                if ctx["fair_value"] is not None:
                     description = (
                         f"{company_name or ticker}: hand-covered Rational Compounder research "
-                        f"— fair value ${fair_value:,.2f} — every input shown, described "
+                        f"— fair value ${ctx['fair_value']:,.2f} — every input shown, described "
                         "calculations, not advice."
                     )
                 else:
@@ -2533,7 +2613,12 @@ def _social_meta_tags_for_request(request: Request, base_url: str) -> str:
                         f"{company_name or ticker}: hand-covered Rational Compounder research "
                         "— every input shown, described calculations, not advice."
                     )
-                image = f"{base_url}/og/research/{ticker}.png"
+                # Content-versioned (follow-up, 25 Sep 2026): the exact
+                # URL a social platform will cache forever once crawled -
+                # see og_research_ticker_card()'s own docstring for why
+                # this MUST be the ?v= URL directly, not the unversioned
+                # path that merely redirects to it.
+                image = f"{base_url}/og/research/{ticker}.png?v={ctx['token']}"
                 canonical = f"{base_url}{path}?ticker={ticker}"
         else:
             try:
@@ -2636,31 +2721,21 @@ def _plain_seo_tags_for_request(request: Request, base_url: str) -> dict:
         if path == "/research":
             # Same fix, same reasoning as _social_meta_tags_for_
             # request()'s own /research branch just above in this file -
-            # see _research_ticker_lookup()'s docstring. Deliberately a
-            # SEPARATE lookup, not shared with that function (this
-            # module's own standing convention - see this function's own
-            # docstring for why).
-            try:
-                covered, fair_value = _research_ticker_lookup(ticker)
-            except Exception:
-                covered, fair_value = False, None
-            if covered:
-                try:
-                    snap = snapshot_store.get_snapshot(ticker)
-                except Exception:
-                    snap = None
-                company_name = None
-                if snap:
-                    try:
-                        company_name = snapshot_store.public_view(snap.get("data") or {}).get("company_name")
-                    except Exception:
-                        company_name = None
+            # see _research_card_context()'s docstring. Deliberately a
+            # SEPARATE call, not shared with that function's own tag
+            # building (this module's own standing convention - see this
+            # function's own docstring for why) - though both now call
+            # the same underlying _research_card_context() rather than
+            # each re-deriving covered/company_name/fair_value by hand.
+            ctx = _research_card_context(ticker)
+            if ctx["covered"]:
+                company_name = ctx["company_name"]
                 title = (f"{ticker} — {company_name} | StocksDeepDive" if company_name
                          else f"{ticker} | StocksDeepDive")
-                if fair_value is not None:
+                if ctx["fair_value"] is not None:
                     description = (
                         f"{company_name or ticker}: hand-covered Rational Compounder research "
-                        f"— fair value ${fair_value:,.2f} — every input shown, described "
+                        f"— fair value ${ctx['fair_value']:,.2f} — every input shown, described "
                         "calculations, not advice."
                     )
                 else:
