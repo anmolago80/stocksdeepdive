@@ -292,7 +292,7 @@ MAX_NIGHTLY_SCORES = 120
 
 _SYSTEM_PROMPT = """You are screening publicly-listed companies for a factual, descriptive "Top 100" quality shortlist on an investing research site. You are given one company's ticker and name. Score it on TEN qualitative dimensions, each as an integer from 1 to 5 - 5 is ALWAYS the good outcome for a long-term holder of the stock, 1 is ALWAYS the bad outcome, on every dimension, no exceptions. Your response format has NO null/blank values anywhere - every field below names the exact SENTINEL value that stands in for "no value" wherever one is needed.
 
-For each dimension also give a ONE-LINE justification naming the specific source period it is based on (e.g. "FY25 annual report", "Q2 2026 investor call", "the company's own FY24 10-K risk factors section") - or an empty string "" for source_period if the dimension's score is 0 (see the honesty rule).
+For each dimension also give a ONE-LINE justification, AT MOST ABOUT 25 WORDS, naming the specific source period it is based on (e.g. "FY25 annual report", "Q2 2026 investor call", "the company's own FY24 10-K risk factors section") - or an empty string "" for source_period if the dimension's score is 0 (see the honesty rule).
 
 HONESTY RULE, the single most important instruction in this prompt: output 0 for a dimension's score (not a number 1-5, and never a middle value like 3 to "play it safe") for ANY dimension you do not have confident, specific, public-record knowledge of for THIS company. 0 is not a real score - it is the sentinel meaning "cannot score honestly". Guessing a plausible-sounding score is worse than admitting you don't know - a 0 is the honest answer, a fabricated 3 is not. If three or more of your ten scores end up 0, that is expected and correct for a company with a thin public record - do not distort your other scores to avoid it. This applies especially to MANAGEMENT QUALITY (dimension 8 below): score it 0 freely whenever the people running the company aren't publicly well known - most companies have no public record of their management's integrity, candour or execution track record, and that is the honest, expected answer, not a failure.
 
@@ -433,7 +433,18 @@ def _request_params(ticker, company_name):
     task's own one real API test call)."""
     return {
         "model": MODEL_TOP100,
-        "max_tokens": 2000,
+        # SMALL FIX (25 Sep 2026, owner-reported): was 2000 - 19/100
+        # batch results failed with JSON parse errors ("Unterminated
+        # string" around char 2500-3400), i.e. the response was cut off
+        # by max_tokens mid-object before the JSON could close. Ten
+        # dimensions' worth of {score, justification, source_period}
+        # plus the two inversion fields, all inside one structured-
+        # outputs JSON object, doesn't reliably fit in 2000 output
+        # tokens - raised to 4000 (2x) to comfortably fit all ten
+        # justifications + the inversion synthesis even before
+        # _SYSTEM_PROMPT's own new ~25-word-per-justification cap
+        # (added the same day) further reduces the typical case.
+        "max_tokens": 4000,
         "system": [{"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
         "messages": [{"role": "user", "content": _user_prompt(ticker, company_name)}],
         "output_config": {"format": {"type": "json_schema", "schema": _response_schema()}},
@@ -696,7 +707,7 @@ def poll_and_ingest_batch(log=print):
             "cost_usd": cost}
 
 
-def submit_nightly_batch(pool=None, quarter=None, model=MODEL_TOP100, log=print):
+def submit_nightly_batch(pool=None, quarter=None, model=MODEL_TOP100, log=print, force=False):
     """Phase 2 of every nightly run, called only when poll_and_ingest_
     batch() found nothing in flight (never both submit AND have a
     batch pending - one in-flight batch at a time, top100_store's own
@@ -707,12 +718,41 @@ def submit_nightly_batch(pool=None, quarter=None, model=MODEL_TOP100, log=print)
     None if there was nothing unscored to submit (the common case once
     the pool is fully scored for the quarter - nightly runs then do
     nothing until the quarter rolls over or "refresh all" is used), or
-    the submitted batch's id."""
+    the submitted batch's id.
+
+    force=True (SMALL FIX, 25 Sep 2026, owner-reported - refresh_all()'s
+    own sole caller): submits the WHOLE pool regardless of whether a
+    score already exists for (quarter, model) - skips the
+    _unscored_tickers() "already scored, skip" filter entirely, but
+    still saves under the SAME plain `quarter` key every other caller
+    uses (previously refresh_all() achieved "resubmit everyone" by
+    tagging the quarter itself as "{quarter}-refresh-{date}", a
+    DIFFERENT cache key from the plain quarter every other write/read
+    uses - see this function's own git history for the two bugs that
+    caused: (1) top100_render.py's _enriched_pool(), "the one place
+    every tab reads from", queries top100_store.scores_for_quarter_
+    model(top100_engine.current_quarter(), ...) - an EXACT string
+    match - so a refresh-tagged score never matched it and never
+    appeared on the page at all, contradicting this function's own
+    prior docstring claim that the page "naturally prefers the newer
+    result"; (2) _unscored_tickers() at the PLAIN quarter key never
+    saw a refresh-tagged row as "already scored", so any submission
+    later the same day - this module's own hourly-poll auto-resubmit,
+    or that night's regular run_nightly() - would re-submit and
+    re-score the exact same companies the owner just paid for minutes
+    earlier under Refresh all. save_score()'s own per-ticker UPSERT
+    already only ever touches a ticker that actually SUCCEEDED in the
+    batch (a failed/errored per-ticker result is simply never written -
+    see poll_and_ingest_batch()'s own per-result branches), so writing
+    directly to the plain quarter key loses none of the "a failed
+    refresh never destroys a prior good score" protection the old
+    suffix trick was ALSO providing - that protection came from
+    save_score()'s own gating, not from the separate cache key."""
     pool = top100_store.current_pool() if pool is None else pool
     quarter = quarter or current_quarter()
     if not pool:
         return None
-    entrants = _unscored_tickers(pool, quarter, model)[:MAX_NIGHTLY_SCORES]
+    entrants = (pool if force else _unscored_tickers(pool, quarter, model))[:MAX_NIGHTLY_SCORES]
     if not entrants:
         log(f"[top100] every pooled company already scored for {quarter}/{model} - nothing to submit")
         return None
@@ -884,20 +924,33 @@ def refresh_all(log=print):
     """Owner-only "refresh all" button (Commit 1's own cadence rule:
     "full re-score quarterly plus an owner-only refresh all button") -
     re-selects the pool, then submits EVERY pooled company (not just
-    unscored entrants) for the CURRENT quarter/model by first clearing
-    that quarter's cached scores... except clearing scores would
-    violate "any failure leaves prior scores intact" if the refresh
-    batch itself then fails. Instead: bumps the effective cache key by
-    scoring under a synthetic quarter suffix ("2026Q3-refresh-<date>")
-    so every company is genuinely "unscored" for THAT key and gets
-    re-submitted, while the real quarter's last-good scores stay
-    exactly as they were until the refresh batch actually succeeds and
-    is ingested - at which point the page (top100_ui reading "latest
-    scored quarter key per ticker") naturally prefers the newer
-    result. Returns the submitted batch id, or None."""
+    unscored entrants) for the CURRENT quarter/model.
+
+    SMALL FIX (25 Sep 2026, owner-reported): used to submit under a
+    synthetic quarter suffix ("2026Q3-refresh-<date>", a DIFFERENT
+    cache key from the plain quarter the rest of the pipeline reads/
+    writes) specifically to bypass submit_nightly_batch()'s own
+    "already scored, skip" filter. That caused two real bugs -
+    confirmed directly, not assumed: (1) top100_render.py's
+    _enriched_pool(), "the one place every tab reads from", queries
+    the PLAIN quarter key only, so a refresh's results never actually
+    appeared on the page at all; (2) any later-same-day submission
+    (this module's own hourly-poll auto-resubmit, or that night's
+    regular run_nightly()) never saw the refresh-tagged rows as
+    "already scored" at the plain key, so it would re-submit and
+    re-score the exact same companies the owner just paid for minutes
+    earlier. Now passes force=True to submit_nightly_batch() instead -
+    bypasses the same filter, but saves under the SAME plain quarter
+    key every other caller uses, so the page shows the refreshed
+    result as soon as it's ingested and nothing pays twice for the
+    same (ticker, quarter, model) the same day. Losing the separate
+    cache key loses no failure-safety: save_score()'s own per-ticker
+    UPSERT already only ever touches a ticker that actually SUCCEEDED
+    in the batch (see submit_nightly_batch()'s own force= docstring) -
+    that guarantee never came from the suffix. Returns the submitted
+    batch id, or None."""
     pool = select_top100_pool(log=log)
-    refresh_quarter = f"{current_quarter()}-refresh-{datetime.now(timezone.utc).strftime('%Y%m%d')}"
-    return submit_nightly_batch(pool=pool, quarter=refresh_quarter, model=MODEL_TOP100, log=log)
+    return submit_nightly_batch(pool=pool, quarter=current_quarter(), model=MODEL_TOP100, log=log, force=True)
 
 
 # -----------------------------------------------------------------
