@@ -182,6 +182,17 @@ try:
 except Exception:
     quote_recorder = None
 
+# Top 100 Commit 2 (25 Sep 2026, owner-reported): imported at module
+# level, same reasoning as quote_recorder above - _loop() needs to
+# cheaply check top100_store.get_batch_state() on every 60s tick (not
+# once a day) to know whether the hourly poll block below has anything
+# to do at all; a pure sqlite read, no network I/O, so no "don't slow
+# every tick" cost to defer here.
+try:
+    import top100_store
+except Exception:
+    top100_store = None
+
 
 def _data_dir():
     return os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
@@ -1040,6 +1051,39 @@ def _run_top100(log):
     top100_engine.run_nightly(log=log)
 
 
+def _run_top100_poll(log):
+    """Top 100 Commit 2 (25 Sep 2026, owner-reported): poll-ONLY entry
+    point for the hourly check in _loop() below - calls top100_engine.
+    poll_and_ingest_batch() directly and NOTHING else: never select_
+    top100_pool(), never submit_nightly_batch(). Selection/submission
+    stay exclusively the nightly "top100" job's job (_run_top100 above,
+    still the only caller of run_nightly()).
+
+    Why this exists: poll_and_ingest_batch() otherwise only ever ran
+    inside that once-a-day nightly job, so a batch that finished (or
+    errored) within the hour Anthropic itself expects ("most complete
+    within 1 hour" per the Batches API) sat un-ingested for up to 24h
+    - and while it sat there, top100_store.get_batch_state() being
+    non-None also blocked the NEXT night's submit_nightly_batch() from
+    firing at all (only one batch in flight at a time). This hourly
+    poll ingests as soon as a batch actually finishes, so: a
+    successful batch's scores reach the page within about an hour
+    instead of up to a day, and a FAILED batch (e.g. one submitted
+    under an old, since-fixed request shape) gets its batch-state row
+    cleared within about an hour too, so the very next nightly job's
+    own submit_nightly_batch() call goes out fresh rather than waiting
+    behind a stale failure it hadn't even looked at yet.
+
+    Let the exception propagate (same "let it raise" contract as
+    _run_top100 above) - poll_and_ingest_batch() already guards its own
+    per-result failures internally (a bad result is logged and
+    skipped, prior scores are never touched), so an exception escaping
+    THIS far means something is wrong with the poll as a whole (e.g.
+    the Anthropic client itself failing to construct), not one result."""
+    import top100_engine
+    top100_engine.poll_and_ingest_batch(log=log)
+
+
 def _run_earnings_refresh(log):
     """Services batch, Part 4, WEEKLY job: refresh the earnings calendar
     for every ticker this site has ever scanned or that anyone follows -
@@ -1408,6 +1452,13 @@ _JOB_HARD_TIMEOUT_SECONDS = {
     "backup": 30 * 60,
     "volume_check": 5 * 60,
     "top100": 10 * 60,
+    # Top 100 Commit 2 (25 Sep 2026, owner-reported): the hourly poll-
+    # only job (see _run_top100_poll and its own _loop() block) - a
+    # single batch retrieve() plus, on "ended", iterating and saving
+    # up to MAX_NIGHTLY_SCORES results. Never selects or submits (that
+    # stays nightly-only, under the "top100" ceiling above), so this
+    # ceiling is deliberately much tighter than "top100"'s own 10min.
+    "top100_poll": 5 * 60,
     "earnings_refresh": 15 * 60,
     "digest": 15 * 60,
 }
@@ -1840,6 +1891,52 @@ def _loop(log):
                     else:
                         log("[scheduler] Top 100 job skipped - another process "
                             "already holds the lock")
+
+                # Top 100 Commit 2 (25 Sep 2026, owner-reported): hourly
+                # poll for a pending AI-scoring batch, independent of
+                # the once-a-day job above - see _run_top100_poll's own
+                # docstring for why (a batch otherwise sits un-ingested
+                # for up to 24h, and blocks the next night's submission
+                # the whole time it does). Hour-scoped guard (state key
+                # stores "YYYY-MM-DDTHH", not just the date - fires
+                # roughly once per UTC hour, on top of the once-a-day
+                # guard above). Cheap when nothing is pending at all -
+                # top100_store.get_batch_state() is a single sqlite
+                # read, checked BEFORE taking any lock, so an idle
+                # Top 100 pipeline (the common case once the backlog is
+                # cleared) never even attempts the lock every hour.
+                # Uses the SAME "top100" lock as the nightly job above
+                # (deliberately NOT a separate lock name) - both jobs
+                # read/write the identical top100_batch_state row and
+                # the identical in-flight Anthropic batch, and letting
+                # them run concurrently could race: the nightly job's
+                # own submit_nightly_batch() writing a brand-new batch
+                # row while this poll is mid-ingest on the OLD batch
+                # could end with this poll's own clear_batch_state()
+                # deleting the new row it never saw. Sharing the lock
+                # makes that impossible by construction. _record_job()
+                # itself still uses the distinct "top100_poll" name
+                # (own hard-timeout ceiling, own Admin Dashboard row) so
+                # this frequent, usually-uneventful poll never overwrites
+                # the nightly job's own last-run status.
+                _this_hour = now.strftime("%Y-%m-%dT%H")
+                if (top100_store is not None
+                        and state.get("last_top100_poll_hour") != _this_hour
+                        and top100_store.get_batch_state() is not None):
+                    if _acquire_job_lock("top100", log):
+                        try:
+                            log("[scheduler] starting hourly Top 100 batch poll")
+                            _record_job("top100_poll", log, _run_top100_poll)
+                            state = _load_state()
+                            state["last_top100_poll_hour"] = _this_hour
+                            _save_state(state)
+                        except Exception as e:
+                            log(f"[scheduler] hourly Top 100 batch poll failed: {e}")
+                        finally:
+                            _release_job_lock("top100")
+                    else:
+                        log("[scheduler] hourly Top 100 batch poll skipped - another "
+                            "process already holds the lock")
 
                 # Services batch, Part 4: earnings-calendar refresh -
                 # WEEKLY, same one-day-per-run-per-weekday guard as the
