@@ -1925,38 +1925,86 @@ async def og_ticker_card(ticker: str):
 
 
 @app.get("/og/research/{ticker}.png", include_in_schema=False)
-async def og_research_ticker_card(ticker: str, request: Request):
+async def og_research_ticker_card(ticker: str):
+    """The unversioned entry point for the hand-covered Rational
+    Compounder research card - always a 302 to the current canonical
+    /og/research/{ticker}/{token}.png below for a hand-covered ticker
+    (see og_research_ticker_card_versioned()'s own docstring for why
+    that URL, not this one, is what actually goes into the og:image
+    meta tag), or the site-default card directly for anything else.
+    Kept working - never a 404 - purely so nothing already published
+    with this bare URL (from before the ?v=/path-token follow-up, or
+    typed/bookmarked by hand) breaks."""
+    ticker = ticker.strip().upper()
+    try:
+        if not _TICKER_RE.match(ticker):
+            return Response(_og_default_png(), media_type="image/png",
+                             headers={"Cache-Control": _OG_CACHE_HEADERS})
+        ctx = _research_card_context(ticker)
+        if not ctx["covered"]:
+            return Response(_og_default_png(), media_type="image/png",
+                             headers={"Cache-Control": _OG_CACHE_HEADERS})
+        return RedirectResponse(f"/og/research/{ticker}/{ctx['token']}.png", status_code=302)
+    except Exception:
+        log.exception("research OG card redirect failed for ticker=%s", ticker)
+        try:
+            return Response(og_card_render.render_default_card(), media_type="image/png",
+                             headers={"Cache-Control": _OG_CACHE_HEADERS})
+        except Exception:
+            log.exception("even the default OG card failed to render for ticker=%s", ticker)
+            return Response(status_code=204)
+
+
+@app.get("/og/research/{ticker}/{token}.png", include_in_schema=False)
+async def og_research_ticker_card_versioned(ticker: str, token: str):
     """The hand-covered Rational Compounder research card - a SEPARATE
     route/image from /og/{ticker}.png above, because one image per
     ticker can't correctly serve both /research (hand-built figures)
     and /deep-dive (automated figures) - see _research_card_context()'s
     own docstring for the defect this whole route exists to fix.
 
-    Content-versioned (follow-up, 25 Sep 2026, owner-reported): the URL
-    itself carries a `?v=<token>` derived from exactly what the card
-    would render (_research_card_context()'s own "token" field) - a
-    request with no `?v=` at all, or a `?v=` that no longer matches
-    (Andrew has since revised the workbook), gets a 302 to the CURRENT
-    canonical `?v=` URL rather than ever being served directly. This is
-    what makes a revision actually reach an already-shared link: a
-    social platform (X in particular) caches an og:image by the exact
-    URL it first crawled and will not re-fetch it for a link that's
-    already been posted, no matter what Cache-Control says - the only
-    way a stale image ever gets replaced in an already-live share is a
-    URL that changes, which is exactly what `?v=` gives it. The
-    redirect itself only matters for a DIRECT re-fetch (a browser, a
+    Content-versioned via a PATH segment, not a query string (follow-up,
+    25 Sep 2026, owner-reported): `token` is derived from exactly what
+    the card would render (_research_card_context()'s own "token"
+    field) - a request whose token no longer matches the CURRENT one
+    (Andrew has since revised the workbook) gets a 302 to the current
+    canonical URL rather than ever being served directly. This is what
+    makes a revision actually reach an already-shared link: a social
+    platform (X in particular) caches an og:image by the exact URL it
+    first crawled and will not re-fetch it for a link that's already
+    been posted, no matter what Cache-Control says - the only way a
+    stale image ever gets replaced in an already-live share is a URL
+    that changes.
+
+    A PATH segment rather than the `?v=` query param this follow-up
+    originally shipped with: asked directly whether X/LinkedIn/Facebook/
+    Slack/Discord's own og:image crawlers are all known to preserve a
+    query string rather than normalising/stripping it before caching -
+    that was never actually checked (this sandbox has no outbound
+    network access to verify it, and it wasn't looked up before
+    shipping the query-param version either - see this commit's own
+    report for the plain admission). A path segment has no such
+    platform-specific failure mode to even be unsure about, so it's the
+    strictly safer choice for something whose entire job is defeating a
+    cache. Deliberately NOT "{ticker}.{token}.png" (the shape first
+    suggested) - a real hand-covered ticker can itself contain a literal
+    "." (every ASX ticker in this codebase's own fixtures, e.g.
+    "OCL.AX"), which would make a single dot-separated segment
+    genuinely ambiguous to parse back into (ticker, token). A nested
+    path segment has no such ambiguity: Starlette matches route shape
+    by segment count, not by re-parsing one segment's own contents.
+
+    The redirect itself only matters for a DIRECT re-fetch (a browser, a
     crawler, a monitoring tool) - a platform that has already cached the
     old, now-redirecting URL will simply never issue that re-fetch, per
     the same caching behaviour this fix works around; that's expected,
     not a gap this route could close from its own end.
 
-    A ticker that isn't hand-covered (or has no compounder_data.json
-    available at all) gets the site-default card, HTTP 200 - same
-    never-a-404/500-on-a-share-preview rule og_ticker_card() above
-    already follows, and the same behaviour page_research() itself has
-    for that ticker (no per-ticker content, shelf only) - no `?v=`
-    handling applies to it at all, since there's no per-ticker content
-    to version."""
+    An uncovered ticker, or one whose token can't even be resolved
+    (compounder_data.json unavailable etc.), falls to the site-default
+    card directly rather than looping through a redirect that could
+    never resolve to anything - the unversioned route above is the only
+    one that ever decides "is this ticker covered at all"."""
     ticker = ticker.strip().upper()
     try:
         if not _TICKER_RE.match(ticker):
@@ -1965,12 +2013,9 @@ async def og_research_ticker_card(ticker: str, request: Request):
             ctx = _research_card_context(ticker)
             if not ctx["covered"]:
                 png = _og_default_png()
+            elif token != ctx["token"]:
+                return RedirectResponse(f"/og/research/{ticker}/{ctx['token']}.png", status_code=302)
             else:
-                requested_v = request.query_params.get("v")
-                if requested_v != ctx["token"]:
-                    return RedirectResponse(
-                        f"/og/research/{ticker}.png?v={ctx['token']}", status_code=302)
-
                 def _render(_ticker=ticker, _name=ctx["company_name"],
                             _fv=ctx["fair_value"], _gen=ctx["generated_at"]):
                     return og_card_render.render_research_ticker_card(_ticker, _name, _fv, _gen)
@@ -1978,7 +2023,7 @@ async def og_research_ticker_card(ticker: str, request: Request):
                 png = _og_read_or_render_content_keyed(
                     f"research__{_og_safe_name(ticker)}__{ctx['token']}", _render)
     except Exception:
-        log.exception("research OG card render failed for ticker=%s", ticker)
+        log.exception("research OG card render failed for ticker=%s token=%s", ticker, token)
         try:
             png = og_card_render.render_default_card()
         except Exception:
@@ -2507,11 +2552,13 @@ def _research_card_context(ticker):
     renders, and nothing else - so it's used BOTH as the disk-cache key
     (via _og_read_or_render_content_keyed() - a revision can never be
     served from a stale cache entry, because the entry it would need is
-    itself new) AND as the /og/research/{ticker}.png?v= query token (a
-    revision produces a genuinely new URL, which is what makes a social
-    platform that has already cached the OLD url-as-shared re-fetch the
-    image at all - see og_research_ticker_card()'s own docstring for
-    the mechanics). Before this, the disk cache alone was keyed on
+    itself new) AND as a PATH segment in /og/research/{ticker}/{token}.png
+    (a revision produces a genuinely new URL, which is what makes a
+    social platform that has already cached the OLD url-as-shared
+    re-fetch the image at all - see og_research_ticker_card_versioned()'s
+    own docstring for the mechanics, including why this is a path
+    segment and not the `?v=` query param an earlier version of this
+    follow-up used). Before this, the disk cache alone was keyed on
     ticker only and refreshed once per calendar day regardless of
     content - a same-day revision could still serve the pre-revision
     PNG for up to ~24h, and even once that cache expired, the STABLE
@@ -2615,10 +2662,12 @@ def _social_meta_tags_for_request(request: Request, base_url: str) -> str:
                     )
                 # Content-versioned (follow-up, 25 Sep 2026): the exact
                 # URL a social platform will cache forever once crawled -
-                # see og_research_ticker_card()'s own docstring for why
-                # this MUST be the ?v= URL directly, not the unversioned
-                # path that merely redirects to it.
-                image = f"{base_url}/og/research/{ticker}.png?v={ctx['token']}"
+                # see og_research_ticker_card_versioned()'s own docstring
+                # for why this MUST be the path-versioned URL directly,
+                # not the unversioned path that merely redirects to it,
+                # and why the token lives in the PATH rather than a `?v=`
+                # query string.
+                image = f"{base_url}/og/research/{ticker}/{ctx['token']}.png"
                 canonical = f"{base_url}{path}?ticker={ticker}"
         else:
             try:
