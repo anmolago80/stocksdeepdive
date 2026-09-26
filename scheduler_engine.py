@@ -162,6 +162,16 @@ try:
 except Exception:
     admin_metrics_store = None
 
+# Admin Dashboard Analytics Commit 4 prep (26 Sep 2026): visitor_classify's
+# own in-memory DNS-verification cache needs a periodic sweep of expired
+# entries (see visitor_classify.sweep_expired_dns_cache()'s own docstring)
+# - same guarded-import shape as admin_metrics_store above, wired into
+# _run_volume_check() below, same nightly slot as every other prune there.
+try:
+    import visitor_classify
+except Exception:
+    visitor_classify = None
+
 # Mega-batch Part 36: the newsletter list's own nightly retention prune
 # (newsletter_store.prune_stale_unconfirmed) - same guarded-import shape
 # as admin_metrics_store above, wired into _run_volume_check() below.
@@ -1263,6 +1273,13 @@ def _run_volume_check(log):
             admin_metrics_store.prune_old_visitor_hashes(log=log)
         except Exception as e:
             log(f"[scheduler] visitor-hash prune failed: {e}")
+        # Admin Dashboard Analytics Commit 4 (26 Sep 2026): same nightly
+        # slot, same 90-day retention - see admin_metrics_store.
+        # prune_old_human_hashes()'s own docstring.
+        try:
+            admin_metrics_store.prune_old_human_hashes(log=log)
+        except Exception as e:
+            log(f"[scheduler] human-hash prune failed: {e}")
         try:
             admin_metrics_store.prune_old_counters(log=log)
         except Exception as e:
@@ -1275,6 +1292,19 @@ def _run_volume_check(log):
             admin_metrics_store.prune_old_account_signins(log=log)
         except Exception as e:
             log(f"[scheduler] account-signin prune failed: {e}")
+    # Admin Dashboard Analytics Commit 4 prep (26 Sep 2026): sweep
+    # visitor_classify's in-memory DNS-verification cache of expired
+    # entries on this same nightly slot - see that function's own
+    # docstring for why this needed a periodic sweep at all (a TTL per
+    # entry is not eviction on its own). Deliberately its OWN top-level
+    # guard, not nested inside admin_metrics_store's block above - this
+    # sweep has nothing to do with that module and must still run even
+    # if admin_metrics_store failed to import for some other reason.
+    if visitor_classify is not None:
+        try:
+            visitor_classify.sweep_expired_dns_cache(log=log)
+        except Exception as e:
+            log(f"[scheduler] DNS cache sweep failed: {e}")
     # Mega-batch Part 36: same nightly slot, same "log on failure only,
     # never raise" contract - see newsletter_store.prune_stale_
     # unconfirmed's own docstring for exactly what it deletes.

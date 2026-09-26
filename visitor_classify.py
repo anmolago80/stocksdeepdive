@@ -345,11 +345,81 @@ NON_PAGE_VIEW_EXACT_PATHS = (
     "/manifest.webmanifest", "/sw.js", "/robots.txt", "/sitemap.xml",
     "/llms.txt", "/llms-full.txt", "/feed.xml", "/blog/feed.xml",
     "/favicon.ico", "/favicon.png",
+    # Commit 4's own replay verification caught these two missing: the
+    # standard iOS/Safari home-screen-icon convention paths, the SAME
+    # "icon asset" category as favicon.ico/.png directly above (added
+    # to that list for the same reason, in Commit 2). Real evidence this
+    # gap mattered: 146.75.245.78 (an Apple link-preview/prefetch
+    # cluster, NOT a real visitor - 8 requests in under half a second,
+    # mixing this UA with a separate facebookexternalhit/Twitterbot hit)
+    # fetched apple-touch-icon-precomposed.png, which - unrecognized by
+    # EITHER this list or ASSET_FETCH_EXACT_PATHS below at the time -
+    # fell through as a counted "page view," and combined with that
+    # same request's own favicon.ico hit to false-positive a Commit 4
+    # human promotion for what is actually automated link-unfurling
+    # infrastructure. See this commit's own report for the full replay
+    # evidence and the before/after promoted-hash counts.
+    "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png",
 )
 
 # Streamlit's own health/host-config/stream endpoints - matched by
 # containment, not prefix; see the table comment above for the evidence.
 _STCORE_MARKER = "/_stcore/"
+
+# --- asset-fetch heuristic (Commit 4, owner-specified, then extended by
+# an owner follow-up to favicons and blog media): the paths a REAL
+# BROWSER requests ALONGSIDE rendering a page - the manifest, a PWA
+# icon, the service worker, a favicon, or a blog post's own image -
+# never on their own, as the ONLY signal ("A real browser requests a
+# page AND its manifest, icons or service worker within the same
+# session. A scraper requests the page alone" - owner's own evidence:
+# ~20 Tencent-range IPs shared one identical spoofed UA and each
+# requested / exactly once, with NO follow-up asset requests at all;
+# both genuine human IPs in the same replay pulled the manifest and
+# icons).
+#
+# Deliberately a SUBSET of NON_PAGE_VIEW_PATH_PREFIXES/
+# NON_PAGE_VIEW_EXACT_PATHS above, not identical to either: excluded
+# from PAGE VIEWS is not the same as being POSITIVE EVIDENCE of a real
+# browser (the owner's own distinction, made explicit when approving
+# Commit 2's exclusions) - /og/* is fetched by SOCIAL-PLATFORM LINK-
+# PREVIEW SCRAPERS, the opposite of a real visitor's own browser, so it
+# is excluded here on purpose; /_stcore/*, robots.txt, sitemap.xml,
+# llms*.txt, and feed.xml are infrastructure ANY client might hit
+# without a page ever having rendered, so they carry no such evidence
+# either. /static/* (Streamlit's own JS/CSS bundle) is a real candidate
+# for this same treatment - a genuine page render cannot happen without
+# it - but the task's own wording named "manifest, icons or service
+# worker" specifically; left OUT here rather than expanded on this
+# module's own initiative, flagged in this commit's own report for the
+# owner to decide.
+ASSET_FETCH_EXACT_PATHS = (
+    "/manifest.webmanifest", "/sw.js", "/favicon.ico", "/favicon.png",
+    # same iOS/Safari home-screen-icon paths added to
+    # NON_PAGE_VIEW_EXACT_PATHS above (see that entry's own comment for
+    # the replay evidence) - real evidence this direction too: the
+    # genuine 1.123.35.124 iPhone session in the 24 Sep replay fetched
+    # apple-touch-icon-precomposed.png as part of its own real browsing
+    # session, the same "icon asset" category as favicon.ico/.png.
+    "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png",
+)
+ASSET_FETCH_PATH_PREFIXES = ("/pwa/", "/blog/media/")
+
+
+def is_asset_fetch_path(path):
+    """True if `path` is one of the paths a real browser fetches
+    ALONGSIDE rendering a page (manifest/icon/service worker/blog
+    image) - the POSITIVE signal Commit 4's session-promotion logic is
+    built on (see server.py's own middleware for where that promotion
+    actually happens - this function only answers "is this request
+    evidence of a real browser," never "is this session human" on its
+    own). Never raises - a malformed/missing path reads as False, the
+    same safe default every other predicate in this module uses."""
+    if not path:
+        return False
+    if path in ASSET_FETCH_EXACT_PATHS:
+        return True
+    return any(path.startswith(prefix) for prefix in ASSET_FETCH_PATH_PREFIXES)
 
 
 # ============================================================================
@@ -417,6 +487,41 @@ _NEGATIVE_TTL_SECONDS = 5 * 60
 # way) - the next request from that IP tries again.
 _IN_FLIGHT_MAX = 20
 _crawler_dns_in_flight = set()  # ip strings currently being verified
+
+
+def sweep_expired_dns_cache(log=print):
+    """Removes every _crawler_dns_cache entry (positive or negative)
+    whose TTL has already elapsed (owner-flagged finding, second review
+    of this module: a TTL per entry is not the same as eviction - an
+    expired entry was previously only ever noticed lazily, when that
+    exact IP got looked up again by classify_request() or
+    maybe_verify_crawler_async(); an IP that never comes back keeps its
+    now-useless entry forever). _CRAWLER_DNS_CACHE_MAX already bounds
+    the worst case in the meantime, but a long-running process (this
+    one stays up for weeks) that keeps meeting fresh spoofing IPs would
+    otherwise slowly accumulate dead entries nothing ever revisits.
+
+    Called from scheduler_engine's nightly volume-check job - the exact
+    same natural hook Commit 3's visitor-hash and the existing
+    signin-hash prunes already use, per the owner's own instruction, so
+    this needed no new scheduling machinery of its own. A sweep rather
+    than LRU: walking a dict once a night and dropping timed-out entries
+    is less code than tracking access order for eviction, and this
+    cache's entries are cheap enough (one bool + one float per IP) that
+    a nightly walk, even over thousands of entries, costs nothing
+    dashboard-relevant. Never raises."""
+    now = time.monotonic()
+    try:
+        with _crawler_dns_lock:
+            expired = [ip for ip, (_verified, expires_at) in _crawler_dns_cache.items() if now >= expires_at]
+            for ip in expired:
+                _crawler_dns_cache.pop(ip, None)
+        if expired:
+            log(f"[visitor_classify] swept {len(expired)} expired DNS cache entry/entries")
+        return len(expired)
+    except Exception as e:
+        log(f"[visitor_classify] DNS cache sweep failed: {e}")
+        return 0
 
 
 def _verify_crawler_sync(ip, expected_suffixes):

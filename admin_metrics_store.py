@@ -126,6 +126,23 @@ def _conn():
             PRIMARY KEY (day, visitor_hash)
         )"""
     )
+    # Admin Dashboard Analytics Commit 4 (26 Sep 2026) - same shape again,
+    # this time holding only the SUBSET of daily_visitor_hashes' rows
+    # that server.py's asset-fetch heuristic has positively promoted to
+    # "human" (a page view AND a manifest/icon/service-worker/blog-image
+    # fetch seen from the same hash, same day) - see
+    # record_human_hashes()/unique_human_sessions_for_day() below and
+    # visitor_classify.is_asset_fetch_path()'s own docstring for the
+    # full design. Rows here are a subset of daily_visitor_hashes by
+    # construction, never a superset - promotion only ever adds a hash
+    # here, never removes one from the other table.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS daily_human_hashes (
+            day TEXT NOT NULL,
+            visitor_hash TEXT NOT NULL,
+            PRIMARY KEY (day, visitor_hash)
+        )"""
+    )
     conn.execute(
         """CREATE TABLE IF NOT EXISTS job_status (
             job TEXT PRIMARY KEY,
@@ -354,47 +371,69 @@ def prune_old_signin_hashes(log=print):
         return 0
 
 
-def _visitor_hash(ip, day):
-    """Day-rotated visitor-IP hash for Admin Dashboard Analytics
-    Commit 3 (26 Sep 2026) - the EXACT SAME construction as _acct_hash()
-    above, reused verbatim per the owner's own instruction ("reuse the
-    exact pattern"): sha256(value|day|secret), same AUTH_COOKIE_SECRET,
-    same fallback. Because `day` is baked into the hash input exactly as
-    it is in _acct_hash(), the SAME IP gets a DIFFERENT hash every day -
-    two days' daily_visitor_hashes rows can never be joined into a
-    per-visitor trail, and the salt (AUTH_COOKIE_SECRET) is never itself
-    written anywhere this function's output ends up. See _acct_hash()'s
-    own comment and the module docstring's privacy rule for the
-    reasoning, unchanged here."""
+def _visitor_hash(ip, ua, day):
+    """Day-rotated visitor hash for Admin Dashboard Analytics Commit 3
+    (26 Sep 2026, revised same-day per owner follow-up) - the EXACT SAME
+    construction as _acct_hash() above (sha256(value|day|secret), same
+    AUTH_COOKIE_SECRET, same fallback), reused verbatim per the owner's
+    own instruction ("reuse the exact pattern"), but hashing IP + UA
+    TOGETHER rather than IP alone. Why: an IP is not an identity the way
+    an email is - a household/office/carrier NAT collapses several real
+    people behind one address (undercounting), while a mobile connection
+    that rotates its address inflates one person into several
+    (overcounting). Hashing IP+UA together is standard practice in
+    privacy-preserving analytics for exactly this reason: it separates
+    distinct devices sharing one address without making the record any
+    MORE identifiable than IP alone would - the UA never appears
+    anywhere except as an input to this one-way digest, is never itself
+    stored, and (like the IP) cannot be recovered from the hash. This
+    does NOT eliminate the NAT/rotation error - a shared address still
+    undercounts distinct people behind the SAME device+browser
+    combination, and IP rotation still overcounts across days for a
+    hash that's day-scoped anyway - it narrows the specific NAT failure
+    mode (multiple PEOPLE on one address, each with a different device)
+    without adding any new identifiability. Whatever error remains is a
+    property of this method, not a bug - see the eventual panel's own
+    caption for how this is disclosed to the reader, not just to this
+    docstring.
+
+    Because `day` is baked into the hash input exactly as it is in
+    _acct_hash(), the SAME (ip, ua) pair gets a DIFFERENT hash every
+    day - two days' daily_visitor_hashes rows can never be joined into
+    a per-visitor trail, and the salt (AUTH_COOKIE_SECRET) is never
+    itself written anywhere this function's output ends up. See
+    _acct_hash()'s own comment and the module docstring's privacy rule
+    for the reasoning, unchanged here."""
     secret = os.environ.get("AUTH_COOKIE_SECRET", "") or "sdd-pulse-fallback"
-    raw = f"{ip.strip()}|{day}|{secret}".encode("utf-8")
+    raw = f"{ip.strip()}|{ua.strip()}|{day}|{secret}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
 
-def record_visitor(ip):
+def record_visitor(ip, ua):
     """One request's day-rotated visitor hash (Commit 3), written
     immediately, synchronously - see _visitor_hash() above for the
-    construction. NOT what server.py's request-serving middleware
-    actually calls (that path uses the batched record_visitor_hashes()
-    below instead, to keep per-request work off the hot disk-I/O path -
-    see that function's own docstring for why). This single-row form
-    exists for any lower-frequency caller that wants the exact same
-    one-line-and-done shape record_signin() already has - e.g. a script,
-    a one-off admin action, or a future low-volume call site - without
-    needing to build a batch of one.
+    construction (IP + UA together, not IP alone - see that function's
+    own docstring for why). NOT what server.py's request-serving
+    middleware actually calls (that path uses the batched
+    record_visitor_hashes() below instead, to keep per-request work off
+    the hot disk-I/O path - see that function's own docstring for why).
+    This single-row form exists for any lower-frequency caller that
+    wants the exact same one-line-and-done shape record_signin() already
+    has - e.g. a script, a one-off admin action, or a future low-volume
+    call site - without needing to build a batch of one.
 
     INSERT OR IGNORE against the (day, visitor_hash) PRIMARY KEY means
-    calling this any number of times for the SAME ip on the SAME day
-    writes exactly one row, ever - the hash-based de-duplication IS the
-    "unique" in unique visitors; no separate per-IP tracking structure
-    is needed, mirroring exactly how record_signin()'s daily_signin_
-    hashes insert already collapses repeat sign-ins into one row.
-    Callers wrap this in try/except, same convention as every other
-    write in this module."""
-    if not ip:
+    calling this any number of times for the SAME (ip, ua) pair on the
+    SAME day writes exactly one row, ever - the hash-based
+    de-duplication IS the "unique" in unique visitors; no separate
+    per-visitor tracking structure is needed, mirroring exactly how
+    record_signin()'s daily_signin_hashes insert already collapses
+    repeat sign-ins into one row. Callers wrap this in try/except, same
+    convention as every other write in this module."""
+    if not ip or not ua:
         return
     day = _today()
-    h = _visitor_hash(ip, day)
+    h = _visitor_hash(ip, ua, day)
     with _conn() as conn:
         conn.execute(
             "INSERT OR IGNORE INTO daily_visitor_hashes (day, visitor_hash) VALUES (?, ?)",
@@ -467,6 +506,68 @@ def unique_visitors_for_day(day=None):
         with _conn() as conn:
             row = conn.execute(
                 "SELECT COUNT(DISTINCT visitor_hash) FROM daily_visitor_hashes WHERE day = ?",
+                (day,),
+            ).fetchone()
+            return row[0] if row else 0
+    except Exception:
+        return 0
+
+
+def record_human_hashes(day_hash_pairs):
+    """Batch write for Admin Dashboard Analytics Commit 4 (26 Sep 2026):
+    persists (day, visitor_hash) rows for sessions server.py's
+    asset-fetch heuristic has positively promoted to "human" this
+    interval - same batched-flush treatment record_visitor_hashes()
+    already gets, called from the exact same _pulse_flush_once() cycle,
+    for the exact same reason (no synchronous disk I/O on the request
+    path). A hash written here is ALWAYS a hash already written to
+    daily_visitor_hashes too (server.py only ever promotes a hash it
+    has already recorded as a plain visitor) - this table is a subset,
+    never populated independently. INSERT OR IGNORE against the same
+    (day, visitor_hash) PRIMARY KEY shape as every hash table here -
+    calling this for a hash already promoted today is a safe no-op."""
+    pairs = list(day_hash_pairs)
+    if not pairs:
+        return
+    with _conn() as conn:
+        conn.executemany(
+            "INSERT OR IGNORE INTO daily_human_hashes (day, visitor_hash) VALUES (?, ?)",
+            pairs,
+        )
+
+
+def prune_old_human_hashes(log=print):
+    """Deletes human-session hash rows older than PRUNE_AFTER_DAYS (90)
+    - same retention and reasoning as prune_old_visitor_hashes() above,
+    applied to daily_human_hashes. Called from scheduler_engine's
+    nightly volume-check job, same slot as every other prune here.
+    Never raises."""
+    cutoff = _day_n_ago(PRUNE_AFTER_DAYS)
+    try:
+        with _conn() as conn:
+            cur = conn.execute("DELETE FROM daily_human_hashes WHERE day < ?", (cutoff,))
+            n = max(cur.rowcount, 0)
+        if n:
+            log(f"[admin_metrics_store] pruned {n} old human-session hash row(s)")
+        return n
+    except Exception as e:
+        log(f"[admin_metrics_store] prune failed: {e}")
+        return 0
+
+
+def unique_human_sessions_for_day(day=None):
+    """COUNT(DISTINCT visitor_hash) for one UTC day (default: today) in
+    daily_human_hashes - the read-side counterpart to
+    record_human_hashes() above, same query shape as
+    unique_visitors_for_day(). Not yet wired into any admin render (the
+    panel is a later, separate task) - exists here so Commit 4's write
+    path has a demonstrable, testable read path of its own. Never
+    raises - returns 0 on any read error."""
+    day = day or _today()
+    try:
+        with _conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT visitor_hash) FROM daily_human_hashes WHERE day = ?",
                 (day,),
             ).fetchone()
             return row[0] if row else 0

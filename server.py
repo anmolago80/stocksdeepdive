@@ -413,10 +413,89 @@ _pulse_known_src_day: str | None = None
 # the right day's bucket even if its flush lands just after rollover.
 _pending_visitor_hashes: set[tuple[str, str]] = set()
 
+# Admin Dashboard Analytics Commit 4 (26 Sep 2026): the asset-fetch
+# promotion heuristic's in-memory, day-scoped state - "a real browser
+# requests a page AND its manifest, icons or service worker within the
+# same session; a scraper requests the page alone" (owner's own
+# wording). This project has no cookie/session-id concept anywhere -
+# the day-rotated visitor hash itself IS the closest thing to a
+# "session" this design has, so "within the same session" is
+# interpreted here as "this hash, today" (flagged explicitly in this
+# commit's own report as a judgment call, not decided silently).
+#
+# _seen_page_view_hashes / _seen_asset_fetch_hashes hold hashes seen so
+# far today on each side of the signal; the SAME day-rotation shape
+# _pulse_known_src_today/_pulse_known_src_day already use above (a day
+# tag + a clear-on-rollover set) - no separate size cap needed the way
+# the cross-day-persistent DNS cache needed one, since these clear
+# completely every UTC midnight and this site's own daily unique-
+# visitor count (Commit 3: ~100/day on the 24 Sep replay) never
+# approaches a size where a nightly-cleared, in-memory set is a
+# concern. _promoted_human_hashes_today guards against re-promoting
+# (and re-bumping the pulse counter for) a hash already promoted today.
+# None of this is a "per-visitor browsing trail" in the sense the hard
+# privacy rule bars - it holds no path, no timestamp, no sequence, only
+# "has this hash shown EITHER signal today," cleared completely every
+# day, exactly the same transient-in-memory character as the DNS
+# verification cache the owner already reviewed and approved.
+_asset_tracking_day: str | None = None
+_seen_page_view_hashes: set[str] = set()
+_seen_asset_fetch_hashes: set[str] = set()
+_promoted_human_hashes_today: set[str] = set()
+
+# (day, visitor_hash) pairs newly promoted to human, awaiting the next
+# periodic flush - identical batching treatment to _pending_visitor_
+# hashes above, for the identical reason.
+_pending_human_hashes: set[tuple[str, str]] = set()
+
 
 def _pulse_bump(key, n=1):
     with _pulse_lock:
         _pulse_counts[key] = _pulse_counts.get(key, 0) + n
+
+
+def _maybe_promote_to_human(visitor_hash, day, saw_page_view, saw_asset_fetch):
+    """Admin Dashboard Analytics Commit 4 (26 Sep 2026): the asset-fetch
+    positive signal, and ONLY a positive one - a hash is promoted to
+    "human" the first time it has shown BOTH a page view and an
+    asset-fetch request on the same UTC day (either order; both sets
+    below persist across the whole day, not just one request), and
+    NEVER un-promoted afterward. A privacy-hardened browser that blocks
+    the manifest/icon/service-worker fetch simply never satisfies the
+    second condition and stays automated_unknown for that day - it is
+    never "erased" from anything, because nothing here ever removes a
+    hash from _pending_visitor_hashes/daily_visitor_hashes; this
+    function only ever ADDS a hash to the human set, on top of the
+    visitor count Commit 3 already gives it.
+
+    Bumps "req_class:human" ONCE PER PROMOTED HASH, not once per
+    request - a meaningfully different counting rule from the OTHER
+    three req_class:* keys (bumped once per matching REQUEST) - because
+    "human" was never meant to be a per-request classification (see
+    visitor_classify.py's own docstring: classify_request() itself
+    never returns it). Summing this key for a day gives the count of
+    DISTINCT sessions promoted that day, same as
+    admin_metrics_store.unique_human_sessions_for_day() would report
+    from the persisted hash rows - the two are expected to agree once
+    process restarts are accounted for; the persisted table is the
+    authority, this pulse counter is a live-dashboard convenience."""
+    global _asset_tracking_day
+    with _pulse_lock:
+        if _asset_tracking_day != day:
+            _asset_tracking_day = day
+            _seen_page_view_hashes.clear()
+            _seen_asset_fetch_hashes.clear()
+            _promoted_human_hashes_today.clear()
+        if saw_page_view:
+            _seen_page_view_hashes.add(visitor_hash)
+        if saw_asset_fetch:
+            _seen_asset_fetch_hashes.add(visitor_hash)
+        if visitor_hash in _promoted_human_hashes_today:
+            return
+        if visitor_hash in _seen_page_view_hashes and visitor_hash in _seen_asset_fetch_hashes:
+            _promoted_human_hashes_today.add(visitor_hash)
+            _pulse_counts["req_class:human"] = _pulse_counts.get("req_class:human", 0) + 1
+            _pending_human_hashes.add((day, visitor_hash))
 
 
 _PULSE_SRC_SANITIZE_RE = re.compile(r"[^a-z0-9-]")
@@ -465,6 +544,8 @@ def _pulse_flush_once():
         _pulse_counts.clear()
         visitor_batch = set(_pending_visitor_hashes)
         _pending_visitor_hashes.clear()
+        human_batch = set(_pending_human_hashes)
+        _pending_human_hashes.clear()
     if admin_metrics_store is None:
         return
     if batch:
@@ -477,6 +558,11 @@ def _pulse_flush_once():
             admin_metrics_store.record_visitor_hashes(visitor_batch)
         except Exception:
             log.warning("visitor-hash flush failed - this interval's unique-visitor hashes are lost")
+    if human_batch:
+        try:
+            admin_metrics_store.record_human_hashes(human_batch)
+        except Exception:
+            log.warning("human-hash flush failed - this interval's promoted-session hashes are lost")
 
 
 async def _pulse_flush_loop():
@@ -521,21 +607,36 @@ async def _pulse_counting_middleware(request: Request, call_next):
     which does no I/O of its own - see that module's docstring.
 
     Commit 3 (26 Sep 2026) computes this request's day-rotated visitor
-    hash (admin_metrics_store._visitor_hash(ip, day) - the EXACT same
-    construction _acct_hash()/record_signin() already use for the
-    unique-signed-in-accounts figure, reused verbatim) ONLY when this
-    request's label is neither known_crawler nor vuln_scanner - "unique
-    visitors" excluding the two categories this project already knows
-    for certain aren't visitors is a meaningfully less-misleading number
-    than "unique IPs of any kind" would be, even though it is NOT yet
-    "unique HUMAN visitors" (classify_request() never returns human on
-    its own - that further narrowing is a later commit's job). The hash
-    itself costs one sha256 call and a set.add() here - no I/O; the
-    actual disk write is deferred to _pulse_flush_once() below via
-    admin_metrics_store.record_visitor_hashes(), the SAME periodic-flush
-    treatment the "requests"/"req_class:*"/"page_views" pulse counters
-    already get, for the same reason: keep every per-request cost in
-    this middleware off the disk-I/O path."""
+    hash (admin_metrics_store._visitor_hash(ip, ua, day) - the EXACT
+    same construction _acct_hash()/record_signin() already use for the
+    unique-signed-in-accounts figure, reused verbatim, but hashing IP+UA
+    together rather than IP alone - see that function's own docstring
+    for why: an IP is not an identity the way an email is, and hashing
+    the UA in alongside it separates distinct devices sharing one
+    address without making the record any more identifiable) ONLY when
+    this request's label is neither known_crawler nor vuln_scanner -
+    "unique visitors" excluding the two categories this project already
+    knows for certain aren't visitors is a meaningfully less-misleading
+    number than "unique IPs of any kind" would be, even though it is
+    NOT yet "unique HUMAN visitors" (classify_request() never returns
+    human on its own - that further narrowing is a later commit's job).
+    The hash itself costs one sha256 call and a set.add() here - no
+    I/O; the actual disk write is deferred to _pulse_flush_once() below
+    via admin_metrics_store.record_visitor_hashes(), the SAME
+    periodic-flush treatment the "requests"/"req_class:*"/"page_views"
+    pulse counters already get, for the same reason: keep every
+    per-request cost in this middleware off the disk-I/O path.
+
+    Commit 4 (26 Sep 2026) adds the asset-fetch positive signal: when
+    this same request is either a page view (is_page_view_path) or an
+    asset fetch (visitor_classify.is_asset_fetch_path - manifest, icon,
+    service worker) for a hash that ALSO shows the other side of that
+    pair sometime the same day, _maybe_promote_to_human() (see its own
+    docstring) promotes that hash to "human" - a POSITIVE-ONLY signal,
+    never a demotion: a session that shows neither, or only one side,
+    simply stays automated_unknown, exactly as it already was under
+    Commit 3. This never runs for known_crawler/vuln_scanner requests,
+    same gating as the visitor-hash write directly above."""
     response = await call_next(request)
     try:
         _pulse_bump("requests")
@@ -544,18 +645,23 @@ async def _pulse_counting_middleware(request: Request, call_next):
         if visitor_classify is not None:
             ua = request.headers.get("user-agent", "")
             ip = _client_ip(request)
-            label = visitor_classify.classify_request(ua, ip, request.url.path)
+            path = request.url.path
+            label = visitor_classify.classify_request(ua, ip, path)
             _pulse_bump(f"req_class:{label}")
-            if visitor_classify.is_page_view_path(request.url.path):
+            is_page_view = visitor_classify.is_page_view_path(path)
+            if is_page_view:
                 _pulse_bump("page_views")
             asyncio.create_task(visitor_classify.maybe_verify_crawler_async(ua, ip))
             if admin_metrics_store is not None and label not in (
                 visitor_classify.KNOWN_CRAWLER, visitor_classify.VULN_SCANNER,
-            ) and ip:
+            ) and ip and ua:
                 day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                h = admin_metrics_store._visitor_hash(ip, day)
+                h = admin_metrics_store._visitor_hash(ip, ua, day)
                 with _pulse_lock:
                     _pending_visitor_hashes.add((day, h))
+                is_asset_fetch = visitor_classify.is_asset_fetch_path(path)
+                if is_page_view or is_asset_fetch:
+                    _maybe_promote_to_human(h, day, is_page_view, is_asset_fetch)
         src = _pulse_sanitize_src(request.query_params.get("src") or "")
         if src:
             _pulse_bump(_pulse_src_key(src))
