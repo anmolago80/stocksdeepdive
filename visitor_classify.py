@@ -161,6 +161,7 @@ import ipaddress
 import re
 import socket
 import threading
+import time
 
 HUMAN = "human"
 KNOWN_CRAWLER = "known_crawler"
@@ -363,9 +364,59 @@ _STCORE_MARKER = "/_stcore/"
 # "Googlebot" UAs from many distinct IPs can't grow this without limit -
 # oldest entries are dropped first once the cap is hit (a coarse, cheap
 # bound; not meant to be a precise LRU).
+#
+# Caches BOTH outcomes (owner-flagged finding, this file's own second
+# review): caching only positive results meant a spoofed "Googlebot" UA
+# that FAILS verification got a fresh DNS lookup on every single
+# request it made - free for the spoofer, not free for this server, and
+# an amplification path that exists purely because the negative case
+# wasn't remembered. ip -> (verified: bool, expires_at: float, from
+# time.monotonic()). A positive result gets the long TTL, a negative
+# result the short one - see the two constants below for the exact
+# values and why. classify_request() only ever treats a FRESH (verified
+# is True and not yet expired) entry as known_crawler; an expired or
+# negative entry is silently equivalent to no entry at all there.
 _CRAWLER_DNS_CACHE_MAX = 5000
 _crawler_dns_lock = threading.Lock()
-_crawler_dns_verified = {}  # ip string -> True
+_crawler_dns_cache = {}  # ip string -> (verified: bool, expires_at: float)
+
+# Positive TTL: 24 hours - a genuine Google/Bing/Apple crawler IP is
+# long-lived (Google's own published range has been stable for well
+# over a decade), and this project already thinks in day-sized buckets
+# everywhere else (the day-rotated visitor hash, daily pulse-counter
+# aggregates) - caching a real crawler for a full day avoids re-running
+# DNS against it on every one of its (often hundreds of) daily requests
+# without ever letting a stale positive linger across days.
+_POSITIVE_TTL_SECONDS = 24 * 60 * 60
+
+# Negative TTL: 5 minutes - short enough to bound the DNS cost a single
+# spoofing IP can impose to at most one lookup per 5 minutes (down from
+# "one lookup per request," the amplification path this fix closes),
+# long enough that a genuine crawler hit by a transient DNS hiccup
+# (NXDOMAIN/timeout) self-corrects within minutes rather than being
+# written off, and short relative to the positive TTL so a truly
+# negative address is re-checked far more often than a confirmed one,
+# never the other way around.
+_NEGATIVE_TTL_SECONDS = 5 * 60
+
+# Ceiling on concurrent in-flight verifications, system-wide (not
+# per-IP) - bounds how many blocking DNS calls this process can have
+# queued onto the default asyncio executor at once, so a burst of many
+# DISTINCT spoofed-UA IPs in a short window (the cache above only
+# throttles repeats of the SAME IP) can't queue an unbounded pile of
+# lookups. loop.run_in_executor(None, ...) uses Python's default
+# ThreadPoolExecutor (sized min(32, cpu_count+4)); nothing else in this
+# codebase currently calls it with the default executor (server.py's/
+# app.py's/scanner_engine.py's own thread pools are all separate,
+# dedicated ThreadPoolExecutor instances - confirmed by reading this
+# repo), so this ceiling doesn't have to share headroom with anything
+# else today, but is kept well under that pool's typical size anyway as
+# a margin against whatever else may come to share it later. A request
+# that arrives once the ceiling is already hit simply skips
+# verification for that one attempt (no cache entry written either
+# way) - the next request from that IP tries again.
+_IN_FLIGHT_MAX = 20
+_crawler_dns_in_flight = set()  # ip strings currently being verified
 
 
 def _verify_crawler_sync(ip, expected_suffixes):
@@ -397,17 +448,27 @@ async def maybe_verify_crawler_async(user_agent, client_ip):
     calls this via asyncio.create_task(...), NEVER awaited, so it can
     never delay the response it's associated with. No-ops immediately
     (before any DNS I/O) unless the UA claims one of RDNS_VERIFIABLE_
-    CRAWLERS AND the IP isn't already cached - so the common case (an
-    ordinary browser request, or a repeat request from an already-
-    verified crawler IP) costs one dict lookup and returns, exactly like
-    every other unmatched case in this module. On a genuine cache miss
-    for a verifiable-crawler UA claim, runs the actual (blocking) DNS
-    round trip in a thread-pool executor - never on the event loop
-    itself - and caches a POSITIVE result only; a failed/mismatched
-    verification is NOT cached, so it's simply re-attempted on this
-    IP's next request rather than being permanently written off (a
-    transient DNS hiccup should never permanently block a real
-    crawler)."""
+    CRAWLERS - so the common case (an ordinary browser request) costs
+    one regex miss and returns.
+
+    For a UA that DOES claim to be Google/Bing/Apple, this now checks
+    THREE things before ever touching DNS, in order:
+      1. a fresh cache entry (positive OR negative, either one skips
+         DNS - see _POSITIVE_TTL_SECONDS/_NEGATIVE_TTL_SECONDS above for
+         why each outcome gets a different TTL);
+      2. this exact IP already being verified by a concurrent call
+         (dedupes a burst of requests from the SAME spoofed/real IP
+         arriving faster than one DNS round trip);
+      3. the system-wide in-flight ceiling (_IN_FLIGHT_MAX) - bounds how
+         many DISTINCT IPs can have a lookup outstanding at once.
+    Only past all three does this run the actual (blocking) DNS round
+    trip, in a thread-pool executor, never on the event loop itself -
+    and this time caches WHATEVER the result is, positive or negative,
+    each with its own TTL. Caching negative results closes a real
+    amplification path a positive-only cache left open: without it, an
+    IP that FAILS verification (a spoofed UA claim) got a fresh DNS
+    lookup on every single request it made - cheap for that client,
+    not free for this server."""
     ua = user_agent or ""
     ip = client_ip or ""
     if not ua or not ip:
@@ -415,19 +476,30 @@ async def maybe_verify_crawler_async(user_agent, client_ip):
     for pattern, expected_suffixes, _name in RDNS_VERIFIABLE_CRAWLERS:
         if not pattern.search(ua):
             continue
+        now = time.monotonic()
         with _crawler_dns_lock:
-            if ip in _crawler_dns_verified:
-                return
+            entry = _crawler_dns_cache.get(ip)
+            if entry is not None and now < entry[1]:
+                return  # fresh cached result (positive or negative) - no DNS needed
+            if ip in _crawler_dns_in_flight:
+                return  # a concurrent request from this exact IP is already verifying it
+            if len(_crawler_dns_in_flight) >= _IN_FLIGHT_MAX:
+                return  # system-wide ceiling hit - skip this attempt, a later request retries
+            _crawler_dns_in_flight.add(ip)
         try:
-            loop = asyncio.get_event_loop()
-            verified = await loop.run_in_executor(None, _verify_crawler_sync, ip, expected_suffixes)
-        except Exception:
-            verified = False
-        if verified:
+            try:
+                loop = asyncio.get_event_loop()
+                verified = await loop.run_in_executor(None, _verify_crawler_sync, ip, expected_suffixes)
+            except Exception:
+                verified = False
+            ttl = _POSITIVE_TTL_SECONDS if verified else _NEGATIVE_TTL_SECONDS
             with _crawler_dns_lock:
-                if len(_crawler_dns_verified) >= _CRAWLER_DNS_CACHE_MAX:
-                    _crawler_dns_verified.pop(next(iter(_crawler_dns_verified)), None)
-                _crawler_dns_verified[ip] = True
+                if len(_crawler_dns_cache) >= _CRAWLER_DNS_CACHE_MAX and ip not in _crawler_dns_cache:
+                    _crawler_dns_cache.pop(next(iter(_crawler_dns_cache)), None)
+                _crawler_dns_cache[ip] = (verified, time.monotonic() + ttl)
+        finally:
+            with _crawler_dns_lock:
+                _crawler_dns_in_flight.discard(ip)
         return
 
 
@@ -481,8 +553,12 @@ def classify_request(user_agent, client_ip, path):
                 return KNOWN_CRAWLER
         if client_ip:
             with _crawler_dns_lock:
-                if client_ip in _crawler_dns_verified:
-                    return KNOWN_CRAWLER
+                entry = _crawler_dns_cache.get(client_ip)
+            # only a FRESH positive entry counts - an expired entry or a
+            # cached negative result is silently equivalent to no entry
+            # at all here (see _crawler_dns_cache's own comment above).
+            if entry is not None and entry[0] and time.monotonic() < entry[1]:
+                return KNOWN_CRAWLER
 
     for pattern, _why in UA_TRUSTED_CRAWLERS:
         if pattern.search(ua):
