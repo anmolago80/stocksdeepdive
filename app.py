@@ -3611,10 +3611,13 @@ def _render_mobile_bottom_nav(lang, current=None):
 
     Five thumb targets: Deep Dive / Scanner / Portfolio / Tools (keeps
     the amber "NEW" launch-period dot) / a "More" <details> whose sheet
-    holds everything else - Research, Compare and Blog (desktop's own
-    primary tabs; the bar only has 5 slots) plus the same four pages
-    desktop's own "More" popover tucks away (Results Calendar, Track
-    record, Methodology, About). Same <details>/<summary> no-JS toggle
+    holds everything else - Top 100 (26 Sep 2026 fix, gated by the same
+    TOP100_PUBLIC/is_owner() check the desktop tab uses - see the sheet
+    item's own comment below; sits at the TOP of the sheet, above
+    Research), then Research, Compare and Blog (desktop's own primary
+    tabs; the bar only has 5 slots) plus the same four pages desktop's
+    own "More" popover tucks away (Results Calendar, Track record,
+    Methodology, About). Same <details>/<summary> no-JS toggle
     blog_render.py's static-page nav already uses for its own "More"
     dropdown (see that module's _header_html docstring) - consistent
     pattern, and it means the sheet opens/closes with zero Streamlit
@@ -3764,10 +3767,38 @@ def _render_mobile_bottom_nav(lang, current=None):
         f'<span class="ic">{_icon}</span>{html.escape(_label)}</a>'
         for _id, _icon, _label, _href in _bar_items
     )
-    # Sheet contents: Research/Compare/Blog first (desktop's own primary
-    # tabs, in the same order _primary_items lists them), then the same
-    # four More-page entries desktop's own popover shows, same order.
-    _sheet_items = [
+    # Mobile-nav fix (26 Sep 2026, owner-reported): Top 100 was added to
+    # _render_app_nav_items()'s desktop _primary_items only - the
+    # desktop nav row is display:none at this same <=768px breakpoint,
+    # so a phone visitor had no path to the page at all (neither of
+    # this bar's 5 slots nor the sheet named it). Placed at the TOP of
+    # the sheet, above Research - it's the newest public feature and
+    # sits fourth on desktop's own primary row, so burying it below
+    # Blog would misrepresent its place there. Gated with the EXACT
+    # same visibility check _render_app_nav_items() uses for the
+    # desktop tab - TOP100_PUBLIC true shows it to everyone, otherwise
+    # only the owner (ai_gate.is_owner()) sees it - a NEW condition in
+    # THIS function specifically: every other entry below is static,
+    # ungated HTML, so without this check a non-owner would get a
+    # sheet link to a page that errors for them the moment TOP100_
+    # PUBLIC is ever turned off again. The icon (\U0001F3C6) matches
+    # nav.top100's own emoji; the title strips that same emoji back off
+    # (nav.top100 bakes it into the label text for its one existing
+    # caller, the desktop button, where label IS the emoji+text - here
+    # the icon already renders in its own span, exactly like every
+    # other sheet item, so keeping it in the title too would show it
+    # twice).
+    _sheet_items = []
+    if top100_render.TOP100_PUBLIC or ai_gate.is_owner(paywall_engine.current_user_email()):
+        _sheet_items.append(
+            ("top100", "\U0001F3C6", i18n.t("nav.top100", lang).replace("\U0001F3C6 ", "", 1),
+             i18n.t("nav.more_top100_desc", lang), "/top-100")
+        )
+    # Sheet contents after Top 100 (if shown): Research/Compare/Blog
+    # (desktop's own primary tabs, in the same order _primary_items
+    # lists them), then the same four More-page entries desktop's own
+    # popover shows, same order.
+    _sheet_items += [
         ("research", "\U0001F4DA", i18n.t("nav.research", lang),
          i18n.t("nav.more_research_desc", lang), "/research"),
         ("comparison", "⚖️", i18n.t("nav.comparison", lang),

@@ -112,6 +112,11 @@ EN = {
     "nav.more_research_desc": "One company at a time, the full thesis and verdict written out.",
     "nav.more_comparison_desc": "Two or more tickers, lined up on identical calculations.",
     "nav.more_blog_desc": "Write-ups on individual stocks and how the models work.",
+    # Mobile-nav fix (26 Sep 2026, owner-reported): Top 100's own sheet
+    # entry description - same one-line-description treatment as the
+    # three above, since Top 100 is a primary desktop tab with no
+    # existing "More"-panel copy of its own to reuse.
+    "nav.more_top100_desc": "A hundred companies, selected by value and ranked by Claude's analysis.",
 
     "header.tagline": "Research any stock in seconds.",
     "header.search_placeholder": (
@@ -3787,6 +3792,7 @@ ES = {
     "nav.more_research_desc": "Una empresa a la vez, con la tesis y el veredicto completos.",
     "nav.more_comparison_desc": "Dos o más acciones, alineadas sobre los mismos cálculos.",
     "nav.more_blog_desc": "Artículos sobre acciones concretas y cómo funcionan los modelos.",
+    "nav.more_top100_desc": "Cien empresas, seleccionadas por valor y clasificadas por el análisis de Claude.",
 
     "header.tagline": "Analiza cualquier acción en segundos.",
     "header.search_placeholder": (
