@@ -489,16 +489,33 @@ async def _pulse_counting_middleware(request: Request, call_next):
     a short label string that this same in-memory pulse-counter path
     (already flushed periodically by _pulse_flush_once(), never
     per-request) eventually persists as an aggregate count, exactly
-    like every other pulse counter here."""
+    like every other pulse counter here.
+
+    Commit 2 (26 Sep 2026) adds two more additive, disk-shape-unchanged
+    things, both wrapped in this same suppress-and-continue try/except:
+    a "page_views" pulse counter, bumped only when
+    visitor_classify.is_page_view_path() says this path is a real page
+    (never for /_stcore/*, static assets, PWA icons, manifest/sw.js/
+    robots.txt/sitemap.xml/llms*.txt/feed.xml/og-card/blog-media hits -
+    see that function's own module for the exact list and the replay
+    evidence behind it); and a fire-and-forget
+    asyncio.create_task(...) of visitor_classify.maybe_verify_crawler_async()
+    - NEVER awaited, so a slow/hanging DNS lookup can never delay this
+    or any other request. Both call straight into visitor_classify,
+    which does no I/O of its own - see that module's docstring."""
     response = await call_next(request)
     try:
         _pulse_bump("requests")
         if response.status_code >= 500:
             _pulse_bump("requests_5xx")
         if visitor_classify is not None:
-            label = visitor_classify.classify_request(
-                request.headers.get("user-agent", ""), _client_ip(request), request.url.path)
+            ua = request.headers.get("user-agent", "")
+            ip = _client_ip(request)
+            label = visitor_classify.classify_request(ua, ip, request.url.path)
             _pulse_bump(f"req_class:{label}")
+            if visitor_classify.is_page_view_path(request.url.path):
+                _pulse_bump("page_views")
+            asyncio.create_task(visitor_classify.maybe_verify_crawler_async(ua, ip))
         src = _pulse_sanitize_src(request.query_params.get("src") or "")
         if src:
             _pulse_bump(_pulse_src_key(src))
