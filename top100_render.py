@@ -454,6 +454,40 @@ def _inversion_line_html(score_row, lang):
     )
 
 
+def _scored_date_suffix_html(score_row, lang):
+    """The muted " · read {date}" stamp (or "" if there's no usable
+    scored_at) - extracted from _headwind_line_html() (26 Sep 2026,
+    RUBRIC_VERSION v4) so _competitive_landscape_html()'s one-foot-
+    hurdle line can render the "same formatting/i18n" stamp the task
+    requires without duplicating this logic; the two can never drift
+    apart. "" whenever scored_at is missing or malformed - never
+    renders today's date for an old/undated score, same rule
+    _headwind_line_html() has always followed."""
+    scored_at = score_row.get("scored_at")
+    if not scored_at:
+        return ""
+    try:
+        scored_dt = _dt.datetime.fromisoformat(scored_at)
+    except ValueError:
+        return ""
+    date_text = i18n.format_date_dmy(scored_dt, lang)
+    date_caption = html.escape(_t("headwind_date_caption", lang, date=date_text))
+    return f" <span style='color:#5b7290;'>· {date_caption}</span>"
+
+
+def _normalize_comment_period(text):
+    """Trailing whitespace/period trim, then exactly one "." added back
+    - the SAME double-period fix _headwind_line_html() applies to the
+    headwind text, applied here to market_structure_comment/
+    one_foot_comment too (RUBRIC_VERSION v4's own "apply the same
+    trailing-period normalization" requirement) - a model comment
+    ending in "." or ".." renders identically, with exactly one period.
+    "" for a missing/empty comment (the caller only invokes this once
+    it already knows the comment's own label is present, so this
+    should never actually see one, but stays safe regardless)."""
+    return html.escape((text or "").rstrip(" \t\n.")) + "."
+
+
 def _headwind_line_html(score_row, lang):
     """"📉 Current headwind: {text}. · read {date}" (RUBRIC_VERSION v3,
     25 Sep 2026, owner-approved mock, "headwind_and_currency_risk_
@@ -480,23 +514,83 @@ def _headwind_line_html(score_row, lang):
     headwind = score_row.get("current_headwind")
     if not headwind:
         return ""
-    scored_at = score_row.get("scored_at")
-    date_html = ""
-    if scored_at:
-        try:
-            scored_dt = _dt.datetime.fromisoformat(scored_at)
-        except ValueError:
-            scored_dt = None
-        if scored_dt:
-            date_text = i18n.format_date_dmy(scored_dt, lang)
-            date_caption = html.escape(_t("headwind_date_caption", lang, date=date_text))
-            date_html = f" <span style='color:#5b7290;'>· {date_caption}</span>"
+    date_html = _scored_date_suffix_html(score_row, lang)
     label = html.escape(_t("headwind_label", lang))
     text = html.escape(headwind.rstrip(" \t\n."))
     return (
         "<div style='color:#9fb8d4;background:#0d1b2e;border:1px solid #1e3a5f;"
         "border-radius:9px;padding:8px 12px;margin-top:7px;font-size:12px;line-height:1.55;'>"
         f"📉 <b style='color:#7dd3fc;'>{label}</b> {text}.{date_html}</div>"
+    )
+
+
+_STRUCTURE_CHIP_STYLE = {
+    "monopoly": ("#2a1a33", "#a855f7", "#d8b4fe"),
+    "duopoly": ("#1a2333", "#38bdf8", "#7dd3fc"),
+    "oligopoly": ("#0e2a26", "#14532d", "#34d399"),
+    "competitive": ("#1a2333", "#2a3f63", "#8aa0b8"),
+}
+# Same green as the OLIGOPOLY structure chip above - the task gives an
+# explicit hex for OLIGOPOLY but not for this "yes" chip, and reusing
+# this box's own already-specified green is the most consistent choice
+# within the same box family (rather than pulling in compounder_ui's
+# separate score-chip green, a different visual context).
+_ONE_FOOT_YES_STYLE = ("#0e2a26", "#14532d", "#34d399")
+# The "no"/HIGH BAR chip's own hex (bg #2a2413, border #7c5e10, text
+# #fbbf24) is IDENTICAL to _SHELF_CHIP_NOT_RATED below - reused by
+# reference rather than duplicated.
+
+
+def _competitive_landscape_html(score_row, lang):
+    """"Competitive landscape" box (RUBRIC_VERSION v4, 26 Sep 2026,
+    owner-approved mock, "top100_v4_market_structure_onefoot_mock.
+    html") - sits between the inversion box and the headwind box,
+    same border/typography family as the headwind box. Two
+    INDEPENDENT verdicts (market_structure and one_foot_hurdle),
+    either of which may be absent - renders only the line(s) actually
+    present, joined by a line break when both are; "" when NEITHER is
+    present, which covers three cases identically: the model declined
+    both, this is a NOT RATED row, or this is a previous-rubric
+    FALLBACK score (v3-and-earlier rows have no v4 columns at all, so
+    both read None) - a reader should never see this box on an
+    analysis that predates these two questions existing, "which is
+    correct" per the task's own wording.
+
+    market_structure/one_foot_hurdle are read as the already-validated
+    lower-case strings top100_engine._parse_response_json() stored
+    (anything outside each field's own small fixed vocabulary was
+    already forced to None there) - this function never re-validates,
+    it only maps a known-good value to its chip style."""
+    if not score_row or score_row.get("not_rated"):
+        return ""
+    structure = score_row.get("market_structure")
+    hurdle = score_row.get("one_foot_hurdle")
+    if not structure and not hurdle:
+        return ""
+
+    lines = []
+    if structure:
+        bg, border, color = _STRUCTURE_CHIP_STYLE.get(structure, _STRUCTURE_CHIP_STYLE["competitive"])
+        chip = _shelf_chip_html(_t(f"structure_{structure}", lang), bg, border, color)
+        label = html.escape(_t("market_structure_label", lang))
+        comment = _normalize_comment_period(score_row.get("market_structure_comment"))
+        lines.append(f"{chip} <b style='color:#e6edf5;'>{label}:</b> {comment}")
+
+    if hurdle:
+        if hurdle == "yes":
+            chip = _shelf_chip_html(_t("one_foot_yes_chip", lang), *_ONE_FOOT_YES_STYLE)
+        else:
+            chip = _shelf_chip_html(_t("one_foot_no_chip", lang), *_SHELF_CHIP_NOT_RATED)
+        label = html.escape(_t("easy_decision_label", lang))
+        comment = _normalize_comment_period(score_row.get("one_foot_comment"))
+        date_html = _scored_date_suffix_html(score_row, lang)
+        lines.append(f"{chip} <b style='color:#e6edf5;'>{label}:</b> {comment}{date_html}")
+
+    return (
+        "<div style='color:#9fb8d4;background:#0d1b2e;border:1px solid #1e3a5f;"
+        "border-radius:9px;padding:8px 12px;margin-top:7px;font-size:12px;line-height:1.55;'>"
+        + "<br>".join(lines) +
+        "</div>"
     )
 
 
@@ -529,7 +623,11 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     already filter to that via _sort_and_gate_rated() before reaching
     here; an unrated company lives in the bottom shelf instead
     (_shelf_row_html), which has no dimension chips or Research Score
-    to show.
+    to show. score_row may be a previous-rubric FALLBACK score (see
+    _score_row_with_fallback()'s own docstring, RUBRIC_VERSION v4) -
+    rendered identically either way except for the small "previous
+    rubric" chip row["is_fallback_score"] adds near the metrics
+    cluster below.
 
     `finer_industry` (Top 100 Commit 5, 25 Sep 2026, owner-reported,
     industry mock): this ticker's compounder_data.json industry string
@@ -565,6 +663,15 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     secondary_html = _secondary_metrics_html(row, sort_mode, lang)
     if secondary_html:
         header_bits.append(secondary_html)
+    # Previous-rubric fallback (26 Sep 2026, owner-reported gap,
+    # RUBRIC_VERSION v4) - see _score_row_with_fallback()'s own
+    # docstring for what this means. Placed right next to the metrics
+    # cluster the Research Score itself sits in (leading or secondary,
+    # depending on sort_mode) - same muted visual family as the
+    # AWAITING shelf chip, so a reader immediately recognises "this
+    # analysis predates the current rubric" without a legend.
+    if row.get("is_fallback_score"):
+        header_bits.append(_shelf_chip_html(_t("previous_rubric_chip", lang), *_SHELF_CHIP_AWAITING))
 
     spread_pct = _tradability_spread_pct(ticker)
     tradable_chip = ""
@@ -586,6 +693,7 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
         )
         + "</div>"
         + _inversion_line_html(score_row, lang)
+        + _competitive_landscape_html(score_row, lang)
         + _headwind_line_html(score_row, lang) +
         "</div>",
         unsafe_allow_html=True,
@@ -611,40 +719,75 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
             )
 
 
+def _score_row_with_fallback(ticker, scores, quarter):
+    """Previous-rubric fallback (26 Sep 2026, owner-reported gap,
+    RUBRIC_VERSION v4) - score_row for one ticker: the current-rubric
+    score if it exists (from the pre-fetched `scores` map), else the
+    most recent score from a PREVIOUS rubric version (top100_store.
+    latest_score_previous_rubric() - see that function's own docstring
+    for the exact "same quarter/model preferred, else latest
+    available" order). Returns (score_row, is_fallback_score) -
+    is_fallback_score is True only when a fallback score was actually
+    used to fill score_row; it is never True when score_row is None
+    (no score exists under ANY rubric yet - a genuinely new pool
+    entrant, or the ticker really has never been scored - today's
+    existing AWAITING/NOT RATED shelf behaviour is completely
+    unchanged for that case). Fixes the known gap re-opened by every
+    RUBRIC_VERSION bump: without this, every pooled company reads as
+    unscored the moment the version string changes, and the page goes
+    blank/AWAITING until the next nightly run finishes re-scoring
+    (which can take up to a day) - this was already a known,
+    documented gap at the v2->v3 bump, closed here so it can't recur
+    at v4 or any future bump. Shared by _enriched_pool()/
+    _enriched_asx_extension() so both tabs apply the exact same rule."""
+    score_row = scores.get(ticker)
+    if score_row is not None:
+        return score_row, False
+    fallback = top100_store.latest_score_previous_rubric(
+        ticker, quarter, top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
+    return fallback, fallback is not None
+
+
 def _enriched_pool():
     """current_pool() rows, each augmented with "score_row" (top100_
-    store.get_score() for the current quarter/model, or None) and
-    "composite" (top100_engine.composite_score(), or None) - the one
-    place every tab reads from, so the Top 20 tabs and the Full 100
-    tab can never compute composite differently from each other."""
+    store.get_score() for the current quarter/model, or a previous-
+    rubric fallback - see _score_row_with_fallback()'s own docstring -
+    or None if neither exists), "composite" (top100_engine.
+    composite_score(), or None), and "is_fallback_score" (True only
+    when score_row came from the fallback) - the one place every tab
+    reads from, so the Top 20 tabs and the Full 100 tab can never
+    compute composite differently from each other."""
     pool = top100_store.current_pool()
     quarter = top100_engine.current_quarter()
     scores = top100_store.scores_for_quarter_model(
         quarter, top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
     out = []
     for row in pool:
-        score_row = scores.get(row["ticker"])
+        score_row, is_fallback = _score_row_with_fallback(row["ticker"], scores, quarter)
         composite = top100_engine.composite_score(score_row)
-        out.append({**row, "score_row": score_row, "composite": composite})
+        out.append({**row, "score_row": score_row, "composite": composite,
+                     "is_fallback_score": is_fallback})
     return out
 
 
 def _enriched_asx_extension():
     """top100_store.current_asx_extension() rows, augmented with score_
-    row/composite exactly like _enriched_pool() does for the global
-    pool - Top 20 Australia's own guaranteed-twenty supplement. NEVER
-    read by any other tab, the homepage teaser, or the changes strip -
-    they all read _enriched_pool() (i.e. top100_store.current_pool())
-    alone, which never includes an extension row."""
+    row/composite/is_fallback_score exactly like _enriched_pool() does
+    for the global pool - Top 20 Australia's own guaranteed-twenty
+    supplement. NEVER read by any other tab, the homepage teaser, or
+    the changes strip - they all read _enriched_pool() (i.e. top100_
+    store.current_pool()) alone, which never includes an extension
+    row."""
     extension = top100_store.current_asx_extension()
     quarter = top100_engine.current_quarter()
     scores = top100_store.scores_for_quarter_model(
         quarter, top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
     out = []
     for row in extension:
-        score_row = scores.get(row["ticker"])
+        score_row, is_fallback = _score_row_with_fallback(row["ticker"], scores, quarter)
         composite = top100_engine.composite_score(score_row)
-        out.append({**row, "score_row": score_row, "composite": composite})
+        out.append({**row, "score_row": score_row, "composite": composite,
+                     "is_fallback_score": is_fallback})
     return out
 
 

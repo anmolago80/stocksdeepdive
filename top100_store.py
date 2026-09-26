@@ -220,6 +220,20 @@ def _conn():
         conn.execute("ALTER TABLE top100_scores ADD COLUMN current_headwind TEXT")
     except sqlite3.OperationalError:
         pass
+    # RUBRIC_VERSION v4 (26 Sep 2026, owner-approved mock, "top100_v4_
+    # market_structure_onefoot_mock.html") - two more questions, same
+    # purely-additive/nullable pattern as current_headwind just above
+    # (no _migrate_scores_schema_v4() rebuild needed, same reason).
+    # Every existing v1-v3 row simply reads NULL here, which
+    # top100_render.py's competitive-landscape box already treats as
+    # "no line for this verdict" - the same status a genuinely-declined
+    # v4 answer gets.
+    for _col in ("market_structure", "market_structure_comment",
+                 "one_foot_hurdle", "one_foot_comment"):
+        try:
+            conn.execute(f"ALTER TABLE top100_scores ADD COLUMN {_col} TEXT")
+        except sqlite3.OperationalError:
+            pass
     conn.execute(
         """CREATE TABLE IF NOT EXISTS top100_batch_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -364,7 +378,8 @@ def current_asx_extension():
 
 def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
                 inversion_scenario, inversion_severity, prompt, raw_response,
-                current_headwind=None):
+                current_headwind=None, market_structure=None, market_structure_comment=None,
+                one_foot_hurdle=None, one_foot_comment=None):
     """Upserts one ticker's AI score for (quarter, model,
     rubric_version) - rubric_version (top100_engine.RUBRIC_VERSION) is
     part of the cache key/PK (see _migrate_scores_schema_v2()'s own
@@ -384,26 +399,42 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
     same None-for-NOT-RATED / None-for-"no clearly identifiable
     headwind" treatment as the inversion fields - defaults to None so
     a caller passing the old (v1/v2-era) argument list still works.
-    `prompt`/`raw_response`: the FULL text sent/received, for
-    reproducibility (the task's own instruction) - never truncated."""
+    `market_structure`/`market_structure_comment`/`one_foot_hurdle`/
+    `one_foot_comment` (RUBRIC_VERSION v4, 26 Sep 2026): the
+    competitive-structure label + comment and the one-foot-hurdle
+    verdict + comment - top100_engine._parse_response_json() has
+    already validated each label against its own small fixed
+    vocabulary and nulled the matching comment whenever its label is
+    None, so this function stores exactly what it's given, no further
+    validation here. All four default to None so a caller passing the
+    old (v1-v3-era) argument list still works. `prompt`/`raw_response`:
+    the FULL text sent/received, for reproducibility (the task's own
+    instruction) - never truncated."""
     with _conn() as conn:
         conn.execute(
             """INSERT INTO top100_scores
                  (ticker, quarter, model, rubric_version, dims_json, not_rated,
                   inversion_scenario, inversion_severity, current_headwind,
+                  market_structure, market_structure_comment,
+                  one_foot_hurdle, one_foot_comment,
                   prompt, raw_response, scored_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(ticker, quarter, model, rubric_version) DO UPDATE SET
                  dims_json = excluded.dims_json,
                  not_rated = excluded.not_rated,
                  inversion_scenario = excluded.inversion_scenario,
                  inversion_severity = excluded.inversion_severity,
                  current_headwind = excluded.current_headwind,
+                 market_structure = excluded.market_structure,
+                 market_structure_comment = excluded.market_structure_comment,
+                 one_foot_hurdle = excluded.one_foot_hurdle,
+                 one_foot_comment = excluded.one_foot_comment,
                  prompt = excluded.prompt,
                  raw_response = excluded.raw_response,
                  scored_at = excluded.scored_at""",
             (ticker, quarter, model, rubric_version, json.dumps(dims), int(bool(not_rated)),
              inversion_scenario, inversion_severity, current_headwind,
+             market_structure, market_structure_comment, one_foot_hurdle, one_foot_comment,
              prompt, raw_response, datetime.now(timezone.utc).isoformat()),
         )
 
@@ -411,11 +442,12 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
 def get_score(ticker, quarter, model, rubric_version):
     """{"ticker","quarter","model","rubric_version","dims","not_rated",
     "inversion_scenario","inversion_severity","current_headwind",
-    "prompt","raw_response","scored_at"} for one ticker, or None if it
-    hasn't been scored yet for this exact (quarter, model,
-    rubric_version) - a row cached
-    under a DIFFERENT rubric_version (e.g. a retired "v1") is never
-    returned here, by design."""
+    "market_structure","market_structure_comment","one_foot_hurdle",
+    "one_foot_comment","prompt","raw_response","scored_at"} for one
+    ticker, or None if it hasn't been scored yet for this exact
+    (quarter, model, rubric_version) - a row cached under a DIFFERENT
+    rubric_version (e.g. a retired "v1") is never returned here, by
+    design."""
     with _conn() as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
@@ -452,6 +484,47 @@ def scores_for_quarter_model(quarter, model, rubric_version):
         d["dims"] = json.loads(d.pop("dims_json"))
         d["not_rated"] = bool(d["not_rated"])
         out[d["ticker"]] = d
+    return out
+
+
+def latest_score_previous_rubric(ticker, quarter, model, current_rubric_version):
+    """Previous-rubric fallback (26 Sep 2026, owner-reported gap,
+    RUBRIC_VERSION v4): the most recent score this ticker has under
+    ANY rubric_version OTHER than `current_rubric_version`, so
+    top100_render._enriched_pool() can render a row normally from it
+    while the ticker has no CURRENT-rubric score yet (every pooled
+    company, right after a rubric bump, until the next nightly run
+    re-scores it) - the exact gap that used to blank the page/AWAITING-
+    shelve every company for up to a day. Same quarter/model preferred
+    (an exact re-run of this quarter under a retired rubric); failing
+    that, the single most recent row by scored_at regardless of
+    quarter - "same quarter/model preferred; else the latest
+    available" per the task's own wording. Returns None if this
+    ticker has never been scored under any OTHER rubric for this
+    model either (a genuinely brand-new pool entrant) - the caller
+    then falls through to today's existing AWAITING behaviour,
+    unchanged. Read-only - never writes, never deletes, never
+    overwrites a score; a real current-rubric score, whenever it
+    lands, is read by scores_for_quarter_model() instead and always
+    wins (see that function's own call site)."""
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM top100_scores WHERE ticker = ? AND model = ? "
+            "AND rubric_version != ? AND quarter = ? ORDER BY scored_at DESC LIMIT 1",
+            (ticker, model, current_rubric_version, quarter),
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                "SELECT * FROM top100_scores WHERE ticker = ? AND model = ? "
+                "AND rubric_version != ? ORDER BY scored_at DESC LIMIT 1",
+                (ticker, model, current_rubric_version),
+            ).fetchone()
+    if not row:
+        return None
+    out = dict(row)
+    out["dims"] = json.loads(out.pop("dims_json"))
+    out["not_rated"] = bool(out["not_rated"])
     return out
 
 

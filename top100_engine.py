@@ -356,7 +356,28 @@ NOT_RATED_MIN_NULLS = 3
 # unchanged by this bump - see composite_score()'s own docstring for
 # why a headwind, like the inversion synthesis, has zero effect on any
 # score or ranking (display-only, same status as the inversion line).
-RUBRIC_VERSION = "v3"
+#
+# v3 -> v4 (26 Sep 2026, owner-approved mock, "top100_v4_market_
+# structure_onefoot_mock.html"): two more questions added to the
+# response schema - market_structure/market_structure_comment (the
+# competitive structure of the company's PRIMARY profit pool) and
+# one_foot_hurdle/one_foot_comment (Buffett's one-foot-bar test) - see
+# _response_schema()'s own comment for the exact fields. Same delivery
+# mechanism as v2->v3: every pooled company is "unscored" under v4
+# until the next nightly run, the four new columns are a purely
+# additive ALTER TABLE (top100_store.py), no rubric_version PK/schema
+# migration needed, and v3 (and earlier) rows stay preserved under
+# their own key untouched. KNOWN GAP this bump reopens (already
+# fixed once, for the v2->v3 bump): every pooled company reads as
+# unscored under "v4" until the next nightly run completes, which
+# would blank the page/AWAITING-shelve every company for up to a day -
+# see top100_render._enriched_pool()'s own "previous rubric" fallback,
+# shipped ALONGSIDE this bump specifically so that gap never recurs.
+# Weights, DIMENSIONS, max_tokens and the cache-key STRUCTURE are all
+# otherwise unchanged - both new question pairs are display-only, same
+# zero-effect-on-scoring status as the inversion/headwind fields (see
+# composite_score()'s own docstring).
+RUBRIC_VERSION = "v4"
 
 MODEL_TOP100 = "claude-opus-5-5"
 
@@ -436,7 +457,11 @@ THE TEN DIMENSIONS AND THEIR ANCHORS (1 = worst for a holder, 5 = best for a hol
 
 INVERSION SYNTHESIS - after scoring all ten dimensions, write ONE sentence naming the single most plausible scenario that could seriously damage this company, plus a severity from 1 (minor) to 5 (plausibly breaks the company). This is a separate analytical synthesis, not a dimension score - it has ZERO effect on any of the ten scores above, on this company's ranking, or on its Top-20 eligibility. If three or more of your ten dimension scores are 0 (this company will be marked NOT RATED), output the sentinel values instead - an empty string "" for the inversion scenario and 0 for its severity - do not invent a damaging scenario for a company you don't know well enough to score in the first place.
 
-CURRENT HEADWIND - a separate field from the inversion above, and easy to confuse with it, so read this carefully: the inversion is HYPOTHETICAL (the worst plausible future scenario); the headwind is ACTUAL and PRESENT (why the market is discounting this company right now, as of your knowledge). In at most 40 words, state the actual, present reason the market is discounting this company - the standing headwind (demand, margins, competition, regulation, sentiment), as of your knowledge. This is what IS weighing on the stock, distinct from the inversion's hypothetical worst case. If no clearly identifiable headwind exists, output an empty string "" - never invent one. Same honesty rule as everywhere else in this prompt: a company you don't know a specific, current headwind for gets the empty-string sentinel, not a guessed one. NOT RATED companies (three or more null dimensions) get the empty-string sentinel here too, same as the inversion fields."""
+CURRENT HEADWIND - a separate field from the inversion above, and easy to confuse with it, so read this carefully: the inversion is HYPOTHETICAL (the worst plausible future scenario); the headwind is ACTUAL and PRESENT (why the market is discounting this company right now, as of your knowledge). In at most 40 words, state the actual, present reason the market is discounting this company - the standing headwind (demand, margins, competition, regulation, sentiment), as of your knowledge. This is what IS weighing on the stock, distinct from the inversion's hypothetical worst case. If no clearly identifiable headwind exists, output an empty string "" - never invent one. Same honesty rule as everywhere else in this prompt: a company you don't know a specific, current headwind for gets the empty-string sentinel, not a guessed one. NOT RATED companies (three or more null dimensions) get the empty-string sentinel here too, same as the inversion fields.
+
+MARKET STRUCTURE (RUBRIC_VERSION v4) - classify the competitive structure of this company's PRIMARY PROFIT POOL: the specific market segment that actually generates the bulk of its profit, NOT the broadest possible industry definition (e.g. a payments network's primary profit pool is card-network processing, not "financial services" broadly). Output exactly one of "monopoly", "duopoly", "oligopoly", "competitive". If you don't have confident, specific knowledge of the competitive landscape, output the sentinel empty string "" - never guess a label you can't justify. Then, in at most 25 words, name the actual competitors/players that justify the label (empty string "" if you declined the label itself).
+
+ONE-FOOT HURDLE (RUBRIC_VERSION v4) - Buffett's "one-foot bar" test: would a well-informed investor consider this an EASY, OBVIOUS investment decision that requires no heroic assumptions about the future? Output exactly "yes" only if the case is genuinely easy and obvious; "no" if the thesis depends on hard-to-predict outcomes, however attractively priced the stock may be. If you don't have enough confident knowledge of the company to judge, output the sentinel empty string "" - never guess. Then, in at most 25 words, explain the verdict (empty string "" if you declined the verdict itself)."""
 
 
 def _user_prompt(ticker, company_name):
@@ -444,8 +469,11 @@ def _user_prompt(ticker, company_name):
     return (
         f"Company: {name} (ticker: {ticker})\n\n"
         "Score this company on all ten dimensions per your instructions, "
-        "then write the one-sentence inversion synthesis (scenario + severity) "
-        "and the current headwind (at most 40 words, or an empty string)."
+        "then write the one-sentence inversion synthesis (scenario + severity), "
+        "the current headwind (at most 40 words, or an empty string), the "
+        "market structure of its primary profit pool (plus a short comment "
+        "naming the competitors that justify it), and the one-foot-hurdle "
+        "verdict (plus a short comment explaining it)."
     )
 
 
@@ -502,7 +530,22 @@ def _response_schema():
     by structured outputs, same constraint every other field here
     already respects) with the SAME "" -> null sentinel convention as
     inversion_scenario just above - "no clearly identifiable headwind"
-    is a permitted, honest answer, never guessed."""
+    is a permitted, honest answer, never guessed.
+
+    RUBRIC_VERSION v4 (26 Sep 2026, owner-approved mock, "top100_v4_
+    market_structure_onefoot_mock.html"): added market_structure/
+    market_structure_comment and one_foot_hurdle/one_foot_comment -
+    four more PLAIN strings, same "" -> None sentinel convention, same
+    zero-union-type/zero-min-max discipline. market_structure and
+    one_foot_hurdle each have a small fixed vocabulary of allowed
+    values ("monopoly"/"duopoly"/"oligopoly"/"competitive" and
+    "yes"/"no" respectively) but are declared as plain "string" here,
+    NOT as an enum-constrained/union type - structured outputs doesn't
+    support enum validation any more than it supports min/max (same
+    constraint that forced the sentinel rewrite in the first place);
+    the allowed-value check is enforced server-side in
+    _parse_response_json() below instead, exactly like every other
+    range/vocabulary constraint in this schema."""
     props = {key: _dimension_schema() for key in DIMENSION_KEYS}
     props["inversion_scenario"] = {
         "type": "string",
@@ -516,10 +559,30 @@ def _response_schema():
         "type": "string",
         "description": "At most 40 words: the actual, present reason the market is discounting this company - distinct from the hypothetical inversion scenario above. An empty string \"\" if no clearly identifiable headwind exists, or if this company is NOT RATED - never invent one.",
     }
+    props["market_structure"] = {
+        "type": "string",
+        "description": "The competitive structure of this company's PRIMARY profit pool - exactly one of \"monopoly\", \"duopoly\", \"oligopoly\", \"competitive\", or an empty string \"\" if you don't have confident, specific knowledge of the competitive landscape. Never guess a label you can't justify.",
+    }
+    props["market_structure_comment"] = {
+        "type": "string",
+        "description": "At most 25 words naming the actual competitors/players that justify the market_structure label above. An empty string \"\" if market_structure is \"\".",
+    }
+    props["one_foot_hurdle"] = {
+        "type": "string",
+        "description": "Buffett's one-foot-bar test - exactly \"yes\" only if this is an easy, obvious investment decision requiring no heroic assumptions about the future; \"no\" if the thesis depends on hard-to-predict outcomes, however attractive the price. An empty string \"\" if you don't have enough confident knowledge to judge - never guess.",
+    }
+    props["one_foot_comment"] = {
+        "type": "string",
+        "description": "At most 25 words explaining the one_foot_hurdle verdict above. An empty string \"\" if one_foot_hurdle is \"\".",
+    }
     return {
         "type": "object",
         "properties": props,
-        "required": DIMENSION_KEYS + ["inversion_scenario", "inversion_severity", "current_headwind"],
+        "required": DIMENSION_KEYS + [
+            "inversion_scenario", "inversion_severity", "current_headwind",
+            "market_structure", "market_structure_comment",
+            "one_foot_hurdle", "one_foot_comment",
+        ],
         "additionalProperties": False,
     }
 
@@ -556,14 +619,56 @@ def current_quarter(today=None):
     return f"{d.year}Q{(d.month - 1) // 3 + 1}"
 
 
+_ALLOWED_MARKET_STRUCTURES = ("monopoly", "duopoly", "oligopoly", "competitive")
+_ALLOWED_ONE_FOOT_HURDLE = ("yes", "no")
+# Safety net only - the prompt's own target is ~25 words per comment;
+# this just bounds the worst case (a model ignoring that guidance)
+# rather than enforcing the target itself.
+_COMMENT_MAX_WORDS = 40
+
+
+def _truncate_words(text, max_words=_COMMENT_MAX_WORDS):
+    """Hard word-count truncation - never raises, never fails a result
+    over an overlong comment (task's own explicit rule). "" / None
+    pass through unchanged."""
+    if not text:
+        return text
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    return " ".join(words[:max_words])
+
+
 def _parse_response_json(text):
     """Parses one company's structured-output JSON text into
     (dims_dict, not_rated, inversion_scenario, inversion_severity,
-    current_headwind). `dims_dict`: {key: {"score","justification",
-    "source_period"}, ...} for all ten keys. Raises ValueError on
-    malformed JSON or a missing dimension - the caller (poll_and_
-    ingest_batch) treats that exactly like any other per-ticker
-    failure: logged, skipped, prior cache untouched.
+    current_headwind, market_structure, market_structure_comment,
+    one_foot_hurdle, one_foot_comment). `dims_dict`: {key: {"score",
+    "justification", "source_period"}, ...} for all ten keys. Raises
+    ValueError on malformed JSON or a missing dimension - the caller
+    (poll_and_ingest_batch) treats that exactly like any other
+    per-ticker failure: logged, skipped, prior cache untouched.
+
+    market_structure/one_foot_hurdle (RUBRIC_VERSION v4, 26 Sep 2026,
+    owner-approved mock): each has a small fixed vocabulary the wire
+    schema can't itself enforce (structured outputs supports neither
+    enums nor min/max - see _response_schema()'s own comment), so it's
+    enforced HERE, server-side, the same belt-and-braces spot every
+    other range/vocabulary rule in this function already lives: a
+    value outside the allowed set is treated as a decline (None), same
+    as the model outputting the "" sentinel itself. The matching
+    comment is forced to None whenever its own label is None too, even
+    if the model didn't null it - a comment justifying a label that
+    was just discarded as invalid would be an orphaned artefact, not a
+    real answer, so it never survives to be stored or shown. Neither
+    field is a NOT-RATED-forced-null like inversion_scenario/
+    current_headwind below - unlike those, this never reaches the page
+    for a NOT RATED company anyway (top100_render._render_row() is
+    never called for one; NOT RATED companies render from the bottom
+    shelf, which never shows this box), so there is nothing for a
+    stray value to leak into. Comments are also hard-truncated
+    (_truncate_words()) as the task's own safety net against an
+    overlong response - never a failure, just a trim.
 
     current_headwind (RUBRIC_VERSION v3, 25 Sep 2026, owner-approved
     mock): the model's one-line, present-tense "why is the market
@@ -651,7 +756,30 @@ def _parse_response_json(text):
         inversion_severity = None
         current_headwind = None
 
-    return dims, not_rated, inversion_scenario, inversion_severity, current_headwind
+    market_structure = data.get("market_structure")
+    if isinstance(market_structure, str):
+        market_structure = market_structure.strip().lower()
+    if market_structure not in _ALLOWED_MARKET_STRUCTURES:
+        market_structure = None
+    market_structure_comment = data.get("market_structure_comment") or None
+    if market_structure is None:
+        market_structure_comment = None
+    else:
+        market_structure_comment = _truncate_words(market_structure_comment)
+
+    one_foot_hurdle = data.get("one_foot_hurdle")
+    if isinstance(one_foot_hurdle, str):
+        one_foot_hurdle = one_foot_hurdle.strip().lower()
+    if one_foot_hurdle not in _ALLOWED_ONE_FOOT_HURDLE:
+        one_foot_hurdle = None
+    one_foot_comment = data.get("one_foot_comment") or None
+    if one_foot_hurdle is None:
+        one_foot_comment = None
+    else:
+        one_foot_comment = _truncate_words(one_foot_comment)
+
+    return (dims, not_rated, inversion_scenario, inversion_severity, current_headwind,
+            market_structure, market_structure_comment, one_foot_hurdle, one_foot_comment)
 
 
 # -----------------------------------------------------------------
@@ -784,8 +912,9 @@ def poll_and_ingest_batch(log=print):
             text = next((b.text for b in msg.content if b.type == "text"), "")
             prompt_params = _request_params(ticker, ticker)
             try:
-                dims, not_rated, inversion_scenario, inversion_severity, current_headwind = \
-                    _parse_response_json(text)
+                (dims, not_rated, inversion_scenario, inversion_severity, current_headwind,
+                 market_structure, market_structure_comment,
+                 one_foot_hurdle, one_foot_comment) = _parse_response_json(text)
             except Exception as e:
                 failed += 1
                 log(f"[top100] {ticker}: could not parse batch result, skipped ({e})")
@@ -795,6 +924,8 @@ def poll_and_ingest_batch(log=print):
                 rubric_version=RUBRIC_VERSION, dims=dims, not_rated=not_rated,
                 inversion_scenario=inversion_scenario, inversion_severity=inversion_severity,
                 current_headwind=current_headwind,
+                market_structure=market_structure, market_structure_comment=market_structure_comment,
+                one_foot_hurdle=one_foot_hurdle, one_foot_comment=one_foot_comment,
                 prompt=json.dumps(prompt_params), raw_response=text,
             )
             saved += 1
@@ -1005,16 +1136,19 @@ def run_single_test_call(ticker, company_name=None):
     as a real batch result would, so the test call's own result is
     immediately visible on the page rather than thrown away. Returns
     {"ticker","dims","not_rated","inversion_scenario","inversion_
-    severity","current_headwind","input_tokens","output_tokens",
-    "cost_usd"} - standard, non-batch pricing (this call does not go
-    through the Batches API), reported honestly as such."""
+    severity","current_headwind","market_structure","market_structure_
+    comment","one_foot_hurdle","one_foot_comment","input_tokens",
+    "output_tokens","cost_usd"} - standard, non-batch pricing (this
+    call does not go through the Batches API), reported honestly as
+    such."""
     import anthropic
     client = anthropic.Anthropic()
     params = _request_params(ticker, company_name)
     resp = client.messages.create(**params)
     text = next((b.text for b in resp.content if b.type == "text"), "")
-    dims, not_rated, inversion_scenario, inversion_severity, current_headwind = \
-        _parse_response_json(text)
+    (dims, not_rated, inversion_scenario, inversion_severity, current_headwind,
+     market_structure, market_structure_comment,
+     one_foot_hurdle, one_foot_comment) = _parse_response_json(text)
     input_tokens = getattr(resp.usage, "input_tokens", 0) or 0
     output_tokens = getattr(resp.usage, "output_tokens", 0) or 0
     cost = (input_tokens / 1_000_000) * TOP100_INPUT_USD_PER_MTOK + \
@@ -1025,12 +1159,16 @@ def run_single_test_call(ticker, company_name=None):
         dims=dims, not_rated=not_rated,
         inversion_scenario=inversion_scenario, inversion_severity=inversion_severity,
         current_headwind=current_headwind,
+        market_structure=market_structure, market_structure_comment=market_structure_comment,
+        one_foot_hurdle=one_foot_hurdle, one_foot_comment=one_foot_comment,
         prompt=json.dumps(params), raw_response=text,
     )
     return {
         "ticker": ticker, "dims": dims, "not_rated": not_rated,
         "inversion_scenario": inversion_scenario, "inversion_severity": inversion_severity,
         "current_headwind": current_headwind,
+        "market_structure": market_structure, "market_structure_comment": market_structure_comment,
+        "one_foot_hurdle": one_foot_hurdle, "one_foot_comment": one_foot_comment,
         "input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost,
     }
 
