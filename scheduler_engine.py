@@ -1255,6 +1255,14 @@ def _run_volume_check(log):
             admin_metrics_store.prune_old_signin_hashes(log=log)
         except Exception as e:
             log(f"[scheduler] signin-hash prune failed: {e}")
+        # Admin Dashboard Analytics Commit 3 (26 Sep 2026): same nightly
+        # slot, same 90-day retention, same reasoning as the signin-hash
+        # prune directly above - see admin_metrics_store.
+        # prune_old_visitor_hashes()'s own docstring.
+        try:
+            admin_metrics_store.prune_old_visitor_hashes(log=log)
+        except Exception as e:
+            log(f"[scheduler] visitor-hash prune failed: {e}")
         try:
             admin_metrics_store.prune_old_counters(log=log)
         except Exception as e:

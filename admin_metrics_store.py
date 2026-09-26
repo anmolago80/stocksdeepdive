@@ -112,6 +112,20 @@ def _conn():
             PRIMARY KEY (day, acct_hash)
         )"""
     )
+    # Admin Dashboard Analytics Commit 3 (26 Sep 2026) - the EXACT same
+    # shape as daily_signin_hashes above, reused verbatim for visitor
+    # IPs instead of sign-in emails: see _visitor_hash()/record_visitor()
+    # below for the construction (identical to _acct_hash()/
+    # record_signin(), same day-baked-into-the-hash design, same
+    # PRIMARY KEY-as-dedup mechanism - one row per (day, distinct hash),
+    # never one row per request).
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS daily_visitor_hashes (
+            day TEXT NOT NULL,
+            visitor_hash TEXT NOT NULL,
+            PRIMARY KEY (day, visitor_hash)
+        )"""
+    )
     conn.execute(
         """CREATE TABLE IF NOT EXISTS job_status (
             job TEXT PRIMARY KEY,
@@ -337,6 +351,126 @@ def prune_old_signin_hashes(log=print):
         return n
     except Exception as e:
         log(f"[admin_metrics_store] prune failed: {e}")
+        return 0
+
+
+def _visitor_hash(ip, day):
+    """Day-rotated visitor-IP hash for Admin Dashboard Analytics
+    Commit 3 (26 Sep 2026) - the EXACT SAME construction as _acct_hash()
+    above, reused verbatim per the owner's own instruction ("reuse the
+    exact pattern"): sha256(value|day|secret), same AUTH_COOKIE_SECRET,
+    same fallback. Because `day` is baked into the hash input exactly as
+    it is in _acct_hash(), the SAME IP gets a DIFFERENT hash every day -
+    two days' daily_visitor_hashes rows can never be joined into a
+    per-visitor trail, and the salt (AUTH_COOKIE_SECRET) is never itself
+    written anywhere this function's output ends up. See _acct_hash()'s
+    own comment and the module docstring's privacy rule for the
+    reasoning, unchanged here."""
+    secret = os.environ.get("AUTH_COOKIE_SECRET", "") or "sdd-pulse-fallback"
+    raw = f"{ip.strip()}|{day}|{secret}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def record_visitor(ip):
+    """One request's day-rotated visitor hash (Commit 3), written
+    immediately, synchronously - see _visitor_hash() above for the
+    construction. NOT what server.py's request-serving middleware
+    actually calls (that path uses the batched record_visitor_hashes()
+    below instead, to keep per-request work off the hot disk-I/O path -
+    see that function's own docstring for why). This single-row form
+    exists for any lower-frequency caller that wants the exact same
+    one-line-and-done shape record_signin() already has - e.g. a script,
+    a one-off admin action, or a future low-volume call site - without
+    needing to build a batch of one.
+
+    INSERT OR IGNORE against the (day, visitor_hash) PRIMARY KEY means
+    calling this any number of times for the SAME ip on the SAME day
+    writes exactly one row, ever - the hash-based de-duplication IS the
+    "unique" in unique visitors; no separate per-IP tracking structure
+    is needed, mirroring exactly how record_signin()'s daily_signin_
+    hashes insert already collapses repeat sign-ins into one row.
+    Callers wrap this in try/except, same convention as every other
+    write in this module."""
+    if not ip:
+        return
+    day = _today()
+    h = _visitor_hash(ip, day)
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO daily_visitor_hashes (day, visitor_hash) VALUES (?, ?)",
+            (day, h),
+        )
+
+
+def record_visitor_hashes(day_hash_pairs):
+    """Batch counterpart to record_visitor() above - one connection, one
+    transaction, many (day, visitor_hash) rows via executemany(), each
+    still going through the same INSERT OR IGNORE de-duplication a
+    single-row insert would. This is what server.py's middleware
+    actually calls: it accumulates (day, hash) pairs in memory per
+    request (a sha256 call plus a set.add() - no I/O) and flushes them
+    here on the SAME periodic interval _pulse_flush_once() already uses
+    for the "requests"/"req_class:*"/"page_views" pulse counters, via
+    admin_metrics_store.bump_many() - so per-request work stays
+    in-memory-only and this write, like every pulse-counter write, never
+    happens on the request/response path itself. A deliberate
+    adaptation of record_signin()'s otherwise-identical synchronous
+    per-event pattern: sign-ins are rare enough that a write-per-event
+    is fine there, but this hash is written on a much higher fraction of
+    all traffic, so it gets the SAME batching bump_many() already gives
+    the "requests" counter, not a new I/O shape. The hash CONSTRUCTION
+    (_visitor_hash(), reused verbatim by the caller) and table shape are
+    unchanged - only how often a connection gets opened differs.
+    Callers wrap this in try/except, same convention as bump_many()."""
+    pairs = list(day_hash_pairs)
+    if not pairs:
+        return
+    with _conn() as conn:
+        conn.executemany(
+            "INSERT OR IGNORE INTO daily_visitor_hashes (day, visitor_hash) VALUES (?, ?)",
+            pairs,
+        )
+
+
+def prune_old_visitor_hashes(log=print):
+    """Deletes visitor-hash rows older than PRUNE_AFTER_DAYS (90) - same
+    retention and reasoning as prune_old_signin_hashes() above, applied
+    to daily_visitor_hashes. Called from scheduler_engine's nightly
+    volume-check job, same slot as every other prune here, so per-day
+    hashes are actually discarded on rollover rather than merely
+    described as such - see this project's own report for direct
+    confirmation this call is wired in, not just documented. Never
+    raises."""
+    cutoff = _day_n_ago(PRUNE_AFTER_DAYS)
+    try:
+        with _conn() as conn:
+            cur = conn.execute("DELETE FROM daily_visitor_hashes WHERE day < ?", (cutoff,))
+            n = max(cur.rowcount, 0)
+        if n:
+            log(f"[admin_metrics_store] pruned {n} old visitor-hash row(s)")
+        return n
+    except Exception as e:
+        log(f"[admin_metrics_store] prune failed: {e}")
+        return 0
+
+
+def unique_visitors_for_day(day=None):
+    """COUNT(DISTINCT visitor_hash) for one UTC day (default: today) -
+    the read-side counterpart to record_visitor() above, same query
+    shape as pulse_7d()'s own "SELECT COUNT(DISTINCT acct_hash)..."
+    for signed-in uniqueness. Not yet wired into any admin render (the
+    panel is a later, separate task) - exists here so Commit 3's write
+    path has a demonstrable, testable read path of its own. Never
+    raises - returns 0 on any read error."""
+    day = day or _today()
+    try:
+        with _conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(DISTINCT visitor_hash) FROM daily_visitor_hashes WHERE day = ?",
+                (day,),
+            ).fetchone()
+            return row[0] if row else 0
+    except Exception:
         return 0
 
 

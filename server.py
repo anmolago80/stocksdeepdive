@@ -403,6 +403,16 @@ _pulse_counts: dict[str, int] = {}
 _pulse_known_src_today: set[str] = set()
 _pulse_known_src_day: str | None = None
 
+# Admin Dashboard Analytics Commit 3 (26 Sep 2026): (day, visitor_hash)
+# pairs awaiting the next periodic flush - see admin_metrics_store.
+# record_visitor_hashes()'s own docstring for why this is batched the
+# same way _pulse_counts is, rather than writing to SQLite on every
+# request. The hash itself is computed at REQUEST time (using the
+# correct day for that exact moment), only the DISK WRITE is deferred -
+# so a request in the last seconds before UTC midnight still credits
+# the right day's bucket even if its flush lands just after rollover.
+_pending_visitor_hashes: set[tuple[str, str]] = set()
+
 
 def _pulse_bump(key, n=1):
     with _pulse_lock:
@@ -451,16 +461,22 @@ _PULSE_TICKER_VIEW_PATHS = {"/research": "research", "/deep-dive": "deep_dive"}
 
 def _pulse_flush_once():
     with _pulse_lock:
-        if not _pulse_counts:
-            return
         batch = dict(_pulse_counts)
         _pulse_counts.clear()
+        visitor_batch = set(_pending_visitor_hashes)
+        _pending_visitor_hashes.clear()
     if admin_metrics_store is None:
         return
-    try:
-        admin_metrics_store.bump_many(batch)
-    except Exception:
-        log.warning("pulse metrics flush failed - this interval's counts are lost")
+    if batch:
+        try:
+            admin_metrics_store.bump_many(batch)
+        except Exception:
+            log.warning("pulse metrics flush failed - this interval's counts are lost")
+    if visitor_batch:
+        try:
+            admin_metrics_store.record_visitor_hashes(visitor_batch)
+        except Exception:
+            log.warning("visitor-hash flush failed - this interval's unique-visitor hashes are lost")
 
 
 async def _pulse_flush_loop():
@@ -502,7 +518,24 @@ async def _pulse_counting_middleware(request: Request, call_next):
     asyncio.create_task(...) of visitor_classify.maybe_verify_crawler_async()
     - NEVER awaited, so a slow/hanging DNS lookup can never delay this
     or any other request. Both call straight into visitor_classify,
-    which does no I/O of its own - see that module's docstring."""
+    which does no I/O of its own - see that module's docstring.
+
+    Commit 3 (26 Sep 2026) computes this request's day-rotated visitor
+    hash (admin_metrics_store._visitor_hash(ip, day) - the EXACT same
+    construction _acct_hash()/record_signin() already use for the
+    unique-signed-in-accounts figure, reused verbatim) ONLY when this
+    request's label is neither known_crawler nor vuln_scanner - "unique
+    visitors" excluding the two categories this project already knows
+    for certain aren't visitors is a meaningfully less-misleading number
+    than "unique IPs of any kind" would be, even though it is NOT yet
+    "unique HUMAN visitors" (classify_request() never returns human on
+    its own - that further narrowing is a later commit's job). The hash
+    itself costs one sha256 call and a set.add() here - no I/O; the
+    actual disk write is deferred to _pulse_flush_once() below via
+    admin_metrics_store.record_visitor_hashes(), the SAME periodic-flush
+    treatment the "requests"/"req_class:*"/"page_views" pulse counters
+    already get, for the same reason: keep every per-request cost in
+    this middleware off the disk-I/O path."""
     response = await call_next(request)
     try:
         _pulse_bump("requests")
@@ -516,6 +549,13 @@ async def _pulse_counting_middleware(request: Request, call_next):
             if visitor_classify.is_page_view_path(request.url.path):
                 _pulse_bump("page_views")
             asyncio.create_task(visitor_classify.maybe_verify_crawler_async(ua, ip))
+            if admin_metrics_store is not None and label not in (
+                visitor_classify.KNOWN_CRAWLER, visitor_classify.VULN_SCANNER,
+            ) and ip:
+                day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                h = admin_metrics_store._visitor_hash(ip, day)
+                with _pulse_lock:
+                    _pending_visitor_hashes.add((day, h))
         src = _pulse_sanitize_src(request.query_params.get("src") or "")
         if src:
             _pulse_bump(_pulse_src_key(src))
