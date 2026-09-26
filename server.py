@@ -353,17 +353,58 @@ async def lifespan(app: FastAPI):
         try:
             yield
         finally:
+            # CRITICAL (26 Sep 2026, owner-reported): this whole teardown
+            # used to be ONE shared `with suppress(Exception):` spanning
+            # from "await _pulse_task" through the end of this block - but
+            # asyncio.CancelledError has inherited from BaseException, not
+            # Exception, since Python 3.8 (precisely so a broad except/
+            # suppress handler can't swallow cancellation), so
+            # suppress(Exception) never actually caught it: EVERY graceful
+            # shutdown of this app raised CancelledError straight out of
+            # this finally block ("Application shutdown failed. Exiting."
+            # in the deploy logs), abandoning every step below it - the
+            # flush, the Streamlit SIGTERM, and the httpx client close
+            # never ran. Confirmed against real Railway deploy logs for
+            # this exact service, before and after this fix - see this
+            # commit's own report. The actual defect was never the
+            # CancelledError itself, it was ONE shared handler making
+            # every step's fate depend on every OTHER step's - so each
+            # step below now gets its own try/except, logged loudly on
+            # failure (never a silent suppress - the same "25 Sep 2026"
+            # lesson this file already learned once above, applied here
+            # too: a swallowed teardown failure is indistinguishable from
+            # a clean one with zero trace anywhere).
             _pulse_task.cancel()
-            with suppress(Exception):
+            try:
                 await _pulse_task
-            _pulse_flush_once()  # don't lose the last <60s of counts on shutdown
-            if _client:
-                await _client.aclose()
-            if _streamlit_proc and _streamlit_proc.poll() is None:
-                log.info("stopping Streamlit")
-                _streamlit_proc.send_signal(signal.SIGTERM)
-                with suppress(Exception):
-                    _streamlit_proc.wait(timeout=10)
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.warning("shutdown: pulse flush loop task raised on cancellation", exc_info=True)
+            try:
+                _pulse_flush_once()  # don't lose the last <60s of counts on shutdown
+            except Exception:
+                log.warning("shutdown: pulse flush failed", exc_info=True)
+            # Signalling Streamlit to stop happens BEFORE the httpx client
+            # close (reordered from before) - it's the step with a real
+            # cost to delaying (Streamlit gets up to 10s to exit cleanly
+            # below), and nothing about closing the httpx client helps
+            # Streamlit shut down any sooner.
+            try:
+                if _streamlit_proc and _streamlit_proc.poll() is None:
+                    log.info("stopping Streamlit")
+                    _streamlit_proc.send_signal(signal.SIGTERM)
+                    try:
+                        _streamlit_proc.wait(timeout=10)
+                    except Exception:
+                        log.warning("shutdown: Streamlit did not exit within 10s of SIGTERM", exc_info=True)
+            except Exception:
+                log.warning("shutdown: failed to signal Streamlit to stop", exc_info=True)
+            try:
+                if _client:
+                    await _client.aclose()
+            except Exception:
+                log.warning("shutdown: httpx client close failed", exc_info=True)
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
