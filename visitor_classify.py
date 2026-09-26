@@ -162,6 +162,7 @@ import re
 import socket
 import threading
 import time
+import urllib.parse
 
 HUMAN = "human"
 KNOWN_CRAWLER = "known_crawler"
@@ -420,6 +421,67 @@ def is_asset_fetch_path(path):
     if path in ASSET_FETCH_EXACT_PATHS:
         return True
     return any(path.startswith(prefix) for prefix in ASSET_FETCH_PATH_PREFIXES)
+
+
+# ============================================================================
+# REFERRER BUCKETING (Commit 5, owner-specified: "x.com, google, reddit,
+# linkedin, direct, other. Never store the full referring URL.") - a
+# coarse, fixed-vocabulary bucket, never the Referer header's own value.
+# ============================================================================
+
+REFERRER_BUCKETS = ("x", "google", "reddit", "linkedin", "direct", "other")
+
+# Exact-or-subdomain host matches, checked in this order (first match
+# wins - not that any of these could overlap today, but a fixed order
+# keeps behavior deterministic if a future entry ever could). "x" also
+# covers the pre-rebrand twitter.com domain, since old shared links
+# and cached pages still commonly point there.
+_REFERRER_HOST_BUCKETS = (
+    (("x.com", "twitter.com"), "x"),
+    (("reddit.com",), "reddit"),
+    (("linkedin.com",), "linkedin"),
+)
+
+# Google has dozens of country-code TLD variants (google.com, google.co.uk,
+# google.com.au, ...) - a regex is far less code than enumerating them,
+# but loose enough to also need a length-bounded TLD shape so it can't
+# be tricked by something like "google.evil.com" (the "evil" label is
+# 4 letters, outside the 2-3-letter TLD shape this regex requires,
+# so that host correctly falls through to "other" instead of "google").
+_GOOGLE_REFERRER_RE = re.compile(r"^(www\.)?google\.[a-z]{2,3}(\.[a-z]{2,3})?$", re.I)
+
+
+def _referrer_host_matches(host, domain):
+    return host == domain or host.endswith("." + domain)
+
+
+def bucket_referrer(referrer):
+    """One of REFERRER_BUCKETS for a raw Referer header value - the
+    ONLY thing this module ever does with that header. The caller
+    (server.py's middleware) passes this function's return value to
+    its pulse counter and never persists `referrer` itself anywhere -
+    see that call site's own comment for the exact "never store the
+    full referring URL" guarantee this satisfies. Never raises - a
+    missing/empty header, or one that fails to parse as a URL at all,
+    reads as "direct" (no Referer header is exactly what a user typing
+    the URL directly, or opening a bookmark, produces) and anything
+    that parses but doesn't match a named bucket reads as "other" -
+    the same safe-default philosophy every other classifier in this
+    module already follows."""
+    if not referrer:
+        return "direct"
+    try:
+        host = (urllib.parse.urlparse(referrer).hostname or "").lower()
+    except Exception:
+        return "other"
+    if not host:
+        return "other"
+    for domains, bucket in _REFERRER_HOST_BUCKETS:
+        if any(_referrer_host_matches(host, d) for d in domains):
+            return bucket
+    if _GOOGLE_REFERRER_RE.match(host):
+        return "google"
+    return "other"
 
 
 # ============================================================================

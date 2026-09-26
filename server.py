@@ -636,7 +636,19 @@ async def _pulse_counting_middleware(request: Request, call_next):
     never a demotion: a session that shows neither, or only one side,
     simply stays automated_unknown, exactly as it already was under
     Commit 3. This never runs for known_crawler/vuln_scanner requests,
-    same gating as the visitor-hash write directly above."""
+    same gating as the visitor-hash write directly above.
+
+    Commit 5 (26 Sep 2026) buckets this request's Referer header via
+    visitor_classify.bucket_referrer() (x/google/reddit/linkedin/
+    direct/other - see that function's own docstring) and bumps
+    "referrer:<bucket>" - never the header's own value, which this
+    middleware never even holds onto past this one line. Unlike the
+    visitor-hash/human-promotion block above, this runs for EVERY
+    request regardless of classify_request()'s label - a judgment
+    call, not an assumption: the task names no such restriction, and a
+    bucketed referrer stays a small, fixed-vocabulary counter no matter
+    how many labels it's spread across; filtering this to human-only
+    traffic, if wanted, is left to the eventual panel to decide."""
     response = await call_next(request)
     try:
         _pulse_bump("requests")
@@ -662,6 +674,8 @@ async def _pulse_counting_middleware(request: Request, call_next):
                 is_asset_fetch = visitor_classify.is_asset_fetch_path(path)
                 if is_page_view or is_asset_fetch:
                     _maybe_promote_to_human(h, day, is_page_view, is_asset_fetch)
+            ref_bucket = visitor_classify.bucket_referrer(request.headers.get("referer", ""))
+            _pulse_bump(f"referrer:{ref_bucket}")
         src = _pulse_sanitize_src(request.query_params.get("src") or "")
         if src:
             _pulse_bump(_pulse_src_key(src))
