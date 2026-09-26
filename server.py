@@ -482,15 +482,63 @@ _pending_visitor_hashes: set[tuple[str, str]] = set()
 # approaches a size where a nightly-cleared, in-memory set is a
 # concern. _promoted_human_hashes_today guards against re-promoting
 # (and re-bumping the pulse counter for) a hash already promoted today.
-# None of this is a "per-visitor browsing trail" in the sense the hard
-# privacy rule bars - it holds no path, no timestamp, no sequence, only
-# "has this hash shown EITHER signal today," cleared completely every
-# day, exactly the same transient-in-memory character as the DNS
+# These three sets hold no path, no timestamp, no sequence - only "has
+# this hash shown EITHER signal today" - cleared completely every day,
+# exactly the same transient-in-memory character as the DNS
 # verification cache the owner already reviewed and approved.
+#
+# _pending_page_buffer below is the one exception - see its own comment
+# for why it's scoped to stay inside the same hard privacy rule anyway.
 _asset_tracking_day: str | None = None
 _seen_page_view_hashes: set[str] = set()
 _seen_asset_fetch_hashes: set[str] = set()
 _promoted_human_hashes_today: set[str] = set()
+
+# "The panel" follow-up (26 Sep 2026, owner-specified): fixes a real gap
+# the 24 Sep replay exposed - a session whose page view arrives BEFORE
+# the asset fetch that confirms it human (the common real order: load a
+# page, then its own icons/manifest - see the 24 Sep evidence in this
+# follow-up's own commit report) had that page view permanently
+# uncredited to "top pages by human traffic," because at the moment it
+# arrived this hash wasn't known-human yet. This buffer holds a small,
+# capped list of page paths PER UNCONFIRMED HASH, so that IF the hash
+# later promotes to human (same UTC day - see _maybe_promote_to_human()
+# below, which pops and credits a hash's buffer the instant it
+# promotes), the pages it genuinely visited before confirmation get
+# credited then - deferred attribution of a real event, never a
+# fabricated one. A hash that never promotes has its buffer discarded
+# at day rollover, contributing nothing - the same fail-safe-undercount
+# direction as every other signal in this design.
+#
+# This IS the closest thing in this project to a per-visitor browsing
+# trail, and the owner's own explicit call on where the hard privacy
+# rule's line sits: judged to stay inside it because it is -
+#   (a) in-memory only, never written to disk/DB;
+#   (b) never logged - nothing in this module ever prints, logs, or
+#       exc_info()'s this dict's contents;
+#   (c) discarded the instant it's used (popped whole at promotion) or
+#       at the next UTC day rollover, whichever comes first - never
+#       carried across days, so two days' buffers can never be joined;
+#   (d) bounded PER HASH at _PENDING_PAGE_BUFFER_MAX_PATHS_PER_HASH (5)
+#       distinct paths - a real browser satisfies the asset-fetch
+#       signal on its very first page load, so a hash buffering more
+#       than a handful of distinct pages before ever showing one isn't
+#       a real browser; further distinct pages for it are simply
+#       dropped, never evicting an earlier one;
+#   (e) bounded IN TOTAL at _PENDING_PAGE_BUFFER_MAX_HASHES (500)
+#       distinct unconfirmed hashes tracked at once - an explicit
+#       ceiling rather than an incidental one, so a deliberate flood of
+#       fabricated IP/UA combinations (each showing one page view and
+#       never confirming) can't grow this dict without limit; a hash
+#       beyond that ceiling is simply never buffered, costing a
+#       possible future credit, never fabricating one.
+# If this reasoning is ever revisited and judged to cross the line
+# after all, the fix is to delete this buffer and the top-pages-by-
+# human-traffic feature with it, not to weaken these bounds - an absent
+# tile beats a compromised one.
+_PENDING_PAGE_BUFFER_MAX_PATHS_PER_HASH = 5
+_PENDING_PAGE_BUFFER_MAX_HASHES = 500
+_pending_page_buffer: dict[str, list[str]] = {}
 
 # (day, visitor_hash) pairs newly promoted to human, awaiting the next
 # periodic flush - identical batching treatment to _pending_visitor_
@@ -538,6 +586,49 @@ def _pulse_bump(key, n=1):
         _pulse_counts[key] = _pulse_counts.get(key, 0) + n
 
 
+def _pulse_reset_asset_tracking_if_new_day(day):
+    """Must be called with _pulse_lock already held. Shared day-rollover
+    for every asset-fetch-promotion structure - _seen_page_view_hashes/
+    _seen_asset_fetch_hashes/_promoted_human_hashes_today (Commit 4) and
+    _pending_page_buffer ("the panel" follow-up) - so whichever caller
+    happens to see the new day first (buffering a page, or checking
+    promotion) rolls over all four together in one place, never leaving
+    one cleared and another not."""
+    global _asset_tracking_day
+    if _asset_tracking_day != day:
+        _asset_tracking_day = day
+        _seen_page_view_hashes.clear()
+        _seen_asset_fetch_hashes.clear()
+        _promoted_human_hashes_today.clear()
+        _pending_page_buffer.clear()
+
+
+def _pulse_buffer_pending_page(visitor_hash, day, path):
+    """"The panel" follow-up (26 Sep 2026) - buffers a page path for an
+    UNCONFIRMED hash (see _pending_page_buffer's own module-level
+    comment for the full privacy reasoning and the two caps this
+    enforces). Only ever called for a page-view request whose hash is
+    NOT yet in _promoted_human_hashes_today - the middleware below is
+    what decides that; this function has no opinion on promotion
+    itself, only on what to remember in case it happens later.
+    Deliberately never evicts an earlier path to make room for a new
+    one once a hash's own per-hash cap is hit - the FIRST few pages a
+    session shows are exactly the ones most likely to still be
+    uncredited if promotion happens later, and there is no principled
+    reason to prefer a later page over an earlier one, so this simply
+    stops recording further distinct pages for that hash today."""
+    with _pulse_lock:
+        _pulse_reset_asset_tracking_if_new_day(day)
+        bucket = _pending_page_buffer.get(visitor_hash)
+        if bucket is None:
+            if len(_pending_page_buffer) >= _PENDING_PAGE_BUFFER_MAX_HASHES:
+                return
+            bucket = []
+            _pending_page_buffer[visitor_hash] = bucket
+        if path not in bucket and len(bucket) < _PENDING_PAGE_BUFFER_MAX_PATHS_PER_HASH:
+            bucket.append(path)
+
+
 def _maybe_promote_to_human(visitor_hash, day, saw_page_view, saw_asset_fetch):
     """Admin Dashboard Analytics Commit 4 (26 Sep 2026): the asset-fetch
     positive signal, and ONLY a positive one - a hash is promoted to
@@ -562,24 +653,34 @@ def _maybe_promote_to_human(visitor_hash, day, saw_page_view, saw_asset_fetch):
     admin_metrics_store.unique_human_sessions_for_day() would report
     from the persisted hash rows - the two are expected to agree once
     process restarts are accounted for; the persisted table is the
-    authority, this pulse counter is a live-dashboard convenience."""
-    global _asset_tracking_day
+    authority, this pulse counter is a live-dashboard convenience.
+
+    "The panel" follow-up (26 Sep 2026): the moment a hash promotes,
+    also pops whatever _pulse_buffer_pending_page() buffered for it (if
+    anything) and credits each of those pages to human_page:<path> -
+    outside the lock, since _pulse_human_page_key()/_pulse_bump() each
+    take _pulse_lock themselves and it isn't reentrant. This is the
+    ONLY place a buffered page is ever read back; it's popped (removed),
+    not merely read, so a hash's buffer is credited at most once, ever."""
+    buffered_pages_to_credit = None
     with _pulse_lock:
-        if _asset_tracking_day != day:
-            _asset_tracking_day = day
-            _seen_page_view_hashes.clear()
-            _seen_asset_fetch_hashes.clear()
-            _promoted_human_hashes_today.clear()
+        _pulse_reset_asset_tracking_if_new_day(day)
         if saw_page_view:
             _seen_page_view_hashes.add(visitor_hash)
         if saw_asset_fetch:
             _seen_asset_fetch_hashes.add(visitor_hash)
-        if visitor_hash in _promoted_human_hashes_today:
-            return
-        if visitor_hash in _seen_page_view_hashes and visitor_hash in _seen_asset_fetch_hashes:
+        if (
+            visitor_hash not in _promoted_human_hashes_today
+            and visitor_hash in _seen_page_view_hashes
+            and visitor_hash in _seen_asset_fetch_hashes
+        ):
             _promoted_human_hashes_today.add(visitor_hash)
             _pulse_counts["req_class:human"] = _pulse_counts.get("req_class:human", 0) + 1
             _pending_human_hashes.add((day, visitor_hash))
+            buffered_pages_to_credit = _pending_page_buffer.pop(visitor_hash, None)
+    if buffered_pages_to_credit:
+        for buffered_path in buffered_pages_to_credit:
+            _pulse_bump(_pulse_human_page_key(buffered_path))
 
 
 _PULSE_SRC_SANITIZE_RE = re.compile(r"[^a-z0-9-]")
@@ -778,28 +879,28 @@ async def _pulse_counting_middleware(request: Request, call_next):
     stay accurate for every request regardless of whose it is.
 
     "The panel" (26 Sep 2026, the project's final deliverable) adds one
-    more counter: "human_page:<path>", bumped for a page-view request
-    whose hash is ALREADY in _promoted_human_hashes_today at this exact
-    point in the request - i.e. a hash this module already knows is
-    human, from a signal seen on some earlier request today (Commit 4's
-    promotion is one-way and day-persistent, so this includes the
-    session's very first page view if an asset fetch already promoted
-    it earlier, or a later page view in the same session once the pair
-    that triggered promotion has been seen). This is deliberately NOT
-    "every page view this hash will ever be shown to have made" - a
-    session's first page view, if it's also the request that completes
-    the promoting pair, IS credited (the promote call above runs before
-    this check); a session that browses several pages before ever
-    satisfying the asset-fetch signal has its earlier page views
-    uncredited, same fail-safe-undercount direction as every other
-    positive-only signal in this design. Crucially, this reads an
-    EXISTING in-memory set for a same-request check - it does not add a
-    per-hash page history anywhere: no path is ever stored against a
-    hash, only an aggregate 'human_page:<path>' tally goes to disk, and
-    that tally cannot be traced back to any individual session. Gated by
-    the same enclosing block as the visitor-hash/promotion logic above,
-    so it already excludes known_crawler/vuln_scanner and (by default)
-    the owner's own IP without any separate check."""
+    more counter: "human_page:<path>". A page-view request whose hash is
+    ALREADY in _promoted_human_hashes_today at this exact point (known
+    human from an earlier signal today) is credited immediately. A
+    page-view request whose hash is NOT yet known human is instead
+    buffered (_pulse_buffer_pending_page() - see _pending_page_buffer's
+    own module-level comment for the full design and its privacy
+    bounds) rather than dropped outright: if that hash goes on to
+    promote later the same day, _maybe_promote_to_human() pops and
+    credits every page genuinely buffered for it, including the
+    session's very first page. A hash that never promotes has its
+    buffer discarded at day rollover, contributing nothing - the
+    original (26 Sep) version of this feature credited nothing at all
+    for a session whose page view arrived before its confirming asset
+    fetch, which the 24 Sep replay showed was the COMMON case (both of
+    that day's two real human sessions loaded their one page, then
+    their icons/manifest, a second later); this buffer is the owner-
+    specified fix for that gap, still crediting only pages a hash
+    genuinely showed - deferred attribution of a real event, never an
+    invented one. Gated by the same enclosing block as the visitor-
+    hash/promotion logic above, so it already excludes known_crawler/
+    vuln_scanner and (by default) the owner's own IP without any
+    separate check."""
     response = await call_next(request)
     try:
         _pulse_bump("requests")
@@ -826,10 +927,13 @@ async def _pulse_counting_middleware(request: Request, call_next):
                 with _pulse_lock:
                     _pending_visitor_hashes.add((day, h))
                 is_asset_fetch = visitor_classify.is_asset_fetch_path(path)
+                if is_page_view:
+                    if h in _promoted_human_hashes_today:
+                        _pulse_bump(_pulse_human_page_key(path))
+                    else:
+                        _pulse_buffer_pending_page(h, day, path)
                 if is_page_view or is_asset_fetch:
                     _maybe_promote_to_human(h, day, is_page_view, is_asset_fetch)
-                if is_page_view and h in _promoted_human_hashes_today:
-                    _pulse_bump(_pulse_human_page_key(path))
             ref_bucket = visitor_classify.bucket_referrer(request.headers.get("referer", ""))
             _pulse_bump(f"referrer:{ref_bucket}")
         src = _pulse_sanitize_src(request.query_params.get("src") or "")

@@ -29983,20 +29983,19 @@ def page_admin_dashboard():
             else:
                 st.caption("No human-attributed page views yet today.")
             st.caption(
-                "Counts a page view only once its visitor hash is "
-                "already known-human (see the Human visitors caption "
-                "above) - a session's very first page, before anything "
-                "has confirmed it human, isn't attributed to any page "
-                "here even though the session is still counted in the "
-                "figures above once it does resolve. Checked against the "
-                "real 24 Sep replay: in both of that day's real human "
-                "sessions, the one page view came BEFORE the asset fetch "
-                "that confirmed it human, so this tile credited nothing "
-                "for either - the typical order (load a page, then its "
-                "own icons/manifest) means this tile can stay empty for "
-                "real traffic shaped that way; a session that loads a "
-                "SECOND page after it's already confirmed human is what "
-                "populates it."
+                "Credits a page the moment its visitor hash is known "
+                "human (see the Human visitors caption above) - "
+                "including a session's very first page, held in a "
+                "small in-memory buffer (never written to disk, never "
+                "logged) until that hash either confirms human the same "
+                "day, crediting every page genuinely buffered for it, "
+                "or the day rolls over with the buffer discarded "
+                "unused. Capped at 5 distinct pages per unconfirmed "
+                "hash and 500 unconfirmed hashes at once, so a session "
+                "is never credited for more pages than it actually "
+                "showed, and a session that never confirms human "
+                "contributes nothing here, same as everywhere else on "
+                "this panel."
             )
         with _va_p2:
             st.markdown("**Referrer buckets**")
