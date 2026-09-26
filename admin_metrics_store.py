@@ -93,6 +93,17 @@ PRUNE_AFTER_DAYS = 90
 # admin "top src" table has never shown more than a dozen).
 MAX_NEW_SRC_TAGS_PER_DAY = 50
 
+# Admin Dashboard Analytics: "the panel" (26 Sep 2026) - same cap shape
+# as MAX_NEW_SRC_TAGS_PER_DAY above, applied to the new "top pages by
+# HUMAN traffic" breakdown (see server.py's own _pulse_human_page_key).
+# A page path is visitor-influenced (e.g. /s/<ticker> takes an arbitrary
+# ticker segment), so without a cap a scripted enumeration of fake paths
+# could inflate this day's distinct-key count the same way an
+# uncapped src= tag could - folded into "human_page:other" past this
+# many distinct real pages in one UTC day, well above this site's actual
+# page count.
+MAX_NEW_HUMAN_PAGES_PER_DAY = 50
+
 
 def _conn():
     conn = sqlite3.connect(DB_PATH, timeout=10)
@@ -497,10 +508,11 @@ def unique_visitors_for_day(day=None):
     """COUNT(DISTINCT visitor_hash) for one UTC day (default: today) -
     the read-side counterpart to record_visitor() above, same query
     shape as pulse_7d()'s own "SELECT COUNT(DISTINCT acct_hash)..."
-    for signed-in uniqueness. Not yet wired into any admin render (the
-    panel is a later, separate task) - exists here so Commit 3's write
-    path has a demonstrable, testable read path of its own. Never
-    raises - returns 0 on any read error."""
+    for signed-in uniqueness. Called directly by visitor_panel_for_day()
+    below (the Admin Dashboard's Visitor analytics panel) - kept as its
+    own function rather than inlined there since it also has a
+    demonstrable, testable read path of its own, independent of that
+    panel. Never raises - returns 0 on any read error."""
     day = day or _today()
     try:
         with _conn() as conn:
@@ -559,10 +571,9 @@ def unique_human_sessions_for_day(day=None):
     """COUNT(DISTINCT visitor_hash) for one UTC day (default: today) in
     daily_human_hashes - the read-side counterpart to
     record_human_hashes() above, same query shape as
-    unique_visitors_for_day(). Not yet wired into any admin render (the
-    panel is a later, separate task) - exists here so Commit 4's write
-    path has a demonstrable, testable read path of its own. Never
-    raises - returns 0 on any read error."""
+    unique_visitors_for_day(). Called directly by visitor_panel_for_day()
+    below - see that function's own docstring for the panel this feeds.
+    Never raises - returns 0 on any read error."""
     day = day or _today()
     try:
         with _conn() as conn:
@@ -573,6 +584,115 @@ def unique_human_sessions_for_day(day=None):
             return row[0] if row else 0
     except Exception:
         return 0
+
+
+_REFERRER_BUCKETS_FOR_PANEL = ("x", "google", "reddit", "linkedin", "direct", "other")
+
+
+def visitor_panel_for_day(day=None):
+    """Everything the Admin Dashboard's "Visitor analytics" panel (Admin
+    Dashboard Analytics Commits 1-6, 26 Sep 2026 - "the panel" the whole
+    project's final deliverable) needs for one UTC day (default: today),
+    in one call - same one-big-read-per-section shape pulse_7d() already
+    uses for the SITE PULSE row, applied here instead of making the panel
+    call five or six separate read functions per render.
+
+    Returns:
+      {
+        "unique_visitors": int,       # unique_visitors_for_day() - Commit 3:
+                                       # every hash seen today that isn't a
+                                       # known_crawler/vuln_scanner request
+                                       # (and, per Commit 6, isn't the owner's
+                                       # own IP while OWNER_TRAFFIC_EXCLUDE is
+                                       # on - that exclusion happens upstream,
+                                       # in server.py's middleware, before a
+                                       # hash is ever added to this table, so
+                                       # this figure is ALREADY owner-excluded
+                                       # by construction, not filtered here).
+        "human_visitors": int,        # unique_human_sessions_for_day() -
+                                       # Commit 4's positively-promoted subset
+                                       # of the above (same owner-exclusion
+                                       # applies, same reason).
+        "req_class": {"known_crawler": int, "vuln_scanner": int,
+                      "automated_unknown": int},   # Commit 1/2's per-request
+                                       # classification tallies (raw request
+                                       # counts, NOT deduplicated by hash -
+                                       # these are hits, not visitors).
+        "owner_requests": int,        # Commit 6's always-on tally of
+                                       # requests from an IP in
+                                       # OWNER_TRAFFIC_IPS - a raw REQUEST
+                                       # count (see its own key's docstring
+                                       # in server.py), not a session count;
+                                       # there is no owner-session hash table
+                                       # to count distinct owner sessions from,
+                                       # by the same design that keeps the
+                                       # owner's browsing out of the two
+                                       # figures above.
+        "referrer": {"x": int, "google": int, "reddit": int,
+                     "linkedin": int, "direct": int, "other": int},
+                                       # Commit 5's bucketed referrer tallies -
+                                       # every request regardless of label,
+                                       # per that commit's own documented
+                                       # judgment call (not filtered to human
+                                       # traffic here).
+        "top_human_pages": [{"page": str, "count": int}, ...],
+                                       # up to 10 rows, highest count first -
+                                       # server.py's "human_page:<path>"
+                                       # counter (see that key's own comment
+                                       # for exactly when it's bumped: a page
+                                       # view from a hash ALREADY promoted to
+                                       # human as of that same request).
+      }
+    Never raises - returns an all-zero/empty version of the same shape on
+    any read error, since this is a diagnostics panel, not a load-bearing
+    one."""
+    day = day or _today()
+    empty = {
+        "unique_visitors": 0,
+        "human_visitors": 0,
+        "req_class": {"known_crawler": 0, "vuln_scanner": 0, "automated_unknown": 0},
+        "owner_requests": 0,
+        "referrer": {b: 0 for b in _REFERRER_BUCKETS_FOR_PANEL},
+        "top_human_pages": [],
+    }
+    try:
+        out = {
+            "unique_visitors": unique_visitors_for_day(day),
+            "human_visitors": unique_human_sessions_for_day(day),
+            "req_class": dict(empty["req_class"]),
+            "owner_requests": 0,
+            "referrer": dict(empty["referrer"]),
+            "top_human_pages": [],
+        }
+        with _conn() as conn:
+            for label in out["req_class"]:
+                row = conn.execute(
+                    "SELECT count FROM pulse_counters WHERE day = ? AND key = ?",
+                    (day, f"req_class:{label}"),
+                ).fetchone()
+                out["req_class"][label] = row[0] if row else 0
+            owner_row = conn.execute(
+                "SELECT count FROM pulse_counters WHERE day = ? AND key = 'owner_requests'",
+                (day,),
+            ).fetchone()
+            out["owner_requests"] = owner_row[0] if owner_row else 0
+            for bucket in out["referrer"]:
+                row = conn.execute(
+                    "SELECT count FROM pulse_counters WHERE day = ? AND key = ?",
+                    (day, f"referrer:{bucket}"),
+                ).fetchone()
+                out["referrer"][bucket] = row[0] if row else 0
+            pages = conn.execute(
+                "SELECT key, count FROM pulse_counters WHERE day = ? AND key LIKE 'human_page:%' "
+                "ORDER BY count DESC LIMIT 10",
+                (day,),
+            ).fetchall()
+            out["top_human_pages"] = [
+                {"page": k[len("human_page:"):], "count": c} for k, c in pages
+            ]
+        return out
+    except Exception:
+        return empty
 
 
 def prune_old_account_signins(log=print):

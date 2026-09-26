@@ -29884,6 +29884,132 @@ def page_admin_dashboard():
         else:
             st.metric("Last send", "none yet")
 
+    # --- VISITOR ANALYTICS ("the panel", 26 Sep 2026 - the final
+    # deliverable of Admin Dashboard Analytics Commits 1-6) -------------
+    # Reads admin_metrics_store.visitor_panel_for_day() - see that
+    # function's own docstring for exactly what each figure is and where
+    # its write path lives (visitor_classify.py + server.py's
+    # _pulse_counting_middleware). Owner-gated the same way every other
+    # section on this page is - this whole page function already
+    # returned early above if ai_gate.is_owner() failed, so no separate
+    # check is needed here.
+    st.markdown("---")
+    st.markdown("### Visitor analytics")
+    _va_today = datetime.now(timezone.utc).date()
+    _va_day_options = [(_va_today - timedelta(days=_n)).strftime("%Y-%m-%d") for _n in range(7)]
+
+    def _va_day_label(_d):
+        if _d == _va_day_options[0]:
+            return f"{_d} (today, so far)"
+        if _d == _va_day_options[1]:
+            return f"{_d} (yesterday)"
+        return _d
+
+    _va_day = st.selectbox(
+        "Day (UTC)", _va_day_options, index=1, format_func=_va_day_label,
+        key="admin_dash_visitor_analytics_day",
+    )
+    try:
+        _va = admin_metrics_store.visitor_panel_for_day(_va_day)
+    except Exception:
+        _va = None
+    if not _va:
+        st.caption("Visitor analytics unavailable.")
+    else:
+        _va_v1, _va_v2, _va_v3 = st.columns(3)
+        with _va_v1:
+            st.metric("Unique visitors", _va["unique_visitors"])
+            st.caption(
+                "A day-rotated hash of IP address + user-agent - not a "
+                "person. One shared connection (a household, an office, "
+                "a mobile carrier's NAT) can collapse several real "
+                "visitors into one hash; one person on a mobile "
+                "connection that rotates its address during the day can "
+                "split into several. Read this as \"distinct "
+                "device+browser combinations seen today\", not a "
+                "precise headcount."
+            )
+        with _va_v2:
+            st.metric("Human visitors", _va["human_visitors"])
+            st.caption(
+                "This day's count of unique human sessions: the subset "
+                "of unique visitors (left) whose hash showed both a real "
+                "page view and a browser-issued subresource fetch "
+                "(manifest/icon/service worker) the same day. A browser "
+                "that blocks those subresource requests is counted as "
+                "automated_unknown below, never dropped from either "
+                "figure - this number can only undercount real humans, "
+                "never overcount them."
+            )
+        with _va_v3:
+            st.metric("Owner requests", _va["owner_requests"])
+            st.caption(
+                "Owner traffic (OWNER_TRAFFIC_IPS), shown separately "
+                "rather than merged into or hidden from the figures "
+                "above - excluded from both by default "
+                "(OWNER_TRAFFIC_EXCLUDE). This is a raw request count, "
+                "not a deduplicated session count: the owner's traffic "
+                "is deliberately kept out of the hash tables both "
+                "figures above are built from, so there is no owner-"
+                "session count to show here."
+            )
+
+        st.markdown("---")
+        _va_c1, _va_c2, _va_c3 = st.columns(3)
+        with _va_c1:
+            st.markdown("**Known crawlers**")
+            st.metric("Hits", _va["req_class"]["known_crawler"])
+        with _va_c2:
+            st.markdown("**Vulnerability scanners**")
+            st.metric("Hits", _va["req_class"]["vuln_scanner"])
+        with _va_c3:
+            st.markdown("**Automated / unknown**")
+            st.metric("Hits", _va["req_class"]["automated_unknown"])
+        st.caption(
+            "Per-request hit counts, not deduplicated by visitor - a "
+            "single crawler or scanner can register many hits in one day."
+        )
+
+        st.markdown("---")
+        _va_p1, _va_p2 = st.columns(2)
+        with _va_p1:
+            st.markdown("**Top pages by human traffic**")
+            _va_pages = _va["top_human_pages"]
+            if _va_pages:
+                _va_max_page = max(_r["count"] for _r in _va_pages) or 1
+                for _r in _va_pages:
+                    st.progress(min(1.0, _r["count"] / _va_max_page),
+                                text=f"{_r['page']}: {_r['count']}")
+            else:
+                st.caption("No human-attributed page views yet today.")
+            st.caption(
+                "Counts a page view only once its visitor hash is "
+                "already known-human (see the Human visitors caption "
+                "above) - a session's very first page, before anything "
+                "has confirmed it human, isn't attributed to any page "
+                "here even though the session is still counted in the "
+                "figures above once it does resolve. Checked against the "
+                "real 24 Sep replay: in both of that day's real human "
+                "sessions, the one page view came BEFORE the asset fetch "
+                "that confirmed it human, so this tile credited nothing "
+                "for either - the typical order (load a page, then its "
+                "own icons/manifest) means this tile can stay empty for "
+                "real traffic shaped that way; a session that loads a "
+                "SECOND page after it's already confirmed human is what "
+                "populates it."
+            )
+        with _va_p2:
+            st.markdown("**Referrer buckets**")
+            _va_ref = _va["referrer"]
+            _va_ref_total = sum(_va_ref.values()) or 1
+            for _b in ("x", "google", "reddit", "linkedin", "direct", "other"):
+                st.progress(min(1.0, _va_ref[_b] / _va_ref_total),
+                            text=f"{_b}: {_va_ref[_b]}")
+            st.caption(
+                "Every request regardless of classification, not "
+                "filtered to human traffic only."
+            )
+
     # --- ACCOUNTS & TRAFFIC DETAIL (everything the old Stats popover
     # showed that doesn't have its own tile above - kept in full so
     # nothing from it was lost, per the instruction's hard rule) --------

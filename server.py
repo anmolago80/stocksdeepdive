@@ -444,6 +444,14 @@ _pulse_counts: dict[str, int] = {}
 _pulse_known_src_today: set[str] = set()
 _pulse_known_src_day: str | None = None
 
+# "The panel" (26 Sep 2026): top-pages-by-HUMAN-traffic tracking, same
+# day-rotated-set-with-a-cap shape as _pulse_known_src_today/_day above,
+# applied to page paths instead of src= tags - see
+# _pulse_human_page_key()'s own docstring for the cap's reasoning and
+# admin_metrics_store.MAX_NEW_HUMAN_PAGES_PER_DAY for the exact bound.
+_pulse_known_human_pages_today: set[str] = set()
+_pulse_known_human_pages_day: str | None = None
+
 # Admin Dashboard Analytics Commit 3 (26 Sep 2026): (day, visitor_hash)
 # pairs awaiting the next periodic flush - see admin_metrics_store.
 # record_visitor_hashes()'s own docstring for why this is batched the
@@ -606,6 +614,38 @@ def _pulse_src_key(src):
         return f"src:{src}"
 
 
+def _pulse_human_page_key(path):
+    """"The panel" (26 Sep 2026): folds a page path into a bounded
+    'human_page:<path>' key, or 'human_page:other' once today has already
+    seen admin_metrics_store.MAX_NEW_HUMAN_PAGES_PER_DAY distinct pages -
+    the exact same cap-then-fold shape _pulse_src_key() above already
+    uses for src= tags, applied here because a page path can also be
+    visitor-influenced (a /s/<ticker> snapshot takes an arbitrary ticker
+    segment) and this counter's caller (see the middleware below) only
+    ever calls it for requests already gated to non-crawler/non-scanner,
+    already-promoted-human hashes - real traffic, but still worth the
+    same defensive bound as the src= cap, for the same reason: an
+    enumerated flood of fake paths must fold into "other" rather than
+    growing this key space without limit. request.url.path never
+    includes the query string, so this is already the bare path, not a
+    raw querystring-bearing URL; truncated to 80 chars as a second,
+    independent guard against a pathological single value."""
+    global _pulse_known_human_pages_day
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    cap = admin_metrics_store.MAX_NEW_HUMAN_PAGES_PER_DAY if admin_metrics_store else 50
+    key_path = (path or "/")[:80]
+    with _pulse_lock:
+        if _pulse_known_human_pages_day != today:
+            _pulse_known_human_pages_day = today
+            _pulse_known_human_pages_today.clear()
+        if key_path in _pulse_known_human_pages_today:
+            return f"human_page:{key_path}"
+        if len(_pulse_known_human_pages_today) >= cap:
+            return "human_page:other"
+        _pulse_known_human_pages_today.add(key_path)
+        return f"human_page:{key_path}"
+
+
 # Instruction, verbatim: "the ticker for /research?ticker=X and
 # /deep-dive?ticker=X views" - these are the two st.Page url_path values
 # (app.py's PG_RESEARCH/PG_DEEP_DIVE) that take a ?ticker= query param.
@@ -735,7 +775,31 @@ async def _pulse_counting_middleware(request: Request, call_next):
     owner's own browsing never inflates "unique visitors" or "human
     sessions." req_class:*/page_views/referrer:* are untouched by this
     exclusion - those are raw request tallies, not visitor figures, and
-    stay accurate for every request regardless of whose it is."""
+    stay accurate for every request regardless of whose it is.
+
+    "The panel" (26 Sep 2026, the project's final deliverable) adds one
+    more counter: "human_page:<path>", bumped for a page-view request
+    whose hash is ALREADY in _promoted_human_hashes_today at this exact
+    point in the request - i.e. a hash this module already knows is
+    human, from a signal seen on some earlier request today (Commit 4's
+    promotion is one-way and day-persistent, so this includes the
+    session's very first page view if an asset fetch already promoted
+    it earlier, or a later page view in the same session once the pair
+    that triggered promotion has been seen). This is deliberately NOT
+    "every page view this hash will ever be shown to have made" - a
+    session's first page view, if it's also the request that completes
+    the promoting pair, IS credited (the promote call above runs before
+    this check); a session that browses several pages before ever
+    satisfying the asset-fetch signal has its earlier page views
+    uncredited, same fail-safe-undercount direction as every other
+    positive-only signal in this design. Crucially, this reads an
+    EXISTING in-memory set for a same-request check - it does not add a
+    per-hash page history anywhere: no path is ever stored against a
+    hash, only an aggregate 'human_page:<path>' tally goes to disk, and
+    that tally cannot be traced back to any individual session. Gated by
+    the same enclosing block as the visitor-hash/promotion logic above,
+    so it already excludes known_crawler/vuln_scanner and (by default)
+    the owner's own IP without any separate check."""
     response = await call_next(request)
     try:
         _pulse_bump("requests")
@@ -764,6 +828,8 @@ async def _pulse_counting_middleware(request: Request, call_next):
                 is_asset_fetch = visitor_classify.is_asset_fetch_path(path)
                 if is_page_view or is_asset_fetch:
                     _maybe_promote_to_human(h, day, is_page_view, is_asset_fetch)
+                if is_page_view and h in _promoted_human_hashes_today:
+                    _pulse_bump(_pulse_human_page_key(path))
             ref_bucket = visitor_classify.bucket_referrer(request.headers.get("referer", ""))
             _pulse_bump(f"referrer:{ref_bucket}")
         src = _pulse_sanitize_src(request.query_params.get("src") or "")
