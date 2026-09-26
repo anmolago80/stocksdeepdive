@@ -196,11 +196,32 @@ def _leading_metric_html(row, sort_mode, lang):
     )
 
 
+def _dividend_yield_html(dividend_yield_pct, lang):
+    """"Div N.N%" (amber #facc15, bold) for a payer (yield > 0), or
+    "no div" (muted grey #5b7290, matching the surrounding info text)
+    for anything else - non-payer, a genuinely None/missing value (a
+    pool row from before this column existed, or a scan row that never
+    carried "Dividend Yield %"), or a zero. Never raises and never
+    shows a raw "None" - `dividend_yield_pct` is checked for both
+    None-ness and sign before any formatting touches it. Shared by the
+    row info line (_secondary_metrics_html) and the expanded per-row
+    detail panel (_render_row's own st.expander block) so both surfaces
+    can never drift."""
+    if dividend_yield_pct is not None and dividend_yield_pct > 0:
+        return (
+            "<span style='color:#facc15;font-weight:700;'>"
+            f"{html.escape(_t('div_prefix', lang))} {dividend_yield_pct:.1f}%</span>"
+        )
+    return f"<span style='color:#5b7290;'>{html.escape(_t('no_div', lang))}</span>"
+
+
 def _secondary_metrics_html(row, sort_mode, lang):
     """The other stat(s) next to the leading number - whichever of
     Value Score / MOS / Research Score ISN'T already the leading
     metric for this sort mode, same "MOS · Value Score" / "Research ·
-    Value Score" pairing the mock shows."""
+    Value Score" pairing the mock shows, plus the dividend yield
+    display (26 Sep 2026, owner-approved mock) always appended last -
+    display-only, never affects sort order or which metric leads."""
     parts = []
     if sort_mode != SORT_VALUE_SCORE:
         parts.append(f"{html.escape(_t('col_value_score', lang))}: <b style='color:#e6edf5;'>{row['value_score']:.1f}</b>")
@@ -208,8 +229,7 @@ def _secondary_metrics_html(row, sort_mode, lang):
         parts.append(f"{html.escape(_t('col_mos', lang))}: <b style='color:#e6edf5;'>{row['mos_pct']:.1f}%</b>")
     if sort_mode != SORT_RESEARCH:
         parts.append(f"{html.escape(_t('col_research_score', lang))}: <b style='color:#e6edf5;'>{row['composite']:.1f}</b>")
-    if not parts:
-        return ""
+    parts.append(_dividend_yield_html(row.get("dividend_yield_pct"), lang))
     return f"<span style='color:#8aa0b8;font-size:12px;'>{' · '.join(parts)}</span>"
 
 
@@ -435,7 +455,7 @@ def _inversion_line_html(score_row, lang):
 
 
 def _headwind_line_html(score_row, lang):
-    """"📉 Current headwind: {text} · read {date}" (RUBRIC_VERSION v3,
+    """"📉 Current headwind: {text}. · read {date}" (RUBRIC_VERSION v3,
     25 Sep 2026, owner-approved mock, "headwind_and_currency_risk_
     mock.html") - sits directly under the inversion box, blue-toned to
     visually separate "is happening" (the headwind) from the
@@ -445,7 +465,16 @@ def _headwind_line_html(score_row, lang):
     answer, or the row predates RUBRIC_VERSION v3 entirely and the
     column is simply NULL - same rendering either way), or a row with
     a headwind but no scored_at timestamp (never renders today's date
-    for an old score - exact task requirement)."""
+    for an old score - exact task requirement).
+
+    Double-period trim (26 Sep 2026, owner-reported): the model's own
+    headwind text often already ends with its own "." (sometimes even
+    "..") - naively appending " · read {date}" straight after it used
+    to render as "...guidance.. · read 26 Sep 2026" on the live page.
+    Trailing whitespace/periods are stripped from the text FIRST, then
+    exactly one "." is rendered before the date suffix - so the visible
+    line always ends the sentence with exactly one period, regardless
+    of how the model's own text happened to end."""
     if not score_row or score_row.get("not_rated"):
         return ""
     headwind = score_row.get("current_headwind")
@@ -463,11 +492,11 @@ def _headwind_line_html(score_row, lang):
             date_caption = html.escape(_t("headwind_date_caption", lang, date=date_text))
             date_html = f" <span style='color:#5b7290;'>· {date_caption}</span>"
     label = html.escape(_t("headwind_label", lang))
-    text = html.escape(headwind)
+    text = html.escape(headwind.rstrip(" \t\n."))
     return (
         "<div style='color:#9fb8d4;background:#0d1b2e;border:1px solid #1e3a5f;"
         "border-radius:9px;padding:8px 12px;margin-top:7px;font-size:12px;line-height:1.55;'>"
-        f"📉 <b style='color:#7dd3fc;'>{label}</b> {text}{date_html}</div>"
+        f"📉 <b style='color:#7dd3fc;'>{label}</b> {text}.{date_html}</div>"
     )
 
 
@@ -565,6 +594,11 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     # Row-level details toggle (task's own words) - the tap-expand path
     # for phones (no hover) AND the desktop "read everything" path.
     with st.expander(f"{ticker} — {_t('why_here_label', lang)}", expanded=False):
+        st.markdown(
+            f"**{html.escape(_t('dividend_yield_label', lang))}:** "
+            + _dividend_yield_html(row.get("dividend_yield_pct"), lang),
+            unsafe_allow_html=True,
+        )
         for key in top100_engine.DIMENSION_KEYS:
             dim = score_row["dims"].get(key) or {}
             if dim.get("score") is None and not dim.get("justification"):

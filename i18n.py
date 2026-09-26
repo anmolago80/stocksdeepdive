@@ -3607,6 +3607,13 @@ EN = {
     "top100.col_mos": "MOS",
     "top100.col_research_score": "Research Score",
     "top100.col_your_score": "This company's score",
+    # Dividend yield display (26 Sep 2026, owner-approved mock) -
+    # display-only, same "carried through, never scored" status as
+    # psychology/sector - see top100_engine.select_top100_pool()'s own
+    # comment.
+    "top100.div_prefix": "Div",
+    "top100.no_div": "no div",
+    "top100.dividend_yield_label": "Dividend yield",
     "top100.shelf_heading": "Awaiting score / not rated",
     "top100.shelf_chip_awaiting": "⏳ AWAITING",
     "top100.shelf_caption_awaiting": "scored automatically at the next nightly run",
@@ -6805,6 +6812,9 @@ ES = {
     "top100.col_mos": "MOS",
     "top100.col_research_score": "Puntuación de Investigación",
     "top100.col_your_score": "Puntuación de esta empresa",
+    "top100.div_prefix": "Div",
+    "top100.no_div": "sin div",
+    "top100.dividend_yield_label": "Rentabilidad por dividendo",
     "top100.shelf_heading": "Esperando puntuación / no evaluadas",
     "top100.shelf_chip_awaiting": "⏳ EN ESPERA",
     "top100.shelf_caption_awaiting": "se puntúa automáticamente en la próxima ejecución nocturna",

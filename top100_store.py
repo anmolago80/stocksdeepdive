@@ -163,6 +163,17 @@ def _conn():
         conn.execute("ALTER TABLE top100_pool ADD COLUMN sector TEXT")
     except sqlite3.OperationalError:
         pass
+    # Dividend yield display (26 Sep 2026, owner-approved mock): the
+    # pooled row's own "Dividend Yield %" number, same guarded-ALTER-
+    # TABLE pattern as psychology/sector above - purely additive,
+    # display-only, never fed into composite_score(). Existing rows
+    # simply read NULL until the next nightly pool selection populates
+    # it, same self-heals-overnight behaviour sector had on its own
+    # introduction.
+    try:
+        conn.execute("ALTER TABLE top100_pool ADD COLUMN dividend_yield_pct REAL")
+    except sqlite3.OperationalError:
+        pass
     # Top 20 Australia guaranteed-twenty (25 Sep 2026, owner-approved
     # mock, "top20_australia_extended_mock.html") - True for an "ASX
     # extension" row (top100_engine.select_top100_pool()'s own
@@ -230,19 +241,19 @@ def save_pool(rows, as_of):
     """Upserts one full pool snapshot - `rows`: [{"ticker",
     "company_name", "universe", "value_score", "mos_pct", "price",
     "intrinsic_value", "currency", "psychology", "sector",
-    "asx_extension"}, ...], `as_of`: "YYYY-MM-DD". `asx_extension`
-    (Top 20 Australia guaranteed-twenty) defaults to False when a row
-    doesn't carry it - every caller before this feature existed passes
-    plain pool rows and keeps working unchanged. Also prunes snapshots
-    beyond POOL_SNAPSHOT_RETENTION in the same call, so callers never
-    have to remember to prune separately."""
+    "dividend_yield_pct", "asx_extension"}, ...], `as_of`: "YYYY-MM-DD".
+    `asx_extension` (Top 20 Australia guaranteed-twenty) defaults to
+    False when a row doesn't carry it - every caller before this
+    feature existed passes plain pool rows and keeps working unchanged.
+    Also prunes snapshots beyond POOL_SNAPSHOT_RETENTION in the same
+    call, so callers never have to remember to prune separately."""
     with _conn() as conn:
         conn.executemany(
             """INSERT INTO top100_pool
                  (as_of, ticker, company_name, universe, value_score,
                   mos_pct, price, intrinsic_value, currency, psychology, sector,
-                  asx_extension)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  dividend_yield_pct, asx_extension)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(as_of, ticker) DO UPDATE SET
                  company_name = excluded.company_name,
                  universe = excluded.universe,
@@ -253,12 +264,14 @@ def save_pool(rows, as_of):
                  currency = excluded.currency,
                  psychology = excluded.psychology,
                  sector = excluded.sector,
+                 dividend_yield_pct = excluded.dividend_yield_pct,
                  asx_extension = excluded.asx_extension""",
             [
                 (as_of, r["ticker"], r.get("company_name"), r.get("universe"),
                  r.get("value_score"), r.get("mos_pct"), r.get("price"),
                  r.get("intrinsic_value"), r.get("currency"), r.get("psychology"),
-                 r.get("sector"), int(bool(r.get("asx_extension"))))
+                 r.get("sector"), r.get("dividend_yield_pct"),
+                 int(bool(r.get("asx_extension"))))
                 for r in rows
             ],
         )
@@ -306,8 +319,8 @@ def latest_as_of():
 def current_pool():
     """The most recent pool snapshot - [{"ticker", "company_name",
     "universe", "value_score", "mos_pct", "price", "intrinsic_value",
-    "currency", "psychology", "sector"}, ...], Value Score descending.
-    [] if no selection has ever run."""
+    "currency", "psychology", "sector", "dividend_yield_pct"}, ...],
+    Value Score descending. [] if no selection has ever run."""
     as_of = latest_as_of()
     return _pool_for_as_of(as_of) if as_of else []
 

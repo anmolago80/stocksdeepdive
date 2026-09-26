@@ -129,7 +129,8 @@ def select_top100_pool(log=print):
     pool only (unchanged contract - the ASX extension below is never
     part of this return value) - [{"ticker","company_name","universe",
     "value_score","mos_pct","price","intrinsic_value","currency",
-    "psychology","sector"}, ...], Value Score descending. Never raises -
+    "psychology","sector","dividend_yield_pct"}, ...], Value Score
+    descending. Never raises -
     a single bad universe file is skipped (scan_store.load_scan_raw()
     itself already returns None on any read error), and an empty
     result (no saved scans yet) simply persists/returns an empty pool
@@ -193,6 +194,13 @@ def select_top100_pool(log=print):
                     # the Deep Dive's own finer industry string where
                     # cached (top100_render._finer_industry_by_ticker()).
                     "sector": row.get("Sector"),
+                    # Dividend yield display (26 Sep 2026, owner-approved
+                    # mock): the raw scan row's own "Dividend Yield %"
+                    # (nightly_scan.py's Dividend TTM / Price), same
+                    # "carried through for display only, never fed into
+                    # composite_score() or any sort/selection" status as
+                    # psychology/sector above.
+                    "dividend_yield_pct": row.get("Dividend Yield %"),
                 }
 
     pool = sorted(best_by_ticker.values(), key=lambda r: r["value_score"], reverse=True)[:POOL_SIZE]
