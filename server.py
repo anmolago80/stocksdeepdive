@@ -489,6 +489,41 @@ _promoted_human_hashes_today: set[str] = set()
 # hashes above, for the identical reason.
 _pending_human_hashes: set[tuple[str, str]] = set()
 
+# Admin Dashboard Analytics Commit 6 (26 Sep 2026, owner-specified):
+# owner-traffic exclusion - keeps the owner's own sessions out of the
+# "unique visitors"/"human sessions" figures (Commits 3-4) without ever
+# silently dropping the fact that they happened; a NEW, always-bumped
+# "owner_requests" pulse counter (see the middleware below) makes that
+# count visible on its own, separately, regardless of whether exclusion
+# is currently on.
+#
+# Identified by IP, not by ai_gate.is_owner()'s existing signed-in-email
+# check - this middleware runs at the raw HTTP layer, before any
+# Streamlit session (let alone a signed-in one) exists to check against;
+# the only identity available this early is the source IP. Parsed once
+# at import (same "prepared once, never per request" discipline
+# visitor_classify.py's own tables already follow) from OWNER_TRAFFIC_
+# IPS, a comma-separated env var - deliberately NOT the specific IP
+# this project's own replay evidence already named (115.64.250.21)
+# hardcoded into source control: an IP is exactly the kind of value
+# this codebase already treats as config, not code (AUTH_COOKIE_SECRET,
+# ADMIN_REFRESH_KEY, ...), and a home broadband IP can change. Empty by
+# default - this toggle does nothing until OWNER_TRAFFIC_IPS is
+# actually set (in Railway's own env var settings, not here).
+_OWNER_TRAFFIC_IPS = frozenset(
+    _ip.strip() for _ip in os.environ.get("OWNER_TRAFFIC_IPS", "").split(",") if _ip.strip()
+)
+
+# Toggle, default ON per the task's own wording - OWNER_TRAFFIC_EXCLUDE
+# must be explicitly set to a falsy value ("0"/"false"/"no"/"off",
+# case-insensitive) to let owner-IP traffic count toward visitor
+# figures like anyone else's. Also parsed once at import - Railway env
+# vars only change on a redeploy anyway, so there is no live-toggle
+# behavior to lose by not re-reading os.environ per request.
+_OWNER_TRAFFIC_EXCLUDE = os.environ.get("OWNER_TRAFFIC_EXCLUDE", "1").strip().lower() not in (
+    "0", "false", "no", "off",
+)
+
 
 def _pulse_bump(key, n=1):
     with _pulse_lock:
@@ -689,7 +724,18 @@ async def _pulse_counting_middleware(request: Request, call_next):
     call, not an assumption: the task names no such restriction, and a
     bucketed referrer stays a small, fixed-vocabulary counter no matter
     how many labels it's spread across; filtering this to human-only
-    traffic, if wanted, is left to the eventual panel to decide."""
+    traffic, if wanted, is left to the eventual panel to decide.
+
+    Commit 6 (26 Sep 2026) adds owner-traffic exclusion: a request from
+    an IP in _OWNER_TRAFFIC_IPS always bumps "owner_requests" (visible
+    on its own, never silently dropped), and - only when
+    _OWNER_TRAFFIC_EXCLUDE is true, the default - is ALSO excluded from
+    the visitor-hash/human-promotion block above entirely (never added
+    to _pending_visitor_hashes, never considered for promotion), so the
+    owner's own browsing never inflates "unique visitors" or "human
+    sessions." req_class:*/page_views/referrer:* are untouched by this
+    exclusion - those are raw request tallies, not visitor figures, and
+    stay accurate for every request regardless of whose it is."""
     response = await call_next(request)
     try:
         _pulse_bump("requests")
@@ -705,9 +751,12 @@ async def _pulse_counting_middleware(request: Request, call_next):
             if is_page_view:
                 _pulse_bump("page_views")
             asyncio.create_task(visitor_classify.maybe_verify_crawler_async(ua, ip))
+            is_owner_ip = bool(ip) and ip in _OWNER_TRAFFIC_IPS
+            if is_owner_ip:
+                _pulse_bump("owner_requests")
             if admin_metrics_store is not None and label not in (
                 visitor_classify.KNOWN_CRAWLER, visitor_classify.VULN_SCANNER,
-            ) and ip and ua:
+            ) and ip and ua and not (is_owner_ip and _OWNER_TRAFFIC_EXCLUDE):
                 day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 h = admin_metrics_store._visitor_hash(ip, ua, day)
                 with _pulse_lock:

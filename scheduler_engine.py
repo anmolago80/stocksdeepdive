@@ -503,6 +503,46 @@ _JOB_LOCK_FOREIGN_BOOT_STALE_SECONDS = 2 * 60
 # process" territory purely because it went quiet for a while.
 _JOB_LOCK_ACTIVE_REFRESH_SECONDS = 30
 
+# KNOWN, DELIBERATE GAP (26 Sep 2026, owner-reviewed - documented, not
+# fixed): every job here runs on a DAEMON thread (see start()'s own
+# Thread(..., daemon=True)), and neither this module nor app.py installs
+# any custom SIGTERM/signal handling anywhere (grep app.py for
+# signal.signal/atexit - there is none). Python abandons a daemon
+# thread outright whenever its owning process exits, gracefully OR
+# not - a clean SIGTERM with no handler installed gives an in-flight
+# job's own `finally: _release_job_lock(...)` no more chance to run
+# than a hard SIGKILL would. So if this process is killed (by any
+# means - a deploy, a crash, an OOM) WHILE a job here is actively
+# holding a lock, that lock's heartbeat freezes at the moment of death
+# and nothing releases it cleanly - the exact shape of the 17 Sep
+# incident described above, just from a different trigger.
+#
+# Left deliberately unfixed, not merely unnoticed:
+#   - the bound already in force above (_JOB_LOCK_HEARTBEAT_STALE_
+#     SECONDS / _JOB_LOCK_FOREIGN_BOOT_STALE_SECONDS) self-heals this
+#     exact scenario - a genuinely dead holder's lock gets reclaimed
+#     within 2 minutes (a different boot_id) to 10 minutes (any
+#     holder), a bounded delay to the next retry, never an indefinite
+#     lockout;
+#   - closing it properly means adding real signal handling to app.py
+#     (installing a SIGTERM handler that gracefully drains an
+#     in-flight job before the process exits) - new machinery in
+#     exactly the area ("a process dies mid-job, unpredictably")
+#     that's already cost two real incidents (17 Sep, 25 Sep, both
+#     documented above); the risk of getting THAT wrong outweighs the
+#     risk of leaving an already-bounded gap in place;
+#   - checked directly against the real Railway logs for the 24 Sep
+#     restart storm this gap was raised alongside (ten "Application
+#     shutdown failed" restarts that day, six within one 35-minute
+#     window): zero "reclaimed stale scan lock" lines anywhere that
+#     day, and the night's actual scanning work had already finished
+#     (or exhausted its retries) well before the first of those
+#     restarts - no evidence this specific gap has fired for real yet.
+# Revisit if that changes - a "reclaimed stale scan lock held by
+# <boot_id> (different process)" log line for a holder that was
+# genuinely killed mid-job (not the 25 Sep false-stale race, which is
+# a different, already-fixed failure) is the signal that would.
+
 # Generated once when this module is first imported (i.e. once per
 # process boot) - identifies THIS process's lifetime across every lock
 # it acquires, so a lock can be told apart from "abandoned by some
