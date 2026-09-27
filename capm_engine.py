@@ -111,14 +111,17 @@ RISK_FREE_MAX = 0.15
 # 2026): the previous USD figure (0.042) was set when 10-year yields were
 # meaningfully lower and was stale against a live ~5.16% US 10-year read
 # the owner reported that day - moved to 0.050, a round, conservative
-# approximation rather than pinning to one day's exact reading. AUD moved
-# up by the same rough margin for consistency, since AU10Y=RR's own live
-# fetch currently 404s on every call (see get_risk_free_rate's docstring)
-# and this fallback is therefore the ONLY rate AUD stocks actually get -
-# unlike the USD figure, this has no live reading behind it to anchor on
-# and should be checked against a real AU 10-year source and corrected
-# once one is found (see A1 point 4 in the audit).
-RISK_FREE_FALLBACK = {"USD": 0.050, "AUD": 0.045}
+# approximation rather than pinning to one day's exact reading.
+#
+# AUD amended same audit, owner-supplied (27 Sep 2026): moved to 0.053,
+# citing the AU 10-year yield at 5.3850% on 26 Sep 2026 (Trading
+# Economics) and 5.16% on 1 Sep 2026 (ABC News) - AU10Y=RR's own live
+# fetch currently 404s on every call (see get_risk_free_rate's
+# docstring), so this fallback is the ONLY rate AUD stocks actually get.
+# Still flagged as a defaulted (non-live) rate wherever it's used - a
+# real AU 10-year source should still be found and swapped in once one
+# is confirmed live (see A1 point 4 in the audit).
+RISK_FREE_FALLBACK = {"USD": 0.050, "AUD": 0.053}
 DEFAULT_RISK_FREE_FALLBACK = 0.04
 
 
