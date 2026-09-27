@@ -185,6 +185,15 @@ EN = {
         "wasn't available - see the notes below."
     ),
 
+    # Commit 2 (27 Sep 2026, owner-reported): shown instead of the
+    # "check the ticker symbol" error + "Did you mean" chips when the
+    # live price-history fetch itself failed (rate-limited or a
+    # network problem) rather than the ticker genuinely having no
+    # data - see deep_dive_engine.analyze()'s own error_kind docstring.
+    "dd.error_fetch_failed": (
+        "Market data is temporarily unavailable - please try again shortly."
+    ),
+
     "dd.chip.reverse_dcf": "Reverse DCF",
     "dd.chip.moat": "Moat",
     "dd.chip.moat_scored": "Moat {score}",
@@ -3860,6 +3869,11 @@ ES = {
     "dd.verdict.default_note": (
         "Se basa en un dato predeterminado o estimado porque no había una "
         "cifra reportada disponible - consulta las notas más abajo."
+    ),
+
+    "dd.error_fetch_failed": (
+        "Los datos de mercado no están disponibles temporalmente - "
+        "inténtalo de nuevo en unos minutos."
     ),
 
     "dd.chip.reverse_dcf": "DCF inverso",

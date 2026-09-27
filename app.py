@@ -289,7 +289,27 @@ METRIC_HELP = {
 _fetch_logger = logging.getLogger("sdd.fetch")
 
 
-def _fetch_with_retry(fetch_fn, ticker, label, fallback, attempts=3, is_empty=None):
+def _classify_fetch_failure(last_exc):
+    """Commit 2 (27 Sep 2026, owner-reported): None (every attempt
+    genuinely returned cleanly, just empty - "no data for this ticker",
+    never a fetch problem) | "rate_limited" | "network" - classifies
+    why _fetch_with_retry() exhausted every attempt, from the exact
+    same `last_exc` its own warning log line already reports (see that
+    function's own docstring: `last_exc` is reset to None whenever the
+    LAST attempt returned cleanly, even if an earlier attempt raised -
+    only a last attempt that actually raised counts as a fetch
+    failure here). Any other raised exception still counts as
+    "network" - the fetch itself failed, which always needs a
+    different message than "this ticker doesn't exist"."""
+    if last_exc is None:
+        return None
+    msg = str(last_exc).lower()
+    if "429" in msg or "too many requests" in msg or "rate" in msg or "crumb" in msg:
+        return "rate_limited"
+    return "network"
+
+
+def _fetch_with_retry(fetch_fn, ticker, label, fallback, attempts=3, is_empty=None, failure_kind_out=None):
     """Shared retry wrapper for the three @st.cache_data-wrapped yfinance
     fetchers below (18 Sep 2026 fix). Before this, each of them caught
     every exception and returned a bare empty fallback ({} / empty
@@ -314,7 +334,14 @@ def _fetch_with_retry(fetch_fn, ticker, label, fallback, attempts=3, is_empty=No
     a hiccup instead of raising) as a retry-worthy failure too. Return
     type/fallback value are byte-identical to before on both the
     success and exhausted-retries paths - no caller anywhere in the
-    codebase needs to change."""
+    codebase needs to change.
+
+    `failure_kind_out` (Commit 2, 27 Sep 2026, owner-reported): an
+    optional single-element list a caller passes in (e.g. `[None]`) to
+    learn WHY every attempt was exhausted - set via _classify_fetch_
+    failure() on the SAME `last_exc` the warning log line above already
+    reports, so the two can never disagree. Left at its initial value
+    on success (the loop returns early and never reaches this line)."""
     last_exc = None
     result = fallback
     for attempt in range(attempts):
@@ -333,6 +360,8 @@ def _fetch_with_retry(fetch_fn, ticker, label, fallback, attempts=3, is_empty=No
         f"raised - last error: {last_exc}" if last_exc is not None
         else "returned an empty/incomplete result",
     )
+    if failure_kind_out is not None:
+        failure_kind_out[0] = _classify_fetch_failure(last_exc)
     return result
 
 
@@ -342,6 +371,20 @@ def get_ticker_info(ticker):
         lambda: yf.Ticker(ticker).info, ticker, "get_ticker_info",
         fallback={}, is_empty=lambda d: not d or len(d) < 5,
     )
+
+
+# Commit 2 (27 Sep 2026, owner-reported): companion side-channel to
+# get_price_history()'s own @st.cache_data cache - NOT itself cached.
+# get_price_history() is called as a plain callable by deep_dive_engine.
+# analyze() and many other sites; changing its return type to carry a
+# failure reason would ripple through every one of them for a DataFrame
+# they all still need untouched. Written only inside get_price_history()'s
+# own body, so on a cache HIT (the function body doesn't run at all) this
+# simply keeps whatever it held from the run that produced the cached
+# result - correct, since that's the same run's own failure reason,
+# replayed for exactly as long as the cached (possibly empty) DataFrame
+# itself is replayed.
+_price_history_failure_kind = {}
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -355,10 +398,28 @@ def get_price_history(ticker):
     """
     # 6 months (not 3) so the Trade Filter's 60-day support/resistance
     # window has a comfortable buffer of real trading days behind it.
-    return _fetch_with_retry(
+    _kind_flag = [None]
+    result = _fetch_with_retry(
         lambda: yf.Ticker(ticker).history(period="6mo"), ticker, "get_price_history",
         fallback=pd.DataFrame(), is_empty=lambda df: df is None or df.empty,
+        failure_kind_out=_kind_flag,
     )
+    _price_history_failure_kind[ticker] = _kind_flag[0]
+    return result
+
+
+def get_price_history_failure_kind(ticker):
+    """Commit 2 (27 Sep 2026, owner-reported): companion reader for
+    get_price_history()'s own side-channel (see that dict's own comment
+    above) - None if this ticker was never fetched, resolved
+    successfully, or genuinely has no data anywhere; "rate_limited" or
+    "network" if the run that produced get_price_history(ticker)'s
+    current cached value (a real fetch just now, or one replayed from
+    its own 30-minute cache) actually failed rather than returning
+    clean-but-empty data. deep_dive_engine.analyze() reads this,
+    alongside get_price_history() itself, to choose its error message -
+    see that function's own docstring."""
+    return _price_history_failure_kind.get(ticker)
 
 
 def _price_history_rows_for_trading_cost(ticker):
@@ -2804,6 +2865,7 @@ def _dispatch_search(text):
                 enable_social=enable_social,
                 discount_rate=_dd_discount, perpetual_rate=_dd_perpetual,
                 growth_rate=_dd_growth, manual_fcf=_dd_manual_fcf,
+                get_price_history_failure_kind=get_price_history_failure_kind,
             )
             _dd_res = st.session_state["dd_result"]
             if _dd_res.get("error"):
@@ -7064,6 +7126,7 @@ def _render_research_detail(ticker, data, section_order, lang="en"):
                     news_api_key=news_api_key, live_data=live_data, enable_social=enable_social,
                     discount_rate=_dd_discount, perpetual_rate=_dd_perpetual,
                     growth_rate=_dd_growth, manual_fcf=_dd_manual_fcf,
+                    get_price_history_failure_kind=get_price_history_failure_kind,
                 )
             st.switch_page(PG_DEEP_DIVE)
 
@@ -10287,6 +10350,7 @@ def page_deep_dive():
                     live_data=live_data, enable_social=enable_social,
                     discount_rate=_dd_discount, perpetual_rate=_dd_perpetual,
                     growth_rate=_dd_growth, manual_fcf=_dd_manual_fcf,
+                    get_price_history_failure_kind=get_price_history_failure_kind,
                 )
             _dd = st.session_state["dd_result"]
     if _dd is not None and not _dd.get("error") and _dd.get("ticker"):
@@ -10328,8 +10392,20 @@ def page_deep_dive():
     if _dd is None:
         _render_dd_empty_state()
     elif _dd.get("error"):
-        st.error(_dd["error"])
-        _render_suggestion_chips("dd_err", st.session_state.get("search_suggestions") or [])
+        # Commit 2 (27 Sep 2026, owner-reported): a rate-limited/network
+        # fetch failure (error_kind == "fetch_failed") is never the same
+        # situation as a genuinely bad ticker symbol - show the neutral,
+        # localized "try again shortly" message and skip the "check the
+        # ticker symbol" text AND the "Did you mean" chips entirely; the
+        # symbol was never the problem, so a name-similarity suggestion
+        # would be actively misleading. Any other/missing error_kind
+        # (including dd dicts from before this change) keeps today's
+        # exact behaviour.
+        if _dd.get("error_kind") == "fetch_failed":
+            st.error(i18n.t("dd.error_fetch_failed", st.session_state.get("lang", "en")))
+        else:
+            st.error(_dd["error"])
+            _render_suggestion_chips("dd_err", st.session_state.get("search_suggestions") or [])
     else:
         if _dd["long_score"] > SIGNAL_THRESHOLDS["STRONG_LONG"]:
             _dd_signal = "STRONG LONG"

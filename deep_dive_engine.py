@@ -96,12 +96,29 @@ def _quality_breakdown(info):
 def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
             news_api_key=None, live_data=True, enable_social=True,
             discount_rate=None, perpetual_rate=None, growth_rate=None,
-            manual_fcf=None):
+            manual_fcf=None, get_price_history_failure_kind=None):
     """
     Run a full single-ticker analysis and return a dict of everything the
     Deep Dive tab needs to render (metrics + chart data), or
     {"error": "..."} (with every other key None/0) if the ticker couldn't be
     analyzed at all (bad symbol, no price history).
+
+    `get_price_history_failure_kind` (Commit 2, 27 Sep 2026, owner-
+    reported): an optional callable, `app.get_price_history_failure_
+    kind`, taking the same `ticker` - reports WHY get_price_history()
+    came back empty, when it did: None means genuinely no data for this
+    ticker (a bad symbol - the existing "check the ticker symbol"
+    error), "rate_limited"/"network" means the live fetch itself failed
+    (Yahoo throttled, or a network/timeout problem) - a completely
+    different situation that must never be reported as "check the
+    ticker symbol" with "Did you mean" chips, since the symbol was
+    never actually the problem. Sets `error_kind` on the returned dict
+    ("not_found" or "fetch_failed") so the render layer (app.py) can
+    choose - and localize - the right message; `error` itself stays a
+    plain-English fallback for any caller that doesn't branch on
+    error_kind. Left None (the default) for a caller with no access to
+    that side-channel - degrades to today's exact "not_found" behaviour,
+    unchanged.
 
     get_price_history / get_ticker_info / get_cashflow_df are passed in as
     callables (rather than imported directly) so this module reuses the
@@ -124,12 +141,21 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     """
     ticker = (ticker or "").strip().upper()
     if not ticker:
-        return {"error": "Enter a ticker symbol."}
+        return {"error": "Enter a ticker symbol.", "error_kind": "not_found"}
 
     df = get_price_history(ticker)
     if df is None or df.empty:
-        return {"error": f"No price history found for '{ticker}' - check the ticker symbol "
-                          f"(e.g. CSL.AX for the ASX, AAPL for the US)."}
+        _failure_kind = get_price_history_failure_kind(ticker) if get_price_history_failure_kind else None
+        if _failure_kind in ("rate_limited", "network"):
+            return {
+                "error": "Market data is temporarily unavailable - please try again shortly.",
+                "error_kind": "fetch_failed",
+            }
+        return {
+            "error": f"No price history found for '{ticker}' - check the ticker symbol "
+                      f"(e.g. CSL.AX for the ASX, AAPL for the US).",
+            "error_kind": "not_found",
+        }
 
     info = get_ticker_info(ticker)
 
@@ -140,7 +166,7 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     window_3mo = df.tail(63)
     _close_series = window_3mo["Close"].dropna()
     if _close_series.empty:
-        return {"error": f"No usable price data for {ticker}."}
+        return {"error": f"No usable price data for {ticker}.", "error_kind": "not_found"}
     current_price = float(_close_series.iloc[-1])
     high_price = float(_close_series.max())
     fear_score = ((high_price - current_price) / high_price) * 100 if high_price else 0
