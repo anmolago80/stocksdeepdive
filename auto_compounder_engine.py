@@ -76,6 +76,7 @@ import build_compounder_data
 import capm_engine
 import fcf_valuation_engine
 import fundamentals_data
+import share_class_engine
 
 _CACHE_DIR_NAME = "auto_cv_sections"
 _CACHE_TTL_SECONDS = 24 * 3600
@@ -456,35 +457,31 @@ def _year_end_prices(prices_10y, statement_df=None):
 
 
 def _whole_company_shares(bundle):
-    """Data-correctness audit A3 (27 Sep 2026, owner-reported): a dual-
-    class company's info["sharesOutstanding"] can reflect only ONE
-    listed class - see _build_fundamentals's own HEI/HEICO root-cause
-    comment below for the full story (Common "HEI" shows 55,235,561
-    shares against a real whole-company diluted total around 122M
-    across both classes). Every per-share figure in this module (BVPS,
-    the Equity Method 10y, the IV/BV series, and - via _basics()'s
-    market cap - the WACC equity weight in moat_engine._ttm_wacc) used
-    to read info["sharesOutstanding"] directly (or a market cap built
-    from it) and inherited the same understatement; only
-    _build_fundamentals's own local market-cap correction existed
-    before this.
+    """Data-correctness audit A3 (27 Sep 2026, owner-reported), extended
+    by A3b (27 Sep 2026): a dual-class company's info["sharesOutstanding"]
+    can reflect only ONE listed class - see _build_fundamentals's own
+    HEI/HEICO root-cause comment below for the full story (Common "HEI"
+    shows 55,235,561 shares against a real whole-company diluted total
+    around 122M across both classes). Every per-share figure in this
+    module (BVPS, the Equity Method 10y, the IV/BV series, and - via
+    _basics()'s market cap - the WACC equity weight in moat_engine.
+    _ttm_wacc) used to read info["sharesOutstanding"] directly (or a
+    market cap built from it) and inherited the same understatement.
 
-    Centralizes that SAME correction (the "1.3x diluted-shares" test) as
-    the ONE place every per-share figure in this module now gets its
-    share count from: when the income statement's own "Diluted Average
-    Shares" row (the total count the company itself used for its
-    reported, whole-company EPS - already correct the same way
-    trailing_eps already is, per _build_fundamentals's Earning Yield fix
-    comment) is more than 30% above the single-class Yahoo figure,
-    that's a real second share class, not ordinary buyback/issuance
-    drift - use it instead. Returns (shares, flagged); shares is
-    whatever info reports (possibly None) when the test doesn't fire."""
+    A3b moved the actual resolution logic (the "1.3x diluted-shares"
+    test) into share_class_engine.whole_company_shares() - the ONE
+    implementation now shared with nightly_scan/deep_dive_engine's own
+    DCF path (via fcf_valuation_engine.dcf_intrinsic_value), so the two
+    paths can't independently drift. This function is a thin wrapper:
+    this module always has a full fundamentals bundle (including the
+    income statement) already fetched, so it passes bundle["income"]
+    straight through - the cheapest of that module's three resolution
+    tiers, no network call either way. Returns (shares, flagged)."""
     info = bundle.get("info") or {}
-    shares = info.get("sharesOutstanding")
-    filed_shares = _latest(bundle.get("income"), "diluted_average_shares")
-    if filed_shares and shares and filed_shares > shares * 1.3:
-        return filed_shares, True
-    return shares, False
+    shares, flagged, _source = share_class_engine.whole_company_shares(
+        info, income_df=bundle.get("income"),
+    )
+    return shares, flagged
 
 
 def _bvps(bundle):

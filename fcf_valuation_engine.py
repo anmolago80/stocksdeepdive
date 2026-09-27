@@ -56,6 +56,7 @@ import time
 import yfinance as yf
 
 import capm_engine
+import share_class_engine
 
 # Kept only as an absolute last-resort fallback if capm_engine itself throws
 # (e.g. both the live and fallback risk-free lookups somehow fail).
@@ -505,19 +506,23 @@ def dcf_intrinsic_value(
     an explicit number for any of the three (from the app's Valuation & FCF
     panel, global or per-stock) and it's used as-is instead.
 
-    diluted_shares_override (audit A3, 27 Sep 2026): for a dual-class
-    company, info["sharesOutstanding"] can reflect only ONE listed
-    class (see auto_compounder_engine._whole_company_shares()'s own
-    docstring for the HEI/HEICO root cause this fixes) - understating
-    per-share value for the affected names. None (the default, used by
-    every existing caller - nightly_scan/deep_dive_engine's lite path
-    has no income-statement fetch of its own to derive this from, and
-    adding one would mean a new per-ticker network call across every
-    nightly scan and every live Scanner/Comparison DCF) means "use
-    info['sharesOutstanding'] as before, unchanged". A caller that
-    already has a full fundamentals bundle on hand (auto_compounder_
-    engine._run_dcf(), the only caller passing this today) passes the
-    already-corrected whole-company share count instead.
+    diluted_shares_override (audit A3, 27 Sep 2026; A3b, 27 Sep 2026):
+    for a dual-class company, info["sharesOutstanding"] can reflect
+    only ONE listed class (see share_class_engine.whole_company_
+    shares()'s own docstring for the HEI/HEICO root cause this fixes) -
+    understating per-share value for the affected names. None (the
+    default) means "resolve it the normal way" - see below, NOT "skip
+    the correction": A3b moved the actual resolution into share_class_
+    engine.whole_company_shares(info, ticker=ticker), called right
+    below whenever this parameter isn't explicitly given, which tries
+    (a) info["impliedSharesOutstanding"] (already on the SAME `info`
+    every caller already has - zero new network calls) then (b), only
+    for a ticker on that module's own small explicit multi-class list,
+    a cached targeted fetch (a handful of calls a night, never a fetch
+    added to the general per-ticker path). A caller that already has a
+    full fundamentals bundle on hand (auto_compounder_engine._run_dcf())
+    passes the already-corrected share count explicitly instead, which
+    always takes priority over the auto-resolution below.
 
     meta = {
         "growth_source":    "analyst" | "history" | "analyst+history" | "info" | "default" | "manual",
@@ -574,7 +579,12 @@ def dcf_intrinsic_value(
             info = yf.Ticker(ticker).info or {}
         currency = currency or info.get("currency") or "USD"
 
-        shares = diluted_shares_override or (info.get("sharesOutstanding", 0) or 0)
+        if diluted_shares_override:
+            shares = diluted_shares_override
+        else:
+            shares, _dc_flagged, _dc_source = share_class_engine.whole_company_shares(
+                info, ticker=ticker,
+            )
         if shares <= 0:
             return 0, None, meta
 

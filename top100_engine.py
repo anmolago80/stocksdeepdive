@@ -77,6 +77,7 @@ import nightly_scan
 import scan_store
 import scanner_engine
 import sector_cache_store
+from share_class_engine import SHARE_CLASS_PAIRS
 import top100_store
 
 # Commit 1 (24 Sep 2026, owner-reported): first 5 errored batch results
@@ -134,12 +135,12 @@ TOP20_AU_TARGET = 20
 # below, which only ever REPORTS a same-name pair outside this set - it
 # never merges one). A ticker not listed here is never touched by the
 # dedupe, however similar its company name looks to another row's.
-SHARE_CLASS_PAIRS = [
-    frozenset({"GOOG", "GOOGL"}),          # Alphabet Inc.
-    frozenset({"FOX", "FOXA"}),            # Fox Corporation
-    frozenset({"NWS", "NWSA"}),            # News Corporation
-    frozenset({"BRK-A", "BRK-B"}),         # Berkshire Hathaway
-]
+#
+# Data-correctness audit A3b (27 Sep 2026): moved to share_class_engine.py
+# (imported at the top of this file) so it's the single source of truth
+# for every valuation path that needs to know "is this ticker part of a
+# known multi-class company" (that module's own whole_company_shares()
+# reuses it too) - same name, so nothing else in this file had to change.
 
 
 def _is_flagged_stale(row):
