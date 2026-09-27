@@ -771,7 +771,14 @@ def dcf_intrinsic_value(
         terminal_value = terminal_cf / (discount_rate - perpetual_rate)
         intrinsic += terminal_value / ((1 + discount_rate) ** growth_years)
 
-        return round(intrinsic, 2), round(growth_rate, 4), meta
+        # Audit fix B2.5 (27 Sep 2026, owner-directed, CONFIRMED BUG):
+        # intrinsic used to be rounded to 2dp HERE, before any caller
+        # computed MOS from it - corrupting MOS (and misclassifying
+        # penny stocks) whenever the true value had meaningful precision
+        # below a cent. Round only for display (nightly_scan.py and
+        # every other caller already re-round independently); keep full
+        # precision in the value MOS is actually computed from.
+        return intrinsic, round(growth_rate, 4), meta
 
     except Exception:
         return 0, None, meta
