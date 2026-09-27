@@ -3204,10 +3204,23 @@ def _render_results_day_card(ticker):
             continue
         delta = (a - b) if (a is not None and b is not None) else None
         _na = "<span style='color:#8aa0b8;'>N/A</span>"
+        # Audit fix B2.10 (27 Sep 2026, owner-directed, CONFIRMED BUG):
+        # fcf_base is read straight from a raw yfinance cashflow
+        # statement (results_engine._reanalyze()), never currency-
+        # converted the way every other "$"-labelled figure on this card
+        # is - for a company that reports in a different currency than
+        # it trades in, the bare "$" this row used to show silently
+        # implied the wrong currency. Label it explicitly whenever the
+        # reporting currency is known, rather than converting it inside
+        # a nightly notification job (a live FX call there would add a
+        # new network dependency to a path this module's own docstring
+        # already describes as deliberately cheap/minimal).
+        _fcf_ccy = (key == "fcf_base") and (before.get("fcf_currency") or after.get("fcf_currency"))
+        _ccy_suffix = f" {_fcf_ccy}" if _fcf_ccy else ""
         rows_html.append(
             "<tr>" + _td(meta["label"])
-            + _td(meta["fmt"](b) if b is not None else _na)
-            + _td(meta["fmt"](a) if a is not None else _na)
+            + _td((meta["fmt"](b) + _ccy_suffix) if b is not None else _na)
+            + _td((meta["fmt"](a) + _ccy_suffix) if a is not None else _na)
             + _td(_results_delta_cell(delta, kind=meta["kind"]))
             + "</tr>"
         )

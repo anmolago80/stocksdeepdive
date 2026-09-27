@@ -153,11 +153,19 @@ def what_moved(before, after, top_n=5):
         if delta == 0:
             continue
         rank = abs(delta / b) if b != 0 else abs(delta)
+        # Audit fix B2.10 (27 Sep 2026, owner-directed, CONFIRMED BUG):
+        # fcf_base's value is in the ticker's raw REPORTING currency
+        # (see _reanalyze()'s own comment), not necessarily its listing/
+        # price currency every other metric here is in - label it
+        # explicitly in this bullet text too, same as the card table.
+        _ccy = ((before or {}).get("fcf_currency") or (after or {}).get("fcf_currency")
+                if key == "fcf_base" else None)
+        _ccy_sfx = f" {_ccy}" if _ccy else ""
         items.append({
             "metric": key, "label": meta["label"], "before": b, "after": a,
             "delta": delta,
-            "text": (f"{meta['label']} moved from {meta['fmt'](b)} to {meta['fmt'](a)} "
-                     f"({_delta_text(meta['kind'], delta)})"),
+            "text": (f"{meta['label']} moved from {meta['fmt'](b)}{_ccy_sfx} to "
+                     f"{meta['fmt'](a)}{_ccy_sfx} ({_delta_text(meta['kind'], delta)})"),
             "_rank": rank,
         })
     items.sort(key=lambda it: it["_rank"], reverse=True)
@@ -353,9 +361,27 @@ def _reanalyze(ticker, report_date, log=print):
     nightly_scan._attach_moat(row, ticker, log=log)
 
     try:
-        cashflow_df = yf.Ticker(ticker).cashflow
+        tk = yf.Ticker(ticker)
+        cashflow_df = tk.cashflow
+        # Audit fix B2.10 (27 Sep 2026, owner-directed, CONFIRMED BUG):
+        # this cashflow statement is fetched raw here, straight from
+        # yfinance, never routed through fundamentals_data.get_bundle()'s
+        # currency conversion the way the Deep Dive/Research pages'
+        # figures are - so for a company that reports in a different
+        # currency than it trades in (e.g. CSL.AX/RMD.AX-style ASX names
+        # reporting in USD), fcf_base is genuinely in that REPORTING
+        # currency, not the ticker's listing/price currency every other
+        # "$"-labelled figure on this card is in. Capture it so the card
+        # can say which currency this one figure is actually in, instead
+        # of a bare "$" that silently implies the same currency as
+        # Price/Intrinsic value/EPS.
+        _info = tk.info or {}
+        fcf_currency = _info.get("financialCurrency") or _info.get("currency") or None
+        if fcf_currency:
+            fcf_currency = fcf_currency.upper()
     except Exception:
         cashflow_df = None
+        fcf_currency = None
     fcf_after, fcf_before = _fcf_pair(cashflow_df)
 
     watch = results_store.get_earnings_watch(ticker) or {}
@@ -373,12 +399,14 @@ def _reanalyze(ticker, report_date, log=print):
         "price": (before_hist or {}).get("price"),
         "eps_ttm": eps_before,
         "fcf_base": fcf_before,
+        "fcf_currency": fcf_currency,
     }
     after = {
         "value_score": row.get("Long Score"), "quality": row.get("Quality"),
         "moat": row.get("Moat"), "mos_pct": row.get("MOS %"),
         "intrinsic_value": row.get("Intrinsic Value"), "price": row.get("Price"),
         "eps_ttm": eps_after, "fcf_base": fcf_after,
+        "fcf_currency": fcf_currency,
     }
     moved = what_moved(before, after)
     stale = _statements_stale(cashflow_df, report_date)
