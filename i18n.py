@@ -2200,9 +2200,20 @@ EN = {
     # Part 6 (Comparison opener): the new [ticker] VS [ticker] input row +
     # popular-pair chips, and the head-to-head table shown for paying
     # visitors above the existing full comparison table.
-    "comparison.add_third": "+ add third",
+    # Commit 2 (27 Sep 2026): replaced the fixed "+ add third" (stopped
+    # at 3 tickers) with an open-ended "+ add company" that keeps adding
+    # slots up to compare_config.COMPARE_MAX_TICKERS.
+    "comparison.add_company": "+ Add company",
     "comparison.compare_button": "Compare",
     "comparison.need_two_warning": "Enter at least two tickers to compare.",
+    # {cap}/{entered}: the max-tickers cap and how many were actually
+    # typed/shared - same cap, same message, for every entry point that
+    # can start a comparison (search bar, "+ add company", a shared URL)
+    # since they all route through _dispatch_search()'s one check.
+    "comparison.max_tickers_warning": (
+        "You can compare up to {cap} companies at a time - showing the "
+        "first {cap} of the {entered} you entered."
+    ),
     "comparison.popular_pairs_label": "Popular comparisons",
     "comparison.h2h_heading": "Head-to-head",
     "comparison.h2h_metric_col": "Metric",
@@ -5654,9 +5665,13 @@ ES = {
     ),
 
     "comparison.empty_message": "Busca dos o más tickers arriba para ejecutar una Comparación.",
-    "comparison.add_third": "+ añadir un tercero",
+    "comparison.add_company": "+ Añadir empresa",
     "comparison.compare_button": "Comparar",
     "comparison.need_two_warning": "Ingresa al menos dos tickers para comparar.",
+    "comparison.max_tickers_warning": (
+        "Puedes comparar hasta {cap} empresas a la vez - mostrando las "
+        "primeras {cap} de las {entered} que ingresaste."
+    ),
     "comparison.popular_pairs_label": "Comparaciones populares",
     "comparison.h2h_heading": "Cara a cara",
     "comparison.h2h_metric_col": "Métrica",

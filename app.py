@@ -46,6 +46,7 @@ import follow_store
 import metrics_store
 import positions_store
 import announce_engine
+import compare_config
 import scan_store
 import scanner_engine
 import screen_import_store
@@ -2833,9 +2834,42 @@ def _render_overnight_snapshot_line(ticker):
     )
 
 
+def _cap_comparison_tickers(tickers, lang):
+    """Commit 2 amendment (27 Sep 2026, owner-directed): the ONE place the
+    compare_config.COMPARE_MAX_TICKERS cap is actually applied, called by
+    every path that can hand Compare a ticker list - _dispatch_search()
+    (the search bar, the "+ add company" row's own Compare button,
+    popular-pair chips, example chips) and page_comparison()'s shared-URL
+    parsing. A duplicated inline check at each call site is exactly how
+    the original 3-vs-unlimited mismatch this commit fixes happened -
+    one helper means the limit and the warning wording can't drift apart
+    again. Truncates to the first COMPARE_MAX_TICKERS and shows the
+    EN/ES warning naming both numbers when `tickers` is over the cap;
+    returns `tickers` unchanged otherwise."""
+    if len(tickers) <= compare_config.COMPARE_MAX_TICKERS:
+        return tickers
+    st.warning(
+        i18n.t(
+            "comparison.max_tickers_warning", lang,
+            cap=compare_config.COMPARE_MAX_TICKERS, entered=len(tickers),
+        )
+    )
+    return tickers[:compare_config.COMPARE_MAX_TICKERS]
+
+
 def _dispatch_search(text):
     """One shared handler behind every search box and example chip on the
-    site: one ticker -> Deep Dive, two or more -> Comparison."""
+    site: one ticker -> Deep Dive, two or more -> Comparison.
+
+    Commit 2 (27 Sep 2026, owner-directed): this is also the ONE place
+    the comparison.compare_max_tickers cap is enforced for every entry
+    point that can start a multi-ticker comparison (the header search
+    box, the home page search box, the Comparison page's own opener,
+    popular-pair chips, example chips) - they all already funnel through
+    here per this docstring's own original claim, so capping it here,
+    once (via the shared _cap_comparison_tickers() helper - see its own
+    docstring), applies it everywhere at once rather than needing a
+    matching check at each call site."""
     raw = (text or "").replace(",", " ").replace("\n", " ").split()
     parsed = []
     for tok in raw:
@@ -2845,6 +2879,7 @@ def _dispatch_search(text):
     if not parsed:
         st.warning("Type at least one ticker above, then hit Search.")
         return
+    parsed = _cap_comparison_tickers(parsed, st.session_state.get("lang", "en"))
     if len(parsed) == 1:
         tk = parsed[0]
         # Task 5: instant overnight-scan snapshot line, shown immediately -
@@ -14026,6 +14061,194 @@ def page_results_calendar():
     )
 
 
+def _comparison_row_from_saved_scan(ticker):
+    """Commit 2 (27 Sep 2026, owner-directed): if `ticker` has a fresh
+    (<=72h) overnight-scan row already on disk (scan_store.find_ticker_
+    row), Compare can serve it straight from that instead of paying for
+    a live per-ticker fetch - it's the exact same nightly_scan.analyze_
+    ticker_lite() computation _render_scan_results()'s own live loop
+    below re-derives from scratch for every ticker it fetches. Returns
+    None (caller falls back to the live loop) when no fresh scan covers
+    this ticker.
+
+    Maps the saved row onto the SAME dict shape the live loop's own
+    data.append({...}) builds further down in _render_scan_results,
+    field for field - confirmed against nightly_scan.py's own return
+    dict and the live computation it mirrors:
+      - Ticker/Price/Company Name/Quality(+flag)/Moat(+flag)/Trade
+        Setup/Trend/Psychology are genuine formula matches, same key
+        names both places.
+      - Intrinsic Value/MOS/Long Score/Valuation/Investment Signal are
+        genuine formula matches under a different key name here
+        (nightly's "MOS %"/"Signal" == this dict's "MOS"/"Investment
+        Signal" - confirmed identical threshold ladders, incl. the
+        N/A-valuation WATCHLIST cap).
+      - Holding Period/Entry/Target/Upside %/IV-Price Multiple/
+        Sentiment/Val Capped are recomputed here from fields the saved
+        row already has - same formulas the live loop below uses,
+        zero extra fetch.
+      - Every other key (source-provenance strings, DCF internals,
+        Market Cap, Fear/Greed/FOMO sub-scores, Activity/Volume Ratio,
+        Trend/News/Social scores, RR1, and every swing-trading/
+        position-sizing/earnings field) is genuinely absent from a
+        saved scan row and stays "-"/None/0 - never a fabricated
+        reading. Trend/News/Social score default to 0 specifically
+        because that is the SAME "this lookup didn't run" value the
+        live loop itself already uses for an attention-lite scan or a
+        disabled feature (see live_data/enable_social/attention_lite
+        above) - not a new convention, the existing one.
+      - Deliberately does NOT borrow nightly's "Model Growth %" for
+        this dict's "DCF Growth %" - the reverse-DCF-solved growth
+        rate a price IMPLIES is not the forward growth ASSUMPTION fed
+        INTO the DCF that produced Intrinsic Value; conflating the two
+        would silently misstate the DCF Growth % column, so that one
+        stays "-" like every other DCF-internal field.
+      - Quality/Long Score are never left non-numeric (default 0, not
+        "-") even on a malformed/legacy row - both feed pandas
+        sort_values/idxmax elsewhere in this function, which raises on
+        a mixed str/float column; every other field already degrades
+        safely through _bar_cell/_money_cell's own None/"N/A"/NaN
+        handling, confirmed by direct reading of those helpers.
+    """
+    found = scan_store.find_ticker_row(ticker)
+    if not found:
+        return None
+    row = found["row"]
+
+    intrinsic_value = row.get("Intrinsic Value")
+    current_price = row.get("Price")
+    long_score = row.get("Long Score")
+    valuation = row.get("Valuation") or "N/A"
+    psychology_score = row.get("Psychology")
+    stock_type = row.get("Type")
+    mos_pct = row.get("MOS %")
+
+    if intrinsic_value and current_price:
+        entry_price = round(intrinsic_value * 0.8, 2)
+        target_price = intrinsic_value
+        upside_percent = (
+            round(((target_price - current_price) / current_price) * 100, 2)
+            if current_price > 0 else "-"
+        )
+        iv_price_multiple = (
+            round(intrinsic_value / current_price, 2)
+            if current_price > 0 else "N/A"
+        )
+    else:
+        entry_price, target_price, upside_percent, iv_price_multiple = "-", "-", "-", "N/A"
+
+    if psychology_score is None:
+        sentiment = "-"
+    elif psychology_score > 20:
+        sentiment = "FEARFUL"
+    elif psychology_score > 5:
+        sentiment = "CALM"
+    elif psychology_score < -20:
+        sentiment = "OVERHEATED"
+    elif psychology_score < -5:
+        sentiment = "GREEDY"
+    else:
+        sentiment = "NEUTRAL"
+
+    val_capped = (
+        "Yes" if (valuation == "N/A" and long_score is not None
+                  and long_score > SIGNAL_THRESHOLDS["LONG"])
+        else "No"
+    )
+
+    return {
+        "Ticker": ticker,
+        "Type": stock_type or "-",
+        "Type Source": "-",
+        "Holding Period": get_holding_period(stock_type) if stock_type else "-",
+        "Market Cap": "-",
+
+        "Price": current_price if current_price is not None else 0,
+        "Company Name": row.get("Company Name") or ticker,
+
+        "Quality": row.get("Quality") if row.get("Quality") is not None else 0,
+        "Quality Source": "-",
+
+        "Intrinsic Value": intrinsic_value if intrinsic_value else "N/A",
+        "Intrinsic Source": "-",
+        "Val Method": "-",
+        "DCF Growth %": "-",
+        "Growth Governor": "-",
+        "DCF Discount %": "-",
+        "DCF Perpetual %": "-",
+        "FCF/Share Used": None,
+        "FCF Source": "-",
+        "MOS": mos_pct if mos_pct is not None else "N/A",
+        "IV/Price Multiple": iv_price_multiple,
+
+        "_flag_type": False,
+        "_flag_quality": bool(row.get("Quality Default")),
+        "_flag_intrinsic": bool(row.get("Intrinsic Default")),
+        "_flag_growth": False,
+        "_flag_discovery": False,
+
+        "Moat": row.get("Moat"),
+        "_flag_moat": bool(row.get("Moat Erosion") in ("watch", "eroding")),
+
+        "Entry": entry_price,
+        "Target": target_price,
+        "Upside %": upside_percent,
+
+        "Fear": "-",
+        "Greed": "-",
+        "FOMO": "-",
+
+        "Psychology": psychology_score if psychology_score is not None else 0,
+        "Activity": "-",
+        "Volume Ratio": "-",
+
+        "Trend Score": 0,
+        "News Score": 0,
+
+        "Social Score": 0,
+        "Social Msgs": 0,
+        "Social Net": 0,
+
+        "Discovery": row.get("Discovery (lite)") if row.get("Discovery (lite)") is not None else 0,
+
+        "Long Score": long_score if long_score is not None else 0,
+
+        "Investment Signal": row.get("Signal") or "-",
+        "Val Capped": val_capped,
+
+        "Valuation": valuation,
+        "Sentiment": sentiment,
+
+        "Trade Setup": row.get("Trade Setup") or "-",
+        "RR1": "-",
+
+        "Trader Score": 0,
+        "Trend": row.get("Trend") or "-",
+        "RSI": "-",
+        "MACD Cross": "-",
+
+        "Swing Setup": "-",
+        "Setup Score": "-",
+        "Swing Entry": "-",
+        "Swing Stop": "-",
+        "Swing T1": "-",
+        "Swing T2": "-",
+        "Swing RR": "-",
+
+        "ATR Stop": "-",
+        "Shares": "-",
+        "Capital At Risk": "-",
+        "Position Value": "-",
+        "Regime": "-",
+        "Earnings (days)": "-",
+        "Earnings Warn": "No",
+
+        "_saved_scan": True,
+        "_saved_scan_universe": found["universe"],
+        "_saved_scan_as_of": found.get("generated_at_label") or "-",
+    }
+
+
 # Mega-batch Part 6 (Comparison opener): the popular-pair chips, and the
 # rotating default pair used to keep the page "never empty on load" when
 # nothing else (a URL share, a prior search this session) has picked a
@@ -14039,16 +14262,30 @@ _COMPARISON_POPULAR_PAIRS = [
 
 
 def _render_comparison_input_row(lang):
-    """Mega-batch Part 6: "[ticker] VS [ticker] [+ add third] [Compare]"
-    on top of the Comparison page, plus a row of popular-pair chips below
-    it. Both feed the exact same _dispatch_search()/cmp_stocks session-
-    state mechanism every other entry point on the site already uses (the
+    """Mega-batch Part 6, extended by Commit 2 (27 Sep 2026, owner-
+    directed): "[ticker] VS [ticker] [+ add company...] [Compare]" on top
+    of the Comparison page, plus a row of popular-pair chips below it.
+    Feeds the exact same _dispatch_search()/cmp_stocks session-state
+    mechanism every other entry point on the site already uses (the
     header's own search box, the home page chips, a shared URL) - this is
     just a Comparison-specific opener, not a second/parallel comparison
     engine, so a comparison started here behaves identically to one
-    started anywhere else on the site."""
-    st.session_state.setdefault("cmp_input_third", False)
-    _c1, _cvs, _c2, _c3, _cbtn = st.columns([3, 1, 3, 3, 2], vertical_alignment="bottom")
+    started anywhere else on the site, INCLUDING the compare_config.
+    COMPARE_MAX_TICKERS cap - _dispatch_search() enforces that on
+    whatever this widget hands it, so "+ add company" only ever needs to
+    stop OFFERING more slots at that same cap, not enforce it a second
+    time.
+
+    Was a fixed 5-column "Ticker1/VS/Ticker2/+add third-or-Ticker3/
+    Compare" layout, capped at 3 tickers - replaced with 2 fixed slots
+    plus a dynamic, stacked list of extra single-ticker rows (one per
+    "+ add company" click, up to the cap), so the same widget that used
+    to stop at 3 now reaches 15 without a wider row that would break on a
+    narrow viewport."""
+    st.session_state.setdefault("cmp_extra_slots", 0)
+    _max_extra_slots = compare_config.COMPARE_MAX_TICKERS - 2
+
+    _c1, _cvs, _c2 = st.columns([3, 1, 3], vertical_alignment="bottom")
     with _c1:
         _t1 = st.text_input("Ticker 1", key="cmp_input_a", placeholder="CPRT",
                              label_visibility="collapsed")
@@ -14061,22 +14298,31 @@ def _render_comparison_input_row(lang):
     with _c2:
         _t2 = st.text_input("Ticker 2", key="cmp_input_b", placeholder="FICO",
                              label_visibility="collapsed")
-    _t3 = ""
-    with _c3:
-        if st.session_state["cmp_input_third"]:
-            _t3 = st.text_input("Ticker 3", key="cmp_input_c", placeholder="MSFT",
-                                 label_visibility="collapsed")
-        elif st.button(i18n.t("comparison.add_third", lang), key="cmp_add_third_btn",
-                       width='stretch'):
-            st.session_state["cmp_input_third"] = True
-            st.rerun()
-    with _cbtn:
+
+    # Extra slots stack one per row (rather than more side-by-side columns)
+    # so this stays readable at a phone width even with all 13 of them open.
+    _extra_tickers = [
+        st.text_input(f"Ticker {_i + 3}", key=f"cmp_input_extra_{_i}",
+                       placeholder=f"Ticker {_i + 3}", label_visibility="collapsed")
+        for _i in range(st.session_state["cmp_extra_slots"])
+    ]
+
+    _add_col, _btn_col = st.columns([1, 1], vertical_alignment="bottom")
+    with _add_col:
+        if st.session_state["cmp_extra_slots"] < _max_extra_slots:
+            if st.button(i18n.t("comparison.add_company", lang), key="cmp_add_company_btn",
+                         width='stretch'):
+                st.session_state["cmp_extra_slots"] += 1
+                st.rerun()
+    with _btn_col:
         _go = st.button(
             i18n.t("comparison.compare_button", lang), type="primary",
             key="cmp_compare_btn", width='stretch',
         )
     if _go:
-        _typed = " ".join(t.strip() for t in (_t1, _t2, _t3) if t and t.strip())
+        _typed = " ".join(
+            t.strip() for t in ([_t1, _t2] + _extra_tickers) if t and t.strip()
+        )
         if len(_typed.split()) < 2:
             st.warning(i18n.t("comparison.need_two_warning", lang))
         else:
@@ -14118,6 +14364,11 @@ def page_comparison():
         for _tok in _qp_tickers.replace(",", " ").split():
             if _tok and _tok not in _qp_parsed:
                 _qp_parsed.append(_tok)
+        # Commit 2 amendment (27 Sep 2026, owner-directed): a shared URL is
+        # its own entry point, not routed through _dispatch_search() - it
+        # goes through the same _cap_comparison_tickers() helper that
+        # function uses, rather than a second inline copy of the check.
+        _qp_parsed = _cap_comparison_tickers(_qp_parsed, _cmp_lang)
         if len(_qp_parsed) >= 2:
             _qp_au = sum(1 for _t in _qp_parsed if _t.endswith(".AX"))
             st.session_state["cmp_stocks"] = _qp_parsed
@@ -14262,15 +14513,50 @@ def _render_scan_results(page_label, state_prefix, empty_message,
 
         start_time = time.time()
 
+        # Commit 2 (27 Sep 2026, owner-directed): on Comparison only, a
+        # ticker with a fresh (<=72h) overnight-scan row already covers the
+        # same computation this loop is about to pay for live - serve it
+        # straight from that scan instead (see _comparison_row_from_saved_
+        # scan()'s own docstring for exactly which fields carry over, which
+        # are derived, and which stay "-"). Also builds this ticker's thesis
+        # up front (same generate_thesis() call the live loop below makes,
+        # from the same inputs the saved row already has) so the "Why Buy"
+        # panel further down never hits a ticker with no thesis_lookup entry.
+        # Scanner (state_prefix != "cmp") always goes through the live loop
+        # unchanged - it's already reading a whole saved universe at once
+        # via scanner_engine, so this split doesn't apply to it.
+        loop_stocks = stocks
+        if state_prefix == "cmp" and _need_fresh_scan:
+            loop_stocks = []
+            for _cmp_ticker in stocks:
+                _saved_row = _comparison_row_from_saved_scan(_cmp_ticker)
+                if _saved_row is None:
+                    loop_stocks.append(_cmp_ticker)
+                    continue
+                data.append(_saved_row)
+                _saved_mos = _saved_row["MOS"]
+                thesis_lookup[_cmp_ticker] = generate_thesis(
+                    ticker=_cmp_ticker,
+                    stock_type=_saved_row["Type"],
+                    quality_score=_saved_row["Quality"],
+                    margin_of_safety=_saved_mos if isinstance(_saved_mos, (int, float)) else 0,
+                    psychology_score=_saved_row["Psychology"],
+                    discovery_score=_saved_row["Discovery"],
+                    long_score=_saved_row["Long Score"],
+                    holding_period=_saved_row["Holding Period"],
+                )
+
         # Warm every ticker's cached lookups CONCURRENTLY before the scan loop
         # below touches any of them one at a time - see _prefetch_scan_data's
         # docstring. Only worth doing for a real fresh scan (same guard as the
         # loop itself) and only once there's more than a couple of tickers,
         # since thread-pool setup isn't free and a 1-2 ticker Comparison is
-        # already fast without it.
-        if _need_fresh_scan and len(stocks) > 2:
-            with st.spinner(f"Fetching data for {len(stocks)} stocks..."):
-                _prefetch_scan_data(stocks, live_data, enable_social, news_api_key)
+        # already fast without it. Uses loop_stocks (the tickers that still
+        # need a live fetch after the saved-scan split above), not the full
+        # `stocks` list, for the same reason.
+        if _need_fresh_scan and len(loop_stocks) > 2:
+            with st.spinner(f"Fetching data for {len(loop_stocks)} stocks..."):
+                _prefetch_scan_data(loop_stocks, live_data, enable_social, news_api_key)
 
         # Only actually build the progress bar / iterate tickers when a fresh scan
         # is needed (see _need_fresh_scan above) - otherwise this rerun reuses the
@@ -14278,11 +14564,11 @@ def _render_scan_results(page_label, state_prefix, empty_message,
         # session_state right after this loop, and the loop body below never runs.
         progress_bar = st.progress(0.0, text="Starting scan...") if _need_fresh_scan else None
 
-        for idx, ticker in enumerate(stocks if _need_fresh_scan else []):
+        for idx, ticker in enumerate(loop_stocks if _need_fresh_scan else []):
 
             progress_bar.progress(
-                (idx + 1) / len(stocks),
-                text=f"Scanning {ticker} ({idx + 1}/{len(stocks)})"
+                (idx + 1) / len(loop_stocks),
+                text=f"Scanning {ticker} ({idx + 1}/{len(loop_stocks)})"
             )
 
             try:
@@ -14876,11 +15162,27 @@ def _render_scan_results(page_label, state_prefix, empty_message,
             )
             _preview_cols = [c for c in _preview_cols if c in results.columns]
             st.subheader(f"{page_label} preview")
+            _prev_lang = st.session_state.get("lang", "en")
             _prev_rows = []
             for _, _pr in results.iterrows():
+                _pr_tk_cell = f"<b>{_pr['Ticker']}</b>"
+                if _pr.get("_saved_scan"):
+                    # Commit 2 amendment (27 Sep 2026, owner-directed): a
+                    # ticker served from a saved overnight scan (rather than
+                    # a live fetch) says so, using the same "scan of {when}"
+                    # wording/convention the Scanner page already uses for
+                    # its own freshness label.
+                    _pr_tk_cell += (
+                        "<div style='font-size:11px;color:#8aa0b8;font-weight:400;'>"
+                        + html.escape(i18n.t(
+                            "scanner.scan_of", _prev_lang,
+                            when=_pr.get("_saved_scan_as_of") or "-",
+                        ))
+                        + "</div>"
+                    )
                 _row_html = (
                     "<tr>"
-                    + _td(f"<b>{_pr['Ticker']}</b>")
+                    + _td(_pr_tk_cell)
                     + _td(f"{_pr['Price']:,.2f}")
                     + _td(_bar_cell(_pr.get("Long Score"), SIGNAL_THRESHOLDS["WATCHLIST"],
                                     SIGNAL_THRESHOLDS["LONG"]), minw=110)
@@ -15096,6 +15398,19 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     "style='color:inherit;text-decoration:underline;'><b>"
                     f"{_cmp_tk}</b></a>"
                 )
+                if r.get("_saved_scan"):
+                    # Commit 2 amendment (27 Sep 2026, owner-directed): same
+                    # "scan of {when}" note as the preview table above -
+                    # this row came from a saved overnight scan, not a live
+                    # fetch just now.
+                    _cmp_tk_cell += (
+                        "<div style='font-size:11px;color:#8aa0b8;font-weight:400;'>"
+                        + html.escape(i18n.t(
+                            "scanner.scan_of", _scan_gate_lang,
+                            when=r.get("_saved_scan_as_of") or "-",
+                        ))
+                        + "</div>"
+                    )
                 _row_html = (
                     "<tr>"
                     + _td(_cmp_tk_cell)

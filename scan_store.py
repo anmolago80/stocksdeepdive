@@ -173,6 +173,47 @@ def list_saved_universes():
     return sorted(out)
 
 
+def find_ticker_row(ticker):
+    """The freshest saved overnight-scan row for `ticker`, across every
+    universe with a scan on disk, or None if no fresh scan covers it.
+
+    Built for Comparison (Commit 2, 27 Sep 2026): a ticker a nightly scan
+    already covers doesn't need a fresh live fetch just to compare it -
+    this is the per-ticker lookup that decision needs, layered on top of
+    list_saved_universes()'s existing "which universes exist" listing
+    (same iterate-and-check pattern top100_engine.select_top100_pool()
+    already uses, for the same reason). Goes through load_scan() (not
+    load_scan_raw()) so this only ever returns a row the Scanner page
+    itself would actually be showing right now - the same 72h freshness
+    cutoff, not a stale scan sitting on disk past it.
+
+    Returns {"row": <the stored dict, nightly_scan.analyze_ticker_lite()
+    shape>, "universe": <str>, "generated_at_label": <str>, "age_hours":
+    <float>} for the first matching universe, or None. A ticker saved
+    under several universes (e.g. BHP.AX in ASX 50/100/200/300) resolves
+    to whichever universe list_saved_universes()'s sorted order checks
+    first - deterministic run to run, not "most recently scanned" (every
+    fresh scan this returns is equally current within the 72h window
+    load_scan() already enforces, so there's no real "freshest of the
+    fresh" to break the tie on)."""
+    ticker = (ticker or "").strip().upper()
+    if not ticker:
+        return None
+    for universe in list_saved_universes():
+        payload = load_scan(universe)
+        if not payload:
+            continue
+        for row in payload.get("rows") or []:
+            if (row.get("Ticker") or "").strip().upper() == ticker:
+                return {
+                    "row": row,
+                    "universe": universe,
+                    "generated_at_label": payload.get("generated_at_label"),
+                    "age_hours": payload.get("age_hours"),
+                }
+    return None
+
+
 def reprice_scan(universe, rows, repriced_count=None, kept_stale_count=None):
     """Part 34 addendum 34.7 (11 Sep 2026): persists a repriced version of
     `universe`'s stored scan - same file, `rows` replaced with the

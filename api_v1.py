@@ -37,6 +37,7 @@ import yfinance as yf
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+import compare_config
 import scan_store
 import scanner_engine
 import snapshot_render
@@ -304,14 +305,17 @@ def get_deep_dive(ticker: str, request: Request):
 @api_app.get("/compare", summary="Computed scores for several tickers side by side")
 def get_compare(
     request: Request,
-    tickers: str = Query(..., description="Comma-separated tickers, e.g. CSL.AX,BHP.AX (max 10)"),
+    tickers: str = Query(..., description=f"Comma-separated tickers, e.g. CSL.AX,BHP.AX (max {compare_config.COMPARE_MAX_TICKERS})"),
 ):
     _check_rate_limit(request)
     wanted = [t.strip().upper() for t in tickers.split(",") if t.strip()]
     if not wanted:
         raise HTTPException(status_code=400, detail="Pass at least one ticker in ?tickers=")
-    if len(wanted) > 10:
-        raise HTTPException(status_code=400, detail="Max 10 tickers per request")
+    if len(wanted) > compare_config.COMPARE_MAX_TICKERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Max {compare_config.COMPARE_MAX_TICKERS} tickers per request",
+        )
     base = str(request.base_url).rstrip("/")
     results, missing = [], []
     for t in wanted:
