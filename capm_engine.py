@@ -32,6 +32,9 @@ Both outputs are clamped to a defensible band so a missing/bad beta or a
 bond-yield fetch glitch can't produce a nonsense valuation.
 """
 
+import csv
+
+import requests
 import streamlit as st
 import yfinance as yf
 
@@ -218,6 +221,208 @@ def resolve_perpetual_rate(currency, discount_rate=None):
     if discount_rate is not None and rate >= discount_rate:
         rate = max(0.0, discount_rate - 0.01)
     return round(rate, 4)
+
+
+# =====================================================================
+# A6 (27 Sep 2026, owner-directed, FINAL SPEC): market-cap-tiered
+# discount rate, replacing beta. DESIGN + DRY RUN ONLY.
+#
+# resolve_discount_rate() above (beta-based CAPM) remains the ONLY
+# discount rate any LIVE valuation on the site actually uses - nothing
+# below this line is called from fcf_valuation_engine.dcf_intrinsic_
+# value() or moat_engine.py's cost-of-equity/WACC helpers today.
+# resolve_discount_rate_by_market_cap() is called only from the Admin
+# Dashboard's A6 dry-run comparison (admin_data_audit.check_a6_
+# discount_tiers() and app.py's bulk saved-universe audit), until the
+# owner has reviewed the side-by-side numbers and approves the swap.
+#
+# When that swap happens: moat_engine.py's ~7 call sites already all go
+# through capm_engine.resolve_discount_rate(info, ccy) (never a second,
+# parallel cost-of-equity formula of their own) - so the DCF and the
+# moat spread automatically stay on the same rate for free, as long as
+# the swap is made by having resolve_discount_rate() itself call into
+# resolve_discount_rate_by_market_cap() (or by redirecting every one of
+# those call sites to call resolve_discount_rate_by_market_cap()
+# directly) rather than by only changing fcf_valuation_engine.py's own
+# call site. This function is written now, in its final shape, so that
+# swap is a small, mechanical change rather than new design work.
+# =====================================================================
+
+# Same static USD-bucketing FX snapshot fcf_valuation_engine.py's own
+# MARKET_CAP_GROWTH_CEILINGS tiers use (see that module for the full
+# rationale) - duplicated here as a small local constant rather than
+# imported, the same precedent fcf_valuation_engine.py itself already
+# set for _FCF_LABELS/_OCF_LABELS/_CAPEX_LABELS: fcf_valuation_engine
+# imports capm_engine at module level, so importing fcf_valuation_
+# engine back from here would be circular.
+_DISCOUNT_TIER_FX_TO_USD_APPROX = {
+    "USD": 1.0,
+    "AUD": 0.65,
+}
+
+# Premiums are RELATIVE TO THE RISK-FREE RATE (not a flat add-on), so
+# every tier's discount rate tracks interest rates the same way the
+# risk-free rate itself does - the owner's own explicit design goal.
+# (min USD market cap, premium over risk-free, label) triples, largest
+# threshold first - the first one a company's market cap clears wins.
+# MIN_DISCOUNT_RATE (7.5%) still applies as a floor below - the owner
+# has explicitly confirmed the top tier (rf + 2%, ~7.2% for USD at
+# today's rate) is EXPECTED to sit below it and floor there on
+# purpose. DISCOUNT_CEIL (15%) does NOT apply to this tiered path -
+# the under-US$2B tier (rf + 6%, ~11.2% today) is now the effective
+# ceiling by design, so a separate flat ceiling above it would be
+# redundant. One named, commented table, per the owner's own
+# instruction - deliberately NOT merged with fcf_valuation_engine.py's
+# MARKET_CAP_GROWTH_CEILINGS: one governs the discount rate, the other
+# the FCF growth ceiling, and nothing requires their tier boundaries to
+# line up.
+MARKET_CAP_DISCOUNT_TIERS = [
+    (200_000_000_000, 0.02, "mega-cap (>= US$200B)"),
+    (50_000_000_000,  0.03, "large-cap (US$50B-200B)"),
+    (10_000_000_000,  0.04, "mid-cap (US$10B-50B)"),
+    (2_000_000_000,   0.05, "small-cap (US$2B-10B)"),
+    (0,                0.06, "micro-cap (< US$2B)"),
+]
+
+# A6 addition (27 Sep 2026, owner-directed): with beta removed, the
+# risk-free rate becomes the main driver of every discount rate, so the
+# AU 10-year can no longer stay a hand-set constant the way it can
+# today (where it's just one input among several, dampened by beta).
+# Live source: the RBA's own published daily yields, statistical table
+# F2 "Capital Market Yields - Government Bonds - Daily". Fetched at
+# most once a day (cached below) and falling back to the flagged
+# RISK_FREE_FALLBACK["AUD"] constant on ANY failure - same degrade-
+# gracefully philosophy as every other optional feed in this app.
+#
+# UNVERIFIED FROM THIS SANDBOX: this session has no live network access
+# (confirmed EGRESS_BLOCKED against www.rba.gov.au on a direct check,
+# same as the finance.yahoo.com/stocksdeepdive.com checks this whole
+# audit already documented elsewhere) - the exact CSV URL and column
+# layout below could not be tested against the real RBA site from here.
+# Written defensively for the wide (column-per-series) layout RBA's
+# statistical tables are published in (short timeout, tolerant column-
+# label matching, the SAME RISK_FREE_MIN/RISK_FREE_MAX sanity band as
+# get_risk_free_rate() above, and a hard fallback to the flagged
+# constant on ANY failure) so a wrong guess here degrades to "flagged
+# as defaulted" rather than ever corrupting a rate - but this needs a
+# real on-server check (see the A6 dry-run report) before its "live"
+# label can be trusted, same as AU10Y=RR's own still-unresolved 404
+# documented in get_risk_free_rate()'s docstring above.
+_RBA_F2_CSV_URL = "https://www.rba.gov.au/statistics/tables/csv/f02d-data.csv"
+_RBA_TIMEOUT_SECONDS = 6
+_RBA_10Y_COLUMN_HINTS = ("10-year", "10 year", "10yr")
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_au_risk_free_rate_live():
+    """Best-effort live AU 10-year government bond yield from the RBA's
+    own published table F2, cached once a day (a daily series - no
+    point refetching more often, and this keeps the site polite to the
+    RBA's own servers). Returns (rate, source) in the same shape as
+    get_risk_free_rate() - "live" or "default" (the flagged
+    RISK_FREE_FALLBACK["AUD"] constant).
+
+    A6 dry-run only for now - see the module comment above this
+    section for why. Once the owner has verified on the live server
+    that this is genuinely reaching the RBA and reading the right
+    series, this can replace AU10Y=RR inside get_risk_free_rate()
+    itself (the SAME shared function every live valuation already
+    calls), at which point this function can be retired rather than
+    kept as a second, parallel rate source."""
+    try:
+        resp = requests.get(_RBA_F2_CSV_URL, timeout=_RBA_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        rows = list(csv.reader(resp.text.splitlines()))
+        # RBA statistical-table CSVs are WIDE: one column per bond series
+        # (2-year, 3-year, 5-year, 10-year, ...), several metadata rows
+        # (title, series ID, units, description) at the top carrying each
+        # column's description, then one row per date below. Find the
+        # 10-year column by a tolerant substring match on ANY metadata-row
+        # cell (mirrors auto_compounder_engine._find_row()'s own
+        # substring-match tolerance for exactly this "don't know the
+        # exact label in advance" situation) rather than assuming a label
+        # and its value share one row - they don't, in this layout.
+        target_col = None
+        for row in rows:
+            for i, cell in enumerate(row):
+                if any(hint in (cell or "").lower() for hint in _RBA_10Y_COLUMN_HINTS):
+                    target_col = i
+                    break
+            if target_col is not None:
+                break
+        if target_col is not None:
+            # Scan from the LAST row upward (most recent date first - RBA's
+            # date rows run oldest-to-newest, top-to-bottom) for the first
+            # row with a usable numeric value in that column. A blank cell
+            # (public holiday / no quote that day) is skipped, not treated
+            # as a failure; a real-but-out-of-band value stops the scan
+            # rather than reaching further back into older, unrelated
+            # figures - same "reject garbage in either direction" stance
+            # get_risk_free_rate() already takes.
+            for row in reversed(rows):
+                if len(row) <= target_col:
+                    continue
+                cell = row[target_col]
+                try:
+                    raw = float(cell)
+                except (TypeError, ValueError):
+                    continue
+                rate = raw / 100.0
+                if RISK_FREE_MIN < rate < RISK_FREE_MAX:   # same sanity band as get_risk_free_rate
+                    return rate, "live"
+                break
+    except Exception:
+        pass
+    return RISK_FREE_FALLBACK.get("AUD", DEFAULT_RISK_FREE_FALLBACK), "default"
+
+
+def resolve_discount_rate_by_market_cap(info, currency):
+    """A6 dry-run: market-cap-tiered cost of equity - no beta anywhere in
+    this formula. Returns (discount_rate, meta), meta in a shape a
+    caller can display the same way resolve_discount_rate()'s is (rf_
+    source, defaulted) plus tier_label. MIN_DISCOUNT_RATE still applies
+    as a floor; there is deliberately no ceiling clamp - see MARKET_CAP_
+    DISCOUNT_TIERS' own comment above.
+
+    Uses get_au_risk_free_rate_live() for AUD (not get_risk_free_rate())
+    - see that function's own docstring for why this stays a separate,
+    dry-run-only path for now. USD keeps using get_risk_free_rate()
+    (^TNX) - already a live, working source; the owner's own queued
+    instruction only asked for AUD to stop being a hand-set constant
+    and for "any future market" to eventually get its own real source,
+    not to touch a currency that already has one."""
+    info = info or {}
+    ccy = (currency or info.get("currency") or "USD").upper()
+    meta = {"rf_source": None, "defaulted": False, "tier_label": None,
+            "market_cap_missing": False, "discount_floored": False}
+
+    if ccy == "AUD":
+        rf, rf_src = get_au_risk_free_rate_live()
+    else:
+        rf, rf_src = get_risk_free_rate(ccy)
+    meta["rf_source"] = rf_src
+    if rf_src == "default":
+        meta["defaulted"] = True
+
+    market_cap = info.get("marketCap")
+    if not market_cap or market_cap <= 0:
+        meta["market_cap_missing"] = True
+        market_cap = 0
+    market_cap_usd = market_cap * _DISCOUNT_TIER_FX_TO_USD_APPROX.get(ccy, 1.0)
+
+    premium, tier_label = MARKET_CAP_DISCOUNT_TIERS[-1][1], MARKET_CAP_DISCOUNT_TIERS[-1][2]
+    for threshold, prem, label in MARKET_CAP_DISCOUNT_TIERS:
+        if market_cap_usd >= threshold:
+            premium, tier_label = prem, label
+            break
+    meta["tier_label"] = tier_label
+    meta["premium_used"] = premium
+
+    rate = rf + premium
+    if rate < MIN_DISCOUNT_RATE:
+        meta["discount_floored"] = True
+    rate = max(MIN_DISCOUNT_RATE, rate)
+    return round(rate, 4), meta
 
 
 @st.cache_data(ttl=1800, show_spinner=False)

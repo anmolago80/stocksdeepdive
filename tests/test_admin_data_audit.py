@@ -160,6 +160,51 @@ assert rows3[0]["ticker"] == "ERRTEST.AX" and "error" in rows3[0]
 print("[a5_error_isolated] a fetch failure is captured per-ticker, not raised OK")
 
 
+# ---- check_a6_discount_tiers(): mocked bundle + capm_engine + dcf_intrinsic_value ----
+import capm_engine
+import fcf_valuation_engine
+
+_A6_INFO = {"currency": "USD", "currentPrice": 150.0, "marketCap": 100_000_000_000}
+_A6_BUNDLE = {"info": _A6_INFO, "cashflow": pd.DataFrame()}
+
+
+def _fake_dcf(ticker, info=None, cashflow_df=None, currency=None, discount_rate=None, **kw):
+    # Old (auto CAPM) path: discount_rate=None -> a fixed "old" IV/rate.
+    # New (tiered) path: discount_rate=<tier rate> passed straight through.
+    if discount_rate is None:
+        return 200.0, 0.08, {"discount_rate_used": 0.085}
+    return 220.0, 0.08, {"discount_rate_used": discount_rate}
+
+
+with mock.patch("fundamentals_data.get_bundle", return_value=_A6_BUNDLE), \
+     mock.patch("fcf_valuation_engine.dcf_intrinsic_value", side_effect=_fake_dcf), \
+     mock.patch("capm_engine.resolve_discount_rate_by_market_cap",
+                return_value=(0.080, {"tier_label": "large-cap (US$50B-200B)", "rf_source": "default"})):
+    rows = ada.check_a6_discount_tiers(tickers=["MSFT"])
+assert len(rows) == 1
+r = rows[0]
+assert r["price"] == 150.0
+assert r["current_model"]["discount_rate"] == 0.085
+assert r["current_model"]["intrinsic_value"] == 200.0
+assert abs(r["current_model"]["mos_pct"] - round((200.0 - 150.0) / 200.0 * 100.0, 2)) < 1e-6
+assert r["tier_model"]["discount_rate"] == 0.080
+assert r["tier_model"]["tier_label"] == "large-cap (US$50B-200B)"
+assert r["tier_model"]["intrinsic_value"] == 220.0
+assert abs(r["tier_model"]["mos_pct"] - round((220.0 - 150.0) / 220.0 * 100.0, 2)) < 1e-6
+_expected_delta = round(r["tier_model"]["mos_pct"] - r["current_model"]["mos_pct"], 2)
+assert r["mos_delta_pts"] == _expected_delta
+print("[check_a6_discount_tiers] old (auto-CAPM) vs new (tiered) discount rate/IV/MOS both "
+      "computed from the SAME dcf_intrinsic_value() call, differing only in the discount_rate= "
+      "override, with mos_delta_pts correctly derived OK")
+
+# A ticker whose bundle fetch fails must not crash the whole check.
+with mock.patch("fundamentals_data.get_bundle", side_effect=Exception("network down")):
+    rows_err = ada.check_a6_discount_tiers(tickers=["BADTICKER"])
+assert rows_err[0]["ticker"] == "BADTICKER" and "error" in rows_err[0]
+print("[check_a6_discount_tiers_error_isolated] one ticker's fetch failure is captured, not "
+      "raised OK")
+
+
 # ---- check_mer(): mocked funds_data + etf_insights.get_fund_facts ----
 with mock.patch.object(ada, "yf") as mock_yf:
     ops = pd.DataFrame({"IVV": [0.0007]}, index=["Annual Report Expense Ratio"])

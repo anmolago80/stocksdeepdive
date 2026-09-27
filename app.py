@@ -49,6 +49,10 @@ import announce_engine
 import compare_config
 import compare_lists_store
 import admin_data_audit
+import capm_engine
+import fcf_valuation_engine
+import top100_store
+import top100_engine
 import scan_store
 import scanner_engine
 import screen_import_store
@@ -29118,6 +29122,54 @@ def _render_data_audit_checks_panel():
         _da_mer_rows,
     ), unsafe_allow_html=True)
 
+    # --- A6: market-cap discount-rate tiers, current model vs proposed (dry-run) ---
+    # (27 Sep 2026, owner-directed, FINAL SPEC): DESIGN + DRY RUN ONLY -
+    # see capm_engine.py's own "A6" section. Nothing here is read by any
+    # live valuation; this is purely the side-by-side numbers the spec
+    # asked for, for the owner's own named 14-ticker list.
+    st.markdown("**A6 - market-cap discount-rate tiers vs current beta model (dry-run, DESIGN ONLY)**")
+    st.caption(
+        "Beta is NOT used anywhere below - the 'tier model' column is the cost of equity as "
+        "risk-free rate + a premium set by market-cap tier (see capm_engine.MARKET_CAP_DISCOUNT_"
+        "TIERS). Both columns run through the SAME fcf_valuation_engine.dcf_intrinsic_value() "
+        "call for a given ticker, differing only in the discount_rate passed in - isolates the "
+        "one variable this comparison is about. Nothing here changes the live site; capm_engine."
+        "resolve_discount_rate_by_market_cap() is not called from any live valuation path."
+    )
+    _da_a6_rows = []
+    for _r in _da_result.get("a6_discount_tiers", []):
+        _cur, _tier = _r.get("current_model", {}), _r.get("tier_model", {})
+        _delta = _r.get("mos_delta_pts")
+        _da_a6_rows.append(
+            "<tr>"
+            f"<td>{_r['ticker']}</td>"
+            f"<td>{_r.get('price', '-')}</td>"
+            f"<td>{_cur.get('discount_rate', '-')}</td>"
+            f"<td>{_cur.get('intrinsic_value', '-')}</td>"
+            f"<td>{_cur.get('mos_pct', '-')}</td>"
+            f"<td>{_tier.get('tier_label', _r.get('error', '-'))}</td>"
+            f"<td>{_tier.get('discount_rate', '-')}</td>"
+            f"<td>{_tier.get('intrinsic_value', '-')}</td>"
+            f"<td>{_tier.get('mos_pct', '-')}</td>"
+            f"<td>{'-' if _delta is None else f'{_delta:+.2f}'}</td>"
+            "</tr>"
+        )
+    st.markdown(_sdd_table(
+        ["Ticker", "Price", "Current: Rate", "Current: IV", "Current: MOS%",
+         "Tier (new)", "Tier: Rate", "Tier: IV", "Tier: MOS%", "MOS delta (pts)"],
+        _da_a6_rows,
+    ), unsafe_allow_html=True)
+    _da_a6_big_moves = [
+        _r for _r in _da_result.get("a6_discount_tiers", [])
+        if _r.get("mos_delta_pts") is not None and abs(_r["mos_delta_pts"]) > 10
+    ]
+    if _da_a6_big_moves:
+        st.caption(
+            f"{len(_da_a6_big_moves)} of {len(_da_result.get('a6_discount_tiers', []))} named "
+            f"ticker(s) move by more than 10 points of MOS: "
+            + ", ".join(f"{_r['ticker']} ({_r['mos_delta_pts']:+.1f})" for _r in _da_a6_big_moves)
+        )
+
 
 def page_admin_dashboard():
     """Mega-batch Part 35.2: the owner Admin Dashboard - matches the
@@ -29603,6 +29655,170 @@ def page_admin_dashboard():
     # on-demand, network-using tools guarded by the same scan-lock/
     # schedule refusal.
     _render_data_audit_checks_panel()
+
+    # --- A6: MARKET-CAP DISCOUNT-RATE TIERS, BULK ACROSS SAVED UNIVERSES
+    # (27 Sep 2026, owner-directed, FINAL SPEC). DESIGN + DRY RUN ONLY -
+    # answers the spec's "how many tickers across the saved universes
+    # move by more than 10 points of MOS" question. Same cache-only
+    # pattern as the Operating-income audit below (fundamentals_data.
+    # peek_cached_bundle() - NEVER a live fetch; a ticker with nothing
+    # cached is skipped and listed), for the same reason: auditing every
+    # saved universe live would be far too slow and would hammer Yahoo
+    # for a read-only diagnostic. capm_engine.resolve_discount_rate_by_
+    # market_cap() is not called from any live valuation path (see its
+    # own docstring) - nothing here changes the live site.
+    st.markdown("### A6 - discount-rate tiers vs current beta model, bulk (dry-run, DESIGN ONLY)")
+    st.caption(
+        "For every ticker in the selected universe(s) with a cached fundamentals bundle: MOS "
+        "under the current live beta-based model vs the proposed market-cap-tier model (no "
+        "beta), both from the SAME dcf_intrinsic_value() call differing only in the discount "
+        "rate passed in. Counts how many move by more than 10 points of MOS, and how many of "
+        "those are in the CURRENT Top 100 pool (top100_store.current_pool()) - a directional "
+        "signal for how much this could reshuffle Top 100, not a full re-selection (Value Score "
+        "also depends on components other than MOS, which this audit does not re-run)."
+    )
+    with st.container(border=True):
+        _a6_candidate_universes = (
+            list(scanner_engine.AUSTRALIA_UNIVERSES) + list(scanner_engine.USA_UNIVERSES)
+            + [nightly_scan.IMPORTED_UNIVERSE]
+        )
+        _a6_saved_universes = sorted(
+            _u for _u in _a6_candidate_universes if os.path.exists(scan_store._path(_u))
+        )
+        _a6_universe_choice = st.selectbox(
+            "Universe", ["All saved universes"] + _a6_saved_universes,
+            key="admin_dash_a6_audit_universe",
+        )
+        if st.button("Run audit", key="admin_dash_a6_audit_btn"):
+            _a6_target_universes = (
+                _a6_saved_universes if _a6_universe_choice == "All saved universes"
+                else [_a6_universe_choice]
+            )
+            _a6_ticker_universes = {}
+            for _uni in _a6_target_universes:
+                try:
+                    _a6_payload = scan_store.load_scan_raw(_uni)
+                except Exception:
+                    _a6_payload = None
+                for _row in (_a6_payload or {}).get("rows", []):
+                    _tk = _row.get("Ticker")
+                    if _tk:
+                        _a6_ticker_universes.setdefault(_tk, set()).add(_uni)
+
+            _a6_unique_tickers = sorted(_a6_ticker_universes.keys())
+            _a6_total = len(_a6_unique_tickers)
+            _a6_progress_bar = st.progress(0.0)
+            _a6_progress_caption = st.empty()
+
+            _a6_rows = []
+            _a6_skipped_no_cache = []
+            _a6_CHUNK = 25
+            for _i, _tk in enumerate(_a6_unique_tickers):
+                _bundle = fundamentals_data.peek_cached_bundle(_tk)
+                if _bundle is None:
+                    _a6_skipped_no_cache.append(_tk)
+                else:
+                    try:
+                        _info = (_bundle or {}).get("info") or {}
+                        _cashflow_df = (_bundle or {}).get("cashflow")
+                        _currency = _info.get("currency")
+                        _price = _info.get("currentPrice")
+
+                        _iv_old, _, _meta_old = fcf_valuation_engine.dcf_intrinsic_value(
+                            _tk, info=_info, cashflow_df=_cashflow_df, currency=_currency,
+                        )
+                        _mos_old = ((_iv_old - _price) / _iv_old * 100.0) if (_iv_old and _price) else None
+
+                        _tier_rate, _tier_meta = capm_engine.resolve_discount_rate_by_market_cap(_info, _currency)
+                        _iv_new, _, _meta_new = fcf_valuation_engine.dcf_intrinsic_value(
+                            _tk, info=_info, cashflow_df=_cashflow_df, currency=_currency,
+                            discount_rate=_tier_rate,
+                        )
+                        _mos_new = ((_iv_new - _price) / _iv_new * 100.0) if (_iv_new and _price) else None
+
+                        if _mos_old is not None and _mos_new is not None:
+                            _a6_rows.append({
+                                "ticker": _tk,
+                                "universe": ", ".join(sorted(_a6_ticker_universes[_tk])),
+                                "tier": _tier_meta.get("tier_label"),
+                                "mos_old": round(_mos_old, 2),
+                                "mos_new": round(_mos_new, 2),
+                                "mos_delta": round(_mos_new - _mos_old, 2),
+                            })
+                    except Exception:
+                        pass  # same "silently excluded" convention as the EBIT audit below for an unscoreable ticker
+                if (_i + 1) % _a6_CHUNK == 0 or (_i + 1) == _a6_total:
+                    _a6_progress_bar.progress((_i + 1) / _a6_total if _a6_total else 1.0)
+                    _a6_progress_caption.caption(f"Processed {_i + 1}/{_a6_total} ticker(s) - {_tk}")
+
+            _a6_progress_bar.empty()
+            _a6_progress_caption.empty()
+
+            st.session_state["admin_dash_a6_audit_rows"] = _a6_rows
+            st.session_state["admin_dash_a6_audit_skipped"] = _a6_skipped_no_cache
+
+        _a6_rows = st.session_state.get("admin_dash_a6_audit_rows")
+        _a6_skipped_no_cache = st.session_state.get("admin_dash_a6_audit_skipped") or []
+
+        if _a6_skipped_no_cache:
+            with st.expander(f"{len(_a6_skipped_no_cache)} ticker(s) skipped - no cached fundamentals on file"):
+                st.dataframe(pd.DataFrame({"ticker": _a6_skipped_no_cache}), hide_index=True, width='stretch')
+
+        if _a6_rows:
+            _a6_df = pd.DataFrame(_a6_rows)
+            _a6_big_movers = _a6_df[_a6_df["mos_delta"].abs() > 10]
+            st.markdown(
+                f"**{len(_a6_df)} ticker(s) audited** (deduped across selected universes, cached "
+                f"data only) - **{len(_a6_big_movers)} move by more than 10 points of MOS**."
+            )
+
+            try:
+                _a6_pool_tickers = {r["ticker"] for r in top100_store.current_pool()}
+            except Exception:
+                _a6_pool_tickers = set()
+            _a6_pool_big_movers = (
+                set(_a6_big_movers["ticker"]) & _a6_pool_tickers if _a6_pool_tickers else set()
+            )
+            if _a6_pool_tickers:
+                st.markdown(
+                    f"Of those, **{len(_a6_pool_big_movers)} are in the current Top 100 pool** "
+                    f"({len(_a6_pool_tickers)} tickers) - a directional signal only (see caption "
+                    "above), not a re-run of the actual selection."
+                )
+                # Worst-case scoring-cost bound: EVERY current pool ticker
+                # rescored fresh (an upper bound - in practice, a ticker
+                # already scored for this quarter/model/rubric costs
+                # nothing again; only a genuinely new pool entrant would).
+                # Token estimate is NOT from a real batch log (none
+                # available from this sandbox) - it's the measured length
+                # of top100_engine._SYSTEM_PROMPT (~4 chars/token, a
+                # standard rough approximation) plus a documented
+                # estimate for the small per-ticker user prompt and a
+                # ten-dimension structured-JSON output. Labelled as an
+                # ESTIMATE, not a measured figure.
+                _a6_est_input_tokens = (len(top100_engine._SYSTEM_PROMPT) // 4) + 150
+                _a6_est_output_tokens = 700
+                _a6_est_cost_per_ticker = top100_engine.estimate_batch_cost_usd(
+                    _a6_est_input_tokens, _a6_est_output_tokens
+                )
+                _a6_est_full_pool_cost = _a6_est_cost_per_ticker * len(_a6_pool_tickers)
+                st.caption(
+                    f"Estimated worst-case scoring cost if the ENTIRE current pool "
+                    f"({len(_a6_pool_tickers)} tickers) needed fresh scoring: "
+                    f"~${_a6_est_full_pool_cost:.2f} (~${_a6_est_cost_per_ticker:.4f}/ticker, "
+                    f"batch-priced, based on an estimated ~{_a6_est_input_tokens:,} input / "
+                    f"~{_a6_est_output_tokens:,} output tokens per ticker - NOT a measured "
+                    "figure, see caption above). In practice only a genuinely new pool entrant "
+                    "would cost anything - a ticker already scored this quarter/model/rubric is "
+                    "free to re-rank."
+                )
+
+            if not _a6_big_movers.empty:
+                st.markdown("**Tickers moving by more than 10 points of MOS:**")
+                st.dataframe(
+                    _a6_big_movers.sort_values("mos_delta", key=abs, ascending=False),
+                    hide_index=True, width='stretch',
+                )
 
     # --- STALE-PRICED TICKERS (Commit J, 21 Sep 2026, owner-reported) --
     # A per-TICKER condition, not a data-SOURCE health check - the

@@ -4,12 +4,20 @@ admin_data_audit.py
 Data-correctness audit, item 5 (27 Sep 2026, owner-directed): a single
 owner-only, button-triggered "Data audit checks" panel on the Admin
 Dashboard (see app.py's page_admin_dashboard()) that answers, against
-REAL production data, every A1/A3b/A5/MER question this whole audit
+REAL production data, every A1/A3b/A5/A6/MER question this whole audit
 could not verify from the sandboxed session that did the actual code
-fixes (no live network access there - confirmed via two separate
-WebFetch attempts against finance.yahoo.com and stocksdeepdive.com,
-both EGRESS_BLOCKED). The production server CAN reach Yahoo; this is
-the one place on the live site built specifically to use that.
+fixes (no live network access there - confirmed via three separate
+WebFetch attempts against finance.yahoo.com, stocksdeepdive.com, and
+www.rba.gov.au, all EGRESS_BLOCKED). The production server CAN reach
+Yahoo (and, pending verification, the RBA); this is the one place on
+the live site built specifically to use that.
+
+A6 (27 Sep 2026, owner-directed, FINAL SPEC): the market-cap-discount-
+tier design that would replace beta is DESIGN + DRY RUN ONLY - see
+capm_engine.py's own "A6" section for the full rationale. Nothing this
+module computes for A6 is read by any live valuation; check_a6_
+discount_tiers() below exists purely to give the owner the side-by-side
+numbers that spec asked for.
 
 Read-only, by design: nothing here writes to any store, invalidates any
 cache, or touches scan_store/score_history/the nightly scan in any way.
@@ -86,6 +94,17 @@ A1_TICKERS = ["AAPL", "MSFT", "KO", "JNJ", "CROX"]  # CROX: "one small US cap"
 A3B_TICKERS = ["HEI", "GOOG", "GOOGL", "FOX", "FOXA", "NWS", "NWSA", "BRK-B"]
 A5_TICKERS = ["CSL.AX", "BHP.AX", "WES.AX"]
 MER_TICKERS = ["IVV", "VAS", "VGS"]
+# A6 (27 Sep 2026, owner-directed, FINAL SPEC): the owner's own named
+# list, deliberately spanning every discount-rate tier and both
+# currencies - AAPL/MSFT (mega-cap USD), KO/JNJ (large-cap USD), CPRT
+# (mid-cap USD), NVDA (mega-cap USD), CROX (small/mid-cap USD, already
+# this audit's "one small US cap"), CSL.AX/BHP.AX/WES.AX (large-cap
+# AUD, already A5's tickers), DUG.AX/AR1.AX/REG.AX/HM1.AX (small/micro-
+# cap AUD).
+A6_TICKERS = [
+    "AAPL", "MSFT", "KO", "JNJ", "CPRT", "NVDA", "CROX",
+    "CSL.AX", "BHP.AX", "WES.AX", "DUG.AX", "AR1.AX", "REG.AX", "HM1.AX",
+]
 
 _PACE_SECONDS = 0.4  # "polite to yfinance" - same spirit as _prefetch_scan_data's pacing
 
@@ -329,6 +348,67 @@ def check_a5_half_year(tickers=None):
     return out
 
 
+def check_a6_discount_tiers(tickers=None):
+    """A6 dry-run (27 Sep 2026, owner-directed, FINAL SPEC): for each of
+    `tickers`, the tier/discount rate/intrinsic value/MOS under (a) the
+    current live beta-based CAPM model (with the A1 fix already live -
+    capm_engine.resolve_discount_rate) and (b) the new market-cap-tier
+    model (capm_engine.resolve_discount_rate_by_market_cap), computed
+    by calling fcf_valuation_engine.dcf_intrinsic_value() TWICE for the
+    same ticker with the SAME fetched bundle/growth/perpetual-rate
+    inputs, differing only in the discount_rate= override passed in -
+    isolates the one variable this whole audit is actually about,
+    rather than risking two runs that also silently differ in FCF base
+    or growth source. DESIGN + DRY RUN ONLY - neither call here ever
+    writes anywhere; capm_engine.resolve_discount_rate_by_market_cap()
+    itself is not called from any live valuation path (see its own
+    docstring)."""
+    tickers = tickers or A6_TICKERS
+    out = []
+    for t in tickers:
+        row = {"ticker": t}
+        try:
+            bundle = fundamentals_data.get_bundle(t)
+            info = (bundle or {}).get("info") or {}
+            cashflow_df = (bundle or {}).get("cashflow")
+            currency = info.get("currency")
+            price = info.get("currentPrice")
+
+            iv_old, _g_old, meta_old = fcf_valuation_engine.dcf_intrinsic_value(
+                t, info=info, cashflow_df=cashflow_df, currency=currency,
+            )
+            mos_old = ((iv_old - price) / iv_old * 100.0) if (iv_old and price) else None
+
+            tier_rate, tier_meta = capm_engine.resolve_discount_rate_by_market_cap(info, currency)
+            iv_new, _g_new, meta_new = fcf_valuation_engine.dcf_intrinsic_value(
+                t, info=info, cashflow_df=cashflow_df, currency=currency,
+                discount_rate=tier_rate,
+            )
+            mos_new = ((iv_new - price) / iv_new * 100.0) if (iv_new and price) else None
+
+            row["price"] = price
+            row["current_model"] = {
+                "discount_rate": meta_old.get("discount_rate_used"),
+                "intrinsic_value": round(iv_old, 2) if iv_old else None,
+                "mos_pct": round(mos_old, 2) if mos_old is not None else None,
+            }
+            row["tier_model"] = {
+                "tier_label": tier_meta.get("tier_label"),
+                "discount_rate": round(tier_rate, 4),
+                "rf_source": tier_meta.get("rf_source"),
+                "intrinsic_value": round(iv_new, 2) if iv_new else None,
+                "mos_pct": round(mos_new, 2) if mos_new is not None else None,
+            }
+            row["mos_delta_pts"] = (
+                round(mos_new - mos_old, 2) if (mos_old is not None and mos_new is not None) else None
+            )
+        except Exception as e:
+            row["error"] = str(e)
+        out.append(row)
+        time.sleep(_PACE_SECONDS)
+    return out
+
+
 def check_mer(tickers=None):
     """MER: the raw expense-ratio value yfinance returns (pre any
     normalization) next to what etf_insights.get_fund_facts() - the
@@ -374,5 +454,6 @@ def run_all_checks(_cache_bust=0):
         "a1_before_after": check_a1_before_after(),
         "a3b_shares": check_a3b_shares(),
         "a5_half_year": check_a5_half_year(),
+        "a6_discount_tiers": check_a6_discount_tiers(),
         "mer": check_mer(),
     }

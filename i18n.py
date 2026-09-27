@@ -3848,6 +3848,18 @@ EN = {
     "currency_risk.scenario_average_label": "If {base} reverts to the period average ({rate})",
     "currency_risk.scenario_plus_1sigma_label": "If {base} reaches +1σ ({rate})",
     "currency_risk.scenario_minus_1sigma_label": "If {base} falls to −1σ ({rate})",
+
+    # A6 (27 Sep 2026, owner-directed, FINAL SPEC): PREPARED, NOT YET
+    # WIRED INTO ANY LIVE PAGE. Beta still IS used in the live discount
+    # rate today (capm_engine.resolve_discount_rate) - these two keys
+    # are the copy the owner's spec calls for on the day the market-cap-
+    # tier model actually replaces it ("beta stays visible on the page
+    # for information, labelled as not used in valuation"), written now
+    # so that swap is copy-ready rather than new design work, but not
+    # referenced by any render function yet - wiring it in before the
+    # swap ships would mislabel a rate beta still genuinely drives.
+    "a6_future.beta_label": "Beta",
+    "a6_future.beta_not_used_note": "Shown for information only - not used in this valuation.",
 }
 
 ES = {
@@ -7116,6 +7128,11 @@ ES = {
     "currency_risk.scenario_average_label": "Si {base} revierte al promedio del período ({rate})",
     "currency_risk.scenario_plus_1sigma_label": "Si {base} alcanza +1σ ({rate})",
     "currency_risk.scenario_minus_1sigma_label": "Si {base} cae a −1σ ({rate})",
+
+    # A6 - PREPARED, NOT YET WIRED INTO ANY LIVE PAGE (see the EN dict's
+    # own comment above these same two keys).
+    "a6_future.beta_label": "Beta",
+    "a6_future.beta_not_used_note": "Se muestra solo a título informativo - no se usa en esta valoración.",
 }
 
 
