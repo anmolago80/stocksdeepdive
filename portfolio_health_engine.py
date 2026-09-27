@@ -204,9 +204,18 @@ def fetch_snapshot(ticker, discount_rate=None, perpetual_rate=None, growth_rate=
             def _fcf_for_col(col):
                 ocf = cf.loc["Operating Cash Flow", col] if "Operating Cash Flow" in cf.index else None
                 capex = cf.loc["Capital Expenditure", col] if "Capital Expenditure" in cf.index else None
-                if ocf is None:
+                if ocf is None or (isinstance(ocf, float) and ocf != ocf):
                     return None
-                return float(ocf) + float(capex or 0)  # capex is already negative in yfinance
+                # Audit fix B2.8 (27 Sep 2026, owner-directed, CONFIRMED
+                # BUG): a MISSING Capital Expenditure row used to be
+                # treated as a zero capex ("capex or 0"), silently making
+                # FCF = OCF - overstating FCF for exactly the tickers
+                # whose cashflow statement doesn't carry that row at all,
+                # rather than leaving this figure unavailable like every
+                # other missing-input case on this site.
+                if capex is None or (isinstance(capex, float) and capex != capex):
+                    return None
+                return float(ocf) + float(capex)  # capex is already negative in yfinance
             cols = list(cf.columns)
             if len(cols) >= 2:
                 latest, prior = _fcf_for_col(cols[0]), _fcf_for_col(cols[1])

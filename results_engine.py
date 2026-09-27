@@ -251,7 +251,15 @@ def _fcf_for_col(cashflow_df, col):
                  if "Capital Expenditure" in cashflow_df.index else None)
         if ocf is None or (isinstance(ocf, float) and pd.isna(ocf)):
             return None
-        return float(ocf) + float(capex or 0)
+        # Audit fix B2.8 (27 Sep 2026, owner-directed, CONFIRMED BUG): a
+        # MISSING Capital Expenditure row used to be treated as a zero
+        # capex ("capex or 0"), silently making FCF = OCF - overstating
+        # FCF for exactly the tickers whose cashflow statement doesn't
+        # carry that row at all, rather than leaving this figure
+        # unavailable like every other missing-input case on this site.
+        if capex is None or (isinstance(capex, float) and pd.isna(capex)):
+            return None
+        return float(ocf) + float(capex)
     except Exception:
         return None
 
