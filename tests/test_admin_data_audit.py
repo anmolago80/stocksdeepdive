@@ -160,6 +160,51 @@ assert rows3[0]["ticker"] == "ERRTEST.AX" and "error" in rows3[0]
 print("[a5_error_isolated] a fetch failure is captured per-ticker, not raised OK")
 
 
+# ---- A1 pre-fix snapshot mechanism (27 Sep 2026, owner-directed, MANDATORY) ----
+import scan_store
+
+# The module-level import above already ran capture_a1_before_snapshot_
+# once() once (with nothing yet saved in this fresh TESTVOL) - remove
+# that empty snapshot so this block can test real capture behaviour
+# from a clean slate, same as a fresh production deploy would see it.
+if os.path.exists(ada._snapshot_path()):
+    os.remove(ada._snapshot_path())
+
+scan_store.save_scan("TEST_UNIVERSE", [{"Ticker": "AAPL", "Intrinsic Value": 150.0, "MOS %": -10.0}], "test")
+
+ada.capture_a1_before_snapshot_once(tickers=["AAPL", "MSFT"])
+snap = ada.load_a1_before_snapshot()
+assert snap is not None and "AAPL" in snap["rows"] and "MSFT" not in snap["rows"]
+assert snap["rows"]["AAPL"]["row"]["Intrinsic Value"] == 150.0
+print("[a1_snapshot_capture] captures exactly the tickers with a saved row, skips ones with "
+      "none, from the live scan_store state at capture time OK")
+
+# Idempotency: change scan_store afterwards, re-run the capture - must NOT overwrite.
+scan_store.save_scan("TEST_UNIVERSE", [{"Ticker": "AAPL", "Intrinsic Value": 999.0, "MOS %": 50.0}], "test")
+ada.capture_a1_before_snapshot_once(tickers=["AAPL"])
+snap2 = ada.load_a1_before_snapshot()
+assert snap2["rows"]["AAPL"]["row"]["Intrinsic Value"] == 150.0  # still the FIRST capture
+print("[a1_snapshot_idempotent] a second capture call never overwrites an existing snapshot, "
+      "even when scan_store has since changed - this is the whole mechanism's point OK")
+
+# check_a1_before_after() prefers the snapshot for a captured ticker, falls back to a live
+# read (via _find_any_saved_row) for one the snapshot never saw.
+scan_store.save_scan("TEST_UNIVERSE", [
+    {"Ticker": "AAPL", "Intrinsic Value": 999.0, "MOS %": 50.0},
+    {"Ticker": "MSFT", "Intrinsic Value": 400.0, "MOS %": 5.0},
+], "test")
+with mock.patch("fundamentals_data.get_bundle", return_value=None):
+    rows = ada.check_a1_before_after(tickers=["AAPL", "MSFT"])
+by_ticker = {r["ticker"]: r for r in rows}
+assert by_ticker["AAPL"]["before"]["row"]["Intrinsic Value"] == 150.0  # snapshot, not live 999.0
+assert by_ticker["AAPL"]["before_source"] == "snapshot"
+assert by_ticker["MSFT"]["before"]["row"]["Intrinsic Value"] == 400.0  # live fallback, snapshot never had it
+assert by_ticker["MSFT"]["before_source"] == "live"
+print("[check_a1_before_after_snapshot_wiring] AAPL's 'before' comes from the frozen snapshot "
+      "(ignoring scan_store's now-different live row) while MSFT, never captured, correctly "
+      "falls back to a live read OK")
+
+
 # ---- check_a6_discount_tiers(): mocked bundle + capm_engine + dcf_intrinsic_value ----
 import capm_engine
 import fcf_valuation_engine
@@ -214,6 +259,86 @@ with mock.patch.object(ada, "yf") as mock_yf:
 assert abs(rows[0]["raw_expense_ratio"] - 0.0007) < 1e-9
 assert rows[0]["site_displays_mer_pct"] == 0.07
 print("[check_mer] raw fraction (0.0007) next to the site's own normalized display (0.07%) OK")
+
+
+# ---- Batch B1a: check_b1_dividend_currency() ----
+class _FakeDividends(dict):
+    """Minimal stand-in for a pandas Series with .empty/.tail()/.items()."""
+    def __init__(self, mapping):
+        super().__init__(mapping)
+    @property
+    def empty(self):
+        return len(self) == 0
+    def tail(self, n):
+        items = list(self.items())[-n:]
+        return _FakeDividends(dict(items))
+
+
+with mock.patch.object(ada, "yf") as mock_yf:
+    mock_yf.Ticker.return_value.info = {"currency": "AUD", "trailingAnnualDividendRate": 2.5}
+    mock_yf.Ticker.return_value.dividends = _FakeDividends({"2026-03-01": 1.25, "2026-09-01": 1.30})
+    rows = ada.check_b1_dividend_currency(tickers=["BHP.AX"])
+assert rows[0]["currency"] == "AUD" and rows[0]["trailingAnnualDividendRate"] == 2.5
+assert len(rows[0]["last_two_payments"]) == 2
+assert rows[0]["last_two_payments"][-1]["amount"] == 1.30
+print("[check_b1_dividend_currency] last-2 payments + trailingAnnualDividendRate + listing "
+      "currency all wired correctly OK")
+
+with mock.patch.object(ada, "yf") as mock_yf:
+    mock_yf.Ticker.return_value.info = {"currency": "AUD"}
+    mock_yf.Ticker.return_value.dividends = _FakeDividends({})
+    rows = ada.check_b1_dividend_currency(tickers=["EMPTY.AX"])
+assert rows[0]["last_two_payments"] == []
+print("[check_b1_dividend_currency_empty] no dividend history -> empty list, not a crash OK")
+
+
+# ---- Batch B1b: check_b1_lease_rows() ----
+_LEASE_CF_YEARS = ["2026-06-30", "2025-06-30"]
+_lease_cf_df = pd.DataFrame.from_dict({
+    "Repayments Of Lease Liabilities": [-120.0, -100.0],
+    "Some Unrelated Row": [50.0, 40.0],
+}, orient="index", columns=_LEASE_CF_YEARS)
+_lease_bs_df = pd.DataFrame.from_dict({
+    "Total Debt": [5000.0, 4800.0],
+    "Long Term Lease Liabilities": [900.0, 850.0],
+    "Cash": [200.0, 180.0],
+}, orient="index", columns=_LEASE_CF_YEARS)
+
+with mock.patch.object(ada, "yf") as mock_yf:
+    mock_yf.Ticker.return_value.cashflow = _lease_cf_df
+    mock_yf.Ticker.return_value.balance_sheet = _lease_bs_df
+    rows = ada.check_b1_lease_rows(tickers=["WES.AX"])
+r = rows[0]
+assert "Repayments Of Lease Liabilities" in r["cashflow_lease_rows"]
+assert "Some Unrelated Row" not in r["cashflow_lease_rows"]
+assert r["cashflow_lease_rows"]["Repayments Of Lease Liabilities"] == [-120.0, -100.0]
+assert r["total_debt_latest"] == 5000.0
+assert "Long Term Lease Liabilities" in r["balance_sheet_lease_rows"]
+assert "Cash" not in r["balance_sheet_lease_rows"]
+print("[check_b1_lease_rows] tolerant substring match finds the real lease/repayment row and "
+      "skips unrelated ones, Total Debt and balance-sheet lease liabilities both captured OK")
+
+with mock.patch.object(ada, "yf") as mock_yf:
+    mock_yf.Ticker.side_effect = Exception("network down")
+    rows_err = ada.check_b1_lease_rows(tickers=["ERR.AX"])
+assert rows_err[0]["ticker"] == "ERR.AX" and "error" in rows_err[0]
+print("[check_b1_lease_rows_error_isolated] a fetch failure is captured per-ticker, not raised OK")
+
+
+# ---- Batch B1c: check_b1_price_to_book_fx() ----
+with mock.patch.object(ada, "yf") as mock_yf:
+    mock_yf.Ticker.return_value.info = {
+        "priceToBook": 8.5, "currentPrice": 280.0, "bookValue": 32.0,
+        "currency": "AUD", "financialCurrency": "USD",
+    }
+    rows = ada.check_b1_price_to_book_fx(tickers=["CSL.AX"])
+r = rows[0]
+assert r["priceToBook_yahoo"] == 8.5
+assert abs(r["price_over_book_computed"] - 8.75) < 1e-6  # 280/32, NOT the same as Yahoo's 8.5
+assert r["currency"] == "AUD" and r["financialCurrency"] == "USD"
+print("[check_b1_price_to_book_fx] Yahoo's priceToBook shown next to the locally-computed "
+      "price/book and BOTH currencies, so a mismatch between them (8.5 vs 8.75 here) is visible "
+      "OK")
 
 
 print("\nALL ADMIN_DATA_AUDIT FIXTURES PASSED")

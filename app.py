@@ -29036,20 +29036,24 @@ def _render_data_audit_checks_panel():
     # --- A1: before/after discount rate / IV / MOS -------------------
     st.markdown("**A1 - discount rate / intrinsic value / MOS, before vs now**")
     st.caption(
-        "\"Before\" is the last saved scan row for that ticker, whatever its "
-        "age (no Discount Rate is saved on a scan row, only Intrinsic Value "
-        "and MOS %) - not necessarily from before A1's own fix if a scan has "
-        "run since."
+        "\"Before\" is a frozen snapshot of the last saved scan row for that "
+        "ticker, captured once at deploy time (before any scan since A1's "
+        "fix could overwrite it) - no Discount Rate is saved on a scan row, "
+        "only Intrinsic Value and MOS %. Falls back to a live read (same "
+        "caveat as before this snapshot mechanism existed) for a ticker the "
+        "snapshot never captured."
     )
     _da_ba_rows = []
     for _r in _da_result.get("a1_before_after", []):
         _before = (_r.get("before") or {}).get("row") or {}
+        _before_src = _r.get("before_source", "live")
         _now = _r.get("now", {})
         _da_ba_rows.append(
             "<tr>"
             f"<td>{_r['ticker']}</td>"
             f"<td>{_before.get('Intrinsic Value', '-')}</td>"
             f"<td>{_before.get('MOS %', '-')}</td>"
+            f"<td>{_before_src}</td>"
             f"<td>{_now.get('discount_rate', '-')}</td>"
             f"<td>{_now.get('intrinsic_value', '-')}</td>"
             f"<td>{_now.get('mos_pct', '-')}</td>"
@@ -29057,7 +29061,8 @@ def _render_data_audit_checks_panel():
             "</tr>"
         )
     st.markdown(_sdd_table(
-        ["Ticker", "Before: IV", "Before: MOS%", "Now: Rate", "Now: IV", "Now: MOS%", "Now: source/error"],
+        ["Ticker", "Before: IV", "Before: MOS%", "Before: source", "Now: Rate", "Now: IV",
+         "Now: MOS%", "Now: source/error"],
         _da_ba_rows,
     ), unsafe_allow_html=True)
 
@@ -29169,6 +29174,81 @@ def _render_data_audit_checks_panel():
             f"ticker(s) move by more than 10 points of MOS: "
             + ", ".join(f"{_r['ticker']} ({_r['mos_delta_pts']:+.1f})" for _r in _da_a6_big_moves)
         )
+
+    # --- BATCH B1 (27 Sep 2026, owner-directed): unverified-findings checks -
+    # confirms or rules out before anything in Batch B3 is touched. All
+    # three read-only, same guardrails as every other check on this panel.
+    st.markdown("**B1a - dividend currency (BHP.AX, RIO.AX, WDS.AX)**")
+    st.caption(
+        "Last two dividend payments from yfinance's own tk.dividends series, next to "
+        "trailingAnnualDividendRate and the listing currency - compare against the AUD amounts "
+        "on the ASX announcements themselves."
+    )
+    _da_b1a_rows = []
+    for _r in _da_result.get("b1_dividend_currency", []):
+        _pays = _r.get("last_two_payments") or []
+        _pay_str = ", ".join(f"{p['date']}: {p['amount']}" for p in _pays) if _pays else "-"
+        _da_b1a_rows.append(
+            "<tr>"
+            f"<td>{_r['ticker']}</td>"
+            f"<td>{_r.get('currency', _r.get('error', '-'))}</td>"
+            f"<td>{_r.get('trailingAnnualDividendRate', '-')}</td>"
+            f"<td>{_pay_str}</td>"
+            "</tr>"
+        )
+    st.markdown(_sdd_table(
+        ["Ticker", "Listing currency", "trailingAnnualDividendRate", "Last 2 payments (tk.dividends)"],
+        _da_b1a_rows,
+    ), unsafe_allow_html=True)
+
+    st.markdown("**B1b - lease rows (WES.AX, WOW.AX, QAN.AX, TGT)**")
+    st.caption(
+        "Every cash-flow-statement row whose name mentions lease/repayment/principal, plus Total "
+        "Debt and any lease-liability row on the balance sheet."
+    )
+    for _r in _da_result.get("b1_lease_rows", []):
+        with st.expander(f"{_r['ticker']}"):
+            if _r.get("error"):
+                st.warning(_r["error"])
+                continue
+            st.caption(f"Total Debt (latest): {_r.get('total_debt_latest', '-')}")
+            _cf_rows = _r.get("cashflow_lease_rows") or {}
+            if _cf_rows:
+                st.markdown("*Cash-flow rows:*")
+                st.dataframe(pd.DataFrame(_cf_rows).T, width='stretch')
+            else:
+                st.caption("No cash-flow row matched lease/repayment/principal.")
+            _bs_rows = _r.get("balance_sheet_lease_rows") or {}
+            if _bs_rows:
+                st.markdown("*Balance-sheet lease-liability rows:*")
+                st.dataframe(pd.DataFrame(_bs_rows).T, width='stretch')
+            else:
+                st.caption("No balance-sheet row matched 'lease'.")
+
+    st.markdown("**B1c - priceToBook FX (CSL.AX, RMD.AX)**")
+    st.caption(
+        "priceToBook (Yahoo's own figure) next to currentPrice / bookValue computed locally, "
+        "and both the listing currency and the financial-statement currency - shows whether "
+        "Yahoo's priceToBook is FX-adjusted or mixes currencies."
+    )
+    _da_b1c_rows = []
+    for _r in _da_result.get("b1_price_to_book_fx", []):
+        _da_b1c_rows.append(
+            "<tr>"
+            f"<td>{_r['ticker']}</td>"
+            f"<td>{_r.get('priceToBook_yahoo', _r.get('error', '-'))}</td>"
+            f"<td>{_r.get('price_over_book_computed', '-')}</td>"
+            f"<td>{_r.get('currentPrice', '-')}</td>"
+            f"<td>{_r.get('bookValue', '-')}</td>"
+            f"<td>{_r.get('currency', '-')}</td>"
+            f"<td>{_r.get('financialCurrency', '-')}</td>"
+            "</tr>"
+        )
+    st.markdown(_sdd_table(
+        ["Ticker", "priceToBook (Yahoo)", "Price/Book (computed)", "currentPrice", "bookValue",
+         "Listing ccy", "Financial ccy"],
+        _da_b1c_rows,
+    ), unsafe_allow_html=True)
 
 
 def page_admin_dashboard():

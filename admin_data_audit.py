@@ -24,6 +24,14 @@ cache, or touches scan_store/score_history/the nightly scan in any way.
 Every yfinance object built here is a NEW, disposable yf.Ticker(...)
 (or the existing cached wrappers below) - never a write path.
 
+ONE deliberate, owner-mandated exception: capture_a1_before_snapshot_
+once() (see its own section further down) writes a small local JSON
+snapshot of A1_TICKERS' pre-fix scan rows, exactly once per server
+process at import time, so the Data audit panel's A1 "before" column
+still means something after the nightly scan overwrites scan_store's
+live rows with post-fix values. It never touches scan_store,
+score_history, or the nightly scan itself - only its own small file.
+
 Reuses the site's own existing logic wherever it exists, rather than a
 second implementation of the same thing (this repo's own precedent -
 see CLAUDE.md and share_class_engine.py's own module docstring):
@@ -68,6 +76,8 @@ panel):
     fundamentals_data bundle for a check that doesn't need one) rather
     than reusing one maximal fetch everywhere.
 """
+import json
+import os
 import time
 from datetime import datetime, timezone
 
@@ -105,6 +115,13 @@ A6_TICKERS = [
     "AAPL", "MSFT", "KO", "JNJ", "CPRT", "NVDA", "CROX",
     "CSL.AX", "BHP.AX", "WES.AX", "DUG.AX", "AR1.AX", "REG.AX", "HM1.AX",
 ]
+# Batch B1 (27 Sep 2026, owner-directed): unverified-findings checks -
+# read-only, same as every check above; confirms or rules out before
+# anything in Batch B3 is touched.
+B1_DIVIDEND_CCY_TICKERS = ["BHP.AX", "RIO.AX", "WDS.AX"]
+B1_LEASE_TICKERS = ["WES.AX", "WOW.AX", "QAN.AX", "TGT"]
+B1_P2B_FX_TICKERS = ["CSL.AX", "RMD.AX"]
+_LEASE_ROW_HINTS = ("lease", "repayment", "principal")
 
 _PACE_SECONDS = 0.4  # "polite to yfinance" - same spirit as _prefetch_scan_data's pacing
 
@@ -172,6 +189,92 @@ def _find_any_saved_row(ticker):
     return None
 
 
+# =====================================================================
+# A1 pre-fix snapshot (27 Sep 2026, owner-directed, MANDATORY): the ONE
+# deliberate exception to this module's "read-only, writes nothing"
+# design (see the module docstring). The owner won't be awake before
+# tonight's 20:00 UTC scan overwrites scan_store's saved rows with
+# POST-A1-fix values, which would silently turn the panel's "before"
+# column into another "now" column - not a genuine before/after
+# comparison. This captures whatever scan_store CURRENTLY holds for
+# A1_TICKERS into a small persisted snapshot, ONE TIME, the moment this
+# module is first imported after this fix's own deploy (i.e. while
+# scan_store still holds the PRE-fix rows written by the last scan that
+# ran before this deploy - see capture_a1_before_snapshot_once()'s own
+# docstring for why that timing holds). Every later
+# check_a1_before_after() call then reads "before" from this frozen
+# snapshot instead of scan_store, so it stays meaningful even after
+# tonight's scan (and every scan after it) overwrites the live rows.
+# =====================================================================
+
+def _snapshot_dir():
+    # Same RAILWAY_VOLUME_MOUNT_PATH-or-local-fallback convention every
+    # other persisted store in this app uses (see scan_store._data_dir()).
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    path = os.path.join(base, "admin_data_audit")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _snapshot_path():
+    return os.path.join(_snapshot_dir(), "a1_before_snapshot.json")
+
+
+def capture_a1_before_snapshot_once(tickers=None):
+    """Idempotent: if a snapshot file already exists, does nothing at
+    all (never overwrites a real captured snapshot with a later, no-
+    longer-pre-fix read). Otherwise captures _find_any_saved_row() for
+    each of `tickers` right now and persists it.
+
+    Called once at the bottom of this module, so it runs exactly once
+    per server process at import time - i.e. at boot, right after this
+    fix's own deploy. At that exact moment scan_store still holds
+    whatever the LAST scan before this deploy wrote (deploying new code
+    doesn't itself touch scan_store; only an actual scan run does, and
+    none has run between this fix landing and the process booting) -
+    genuinely pre-fix data, which is the whole point of taking the
+    snapshot here rather than lazily on first panel view (a lazy first
+    capture could easily happen AFTER tonight's scan had already
+    overwritten the rows, if the owner's first click came after 20:00
+    UTC).
+
+    Wrapped in try/except at the call site below (never allowed to
+    block app boot); a failure here just means check_a1_before_after()
+    keeps falling back to a live scan_store read, exactly like before
+    this mechanism existed."""
+    path = _snapshot_path()
+    if os.path.exists(path):
+        return
+    tickers = tickers or A1_TICKERS
+    rows = {}
+    for t in tickers:
+        found = _find_any_saved_row(t)
+        if found:
+            rows[t] = found
+    payload = {
+        "captured_at_utc": datetime.now(timezone.utc).isoformat(),
+        "rows": rows,
+    }
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f)
+    os.replace(tmp, path)  # atomic - a concurrent worker's own capture can't corrupt this
+
+
+def load_a1_before_snapshot():
+    """The frozen pre-fix snapshot, or None if it was never captured
+    (e.g. a from-scratch deploy where scan_store had nothing yet for
+    these tickers) - read-only, no network, no write."""
+    path = _snapshot_path()
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def check_a1_rates():
     """A1: the raw ^TNX value fetched now, the US rate it produces, the
     AU rate used and whether it's live or defaulted."""
@@ -205,13 +308,21 @@ def check_a1_rates():
 
 
 def check_a1_before_after(tickers=None):
-    """A1: before (last saved scan row, any age, local only) vs now
-    (live discount rate / intrinsic value / MOS through the exact DCF
-    path A1 fixed) for each of `tickers`."""
+    """A1: before (the frozen pre-fix snapshot if one was captured -
+    see capture_a1_before_snapshot_once() above - otherwise falling
+    back to a live "last saved scan row, any age" read, same as before
+    this mechanism existed) vs now (live discount rate / intrinsic
+    value / MOS through the exact DCF path A1 fixed) for each of
+    `tickers`."""
     tickers = tickers or A1_TICKERS
+    snapshot = load_a1_before_snapshot()
+    snapshot_rows = (snapshot or {}).get("rows") or {}
     out = []
     for t in tickers:
-        row = {"ticker": t, "before": _find_any_saved_row(t)}
+        before = snapshot_rows.get(t) if snapshot else None
+        if before is None:
+            before = _find_any_saved_row(t)
+        row = {"ticker": t, "before": before, "before_source": "snapshot" if (snapshot and t in snapshot_rows) else "live"}
         try:
             bundle = fundamentals_data.get_bundle(t)
             info = (bundle or {}).get("info") or {}
@@ -409,6 +520,121 @@ def check_a6_discount_tiers(tickers=None):
     return out
 
 
+def check_b1_dividend_currency(tickers=None):
+    """B1a (27 Sep 2026, owner-directed): the last two dividend payments
+    from tk.dividends (a real pandas Series, date-indexed, in whatever
+    currency yfinance itself reports cash dividend amounts) next to
+    trailingAnnualDividendRate and the listing currency, for each of
+    `tickers` - the owner compares these against the AUD amounts on the
+    ASX announcements themselves. Confirms or rules out the finding;
+    changes nothing."""
+    tickers = tickers or B1_DIVIDEND_CCY_TICKERS
+    out = []
+    for t in tickers:
+        row = {"ticker": t}
+        try:
+            tk = yf.Ticker(t)
+            info = tk.info or {}
+            row["currency"] = info.get("currency")
+            row["trailingAnnualDividendRate"] = info.get("trailingAnnualDividendRate")
+            divs = tk.dividends
+            if divs is not None and not divs.empty:
+                last_two = divs.tail(2)
+                row["last_two_payments"] = [
+                    {"date": str(idx), "amount": float(v)} for idx, v in last_two.items()
+                ]
+            else:
+                row["last_two_payments"] = []
+        except Exception as e:
+            row["error"] = str(e)
+        out.append(row)
+        time.sleep(_PACE_SECONDS)
+    return out
+
+
+def check_b1_lease_rows(tickers=None):
+    """B1b (27 Sep 2026, owner-directed): every cash-flow-statement row
+    whose name mentions lease/repayment/principal, with values, plus
+    Total Debt and any lease-liability row on the balance sheet, for
+    each of `tickers`. Tolerant substring match on row labels (same
+    "don't know the exact label in advance" reasoning as auto_
+    compounder_engine._find_row()'s own substring fallback) rather than
+    an exact-name list, since IFRS lease-line naming varies by filer.
+    Confirms or rules out the finding; changes nothing."""
+    tickers = tickers or B1_LEASE_TICKERS
+    out = []
+    for t in tickers:
+        row = {"ticker": t}
+        try:
+            tk = yf.Ticker(t)
+            cashflow_df = tk.cashflow
+            lease_rows = {}
+            if cashflow_df is not None and not cashflow_df.empty:
+                for label in cashflow_df.index:
+                    if any(hint in str(label).lower() for hint in _LEASE_ROW_HINTS):
+                        lease_rows[str(label)] = [
+                            (float(v) if v == v else None) for v in cashflow_df.loc[label].tolist()
+                        ]
+            row["cashflow_lease_rows"] = lease_rows
+            row["cashflow_years"] = (
+                [str(c) for c in cashflow_df.columns] if cashflow_df is not None and not cashflow_df.empty else []
+            )
+
+            balance_df = tk.balance_sheet
+            total_debt = None
+            balance_lease_rows = {}
+            if balance_df is not None and not balance_df.empty:
+                for label in balance_df.index:
+                    label_l = str(label).lower()
+                    if label_l == "total debt":
+                        v = balance_df.loc[label].iloc[0]
+                        total_debt = float(v) if v == v else None
+                    if "lease" in label_l:
+                        balance_lease_rows[str(label)] = [
+                            (float(v) if v == v else None) for v in balance_df.loc[label].tolist()
+                        ]
+            row["total_debt_latest"] = total_debt
+            row["balance_sheet_lease_rows"] = balance_lease_rows
+        except Exception as e:
+            row["error"] = str(e)
+        out.append(row)
+        time.sleep(_PACE_SECONDS)
+    return out
+
+
+def check_b1_price_to_book_fx(tickers=None):
+    """B1c (27 Sep 2026, owner-directed): priceToBook next to a locally
+    computed currentPrice / bookValue, and both the listing currency
+    and the financial-statement currency (the same financialCurrency
+    vs currency distinction fcf_valuation_engine.dcf_intrinsic_value()
+    already has to account for - see its own "Currency conversion"
+    comment), for each of `tickers` - shows whether Yahoo's own
+    priceToBook is FX-adjusted or mixes a price-currency numerator
+    against a statement-currency denominator. Confirms or rules out the
+    finding; changes nothing."""
+    tickers = tickers or B1_P2B_FX_TICKERS
+    out = []
+    for t in tickers:
+        row = {"ticker": t}
+        try:
+            info = yf.Ticker(t).info or {}
+            price = info.get("currentPrice")
+            book_value = info.get("bookValue")
+            row["priceToBook_yahoo"] = info.get("priceToBook")
+            row["currentPrice"] = price
+            row["bookValue"] = book_value
+            row["price_over_book_computed"] = (
+                round(price / book_value, 4) if (price and book_value) else None
+            )
+            row["currency"] = info.get("currency")
+            row["financialCurrency"] = info.get("financialCurrency")
+        except Exception as e:
+            row["error"] = str(e)
+        out.append(row)
+        time.sleep(_PACE_SECONDS)
+    return out
+
+
 def check_mer(tickers=None):
     """MER: the raw expense-ratio value yfinance returns (pre any
     normalization) next to what etf_insights.get_fund_facts() - the
@@ -455,5 +681,23 @@ def run_all_checks(_cache_bust=0):
         "a3b_shares": check_a3b_shares(),
         "a5_half_year": check_a5_half_year(),
         "a6_discount_tiers": check_a6_discount_tiers(),
+        "b1_dividend_currency": check_b1_dividend_currency(),
+        "b1_lease_rows": check_b1_lease_rows(),
+        "b1_price_to_book_fx": check_b1_price_to_book_fx(),
         "mer": check_mer(),
     }
+
+
+# Boot-time, one-shot, idempotent (27 Sep 2026, owner-directed, MANDATORY
+# - see capture_a1_before_snapshot_once()'s own docstring above for the
+# full timing rationale). Runs once per server process, right after this
+# fix's own deploy - `import admin_data_audit` only executes a module's
+# top-level code once per process, however many times app.py itself is
+# re-run per Streamlit session. Never allowed to block app boot: any
+# failure here (e.g. no volume mounted yet, a transient disk error) is
+# swallowed, and check_a1_before_after() simply keeps its pre-existing
+# live-read fallback, exactly as if this mechanism didn't exist.
+try:
+    capture_a1_before_snapshot_once()
+except Exception:
+    pass
