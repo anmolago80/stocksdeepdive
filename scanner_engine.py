@@ -2292,14 +2292,26 @@ def _asx_small_ords_df():
     """ASX Small Ordinaries = ASX 300 minus ASX 100 (the standard
     definition) - derived from the two pools already fetched above, no
     new scrape. None if ASX 300 itself isn't available (nothing to
-    subtract from); if ASX 100's own live/fallback source is
-    unavailable too, falls back to ASX 300 minus ASX 200 instead (still
-    a real, if less precise, "smaller names" cut) rather than returning
-    the whole ASX 300 unfiltered under the Small Ordinaries name."""
+    subtract from); if ASX 100's own live source is unavailable (the
+    normal case - see ASX100_WIKI_URL's own comment: no confirmed
+    constituent-table page exists for it), falls back to the SAME
+    top-100-of-ASX-200-by-market-cap approximation get_universe_pool()'s
+    own "ASX 100" branch already uses in that case, rather than falling
+    all the way back to excluding the whole ~200-row ASX 200 (which
+    under-subtracts by ~100 names and was the actual cause of a 27 Sep
+    2026 owner-reported floor breach: Small Ordinaries saved at 99 rows,
+    below its 120 floor, when it should read closer to ASX 300's ~300
+    minus ASX 100's ~100 = ~200). Only falls all the way to ASX 300
+    minus ASX 200 if even that market-cap approximation can't be built
+    either (still a real, if less precise, "smaller names" cut) rather
+    than returning the whole ASX 300 unfiltered under the Small
+    Ordinaries name."""
     df300 = fetch_asx300()
     if df300 is None:
         return None
     df100 = fetch_asx100()
+    if df100 is None:
+        df100 = _asx_topn_by_marketcap_df(100)
     exclude = set((df100 if df100 is not None else fetch_asx200())["Ticker"]) \
         if (df100 is not None or fetch_asx200() is not None) else set()
     return df300[~df300["Ticker"].isin(exclude)]
@@ -2656,6 +2668,25 @@ def get_universe_pool(country, universe):
         # becomes unparseable one day too).
         df_topn = _asx_topn_by_marketcap_df(100)
         if df_topn is not None and not df_topn.empty:
+            # Fix (27 Sep 2026, owner-reported: NWS.AX in the live-
+            # scraped ASX 50 but missing from the saved ASX 100):
+            # fetch_asx100() itself backfills against fetch_asx50() (its
+            # own containment-chain child) when its live Wikipedia
+            # source succeeds - see fetch_asx100()'s own docstring - but
+            # this market-cap fallback path (taken every time, since
+            # ASX100_WIKI_URL has no confirmed constituent table - see
+            # that constant's own comment) never went through that
+            # backfill at all. A genuine ASX 100 constituent whose ASX-
+            # quoted market cap doesn't rank it in ASX 200's own top 100
+            # by cap (News Corp's ASX CDI listing is a small fraction of
+            # its real, Nasdaq-primary market cap) was silently dropped
+            # from "ASX 100" here even though the real S&P/ASX 50 (a
+            # confirmed live source) correctly includes it - which then
+            # failed ASX 50's own nightly containment check against
+            # THIS pool ("NWS.AX not in ASX 100") for a reason that has
+            # nothing to do with ASX 50's own data being wrong.
+            df_topn = _asx_backfill_missing_subset_tickers(
+                df_topn, fetch_asx50(), "ASX 100 (market-cap fallback)", "ASX 50")
             return df_topn, "top 100 of ASX 200 by market cap - membership list unavailable"
         df200 = fetch_asx200()
         if df200 is not None:
