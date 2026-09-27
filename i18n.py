@@ -2226,6 +2226,34 @@ EN = {
         "higher number, nothing more."
     ),
 
+    # Compare Commit 3 (27 Sep 2026, owner-directed): named saved
+    # comparison lists, signed-in only - see compare_lists_store.py.
+    "comparison.save_button": "\U0001F4BE Save this comparison",
+    "comparison.save_signin_prompt": "Sign in to save this comparison.",
+    "comparison.save_signin_cta": "Sign in",
+    "comparison.save_caption": "Save these {count} companies as a named list.",
+    "comparison.save_name_label": "List name",
+    "comparison.save_name_placeholder": "e.g. My retail picks",
+    "comparison.save_confirm": "Save",
+    "comparison.save_success": "Saved “{name}”.",
+    "comparison.error_name_required": "Enter a name for this list.",
+    "comparison.error_name_too_long": "Use a shorter name (60 characters or fewer).",
+    "comparison.error_no_tickers": "Nothing to save yet.",
+    "comparison.error_not_signed_in": "Sign in to save this comparison.",
+    "comparison.error_name_taken": "You already have a list with that name.",
+    "comparison.saved_lists_heading": "My saved lists",
+    "comparison.no_saved_lists": "No saved lists yet.",
+    "comparison.list_ticker_count": "{count} companies",
+    "comparison.load_button": "Load",
+    "comparison.rename_button": "Rename",
+    "comparison.delete_button": "Delete",
+    "comparison.rename_name_label": "New name",
+    "comparison.rename_confirm": "Save name",
+    "comparison.rename_cancel": "Cancel",
+    "comparison.delete_confirm_question": "Delete “{name}”? This can't be undone.",
+    "comparison.delete_confirm_yes": "Yes, delete",
+    "comparison.delete_confirm_cancel": "Cancel",
+
     # Mega-batch Part 7: Results Calendar week board.
     "calendar.subtitle": "Every report this week, at a glance.",
     "calendar.methodology": (
@@ -5683,6 +5711,32 @@ ES = {
         "recomendación - la cifra en verde en cada línea es simplemente "
         "el número más alto, nada más."
     ),
+
+    "comparison.save_button": "\U0001F4BE Guardar esta comparación",
+    "comparison.save_signin_prompt": "Inicia sesión para guardar esta comparación.",
+    "comparison.save_signin_cta": "Iniciar sesión",
+    "comparison.save_caption": "Guarda estas {count} empresas como una lista con nombre.",
+    "comparison.save_name_label": "Nombre de la lista",
+    "comparison.save_name_placeholder": "p. ej. Mis favoritas de retail",
+    "comparison.save_confirm": "Guardar",
+    "comparison.save_success": "Se guardó “{name}”.",
+    "comparison.error_name_required": "Ingresa un nombre para esta lista.",
+    "comparison.error_name_too_long": "Usa un nombre más corto (60 caracteres o menos).",
+    "comparison.error_no_tickers": "Aún no hay nada que guardar.",
+    "comparison.error_not_signed_in": "Inicia sesión para guardar esta comparación.",
+    "comparison.error_name_taken": "Ya tienes una lista con ese nombre.",
+    "comparison.saved_lists_heading": "Mis listas guardadas",
+    "comparison.no_saved_lists": "Aún no tienes listas guardadas.",
+    "comparison.list_ticker_count": "{count} empresas",
+    "comparison.load_button": "Cargar",
+    "comparison.rename_button": "Renombrar",
+    "comparison.delete_button": "Eliminar",
+    "comparison.rename_name_label": "Nuevo nombre",
+    "comparison.rename_confirm": "Guardar nombre",
+    "comparison.rename_cancel": "Cancelar",
+    "comparison.delete_confirm_question": "¿Eliminar “{name}”? Esto no se puede deshacer.",
+    "comparison.delete_confirm_yes": "Sí, eliminar",
+    "comparison.delete_confirm_cancel": "Cancelar",
 
     # Mega-batch Part 7: tablero semanal del Calendario de resultados.
     "calendar.subtitle": "Todos los informes de esta semana, de un vistazo.",

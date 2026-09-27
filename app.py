@@ -47,6 +47,7 @@ import metrics_store
 import positions_store
 import announce_engine
 import compare_config
+import compare_lists_store
 import admin_data_audit
 import scan_store
 import scanner_engine
@@ -14272,6 +14273,119 @@ _COMPARISON_POPULAR_PAIRS = [
 ]
 
 
+def _render_save_comparison_control(lang):
+    """Compare Commit 3 (27 Sep 2026, owner-directed): save the current
+    comparison as a named list (signed-in only), then load/rename/
+    delete saved lists. See compare_lists_store.py's own module
+    docstring for why this is a new store rather than an extension of
+    watchlist_store.py.
+
+    Placed right below the Compare button (see _render_comparison_
+    input_row's own call site, right after `if _go:`) - where a
+    visitor who just finished comparing will look for a save option.
+
+    Signed-out: no save control at all - just a short prompt with a
+    REAL working inline sign-in, not a dead link. Reuses paywall_
+    engine._render_signin_control_inline(), the one "sign in to do X"
+    CTA on this site actually proven to work end-to-end (see
+    _render_tools_signedout_hub()'s own 5-round bug-fix history: a raw
+    href/anchor fragment link had nothing to navigate to). Nothing is
+    ever stored for a signed-out visitor - this branch returns before
+    compare_lists_store is touched at all."""
+    email = paywall_engine.current_user_email()
+    if not email:
+        st.caption(i18n.t("comparison.save_signin_prompt", lang))
+        if st.button(i18n.t("comparison.save_signin_cta", lang), key="cmp_save_signin_btn"):
+            st.session_state["_cmp_show_signin_inline"] = True
+            st.rerun()
+        if st.session_state.get("_cmp_show_signin_inline"):
+            paywall_engine._render_signin_control_inline(key="cmp_signin_inline", lang=lang)
+        return
+
+    _current = st.session_state.get("cmp_stocks") or []
+    with st.popover(i18n.t("comparison.save_button", lang), key="cmp_save_popover"):
+        st.caption(i18n.t("comparison.save_caption", lang, count=len(_current)))
+        _new_list_name = st.text_input(
+            i18n.t("comparison.save_name_label", lang), key="cmp_save_name_input",
+            placeholder=i18n.t("comparison.save_name_placeholder", lang),
+            label_visibility="collapsed",
+        )
+        if st.button(i18n.t("comparison.save_confirm", lang), key="cmp_save_confirm_btn", type="primary"):
+            _ok, _err_key = compare_lists_store.save_list(email, _new_list_name, _current)
+            if _ok:
+                st.success(i18n.t("comparison.save_success", lang, name=_new_list_name.strip()))
+            else:
+                st.warning(i18n.t(f"comparison.error_{_err_key}", lang))
+
+        _saved_lists = compare_lists_store.list_lists(email)
+        st.divider()
+        st.markdown(f"**{i18n.t('comparison.saved_lists_heading', lang)}**")
+        if not _saved_lists:
+            st.caption(i18n.t("comparison.no_saved_lists", lang))
+        for _lst in _saved_lists:
+            _row_name = _lst["name"]
+            st.caption(
+                f"{_row_name} — "
+                f"{i18n.t('comparison.list_ticker_count', lang, count=len(_lst['tickers']))}"
+            )
+            _lc1, _lc2, _lc3 = st.columns(3)
+            with _lc1:
+                if st.button(i18n.t("comparison.load_button", lang), key=f"cmp_load_{_row_name}"):
+                    _load_tickers = _lst["tickers"]
+                    _n_au = sum(1 for t in _load_tickers if t.endswith(".AX"))
+                    st.session_state["cmp_stocks"] = _load_tickers
+                    st.session_state["cmp_universe_source"] = f"Saved list: {_row_name}"
+                    st.session_state["cmp_scan_country"] = (
+                        "Australia" if _n_au > (len(_load_tickers) - _n_au) else "USA"
+                    )
+                    st.session_state["cmp_fresh"] = True
+                    st.rerun()
+            with _lc2:
+                if st.button(i18n.t("comparison.rename_button", lang), key=f"cmp_rename_btn_{_row_name}"):
+                    st.session_state[f"_cmp_renaming_{_row_name}"] = True
+                    st.rerun()
+            with _lc3:
+                if st.button(i18n.t("comparison.delete_button", lang), key=f"cmp_delete_btn_{_row_name}"):
+                    st.session_state[f"_cmp_deleting_{_row_name}"] = True
+                    st.rerun()
+
+            if st.session_state.get(f"_cmp_renaming_{_row_name}"):
+                _new_name = st.text_input(
+                    i18n.t("comparison.rename_name_label", lang), value=_row_name,
+                    key=f"cmp_rename_input_{_row_name}", label_visibility="collapsed",
+                )
+                _rc1, _rc2 = st.columns(2)
+                with _rc1:
+                    if st.button(i18n.t("comparison.rename_confirm", lang),
+                                 key=f"cmp_rename_confirm_{_row_name}", type="primary"):
+                        _ok, _err_key = compare_lists_store.rename_list(email, _row_name, _new_name)
+                        st.session_state[f"_cmp_renaming_{_row_name}"] = False
+                        if not _ok:
+                            st.warning(i18n.t(f"comparison.error_{_err_key}", lang))
+                        st.rerun()
+                with _rc2:
+                    if st.button(i18n.t("comparison.rename_cancel", lang),
+                                 key=f"cmp_rename_cancel_{_row_name}"):
+                        st.session_state[f"_cmp_renaming_{_row_name}"] = False
+                        st.rerun()
+
+            if st.session_state.get(f"_cmp_deleting_{_row_name}"):
+                st.warning(i18n.t("comparison.delete_confirm_question", lang, name=_row_name))
+                _dc1, _dc2 = st.columns(2)
+                with _dc1:
+                    if st.button(i18n.t("comparison.delete_confirm_yes", lang),
+                                 key=f"cmp_delete_yes_{_row_name}", type="primary"):
+                        compare_lists_store.delete_list(email, _row_name)
+                        st.session_state[f"_cmp_deleting_{_row_name}"] = False
+                        st.rerun()
+                with _dc2:
+                    if st.button(i18n.t("comparison.delete_confirm_cancel", lang),
+                                 key=f"cmp_delete_cancel_{_row_name}"):
+                        st.session_state[f"_cmp_deleting_{_row_name}"] = False
+                        st.rerun()
+            st.markdown("---")
+
+
 def _render_comparison_input_row(lang):
     """Mega-batch Part 6, extended by Commit 2 (27 Sep 2026, owner-
     directed): "[ticker] VS [ticker] [+ add company...] [Compare]" on top
@@ -14338,6 +14452,10 @@ def _render_comparison_input_row(lang):
             st.warning(i18n.t("comparison.need_two_warning", lang))
         else:
             _dispatch_search(_typed)
+
+    # Compare Commit 3 (27 Sep 2026, owner-directed): the save-comparison
+    # control sits right below the Compare button, per instruction.
+    _render_save_comparison_control(lang)
 
     _pair_labels = [f"{a} vs {b}" for a, b in _COMPARISON_POPULAR_PAIRS]
     _sel = st.pills(
