@@ -47,6 +47,7 @@ import metrics_store
 import positions_store
 import announce_engine
 import compare_config
+import admin_data_audit
 import scan_store
 import scanner_engine
 import screen_import_store
@@ -28823,6 +28824,183 @@ def _render_rescan_now_control():
         _handle_rescan_now_click(_rescan_selected)
 
 
+def _is_owner_for_data_audit():
+    """Deferred, FAIL-CLOSED owner check for the Data audit checks panel -
+    same shape/reasoning as _is_owner_for_rescan() above."""
+    try:
+        return bool(ai_gate.is_owner(paywall_engine.current_user_email()))
+    except Exception:
+        return False
+
+
+def _handle_data_audit_click(cache_bust):
+    """Data-correctness audit item 5 (27 Sep 2026, owner-directed): the
+    Data audit checks button's own click handler, kept separate from
+    the button's `if st.button(...):` block for the same reason
+    _handle_rescan_now_click() is - independently re-checks ownership
+    AND the scan-lock/schedule refusal window here, never trusting that
+    the render-time check already gated on either (a forged session-
+    state click or a stale rerun would otherwise reach this directly).
+    Returns the check results dict, or None if refused."""
+    if not _is_owner_for_data_audit():
+        st.error("This action isn't available.")
+        return None
+    _reason = admin_data_audit.refusal_reason()
+    if _reason:
+        st.warning(_reason)
+        return None
+    with st.spinner(
+        "Running data audit checks against live data - a few dozen paced "
+        "Yahoo calls, usually under a minute..."
+    ):
+        return admin_data_audit.run_all_checks(_cache_bust=cache_bust)
+
+
+def _render_data_audit_checks_panel():
+    """Data-correctness audit item 5 (27 Sep 2026, owner-directed):
+    owner-only, on-demand "Data audit checks" panel - runs the A1
+    (risk-free rates + before/after discount rate/IV/MOS), A3b (dual-
+    class share counts), A5 (ASX half-year cumulative-vs-per-half
+    verification) and MER (ETF expense-ratio raw-vs-displayed) checks
+    against REAL production data, since the sandboxed session that did
+    those code fixes had no live network access to verify any of it
+    (confirmed EGRESS_BLOCKED against finance.yahoo.com and
+    stocksdeepdive.com earlier in that same audit). Read-only - see
+    admin_data_audit.py's own module docstring for the full design
+    (reuse of existing engine functions, pacing, session caching, and
+    the refusal-window guardrails)."""
+    st.markdown("### Data audit checks")
+    st.caption(
+        "Owner-only, on demand - never runs automatically. Read-only: checks "
+        "live Yahoo data against this audit's A1/A3b/A5/MER fixes, changes "
+        "nothing on the site. Refuses while a scan lock is held or during "
+        "20:00-03:00 UTC. Paced (a few dozen Yahoo calls total), and cached "
+        "for 30 minutes per click."
+    )
+    _da_reason = admin_data_audit.refusal_reason()
+    if _da_reason:
+        st.info(_da_reason)
+    _da_force = st.checkbox(
+        "Force a fresh run (ignore the 30-minute cache)", key="admin_dash_data_audit_force",
+    )
+    if st.button("Run data audit checks", key="admin_dash_data_audit_btn", disabled=bool(_da_reason)):
+        if _da_force:
+            st.session_state["_data_audit_bust"] = st.session_state.get("_data_audit_bust", 0) + 1
+        _da_result = _handle_data_audit_click(st.session_state.get("_data_audit_bust", 0))
+        if _da_result:
+            st.session_state["_data_audit_result"] = _da_result
+
+    _da_result = st.session_state.get("_data_audit_result")
+    if not _da_result:
+        return
+
+    st.caption(f"Last run: {_da_result.get('run_at_utc', '-')} UTC")
+
+    # --- A1: risk-free rates -----------------------------------------
+    st.markdown("**A1 - risk-free rates**")
+    _da_rates = _da_result.get("a1_rates", {})
+    _da_usd, _da_aud = _da_rates.get("usd", {}), _da_rates.get("aud", {})
+    _da_rc1, _da_rc2 = st.columns(2)
+    with _da_rc1:
+        st.metric("US 10Y raw close (^TNX)", _da_usd.get("raw_close", "-"))
+        _da_usd_rate = _da_usd.get("rate")
+        st.metric("US risk-free rate", f"{_da_usd_rate:.2%}" if _da_usd_rate is not None else "-")
+        st.caption(f"source: {_da_usd.get('source', _da_usd.get('error', '-'))}")
+    with _da_rc2:
+        _da_aud_rate = _da_aud.get("rate")
+        st.metric("AU risk-free rate", f"{_da_aud_rate:.2%}" if _da_aud_rate is not None else "-")
+        st.caption(f"source: {_da_aud.get('source', _da_aud.get('error', '-'))}")
+
+    # --- A1: before/after discount rate / IV / MOS -------------------
+    st.markdown("**A1 - discount rate / intrinsic value / MOS, before vs now**")
+    st.caption(
+        "\"Before\" is the last saved scan row for that ticker, whatever its "
+        "age (no Discount Rate is saved on a scan row, only Intrinsic Value "
+        "and MOS %) - not necessarily from before A1's own fix if a scan has "
+        "run since."
+    )
+    _da_ba_rows = []
+    for _r in _da_result.get("a1_before_after", []):
+        _before = (_r.get("before") or {}).get("row") or {}
+        _now = _r.get("now", {})
+        _da_ba_rows.append(
+            "<tr>"
+            f"<td>{_r['ticker']}</td>"
+            f"<td>{_before.get('Intrinsic Value', '-')}</td>"
+            f"<td>{_before.get('MOS %', '-')}</td>"
+            f"<td>{_now.get('discount_rate', '-')}</td>"
+            f"<td>{_now.get('intrinsic_value', '-')}</td>"
+            f"<td>{_now.get('mos_pct', '-')}</td>"
+            f"<td>{_now.get('discount_source', _now.get('error', '-'))}</td>"
+            "</tr>"
+        )
+    st.markdown(_sdd_table(
+        ["Ticker", "Before: IV", "Before: MOS%", "Now: Rate", "Now: IV", "Now: MOS%", "Now: source/error"],
+        _da_ba_rows,
+    ), unsafe_allow_html=True)
+
+    # --- A3b: dual-class share counts ---------------------------------
+    st.markdown("**A3b - dual-class share counts**")
+    _da_shares_rows = []
+    for _r in _da_result.get("a3b_shares", []):
+        _da_shares_rows.append(
+            "<tr>"
+            f"<td>{_r['ticker']}</td>"
+            f"<td>{_r.get('sharesOutstanding', '-')}</td>"
+            f"<td>{_r.get('impliedSharesOutstanding', '-')}</td>"
+            f"<td>{_r.get('diluted_average_shares_filed', _r.get('diluted_shares_error', '-'))}</td>"
+            f"<td>{_r.get('whole_company_shares', '-')}</td>"
+            f"<td>{_r.get('whole_company_source', '-')}</td>"
+            f"<td>{'yes' if _r.get('whole_company_flagged') else 'no'}</td>"
+            "</tr>"
+        )
+    st.markdown(_sdd_table(
+        ["Ticker", "sharesOutstanding", "impliedSharesOutstanding", "Diluted avg shares (filed)",
+         "Whole-company shares used", "Resolved via", "Corrected?"],
+        _da_shares_rows,
+    ), unsafe_allow_html=True)
+
+    # --- A5: ASX half-year cumulative vs per-half ---------------------
+    st.markdown("**A5 - ASX half-year EPS: cumulative or per-half? (verify only)**")
+    _da_a5_rows = []
+    for _r in _da_result.get("a5_half_year", []):
+        _ni, _eps = _r.get("net_income", {}), _r.get("diluted_eps", {})
+        _da_a5_rows.append(
+            "<tr>"
+            f"<td>{_r['ticker']}</td>"
+            f"<td>{_r.get('quarterly_june_column', '-')}</td>"
+            f"<td>{_r.get('annual_june_column', '-')}</td>"
+            f"<td>{_ni.get('quarterly_june', '-')}</td>"
+            f"<td>{_ni.get('annual_june', '-')}</td>"
+            f"<td>{_r.get('verdict_net_income', _r.get('error', '-'))}</td>"
+            f"<td>{_eps.get('quarterly_june', '-')}</td>"
+            f"<td>{_eps.get('annual_june', '-')}</td>"
+            f"<td>{_r.get('verdict_diluted_eps', '-')}</td>"
+            "</tr>"
+        )
+    st.markdown(_sdd_table(
+        ["Ticker", "Qtly June col", "Annual June col", "Net Income (qtly)", "Net Income (annual)",
+         "Verdict (NI)", "Diluted EPS (qtly)", "Diluted EPS (annual)", "Verdict (EPS)"],
+        _da_a5_rows,
+    ), unsafe_allow_html=True)
+
+    # --- MER: raw vs displayed ----------------------------------------
+    st.markdown("**MER - raw expense ratio vs what the site displays**")
+    _da_mer_rows = []
+    for _r in _da_result.get("mer", []):
+        _da_mer_rows.append(
+            "<tr>"
+            f"<td>{_r['ticker']}</td>"
+            f"<td>{_r.get('raw_expense_ratio', _r.get('raw_error', '-'))}</td>"
+            f"<td>{_r.get('site_displays_mer_pct', _r.get('site_error', '-'))}</td>"
+            "</tr>"
+        )
+    st.markdown(_sdd_table(
+        ["Ticker", "Raw expense ratio (yfinance)", "Site displays (%)"],
+        _da_mer_rows,
+    ), unsafe_allow_html=True)
+
+
 def page_admin_dashboard():
     """Mega-batch Part 35.2: the owner Admin Dashboard - matches the
     owner-approved mock at mocks/admin_dashboard_mock.html. Replaces the
@@ -29300,6 +29478,13 @@ def page_admin_dashboard():
     # "Universe scan sizes" table above, which already shows exactly
     # which universes need this.
     _render_rescan_now_control()
+
+    # --- DATA AUDIT CHECKS (data-correctness audit item 5, 27 Sep 2026,
+    # owner-directed) - see _render_data_audit_checks_panel()'s own
+    # docstring. Placed right after Rescan now: both are owner-only,
+    # on-demand, network-using tools guarded by the same scan-lock/
+    # schedule refusal.
+    _render_data_audit_checks_panel()
 
     # --- STALE-PRICED TICKERS (Commit J, 21 Sep 2026, owner-reported) --
     # A per-TICKER condition, not a data-SOURCE health check - the
