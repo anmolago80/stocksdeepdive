@@ -455,9 +455,41 @@ def _year_end_prices(prices_10y, statement_df=None):
     return out
 
 
+def _whole_company_shares(bundle):
+    """Data-correctness audit A3 (27 Sep 2026, owner-reported): a dual-
+    class company's info["sharesOutstanding"] can reflect only ONE
+    listed class - see _build_fundamentals's own HEI/HEICO root-cause
+    comment below for the full story (Common "HEI" shows 55,235,561
+    shares against a real whole-company diluted total around 122M
+    across both classes). Every per-share figure in this module (BVPS,
+    the Equity Method 10y, the IV/BV series, and - via _basics()'s
+    market cap - the WACC equity weight in moat_engine._ttm_wacc) used
+    to read info["sharesOutstanding"] directly (or a market cap built
+    from it) and inherited the same understatement; only
+    _build_fundamentals's own local market-cap correction existed
+    before this.
+
+    Centralizes that SAME correction (the "1.3x diluted-shares" test) as
+    the ONE place every per-share figure in this module now gets its
+    share count from: when the income statement's own "Diluted Average
+    Shares" row (the total count the company itself used for its
+    reported, whole-company EPS - already correct the same way
+    trailing_eps already is, per _build_fundamentals's Earning Yield fix
+    comment) is more than 30% above the single-class Yahoo figure,
+    that's a real second share class, not ordinary buyback/issuance
+    drift - use it instead. Returns (shares, flagged); shares is
+    whatever info reports (possibly None) when the test doesn't fire."""
+    info = bundle.get("info") or {}
+    shares = info.get("sharesOutstanding")
+    filed_shares = _latest(bundle.get("income"), "diluted_average_shares")
+    if filed_shares and shares and filed_shares > shares * 1.3:
+        return filed_shares, True
+    return shares, False
+
+
 def _bvps(bundle):
     equity = _latest(bundle["balance"], "stockholders_equity")
-    shares = (bundle.get("info") or {}).get("sharesOutstanding")
+    shares, _ = _whole_company_shares(bundle)
     if equity is not None and shares:
         return equity / shares
     return None
@@ -466,12 +498,24 @@ def _bvps(bundle):
 def _basics(bundle):
     info = bundle.get("info") or {}
     price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
-    shares = info.get("sharesOutstanding")
-    market_cap = info.get("marketCap")
-    if market_cap is None and price is not None and shares:
+    shares, dual_class_flagged = _whole_company_shares(bundle)
+    # Audit A3: Yahoo's own info["marketCap"] is built from the SAME
+    # single-class share count as sharesOutstanding for a dual-class
+    # ticker (it's literally price x that class's shares), so it's
+    # rebuilt from the corrected share count, overriding Yahoo's figure
+    # rather than only filling a gap - matching _build_fundamentals's
+    # own pre-existing (now centralized here) correction exactly.
+    if dual_class_flagged and price is not None and shares:
         market_cap = price * shares
+    else:
+        market_cap = info.get("marketCap")
+        if market_cap is None and price is not None and shares:
+            market_cap = price * shares
     currency = info.get("currency") or "USD"
-    return {"price": price, "shares": shares, "market_cap": market_cap, "currency": currency, "info": info}
+    return {
+        "price": price, "shares": shares, "market_cap": market_cap,
+        "currency": currency, "info": info, "dual_class_flagged": dual_class_flagged,
+    }
 
 
 def _dividend_ttm_window(dividends):
@@ -1465,11 +1509,19 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         dcf_info = dict(info)
         dcf_info["financialCurrency"] = currency
 
+    # Audit A3 (27 Sep 2026): this DCF's per-share value used to divide
+    # by info["sharesOutstanding"] directly, inheriting the same dual-
+    # class understatement _whole_company_shares() exists to fix -
+    # this caller already has a full bundle on hand, so it passes the
+    # already-corrected share count straight through rather than
+    # leaving fcf_valuation_engine to guess at it.
+    _dcf_shares, _ = _whole_company_shares(bundle)
     result = _safe(
         fcf_valuation_engine.dcf_intrinsic_value,
         ticker, info=dcf_info, cashflow_df=bundle.get("cashflow"), currency=currency,
         discount_rate=discount_rate, perpetual_rate=perpetual_rate,
         growth_rate=growth_rate, manual_fcf=manual_fcf,
+        diluted_shares_override=_dcf_shares,
     )
     if not result:
         return {"value": None, "growth": None, "perpetual_rate": None, "discount_rate": None, "flagged": True}
@@ -1523,10 +1575,17 @@ def _build_fundamentals(bundle, ticker, ref):
     # was - every metric below is flagged (red asterisk) only on the
     # tickers where the correction actually fires, disclosing that mcap
     # was rebuilt rather than taken from Yahoo directly.
-    filed_shares = _latest(income, "diluted_average_shares")
-    dual_class_mcap_fix = bool(filed_shares and shares and price and filed_shares > shares * 1.3)
-    if dual_class_mcap_fix:
-        mcap = price * filed_shares
+    #
+    # Data-correctness audit A3 (27 Sep 2026): this correction (and
+    # `shares`/`mcap` above) now come from _basics() -> _whole_company_
+    # shares(), the ONE place this test runs - previously duplicated
+    # here as its own local re-derivation, which is exactly how
+    # _bvps/_equity_10y_method/_iv_bv_series/moat_engine's WACC equity
+    # weight ended up NOT getting this same correction (they each read
+    # info["sharesOutstanding"] straight, never this function's local
+    # fix). See _whole_company_shares()'s own docstring for the full
+    # HEI/HEICO root cause this test exists for.
+    dual_class_mcap_fix = bool(b.get("dual_class_flagged"))
 
     is_financials = _ac_is_financials(bundle.get("info") or {})
     operating_income, operating_income_estimated = ebit_ttm(bundle, is_financials, revenue, bundle.get("info"))
@@ -1873,7 +1932,7 @@ def _iv_bv_series(bundle, dcf_result, bvps_ttm):
     p = dcf_result.get("perpetual_rate")
     if p is None:
         p = 0.03
-    shares = (bundle.get("info") or {}).get("sharesOutstanding")
+    shares, _ = _whole_company_shares(bundle)  # audit A3
 
     years, ratios = [], []
     if g_earn is not None and d_dcf is not None and shares and d_dcf > p:
@@ -2748,7 +2807,7 @@ def _equity_10y_method(bundle, g_earn):
         return None
     equity = _latest(bundle["balance"], "stockholders_equity")
     net_income = _latest(bundle["income"], "net_income")
-    shares = (bundle.get("info") or {}).get("sharesOutstanding")
+    shares, _ = _whole_company_shares(bundle)  # audit A3
     g_eq, g_eq_capped = _equity_growth_rate(bundle)
     if equity is None or net_income is None or not shares or g_eq is None:
         return None
