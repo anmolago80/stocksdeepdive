@@ -44,6 +44,7 @@ import fundamentals_data
 import moat_engine
 import peer_context
 import reverse_dcf_engine
+import scan_checkpoint_store
 import scan_store
 import score_history
 import scanner_engine
@@ -653,12 +654,24 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     default) for a hand-run scan with no scheduler context; scheduler_
     engine._run_nightly() always passes it.
 
+    RESUME (Commit 5, 27 Sep 2026, owner-directed): if a prior call for
+    this exact universe/run_night was killed mid-loop (a deploy, a
+    crash), this picks up from scan_checkpoint_store's own checkpoint
+    at the next unattempted ticker instead of restarting from 0 - see
+    that module's own docstring for the three gates that keep this from
+    ever mixing two scan sessions' prices. Invisible to every caller:
+    same signature, same return contract, no caller-visible flag - the
+    resume happens (or doesn't) entirely inside this function.
+
     Raises RateLimitCircuitBreaker (URGENT Commit 1, 27 Sep 2026,
     owner-reported) if RATE_LIMIT_CONSECUTIVE_ABORT_THRESHOLD consecutive
     tickers fail on rate-limiting during the per-ticker loop below - see
-    that exception's own docstring. Nothing is saved when this happens;
-    the caller (scheduler_engine._run_nightly()) is responsible for
-    reacting to it (aborting the rest of that run, recording a cool-
+    that exception's own docstring. Nothing is saved when this happens
+    (including no checkpoint - see scan_checkpoint_store.py's own
+    docstring for why a rate-limit abort's own checkpoint is cleared,
+    never left resumable); the caller (scheduler_engine._run_nightly())
+    is responsible for reacting to it (aborting the rest of that run,
+    recording a cool-
     down)."""
     # Services batch 2, Part 2 (2026-09-01): calls get_universe_pool()
     # directly (what resolve_tickers() itself calls internally) instead
@@ -752,6 +765,31 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     log(f"[nightly_scan] {universe}: scanning {len(tickers)} tickers ({source}), "
         f"attention_lite={attention_lite}")
 
+    # Commit 5 (27 Sep 2026, owner-directed): resume from a checkpoint a
+    # PRIOR, killed run of this exact scan night left behind, instead of
+    # restarting from ticker 0 - see scan_checkpoint_store.py's own
+    # module docstring for the three resume gates and why this is safe
+    # against mixing two sessions' prices. `_resume_index` is 0 (a plain
+    # fresh start, identical to before this commit) unless a resumable
+    # checkpoint was found.
+    _resume_index = 0
+    _session_started_at = datetime.now(timezone.utc).isoformat()
+    rows = []
+    skipped_no_price = 0
+    _checkpoint = scan_checkpoint_store.load(universe)
+    if _checkpoint:
+        if scan_checkpoint_store.is_resumable(_checkpoint, tickers, run_night, log=log):
+            rows = list(_checkpoint["rows"])
+            skipped_no_price = _checkpoint.get("skipped_no_price", 0)
+            _resume_index = _checkpoint["resume_index"]
+            _session_started_at = _checkpoint.get("session_started_at", _session_started_at)
+            log(f"[nightly_scan] {universe}: resuming from checkpoint - "
+                f"{_resume_index}/{len(tickers)} tickers already attempted "
+                f"({len(rows)} rows captured), checkpoint last written "
+                f"{_checkpoint.get('last_checkpoint_at')}")
+        else:
+            scan_checkpoint_store.clear(universe)
+
     # URGENT Commit 2 (24 Sep 2026, owner-reported): "reuse ONE
     # authenticated session per scan run instead of re-fetching the
     # crumb per ticker" - yfinance's own YfData singleton already
@@ -763,12 +801,16 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     # already gives us that reuse for free; what it doesn't give us for
     # free is recovering from a poisoned crumb, which is what this and
     # the per-ticker retries below actually fix. .fast_info is the
-    # cheapest yfinance call that still exercises the crumb.
-    if tickers:
-        _yf_call_with_retry(lambda: yf.Ticker(tickers[0]).fast_info, log, tickers[0], "crumb warm-up")
+    # cheapest yfinance call that still exercises the crumb. Warms up
+    # against the NEXT ticker actually due to be fetched (tickers[0] on
+    # a fresh start, tickers[_resume_index] on a resume) rather than
+    # always tickers[0] - a resumed run already fetched tickers[0] in
+    # its prior session, so warming up against it again would be a
+    # wasted call.
+    if tickers and _resume_index < len(tickers):
+        _warmup_ticker = tickers[_resume_index]
+        _yf_call_with_retry(lambda: yf.Ticker(_warmup_ticker).fast_info, log, _warmup_ticker, "crumb warm-up")
 
-    rows = []
-    skipped_no_price = 0
     # URGENT Commit 1 (27 Sep 2026, owner-reported): rate-limit circuit
     # breaker. The 01:20:35 UTC deploy on 27 Sep killed a Russell 2000
     # scan mid-run; the catch-up restart hit Yahoo's throttle from
@@ -787,7 +829,7 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     # analyze_ticker_lite()/_yf_call_with_retry() themselves retry -
     # only reads what they already tell it.
     _consecutive_rate_limited = 0
-    for i, t in enumerate(tickers):
+    for i, t in enumerate(tickers[_resume_index:], start=_resume_index):
         try:
             _rate_limited_flag = [False]
             row = analyze_ticker_lite(t, attention_lite=attention_lite, log=log,
@@ -830,13 +872,33 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
                 f"(Yahoo throttled) - stopping now rather than grinding the rest of this "
                 f"universe (and the next) into the same throttle. Not saving; last "
                 f"known-good scan for {universe} stays in place.")
+            # Commit 5 (27 Sep 2026, owner-directed): a checkpoint written
+            # mid-throttle must never be resumed INTO the same throttle -
+            # clear it here, before the exception propagates, same as the
+            # "save nothing from an aborted universe" rule just above
+            # applies to scan_store itself.
+            scan_checkpoint_store.clear(universe)
             raise RateLimitCircuitBreaker(
                 f"{universe}: aborted after {_consecutive_rate_limited} consecutive "
                 f"rate-limited tickers"
             )
         if i % 25 == 24:
             log(f"[nightly_scan] {universe}: {i + 1}/{len(tickers)} done")
+            # Commit 5 (27 Sep 2026, owner-directed): checkpoint at the
+            # same cadence as the progress-log line just above - a killed
+            # process resumes from here instead of ticker 0. `i + 1` is
+            # the index of the NEXT ticker still to attempt.
+            scan_checkpoint_store.save(
+                universe, run_night, _session_started_at, i + 1, tickers, rows, skipped_no_price,
+            )
         time.sleep(PER_TICKER_SLEEP)
+
+    # Commit 5 (27 Sep 2026, owner-directed): the per-ticker loop just
+    # finished (successfully or degraded) - nothing left for a future
+    # process to resume, whether or not the save below goes on to skip
+    # persisting this run to scan_store (the completeness/integrity
+    # guards further down can still return None without saving).
+    scan_checkpoint_store.clear(universe)
 
     # Part 48.2(a): bulk-learn every row's sector into the persistent
     # cache (source="scan") right after this universe's rows are built -
