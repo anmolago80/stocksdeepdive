@@ -414,17 +414,19 @@ ETF_SECTION_CAPTIONS_ES = {
 # ---------------------------------------------------------------------
 
 ETF_COLUMN_HELP_EN = {
-    "mer": "The fund's yearly fee, already inside its returns.",
+    "mer": "The fund's yearly fee, already inside its returns. \"n/a\" means the fee isn't available - not that it's zero.",
+    "fee_cost": "Position value x MER - what that fee costs in dollars this year. \"n/a\" (never $0) whenever MER itself is n/a.",
     "return": "Annualised total return (price + distributions) over the stated lookback.",
     "yield": "Trailing 12-month distributions as a % of price.",
-    "corr_sp500": "How in-step its monthly moves are with the S&P 500: 1 = lockstep, 0 = unrelated.",
+    "corr_sp500": "How in-step its DAILY moves are with the S&P 500's own PRECEDING session (the US market hasn't opened yet during an ASX trading day): 1 = lockstep, 0 = unrelated.",
     "corr_asx200": "How in-step its monthly moves are with the ASX 200: 1 = lockstep, 0 = unrelated.",
 }
 ETF_COLUMN_HELP_ES = {
-    "mer": "La comisión anual del fondo, ya incluida en su rentabilidad.",
+    "mer": "La comisión anual del fondo, ya incluida en su rentabilidad. \"n/d\" significa que la comisión no está disponible - no que sea cero.",
+    "fee_cost": "Valor de la posición x comisión (MER) - lo que cuesta esa comisión en dólares este año. \"n/d\" (nunca $0) siempre que la comisión misma sea n/d.",
     "return": "Rentabilidad total anualizada (precio + reparto) en el periodo indicado.",
     "yield": "Reparto de los últimos 12 meses como % del precio.",
-    "corr_sp500": "Cuánto se mueve en sintonía con el S&P 500 cada mes: 1 = al mismo ritmo, 0 = sin relación.",
+    "corr_sp500": "Cuánto se mueve en sintonía DIARIA con la sesión ANTERIOR del S&P 500 (el mercado de EE.UU. aún no ha abierto durante la sesión de la ASX): 1 = al mismo ritmo, 0 = sin relación.",
     "corr_asx200": "Cuánto se mueve en sintonía con el ASX 200 cada mes: 1 = al mismo ritmo, 0 = sin relación.",
 }
 

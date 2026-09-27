@@ -17380,13 +17380,25 @@ def _etf_sleeve_rows(_holdings, _analyses):
       etf_rows - one dict per ETF holding: ticker, label, name,
         value_aud, pct_now (share of WHOLE portfolio), pct_of_sleeve
         (share of the ETF-only sleeve, filled in after the loop), mer,
+        mer_source ("yahoo"|"table"|None - see etf_insights.
+        MER_FALLBACK_TABLE), mer_source_url, mer_asof, fee_cost_pa
+        (position value x MER, None whenever mer is None - never 0),
         category, family, issuer_url, sector_weights, top_holdings,
         return_pa + return_pa_label ("5y"/"3y"/"1y" - whichever window
-        had enough history), yield_ttm, corr_sp500, corr_asx200,
+        had enough history), yield_ttm, corr_sp500 (via etf_insights.
+        correlation_vs_us_benchmark() - see that function's own
+        docstring for why a cross-market pair needs a different method
+        than corr_asx200's same-market correlation_vs()), corr_asx200,
         top_exposure_line.
       sleeve_totals - {"value_aud", "blended_mer", "blended_return_pa",
-        "blended_corr_sp500", "blended_corr_asx200"}, each a
-        value-weighted average across the ETFs that have that field.
+        "blended_corr_sp500", "blended_corr_asx200", "total_fee_pa",
+        "weighted_fee_pct"} - total_fee_pa is a plain SUM (not a
+        weighted average - it's a dollar cost, adding up is the right
+        aggregation), None whenever any ETF's own fee_cost_pa is None
+        (never silently treats a missing fee as $0 lost from the
+        total); weighted_fee_pct is that total as a % of the whole
+        sleeve's value (the "weighted portfolio fee %" the ETF task's
+        own acceptance criteria names), same all-or-nothing rule.
       direct_values_aud - {ticker: value_aud} summed across every
         NON-ETF holding, for the overlap panel (etf_insights.
         compute_overlap's own `direct_holdings` argument shape).
@@ -17430,16 +17442,29 @@ def _etf_sleeve_rows(_holdings, _analyses):
             _top_line = (f"{_top1['symbol']} {_top1['weight']:.1f}%"
                          if _top1.get("weight") is not None else _top1["symbol"])
 
+        _mer = _facts.get("mer")
         etf_rows.append({
             "ticker": h["ticker"], "label": _r["label"], "name": h.get("name") or h["ticker"],
             "value_aud": _r["value_aud"], "pct_now": _r["pct_now"], "pct_of_sleeve": None,
-            "mer": _facts.get("mer"), "category": _facts.get("category"),
+            "mer": _mer, "mer_source": _facts.get("mer_source"),
+            "mer_source_url": _facts.get("mer_source_url"), "mer_asof": _facts.get("mer_asof"),
+            "fee_cost_pa": etf_insights.fee_cost_pa(_mer, _r["value_aud"]),
+            "category": _facts.get("category"),
             "family": _facts.get("family"),
             "issuer_url": etf_insights.issuer_link(h["ticker"], _facts.get("family")),
             "sector_weights": _facts.get("sector_weights"), "top_holdings": _top_holdings,
             "return_pa": _ret_pa, "return_pa_label": _ret_label,
             "yield_ttm": etf_insights.ttm_distribution_yield(_hist),
-            "corr_sp500": etf_insights.correlation_vs(_hist, _sp500_hist),
+            # Bug fix (27 Sep 2026, owner-reported): correlation_vs()
+            # joins on exact tz-aware timestamp equality, which a
+            # Sydney-tz .AX fund and a New-York-tz ^GSPC never satisfy
+            # even for "the same" calendar month - see etf_insights.
+            # correlation_vs_us_benchmark()'s own docstring for the
+            # full mechanism and the fix (tz-stripped daily returns,
+            # US-session-lag join). corr_asx200 is unaffected (both
+            # sides are Sydney-tz already) and keeps the original,
+            # already-working correlation_vs().
+            "corr_sp500": etf_insights.correlation_vs_us_benchmark(_hist, _sp500_hist),
             "corr_asx200": etf_insights.correlation_vs(_hist, _asx_hist),
             "top_exposure_line": _top_line,
         })
@@ -17456,12 +17481,26 @@ def _etf_sleeve_rows(_holdings, _analyses):
                 _den += r["value_aud"]
         return (_num / _den) if _den else None
 
+    # Task 2 (27 Sep 2026, owner-directed): the fee total is a plain SUM
+    # of each ETF's own dollar cost, not a weighted average - and, like
+    # fee_cost_pa() itself, None (never a partial total silently
+    # treating a missing fee as $0) whenever ANY ETF in the sleeve has
+    # no fee_cost_pa at all.
+    _fee_costs = [r["fee_cost_pa"] for r in etf_rows]
+    _total_fee_pa = sum(_fee_costs) if _fee_costs and all(f is not None for f in _fee_costs) else None
+    _weighted_fee_pct = (
+        (_total_fee_pa / _sleeve_value) * 100.0
+        if (_total_fee_pa is not None and _sleeve_value) else None
+    )
+
     sleeve_totals = {
         "value_aud": _sleeve_value or None,
         "blended_mer": _wavg("mer"),
         "blended_return_pa": _wavg("return_pa"),
         "blended_corr_sp500": _wavg("corr_sp500"),
         "blended_corr_asx200": _wavg("corr_asx200"),
+        "total_fee_pa": _total_fee_pa,
+        "weighted_fee_pct": _weighted_fee_pct,
     }
     return etf_rows, sleeve_totals, direct_values
 
@@ -17511,16 +17550,25 @@ def _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses):
 
     _etf_rows, _sleeve_totals, _direct_values = _etf_sleeve_rows(_holdings, _analyses)
     _na = _etf("na")
+    # Task 1c (27 Sep 2026, owner-directed): MER/fee-cost use a DISTINCT
+    # "n/a" (never this table's usual "-" em-dash, which reads as "no
+    # fee" rather than "fee unknown") - the column help text below spells
+    # out what "n/a" means here.
+    _mer_na = _etf("mer_na")
 
     # --- 1. Summary table -------------------------------------------------
     st.markdown(f"##### {_etf('summary_title')}")
     _table_rows = []
+    _fallback_sourced = []  # (ticker, source_url, as_of) for the caption note below
     for r in sorted(_etf_rows, key=lambda r: r["value_aud"] or 0, reverse=True):
+        if r["mer_source"] == "table":
+            _fallback_sourced.append((r["ticker"], r["mer_source_url"], r["mer_asof"]))
         _table_rows.append({
             _etf("col_ticker"): f"/deep-dive?ticker={r['ticker']}",
             _etf("col_allocation"): (r["pct_of_sleeve"] * 100.0) if r["pct_of_sleeve"] is not None else None,
             _etf("col_value"): _fmt_aud(r["value_aud"]),
-            _etf("col_mer"): f"{r['mer']:.2f}%" if r["mer"] is not None else _na,
+            _etf("col_mer"): f"{r['mer']:.2f}%" if r["mer"] is not None else _mer_na,
+            _etf("col_fee_cost"): (_fmt_aud(r["fee_cost_pa"]) if r["fee_cost_pa"] is not None else _mer_na),
             _etf("col_return"): (f"{r['return_pa']:.1f}% ({r['return_pa_label']})"
                                   if r["return_pa"] is not None else _na),
             _etf("col_yield"): f"{r['yield_ttm']:.2f}%" if r["yield_ttm"] is not None else _na,
@@ -17538,6 +17586,7 @@ def _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses):
             else "Its share of the ETF sleeve (not the whole portfolio)."
         ),
         _etf("col_mer"): stress_etf_help_copy.etf_column_help("mer", _lang),
+        _etf("col_fee_cost"): stress_etf_help_copy.etf_column_help("fee_cost", _lang),
         _etf("col_return"): stress_etf_help_copy.etf_column_help("return", _lang),
         _etf("col_yield"): stress_etf_help_copy.etf_column_help("yield", _lang),
         _etf("col_corr_sp500"): stress_etf_help_copy.etf_column_help("corr_sp500", _lang),
@@ -17555,6 +17604,9 @@ def _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses):
                 help=_etf_col_help[_etf("col_allocation")],
             ),
             _etf("col_mer"): st.column_config.Column(_etf("col_mer"), help=_etf_col_help[_etf("col_mer")]),
+            _etf("col_fee_cost"): st.column_config.Column(
+                _etf("col_fee_cost"), help=_etf_col_help[_etf("col_fee_cost")],
+            ),
             _etf("col_return"): st.column_config.Column(_etf("col_return"), help=_etf_col_help[_etf("col_return")]),
             _etf("col_yield"): st.column_config.Column(_etf("col_yield"), help=_etf_col_help[_etf("col_yield")]),
             _etf("col_corr_sp500"): st.column_config.Column(
@@ -17569,7 +17621,9 @@ def _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses):
     _tot_ret = (f"{_sleeve_totals['blended_return_pa']:.1f}%"
                 if _sleeve_totals["blended_return_pa"] is not None else _na)
     _tot_mer = (f"{_sleeve_totals['blended_mer']:.2f}%"
-                if _sleeve_totals["blended_mer"] is not None else _na)
+                if _sleeve_totals["blended_mer"] is not None else _mer_na)
+    _tot_fee_cost = (_fmt_aud(_sleeve_totals["total_fee_pa"])
+                      if _sleeve_totals["total_fee_pa"] is not None else _mer_na)
     _tot_corr_sp = (f"{_sleeve_totals['blended_corr_sp500']:.2f}"
                     if _sleeve_totals["blended_corr_sp500"] is not None else _na)
     _tot_corr_asx = (f"{_sleeve_totals['blended_corr_asx200']:.2f}"
@@ -17577,11 +17631,28 @@ def _render_portfolio_etfs_tab(email, _active_portfolio, _holdings, _analyses):
     _blended = _etf("blended_label")
     st.caption(
         f"**{_etf('totals_label')}**: {_fmt_aud(_sleeve_totals['value_aud'])} · "
-        f"{_blended} {_etf('col_mer')} {_tot_mer} · {_blended} {_etf('col_return')} {_tot_ret} · "
+        f"{_blended} {_etf('col_mer')} {_tot_mer} · "
+        f"{_etf('totals_fee_cost_label')} {_tot_fee_cost} · "
+        f"{_blended} {_etf('col_return')} {_tot_ret} · "
         f"{_blended} {_etf('col_corr_sp500')} {_tot_corr_sp} · "
         f"{_blended} {_etf('col_corr_asx200')} {_tot_corr_asx}"
     )
     st.caption(_etf("caption_return"))
+    # Task 1c (27 Sep 2026, owner-directed): "source: issuer, as of
+    # <date>" note for every row whose MER came from MER_FALLBACK_TABLE
+    # rather than Yahoo - shown once here (a per-cell tooltip isn't
+    # available in st.dataframe) rather than per-row, since every
+    # fallback entry today shares the same as_of date but each has its
+    # own source URL.
+    if _fallback_sourced:
+        _source_bits = [
+            f"[{_ticker}]({_url})" if _url else _ticker
+            for _ticker, _url, _asof in _fallback_sourced
+        ]
+        st.caption(
+            _etf("mer_source_note", source=", ".join(_source_bits),
+                 date=_fallback_sourced[0][2])
+        )
 
     # --- 2. Per-ETF cards ---------------------------------------------------
     st.markdown(f"##### {_etf('cards_title')}")

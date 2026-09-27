@@ -173,6 +173,36 @@ def issuer_link(ticker, family_name):
 # Fund facts - MER, category, sector weights, top-10 holdings.
 # -----------------------------------------------------------------
 
+# Audit A2-follow-up (27 Sep 2026, owner-directed): a sane-value gate on
+# whatever yfinance's own MER parsing below produces, per the owner's
+# own "0 < MER < 3%" rule - every real ASX/US index or sector ETF's fee
+# sits well under 3%, so a value outside that band is a scaling error
+# (either direction: Yahoo's raw `annualReportExpenseRatio.raw` field
+# treated as a fraction when it was already a percent, or vice versa -
+# see _fetch_fund_facts_live()'s own comment on that unresolved
+# ambiguity), not a real fee - reject it rather than display a number
+# that reads as either "free" or "10x too expensive".
+MER_SANE_MIN_PCT = 0.0
+MER_SANE_MAX_PCT = 3.0
+
+
+def _mer_is_sane(mer):
+    return mer is not None and MER_SANE_MIN_PCT < mer < MER_SANE_MAX_PCT
+
+
+# Hand-maintained fallback for a small, explicitly-verified set of ASX
+# ETFs whose Yahoo-derived MER has been found empty or out of the sane
+# band above. Owner's own instruction: "Do NOT add any other ETF unless
+# you verify it on the issuer's own page in this session and record the
+# URL. Never guess a fee." - every entry here was verified by the
+# owner's advisor directly on the issuer's own page on the "as_of" date
+# given; do not add or edit an entry without the same verification.
+MER_FALLBACK_TABLE = {
+    "IVV.AX": {"fee_pct": 0.04, "source_url": "https://www.blackrock.com/au/products/275304/", "as_of": "2026-09-28"},
+    "QRE.AX": {"fee_pct": 0.34, "source_url": "https://www.betashares.com.au/fund/resources-sector-etf-betashares/", "as_of": "2026-09-28"},
+    "VAP.AX": {"fee_pct": 0.23, "source_url": "https://fund-docs.vanguard.com/AU_ETF_Profile_flyer_VAP.pdf", "as_of": "2026-09-28"},
+}
+
 def _fetch_fund_facts_live(ticker):
     """One yfinance funds_data() round trip, every field parsed and
     failed independently so one missing/malformed field never blanks
@@ -256,26 +286,77 @@ def _fetch_fund_facts_live(ticker):
     return out
 
 
+def _apply_mer_fallback(ticker, data):
+    """Audit A2-follow-up (27 Sep 2026, owner-directed): order is a sane
+    Yahoo value (MER_SANE_MIN_PCT < mer < MER_SANE_MAX_PCT) first, else
+    the hand-maintained MER_FALLBACK_TABLE, else leave mer=None (the
+    caller shows "n/a" with a "fee not available" tooltip - never the
+    site's usual "-", which reads as "no fee" rather than "unknown
+    fee"). Sets "mer_source" ("yahoo" | "table" | None) and, only when
+    the table was used, "mer_source_url"/"mer_asof" so the UI can show
+    a "source: issuer, as of <date>" note. Mutates and returns `data`;
+    never raises."""
+    data = dict(data)
+    if _mer_is_sane(data.get("mer")):
+        data["mer_source"] = "yahoo"
+        data["mer_source_url"] = None
+        data["mer_asof"] = None
+        return data
+    fallback = MER_FALLBACK_TABLE.get(ticker)
+    if fallback:
+        data["mer"] = fallback["fee_pct"]
+        data["mer_source"] = "table"
+        data["mer_source_url"] = fallback["source_url"]
+        data["mer_asof"] = fallback["as_of"]
+        return data
+    data["mer"] = None
+    data["mer_source"] = None
+    data["mer_source_url"] = None
+    data["mer_asof"] = None
+    return data
+
+
 def get_fund_facts(ticker, force_refresh=False):
     """Fund facts for one ETF ticker - a 7-day cache hit almost always,
     a live yfinance funds_data() call otherwise. Never raises: any
     failure (network, parsing, an unrecognised fund shape) returns the
     same all-None shape _fetch_fund_facts_live() does on total failure,
-    so a caller can always safely read every key with .get()."""
+    so a caller can always safely read every key with .get().
+
+    The MER fallback (_apply_mer_fallback() above) is applied AFTER the
+    cache lookup, every call, not baked into what gets cached - the
+    cache still stores only the raw Yahoo-derived fields (same 7-day
+    TTL, same shape as before this fix), so the hand-maintained table
+    takes effect immediately for an already-cached ticker with no cache
+    bust needed, and updating the table later needs no cache changes
+    either."""
     ticker = (ticker or "").strip().upper()
     if not ticker:
-        return {"mer": None, "category": None, "family": None,
-                "sector_weights": None, "top_holdings": None, "fetched_ok": False}
+        return _apply_mer_fallback(ticker, {
+            "mer": None, "category": None, "family": None,
+            "sector_weights": None, "top_holdings": None, "fetched_ok": False,
+        })
     if not force_refresh:
         cached = _cache_get(ticker)
         if cached is not None:
-            return cached
+            return _apply_mer_fallback(ticker, cached)
     data = _fetch_fund_facts_live(ticker)
     try:
         _cache_set(ticker, data)
     except Exception:
         pass
-    return data
+    return _apply_mer_fallback(ticker, data)
+
+
+def fee_cost_pa(mer_pct, value_aud):
+    """Portfolio ETF table, Task 2 (27 Sep 2026, owner-directed): annual
+    fee cost in AUD = position value x MER. None (never 0) when either
+    input is None - a missing MER must never be silently treated as a
+    0% fee, the exact "n/a means unknown, not free" rule MER_FALLBACK_
+    TABLE's own tooltip already applies to the rate itself."""
+    if mer_pct is None or value_aud is None:
+        return None
+    return value_aud * (mer_pct / 100.0)
 
 
 # -----------------------------------------------------------------
@@ -358,7 +439,16 @@ def correlation_vs(hist, benchmark_hist, min_months=24):
     """Correlation of monthly returns between `hist` and
     `benchmark_hist`, or None with fewer than `min_months` overlapping
     months (the spec's own threshold - a handful of overlapping months
-    produces a correlation number with no real statistical meaning)."""
+    produces a correlation number with no real statistical meaning).
+
+    SAME-MARKET series only (e.g. an ASX-listed fund vs ^AXJO, both
+    fetched via yfinance so both carry that exchange's own tz-aware
+    index) - `pd.concat(..., join="inner")` joins on exact index
+    (timestamp) equality, which two SAME-tz series' own month-end
+    resample lands on identically. For a CROSS-market pair (an
+    ASX-listed fund vs ^GSPC), use correlation_vs_us_benchmark() below
+    instead - see its own docstring for why this function silently
+    returns None for that case rather than a wrong number."""
     a = _monthly_returns(hist)
     b = _monthly_returns(benchmark_hist)
     if a is None or b is None:
@@ -367,6 +457,95 @@ def correlation_vs(hist, benchmark_hist, min_months=24):
     if len(aligned) < min_months:
         return None
     corr = aligned.iloc[:, 0].corr(aligned.iloc[:, 1])
+    if corr is None or (isinstance(corr, float) and np.isnan(corr)):
+        return None
+    return float(corr)
+
+
+def _daily_returns_naive(hist):
+    """Close -> a Series of daily simple returns, indexed by a plain
+    (tz-naive, midnight-normalized) calendar date - never a tz-aware
+    Timestamp. None with under 2 valid closes.
+
+    Bug this exists to fix (27 Sep 2026, owner-reported: "Corr. vs
+    S&P 500" empty for every ASX-listed ETF while "Corr. vs ASX 200"
+    worked for the same rows): yfinance's `.history()` index is
+    tz-AWARE, localized to each ticker's OWN exchange (Australia/Sydney
+    for a .AX fund, America/New_York for ^GSPC). correlation_vs()'s
+    `_monthly_returns()` never stripped that tz, so its own
+    `pd.concat(..., join="inner")` joins on exact tz-aware Timestamp
+    equality - two SAME-market series (both Sydney-tz, e.g. a .AX fund
+    vs ^AXJO) land on identical month-end instants and join fine, but
+    an ASX fund's Sydney-tz month-end and ^GSPC's New-York-tz month-end
+    are DIFFERENT Timestamp objects even for "the same" calendar month
+    end - zero rows ever match, hence "Corr. vs S&P 500" was always
+    empty for every .AX holding, confirmed from this exact tz mechanism
+    (not a live network failure - fetching ^GSPC's history and
+    computing ITS OWN monthly returns both work fine in isolation, the
+    join is what silently produces zero overlap). Stripping tz and
+    normalizing to a plain calendar date here, rather than at the
+    yfinance-history-fetch call site, keeps every other caller of this
+    module's price-history plumbing (which never had this problem,
+    since they only ever compare a series against itself or a
+    same-market benchmark) untouched."""
+    if hist is None or hist.empty or "Close" not in hist:
+        return None
+    closes = hist["Close"].dropna()
+    if len(closes) < 2:
+        return None
+    idx = closes.index
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_localize(None)
+    closes = closes.copy()
+    closes.index = pd.DatetimeIndex(idx).normalize()
+    closes = closes[~closes.index.duplicated(keep="last")].sort_index()
+    returns = closes.pct_change().dropna()
+    return returns if len(returns) >= 1 else None
+
+
+def correlation_vs_us_benchmark(target_hist, us_hist, min_days=60):
+    """Correlation between a non-US-listed fund's (e.g. .AX) daily
+    returns and a US benchmark's (^GSPC) PRECEDING completed session -
+    the fix for correlation_vs()'s tz-join failure on a cross-market
+    pair (see _daily_returns_naive()'s own docstring for the exact
+    mechanism), plus the owner's own "an ASX trading day reflects the
+    PREVIOUS US session" lag: by the time the ASX opens, the US market
+    that already closed hours earlier is the economically comparable
+    session, not a same-calendar-date one (the US market is usually
+    still MID-session, or not yet open, at any point during the ASX's
+    own trading day).
+
+    Method: DAILY simple returns (not monthly - a lag this short needs
+    day-level resolution; also naturally gives many more overlapping
+    points than a 24-months-minimum monthly window would, since ETF
+    price history is typically kept for ~2 years - see
+    app.py._etf_benchmark_history()), joined via `pd.merge_asof(...,
+    direction="backward", allow_exact_matches=False)`: for each target
+    trading date T, the US return used is from the US market's own most
+    recent COMPLETED session strictly BEFORE T - ordinarily US date T-1,
+    but correctly falls back further over a US holiday/weekend rather
+    than a hardcoded "-1 calendar day" that would misalign across one.
+    min_days=60 (~3 trading months) - short enough that ~2y of daily
+    history clears it easily, long enough that a handful of overlapping
+    days isn't mistaken for a real correlation (same spirit as
+    correlation_vs()'s own min_months, scaled from a monthly to a daily
+    return series)."""
+    a = _daily_returns_naive(target_hist)
+    b = _daily_returns_naive(us_hist)
+    if a is None or b is None:
+        return None
+    a_df = a.rename("target").reset_index()
+    a_df.columns = ["date", "target"]
+    b_df = b.rename("us").reset_index()
+    b_df.columns = ["date", "us"]
+    merged = pd.merge_asof(
+        a_df.sort_values("date"), b_df.sort_values("date"),
+        on="date", direction="backward", allow_exact_matches=False,
+    )
+    merged = merged.dropna(subset=["target", "us"])
+    if len(merged) < min_days:
+        return None
+    corr = merged["target"].corr(merged["us"])
     if corr is None or (isinstance(corr, float) and np.isnan(corr)):
         return None
     return float(corr)
