@@ -456,6 +456,43 @@ def _year_end_prices(prices_10y, statement_df=None):
     return out
 
 
+# Data-correctness audit A4a (27 Sep 2026, owner-reported): shared by
+# every cost-of-capital consumer in this module AND moat_engine.py (via
+# effective_tax_rate() below) - see that function's own docstring.
+TAX_RATE_DEFAULT = 0.25
+MAX_TAX_RATE = 0.40
+
+
+def effective_tax_rate(tax_provision, pretax_income):
+    """tax_provision / pretax_income is unbounded whenever pretax_income
+    is small or negative - a loss year (pretax_income < 0) can pair
+    with a tax provision of either sign and produce a deceptively
+    "normal"-looking rate or a wildly negative one; a thin positive
+    pretax_income (e.g. $5 against a $10 tax provision) gives 200%+.
+    Both silently distort every downstream cost-of-capital figure this
+    feeds - NOPAT/ROIC here (_build_fundamentals, _build_cost_of_
+    capital) and WACC's cost-of-debt leg in moat_engine.py (_ttm_wacc,
+    _year_cost_of_capital_series - both now call this same function
+    instead of computing the ratio locally, so the two engines can't
+    independently drift on this).
+
+    Returns TAX_RATE_DEFAULT (25%, the same constant every consumer
+    here already used as its own missing-data fallback) whenever
+    pretax_income isn't a genuine positive number; otherwise clamps the
+    computed rate to [0%, MAX_TAX_RATE] (40% - comfortably above the US
+    federal+state blended corporate rate and most developed-market
+    statutory rates, so this only ever bites an actual one-off-item-
+    driven outlier ratio, never a normal reported tax rate). Does NOT
+    touch _build_fundamentals's own separate "% Income Paid on Taxes"
+    display metric, which is a factual "what did the company report"
+    figure, not a modeling input - that one stays exactly as reported,
+    unbounded, since clamping a DISPLAY of an unusual-but-real effective
+    tax rate would hide a genuine fact rather than fix a modeling bug."""
+    if tax_provision is None or pretax_income is None or pretax_income <= 0:
+        return TAX_RATE_DEFAULT
+    return max(0.0, min(tax_provision / pretax_income, MAX_TAX_RATE))
+
+
 def _whole_company_shares(bundle):
     """Data-correctness audit A3 (27 Sep 2026, owner-reported), extended
     by A3b (27 Sep 2026): a dual-class company's info["sharesOutstanding"]
@@ -1279,15 +1316,30 @@ def _interest_expense_ttm(bundle):
 
     No total debt on the balance sheet at all -> (None, True, False):
     there's nothing to estimate a borrowing cost against, so
-    interest-based metrics are simply omitted by their callers."""
+    interest-based metrics are simply omitted by their callers.
+
+    Data-correctness audit A4b: this used to always sum the newest 4
+    quarterly columns - a genuine trailing 12 months for a quarterly
+    reporter, but TWO YEARS of columns for a half-yearly ASX reporter
+    (gap between the two newest columns over ~135 days), roughly
+    doubling "TTM" interest expense for those tickers. Reuses _eps_ttm's
+    own cadence detection (same 135-day threshold) so only 2 columns are
+    summed for a half-yearly reporter. This does NOT address whether
+    ASX half-year statement columns are themselves cumulative (see A5,
+    unverified in this audit) - if they are, summing 2 raw columns could
+    still overstate the window; that's a separate, still-open question,
+    not resolved by this cadence fix."""
     income_q = bundle.get("income_q")
     candidate, candidate_flagged = None, True
     if income_q is not None and not income_q.empty:
+        q_cols = _statement_col_dates(income_q)
+        gap_days = (q_cols[0][1] - q_cols[1][1]).days if len(q_cols) >= 2 else None
+        n_needed = 2 if (gap_days is not None and gap_days > 135) else 4
         q_series = [(y, v) for y, v in _series(income_q, "interest_expense") if v is not None]
         if q_series:
-            last4 = q_series[:4]
-            candidate = sum(abs(v) for _, v in last4)
-            candidate_flagged = len(last4) < 4
+            take = q_series[:n_needed]
+            candidate = sum(abs(v) for _, v in take)
+            candidate_flagged = len(take) < n_needed
     if candidate is None:
         annual = _latest(bundle["income"], "interest_expense")
         if annual is not None:
@@ -1867,7 +1919,14 @@ def _build_fundamentals(bundle, ticker, ref):
     # ~25-40%, while dropping the cash subtraction lands in that same
     # band - cross-checked against real numbers, not a guess).
     invested_capital = (equity + (total_debt or 0)) if equity is not None else None
-    nopat = (operating_income * (1 - (tax_rate if tax_rate is not None else 0.25))) if operating_income is not None else None
+    # Data-correctness audit A4a: NOPAT's own tax rate is clamped/
+    # defaulted via effective_tax_rate() (a loss year or a near-zero
+    # pretax income made the raw tax_provision/pretax_income ratio
+    # unbounded, inflating ROIC below) - deliberately a SEPARATE value
+    # from `tax_rate` above, which stays the raw, unclamped figure for
+    # the "% Income Paid on Taxes" display metric (see effective_tax_
+    # rate()'s own docstring for why that one is left alone).
+    nopat = (operating_income * (1 - effective_tax_rate(tax_provision, pretax_income))) if operating_income is not None else None
     add("ROIC", (nopat / invested_capital) if (nopat is not None and invested_capital) else None, "pct",
         flagged=True, fallback="NOPAT (operating income after an estimated tax rate) divided by invested capital (equity + total debt).")
 
@@ -2572,7 +2631,12 @@ def _build_cost_of_capital(bundle, ticker, ref):
     operating_income, _operating_income_estimated = ebit_ttm(bundle, is_financials, revenue, info)
     equity = _latest(bundle["balance"], "stockholders_equity")
     cash = _latest(bundle["balance"], "cash")
-    tax_ttm = (tax_provision / pretax_income) if (tax_provision is not None and pretax_income) else 0.25
+    # Data-correctness audit A4a: same unbounded-ratio bug as _build_
+    # fundamentals's NOPAT line above - a loss year or near-zero pretax
+    # income made this ratio swing arbitrarily (even negative), which
+    # both _wacc_for's cost-of-debt/NOPAT and _roic_for's NOPAT below
+    # would otherwise inherit uncorrected. Clamped via the shared helper.
+    tax_ttm = effective_tax_rate(tax_provision, pretax_income)
 
     ev = (mcap + (total_debt or 0) - (cash or 0)) if mcap is not None else None
 

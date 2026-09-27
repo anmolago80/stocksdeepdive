@@ -115,7 +115,6 @@ MOAT_ENGINE_VERSION = 5
 _CACHE_DIR_NAME = "moat_cache"
 _CACHE_TTL_SECONDS = 24 * 3600
 
-TAX_RATE_DEFAULT = 0.25
 PERSISTENCE_ROIC_THRESHOLD = 0.12
 MIN_YEARS_FOR_FULL_PERSISTENCE = 8
 PERSISTENCE_CAP_BELOW_MIN_YEARS = 20  # out of the pillar's 25
@@ -378,7 +377,10 @@ def _year_return_series(bundle, info, is_financials, force_switch=None, flags=No
     pretax_s = dict(_ace._series(income, "pretax_income"))
     tax_s = dict(_ace._series(income, "tax_provision"))
     ttm_pretax, ttm_tax = pretax_s.get(years_desc[0]), tax_s.get(years_desc[0])
-    tax_rate = (ttm_tax / ttm_pretax) if (ttm_tax is not None and ttm_pretax) else TAX_RATE_DEFAULT
+    # Data-correctness audit A4a: unbounded tax_provision/pretax_income
+    # ratio (a loss year inflates NOPAT/ROTC above) - see
+    # auto_compounder_engine.effective_tax_rate()'s own docstring.
+    tax_rate = _ace.effective_tax_rate(ttm_tax, ttm_pretax)
 
     out = []
     for y in years_desc:
@@ -424,20 +426,28 @@ def _ttm_wacc(bundle, basics):
     """Reproduces _build_cost_of_capital's own _wacc_for() at the TTM
     point only - this module never needs WACC for any other year (see
     module docstring for why this can't just import that closure).
-    Returns (wacc_or_None, flagged)."""
+    Returns (wacc_or_None, flagged).
+
+    Data-correctness audit A4c: both the debt WEIGHT and the cost-of-
+    debt DENOMINATOR now use total_debt, not a long-term-debt figure
+    (previously falling back to total_debt only when long-term debt was
+    missing). _interest_expense_ttm's own interest figure includes lease
+    interest, which isn't confined to long-term borrowings, so dividing
+    it by long-term debt alone overstated the cost of debt for any
+    company carrying meaningful current/short-term debt."""
     info, mcap, ccy = basics["info"], basics["market_cap"], basics["currency"]
     balance, income = bundle["balance"], bundle["income"]
 
     total_debt = _ace._latest(balance, "total_debt")
-    long_term_debt = _ace._latest(balance, "long_term_debt")
-    ltd = long_term_debt if long_term_debt is not None else total_debt
-    ltd_flagged = long_term_debt is None
 
     interest_expense, interest_flagged, interest_estimated = _ace._interest_expense_ttm(bundle)
 
     pretax_income = _ace._latest(income, "pretax_income")
     tax_provision = _ace._latest(income, "tax_provision")
-    tax_rate = (tax_provision / pretax_income) if (tax_provision is not None and pretax_income) else TAX_RATE_DEFAULT
+    # Data-correctness audit A4a: see auto_compounder_engine.effective_
+    # tax_rate()'s own docstring - unbounded tax_provision/pretax_income
+    # ratio, clamped/defaulted here instead.
+    tax_rate = _ace.effective_tax_rate(tax_provision, pretax_income)
 
     ce_result = _ace._safe(capm_engine.resolve_discount_rate, info, ccy)
     cost_of_equity, ce_meta = ce_result if ce_result else (None, {})
@@ -445,14 +455,14 @@ def _ttm_wacc(bundle, basics):
         return None, False
     ce_flagged = bool((ce_meta or {}).get("defaulted") or (ce_meta or {}).get("floored"))
 
-    if not ltd:
+    if not total_debt:
         return cost_of_equity, True  # 100% equity weight - same convention as _wacc_for
 
-    weight_e = mcap / (mcap + ltd)
-    weight_d = ltd / (mcap + ltd)
-    cost_of_debt = (abs(interest_expense) / ltd) * (1 - tax_rate) if interest_expense is not None else 0.0
+    weight_e = mcap / (mcap + total_debt)
+    weight_d = total_debt / (mcap + total_debt)
+    cost_of_debt = (abs(interest_expense) / total_debt) * (1 - tax_rate) if interest_expense is not None else 0.0
     wacc = weight_e * cost_of_equity + weight_d * cost_of_debt
-    flagged = bool(ltd_flagged or interest_expense is None or interest_flagged or interest_estimated or ce_flagged)
+    flagged = bool(interest_expense is None or interest_flagged or interest_estimated or ce_flagged)
     return wacc, flagged
 
 
@@ -496,7 +506,6 @@ def _year_cost_of_capital_series(bundle, basics, is_financials, years_desc):
         return [(None, True) for _ in years_desc]
 
     debt_s = dict(_ace._series(balance, "total_debt"))
-    ltd_s = dict(_ace._series(balance, "long_term_debt"))
     interest_s = dict(_ace._series(income, "net_non_operating_interest"))
     pretax_s = dict(_ace._series(income, "pretax_income"))
     tax_s = dict(_ace._series(income, "tax_provision"))
@@ -506,20 +515,22 @@ def _year_cost_of_capital_series(bundle, basics, is_financials, years_desc):
 
     out = []
     for y in years_desc:
-        total_debt, long_term_debt = debt_s.get(y), ltd_s.get(y)
-        ltd = long_term_debt if long_term_debt is not None else total_debt
+        # A4c: total_debt for both the weight and the cost-of-debt
+        # denominator - see _ttm_wacc's own comment on why long-term
+        # debt alone understated the debt base.
+        total_debt = debt_s.get(y)
         interest_expense = interest_s.get(y)
-        if ltd is None or interest_expense is None or cost_of_equity is None or mcap is None:
+        if total_debt is None or interest_expense is None or cost_of_equity is None or mcap is None:
             out.append((ttm_coc, True))
             continue
-        if not ltd:
+        if not total_debt:
             out.append((cost_of_equity, False))
             continue
         pretax_income, tax_provision = pretax_s.get(y), tax_s.get(y)
-        tax_rate = (tax_provision / pretax_income) if (tax_provision is not None and pretax_income) else TAX_RATE_DEFAULT
-        weight_e = mcap / (mcap + ltd)
-        weight_d = ltd / (mcap + ltd)
-        cost_of_debt = (abs(interest_expense) / ltd) * (1 - tax_rate)
+        tax_rate = _ace.effective_tax_rate(tax_provision, pretax_income)  # A4a
+        weight_e = mcap / (mcap + total_debt)
+        weight_d = total_debt / (mcap + total_debt)
+        cost_of_debt = (abs(interest_expense) / total_debt) * (1 - tax_rate)
         wacc_y = weight_e * cost_of_equity + weight_d * cost_of_debt
         out.append((wacc_y, False))
     return out
