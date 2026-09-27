@@ -122,6 +122,25 @@ def _conn():
             conn.execute(f"ALTER TABLE quote_snapshot_runs ADD COLUMN {_col} INTEGER")
         except sqlite3.OperationalError:
             pass  # column already exists
+    # Trading Cost Commit 4 (27 Sep 2026, owner-reported): PAYX/CPRT/AOS
+    # all showed the same ambiguous "No snapshot recorded yet" whether
+    # the recorder simply hadn't reached them yet (rotation) or had
+    # tried and a quality gate rejected the quote - quote_recorder.py's
+    # own docstring notes "a rejected quote itself leaves no row
+    # anywhere else, by design", which is exactly the gap. This table
+    # is the one exception to that: the MOST RECENT rejection per
+    # ticker only (PRIMARY KEY ticker, upserted - never a history), so
+    # the Trading Cost tab can tell the two cases apart. record_
+    # snapshot() below clears a ticker's row here the moment it
+    # actually captures a quote, so this never lags behind reality.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS quote_rejections (
+            ticker TEXT PRIMARY KEY,
+            reason TEXT NOT NULL,
+            snap_date TEXT NOT NULL,
+            rejected_at_utc TEXT NOT NULL
+        )"""
+    )
     return conn
 
 
@@ -150,6 +169,43 @@ def record_snapshot(ticker, snap_date, snap_at_utc, bid, ask, bid_size,
             (ticker, snap_date, snap_at_utc, bid, ask, bid_size, ask_size,
              last_price, currency, source),
         )
+        conn.execute("DELETE FROM quote_rejections WHERE ticker = ?", (ticker,))
+
+
+def record_rejection(ticker, reason, snap_date, rejected_at_utc):
+    """Upserts `ticker`'s MOST RECENT rejection only (Trading Cost
+    Commit 4, 27 Sep 2026) - called from quote_recorder.py's own
+    _record_market() once a ticker has failed BOTH the first pass and
+    its one retry in the same run, with the retry's own final reason.
+    Overwritten by a later rejection, and cleared entirely the next
+    time record_snapshot() actually captures a quote for this ticker -
+    this table is deliberately never a history, only "is this ticker's
+    latest known state a rejection, and why"."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO quote_rejections (ticker, reason, snap_date, rejected_at_utc)
+                 VALUES (?, ?, ?, ?)
+               ON CONFLICT(ticker) DO UPDATE SET
+                 reason = excluded.reason,
+                 snap_date = excluded.snap_date,
+                 rejected_at_utc = excluded.rejected_at_utc""",
+            (ticker, reason, snap_date, rejected_at_utc),
+        )
+
+
+def latest_rejection(ticker):
+    """{"reason", "snap_date", "rejected_at_utc"} for `ticker`'s most
+    recent rejection, or None if it has none on file (never rejected,
+    or its rejection was cleared by a later successful capture) - the
+    Trading Cost tab's SAMPLED BUT REJECTED vs ON ROSTER NOT YET
+    SAMPLED distinction (Commit 4) reads this directly."""
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT reason, snap_date, rejected_at_utc FROM quote_rejections WHERE ticker = ?",
+            (ticker,),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def record_run_summary(run_date, market, captured_count, rejection_counts, ran_at_utc):

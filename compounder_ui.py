@@ -2119,6 +2119,22 @@ def _trading_cost_spread_chart(days_rows, recording_start_date, snap_times, tick
     return fig
 
 
+def _recording_status_message(ticker, lang):
+    """ON ROSTER NOT YET SAMPLED vs SAMPLED BUT REJECTED (Trading Cost
+    Commit 4, 27 Sep 2026, owner-reported: PAYX/CPRT/AOS all showed the
+    same "No snapshot recorded yet" whether the recorder simply hadn't
+    reached the ticker yet or had tried and a quality gate rejected the
+    quote). Only ever called for a ROSTER ticker with no usable latest
+    snapshot - the NOT ON ROSTER case already has its own plain message
+    (not_in_roster_note, Commit 2) and never reaches this function."""
+    _t = lambda key, **fmt: i18n.t(f"compounder.trading_cost.{key}", lang, **fmt)
+    rejection = quote_snapshot_store.latest_rejection(ticker)
+    if rejection:
+        reason_label = _t(f"reject_reason_label.{rejection['reason']}")
+        return _t("recording_status_rejected", reason=reason_label)
+    return _t("recording_status_not_yet_sampled")
+
+
 def render_trading_cost_tab(ticker, price_history, lang="en"):
     """Renders the 💱 Trading Cost tab's full content for `ticker` - see
     TRADING_COST_ENABLED/with_trading_cost_tab() above for when this
@@ -2263,7 +2279,7 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
                     min_count=trading_cost_engine.RECORDED_LEADS_MIN_DAYS,
                 )
             else:
-                _progress_caption = _t("bid_ask_now_no_data")
+                _progress_caption = _recording_status_message(ticker, lang)
             st.markdown(_spread_meter_html(
                 _t("meter_recorded_label"),
                 series["average_recorded_spread_pct"],
@@ -2415,7 +2431,7 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
             st.caption(_t("bid_ask_now_snapshot_label", datetime=_exact_dt) + " · " + _t("rail_not_live_note"))
         else:
             st.markdown("—")
-            st.caption(_t("bid_ask_now_no_data"))
+            st.caption(_recording_status_message(ticker, lang))
 
     # ---- Section 4: history chart - the "Recorded" legend/dots/zone
     # only ever appear for a roster ticker (show_recorded=_in_roster) -

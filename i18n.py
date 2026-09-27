@@ -3311,6 +3311,32 @@ EN = {
     "compounder.trading_cost.bid_ask_now_snapshot_label": "recorded {datetime}",
     "compounder.trading_cost.bid_ask_now_stale_label": "last recorded {date}",
     "compounder.trading_cost.bid_ask_now_no_data": "No snapshot recorded yet",
+    # Trading Cost Commit 4 (27 Sep 2026, owner-reported: PAYX/CPRT/AOS
+    # all read as broken when the recorder was actually working fine -
+    # the ticker just hadn't had a real reading land yet, or landed one
+    # a quality gate rejected). Replaces the single ambiguous message
+    # above in both places it was shown (the meter's own progress
+    # caption and this "Bid & ask now" section) with the actual state -
+    # NOT ON ROSTER already has its own plain message (not_in_roster_
+    # note, Commit 2) and never reaches either of these two.
+    "compounder.trading_cost.recording_status_not_yet_sampled": (
+        "On the recording roster, not sampled yet — real quotes are "
+        "captured on a rotating schedule (about 1 trading day in 5, "
+        "mid-session), so there's no fixed date; the rotation shifts "
+        "with this ticker's tier."
+    ),
+    "compounder.trading_cost.recording_status_rejected": (
+        "Sampled, but the quote didn't pass the quality check "
+        "({reason}) — no usable reading yet. It's retried on the next "
+        "scheduled pass."
+    ),
+    "compounder.trading_cost.reject_reason_label.rejected_missing_or_nonpositive": "no usable bid/ask returned",
+    "compounder.trading_cost.reject_reason_label.rejected_ask_le_bid": "ask wasn't above bid",
+    "compounder.trading_cost.reject_reason_label.rejected_wide_spread": "spread looked implausibly wide",
+    "compounder.trading_cost.reject_reason_label.rejected_price_off_mid": "last price was too far from the quote",
+    "compounder.trading_cost.reject_reason_label.rejected_market_not_regular": "market wasn't in regular trading when sampled",
+    "compounder.trading_cost.reject_reason_label.rejected_no_volume": "no trading volume signal",
+    "compounder.trading_cost.reject_reason_label.rejected_frozen_quote": "quote looked frozen, unchanged from last time",
 
     # Section 2 — "What crossing it costs you" (Option B).
     "compounder.trading_cost.cost_heading": "What crossing it costs you",
@@ -6551,6 +6577,24 @@ ES = {
     "compounder.trading_cost.bid_ask_now_snapshot_label": "registrado {datetime}",
     "compounder.trading_cost.bid_ask_now_stale_label": "último registro: {date}",
     "compounder.trading_cost.bid_ask_now_no_data": "Aún no hay captura registrada",
+    "compounder.trading_cost.recording_status_not_yet_sampled": (
+        "Está en el conjunto de registro, pero aún no se ha muestreado — "
+        "las capturas reales siguen un calendario rotativo (alrededor de "
+        "1 día de operaciones de cada 5, a media sesión), así que no hay "
+        "una fecha fija; la rotación cambia según el nivel de esta acción."
+    ),
+    "compounder.trading_cost.recording_status_rejected": (
+        "Se intentó capturar, pero la cotización no pasó el control de "
+        "calidad ({reason}) — aún no hay una lectura utilizable. Se "
+        "reintenta en la próxima pasada programada."
+    ),
+    "compounder.trading_cost.reject_reason_label.rejected_missing_or_nonpositive": "no se recibió una compra/venta utilizable",
+    "compounder.trading_cost.reject_reason_label.rejected_ask_le_bid": "el precio de venta no fue mayor que el de compra",
+    "compounder.trading_cost.reject_reason_label.rejected_wide_spread": "el spread parecía implausiblemente amplio",
+    "compounder.trading_cost.reject_reason_label.rejected_price_off_mid": "el último precio estaba demasiado lejos de la cotización",
+    "compounder.trading_cost.reject_reason_label.rejected_market_not_regular": "el mercado no estaba en sesión regular al muestrear",
+    "compounder.trading_cost.reject_reason_label.rejected_no_volume": "sin señal de volumen operado",
+    "compounder.trading_cost.reject_reason_label.rejected_frozen_quote": "la cotización parecía congelada, sin cambios respecto a la anterior",
 
     # Sección 2 — "Lo que te cuesta cruzar el spread" (Opción B).
     "compounder.trading_cost.cost_heading": "Lo que te cuesta cruzar el spread",

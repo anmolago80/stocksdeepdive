@@ -693,6 +693,17 @@ def _record_market(market, log=print):
                 captured += 1
             else:
                 counts[reason] += 1
+                # Trading Cost Commit 4 (27 Sep 2026, owner-reported):
+                # per-ticker "why" for the tab's SAMPLED BUT REJECTED
+                # state - only written here, after BOTH the first pass
+                # and this retry have rejected the same ticker, so a
+                # transient first-pass rejection that clears on retry
+                # (the common case this retry pass exists for) never
+                # gets recorded as a rejection at all.
+                quote_snapshot_store.record_rejection(
+                    ticker=ticker, reason=reason, snap_date=local_date,
+                    rejected_at_utc=now_utc.isoformat(),
+                )
 
     total_rejected = sum(counts.values())
     _reasons = ", ".join(f"{k}={v}" for k, v in counts.items() if v)

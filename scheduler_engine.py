@@ -153,14 +153,44 @@ import traceback
 import uuid
 from datetime import datetime, timedelta, timezone
 
+# URGENT Commit 4 (27 Sep 2026, owner-reported): every guarded import
+# below used to fail with NO log line at all - a broken module quietly
+# set its name to None forever, and the only symptom was whatever
+# feature depends on it going dark (e.g. both nightly retention prunes
+# stopping - see the quote_recorder.py case that prompted this). This
+# helper is called from each guarded import's `except` clause instead:
+# it prints one clear line (this runs at process import time, before
+# any job's own log=print callable exists, so plain print() is the
+# right tool, same as this module's own top-level code elsewhere) AND
+# records the failure via source_health_store, keyed "module import:
+# <name>", so it survives past the startup log and is queryable the
+# same way every other tracked source is (source_health_store.get()).
+# Fail-open is UNCHANGED - the caller still sets its module name to
+# None either way; this only adds visibility, never a behaviour change.
+def _log_guarded_import_failure(module_name, exc):
+    print(f"[scheduler] optional module '{module_name}' failed to import "
+          f"({exc}) - continuing without it")
+    try:
+        import source_health_store
+        source_health_store.record_failure(
+            f"module import: {module_name}",
+            {"import": {"ok": False, "detail": str(exc)}},
+            str(exc),
+        )
+    except Exception as _health_exc:
+        print(f"[scheduler] also failed to record '{module_name}' import "
+              f"failure via source_health_store ({_health_exc})")
+
+
 # Mega-batch Part 35.1: NIGHTLY JOBS table on the new owner Admin
 # Dashboard - see _record_job() below for how each job's ok/warn/error
 # result and duration are captured, and admin_metrics_store.py's own
 # docstring for the rest of the site-pulse design.
 try:
     import admin_metrics_store
-except Exception:
+except Exception as _e:
     admin_metrics_store = None
+    _log_guarded_import_failure("admin_metrics_store", _e)
 
 # Admin Dashboard Analytics Commit 4 prep (26 Sep 2026): visitor_classify's
 # own in-memory DNS-verification cache needs a periodic sweep of expired
@@ -169,16 +199,18 @@ except Exception:
 # _run_volume_check() below, same nightly slot as every other prune there.
 try:
     import visitor_classify
-except Exception:
+except Exception as _e:
     visitor_classify = None
+    _log_guarded_import_failure("visitor_classify", _e)
 
 # Mega-batch Part 36: the newsletter list's own nightly retention prune
 # (newsletter_store.prune_stale_unconfirmed) - same guarded-import shape
 # as admin_metrics_store above, wired into _run_volume_check() below.
 try:
     import newsletter_store
-except Exception:
+except Exception as _e:
     newsletter_store = None
+    _log_guarded_import_failure("newsletter_store", _e)
 
 # Trading Cost tab, Commit 1: imported at module level (not deferred
 # inside a _run_* function like the other job modules) because _loop()
@@ -191,8 +223,9 @@ except Exception:
 # never take the whole scheduler down.
 try:
     import quote_recorder
-except Exception:
+except Exception as _e:
     quote_recorder = None
+    _log_guarded_import_failure("quote_recorder", _e)
 
 # Top 100 Commit 2 (25 Sep 2026, owner-reported): imported at module
 # level, same reasoning as quote_recorder above - _loop() needs to
@@ -202,8 +235,9 @@ except Exception:
 # every tick" cost to defer here.
 try:
     import top100_store
-except Exception:
+except Exception as _e:
     top100_store = None
+    _log_guarded_import_failure("top100_store", _e)
 
 
 def _data_dir():
