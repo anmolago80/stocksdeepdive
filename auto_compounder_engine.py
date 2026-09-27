@@ -1213,6 +1213,31 @@ def _half_year_cumulative_ttm(income_q, q_cols, last_annual_end=None):
     return _reconstruct_interim()
 
 
+def _ttm_overlaps_latest_fy(bundle):
+    """True when this bundle's TTM figures aren't built from genuinely
+    fresher quarterly data than the latest annual column - the SAME
+    "no fresher quarter than the newest annual column" condition _eps_
+    ttm() itself already checks (see that function's own docstring):
+    no quarterly columns at all, or the newest quarterly column isn't
+    actually newer than the newest annual one. In that case, whatever
+    _eps_ttm()/_dividend_ttm() return is a fallback read of the SAME
+    period the latest fiscal-year column already covers, not a
+    genuinely distinct trailing-twelve-month window.
+
+    B2.2/B2.3 fix (27 Sep 2026, owner-directed): a caller building a
+    multi-period series from both a "TTM" figure and a sum over fiscal
+    years (Retained Earnings' Value Created windows, EPS growth
+    averages) must check this before treating both as independent data
+    points, or it silently double-counts one real year of reported
+    earnings as if it were two. Shared here (rather than re-derived in
+    each caller) so both fixes stay consistent with each other and
+    with _eps_ttm()'s own fallback condition."""
+    income_q = bundle.get("income_q")
+    q_cols = _statement_col_dates(income_q)
+    a_cols = _statement_col_dates(bundle.get("income"))
+    return (not q_cols) or (bool(a_cols) and q_cols[0][1] <= a_cols[0][1])
+
+
 def _eps_ttm(bundle, ticker=None):
     """(value, flagged). The TTM EPS every TTM-consuming metric uses.
 
@@ -2230,19 +2255,36 @@ def _value_created(bundle, retained_ttm, price_now):
         return d.strftime("%b %Y") if d else f"FY{y} end"
 
     def _fy_window(n_years, key):
-        """Workbook-style fixed-FY horizon (2Y/5Y/10Y formula)."""
+        """Workbook-style fixed-FY horizon (2Y/5Y/10Y formula).
+
+        B2.2 fix (27 Sep 2026, owner-directed, CONFIRMED BUG): retained
+        earnings sums n_years of EPS-DPS - from the START of the
+        oldest included fiscal year to the END of the newest - so the
+        price used to measure "value created" must span the SAME
+        n_years: starting at the year-end BEFORE the oldest included
+        year, not that year's own year-end. The old code anchored
+        start_price at the oldest included year's OWN year-end, which
+        only captures the price change within the newest of those
+        years - one year short of what the retained-earnings sum
+        actually covers (e.g. a "2Y" bar was really measuring a
+        1-year price change against 2 years of retained earnings).
+        Returns None (same "don't fake a window the data can't
+        support" discipline the shallow-depth branches below already
+        follow) when there's no year-end available before the window -
+        i.e. exactly n_years of statement history and no more."""
         slice_ = eps_series[:n_years]
-        if len(slice_) < n_years:
+        if len(slice_) < n_years or len(eps_series) <= n_years:
             return None
         re_val = sum(eps - dps_by_year.get(y, 0.0) for y, eps in slice_)
         end_price = year_end_prices.get(slice_[0][0])
-        start_price = year_end_prices.get(slice_[-1][0])
+        anchor_year = eps_series[n_years][0]  # the fiscal year BEFORE the oldest year in the window
+        start_price = year_end_prices.get(anchor_year)
         if re_val in (None, 0) or end_price is None or start_price is None:
             return None
         return {
             "retained_earnings": re_val,
             "value_created": (end_price - start_price) / re_val,
-            "window": f"{_fy_end(slice_[-1][0])} \u2192 {_fy_end(slice_[0][0])}",
+            "window": f"{_fy_end(anchor_year)} \u2192 {_fy_end(slice_[0][0])}",
         }
 
     out = {}
@@ -2256,15 +2298,30 @@ def _value_created(bundle, retained_ttm, price_now):
         # TTM = the workbook's "11Y (From TTM)": TTM retained plus the
         # last 10 FYs, price change from that window's oldest year-end
         # to today.
+        #
+        # B2.2 fix (27 Sep 2026, owner-directed, CONFIRMED BUG): two
+        # separate mismatches, same as _fy_window() above -
+        #   1. start_price used to anchor at ttm_slice's OWN oldest
+        #      year-end, one year short of the 10-FY-plus-TTM span the
+        #      retained-earnings sum actually covers - now anchored at
+        #      the year BEFORE that (eps_series[10]), same fix as
+        #      _fy_window().
+        #   2. retained_ttm was always ADDED on top of ttm_slice's own
+        #      sum, even when _ttm_overlaps_latest_fy(bundle) is True -
+        #      in that case retained_ttm is a fallback read of the SAME
+        #      period ttm_slice[0] (the newest FY) already covers, so
+        #      adding it double-counts one real year of earnings as two.
         ttm_slice = eps_series[:10]
-        if retained_ttm is not None:
-            re_val = retained_ttm + sum(eps - dps_by_year.get(y, 0.0) for y, eps in ttm_slice)
-            start_price = year_end_prices.get(ttm_slice[-1][0])
+        if retained_ttm is not None and len(eps_series) > 10:
+            fy_sum = sum(eps - dps_by_year.get(y, 0.0) for y, eps in ttm_slice)
+            re_val = fy_sum if _ttm_overlaps_latest_fy(bundle) else (retained_ttm + fy_sum)
+            anchor_year = eps_series[10][0]  # the fiscal year BEFORE ttm_slice's own oldest year
+            start_price = year_end_prices.get(anchor_year)
             if re_val not in (None, 0) and start_price is not None and price_now is not None:
                 out["TTM"] = {
                     "retained_earnings": re_val,
                     "value_created": (price_now - start_price) / re_val,
-                    "window": f"{_fy_end(ttm_slice[-1][0])} \u2192 today",
+                    "window": f"{_fy_end(anchor_year)} \u2192 today",
                 }
     else:
         # Shallow depth: 1Y / 2Y / max-available cumulative.
@@ -2280,7 +2337,16 @@ def _value_created(bundle, retained_ttm, price_now):
         if entry:
             out["2Y"] = entry
         if n_avail > 2 and retained_ttm is not None and price_now is not None:
-            re_val = retained_ttm + sum(eps - dps_by_year.get(y, 0.0) for y, eps in eps_series)
+            # B2.2 fix (27 Sep 2026, owner-directed): same retained_ttm
+            # double-count guard as the full-depth TTM branch above -
+            # eps_series[0] (the newest FY) is already included in this
+            # sum, so adding retained_ttm on top when it overlaps that
+            # same period double-counts it. start_price is NOT changed
+            # here - eps_series[-1] genuinely is the oldest year this
+            # bundle has, there is no earlier year-end to anchor to (see
+            # this branch's own "max-available cumulative" docstring).
+            fy_sum = sum(eps - dps_by_year.get(y, 0.0) for y, eps in eps_series)
+            re_val = fy_sum if _ttm_overlaps_latest_fy(bundle) else (retained_ttm + fy_sum)
             start_price = year_end_prices.get(eps_series[-1][0])
             if re_val not in (None, 0) and start_price is not None:
                 out[f"{n_avail}Y*"] = {
