@@ -805,10 +805,26 @@ def _pillar_pricing_power(bundle, is_financials, flags, force_switch=None, force
     # window above, since "growth without discounting margins" is asking
     # whether margin held up over the company's actual growth run, not
     # just its most recent half.
-    newest_rev, oldest_rev = revenue_s.get(years_desc[0]), revenue_s.get(years_desc[-1])
-    years_span = max(1, len(years_desc) - 1)
+    # Audit fix B2.9 (27 Sep 2026, owner-directed, CONFIRMED BUG): this
+    # used to pin oldest_rev to years_desc[-1] (the OLDEST column by
+    # position) even when that specific year's revenue was missing/empty
+    # - not unusual for the earliest year in a statement history, which
+    # is often the most likely to have a gap. A missing oldest year made
+    # the whole revenue_cagr calculation give up (None) even though a
+    # real, computable CAGR was still available from the remaining
+    # years. Walk backward from the oldest position to the first year
+    # that actually has a positive revenue figure, and span the years
+    # between THAT year and the newest one - not the nominal full column
+    # count, which would overstate the number of years actually spanned.
+    newest_rev = revenue_s.get(years_desc[0])
+    oldest_rev, years_span = None, None
+    for _idx in range(len(years_desc) - 1, 0, -1):
+        _candidate = revenue_s.get(years_desc[_idx])
+        if _candidate and _candidate > 0:
+            oldest_rev, years_span = _candidate, _idx
+            break
     revenue_cagr = None
-    if newest_rev and oldest_rev and newest_rev > 0 and oldest_rev > 0:
+    if newest_rev and oldest_rev and newest_rev > 0 and years_span:
         revenue_cagr = (newest_rev / oldest_rev) ** (1 / years_span) - 1
     gm_change_full_pts = (values[0] - values[-1]) * 100
 
