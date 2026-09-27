@@ -46,6 +46,7 @@ but the EODHD field-name mapping in particular should be spot-checked
 against a real EODHD response the first time EODHD_API_KEY is set.
 """
 
+import calendar
 import datetime
 import json
 import os
@@ -337,35 +338,66 @@ def _convert_statement_currency(df, from_ccy, to_ccy):
 # -----------------------------------
 
 def _monthly_series(hist_df):
-    """yfinance history DataFrame -> ~10y of monthly closes (first trading
-    close of each month), same "one point per month" shape the hand-built
+    """yfinance history DataFrame -> ~10y of monthly closes (the LAST
+    trading close of each month, labeled at that CALENDAR month's own
+    last day), same "one point per month" shape the hand-built
     workbook's own price_history series uses.
 
-    yfinance's `.history()` index is tz-AWARE, localized to that ticker's
-    own exchange (Australia/Sydney for a .AX stock, America/New_York for
-    ^GSPC). `Timestamp.isoformat()` on a tz-aware value includes that
-    offset ("...T00:00:00+11:00" vs "...T00:00:00-05:00") - so the SAME
-    calendar month produced two different-looking date strings depending
-    on which exchange the series came from. _cov_corr() (and anything
-    else joining a stock's own prices_10y against spx_prices_10y by date
-    string) built its {date: price} dicts straight off these strings, so
-    for every non-US ticker the two dicts shared ZERO keys and Covariance/
-    Correlation/Variance silently came back None for the entire ASX
-    lineup - not a missing feature, a broken join. Strip the tz (this is
-    already a monthly-first-close bucket, not an intraday timestamp, so
-    the offset carries no real information) so every ticker's dates land
-    on the same plain "YYYY-MM-01T00:00:00" grid regardless of exchange."""
+    Audit fix B2.6 (27 Sep 2026, owner-directed, CONFIRMED BUG): this used
+    to be `resample("MS").first()` - the FIRST trading close of each
+    month, dated to that month's start. auto_compounder_engine.
+    _year_end_prices() matches each fiscal year-end to the latest point
+    "on or before" that end date, so for a fiscal year ending, say,
+    2024-06-30, it would land on the close from the FIRST trading day of
+    June (as early as 1 Jun) rather than the close nearest the real
+    30 June year-end - up to a month of price drift feeding into every
+    year's PE Ratio, Fair Value's PE-based method, Retained Earnings'
+    Value Created chart, and Cost of Capital's WACC-by-year, all of which
+    price a fiscal year's own EPS/equity against a stale month-open quote
+    instead of the closing quote that fiscal year actually ended on.
+    Grouping by (year, month) and keeping each group's LAST real trading
+    close (not a resample bucket's first value) fixes this without
+    changing the "one point per month" granularity the rest of this
+    module and _year_end_prices() rely on.
+
+    The DATE label for that price is the calendar month's own LAST day
+    (e.g. "2024-06-30"), not the real trading date the close happened on
+    (which could be a few days earlier around a weekend/holiday) -
+    deliberately, so a stock's monthly grid and spx_prices_10y's monthly
+    grid land on IDENTICAL date strings for the same (year, month) even
+    when the two exchanges' actual last trading day of that month
+    differs (different public holidays). Using the true trading date as
+    the label instead would silently break _cov_corr()'s date-string join
+    between a stock and the S&P 500 exactly whenever their calendars
+    happened to diverge - the same class of join bug the tz-strip fix
+    below was already written to prevent. This still fixes the pricing
+    bug above (the VALUE is always the real last trading day's close,
+    never a first-of-month or interpolated one) while keeping the join
+    exchange-independent.
+
+    (Historical note this fix also resolves as a side effect: yfinance's
+    `.history()` index is tz-AWARE, localized to that ticker's own
+    exchange - a plain `Timestamp.isoformat()` on a tz-aware value used
+    to include that offset, so the SAME calendar month produced two
+    different-looking date strings depending on which exchange the
+    series came from, and _cov_corr()'s date-string join between a
+    stock's prices_10y and spx_prices_10y silently found zero common
+    keys for every non-US ticker. Labeling by (year, month) -> calendar
+    month-end directly, rather than by the tz-aware Timestamp itself,
+    means every ticker's dates land on one naive, exchange-independent
+    grid with no tz-stripping step needed at all.)"""
     if hist_df is None or hist_df.empty or "Close" not in hist_df.columns:
         return {"dates": [], "prices": []}
     try:
-        monthly = hist_df["Close"].resample("MS").first().dropna()
-        idx = monthly.index
-        if getattr(idx, "tz", None) is not None:
-            idx = idx.tz_localize(None)
-        return {
-            "dates": [d.isoformat() for d in idx.to_pydatetime()],
-            "prices": [round(float(v), 4) for v in monthly.values],
-        }
+        closes = hist_df["Close"].dropna().sort_index()
+        if closes.empty:
+            return {"dates": [], "prices": []}
+        dates, prices = [], []
+        for (y, m), group in closes.groupby([closes.index.year, closes.index.month]):
+            month_end = datetime.date(int(y), int(m), calendar.monthrange(int(y), int(m))[1])
+            dates.append(f"{month_end.isoformat()}T00:00:00")
+            prices.append(round(float(group.iloc[-1]), 4))
+        return {"dates": dates, "prices": prices}
     except Exception:
         return {"dates": [], "prices": []}
 
