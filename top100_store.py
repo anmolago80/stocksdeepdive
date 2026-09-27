@@ -174,6 +174,20 @@ def _conn():
         conn.execute("ALTER TABLE top100_pool ADD COLUMN dividend_yield_pct REAL")
     except sqlite3.OperationalError:
         pass
+    # Results-driven Top 100 refresh (27 Sep 2026, owner-directed): the
+    # pooled row's own most recently reported period (nightly_scan.py's
+    # "Most Recent Quarter", an ISO "YYYY-MM-DD" or None), same guarded-
+    # ALTER-TABLE/purely-additive pattern as psychology/sector/dividend_
+    # yield_pct above - but unlike those three, this one is NOT display-
+    # only: top100_engine._unscored_tickers() reads it to decide whether
+    # a pooled company needs a fresh AI score (see that function's own
+    # docstring for the a/b/c rule). Still never fed into composite_
+    # score() or any sort/selection - it decides WHETHER to re-score, not
+    # the score itself.
+    try:
+        conn.execute("ALTER TABLE top100_pool ADD COLUMN most_recent_quarter TEXT")
+    except sqlite3.OperationalError:
+        pass
     # Top 20 Australia guaranteed-twenty (25 Sep 2026, owner-approved
     # mock, "top20_australia_extended_mock.html") - True for an "ASX
     # extension" row (top100_engine.select_top100_pool()'s own
@@ -234,6 +248,22 @@ def _conn():
             conn.execute(f"ALTER TABLE top100_scores ADD COLUMN {_col} TEXT")
         except sqlite3.OperationalError:
             pass
+    # Results-driven Top 100 refresh (27 Sep 2026, owner-directed) - see
+    # this module's own module docstring section below for the full
+    # redefinition. Same purely-additive/nullable pattern as every prior
+    # rubric bump above (no table rebuild - the `quarter` column's PK
+    # role is unchanged, only what STRING gets written into it for new
+    # rows changes). This column stores the `most_recent_quarter` the
+    # company had AT THE TIME it was scored, read back without having to
+    # parse it out of the `quarter`/score-key string - every pre-existing
+    # row (scored under the old calendar-quarter regime) simply reads
+    # NULL here, which top100_engine._unscored_tickers() already treats
+    # as "unknown, never itself a trigger" (see that function's own
+    # docstring).
+    try:
+        conn.execute("ALTER TABLE top100_scores ADD COLUMN most_recent_quarter TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
         """CREATE TABLE IF NOT EXISTS top100_batch_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -255,19 +285,22 @@ def save_pool(rows, as_of):
     """Upserts one full pool snapshot - `rows`: [{"ticker",
     "company_name", "universe", "value_score", "mos_pct", "price",
     "intrinsic_value", "currency", "psychology", "sector",
-    "dividend_yield_pct", "asx_extension"}, ...], `as_of`: "YYYY-MM-DD".
-    `asx_extension` (Top 20 Australia guaranteed-twenty) defaults to
-    False when a row doesn't carry it - every caller before this
-    feature existed passes plain pool rows and keeps working unchanged.
-    Also prunes snapshots beyond POOL_SNAPSHOT_RETENTION in the same
-    call, so callers never have to remember to prune separately."""
+    "dividend_yield_pct", "most_recent_quarter", "asx_extension"}, ...],
+    `as_of`: "YYYY-MM-DD". `asx_extension` (Top 20 Australia
+    guaranteed-twenty) defaults to False when a row doesn't carry it -
+    every caller before this feature existed passes plain pool rows and
+    keeps working unchanged; `most_recent_quarter` (results-driven Top
+    100 refresh, 27 Sep 2026) likewise defaults to None for any caller
+    that doesn't carry it. Also prunes snapshots beyond POOL_SNAPSHOT_
+    RETENTION in the same call, so callers never have to remember to
+    prune separately."""
     with _conn() as conn:
         conn.executemany(
             """INSERT INTO top100_pool
                  (as_of, ticker, company_name, universe, value_score,
                   mos_pct, price, intrinsic_value, currency, psychology, sector,
-                  dividend_yield_pct, asx_extension)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  dividend_yield_pct, most_recent_quarter, asx_extension)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(as_of, ticker) DO UPDATE SET
                  company_name = excluded.company_name,
                  universe = excluded.universe,
@@ -279,12 +312,13 @@ def save_pool(rows, as_of):
                  psychology = excluded.psychology,
                  sector = excluded.sector,
                  dividend_yield_pct = excluded.dividend_yield_pct,
+                 most_recent_quarter = excluded.most_recent_quarter,
                  asx_extension = excluded.asx_extension""",
             [
                 (as_of, r["ticker"], r.get("company_name"), r.get("universe"),
                  r.get("value_score"), r.get("mos_pct"), r.get("price"),
                  r.get("intrinsic_value"), r.get("currency"), r.get("psychology"),
-                 r.get("sector"), r.get("dividend_yield_pct"),
+                 r.get("sector"), r.get("dividend_yield_pct"), r.get("most_recent_quarter"),
                  int(bool(r.get("asx_extension"))))
                 for r in rows
             ],
@@ -379,21 +413,35 @@ def current_asx_extension():
 def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
                 inversion_scenario, inversion_severity, prompt, raw_response,
                 current_headwind=None, market_structure=None, market_structure_comment=None,
-                one_foot_hurdle=None, one_foot_comment=None):
+                one_foot_hurdle=None, one_foot_comment=None, most_recent_quarter=None):
     """Upserts one ticker's AI score for (quarter, model,
     rubric_version) - rubric_version (top100_engine.RUBRIC_VERSION) is
     part of the cache key/PK (see _migrate_scores_schema_v2()'s own
     docstring for why) so a rubric bump never reads an old rubric's
-    row back as if it answered the new questions. `dims`: a plain dict
-    {"ai_exposure": {"score": int_or_None, "justification": str,
-    "source_period": str}, ...} for all ten CURRENT-rubric dimension
-    keys - stored as JSON, read back exactly as given. `not_rated`:
-    bool, True when >=3 dimensions came back null (top100_engine.py's
-    own rule - see that module's docstring). `inversion_scenario`/
-    `inversion_severity`: the one-sentence damaging-scenario synthesis
-    + 1-5 severity (task's own "inversion synthesis" instruction) -
-    both None for a NOT RATED company (top100_engine._parse_response_
-    json() enforces this server-side before it ever reaches here).
+    row back as if it answered the new questions.
+
+    `quarter` (results-driven Top 100 refresh, 27 Sep 2026): despite the
+    name, this is no longer a calendar-quarter label for a NEW row - it's
+    the SCORE KEY top100_engine computes per entrant, either "RP<YYYY-MM-
+    DD>" (the most_recent_quarter the company had when scored) or
+    "D<YYYY-MM-DD>" (the scoring date, when that's unknown or a same-
+    period age-triggered rescore would otherwise collide with the
+    existing row - see top100_engine._unscored_tickers()/_score_key_for_
+    entrant()'s own docstrings). Existing "2026Q3"-style rows from before
+    this change keep that literal value untouched - this column's PK role
+    and this function's own upsert behaviour are otherwise unchanged, so
+    old and new-style keys coexist in the same table with no migration.
+
+    `dims`: a plain dict {"ai_exposure": {"score": int_or_None,
+    "justification": str, "source_period": str}, ...} for all ten
+    CURRENT-rubric dimension keys - stored as JSON, read back exactly as
+    given. `not_rated`: bool, True when >=3 dimensions came back null
+    (top100_engine.py's own rule - see that module's docstring).
+    `inversion_scenario`/`inversion_severity`: the one-sentence damaging-
+    scenario synthesis + 1-5 severity (task's own "inversion synthesis"
+    instruction) - both None for a NOT RATED company (top100_engine.
+    _parse_response_json() enforces this server-side before it ever
+    reaches here).
     `current_headwind` (RUBRIC_VERSION v3, 25 Sep 2026): the one-line
     "why is the market discounting this company right now" answer,
     same None-for-NOT-RATED / None-for-"no clearly identifiable
@@ -407,24 +455,32 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
     vocabulary and nulled the matching comment whenever its label is
     None, so this function stores exactly what it's given, no further
     validation here. All four default to None so a caller passing the
-    old (v1-v3-era) argument list still works. `prompt`/`raw_response`:
-    the FULL text sent/received, for reproducibility (the task's own
-    instruction) - never truncated."""
+    old (v1-v3-era) argument list still works.
+    `most_recent_quarter` (results-driven Top 100 refresh, 27 Sep 2026):
+    the pool row's own most_recent_quarter AT THE TIME this score was
+    taken - stored alongside the score key (not just baked into the key
+    string) so latest_scores_for_model()/_unscored_tickers() can read it
+    back directly. Defaults to None so a caller passing the old
+    argument list still works, and every pre-existing row simply reads
+    NULL here (see this column's own ALTER TABLE comment above).
+    `prompt`/`raw_response`: the FULL text sent/received, for
+    reproducibility (the task's own instruction) - never truncated."""
     with _conn() as conn:
         conn.execute(
             """INSERT INTO top100_scores
                  (ticker, quarter, model, rubric_version, dims_json, not_rated,
                   inversion_scenario, inversion_severity, current_headwind,
                   market_structure, market_structure_comment,
-                  one_foot_hurdle, one_foot_comment,
+                  one_foot_hurdle, one_foot_comment, most_recent_quarter,
                   prompt, raw_response, scored_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(ticker, quarter, model, rubric_version) DO UPDATE SET
                  dims_json = excluded.dims_json,
                  not_rated = excluded.not_rated,
                  inversion_scenario = excluded.inversion_scenario,
                  inversion_severity = excluded.inversion_severity,
                  current_headwind = excluded.current_headwind,
+                 most_recent_quarter = excluded.most_recent_quarter,
                  market_structure = excluded.market_structure,
                  market_structure_comment = excluded.market_structure_comment,
                  one_foot_hurdle = excluded.one_foot_hurdle,
@@ -435,7 +491,7 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
             (ticker, quarter, model, rubric_version, json.dumps(dims), int(bool(not_rated)),
              inversion_scenario, inversion_severity, current_headwind,
              market_structure, market_structure_comment, one_foot_hurdle, one_foot_comment,
-             prompt, raw_response, datetime.now(timezone.utc).isoformat()),
+             most_recent_quarter, prompt, raw_response, datetime.now(timezone.utc).isoformat()),
         )
 
 
@@ -465,13 +521,17 @@ def get_score(ticker, quarter, model, rubric_version):
 
 def scores_for_quarter_model(quarter, model, rubric_version):
     """{ticker: score_dict, ...} for every ticker already scored this
-    exact (quarter, model, rubric_version) - the nightly job's own
-    "only unscored entrants go to the API" check (top100_engine.
-    _unscored_tickers()) reads this to know what's already cached
-    UNDER THE CURRENT RUBRIC; a ticker's old-rubric row never
-    satisfies this lookup, so a rubric bump makes every pooled ticker
-    "unscored" again for one full re-score, per the task's own
-    instruction."""
+    exact (quarter, model, rubric_version) - `quarter` here means an
+    EXACT score-key string match, calendar-quarter-style ("2026Q3") or
+    the newer results-driven "RP<date>"/"D<date>" keys alike. Kept for
+    callers/fixtures that key off one specific quarter string (e.g. the
+    RUBRIC_VERSION v4 fallback fixtures seeding "2026Q3" rows); the
+    scoring-decision path (top100_engine._unscored_tickers()) and the
+    render path (top100_render._enriched_pool()/_enriched_asx_
+    extension()) no longer call this - see latest_scores_for_model()
+    below, added for the results-driven refresh (27 Sep 2026) precisely
+    because neither of those two callers can assume "the current quarter"
+    is a meaningful score key any more."""
     with _conn() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
@@ -487,7 +547,36 @@ def scores_for_quarter_model(quarter, model, rubric_version):
     return out
 
 
-def latest_score_previous_rubric(ticker, quarter, model, current_rubric_version):
+def latest_scores_for_model(model, rubric_version):
+    """Results-driven Top 100 refresh (27 Sep 2026, owner-directed):
+    {ticker: score_dict, ...} - for each ticker, its single most recent
+    row (by scored_at) under this exact model + rubric_version,
+    REGARDLESS of the quarter/score-key string value. Replaces every
+    "current calendar quarter" lookup in both the scoring-decision path
+    (top100_engine._unscored_tickers()) and the render path (top100_
+    render._enriched_pool()/_enriched_asx_extension()) - a ticker can
+    now carry more than one row under the same rubric (a genuine
+    re-score after new results, or a rule-(c) age-triggered re-score),
+    and this always returns the newest one. scores_for_quarter_model()
+    above is kept, unchanged, for callers that still key off one exact
+    quarter string."""
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM top100_scores WHERE model = ? AND rubric_version = ? "
+            "ORDER BY scored_at ASC",
+            (model, rubric_version),
+        ).fetchall()
+    out = {}
+    for r in rows:
+        d = dict(r)
+        d["dims"] = json.loads(d.pop("dims_json"))
+        d["not_rated"] = bool(d["not_rated"])
+        out[d["ticker"]] = d  # ascending scored_at + overwrite -> newest row wins per ticker
+    return out
+
+
+def latest_score_previous_rubric(ticker, model, current_rubric_version):
     """Previous-rubric fallback (26 Sep 2026, owner-reported gap,
     RUBRIC_VERSION v4): the most recent score this ticker has under
     ANY rubric_version OTHER than `current_rubric_version`, so
@@ -495,31 +584,30 @@ def latest_score_previous_rubric(ticker, quarter, model, current_rubric_version)
     while the ticker has no CURRENT-rubric score yet (every pooled
     company, right after a rubric bump, until the next nightly run
     re-scores it) - the exact gap that used to blank the page/AWAITING-
-    shelve every company for up to a day. Same quarter/model preferred
-    (an exact re-run of this quarter under a retired rubric); failing
-    that, the single most recent row by scored_at regardless of
-    quarter - "same quarter/model preferred; else the latest
-    available" per the task's own wording. Returns None if this
-    ticker has never been scored under any OTHER rubric for this
-    model either (a genuinely brand-new pool entrant) - the caller
-    then falls through to today's existing AWAITING behaviour,
-    unchanged. Read-only - never writes, never deletes, never
-    overwrites a score; a real current-rubric score, whenever it
-    lands, is read by scores_for_quarter_model() instead and always
-    wins (see that function's own call site)."""
+    shelve every company for up to a day.
+
+    Results-driven Top 100 refresh (27 Sep 2026): this used to try a
+    "same quarter/model" match first, preferring an exact re-run of
+    "this calendar quarter" under a retired rubric. That branch is
+    dropped - a calendar quarter is no longer a meaningful axis to match
+    on (see this module's own docstring for the new score-key scheme) -
+    so this is now simply "the single most recent row under any other
+    rubric", unconditionally. Behaviour for every existing caller/
+    fixture is unchanged: a ticker scored more than once under a single
+    retired rubric still resolves to its newest row there, and a ticker
+    never scored under ANY other rubric still returns None so the
+    caller falls through to today's existing AWAITING behaviour.
+    Read-only - never writes, never deletes, never overwrites a score;
+    a real current-rubric score, whenever it lands, is read by latest_
+    scores_for_model() instead and always wins (see that function's own
+    call site)."""
     with _conn() as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT * FROM top100_scores WHERE ticker = ? AND model = ? "
-            "AND rubric_version != ? AND quarter = ? ORDER BY scored_at DESC LIMIT 1",
-            (ticker, model, current_rubric_version, quarter),
+            "AND rubric_version != ? ORDER BY scored_at DESC LIMIT 1",
+            (ticker, model, current_rubric_version),
         ).fetchone()
-        if row is None:
-            row = conn.execute(
-                "SELECT * FROM top100_scores WHERE ticker = ? AND model = ? "
-                "AND rubric_version != ? ORDER BY scored_at DESC LIMIT 1",
-                (ticker, model, current_rubric_version),
-            ).fetchone()
     if not row:
         return None
     out = dict(row)
@@ -533,6 +621,15 @@ def latest_score_previous_rubric(ticker, quarter, model, current_rubric_version)
 # -----------------------------------------------------------------
 
 def save_batch_state(batch_id, quarter, model, custom_id_map):
+    """`quarter` (results-driven Top 100 refresh, 27 Sep 2026): no
+    longer a scoring key - top100_engine.submit_nightly_batch() now
+    computes each entrant's own score key and stores it PER-ENTRANT
+    inside `custom_id_map` (see that function's own docstring), applied
+    per-ticker by poll_and_ingest_batch() at save time. This column is
+    now a batch-level LABEL ONLY (today's submission date, for anyone
+    reading the raw row) - nothing reads it back as a lookup key. Column
+    kept as-is (no schema change) purely to avoid a table rebuild for
+    what's now just a display string."""
     with _conn() as conn:
         conn.execute(
             """INSERT INTO top100_batch_state (id, batch_id, submitted_at, quarter, model, custom_id_map_json)

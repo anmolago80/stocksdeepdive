@@ -32,10 +32,16 @@ wrote):
      return in seconds to minutes). So:
        - submit_nightly_batch(): called when there's no batch already
          in flight (top100_store.get_batch_state() is None) - selects
-         up to MAX_NIGHTLY_SCORES unscored (ticker, quarter, model)
-         entrants, submits ONE Batches API call for all of them, and
-         persists the batch id + custom_id->ticker map, then returns
-         immediately. No scores are written yet.
+         up to MAX_NIGHTLY_SCORES entrants that need scoring (results-
+         driven Top 100 refresh, 27 Sep 2026: a company whose most
+         recently reported period has changed since its last score, a
+         genuine newcomer/rubric-bump orphan, or an age-based safety
+         net - see _unscored_tickers()'s own docstring for the exact
+         rule), submits ONE Batches API call for all of them, and
+         persists the batch id + custom_id->entrant map (each entrant's
+         own score key, computed at submission time - see submit_
+         nightly_batch()'s own docstring), then returns immediately. No
+         scores are written yet.
        - poll_and_ingest_batch(): called first, every night, BEFORE
          submit_nightly_batch() - if a batch is in flight and its
          processing_status is "ended", parses every result, writes
@@ -129,8 +135,8 @@ def select_top100_pool(log=print):
     pool only (unchanged contract - the ASX extension below is never
     part of this return value) - [{"ticker","company_name","universe",
     "value_score","mos_pct","price","intrinsic_value","currency",
-    "psychology","sector","dividend_yield_pct"}, ...], Value Score
-    descending. Never raises -
+    "psychology","sector","dividend_yield_pct","most_recent_quarter"},
+    ...], Value Score descending. Never raises -
     a single bad universe file is skipped (scan_store.load_scan_raw()
     itself already returns None on any read error), and an empty
     result (no saved scans yet) simply persists/returns an empty pool
@@ -201,6 +207,17 @@ def select_top100_pool(log=print):
                     # composite_score() or any sort/selection" status as
                     # psychology/sector above.
                     "dividend_yield_pct": row.get("Dividend Yield %"),
+                    # Results-driven Top 100 refresh (27 Sep 2026,
+                    # owner-directed): the raw scan row's own "Most
+                    # Recent Quarter" (nightly_scan.py's ISO-date read of
+                    # yfinance's mostRecentQuarter), same "carried
+                    # through" status as dividend_yield_pct above - but
+                    # unlike every prior carried-through field, this one
+                    # is NOT display-only: top100_engine._unscored_
+                    # tickers() reads it to decide whether a pooled
+                    # company needs a fresh AI score. Still never fed
+                    # into composite_score()/any sort/selection here.
+                    "most_recent_quarter": row.get("Most Recent Quarter"),
                 }
 
     pool = sorted(best_by_ticker.values(), key=lambda r: r["value_score"], reverse=True)[:POOL_SIZE]
@@ -393,6 +410,15 @@ TOP100_OUTPUT_USD_PER_MTOK = 20.00
 BATCH_DISCOUNT = 0.5
 
 MAX_NIGHTLY_SCORES = 120
+
+# Results-driven Top 100 refresh (27 Sep 2026, owner-directed): the
+# age-based safety net for _unscored_tickers()'s rule (c) - two half-
+# year reporting cycles, so a normally-reporting company (US quarterly,
+# ASX/LSE half-yearly) always hits rule (b) (its most_recent_quarter
+# actually changing) well before it ever reaches this fallback. Only a
+# company whose results signal is missing or stuck re-scores on age
+# alone.
+RESCORE_MAX_AGE_DAYS = 200
 
 _SYSTEM_PROMPT = """You are screening publicly-listed companies for a factual, descriptive "Top 100" quality shortlist on an investing research site. You are given one company's ticker and name. Score it on TEN qualitative dimensions, each as an integer from 1 to 5 - 5 is ALWAYS the good outcome for a long-term holder of the stock, 1 is ALWAYS the bad outcome, on every dimension, no exceptions. Your response format has NO null/blank values anywhere - every field below names the exact SENTINEL value that stands in for "no value" wherever one is needed.
 
@@ -613,8 +639,17 @@ def _request_params(ticker, company_name):
 
 
 def current_quarter(today=None):
-    """"2026Q3"-style quarter label - the cache/cadence key (task's own
-    "scores persist per (ticker, quarter, model)")."""
+    """"2026Q3"-style calendar-quarter label.
+
+    Results-driven Top 100 refresh (27 Sep 2026, owner-directed): this is
+    NO LONGER the score cache/cadence key - see _unscored_tickers()/
+    _score_key_for_entrant()'s own docstrings for the key that replaced
+    it ("RP<date>"/"D<date>", results-event-driven, not calendar-driven).
+    Nothing in the scoring-decision path or the render path calls this
+    any more. Kept only as a plain label generator - existing fixtures
+    that seed a literal "2026Q3"-style legacy row still use it for
+    exactly that, and every pre-27-Sep-2026 row in top100_scores really
+    does carry one of these as its (now-frozen, never-recomputed) key."""
     d = today or datetime.now(timezone.utc).date()
     return f"{d.year}Q{(d.month - 1) // 3 + 1}"
 
@@ -786,15 +821,104 @@ def _parse_response_json(text):
 # Batch submit / poll (two-phase, non-blocking).
 # -----------------------------------------------------------------
 
-def _unscored_tickers(pool, quarter, model):
-    """Which pooled rows still need an API call for (quarter, model,
-    RUBRIC_VERSION) - rubric_version is folded into the cache key here
-    (not just at the storage layer) so a rubric bump makes every
-    pooled ticker "unscored" again for the new rubric, even though its
-    old-rubric row is still sitting in the DB untouched (see
-    top100_store's own schema/migration docstring)."""
-    already = top100_store.scores_for_quarter_model(quarter, model, RUBRIC_VERSION)
-    return [r for r in pool if r["ticker"] not in already]
+def _unscored_tickers(pool, model):
+    """Results-driven Top 100 refresh (27 Sep 2026, owner-directed):
+    which pooled rows need an API call tonight, and WHY. Returns
+    [(row, reason), ...] - `reason` is one of:
+      - "new_or_rubric": no score exists for this ticker under the
+        CURRENT RUBRIC_VERSION/model at all (unchanged behaviour: a
+        genuinely new pool entrant, OR every pooled ticker right after
+        a rubric bump, until the nightly run catches up - the fallback
+        render path covers the gap in the meantime, see top100_render.
+        _score_row_with_fallback()).
+      - "new_results": the pool row's own most_recent_quarter and the
+        latest current-rubric score's stored most_recent_quarter are
+        BOTH non-null and DIFFER - the company has published a new
+        reported period since it was last read. A null on either side
+        is NEVER a trigger here - Yahoo intermittently returns null for
+        this field, and a null-to-null or null-to-value transition on
+        its own must not cause a rescore (that would be a data blip, not
+        a results event); rule "age" below is what actually catches a
+        ticker whose results signal is genuinely missing or stuck.
+      - "age": the latest current-rubric score is older than
+        RESCORE_MAX_AGE_DAYS (200 days - two half-year reporting
+        cycles), regardless of most_recent_quarter - the safety net for
+        a company that never triggers "new_results" (a missing/garbled
+        signal, or one that has genuinely gone quiet). A missing or
+        unparseable scored_at on the existing score is treated as
+        maximally stale (this reason fires) rather than as "never
+        rescore" - the failure mode of treating a bad timestamp as
+        "recent" (a company silently never re-read again) is worse than
+        the failure mode of rescoring a company slightly early.
+    Every pooled row appears at most once, with its FIRST matching
+    reason in the (a, b, c) order above - a brand-new entrant is
+    reported as "new_or_rubric" even though it would also trivially
+    satisfy "age". latest_scores_for_model() (not scores_for_quarter_
+    model()) is the read here specifically because it looks past the
+    calendar-quarter-era score key entirely and finds each ticker's
+    single newest current-rubric row regardless of what string is in
+    its `quarter` column."""
+    latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+    now = datetime.now(timezone.utc)
+    out = []
+    for row in pool:
+        score = latest.get(row["ticker"])
+        if score is None:
+            out.append((row, "new_or_rubric"))
+            continue
+        row_mrq = row.get("most_recent_quarter")
+        score_mrq = score.get("most_recent_quarter")
+        if row_mrq and score_mrq and row_mrq != score_mrq:
+            out.append((row, "new_results"))
+            continue
+        age_days = None
+        scored_at = score.get("scored_at")
+        if scored_at:
+            try:
+                scored_dt = datetime.fromisoformat(scored_at)
+                if scored_dt.tzinfo is None:
+                    scored_dt = scored_dt.replace(tzinfo=timezone.utc)
+                age_days = (now - scored_dt).days
+            except Exception:
+                age_days = None
+        if age_days is None or age_days > RESCORE_MAX_AGE_DAYS:
+            out.append((row, "age"))
+    return out
+
+
+def _score_key_for_entrant(row, reason, today=None):
+    """Results-driven Top 100 refresh (27 Sep 2026): the score key
+    (goes in top100_scores' own `quarter` column) for one entrant being
+    submitted tonight, given the reason _unscored_tickers() returned it
+    for. "RP<row's most_recent_quarter>" whenever that's known;
+    "D<today>" when it isn't. reason == "age" ALWAYS forces "D<today>",
+    even when most_recent_quarter is known and unchanged - a rule-(c)
+    entrant by definition has an UNCHANGED most_recent_quarter versus
+    its existing score, so deriving "RP<mrq>" here would reproduce that
+    score's own existing key exactly and upsert-overwrite it, destroying
+    the prior row's history for no reason other than it being old.
+    "new_or_rubric"/"new_results" entrants never have this collision
+    risk by construction (a genuinely new PK either way - a fresh
+    ticker/rubric, or a changed most_recent_quarter), so they get the
+    natural RP/D derivation."""
+    d = today or datetime.now(timezone.utc).date()
+    if reason == "age":
+        return f"D{d.isoformat()}"
+    return _natural_score_key(row, d)
+
+
+def _natural_score_key(row, today=None):
+    """The plain RP<most_recent_quarter>/D<today> derivation with no
+    reason-based override - used by the force=True path (refresh_all()'s
+    own sole caller, see submit_nightly_batch()'s docstring) and by
+    run_single_test_call(), where reproducing (and upsert-overwriting) an
+    existing key for an unchanged ticker is the explicitly accepted
+    behaviour for an explicit, owner/diagnostic-initiated call - unlike
+    the automatic nightly path, which never overwrites a rule-(c) entrant
+    (see _score_key_for_entrant() above)."""
+    d = today or datetime.now(timezone.utc).date()
+    mrq = row.get("most_recent_quarter")
+    return f"RP{mrq}" if mrq else f"D{d.isoformat()}"
 
 
 def _serialize_batch_result_error(result_error):
@@ -856,6 +980,18 @@ def poll_and_ingest_batch(log=print):
         can be submitted next run), NO score is touched either way -
         "any failure leaves prior scores intact", the task's own
         guardrail.
+
+    Results-driven Top 100 refresh (27 Sep 2026): each result is saved
+    under its OWN per-entrant score key/most_recent_quarter (computed by
+    submit_nightly_batch() at submission time, carried through custom_
+    id_map - see that function's own docstring for why key computation
+    happens there and not here), never one batch-wide `state["quarter"]`
+    value for every ticker. custom_id_map entries from a batch submitted
+    BEFORE this change shipped are a flat {custom_id: ticker} string map
+    with no per-entrant key - handled defensively below by falling back
+    to state["quarter"] as that legacy batch's one shared key, so a
+    batch already in flight across this deploy still ingests correctly
+    instead of crashing.
     Returns None if there was nothing to poll, or a summary dict."""
     state = top100_store.get_batch_state()
     if state is None:
@@ -879,7 +1015,19 @@ def poll_and_ingest_batch(log=print):
     errored_rest_type_counts = {}
     try:
         for result in client.messages.batches.results(state["batch_id"]):
-            ticker = custom_id_map.get(result.custom_id)
+            entry = custom_id_map.get(result.custom_id)
+            if not entry:
+                continue
+            if isinstance(entry, dict):
+                ticker = entry.get("ticker")
+                score_key = entry.get("score_key")
+                entrant_most_recent_quarter = entry.get("most_recent_quarter")
+            else:
+                # Legacy in-flight batch (submitted before 27 Sep 2026) -
+                # see this function's own docstring above.
+                ticker = entry
+                score_key = state.get("quarter")
+                entrant_most_recent_quarter = None
             if not ticker:
                 continue
             if result.result.type == "errored":
@@ -920,8 +1068,9 @@ def poll_and_ingest_batch(log=print):
                 log(f"[top100] {ticker}: could not parse batch result, skipped ({e})")
                 continue
             top100_store.save_score(
-                ticker=ticker, quarter=state["quarter"], model=state["model"],
+                ticker=ticker, quarter=score_key, model=state["model"],
                 rubric_version=RUBRIC_VERSION, dims=dims, not_rated=not_rated,
+                most_recent_quarter=entrant_most_recent_quarter,
                 inversion_scenario=inversion_scenario, inversion_severity=inversion_severity,
                 current_headwind=current_headwind,
                 market_structure=market_structure, market_structure_comment=market_structure_comment,
@@ -951,63 +1100,87 @@ def poll_and_ingest_batch(log=print):
             "cost_usd": cost}
 
 
-def submit_nightly_batch(pool=None, quarter=None, model=MODEL_TOP100, log=print, force=False):
+def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     """Phase 2 of every nightly run, called only when poll_and_ingest_
     batch() found nothing in flight (never both submit AND have a
     batch pending - one in-flight batch at a time, top100_store's own
-    singleton row). Selects up to MAX_NIGHTLY_SCORES unscored (ticker,
-    quarter, model) entrants from `pool` (defaults to top100_store.
-    current_pool()), submits ONE Batches API request covering all of
-    them, and persists the batch id + custom_id->ticker map. Returns
-    None if there was nothing unscored to submit (the common case once
-    the pool is fully scored for the quarter - nightly runs then do
-    nothing until the quarter rolls over or "refresh all" is used), or
-    the submitted batch's id.
+    singleton row). Selects up to MAX_NIGHTLY_SCORES entrants that need
+    scoring from `pool` (defaults to top100_store.current_pool() +
+    current_asx_extension()), submits ONE Batches API request covering
+    all of them, and persists the batch id + custom_id->entrant map.
+    Returns None if there was nothing to submit, or the submitted
+    batch's id.
 
-    force=True (SMALL FIX, 25 Sep 2026, owner-reported - refresh_all()'s
-    own sole caller): submits the WHOLE pool regardless of whether a
-    score already exists for (quarter, model) - skips the
-    _unscored_tickers() "already scored, skip" filter entirely, but
-    still saves under the SAME plain `quarter` key every other caller
-    uses (previously refresh_all() achieved "resubmit everyone" by
-    tagging the quarter itself as "{quarter}-refresh-{date}", a
-    DIFFERENT cache key from the plain quarter every other write/read
-    uses - see this function's own git history for the two bugs that
-    caused: (1) top100_render.py's _enriched_pool(), "the one place
-    every tab reads from", queries top100_store.scores_for_quarter_
-    model(top100_engine.current_quarter(), ...) - an EXACT string
-    match - so a refresh-tagged score never matched it and never
-    appeared on the page at all, contradicting this function's own
-    prior docstring claim that the page "naturally prefers the newer
-    result"; (2) _unscored_tickers() at the PLAIN quarter key never
-    saw a refresh-tagged row as "already scored", so any submission
-    later the same day - this module's own hourly-poll auto-resubmit,
-    or that night's regular run_nightly() - would re-submit and
-    re-score the exact same companies the owner just paid for minutes
-    earlier under Refresh all. save_score()'s own per-ticker UPSERT
-    already only ever touches a ticker that actually SUCCEEDED in the
-    batch (a failed/errored per-ticker result is simply never written -
-    see poll_and_ingest_batch()'s own per-result branches), so writing
-    directly to the plain quarter key loses none of the "a failed
-    refresh never destroys a prior good score" protection the old
-    suffix trick was ALSO providing - that protection came from
-    save_score()'s own gating, not from the separate cache key.
+    Results-driven Top 100 refresh (27 Sep 2026, owner-directed): this
+    used to select entrants by "unscored for the current calendar
+    quarter" and save every result under that one shared `quarter`
+    string. Both are gone. Entrants now come from _unscored_tickers(),
+    which returns [(row, reason), ...] where reason in ("new_or_rubric",
+    "new_results", "age") - see that function's own docstring for the
+    exact rule. Each entrant gets its OWN score key, computed HERE at
+    submission time (via _score_key_for_entrant(), reason-aware - see
+    its own docstring for why rule "age" must NEVER reuse the entrant's
+    existing key) rather than at ingest time in poll_and_ingest_batch():
+    the a/b/c reason is only available here, right after _unscored_
+    tickers() computed it: poll_and_ingest_batch() runs later, possibly
+    a full night later, against whatever the POOL looks like THEN, which
+    may no longer match the reason this entrant was actually submitted
+    for. The score key + most_recent_quarter travel from here to save
+    time via custom_id_map (now {custom_id: {"ticker", "score_key",
+    "most_recent_quarter"}} - see save_batch_state()'s own docstring for
+    why its `quarter` column is now label-only), applied verbatim by
+    poll_and_ingest_batch() when it calls save_score() - never
+    recomputed there. Logs the reason-mix breakdown BEFORE submitting,
+    every night (skipped for force=True - see below - since "every
+    pooled company" has no a/b/c breakdown to report):
+    "[top100] N to score tonight — new/rubric: a, new results: b,
+    age>200d: c".
+
+    force=True (SMALL FIX, 25 Sep 2026, owner-reported, extended 27 Sep
+    2026 - refresh_all()'s own sole caller): submits the WHOLE pool
+    regardless of whether a current-rubric score already exists,
+    skipping the _unscored_tickers() filter entirely. Each entrant still
+    gets its own score key, but via the NATURAL derivation only
+    (_natural_score_key() - "RP<most_recent_quarter>"/"D<today>", no
+    rule-(c)-style forcing) - an unchanged ticker naturally reproduces
+    its existing key and upsert-overwrites it, which is the explicitly
+    accepted behaviour for an EXPLICIT owner-initiated refresh (unlike
+    the automatic nightly path, which must never silently overwrite a
+    rule-(c) entrant's history - see _score_key_for_entrant()'s own
+    docstring). save_score()'s own per-ticker UPSERT already only ever
+    touches a ticker that actually SUCCEEDED in the batch (a failed/
+    errored per-ticker result is simply never written - see poll_and_
+    ingest_batch()'s own per-result branches), so this loses no failure-
+    safety versus the old suffix-key trick this function's git history
+    once used for the same purpose - that protection came from save_
+    score()'s own gating, not from a separate cache key.
 
     ASX extension (Top 20 Australia guaranteed-twenty, 25 Sep 2026):
     when `pool` isn't explicitly passed, the default now ALSO includes
     top100_store.current_asx_extension() - so an ordinary nightly run
     (run_nightly() calls this with no `pool` arg) scores extension
-    members exactly like pool members, same rubric/cache keys, no
+    members exactly like pool members, same rubric/cache-key rules, no
     special-casing anywhere below this line. A caller that passes its
     own `pool` (refresh_all() does) controls this explicitly instead."""
     pool = (top100_store.current_pool() + top100_store.current_asx_extension()) if pool is None else pool
-    quarter = quarter or current_quarter()
     if not pool:
         return None
-    entrants = (pool if force else _unscored_tickers(pool, quarter, model))[:MAX_NIGHTLY_SCORES]
+    today = datetime.now(timezone.utc).date()
+    if force:
+        entrants = [(row, "forced") for row in pool][:MAX_NIGHTLY_SCORES]
+    else:
+        entrants = _unscored_tickers(pool, model)[:MAX_NIGHTLY_SCORES]
     if not entrants:
-        log(f"[top100] every pooled company already scored for {quarter}/{model} - nothing to submit")
+        log(f"[top100] every pooled company already scored under the current rubric for {model} "
+            "- nothing to submit")
         return None
+
+    if not force:
+        counts = {"new_or_rubric": 0, "new_results": 0, "age": 0}
+        for _, reason in entrants:
+            counts[reason] += 1
+        log(f"[top100] {len(entrants)} to score tonight — new/rubric: {counts['new_or_rubric']}, "
+            f"new results: {counts['new_results']}, age>{RESCORE_MAX_AGE_DAYS}d: {counts['age']}")
 
     try:
         import anthropic
@@ -1019,10 +1192,15 @@ def submit_nightly_batch(pool=None, quarter=None, model=MODEL_TOP100, log=print,
 
     custom_id_map = {}
     requests = []
-    for i, row in enumerate(entrants):
+    for i, (row, reason) in enumerate(entrants):
         ticker = row["ticker"]
         custom_id = f"t100-{i}-{re.sub(r'[^A-Za-z0-9]', '', ticker)}"
-        custom_id_map[custom_id] = ticker
+        score_key = _natural_score_key(row, today) if force else _score_key_for_entrant(row, reason, today)
+        custom_id_map[custom_id] = {
+            "ticker": ticker,
+            "score_key": score_key,
+            "most_recent_quarter": row.get("most_recent_quarter"),
+        }
         requests.append(Request(
             custom_id=custom_id,
             params=MessageCreateParamsNonStreaming(**_request_params(ticker, row.get("company_name"))),
@@ -1035,9 +1213,9 @@ def submit_nightly_batch(pool=None, quarter=None, model=MODEL_TOP100, log=print,
         log(f"[top100] batch submission failed: {e}")
         return None
 
-    top100_store.save_batch_state(batch.id, quarter, model, custom_id_map)
+    top100_store.save_batch_state(batch.id, today.isoformat(), model, custom_id_map)
     log(f"[top100] submitted batch {batch.id}: {len(entrants)} compan{'y' if len(entrants) == 1 else 'ies'} "
-        f"for {quarter}/{model}")
+        f"for {model}")
     return batch.id
 
 
@@ -1132,9 +1310,18 @@ def run_single_test_call(ticker, company_name=None):
     task's own "make ONE real single-company API test call" ask.
     Never touches the batch-state row or the pool (a standalone
     diagnostic, not part of the nightly flow) - does persist the score
-    via top100_store.save_score() under the CURRENT quarter/model, same
-    as a real batch result would, so the test call's own result is
-    immediately visible on the page rather than thrown away. Returns
+    via top100_store.save_score(), same as a real batch result would,
+    so the test call's own result is immediately visible on the page
+    rather than thrown away.
+
+    Results-driven Top 100 refresh (27 Sep 2026): the score key is now
+    the natural RP/D derivation (_natural_score_key(), same as the
+    force=True path - see submit_nightly_batch()'s own docstring for why
+    that's the right choice for an explicit, standalone call), looking
+    up this ticker's own most_recent_quarter from the current pool
+    (current_pool() + current_asx_extension()) if it's in there, else
+    None for a ticker outside the pool entirely (this call's whole
+    point is to test-score an arbitrary ticker, pooled or not). Returns
     {"ticker","dims","not_rated","inversion_scenario","inversion_
     severity","current_headwind","market_structure","market_structure_
     comment","one_foot_hurdle","one_foot_comment","input_tokens",
@@ -1153,10 +1340,17 @@ def run_single_test_call(ticker, company_name=None):
     output_tokens = getattr(resp.usage, "output_tokens", 0) or 0
     cost = (input_tokens / 1_000_000) * TOP100_INPUT_USD_PER_MTOK + \
         (output_tokens / 1_000_000) * TOP100_OUTPUT_USD_PER_MTOK
-    quarter = current_quarter()
+    pool_row = next(
+        (r for r in top100_store.current_pool() + top100_store.current_asx_extension()
+         if r["ticker"] == ticker),
+        None,
+    )
+    most_recent_quarter = pool_row.get("most_recent_quarter") if pool_row else None
+    score_key = _natural_score_key({"most_recent_quarter": most_recent_quarter})
     top100_store.save_score(
-        ticker=ticker, quarter=quarter, model=MODEL_TOP100, rubric_version=RUBRIC_VERSION,
+        ticker=ticker, quarter=score_key, model=MODEL_TOP100, rubric_version=RUBRIC_VERSION,
         dims=dims, not_rated=not_rated,
+        most_recent_quarter=most_recent_quarter,
         inversion_scenario=inversion_scenario, inversion_severity=inversion_severity,
         current_headwind=current_headwind,
         market_structure=market_structure, market_structure_comment=market_structure_comment,
@@ -1183,34 +1377,21 @@ def estimate_batch_cost_usd(input_tokens, output_tokens):
 
 
 def refresh_all(log=print):
-    """Owner-only "refresh all" button (Commit 1's own cadence rule:
-    "full re-score quarterly plus an owner-only refresh all button") -
-    re-selects the pool, then submits EVERY pooled company (not just
-    unscored entrants) for the CURRENT quarter/model.
+    """Owner-only "refresh all" button - re-selects the pool, then
+    submits EVERY pooled company (not just entrants _unscored_tickers()
+    would flag) via submit_nightly_batch(force=True).
 
-    SMALL FIX (25 Sep 2026, owner-reported): used to submit under a
-    synthetic quarter suffix ("2026Q3-refresh-<date>", a DIFFERENT
-    cache key from the plain quarter the rest of the pipeline reads/
-    writes) specifically to bypass submit_nightly_batch()'s own
-    "already scored, skip" filter. That caused two real bugs -
-    confirmed directly, not assumed: (1) top100_render.py's
-    _enriched_pool(), "the one place every tab reads from", queries
-    the PLAIN quarter key only, so a refresh's results never actually
-    appeared on the page at all; (2) any later-same-day submission
-    (this module's own hourly-poll auto-resubmit, or that night's
-    regular run_nightly()) never saw the refresh-tagged rows as
-    "already scored" at the plain key, so it would re-submit and
-    re-score the exact same companies the owner just paid for minutes
-    earlier. Now passes force=True to submit_nightly_batch() instead -
-    bypasses the same filter, but saves under the SAME plain quarter
-    key every other caller uses, so the page shows the refreshed
-    result as soon as it's ingested and nothing pays twice for the
-    same (ticker, quarter, model) the same day. Losing the separate
-    cache key loses no failure-safety: save_score()'s own per-ticker
-    UPSERT already only ever touches a ticker that actually SUCCEEDED
-    in the batch (see submit_nightly_batch()'s own force= docstring) -
-    that guarantee never came from the suffix. Returns the submitted
-    batch id, or None.
+    Results-driven Top 100 refresh (27 Sep 2026): each entrant now gets
+    its own natural score key (RP<most_recent_quarter>/D<today>, see
+    submit_nightly_batch()'s own force= docstring), computed there - this
+    function no longer passes a `quarter` at all (submit_nightly_batch()
+    dropped that parameter). An unchanged ticker naturally reproduces its
+    existing key and upsert-overwrites it, which is the explicitly
+    accepted behaviour for this EXPLICIT owner-initiated action (unlike
+    the automatic nightly path, which never does this for a rule-(c)
+    entrant). save_score()'s own per-ticker UPSERT already only ever
+    touches a ticker that actually SUCCEEDED in the batch, so this loses
+    no failure-safety. Returns the submitted batch id, or None.
 
     ASX extension (Top 20 Australia guaranteed-twenty, 25 Sep 2026):
     re-selecting also re-selects the extension (select_top100_pool()'s
@@ -1220,7 +1401,7 @@ def refresh_all(log=print):
     100, not just the tickers that happen to already be in the 100."""
     pool = select_top100_pool(log=log)
     extension = top100_store.current_asx_extension()
-    return submit_nightly_batch(pool=pool + extension, quarter=current_quarter(), model=MODEL_TOP100, log=log, force=True)
+    return submit_nightly_batch(pool=pool + extension, model=MODEL_TOP100, log=log, force=True)
 
 
 # -----------------------------------------------------------------

@@ -317,6 +317,23 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         except Exception:
             next_ex_date = None
 
+    # Results-driven Top 100 refresh (27 Sep 2026, owner-directed): the
+    # company's own most recently reported period, straight off `info`
+    # (already fetched above - zero extra network calls, same free-ride
+    # as exDividendDate just above). Unix timestamp -> ISO date, or None
+    # when absent/unparseable - never raises, never fails this row.
+    # top100_engine.select_top100_pool() carries this onto the pool dict
+    # (same pattern as Dividend Yield % below) so a nightly re-score can
+    # trigger on "this company published new results" instead of a
+    # calendar-quarter rollover.
+    most_recent_quarter = None
+    _mrq_ts = info.get("mostRecentQuarter")
+    if _mrq_ts:
+        try:
+            most_recent_quarter = datetime.fromtimestamp(_mrq_ts, tz=timezone.utc).date().isoformat()
+        except Exception:
+            most_recent_quarter = None
+
     # Fix 9 (2026-09-01): price from the last VALID bar, not blindly
     # iloc[-1]. Root cause (confirmed via Railway logs from the 31 Aug
     # 20:00 UTC run): yfinance's most recent bar can be a still-forming
@@ -533,6 +550,11 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
             if dividend_ttm and current_price else None
         ),
         "Next Ex-Div Date": next_ex_date,
+        # Results-driven Top 100 refresh (27 Sep 2026, owner-directed) -
+        # see this function's own comment above where most_recent_quarter
+        # is computed. Display/trigger field only - never fed into Value
+        # Score/Quality/Long Score/any ranking here or downstream.
+        "Most Recent Quarter": most_recent_quarter,
         # Commit J: "stale" when window_shows_no_trading() found no
         # evidence of real trading in the last 5 rows above - None
         # (not "trading"/"active" - see this dict's own convention of

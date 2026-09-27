@@ -3514,12 +3514,13 @@ EN = {
         "ordinary day-to-day price movement distort what's meant to be a "
         "pure read of the business. MOS stays on every row as information, "
         "and is its own sort option below (\"Best value today\").\n\n"
-        "**Cache and cadence.** A score is cached per ticker, calendar "
-        "quarter, model and rubric version - only newly-entered, unscored "
-        "companies are sent to the API on an ordinary night (capped at 120 "
-        "a night), with a full re-score every quarter or on demand via the "
-        "owner's own \"refresh all\" button below. Scoring runs through "
-        "Anthropic's Batch API."
+        "**Cache and cadence.** A score is cached per ticker, model and "
+        "rubric version, and re-read whenever the company publishes new "
+        "results - and at least every ~6 months even without one - or "
+        "on demand via the owner's own \"refresh all\" button below; "
+        "only newly-entered companies and those with new results to "
+        "read are sent to the API on an ordinary night (capped at 120 "
+        "a night). Scoring runs through Anthropic's Batch API."
     ),
     "top100.methodology_decircularisation": (
         "**Never double-counted.** This site separately computes a purely "
@@ -3546,10 +3547,11 @@ EN = {
         "The current headwind is present and factual - the actual, "
         "standing reason the market is discounting the stock right now "
         "(demand, margins, competition, regulation, sentiment), as at "
-        "the analysis date shown on the line itself. Refreshed "
-        "quarterly with the rest of the score, never on a live feed; "
-        "\"no clearly identifiable headwind\" is a permitted, honest "
-        "answer and simply shows no line."
+        "the analysis date shown on the line itself. Refreshed when the "
+        "company publishes new results - and at least every ~6 months "
+        "- with the rest of the score, never on a live feed; \"no "
+        "clearly identifiable headwind\" is a permitted, honest answer "
+        "and simply shows no line."
     ),
     "top100.headwind_label": "Current headwind:",
     "top100.headwind_date_caption": "read {date}",
@@ -3601,7 +3603,7 @@ EN = {
     ),
     "top100.changes_strip_caption": (
         "hover for reasons · newcomers scored at the next nightly run "
-        "· dropped companies keep their cached scores all quarter."
+        "· dropped companies keep their cached scores until their next results."
     ),
     "top100.tab_mixed": "Top 20 · Mixed",
     "top100.tab_au": "Top 20 · Australia",
@@ -3636,7 +3638,7 @@ EN = {
     "top100.shelf_chip_awaiting": "⏳ AWAITING",
     "top100.shelf_caption_awaiting": "scored automatically at the next nightly run",
     "top100.shelf_chip_not_rated": "◇ NOT RATED",
-    "top100.shelf_caption_not_rated": "insufficient public record — Claude declined to score; retried each quarter",
+    "top100.shelf_caption_not_rated": "insufficient public record — Claude declined to score; retried when results change (or every ~6 months)",
     "top100.origin_pool_badge": "🌐 TOP 100 · #{rank}",
     "top100.origin_pool_tooltip": "In the global Top 100 by Value Score — global rank #{rank}.",
     "top100.origin_extension_badge": "＋ ASX EXTENSION",
@@ -6731,12 +6733,14 @@ ES = {
         "MOS se sigue mostrando en cada fila como información, y es su "
         "propia opción de orden más abajo (\"Mejor valor hoy\").\n\n"
         "**Caché y periodicidad.** Una puntuación se guarda en caché por "
-        "acción, trimestre calendario, modelo y versión de rúbrica - solo "
-        "las empresas nuevas y aún sin puntuar se envían a la API en una "
-        "noche normal (con un límite de 120 por noche), con una "
-        "reevaluación completa cada trimestre o bajo demanda mediante el "
-        "botón \"actualizar todo\" del propietario más abajo. La "
-        "puntuación se ejecuta a través de la API por lotes de Anthropic."
+        "acción, modelo y versión de rúbrica, y se vuelve a leer cada "
+        "vez que la empresa publica nuevos resultados - y al menos cada "
+        "~6 meses aunque no los publique - o bajo demanda mediante el "
+        "botón \"actualizar todo\" del propietario más abajo; solo las "
+        "empresas nuevas y las que tienen resultados nuevos que leer se "
+        "envían a la API en una noche normal (con un límite de 120 por "
+        "noche). La puntuación se ejecuta a través de la API por lotes "
+        "de Anthropic."
     ),
     "top100.methodology_decircularisation": (
         "**Nunca contado dos veces.** Este sitio calcula por separado un "
@@ -6768,8 +6772,9 @@ ES = {
         "mercado está descontando la acción ahora mismo (demanda, "
         "márgenes, competencia, regulación, sentimiento), a la fecha "
         "de análisis que se muestra en la propia línea. Se actualiza "
-        "trimestralmente junto con el resto de la puntuación, nunca en "
-        "vivo; \"sin viento en contra claramente identificable\" es una "
+        "cuando la empresa publica nuevos resultados - y al menos cada "
+        "~6 meses - junto con el resto de la puntuación, nunca en vivo; "
+        "\"sin viento en contra claramente identificable\" es una "
         "respuesta honesta y permitida, y simplemente no muestra línea."
     ),
     "top100.headwind_label": "Viento en contra actual:",
@@ -6820,7 +6825,7 @@ ES = {
     "top100.changes_strip_caption": (
         "pase el cursor para ver los motivos · las nuevas se puntúan en la "
         "próxima ejecución nocturna · las empresas que salieron conservan "
-        "su puntuación guardada todo el trimestre."
+        "su puntuación guardada hasta sus próximos resultados."
     ),
     "top100.tab_mixed": "Top 20 · Mixto",
     "top100.tab_au": "Top 20 · Australia",
@@ -6847,7 +6852,7 @@ ES = {
     "top100.shelf_chip_awaiting": "⏳ EN ESPERA",
     "top100.shelf_caption_awaiting": "se puntúa automáticamente en la próxima ejecución nocturna",
     "top100.shelf_chip_not_rated": "◇ NO EVALUADA",
-    "top100.shelf_caption_not_rated": "registro público insuficiente — Claude no la puntuó; se reintenta cada trimestre",
+    "top100.shelf_caption_not_rated": "registro público insuficiente — Claude no la puntuó; se reintenta cuando cambian los resultados (o cada ~6 meses)",
     "top100.origin_pool_badge": "🌐 TOP 100 · #{rank}",
     "top100.origin_pool_tooltip": "En el Top 100 global por Value Score — puesto global #{rank}.",
     "top100.origin_extension_badge": "＋ EXTENSIÓN ASX",

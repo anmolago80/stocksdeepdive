@@ -719,51 +719,66 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
             )
 
 
-def _score_row_with_fallback(ticker, scores, quarter):
+def _score_row_with_fallback(ticker, scores):
     """Previous-rubric fallback (26 Sep 2026, owner-reported gap,
     RUBRIC_VERSION v4) - score_row for one ticker: the current-rubric
     score if it exists (from the pre-fetched `scores` map), else the
     most recent score from a PREVIOUS rubric version (top100_store.
-    latest_score_previous_rubric() - see that function's own docstring
-    for the exact "same quarter/model preferred, else latest
-    available" order). Returns (score_row, is_fallback_score) -
-    is_fallback_score is True only when a fallback score was actually
-    used to fill score_row; it is never True when score_row is None
-    (no score exists under ANY rubric yet - a genuinely new pool
-    entrant, or the ticker really has never been scored - today's
-    existing AWAITING/NOT RATED shelf behaviour is completely
-    unchanged for that case). Fixes the known gap re-opened by every
-    RUBRIC_VERSION bump: without this, every pooled company reads as
-    unscored the moment the version string changes, and the page goes
-    blank/AWAITING until the next nightly run finishes re-scoring
-    (which can take up to a day) - this was already a known,
+    latest_score_previous_rubric()). Returns (score_row,
+    is_fallback_score) - is_fallback_score is True only when a fallback
+    score was actually used to fill score_row; it is never True when
+    score_row is None (no score exists under ANY rubric yet - a
+    genuinely new pool entrant, or the ticker really has never been
+    scored - today's existing AWAITING/NOT RATED shelf behaviour is
+    completely unchanged for that case). Fixes the known gap re-opened
+    by every RUBRIC_VERSION bump: without this, every pooled company
+    reads as unscored the moment the version string changes, and the
+    page goes blank/AWAITING until the next nightly run finishes
+    re-scoring (which can take up to a day) - this was already a known,
     documented gap at the v2->v3 bump, closed here so it can't recur
     at v4 or any future bump. Shared by _enriched_pool()/
-    _enriched_asx_extension() so both tabs apply the exact same rule."""
+    _enriched_asx_extension() so both tabs apply the exact same rule.
+
+    Results-driven Top 100 refresh (27 Sep 2026): this used to take a
+    `quarter` argument and prefer an exact same-quarter/model match
+    before falling back to the latest row under any other rubric - see
+    top100_store.latest_score_previous_rubric()'s own docstring for why
+    that branch was dropped (a calendar quarter is no longer a
+    meaningful axis to match on). Behaviour for every existing caller is
+    unchanged - the store function's own "latest row under any other
+    rubric" is what this always effectively fell through to anyway once
+    a company had been scored more than once under a retired rubric."""
     score_row = scores.get(ticker)
     if score_row is not None:
         return score_row, False
     fallback = top100_store.latest_score_previous_rubric(
-        ticker, quarter, top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
+        ticker, top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
     return fallback, fallback is not None
 
 
 def _enriched_pool():
-    """current_pool() rows, each augmented with "score_row" (top100_
-    store.get_score() for the current quarter/model, or a previous-
-    rubric fallback - see _score_row_with_fallback()'s own docstring -
-    or None if neither exists), "composite" (top100_engine.
-    composite_score(), or None), and "is_fallback_score" (True only
-    when score_row came from the fallback) - the one place every tab
-    reads from, so the Top 20 tabs and the Full 100 tab can never
-    compute composite differently from each other."""
+    """current_pool() rows, each augmented with "score_row" (this
+    ticker's latest current-rubric score - top100_store.latest_scores_
+    for_model() - or a previous-rubric fallback, see _score_row_with_
+    fallback()'s own docstring - or None if neither exists), "composite"
+    (top100_engine.composite_score(), or None), and "is_fallback_score"
+    (True only when score_row came from the fallback) - the one place
+    every tab reads from, so the Top 20 tabs and the Full 100 tab can
+    never compute composite differently from each other.
+
+    Results-driven Top 100 refresh (27 Sep 2026): reads latest_scores_
+    for_model() instead of scores_for_quarter_model(current_quarter(),
+    ...) - a calendar quarter is no longer a meaningful read-path key
+    (a ticker can now be re-scored mid-quarter on new results, or held
+    past a quarter boundary on an unchanged results signal), so this
+    always finds each ticker's single newest current-rubric row
+    regardless of what string is in its own score key."""
     pool = top100_store.current_pool()
-    quarter = top100_engine.current_quarter()
-    scores = top100_store.scores_for_quarter_model(
-        quarter, top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
+    scores = top100_store.latest_scores_for_model(
+        top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
     out = []
     for row in pool:
-        score_row, is_fallback = _score_row_with_fallback(row["ticker"], scores, quarter)
+        score_row, is_fallback = _score_row_with_fallback(row["ticker"], scores)
         composite = top100_engine.composite_score(score_row)
         out.append({**row, "score_row": score_row, "composite": composite,
                      "is_fallback_score": is_fallback})
@@ -779,12 +794,11 @@ def _enriched_asx_extension():
     store.current_pool()) alone, which never includes an extension
     row."""
     extension = top100_store.current_asx_extension()
-    quarter = top100_engine.current_quarter()
-    scores = top100_store.scores_for_quarter_model(
-        quarter, top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
+    scores = top100_store.latest_scores_for_model(
+        top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
     out = []
     for row in extension:
-        score_row, is_fallback = _score_row_with_fallback(row["ticker"], scores, quarter)
+        score_row, is_fallback = _score_row_with_fallback(row["ticker"], scores)
         composite = top100_engine.composite_score(score_row)
         out.append({**row, "score_row": score_row, "composite": composite,
                      "is_fallback_score": is_fallback})
