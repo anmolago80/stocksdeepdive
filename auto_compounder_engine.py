@@ -2431,10 +2431,24 @@ def _build_earnings_trends(bundle, ticker, ref):
     year_end_prices = _year_end_prices(bundle["prices_10y"], bundle["income"])
     price_now = info.get("currentPrice") or info.get("regularMarketPrice")
 
+    # B2.3 fix (27 Sep 2026, owner-directed, CONFIRMED BUG): when _ttm_
+    # overlaps_latest_fy(bundle) is True, trailing_eps is a fallback
+    # read of the SAME period fy_eps[0] (the latest fiscal year) already
+    # covers, not a genuinely fresher trailing-twelve-month figure (see
+    # that helper's own docstring). full_eps above still carries the TTM
+    # point (kept for the "EPS"/"P/E" display series - still informative
+    # to show, even when it just repeats the latest FY), but every
+    # GROWTH-derived figure must use a version WITHOUT it, or the
+    # "TTM-vs-lastFY" comparison silently double-counts one real
+    # fiscal year of earnings as two consecutive, near-identical
+    # points - dragging any average of the growth series toward zero
+    # and inflating its own reported sample depth by one.
+    full_eps_for_growth = fy_eps if _ttm_overlaps_latest_fy(bundle) else full_eps
+
     eps_growth = []
-    for i in range(len(full_eps) - 1):
-        y, v = full_eps[i]
-        _, v0 = full_eps[i + 1]
+    for i in range(len(full_eps_for_growth) - 1):
+        y, v = full_eps_for_growth[i]
+        _, v0 = full_eps_for_growth[i + 1]
         if v is not None and v0:
             eps_growth.append((y, (v - v0) / abs(v0)))
 
@@ -2545,23 +2559,31 @@ def _build_earnings_trends(bundle, ticker, ref):
             add("4y AVG+SD", four_avg + four_sd, "x", flagged=four_y_flag, fallback=four_y_fallback)
 
     # "Average 10 Year Growth" = the arithmetic MEAN of the year-over-year
-    # EPS growth series above (which correctly includes the TTM-vs-lastFY
-    # point) - NOT a CAGR. Decoded from the workbook's own
-    # AVERAGEIF(AE:AN). Depth here is len(growth_vals) (the real count of
-    # YoY comparisons - matches the "EPS Growth by Year" chart's own bar
-    # count), not n_fy directly, since TTM adds one more real comparison
-    # point on top of the fiscal years.
+    # EPS growth series above - NOT a CAGR. Decoded from the workbook's
+    # own AVERAGEIF(AE:AN). Depth here is len(growth_vals) (the real
+    # count of YoY comparisons - matches the "EPS Growth by Year"
+    # chart's own bar count), not n_fy directly, since a genuinely
+    # fresh TTM point adds one more real comparison point on top of
+    # the fiscal years - B2.3 fix (27 Sep 2026, owner-directed): it
+    # does so ONLY when _ttm_overlaps_latest_fy(bundle) is False (see
+    # full_eps_for_growth above); when TTM just repeats the latest FY,
+    # counting a "TTM-vs-lastFY" comparison here would double-count
+    # that one real year as two near-identical points and drag the
+    # average toward zero.
     if eps_growth:
         growth_vals = [g for _, g in eps_growth]
         lbl, flg = dyn_10y_label("Average 10 Year Growth", len(growth_vals))
         add(lbl, sum(growth_vals) / len(growth_vals), "pct", flagged=flg)
 
     # "10Y Growth (3Y AVG)" = TOTAL (not annualised) growth between the
-    # newest-3 average (including TTM) and the oldest-3 average.
-    if len(full_eps) >= 4:
-        newest3 = [v for _, v in full_eps[:3] if v is not None]
-        oldest3 = [v for _, v in full_eps[-3:] if v is not None]
-        overlap = len(full_eps) < 6  # newest-3 and oldest-3 share points below 6 total
+    # newest-3 average and the oldest-3 average - uses full_eps_for_
+    # growth (B2.3 fix, same reasoning as eps_growth above), not
+    # full_eps, so a TTM point that duplicates the latest FY can't
+    # count fy_eps[0] twice inside "newest3".
+    if len(full_eps_for_growth) >= 4:
+        newest3 = [v for _, v in full_eps_for_growth[:3] if v is not None]
+        oldest3 = [v for _, v in full_eps_for_growth[-3:] if v is not None]
+        overlap = len(full_eps_for_growth) < 6  # newest-3 and oldest-3 share points below 6 total
         if newest3 and oldest3:
             mean_new = sum(newest3) / len(newest3)
             mean_old = sum(oldest3) / len(oldest3)
