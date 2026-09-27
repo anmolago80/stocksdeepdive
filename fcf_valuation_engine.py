@@ -299,13 +299,33 @@ def normalized_base_and_series(cashflow_df, info=None):
     return None, [], "none", False
 
 
-def growth_from_history(fcf_history):
+def growth_from_history(fcf_history, dates=None):
     """
     Compound annual growth rate of free cash flow across the available years.
 
     fcf_history is most-recent-first (yfinance order). Needs at least two
     positive endpoints to be meaningful. Returns a decimal growth rate, or
     None if history can't support an estimate.
+
+    `dates` (B2.4, 27 Sep 2026, owner-directed, CONFIRMED BUG - added
+    here but NOT YET wired into any live caller, see this function's
+    own call site in dcf_intrinsic_value() for why): optional, same
+    length and order as fcf_history (most-recent-first). When given,
+    the elapsed-years denominator is the REAL calendar span between
+    the oldest and newest dates, not the column COUNT - a gap in the
+    statement history (a missing year) would otherwise understate
+    elapsed time and overstate the CAGR (same fix as auto_compounder_
+    engine._equity_growth_rate(), which has the identical root cause
+    for per-share equity growth). Omitted (the default, and every
+    EXISTING caller today), this keeps the exact prior column-count
+    behavior - a deliberate backward-compatible default, not an
+    oversight: dcf_intrinsic_value()'s own fcf_series can be built via
+    more than one fallback path with differing column-to-value
+    correspondence (see normalized_base_and_series()'s own "ocf-
+    normcapex" vs "fcf-median" sources), and wiring real dates through
+    every one of those paths safely is deferred as its own follow-up
+    rather than risked here on the live discount-rate-adjacent growth
+    calculation without production data to verify it against.
     """
     if not fcf_history or len(fcf_history) < 2:
         return None
@@ -313,7 +333,15 @@ def growth_from_history(fcf_history):
     # Reorder oldest -> newest for a clean CAGR.
     series = list(reversed(fcf_history))
     oldest, newest = series[0], series[-1]
-    years = len(series) - 1
+
+    if dates and len(dates) == len(fcf_history):
+        dates_asc = list(reversed(dates))
+        oldest_date, newest_date = dates_asc[0], dates_asc[-1]
+        years = ((newest_date - oldest_date).days / 365.25) if (oldest_date and newest_date) else None
+        if not years or years <= 0:
+            years = len(series) - 1
+    else:
+        years = len(series) - 1
 
     # CAGR only makes sense between two positive endpoints.
     if oldest is None or newest is None or oldest <= 0 or newest <= 0:

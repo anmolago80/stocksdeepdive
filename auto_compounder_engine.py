@@ -291,6 +291,11 @@ _ROW_ALIASES = {
     "long_term_debt": ["Long Term Debt", "Long Term Debt And Capital Lease Obligation", "longTermDebt"],
     "total_liabilities": ["Total Liabilities Net Minority Interest", "Total Liab", "totalLiab"],
     "stockholders_equity": ["Stockholders Equity", "Common Stock Equity", "Total Equity Gross Minority Interest", "totalStockholderEquity"],
+    # B2.4 (27 Sep 2026, owner-directed): each fiscal year's OWN share
+    # count, for per-share equity growth - see _equity_growth_rate()'s
+    # own comment for why today's constant sharesOutstanding was wrong
+    # to divide every historical year by.
+    "ordinary_shares_number": ["Ordinary Shares Number"],
     "goodwill_and_intangibles": ["Goodwill And Other Intangible Assets", "goodWill", "intangibleAssets"],
     "net_ppe": ["Net PPE", "Property Plant Equipment Net", "netPPE"],
     "working_capital": ["Working Capital", "netWorkingCapital"],
@@ -357,6 +362,32 @@ def _series(df, key):
                 out.append((y, None))
             else:
                 out.append((y, float(v)))
+        return out
+    except Exception:
+        return []
+
+
+def _series_with_dates(df, key):
+    """[(date_or_None, value_or_None), ...] newest-first for a mapped row -
+    like _series() above, but pairs each value with its OWN column's real
+    period-end date (the same date parsing _statement_col_dates() uses)
+    instead of a bare year label. Built in ONE pass over df.columns, the
+    same loop _series() itself uses, so the two can never drift out of
+    positional alignment with each other or with the source columns -
+    added for B2.4 (27 Sep 2026, owner-directed), which needs the real
+    calendar date behind each column, not just its label."""
+    row_name = _find_row(df, _ROW_ALIASES.get(key, [key]))
+    if row_name is None:
+        return []
+    try:
+        row = df.loc[row_name]
+        out = []
+        for c in df.columns:
+            v = row[c]
+            v = None if (v is None or (isinstance(v, float) and v != v)) else float(v)
+            m = re.search(r"((?:19|20)\d{2})-(\d{2})-(\d{2})", str(c))
+            d = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+            out.append((d, v))
         return out
     except Exception:
         return []
@@ -2909,15 +2940,45 @@ def _equity_growth_rate(bundle):
     actually bound (mirrors the DCF's own governor="Cap"), so callers can
     flag the number as an estimate the same way the DCF does. Returns
     (None, False) whenever the series isn't usable at all.
-    """
-    equity_series = [(y, v) for y, v in _series(bundle["balance"], "stockholders_equity") if v]
+
+    B2.4 fix (27 Sep 2026, owner-directed, CONFIRMED BUG): two separate
+    mismatches in how this per-share series was built.
+      1. Every year's equity used TODAY's constant sharesOutstanding as
+         the denominator - a company that issued or bought back shares
+         over the window gets a per-share series that's wrong for every
+         year except the newest, silently misstating the whole CAGR
+         (unlike _book_value_growth_entry() elsewhere in this module,
+         where a constant share count algebraically CANCELS out of a
+         single-year (v-v0)/abs(v0) ratio - it does NOT cancel here,
+         since per_share feeds a multi-year (newest/oldest)^(1/n)
+         formula). Fixed: each year's OWN "Ordinary Shares Number"
+         balance-sheet row, falling back to today's count only for a
+         year that row doesn't cover (never fabricated further back).
+      2. n (elapsed years) was the column COUNT, not the real calendar
+         span - a gap in the statement history (a missing year) would
+         understate elapsed time and overstate the CAGR. Fixed: n comes
+         from the actual dates of the oldest and newest columns used,
+         falling back to the column count only when a date can't be
+         read at all (same "don't fake it" discipline the DCF's own
+         growth gating already follows elsewhere)."""
+    equity_dated = [(d, v) for d, v in _series_with_dates(bundle["balance"], "stockholders_equity") if v]
+    shares_by_date = {
+        d: v for d, v in _series_with_dates(bundle["balance"], "ordinary_shares_number") if v and d
+    }
     info = bundle.get("info") or {}
-    shares = info.get("sharesOutstanding")
-    if len(equity_series) < 2 or not shares:
+    today_shares = info.get("sharesOutstanding")
+    if len(equity_dated) < 2 or not today_shares:
         return None, False
-    per_share = [v / shares for _y, v in equity_series]
+    per_share = []
+    for d, v in equity_dated:
+        shares_y = shares_by_date.get(d) or today_shares
+        per_share.append(v / shares_y)
     newest, oldest = per_share[0], per_share[-1]
-    n = len(equity_series) - 1
+    newest_date, oldest_date = equity_dated[0][0], equity_dated[-1][0]
+    if newest_date and oldest_date and newest_date != oldest_date:
+        n = (newest_date - oldest_date).days / 365.25
+    else:
+        n = len(equity_dated) - 1
     if oldest <= 0 or n <= 0:
         return None, False
     try:
