@@ -242,6 +242,52 @@ def _save_state(state):
         pass
 
 
+# URGENT Commit 1 (27 Sep 2026, owner-reported): the rate-limit circuit
+# breaker's own cool-down (see nightly_scan.RateLimitCircuitBreaker's
+# own docstring for what trips it, and _run_nightly()'s per-universe
+# loop for where it's caught). 45 minutes: long enough for a Yahoo IP-
+# level throttle - the 01:20:35 UTC 27 Sep incident this fixes ground
+# for HOURS instead, because nothing ever stopped retrying into it -
+# to clear on its own; short enough that one genuine throttle doesn't
+# cost the rest of the night's scans.
+RATE_LIMIT_COOLDOWN_MINUTES = 45
+
+
+def _rate_limit_cooldown_status(state, now):
+    """(is_active, until_iso_or_None) - whether the rate-limit circuit
+    breaker's cool-down (state["rate_limit_cooldown_until"], set by
+    _record_rate_limit_cooldown() below) is still in effect at `now`.
+    Fail-open on a missing/malformed timestamp - a corrupt or absent
+    cool-down record must never itself block scanning; it just reads
+    as "not active", same as never having tripped at all."""
+    until_str = state.get("rate_limit_cooldown_until")
+    if not until_str:
+        return False, None
+    try:
+        until = datetime.fromisoformat(until_str)
+    except ValueError:
+        return False, None
+    return (now < until), until_str
+
+
+def _record_rate_limit_cooldown(log):
+    """Persists a RATE_LIMIT_COOLDOWN_MINUTES cool-down starting now.
+    Every scan attempt below - the regular due-scan block AND the
+    catch-up block, every tick, in this process or a freshly restarted
+    one (this lives in scheduler_state.json on the Railway Volume, same
+    as scan_attempts) - checks _rate_limit_cooldown_status() before
+    doing anything else and skips with a log line instead of starting
+    while it's active. Never counts against scan_attempts' own 3/day
+    budget - a skip is not an attempt."""
+    until = datetime.now(timezone.utc) + timedelta(minutes=RATE_LIMIT_COOLDOWN_MINUTES)
+    state = _load_state()
+    state["rate_limit_cooldown_until"] = until.isoformat()
+    _save_state(state)
+    log(f"[scheduler] rate-limit cool-down recorded until {until.isoformat()} "
+        f"({RATE_LIMIT_COOLDOWN_MINUTES} minutes) - no scan attempt will start "
+        f"before then")
+
+
 # Fix 8b, AI fixes round 2 (2026-08-31): the round 2 instruction doc's
 # own recommended default cadence line, set as the code default so
 # broader coverage works out of the box without the owner touching
@@ -824,6 +870,23 @@ def _run_nightly(cfg, log, run_night=None):
                     insider_engine.refresh_universe(payload["rows"], log=log)
                 except Exception as e:
                     log(f"[scheduler] insider refresh {universe} failed: {e}")
+        except nightly_scan.RateLimitCircuitBreaker as e:
+            # URGENT Commit 1 (27 Sep 2026, owner-reported): the next
+            # universe in `ordered` would hit the exact same throttled
+            # address run_universe_scan() just gave up on - so this
+            # aborts the REST of tonight's run too (not just this one
+            # universe), and records a cool-down every future scan
+            # attempt (due-scan or catch-up, this process or a restarted
+            # one - the cool-down lives in scheduler_state.json) checks
+            # before doing anything - see _loop()'s own two gates and
+            # _record_rate_limit_cooldown()'s own docstring. Checked
+            # BEFORE the plain Exception clause below (Python tries
+            # except clauses in order), so this specific case never
+            # falls into the generic "log and move to the next universe"
+            # path a RateLimitCircuitBreaker is deliberately NOT that.
+            log(f"[scheduler] {e} - aborting the rest of tonight's run too")
+            _record_rate_limit_cooldown(log)
+            break
         except Exception as e:
             log(f"[scheduler] nightly scan {universe} failed: {e}")
 
@@ -1936,9 +1999,18 @@ def _loop(log):
                 now = datetime.now(timezone.utc)
                 today = now.strftime("%Y-%m-%d")
                 state = _load_state()
+                # URGENT Commit 1 (27 Sep 2026, owner-reported): computed
+                # once per tick, shared by both gates below (due-scan and
+                # catch-up) - see _rate_limit_cooldown_status()'s own
+                # docstring.
+                _rl_cooldown_active, _rl_cooldown_until = _rate_limit_cooldown_status(state, now)
 
                 if now.hour >= cfg["scan_hour"]:
                     due = _universes_needing_scan(cfg)
+                    if due and _rl_cooldown_active:
+                        log(f"[scheduler] nightly scan skipped - rate-limit cool-down "
+                            f"active until {_rl_cooldown_until}")
+                        due = []
                     attempts = state.get("scan_attempts", {})
                     n_today = attempts.get(today, 0)
                     if due and n_today < 3:  # retry cap: a persistently
@@ -2028,6 +2100,10 @@ def _loop(log):
                 ref_night = _catchup_reference_night(cfg, now)
                 if ref_night is not None:
                     missing = _universes_missing_today(cfg, ref_night)
+                    if missing and _rl_cooldown_active:
+                        log(f"[scheduler] catch-up scan skipped - rate-limit cool-down "
+                            f"active until {_rl_cooldown_until}")
+                        missing = []
                     if missing:
                         # URGENT COMMIT 2 (25 Sep 2026, owner-reported):
                         # a universe with NOTHING servable right now -

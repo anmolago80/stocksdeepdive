@@ -190,6 +190,24 @@ def _attach_dividend_payout(row, ticker, log=print):
 _YF_RETRY_ATTEMPTS = 4
 _YF_RETRY_BASE_DELAY_SECONDS = 2.0  # doubles each attempt: 2s, 4s, 8s
 
+# URGENT Commit 1 (27 Sep 2026, owner-reported): trips run_universe_
+# scan()'s own circuit breaker - see that function's own comment right
+# above its per-ticker loop for the incident this fixes and exactly what
+# "consecutive" means here.
+RATE_LIMIT_CONSECUTIVE_ABORT_THRESHOLD = 15
+
+
+class RateLimitCircuitBreaker(Exception):
+    """Raised by run_universe_scan() when RATE_LIMIT_CONSECUTIVE_ABORT_
+    THRESHOLD consecutive tickers fail on rate-limiting - a distinct
+    exception type (not a plain Exception) specifically so scheduler_
+    engine._run_nightly()'s per-universe loop can catch THIS case
+    separately from "one universe had an ordinary failure" and react
+    differently: abort every remaining universe in the same run (the
+    next one would hit the same throttled address) and record a cool-
+    down (see scheduler_engine._record_rate_limit_cooldown()) rather
+    than just logging and moving on to the next universe."""
+
 
 def _yf_looks_rate_limited(exc):
     msg = str(exc).lower()
@@ -211,7 +229,7 @@ def _reset_poisoned_yf_crumb():
         pass
 
 
-def _yf_call_with_retry(fn, log, ticker, label, attempts=_YF_RETRY_ATTEMPTS):
+def _yf_call_with_retry(fn, log, ticker, label, attempts=_YF_RETRY_ATTEMPTS, rate_limited_out=None):
     """Retries ONE yfinance call with exponential backoff - the "add
     retry with backoff on crumb acquisition" fix. Resets yfinance's own
     poisoned crumb state (see _reset_poisoned_yf_crumb) before any retry
@@ -220,7 +238,17 @@ def _yf_call_with_retry(fn, log, ticker, label, attempts=_YF_RETRY_ATTEMPTS):
     app.py's own _fetch_with_retry() shape (this codebase's established
     pattern for transient yfinance failures), adapted for a background/
     non-Streamlit caller that takes its own `log`. Returns fn()'s result,
-    or None if every attempt failed (logged once, at the end)."""
+    or None if every attempt failed (logged once, at the end).
+
+    `rate_limited_out` (URGENT Commit 1, 27 Sep 2026, owner-reported): an
+    optional single-element list a caller passes in (e.g. `[False]`) to
+    learn WHY a total failure happened, without this function's own
+    retry/backoff/crumb-reset behaviour changing at all - on total
+    failure only, set to whether the LAST exception looked rate-limited
+    (same _yf_looks_rate_limited() check already used above to decide
+    on a crumb reset); left untouched on success. run_universe_scan()'s
+    own circuit breaker reads this to count CONSECUTIVE rate-limited
+    ticker failures specifically, never any other kind of failure."""
     last_exc = None
     for attempt in range(attempts):
         try:
@@ -234,11 +262,14 @@ def _yf_call_with_retry(fn, log, ticker, label, attempts=_YF_RETRY_ATTEMPTS):
                 log(f"[nightly_scan] {ticker}: {label} failed (attempt {attempt + 1}/{attempts}) - {e} - retrying in {delay:.0f}s")
                 time.sleep(delay)
     log(f"[nightly_scan] {ticker}: {label} failed after {attempts} attempt(s) - {last_exc}")
+    if rate_limited_out is not None:
+        rate_limited_out[0] = _yf_looks_rate_limited(last_exc)
     return None
 
 
 def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
-                         perpetual_rate=None, growth_rate=None, manual_fcf=None, log=print):
+                         perpetual_rate=None, growth_rate=None, manual_fcf=None, log=print,
+                         rate_limited_out=None):
     """Core value/quality/psychology scoring for one ticker - the same
     resolvers and Long Score the site uses. Returns a plain dict, or None
     if no usable price data. Also used by digest_engine for the weekly
@@ -271,9 +302,20 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     `log` (URGENT Commit 2, 24 Sep 2026): defaults to print, same as
     every other log= parameter in this module - only used to surface
     _yf_call_with_retry()'s own retry/failure lines for this ticker's
-    yfinance calls, never anything else about the row itself."""
+    yfinance calls, never anything else about the row itself.
+
+    `rate_limited_out` (URGENT Commit 1, 27 Sep 2026, owner-reported):
+    an optional single-element list, passed straight through to the
+    price-history fetch's own _yf_call_with_retry() call (the very
+    first network call this function makes, and the one whose total
+    failure returns None here with no row at all) - see that function's
+    own docstring. run_universe_scan()'s circuit breaker is the only
+    caller that passes this; every other caller (digest_engine,
+    portfolio_health_engine) leaves it None and is completely
+    unaffected."""
     tk = yf.Ticker(ticker)
-    df = _yf_call_with_retry(lambda: tk.history(period="6mo"), log, ticker, "history")
+    df = _yf_call_with_retry(lambda: tk.history(period="6mo"), log, ticker, "history",
+                              rate_limited_out=rate_limited_out)
     if df is None or df.empty:
         return None
     info = _yf_call_with_retry(lambda: tk.info, log, ticker, "info") or {}
@@ -593,7 +635,15 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     and admin_metrics_store.bump_scan_calendar() - see save_scan()'s own
     docstring for exactly why this exists and what it fixes. None (the
     default) for a hand-run scan with no scheduler context; scheduler_
-    engine._run_nightly() always passes it."""
+    engine._run_nightly() always passes it.
+
+    Raises RateLimitCircuitBreaker (URGENT Commit 1, 27 Sep 2026,
+    owner-reported) if RATE_LIMIT_CONSECUTIVE_ABORT_THRESHOLD consecutive
+    tickers fail on rate-limiting during the per-ticker loop below - see
+    that exception's own docstring. Nothing is saved when this happens;
+    the caller (scheduler_engine._run_nightly()) is responsible for
+    reacting to it (aborting the rest of that run, recording a cool-
+    down)."""
     # Services batch 2, Part 2 (2026-09-01): calls get_universe_pool()
     # directly (what resolve_tickers() itself calls internally) instead
     # of resolve_tickers() - same ticker list, same single fetch per
@@ -703,10 +753,31 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
 
     rows = []
     skipped_no_price = 0
+    # URGENT Commit 1 (27 Sep 2026, owner-reported): rate-limit circuit
+    # breaker. The 01:20:35 UTC deploy on 27 Sep killed a Russell 2000
+    # scan mid-run; the catch-up restart hit Yahoo's throttle from
+    # ticker 1 and every ticker since failed "Too Many Requests" on all
+    # 4 retry attempts - with nothing to detect that pattern, the loop
+    # below would have ground the remaining ~1,957 x 4 requests into the
+    # throttle for hours, which is exactly what KEEPS a throttle in
+    # place. `_consecutive_rate_limited` counts ONLY consecutive ticker
+    # failures whose LAST retry attempt looked rate-limited (via
+    # analyze_ticker_lite()'s own rate_limited_out passthrough, itself
+    # from _yf_call_with_retry()'s _yf_looks_rate_limited() check - see
+    # both docstrings) - a genuine success OR a different kind of
+    # failure (a real "no data for this ticker", a parsing error) resets
+    # the streak to 0, so scattered non-consecutive 429s among otherwise
+    # normal tickers never trip this. Deliberately does NOT change how
+    # analyze_ticker_lite()/_yf_call_with_retry() themselves retry -
+    # only reads what they already tell it.
+    _consecutive_rate_limited = 0
     for i, t in enumerate(tickers):
         try:
-            row = analyze_ticker_lite(t, attention_lite=attention_lite, log=log)
+            _rate_limited_flag = [False]
+            row = analyze_ticker_lite(t, attention_lite=attention_lite, log=log,
+                                       rate_limited_out=_rate_limited_flag)
             if row:
+                _consecutive_rate_limited = 0
                 # Fix 9 item 2 (2026-09-01): hard backstop, on top of item
                 # 1's fix inside analyze_ticker_lite() itself - a row can
                 # NEVER reach scan_store/score_history with a non-finite,
@@ -730,8 +801,23 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
                     # get_universe_pool's own convention.
                     row["Sector"] = _sector_by_ticker.get(t)
                     rows.append(row)
+            else:
+                _consecutive_rate_limited = (
+                    _consecutive_rate_limited + 1 if _rate_limited_flag[0] else 0
+                )
         except Exception as e:  # one bad ticker never kills the run
             log(f"[nightly_scan] {t}: {e}")
+            _consecutive_rate_limited = 0
+        if _consecutive_rate_limited >= RATE_LIMIT_CONSECUTIVE_ABORT_THRESHOLD:
+            log(f"[nightly_scan] {universe}: ABORTING after {i + 1}/{len(tickers)} tickers - "
+                f"{_consecutive_rate_limited} consecutive tickers failed on rate-limiting "
+                f"(Yahoo throttled) - stopping now rather than grinding the rest of this "
+                f"universe (and the next) into the same throttle. Not saving; last "
+                f"known-good scan for {universe} stays in place.")
+            raise RateLimitCircuitBreaker(
+                f"{universe}: aborted after {_consecutive_rate_limited} consecutive "
+                f"rate-limited tickers"
+            )
         if i % 25 == 24:
             log(f"[nightly_scan] {universe}: {i + 1}/{len(tickers)} done")
         time.sleep(PER_TICKER_SLEEP)
