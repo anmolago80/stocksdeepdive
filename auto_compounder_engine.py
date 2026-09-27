@@ -1614,6 +1614,32 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         dcf_info = dict(info)
         dcf_info["financialCurrency"] = currency
 
+    # Audit fix B2.7 (27 Sep 2026, owner-directed, CONFIRMED BUG): manual_fcf
+    # is a raw, user-typed number - unlike bundle["cashflow"], it is NEVER
+    # pre-converted by fundamentals_data.get_bundle() (that module only
+    # touches statement DataFrames). The dcf_info override just above
+    # exists specifically to stop dcf_intrinsic_value() from double-
+    # converting the ALREADY-converted cashflow_df - but dcf_intrinsic_
+    # value() decides whether to convert its chosen FCF (auto-derived OR
+    # manual override - "Applied to whichever fcf was just chosen above,
+    # manual override included", per that function's own comment) by
+    # comparing dcf_info's financialCurrency against currency, and the
+    # override above always makes those equal. So a manual override
+    # silently skipped the ONE conversion it still genuinely needed,
+    # unlike calling dcf_intrinsic_value() directly (the main site's Deep
+    # Dive page), which passes the real, unmodified financialCurrency and
+    # converts a manual override correctly. Convert manual_fcf ourselves,
+    # with the same fx_rate() lookup dcf_intrinsic_value's own internal
+    # block would have used, before dcf_info's override makes that
+    # internal conversion a no-op.
+    _dcf_manual_fcf = manual_fcf
+    if manual_fcf is not None and manual_fcf > 0:
+        _fin_ccy = (info.get("financialCurrency") or currency or "").upper()
+        _listing_ccy = currency.upper()
+        if _fin_ccy and _listing_ccy and _fin_ccy != _listing_ccy:
+            _fx, _ = fcf_valuation_engine.fx_rate(_fin_ccy, _listing_ccy)
+            _dcf_manual_fcf = manual_fcf * _fx
+
     # Audit A3 (27 Sep 2026): this DCF's per-share value used to divide
     # by info["sharesOutstanding"] directly, inheriting the same dual-
     # class understatement _whole_company_shares() exists to fix -
@@ -1625,7 +1651,7 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         fcf_valuation_engine.dcf_intrinsic_value,
         ticker, info=dcf_info, cashflow_df=bundle.get("cashflow"), currency=currency,
         discount_rate=discount_rate, perpetual_rate=perpetual_rate,
-        growth_rate=growth_rate, manual_fcf=manual_fcf,
+        growth_rate=growth_rate, manual_fcf=_dcf_manual_fcf,
         diluted_shares_override=_dcf_shares,
     )
     if not result:
