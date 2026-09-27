@@ -14,6 +14,7 @@ position size stands to gain/lose from the FX leg alone under three
 scenarios. Every number here is computed fresh from cached daily closes -
 never a live feed per page view, never an AI call.
 """
+import bisect
 import datetime
 import json
 import math
@@ -188,6 +189,54 @@ def get_fx_history(base, quote, force_refresh=False):
     if stale_cached:
         return {**stale_cached, "stale": True}
     return None
+
+
+def historical_fx_rate(base, quote, target_date):
+    """B2.1 fix (27 Sep 2026, owner-directed): the BASE->QUOTE fx rate on
+    (or the nearest trading day before) `target_date` - a date, datetime,
+    pd.Timestamp, or 'YYYY-MM-DD' string - read from the SAME cached
+    daily-close series get_fx_history() already maintains for the
+    Currency Risk page, never a second live fetch of its own. Returns
+    (rate, source):
+      - (1.0, "identity") for base == quote (or either missing).
+      - (rate, "historical") when a cached close on or before
+        target_date was found - the normal case for any date within
+        the cached history's own range.
+      - (rate, "live_fallback") when no cached history reaches back
+        that far (a fetch failure, or a target_date older than
+        whatever history is cached) - falls back to fcf_valuation_
+        engine.fx_rate()'s own live/current rate, same "a missing
+        number is worse than a slightly-off one" reasoning every
+        other optional feed in this app already follows. A caller
+        converting a whole multi-year series should expect a MIX of
+        "historical" and "live_fallback" sources across different
+        years, not treat a fallback as a bug - just as accurate as the
+        code could get for that particular year.
+
+    Used by fundamentals_data.py's per-period statement-currency
+    conversion, fixing the bug where every year of a converted
+    statement used TODAY's rate instead of its own period's (see that
+    module's own _convert_statement_currency() docstring)."""
+    base, quote = (base or "").upper(), (quote or "").upper()
+    if not base or not quote or base == quote:
+        return 1.0, "identity"
+
+    target = str(target_date)[:10]  # tolerates a pd.Timestamp/datetime/date too
+    hist = get_fx_history(base, quote)
+    if hist and hist.get("dates") and hist.get("closes"):
+        dates, closes = hist["dates"], hist["closes"]
+        idx = bisect.bisect_right(dates, target) - 1  # dates ascending - last one <= target
+        if idx >= 0:
+            rate = closes[idx]
+            if rate == rate and rate > 0:  # not NaN
+                return float(rate), "historical"
+
+    try:
+        import fcf_valuation_engine
+        rate, _src = fcf_valuation_engine.fx_rate(base, quote)
+        return rate, "live_fallback"
+    except Exception:
+        return 1.0, "live_fallback"
 
 
 def slice_range(dates, closes, range_key):

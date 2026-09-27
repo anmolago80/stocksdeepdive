@@ -57,6 +57,7 @@ import urllib.request
 import pandas as pd
 import yfinance as yf
 
+import currency_risk_engine
 import fcf_valuation_engine
 
 # -----------------------------------
@@ -289,12 +290,12 @@ def _is_non_monetary_row(label):
     return any(p in l for p in _NON_MONETARY_ROW_PATTERNS)
 
 
-def _convert_statement_currency(df, rate):
-    """Multiply every MONETARY cell of a statement DataFrame by an fx rate,
-    coercing anything non-numeric to NaN first so a stray string/None cell
-    can never raise - same best-effort spirit as the rest of this module.
-    Returns the input unchanged if it's empty or the multiply fails
-    outright.
+def _convert_statement_currency(df, from_ccy, to_ccy):
+    """Multiply every MONETARY cell of a statement DataFrame by an fx
+    rate, coercing anything non-numeric to NaN first so a stray
+    string/None cell can never raise - same best-effort spirit as the
+    rest of this module. Returns the input unchanged if it's empty or
+    the conversion fails outright.
 
     Audit fix 1.7: this used to blanket-multiply the WHOLE DataFrame by
     `rate`, which would corrupt a share-count or tax-rate row if one were
@@ -302,12 +303,27 @@ def _convert_statement_currency(df, rate):
     through this path, so this was a landmine for the next metric added
     rather than a live bug (see _NON_MONETARY_ROW_PATTERNS above). Rows
     matching that list are coerced to numeric but left unconverted;
-    everything else converts as before."""
+    everything else converts as before.
+
+    B2.1 fix (27 Sep 2026, owner-directed): this used to take a single
+    flat `rate` (TODAY's fx rate) and apply it to every COLUMN (fiscal
+    year/quarter) alike - a statement column from 3 years ago got
+    converted at today's rate, not that year's own rate. Every metric
+    built from more than the newest column (historic P/E, the IV/BV
+    series, Retained Earnings' multi-year windows, ...) was silently
+    wrong for every year except the most recent whenever the fx rate
+    had moved since. Now converts EACH column at that column's own
+    period-end date, via currency_risk_engine.historical_fx_rate() -
+    the same cached daily-close series the Currency Risk page already
+    maintains, never a second live fetch per column."""
     if df is None or df.empty:
         return df
     try:
         numeric = df.apply(pd.to_numeric, errors="coerce")
-        converted = numeric * rate
+        converted = numeric.copy()
+        for col in numeric.columns:
+            rate, _source = currency_risk_engine.historical_fx_rate(from_ccy, to_ccy, col)
+            converted[col] = numeric[col] * rate
         non_monetary = [label for label in numeric.index if _is_non_monetary_row(label)]
         if non_monetary:
             converted.loc[non_monetary] = numeric.loc[non_monetary]
@@ -770,16 +786,15 @@ def get_bundle(ticker, force_refresh=False):
     fin_ccy = (info.get("financialCurrency") or "").upper()
     list_ccy = (info.get("currency") or "").upper()
     if fin_ccy and list_ccy and fin_ccy != list_ccy:
-        try:
-            fx, fx_source = fcf_valuation_engine.fx_rate(fin_ccy, list_ccy)
-        except Exception:
-            fx, fx_source = 1.0, "fallback"
-        if fx and fx > 0 and fx != 1.0:
-            income = _convert_statement_currency(income, fx)
-            balance = _convert_statement_currency(balance, fx)
-            cashflow = _convert_statement_currency(cashflow, fx)
-            income_q = _convert_statement_currency(income_q, fx)
-            flags.append("currency_converted")
+        # B2.1 fix: each column now fetches ITS OWN period-end rate
+        # inside _convert_statement_currency() - no single up-front
+        # `fx` value to gate on any more (see that function's own
+        # docstring for why a flat rate here was the bug).
+        income = _convert_statement_currency(income, fin_ccy, list_ccy)
+        balance = _convert_statement_currency(balance, fin_ccy, list_ccy)
+        cashflow = _convert_statement_currency(cashflow, fin_ccy, list_ccy)
+        income_q = _convert_statement_currency(income_q, fin_ccy, list_ccy)
+        flags.append("currency_converted")
 
     try:
         hist = tk.history(period="10y", interval="1mo")
