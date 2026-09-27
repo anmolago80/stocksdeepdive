@@ -68,9 +68,15 @@ wrote):
 import json
 import os
 import re
+import time
 from datetime import datetime, timezone
 
+import yfinance as yf
+
+import nightly_scan
 import scan_store
+import scanner_engine
+import sector_cache_store
 import top100_store
 
 # Commit 1 (24 Sep 2026, owner-reported): first 5 errored batch results
@@ -193,13 +199,35 @@ def select_top100_pool(log=print):
                     # the tradability chip's own spread%.
                     "psychology": row.get("Psychology"),
                     # Top 100 Commit 5 (25 Sep 2026, owner-reported,
-                    # industry mock): the raw scan row's own "Sector"
-                    # string, same "carried through for a display-only
-                    # tag, never fed into composite_score()" status as
-                    # psychology just above - the page refines it with
-                    # the Deep Dive's own finer industry string where
-                    # cached (top100_render._finer_industry_by_ticker()).
-                    "sector": row.get("Sector"),
+                    # industry mock): the sector tag, same "carried
+                    # through for a display-only tag, never fed into
+                    # composite_score()" status as psychology just above
+                    # - the page refines it with the Deep Dive's own
+                    # finer industry string where cached (top100_render.
+                    # _finer_industry_by_ticker()).
+                    #
+                    # Sector fallback (27 Sep 2026, owner-reported):
+                    # scanner_engine.sector_for_ticker(ticker, scan_row=
+                    # row) instead of the bare row.get("Sector") this
+                    # used to be - identical result for every ticker
+                    # whose WINNING row already carries a "Sector" (the
+                    # common case, unchanged), but for a ticker whose
+                    # winning row came from a sector-less universe (e.g.
+                    # Nasdaq 100 via the Invesco CSV/static fallback,
+                    # Russell lists - see nightly_scan.run_universe_
+                    # scan()'s own _sector_by_ticker comment) this falls
+                    # through to the site's own persistent sector_cache_
+                    # store (written through by every OTHER universe's
+                    # scan that DOES carry a sector for the same ticker),
+                    # then the ASX static map - so an S&P 500 member that
+                    # also happens to be a Nasdaq 100 constituent no
+                    # longer loses its sector just because the Nasdaq 100
+                    # row happened to win on Value Score. company_info is
+                    # deliberately omitted here (no per-ticker network
+                    # call at THIS point in selection) - a ticker still
+                    # blank after this falls to the bounded one-shot
+                    # yfinance fill below (_fill_missing_sectors()).
+                    "sector": scanner_engine.sector_for_ticker(ticker, scan_row=row),
                     # Dividend yield display (26 Sep 2026, owner-approved
                     # mock): the raw scan row's own "Dividend Yield %"
                     # (nightly_scan.py's Dividend TTM / Price), same
@@ -239,6 +267,7 @@ def select_top100_pool(log=print):
             row["asx_extension"] = True
         extension = au_candidates
 
+    _fill_missing_sectors(pool + extension, log=log)
     top100_store.save_pool(pool + extension, as_of)
     log(f"[top100] selected {len(pool)} companies for {as_of} "
         f"(from {len(best_by_ticker)} deduped candidates across "
@@ -246,6 +275,55 @@ def select_top100_pool(log=print):
         f"ASX extension: {len(extension)} added ({au_in_pool} pool Australians -> "
         f"{au_in_pool + len(extension)} total for Top 20 Australia)")
     return pool
+
+
+_SECTOR_FILL_MAX_PER_NIGHT = 40
+
+
+def _fill_missing_sectors(rows, log=print):
+    """Sector fallback Part 2 (27 Sep 2026, owner-reported): a bounded,
+    one-shot yfinance fallback for whichever `rows` (pool + extension,
+    mutated in place) still have no sector after Part 1's scan-row ->
+    sector_cache_store -> ASX static map chain (scanner_engine.sector_
+    for_ticker(), called while best_by_ticker is built above) - tickers
+    like MELI/CARG/WDFC that have never been scanned under ANY sector-
+    carrying universe at all, so no cache/static-map answer exists yet
+    either. Capped at _SECTOR_FILL_MAX_PER_NIGHT fetches a night so a
+    large blank backlog can never turn one pool selection into a
+    hundreds-of-tickers fetch storm; every ticker this learns a sector
+    for is written into sector_cache_store (source="top100_info") and
+    therefore never fetched again by ANYTHING in this codebase, so the
+    steady state (after the first night or two) is zero fetches - only
+    a genuinely new, never-before-seen pool entrant costs one more call.
+
+    Reuses nightly_scan._yf_call_with_retry() - the same crumb-
+    poisoning/429-retry helper nightly_scan.py's own per-ticker fetch
+    loop already uses - rather than writing a second retry loop, and
+    nightly_scan.PER_TICKER_SLEEP between calls, same Yahoo-etiquette
+    pacing every other per-ticker yfinance loop in this app already
+    follows. Never raises, and a fetch failure or a ticker with
+    genuinely no sector on Yahoo is simply left blank - this must never
+    fail pool selection over a display-only field. Logs
+    "[top100] sector fill: N fetched, M learned, K still blank" every
+    run (even when N is 0) so the Railway log shows the one-off cost on
+    a night with backlog and the steady-state zero afterwards."""
+    missing = [r for r in rows if not (r.get("sector") or "").strip()]
+    fetched = learned = 0
+    for row in missing[:_SECTOR_FILL_MAX_PER_NIGHT]:
+        ticker = row["ticker"]
+        info = nightly_scan._yf_call_with_retry(
+            lambda: yf.Ticker(ticker).info, log, ticker, "sector fill",
+        ) or {}
+        fetched += 1
+        sector = info.get("sector")
+        if isinstance(sector, str) and sector.strip():
+            sector = sector.strip()
+            sector_cache_store.learn(ticker, sector, source="top100_info")
+            row["sector"] = sector
+            learned += 1
+        time.sleep(nightly_scan.PER_TICKER_SLEEP)
+    still_blank = sum(1 for r in rows if not (r.get("sector") or "").strip())
+    log(f"[top100] sector fill: {fetched} fetched, {learned} learned, {still_blank} still blank")
 
 
 def pool_changes(current=None, previous=None):
