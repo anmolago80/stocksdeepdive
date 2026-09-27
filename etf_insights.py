@@ -206,6 +206,23 @@ def _fetch_fund_facts_live(ticker):
                 # own dividend-yield parsing already guards against
                 # elsewhere (portfolio_health_engine._normalize_dividend_
                 # yield), so apply the same >1-means-already-percent test.
+                # Data-correctness audit A2 (27 Sep 2026): flagged by the
+                # owner as sharing the SAME ambiguity-guard pattern that
+                # proved wrong for dividendYield (a >1 threshold can't
+                # tell a genuinely low value in one format from a
+                # genuinely low value in the other) - but this reads
+                # `fund_operations` (a completely different yfinance data
+                # source from `info["dividendYield"]`, scraped
+                # separately), and this sandboxed session has no live
+                # network access to confirm whether ITS format has
+                # actually drifted the same way under yfinance>=1.7.0.
+                # Every realistic MER (roughly 0.03%-3%, i.e. 0.0003-0.03
+                # as a fraction) stays comfortably under the >1 threshold
+                # either way, so this branch is very likely dead code in
+                # practice regardless - left unchanged pending a real
+                # check against a live ETF (see the audit's own "Verify
+                # on ... one ETF" instruction) rather than guess-fixing a
+                # field I can't verify.
                 mer = float(val)
                 out["mer"] = mer if mer > 1 else mer * 100.0
     except Exception:

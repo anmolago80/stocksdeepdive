@@ -142,10 +142,17 @@ def score_color(score):
 # ---------------------------------------------------------------------
 
 def _normalize_dividend_yield(v):
-    """See the call site's comment - Yahoo has returned dividendYield as
-    both a fraction and an already-percent number depending on version/
-    endpoint. No real security yields >100%, so >1 unambiguously means
-    the percent form; divide it back down to a fraction."""
+    """Audit A2 (27 Sep 2026): fallback-only now, for the case fetch_
+    snapshot()'s own primary path (dividendRate / price, see its call
+    site) can't use - no dividendRate on file. Kept because dividendYield
+    itself is still ambiguous across yfinance versions/endpoints (a
+    fraction on some, an already-percent number on others), and >1
+    unambiguously means the percent form (no real security yields
+    >100%) - but this heuristic alone silently mis-reads any LOW yield
+    under the currently-pinned yfinance version's percent-number
+    convention (see fetch_snapshot's own comment for the AAPL-shaped
+    failure this caused), which is exactly why it's no longer the
+    primary path."""
     if v is None:
         return None
     return v / 100.0 if v > 1 else v
@@ -324,14 +331,32 @@ def fetch_snapshot(ticker, discount_rate=None, perpetual_rate=None, growth_rate=
         "debt_to_equity": _num("debtToEquity"),
         "fcf_growth": fcf_growth,
         "dividend_rate": _num("dividendRate"),
-        # yfinance/Yahoo has shipped both a fraction (0.0235 = 2.35%) and a
-        # already-percent number (2.35 = 2.35%) under this same key across
-        # versions - a real yield over 100% doesn't exist, so treat >1 as
-        # the percent form and normalize down. Bug this fixed: CSL showed
-        # "235.00%" div yield and a $54k "potential dividend income" on a
-        # $23k holding because the raw 2.35 was used as a fraction (K=2.35
-        # instead of 0.0235) in both the display and the L = K x T formula.
-        "dividend_yield": _normalize_dividend_yield(_num("dividendYield")),
+        # Data-correctness audit A2 (27 Sep 2026, owner-reported):
+        # dividendYield's fraction-vs-percent ambiguity was never fully
+        # resolved by the >1 heuristic below - requirements.txt pins
+        # yfinance>=1.7.0, which returns dividendYield already as a
+        # percent NUMBER (0.44 for AAPL's 0.44% yield, not 0.0044), so a
+        # LOW yield under 1% (most large caps) never triggers the >1
+        # branch and was left as-is - a raw 0.44 used directly as the
+        # fraction K in K x holding_value (see this function's caller,
+        # and app.py's own pot_div_income_aud) is a 44% yield, ~100x too
+        # high. The >1 heuristic only ever correctly caught the HIGHER-
+        # yield case (e.g. the original CSL 2.35 -> 235% bug it was
+        # written for).
+        # Fixed by computing yield directly from two unambiguous $
+        # figures - dividendRate (Yahoo's own annual $/share dividend
+        # rate, never a ratio, so no fraction-vs-percent question exists
+        # for it) divided by price - the same "$ dividends / price"
+        # shape nightly_scan.analyze_ticker_lite() already uses for its
+        # own "Dividend Yield %" (TTM $ dividends / price), rather than
+        # continuing to guess at dividendYield's format. Falls back to
+        # the normalized dividendYield only when dividendRate is missing
+        # (e.g. some ETFs) - kept for that case, not as the primary path
+        # anymore.
+        "dividend_yield": (
+            (_num("dividendRate") / price) if (_num("dividendRate") and price)
+            else _normalize_dividend_yield(_num("dividendYield"))
+        ),
         "quote_type": info.get("quoteType"),
         "sector": info.get("sector"),
         "currency": info.get("currency"),
