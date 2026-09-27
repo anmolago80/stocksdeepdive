@@ -71,25 +71,54 @@ DEFAULT_PERPETUAL_GROWTH = 0.025
 
 # 10-year government bond yield proxies used as the CAPM risk-free rate.
 # "^TNX" (US 10Y Treasury Note yield) is a well-established yfinance ticker,
-# quoted as yield*10. The AU equivalent is best-effort - Yahoo's coverage of
-# non-US government bond yields is patchy, so this degrades to the fallback
-# constant below (like every other optional feed in this app) when it can't
-# be fetched.
+# quoted as a plain percentage (Yahoo's own ^TNX history shows ~5.16 for a
+# 5.16% yield, not 51.6 - there is no separate x10 convention on this
+# ticker). The AU equivalent is best-effort - Yahoo's coverage of non-US
+# government bond yields is patchy, so this degrades to the fallback
+# constant below (like every other optional feed in this app) when it
+# can't be fetched.
 _RISK_FREE_TICKERS = {"USD": "^TNX", "AUD": "AU10Y=RR"}
-# ^TNX is quoted as yield*10 (a 4.2% yield reads as ~42.0), so dividing by
-# 10 alone only recovers the percentage-point number (~4.2), not the
-# decimal fraction (~0.042) the sanity band below expects - that value
-# always failed `0.0 < rate < 0.20`, so the USD live-rate path was dead
-# code (silently falling to RISK_FREE_FALLBACK on every call). Audit fix
-# 1.1: divide by 1000 (10 for the quoting convention, x100 to go from a
-# percentage-point number to a decimal fraction) so a live ^TNX read
-# actually clears the sanity band and gets used.
-_RISK_FREE_DIVISOR = {"^TNX": 1000.0, "AU10Y=RR": 100.0}
+# Data-correctness audit A1 (27 Sep 2026, owner-reported): Audit fix 1.1
+# (28 Aug 2026, bec711b) divided ^TNX by 1000 on the mistaken assumption
+# that it's quoted as yield*10 - it isn't; Yahoo already quotes it as the
+# plain percentage. Dividing a real ~5.16 reading by 1000 gave 0.00516 (a
+# 0.52% "risk-free rate"), which is inside the old 0.0-0.20 sanity band
+# and so was silently accepted and labelled "live" instead of being caught
+# as garbage - the exact failure mode that band exists to prevent, just
+# from the opposite direction (too low, not too high). Both tickers here
+# are already plain-percentage quotes, so both use the same /100 divisor
+# (a 5.16 reading -> 0.0516, the actual decimal fraction).
+_RISK_FREE_DIVISOR = {"^TNX": 100.0, "AU10Y=RR": 100.0}
+
+# Sanity band a live-fetched rate must clear to be trusted (rejects a
+# fetch/divisor error in EITHER direction, not just implausibly high).
+# Tightened from 0.0-0.20 by audit A1. 1% is a deliberately tighter floor
+# than "any yield ever printed" (US 10Y briefly touched ~0.5% in 2020) -
+# chosen specifically because it's ABOVE what an accidental extra /10 on
+# a normal, current 3-8% yield would produce (0.03%-0.8%), so THIS class
+# of divisor bug is actually rejected rather than merely discouraged; a
+# genuine sub-1% yield environment would fall back to the (occasionally-
+# updated) fallback constant below instead of a live read, which is an
+# acceptable trade for making a repeat of this exact bug loud instead of
+# silent. 15% remains comfortably above any developed-market 10-year
+# print.
+RISK_FREE_MIN = 0.01
+RISK_FREE_MAX = 0.15
 
 # Fallback risk-free rates (approximate 10-year yields), used only when the
 # live bond-yield fetch fails or returns something outside a sane band.
-# Update occasionally to keep these roughly current.
-RISK_FREE_FALLBACK = {"USD": 0.042, "AUD": 0.043}
+# Update occasionally to keep these roughly current. Audit A1 (27 Sep
+# 2026): the previous USD figure (0.042) was set when 10-year yields were
+# meaningfully lower and was stale against a live ~5.16% US 10-year read
+# the owner reported that day - moved to 0.050, a round, conservative
+# approximation rather than pinning to one day's exact reading. AUD moved
+# up by the same rough margin for consistency, since AU10Y=RR's own live
+# fetch currently 404s on every call (see get_risk_free_rate's docstring)
+# and this fallback is therefore the ONLY rate AUD stocks actually get -
+# unlike the USD figure, this has no live reading behind it to anchor on
+# and should be checked against a real AU 10-year source and corrected
+# once one is found (see A1 point 4 in the audit).
+RISK_FREE_FALLBACK = {"USD": 0.050, "AUD": 0.045}
 DEFAULT_RISK_FREE_FALLBACK = 0.04
 
 
@@ -98,6 +127,18 @@ def get_risk_free_rate(currency):
     """Live 10-year government bond yield for a currency, for use as the
     CAPM risk-free rate. Returns (rate, source) where source is "live" or
     "default" (the fallback constant above).
+
+    Audit A1 (27 Sep 2026): "AU10Y=RR" was reported returning 404 on
+    every call, meaning AUD currently ALWAYS uses RISK_FREE_FALLBACK, not
+    a live read. Could not verify a working replacement ticker in this
+    session (no live network access here to test candidates against
+    yfinance) - the owner's own next step, with real access, should be to
+    try yfinance-known alternates for the AU 10-year (candidates worth
+    testing: "AU10YT=RR", "AU10Y.SG", or pulling the RBA's own published
+    series if yfinance genuinely has no coverage) and swap
+    _RISK_FREE_TICKERS["AUD"] once one is confirmed live. Left as the
+    flagged fallback until then, per that audit's own "if not, say so"
+    instruction.
 
     Cached (keyed only on `currency` - there are only ever a couple of
     these in practice, USD/AUD) at a longer 3-hour TTL than the per-ticker
@@ -118,7 +159,7 @@ def get_risk_free_rate(currency):
             if hist is not None and not hist.empty:
                 raw = float(hist["Close"].iloc[-1])
                 rate = raw / _RISK_FREE_DIVISOR.get(ticker, 100.0)
-                if 0.0 < rate < 0.20:          # sanity band - reject garbage
+                if RISK_FREE_MIN < rate < RISK_FREE_MAX:   # sanity band - reject garbage
                     return rate, "live"
         except Exception:
             pass

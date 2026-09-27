@@ -412,6 +412,13 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         # DCF fixes: same pure passthrough, no scoring logic touched - see
         # resolver_engine.py's identical comment on these same keys.
         "dcf_discount_floored": bool(iv_meta.get("discount_floored")),
+        # Data-correctness audit A1 (27 Sep 2026): capm_engine.resolve_
+        # discount_rate() already records "capm-default" on resolver_
+        # engine's discount_source whenever beta and/or the risk-free rate
+        # had to fall back to a default - nothing downstream ever read it
+        # before this, so it never reached the screen. Same pure-
+        # passthrough pattern as every other flag on this page.
+        "dcf_discount_defaulted": iv_meta.get("discount_source") == "capm-default",
         "dcf_discount_manual_clamped": bool(iv_meta.get("discount_manual_clamped")),
         "dcf_perpetual_manual_clamped": bool(iv_meta.get("perpetual_manual_clamped")),
         "dcf_fx_converted": iv_meta.get("fx_converted"),

@@ -10659,6 +10659,16 @@ def page_deep_dive():
                     "Discount rate floored at 7.5% (low measured beta - see "
                     "Methodology)."
                 )
+            # Data-correctness audit A1 (27 Sep 2026): the discount rate
+            # rests on an assumption (beta and/or the risk-free rate
+            # weren't available live and fell back to a default) - same
+            # provenance-flag pattern as the floored caption above, a
+            # distinct condition (this can fire with or without flooring).
+            if _dd.get("dcf_discount_defaulted"):
+                st.caption(
+                    "Discount rate uses a default beta and/or risk-free "
+                    "rate (live data wasn't available for this stock)."
+                )
             # Audit fix 1.4: a manually-typed discount/perpetual-rate override
             # that fell outside the defensible band got silently clamped back
             # into it - same provenance-flag pattern as the caption above, just
