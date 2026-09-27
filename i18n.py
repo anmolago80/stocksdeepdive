@@ -3655,6 +3655,11 @@ EN = {
         "Outside the global Top 100 — added from the ASX scans so Australia "
         "always fields a full twenty; scored identically."
     ),
+    # Top 100 Commit 3 (27 Sep 2026, owner-reported): share-class dedupe
+    # (top100_engine.SHARE_CLASS_PAIRS/_dedupe_share_classes()) - the
+    # other ticker of a pair like GOOG/GOOGL this row's own ticker won
+    # on average traded volume.
+    "top100.also_trades_as_chip": "also trades as {ticker}",
     "top100.why_here_label": "full dimension detail",
     "top100.tradability_chip": "⚠ wide spread · {pct}% - costly to trade",
     "top100.sentiment_fearful": "Fearful",
@@ -6875,6 +6880,7 @@ ES = {
         "Australia siempre presente veinte completas; puntuada de forma "
         "idéntica."
     ),
+    "top100.also_trades_as_chip": "también cotiza como {ticker}",
     "top100.why_here_label": "detalle completo por dimensión",
     "top100.tradability_chip": "⚠ spread amplio · {pct}% - costoso de operar",
     "top100.sentiment_fearful": "Temeroso",

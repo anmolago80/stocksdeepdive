@@ -376,6 +376,17 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         except Exception:
             most_recent_quarter = None
 
+    # Top 100 Commit 3 (27 Sep 2026, owner-reported): average traded
+    # volume, straight off `info` (already fetched above - zero extra
+    # network calls, same free-ride as most_recent_quarter/exDividendDate
+    # just above). top100_engine.select_top100_pool() reads this to pick
+    # which ticker of a share-class pair (GOOG/GOOGL, FOX/FOXA, ...) to
+    # keep - the more liquid class - never fed into Value Score/Quality/
+    # Long Score/any ranking here or downstream.
+    avg_volume = info.get("averageVolume")
+    if not isinstance(avg_volume, (int, float)) or avg_volume < 0:
+        avg_volume = None
+
     # Fix 9 (2026-09-01): price from the last VALID bar, not blindly
     # iloc[-1]. Root cause (confirmed via Railway logs from the 31 Aug
     # 20:00 UTC run): yfinance's most recent bar can be a still-forming
@@ -597,6 +608,11 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         # is computed. Display/trigger field only - never fed into Value
         # Score/Quality/Long Score/any ranking here or downstream.
         "Most Recent Quarter": most_recent_quarter,
+        # Top 100 Commit 3 (27 Sep 2026, owner-reported) - see this
+        # function's own comment above where avg_volume is computed.
+        # Share-class-pair dedupe input only - never fed into Value
+        # Score/Quality/Long Score/any ranking here or downstream.
+        "Average Volume": avg_volume,
         # Commit J: "stale" when window_shows_no_trading() found no
         # evidence of real trading in the last 5 rows above - None
         # (not "trading"/"active" - see this dict's own convention of

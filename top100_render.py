@@ -657,6 +657,17 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     industry_tag = _industry_tag_html(row.get("sector"), finer_industry)
     if industry_tag:
         header_bits.append(industry_tag)
+    # Top 100 Commit 3 (27 Sep 2026, owner-reported): the share-class
+    # dedupe (top100_engine._dedupe_share_classes()) keeps only ONE
+    # ticker of a pair like GOOG/GOOGL - this surfaces the other one it
+    # collapsed so a reader who searches the dropped ticker still finds
+    # the company, without a second, fully-duplicate row ever existing.
+    if row.get("also_trades_as"):
+        header_bits.append(
+            "<span style='display:inline-block;background:#0e1930;border:1px solid #2a3f63;"
+            "color:#7f95b3;border-radius:6px;padding:1px 9px;font-size:10.5px;'>"
+            f"{html.escape(_t('also_trades_as_chip', lang, ticker=row['also_trades_as']))}</span>"
+        )
     if origin_badge_html:
         header_bits.append(origin_badge_html)
     header_bits.append(_leading_metric_html(row, sort_mode, lang))

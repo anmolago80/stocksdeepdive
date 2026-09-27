@@ -118,6 +118,29 @@ POOL_SIZE = 100
 # whenever the global pool alone has fewer.
 TOP20_AU_TARGET = 20
 
+# Top 100 Commit 3 (27 Sep 2026, owner-reported): explicit share-class
+# pairs - the SAME underlying company listed under two tickers. GOOG and
+# GOOGL both appeared in the 27 Sep Top 100, each fully AI-scored, because
+# select_top100_pool()'s own dedupe (below) is by TICKER, and the S&P 500/
+# Nasdaq 100 lists legitimately carry both classes as separate index
+# members - that's correct for the Scanner/every other page, but wrong for
+# a "Top 100 distinct companies" shortlist. _dedupe_share_classes() below
+# collapses each pair to whichever ticker has the higher average traded
+# volume BEFORE scoring, so the loser's slot goes to the next real
+# candidate and the pair never both reach the AI batch.
+#
+# Deliberately an explicit, hand-maintained set, never inferred from
+# company-name similarity (see _report_undocumented_same_name_duplicates()
+# below, which only ever REPORTS a same-name pair outside this set - it
+# never merges one). A ticker not listed here is never touched by the
+# dedupe, however similar its company name looks to another row's.
+SHARE_CLASS_PAIRS = [
+    frozenset({"GOOG", "GOOGL"}),          # Alphabet Inc.
+    frozenset({"FOX", "FOXA"}),            # Fox Corporation
+    frozenset({"NWS", "NWSA"}),            # News Corporation
+    frozenset({"BRK-A", "BRK-B"}),         # Berkshire Hathaway
+]
+
 
 def _is_flagged_stale(row):
     """True if this raw scan row is the "not currently trading" ghost-
@@ -129,6 +152,68 @@ def _is_flagged_stale(row):
     Value Score/price/MOS are exactly the numbers this guard exists to
     distrust."""
     return row.get("Trading Status") == "stale"
+
+
+def _dedupe_share_classes(best_by_ticker, log=print):
+    """Top 100 Commit 3 (27 Sep 2026, owner-reported): collapses every
+    SHARE_CLASS_PAIRS pair BOTH of whose tickers are still in
+    `best_by_ticker` (mutated in place, called BEFORE pool = sorted(...)
+    [:POOL_SIZE] and therefore before any scoring) down to ONE -
+    whichever has the higher "avg_volume" (nightly_scan.py's own
+    "Average Volume", off the already-fetched .info - see that field's
+    own comment there). A None avg_volume never wins over a real
+    number; if BOTH sides are unknown, falls back to the higher
+    value_score (the same ordering the pool itself sorts by, so the
+    tiebreak is at least consistent with how the rest of selection
+    already ranks these two rows). Deleting the loser here is what
+    frees its slot for the next real candidate and keeps it out of the
+    AI batch entirely - nothing downstream ever sees it. Never touches
+    a ticker outside SHARE_CLASS_PAIRS. Sets "also_trades_as" on the
+    surviving row (the OTHER ticker it collapsed) so the page can show
+    it (top100_render.py's own row header, "also trades as {ticker}") -
+    absent/None on every row that isn't the winner of a real pair."""
+    for pair in SHARE_CLASS_PAIRS:
+        present = [t for t in pair if t in best_by_ticker]
+        if len(present) < 2:
+            continue
+
+        def _volume_then_value_key(t):
+            row = best_by_ticker[t]
+            vol = row.get("avg_volume")
+            return (vol if isinstance(vol, (int, float)) else -1, row.get("value_score") or 0)
+
+        present.sort(key=_volume_then_value_key, reverse=True)
+        winner, *losers = present
+        for loser in losers:
+            log(f"[top100] share-class dedupe: kept {winner} (avg vol "
+                f"{best_by_ticker[winner].get('avg_volume')!r}) over {loser} (avg vol "
+                f"{best_by_ticker[loser].get('avg_volume')!r}) - same company, per "
+                f"SHARE_CLASS_PAIRS")
+            del best_by_ticker[loser]
+        best_by_ticker[winner]["also_trades_as"] = losers[0]
+
+
+def _report_undocumented_same_name_duplicates(best_by_ticker, log=print):
+    """Top 100 Commit 3 (27 Sep 2026, owner-reported): after
+    _dedupe_share_classes() above has already collapsed every
+    DOCUMENTED pair down to one ticker, groups whatever tickers remain
+    by normalized company name - any group still holding more than one
+    ticker is a same-name duplicate SHARE_CLASS_PAIRS doesn't cover.
+    Report-only, exact-name match (deliberately never fuzzy - "never
+    merge on company-name similarity alone" applies doubly to even
+    DETECTING a merge candidate this way): logs once per group, never
+    removes or merges anything itself. Reviewed by hand; a genuine pair
+    gets added to SHARE_CLASS_PAIRS explicitly, never auto-added here."""
+    by_name = {}
+    for ticker, row in best_by_ticker.items():
+        name = (row.get("company_name") or "").strip().lower()
+        if not name:
+            continue
+        by_name.setdefault(name, []).append(ticker)
+    for name, tickers in by_name.items():
+        if len(tickers) > 1:
+            log(f"[top100] same company name, NOT in SHARE_CLASS_PAIRS - review and add "
+                f"by hand if genuine: {sorted(tickers)} all show company_name={name!r}")
 
 
 def select_top100_pool(log=print):
@@ -246,7 +331,15 @@ def select_top100_pool(log=print):
                     # company needs a fresh AI score. Still never fed
                     # into composite_score()/any sort/selection here.
                     "most_recent_quarter": row.get("Most Recent Quarter"),
+                    # Top 100 Commit 3 (27 Sep 2026, owner-reported): the
+                    # raw scan row's own "Average Volume" - dedupe input
+                    # only (_dedupe_share_classes() below), never fed
+                    # into composite_score()/any sort/selection here.
+                    "avg_volume": row.get("Average Volume"),
                 }
+
+    _dedupe_share_classes(best_by_ticker, log=log)
+    _report_undocumented_same_name_duplicates(best_by_ticker, log=log)
 
     pool = sorted(best_by_ticker.values(), key=lambda r: r["value_score"], reverse=True)[:POOL_SIZE]
     as_of = datetime.now(timezone.utc).strftime("%Y-%m-%d")
