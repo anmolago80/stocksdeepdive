@@ -12999,13 +12999,29 @@ def _render_scanner_market_pulse(universe_label, overnight, lang):
 
 def _render_screen_import_admin():
     """
-    Admin-only block (Comparison page, full-view/ADMIN_REFRESH_KEY gated -
-    same convention used elsewhere on this site for admin-only bits, e.g.
-    the Scanner page's Signal/Trade Setup/Opportunity Details columns) for
-    the TradingView screen CSV -> nightly scan queue workflow
-    (screen_import_store.py). Lives on Comparison (not Scanner, where it
-    originally shipped) so the owner can review an import's scanned
-    stocks right where they'd actually compare them:
+    Admin Dashboard section (page_admin_dashboard(), owner-only per that
+    page's own strict ai_gate.is_owner() check - see this function's own
+    call site) for the TradingView screen CSV -> nightly scan queue
+    workflow (screen_import_store.py).
+
+    History (owner-reported, 28 Sep 2026 - this block was showing up on
+    the Compare tab): originally shipped on the Stock Scanner page
+    (d5060533, 27 Aug 2026), then moved to Comparison the same day
+    (62117c87) "so the owner can review an import's scanned stocks right
+    where they'd actually compare them." Moved again here, to its own
+    section on the Admin Dashboard, since Comparison is a page real
+    (non-admin) visitors also use - Scanner and Comparison must show
+    nothing from this block, admin or not. Deliberately NOT self-gated
+    on _factual()/full_view_unlocked any more: page_admin_dashboard()'s
+    own gate is independent and STRICTER (ai_gate.is_owner() by email,
+    not the shared ADMIN_REFRESH_KEY a co-admin's full_view_unlocked can
+    also come from), and full_view_unlocked can be False for the actual
+    owner after an explicit "Exit full view" even while they're still on
+    this owner-only page - a _factual() self-gate here would silently
+    blank this section in exactly that case. This function has exactly
+    one caller; if that ever changes, gate the NEW call site the same
+    way page_admin_dashboard() does, rather than re-adding a _factual()
+    check here.
 
       1. An "Import screen CSV" expander: upload -> parse -> preview ->
          confirm.
@@ -13020,14 +13036,8 @@ def _render_screen_import_admin():
     so mixing every import's scanned tickers into one shared table (as
     an earlier version of this did via screen_import_store.all_scanned_rows())
     would defeat the point. See screen_import_store.scanned_rows_for_import().
-
-    Self-gates on _factual() so it's a no-op if this is ever called from
-    somewhere that forgot to check first.
     """
-    if _factual():
-        return
-
-    st.markdown("#### Imported screen (TradingView, admin-only)")
+    st.markdown("### Imported screen (TradingView)")
 
     with st.expander("Import screen CSV (admin)"):
         st.caption(
@@ -14493,9 +14503,10 @@ def page_comparison():
     _bump_page_view("comparison")
     _cmp_lang = st.session_state.get("lang", "en")
 
-    if not _factual():
-        _render_screen_import_admin()
-        st.divider()
+    # Owner-reported (28 Sep 2026): the "Imported screen (TradingView,
+    # admin-only)" block used to render here (see 62117c87). Moved to
+    # its own section on the Admin Dashboard so Comparison shows
+    # nothing from that workflow, admin or not.
 
     # Shareable URLs: /comparison?tickers=CSL.AX,BHP.AX runs the comparison
     # directly (blog posts can deep-link a specific matchup), and once
@@ -29613,6 +29624,15 @@ def page_admin_dashboard():
             "different page, so both buttons navigate there rather than "
             "duplicating that panel's logic."
         )
+
+    # --- IMPORTED SCREEN (TRADINGVIEW) --------------------------------
+    # Owner-reported (28 Sep 2026): this section used to render on the
+    # Compare tab - moved here, its own section, so Comparison (and
+    # Scanner, where it lived before that) show nothing from it. See
+    # _render_screen_import_admin()'s own docstring for the full history
+    # and why it no longer self-gates on _factual().
+    st.markdown("---")
+    _render_screen_import_admin()
 
     # --- NIGHTLY JOBS - LAST RUN --------------------------------------
     st.markdown("---")
