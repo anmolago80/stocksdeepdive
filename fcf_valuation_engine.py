@@ -61,7 +61,15 @@ import share_class_engine
 # Kept only as an absolute last-resort fallback if capm_engine itself throws
 # (e.g. both the live and fallback risk-free lookups somehow fail).
 DEFAULT_DISCOUNT_RATE = 0.09
-DEFAULT_PERPETUAL_RATE = 0.03
+# Owner-reported (28 Sep 2026): this used to be a hardcoded 0.03 (3%) -
+# a THIRD terminal-growth value, matching neither of capm_engine.
+# PERPETUAL_GROWTH_BY_CCY's own currency-keyed rates (AUD 2.5% / USD
+# 2.0%). Imported from capm_engine.DEFAULT_PERPETUAL_GROWTH instead, so
+# this rarely-hit exception-path fallback (capm_engine.resolve_
+# perpetual_rate() itself raising - see the `except Exception:` below)
+# stays consistent with the rest of the system rather than silently
+# drifting from it.
+DEFAULT_PERPETUAL_RATE = capm_engine.DEFAULT_PERPETUAL_GROWTH
 DEFAULT_GROWTH_YEARS = 10
 
 # The "assume an average" fallback growth, used only when neither historical

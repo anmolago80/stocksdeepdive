@@ -789,7 +789,11 @@ def _cp_wacc_buildup_assumptions_caption(assumptions):
 # "inputs under each bar" row so the two line up.
 _CP_VALUATION_METHOD_ORDER = [
     ("price", "Current Price", "#2dd4bf"),
-    ("pe_forward", "PE Forward", "#94a3b8"),
+    # Owner-reported (28 Sep 2026): relabelled - this is a Year-5 price
+    # target discounted back to today, not a same-day multiple-times-
+    # earnings snapshot (see auto_compounder_engine._pe_forward_method's
+    # own docstring for the fix).
+    ("pe_forward", "PE Forward (Y5, discounted)", "#94a3b8"),
     ("pe_trailing", "PE Trailing", "#8aa0b8"),
     ("dcf", "DCF (10y FCF)", "#34d399"),
     ("equity_10y", "Rational Compounder Method 10y", "#4cc38a"),

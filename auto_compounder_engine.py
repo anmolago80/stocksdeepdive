@@ -3060,15 +3060,28 @@ def _equity_10y_method(bundle, g_earn):
     return value_per_share, g_eq, discount, g_eq_capped
 
 
-def _pe_forward_method(bundle, g_earn):
+def _pe_forward_method(bundle, g_earn, discount_rate):
     """Workbook's real pe_forward (Valuation!J = Forecast EPS(5y) x Actual
     P/E x fx): Forecast EPS(5y) = eps_ttm x (1+g_earn)^5 (net income
     compounded 5y / shares, i.e. trailing EPS grown at the DCF's own
     owner-earnings growth rate); Actual P/E = price / eps_ttm (today's
-    actual multiple, NOT an average). Returns
-    (value, forecast_eps_5y, actual_pe) or None if trailing EPS/price/
-    g_earn aren't available."""
-    if g_earn is None:
+    actual multiple, NOT an average).
+
+    Owner-reported bug fix (28 Sep 2026): forecast_eps_5y x actual_pe is
+    a YEAR-5 price estimate (what the stock might trade at in 5 years,
+    at today's multiple) - it was being shown as today's Intrinsic
+    Value with no discounting at all (e.g. a reported $429.88 "IV" for
+    a stock whose actual present value, discounted at its own 9.3% DCF
+    discount rate, is ~$276). Now discounted back 5 years at the SAME
+    discount_rate the DCF box (dcf_result["discount_rate"]) already
+    uses, so it's a genuine present value comparable to the other
+    methods on this chart, not a future price. Returns (value,
+    forecast_eps_5y, actual_pe, year5_price_undiscounted) - value is
+    None (method not offered) if trailing EPS/price/g_earn OR
+    discount_rate aren't all available; a year-5 estimate with no
+    discount rate to bring it back to today isn't a usable Intrinsic
+    Value, so it's withheld rather than shown undiscounted again."""
+    if g_earn is None or discount_rate is None or discount_rate <= -1:
         return None
     info = bundle.get("info") or {}
     trailing_eps, _ = _eps_ttm(bundle)
@@ -3077,7 +3090,9 @@ def _pe_forward_method(bundle, g_earn):
         return None
     forecast_eps_5y = trailing_eps * ((1 + g_earn) ** 5)
     actual_pe = price_now / trailing_eps
-    return forecast_eps_5y * actual_pe, forecast_eps_5y, actual_pe
+    year5_price = forecast_eps_5y * actual_pe
+    value = year5_price / ((1 + discount_rate) ** 5)
+    return value, forecast_eps_5y, actual_pe, year5_price
 
 
 def _build_fair_value(bundle, ticker, dcf_result):
@@ -3087,8 +3102,10 @@ def _build_fair_value(bundle, ticker, dcf_result):
     g_earn = dcf_result.get("growth")
     avg_pe = _avg_pe_3pt(bundle)
 
-    pe_forward_result = _safe(_pe_forward_method, bundle, g_earn)
-    pe_forward_value, forecast_eps_5y, actual_pe = pe_forward_result if pe_forward_result else (None, None, None)
+    pe_forward_result = _safe(_pe_forward_method, bundle, g_earn, dcf_result.get("discount_rate"))
+    pe_forward_value, forecast_eps_5y, actual_pe, pe_forward_year5_price = (
+        pe_forward_result if pe_forward_result else (None, None, None, None)
+    )
 
     pe_trailing_value = (trailing_eps * avg_pe) if (trailing_eps is not None and avg_pe is not None) else None
     dcf_value = dcf_result.get("value")
@@ -3115,6 +3132,8 @@ def _build_fair_value(bundle, ticker, dcf_result):
         valuation_inputs["pe_forward"] = [
             {"label": "Forecast EPS (5y)", "value": forecast_eps_5y, "format": "cur"},
             {"label": "Actual P/E", "value": actual_pe, "format": "x"},
+            {"label": "Year 5 Price (undiscounted)", "value": pe_forward_year5_price, "format": "cur"},
+            {"label": "Discount Rate (this calc)", "value": dcf_result.get("discount_rate"), "format": "pct"},
         ]
     if "pe_trailing" in valuation_methods:
         valuation_inputs["pe_trailing"] = [
@@ -3122,8 +3141,16 @@ def _build_fair_value(bundle, ticker, dcf_result):
             {"label": "Average P/E", "value": avg_pe, "format": "x"},
         ]
     if "dcf" in valuation_methods:
+        # Owner-reported (28 Sep 2026): the Perpetual Rate is resolved
+        # from the stock's OWN currency (capm_engine.PERPETUAL_GROWTH_
+        # BY_CCY - AUD 2.5% / USD 2.0%), so a bare "2.0%" invited the
+        # question "does this match the 2.5% used elsewhere?" - it's
+        # not supposed to for a USD stock. Naming the currency inline
+        # answers that on sight instead of requiring a code dig.
+        _dcf_ccy = (info.get("currency") or "").upper()
+        _perp_label = f"Perpetual Rate ({_dcf_ccy})" if _dcf_ccy else "Perpetual Rate"
         valuation_inputs["dcf"] = [
-            {"label": "Perpetual Rate", "value": dcf_result.get("perpetual_rate"), "format": "pct"},
+            {"label": _perp_label, "value": dcf_result.get("perpetual_rate"), "format": "pct"},
             {"label": "Discount Rate", "value": dcf_result.get("discount_rate"), "format": "pct"},
             {"label": "Base Case Growth", "value": dcf_result.get("growth"), "format": "pct"},
         ]
