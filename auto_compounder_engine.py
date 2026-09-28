@@ -124,7 +124,57 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # the perpetual rate itself - see fcf_valuation_engine.growth_end_rate_
 # for()/dcf_intrinsic_value()'s stage-1 loop. Terminal value still uses
 # the perpetual rate, unchanged.
-ENGINE_VERSION = 43
+# 43->44 (cache-safety fix, 28 Sep 2026, owner-reported): the growth-
+# estimate-fetch resilience fix (4a1a000) changed fcf_valuation_engine.py/
+# capm_engine.py/resolver_engine.py WITHOUT bumping this constant - the
+# exact "easy to forget" failure this comment already warned about,
+# confirmed live: the Fair Value tab kept serving a pre-fix ADP result
+# from the disk cache for hours after that deploy. See VALUATION_SOURCE_
+# HASH just below for the structural fix (this bump is the immediate,
+# belt-and-suspenders one - the hash alone would already have caught
+# this specific incident, since it changes on ANY edit to those three
+# files, bump or no bump).
+ENGINE_VERSION = 44
+
+
+def _valuation_source_hash():
+    """Hash of the combined raw source of fcf_valuation_engine.py,
+    capm_engine.py and resolver_engine.py - the three modules the DCF's
+    actual math lives in. Included in _read_cache()'s own validity check
+    (VALUATION_SOURCE_HASH below, computed once at import time) so ANY
+    edit to the valuation formula invalidates every disk-cached Fair
+    Value section automatically, closing the "forgot to bump ENGINE_
+    VERSION" gap structurally instead of relying on remembering to bump
+    a constant by hand on every valuation-code change (see 43->44's own
+    comment above for the incident this fixes). Reads the files' raw
+    bytes directly (not inspect.getsource(), which depends on each
+    function's __code__ still pointing at a readable source line and
+    can raise for oddly-loaded modules) - the plainest, hardest-to-break
+    way to answer "did any of these three files change on disk".
+    Returns None (never raises) if the files can't be read for any
+    reason - _read_cache() then simply can't validate against it, same
+    fail-open posture as a missing/old cache entry elsewhere in this
+    module."""
+    _dir = os.path.dirname(os.path.abspath(__file__))
+    h = hashlib.sha1()
+    try:
+        for _fname in ("fcf_valuation_engine.py", "capm_engine.py", "resolver_engine.py"):
+            with open(os.path.join(_dir, _fname), "rb") as f:
+                h.update(f.read())
+        return h.hexdigest()[:12]
+    except OSError:
+        return None
+
+
+# Computed once at import time (a deploy always restarts the process, so
+# this reflects the source on disk for this process's entire lifetime -
+# no benefit to recomputing per cache read, only wasted file I/O on
+# every single page view). Public (no leading underscore) so other
+# modules with their own st.cache_data caches over valuation output -
+# see app.py's _featured_analysis()/portfolio_health_engine.fetch_
+# snapshot() - can key on the SAME hash rather than each computing (and
+# potentially drifting from) their own.
+VALUATION_SOURCE_HASH = _valuation_source_hash()
 
 
 # -----------------------------------
@@ -188,6 +238,16 @@ def _read_cache(ticker, overrides=()):
         # (bundle_version missing) are correctly treated as stale - fetching
         # them once to fill in the size is the honest choice.
         if meta.get("bundle_version") != fundamentals_data.BUNDLE_VERSION:
+            return None
+        # Cache-safety fix (28 Sep 2026, owner-reported): the structural
+        # fix for the SAME "forgot to bump ENGINE_VERSION" failure class
+        # as the bundle_version check just above, but for the valuation
+        # CODE itself rather than the fundamentals bundle shape - see
+        # VALUATION_SOURCE_HASH's own comment. A None hash (the source
+        # files couldn't be read for some reason) never matches a real
+        # cached hash, so this fails safe (treats the entry as stale)
+        # rather than silently skipping the check.
+        if meta.get("valuation_source_hash") != VALUATION_SOURCE_HASH:
             return None
         fetched_at = meta.get("generated_at")
         if not fetched_at:
@@ -3460,6 +3520,10 @@ def build_sections(ticker, force_refresh=False, discount_rate=None,
         # up on a warm cache, not just a cold one.
         "bundle_version": fundamentals_data.BUNDLE_VERSION,
         "price_at_build": _basics(bundle).get("price"),
+        # Cache-safety fix (28 Sep 2026, owner-reported) - see
+        # VALUATION_SOURCE_HASH's own comment and _read_cache()'s
+        # matching check.
+        "valuation_source_hash": VALUATION_SOURCE_HASH,
     }
 
     _write_cache(ticker, sections, overrides)

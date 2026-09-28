@@ -44,6 +44,7 @@ bond-yield fetch glitch can't produce a nonsense valuation.
 
 import csv
 import logging
+import time
 
 import requests
 import streamlit as st
@@ -518,7 +519,20 @@ def _log_growth_estimate_labels_once(df):
         pass
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+# Cache-safety fix (owner-reported, 28 Sep 2026): a "fetch_failed" result
+# must NOT sit at the same 30-minute TTL as a genuine "ok"/"no_coverage"
+# one - a transient failure (a rate limit, a still-recovering poisoned
+# crumb) should be retried again soon, not treated as settled for half
+# an hour. st.cache_data's ttl is fixed per DECORATED FUNCTION, not per
+# RETURN VALUE, so there is no way to give one outcome a shorter TTL
+# than another while still using that decorator - this uses a manual
+# per-ticker memo instead, same (result, fetched_at)-tuple/manual-expiry
+# pattern as fcf_valuation_engine.fx_rate()'s own _fx_cache.
+_growth_estimate_cache = {}
+_GROWTH_ESTIMATE_SUCCESS_TTL_SECONDS = 1800   # 30 min - "ok"/"no_coverage" (a settled data fact)
+_GROWTH_ESTIMATE_FAILURE_TTL_SECONDS = 300    # 5 min - "fetch_failed" (retry soon, not settled)
+
+
 def get_growth_estimates_5y(ticker):
     """
     Analyst consensus 'Next 5 Years (per annum)' EPS growth estimate for the
@@ -554,8 +568,8 @@ def get_growth_estimates_5y(ticker):
     this used to be a bare try/except with no retry, so ANY transient
     failure (or a process-wide poisoned crumb caused by a COMPLETELY
     different ticker's fetch elsewhere in the app) silently and
-    permanently (until this 30-minute cache entry expired) fell back to
-    "no coverage" - materially different from today's growth-rewrite
+    permanently (until this cache entry expired) fell back to "no
+    coverage" - materially different from today's growth-rewrite
     behaviour (0d7ee0b/cc06b75), where Yahoo's estimate, when available,
     is now the SOLE determinant of growth rather than one input blended
     with history. Reuses nightly_scan.py's own _yf_call_with_retry()/
@@ -563,11 +577,34 @@ def get_growth_estimates_5y(ticker):
     rate()'s own docstring for why a module-level import would be
     circular here) rather than a third copy of the same retry logic.
 
-    Cached the same way as the other per-ticker yfinance lookups in app.py
-    (30-minute TTL, keyed by ticker) - previously uncached, so every single
-    Deep Dive/Comparison view re-fetched this from Yahoo Finance even for a
-    ticker someone else had just looked at seconds earlier.
+    Cached per-ticker, with a two-tier TTL - see _growth_estimate_cache's
+    own comment just above for why a manual memo instead of the usual
+    @st.cache_data(ttl=1800) every other per-ticker feed in this app
+    uses: 30 minutes for a genuine "ok"/"no_coverage" result, only 5 for
+    "fetch_failed" (so a transient failure self-heals within one page
+    view or two, rather than pinning a stock to the history fallback for
+    the same half hour a real data fact would earn).
     """
+    cached = _growth_estimate_cache.get(ticker)
+    if cached is not None:
+        cached_value, cached_status, fetched_at = cached
+        ttl = (
+            _GROWTH_ESTIMATE_FAILURE_TTL_SECONDS if cached_status == "fetch_failed"
+            else _GROWTH_ESTIMATE_SUCCESS_TTL_SECONDS
+        )
+        if time.time() - fetched_at < ttl:
+            return cached_value, cached_status
+
+    value, status = _fetch_growth_estimates_5y_uncached(ticker)
+    _growth_estimate_cache[ticker] = (value, status, time.time())
+    return value, status
+
+
+def _fetch_growth_estimates_5y_uncached(ticker):
+    """The actual yfinance fetch + retry + parsing for get_growth_
+    estimates_5y() above - split out so that function's own docstring
+    stays the one place callers read, and so this can be called on
+    every cache miss without duplicating the memo logic inline."""
     import nightly_scan
 
     _last_exc = [None]

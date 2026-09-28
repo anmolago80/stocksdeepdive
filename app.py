@@ -3259,10 +3259,29 @@ def _render_results_day_card(ticker):
 
 
 @st.cache_data(ttl=21600, show_spinner=False)
-def _featured_analysis(ticker, day_key):
+def _featured_analysis(ticker, day_key, valuation_hash=None):
     """Attention-lite Deep Dive for the landing page's featured card -
     cached 6h. live_data/social off keeps it fast and quota-free; the card
-    only shows value/quality/psychology fields anyway."""
+    only shows value/quality/psychology fields anyway.
+
+    `valuation_hash` (cache-safety fix, owner-reported, 28 Sep 2026):
+    unused by the function body - its only job is to be part of
+    st.cache_data's own argument-based cache key, so a code change to
+    the DCF (auto_compounder_engine.VALUATION_SOURCE_HASH - see that
+    constant's own comment) gets a fresh cache entry instead of this
+    in-memory cache serving pre-change dd["dcf_*"] fields for up to 6h.
+    Deliberately NOT named with a leading underscore: st.cache_data
+    excludes underscore-prefixed parameters from its own cache key
+    (verified directly - a parameter named "_x" changing value between
+    calls does NOT bust the cache), so an underscore-prefixed version of
+    this parameter would silently do nothing at all. In practice a
+    redeploy already restarts the process and clears this in-memory
+    cache on its own (unlike auto_compounder_engine's own disk-persisted
+    section cache, the actual target of that fix) - this is defense-in-
+    depth for that assumption, not a fix for an observed bug on this
+    specific cache. Callers pass auto_compounder_engine.
+    VALUATION_SOURCE_HASH explicitly (not computed in here) so every
+    valuation-output cache in the app keys on the exact same hash."""
     try:
         dd = deep_dive_engine.analyze(
             ticker, get_price_history, get_ticker_info, get_cashflow_df,
@@ -8385,7 +8404,8 @@ def page_home():
             "tape": lambda: _tape_quotes(_day_key),
             "mood_au": lambda: get_country_mood("Australia"),
             "mood_us": lambda: get_country_mood("USA"),
-            "featured": lambda: _featured_analysis(_feat_ticker, _day_key),
+            "featured": lambda: _featured_analysis(
+                _feat_ticker, _day_key, auto_compounder_engine.VALUATION_SOURCE_HASH),
         },
         budget_seconds=10,
     )
@@ -10333,7 +10353,8 @@ def _render_dd_empty_state():
         _feat_tk = _FEATURED_ROTATION[
             (_today.timetuple().tm_yday + 3) % len(_FEATURED_ROTATION)
         ]
-        _feat = _featured_analysis(_feat_tk, _today.strftime("%Y-%m-%d"))
+        _feat = _featured_analysis(
+            _feat_tk, _today.strftime("%Y-%m-%d"), auto_compounder_engine.VALUATION_SOURCE_HASH)
     except Exception:
         _feat = None
 

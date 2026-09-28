@@ -56,6 +56,7 @@ from datetime import datetime, timedelta, timezone
 import streamlit as st
 import yfinance as yf
 
+import auto_compounder_engine
 import nightly_scan
 import portfolio_news_engine as pne
 
@@ -159,7 +160,8 @@ def _normalize_dividend_yield(v):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_snapshot(ticker, discount_rate=None, perpetual_rate=None, growth_rate=None, manual_fcf=None):
+def fetch_snapshot(ticker, discount_rate=None, perpetual_rate=None, growth_rate=None, manual_fcf=None,
+                    valuation_hash=auto_compounder_engine.VALUATION_SOURCE_HASH):
     """Live fundamentals + price snapshot for one ticker: whatever
     analyze_ticker_lite() doesn't already cover (growth/margin/ROE/
     debt/dividend/FCF), fetched straight from yfinance and cached for 30
@@ -173,7 +175,25 @@ def fetch_snapshot(ticker, discount_rate=None, perpetual_rate=None, growth_rate=
     page's for the same ticker instead of always being pure-auto.
     @st.cache_data keys on all arguments automatically, so passing
     different overrides for the same ticker naturally gets its own cache
-    entry rather than colliding with the pure-auto one."""
+    entry rather than colliding with the pure-auto one.
+
+    `valuation_hash` (cache-safety fix, owner-reported, 28 Sep 2026): no
+    caller passes this explicitly - its default is auto_compounder_
+    engine.VALUATION_SOURCE_HASH evaluated ONCE, at this module's own
+    import time (Python resolves a default argument value when the
+    `def` statement runs, not on each call), so it's effectively "the
+    valuation code's hash as of this process's boot". Deliberately not
+    underscore-prefixed: st.cache_data excludes underscore-prefixed
+    parameters from its own cache key (verified directly against
+    _featured_analysis()'s matching fix in app.py), so this has to be a
+    real, hashed parameter to do anything. Since this is an in-memory
+    st.cache_data cache, a redeploy already clears it outright regardless
+    of this parameter - this is defense-in-depth (and documents the
+    intent explicitly) rather than a fix for an observed bug on this
+    specific cache, same reasoning as _featured_analysis()'s own. Baking
+    the hash into the DEFAULT rather than requiring every caller to pass
+    it explicitly means fetch_snapshot()'s several existing call sites
+    (app.py, portfolio_watchdog_engine.py) need no changes at all."""
     try:
         lite = nightly_scan.analyze_ticker_lite(
             ticker,
