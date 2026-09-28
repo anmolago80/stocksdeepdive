@@ -3282,6 +3282,117 @@ def _pe_forward_method(bundle, g_earn, discount_rate):
     return value, forecast_eps_5y, actual_pe, year5_price
 
 
+def _dcf_valuation_and_inputs(info, price, canonical_dcf_result):
+    """The Fair Value tab's "dcf" row - value plus every input shown
+    alongside it (perpetual/discount/growth/tier/source/capex basis/
+    sanity flag) - factored out of _build_fair_value() (28 Sep 2026,
+    owner-directed, "always-live DCF row" fix) so build_sections()'s
+    cache-hit path (see its own comment) can recompute JUST this one row
+    with a FRESH canonical_dcf_result on every call, without touching
+    the other three valuation methods (PE Forward/PE Trailing/Equity
+    10y/Rational Compounder), which stay served from the 24h section
+    cache unchanged - the owner's explicit instruction: the DCF row must
+    always show the live resolver_engine.resolve_intrinsic_value() value
+    (same call the Deep Dive gauge makes), the other methods can stay
+    cached.
+
+    Pure - no I/O, no caching of its own. Returns (None, None) when
+    canonical_dcf_result has no usable value, so the caller omits the
+    row entirely - identical to the row simply never having existed,
+    matching this function's own prior inline behavior."""
+    canonical_dcf_result = canonical_dcf_result or {}
+    dcf_value = canonical_dcf_result.get("value")
+    if dcf_value is None:
+        return None, None
+
+    # Owner-reported (28 Sep 2026): the Perpetual Rate is resolved
+    # from the stock's OWN currency (capm_engine.PERPETUAL_GROWTH_
+    # BY_CCY - AUD 2.5% / USD 2.0%), so a bare "2.0%" invited the
+    # question "does this match the 2.5% used elsewhere?" - it's
+    # not supposed to for a USD stock. Naming the currency inline
+    # answers that on sight instead of requiring a code dig.
+    _dcf_ccy = (info.get("currency") or "").upper()
+    _perp_label = f"Perpetual Rate ({_dcf_ccy})" if _dcf_ccy else "Perpetual Rate"
+    # Growth-path option E (owner-directed follow-up to 0d7ee0b, 28 Sep
+    # 2026): growth is flat for years 1-5, then fades to a market-cap-
+    # tiered end rate (floored at the currency perpetual rate) by year
+    # 10 - see fcf_valuation_engine.dcf_intrinsic_value()'s own stage-1
+    # loop comment. Terminal value after year 10 still uses the
+    # currency perpetual rate, unchanged - that's why this uses
+    # growth_end_rate, not perpetual_rate. Shown as "X% for 5 yrs, then
+    # fades to Y% by yr 10" (format="raw" - a display-ready string, not
+    # a number _cp_format() should try to reformat) so this row doesn't
+    # read as "a flat X% for all 10 years", which it no longer is.
+    _dcf_growth = canonical_dcf_result.get("growth")
+    _dcf_end_rate = canonical_dcf_result.get("growth_end_rate")
+    if _dcf_growth is not None and _dcf_end_rate is not None:
+        _growth_display = f"{_dcf_growth * 100:.1f}% for 5 yrs, then fades to {_dcf_end_rate * 100:.1f}% by yr 10"
+        _growth_fmt = "raw"
+    else:
+        _growth_display = _dcf_growth
+        _growth_fmt = "pct"
+    # A6/growth-rewrite (28 Sep 2026, owner-directed): "one value
+    # everywhere" needs the SOURCE of each auto-resolved input on
+    # screen too, not just the number.
+    _growth_source_labels = {
+        "analyst": "Yahoo 5y analyst", "history": "historical avg",
+        # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
+        # positive): same REPORTED_GROWTH_CAP (8%) label as app.py's
+        # Deep Dive caption - see fcf_valuation_engine.py's own
+        # comment on that constant.
+        "info": "reported growth (capped 8%)", "manual": "manual override",
+        "default": "default assumption",
+    }
+    _growth_source_display = _growth_source_labels.get(canonical_dcf_result.get("growth_source"))
+    # Growth-estimate-fetch resilience fix (28 Sep 2026, owner-
+    # directed): "historical avg" alone reads as "Yahoo has no
+    # coverage for this stock" - only true when yahoo_estimate_
+    # status is "no_coverage"; a "fetch_failed" status means the
+    # fetch itself broke (even after retrying), so Yahoo's real
+    # coverage is unknown - see app.py's matching Deep Dive caption
+    # logic (same distinction, same reasoning) and capm_engine.
+    # get_growth_estimates_5y()'s own docstring.
+    if canonical_dcf_result.get("growth_source") == "history":
+        _yahoo_status = canonical_dcf_result.get("yahoo_estimate_status")
+        if _yahoo_status == "fetch_failed":
+            _growth_source_display = f"{_growth_source_display} (Yahoo fetch failed)"
+        elif _yahoo_status == "no_coverage":
+            _growth_source_display = f"{_growth_source_display} (no Yahoo estimate)"
+
+    dcf_inputs = [
+        {"label": _perp_label, "value": canonical_dcf_result.get("perpetual_rate"), "format": "pct"},
+        {
+            "label": "Discount Rate", "value": canonical_dcf_result.get("discount_rate"), "format": "pct",
+        },
+        {"label": "Base Case Growth", "value": _growth_display, "format": _growth_fmt},
+    ]
+    if canonical_dcf_result.get("discount_tier_label"):
+        dcf_inputs.append(
+            {"label": "Discount Tier", "value": canonical_dcf_result["discount_tier_label"], "format": "raw"})
+    if _growth_source_display:
+        dcf_inputs.append(
+            {"label": "Growth Source", "value": _growth_source_display, "format": "raw"})
+    # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
+    # positive): show it whenever the rising-capex guard actually
+    # fired - same non-default-only pattern as Discount Tier/Growth
+    # Source above. See fcf_valuation_engine.normalized_base_and_
+    # series()'s own docstring for the mechanism.
+    if canonical_dcf_result.get("capex_basis") == "midpoint (capex rising)":
+        dcf_inputs.append(
+            {"label": "Capex Basis", "value": "midpoint (capex rising)", "format": "raw"})
+    # Same fix: DISPLAY-ONLY sanity flag - reuses the existing
+    # flagged-line red-text convention (_cp_render_valuation_inputs
+    # above), never feeds Top 100 selection/scoring. See resolver_
+    # engine.dcf_looks_unreliable()'s own comment for why 3x is the
+    # bar.
+    if price is not None and resolver_engine.dcf_looks_unreliable(dcf_value, price):
+        dcf_inputs.append(
+            {"label": "Model Reliability", "value": "Model unreliable - check manually",
+             "format": "raw", "flagged": True})
+
+    return dcf_value, dcf_inputs
+
+
 def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
     """canonical_dcf_result (Change 3, owner-directed, 28 Sep 2026, "one
     value everywhere" - see _run_canonical_dcf()'s own docstring): the
@@ -3307,8 +3418,7 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
     )
 
     pe_trailing_value = (trailing_eps * avg_pe) if (trailing_eps is not None and avg_pe is not None) else None
-    canonical_dcf_result = canonical_dcf_result or {}
-    dcf_value = canonical_dcf_result.get("value")
+    dcf_value, dcf_inputs = _dcf_valuation_and_inputs(info, price, canonical_dcf_result)
 
     equity_10y_result = _safe(_equity_10y_method, bundle, g_earn)
     equity_10y_value, equity_growth, equity_discount, equity_growth_capped = (
@@ -3341,89 +3451,7 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
             {"label": "Average P/E", "value": avg_pe, "format": "x"},
         ]
     if "dcf" in valuation_methods:
-        # Owner-reported (28 Sep 2026): the Perpetual Rate is resolved
-        # from the stock's OWN currency (capm_engine.PERPETUAL_GROWTH_
-        # BY_CCY - AUD 2.5% / USD 2.0%), so a bare "2.0%" invited the
-        # question "does this match the 2.5% used elsewhere?" - it's
-        # not supposed to for a USD stock. Naming the currency inline
-        # answers that on sight instead of requiring a code dig.
-        _dcf_ccy = (info.get("currency") or "").upper()
-        _perp_label = f"Perpetual Rate ({_dcf_ccy})" if _dcf_ccy else "Perpetual Rate"
-        # Growth-path option E (owner-directed follow-up to 0d7ee0b, 28 Sep
-        # 2026): growth is flat for years 1-5, then fades to a market-cap-
-        # tiered end rate (floored at the currency perpetual rate) by year
-        # 10 - see fcf_valuation_engine.dcf_intrinsic_value()'s own stage-1
-        # loop comment. Terminal value after year 10 still uses the
-        # currency perpetual rate, unchanged - that's why this uses
-        # growth_end_rate, not perpetual_rate. Shown as "X% for 5 yrs, then
-        # fades to Y% by yr 10" (format="raw" - a display-ready string, not
-        # a number _cp_format() should try to reformat) so this row doesn't
-        # read as "a flat X% for all 10 years", which it no longer is.
-        _dcf_growth = canonical_dcf_result.get("growth")
-        _dcf_end_rate = canonical_dcf_result.get("growth_end_rate")
-        if _dcf_growth is not None and _dcf_end_rate is not None:
-            _growth_display = f"{_dcf_growth * 100:.1f}% for 5 yrs, then fades to {_dcf_end_rate * 100:.1f}% by yr 10"
-            _growth_fmt = "raw"
-        else:
-            _growth_display = _dcf_growth
-            _growth_fmt = "pct"
-        # A6/growth-rewrite (28 Sep 2026, owner-directed): "one value
-        # everywhere" needs the SOURCE of each auto-resolved input on
-        # screen too, not just the number.
-        _growth_source_labels = {
-            "analyst": "Yahoo 5y analyst", "history": "historical avg",
-            # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
-            # positive): same REPORTED_GROWTH_CAP (8%) label as app.py's
-            # Deep Dive caption - see fcf_valuation_engine.py's own
-            # comment on that constant.
-            "info": "reported growth (capped 8%)", "manual": "manual override",
-            "default": "default assumption",
-        }
-        _growth_source_display = _growth_source_labels.get(canonical_dcf_result.get("growth_source"))
-        # Growth-estimate-fetch resilience fix (28 Sep 2026, owner-
-        # directed): "historical avg" alone reads as "Yahoo has no
-        # coverage for this stock" - only true when yahoo_estimate_
-        # status is "no_coverage"; a "fetch_failed" status means the
-        # fetch itself broke (even after retrying), so Yahoo's real
-        # coverage is unknown - see app.py's matching Deep Dive caption
-        # logic (same distinction, same reasoning) and capm_engine.
-        # get_growth_estimates_5y()'s own docstring.
-        if canonical_dcf_result.get("growth_source") == "history":
-            _yahoo_status = canonical_dcf_result.get("yahoo_estimate_status")
-            if _yahoo_status == "fetch_failed":
-                _growth_source_display = f"{_growth_source_display} (Yahoo fetch failed)"
-            elif _yahoo_status == "no_coverage":
-                _growth_source_display = f"{_growth_source_display} (no Yahoo estimate)"
-        valuation_inputs["dcf"] = [
-            {"label": _perp_label, "value": canonical_dcf_result.get("perpetual_rate"), "format": "pct"},
-            {
-                "label": "Discount Rate", "value": canonical_dcf_result.get("discount_rate"), "format": "pct",
-            },
-            {"label": "Base Case Growth", "value": _growth_display, "format": _growth_fmt},
-        ]
-        if canonical_dcf_result.get("discount_tier_label"):
-            valuation_inputs["dcf"].append(
-                {"label": "Discount Tier", "value": canonical_dcf_result["discount_tier_label"], "format": "raw"})
-        if _growth_source_display:
-            valuation_inputs["dcf"].append(
-                {"label": "Growth Source", "value": _growth_source_display, "format": "raw"})
-        # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
-        # positive): show it whenever the rising-capex guard actually
-        # fired - same non-default-only pattern as Discount Tier/Growth
-        # Source above. See fcf_valuation_engine.normalized_base_and_
-        # series()'s own docstring for the mechanism.
-        if canonical_dcf_result.get("capex_basis") == "midpoint (capex rising)":
-            valuation_inputs["dcf"].append(
-                {"label": "Capex Basis", "value": "midpoint (capex rising)", "format": "raw"})
-        # Same fix: DISPLAY-ONLY sanity flag - reuses the existing
-        # flagged-line red-text convention (_cp_render_valuation_inputs
-        # above), never feeds Top 100 selection/scoring. See resolver_
-        # engine.dcf_looks_unreliable()'s own comment for why 3x is the
-        # bar.
-        if dcf_value is not None and price is not None and resolver_engine.dcf_looks_unreliable(dcf_value, price):
-            valuation_inputs["dcf"].append(
-                {"label": "Model Reliability", "value": "Model unreliable - check manually",
-                 "format": "raw", "flagged": True})
+        valuation_inputs["dcf"] = dcf_inputs
     if "equity_10y" in valuation_methods:
         # No "Average P/E" here - matches the hand-built workbook's own
         # equity_10y inputs (Equity Growth + Discount Rate only), and the
@@ -3451,6 +3479,56 @@ _SECTION_BUILDERS = [
     "Fundamentals", "Value vs Book", "Retained Earnings",
     "Earnings Trends", "Cost of Capital", "Fair Value",
 ]
+
+
+def _refresh_live_dcf_in_cached_sections(cached, ticker, discount_rate, perpetual_rate,
+                                          growth_rate, manual_fcf):
+    """Splices a FRESH canonical DCF value/inputs into an already-cached
+    `sections` dict's "Fair Value" section, in place - owner-directed
+    (28 Sep 2026): the Fair Value tab's DCF row must always show the
+    LIVE resolver_engine.resolve_intrinsic_value() value (the same call
+    the Deep Dive gauge makes on every render), never a value served
+    from this module's 24h section cache - while the OTHER three
+    valuation methods (PE Forward, PE Trailing, Rational Compounder/
+    Equity 10y) keep coming from the cache unchanged, per the owner's
+    own instruction that those can stay cached.
+
+    Only re-fetches the bundle (itself already 24h-cached with a fresh
+    live-price overlay on every call - see fundamentals_data.
+    get_bundle()'s own docstring) and re-runs _run_canonical_dcf() - it
+    does NOT rebuild the other five sections or the other three Fair
+    Value methods, so this stays cheap relative to a full build_
+    sections() rebuild, and it never writes back to the section cache
+    (the DCF row is meant to be recomputed on every read, not cached at
+    all - writing a "fresher" value back in would just reintroduce a
+    shorter-lived version of the same staleness bug).
+
+    Mutates and returns `cached`. Fails open: if the bundle fetch or the
+    DCF computation raises or comes back empty, `cached` is returned
+    completely unchanged (the previously-cached dcf row, stale but
+    present) rather than blanking the row out or letting an exception
+    take down an otherwise-working cached page render."""
+    bundle = _safe(fundamentals_data.get_bundle, ticker)
+    if not bundle:
+        return cached
+    canonical_dcf_result = _safe(
+        _run_canonical_dcf, bundle, ticker,
+        discount_rate=discount_rate, perpetual_rate=perpetual_rate,
+        growth_rate=growth_rate, manual_fcf=manual_fcf,
+    )
+    b = _basics(bundle)
+    dcf_value, dcf_inputs = _dcf_valuation_and_inputs(b["info"], b["price"], canonical_dcf_result)
+
+    fair_value = cached.setdefault("Fair Value", {"metrics": []})
+    ticker_methods = fair_value.setdefault("valuation_methods", {}).setdefault(ticker, {})
+    ticker_inputs = fair_value.setdefault("valuation_inputs", {}).setdefault(ticker, {})
+    if dcf_value is not None:
+        ticker_methods["dcf"] = dcf_value
+        ticker_inputs["dcf"] = dcf_inputs
+    else:
+        ticker_methods.pop("dcf", None)
+        ticker_inputs.pop("dcf", None)
+    return cached
 
 
 def build_sections(ticker, force_refresh=False, discount_rate=None,
@@ -3500,12 +3578,18 @@ def build_sections(ticker, force_refresh=False, discount_rate=None,
             if price_then:
                 price_now = fundamentals_data.get_live_price(ticker)
                 if price_now and abs(price_now - price_then) / price_then <= 0.03:
-                    return cached
+                    return _refresh_live_dcf_in_cached_sections(
+                        cached, ticker, discount_rate, perpetual_rate, growth_rate, manual_fcf)
                 # else: no live price available (fail open - serve the
                 # cache rather than block on a flaky quote), or it moved
                 # >3% - fall through to a real rebuild either way below.
             else:
-                return cached  # pre-fix cache entry with no baseline price recorded - nothing to compare against, serve as-is
+                # pre-fix cache entry with no baseline price recorded -
+                # nothing to compare against, serve the rest of it as-is,
+                # but the DCF row is still always refreshed live (see
+                # _refresh_live_dcf_in_cached_sections's own docstring).
+                return _refresh_live_dcf_in_cached_sections(
+                    cached, ticker, discount_rate, perpetual_rate, growth_rate, manual_fcf)
 
     bundle = fundamentals_data.get_bundle(ticker, force_refresh=force_refresh)
     if not bundle:

@@ -8,3 +8,5 @@ scheduler_state.json
 auto_cv_cache/
 moat_cache/
 admin_data_audit/
+scheduler_*.lock
+source_health/
