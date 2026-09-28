@@ -268,9 +268,39 @@ def _yf_call_with_retry(fn, log, ticker, label, attempts=_YF_RETRY_ATTEMPTS, rat
     return None
 
 
+def _growth_source_bucket(iv_meta):
+    """Buckets one ticker's resolved growth source for run_universe_
+    scan()'s own scan-level summary line (growth-estimate-fetch
+    resilience fix, owner-directed, 28 Sep 2026) - see that function's
+    own comment above where this is aggregated and logged.
+
+    "cap" takes priority over the raw source: when growth_governor is
+    "Cap", the market-cap ceiling is what actually determined the final
+    number, whether the pre-cap signal was Yahoo's estimate or history.
+    Otherwise "yahoo_5y" for a genuine analyst estimate, and "history"
+    splits on capm_engine.get_growth_estimates_5y()'s own yahoo_
+    estimate_status - "no_coverage" (Yahoo genuinely has nothing on this
+    name) vs "fetch_failed" (the fetch itself broke, even after
+    retrying - Yahoo's real coverage is unknown). Everything else
+    (info/default/manual/None) falls into "other"."""
+    governor = iv_meta.get("growth_governor")
+    source = iv_meta.get("growth_source")
+    if governor == "Cap":
+        return "cap"
+    if source == "analyst":
+        return "yahoo_5y"
+    if source == "history":
+        return (
+            "history_fetch_failed"
+            if iv_meta.get("yahoo_estimate_status") == "fetch_failed"
+            else "history_no_estimate"
+        )
+    return "other"
+
+
 def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
                          perpetual_rate=None, growth_rate=None, manual_fcf=None, log=print,
-                         rate_limited_out=None):
+                         rate_limited_out=None, growth_summary_out=None):
     """Core value/quality/psychology scoring for one ticker - the same
     resolvers and Long Score the site uses. Returns a plain dict, or None
     if no usable price data. Also used by digest_engine for the weekly
@@ -313,7 +343,17 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     own docstring. run_universe_scan()'s circuit breaker is the only
     caller that passes this; every other caller (digest_engine,
     portfolio_health_engine) leaves it None and is completely
-    unaffected."""
+    unaffected.
+
+    `growth_summary_out` (growth-estimate-fetch resilience fix, owner-
+    directed, 28 Sep 2026): an optional dict a caller passes in (e.g.
+    `{}`) to accumulate a per-scan count of which growth source each
+    ticker actually resolved to - see _growth_source_bucket()'s own
+    docstring for the bucket names. Mutated in place (same out-param
+    pattern as rate_limited_out above), never read. run_universe_scan()
+    is the only caller that passes this, to log one summary line at the
+    end of each universe's scan; every other caller leaves it None and
+    is completely unaffected."""
     tk = yf.Ticker(ticker)
     df = _yf_call_with_retry(lambda: tk.history(period="6mo"), log, ticker, "history",
                               rate_limited_out=rate_limited_out)
@@ -441,6 +481,9 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         discount_rate=discount_rate, perpetual_rate=perpetual_rate,
         growth_rate=growth_rate, manual_fcf=manual_fcf,
     )
+    if growth_summary_out is not None:
+        _bucket = _growth_source_bucket(iv_meta)
+        growth_summary_out[_bucket] = growth_summary_out.get(_bucket, 0) + 1
     stock_type, stock_type_src, _tdef = resolve_stock_type(ticker, info=info)
     if stock_type_src == "auto":
         low52 = info.get("fiftyTwoWeekLow", 0) or 0
@@ -776,6 +819,13 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     _session_started_at = datetime.now(timezone.utc).isoformat()
     rows = []
     skipped_no_price = 0
+    # Growth-estimate-fetch resilience fix (owner-directed, 28 Sep 2026):
+    # per-ticker growth-source counts for this run's own summary log line
+    # (see the log() call right after the per-ticker loop below). Not
+    # restored from a checkpoint on resume - covers only the tickers this
+    # particular run/resume attempted, not the full universe across a
+    # killed-and-resumed run; a diagnostic summary, not a persisted count.
+    _growth_summary = {}
     _checkpoint = scan_checkpoint_store.load(universe)
     if _checkpoint:
         if scan_checkpoint_store.is_resumable(_checkpoint, tickers, run_night, log=log):
@@ -833,7 +883,8 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
         try:
             _rate_limited_flag = [False]
             row = analyze_ticker_lite(t, attention_lite=attention_lite, log=log,
-                                       rate_limited_out=_rate_limited_flag)
+                                       rate_limited_out=_rate_limited_flag,
+                                       growth_summary_out=_growth_summary)
             if row:
                 _consecutive_rate_limited = 0
                 # Fix 9 item 2 (2026-09-01): hard backstop, on top of item
@@ -1058,6 +1109,20 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     log(f"[nightly_scan] {universe}: saved {len(rows)} rows, skipped {skipped_no_price} "
         f"(no price)" + (" (degraded)" if degraded else "") +
         f" - {len(tickers)} tickers in {_mins}m {_secs}s")
+    # Growth-estimate-fetch resilience fix (owner-directed, 28 Sep 2026):
+    # one summary line per scan of which growth source each ticker
+    # actually resolved to - see _growth_source_bucket()'s own docstring
+    # for the bucket definitions. "other" (info/default/manual/None) is
+    # only shown when non-zero, same convention as the "(degraded)" tag
+    # just above - most nights it will be 0 and stays out of the line.
+    if _growth_summary:
+        _gs_other = _growth_summary.get("other", 0)
+        log(f"[nightly_scan] {universe}: growth source - Yahoo 5y "
+            f"{_growth_summary.get('yahoo_5y', 0)}, historical avg (no estimate) "
+            f"{_growth_summary.get('history_no_estimate', 0)}, historical avg "
+            f"(fetch failed) {_growth_summary.get('history_fetch_failed', 0)}, "
+            f"cap {_growth_summary.get('cap', 0)}" +
+            (f", other {_gs_other}" if _gs_other else ""))
     try:
         score_history.record(rows)
         log(f"[nightly_scan] {universe}: recorded {len(rows)} rows to score_history")

@@ -74,6 +74,9 @@ def resolve_intrinsic_value(
         meta["growth_default"]   : bool  (DCF fell back to average growth)
         meta["value_default"]    : bool  (the intrinsic value rests on an
                                           assumption - render it red)
+        meta["yahoo_estimate_status"] : "ok"|"no_coverage"|"fetch_failed"|None
+                                          (only set on the auto growth path -
+                                          see capm_engine.get_growth_estimates_5y())
     """
     dcf_value, growth_used, dcf_meta = dcf_intrinsic_value(
         ticker,
@@ -102,6 +105,11 @@ def resolve_intrinsic_value(
             # own end rate (tiered, floored at perpetual_rate_used), same
             # pure-provenance pattern as every other *_used key above.
             "growth_end_rate_used": dcf_meta.get("growth_end_rate_used"),
+            # Growth-estimate-fetch resilience fix (28 Sep 2026) passthrough
+            # - "ok"/"no_coverage"/"fetch_failed"/None, same pure-provenance
+            # pattern as every other *_used/*_source key above - see
+            # capm_engine.get_growth_estimates_5y()'s own docstring.
+            "yahoo_estimate_status": dcf_meta.get("yahoo_estimate_status"),
             "growth_default": dcf_meta.get("growth_default", False),
             "value_default": dcf_meta.get("defaulted", False),
             # Task 10: pure passthrough of fcf_valuation_engine's own

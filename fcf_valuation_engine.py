@@ -667,6 +667,12 @@ def dcf_intrinsic_value(
         "growth_end_rate_used": float | None,  # the market-cap-tiered end rate the fade
                                        # targets, floored at perpetual_rate_used (a
                                        # stock never fades below its own terminal rate)
+        "yahoo_estimate_status": "ok" | "no_coverage" | "fetch_failed" | None,  # only
+                                       # set on the auto (growth_rate=None) path - see
+                                       # capm_engine.get_growth_estimates_5y()'s own
+                                       # docstring. None on the manual/Cap path (the
+                                       # Yahoo lookup is never attempted when a caller
+                                       # supplies growth_rate explicitly).
     }
     """
     meta = {
@@ -698,6 +704,7 @@ def dcf_intrinsic_value(
         "fx_rate_used": None,
         "fx_fallback": False,
         "growth_path": None,
+        "yahoo_estimate_status": None,
     }
 
     try:
@@ -837,10 +844,20 @@ def dcf_intrinsic_value(
             meta["growth_governor"] = "Cap" if capped else "Manual"
         else:
             analyst_growth = None
+            # Growth-estimate-fetch resilience fix (owner-directed, 28 Sep
+            # 2026): get_growth_estimates_5y() now returns (value, status)
+            # - status distinguishes "Yahoo genuinely has no +5y estimate
+            # for this name" (no_coverage) from "the fetch itself failed,
+            # even after retrying" (fetch_failed) - see that function's
+            # own docstring. Surfaced here (not just used to decide the
+            # fallback) so the app can show the real reason instead of
+            # always implying "no Yahoo coverage" when growth_source ends
+            # up "history".
             try:
-                analyst_growth = capm_engine.get_growth_estimates_5y(ticker)
+                analyst_growth, yahoo_estimate_status = capm_engine.get_growth_estimates_5y(ticker)
             except Exception:
-                analyst_growth = None
+                analyst_growth, yahoo_estimate_status = None, "fetch_failed"
+            meta["yahoo_estimate_status"] = yahoo_estimate_status
             growth_rate, gsrc, governor = estimate_growth(
                 info, fcf_series=fcf_series, analyst_growth=analyst_growth,
                 ceiling=growth_ceiling)

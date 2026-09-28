@@ -43,10 +43,20 @@ bond-yield fetch glitch can't produce a nonsense valuation.
 """
 
 import csv
+import logging
 
 import requests
 import streamlit as st
 import yfinance as yf
+
+# Growth-estimate-fetch resilience fix (owner-directed, 28 Sep 2026):
+# real WARNING-level visibility for the yfinance calls in this module
+# (previously bare `except: pass`, so a rate-limited or poisoned-crumb
+# fetch failure - see nightly_scan.py's own module comment above
+# _YF_RETRY_ATTEMPTS for the root cause - left no trace anywhere in the
+# logs). Named "sdd.growth", following this codebase's established
+# per-module logger convention (sdd.fetch/sdd.tools/sdd.scanner/...).
+_growth_logger = logging.getLogger("sdd.growth")
 
 DISCOUNT_CEIL = 0.15
 
@@ -156,12 +166,52 @@ def get_risk_free_rate(currency):
     effectively one live fetch per currency per 3 hours, no matter how many
     people are browsing Deep Dive/Comparison at once - and Streamlit's
     cache_data locks per cache key, so concurrent first-time requests for
-    the same currency wait on one fetch rather than all firing at once."""
+    the same currency wait on one fetch rather than all firing at once.
+
+    Growth-estimate-fetch resilience fix (owner-directed, 28 Sep 2026):
+    this fetch used to be a bare try/except with no retry and no crumb-
+    reset, so a poisoned yfinance crumb (see nightly_scan.py's own module
+    comment above _YF_RETRY_ATTEMPTS) silently pinned this at the fallback
+    constant for the rest of the process's life, with nothing logged.
+    Reuses nightly_scan.py's own _yf_call_with_retry()/_reset_poisoned_
+    yf_crumb() - the SAME helper the rest of this codebase's yfinance call
+    sites already use for exactly this failure mode - rather than a new,
+    third copy of the same retry/backoff/crumb-reset logic. Imported
+    lazily (inside the function, not at module level): nightly_scan.py
+    transitively imports capm_engine.py at ITS OWN module load time (via
+    auto_compounder_engine/fcf_valuation_engine/resolver_engine), so a
+    module-level `import nightly_scan` here would be circular; deferring
+    it to call time is safe because every module in that chain, including
+    this one, has already finished loading by the time any function here
+    is actually invoked."""
     ccy = (currency or "").upper()
     ticker = _RISK_FREE_TICKERS.get(ccy)
     if ticker:
+        import nightly_scan
+
+        _last_exc = [None]
+
+        def _fetch_hist():
+            try:
+                return yf.Ticker(ticker).history(period="5d")
+            except Exception as e:
+                _last_exc[0] = e
+                raise
+
+        hist = nightly_scan._yf_call_with_retry(
+            _fetch_hist, log=lambda msg: None, ticker=ticker, label="risk_free_rate",
+        )
+        # hist is None only when EVERY retry attempt raised (see get_
+        # growth_estimates_5y()'s own comment on this same pattern for
+        # why the None check has to come before reading _last_exc[0] -
+        # a later attempt succeeding after an earlier one raised must
+        # not be logged as a failure).
+        if hist is None and _last_exc[0] is not None:
+            _growth_logger.warning(
+                "get_risk_free_rate(%s): %s fetch failed after retries - %s: %s",
+                ccy, ticker, type(_last_exc[0]).__name__, _last_exc[0],
+            )
         try:
-            hist = yf.Ticker(ticker).history(period="5d")
             if hist is not None and not hist.empty:
                 raw = float(hist["Close"].iloc[-1])
                 rate = raw / _RISK_FREE_DIVISOR.get(ticker, 100.0)
@@ -442,26 +492,118 @@ def _normalize_yahoo_growth_estimate(v):
     return v / 100.0 if abs(v) >= 1.5 else v
 
 
+# Growth-estimate-fetch resilience fix (owner-directed, 28 Sep 2026): log
+# the growth_estimates DataFrame's own index labels ONCE per process (the
+# first ticker that returns a real DataFrame, whichever one that is), so
+# the actual "+5y"-shaped row name Yahoo returns is visible in the logs
+# instead of only inferred from the matching code below. A plain module-
+# level flag, not per-ticker - this is a one-time "does the +5y row
+# genuinely exist in the shape this code expects" sanity check, not a
+# per-fetch diagnostic (get_growth_estimates_5y's own WARNING on an
+# actual failure already covers that).
+_growth_estimate_labels_logged = False
+
+
+def _log_growth_estimate_labels_once(df):
+    global _growth_estimate_labels_logged
+    if _growth_estimate_labels_logged:
+        return
+    _growth_estimate_labels_logged = True
+    try:
+        _growth_logger.info(
+            "get_growth_estimates_5y: yfinance growth_estimates index labels (first "
+            "ticker seen this process): %s", [str(i) for i in df.index],
+        )
+    except Exception:
+        pass
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_growth_estimates_5y(ticker):
     """
     Analyst consensus 'Next 5 Years (per annum)' EPS growth estimate for the
     stock itself (not the industry-average column), from yfinance's
-    growth_estimates table. Returns a decimal rate (e.g. 0.12 for 12%,
-    unit-normalized by _normalize_yahoo_growth_estimate() above - see its
-    own docstring), or None if Yahoo has no analyst coverage for this name
-    or the table isn't shaped as expected - degrades silently, same as
-    every other optional feed in this app.
+    growth_estimates table.
+
+    Returns (value, status):
+        value  - a decimal rate (e.g. 0.12 for 12%, unit-normalized by
+                 _normalize_yahoo_growth_estimate() above - see its own
+                 docstring), or None.
+        status - "ok"           - value is a genuine Yahoo estimate.
+                 "no_coverage"  - the fetch itself succeeded, but Yahoo
+                                  has no +5y analyst estimate for this
+                                  name (or the table isn't shaped as
+                                  expected) - a real DATA fact, not a
+                                  failure.
+                 "fetch_failed" - the fetch raised (network error, rate
+                                  limit, a poisoned yfinance crumb - see
+                                  nightly_scan.py's own module comment
+                                  above _YF_RETRY_ATTEMPTS) even after
+                                  retrying - Yahoo's actual coverage for
+                                  this name is UNKNOWN, not "no
+                                  coverage". Callers that fall back to
+                                  historical growth on a None value
+                                  should show this distinction rather
+                                  than silently implying "Yahoo has
+                                  nothing on this stock" when the truth
+                                  is "we couldn't ask Yahoo" - see
+                                  fcf_valuation_engine.dcf_intrinsic_
+                                  value()'s meta["yahoo_estimate_status"].
+
+    Growth-estimate-fetch resilience fix (owner-directed, 28 Sep 2026):
+    this used to be a bare try/except with no retry, so ANY transient
+    failure (or a process-wide poisoned crumb caused by a COMPLETELY
+    different ticker's fetch elsewhere in the app) silently and
+    permanently (until this 30-minute cache entry expired) fell back to
+    "no coverage" - materially different from today's growth-rewrite
+    behaviour (0d7ee0b/cc06b75), where Yahoo's estimate, when available,
+    is now the SOLE determinant of growth rather than one input blended
+    with history. Reuses nightly_scan.py's own _yf_call_with_retry()/
+    _reset_poisoned_yf_crumb() (imported lazily - see get_risk_free_
+    rate()'s own docstring for why a module-level import would be
+    circular here) rather than a third copy of the same retry logic.
 
     Cached the same way as the other per-ticker yfinance lookups in app.py
     (30-minute TTL, keyed by ticker) - previously uncached, so every single
     Deep Dive/Comparison view re-fetched this from Yahoo Finance even for a
     ticker someone else had just looked at seconds earlier.
     """
+    import nightly_scan
+
+    _last_exc = [None]
+
+    def _fetch():
+        try:
+            return yf.Ticker(ticker).growth_estimates
+        except Exception as e:
+            _last_exc[0] = e
+            raise
+
+    df = nightly_scan._yf_call_with_retry(
+        _fetch, log=lambda msg: None, ticker=ticker, label="growth_estimates_5y",
+    )
+    # df is None either because EVERY retry attempt raised (a genuine
+    # fetch failure - _last_exc[0] is set, since _fetch() always records
+    # it before re-raising) or because some attempt cleanly returned None
+    # with no exception at all (_last_exc[0] stays None - a real "Yahoo
+    # returned nothing" case). A non-None df here means SOME attempt
+    # succeeded, even if an EARLIER one raised (and left a stale
+    # _last_exc[0] behind) - that's a genuine "ok"/"no_coverage" case,
+    # not a failure, so this checks df first rather than _last_exc[0].
+    if df is None:
+        if _last_exc[0] is not None:
+            _growth_logger.warning(
+                "get_growth_estimates_5y(%s): fetch failed after retries - %s: %s",
+                ticker, type(_last_exc[0]).__name__, _last_exc[0],
+            )
+            return None, "fetch_failed"
+        return None, "no_coverage"
+    if getattr(df, "empty", True):
+        return None, "no_coverage"
+
+    _log_growth_estimate_labels_once(df)
+
     try:
-        df = yf.Ticker(ticker).growth_estimates
-        if df is None or getattr(df, "empty", True):
-            return None
         for label in [str(i) for i in df.index]:
             key = label.lower().replace(" ", "")
             if "5year" in key or key in ("+5y", "5y"):
@@ -470,8 +612,8 @@ def get_growth_estimates_5y(ticker):
                     if col in row.index:
                         v = row[col]
                         if v is not None and v == v:   # not NaN
-                            return _normalize_yahoo_growth_estimate(float(v))
+                            return _normalize_yahoo_growth_estimate(float(v)), "ok"
                 break
     except Exception:
         pass
-    return None
+    return None, "no_coverage"

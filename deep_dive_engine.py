@@ -439,6 +439,13 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
             round(iv_meta.get("growth_end_rate_used") * 100, 1)
             if iv_meta.get("growth_end_rate_used") is not None else None
         ),
+        # Growth-estimate-fetch resilience fix (28 Sep 2026, owner-
+        # directed): "ok"/"no_coverage"/"fetch_failed"/None - lets app.py
+        # distinguish "Yahoo genuinely has no 5y estimate for this stock"
+        # from "we couldn't reach Yahoo" when growth_source ends up
+        # "history", instead of always implying the former - see capm_
+        # engine.get_growth_estimates_5y()'s own docstring.
+        "dcf_yahoo_estimate_status": iv_meta.get("yahoo_estimate_status"),
 
         "quality_score": quality_score,
         "quality_default": bool(quality_default),

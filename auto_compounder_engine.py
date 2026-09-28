@@ -1671,7 +1671,7 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         return {
             "value": None, "growth": None, "perpetual_rate": None, "discount_rate": None,
             "discount_tier_label": None, "growth_source": None, "growth_path": None,
-            "growth_end_rate": None,
+            "growth_end_rate": None, "yahoo_estimate_status": None,
             "flagged": True,
         }
     value, growth_used, meta = result
@@ -1692,6 +1692,11 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         # _build_fair_value()'s display line for why this replaced
         # perpetual_rate there.
         "growth_end_rate": meta.get("growth_end_rate_used"),
+        # Growth-estimate-fetch resilience fix (28 Sep 2026, owner-
+        # directed): "ok"/"no_coverage"/"fetch_failed"/None - see
+        # _build_fair_value()'s Growth Source display for why this
+        # replaced a blanket "historical avg" reading.
+        "yahoo_estimate_status": meta.get("yahoo_estimate_status"),
         "flagged": bool(meta.get("defaulted") or meta.get("growth_default")),
     }
 
@@ -1762,6 +1767,9 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         # Growth-path option E (28 Sep 2026, owner-directed follow-up): same
         # passthrough as _run_dcf() above - see that function's comment.
         "growth_end_rate": meta.get("growth_end_rate_used"),
+        # Growth-estimate-fetch resilience fix (28 Sep 2026, owner-
+        # directed): same passthrough as _run_dcf() above.
+        "yahoo_estimate_status": meta.get("yahoo_estimate_status"),
     }
 
 
@@ -3288,6 +3296,20 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
             "default": "default assumption",
         }
         _growth_source_display = _growth_source_labels.get(canonical_dcf_result.get("growth_source"))
+        # Growth-estimate-fetch resilience fix (28 Sep 2026, owner-
+        # directed): "historical avg" alone reads as "Yahoo has no
+        # coverage for this stock" - only true when yahoo_estimate_
+        # status is "no_coverage"; a "fetch_failed" status means the
+        # fetch itself broke (even after retrying), so Yahoo's real
+        # coverage is unknown - see app.py's matching Deep Dive caption
+        # logic (same distinction, same reasoning) and capm_engine.
+        # get_growth_estimates_5y()'s own docstring.
+        if canonical_dcf_result.get("growth_source") == "history":
+            _yahoo_status = canonical_dcf_result.get("yahoo_estimate_status")
+            if _yahoo_status == "fetch_failed":
+                _growth_source_display = f"{_growth_source_display} (Yahoo fetch failed)"
+            elif _yahoo_status == "no_coverage":
+                _growth_source_display = f"{_growth_source_display} (no Yahoo estimate)"
         valuation_inputs["dcf"] = [
             {"label": _perp_label, "value": canonical_dcf_result.get("perpetual_rate"), "format": "pct"},
             {

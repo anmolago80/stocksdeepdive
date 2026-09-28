@@ -10692,6 +10692,23 @@ def page_deep_dive():
             }
             _dd_tier = _dd.get("dcf_discount_tier")
             _dd_gsrc = _dd_growth_source_labels.get(_dd.get("dcf_growth_source"))
+            # Growth-estimate-fetch resilience fix (owner-directed, 28 Sep
+            # 2026): "historical avg" alone reads as "Yahoo has no
+            # coverage for this stock" - true when dcf_yahoo_estimate_
+            # status is "no_coverage", but NOT true when it's
+            # "fetch_failed" (the fetch itself broke, even after
+            # retrying - Yahoo's actual coverage is unknown). Only
+            # applies when history is actually what drove the number
+            # (growth_source == "history") - a manual override or the
+            # info/default fallback never touched the Yahoo lookup at
+            # all (see fcf_valuation_engine.dcf_intrinsic_value()'s own
+            # comment: yahoo_estimate_status is None on those paths).
+            if _dd.get("dcf_growth_source") == "history":
+                _dd_yahoo_status = _dd.get("dcf_yahoo_estimate_status")
+                if _dd_yahoo_status == "fetch_failed":
+                    _dd_gsrc = f"{_dd_gsrc} (Yahoo fetch failed)"
+                elif _dd_yahoo_status == "no_coverage":
+                    _dd_gsrc = f"{_dd_gsrc} (no Yahoo estimate)"
             if _dd_tier or _dd_gsrc:
                 _dd_tier_gsrc_bits = []
                 if _dd_tier:
