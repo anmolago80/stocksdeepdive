@@ -7,3 +7,4 @@ overnight_scans/
 scheduler_state.json
 auto_cv_cache/
 moat_cache/
+admin_data_audit/
