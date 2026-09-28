@@ -10669,18 +10669,21 @@ def page_deep_dive():
                     "outlier reporting year can't dominate the valuation."
                 )
 
-            # Growth-rewrite amendment (owner-directed, 28 Sep 2026): growth
-            # is flat for years 1-5, then fades to the perpetual rate over
-            # years 6-10 - see fcf_valuation_engine.dcf_intrinsic_value()'s
-            # own stage-1 loop comment. A6 (owner-approved live, same date):
-            # the discount tier and growth source are shown alongside it,
-            # since both are now market-cap-tiered/analyst-sourced auto
-            # figures a reader would otherwise have no way to see.
-            if _dd.get("dcf_growth") is not None and _dd.get("dcf_perpetual") is not None:
+            # Growth-path option E (owner-directed follow-up to 0d7ee0b,
+            # 28 Sep 2026): growth is flat for years 1-5, then fades to a
+            # market-cap-tiered end rate (floored at the currency perpetual
+            # rate) by year 10 - see fcf_valuation_engine.dcf_intrinsic_
+            # value()'s own stage-1 loop comment. Terminal value after year
+            # 10 still uses the currency perpetual rate, unchanged - that's
+            # why this caption uses dcf_growth_end_rate, not dcf_perpetual.
+            # A6 (owner-approved live, same date): the discount tier and
+            # growth source are shown alongside it, since both are now
+            # market-cap-tiered/analyst-sourced auto figures a reader would
+            # otherwise have no way to see.
+            if _dd.get("dcf_growth") is not None and _dd.get("dcf_growth_end_rate") is not None:
                 st.caption(
                     f"DCF growth: {_dd['dcf_growth']:.1f}% for 5 yrs, then fades to "
-                    f"{_dd['dcf_perpetual']:.1f}% over the following 5 (not held flat "
-                    "for the whole 10-year forecast)."
+                    f"{_dd['dcf_growth_end_rate']:.1f}% by yr 10."
                 )
             _dd_growth_source_labels = {
                 "analyst": "Yahoo 5y analyst", "history": "historical avg",

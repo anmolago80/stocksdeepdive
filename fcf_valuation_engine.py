@@ -144,6 +144,54 @@ def growth_ceiling_for(info, currency=None):
             return ceiling
     return GROWTH_CEIL
 
+
+# Growth-path option E (owner-directed, 28 Sep 2026, follow-up to
+# 0d7ee0b): the stage-1 fade (years 6-10) targets a market-cap-tiered
+# END RATE, not the currency perpetual rate - a mega-cap's growth
+# plausibly settles near the broad economy's own trend growth faster
+# than a micro-cap's, which can still be compounding off a much smaller
+# base. Same five tiers/thresholds as capm_engine.MARKET_CAP_DISCOUNT_
+# TIERS (mega/large/mid/small/micro, $200B/$50B/$10B/$2B/$0) - a
+# DELIBERATELY SEPARATE table, not imported from there, even though
+# today's values happen to match the discount tiers' own premiums one-
+# for-one: growth end rate and discount-rate premium are two different
+# knobs (one shapes the cash-flow growth path, the other the cost of
+# equity) that only coincide in value because the owner chose the same
+# numbers for both today - hard-linking them would mean a future change
+# to one silently move the other.
+MARKET_CAP_GROWTH_END_RATES = [
+    (200_000_000_000, 0.02),   # mega-cap
+    (50_000_000_000,  0.03),   # large-cap
+    (10_000_000_000,  0.04),   # mid-cap
+    (2_000_000_000,   0.05),   # small-cap
+    (0,                0.06),  # micro-cap
+]
+
+
+def growth_end_rate_for(info, currency=None):
+    """
+    Market-cap-tiered growth-path END RATE - the rate the stage-1 fade
+    (years 6-growth_years) targets, NOT the currency perpetual/terminal
+    rate the Gordon terminal value still uses (a separate input - see
+    dcf_intrinsic_value()'s own stage-1 loop comment). Falls back to
+    DEFAULT_PERPETUAL_RATE whenever market cap isn't available - same
+    fail-safe philosophy as growth_ceiling_for() above; a missing data
+    point should never block a valuation.
+    """
+    info = info or {}
+    market_cap = info.get("marketCap")
+    if not market_cap or market_cap <= 0:
+        return DEFAULT_PERPETUAL_RATE
+
+    ccy = (currency or info.get("currency") or "USD").upper()
+    market_cap_usd = market_cap * FX_TO_USD_APPROX.get(ccy, 1.0)
+
+    for threshold, end_rate in MARKET_CAP_GROWTH_END_RATES:
+        if market_cap_usd >= threshold:
+            return end_rate
+    return DEFAULT_PERPETUAL_RATE
+
+
 # Cash-flow-statement row labels vary across yfinance versions / listings -
 # AND across data sources: a bundle built from EODHD instead of yfinance
 # returns the same rows under EODHD's own lower-camelCase JSON keys
@@ -608,12 +656,17 @@ def dcf_intrinsic_value(
         "fx_converted":   str | None,  # DCF fix: "USD->AUD" etc. when financials/listing currency differ
         "fx_rate_used":   float | None,  # the rate actually applied
         "fx_fallback":    bool,   # True if fx_rate() had to use the static fallback table
-        "growth_path":    list[float] | None,  # growth-rewrite (28 Sep 2026, owner-approved):
-                                       # the growth_years yearly rates actually used in
-                                       # stage 1 - flat at growth_rate for years 1-5,
-                                       # fading linearly to perpetual_rate over years
-                                       # 6-growth_years - see the stage-1 loop's own
-                                       # comment below.
+        "growth_path":    list[float] | None,  # growth-path option E (28 Sep 2026, owner-
+                                       # approved): the growth_years yearly rates
+                                       # actually used in stage 1 - flat at growth_rate
+                                       # for years 1-5, fading linearly to
+                                       # growth_end_rate_used over years 6-growth_years
+                                       # (never above growth_rate - flat throughout if
+                                       # growth_rate is already <= the end rate) - see
+                                       # the stage-1 loop's own comment below.
+        "growth_end_rate_used": float | None,  # the market-cap-tiered end rate the fade
+                                       # targets, floored at perpetual_rate_used (a
+                                       # stock never fades below its own terminal rate)
     }
     """
     meta = {
@@ -628,6 +681,7 @@ def dcf_intrinsic_value(
         "defaulted": False,
         "discount_rate_used": None,
         "perpetual_rate_used": None,
+        "growth_end_rate_used": None,
         # Task 10: set only when normalized_base_and_series() swapped the
         # latest reporting year's base for the 3-year median because it was
         # an outlier (see FCF_OUTLIER_THRESHOLD) - never set for a manual
@@ -807,31 +861,50 @@ def dcf_intrinsic_value(
         meta["fcf_per_share_used"] = round(fcf_per_share, 4)
 
         # Stage 1: discount each year's grown cash flow back to today.
-        # Growth-rewrite amendment (owner-directed, 28 Sep 2026): three
-        # sub-stages, not one flat rate for the whole horizon:
+        # Growth-path option E (owner-directed, 28 Sep 2026 follow-up to
+        # the same-day amendment this replaces): three sub-stages, not
+        # one flat rate for the whole horizon:
         #   years 1-5:  flat at growth_rate (g1, as chosen above)
-        #   years 6-N:  fade linearly from g1 down to perpetual_rate,
-        #               reaching perpetual_rate exactly in year N
-        #               (growth_years, normally 10):
-        #                   g_t = g1 - (g1 - perpetual_rate) * (t-5) / (N-5)
+        #   years 6-N:  fade linearly from g1 down to end_rate, reaching
+        #               end_rate exactly in year N (growth_years,
+        #               normally 10):
+        #                   g_t = g1 - (g1 - end_rate) * (t-5) / (N-5)
+        # end_rate is the market-cap-tiered growth end rate (growth_end_
+        # rate_for() above) - NOT perpetual_rate, which is currency-
+        # based and stays the Gordon terminal-value input just below,
+        # unchanged - floored at perpetual_rate itself (max(tier end
+        # rate, perpetual_rate)) so a stock never fades BELOW its own
+        # terminal rate (e.g. an AUD mega-cap tier end of 2% would sit
+        # below AUD's own 2.5% perpetual rate - floored up to 2.5%
+        # instead, so the path never implies negative growth relative to
+        # the terminal assumption it's about to hand off to).
+        #
         # A company growing at, say, 10% today plausibly still grows near
         # 10% for the next several years, but not flat all the way to the
         # terminal-value boundary - fading only the back half is the
         # owner's own explicit design (replacing both the pre-28-Sep-2026
-        # flat-10-years model AND the since-reverted single-stage fade
-        # from every year 1). growth_years <= 5 has no fade stage at all
-        # (every year is in the flat window) - handled by the same
-        # divide-by-(growth_years-5) guard as growth_years<=1 elsewhere in
-        # this codebase. meta["growth_path"] carries all growth_years
-        # yearly rates actually used.
+        # flat-10-years model AND the since-reverted single-stage fades
+        # this repo has already tried, first to perpetual_rate from year
+        # 1, then to perpetual_rate from year 6). If g1 is already AT or
+        # BELOW end_rate, the fade never applies at all - flat g1 for
+        # every year, never fading upward. growth_years <= 5 also has no
+        # fade stage (every year is in the flat window) - same divide-
+        # by-(growth_years-5) guard as growth_years<=1 elsewhere in this
+        # codebase. meta["growth_path"] carries all growth_years yearly
+        # rates actually used; meta["growth_end_rate_used"] is the
+        # (floored) end_rate itself, for display.
+        end_rate = max(growth_end_rate_for(info, currency), perpetual_rate)
+        meta["growth_end_rate_used"] = round(end_rate, 4)
+        fade = growth_rate > end_rate
+
         intrinsic = 0.0
         cash_flow = fcf_per_share
         growth_path = []
         for year in range(1, growth_years + 1):
-            if year <= 5 or growth_years <= 5:
+            if year <= 5 or growth_years <= 5 or not fade:
                 g_t = growth_rate
             else:
-                g_t = growth_rate - (growth_rate - perpetual_rate) * (year - 5) / (growth_years - 5)
+                g_t = growth_rate - (growth_rate - end_rate) * (year - 5) / (growth_years - 5)
             growth_path.append(round(g_t, 4))
             cash_flow = cash_flow * (1 + g_t)
             intrinsic += cash_flow / ((1 + discount_rate) ** year)

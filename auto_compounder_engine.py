@@ -112,7 +112,19 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # version bump exists so that flipping the switch on later invalidates
 # this cache immediately rather than waiting up to 24h for a stale entry
 # to expire.
-ENGINE_VERSION = 42
+# 41->42 (A6/growth-rewrite, 28 Sep 2026, owner-directed): A6 market-cap
+# discount tiers went live (beta/CAPM removed), growth selection was
+# rewritten (Yahoo-alone, new history formula), and the Fair Value tab's
+# DCF row switched to the SAME canonical resolver_engine.resolve_
+# intrinsic_value() value Deep Dive/Scanner/Top 100 use - see fcf_
+# valuation_engine.py and resolver_engine.py for the formulas themselves.
+# 42->43 (growth-path option E, 28 Sep 2026, owner-directed follow-up):
+# years 6-10 of the growth path now fade toward a market-cap-tiered END
+# RATE (floored at the currency perpetual rate via max()), not straight to
+# the perpetual rate itself - see fcf_valuation_engine.growth_end_rate_
+# for()/dcf_intrinsic_value()'s stage-1 loop. Terminal value still uses
+# the perpetual rate, unchanged.
+ENGINE_VERSION = 43
 
 
 # -----------------------------------
@@ -1659,6 +1671,7 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         return {
             "value": None, "growth": None, "perpetual_rate": None, "discount_rate": None,
             "discount_tier_label": None, "growth_source": None, "growth_path": None,
+            "growth_end_rate": None,
             "flagged": True,
         }
     value, growth_used, meta = result
@@ -1674,6 +1687,11 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         "discount_tier_label": meta.get("discount_tier_label"),
         "growth_source": meta.get("growth_source"),
         "growth_path": meta.get("growth_path"),
+        # Growth-path option E (28 Sep 2026, owner-directed follow-up): the
+        # fade's own end rate (tiered, floored at perpetual_rate) - see
+        # _build_fair_value()'s display line for why this replaced
+        # perpetual_rate there.
+        "growth_end_rate": meta.get("growth_end_rate_used"),
         "flagged": bool(meta.get("defaulted") or meta.get("growth_default")),
     }
 
@@ -1741,6 +1759,9 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         "discount_rate": meta.get("discount_rate_used"),
         "discount_tier_label": meta.get("discount_tier_label"),
         "growth_source": meta.get("growth_source"),
+        # Growth-path option E (28 Sep 2026, owner-directed follow-up): same
+        # passthrough as _run_dcf() above - see that function's comment.
+        "growth_end_rate": meta.get("growth_end_rate_used"),
     }
 
 
@@ -3240,17 +3261,20 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
         # answers that on sight instead of requiring a code dig.
         _dcf_ccy = (info.get("currency") or "").upper()
         _perp_label = f"Perpetual Rate ({_dcf_ccy})" if _dcf_ccy else "Perpetual Rate"
-        # Growth-rewrite amendment (owner-directed, 28 Sep 2026): growth is
-        # flat for years 1-5, then fades to the perpetual rate over years
-        # 6-10 - see fcf_valuation_engine.dcf_intrinsic_value()'s own
-        # stage-1 loop comment. Shown as "X% for 5 yrs, then fades to Y%"
-        # (format="raw" - a display-ready string, not a number _cp_
-        # format() should try to reformat) so this row doesn't read as "a
-        # flat X% for all 10 years", which it no longer is.
+        # Growth-path option E (owner-directed follow-up to 0d7ee0b, 28 Sep
+        # 2026): growth is flat for years 1-5, then fades to a market-cap-
+        # tiered end rate (floored at the currency perpetual rate) by year
+        # 10 - see fcf_valuation_engine.dcf_intrinsic_value()'s own stage-1
+        # loop comment. Terminal value after year 10 still uses the
+        # currency perpetual rate, unchanged - that's why this uses
+        # growth_end_rate, not perpetual_rate. Shown as "X% for 5 yrs, then
+        # fades to Y% by yr 10" (format="raw" - a display-ready string, not
+        # a number _cp_format() should try to reformat) so this row doesn't
+        # read as "a flat X% for all 10 years", which it no longer is.
         _dcf_growth = canonical_dcf_result.get("growth")
-        _dcf_perp = canonical_dcf_result.get("perpetual_rate")
-        if _dcf_growth is not None and _dcf_perp is not None:
-            _growth_display = f"{_dcf_growth * 100:.1f}% for 5 yrs, then fades to {_dcf_perp * 100:.1f}%"
+        _dcf_end_rate = canonical_dcf_result.get("growth_end_rate")
+        if _dcf_growth is not None and _dcf_end_rate is not None:
+            _growth_display = f"{_dcf_growth * 100:.1f}% for 5 yrs, then fades to {_dcf_end_rate * 100:.1f}% by yr 10"
             _growth_fmt = "raw"
         else:
             _growth_display = _dcf_growth

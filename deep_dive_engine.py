@@ -430,6 +430,15 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         # rendering for where these two land.
         "dcf_discount_tier": iv_meta.get("discount_tier_label"),
         "dcf_growth_source": iv_meta.get("growth_source"),
+        # Growth-path option E (28 Sep 2026, owner-directed follow-up to
+        # 0d7ee0b): the fade's own end rate (tiered, floored at the
+        # currency perpetual rate) - app.py's caption needs this instead
+        # of dcf_perpetual now that the fade target is no longer the
+        # terminal growth rate.
+        "dcf_growth_end_rate": (
+            round(iv_meta.get("growth_end_rate_used") * 100, 1)
+            if iv_meta.get("growth_end_rate_used") is not None else None
+        ),
 
         "quality_score": quality_score,
         "quality_default": bool(quality_default),

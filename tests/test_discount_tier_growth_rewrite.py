@@ -24,9 +24,24 @@ CHANGE 2 - growth: the 71f183b single-stage fade is reverted (git revert
     the year-10 cash flow as before. meta["growth_path"] carries all 10
     yearly rates.
 
+CHANGE 2, FOLLOW-UP (owner-directed, 28 Sep 2026, "option E" - supersedes
+the growth-PATH fade target above, everything else in CHANGE 2 unchanged):
+years 6-10 now fade toward a market-cap-tiered growth-path END RATE
+(fcf_valuation_engine.growth_end_rate_for(), mega 2%/large 3%/mid 4%/
+small 5%/micro 6% - a table DELIBERATELY SEPARATE from capm_engine's
+discount tiers, see that function's own comment), not straight to the
+currency perpetual rate. Floored at the perpetual rate itself
+(end_rate = max(tier_end_rate, perpetual_rate)) so a stock never fades
+below its own terminal rate (e.g. an AUD mega-cap ends at 2.5%, not 2%).
+If g1 <= end_rate, the path stays flat at g1 for all 10 years (never
+fades upward). Terminal value after year 10 is unchanged - still the
+currency perpetual rate. meta["growth_end_rate_used"] carries the
+(floored) end rate; meta["growth_path"] still carries all 10 yearly
+rates.
+
 CHANGE 3 - "one value everywhere": auto_compounder_engine.ENGINE_VERSION
-bumped (41 -> 42, invalidates every cached Fair Value result) and the
-Fair Value tab's "dcf" row now shows resolver_engine.
+bumped (41 -> 42 -> 43, invalidates every cached Fair Value result) and
+the Fair Value tab's "dcf" row now shows resolver_engine.
 resolve_intrinsic_value()'s OWN value/growth/discount (via the new
 _run_canonical_dcf()), not a second, separately-computed number - PE
 Forward/PE Trailing/Equity 10y are untouched, still driven by _run_dcf().
@@ -112,37 +127,81 @@ print(f"[yahoo_estimate_above_cap] Yahoo 25% analyst estimate against an 8% mega
 
 
 # ======================================================================
-# CHECK: growth PATH amendment - FCF/share 12.20, g1 10.3%, discount
-# 8.17%, perpetual 2.0% -> path [10.3 x5, 8.6, 7.0, 5.3, 3.7, 2.0],
-# IV ~ $322.7
+# CHECK: growth PATH option E (follow-up to the same-day amendment above,
+# owner-directed 28 Sep 2026) - FCF/share 12.20, g1 10.275%, discount
+# 8.17%, large tier (end 3%), perpetual 2.0% -> path
+# [10.27 x5, 8.82, 7.36, 5.91, 4.46, 3.00], IV ~ $329.16. marketCap must
+# be supplied (US$105B, same large-tier fixture as tier_placement_adp_
+# cprt_aos above) so growth_end_rate_for() can resolve the tier.
 # ======================================================================
 _iv, _g_used, _meta = fve.dcf_intrinsic_value(
-    "TEST", info={"currentPrice": 100.0, "currency": "USD"}, cashflow_df=None, currency="USD",
-    discount_rate=0.0817, perpetual_rate=0.02, growth_rate=0.103,
+    "TEST", info={"currentPrice": 100.0, "currency": "USD", "marketCap": 105_000_000_000},
+    cashflow_df=None, currency="USD",
+    discount_rate=0.0817, perpetual_rate=0.02, growth_rate=0.10275,
     manual_fcf=12.20, diluted_shares_override=1,
 )
-_expected_path = [0.103, 0.103, 0.103, 0.103, 0.103, 0.0864, 0.0698, 0.0532, 0.0366, 0.02]
+_expected_path = [0.1027, 0.1027, 0.1027, 0.1027, 0.1027, 0.0882, 0.0736, 0.0591, 0.0445, 0.03]
 _path = _meta["growth_path"]
 assert len(_path) == 10, _path
 for _i, (_got, _want) in enumerate(zip(_path, _expected_path)):
     assert abs(_got - _want) < 1e-3, (_i, _got, _want)
-assert _path[:5] == [0.103] * 5, _path  # flat for years 1-5
-assert _path[-1] == 0.02, _path  # year 10 == perpetual, exactly
+assert _path[:5] == [_path[0]] * 5, _path  # flat for years 1-5
+assert _path[-1] == 0.03, _path  # year 10 == the tiered end rate (3%), NOT perpetual (2%)
 assert all(_path[i] > _path[i + 1] for i in range(5, 9)), _path  # strictly fading years 6-10
-assert 315 < _iv < 330, _iv  # owner's own estimate: ~$322.7
-print(f"[growth_path_three_stage] path (%): {[round(p * 100, 1) for p in _path]} "
-      f"(owner's own expectation: [10.3 x5, 8.6, 7.0, 5.3, 3.7, 2.0]) - "
-      f"IV ${_iv:.2f} (owner's own expectation: ~$322.7) OK")
+assert abs(_meta["growth_end_rate_used"] - 0.03) < 1e-9, _meta["growth_end_rate_used"]
+assert abs(_meta["perpetual_rate_used"] - 0.02) < 1e-9, _meta["perpetual_rate_used"]  # terminal value unchanged
+assert 320 < _iv < 335, _iv  # owner's own estimate: ~$329.16
+print(f"[growth_path_option_e_large_tier] path (%): {[round(p * 100, 2) for p in _path]} "
+      f"(owner's own expectation: [10.27 x5, 8.82, 7.36, 5.91, 4.46, 3.00]) - "
+      f"IV ${_iv:.2f} (owner's own expectation: ~$329.16), fade target={_meta['growth_end_rate_used']:.2%} "
+      f"(large tier), terminal rate unchanged at {_meta['perpetual_rate_used']:.2%} OK")
+
+# g1 <= end_rate (micro tier, end=6%, g1=4%): keep g1 flat for all 10
+# years - never fade upward. marketCap supplied below $2B (micro tier).
+_iv_flat, _, _meta_flat = fve.dcf_intrinsic_value(
+    "TEST", info={"currentPrice": 100.0, "currency": "USD", "marketCap": 500_000_000},
+    cashflow_df=None, currency="USD",
+    discount_rate=0.0817, perpetual_rate=0.02, growth_rate=0.04,
+    manual_fcf=12.20, diluted_shares_override=1,
+)
+assert _meta_flat["growth_end_rate_used"] == 0.06, _meta_flat["growth_end_rate_used"]  # micro tier end rate
+assert _meta_flat["growth_path"] == [0.04] * 10, _meta_flat["growth_path"]
+print(f"[growth_path_option_e_g1_below_end_micro] micro tier end rate "
+      f"{_meta_flat['growth_end_rate_used']:.0%}, g1=4% is already below it - path stays flat "
+      f"{_meta_flat['growth_path']} for all 10 years, never fades upward OK")
+
+# Addition to option E (owner's OK message, 28 Sep 2026): end_rate =
+# max(tier_end_rate, perpetual_rate), so a stock never fades below its
+# own currency terminal rate. AUD mega-cap: growth_end_rate_for() alone
+# resolves to 2% (mega tier), but AUD's own perpetual rate is 2.5% - the
+# floor must lift the fade target to 2.5%, not let it end at 2%.
+_iv_aud, _, _meta_aud = fve.dcf_intrinsic_value(
+    "TEST", info={"currentPrice": 100.0, "currency": "AUD", "marketCap": 400_000_000_000},
+    cashflow_df=None, currency="AUD",
+    discount_rate=0.0817, growth_rate=0.08,
+    manual_fcf=12.20, diluted_shares_override=1,
+)
+_tier_end_alone = fve.growth_end_rate_for({"marketCap": 400_000_000_000, "currency": "AUD"}, "AUD")
+assert abs(_tier_end_alone - 0.02) < 1e-9, _tier_end_alone  # mega tier's OWN end rate, unfloored
+assert abs(_meta_aud["perpetual_rate_used"] - 0.025) < 1e-9, _meta_aud["perpetual_rate_used"]  # AUD terminal rate
+assert abs(_meta_aud["growth_end_rate_used"] - 0.025) < 1e-9, _meta_aud["growth_end_rate_used"]  # floored up to 2.5%, not 2%
+assert _meta_aud["growth_path"][-1] == 0.025, _meta_aud["growth_path"]
+print(f"[growth_path_option_e_aud_mega_floor] AUD mega-cap: growth_end_rate_for() alone = "
+      f"{_tier_end_alone:.1%} (mega tier), but max(tier_end_rate, perpetual_rate) floors it to "
+      f"{_meta_aud['growth_end_rate_used']:.1%} (AUD's own 2.5% terminal rate) - path ends at "
+      f"{_meta_aud['growth_path'][-1]:.1%}, not 2.0% OK")
 
 # growth_years <= 5: no fade stage exists at all (every year is in the
 # flat window) - the same defensive-edge-case precedent as growth_years
 # <= 1 elsewhere in this function.
 _iv_5y, _, _meta_5y = fve.dcf_intrinsic_value(
-    "TEST", info={"currentPrice": 100.0, "currency": "USD"}, cashflow_df=None, currency="USD",
-    discount_rate=0.0817, perpetual_rate=0.02, growth_rate=0.103,
+    "TEST", info={"currentPrice": 100.0, "currency": "USD", "marketCap": 105_000_000_000},
+    cashflow_df=None, currency="USD",
+    discount_rate=0.0817, perpetual_rate=0.02, growth_rate=0.10275,
     manual_fcf=12.20, diluted_shares_override=1, growth_years=5,
 )
-assert _meta_5y["growth_path"] == [0.103] * 5, _meta_5y["growth_path"]
+assert len(_meta_5y["growth_path"]) == 5, _meta_5y["growth_path"]
+assert all(abs(p - 0.10275) < 1e-3 for p in _meta_5y["growth_path"]), _meta_5y["growth_path"]
 print("[growth_years_five_no_fade_stage] growth_years=5 (no years left for a fade stage) - "
       f"growth_path is flat {_meta_5y['growth_path']} throughout, no crash OK")
 
@@ -197,9 +256,9 @@ print("[resolver_shared_by_nightly_and_deep_dive] both nightly_scan.py and deep_
 # Value result so the growth-path/discount-tier rewrite isn't served
 # stale from a pre-this-commit cache entry)
 # ======================================================================
-assert ace.ENGINE_VERSION == 42, ace.ENGINE_VERSION
+assert ace.ENGINE_VERSION == 43, ace.ENGINE_VERSION
 print(f"[engine_version_bumped] auto_compounder_engine.ENGINE_VERSION = {ace.ENGINE_VERSION} "
-      "(was 41) - every cached Fair Value section is now treated as stale OK")
+      "(was 42) - every cached Fair Value section is now treated as stale OK")
 
 
 # ======================================================================
@@ -214,7 +273,8 @@ _bundle = {
 }
 _dcf_result = {"value": 999.0, "growth": 0.15, "perpetual_rate": 0.02, "discount_rate": 0.09}
 _canonical_result = {"value": 42.0, "growth": 0.103, "perpetual_rate": 0.02, "discount_rate": 0.09,
-                      "discount_tier_label": "mid-cap (US$10B-50B)", "growth_source": "analyst"}
+                      "discount_tier_label": "mid-cap (US$10B-50B)", "growth_source": "analyst",
+                      "growth_end_rate": 0.04}
 _fv = ace._build_fair_value(_bundle, "TEST", _dcf_result, _canonical_result)
 _methods = _fv["valuation_methods"]["TEST"]
 # dcf value comes from canonical_result (42.0), NOT dcf_result (999.0).
@@ -226,7 +286,11 @@ assert abs(_methods["dcf"] - 42.0) < 1e-9, _methods["dcf"]
 # test_adp_fair_value_pe_forward_and_perpetual_rate.py's own fixtures.
 assert "pe_forward" in _methods or "pe_trailing" in _methods or "equity_10y" in _methods
 _dcf_inputs = {i["label"]: i["value"] for i in _fv["valuation_inputs"]["TEST"]["dcf"]}
-assert "10.3% for 5 yrs, then fades to 2.0%" in _dcf_inputs["Base Case Growth"], _dcf_inputs
+# Growth-path option E (28 Sep 2026 follow-up): the "Base Case Growth"
+# display now fades to the mid-cap tier's growth_end_rate (4.0%), NOT
+# perpetual_rate (2.0%) - deliberately different values in this fixture
+# so a silent fallback to perpetual_rate would fail loudly.
+assert "10.3% for 5 yrs, then fades to 4.0% by yr 10" in _dcf_inputs["Base Case Growth"], _dcf_inputs
 assert _dcf_inputs.get("Discount Tier") == "mid-cap (US$10B-50B)", _dcf_inputs
 assert _dcf_inputs.get("Growth Source") == "Yahoo 5y analyst", _dcf_inputs
 print("[fair_value_dcf_row_is_canonical] the 'dcf' row's value/growth/discount/tier/source all "

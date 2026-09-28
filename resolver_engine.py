@@ -98,6 +98,10 @@ def resolve_intrinsic_value(
             "perpetual_source": dcf_meta.get("perpetual_source"),
             "discount_rate_used": dcf_meta.get("discount_rate_used"),
             "perpetual_rate_used": dcf_meta.get("perpetual_rate_used"),
+            # Growth-path option E (28 Sep 2026) passthrough - the fade's
+            # own end rate (tiered, floored at perpetual_rate_used), same
+            # pure-provenance pattern as every other *_used key above.
+            "growth_end_rate_used": dcf_meta.get("growth_end_rate_used"),
             "growth_default": dcf_meta.get("growth_default", False),
             "value_default": dcf_meta.get("defaulted", False),
             # Task 10: pure passthrough of fcf_valuation_engine's own
