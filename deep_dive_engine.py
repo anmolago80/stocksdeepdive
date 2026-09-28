@@ -36,7 +36,10 @@ this mirror needs updating too - see the comment on _quality_breakdown().
 
 import pandas as pd
 
-from resolver_engine import resolve_quality_score, resolve_intrinsic_value, resolve_stock_type
+from resolver_engine import (
+    resolve_quality_score, resolve_intrinsic_value, resolve_stock_type,
+    dcf_looks_unreliable,
+)
 from ranking_engine import calculate_long_score, MOS_CLAMP, PSY_CLAMP, DISCOVERY_CAP
 from trends_engine import get_trend_score
 from news_engine import get_news_score, get_yahoo_news_score
@@ -446,6 +449,16 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         # "history", instead of always implying the former - see capm_
         # engine.get_growth_estimates_5y()'s own docstring.
         "dcf_yahoo_estimate_status": iv_meta.get("yahoo_estimate_status"),
+        # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
+        # positive): "average"|"midpoint (capex rising)"|None - pure
+        # passthrough, see fcf_valuation_engine.normalized_base_and_series()
+        # and resolver_engine.py's identical comment on this same key.
+        "dcf_capex_basis": iv_meta.get("capex_basis"),
+        # Same fix: DISPLAY-ONLY sanity flag - never feeds quality/scoring,
+        # only tells the page to show "Model unreliable - check manually"
+        # next to the Intrinsic Value figure. See resolver_engine.
+        # dcf_looks_unreliable()'s own comment for why 3x is the bar.
+        "dcf_unreliable": dcf_looks_unreliable(intrinsic_value, current_price),
 
         "quality_score": quality_score,
         "quality_default": bool(quality_default),

@@ -10690,6 +10690,22 @@ def page_deep_dive():
                     "outlier reporting year can't dominate the valuation."
                 )
 
+            # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
+            # positive): flag it when the latest year's capex was more than
+            # 1.5x the average, in which case the DCF subtracted the
+            # midpoint of (latest capex, average capex) from OCF instead of
+            # the average - see fcf_valuation_engine.normalized_base_and_
+            # series()'s own docstring. Only show something when this
+            # non-default path actually fired, same pattern as the
+            # dcf_base_normalized caption above.
+            if _dd.get("dcf_capex_basis") == "midpoint (capex rising)":
+                st.caption(
+                    "Note: the latest year's capex was more than 1.5x the "
+                    "average, so the DCF's base cash flow used the midpoint "
+                    "of latest and average capex instead of the average - a "
+                    "guard against understating capex during a spend ramp."
+                )
+
             # Growth-path option E (owner-directed follow-up to 0d7ee0b,
             # 28 Sep 2026): growth is flat for years 1-5, then fades to a
             # market-cap-tiered end rate (floored at the currency perpetual
@@ -10708,7 +10724,13 @@ def page_deep_dive():
                 )
             _dd_growth_source_labels = {
                 "analyst": "Yahoo 5y analyst", "history": "historical avg",
-                "info": "reported growth", "manual": "manual override",
+                # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
+                # positive): the "info" fallback (a single-period info.
+                # earningsGrowth/revenueGrowth figure) is now held to
+                # REPORTED_GROWTH_CAP (8%) regardless of market-cap tier -
+                # see fcf_valuation_engine.py's own comment on that
+                # constant. Label it here so the cap is visible, not silent.
+                "info": "reported growth (capped 8%)", "manual": "manual override",
                 "default": "default assumption",
             }
             _dd_tier = _dd.get("dcf_discount_tier")
@@ -10788,6 +10810,23 @@ def page_deep_dive():
                     st.caption(
                         f"Cash flows converted {_dd['dcf_fx_converted']} at {_fx_rate_txt}."
                     )
+
+        # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
+        # positive): DISPLAY-ONLY sanity flag when the DCF intrinsic value
+        # is more than 3x the current price - shown on both the factual and
+        # full views (unlike the provenance captions above, which are
+        # full-view only), since a reader relying on the simple view is the
+        # one most likely to take a wildly overstated value at face value.
+        # See resolver_engine.dcf_looks_unreliable()'s own comment - never
+        # feeds Top 100 selection/scoring, purely a screen warning.
+        if _dd.get("dcf_unreliable"):
+            st.markdown(
+                "<div style='font-size:13px;color:#fb7185;font-weight:600;"
+                "margin:2px 0 8px;'>&#9888; Model unreliable - check "
+                "manually (intrinsic value is more than 3x the current "
+                "price).</div>",
+                unsafe_allow_html=True,
+            )
 
         # --- Research cross-link (Task 5): when this ticker has hand-built
         # Rational Compounder coverage, point straight at it. st.switch_page
@@ -12546,9 +12585,23 @@ def _render_overnight_scan_table(universe_label, overnight, show_market_pulse=Fa
             + _td(_tk_cell)
             + _td(_badge_cell(_orow.get("Type", "-"), _TYPE_NEUTRAL))
             + _td(_price_cell(_orow.get("Price")))
-            + _td(_money_cell(_orow.get("Intrinsic Value"),
-                              ref=_orow.get("Price"),
-                              flag=bool(_orow.get("Intrinsic Default"))))
+            + _td(
+                _money_cell(_orow.get("Intrinsic Value"),
+                            ref=_orow.get("Price"),
+                            flag=bool(_orow.get("Intrinsic Default")))
+                # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO
+                # false positive): DISPLAY-ONLY sanity marker when the DCF
+                # intrinsic value is more than 3x the current price - see
+                # resolver_engine.dcf_looks_unreliable()'s own comment.
+                # Never affects Intrinsic Default/flag above, Top 100
+                # selection, or any scoring/sorting - purely appended text.
+                + (
+                    " <span title='Model unreliable - check manually "
+                    f"({_tk} intrinsic value is more than 3x price)' "
+                    "style='color:#fb7185;'>&#9888;</span>"
+                    if _orow.get("DCF Unreliable") else ""
+                )
+              )
             + _td(_bar_cell(_orow.get("MOS %"), 0, 25, "%",
                             flag=bool(_orow.get("Intrinsic Default"))), minw=90)
             + _td(_bar_cell(_orow.get("Long Score"),

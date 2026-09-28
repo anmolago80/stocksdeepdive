@@ -256,9 +256,10 @@ print("[resolver_shared_by_nightly_and_deep_dive] both nightly_scan.py and deep_
 # Value result so the growth-path/discount-tier rewrite isn't served
 # stale from a pre-this-commit cache entry)
 # ======================================================================
-assert ace.ENGINE_VERSION == 44, ace.ENGINE_VERSION
+assert ace.ENGINE_VERSION >= 44, ace.ENGINE_VERSION
 print(f"[engine_version_bumped] auto_compounder_engine.ENGINE_VERSION = {ace.ENGINE_VERSION} "
-      "(was 43) - every cached Fair Value section is now treated as stale OK")
+      "(was 43, >= 44 confirms this bump wasn't reverted by a later task) - every "
+      "cached Fair Value section from before this change is now treated as stale OK")
 
 
 # ======================================================================

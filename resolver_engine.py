@@ -126,6 +126,12 @@ def resolve_intrinsic_value(
             "fx_converted": dcf_meta.get("fx_converted"),
             "fx_rate_used": dcf_meta.get("fx_rate_used"),
             "fx_fallback": dcf_meta.get("fx_fallback", False),
+            # Outlier-guard fix (28 Sep 2026) passthrough - "average" or
+            # "midpoint (capex rising)", same pure-provenance pattern as
+            # every other *_used/*_basis key above - see
+            # fcf_valuation_engine.normalized_base_and_series()'s own
+            # docstring for the rising-capex guard this reports on.
+            "capex_basis": dcf_meta.get("capex_basis"),
         }
         return dcf_value, "dcf", growth_used, meta
 
@@ -224,6 +230,30 @@ def dcf_scenarios(ticker, quality_score, info=None, cashflow_df=None, currency=N
                  "value_per_share": base_value},
         "bull": _case(BULL_DISCOUNT_DELTA, BULL_GROWTH_DELTA, BULL_PERPETUAL_DELTA),
     }
+
+
+# --------------------------------------------------------------------------- #
+# DCF sanity flag (display only)
+# --------------------------------------------------------------------------- #
+# Owner-directed outlier guard (28 Sep 2026, TOYO false positive). A DCF that
+# lands more than 3x the current market price is far more likely to reflect
+# a bad/thin data input (see fcf_valuation_engine.py's REPORTED_GROWTH_CAP
+# and the rising-capex guard in normalized_base_and_series() - both aimed at
+# the same root causes) than a genuine 3x-undervalued stock. This is a
+# DISPLAY-ONLY sanity check - it must never feed Top 100 selection, scoring,
+# or ranking; callers only use it to show a warning next to the number.
+DCF_SANITY_MULTIPLE = 3.0
+
+
+def dcf_looks_unreliable(intrinsic_value, current_price):
+    """
+    True when a DCF intrinsic value is far enough above the current price
+    that the model output is more likely a bad-data artifact than a real
+    mispricing - display only, see DCF_SANITY_MULTIPLE's own comment.
+    """
+    if not intrinsic_value or not current_price or current_price <= 0:
+        return False
+    return intrinsic_value > DCF_SANITY_MULTIPLE * current_price
 
 
 def resolve_stock_type(ticker, info=None):

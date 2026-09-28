@@ -134,7 +134,20 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # belt-and-suspenders one - the hash alone would already have caught
 # this specific incident, since it changes on ANY edit to those three
 # files, bump or no bump).
-ENGINE_VERSION = 44
+# 44->45 (bad-data outlier guards, 28 Sep 2026, owner-directed, TOYO false
+# positive): three guards in fcf_valuation_engine.py/resolver_engine.py -
+# (1) REPORTED_GROWTH_CAP holds the "info" (single-period reported
+# earningsGrowth/revenueGrowth) growth fallback to 8% regardless of
+# market-cap tier; (2) normalized_base_and_series() subtracts the midpoint
+# of (latest capex, average capex) from latest OCF, instead of the
+# average, when latest capex is more than 1.5x average - recorded as
+# meta["capex_basis"]; (3) resolver_engine.dcf_looks_unreliable() is a
+# DISPLAY-ONLY sanity flag when intrinsic value exceeds 3x current price -
+# never feeds Top 100 selection/scoring. VALUATION_SOURCE_HASH already
+# invalidates the disk cache automatically (fcf_valuation_engine.py and
+# resolver_engine.py both changed), same belt-and-suspenders bump as
+# 43->44.
+ENGINE_VERSION = 45
 
 
 def _valuation_source_hash():
@@ -1731,7 +1744,7 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         return {
             "value": None, "growth": None, "perpetual_rate": None, "discount_rate": None,
             "discount_tier_label": None, "growth_source": None, "growth_path": None,
-            "growth_end_rate": None, "yahoo_estimate_status": None,
+            "growth_end_rate": None, "yahoo_estimate_status": None, "capex_basis": None,
             "flagged": True,
         }
     value, growth_used, meta = result
@@ -1757,6 +1770,10 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         # _build_fair_value()'s Growth Source display for why this
         # replaced a blanket "historical avg" reading.
         "yahoo_estimate_status": meta.get("yahoo_estimate_status"),
+        # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
+        # positive): "average"|"midpoint (capex rising)"|None - see
+        # _build_fair_value()'s own display of this key.
+        "capex_basis": meta.get("capex_basis"),
         "flagged": bool(meta.get("defaulted") or meta.get("growth_default")),
     }
 
@@ -1830,6 +1847,9 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         # Growth-estimate-fetch resilience fix (28 Sep 2026, owner-
         # directed): same passthrough as _run_dcf() above.
         "yahoo_estimate_status": meta.get("yahoo_estimate_status"),
+        # Outlier-guard fix (28 Sep 2026, owner-directed): same passthrough
+        # as _run_dcf() above - see _build_fair_value()'s own display.
+        "capex_basis": meta.get("capex_basis"),
     }
 
 
@@ -3352,7 +3372,11 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
         # screen too, not just the number.
         _growth_source_labels = {
             "analyst": "Yahoo 5y analyst", "history": "historical avg",
-            "info": "reported growth", "manual": "manual override",
+            # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
+            # positive): same REPORTED_GROWTH_CAP (8%) label as app.py's
+            # Deep Dive caption - see fcf_valuation_engine.py's own
+            # comment on that constant.
+            "info": "reported growth (capped 8%)", "manual": "manual override",
             "default": "default assumption",
         }
         _growth_source_display = _growth_source_labels.get(canonical_dcf_result.get("growth_source"))
@@ -3383,6 +3407,23 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
         if _growth_source_display:
             valuation_inputs["dcf"].append(
                 {"label": "Growth Source", "value": _growth_source_display, "format": "raw"})
+        # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
+        # positive): show it whenever the rising-capex guard actually
+        # fired - same non-default-only pattern as Discount Tier/Growth
+        # Source above. See fcf_valuation_engine.normalized_base_and_
+        # series()'s own docstring for the mechanism.
+        if canonical_dcf_result.get("capex_basis") == "midpoint (capex rising)":
+            valuation_inputs["dcf"].append(
+                {"label": "Capex Basis", "value": "midpoint (capex rising)", "format": "raw"})
+        # Same fix: DISPLAY-ONLY sanity flag - reuses the existing
+        # flagged-line red-text convention (_cp_render_valuation_inputs
+        # above), never feeds Top 100 selection/scoring. See resolver_
+        # engine.dcf_looks_unreliable()'s own comment for why 3x is the
+        # bar.
+        if dcf_value is not None and price is not None and resolver_engine.dcf_looks_unreliable(dcf_value, price):
+            valuation_inputs["dcf"].append(
+                {"label": "Model Reliability", "value": "Model unreliable - check manually",
+                 "format": "raw", "flagged": True})
     if "equity_10y" in valuation_methods:
         # No "Average P/E" here - matches the hand-built workbook's own
         # equity_10y inputs (Equity Growth + Discount Rate only), and the

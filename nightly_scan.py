@@ -60,6 +60,7 @@ from resolver_engine import (
     resolve_quality_score,
     resolve_intrinsic_value,
     resolve_stock_type,
+    dcf_looks_unreliable,
 )
 from trends_engine import get_trend_score
 from news_engine import get_news_score, get_yahoo_news_score
@@ -617,6 +618,13 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         "Quality Default": bool(quality_default),
         "Intrinsic Value": round(intrinsic, 2) if intrinsic > 0 else None,
         "Intrinsic Default": bool(iv_meta.get("value_default", False)),
+        # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
+        # positive): DISPLAY-ONLY sanity flag for the Scanner row - never
+        # read by calculate_long_score()/composite_score() or any
+        # ranking/selection logic, purely a screen warning next to the
+        # Intrinsic Value column. See resolver_engine.
+        # dcf_looks_unreliable()'s own comment.
+        "DCF Unreliable": dcf_looks_unreliable(intrinsic, current_price),
         "MOS %": round(mos, 1) if intrinsic > 0 else None,
         "Psychology": round(psychology, 1),
         "Discovery (lite)": round(discovery, 1),

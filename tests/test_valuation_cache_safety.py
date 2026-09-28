@@ -92,9 +92,9 @@ import capm_engine as ce
 # ======================================================================
 # CHECK: ENGINE_VERSION bumped for this incident (43 -> 44).
 # ======================================================================
-assert ace.ENGINE_VERSION == 44, ace.ENGINE_VERSION
+assert ace.ENGINE_VERSION >= 44, ace.ENGINE_VERSION
 print(f"[engine_version_bumped_44] auto_compounder_engine.ENGINE_VERSION = {ace.ENGINE_VERSION} "
-      "(was 43) OK")
+      "(was 43, >= 44 confirms this incident's bump wasn't reverted by a later task) OK")
 
 
 # ======================================================================

@@ -89,6 +89,20 @@ DEFAULT_GROWTH = 0.05
 GROWTH_FLOOR = 0.00
 GROWTH_CEIL = 0.20
 
+# Reported-growth cap (owner-directed, 28 Sep 2026, TOYO false positive -
+# see estimate_growth()'s own comment on the "info" fallback for the full
+# story). A single-period info["earningsGrowth"]/info["revenueGrowth"]
+# figure is the least trustworthy growth signal this module has - no
+# multi-year smoothing, no analyst consensus, easily distorted by a
+# one-off swing - so it's held to a tighter cap than the market-cap-tiered
+# ceiling every other source gets, regardless of tier. Applied as
+# min(REPORTED_GROWTH_CAP, tier_ceiling) - equals REPORTED_GROWTH_CAP
+# (8%) under every tier in MARKET_CAP_GROWTH_CEILINGS today, since 8% is
+# already that table's own tightest (mega-cap) value, but written as a
+# min() so a future tier tighter than 8% is still respected rather than
+# silently overridden.
+REPORTED_GROWTH_CAP = 0.08
+
 # Task 10: how far the latest year's capex-normalised OCF may deviate from
 # the median of the last up-to-3 years before it's treated as an outlier
 # reporting year and swapped for that median instead (see
@@ -318,10 +332,31 @@ def normalized_base_and_series(cashflow_df, info=None):
     below already bases itself on a 3-year median unconditionally, so it
     needed no separate outlier check.
 
-    Returns (base_fcf, fcf_series_recent_first, source, base_normalized)
-    where source is one of "ocf-normcapex" | "fcf-median" | "info" | "none",
-    and base_normalized is True only when the outlier swap above actually
-    fired (always False for every other source).
+    Rising-capex guard (owner-directed, 28 Sep 2026, TOYO false positive -
+    live symptoms: price $4.47, DCF $41.67, growth 20% from the "reported
+    growth" fallback, a micro-cap): averaging capex correctly smooths a
+    one-off spike in an OLDER year, but does the opposite when the
+    company's capex has genuinely been RISING - it pulls the normalised
+    base UP toward what the company used to spend, understating today's
+    real capex burden and overstating FCF (and the DCF built on it).
+    When the latest year's capex is more than 1.5x the average capex,
+    the BASE year alone uses the MIDPOINT of (latest capex, average
+    capex) instead of the plain average - a partial correction (still
+    smooths a little, unlike using latest capex raw) rather than a full
+    swing to "capex hasn't fallen since this program ramped up, it's
+    still elevated". The historical fcf_series used for the growth CAGR
+    is UNCHANGED (still averaged for every year, base year included) -
+    this only affects the single BASE value the DCF actually compounds
+    from. meta["capex_basis"] ("average" | "midpoint (capex rising)")
+    records which basis was actually used, for the app to disclose.
+
+    Returns (base_fcf, fcf_series_recent_first, source, base_normalized,
+    capex_basis) where source is one of "ocf-normcapex" | "fcf-median" |
+    "info" | "none", base_normalized is True only when the outlier swap
+    above actually fired (always False for every other source), and
+    capex_basis is "average" | "midpoint (capex rising)" | None (None
+    for every source other than "ocf-normcapex", which is the only one
+    with a per-year capex figure to compare against).
     """
     info = info or {}
 
@@ -332,8 +367,15 @@ def normalized_base_and_series(cashflow_df, info=None):
 
     if len(ocf) >= 2 and len(capex) >= 1:
         avg_capex = _mean(capex)                 # capex is negative in statements
-        series = [o + avg_capex for o in ocf]    # OCF - normalised capex
-        base = series[0]                         # latest OCF, normalised capex
+        series = [o + avg_capex for o in ocf]    # OCF - normalised capex (growth series - UNCHANGED)
+
+        latest_capex = capex[0]
+        capex_basis = "average"
+        base_capex = avg_capex
+        if avg_capex != 0 and abs(latest_capex) > 1.5 * abs(avg_capex):
+            base_capex = (latest_capex + avg_capex) / 2.0
+            capex_basis = "midpoint (capex rising)"
+        base = ocf[0] + base_capex                # latest OCF, base-year capex basis (may differ from series[0])
 
         base_normalized = False
         recent = series[:3]
@@ -343,7 +385,7 @@ def normalized_base_and_series(cashflow_df, info=None):
                 base = median
                 base_normalized = True
 
-        return base, series, "ocf-normcapex", base_normalized
+        return base, series, "ocf-normcapex", base_normalized, capex_basis
 
     # Fall back to the reported FCF line. Use the MEDIAN of the last few years
     # as the base so one outlier year doesn't dominate; keep the raw series for
@@ -352,13 +394,13 @@ def normalized_base_and_series(cashflow_df, info=None):
     if fcf:
         recent = sorted(fcf[:3])
         base = recent[len(recent) // 2]          # median of up to 3 latest
-        return base, fcf, "fcf-median", False
+        return base, fcf, "fcf-median", False, None
 
     info_fcf = info.get("freeCashflow", 0) or 0
     if info_fcf > 0:
-        return info_fcf, [], "info", False
+        return info_fcf, [], "info", False, None
 
-    return None, [], "none", False
+    return None, [], "none", False, None
 
 
 def growth_from_history(fcf_history, dates=None):
@@ -467,7 +509,9 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None):
         "Yahoo"   - the analyst estimate was used, and it wasn't capped.
         "History" - the historical FCF CAGR was used (Yahoo had no
                     coverage), and it wasn't capped.
-        "Info"    - fell back to reported earningsGrowth/revenueGrowth.
+        "Info"    - fell back to reported earningsGrowth/revenueGrowth,
+                    capped at REPORTED_GROWTH_CAP (8%) regardless of
+                    tier - see that constant's own comment.
         "Default" - fell back to DEFAULT_GROWTH (flagged red in the UI).
         "Cap"     - whichever signal would otherwise have been used was
                     ABOVE the ceiling for this company's market-cap tier, so
@@ -490,9 +534,10 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None):
     info = info or {}
     ceiling = GROWTH_CEIL if ceiling is None else ceiling
 
-    def _finalize(raw_rate, source, natural_governor):
-        governor = "Cap" if raw_rate > ceiling else natural_governor
-        return max(GROWTH_FLOOR, min(raw_rate, ceiling)), source, governor
+    def _finalize(raw_rate, source, natural_governor, cap=None):
+        _cap = ceiling if cap is None else cap
+        governor = "Cap" if raw_rate > _cap else natural_governor
+        return max(GROWTH_FLOOR, min(raw_rate, _cap)), source, governor
 
     if analyst_growth is not None:
         return _finalize(analyst_growth, "analyst", "Yahoo")
@@ -508,10 +553,20 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None):
     if clean:
         return _finalize(g, "history", "History")
 
+    # Reported-growth cap (owner-directed, 28 Sep 2026, TOYO false
+    # positive - live symptoms: price $4.47, DCF $41.67, growth 20% from
+    # this exact fallback, a micro-cap): a single-period info["earnings
+    # Growth"]/info["revenueGrowth"] figure used to be clamped only by
+    # the SAME market-cap-tier ceiling as every other source (up to 20%
+    # for a micro-cap) - the raw reported figure just rode that ceiling
+    # straight to a stage-1 growth rate 4x tighter sources like Yahoo's
+    # own analyst estimate could ever reach. See REPORTED_GROWTH_CAP's
+    # own comment for why min(REPORTED_GROWTH_CAP, ceiling) instead of a
+    # bare ceiling swap.
     for key in ("earningsGrowth", "revenueGrowth"):
         val = info.get(key)
         if val is not None:
-            return _finalize(val, "info", "Info")
+            return _finalize(val, "info", "Info", cap=min(REPORTED_GROWTH_CAP, ceiling))
 
     if g is not None and g >= 0:
         return _finalize(g, "history", "History")
@@ -673,6 +728,14 @@ def dcf_intrinsic_value(
                                        # docstring. None on the manual/Cap path (the
                                        # Yahoo lookup is never attempted when a caller
                                        # supplies growth_rate explicitly).
+        "capex_basis": "average" | "midpoint (capex rising)" | None,  # rising-
+                                       # capex guard (28 Sep 2026, owner-directed) -
+                                       # only set on the "ocf-normcapex" fcf_source
+                                       # path, see normalized_base_and_series()'s
+                                       # own docstring. None for every other
+                                       # fcf_source (manual/fcf-median/info/none),
+                                       # which have no per-year capex figure to
+                                       # compare against.
     }
     """
     meta = {
@@ -705,6 +768,7 @@ def dcf_intrinsic_value(
         "fx_fallback": False,
         "growth_path": None,
         "yahoo_estimate_status": None,
+        "capex_basis": None,
     }
 
     try:
@@ -725,7 +789,7 @@ def dcf_intrinsic_value(
         # 1) user-supplied manual override, else 2) a capex-NORMALISED base
         # (latest operating cash flow minus AVERAGE capex) so a one-off capex
         # spike doesn't collapse the valuation.
-        norm_base, fcf_series, base_src, base_normalized = normalized_base_and_series(
+        norm_base, fcf_series, base_src, base_normalized, capex_basis = normalized_base_and_series(
             cashflow_df, info=info
         )
 
@@ -735,6 +799,7 @@ def dcf_intrinsic_value(
         elif norm_base is not None and norm_base > 0:
             fcf = norm_base
             meta["fcf_source"] = base_src
+            meta["capex_basis"] = capex_basis
             if base_normalized:
                 meta["fcf_base_normalized"] = True
                 meta["fcf_base_raw"] = round(fcf_series[0], 2) if fcf_series else None
