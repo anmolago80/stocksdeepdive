@@ -76,6 +76,7 @@ import build_compounder_data
 import capm_engine
 import fcf_valuation_engine
 import fundamentals_data
+import resolver_engine
 import share_class_engine
 
 _CACHE_DIR_NAME = "auto_cv_sections"
@@ -111,7 +112,7 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # version bump exists so that flipping the switch on later invalidates
 # this cache immediately rather than waiting up to 24h for a stale entry
 # to expire.
-ENGINE_VERSION = 41
+ENGINE_VERSION = 42
 
 
 # -----------------------------------
@@ -1655,14 +1656,91 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         diluted_shares_override=_dcf_shares,
     )
     if not result:
-        return {"value": None, "growth": None, "perpetual_rate": None, "discount_rate": None, "flagged": True}
+        return {
+            "value": None, "growth": None, "perpetual_rate": None, "discount_rate": None,
+            "discount_tier_label": None, "growth_source": None, "growth_path": None,
+            "flagged": True,
+        }
     value, growth_used, meta = result
     return {
         "value": value if value and value > 0 else None,
         "growth": growth_used,
         "perpetual_rate": meta.get("perpetual_rate_used"),
         "discount_rate": meta.get("discount_rate_used"),
+        # A6/growth-rewrite (28 Sep 2026, owner-directed): "one value
+        # everywhere" needs the SOURCE of each auto-resolved input, not
+        # just the number - see _build_fair_value()'s own display of
+        # these two.
+        "discount_tier_label": meta.get("discount_tier_label"),
+        "growth_source": meta.get("growth_source"),
+        "growth_path": meta.get("growth_path"),
         "flagged": bool(meta.get("defaulted") or meta.get("growth_default")),
+    }
+
+
+def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
+                        growth_rate=None, manual_fcf=None):
+    """Change 3 (owner-directed, 28 Sep 2026), "one value everywhere": the
+    Fair Value tab's own "dcf" row must show the SAME canonical intrinsic
+    value Deep Dive/Scanner/Top 100 use - resolver_engine.
+    resolve_intrinsic_value(), the exact function nightly_scan.py and
+    deep_dive_engine.py both call - not a second, separately-computed
+    number. _run_dcf() above still runs too (PE Forward's discounting and
+    the Value vs Book chart's g_earn both depend on it) - this is an
+    ADDITIONAL call, not a replacement of that one.
+
+    Deliberately does NOT pass diluted_shares_override (unlike _run_dcf()
+    above): Deep Dive/Scanner/Top 100 never pass it either (resolve_
+    intrinsic_value()'s own signature has no such parameter) - matching
+    that exactly, not this bundle's own pre-corrected share count, is
+    what makes this genuinely the SAME value as those pages for the same
+    ticker/overrides, not just a similar one. Same FX double-conversion
+    guard as _run_dcf() (this bundle's cashflow_df is already FX-
+    converted; a manual override needs converting here for the same
+    reason - see _run_dcf()'s own docstring for the full mechanism).
+
+    Returns None when DCF isn't a usable method for this name (P/E-blend
+    fallback fired instead, or no value at all) - the caller then simply
+    doesn't show a "dcf" row, same as _run_dcf() returning no value
+    today. quality_score is passed as None: it is read only by resolve_
+    intrinsic_value()'s P/E-blend FALLBACK path, never by the DCF branch
+    this function actually returns - a ticker where the fallback fires
+    has no usable "dcf" row to show either way, so a placeholder
+    quality_score here can never reach anything this page displays."""
+    info = bundle.get("info") or {}
+    currency = info.get("currency") or "USD"
+
+    dcf_info = info
+    if (info.get("financialCurrency") or "").upper() != currency.upper():
+        dcf_info = dict(info)
+        dcf_info["financialCurrency"] = currency
+
+    _dcf_manual_fcf = manual_fcf
+    if manual_fcf is not None and manual_fcf > 0:
+        _fin_ccy = (info.get("financialCurrency") or currency or "").upper()
+        _listing_ccy = currency.upper()
+        if _fin_ccy and _listing_ccy and _fin_ccy != _listing_ccy:
+            _fx, _ = fcf_valuation_engine.fx_rate(_fin_ccy, _listing_ccy)
+            _dcf_manual_fcf = manual_fcf * _fx
+
+    result = _safe(
+        resolver_engine.resolve_intrinsic_value,
+        ticker, None, info=dcf_info, cashflow_df=bundle.get("cashflow"), currency=currency,
+        discount_rate=discount_rate, perpetual_rate=perpetual_rate,
+        growth_rate=growth_rate, manual_fcf=_dcf_manual_fcf,
+    )
+    if not result:
+        return None
+    value, source, growth_used, meta = result
+    if source != "dcf" or not value or value <= 0:
+        return None
+    return {
+        "value": value,
+        "growth": growth_used,
+        "perpetual_rate": meta.get("perpetual_rate_used"),
+        "discount_rate": meta.get("discount_rate_used"),
+        "discount_tier_label": meta.get("discount_tier_label"),
+        "growth_source": meta.get("growth_source"),
     }
 
 
@@ -3095,7 +3173,19 @@ def _pe_forward_method(bundle, g_earn, discount_rate):
     return value, forecast_eps_5y, actual_pe, year5_price
 
 
-def _build_fair_value(bundle, ticker, dcf_result):
+def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
+    """canonical_dcf_result (Change 3, owner-directed, 28 Sep 2026, "one
+    value everywhere" - see _run_canonical_dcf()'s own docstring): the
+    "dcf" method's headline value AND every input shown alongside it
+    (perpetual/discount/growth/tier/source) now come from THIS, resolver_
+    engine.resolve_intrinsic_value()'s own result, matching Deep Dive/
+    Scanner/Top 100 exactly - not dcf_result (this function's other
+    parameter), which is _run_dcf()'s own, separately-computed result and
+    keeps driving every OTHER thing it always has: PE Forward's g_earn/
+    discount-rate inputs, PE Trailing, and Equity 10y - none of those
+    three change here. None (the default) - the ticker had no usable
+    canonical DCF (P/E-blend fallback fired instead) - simply omits the
+    "dcf" row, same as dcf_result.get("value") being None always has."""
     b = _basics(bundle)
     info, price = b["info"], b["price"]
     trailing_eps, _ = _eps_ttm(bundle)
@@ -3108,7 +3198,8 @@ def _build_fair_value(bundle, ticker, dcf_result):
     )
 
     pe_trailing_value = (trailing_eps * avg_pe) if (trailing_eps is not None and avg_pe is not None) else None
-    dcf_value = dcf_result.get("value")
+    canonical_dcf_result = canonical_dcf_result or {}
+    dcf_value = canonical_dcf_result.get("value")
 
     equity_10y_result = _safe(_equity_10y_method, bundle, g_earn)
     equity_10y_value, equity_growth, equity_discount, equity_growth_capped = (
@@ -3149,27 +3240,43 @@ def _build_fair_value(bundle, ticker, dcf_result):
         # answers that on sight instead of requiring a code dig.
         _dcf_ccy = (info.get("currency") or "").upper()
         _perp_label = f"Perpetual Rate ({_dcf_ccy})" if _dcf_ccy else "Perpetual Rate"
-        # Fix 2 (28 Sep 2026, owner-approved): growth is no longer flat for
-        # all 10 stage-1 years - it fades linearly from Base Case Growth
-        # (year 1) down to the Perpetual Rate above (year 10) - see
-        # fcf_valuation_engine.dcf_intrinsic_value()'s own stage-1 loop
-        # comment. Shown as "X% -> Y%" (format="raw" - a display-ready
-        # string, not a number _cp_format() should try to reformat) so
-        # this bar's own growth figure doesn't read as "16% for 10
-        # years" when it's really just the starting point.
-        _dcf_growth = dcf_result.get("growth")
-        _dcf_perp = dcf_result.get("perpetual_rate")
+        # Growth-rewrite amendment (owner-directed, 28 Sep 2026): growth is
+        # flat for years 1-5, then fades to the perpetual rate over years
+        # 6-10 - see fcf_valuation_engine.dcf_intrinsic_value()'s own
+        # stage-1 loop comment. Shown as "X% for 5 yrs, then fades to Y%"
+        # (format="raw" - a display-ready string, not a number _cp_
+        # format() should try to reformat) so this row doesn't read as "a
+        # flat X% for all 10 years", which it no longer is.
+        _dcf_growth = canonical_dcf_result.get("growth")
+        _dcf_perp = canonical_dcf_result.get("perpetual_rate")
         if _dcf_growth is not None and _dcf_perp is not None:
-            _growth_display = f"{_dcf_growth * 100:.1f}% -> {_dcf_perp * 100:.1f}% (fades)"
+            _growth_display = f"{_dcf_growth * 100:.1f}% for 5 yrs, then fades to {_dcf_perp * 100:.1f}%"
             _growth_fmt = "raw"
         else:
             _growth_display = _dcf_growth
             _growth_fmt = "pct"
+        # A6/growth-rewrite (28 Sep 2026, owner-directed): "one value
+        # everywhere" needs the SOURCE of each auto-resolved input on
+        # screen too, not just the number.
+        _growth_source_labels = {
+            "analyst": "Yahoo 5y analyst", "history": "historical avg",
+            "info": "reported growth", "manual": "manual override",
+            "default": "default assumption",
+        }
+        _growth_source_display = _growth_source_labels.get(canonical_dcf_result.get("growth_source"))
         valuation_inputs["dcf"] = [
-            {"label": _perp_label, "value": dcf_result.get("perpetual_rate"), "format": "pct"},
-            {"label": "Discount Rate", "value": dcf_result.get("discount_rate"), "format": "pct"},
+            {"label": _perp_label, "value": canonical_dcf_result.get("perpetual_rate"), "format": "pct"},
+            {
+                "label": "Discount Rate", "value": canonical_dcf_result.get("discount_rate"), "format": "pct",
+            },
             {"label": "Base Case Growth", "value": _growth_display, "format": _growth_fmt},
         ]
+        if canonical_dcf_result.get("discount_tier_label"):
+            valuation_inputs["dcf"].append(
+                {"label": "Discount Tier", "value": canonical_dcf_result["discount_tier_label"], "format": "raw"})
+        if _growth_source_display:
+            valuation_inputs["dcf"].append(
+                {"label": "Growth Source", "value": _growth_source_display, "format": "raw"})
     if "equity_10y" in valuation_methods:
         # No "Average P/E" here - matches the hand-built workbook's own
         # equity_10y inputs (Equity Growth + Discount Rate only), and the
@@ -3265,6 +3372,16 @@ def build_sections(ticker, force_refresh=False, discount_rate=None,
     ) or {
         "value": None, "growth": None, "perpetual_rate": None, "discount_rate": None, "flagged": True,
     }
+    # Change 3 (owner-directed, 28 Sep 2026), "one value everywhere": a
+    # SEPARATE call for the Fair Value tab's own "dcf" row - see
+    # _run_canonical_dcf()'s own docstring for why this isn't just
+    # dcf_result reused. dcf_result above still feeds PE Forward/Value vs
+    # Book exactly as before - untouched.
+    canonical_dcf_result = _safe(
+        _run_canonical_dcf, bundle, ticker,
+        discount_rate=discount_rate, perpetual_rate=perpetual_rate,
+        growth_rate=growth_rate, manual_fcf=manual_fcf,
+    )
 
     builders = {
         "Fundamentals": lambda: _build_fundamentals(bundle, ticker, ref),
@@ -3272,7 +3389,7 @@ def build_sections(ticker, force_refresh=False, discount_rate=None,
         "Retained Earnings": lambda: _build_retained_earnings(bundle, ticker, ref),
         "Earnings Trends": lambda: _build_earnings_trends(bundle, ticker, ref),
         "Cost of Capital": lambda: _build_cost_of_capital(bundle, ticker, ref),
-        "Fair Value": lambda: _build_fair_value(bundle, ticker, dcf_result),
+        "Fair Value": lambda: _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result),
     }
 
     sections = {}

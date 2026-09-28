@@ -66,7 +66,8 @@ def resolve_intrinsic_value(
         meta["fcf_source"]       : "history" | "info" | "manual" | "none"
         meta["fcf_used"]         : float | None (the base FCF the DCF actually compounded from)
         meta["fcf_per_share_used"] : float | None (fcf_used / shares outstanding)
-        meta["discount_source"]  : "capm" | "capm-default" | "manual" | "fallback"
+        meta["discount_source"]  : "tiered" | "tiered-default" | "manual" | "fallback"
+        meta["discount_tier_label"] : str | None (A6 market-cap tier, e.g. "mid-cap (US$10B-50B)")
         meta["perpetual_source"] : "currency" | "manual" | "fallback"
         meta["discount_rate_used"]  : float | None
         meta["perpetual_rate_used"] : float | None
@@ -93,6 +94,7 @@ def resolve_intrinsic_value(
             "fcf_used": dcf_meta.get("fcf_used"),
             "fcf_per_share_used": dcf_meta.get("fcf_per_share_used"),
             "discount_source": dcf_meta.get("discount_source"),
+            "discount_tier_label": dcf_meta.get("discount_tier_label"),
             "perpetual_source": dcf_meta.get("perpetual_source"),
             "discount_rate_used": dcf_meta.get("discount_rate_used"),
             "perpetual_rate_used": dcf_meta.get("perpetual_rate_used"),

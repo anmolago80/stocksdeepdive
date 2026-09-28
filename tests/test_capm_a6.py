@@ -1,10 +1,12 @@
-"""A6 (27 Sep 2026, owner-directed, FINAL SPEC): unit fixtures for
-capm_engine.py's new market-cap-discount-tier machinery -
-resolve_discount_rate_by_market_cap() and get_au_risk_free_rate_live().
-DESIGN + DRY RUN ONLY - also grep-verifies neither new function is
-called from any LIVE valuation path (fcf_valuation_engine.py,
-moat_engine.py), since nothing about A6 may reach a live valuation
-until the owner has reviewed the side-by-side numbers.
+"""A6 (27 Sep 2026, owner-directed, FINAL SPEC; owner-approved LIVE 28
+Sep 2026): unit fixtures for capm_engine.py's market-cap-discount-tier
+machinery - resolve_discount_rate_by_market_cap() and
+get_au_risk_free_rate_live() - PLUS confirmation this is now the live
+formula every valuation on the site actually uses (resolve_discount_
+rate(), which every one of fcf_valuation_engine.py's/moat_engine.py's/
+auto_compounder_engine.py's call sites goes through, unchanged at every
+one of THEIR call sites - see the live_path_confirmed section at the
+bottom).
 Run: python3 test_capm_a6.py
 """
 import os
@@ -157,21 +159,73 @@ assert source == "default"
 print("[rba_http_error_falls_back] a non-OK HTTP status degrades to the fallback OK")
 
 
-# ---- Live-path guard: neither new A6 function is wired into any live valuation ----
+# ---- Live-path confirmation (owner-approved LIVE, 28 Sep 2026): the ----
+# ---- SAME resolve_discount_rate() every live caller already used     ----
+# ---- now produces the tiered rate, with beta read nowhere at all.    ----
 import inspect
 
-_fcf_src = inspect.getsource(__import__("fcf_valuation_engine"))
-_moat_src = inspect.getsource(__import__("moat_engine"))
-assert "resolve_discount_rate_by_market_cap" not in _fcf_src, (
-    "resolve_discount_rate_by_market_cap must not be called from fcf_valuation_engine.py yet - "
-    "A6 is design + dry run only until the owner approves the swap")
-assert "resolve_discount_rate_by_market_cap" not in _moat_src, (
-    "resolve_discount_rate_by_market_cap must not be called from moat_engine.py yet - "
-    "A6 is design + dry run only until the owner approves the swap")
-assert "get_au_risk_free_rate_live" not in _fcf_src
-assert "get_au_risk_free_rate_live" not in _moat_src
-print("[live_path_guard] neither new A6 function appears anywhere in fcf_valuation_engine.py or "
-      "moat_engine.py - the live model is untouched OK")
+# resolve_discount_rate() no longer reads info["beta"] - the beta CAPM
+# formula's own historic magic numbers are gone from the module entirely
+# (not just unused: genuinely removed, so nothing can silently re-wire
+# them back in), and identical market cap/currency with wildly different
+# beta values must give the EXACT same discount rate.
+for _dead_name in ("EQUITY_RISK_PREMIUM", "DEFAULT_BETA", "MIN_BETA"):
+    assert not hasattr(ce, _dead_name), f"{_dead_name} should have been removed, not just unused"
+print("[beta_constants_removed] EQUITY_RISK_PREMIUM/DEFAULT_BETA/MIN_BETA no longer exist on "
+      "capm_engine - not just unused dead code OK")
+
+with mock.patch.object(ce, "get_risk_free_rate", side_effect=_rf):
+    _rate_lo_beta, _meta_lo_beta = ce.resolve_discount_rate(
+        {"marketCap": 100_000_000_000, "currency": "USD", "beta": 0.05}, "USD")
+    _rate_hi_beta, _meta_hi_beta = ce.resolve_discount_rate(
+        {"marketCap": 100_000_000_000, "currency": "USD", "beta": 5.0}, "USD")
+    _rate_no_beta, _meta_no_beta = ce.resolve_discount_rate(
+        {"marketCap": 100_000_000_000, "currency": "USD"}, "USD")
+assert _rate_lo_beta == _rate_hi_beta == _rate_no_beta == 0.080, (
+    _rate_lo_beta, _rate_hi_beta, _rate_no_beta)
+assert _meta_lo_beta["tier_label"].startswith("large-cap")
+print(f"[resolve_discount_rate_ignores_beta] resolve_discount_rate() - the function EVERY live "
+      f"caller (fcf_valuation_engine.dcf_intrinsic_value, moat_engine.py's ~5 cost-of-equity call "
+      f"sites, auto_compounder_engine._build_cost_of_capital) already goes through - gives the "
+      f"IDENTICAL {_rate_lo_beta:.3f} for beta=0.05, beta=5.0, and no beta at all: the market-cap "
+      f"tier (large-cap, rf+3%), not beta, decides it now OK")
+
+# meta shape every existing caller reads is preserved (defaulted/floored/
+# discount_floored/rf_source) - beta_source/beta_floored are gone (no
+# caller outside this module ever read them).
+for _key in ("defaulted", "floored", "discount_floored", "rf_source", "tier_label", "premium_used"):
+    assert _key in _meta_lo_beta, (_key, _meta_lo_beta)
+for _dead_key in ("beta_source", "beta_floored"):
+    assert _dead_key not in _meta_lo_beta, _meta_lo_beta
+print("[meta_shape_preserved] resolve_discount_rate()'s meta keeps defaulted/floored/"
+      "discount_floored/rf_source (every existing caller's own contract) and adds tier_label/"
+      "premium_used - beta_source/beta_floored are gone OK")
+
+# Integration: fcf_valuation_engine.dcf_intrinsic_value()'s own auto path
+# (discount_rate=None) now reports "tiered"/"tiered-default", not the old
+# "capm"/"capm-default" - confirms the swap reaches the real DCF, not
+# just this module in isolation.
+import fcf_valuation_engine as fve
+
+with mock.patch.object(ce, "get_risk_free_rate", side_effect=_rf):
+    _iv, _g, _dcf_meta = fve.dcf_intrinsic_value(
+        "TEST", info={"marketCap": 100_000_000_000, "currency": "USD", "beta": 0.05},
+        cashflow_df=None, currency="USD", manual_fcf=10.0, diluted_shares_override=1,
+        growth_rate=0.05, perpetual_rate=0.02,
+    )
+assert _dcf_meta["discount_source"] in ("tiered", "tiered-default"), _dcf_meta["discount_source"]
+assert abs(_dcf_meta["discount_rate_used"] - 0.080) < 1e-9, _dcf_meta["discount_rate_used"]
+assert _dcf_meta["discount_tier_label"].startswith("large-cap"), _dcf_meta["discount_tier_label"]
+print(f"[live_dcf_uses_tiered_rate] fcf_valuation_engine.dcf_intrinsic_value()'s own auto-CAPM "
+      f"path (discount_rate=None) now reports discount_source={_dcf_meta['discount_source']!r} "
+      f"and discount_tier_label={_dcf_meta['discount_tier_label']!r} - the live DCF genuinely "
+      "uses the tiered rate, not just capm_engine.py tested in isolation OK")
+
+_fcf_src = inspect.getsource(fve)
+assert "info.get(\"beta\")" not in _fcf_src and "info[\"beta\"]" not in _fcf_src
+print("[fcf_valuation_engine_never_reads_beta] fcf_valuation_engine.py itself never reads "
+      "info[\"beta\"] anywhere (it never did directly - always through capm_engine - but this "
+      "confirms no new beta read was introduced either) OK")
 
 
 print("\nALL CAPM A6 FIXTURES PASSED")

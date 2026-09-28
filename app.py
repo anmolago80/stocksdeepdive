@@ -10655,20 +10655,6 @@ def page_deep_dive():
             )
             _m5.metric(i18n.t("dd.kpi.signal", _dd_lang), _dd_signal, help=METRIC_HELP["Signal"])
 
-            # Fix 2 (28 Sep 2026, owner-approved): the DCF's stage-1 growth
-            # no longer holds flat for all 10 years - it fades linearly
-            # from the stage-1 rate down to the perpetual rate (see
-            # fcf_valuation_engine.dcf_intrinsic_value()'s own comment on
-            # the stage-1 loop). Shown here so the number on screen
-            # (dcf_growth, the YEAR-1 rate) doesn't read as "the rate used
-            # for all 10 years" when it's really just the starting point.
-            if _dd.get("dcf_growth") is not None and _dd.get("dcf_perpetual") is not None:
-                st.caption(
-                    f"DCF growth fades {_dd['dcf_growth']:.1f}% -> {_dd['dcf_perpetual']:.1f}% "
-                    "over the 10-year forecast, reaching the perpetual rate by year 10 "
-                    "(not held flat for the whole horizon)."
-                )
-
             # Task 10: flag it on screen whenever the DCF's base cash flow used
             # the 3-year median instead of the latest reporting year, because
             # that latest year was an outlier (see fcf_valuation_engine.
@@ -10683,24 +10669,54 @@ def page_deep_dive():
                     "outlier reporting year can't dominate the valuation."
                 )
 
+            # Growth-rewrite amendment (owner-directed, 28 Sep 2026): growth
+            # is flat for years 1-5, then fades to the perpetual rate over
+            # years 6-10 - see fcf_valuation_engine.dcf_intrinsic_value()'s
+            # own stage-1 loop comment. A6 (owner-approved live, same date):
+            # the discount tier and growth source are shown alongside it,
+            # since both are now market-cap-tiered/analyst-sourced auto
+            # figures a reader would otherwise have no way to see.
+            if _dd.get("dcf_growth") is not None and _dd.get("dcf_perpetual") is not None:
+                st.caption(
+                    f"DCF growth: {_dd['dcf_growth']:.1f}% for 5 yrs, then fades to "
+                    f"{_dd['dcf_perpetual']:.1f}% over the following 5 (not held flat "
+                    "for the whole 10-year forecast)."
+                )
+            _dd_growth_source_labels = {
+                "analyst": "Yahoo 5y analyst", "history": "historical avg",
+                "info": "reported growth", "manual": "manual override",
+                "default": "default assumption",
+            }
+            _dd_tier = _dd.get("dcf_discount_tier")
+            _dd_gsrc = _dd_growth_source_labels.get(_dd.get("dcf_growth_source"))
+            if _dd_tier or _dd_gsrc:
+                _dd_tier_gsrc_bits = []
+                if _dd_tier:
+                    _dd_tier_gsrc_bits.append(f"discount tier: {_dd_tier}")
+                if _dd_gsrc:
+                    _dd_tier_gsrc_bits.append(f"growth source: {_dd_gsrc}")
+                st.caption(" · ".join(_dd_tier_gsrc_bits).capitalize())
+
             # DCF fixes: floored discount rate + FX currency conversion - same
             # provenance-flag pattern as the outlier-base caption above. Neither
             # is a signal; both are purely descriptive of what the calculation
             # actually did.
             if _dd.get("dcf_discount_floored"):
                 st.caption(
-                    "Discount rate floored at 7.5% (low measured beta - see "
+                    "Discount rate floored at 7.5% (this market-cap tier's "
+                    "rate sits below the floor at today's bond yield - see "
                     "Methodology)."
                 )
             # Data-correctness audit A1 (27 Sep 2026): the discount rate
-            # rests on an assumption (beta and/or the risk-free rate
-            # weren't available live and fell back to a default) - same
-            # provenance-flag pattern as the floored caption above, a
-            # distinct condition (this can fire with or without flooring).
+            # rests on an assumption (the risk-free rate wasn't available
+            # live and fell back to a default) - same provenance-flag
+            # pattern as the floored caption above, a distinct condition
+            # (this can fire with or without flooring).
             if _dd.get("dcf_discount_defaulted"):
                 st.caption(
-                    "Discount rate uses a default beta and/or risk-free "
-                    "rate (live data wasn't available for this stock)."
+                    "Discount rate uses a default risk-free rate (live "
+                    "bond-yield data wasn't available for this stock's "
+                    "currency)."
                 )
             # Audit fix 1.4: a manually-typed discount/perpetual-rate override
             # that fell outside the defensible band got silently clamped back

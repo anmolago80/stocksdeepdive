@@ -1,23 +1,33 @@
 """
-capm_engine  -  CAPM-based cost of equity (discount rate) and a currency-based
-terminal growth rate, replacing the old flat 9% / 3% constants that used to be
-applied to every stock regardless of its own risk.
+capm_engine  -  market-cap-tiered cost of equity (discount rate) and a
+currency-based terminal growth rate.
 
-Discount rate (cost of equity):
-    discount_rate = risk_free_rate + beta * EQUITY_RISK_PREMIUM
+Discount rate (cost of equity), A6 design (owner-approved LIVE, 28 Sep
+2026), replacing beta-based CAPM entirely:
+    discount_rate = risk_free_rate + market_cap_tier_premium
 
-    risk_free_rate  - the 10-year government bond yield for the STOCK'S OWN
-        currency (USD -> US 10Y via yfinance "^TNX", AUD -> AU 10Y), fetched
-        live. Falls back to a fixed, occasionally-updated constant per
-        currency if the live fetch fails - flagged as a default. (Not every
-        government bond yield is reliably available through yfinance, so
-        this degrades the same way every other feed in this app does.)
-    beta            - the stock's own systematic-risk beta (yfinance
-        info["beta"]). Defaults to 1.0 (market-average risk) when missing.
-    EQUITY_RISK_PREMIUM - a single global constant (5%). There is no free
-        live feed for this - it's a slow-moving, widely-cited long-run market
-        assumption (broadly in line with published estimates such as
-        Damodaran's ~4.5-5.5% range), not something re-derived per run.
+    risk_free_rate       - the 10-year government bond yield for the
+        STOCK'S OWN currency (USD -> US 10Y via yfinance "^TNX", AUD -> the
+        RBA's own published 10-year series), fetched live. Falls back to a
+        fixed, occasionally-updated constant per currency if the live fetch
+        fails - flagged as a default.
+    market_cap_tier_premium - a premium over the risk-free rate set by
+        which market-cap tier the stock's own market cap falls into (mega/
+        large/mid/small/micro) - see MARKET_CAP_DISCOUNT_TIERS below for
+        the exact table. Floored at MIN_DISCOUNT_RATE (7.5%); no ceiling -
+        see MARKET_CAP_DISCOUNT_TIERS' own comment for why.
+
+    Beta is not read anywhere in this formula. Pre-A6 history: this used to
+    be rf + beta * EQUITY_RISK_PREMIUM (a single global 5% ERP constant), a
+    formula this module still fetches the same risk-free rate for - only
+    the RISK premium changed, from a noisy, easily-gamed per-stock
+    statistic (a measured beta over a short or unusually defensive lookback
+    window - see MARKET_CAP_DISCOUNT_TIERS' own comment for a worked
+    example of exactly that failure mode) to a plain, auditable fact
+    (market cap) that already tracks the same "how risky is this business"
+    judgment beta was a noisy proxy for. See git history (pre-28-Sep-2026)
+    for the retired beta formula, and resolve_discount_rate()'s own
+    docstring for how this swap was made.
 
 Terminal / perpetual growth rate: tied to the stock's OWN CURRENCY (roughly
 that economy's long-run inflation target) rather than calculated per-stock -
@@ -28,7 +38,7 @@ This app has no shared "data_engine" module (each engine calls yfinance
 directly), so the risk-free-rate fetch lives here rather than in a separate
 data layer - kept consistent with fcf_valuation_engine.py's own style.
 
-Both outputs are clamped to a defensible band so a missing/bad beta or a
+Both outputs are clamped to a defensible band so a missing market cap or a
 bond-yield fetch glitch can't produce a nonsense valuation.
 """
 
@@ -38,10 +48,6 @@ import requests
 import streamlit as st
 import yfinance as yf
 
-EQUITY_RISK_PREMIUM = 0.05          # long-run market ERP assumption
-DEFAULT_BETA = 1.0                  # market-average, used when info["beta"] is missing
-
-DISCOUNT_FLOOR = 0.05
 DISCOUNT_CEIL = 0.15
 
 # DCF-fix constants: a listed equity's cost of capital below ~7.5% is not
@@ -49,19 +55,13 @@ DISCOUNT_CEIL = 0.15
 # extremely sensitive to (discount_rate - perpetual_rate), and a discount
 # rate sitting only a couple of points above terminal growth can blow the
 # whole DCF up by an order of magnitude even with otherwise-sane inputs
-# (this is exactly what happened for CSL.AX: a live beta near 0.2 pushed
-# the CAPM rate down to the old 5% DISCOUNT_FLOOR, only 2.5pp above AUD
-# terminal growth). MIN_DISCOUNT_RATE supersedes DISCOUNT_FLOOR as the
-# effective floor inside resolve_discount_rate() below (DISCOUNT_FLOOR
-# itself is left as-is since resolver_engine.py's bear/bull DCF scenario
-# banding also clamps to it independently).
+# (this is exactly what happened for CSL.AX under the old beta-based
+# formula: a live beta near 0.2 pushed the CAPM rate down to a level only
+# 2.5pp above AUD terminal growth). Still the effective floor under the
+# A6 market-cap-tiered formula below - MARKET_CAP_DISCOUNT_TIERS' own
+# comment explains why the top (mega-cap) tier is EXPECTED to floor here
+# at today's rates.
 MIN_DISCOUNT_RATE = 0.075
-
-# A measured beta below 0.6 is usually a data artefact (thin trading, a
-# short or unusually defensive lookback window) rather than genuinely low
-# systematic risk - flooring it keeps the CAPM discount rate defensible
-# even when Yahoo's own beta figure looks implausibly low.
-MIN_BETA = 0.60
 
 # Terminal growth by the stock's OWN currency - roughly that economy's
 # long-run inflation target / nominal trend growth, not the stock's own
@@ -174,44 +174,38 @@ def get_risk_free_rate(currency):
 
 def resolve_discount_rate(info, currency):
     """
-    CAPM cost of equity for one stock. Returns (discount_rate, meta) where
-    meta records where beta and the risk-free rate came from, and whether
-    either had to fall back to a default (so the app can flag it).
+    Cost of equity for one stock - A6 market-cap-tiered design, owner-
+    approved LIVE 28 Sep 2026. Returns (discount_rate, meta).
 
-    DCF fix: beta is floored at MIN_BETA before it enters the CAPM formula,
-    and the resulting rate is floored at MIN_DISCOUNT_RATE (both above
-    DISCOUNT_FLOOR's old, looser band) - either clamp firing is recorded in
-    meta so the caller (fcf_valuation_engine.dcf_intrinsic_value) can pass
-    it up to the app, which flags it on screen the same way every other
-    assumption on this site is flagged.
+    This is now a thin wrapper around resolve_discount_rate_by_market_cap()
+    below (see that function's own docstring for the tier table, the
+    floor/no-ceiling design, and the AU risk-free source) - the swap the
+    A6 module comment above MARKET_CAP_DISCOUNT_TIERS anticipated: every
+    existing caller of THIS function (fcf_valuation_engine.
+    dcf_intrinsic_value(), moat_engine.py's cost-of-equity/WACC call
+    sites, auto_compounder_engine._build_cost_of_capital()) now gets the
+    tiered rate automatically, with zero changes needed at any of those
+    call sites. Beta is not read anywhere in this call chain any more.
+
+    meta keeps the same "defaulted"/"rf_source"/"discount_floored"/
+    "floored" shape every existing caller already reads (beta_source/
+    beta_floored are gone - nothing outside this module ever read them),
+    plus tier_label/premium_used/market_cap_missing for a caller that
+    wants to disclose which tier a stock landed in (see deep_dive_engine.
+    py/auto_compounder_engine.py's Fair Value section for where those are
+    now surfaced).
     """
-    info = info or {}
+    rate, tiered_meta = resolve_discount_rate_by_market_cap(info, currency)
     meta = {
-        "beta_source": "info", "rf_source": None, "defaulted": False,
-        "beta_floored": False, "discount_floored": False, "floored": False,
+        "rf_source": tiered_meta.get("rf_source"),
+        "defaulted": tiered_meta.get("defaulted", False),
+        "discount_floored": tiered_meta.get("discount_floored", False),
+        "floored": tiered_meta.get("discount_floored", False),
+        "tier_label": tiered_meta.get("tier_label"),
+        "premium_used": tiered_meta.get("premium_used"),
+        "market_cap_missing": tiered_meta.get("market_cap_missing", False),
     }
-
-    beta = info.get("beta")
-    if beta is None or beta <= 0:
-        beta = DEFAULT_BETA
-        meta["beta_source"] = "default"
-        meta["defaulted"] = True
-
-    if beta < MIN_BETA:
-        beta = MIN_BETA
-        meta["beta_floored"] = True
-
-    rf, rf_src = get_risk_free_rate(currency)
-    meta["rf_source"] = rf_src
-    if rf_src == "default":
-        meta["defaulted"] = True
-
-    rate = rf + beta * EQUITY_RISK_PREMIUM
-    if rate < MIN_DISCOUNT_RATE:
-        meta["discount_floored"] = True
-    rate = max(MIN_DISCOUNT_RATE, min(rate, DISCOUNT_CEIL))
-    meta["floored"] = meta["beta_floored"] or meta["discount_floored"]
-    return round(rate, 4), meta
+    return rate, meta
 
 
 def resolve_perpetual_rate(currency, discount_rate=None):
@@ -224,28 +218,21 @@ def resolve_perpetual_rate(currency, discount_rate=None):
 
 
 # =====================================================================
-# A6 (27 Sep 2026, owner-directed, FINAL SPEC): market-cap-tiered
-# discount rate, replacing beta. DESIGN + DRY RUN ONLY.
+# A6 (27 Sep 2026, owner-directed, FINAL SPEC; owner-approved LIVE 28 Sep
+# 2026): market-cap-tiered discount rate, replacing beta.
 #
-# resolve_discount_rate() above (beta-based CAPM) remains the ONLY
-# discount rate any LIVE valuation on the site actually uses - nothing
-# below this line is called from fcf_valuation_engine.dcf_intrinsic_
-# value() or moat_engine.py's cost-of-equity/WACC helpers today.
-# resolve_discount_rate_by_market_cap() is called only from the Admin
-# Dashboard's A6 dry-run comparison (admin_data_audit.check_a6_
-# discount_tiers() and app.py's bulk saved-universe audit), until the
-# owner has reviewed the side-by-side numbers and approves the swap.
-#
-# When that swap happens: moat_engine.py's ~7 call sites already all go
-# through capm_engine.resolve_discount_rate(info, ccy) (never a second,
-# parallel cost-of-equity formula of their own) - so the DCF and the
-# moat spread automatically stay on the same rate for free, as long as
-# the swap is made by having resolve_discount_rate() itself call into
-# resolve_discount_rate_by_market_cap() (or by redirecting every one of
-# those call sites to call resolve_discount_rate_by_market_cap()
-# directly) rather than by only changing fcf_valuation_engine.py's own
-# call site. This function is written now, in its final shape, so that
-# swap is a small, mechanical change rather than new design work.
+# resolve_discount_rate() above now calls resolve_discount_rate_by_
+# market_cap() below directly - every live valuation on the site
+# (fcf_valuation_engine.dcf_intrinsic_value(), moat_engine.py's cost-of-
+# equity/WACC helpers, auto_compounder_engine._build_cost_of_capital())
+# goes through resolve_discount_rate(), so the swap took effect for all
+# of them at once, with no call-site changes needed anywhere else - this
+# function was written in its final shape from the start specifically so
+# that swap would be small and mechanical. admin_data_audit.check_a6_
+# discount_tiers() and app.py's bulk saved-universe A6 audit panel still
+# call this function directly too, for the same side-by-side comparison
+# view - now comparing the live rate against itself, which is expected
+# and harmless (not worth removing a working diagnostic panel over).
 # =====================================================================
 
 # Same static USD-bucketing FX snapshot fcf_valuation_engine.py's own
@@ -294,20 +281,24 @@ MARKET_CAP_DISCOUNT_TIERS = [
 # RISK_FREE_FALLBACK["AUD"] constant on ANY failure - same degrade-
 # gracefully philosophy as every other optional feed in this app.
 #
-# UNVERIFIED FROM THIS SANDBOX: this session has no live network access
-# (confirmed EGRESS_BLOCKED against www.rba.gov.au on a direct check,
-# same as the finance.yahoo.com/stocksdeepdive.com checks this whole
-# audit already documented elsewhere) - the exact CSV URL and column
-# layout below could not be tested against the real RBA site from here.
-# Written defensively for the wide (column-per-series) layout RBA's
-# statistical tables are published in (short timeout, tolerant column-
-# label matching, the SAME RISK_FREE_MIN/RISK_FREE_MAX sanity band as
+# STILL UNVERIFIED FROM ANY SANDBOX THIS SESSION HAS HAD (28 Sep 2026,
+# live-swap commit): no session working on this repo has had live
+# network access to test the exact CSV URL/column layout below against
+# the real RBA site (confirmed EGRESS_BLOCKED against www.rba.gov.au on
+# a direct check, same as the finance.yahoo.com/stocksdeepdive.com
+# checks this whole codebase's audit history already documents). Written
+# defensively for the wide (column-per-series) layout RBA's statistical
+# tables are published in (short timeout, tolerant column-label
+# matching, the SAME RISK_FREE_MIN/RISK_FREE_MAX sanity band as
 # get_risk_free_rate() above, and a hard fallback to the flagged
-# constant on ANY failure) so a wrong guess here degrades to "flagged
-# as defaulted" rather than ever corrupting a rate - but this needs a
-# real on-server check (see the A6 dry-run report) before its "live"
-# label can be trusted, same as AU10Y=RR's own still-unresolved 404
-# documented in get_risk_free_rate()'s docstring above.
+# constant on ANY failure) so a wrong guess degrades to "flagged as
+# defaulted" rather than ever corrupting a rate - but this now runs on
+# EVERY AUD discount-rate resolution in production (owner-approved live,
+# 28 Sep 2026 - see resolve_discount_rate_by_market_cap()'s own
+# docstring), not just an admin dry-run panel, so a first real-server
+# check of this URL/parsing (Railway logs will show "live" vs "default"
+# in meta["rf_source"] for the first AUD ticker resolved after this
+# deploy) matters more now than before, not less.
 _RBA_F2_CSV_URL = "https://www.rba.gov.au/statistics/tables/csv/f02d-data.csv"
 _RBA_TIMEOUT_SECONDS = 6
 _RBA_10Y_COLUMN_HINTS = ("10-year", "10 year", "10yr")
@@ -322,13 +313,17 @@ def get_au_risk_free_rate_live():
     get_risk_free_rate() - "live" or "default" (the flagged
     RISK_FREE_FALLBACK["AUD"] constant).
 
-    A6 dry-run only for now - see the module comment above this
-    section for why. Once the owner has verified on the live server
-    that this is genuinely reaching the RBA and reading the right
-    series, this can replace AU10Y=RR inside get_risk_free_rate()
-    itself (the SAME shared function every live valuation already
-    calls), at which point this function can be retired rather than
-    kept as a second, parallel rate source."""
+    A6, owner-approved LIVE 28 Sep 2026: called from resolve_discount_
+    rate_by_market_cap() for every AUD stock's discount rate now - not
+    just the admin dry-run panel any more. See the module comment above
+    this section for the still-unverified-against-the-real-RBA-server
+    caveat, which applies with more weight now that this reaches
+    production traffic. Once genuinely confirmed live on the real
+    server, this could in principle replace AU10Y=RR inside
+    get_risk_free_rate() itself too (the beta-CAPM formula's own AUD
+    risk-free source, still used nowhere in the live discount rate any
+    more, but retained for any other caller) - not done here, out of
+    this change's scope."""
     try:
         resp = requests.get(_RBA_F2_CSV_URL, timeout=_RBA_TIMEOUT_SECONDS)
         resp.raise_for_status()
@@ -377,20 +372,22 @@ def get_au_risk_free_rate_live():
 
 
 def resolve_discount_rate_by_market_cap(info, currency):
-    """A6 dry-run: market-cap-tiered cost of equity - no beta anywhere in
-    this formula. Returns (discount_rate, meta), meta in a shape a
-    caller can display the same way resolve_discount_rate()'s is (rf_
-    source, defaulted) plus tier_label. MIN_DISCOUNT_RATE still applies
-    as a floor; there is deliberately no ceiling clamp - see MARKET_CAP_
-    DISCOUNT_TIERS' own comment above.
+    """A6, owner-approved LIVE 28 Sep 2026: market-cap-tiered cost of
+    equity - no beta anywhere in this formula. This IS the live
+    discount-rate formula now - resolve_discount_rate() above simply
+    calls this and adapts the meta shape for its existing callers.
+    Returns (discount_rate, meta), meta in a shape a caller can display
+    (rf_source, defaulted) plus tier_label. MIN_DISCOUNT_RATE still
+    applies as a floor; there is deliberately no ceiling clamp - see
+    MARKET_CAP_DISCOUNT_TIERS' own comment above.
 
     Uses get_au_risk_free_rate_live() for AUD (not get_risk_free_rate())
-    - see that function's own docstring for why this stays a separate,
-    dry-run-only path for now. USD keeps using get_risk_free_rate()
-    (^TNX) - already a live, working source; the owner's own queued
-    instruction only asked for AUD to stop being a hand-set constant
-    and for "any future market" to eventually get its own real source,
-    not to touch a currency that already has one."""
+    - see that function's own docstring for its own still-unverified-
+    from-a-sandbox caveat. USD keeps using get_risk_free_rate() (^TNX) -
+    already a live, working source; the owner's own instruction only
+    asked for AUD to stop being a hand-set constant and for "any future
+    market" to eventually get its own real source, not to touch a
+    currency that already has one."""
     info = info or {}
     ccy = (currency or info.get("currency") or "USD").upper()
     meta = {"rf_source": None, "defaulted": False, "tier_label": None,
@@ -425,14 +422,36 @@ def resolve_discount_rate_by_market_cap(info, currency):
     return round(rate, 4), meta
 
 
+def _normalize_yahoo_growth_estimate(v):
+    """Growth-rewrite fix (owner-directed, 28 Sep 2026): yfinance's
+    growth_estimates table has been observed returning this figure in
+    BOTH shapes - a decimal fraction (0.12 meaning 12%) and a bare
+    percentage number (12 meaning 12%) - depending on yfinance version/
+    data source, with nothing in the table itself saying which. Handled
+    explicitly here instead of trusting whichever shape happens to come
+    back raw (the previous behaviour): abs(v) >= 1.5 is treated as a
+    percentage-point figure and divided by 100; anything smaller is
+    already a decimal fraction. 1.5 (150% growth as a RAW fraction) is
+    implausible enough as a genuine analyst estimate, and immediately
+    re-clamped to the market-cap growth ceiling (GROWTH_CEIL, 20% at
+    most) by estimate_growth() regardless of which way a misread would
+    go, that this threshold can't quietly misfire on a real high-growth
+    name either way."""
+    if v is None:
+        return None
+    return v / 100.0 if abs(v) >= 1.5 else v
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_growth_estimates_5y(ticker):
     """
     Analyst consensus 'Next 5 Years (per annum)' EPS growth estimate for the
     stock itself (not the industry-average column), from yfinance's
-    growth_estimates table. Returns a decimal rate, or None if Yahoo has no
-    analyst coverage for this name or the table isn't shaped as expected -
-    degrades silently, same as every other optional feed in this app.
+    growth_estimates table. Returns a decimal rate (e.g. 0.12 for 12%,
+    unit-normalized by _normalize_yahoo_growth_estimate() above - see its
+    own docstring), or None if Yahoo has no analyst coverage for this name
+    or the table isn't shaped as expected - degrades silently, same as
+    every other optional feed in this app.
 
     Cached the same way as the other per-ticker yfinance lookups in app.py
     (30-minute TTL, keyed by ticker) - previously uncached, so every single
@@ -451,7 +470,7 @@ def get_growth_estimates_5y(ticker):
                     if col in row.index:
                         v = row[col]
                         if v is not None and v == v:   # not NaN
-                            return float(v)
+                            return _normalize_yahoo_growth_estimate(float(v))
                 break
     except Exception:
         pass

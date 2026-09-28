@@ -327,10 +327,10 @@ def _cp_format(value, fmt):
         return f"{value:,.2f}x"
     if fmt == "cur":
         return f"${value:,.0f}" if abs(value) >= 1000 else f"${value:,.2f}"
-    # Fix 2 (28 Sep 2026, owner-approved): "raw" - value is already a
-    # display-ready string (e.g. the DCF growth-fade note, "16.0% -> 2.0%"),
-    # not a number to reformat.
     if fmt == "raw":
+        # A pre-formatted display string (e.g. the DCF's growth-fade
+        # description, or a discount-tier/growth-source label), not a
+        # number to reformat - passed straight through.
         return str(value)
     return f"{value:,.2f}"
 

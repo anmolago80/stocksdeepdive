@@ -8,14 +8,9 @@ a hand-entered per-stock number.
 Model (a standard two-stage DCF):
     1. Base = latest annual free cash flow per share (from the cash-flow
        statement, else info["freeCashflow"], else a per-stock manual override).
-    2. Grow it for GROWTH_YEARS years, discounting each year back to today
-       at the discount rate. The growth rate FADES LINEARLY (Fix 2, 28 Sep
-       2026) from the estimated stage-1 rate in year 1 down to the
-       perpetual/terminal rate by the final year, rather than compounding
-       flat for the whole horizon then dropping straight to the terminal
-       rate - meta["growth_path"] carries the actual yearly rate used.
-    3. Add a Gordon-growth terminal value for everything beyond the horizon,
-       on the final (faded-to-perpetual-rate) year's cash flow.
+    2. Grow it for GROWTH_YEARS at an estimated growth rate, discounting each
+       year back to today at the discount rate.
+    3. Add a Gordon-growth terminal value for everything beyond the horizon.
     intrinsic = sum(discounted stage-1 cash flows) + discounted terminal value
 
 GROWTH RATE, in priority order:
@@ -23,19 +18,25 @@ GROWTH RATE, in priority order:
        growth estimate for this specific stock, when Yahoo has coverage
        (capm_engine.get_growth_estimates_5y). This is the only input here
        that comes from outside the stock's own reported financials.
-    2. HISTORICAL FCF CAGR   - compound annual growth of free cash flow across
-       the available years of the cash-flow statement, but only when it's a
-       CLEAN, POSITIVE signal (low year-to-year volatility).
+    2. HISTORICAL FCF CAGR   - only when Yahoo has no coverage for this name,
+       and only when it's a CLEAN, POSITIVE signal (low year-to-year
+       volatility) - see growth_from_history()'s own docstring for the
+       "average of the oldest 2 years -> average of the newest 2" formula
+       (growth-rewrite, 28 Sep 2026 - smooths a one-off spike/dip at
+       either edge of the window, still measured across the full history
+       span). No longer blended (min'd) with the analyst estimate when
+       both are available - Yahoo, when present, is used on its own.
     3. info["earningsGrowth"] / info["revenueGrowth"] - single-point fallback
        when there isn't enough clean FCF history and no analyst coverage.
     4. DEFAULT_GROWTH (a conservative sector-neutral average) - used only when
        nothing else is available. When this happens the value is flagged as a
        DEFAULT so the app can render it in red.
 
-DISCOUNT RATE - CAPM cost of equity, computed per stock (capm_engine.py):
-    discount_rate = risk_free_rate(currency) + beta * equity_risk_premium
-This replaces the old flat 9% for every stock with a rate that reflects that
-stock's own risk (its beta) and the bond yield of its own currency.
+DISCOUNT RATE - market-cap-tiered cost of equity, computed per stock
+(capm_engine.py, A6 design, owner-approved live 28 Sep 2026):
+    discount_rate = risk_free_rate(currency) + market_cap_tier_premium
+Beta is not used anywhere in this formula any more - see capm_engine.py's
+own module docstring for the full rationale and the tier table.
 
 TERMINAL / PERPETUAL GROWTH RATE - tied to the stock's own CURRENCY
 (capm_engine.PERPETUAL_GROWTH_BY_CCY), on the reasoning that no company can
@@ -345,23 +346,51 @@ def growth_from_history(fcf_history, dates=None):
 
     # Reorder oldest -> newest for a clean CAGR.
     series = list(reversed(fcf_history))
-    oldest, newest = series[0], series[-1]
+
+    # Growth-rewrite fix (owner-directed, 28 Sep 2026): the two endpoints
+    # are each the AVERAGE of the two oldest / two newest data points
+    # (series[:2] / series[-2:]), not the single oldest/newest value -
+    # smooths a one-off spike or dip at either edge of the window from
+    # single-handedly setting the whole CAGR. The `years` denominator
+    # changes to match: since each endpoint is now itself a 2-point
+    # window rather than a single year, the elapsed time is measured
+    # between the two windows' own "centers" - n-2 index-periods for n
+    # data points (e.g. 4 points: points 1&2 center on an effective
+    # "year 1.5", points 3&4 on "year 3.5", 2 years apart) - not n-1 (the
+    # full raw index span, which was correct for the single-point
+    # endpoints this formula used before today but overstates the gap
+    # between two SMOOTHED endpoints). Floored at 1: n==2 has
+    # oldest_avg==newest_avg regardless (both windows are the identical
+    # 2 points), so the ratio is always exactly 1.0 (0% CAGR - correctly
+    # reads as "not enough distinct years to measure a trend" rather
+    # than extrapolating from two noisy raw endpoints, what the OLD
+    # (pre-28-Sep-2026) first-vs-last formula did) whatever years is;
+    # n==3's single index-period is the smallest genuine gap.
+    oldest_avg = _mean(series[:2])
+    newest_avg = _mean(series[-2:])
 
     if dates and len(dates) == len(fcf_history):
+        # Same window-center reasoning as the value endpoints above,
+        # applied to real calendar dates instead of index counts - the
+        # midpoint DATE of the oldest pair to the midpoint DATE of the
+        # newest pair, so a regularly-spaced series' real-date years
+        # still closely agrees with the no-dates (index-count) years
+        # just above, and a genuine gap still changes the answer.
         dates_asc = list(reversed(dates))
-        oldest_date, newest_date = dates_asc[0], dates_asc[-1]
-        years = ((newest_date - oldest_date).days / 365.25) if (oldest_date and newest_date) else None
+        oldest_mid = dates_asc[0] + (dates_asc[1] - dates_asc[0]) / 2
+        newest_mid = dates_asc[-2] + (dates_asc[-1] - dates_asc[-2]) / 2
+        years = ((newest_mid - oldest_mid).days / 365.25) if (oldest_mid and newest_mid) else None
         if not years or years <= 0:
-            years = len(series) - 1
+            years = max(len(series) - 2, 1)
     else:
-        years = len(series) - 1
+        years = max(len(series) - 2, 1)
 
     # CAGR only makes sense between two positive endpoints.
-    if oldest is None or newest is None or oldest <= 0 or newest <= 0:
+    if oldest_avg is None or newest_avg is None or oldest_avg <= 0 or newest_avg <= 0:
         return None
 
     try:
-        cagr = (newest / oldest) ** (1.0 / years) - 1.0
+        cagr = (newest_avg / oldest_avg) ** (1.0 / years) - 1.0
     except Exception:
         return None
     return cagr
@@ -371,15 +400,14 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None):
     """
     Estimate a stage-1 growth rate and report where it came from.
 
-    When BOTH a Yahoo analyst 5-year growth estimate AND a clean historical
-    FCF CAGR are available, the growth rate used is the MIN of the two - i.e.
-    whichever of "what Yahoo's analysts expect" and "what the company has
-    actually delivered over the last 5 years" is more conservative wins. This
-    targets a real problem: Yahoo's 5-year analyst estimate is a thin,
-    sometimes single-analyst-driven field that regularly comes in
-    unrealistically high (e.g. 20%+ per year for a mature, mega-cap
-    business) - taking the min against actual historical FCF growth stops
-    that from silently driving the number on its own.
+    Growth-rewrite (owner-directed, 28 Sep 2026): Yahoo's analyst 5-year
+    estimate is used ON ITS OWN whenever available - no longer min'd
+    against historical FCF growth. Historical FCF growth (growth_from_
+    history() - see its own docstring for the "average of the oldest 2
+    years -> average of the newest 2" formula) is used only when Yahoo
+    has no coverage for this name at all, and only when it's a CLEAN,
+    POSITIVE signal (low year-to-year volatility - a noisy or negative
+    CAGR, often a capex-spike artifact, is not trusted).
 
     `ceiling` overrides the module-level GROWTH_CEIL - pass the result of
     growth_ceiling_for(info, currency) to apply the market-cap-tiered
@@ -388,10 +416,9 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None):
 
     The returned `governor` tells you what actually determined the FINAL
     (post-ceiling) number:
-        "Yahoo"   - the analyst estimate was the smaller/only signal, and it
-                    wasn't capped.
-        "History" - the historical FCF CAGR was the smaller/only signal, and
-                    it wasn't capped.
+        "Yahoo"   - the analyst estimate was used, and it wasn't capped.
+        "History" - the historical FCF CAGR was used (Yahoo had no
+                    coverage), and it wasn't capped.
         "Info"    - fell back to reported earningsGrowth/revenueGrowth.
         "Default" - fell back to DEFAULT_GROWTH (flagged red in the UI).
         "Cap"     - whichever signal would otherwise have been used was
@@ -399,12 +426,12 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None):
                     the ceiling itself is what's actually driving the
                     number, not Yahoo or History.
 
-    Priority when only one signal is available:
-        1. "analyst" - Yahoo's estimate alone, if history isn't clean/usable.
-        2. "history" - historical FCF CAGR alone, if Yahoo has no coverage,
-           but ONLY when it's a CLEAN, POSITIVE signal (low year-to-year
-           volatility). A noisy or negative CAGR (often a capex-spike
-           artifact) is not trusted.
+    Priority:
+        1. "analyst" - Yahoo's 5-year estimate alone, whenever available -
+           the single, decisive signal now, not blended with history.
+        2. "history" - historical FCF CAGR alone, only when Yahoo has no
+           coverage, and ONLY when it's a CLEAN, POSITIVE signal (low
+           year-to-year volatility).
         3. "info"    - reported earningsGrowth / revenueGrowth.
         4. "history" (non-negative) as a last numeric resort, else
         5. "default" - DEFAULT_GROWTH average (flagged red in the UI).
@@ -419,6 +446,9 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None):
         governor = "Cap" if raw_rate > ceiling else natural_governor
         return max(GROWTH_FLOOR, min(raw_rate, ceiling)), source, governor
 
+    if analyst_growth is not None:
+        return _finalize(analyst_growth, "analyst", "Yahoo")
+
     g = growth_from_history(fcf_series)
     clean = (
         g is not None
@@ -426,14 +456,6 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None):
         and fcf_series
         and _coeff_of_variation(fcf_series) <= 0.60
     )
-
-    if analyst_growth is not None and clean:
-        combined = min(analyst_growth, g)
-        natural_governor = "Yahoo" if analyst_growth <= g else "History"
-        return _finalize(combined, "analyst+history", natural_governor)
-
-    if analyst_growth is not None:
-        return _finalize(analyst_growth, "analyst", "Yahoo")
 
     if clean:
         return _finalize(g, "history", "History")
@@ -570,7 +592,8 @@ def dcf_intrinsic_value(
         "growth_governor":  "Yahoo" | "History" | "Info" | "Default" | "Manual" | "Cap" | None,
         "growth_ceiling_used": float,  # the market-cap-tiered ceiling actually applied
         "fcf_source":       "history" | "info" | "manual" | "none",
-        "discount_source":  "capm" | "capm-default" | "manual" | "fallback",
+        "discount_source":  "tiered" | "tiered-default" | "manual" | "fallback",
+        "discount_tier_label": str | None,  # A6: e.g. "mid-cap (US$10B-50B)" - only set on the "tiered"/"tiered-default" auto path
         "perpetual_source": "currency" | "manual" | "fallback",
         "growth_default": bool,   # True when the average growth had to be used
         "defaulted":      bool,   # True if any core input was an assumption
@@ -581,15 +604,16 @@ def dcf_intrinsic_value(
         "fcf_base_used":  float | None,  # the median actually used, when normalized
         "fcf_used":       float | None,  # the actual base FCF (listing currency, post-FX) fed into the model
         "fcf_per_share_used": float | None,  # fcf_used / shares - the number stage 1 compounds from
-        "discount_floored": bool,  # DCF fix: True if capm_engine floored beta and/or the rate itself
+        "discount_floored": bool,  # True if capm_engine floored the market-cap-tier rate itself at MIN_DISCOUNT_RATE
         "fx_converted":   str | None,  # DCF fix: "USD->AUD" etc. when financials/listing currency differ
         "fx_rate_used":   float | None,  # the rate actually applied
         "fx_fallback":    bool,   # True if fx_rate() had to use the static fallback table
-        "growth_path":    list[float] | None,  # Fix 2 (28 Sep 2026, owner-approved):
+        "growth_path":    list[float] | None,  # growth-rewrite (28 Sep 2026, owner-approved):
                                        # the growth_years yearly rates actually used in
-                                       # stage 1, faded from growth_rate (year 1) down to
-                                       # perpetual_rate (the final year) - see the stage-1
-                                       # loop's own comment below.
+                                       # stage 1 - flat at growth_rate for years 1-5,
+                                       # fading linearly to perpetual_rate over years
+                                       # 6-growth_years - see the stage-1 loop's own
+                                       # comment below.
     }
     """
     meta = {
@@ -598,6 +622,7 @@ def dcf_intrinsic_value(
         "growth_ceiling_used": None,
         "fcf_source": "none",
         "discount_source": None,
+        "discount_tier_label": None,
         "perpetual_source": None,
         "growth_default": False,
         "defaulted": False,
@@ -699,17 +724,20 @@ def dcf_intrinsic_value(
                                  min(discount_rate, capm_engine.DISCOUNT_CEIL))
             meta["discount_source"] = "manual"
             # Deliberately a separate key from discount_floored (which the
-            # auto/CAPM path below sets for a different reason - a low
-            # measured beta - and which the app renders with beta-specific
-            # caption text): this is a manual value that was out of bounds
-            # and got clamped, which needs its own, accurate on-screen text.
+            # auto/tiered path below sets for a different reason - the
+            # A6 market-cap tier premium sitting below MIN_DISCOUNT_RATE,
+            # e.g. the mega-cap tier at today's rates - and which the app
+            # renders with tier-specific caption text): this is a manual
+            # value that was out of bounds and got clamped, which needs
+            # its own, accurate on-screen text.
             if _dr_capped:
                 meta["discount_manual_clamped"] = True
         else:
             try:
                 discount_rate, capm_meta = capm_engine.resolve_discount_rate(info, currency)
-                meta["discount_source"] = "capm-default" if capm_meta["defaulted"] else "capm"
+                meta["discount_source"] = "tiered-default" if capm_meta["defaulted"] else "tiered"
                 meta["discount_floored"] = bool(capm_meta.get("floored"))
+                meta["discount_tier_label"] = capm_meta.get("tier_label")
             except Exception:
                 discount_rate = DEFAULT_DISCOUNT_RATE
                 meta["discount_source"] = "fallback"
@@ -779,26 +807,31 @@ def dcf_intrinsic_value(
         meta["fcf_per_share_used"] = round(fcf_per_share, 4)
 
         # Stage 1: discount each year's grown cash flow back to today.
-        # Fix 2 (28 Sep 2026, owner-approved): growth FADES linearly from
-        # growth_rate (year 1, as chosen above - post-cap/floor) down to
-        # perpetual_rate (year growth_years), rather than compounding at
-        # the flat stage-1 rate for the whole horizon and then dropping
-        # straight to the terminal rate at the boundary. A company
-        # growing at, say, 16% today plausibly still grows near 16% next
-        # year, but not for 10 STRAIGHT years right up to the moment it's
-        # assumed to settle into a ~2% perpetual rate forever - fading it
-        # in evenly is the standard two-stage-DCF convention this
-        # module's own docstring already describes it as. g_earn/growth_
-        # rate selection itself (estimate_growth, caps, floor) is
-        # UNCHANGED - only how it's applied across the 10 years changed.
+        # Growth-rewrite amendment (owner-directed, 28 Sep 2026): three
+        # sub-stages, not one flat rate for the whole horizon:
+        #   years 1-5:  flat at growth_rate (g1, as chosen above)
+        #   years 6-N:  fade linearly from g1 down to perpetual_rate,
+        #               reaching perpetual_rate exactly in year N
+        #               (growth_years, normally 10):
+        #                   g_t = g1 - (g1 - perpetual_rate) * (t-5) / (N-5)
+        # A company growing at, say, 10% today plausibly still grows near
+        # 10% for the next several years, but not flat all the way to the
+        # terminal-value boundary - fading only the back half is the
+        # owner's own explicit design (replacing both the pre-28-Sep-2026
+        # flat-10-years model AND the since-reverted single-stage fade
+        # from every year 1). growth_years <= 5 has no fade stage at all
+        # (every year is in the flat window) - handled by the same
+        # divide-by-(growth_years-5) guard as growth_years<=1 elsewhere in
+        # this codebase. meta["growth_path"] carries all growth_years
+        # yearly rates actually used.
         intrinsic = 0.0
         cash_flow = fcf_per_share
         growth_path = []
         for year in range(1, growth_years + 1):
-            if growth_years > 1:
-                g_t = growth_rate - (growth_rate - perpetual_rate) * (year - 1) / (growth_years - 1)
-            else:
+            if year <= 5 or growth_years <= 5:
                 g_t = growth_rate
+            else:
+                g_t = growth_rate - (growth_rate - perpetual_rate) * (year - 5) / (growth_years - 5)
             growth_path.append(round(g_t, 4))
             cash_flow = cash_flow * (1 + g_t)
             intrinsic += cash_flow / ((1 + discount_rate) ** year)

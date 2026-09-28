@@ -99,8 +99,14 @@ print(f"[chart_label_relabelled] pe_forward bar label is now {_pe_forward_entry[
 
 # _build_fair_value() end-to-end: dcf_result carries the discount rate,
 # pe_forward_value comes out discounted and consistent with the direct call.
+# Change 3 (28 Sep 2026, later same day): _build_fair_value() now takes a
+# SEPARATE canonical_dcf_result for the "dcf" row itself (see that
+# function's own docstring) - dcf_result here still drives pe_forward/
+# pe_trailing/equity_10y exactly as before; a matching canonical result is
+# passed too so the "dcf" row's own assertions below keep working.
 _dcf_result = {"value": 5000.0, "growth": _G_EARN, "perpetual_rate": 0.02, "discount_rate": _DISCOUNT_RATE}
-_fv = ace._build_fair_value(_bundle, "ADP", _dcf_result)
+_canonical_dcf_result = {"value": 5000.0, "growth": _G_EARN, "perpetual_rate": 0.02, "discount_rate": _DISCOUNT_RATE}
+_fv = ace._build_fair_value(_bundle, "ADP", _dcf_result, _canonical_dcf_result)
 _methods = _fv["valuation_methods"]["ADP"]
 assert abs(_methods["pe_forward"] - _value) < 0.01, _methods["pe_forward"]
 print(f"[build_fair_value_wires_through] _build_fair_value()'s own pe_forward value "
@@ -124,7 +130,7 @@ print(f"[default_perpetual_rate_imported] fcf_valuation_engine.DEFAULT_PERPETUAL
 
 # The Fair Value tab's "Perpetual Rate" input label now names the currency.
 _dcf_result_usd = {"value": 5000.0, "growth": _G_EARN, "perpetual_rate": 0.02, "discount_rate": _DISCOUNT_RATE}
-_fv_usd = ace._build_fair_value(_bundle, "ADP", _dcf_result_usd)
+_fv_usd = ace._build_fair_value(_bundle, "ADP", _dcf_result_usd, _dcf_result_usd)
 _dcf_inputs_usd = {i["label"]: i["value"] for i in _fv_usd["valuation_inputs"]["ADP"]["dcf"]}
 assert "Perpetual Rate (USD)" in _dcf_inputs_usd, list(_dcf_inputs_usd)
 assert abs(_dcf_inputs_usd["Perpetual Rate (USD)"] - 0.02) < 1e-9
@@ -134,8 +140,8 @@ print("[perpetual_rate_label_names_currency] a USD bundle's dcf input row is lab
 _bundle_aud = dict(_bundle)
 _bundle_aud["info"] = dict(_bundle["info"])
 _bundle_aud["info"]["currency"] = "AUD"
-_fv_aud = ace._build_fair_value(_bundle_aud, "ADP.AX", {"value": 5000.0, "growth": _G_EARN,
-                                                          "perpetual_rate": 0.025, "discount_rate": _DISCOUNT_RATE})
+_aud_result = {"value": 5000.0, "growth": _G_EARN, "perpetual_rate": 0.025, "discount_rate": _DISCOUNT_RATE}
+_fv_aud = ace._build_fair_value(_bundle_aud, "ADP.AX", _aud_result, _aud_result)
 _dcf_inputs_aud = {i["label"]: i["value"] for i in _fv_aud["valuation_inputs"]["ADP.AX"]["dcf"]}
 assert "Perpetual Rate (AUD)" in _dcf_inputs_aud, list(_dcf_inputs_aud)
 print("[perpetual_rate_label_currency_varies] an AUD bundle's dcf input row is labelled "

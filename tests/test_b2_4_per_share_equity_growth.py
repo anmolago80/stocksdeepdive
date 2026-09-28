@@ -102,31 +102,48 @@ print(f"[years_from_real_dates] a 4-calendar-year gap (2022->2026, 3 columns) co
       f"CAGR as {_old_buggy_cagr_gap:.4f} instead of {_correct_cagr_gap:.4f}) OK")
 
 # ---- growth_from_history(): optional dates parameter, live path unchanged ----
-FCF_HISTORY = [200.0, 150.0, 100.0]  # newest first, 3 points -> old code: years=2
+# Growth-rewrite (owner-directed, 28 Sep 2026): the endpoints are now the
+# AVERAGE of the two oldest / two newest points (oldest_avg=mean(100,150)
+# =125, newest_avg=mean(150,200)=175), not the single oldest/newest value
+# - see growth_from_history()'s own docstring. Since each endpoint is now
+# a 2-point WINDOW rather than a single year, the elapsed-years
+# denominator this fixture tests also changes to match: it's measured
+# between the two windows' own "centers" (n-2 index-periods for n points,
+# 1 for this fixture's 3 points), not n-1 (the old single-point full
+# span) - both the no-dates and the dates-based branches use this same
+# window-center convention now, which is WHY they still closely agree
+# for regularly-spaced dates (the property this fixture was written to
+# prove, and still proves) even though the absolute years values moved.
+FCF_HISTORY = [200.0, 150.0, 100.0]  # newest first, 3 points
 FCF_DATES_REGULAR = [datetime.date(2026, 6, 30), datetime.date(2025, 6, 30), datetime.date(2024, 6, 30)]
 FCF_DATES_GAPPED = [datetime.date(2026, 6, 30), datetime.date(2025, 6, 30), datetime.date(2022, 6, 30)]
+_FCF_RATIO = 175.0 / 125.0  # newest_avg / oldest_avg
+_FCF_NO_DATES_YEARS = 1  # max(len(series) - 2, 1) for 3 points
 
-# No dates passed (every EXISTING/live caller today) -> EXACT same
-# column-count behavior as before this fix, byte-for-byte.
+# No dates passed (every EXISTING/live caller today) -> the window-center
+# index-period formula, byte-for-byte.
 g_no_dates = fve.growth_from_history(FCF_HISTORY)
 g_regular_dates = fve.growth_from_history(FCF_HISTORY, dates=FCF_DATES_REGULAR)
-assert g_no_dates == (200.0 / 100.0) ** (1 / 2) - 1
-# Regularly-spaced real dates agree CLOSELY (not bit-for-bit - 2 real
-# calendar years is 730 or 731 days depending on the leap-year mix,
-# never exactly 2*365.25) with the column-count answer.
+assert g_no_dates == _FCF_RATIO ** (1 / _FCF_NO_DATES_YEARS) - 1
+# Regularly-spaced real dates agree CLOSELY (not bit-for-bit - the real
+# midpoint-to-midpoint gap is 365 or 366 days depending on the leap-year
+# mix, never exactly 365.25) with the no-dates answer.
 assert abs(g_no_dates - g_regular_dates) < 0.001
 print("[growth_from_history_backward_compatible] omitting dates (every live caller today) gives "
-      "the exact unchanged column-count answer; regularly-spaced real dates agree with it "
+      "the window-center index-period answer; regularly-spaced real dates agree with it "
       "anyway OK")
 
 g_gapped_dates = fve.growth_from_history(FCF_HISTORY, dates=FCF_DATES_GAPPED)
-_correct_fcf_years = (FCF_DATES_GAPPED[0] - FCF_DATES_GAPPED[-1]).days / 365.25
-_correct_fcf_cagr = (200.0 / 100.0) ** (1 / _correct_fcf_years) - 1
+_gapped_dates_asc = list(reversed(FCF_DATES_GAPPED))
+_oldest_mid = _gapped_dates_asc[0] + (_gapped_dates_asc[1] - _gapped_dates_asc[0]) / 2
+_newest_mid = _gapped_dates_asc[-2] + (_gapped_dates_asc[-1] - _gapped_dates_asc[-2]) / 2
+_correct_fcf_years = (_newest_mid - _oldest_mid).days / 365.25
+_correct_fcf_cagr = _FCF_RATIO ** (1 / _correct_fcf_years) - 1
 assert abs(g_gapped_dates - _correct_fcf_cagr) < 1e-9
 assert g_gapped_dates != g_no_dates  # a real gap DOES change the answer when dates are supplied
 print("[growth_from_history_dates_fix_a_real_gap] when dates ARE supplied and reveal a real "
-      "calendar gap, the CAGR correctly uses the true elapsed years, differing from the "
-      "column-count answer OK")
+      "calendar gap, the CAGR correctly uses the true elapsed years (measured window-center to "
+      "window-center), differing from the no-dates answer OK")
 
 # Mismatched-length dates (a caller passing garbage) -> safe fallback, never a crash or wrong math.
 g_mismatched = fve.growth_from_history(FCF_HISTORY, dates=[datetime.date(2026, 1, 1)])
