@@ -8,9 +8,14 @@ a hand-entered per-stock number.
 Model (a standard two-stage DCF):
     1. Base = latest annual free cash flow per share (from the cash-flow
        statement, else info["freeCashflow"], else a per-stock manual override).
-    2. Grow it for GROWTH_YEARS at an estimated growth rate, discounting each
-       year back to today at the discount rate.
-    3. Add a Gordon-growth terminal value for everything beyond the horizon.
+    2. Grow it for GROWTH_YEARS years, discounting each year back to today
+       at the discount rate. The growth rate FADES LINEARLY (Fix 2, 28 Sep
+       2026) from the estimated stage-1 rate in year 1 down to the
+       perpetual/terminal rate by the final year, rather than compounding
+       flat for the whole horizon then dropping straight to the terminal
+       rate - meta["growth_path"] carries the actual yearly rate used.
+    3. Add a Gordon-growth terminal value for everything beyond the horizon,
+       on the final (faded-to-perpetual-rate) year's cash flow.
     intrinsic = sum(discounted stage-1 cash flows) + discounted terminal value
 
 GROWTH RATE, in priority order:
@@ -580,6 +585,11 @@ def dcf_intrinsic_value(
         "fx_converted":   str | None,  # DCF fix: "USD->AUD" etc. when financials/listing currency differ
         "fx_rate_used":   float | None,  # the rate actually applied
         "fx_fallback":    bool,   # True if fx_rate() had to use the static fallback table
+        "growth_path":    list[float] | None,  # Fix 2 (28 Sep 2026, owner-approved):
+                                       # the growth_years yearly rates actually used in
+                                       # stage 1, faded from growth_rate (year 1) down to
+                                       # perpetual_rate (the final year) - see the stage-1
+                                       # loop's own comment below.
     }
     """
     meta = {
@@ -608,6 +618,7 @@ def dcf_intrinsic_value(
         "fx_converted": None,
         "fx_rate_used": None,
         "fx_fallback": False,
+        "growth_path": None,
     }
 
     try:
@@ -768,11 +779,30 @@ def dcf_intrinsic_value(
         meta["fcf_per_share_used"] = round(fcf_per_share, 4)
 
         # Stage 1: discount each year's grown cash flow back to today.
+        # Fix 2 (28 Sep 2026, owner-approved): growth FADES linearly from
+        # growth_rate (year 1, as chosen above - post-cap/floor) down to
+        # perpetual_rate (year growth_years), rather than compounding at
+        # the flat stage-1 rate for the whole horizon and then dropping
+        # straight to the terminal rate at the boundary. A company
+        # growing at, say, 16% today plausibly still grows near 16% next
+        # year, but not for 10 STRAIGHT years right up to the moment it's
+        # assumed to settle into a ~2% perpetual rate forever - fading it
+        # in evenly is the standard two-stage-DCF convention this
+        # module's own docstring already describes it as. g_earn/growth_
+        # rate selection itself (estimate_growth, caps, floor) is
+        # UNCHANGED - only how it's applied across the 10 years changed.
         intrinsic = 0.0
         cash_flow = fcf_per_share
+        growth_path = []
         for year in range(1, growth_years + 1):
-            cash_flow = cash_flow * (1 + growth_rate)
+            if growth_years > 1:
+                g_t = growth_rate - (growth_rate - perpetual_rate) * (year - 1) / (growth_years - 1)
+            else:
+                g_t = growth_rate
+            growth_path.append(round(g_t, 4))
+            cash_flow = cash_flow * (1 + g_t)
             intrinsic += cash_flow / ((1 + discount_rate) ** year)
+        meta["growth_path"] = growth_path
 
         # Stage 2: Gordon terminal value on the final year's cash flow.
         terminal_cf = cash_flow * (1 + perpetual_rate)

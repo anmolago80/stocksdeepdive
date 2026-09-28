@@ -3149,10 +3149,26 @@ def _build_fair_value(bundle, ticker, dcf_result):
         # answers that on sight instead of requiring a code dig.
         _dcf_ccy = (info.get("currency") or "").upper()
         _perp_label = f"Perpetual Rate ({_dcf_ccy})" if _dcf_ccy else "Perpetual Rate"
+        # Fix 2 (28 Sep 2026, owner-approved): growth is no longer flat for
+        # all 10 stage-1 years - it fades linearly from Base Case Growth
+        # (year 1) down to the Perpetual Rate above (year 10) - see
+        # fcf_valuation_engine.dcf_intrinsic_value()'s own stage-1 loop
+        # comment. Shown as "X% -> Y%" (format="raw" - a display-ready
+        # string, not a number _cp_format() should try to reformat) so
+        # this bar's own growth figure doesn't read as "16% for 10
+        # years" when it's really just the starting point.
+        _dcf_growth = dcf_result.get("growth")
+        _dcf_perp = dcf_result.get("perpetual_rate")
+        if _dcf_growth is not None and _dcf_perp is not None:
+            _growth_display = f"{_dcf_growth * 100:.1f}% -> {_dcf_perp * 100:.1f}% (fades)"
+            _growth_fmt = "raw"
+        else:
+            _growth_display = _dcf_growth
+            _growth_fmt = "pct"
         valuation_inputs["dcf"] = [
             {"label": _perp_label, "value": dcf_result.get("perpetual_rate"), "format": "pct"},
             {"label": "Discount Rate", "value": dcf_result.get("discount_rate"), "format": "pct"},
-            {"label": "Base Case Growth", "value": dcf_result.get("growth"), "format": "pct"},
+            {"label": "Base Case Growth", "value": _growth_display, "format": _growth_fmt},
         ]
     if "equity_10y" in valuation_methods:
         # No "Average P/E" here - matches the hand-built workbook's own

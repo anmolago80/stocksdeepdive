@@ -10655,6 +10655,20 @@ def page_deep_dive():
             )
             _m5.metric(i18n.t("dd.kpi.signal", _dd_lang), _dd_signal, help=METRIC_HELP["Signal"])
 
+            # Fix 2 (28 Sep 2026, owner-approved): the DCF's stage-1 growth
+            # no longer holds flat for all 10 years - it fades linearly
+            # from the stage-1 rate down to the perpetual rate (see
+            # fcf_valuation_engine.dcf_intrinsic_value()'s own comment on
+            # the stage-1 loop). Shown here so the number on screen
+            # (dcf_growth, the YEAR-1 rate) doesn't read as "the rate used
+            # for all 10 years" when it's really just the starting point.
+            if _dd.get("dcf_growth") is not None and _dd.get("dcf_perpetual") is not None:
+                st.caption(
+                    f"DCF growth fades {_dd['dcf_growth']:.1f}% -> {_dd['dcf_perpetual']:.1f}% "
+                    "over the 10-year forecast, reaching the perpetual rate by year 10 "
+                    "(not held flat for the whole horizon)."
+                )
+
             # Task 10: flag it on screen whenever the DCF's base cash flow used
             # the 3-year median instead of the latest reporting year, because
             # that latest year was an outlier (see fcf_valuation_engine.
