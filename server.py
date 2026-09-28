@@ -296,6 +296,16 @@ async def lifespan(app: FastAPI):
     # cleanups above.
     with suppress(Exception):
         nightly_scan.cleanup_universe_integrity_pollution()
+    # Owner decision (28 Sep 2026): one-off, marker-file-guarded history
+    # reset for the DCF growth-fade cutover (71f183b) - moves every
+    # score_history row dated before the cutoff into an archive file on
+    # the volume, then clears them from the live table, so every "over
+    # time" chart/figure starts fresh from the corrected DCF - see
+    # nightly_scan.archive_pre_growth_fade_history()'s own docstring.
+    # Same "never allowed to stop the site serving" rule as the cleanups
+    # above.
+    with suppress(Exception):
+        nightly_scan.archive_pre_growth_fade_history()
     # Commit O (21 Sep 2026, owner-verified): EBIT_FROM_PRETAX is a
     # Railway env var, not a code change - see nightly_scan.check_ebit_
     # switch_flip()'s own docstring for why flipping it needs a boot-time

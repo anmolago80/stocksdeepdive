@@ -14,12 +14,17 @@ sessions/cron jobs writing at once). Callers never touch SQL directly.
 Nothing here is ever deleted in ordinary operation - a ticker scanned
 every night for years accumulates one very small row per day, and
 digest/Deep-Dive "days ago" lookups depend on that history actually being
-there to look back at. The one exception is delete_bad_price_rows()
-below, a Fix 9 (2026-09-01) one-off cleanup helper for rows that were
-never valid data to begin with (a NaN price from a broken scan run) -
-see that function's own docstring.
+there to look back at. There are two deliberate, narrowly-scoped
+exceptions: delete_bad_price_rows() below, a Fix 9 (2026-09-01) one-off
+cleanup helper for rows that were never valid data to begin with (a NaN
+price from a broken scan run); and archive_rows_before() below, the
+owner-decided history reset (28 Sep 2026) for the DCF growth-fade cutover
+- unlike delete_bad_price_rows(), archive_rows_before() never discards a
+row outright, it MOVES it to a JSON file on the volume first - see that
+function's own docstring.
 """
 
+import json
 import os
 import sqlite3
 from datetime import datetime, timezone, timedelta
@@ -315,6 +320,70 @@ def delete_bad_price_rows(day):
             (day,),
         )
         return cur.rowcount
+
+
+def archive_rows_before(cutoff_day, archive_path):
+    """Owner decision (28 Sep 2026), history reset for the DCF growth-fade
+    cutover (71f183b): MOVES every row with day < `cutoff_day` ('YYYY-MM-DD')
+    into the JSON file at `archive_path`, then deletes them from the live
+    table. Unlike delete_bad_price_rows() above, nothing is discarded -
+    every archived row is still on the volume, just no longer in the live
+    series any "over time" reader (get()/latest()/series()/before_date()/
+    all_tracked_tickers()/tracked_summary()) sees.
+
+    Returns the number of rows moved on THIS call.
+
+    Idempotent by construction, not by a marker file: the SELECT below is
+    the only thing that decides whether there's work to do, so a second
+    call (nothing left with day < cutoff_day, because the first call
+    already deleted it) finds zero rows and returns 0 without touching the
+    archive file - a correct no-op, not a special case. This also makes it
+    crash-safe between the write and the delete: the archive file is
+    written FIRST (merged with whatever's already there, de-duplicated by
+    (day, ticker)) and only THEN are the rows deleted from the live table;
+    if the process dies in between, the next call re-reads the same
+    still-live rows, merges them into the archive again (the dedupe makes
+    that a no-op on the file), and retries the delete.
+
+    Caller's responsibility: `cutoff_day` and `archive_path`. This
+    function has no opinion on either - see nightly_scan.
+    archive_pre_growth_fade_history() for the one-off boot-time caller
+    that supplies both for this specific cutover."""
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT day, ticker, long_score, price, quality, moat, mos_pct,
+                      intrinsic_value, valuation_label, moat_state, trading_status,
+                      data_correction
+                 FROM score_history
+                 WHERE day < ?
+                 ORDER BY day ASC, ticker ASC""",
+            (cutoff_day,),
+        ).fetchall()
+    new_rows = [dict(r) for r in rows]
+    if not new_rows:
+        return 0
+
+    os.makedirs(os.path.dirname(archive_path), exist_ok=True)
+    existing = []
+    if os.path.exists(archive_path):
+        try:
+            with open(archive_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except (OSError, ValueError):
+            existing = []
+    seen = {(r.get("day"), r.get("ticker")) for r in existing}
+    merged = existing + [r for r in new_rows if (r["day"], r["ticker"]) not in seen]
+
+    tmp_path = archive_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(merged, f)
+    os.replace(tmp_path, archive_path)
+
+    with _conn() as conn:
+        conn.execute("DELETE FROM score_history WHERE day < ?", (cutoff_day,))
+
+    return len(new_rows)
 
 
 def all_tracked_tickers():

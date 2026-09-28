@@ -1726,6 +1726,89 @@ def cleanup_fix9_nan_data(log=print):
         log(f"[nightly_scan] fix9 cleanup: could not write marker file: {e}")
 
 
+# Owner decision (28 Sep 2026): the DCF growth-fade deploy (71f183b,
+# committed 2026-09-28T09:44:00Z) changed how the live DCF computes
+# intrinsic value/MOS - see fcf_valuation_engine.dcf_intrinsic_value()'s
+# own docstring. Every score_history row dated before this cutoff day was
+# computed with the OLD (flat-growth) method, so every "over time" chart/
+# figure that reads score_history (Deep Dive's score-history chart,
+# /track-record, the Deep Dive "vs 30 days ago" caption, the weekly
+# digest's week-over-week column, results-day before/after comparisons)
+# would otherwise mix old- and new-method numbers on either side of one
+# calendar day, looking like a real jump that isn't one.
+#
+# score_history's `day` column is date-only (no time-of-day, same
+# limitation FIX9_CLEANUP_DAY above already documents) - a row dated
+# exactly this cutoff day could in principle be either side of the
+# 09:44 UTC deploy (last night's 00:00 UTC nightly scan ran BEFORE it,
+# any same-day manual/catch-up rescan run AFTER it would overwrite that
+# ticker's row via score_history.record()'s own upsert). This constant
+# is therefore deliberately the archive file's own "pre_2026-09-28"
+# cutoff, not "on-or-before": everything strictly before this day is
+# unambiguously old-method and gets archived; today's own rows are left
+# alone rather than guessed at from a column that can't tell the two
+# apart.
+GROWTH_FADE_HISTORY_CUTOFF_DAY = "2026-09-28"
+
+
+def _growth_fade_archive_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".score_history_archived_pre_2026_09_28.done")
+
+
+def _growth_fade_archive_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, "archive", "score_history_pre_2026-09-28.json")
+
+
+def archive_pre_growth_fade_history(log=print):
+    """One-off, idempotent, marker-file-guarded boot-time step (owner
+    decision, 28 Sep 2026) - moves every score_history row dated before
+    GROWTH_FADE_HISTORY_CUTOFF_DAY (see that constant's own comment for
+    why this cutoff day, not an exact timestamp) into an archive file on
+    the volume via score_history.archive_rows_before(), then removes them
+    from the live table, so every "over time" chart/figure that reads
+    score_history starts fresh from the corrected DCF. Nothing is
+    discarded - see archive_rows_before()'s own docstring and score_
+    history.py's module docstring ("nothing here is ever deleted in
+    ordinary operation" - this is the SECOND deliberate exception, after
+    delete_bad_price_rows()).
+
+    Changes nothing else: no schedule, scan, Top 100 selection or scoring
+    logic is touched by this function or by score_history.archive_rows_
+    before() - this only moves already-recorded rows out of one table.
+
+    Guarded by a marker file, same convention as cleanup_fix9_nan_data()/
+    cleanup_sector_universe_pollution() above - this only ever needs to
+    run once. score_history.archive_rows_before() is independently
+    idempotent too (a second call finds nothing left matching the cutoff
+    and correctly no-ops), so the marker here only exists to skip the
+    query on every boot after the first, not for correctness - unlike
+    those two cleanups, a second run of the underlying archive function
+    would not even touch the archive file.
+
+    Called unconditionally from server.py's lifespan(), wrapped in
+    `with suppress(Exception)` there - never allowed to stop the site
+    serving, same rule as every other one-off boot-time step here."""
+    marker = _growth_fade_archive_marker_path()
+    if os.path.exists(marker):
+        return
+    archive_path = _growth_fade_archive_path()
+    archived = 0
+    try:
+        archived = score_history.archive_rows_before(GROWTH_FADE_HISTORY_CUTOFF_DAY, archive_path)
+    except Exception as e:
+        log(f"[nightly_scan] growth-fade history archive failed: {e}")
+    log(f"[nightly_scan] growth-fade history archive: {archived} row(s) moved to "
+        f"{archive_path} (rows dated before {GROWTH_FADE_HISTORY_CUTOFF_DAY})")
+    try:
+        with open(marker, "w") as f:
+            f.write(f"growth-fade history archive ran {datetime.now(timezone.utc).isoformat()}, "
+                     f"{archived} row(s) archived\n")
+    except OSError as e:
+        log(f"[nightly_scan] growth-fade history archive: could not write marker file: {e}")
+
+
 def _commit_l_cleanup_marker_path():
     base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
     return os.path.join(base, ".commitL_sector_pollution_cleanup.done")
