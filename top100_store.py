@@ -331,6 +331,34 @@ def _conn():
             custom_id_map_json TEXT
         )"""
     )
+    # Audit fixes, Commit 1 (30 Sep 2026, owner-directed, "close the no-
+    # resubmit-loop door") - see top100_engine.py's own TOP100_FAILURE_*
+    # constants docstring for the full root cause. One row per (ticker,
+    # model, rubric_version) - rubric_version is part of the PK for the
+    # same reason it's part of top100_scores' own PK: a rubric bump is a
+    # brand-new question set, so a failure recorded under a retired
+    # rubric must never block scoring under the new one.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS top100_score_failures (
+            ticker TEXT NOT NULL,
+            model TEXT NOT NULL,
+            rubric_version TEXT NOT NULL,
+            failed_at TEXT NOT NULL,
+            reason TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (ticker, model, rubric_version)
+        )"""
+    )
+    # Same commit - the hard daily spend cap's own persistence, keyed by
+    # UTC date so it resets automatically at day rollover with no extra
+    # bookkeeping (no row for a date means 0 batches/0 entrants so far).
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS top100_daily_submissions (
+            utc_date TEXT PRIMARY KEY,
+            batches INTEGER NOT NULL DEFAULT 0,
+            entrants INTEGER NOT NULL DEFAULT 0
+        )"""
+    )
     return conn
 
 
@@ -756,3 +784,91 @@ def get_batch_state():
 def clear_batch_state():
     with _conn() as conn:
         conn.execute("DELETE FROM top100_batch_state WHERE id = 1")
+
+
+# -----------------------------------------------------------------
+# Score failures (audit fixes, Commit 1, 30 Sep 2026) - per-ticker
+# retry/strike memory so a batch result that failed isn't silently
+# re-selected and resubmitted forever. See top100_engine.py's own
+# TOP100_FAILURE_* constants docstring for the full root cause.
+# -----------------------------------------------------------------
+
+def record_score_failure(ticker, model, rubric_version, reason):
+    """Upserts one failure for (ticker, model, rubric_version) -
+    increments `attempts` (starts at 1 on the first failure), refreshes
+    `failed_at` to now, and overwrites `reason` with the latest one
+    (only the most recent failure reason is kept; the point of this
+    table is retry gating, not a full failure history)."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO top100_score_failures (ticker, model, rubric_version, failed_at, reason, attempts)
+                 VALUES (?, ?, ?, ?, ?, 1)
+               ON CONFLICT(ticker, model, rubric_version) DO UPDATE SET
+                 failed_at = excluded.failed_at,
+                 reason = excluded.reason,
+                 attempts = top100_score_failures.attempts + 1""",
+            (ticker, model, rubric_version, datetime.now(timezone.utc).isoformat(), reason),
+        )
+
+
+def clear_score_failure(ticker, model, rubric_version):
+    """Deletes any failure row for (ticker, model, rubric_version) - a
+    successful score clears this ticker's strike count entirely, so a
+    ticker that fails once and later succeeds isn't left shadowed by a
+    stale attempts tally. A no-op (no error) if no row exists."""
+    with _conn() as conn:
+        conn.execute(
+            "DELETE FROM top100_score_failures WHERE ticker = ? AND model = ? AND rubric_version = ?",
+            (ticker, model, rubric_version),
+        )
+
+
+def score_failures_for_model(model, rubric_version):
+    """{ticker: {"failed_at", "reason", "attempts"}, ...} for every
+    ticker with a recorded failure under this exact (model, rubric_
+    version) - one bulk read for top100_engine._unscored_tickers() to
+    filter against, rather than a query per pooled ticker."""
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM top100_score_failures WHERE model = ? AND rubric_version = ?",
+            (model, rubric_version),
+        ).fetchall()
+    return {r["ticker"]: {"failed_at": r["failed_at"], "reason": r["reason"], "attempts": r["attempts"]}
+            for r in rows}
+
+
+# -----------------------------------------------------------------
+# Daily submission cap (audit fixes, Commit 1, 30 Sep 2026) - hard
+# spend ceiling, keyed by UTC date. See top100_engine.submit_nightly_
+# batch()'s own docstring for how the two counters are enforced.
+# -----------------------------------------------------------------
+
+def record_daily_submission(utc_date, entrant_count):
+    """Increments today's batch count by 1 and entrant count by
+    `entrant_count` - called once per successfully-submitted batch,
+    never on a refused/failed submission attempt."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO top100_daily_submissions (utc_date, batches, entrants)
+                 VALUES (?, 1, ?)
+               ON CONFLICT(utc_date) DO UPDATE SET
+                 batches = top100_daily_submissions.batches + 1,
+                 entrants = top100_daily_submissions.entrants + excluded.entrants""",
+            (utc_date, entrant_count),
+        )
+
+
+def get_daily_submission_state(utc_date):
+    """{"batches", "entrants"} submitted so far for this UTC date -
+    {"batches": 0, "entrants": 0} if nothing has been submitted yet
+    today (no row written), never None - callers compare directly
+    against the TOP100_MAX_* caps with no extra None-check needed."""
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM top100_daily_submissions WHERE utc_date = ?", (utc_date,)
+        ).fetchone()
+    if not row:
+        return {"batches": 0, "entrants": 0}
+    return {"batches": row["batches"], "entrants": row["entrants"]}

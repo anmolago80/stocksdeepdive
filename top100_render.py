@@ -843,15 +843,38 @@ def _score_row_with_fallback(ticker, scores):
     return fallback, fallback is not None
 
 
+def _enrich_rows(rows, scores, failures):
+    """Shared enrichment loop for _enriched_pool()/_enriched_asx_
+    extension() - "score_row"/"composite"/"is_fallback_score" exactly
+    as before, plus "score_failure" (audit fixes, Commit 1, 30 Sep
+    2026): the row's own top100_store.score_failures_for_model() entry
+    (or None), read once per page render and passed in rather than
+    queried per ticker - _shelf_row_html() uses it to show a distinct
+    "scoring failed" caption once a ticker has hit top100_engine.
+    TOP100_FAILURE_MAX_ATTEMPTS strikes under the CURRENT rubric,
+    instead of the generic "scored automatically at the next nightly
+    run" AWAITING caption, which would otherwise be actively
+    misleading for a ticker this rubric has given up retrying."""
+    out = []
+    for row in rows:
+        score_row, is_fallback = _score_row_with_fallback(row["ticker"], scores)
+        composite = top100_engine.composite_score(score_row)
+        out.append({**row, "score_row": score_row, "composite": composite,
+                     "is_fallback_score": is_fallback,
+                     "score_failure": failures.get(row["ticker"])})
+    return out
+
+
 def _enriched_pool():
     """current_pool() rows, each augmented with "score_row" (this
     ticker's latest current-rubric score - top100_store.latest_scores_
     for_model() - or a previous-rubric fallback, see _score_row_with_
     fallback()'s own docstring - or None if neither exists), "composite"
-    (top100_engine.composite_score(), or None), and "is_fallback_score"
-    (True only when score_row came from the fallback) - the one place
-    every tab reads from, so the Top 20 tabs and the Full 100 tab can
-    never compute composite differently from each other.
+    (top100_engine.composite_score(), or None), "is_fallback_score"
+    (True only when score_row came from the fallback), and "score_
+    failure" (see _enrich_rows()'s own docstring) - the one place every
+    tab reads from, so the Top 20 tabs and the Full 100 tab can never
+    compute composite differently from each other.
 
     Results-driven Top 100 refresh (27 Sep 2026): reads latest_scores_
     for_model() instead of scores_for_quarter_model(current_quarter(),
@@ -863,33 +886,25 @@ def _enriched_pool():
     pool = top100_store.current_pool()
     scores = top100_store.latest_scores_for_model(
         top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
-    out = []
-    for row in pool:
-        score_row, is_fallback = _score_row_with_fallback(row["ticker"], scores)
-        composite = top100_engine.composite_score(score_row)
-        out.append({**row, "score_row": score_row, "composite": composite,
-                     "is_fallback_score": is_fallback})
-    return out
+    failures = top100_store.score_failures_for_model(
+        top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
+    return _enrich_rows(pool, scores, failures)
 
 
 def _enriched_asx_extension():
     """top100_store.current_asx_extension() rows, augmented with score_
-    row/composite/is_fallback_score exactly like _enriched_pool() does
-    for the global pool - Top 20 Australia's own guaranteed-twenty
-    supplement. NEVER read by any other tab, the homepage teaser, or
-    the changes strip - they all read _enriched_pool() (i.e. top100_
-    store.current_pool()) alone, which never includes an extension
-    row."""
+    row/composite/is_fallback_score/score_failure exactly like
+    _enriched_pool() does for the global pool - Top 20 Australia's own
+    guaranteed-twenty supplement. NEVER read by any other tab, the
+    homepage teaser, or the changes strip - they all read _enriched_
+    pool() (i.e. top100_store.current_pool()) alone, which never
+    includes an extension row."""
     extension = top100_store.current_asx_extension()
     scores = top100_store.latest_scores_for_model(
         top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
-    out = []
-    for row in extension:
-        score_row, is_fallback = _score_row_with_fallback(row["ticker"], scores)
-        composite = top100_engine.composite_score(score_row)
-        out.append({**row, "score_row": score_row, "composite": composite,
-                     "is_fallback_score": is_fallback})
-    return out
+    failures = top100_store.score_failures_for_model(
+        top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
+    return _enrich_rows(extension, scores, failures)
 
 
 def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None):
@@ -988,16 +1003,33 @@ def _shelf_row_html(row, lang, origin_badge_html=None):
     line, never the full dimension-chip card _render_row() draws
     (there are no dimensions to show). Two distinct chip variants:
     "⏳ AWAITING" when score_row is None entirely (never submitted/
-    ingested - a genuine newcomer), "◇ NOT RATED" when score_row
-    exists but the model declined to score it (>= NOT_RATED_MIN_NULLS
-    null dimensions) - the task's own explicit distinction.
+    ingested - a genuine newcomer, OR a ticker that has permanently
+    failed scoring under this rubric, see below), "◇ NOT RATED" when
+    score_row exists but the model declined to score it (>=
+    NOT_RATED_MIN_NULLS null dimensions) - the task's own explicit
+    distinction.
+
+    Scoring-failed caption (audit fixes, Commit 1, 30 Sep 2026, owner-
+    directed): when score_row is None AND row["score_failure"] shows
+    top100_engine.TOP100_FAILURE_MAX_ATTEMPTS or more attempts under
+    the CURRENT rubric, the chip stays the same AWAITING chip (this
+    ticker genuinely has no score, same as any other newcomer) but the
+    caption changes to name the real reason - otherwise a reader would
+    be told this ticker will be "scored automatically at the next
+    nightly run", which is false once _unscored_tickers() has
+    permanently stopped re-selecting it for this rubric.
+
     `origin_badge_html` (Top 20 Australia guaranteed-twenty): None on
     every other tab; Australia's own caller passes its badge so even
     an unrated extension member is clearly marked."""
     score_row = row.get("score_row")
     if score_row is None:
         chip = _shelf_chip_html(_t("shelf_chip_awaiting", lang), *_SHELF_CHIP_AWAITING)
-        caption = _t("shelf_caption_awaiting", lang)
+        failure = row.get("score_failure")
+        if failure and (failure.get("attempts") or 0) >= top100_engine.TOP100_FAILURE_MAX_ATTEMPTS:
+            caption = _t("shelf_caption_scoring_failed", lang)
+        else:
+            caption = _t("shelf_caption_awaiting", lang)
     else:
         chip = _shelf_chip_html(_t("shelf_chip_not_rated", lang), *_SHELF_CHIP_NOT_RATED)
         caption = _t("shelf_caption_not_rated", lang)

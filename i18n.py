@@ -3746,6 +3746,13 @@ EN = {
     "top100.shelf_heading": "Awaiting score / not rated",
     "top100.shelf_chip_awaiting": "⏳ AWAITING",
     "top100.shelf_caption_awaiting": "scored automatically at the next nightly run",
+    # Audit fixes, Commit 1 (30 Sep 2026, owner-directed): a ticker that
+    # has hit TOP100_FAILURE_MAX_ATTEMPTS scoring failures under the
+    # current rubric stops being resubmitted - this caption replaces
+    # the generic "scored automatically..." one so the AWAITING chip
+    # never overpromises a retry that won't happen until the next
+    # rubric bump.
+    "top100.shelf_caption_scoring_failed": "scoring failed — will retry after the next rubric change",
     "top100.shelf_chip_not_rated": "◇ NOT RATED",
     "top100.shelf_caption_not_rated": "Not enough public information for an analytical score.",
     "top100.origin_pool_badge": "🌐 TOP 100 · #{rank}",
@@ -7053,6 +7060,7 @@ ES = {
     "top100.shelf_heading": "Esperando puntuación / no evaluadas",
     "top100.shelf_chip_awaiting": "⏳ EN ESPERA",
     "top100.shelf_caption_awaiting": "se puntúa automáticamente en la próxima ejecución nocturna",
+    "top100.shelf_caption_scoring_failed": "la puntuación falló — se reintentará tras el próximo cambio de rúbrica",
     "top100.shelf_chip_not_rated": "◇ NO EVALUADA",
     "top100.shelf_caption_not_rated": "No hay suficiente información pública para una puntuación analítica.",
     "top100.origin_pool_badge": "🌐 TOP 100 · #{rank}",

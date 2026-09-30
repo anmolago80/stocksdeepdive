@@ -774,6 +774,60 @@ MAX_NIGHTLY_SCORES = 120
 # alone.
 RESCORE_MAX_AGE_DAYS = 200
 
+# Audit fixes, Commit 1 (30 Sep 2026, owner-directed, "close the no-
+# resubmit-loop door"): scheduler_engine._run_top100_poll used to
+# resubmit whenever poll_and_ingest_batch() returned non-None and
+# nothing was pending - a batch ending 0 scored / N failed still
+# returns a dict, so the SAME failed tickers got resubmitted every
+# hourly poll, forever, with the failure never recorded anywhere for
+# _unscored_tickers() to see. Two independent guards close this:
+#
+# 1. Per-ticker failure memory (top100_store.top100_score_failures,
+#    record_score_failure()/clear_score_failure()/score_failures_for_
+#    model()): a ticker whose latest failure under the CURRENT rubric
+#    is younger than TOP100_FAILURE_RETRY_HOURS is skipped by
+#    _unscored_tickers() until that window passes; once its attempts
+#    reach TOP100_FAILURE_MAX_ATTEMPTS it is skipped permanently for
+#    this rubric (the row shows "scoring failed - will retry after the
+#    next rubric change" on the AWAITING shelf instead of silently
+#    retrying forever) - a rubric bump is a new PK row here (rubric_
+#    version is part of the key, same convention as top100_scores), so
+#    attempts naturally reset to 0 the moment RUBRIC_VERSION changes.
+# 2. A hard daily spend cap (top100_store.top100_daily_submissions,
+#    record_daily_submission()/get_daily_submission_state(), keyed by
+#    UTC date): submit_nightly_batch() refuses beyond either
+#    TOP100_MAX_SUBMISSIONS_PER_UTC_DAY batches or TOP100_MAX_ENTRANTS_
+#    PER_UTC_DAY entrants for the day - refresh_all()'s force=True path
+#    may bypass the BATCH-COUNT cap (an owner-initiated refresh is
+#    allowed its own submission even if the automatic nightly job
+#    already used its 2) but never the ENTRANT cap (240 = 2 x
+#    MAX_NIGHTLY_SCORES - the actual spend ceiling this guard exists
+#    to protect).
+TOP100_FAILURE_RETRY_HOURS = 24
+TOP100_FAILURE_MAX_ATTEMPTS = 3
+TOP100_MAX_SUBMISSIONS_PER_UTC_DAY = 2
+TOP100_MAX_ENTRANTS_PER_UTC_DAY = 2 * MAX_NIGHTLY_SCORES
+
+# Rough pre-submission cost estimate ONLY (the real, billed cost is
+# logged after ingest from poll_and_ingest_batch()'s own actual token
+# counts - see estimate_batch_cost_usd()'s own docstring). ~4 chars/
+# token is a standard English-text rule of thumb; the output-token
+# figure is a conservative per-company average from this prompt's own
+# shape (ten ~25-word justifications plus the synthesis fields) rather
+# than a measured constant - this exists purely so the owner sees an
+# order-of-magnitude cost BEFORE a batch goes out, not to be billing-
+# accurate.
+_CHARS_PER_TOKEN_ESTIMATE = 4
+_ESTIMATED_OUTPUT_TOKENS_PER_ENTRANT = 1200
+
+
+def _estimate_prompt_tokens(ticker, company_name):
+    params = _request_params(ticker, company_name)
+    system_text = params["system"][0]["text"]
+    user_text = params["messages"][0]["content"]
+    return max(1, (len(system_text) + len(user_text)) // _CHARS_PER_TOKEN_ESTIMATE)
+
+
 _SYSTEM_PROMPT = """You are screening publicly-listed companies for a factual, descriptive "Top 100" quality shortlist on an investing research site. You are given one company's ticker and name. Score it on TEN qualitative dimensions, each as an integer from 1 to 5 - 5 is ALWAYS the good outcome for a long-term holder of the stock, 1 is ALWAYS the bad outcome, on every dimension, no exceptions. Your response format has NO null/blank values anywhere - every field below names the exact SENTINEL value that stands in for "no value" wherever one is needed.
 
 For each dimension also give a ONE-LINE justification, AT MOST ABOUT 25 WORDS, naming the specific source period it is based on (e.g. "FY25 annual report", "Q2 2026 investor call", "the company's own FY24 10-K risk factors section") - or an empty string "" for source_period if the dimension's score is 0 (see the honesty rule).
@@ -1281,11 +1335,46 @@ def _unscored_tickers(pool, model):
     model()) is the read here specifically because it looks past the
     calendar-quarter-era score key entirely and finds each ticker's
     single newest current-rubric row regardless of what string is in
-    its `quarter` column."""
+    its `quarter` column.
+
+    Audit fixes, Commit 1 (30 Sep 2026, owner-directed): a ticker that
+    otherwise matches (a)/(b)/(c) above is EXCLUDED from the result
+    (never resubmitted) when top100_store.score_failures_for_model()
+    shows a failure row for it under this exact (model, RUBRIC_
+    VERSION) whose attempts have already reached TOP100_FAILURE_MAX_
+    ATTEMPTS (permanent skip for this rubric - see top100_render.py's
+    own "scoring failed" shelf caption for how that's surfaced), or
+    whose failed_at is younger than TOP100_FAILURE_RETRY_HOURS (a
+    temporary skip - eligible again once the window passes). This is
+    the fix for the resubmit loop: without it, a batch that ended 0
+    scored / N failed left every one of those N tickers looking
+    exactly as "unscored" as before, so the next hourly poll
+    resubmitted the identical batch forever."""
     latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+    failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
     now = datetime.now(timezone.utc)
+
+    def _failure_blocks(ticker):
+        failure = failures.get(ticker)
+        if failure is None:
+            return False
+        if (failure.get("attempts") or 0) >= TOP100_FAILURE_MAX_ATTEMPTS:
+            return True
+        failed_at = failure.get("failed_at")
+        if not failed_at:
+            return False
+        try:
+            failed_dt = datetime.fromisoformat(failed_at)
+            if failed_dt.tzinfo is None:
+                failed_dt = failed_dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return False
+        return (now - failed_dt).total_seconds() < TOP100_FAILURE_RETRY_HOURS * 3600
+
     out = []
     for row in pool:
+        if _failure_blocks(row["ticker"]):
+            continue
         score = latest.get(row["ticker"])
         if score is None:
             out.append((row, "new_or_rubric"))
@@ -1416,7 +1505,27 @@ def poll_and_ingest_batch(log=print):
     to state["quarter"] as that legacy batch's one shared key, so a
     batch already in flight across this deploy still ingests correctly
     instead of crashing.
-    Returns None if there was nothing to poll, or a summary dict."""
+
+    Audit fixes, Commit 1 (30 Sep 2026, owner-directed): every FAILED
+    result (errored, non-"succeeded" status, or a JSON parse failure)
+    now records a top100_store.record_score_failure() row for its
+    ticker with a short reason string, and every SUCCEEDED result
+    clears any prior failure row for its ticker (top100_store.clear_
+    score_failure()) - a ticker that fails once and later succeeds
+    isn't left permanently shadowed by a stale failure count. This is
+    what lets _unscored_tickers() stop re-selecting a ticker that just
+    failed (the resubmit-loop fix - see that function's own docstring).
+    When the batch ends with scored == 0 (nothing at all succeeded),
+    this logs "0 scored, N failed - NOT resubmitting" with a short
+    sample of the actual failure reasons, so scheduler_engine._run_
+    top100_poll's own "only resubmit if scored > 0" check (see that
+    function's own docstring) has a clear log trail explaining why it
+    didn't fire.
+
+    Returns None if there was nothing to poll, or a summary dict
+    {"saved"/"scored", "failed", "input_tokens", "output_tokens",
+    "cost_usd"} - "saved" is kept alongside "scored" (same value) so
+    no existing caller of this function's return dict breaks."""
     state = top100_store.get_batch_state()
     if state is None:
         return None
@@ -1437,6 +1546,7 @@ def poll_and_ingest_batch(log=print):
     total_input_tokens, total_output_tokens = 0, 0
     errored_count = 0
     errored_rest_type_counts = {}
+    failure_reasons = []  # [(ticker, reason), ...] - audit fixes Commit 1
     try:
         for result in client.messages.batches.results(state["batch_id"]):
             entry = custom_id_map.get(result.custom_id)
@@ -1470,6 +1580,7 @@ def poll_and_ingest_batch(log=print):
                 errored_count += 1
                 err = getattr(result.result, "error", None)
                 err_type = _batch_result_error_type(err)
+                failure_reasons.append((ticker, err_type))
                 if errored_count <= _ERRORED_DETAIL_LIMIT:
                     detail = _serialize_batch_result_error(err)
                     log(f"[top100] {ticker}: batch result errored #{errored_count} - {detail}")
@@ -1478,6 +1589,7 @@ def poll_and_ingest_batch(log=print):
                 continue
             if result.result.type != "succeeded":
                 failed += 1
+                failure_reasons.append((ticker, result.result.type))
                 log(f"[top100] {ticker}: batch result {result.result.type}, skipped")
                 continue
             msg = result.result.message
@@ -1490,6 +1602,7 @@ def poll_and_ingest_batch(log=print):
                  munger_quality, munger_comment, big_wave, big_wave_comment) = _parse_response_json(text)
             except Exception as e:
                 failed += 1
+                failure_reasons.append((ticker, f"parse_error: {e}"))
                 log(f"[top100] {ticker}: could not parse batch result, skipped ({e})")
                 continue
             top100_store.save_score(
@@ -1504,11 +1617,15 @@ def poll_and_ingest_batch(log=print):
                 big_wave=big_wave, big_wave_comment=big_wave_comment,
                 prompt=json.dumps(prompt_params), raw_response=text,
             )
+            top100_store.clear_score_failure(ticker, state["model"], RUBRIC_VERSION)
             saved += 1
             total_input_tokens += getattr(msg.usage, "input_tokens", 0) or 0
             total_output_tokens += getattr(msg.usage, "output_tokens", 0) or 0
     except Exception as e:
         log(f"[top100] batch result retrieval failed partway through: {e}")
+
+    for ticker, reason in failure_reasons:
+        top100_store.record_score_failure(ticker, state["model"], RUBRIC_VERSION, reason)
 
     if errored_rest_type_counts:
         breakdown = ", ".join(f"{t}: {c}" for t, c in sorted(errored_rest_type_counts.items()))
@@ -1522,7 +1639,16 @@ def poll_and_ingest_batch(log=print):
     log(f"[top100] batch {state['batch_id']} ingested: {saved} scored, {failed} failed - "
         f"{total_input_tokens:,} input + {total_output_tokens:,} output tokens, "
         f"est. ${cost:.4f} (batch-priced)")
-    return {"saved": saved, "failed": failed,
+    if saved == 0 and failed > 0:
+        # Audit fixes, Commit 1 (30 Sep 2026, owner-directed): the
+        # resubmit-loop fix's own log line - _run_top100_poll (scheduler_
+        # engine.py) reads "saved"/"scored" == 0 from this function's
+        # return value to decide NOT to resubmit; this line explains why,
+        # right where the ingest summary above it already is.
+        sample = ", ".join(f"{t}: {r}" for t, r in failure_reasons[:3])
+        log(f"[top100] batch {state['batch_id']}: 0 scored, {failed} failed - "
+            f"NOT resubmitting (reason sample: {sample})")
+    return {"saved": saved, "scored": saved, "failed": failed,
             "input_tokens": total_input_tokens, "output_tokens": total_output_tokens,
             "cost_usd": cost}
 
@@ -1588,7 +1714,22 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     (run_nightly() calls this with no `pool` arg) scores extension
     members exactly like pool members, same rubric/cache-key rules, no
     special-casing anywhere below this line. A caller that passes its
-    own `pool` (refresh_all() does) controls this explicitly instead."""
+    own `pool` (refresh_all() does) controls this explicitly instead.
+
+    Audit fixes, Commit 1 (30 Sep 2026, owner-directed): a hard daily
+    spend cap, checked right after `entrants` is known (so a batch that
+    would push the day over either limit is refused before any request
+    is built or sent) - TOP100_MAX_SUBMISSIONS_PER_UTC_DAY batches and
+    TOP100_MAX_ENTRANTS_PER_UTC_DAY entrants, tracked in top100_store's
+    top100_daily_submissions table, keyed by UTC date (so the cap
+    resets cleanly at day rollover with no extra bookkeeping). force=
+    True (refresh_all()'s owner button) bypasses the BATCH-COUNT check
+    only - the ENTRANT check still applies even to a forced refresh,
+    since that's the actual spend ceiling this guard exists to
+    protect, not a "how many times a night" throttle. A rough pre-
+    submission cost estimate (see _estimate_prompt_tokens()'s own
+    docstring for why it's an estimate, not the billed figure) is
+    logged right before the real submit call, regardless of force."""
     pool = (top100_store.current_pool() + top100_store.current_asx_extension()) if pool is None else pool
     if not pool:
         return None
@@ -1602,12 +1743,27 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
             "- nothing to submit")
         return None
 
+    daily = top100_store.get_daily_submission_state(today.isoformat())
+    batches_over_cap = (not force) and daily["batches"] >= TOP100_MAX_SUBMISSIONS_PER_UTC_DAY
+    entrants_over_cap = (daily["entrants"] + len(entrants)) > TOP100_MAX_ENTRANTS_PER_UTC_DAY
+    if batches_over_cap or entrants_over_cap:
+        log(f"[top100] daily submission cap reached ({daily['batches']}/{TOP100_MAX_SUBMISSIONS_PER_UTC_DAY} "
+            f"batches, {daily['entrants']}/{TOP100_MAX_ENTRANTS_PER_UTC_DAY} entrants) - skipping")
+        return None
+
     if not force:
         counts = {"new_or_rubric": 0, "new_results": 0, "age": 0}
         for _, reason in entrants:
             counts[reason] += 1
         log(f"[top100] {len(entrants)} to score tonight — new/rubric: {counts['new_or_rubric']}, "
             f"new results: {counts['new_results']}, age>{RESCORE_MAX_AGE_DAYS}d: {counts['age']}")
+
+    est_input_tokens = sum(_estimate_prompt_tokens(row["ticker"], row.get("company_name"))
+                            for row, _ in entrants)
+    est_output_tokens = len(entrants) * _ESTIMATED_OUTPUT_TOKENS_PER_ENTRANT
+    est_cost = estimate_batch_cost_usd(est_input_tokens, est_output_tokens)
+    log(f"[top100] estimated cost for tonight's {len(entrants)}-company batch: ${est_cost:.4f} "
+        f"(batch-priced, rough pre-submission estimate - real cost logged after ingest)")
 
     try:
         import anthropic
@@ -1641,6 +1797,7 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         return None
 
     top100_store.save_batch_state(batch.id, today.isoformat(), model, custom_id_map)
+    top100_store.record_daily_submission(today.isoformat(), len(entrants))
     log(f"[top100] submitted batch {batch.id}: {len(entrants)} compan{'y' if len(entrants) == 1 else 'ies'} "
         f"for {model}")
     return batch.id

@@ -1354,11 +1354,32 @@ def _run_top100_poll(log):
     per-result failures internally (a bad result is logged and
     skipped, prior scores are never touched), so an exception escaping
     THIS far means something is wrong with the poll as a whole (e.g.
-    the Anthropic client itself failing to construct), not one result."""
+    the Anthropic client itself failing to construct), not one result.
+
+    Audit fixes, Commit 1 (30 Sep 2026, owner-directed): the auto-
+    resubmit above used to fire whenever a batch had just been ingested
+    and nothing new was pending - INCLUDING a batch that ended 0 scored
+    / N failed, which resubmitted the exact same failed tickers on
+    every subsequent hourly poll, forever (poll_and_ingest_batch() now
+    records each failure - see top100_store.record_score_failure() -
+    but that alone only stops the NEXT submission from re-selecting a
+    ticker within its retry window; without this check, this function
+    would still fire submit_nightly_batch() right away even when 0 of
+    tonight's entrants actually scored, unnecessarily re-running
+    _unscored_tickers() and logging a submission that's likely to be
+    empty or near-empty anyway). Now requires result["scored"] > 0 -
+    poll_and_ingest_batch() itself already logs the "0 scored, N
+    failed - NOT resubmitting" line when that condition fails, so this
+    function needs no log line of its own for that case."""
     import top100_engine
     result = top100_engine.poll_and_ingest_batch(log=log)
-    if result is not None and top100_engine.top100_store.get_batch_state() is None:
-        top100_engine.submit_nightly_batch(log=log)
+    if result is None:
+        return
+    if top100_engine.top100_store.get_batch_state() is not None:
+        return
+    if result.get("scored", 0) <= 0:
+        return
+    top100_engine.submit_nightly_batch(log=log)
 
 
 def _run_earnings_refresh(log):
