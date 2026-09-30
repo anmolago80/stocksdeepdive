@@ -526,10 +526,33 @@ def fetch_nasdaq100_invesco():
     except Exception:
         return None
 
+    # Push 3 hardening (30 Sep 2026, owner-directed): the Invesco URL has
+    # been observed serving an HTML/JS page instead of a CSV - the old
+    # header-detection loop below can still find a line containing
+    # "ticker"/"symbol" and a comma inside minified JavaScript (a string
+    # literal, an object key), hands that to pd.read_csv(), and logs a
+    # ~3 KB DtypeWarning of JS garbage on every Nasdaq 100 scan. Two
+    # guards, both fail closed (return None, same as every other failure
+    # mode here - get_universe_pool() falls further back):
+    # 1. Content-Type must actually claim to be a CSV/plain-text
+    #    response, not text/html (a JS-driven download page) or
+    #    javascript.
+    _ctype = (resp.headers.get("Content-Type") or "").lower()
+    if "html" in _ctype or "javascript" in _ctype:
+        return None
+
     header_idx = None
     for i, line in enumerate(raw_lines[:30]):  # header block is at most a few rows
         low = line.lower()
         if ("ticker" in low or "symbol" in low) and "," in line:
+            # 2. The candidate header line itself must look like a real
+            #    CSV header, not JS/HTML that happens to contain
+            #    "ticker"/"symbol" and a comma (a minified function body,
+            #    an HTML tag/attribute list) - reject anything carrying
+            #    markup or code-syntax characters no genuine CSV header
+            #    row would have.
+            if any(ch in line for ch in ("<", ">", "{", "}", ";", "(", ")")):
+                continue
             header_idx = i
             break
     if header_idx is None:

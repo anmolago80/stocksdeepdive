@@ -68,6 +68,23 @@ relying on "just clear it" alone. clear() is still called on every
 NORMAL completion of the per-ticker loop (successful or degraded) - a
 finished loop has nothing left to resume, whether or not scan_store.
 save_scan() itself goes on to skip the save.
+
+Breaker-abort rewind (Push 3, 30 Sep 2026, owner-directed): a checkpoint
+kept at the moment the circuit breaker trips can still hold rows scored
+against DEFAULT values for the last handful of tickers before the trip
+- yfinance's `.info` endpoint can itself already be throttled (and
+silently return `{}`) some tickers before `.history()` finally starts
+failing consistently enough to trip RATE_LIMIT_CONSECUTIVE_ABORT_
+THRESHOLD, so a ticker just before the trip can have "succeeded" (a row
+was captured) on a `.history()` price alone while every `.info`-sourced
+field on it quietly defaulted. rewind_for_breaker_abort() below backs
+the checkpoint's resume_index up by CHECKPOINT_BREAKER_REWIND (25)
+tickers and drops any already-captured row for a ticker in that
+rewound band, so the post-cooldown resume re-scans that band for real
+rather than trusting rows that may have been silently degraded. Called
+ONLY on the circuit-breaker path (run_universe_scan() at the point it
+raises RateLimitCircuitBreaker) - a normal periodic/cooperative-cancel
+checkpoint is trusted as-is, unrewound, exactly as before.
 """
 
 import json
@@ -76,6 +93,7 @@ import re
 from datetime import datetime, timezone
 
 CHECKPOINT_MAX_AGE_HOURS = 2
+CHECKPOINT_BREAKER_REWIND = 25
 
 
 def _data_dir():
@@ -91,6 +109,23 @@ def _slug(universe):
 
 def _path(universe):
     return os.path.join(_data_dir(), f"{_slug(universe)}.json")
+
+
+def rewind_for_breaker_abort(resume_index, tickers, rows, rewind_n=CHECKPOINT_BREAKER_REWIND):
+    """Pure helper (no disk I/O) for the breaker-abort rewind - see this
+    module's own docstring. Backs `resume_index` up by `rewind_n`
+    tickers (floored at 0) and drops any row in `rows` whose "Ticker"
+    falls in the rewound band (tickers[new_resume_index:resume_index]) -
+    exactly the band that will be re-attempted on resume, so a stale row
+    for one of those tickers is never left sitting in the saved set
+    alongside its own about-to-be-repeated fetch. Returns (new_resume_
+    index, new_rows). Rows for tickers OUTSIDE the rewound band (already
+    captured well before the trip) are returned untouched, in their
+    original order."""
+    new_resume_index = max(0, resume_index - rewind_n)
+    rewound_tickers = set(tickers[new_resume_index:resume_index])
+    new_rows = [r for r in rows if r.get("Ticker") not in rewound_tickers]
+    return new_resume_index, new_rows
 
 
 def save(universe, run_night, session_started_at, resume_index, tickers, rows, skipped_no_price):

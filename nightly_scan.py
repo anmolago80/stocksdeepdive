@@ -1043,13 +1043,32 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
             log(f"[nightly_scan] {t}: {e}")
             _consecutive_rate_limited = 0
         if _consecutive_rate_limited >= RATE_LIMIT_CONSECUTIVE_ABORT_THRESHOLD:
+            # Push 3 (30 Sep 2026, owner-directed): rewind the checkpoint
+            # by CHECKPOINT_BREAKER_REWIND (25) tickers before saving it -
+            # .info can already be silently throttled (returning {}) for
+            # several tickers before .history() failures alone are
+            # consistent enough to trip this breaker, so rows captured in
+            # the minutes just before the trip may hold default values.
+            # Uses the CURRENT in-memory state (i + 1, rows), not
+            # whatever the last periodic every-25 save happened to leave
+            # on disk - the most accurate view of what was actually
+            # attempted this run. See scan_checkpoint_store.py's own
+            # module docstring for the full mechanism.
+            _rewound_index, _rewound_rows = scan_checkpoint_store.rewind_for_breaker_abort(
+                i + 1, tickers, rows,
+            )
+            scan_checkpoint_store.save(
+                universe, run_night, _session_started_at, _rewound_index, tickers,
+                _rewound_rows, skipped_no_price,
+            )
             log(f"[nightly_scan] {universe}: ABORTING after {i + 1}/{len(tickers)} tickers - "
                 f"{_consecutive_rate_limited} consecutive tickers failed on rate-limiting "
                 f"(Yahoo throttled) - stopping now rather than grinding the rest of this "
                 f"universe (and the next) into the same throttle. Not saving; last "
-                f"known-good scan for {universe} stays in place. Checkpoint kept - "
-                f"the post-cooldown retry resumes from it rather than restarting "
-                f"from ticker 0.")
+                f"known-good scan for {universe} stays in place. Checkpoint kept and "
+                f"rewound to {_rewound_index}/{len(tickers)} ({i + 1 - _rewound_index} "
+                f"tickers dropped) - the post-cooldown retry re-scans that band rather "
+                f"than trusting rows that may have been silently throttled.")
             # Audit fixes Commit 2 (30 Sep 2026, owner-directed): the
             # checkpoint is deliberately NOT cleared here any more -
             # Commit 5's original reasoning ("never resume INTO the same

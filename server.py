@@ -499,6 +499,18 @@ _pending_visitor_hashes: set[tuple[str, str]] = set()
 #
 # _pending_page_buffer below is the one exception - see its own comment
 # for why it's scoped to stay inside the same hard privacy rule anyway.
+#
+# Push 3 hardening (30 Sep 2026, owner-directed): the "never approaches
+# a size where a nightly-cleared, in-memory set is a concern" reasoning
+# above holds for this site's real ~100/day traffic, but has no ceiling
+# of its own - a deliberate flood of fabricated IP/UA combinations
+# within a single UTC day (the same threat _PENDING_PAGE_BUFFER_MAX_
+# HASHES above already guards a different structure against) could
+# otherwise grow these sets without bound until the next rollover.
+# _ANALYTICS_HASH_SET_MAX caps each one - a hash beyond the cap is
+# simply never added (same fail-safe-undercount direction as every
+# other bound in this module), never evicting one already present.
+_ANALYTICS_HASH_SET_MAX = 50_000
 _asset_tracking_day: str | None = None
 _seen_page_view_hashes: set[str] = set()
 _seen_asset_fetch_hashes: set[str] = set()
@@ -675,14 +687,15 @@ def _maybe_promote_to_human(visitor_hash, day, saw_page_view, saw_asset_fetch):
     buffered_pages_to_credit = None
     with _pulse_lock:
         _pulse_reset_asset_tracking_if_new_day(day)
-        if saw_page_view:
+        if saw_page_view and len(_seen_page_view_hashes) < _ANALYTICS_HASH_SET_MAX:
             _seen_page_view_hashes.add(visitor_hash)
-        if saw_asset_fetch:
+        if saw_asset_fetch and len(_seen_asset_fetch_hashes) < _ANALYTICS_HASH_SET_MAX:
             _seen_asset_fetch_hashes.add(visitor_hash)
         if (
             visitor_hash not in _promoted_human_hashes_today
             and visitor_hash in _seen_page_view_hashes
             and visitor_hash in _seen_asset_fetch_hashes
+            and len(_promoted_human_hashes_today) < _ANALYTICS_HASH_SET_MAX
         ):
             _promoted_human_hashes_today.add(visitor_hash)
             _pulse_counts["req_class:human"] = _pulse_counts.get("req_class:human", 0) + 1
@@ -3369,10 +3382,24 @@ def _inject_pwa_head_tags(html_bytes: bytes, request: Request = None) -> bytes:
     return text.encode("utf-8")
 
 
+# Push 3 hardening (30 Sep 2026, owner-directed): common automated-scan
+# probe paths - never real routes on this site - used to fall through
+# catch_all() into the Streamlit proxy (a wasted round trip to the
+# subprocess, and a 200/whatever-the-SPA-shell-returns instead of an
+# honest 404) every time a bot requests them, which happens constantly
+# on any public site. Matched case-insensitively, with or without a
+# leading path (".git" and "app/.git" both match, "wp-admin/setup.php"
+# and "wp-login.php" both match). Checked before the proxy call so
+# these never reach the Streamlit subprocess at all.
+_PROBE_PATH_RE = re.compile(r"^(.*/)?(\.env|\.git|wp-admin|wp-login\.php)", re.IGNORECASE)
+
+
 @app.api_route("/{path:path}", include_in_schema=False,
                methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD",
                         "OPTIONS"])
 async def catch_all(path: str, request: Request):
+    if _PROBE_PATH_RE.match(path):
+        return PlainTextResponse("Not Found", status_code=404)
     return await _proxy(request)
 
 

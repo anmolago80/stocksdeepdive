@@ -159,6 +159,23 @@ def _normalize_dividend_yield(v):
     return v / 100.0 if v > 1 else v
 
 
+def _dividend_yield_unit_uncertain(v):
+    """Push 3 hardening (30 Sep 2026, owner-directed): the >1 heuristic
+    above only ever resolves the HIGH-yield case unambiguously (see its
+    own docstring's AAPL/CSL history) - a raw value in (0, 1] is
+    genuinely indistinguishable here between "already a fraction"
+    (0.0044 = 0.44%) and "a sub-1% percent number" (0.44 meaning 0.44%,
+    which requirements.txt's currently-pinned yfinance version actually
+    returns), and _normalize_dividend_yield() passes a value in that
+    range through unchanged either way - silently picking whichever
+    reading happens to be right, with no signal when it's wrong. True
+    only for that same ambiguous (0, 1] band; callers use it to flag the
+    reading (same red "estimated inputs" convention used elsewhere) only
+    when the dividendRate primary path wasn't available to sidestep the
+    ambiguity entirely - see the fetch_snapshot() call site."""
+    return v is not None and 0 < v <= 1
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_snapshot(ticker, discount_rate=None, perpetual_rate=None, growth_rate=None, manual_fcf=None,
                     valuation_hash=auto_compounder_engine.VALUATION_SOURCE_HASH):
@@ -385,6 +402,18 @@ def fetch_snapshot(ticker, discount_rate=None, perpetual_rate=None, growth_rate=
         "dividend_yield": (
             (_num("dividendRate") / price) if (_num("dividendRate") and price)
             else _normalize_dividend_yield(_num("dividendYield"))
+        ),
+        # Push 3 hardening (30 Sep 2026, owner-directed): True only when
+        # the dividendRate primary path above wasn't available (so this
+        # fell back to the ambiguous dividendYield heuristic) AND the
+        # raw value landed in that heuristic's genuinely-ambiguous (0, 1]
+        # band - see _dividend_yield_unit_uncertain()'s own docstring.
+        # Display-only (same red "estimated inputs" convention as the
+        # rest of this module's flags) - never touches the yield number
+        # itself or any downstream sum/score.
+        "dividend_yield_unit_uncertain": (
+            not (_num("dividendRate") and price)
+            and _dividend_yield_unit_uncertain(_num("dividendYield"))
         ),
         "quote_type": info.get("quoteType"),
         "sector": info.get("sector"),
