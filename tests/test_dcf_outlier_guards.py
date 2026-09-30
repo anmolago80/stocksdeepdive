@@ -79,7 +79,7 @@ AOS_INFO = {"currency": "USD", "marketCap": 8_000_000_000}
 # based (Task 2 requirement: "the historical growth series is
 # unchanged").
 # ======================================================================
-_base, _series, _src, _base_norm, _capex_basis = fve.normalized_base_and_series(TOYO_CF, info={})
+_base, _series, _src, _base_norm, _capex_basis, _oneoff_meta = fve.normalized_base_and_series(TOYO_CF, info={})
 assert _src == "ocf-normcapex", _src
 assert _capex_basis == "midpoint (capex rising)", _capex_basis
 assert abs(_base - 99.375) < 1e-6, _base
@@ -94,7 +94,7 @@ print(f"[toyo_capex_midpoint] latest capex -30 vs average -11.25 (>1.5x) -> cape
 # basis, unaffected by the guard.
 # ======================================================================
 for _name, _cf in (("ADP", ADP_CF), ("CPRT", CPRT_CF), ("AOS", AOS_CF)):
-    _b, _s, _sr, _bn, _cb = fve.normalized_base_and_series(_cf, info={})
+    _b, _s, _sr, _bn, _cb, _om = fve.normalized_base_and_series(_cf, info={})
     assert _cb == "average", (_name, _cb)
     assert _bn is False, (_name, _bn)
 print("[stable_capex_average_basis] ADP/CPRT/AOS-shaped (latest capex well under 1.5x average) "

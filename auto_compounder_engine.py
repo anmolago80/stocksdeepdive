@@ -184,7 +184,16 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # engine.py are already covered by VALUATION_SOURCE_HASH below (no new
 # file needed in that hash's own list this time). Belt-and-suspenders
 # bump, same reasoning as every prior ENGINE_VERSION bump above.
-ENGINE_VERSION = 48
+# 48->49 (Step 4, 30 Sep 2026, owner-directed, KO fix): FCF one-off
+# normalisation (fcf_valuation_engine.normalized_base_and_series()'s new
+# income_df-driven distorted-year detection/EBITDA bridge) changes the
+# DCF's base free cash flow - and therefore the intrinsic value - for
+# any ticker whose cached fundamentals bundle has a warm income
+# statement AND shows a genuine one-off cash distortion in the last 5
+# years. fcf_valuation_engine.py is already covered by VALUATION_
+# SOURCE_HASH below. Belt-and-suspenders bump, same reasoning as every
+# prior ENGINE_VERSION bump above.
+ENGINE_VERSION = 49
 
 
 def _valuation_source_hash():
@@ -1814,6 +1823,15 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         discount_rate=discount_rate, perpetual_rate=perpetual_rate,
         growth_rate=growth_rate, manual_fcf=_dcf_manual_fcf,
         diluted_shares_override=_dcf_shares,
+        # Step 4 (30 Sep 2026, owner-directed, KO fix): this caller
+        # already has the FULL fundamentals bundle on hand (unlike the
+        # main site's own Deep Dive page, which fetches only cashflow_df
+        # directly and has to opportunistically peek a cache for this -
+        # see deep_dive_engine.py's own comment) - zero added cost to
+        # pass bundle["income"] straight through for the distorted-year
+        # cross-check. See fcf_valuation_engine.normalized_base_and_
+        # series()'s own docstring.
+        income_df=bundle.get("income"),
     )
     if not result:
         return {
@@ -1821,6 +1839,8 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
             "discount_tier_label": None, "growth_source": None, "growth_path": None,
             "growth_end_rate": None, "yahoo_estimate_status": None, "capex_basis": None,
             "growth_raw": None,
+            "fcf_base_source": None, "fcf_distorted_years": [], "fcf_base_raw_per_share": None,
+            "fcf_per_share_used": None,
             "flagged": True,
         }
     value, growth_used, meta = result
@@ -1853,6 +1873,13 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         # positive): "average"|"midpoint (capex rising)"|None - see
         # _build_fair_value()'s own display of this key.
         "capex_basis": meta.get("capex_basis"),
+        # Step 4 (30 Sep 2026, owner-directed, KO fix) - see
+        # fcf_valuation_engine.normalized_base_and_series()'s own
+        # docstring for what these mean.
+        "fcf_base_source": meta.get("fcf_base_source"),
+        "fcf_distorted_years": meta.get("fcf_distorted_years") or [],
+        "fcf_base_raw_per_share": meta.get("fcf_base_raw_per_share"),
+        "fcf_per_share_used": meta.get("fcf_per_share_used"),
         "flagged": bool(meta.get("defaulted") or meta.get("growth_default")),
     }
 
@@ -1907,6 +1934,14 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         ticker, None, info=dcf_info, cashflow_df=bundle.get("cashflow"), currency=currency,
         discount_rate=discount_rate, perpetual_rate=perpetual_rate,
         growth_rate=growth_rate, manual_fcf=_dcf_manual_fcf,
+        # Step 4 (30 Sep 2026, owner-directed, KO fix): this caller already
+        # has the full fundamentals bundle on hand (same reasoning as
+        # _run_dcf()'s own income_df passthrough above) - zero added cost,
+        # and needed here too since _build_fair_value()'s "dcf" row and
+        # "FCF Basis" row are built from THIS function's result, not
+        # _run_dcf()'s (see this function's own docstring, "one value
+        # everywhere").
+        income_df=bundle.get("income"),
     )
     if not result:
         return None
@@ -1932,6 +1967,11 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         # Outlier-guard fix (28 Sep 2026, owner-directed): same passthrough
         # as _run_dcf() above - see _build_fair_value()'s own display.
         "capex_basis": meta.get("capex_basis"),
+        # Step 4 (30 Sep 2026, owner-directed, KO fix): passthrough for the
+        # Fair Value tab's "FCF Basis" row - see _dcf_valuation_and_inputs().
+        "fcf_base_source": meta.get("fcf_base_source"),
+        "fcf_distorted_years": meta.get("fcf_distorted_years") or [],
+        "fcf_base_raw_per_share": meta.get("fcf_base_raw_per_share"),
     }
 
 
@@ -3486,6 +3526,19 @@ def _dcf_valuation_and_inputs(info, price, canonical_dcf_result):
     if canonical_dcf_result.get("capex_basis") == "midpoint (capex rising)":
         dcf_inputs.append(
             {"label": "Capex Basis", "value": "midpoint (capex rising)", "format": "raw"})
+    # Step 4 (30 Sep 2026, owner-directed, KO fix): FCF one-off
+    # normalization row - shown only when the mechanism actually fired
+    # (fcf_valuation_engine.normalized_base_and_series()'s own docstring
+    # has the full detection rule). Same non-default-only pattern as
+    # Capex Basis/Growth Source above.
+    _dcf_fcf_base_source = canonical_dcf_result.get("fcf_base_source")
+    if _dcf_fcf_base_source in ("median5_clean", "ebitda_bridge"):
+        _dcf_fcf_basis_label = (
+            "Normalized (one-off years excluded)" if _dcf_fcf_base_source == "median5_clean"
+            else "EBITDA bridge (insufficient clean history)"
+        )
+        dcf_inputs.append(
+            {"label": "FCF Basis", "value": _dcf_fcf_basis_label, "format": "raw"})
     # Same fix: DISPLAY-ONLY sanity flag - reuses the existing
     # flagged-line red-text convention (_cp_render_valuation_inputs
     # above), never feeds Top 100 selection/scoring. See resolver_

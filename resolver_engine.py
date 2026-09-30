@@ -46,6 +46,7 @@ def resolve_intrinsic_value(
     perpetual_rate=None,
     growth_rate=None,
     manual_fcf=None,
+    income_df=None,
 ):
     """
     Resolution order for intrinsic value:
@@ -77,6 +78,18 @@ def resolve_intrinsic_value(
         meta["yahoo_estimate_status"] : "ok"|"ok_1y"|"no_coverage"|"non_positive"|"fetch_failed"|None
                                           (only set on the auto growth path -
                                           see capm_engine.get_growth_estimates_5y())
+        meta["fcf_base_source"] : "median5_clean"|"ebitda_bridge"| the plain fcf_source
+                                          value when Step 4's distorted-year mechanism
+                                          didn't fire - see fcf_valuation_engine.
+                                          normalized_base_and_series()'s own docstring
+        meta["fcf_distorted_years"] : list[int] - 0-indexed positions (0=latest) flagged
+                                          as a one-off cash distortion, empty when unused
+
+    income_df (Step 4, 30 Sep 2026, owner-directed): optional income
+    statement, passed straight through to dcf_intrinsic_value()/
+    normalized_base_and_series() for the distorted-year cross-check -
+    None (the default) means that mechanism never fires, identical to
+    before it existed.
     """
     dcf_value, growth_used, dcf_meta = dcf_intrinsic_value(
         ticker,
@@ -87,6 +100,7 @@ def resolve_intrinsic_value(
         perpetual_rate=perpetual_rate,
         growth_rate=growth_rate,
         manual_fcf=manual_fcf,
+        income_df=income_df,
     )
     if dcf_value > 0:
         meta = {
@@ -152,6 +166,13 @@ def resolve_intrinsic_value(
             "share_count_source": dcf_meta.get("share_count_source"),
             "share_count_note": dcf_meta.get("share_count_note"),
             "market_cap_missing": dcf_meta.get("market_cap_missing", False),
+            # Step 4 (30 Sep 2026, KO fix) passthrough - same pure-
+            # provenance pattern as every other *_source key above. See
+            # fcf_valuation_engine.normalized_base_and_series()'s own
+            # docstring for what these mean.
+            "fcf_base_source": dcf_meta.get("fcf_base_source"),
+            "fcf_distorted_years": dcf_meta.get("fcf_distorted_years"),
+            "fcf_base_raw_per_share": dcf_meta.get("fcf_base_raw_per_share"),
         }
         return dcf_value, "dcf", growth_used, meta
 

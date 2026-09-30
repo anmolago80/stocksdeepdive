@@ -47,6 +47,7 @@ import moat_engine
 import social_engine
 import indicators_engine
 import trade_filter_engine
+import fundamentals_data
 
 
 def _quality_breakdown(info):
@@ -227,11 +228,24 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     quality_score, quality_src, quality_default = resolve_quality_score(ticker, info=info)
 
     cashflow_df = get_cashflow_df(ticker)
+    # Step 4 (owner-directed, 30 Sep 2026, KO fix): opportunistically
+    # supply an income statement for the distorted-year cross-check
+    # (see fcf_valuation_engine.normalized_base_and_series()'s own
+    # docstring) whenever this ticker's compounder-page fundamentals
+    # bundle is ALREADY warm in the 24h cache - peek_cached_bundle()
+    # is cache-only (never triggers a fetch), so this adds ZERO cost to
+    # a Deep Dive view: a cold cache simply means income_df stays None
+    # and the mechanism doesn't fire (identical to today's behaviour),
+    # same fail-open philosophy as every other opportunistic-only data
+    # source in this app.
+    _bundle = fundamentals_data.peek_cached_bundle(ticker)
+    income_df = _bundle.get("income") if _bundle else None
     intrinsic_value, intrinsic_src, dcf_growth, iv_meta = resolve_intrinsic_value(
         ticker, quality_score, info=info, cashflow_df=cashflow_df,
         currency=info.get("currency"),
         discount_rate=discount_rate, perpetual_rate=perpetual_rate,
         growth_rate=growth_rate, manual_fcf=manual_fcf,
+        income_df=income_df,
     )
 
     stock_type, stock_type_src, type_default = resolve_stock_type(ticker, info=info)
@@ -412,6 +426,15 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         "dcf_base_normalized": bool(iv_meta.get("fcf_base_normalized")),
         "dcf_base_raw": iv_meta.get("fcf_base_raw"),
         "dcf_base_used": iv_meta.get("fcf_base_used"),
+        # Step 4 (30 Sep 2026, KO fix): same pure passthrough pattern as
+        # the Task-10 fields just above - see fcf_valuation_engine.
+        # normalized_base_and_series()'s own docstring for what these
+        # mean. dcf_fcf_distorted_years is only ever non-empty when
+        # dcf_fcf_base_source is "median5_clean"/"ebitda_bridge".
+        "dcf_fcf_base_source": iv_meta.get("fcf_base_source"),
+        "dcf_fcf_distorted_years": iv_meta.get("fcf_distorted_years") or [],
+        "dcf_fcf_base_raw_per_share": iv_meta.get("fcf_base_raw_per_share"),
+        "dcf_fcf_per_share_used": iv_meta.get("fcf_per_share_used"),
         # DCF fixes: same pure passthrough, no scoring logic touched - see
         # resolver_engine.py's identical comment on these same keys.
         "dcf_discount_floored": bool(iv_meta.get("discount_floored")),

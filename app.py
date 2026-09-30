@@ -10711,6 +10711,28 @@ def page_deep_dive():
                     "guard against understating capex during a spend ramp."
                 )
 
+            # Step 4 (owner-directed, 30 Sep 2026, KO fix): flag it on
+            # screen whenever the distorted-year mechanism actually fired
+            # (SUPERSEDES the dcf_base_normalized caption above for this
+            # ticker - both never fire together, see fcf_valuation_
+            # engine.normalized_base_and_series()'s own docstring). Only
+            # shown when both per-share figures are on hand (they always
+            # are together, or not at all - see that function's own
+            # meta["fcf_base_raw_per_share"] comment).
+            if _dd.get("dcf_fcf_base_source") in ("median5_clean", "ebitda_bridge"):
+                _dd_raw_ps = _dd.get("dcf_fcf_base_raw_per_share")
+                _dd_used_ps = _dd.get("dcf_fcf_per_share_used")
+                if _dd_raw_ps is not None and _dd_used_ps is not None:
+                    _dd_distorted_n = len(_dd.get("dcf_fcf_distorted_years") or [])
+                    _dd_years_label = (
+                        i18n.t("dd.fcf_oneoff_years_one", _dd_lang) if _dd_distorted_n == 1
+                        else i18n.t("dd.fcf_oneoff_years_multi", _dd_lang, n=_dd_distorted_n)
+                    )
+                    st.caption(i18n.t(
+                        "dd.fcf_oneoff_normalized", _dd_lang, years=_dd_years_label,
+                        normalised=f"{_dd_used_ps:.2f}", raw=f"{_dd_raw_ps:.2f}",
+                    ))
+
             # Audit fixes Commit 4 (30 Sep 2026, owner-directed): dual-
             # class share-count override - flag it on screen either way
             # (applied OR rejected), same pattern as the two captions
@@ -15057,11 +15079,21 @@ def _render_scan_results(page_label, state_prefix, empty_message,
 
                 cashflow_df = get_cashflow_df(ticker)
 
+                # Step 4 (30 Sep 2026, owner-directed, KO fix): opportunistic,
+                # cache-only income statement for the FCF one-off distorted-
+                # year cross-check - same peek_cached_bundle() pattern
+                # deep_dive_engine.py uses (see its own comment). Never a
+                # live fetch: a cold cache just means the mechanism doesn't
+                # fire for this row, same as before this change.
+                _scan_bundle = fundamentals_data.peek_cached_bundle(ticker)
+                _scan_income_df = _scan_bundle.get("income") if _scan_bundle else None
+
                 intrinsic_value, intrinsic_src, dcf_growth, iv_meta = resolve_intrinsic_value(
                     ticker, quality_score, info=info, cashflow_df=cashflow_df,
                     currency=info.get("currency"),
                     discount_rate=_t_discount, perpetual_rate=_t_perpetual,
                     growth_rate=_growth_for_ticker, manual_fcf=_manual_fcf,
+                    income_df=_scan_income_df,
                 )
                 intrinsic_default = iv_meta.get("value_default", False)
                 growth_default = iv_meta.get("growth_default", False)
@@ -15334,6 +15366,12 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     # your own override).
                     "FCF/Share Used": iv_meta.get("fcf_per_share_used"),
                     "FCF Source": iv_meta.get("fcf_source") or "-",
+                    # Step 4 (30 Sep 2026, owner-directed, KO fix): only
+                    # populated when the one-off normalisation actually
+                    # fired (needs a warm income-statement cache - see the
+                    # peek_cached_bundle() call above); "-" otherwise, same
+                    # as every other optional column in this row.
+                    "FCF Base Source": iv_meta.get("fcf_base_source") or "-",
                     "MOS": round(margin_of_safety, 2) if intrinsic_value > 0 else "N/A",
                     "IV/Price Multiple": (
                         round(intrinsic_value / current_price, 2)

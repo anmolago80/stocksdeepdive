@@ -158,7 +158,7 @@ def _mkdf(ocf, capex):
 # the basis mismatch, which used to trigger the outlier swap and
 # silently replace 230 with 60 while still claiming "midpoint".
 RAMP_CF = _mkdf([300, 100, 100, 100], [-100, -20, -20, -20])
-base, series, src, base_normalized, capex_basis = fve.normalized_base_and_series(RAMP_CF)
+base, series, src, base_normalized, capex_basis, _oneoff_meta = fve.normalized_base_and_series(RAMP_CF)
 assert capex_basis == "midpoint (capex rising)", capex_basis
 assert base == 230, base
 assert base_normalized is False, (
@@ -171,7 +171,7 @@ print(f"[c4_capex_midpoint_not_swapped] base={base} keeps the midpoint-guarded "
 # when its own (average-basis) base genuinely deviates from the median -
 # unaffected by this fix.
 NORMAL_OUTLIER_CF = _mkdf([10, 100, 100, 100], [-10, -10, -10, -10])
-base_n, series_n, src_n, normalized_n, basis_n = fve.normalized_base_and_series(NORMAL_OUTLIER_CF)
+base_n, series_n, src_n, normalized_n, basis_n, _oneoff_meta_n = fve.normalized_base_and_series(NORMAL_OUTLIER_CF)
 assert basis_n == "average", basis_n
 assert normalized_n is True, "an ordinary (non-rising-capex) outlier must still swap to the median"
 print(f"[c4_ordinary_outlier_swap_unaffected] a non-rising-capex outlier still "
@@ -197,7 +197,8 @@ print("[c4_present_marketcap_not_defaulted] a real marketCap does not set either
       "flag OK")
 
 with mock.patch.object(fve, "normalized_base_and_series",
-                        return_value=(1_000_000.0, [1_000_000.0] * 3, "ocf-normcapex", False, "average")), \
+                        return_value=(1_000_000.0, [1_000_000.0] * 3, "ocf-normcapex", False, "average",
+                                      {"fcf_base_source": "ocf-normcapex", "fcf_distorted_years": [], "fcf_base_raw": None})), \
      mock.patch.object(fve.capm_engine, "resolve_perpetual_rate", return_value=0.025), \
      mock.patch.object(fve.capm_engine, "get_growth_estimates_5y", return_value=(0.08, "ok")), \
      mock.patch.object(capm_engine, "get_risk_free_rate", return_value=(0.04, "live")):

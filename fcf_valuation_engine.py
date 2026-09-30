@@ -149,6 +149,31 @@ MIN_HISTORY_POINTS_FOR_TREND = 4
 # normalized_base_and_series). 0.40 = 40%.
 FCF_OUTLIER_THRESHOLD = 0.40
 
+# Step 4 (owner-directed, 30 Sep 2026, KO fix): Task 10's 3-year-median
+# swap can't help when the DISTORTION spans two of the three comparison
+# years (KO's own shape - 2024's fairlife earn-out AND 2025's IRS tax
+# deposit both depressed OCF while the underlying business was fine).
+# This targets the ROOT CAUSE instead of just an outlier-vs-recent-
+# median comparison: a year is "distorted" when its own operating cash
+# flow fell more than FCF_ONEOFF_OCF_DROP (30%) against the immediately
+# prior year while EBITDA (fallback: operating income; fallback:
+# revenue) held up (fell less than FCF_ONEOFF_EBITDA_TOLERANCE, 10%) -
+# a real operating deterioration would show up in both; a one-off cash
+# item hits OCF alone. FCF_ONEOFF_TWO_YEAR_THRESHOLD (25%) extends a
+# detected distortion into the following (more recent) year too, as
+# long as ITS OWN OCF is still that far below the last genuinely clean
+# year - the two-year one-off shape. See _detect_distorted_years()'s
+# own docstring for the exact algorithm.
+FCF_ONEOFF_OCF_DROP = 0.30
+FCF_ONEOFF_EBITDA_TOLERANCE = 0.10
+FCF_ONEOFF_TWO_YEAR_THRESHOLD = 0.25
+# How many of the most recent years this mechanism considers, and the
+# minimum number of CLEAN (non-distorted) years within that window
+# required before trusting their median as the base - fewer than this
+# falls to the EBITDA bridge instead (see _ebitda_bridge_base()).
+FCF_ONEOFF_WINDOW_YEARS = 5
+FCF_ONEOFF_MIN_CLEAN_YEARS = 3
+
 # Market-cap-tiered version of the ceiling above. A flat 20% ceiling let a
 # mega-cap grow FCF at nearly the same clip as a micro-cap for a full
 # 10-year stage-1 horizon - structurally implausible (compounding off a huge
@@ -264,6 +289,16 @@ _CAPEX_LABELS = (
     "Capital Expenditure", "CapitalExpenditures", "Capital Expenditures",
     "capitalExpenditures",
 )
+# Step 4 (owner-directed, 30 Sep 2026): income-statement row labels for
+# the distorted-year cross-check and EBITDA bridge below - same mirror-
+# not-import reasoning as the cash-flow labels above, spelled to match
+# auto_compounder_engine._ROW_ALIASES exactly (revenue/operating_income/
+# reconciled_depreciation/pretax_income/tax_provision) for consistency.
+_OPERATING_INCOME_LABELS = ("Operating Income", "Total Operating Income As Reported")
+_REVENUE_LABELS = ("Total Revenue", "Revenue", "Operating Revenue", "totalRevenue")
+_DA_LABELS = ("Reconciled Depreciation",)
+_PRETAX_INCOME_LABELS = ("Pretax Income", "Income Before Tax", "incomeBeforeTax")
+_TAX_PROVISION_LABELS = ("Tax Provision", "Income Tax Expense", "incomeTaxExpense")
 
 
 def _row(cashflow_df, labels):
@@ -291,6 +326,119 @@ def _row(cashflow_df, labels):
                 except Exception:
                     continue
     return None
+
+
+def _oneoff_metric_series(income_df):
+    """Step 4 (owner-directed, 30 Sep 2026): per-year (most-recent-first)
+    cross-check metric for _detect_distorted_years() below - EBITDA
+    (operating income + D&A) when both rows are available, else plain
+    operating income, else revenue - whichever ONE tier has a usable
+    row wins for the WHOLE series (never mixed tier-by-tier within one
+    ticker's own comparison, which would make a year-over-year %
+    change meaningless). Returns (metric_series, tier) - tier is
+    "ebitda"|"operating_income"|"revenue"|None. None/None when income_df
+    is missing or has none of these rows - the caller then can't run
+    the cross-check at all and falls through to the pre-existing (Task
+    10) outlier-swap logic unchanged."""
+    if income_df is None or getattr(income_df, "empty", True):
+        return None, None
+    oi = _row(income_df, _OPERATING_INCOME_LABELS)
+    da = _row(income_df, _DA_LABELS)
+    if oi and da and len(oi) == len(da):
+        return [o + d for o, d in zip(oi, da)], "ebitda"
+    if oi:
+        return oi, "operating_income"
+    rev = _row(income_df, _REVENUE_LABELS)
+    if rev:
+        return rev, "revenue"
+    return None, None
+
+
+def _detect_distorted_years(ocf, metric_series):
+    """Step 4 (owner-directed, 30 Sep 2026, KO fix). Returns a list of
+    bool, same length/order as `ocf` (most-recent-first), True for a
+    year whose own reporting is judged a one-off cash distortion rather
+    than a genuine operating change.
+
+    Primary test, per year i (comparing against the immediately prior,
+    older year i+1): operating cash flow fell more than FCF_ONEOFF_
+    OCF_DROP (30%) while the cross-check metric (_oneoff_metric_series()
+    above) fell less than FCF_ONEOFF_EBITDA_TOLERANCE (10%) over the
+    SAME span - a real operating deterioration would show up in both; a
+    one-off item (an earn-out payment, a tax settlement, a working-
+    capital swing) hits OCF alone. If the metric ALSO fell >= 10%,
+    nothing is marked - see FCF_ONEOFF_EBITDA_TOLERANCE's own comment -
+    that's a genuine decline, not a one-off.
+
+    Two-year extension: once a year is marked distorted, the NEXT (more
+    recent) year is marked too, without re-running the primary test on
+    it, as long as its own OCF is still more than FCF_ONEOFF_TWO_YEAR_
+    THRESHOLD (25%) below the last genuinely CLEAN year's OCF (not the
+    already-distorted one immediately before it) - KO's own shape: 2024
+    (the fairlife earn-out) and 2025 (the IRS tax deposit) both
+    depressed, 2023 clean. Implemented as a single oldest-to-newest
+    sweep so "last clean year" always means what it says."""
+    n = len(ocf)
+    distorted = [False] * n
+    if n == 0:
+        return distorted
+    last_clean_value = ocf[n - 1]   # oldest year in the window - nothing before it to test
+    for i in range(n - 2, -1, -1):  # walk oldest -> newest (i+1 = prior/older year)
+        is_distorted = False
+        prior_ocf = ocf[i + 1]
+        if prior_ocf not in (None, 0):
+            ocf_drop = (prior_ocf - ocf[i]) / abs(prior_ocf)
+            if ocf_drop > FCF_ONEOFF_OCF_DROP:
+                if metric_series is not None and i + 1 < len(metric_series):
+                    this_m, prior_m = metric_series[i], metric_series[i + 1]
+                    if this_m is not None and prior_m not in (None, 0):
+                        metric_drop = (prior_m - this_m) / abs(prior_m)
+                        if metric_drop < FCF_ONEOFF_EBITDA_TOLERANCE:
+                            is_distorted = True
+        if not is_distorted and distorted[i + 1] and last_clean_value not in (None, 0):
+            still_depressed = (last_clean_value - ocf[i]) / abs(last_clean_value) > FCF_ONEOFF_TWO_YEAR_THRESHOLD
+            if still_depressed:
+                is_distorted = True
+        distorted[i] = is_distorted
+        if not is_distorted:
+            last_clean_value = ocf[i]
+    return distorted
+
+
+def _ebitda_bridge_base(income_df, avg_capex):
+    """Step 4 (owner-directed, 30 Sep 2026): base = EBITDA - average
+    capex - cash taxes, for when fewer than FCF_ONEOFF_MIN_CLEAN_YEARS
+    clean years remain in the distorted-year window (see normalized_
+    base_and_series() below). Requires a GENUINE EBITDA figure
+    (operating income + D&A both present) - never built from the
+    weaker operating-income-only or revenue-only fallback tiers
+    _oneoff_metric_series() may have used for the DETECTION test alone;
+    returns None (caller falls through to the pre-existing "fcf-median"/
+    "info"/"none" cascade) rather than fabricate a bridge from a metric
+    that was never meant to carry this formula.
+
+    cash_taxes = operating_income * effective_tax_rate(tax_provision,
+    pretax_income) - the same NOPAT-style tax estimate auto_compounder_
+    engine.py already applies to operating income elsewhere in this
+    codebase (A4 helper, lazily imported here since that module itself
+    imports fcf_valuation_engine at module level - a module-level
+    import back would be circular, same reasoning as the label lists
+    above). avg_capex is already negative (capex sign convention - see
+    normalized_base_and_series()'s own comment), so it's ADDED, not
+    subtracted, to match that convention."""
+    oi = _row(income_df, _OPERATING_INCOME_LABELS)
+    da = _row(income_df, _DA_LABELS)
+    if not oi or not da:
+        return None
+    ebitda_latest = oi[0] + da[0]
+    pretax = _row(income_df, _PRETAX_INCOME_LABELS)
+    tax = _row(income_df, _TAX_PROVISION_LABELS)
+    pretax_latest = pretax[0] if pretax else None
+    tax_latest = tax[0] if tax else None
+    import auto_compounder_engine
+    rate = auto_compounder_engine.effective_tax_rate(tax_latest, pretax_latest)
+    cash_taxes = oi[0] * rate
+    return ebitda_latest + avg_capex - cash_taxes
 
 
 def extract_fcf_history(cashflow_df):
@@ -348,7 +496,7 @@ def _coeff_of_variation(series):
     return (var ** 0.5) / scale
 
 
-def normalized_base_and_series(cashflow_df, info=None):
+def normalized_base_and_series(cashflow_df, info=None, income_df=None):
     """
     Produce a *normalised* current free cash flow and an FCF series for growth.
 
@@ -390,13 +538,46 @@ def normalized_base_and_series(cashflow_df, info=None):
     from. meta["capex_basis"] ("average" | "midpoint (capex rising)")
     records which basis was actually used, for the app to disclose.
 
+    Step 4 (owner-directed, 30 Sep 2026, KO fix - see _detect_distorted_
+    years()'s own docstring for the algorithm): a genuine one-off cash
+    distortion (an earn-out payment, a tax settlement) that spans TWO of
+    the three years Task 10's own outlier swap compares against can't be
+    caught by that check - the distorted years pull the comparison
+    median down too. When `income_df` is given AND at least one of the
+    last FCF_ONEOFF_WINDOW_YEARS (5) years is flagged distorted, this
+    SUPERSEDES the Task-10/rising-capex logic above for this computation:
+    the base becomes the median of the CLEAN (non-distorted) years'
+    average-capex-basis FCF in that window (>= FCF_ONEOFF_MIN_CLEAN_
+    YEARS, 3, required), or, with fewer clean years than that, an
+    EBITDA-capex-cash-taxes bridge (_ebitda_bridge_base()) - and the
+    growth-CAGR series has the distorted years dropped from it too.
+    `income_df` is None for every EXISTING caller (nightly_scan.py's
+    lite scan, and a cold-cache Deep Dive view - see resolver_engine.py/
+    deep_dive_engine.py's own comments on how it's threaded in) - this
+    mechanism simply never fires for them, and Task 10/the rising-capex
+    guard behave EXACTLY as before. A ticker with income_df available
+    but no distortion detected in the window is likewise completely
+    unaffected - only a genuinely one-off-distorted ticker's base
+    changes.
+
     Returns (base_fcf, fcf_series_recent_first, source, base_normalized,
-    capex_basis) where source is one of "ocf-normcapex" | "fcf-median" |
-    "info" | "none", base_normalized is True only when the outlier swap
-    above actually fired (always False for every other source), and
-    capex_basis is "average" | "midpoint (capex rising)" | None (None
-    for every source other than "ocf-normcapex", which is the only one
-    with a per-year capex figure to compare against).
+    capex_basis, oneoff_meta) where source is one of "ocf-normcapex" |
+    "fcf-median" | "info" | "none" (UNCHANGED semantics - still names
+    which of the four top-level bases was used, even when oneoff_meta
+    below further refines "ocf-normcapex"), base_normalized is True only
+    when the Task-10 outlier swap above actually fired (always False for
+    every other source, including whenever oneoff_meta's own mechanism
+    fired instead), and capex_basis is "average" | "midpoint (capex
+    rising)" | None (None for every source other than "ocf-normcapex").
+    oneoff_meta = {"fcf_base_source": str, "fcf_distorted_years": list,
+    "fcf_base_raw": float|None} - fcf_base_source is "median5_clean" or
+    "ebitda_bridge" when this mechanism fired, else the SAME string as
+    `source` above (so a caller always has one field to display
+    regardless of path); fcf_distorted_years is the list of 0-indexed
+    positions (0 = latest year) flagged within the window, empty when
+    the mechanism didn't fire; fcf_base_raw is the un-adjusted latest-
+    year figure (ocf[0] + base_capex, the same value "base" would have
+    been without this mechanism), None when it didn't fire.
     """
     info = info or {}
 
@@ -443,7 +624,46 @@ def normalized_base_and_series(cashflow_df, info=None):
                 base = median
                 base_normalized = True
 
-        return base, series, "ocf-normcapex", base_normalized, capex_basis
+        # Step 4 (owner-directed, 30 Sep 2026, KO fix): the distorted-
+        # year mechanism, when it fires, SUPERSEDES everything computed
+        # above for this ticker - see this function's own docstring for
+        # why (a two-year-spanning one-off distortion defeats Task 10's
+        # narrower 3-year-vs-latest comparison). income_df is None for
+        # every existing caller, so this block is a no-op for them.
+        oneoff_meta = {"fcf_base_source": "ocf-normcapex", "fcf_distorted_years": [], "fcf_base_raw": None}
+        if income_df is not None:
+            metric_series, _metric_tier = _oneoff_metric_series(income_df)
+            distorted = _detect_distorted_years(ocf, metric_series)
+            window_distorted = distorted[:FCF_ONEOFF_WINDOW_YEARS]
+            if any(window_distorted):
+                window_series = series[:FCF_ONEOFF_WINDOW_YEARS]
+                clean_values = [v for v, d in zip(window_series, window_distorted) if not d]
+                distorted_positions = [i for i, d in enumerate(window_distorted) if d]
+                oneoff_base = None
+                oneoff_source = None
+                if len(clean_values) >= FCF_ONEOFF_MIN_CLEAN_YEARS:
+                    oneoff_base = sorted(clean_values)[len(clean_values) // 2]
+                    oneoff_source = "median5_clean"
+                else:
+                    bridge = _ebitda_bridge_base(income_df, avg_capex)
+                    if bridge is not None:
+                        oneoff_base = bridge
+                        oneoff_source = "ebitda_bridge"
+                if oneoff_source is not None:
+                    clean_growth_series = [
+                        v for i, v in enumerate(series)
+                        if i >= len(distorted) or not distorted[i]
+                    ]
+                    return (
+                        oneoff_base, clean_growth_series, "ocf-normcapex", False, "average",
+                        {
+                            "fcf_base_source": oneoff_source,
+                            "fcf_distorted_years": distorted_positions,
+                            "fcf_base_raw": ocf[0] + base_capex,
+                        },
+                    )
+
+        return base, series, "ocf-normcapex", base_normalized, capex_basis, oneoff_meta
 
     # Fall back to the reported FCF line. Use the MEDIAN of the last few years
     # as the base so one outlier year doesn't dominate; keep the raw series for
@@ -452,13 +672,19 @@ def normalized_base_and_series(cashflow_df, info=None):
     if fcf:
         recent = sorted(fcf[:3])
         base = recent[len(recent) // 2]          # median of up to 3 latest
-        return base, fcf, "fcf-median", False, None
+        return base, fcf, "fcf-median", False, None, {
+            "fcf_base_source": "fcf-median", "fcf_distorted_years": [], "fcf_base_raw": None,
+        }
 
     info_fcf = info.get("freeCashflow", 0) or 0
     if info_fcf > 0:
-        return info_fcf, [], "info", False, None
+        return info_fcf, [], "info", False, None, {
+            "fcf_base_source": "info", "fcf_distorted_years": [], "fcf_base_raw": None,
+        }
 
-    return None, [], "none", False, None
+    return None, [], "none", False, None, {
+        "fcf_base_source": "none", "fcf_distorted_years": [], "fcf_base_raw": None,
+    }
 
 
 def growth_from_history(fcf_history, dates=None):
@@ -828,9 +1054,24 @@ def dcf_intrinsic_value(
     growth_years=DEFAULT_GROWTH_YEARS,
     manual_fcf=None,
     diluted_shares_override=None,
+    income_df=None,
 ):
     """
     Returns (intrinsic_value_per_share, growth_rate_used, meta).
+
+    income_df (Step 4, 30 Sep 2026, owner-directed, KO fix): optional
+    income statement, passed straight through to normalized_base_and_
+    series()'s own distorted-year cross-check - see that function's own
+    docstring. None (the default, and every caller that predates this)
+    means that mechanism simply never fires - identical behaviour to
+    before it existed. deep_dive_engine.py's Deep Dive path opportunis-
+    tically supplies it via fundamentals_data.peek_cached_bundle()
+    (cache-only, zero added fetch cost) when the compounder-page
+    fundamentals bundle happens to already be warm for this ticker;
+    nightly_scan.py's lite scan never passes it at all (no new fetch
+    added to the bulk nightly path - see that module's own analyze_
+    ticker_lite() docstring for the established cost-avoidance
+    philosophy this follows).
 
     intrinsic_value is 0 when FCF or shares are unavailable/non-positive, so
     callers can fall back to another method.
@@ -872,7 +1113,18 @@ def dcf_intrinsic_value(
                                        # year's base was swapped for the
                                        # 3-year median (see FCF_OUTLIER_THRESHOLD)
         "fcf_base_raw":   float | None,  # the un-swapped latest-year value, when normalized
+                                       # (or, Step 4: the un-adjusted latest-year figure,
+                                       # when fcf_base_source is "median5_clean"/"ebitda_bridge")
         "fcf_base_used":  float | None,  # the median actually used, when normalized
+        "fcf_base_source": str,  # Step 4 (30 Sep 2026, KO fix): "median5_clean" |
+                                       # "ebitda_bridge" | the plain fcf_source value when
+                                       # this mechanism didn't fire - see normalized_base_
+                                       # and_series()'s own docstring
+        "fcf_distorted_years": list,  # Step 4: 0-indexed positions (0=latest) flagged as a
+                                       # one-off cash distortion within the 5-year window;
+                                       # empty when the mechanism didn't fire
+        "fcf_base_raw_per_share": float | None,  # Step 4: fcf_base_raw / shares, only
+                                       # set alongside fcf_base_raw (see above)
         "fcf_used":       float | None,  # the actual base FCF (listing currency, post-FX) fed into the model
         "fcf_per_share_used": float | None,  # fcf_used / shares - the number stage 1 compounds from
         "discount_floored": bool,  # True if capm_engine floored the market-cap-tier rate itself at MIN_DISCOUNT_RATE
@@ -1032,8 +1284,8 @@ def dcf_intrinsic_value(
         # 1) user-supplied manual override, else 2) a capex-NORMALISED base
         # (latest operating cash flow minus AVERAGE capex) so a one-off capex
         # spike doesn't collapse the valuation.
-        norm_base, fcf_series, base_src, base_normalized, capex_basis = normalized_base_and_series(
-            cashflow_df, info=info
+        norm_base, fcf_series, base_src, base_normalized, capex_basis, oneoff_meta = normalized_base_and_series(
+            cashflow_df, info=info, income_df=income_df
         )
 
         if manual_fcf is not None and manual_fcf > 0:
@@ -1046,6 +1298,22 @@ def dcf_intrinsic_value(
             if base_normalized:
                 meta["fcf_base_normalized"] = True
                 meta["fcf_base_raw"] = round(fcf_series[0], 2) if fcf_series else None
+                meta["fcf_base_used"] = round(norm_base, 2)
+            # Step 4 (owner-directed, 30 Sep 2026, KO fix): always set
+            # (mirrors the plain fcf_source when the mechanism didn't
+            # fire - see normalized_base_and_series()'s own docstring),
+            # so a caller always has one field to check regardless of
+            # path. fcf_base_raw here reuses the SAME meta key Task 10's
+            # own swap above sets - the two mechanisms are mutually
+            # exclusive per ticker (this one returns early, before Task
+            # 10's swap ever runs, whenever it fires), so there is never
+            # a conflict over which value the key should hold.
+            meta["fcf_base_source"] = oneoff_meta["fcf_base_source"]
+            meta["fcf_distorted_years"] = oneoff_meta["fcf_distorted_years"]
+            if oneoff_meta["fcf_base_source"] in ("median5_clean", "ebitda_bridge"):
+                meta["fcf_base_raw"] = (
+                    round(oneoff_meta["fcf_base_raw"], 2) if oneoff_meta["fcf_base_raw"] is not None else None
+                )
                 meta["fcf_base_used"] = round(norm_base, 2)
         else:
             # A6 negative-FCF disclosure (owner-directed, 30 Sep 2026):
@@ -1229,6 +1497,14 @@ def dcf_intrinsic_value(
         # using" without recomputing it by hand.
         meta["fcf_used"] = round(fcf, 2)
         meta["fcf_per_share_used"] = round(fcf_per_share, 4)
+        # Step 4 (30 Sep 2026, KO fix): the raw (pre-distortion-swap)
+        # per-share figure, for the Deep Dive caption's "vs raw $X/share"
+        # - same shares denominator as fcf_per_share_used just above, so
+        # the two are directly comparable. None unless the mechanism
+        # actually fired (meta["fcf_base_raw"] is only set then too -
+        # see the oneoff_meta block above).
+        if meta.get("fcf_base_source") in ("median5_clean", "ebitda_bridge") and meta.get("fcf_base_raw") is not None:
+            meta["fcf_base_raw_per_share"] = round(meta["fcf_base_raw"] / shares, 4)
 
         # Stage 1: discount each year's grown cash flow back to today.
         # Growth-path option E (owner-directed, 28 Sep 2026 follow-up to

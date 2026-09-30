@@ -215,6 +215,21 @@ EN = {
     "dd.growth_source_analyst_1y": "Yahoo analyst (next year)",
     "dd.growth_source_analyst_1y_capped": "Yahoo analyst (next year, capped)",
 
+    # Step 4 (owner-directed, 30 Sep 2026, KO fix): shown when fcf_
+    # valuation_engine.normalized_base_and_series()'s distorted-year
+    # mechanism actually fired (a genuine one-off cash distortion, e.g.
+    # an earn-out payment or a tax settlement, spanning one or two of
+    # the most recent reported years) - see that function's own
+    # docstring. {years} is one of the two labels just below; {normalised}/
+    # {raw} are per-share dollar figures (no "$" in the format string
+    # itself - see how this is called for why).
+    "dd.fcf_oneoff_years_one": "the most recent reported year",
+    "dd.fcf_oneoff_years_multi": "the last {n} reported years",
+    "dd.fcf_oneoff_normalized": (
+        "FCF base normalised - operating cash flow in {years} distorted "
+        "by one-off items; base ${normalised}/share vs raw ${raw}/share."
+    ),
+
     # Commit 2 (27 Sep 2026, owner-reported): shown instead of the
     # "check the ticker symbol" error + "Did you mean" chips when the
     # live price-history fetch itself failed (rate-limited or a
@@ -4042,6 +4057,14 @@ ES = {
 
     "dd.growth_source_analyst_1y": "analista Yahoo (próximo año)",
     "dd.growth_source_analyst_1y_capped": "analista Yahoo (próximo año, limitado)",
+
+    "dd.fcf_oneoff_years_one": "el año más reciente reportado",
+    "dd.fcf_oneoff_years_multi": "los últimos {n} años reportados",
+    "dd.fcf_oneoff_normalized": (
+        "Base de FCF normalizada - el flujo de caja operativo en {years} "
+        "se vio distorsionado por partidas no recurrentes; base "
+        "${normalised}/acción frente a ${raw}/acción sin ajustar."
+    ),
 
     "dd.error_fetch_failed": (
         "Los datos de mercado no están disponibles temporalmente - "
