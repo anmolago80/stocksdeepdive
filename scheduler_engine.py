@@ -1501,6 +1501,83 @@ def _run_quote_recorder_us(log):
     quote_recorder.run_us_recorder(log=log)
 
 
+def _mark_top100_pending(scan_day, finished_at, reason):
+    """Top 100 trigger window fix (owner-approved, 30 Sep 2026, from
+    instruction_top100_trigger_window.md): called once a nightly scan
+    (the due-scan or catch-up block in _loop() below) has finished
+    (ok/warn) OR been abandoned on its own hard timeout - see the
+    caller's own TimeoutError handling - recording that `scan_day` (the
+    run_night that nightly credited: `today` for a due-scan, `ref_
+    night` for a catch-up) is now waiting for its own Top 100
+    selection/scoring pass. _top100_trigger_due() below reads this back.
+
+    Problem this closes (scheduler_engine.py ~:3000, pre-fix): the old
+    trigger was a plain `now.hour >= top100_hour`, evaluated on
+    whatever tick happens to run next - a scan that overruns past
+    00:00 UTC hands control back with now.hour==0, that test fails,
+    and Top 100 for that night's scan silently doesn't run until
+    23:00 UTC the NEXT day. Keying the trigger off "a scan day is
+    waiting" rather than "the clock says 23:00" means an overrun
+    night fires on the very first tick after the scan finishes,
+    same scan_day, never skipped - see _top100_trigger_due()'s own
+    docstring for the exact window math.
+
+    `reason` is "completed" (a normal ok/warn finish) or "timeout"
+    (the nightly hit its own hard timeout and was abandoned - point 2
+    of the instruction's "safety net": Top 100 still runs on whatever
+    was saved, rather than silently never running for that night) -
+    read back by the trigger block to log "Top 100 running after a
+    timed-out nightly" when it actually fires for that case.
+
+    Always overwrites any PRIOR pending scan_day - only the most
+    recently completed/abandoned nightly matters for what Top 100
+    should select from next; a scan_day that was already superseded
+    (e.g. two catch-ups for different nights in the same window) never
+    needed its own separate Top 100 run."""
+    state = _load_state()
+    state["top100_pending_for"] = scan_day
+    state["top100_pending_finished_at"] = finished_at.strftime("%H:%M")
+    state["top100_pending_reason"] = reason
+    _save_state(state)
+
+
+def _top100_trigger_due(state, now, top100_hour):
+    """True if the Top 100 job should fire on this tick - see
+    _mark_top100_pending()'s own docstring for how `state["top100_
+    pending_for"]` gets set (by the due-scan/catch-up blocks in
+    _loop() below, on nightly completion or hard-timeout abandonment).
+
+    Fires the first tick where BOTH:
+      (a) a nightly has credited a scan_day Top 100 hasn't run for yet
+          (top100_pending_for is set and != last_top100_date), AND
+      (b) `now` has reached that scan_day's own top100_hour gate (UTC).
+
+    On a normal night this is exactly 23:00 UTC the same day, same as
+    the old plain now.hour>=top100_hour test. On a night whose nightly
+    overran past 00:00 UTC, scan_day is still the PREVIOUS day (the
+    run_night the nightly itself credited, captured before midnight -
+    see nightly_scan.py's own run_night handling), so `now` (already
+    past midnight) is already past yesterday's own 23:00 gate and this
+    returns True on the very first tick after the scan releases the
+    lock - never skipping a day, never waiting for tomorrow's 23:00.
+
+    Deliberately does NOT read whether the "nightly" job lock is
+    currently held, or anything else about whether a scan is actively
+    running - this window has to be correct standing entirely on its
+    own (top100_pending_for/now/last_top100_date), not because the
+    scheduler loop happens to be single-threaded and blocked while a
+    scan runs. A tick evaluated WHILE a scan is still in progress
+    correctly returns False here (top100_pending_for isn't set yet,
+    regardless of the wall-clock hour) - see this module's own test
+    file for that exact case."""
+    pending_for = state.get("top100_pending_for")
+    if not pending_for or state.get("last_top100_date") == pending_for:
+        return False
+    gate = datetime.strptime(pending_for, "%Y-%m-%d").replace(
+        hour=top100_hour, minute=0, second=0, microsecond=0, tzinfo=timezone.utc)
+    return now >= gate
+
+
 def _run_top100(log):
     """Top 100 tab, Commit 1: the nightly Top 100 selection/scoring
     pass - see top100_engine.run_nightly()'s own docstring for the
@@ -2643,6 +2720,13 @@ def _loop(log):
                                         {**cfg, "universes": due}, lg, cancel_event=_due_cancel_event),
                                     cancel_event=_due_cancel_event,
                                 )
+                                # Top 100 trigger window fix (owner-
+                                # approved, 30 Sep 2026): `today` here IS
+                                # the run_night _run_nightly() itself
+                                # defaulted to (both computed within the
+                                # same tick, a moment apart) - see
+                                # _mark_top100_pending()'s own docstring.
+                                _mark_top100_pending(today, datetime.now(timezone.utc), "completed")
                             except TimeoutError:
                                 # Audit fixes Commit 3: the lock is
                                 # deliberately NOT released below on a
@@ -2653,6 +2737,12 @@ def _loop(log):
                                 # next tick re-acquire it and start a
                                 # second concurrent scan.
                                 _due_timed_out = True
+                                # Top 100 trigger window fix, point 2's
+                                # safety net: a timed-out nightly still
+                                # marks its scan day pending, so Top 100
+                                # runs on whatever was saved rather than
+                                # silently never running for this night.
+                                _mark_top100_pending(today, datetime.now(timezone.utc), "timeout")
                                 raise
                             finally:
                                 if not _due_timed_out:
@@ -2790,12 +2880,22 @@ def _loop(log):
                                             cancel_event=_catchup_cancel_event),
                                         cancel_event=_catchup_cancel_event,
                                     )
+                                    # Top 100 trigger window fix (owner-
+                                    # approved, 30 Sep 2026): credited to
+                                    # ref_night, same as the scan itself -
+                                    # see _mark_top100_pending()'s own
+                                    # docstring.
+                                    _mark_top100_pending(ref_night, datetime.now(timezone.utc), "completed")
                                 except TimeoutError:
                                     # Audit fixes Commit 3: same reasoning
                                     # as the due-scan block above - keep
                                     # the lock held while the abandoned
                                     # worker is tracked.
                                     _catchup_timed_out = True
+                                    # Top 100 trigger window fix, point 2's
+                                    # safety net - same reasoning as the
+                                    # due-scan block above.
+                                    _mark_top100_pending(ref_night, datetime.now(timezone.utc), "timeout")
                                     raise
                                 finally:
                                     if not _catchup_timed_out:
@@ -2993,15 +3093,33 @@ def _loop(log):
                             "already holds the lock")
 
                 # Top 100 tab, Commit 1: nightly selection + AI-scoring
-                # batch poll/submit - same one-calendar-day-per-run
-                # guard, its own hour/lock (defaults to the same hour
-                # as backup/volume_check above, never colliding since
-                # each job has its own lock).
-                if (now.hour >= cfg["top100_hour"]
-                        and state.get("last_top100_date") != today):
+                # batch poll/submit - one-calendar-scan-day-per-run
+                # guard, its own lock (never colliding with backup/
+                # volume_check above, each job has its own lock).
+                #
+                # Top 100 trigger window fix (owner-approved, 30 Sep
+                # 2026, from instruction_top100_trigger_window.md):
+                # REPLACES the old plain `now.hour >= cfg["top100_hour"]
+                # and state.get("last_top100_date") != today` test - see
+                # _top100_trigger_due()'s own docstring for the overrun-
+                # past-midnight bug this closes and the exact window
+                # math. `today` is intentionally NOT used here any more;
+                # the scan_day this fires for is whatever _mark_top100_
+                # pending() recorded (today for a due-scan, an earlier
+                # date for a catch-up), read back from state itself.
+                if _top100_trigger_due(state, now, cfg["top100_hour"]):
+                    _t100_scan_day = state["top100_pending_for"]
+                    _t100_finished_at = state.get("top100_pending_finished_at", "?")
+                    _t100_via_timeout = state.get("top100_pending_reason") == "timeout"
                     state = _load_state()
-                    state["last_top100_date"] = today
+                    state["last_top100_date"] = _t100_scan_day
+                    state["top100_pending_for"] = None
+                    state["top100_pending_reason"] = None
                     _save_state(state)
+                    log(f"[scheduler] Top 100 due for {_t100_scan_day} (nightly finished "
+                        f"{_t100_finished_at} UTC, hour gate {cfg['top100_hour']})")
+                    if _t100_via_timeout:
+                        log("[scheduler] Top 100 running after a timed-out nightly")
                     if _acquire_job_lock("top100", log):
                         try:
                             log("[scheduler] starting Top 100 selection + AI-scoring batch")
