@@ -205,6 +205,16 @@ EN = {
         "the discount rate."
     ),
 
+    # Step 1d (owner-directed, 30 Sep 2026): growth-source labels for the
+    # governed next-year analyst tier (fcf_valuation_engine.estimate_
+    # growth()'s new "analyst_1y" source/"Cap1y" governor) - embedded
+    # inline in the existing "growth source: X" caption, e.g. "growth
+    # source: Yahoo analyst (next year, capped)". "Capped" shown only
+    # when growth_governor == "Cap1y" (the tighter next-year-specific cap
+    # actually bound); the plain (uncapped) variant otherwise.
+    "dd.growth_source_analyst_1y": "Yahoo analyst (next year)",
+    "dd.growth_source_analyst_1y_capped": "Yahoo analyst (next year, capped)",
+
     # Commit 2 (27 Sep 2026, owner-reported): shown instead of the
     # "check the ticker symbol" error + "Did you mean" chips when the
     # live price-history fetch itself failed (rate-limited or a
@@ -4029,6 +4039,9 @@ ES = {
         "Nota: capitalización de mercado no disponible - se asume la "
         "prima de micro-capitalización para la tasa de descuento."
     ),
+
+    "dd.growth_source_analyst_1y": "analista Yahoo (próximo año)",
+    "dd.growth_source_analyst_1y_capped": "analista Yahoo (próximo año, limitado)",
 
     "dd.error_fetch_failed": (
         "Los datos de mercado no están disponibles temporalmente - "

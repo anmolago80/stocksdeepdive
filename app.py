@@ -10764,16 +10764,25 @@ def page_deep_dive():
             }
             _dd_tier = _dd.get("dcf_discount_tier")
             _dd_gsrc = _dd_growth_source_labels.get(_dd.get("dcf_growth_source"))
-            # LTG-fallback fix (owner-directed, 30 Sep 2026, from the
-            # RMD.AX frame dump): "analyst" covers BOTH a genuine LTG/+5y
-            # figure (yahoo_estimate_status "ok") and the +1y/0y fallback
-            # capm_engine.get_growth_estimates_5y() now uses when LTG
-            # matched but was NaN ("ok_1y") - estimate_growth() treats
-            # them identically (same tier cap, same >0 rule), but the
-            # reader should see which horizon Yahoo's figure actually
-            # covers rather than always reading "5y".
-            if _dd.get("dcf_growth_source") == "analyst" and _dd.get("dcf_yahoo_estimate_status") == "ok_1y":
-                _dd_gsrc = "Yahoo analyst (next year)"
+            # Step 1d (owner-directed, 30 Sep 2026, from the Dow 30
+            # rescan's own "Yahoo LTG 0, Yahoo 1y 28" coverage line):
+            # "analyst_1y" is the GOVERNED next-year-analyst tier
+            # (fcf_valuation_engine.estimate_growth()'s new source,
+            # distinct from plain "analyst" - a genuine LTG figure,
+            # unchanged) - i18n-driven (EN/ES), the first growth-source
+            # label on this page to need translation. "(capped)" shown
+            # only when growth_governor is "Cap1y" (the tighter next-
+            # year-specific cap - or a corroborating-but-lower history
+            # CAGR - actually reduced the raw 1y figure); the raw-vs-
+            # used "Raw signal: ..." caption below fires independently
+            # off dcf_growth_raw whenever that gap is large enough to
+            # show, same as any other capped source.
+            if _dd.get("dcf_growth_source") == "analyst_1y":
+                _dd_gsrc = (
+                    i18n.t("dd.growth_source_analyst_1y_capped", _dd_lang)
+                    if _dd.get("growth_governor") == "Cap1y"
+                    else i18n.t("dd.growth_source_analyst_1y", _dd_lang)
+                )
             # Growth-estimate-fetch resilience fix (owner-directed, 28 Sep
             # 2026), extended by the growth-never-zero rewrite (30 Sep
             # 2026, "non_positive" status): "historical avg"/"reported

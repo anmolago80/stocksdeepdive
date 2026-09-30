@@ -175,7 +175,16 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # (BVPS, the Equity Method 10y, the IV/BV series, the WACC equity
 # weight) - added below, closing that gap. Belt-and-suspenders bump,
 # same reasoning as every prior ENGINE_VERSION bump above.
-ENGINE_VERSION = 47
+# 47->48 (Step 1d, 30 Sep 2026, owner-directed): the governed next-
+# year-analyst growth tier (fcf_valuation_engine.estimate_growth()'s
+# new "analyst_1y" source/"Cap1y" governor, capm_engine's own "ok_1y"
+# status threaded in as a new parameter) directly changes the DCF
+# growth rate for every ticker whose Yahoo coverage is a next-year (not
+# 5-year) analyst figure - both fcf_valuation_engine.py and capm_
+# engine.py are already covered by VALUATION_SOURCE_HASH below (no new
+# file needed in that hash's own list this time). Belt-and-suspenders
+# bump, same reasoning as every prior ENGINE_VERSION bump above.
+ENGINE_VERSION = 48
 
 
 def _valuation_source_hash():

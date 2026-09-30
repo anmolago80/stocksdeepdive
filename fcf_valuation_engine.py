@@ -545,7 +545,7 @@ def growth_from_history(fcf_history, dates=None):
 
 
 def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
-                     end_rate=None, currency=None):
+                     end_rate=None, currency=None, yahoo_estimate_status=None):
     """
     Estimate a stage-1 growth rate and report where it came from.
 
@@ -600,6 +600,12 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
                              paths already name their own cap explicitly
                              via the governors above, so this label is
                              reserved for the Yahoo/clean-history paths).
+        "Cap1y"           - Step 1d (owner-directed, 30 Sep 2026): the
+                             GOVERNED next-year-analyst tier (source
+                             "analyst_1y", below) was actually reduced
+                             from its raw figure - either by its own
+                             tighter cap, or (when history corroborates
+                             a lower number) by the history CAGR itself.
 
     Priority, first usable match wins - see this module's own docstring
     for the same list at a glance:
@@ -607,6 +613,30 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
            non-positive Yahoo estimate is real DATA, not noise, but
            it's not a growth signal this stage-1 loop can compound on -
            falls through to the next source instead).
+
+           Step 1d (owner-directed, 30 Sep 2026, from the Dow 30 rescan's
+           own "Yahoo coverage - Yahoo LTG 0, Yahoo 1y 28" line - Yahoo's
+           5-year figure is absent for essentially every Dow name, so
+           the +1y/0y fallback (Step 1c) now supplies most of this
+           priority's hits): when `yahoo_estimate_status` is "ok_1y" -
+           a ONE-YEAR consensus (capm_engine.get_growth_estimates_5y()'s
+           own next-fiscal-year/current-fiscal-year fallback, not a
+           genuine 5-year figure) - a small/mid-cap's recovery-year
+           spike could otherwise ride a full 5-year stage-1 rate all the
+           way to the plain tier ceiling, the same false-positive shape
+           the reported-growth (priority 3) cap already exists to close,
+           but from a BETTER (still analyst-sourced) signal. Source
+           "analyst_1y" (distinct from plain "analyst" - see
+           meta["growth_source"]'s own docstring); capped at max(end_
+           rate, ceiling * REPORTED_GROWTH_CAP_FRACTION) - the SAME
+           fractional cap the reported-growth path already uses - UNLESS
+           a clean historical FCF CAGR (>= MIN_HISTORY_POINTS_FOR_TREND
+           points, coefficient of variation <= 0.60) is itself at or
+           above that cap, in which case the higher of the two real
+           signals is corroborating each other and the cap loosens to
+           min(analyst_1y, history_cagr, ceiling) instead. A genuine
+           "ok" status (a real LTG/+5y figure) is UNCHANGED - still the
+           plain tier ceiling only, no fractional cap.
         2. Historical FCF CAGR (growth_from_history(fcf_series)), if
            it's > 0 AND fcf_series has at least MIN_HISTORY_POINTS_FOR_
            TREND points (fewer is "no history", not a real 0%/degenerate
@@ -653,6 +683,28 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
         return result, source, governor, raw_rate
 
     if analyst_growth is not None and analyst_growth > 0:
+        if yahoo_estimate_status == "ok_1y":
+            # Step 1d (owner-directed, 30 Sep 2026) - see this function's
+            # own docstring, priority 1, for the full rationale. Computed
+            # independently of the priority-2 history check just below
+            # (that one only runs when THIS branch doesn't return first).
+            cap_1y = max(end_rate, ceiling * REPORTED_GROWTH_CAP_FRACTION)
+            g_1y_hist = growth_from_history(fcf_series)
+            has_enough_history_1y = (
+                fcf_series is not None and len(fcf_series) >= MIN_HISTORY_POINTS_FOR_TREND
+            )
+            history_corroborates = (
+                g_1y_hist is not None and g_1y_hist > 0 and has_enough_history_1y
+                and _coeff_of_variation(fcf_series) <= 0.60
+                and g_1y_hist >= cap_1y
+            )
+            allowed = (
+                min(analyst_growth, g_1y_hist, ceiling) if history_corroborates
+                else min(analyst_growth, cap_1y)
+            )
+            result = max(GROWTH_FLOOR, allowed)
+            governor = "Cap1y" if allowed < analyst_growth else "Yahoo"
+            return result, "analyst_1y", governor, analyst_growth
         return _finalize(analyst_growth, "analyst", "Yahoo")
 
     g = growth_from_history(fcf_series)
@@ -1159,7 +1211,8 @@ def dcf_intrinsic_value(
             meta["yahoo_estimate_status"] = yahoo_estimate_status
             growth_rate, gsrc, governor, growth_raw = estimate_growth(
                 info, fcf_series=fcf_series, analyst_growth=analyst_growth,
-                ceiling=growth_ceiling, end_rate=end_rate, currency=currency)
+                ceiling=growth_ceiling, end_rate=end_rate, currency=currency,
+                yahoo_estimate_status=yahoo_estimate_status)
             meta["growth_source"] = gsrc
             meta["growth_governor"] = governor
             meta["growth_raw"] = round(growth_raw, 4)

@@ -294,7 +294,17 @@ def _growth_source_bucket(iv_meta):
     "cap" takes priority over the raw source: when growth_governor is
     "Cap", the market-cap ceiling is what actually determined the final
     number, whether the pre-cap signal was Yahoo's estimate or history.
-    Otherwise "yahoo_5y" for a genuine positive analyst estimate;
+    Otherwise "yahoo_analyst_ltg" (Step 1d, 30 Sep 2026 - renamed from
+    "yahoo_5y") for a genuine LTG/+5y positive analyst estimate;
+    "yahoo_analyst_1y" (Step 1d, new) for the governed next-year-analyst
+    tier (source "analyst_1y" - see fcf_valuation_engine.estimate_
+    growth()'s own docstring) - ALWAYS this bucket regardless of whether
+    its own "Cap1y" governor actually reduced the number, deliberately
+    NOT folded into the "cap" bucket above even when Cap1y fired, so
+    this line's "Yahoo analyst (1y) N" count reconciles exactly with the
+    "Yahoo coverage" line's "Yahoo 1y N" (both count the same set of
+    tickers whose capm_engine.get_growth_estimates_5y() call returned
+    status "ok_1y" - see _growth_coverage_bucket() just below).
     "yahoo_non_positive" (growth-never-zero rewrite, 30 Sep 2026) when
     Yahoo had a real LTG/+5y estimate but it was <=0 - capm_engine.
     get_growth_estimates_5y()'s own "non_positive" status - so it fell
@@ -307,10 +317,12 @@ def _growth_source_bucket(iv_meta):
     governor = iv_meta.get("growth_governor")
     source = iv_meta.get("growth_source")
     yahoo_status = iv_meta.get("yahoo_estimate_status")
+    if source == "analyst_1y":
+        return "yahoo_analyst_1y"
     if governor == "Cap":
         return "cap"
     if source == "analyst":
-        return "yahoo_5y"
+        return "yahoo_analyst_ltg"
     if yahoo_status == "non_positive":
         return "yahoo_non_positive"
     if source in ("history", "history_volatile"):
@@ -1238,8 +1250,13 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
     # stays out of the line.
     if _growth_summary:
         _gs_other = _growth_summary.get("other", 0)
-        log(f"[nightly_scan] {universe}: growth source - Yahoo 5y "
-            f"{_growth_summary.get('yahoo_5y', 0)}, Yahoo non-positive "
+        # Step 1d (owner-directed, 30 Sep 2026): "Yahoo 5y" renamed to
+        # "Yahoo analyst" and split into (LTG)/(1y) so this line's
+        # counts reconcile with the "Yahoo coverage" line just below -
+        # see _growth_source_bucket()'s own docstring.
+        log(f"[nightly_scan] {universe}: growth source - Yahoo analyst (LTG) "
+            f"{_growth_summary.get('yahoo_analyst_ltg', 0)}, Yahoo analyst (1y) "
+            f"{_growth_summary.get('yahoo_analyst_1y', 0)}, Yahoo non-positive "
             f"{_growth_summary.get('yahoo_non_positive', 0)}, historical avg (no estimate) "
             f"{_growth_summary.get('history_no_estimate', 0)}, historical avg "
             f"(fetch failed) {_growth_summary.get('history_fetch_failed', 0)}, "

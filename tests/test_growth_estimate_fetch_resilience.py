@@ -303,7 +303,15 @@ print("[fair_value_growth_source_yahoo_unqualified] an analyst-sourced growth sh
 # CHECK: nightly_scan._growth_source_bucket() classifies every combo
 # correctly, including "cap" taking priority over the raw source.
 # ======================================================================
-assert ns._growth_source_bucket({"growth_governor": "Yahoo", "growth_source": "analyst"}) == "yahoo_5y"
+# Step 1d (owner-directed, 30 Sep 2026): "yahoo_5y" renamed to
+# "yahoo_analyst_ltg" and split with a new "yahoo_analyst_1y" bucket for
+# the governed next-year-analyst tier (source "analyst_1y") - see
+# _growth_source_bucket()'s own docstring and tests/test_analyst_1y_
+# governor.py's dedicated reconciliation check for the full rationale.
+assert ns._growth_source_bucket({"growth_governor": "Yahoo", "growth_source": "analyst"}) == "yahoo_analyst_ltg"
+assert ns._growth_source_bucket(
+    {"growth_governor": "Cap1y", "growth_source": "analyst_1y"}
+) == "yahoo_analyst_1y"
 assert ns._growth_source_bucket(
     {"growth_governor": "History", "growth_source": "history", "yahoo_estimate_status": "no_coverage"}
 ) == "history_no_estimate"
@@ -314,8 +322,9 @@ assert ns._growth_source_bucket({"growth_governor": "Cap", "growth_source": "ana
 assert ns._growth_source_bucket({"growth_governor": "Cap", "growth_source": "history"}) == "cap"
 assert ns._growth_source_bucket({"growth_governor": "Info", "growth_source": "info"}) == "other"
 assert ns._growth_source_bucket({"growth_governor": None, "growth_source": None}) == "other"
-print("[growth_source_bucket_classification] all 6 combos (yahoo_5y/history_no_estimate/"
-      "history_fetch_failed/cap-over-analyst/cap-over-history/other) bucket correctly OK")
+print("[growth_source_bucket_classification] all 8 combos (yahoo_analyst_ltg/yahoo_analyst_1y/"
+      "history_no_estimate/history_fetch_failed/cap-over-analyst/cap-over-history/other) bucket "
+      "correctly OK")
 
 # Growth-never-zero rewrite (30 Sep 2026): "non_positive" (a real Yahoo
 # estimate found but <=0, checked before the history branches) and
