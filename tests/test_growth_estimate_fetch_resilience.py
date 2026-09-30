@@ -305,12 +305,17 @@ print("[fair_value_growth_source_yahoo_unqualified] an analyst-sourced growth sh
 # ======================================================================
 # Step 1d (owner-directed, 30 Sep 2026): "yahoo_5y" renamed to
 # "yahoo_analyst_ltg" and split with a new "yahoo_analyst_1y" bucket for
-# the governed next-year-analyst tier (source "analyst_1y") - see
+# the next-year-analyst tier (source "analyst_1y") - see
 # _growth_source_bucket()'s own docstring and tests/test_analyst_1y_
 # governor.py's dedicated reconciliation check for the full rationale.
+# (governor value used below is "Cap" - since 30 Sep 2026 20:55 AEST,
+# owner decision, "analyst_1y" is governed by the plain tier ceiling
+# alone, same as "analyst"/"Cap" - the bucket only checks growth_source,
+# never governor, so this passes regardless of which governor value is
+# actually reachable in production.)
 assert ns._growth_source_bucket({"growth_governor": "Yahoo", "growth_source": "analyst"}) == "yahoo_analyst_ltg"
 assert ns._growth_source_bucket(
-    {"growth_governor": "Cap1y", "growth_source": "analyst_1y"}
+    {"growth_governor": "Cap", "growth_source": "analyst_1y"}
 ) == "yahoo_analyst_1y"
 assert ns._growth_source_bucket(
     {"growth_governor": "History", "growth_source": "history", "yahoo_estimate_status": "no_coverage"}

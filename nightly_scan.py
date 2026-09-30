@@ -296,15 +296,18 @@ def _growth_source_bucket(iv_meta):
     number, whether the pre-cap signal was Yahoo's estimate or history.
     Otherwise "yahoo_analyst_ltg" (Step 1d, 30 Sep 2026 - renamed from
     "yahoo_5y") for a genuine LTG/+5y positive analyst estimate;
-    "yahoo_analyst_1y" (Step 1d, new) for the governed next-year-analyst
-    tier (source "analyst_1y" - see fcf_valuation_engine.estimate_
-    growth()'s own docstring) - ALWAYS this bucket regardless of whether
-    its own "Cap1y" governor actually reduced the number, deliberately
-    NOT folded into the "cap" bucket above even when Cap1y fired, so
-    this line's "Yahoo analyst (1y) N" count reconciles exactly with the
-    "Yahoo coverage" line's "Yahoo 1y N" (both count the same set of
-    tickers whose capm_engine.get_growth_estimates_5y() call returned
-    status "ok_1y" - see _growth_coverage_bucket() just below).
+    "yahoo_analyst_1y" (Step 1d, 30 Sep 2026; governor REVISED the same
+    day 20:55 AEST - the next-year analyst tier is now governed by the
+    plain market-cap ceiling alone, same as a genuine LTG value, see
+    fcf_valuation_engine.estimate_growth()'s own docstring) for the
+    next-year-analyst tier (source "analyst_1y") - ALWAYS this bucket
+    regardless of whether the plain ceiling ("Cap" governor) actually
+    reduced the number, deliberately NOT folded into the "cap" bucket
+    above, so this line's "Yahoo analyst (1y) N" count reconciles
+    exactly with the "Yahoo coverage" line's "Yahoo 1y N" (both count
+    the same set of tickers whose capm_engine.get_growth_estimates_5y()
+    call returned status "ok_1y" - see _growth_coverage_bucket() just
+    below).
     "yahoo_non_positive" (growth-never-zero rewrite, 30 Sep 2026) when
     Yahoo had a real LTG/+5y estimate but it was <=0 - capm_engine.
     get_growth_estimates_5y()'s own "non_positive" status - so it fell

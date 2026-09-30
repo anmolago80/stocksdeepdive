@@ -205,13 +205,18 @@ EN = {
         "the discount rate."
     ),
 
-    # Step 1d (owner-directed, 30 Sep 2026): growth-source labels for the
-    # governed next-year analyst tier (fcf_valuation_engine.estimate_
-    # growth()'s new "analyst_1y" source/"Cap1y" governor) - embedded
-    # inline in the existing "growth source: X" caption, e.g. "growth
-    # source: Yahoo analyst (next year, capped)". "Capped" shown only
-    # when growth_governor == "Cap1y" (the tighter next-year-specific cap
-    # actually bound); the plain (uncapped) variant otherwise.
+    # Step 1d (owner-directed, 30 Sep 2026; governor REVISED 30 Sep 2026
+    # 20:55 AEST - the tier ceiling alone now governs this tier, same as
+    # a genuine LTG value, so the separate Cap1y governor/history-
+    # corroboration branch were removed from estimate_growth()):
+    # growth-source labels for the "analyst_1y" source (fcf_valuation_
+    # engine.estimate_growth()'s next-year-analyst tier, still a
+    # distinct source from plain "analyst" so the label still names the
+    # shorter horizon) - embedded inline in the existing "growth source:
+    # X" caption, e.g. "growth source: Yahoo analyst (next year,
+    # capped)". "Capped" shown only when growth_governor == "Cap" (the
+    # plain tier ceiling actually bound); the plain (uncapped) variant
+    # otherwise.
     "dd.growth_source_analyst_1y": "Yahoo analyst (next year)",
     "dd.growth_source_analyst_1y_capped": "Yahoo analyst (next year, capped)",
 

@@ -193,7 +193,19 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # years. fcf_valuation_engine.py is already covered by VALUATION_
 # SOURCE_HASH below. Belt-and-suspenders bump, same reasoning as every
 # prior ENGINE_VERSION bump above.
-ENGINE_VERSION = 49
+# 49->50 (owner decision, 30 Sep 2026 20:55 AEST): the Cap1y governor/
+# fractional cap/history-corroboration branch the 47->48 bump added for
+# the next-year-analyst tier ("analyst_1y") is REMOVED - that tier is
+# now governed by the plain market-cap tier ceiling alone, same as a
+# genuine LTG value (the owner's own reasoning: the tier ceiling is
+# already the safety limit built for exactly this; a second per-source
+# cap under it added a rule without adding safety). Directly changes
+# the DCF growth rate for every ticker whose Yahoo coverage is a next-
+# year analyst figure that the old Cap1y cap would have bound tighter
+# than the plain ceiling. fcf_valuation_engine.py is already covered by
+# VALUATION_SOURCE_HASH below. Belt-and-suspenders bump, same reasoning
+# as every prior ENGINE_VERSION bump above.
+ENGINE_VERSION = 50
 
 
 def _valuation_source_hash():

@@ -826,12 +826,15 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
                              paths already name their own cap explicitly
                              via the governors above, so this label is
                              reserved for the Yahoo/clean-history paths).
-        "Cap1y"           - Step 1d (owner-directed, 30 Sep 2026): the
-                             GOVERNED next-year-analyst tier (source
-                             "analyst_1y", below) was actually reduced
-                             from its raw figure - either by its own
-                             tighter cap, or (when history corroborates
-                             a lower number) by the history CAGR itself.
+
+        (Step 1d, 30 Sep 2026, briefly added a separate "Cap1y" governor
+        and a tighter fractional cap for the next-year-analyst tier -
+        REMOVED the same day, 20:55 AEST, owner decision: the market-cap
+        tier ceiling is the safety limit and was built for exactly this;
+        a second per-source cap under it adds a rule without adding
+        safety. The "analyst_1y" source below is now governed by the
+        plain ceiling alone, same as a genuine LTG value - see priority
+        1's own comment.)
 
     Priority, first usable match wins - see this module's own docstring
     for the same list at a glance:
@@ -847,22 +850,17 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
            priority's hits): when `yahoo_estimate_status` is "ok_1y" -
            a ONE-YEAR consensus (capm_engine.get_growth_estimates_5y()'s
            own next-fiscal-year/current-fiscal-year fallback, not a
-           genuine 5-year figure) - a small/mid-cap's recovery-year
-           spike could otherwise ride a full 5-year stage-1 rate all the
-           way to the plain tier ceiling, the same false-positive shape
-           the reported-growth (priority 3) cap already exists to close,
-           but from a BETTER (still analyst-sourced) signal. Source
-           "analyst_1y" (distinct from plain "analyst" - see
-           meta["growth_source"]'s own docstring); capped at max(end_
-           rate, ceiling * REPORTED_GROWTH_CAP_FRACTION) - the SAME
-           fractional cap the reported-growth path already uses - UNLESS
-           a clean historical FCF CAGR (>= MIN_HISTORY_POINTS_FOR_TREND
-           points, coefficient of variation <= 0.60) is itself at or
-           above that cap, in which case the higher of the two real
-           signals is corroborating each other and the cap loosens to
-           min(analyst_1y, history_cagr, ceiling) instead. A genuine
-           "ok" status (a real LTG/+5y figure) is UNCHANGED - still the
-           plain tier ceiling only, no fractional cap.
+           genuine 5-year figure) - the source is tagged "analyst_1y"
+           (distinct from plain "analyst" - see meta["growth_source"]'s
+           own docstring, so a Deep Dive/Fair Value label can still say
+           "next year" rather than implying a 5-year figure), but is
+           governed EXACTLY like a genuine "ok" LTG value - the plain
+           market-cap tier ceiling only, no separate fractional cap.
+           (Revised 30 Sep 2026, 20:55 AEST, owner decision - see this
+           function's own docstring intro above: a tighter per-source
+           cap briefly existed here the same day and was removed - the
+           tier ceiling is the one safety limit for every analyst-
+           sourced figure, next-year or 5-year alike.)
         2. Historical FCF CAGR (growth_from_history(fcf_series)), if
            it's > 0 AND fcf_series has at least MIN_HISTORY_POINTS_FOR_
            TREND points (fewer is "no history", not a real 0%/degenerate
@@ -909,29 +907,16 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
         return result, source, governor, raw_rate
 
     if analyst_growth is not None and analyst_growth > 0:
-        if yahoo_estimate_status == "ok_1y":
-            # Step 1d (owner-directed, 30 Sep 2026) - see this function's
-            # own docstring, priority 1, for the full rationale. Computed
-            # independently of the priority-2 history check just below
-            # (that one only runs when THIS branch doesn't return first).
-            cap_1y = max(end_rate, ceiling * REPORTED_GROWTH_CAP_FRACTION)
-            g_1y_hist = growth_from_history(fcf_series)
-            has_enough_history_1y = (
-                fcf_series is not None and len(fcf_series) >= MIN_HISTORY_POINTS_FOR_TREND
-            )
-            history_corroborates = (
-                g_1y_hist is not None and g_1y_hist > 0 and has_enough_history_1y
-                and _coeff_of_variation(fcf_series) <= 0.60
-                and g_1y_hist >= cap_1y
-            )
-            allowed = (
-                min(analyst_growth, g_1y_hist, ceiling) if history_corroborates
-                else min(analyst_growth, cap_1y)
-            )
-            result = max(GROWTH_FLOOR, allowed)
-            governor = "Cap1y" if allowed < analyst_growth else "Yahoo"
-            return result, "analyst_1y", governor, analyst_growth
-        return _finalize(analyst_growth, "analyst", "Yahoo")
+        # Step 1d (owner-directed, 30 Sep 2026), governor REVISED 30 Sep
+        # 2026 20:55 AEST (owner decision - see this function's own
+        # docstring intro): the next-year analyst tier ("ok_1y") is
+        # tagged with its own source label, "analyst_1y" - distinct from
+        # a genuine LTG figure so labels still say "next year" - but is
+        # governed by the plain market-cap tier ceiling alone, exactly
+        # like "ok". No separate fractional cap, no history-
+        # corroboration branch.
+        source = "analyst_1y" if yahoo_estimate_status == "ok_1y" else "analyst"
+        return _finalize(analyst_growth, source, "Yahoo")
 
     g = growth_from_history(fcf_series)
     has_enough_history = fcf_series is not None and len(fcf_series) >= MIN_HISTORY_POINTS_FOR_TREND

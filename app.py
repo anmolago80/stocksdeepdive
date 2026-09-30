@@ -10787,22 +10787,26 @@ def page_deep_dive():
             _dd_tier = _dd.get("dcf_discount_tier")
             _dd_gsrc = _dd_growth_source_labels.get(_dd.get("dcf_growth_source"))
             # Step 1d (owner-directed, 30 Sep 2026, from the Dow 30
-            # rescan's own "Yahoo LTG 0, Yahoo 1y 28" coverage line):
-            # "analyst_1y" is the GOVERNED next-year-analyst tier
-            # (fcf_valuation_engine.estimate_growth()'s new source,
-            # distinct from plain "analyst" - a genuine LTG figure,
-            # unchanged) - i18n-driven (EN/ES), the first growth-source
-            # label on this page to need translation. "(capped)" shown
-            # only when growth_governor is "Cap1y" (the tighter next-
-            # year-specific cap - or a corroborating-but-lower history
-            # CAGR - actually reduced the raw 1y figure); the raw-vs-
-            # used "Raw signal: ..." caption below fires independently
-            # off dcf_growth_raw whenever that gap is large enough to
-            # show, same as any other capped source.
+            # rescan's own "Yahoo LTG 0, Yahoo 1y 28" coverage line;
+            # REVISED 30 Sep 2026 20:55 AEST, owner decision: the tier
+            # ceiling alone already exists for exactly this - a second
+            # per-source cap under it added a rule without adding
+            # safety, so the Cap1y governor/history-corroboration branch
+            # were removed from estimate_growth()): "analyst_1y" is
+            # still a DISTINCT source label from plain "analyst" (so
+            # this label still reads "Yahoo analyst (next year)" instead
+            # of implying a 5-year figure), but is now governed by the
+            # plain tier ceiling only, same as a genuine LTG "ok" value -
+            # i18n-driven (EN/ES). "(capped)" shown only when
+            # growth_governor is "Cap" (the tier ceiling itself actually
+            # bound the raw 1y figure); the raw-vs-used "Raw signal: ..."
+            # caption below fires independently off dcf_growth_raw
+            # whenever that gap is large enough to show, same as any
+            # other capped source.
             if _dd.get("dcf_growth_source") == "analyst_1y":
                 _dd_gsrc = (
                     i18n.t("dd.growth_source_analyst_1y_capped", _dd_lang)
-                    if _dd.get("growth_governor") == "Cap1y"
+                    if _dd.get("growth_governor") == "Cap"
                     else i18n.t("dd.growth_source_analyst_1y", _dd_lang)
                 )
             # Growth-estimate-fetch resilience fix (owner-directed, 28 Sep
