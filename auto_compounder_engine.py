@@ -205,7 +205,19 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # than the plain ceiling. fcf_valuation_engine.py is already covered by
 # VALUATION_SOURCE_HASH below. Belt-and-suspenders bump, same reasoning
 # as every prior ENGINE_VERSION bump above.
-ENGINE_VERSION = 50
+# 50->51 (Push 2, owner-directed, 30 Sep 2026): capm_engine.py's market-
+# cap discount-rate premium is now a continuous log-linear interpolation
+# (SIZE_PREMIUM_ANCHORS_USD) instead of a 5-tier step table - directly
+# changes the discount rate (and therefore every DCF intrinsic value)
+# for any company NOT sitting exactly on one of the five old tier
+# thresholds. Also adds WARNING-level live/fallback logging for both
+# risk-free sources and a US$300M split to fcf_valuation_engine.py's
+# growth ceiling/end-rate tables (labels only, same numeric values on
+# both sides of the new split). capm_engine.py and fcf_valuation_
+# engine.py are already covered by VALUATION_SOURCE_HASH below - belt-
+# and-suspenders bump, same reasoning as every prior ENGINE_VERSION
+# bump above.
+ENGINE_VERSION = 51
 
 
 def _valuation_source_hash():
@@ -1851,6 +1863,8 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
             "discount_tier_label": None, "growth_source": None, "growth_path": None,
             "growth_end_rate": None, "yahoo_estimate_status": None, "capex_basis": None,
             "growth_raw": None,
+            "risk_free_used": None, "risk_free_source": None,
+            "market_cap_usd": None, "premium_used": None,
             "fcf_base_source": None, "fcf_distorted_years": [], "fcf_base_raw_per_share": None,
             "fcf_per_share_used": None,
             "flagged": True,
@@ -1866,6 +1880,13 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         # just the number - see _build_fair_value()'s own display of
         # these two.
         "discount_tier_label": meta.get("discount_tier_label"),
+        # Push 2 (30 Sep 2026, owner-directed): size-premium breakdown -
+        # see _build_fair_value()'s "Size premium" row (was "Discount
+        # Tier") for where these are displayed.
+        "risk_free_used": meta.get("risk_free_used"),
+        "risk_free_source": meta.get("risk_free_source"),
+        "market_cap_usd": meta.get("market_cap_usd"),
+        "premium_used": meta.get("premium_used"),
         "growth_source": meta.get("growth_source"),
         "growth_path": meta.get("growth_path"),
         # Growth-rewrite (29 Sep 2026, owner-directed): pre-cap growth figure,
@@ -1966,6 +1987,12 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         "perpetual_rate": meta.get("perpetual_rate_used"),
         "discount_rate": meta.get("discount_rate_used"),
         "discount_tier_label": meta.get("discount_tier_label"),
+        # Push 2 (30 Sep 2026, owner-directed): same passthrough as
+        # _run_dcf() above.
+        "risk_free_used": meta.get("risk_free_used"),
+        "risk_free_source": meta.get("risk_free_source"),
+        "market_cap_usd": meta.get("market_cap_usd"),
+        "premium_used": meta.get("premium_used"),
         "growth_source": meta.get("growth_source"),
         # Growth-rewrite (29 Sep 2026, owner-directed): same passthrough as
         # _run_dcf() above - see that function's comment.
@@ -3508,9 +3535,34 @@ def _dcf_valuation_and_inputs(info, price, canonical_dcf_result):
         },
         {"label": "Base Case Growth", "value": _growth_display, "format": _growth_fmt},
     ]
-    if canonical_dcf_result.get("discount_tier_label"):
-        dcf_inputs.append(
-            {"label": "Discount Tier", "value": canonical_dcf_result["discount_tier_label"], "format": "raw"})
+    # Push 2 (owner-directed, 30 Sep 2026): "Discount Tier" (a step-table
+    # tier name) relabelled "Size premium" with the same risk-free +
+    # premium breakdown text app.py's Deep Dive caption now shows - see
+    # capm_engine.py's SIZE_PREMIUM_ANCHORS_USD comment for why the old
+    # tier lookup became a continuous interpolation.
+    _cdr_rf = canonical_dcf_result.get("risk_free_used")
+    _cdr_premium = canonical_dcf_result.get("premium_used")
+    _cdr_cap_usd = canonical_dcf_result.get("market_cap_usd")
+    _cdr_tier = canonical_dcf_result.get("discount_tier_label")
+    _cdr_rate = canonical_dcf_result.get("discount_rate")
+    if _cdr_tier and _cdr_rf is not None and _cdr_premium is not None and _cdr_cap_usd is not None:
+        if _cdr_cap_usd >= 1_000_000_000:
+            _cdr_cap_txt = f"US${_cdr_cap_usd / 1_000_000_000:.1f}B"
+        elif _cdr_cap_usd >= 1_000_000:
+            _cdr_cap_txt = f"US${_cdr_cap_usd / 1_000_000:.0f}M"
+        else:
+            _cdr_cap_txt = f"US${_cdr_cap_usd:,.0f}"
+        _cdr_note = "live" if canonical_dcf_result.get("risk_free_source") == "live" else "fallback"
+        _size_premium_text = (
+            f"Discount {_cdr_rate * 100:.1f}% = {_cdr_rf * 100:.1f}% risk-free ({_cdr_note}) + "
+            f"{_cdr_premium * 100:.1f}% size premium ({_cdr_tier}, {_cdr_cap_txt})"
+            if _cdr_rate is not None else
+            f"{_cdr_rf * 100:.1f}% risk-free ({_cdr_note}) + {_cdr_premium * 100:.1f}% size "
+            f"premium ({_cdr_tier}, {_cdr_cap_txt})"
+        )
+        dcf_inputs.append({"label": "Size premium", "value": _size_premium_text, "format": "raw"})
+    elif _cdr_tier:
+        dcf_inputs.append({"label": "Size premium", "value": _cdr_tier, "format": "raw"})
     if _growth_source_display:
         dcf_inputs.append(
             {"label": "Growth Source", "value": _growth_source_display, "format": "raw"})

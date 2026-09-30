@@ -220,6 +220,27 @@ EN = {
     "dd.growth_source_analyst_1y": "Yahoo analyst (next year)",
     "dd.growth_source_analyst_1y_capped": "Yahoo analyst (next year, capped)",
 
+    # Push 2 (owner-directed, 30 Sep 2026): the Deep Dive discount
+    # caption used to just name a step-table tier ("discount tier: mid-
+    # cap (US$10B-50B)") with no visible breakdown - now that the size
+    # premium is a continuous interpolation (capm_engine.py's
+    # SIZE_PREMIUM_ANCHORS_USD), showing the risk-free/premium split is
+    # what lets a reader see WHY two similarly-sized companies get
+    # slightly different discount rates (their risk-free currencies
+    # differ) and WHY the premium itself isn't a round tier number any
+    # more. {rate}/{rf}/{premium} are percentages (no "%" in the format
+    # string - the caller appends it); {rf_note} is one of the three
+    # keys just below (RBA live / live / fallback); {band}/{cap} are the
+    # size-premium band label and the USD-converted market cap string
+    # (e.g. "small-cap (US$300M-2B)", "US$0.9B").
+    "dd.discount_breakdown": (
+        "Discount {rate}% = {rf}% risk-free ({rf_note}) + {premium}% "
+        "size premium ({band}, {cap})"
+    ),
+    "dd.risk_free_note_rba_live": "RBA live",
+    "dd.risk_free_note_live": "live",
+    "dd.risk_free_note_fallback": "fallback",
+
     # Step 4 (owner-directed, 30 Sep 2026, KO fix): shown when fcf_
     # valuation_engine.normalized_base_and_series()'s distorted-year
     # mechanism actually fired (a genuine one-off cash distortion, e.g.
@@ -4062,6 +4083,14 @@ ES = {
 
     "dd.growth_source_analyst_1y": "analista Yahoo (próximo año)",
     "dd.growth_source_analyst_1y_capped": "analista Yahoo (próximo año, limitado)",
+
+    "dd.discount_breakdown": (
+        "Descuento {rate}% = {rf}% tasa libre de riesgo ({rf_note}) + "
+        "{premium}% prima por tamaño ({band}, {cap})"
+    ),
+    "dd.risk_free_note_rba_live": "RBA en vivo",
+    "dd.risk_free_note_live": "en vivo",
+    "dd.risk_free_note_fallback": "respaldo",
 
     "dd.fcf_oneoff_years_one": "el año más reciente reportado",
     "dd.fcf_oneoff_years_multi": "los últimos {n} años reportados",

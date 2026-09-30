@@ -10832,13 +10832,51 @@ def page_deep_dive():
                     _dd_gsrc = f"{_dd_gsrc} (no Yahoo estimate)"
                 elif _dd_yahoo_status == "non_positive":
                     _dd_gsrc = f"{_dd_gsrc} (Yahoo estimate was non-positive)"
-            if _dd_tier or _dd_gsrc:
-                _dd_tier_gsrc_bits = []
-                if _dd_tier:
-                    _dd_tier_gsrc_bits.append(f"discount tier: {_dd_tier}")
-                if _dd_gsrc:
-                    _dd_tier_gsrc_bits.append(f"growth source: {_dd_gsrc}")
-                st.caption(" · ".join(_dd_tier_gsrc_bits).capitalize())
+            # Push 2 (owner-directed, 30 Sep 2026): the old caption just
+            # named a step-table tier ("discount tier: mid-cap (US$10B-
+            # 50B)") with no visible breakdown - now that capm_engine.py's
+            # size premium is a continuous log-linear interpolation
+            # (SIZE_PREMIUM_ANCHORS_USD), showing the actual risk-free +
+            # premium split (and whether the risk-free rate is live or a
+            # fallback) is what lets a reader see WHY two similarly-sized
+            # companies land on slightly different rates. Growth source
+            # keeps its own separate caption line below - unchanged
+            # content, just no longer joined into the same sentence as
+            # the discount breakdown.
+            _dd_rf = _dd.get("dcf_risk_free_used")
+            _dd_premium = _dd.get("dcf_premium_used")
+            _dd_cap_usd = _dd.get("dcf_market_cap_usd")
+            if (
+                _dd.get("dcf_discount") is not None and _dd_rf is not None
+                and _dd_premium is not None and _dd_tier and _dd_cap_usd is not None
+            ):
+                _dd_is_live = _dd.get("dcf_risk_free_source") == "live"
+                if (_dd.get("currency") or "").upper() == "AUD":
+                    _dd_rf_note = i18n.t(
+                        "dd.risk_free_note_rba_live" if _dd_is_live else "dd.risk_free_note_fallback",
+                        _dd_lang,
+                    )
+                else:
+                    _dd_rf_note = i18n.t(
+                        "dd.risk_free_note_live" if _dd_is_live else "dd.risk_free_note_fallback",
+                        _dd_lang,
+                    )
+                if _dd_cap_usd >= 1_000_000_000:
+                    _dd_cap_txt = f"US${_dd_cap_usd / 1_000_000_000:.1f}B"
+                elif _dd_cap_usd >= 1_000_000:
+                    _dd_cap_txt = f"US${_dd_cap_usd / 1_000_000:.0f}M"
+                else:
+                    _dd_cap_txt = f"US${_dd_cap_usd:,.0f}"
+                st.caption(i18n.t(
+                    "dd.discount_breakdown", _dd_lang,
+                    rate=_dd["dcf_discount"], rf=round(_dd_rf * 100, 1),
+                    premium=round(_dd_premium * 100, 1), band=_dd_tier,
+                    cap=_dd_cap_txt, rf_note=_dd_rf_note,
+                ))
+            elif _dd_tier:
+                st.caption(f"Discount tier: {_dd_tier}")
+            if _dd_gsrc:
+                st.caption(f"Growth source: {_dd_gsrc}")
             # Growth-never-zero rewrite, 1.2b (owner-directed, 30 Sep
             # 2026): show the RAW pre-cap signal next to the capped
             # figure the model actually compounds from, whenever a cap
@@ -29524,6 +29562,19 @@ def _render_data_audit_checks_panel():
     for _r in _da_result.get("a6_discount_tiers", []):
         _cur, _tier = _r.get("current_model", {}), _r.get("tier_model", {})
         _delta = _r.get("mos_delta_pts")
+        # Push 2 (owner-directed, 30 Sep 2026): the size premium is now a
+        # continuous log-linear interpolation (capm_engine.py's SIZE_
+        # PREMIUM_ANCHORS_USD), not a step-table lookup - show the actual
+        # interpolated premium and the USD cap it was computed from,
+        # instead of only the band name (which alone would still read
+        # like a step-table result).
+        _tier_premium = _tier.get("premium_used")
+        _tier_cap_usd = _tier.get("market_cap_usd")
+        _tier_premium_txt = (
+            f"{_tier_premium * 100:.2f}% (US${_tier_cap_usd / 1e9:.2f}B)"
+            if _tier_premium is not None and _tier_cap_usd
+            else "-"
+        )
         _da_a6_rows.append(
             "<tr>"
             f"<td>{_r['ticker']}</td>"
@@ -29532,6 +29583,7 @@ def _render_data_audit_checks_panel():
             f"<td>{_cur.get('intrinsic_value', '-')}</td>"
             f"<td>{_cur.get('mos_pct', '-')}</td>"
             f"<td>{_tier.get('tier_label', _r.get('error', '-'))}</td>"
+            f"<td>{_tier_premium_txt}</td>"
             f"<td>{_tier.get('discount_rate', '-')}</td>"
             f"<td>{_tier.get('intrinsic_value', '-')}</td>"
             f"<td>{_tier.get('mos_pct', '-')}</td>"
@@ -29540,7 +29592,8 @@ def _render_data_audit_checks_panel():
         )
     st.markdown(_sdd_table(
         ["Ticker", "Price", "Current: Rate", "Current: IV", "Current: MOS%",
-         "Tier (new)", "Tier: Rate", "Tier: IV", "Tier: MOS%", "MOS delta (pts)"],
+         "Tier (new)", "Interpolated premium (cap)", "Tier: Rate", "Tier: IV", "Tier: MOS%",
+         "MOS delta (pts)"],
         _da_a6_rows,
     ), unsafe_allow_html=True)
     _da_a6_big_moves = [

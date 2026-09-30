@@ -455,6 +455,15 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         # screen too, not just the number - see app.py's Deep Dive
         # rendering for where these two land.
         "dcf_discount_tier": iv_meta.get("discount_tier_label"),
+        # Push 2 (30 Sep 2026, owner-directed): the size-premium
+        # breakdown behind dcf_discount_rate - app.py's Deep Dive
+        # caption uses these to render "Discount X% = Y% risk-free +
+        # Z% size premium (band, US$capB)" instead of just the tier
+        # label and the combined rate.
+        "dcf_risk_free_used": iv_meta.get("risk_free_used"),
+        "dcf_risk_free_source": iv_meta.get("risk_free_source"),
+        "dcf_market_cap_usd": iv_meta.get("market_cap_usd"),
+        "dcf_premium_used": iv_meta.get("premium_used"),
         "dcf_growth_source": iv_meta.get("growth_source"),
         # Growth-path option E (28 Sep 2026, owner-directed follow-up to
         # 0d7ee0b): the fade's own end rate (tiered, floored at the

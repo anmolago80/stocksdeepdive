@@ -68,7 +68,13 @@ def resolve_intrinsic_value(
         meta["fcf_used"]         : float | None (the base FCF the DCF actually compounded from)
         meta["fcf_per_share_used"] : float | None (fcf_used / shares outstanding)
         meta["discount_source"]  : "tiered" | "tiered-default" | "manual" | "fallback"
-        meta["discount_tier_label"] : str | None (A6 market-cap tier, e.g. "mid-cap (US$10B-50B)")
+        meta["discount_tier_label"] : str | None (A6 size-premium band, e.g. "mid-cap (US$10B-50B)" -
+                                          Push 2, 30 Sep 2026: a continuous log-linear interpolation
+                                          now sets the actual premium, this is a display-only band name)
+        meta["risk_free_used"]   : float | None (Push 2 - the risk-free component of discount_rate_used)
+        meta["risk_free_source"] : "live" | "default" | None (Push 2)
+        meta["market_cap_usd"]   : float | None (Push 2 - USD-converted market cap used for the lookup)
+        meta["premium_used"]     : float | None (Push 2 - the interpolated size premium over risk-free)
         meta["perpetual_source"] : "currency" | "manual" | "fallback"
         meta["discount_rate_used"]  : float | None
         meta["perpetual_rate_used"] : float | None
@@ -112,6 +118,15 @@ def resolve_intrinsic_value(
             "fcf_per_share_used": dcf_meta.get("fcf_per_share_used"),
             "discount_source": dcf_meta.get("discount_source"),
             "discount_tier_label": dcf_meta.get("discount_tier_label"),
+            # Push 2 (30 Sep 2026) passthrough - the size-premium
+            # breakdown (risk-free + premium) behind discount_rate_used,
+            # same pure-provenance pattern as every other *_used key
+            # here - see capm_engine.resolve_discount_rate()'s own
+            # docstring.
+            "risk_free_used": dcf_meta.get("risk_free_used"),
+            "risk_free_source": dcf_meta.get("risk_free_source"),
+            "market_cap_usd": dcf_meta.get("market_cap_usd"),
+            "premium_used": dcf_meta.get("premium_used"),
             "perpetual_source": dcf_meta.get("perpetual_source"),
             "discount_rate_used": dcf_meta.get("discount_rate_used"),
             "perpetual_rate_used": dcf_meta.get("perpetual_rate_used"),

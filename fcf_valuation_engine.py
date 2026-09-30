@@ -193,11 +193,24 @@ FX_TO_USD_APPROX = {
 
 # (min USD market cap, ceiling) pairs, largest threshold first - the first
 # one a company's market cap clears wins.
+#
+# Push 2 Part 1 point 3 (owner-directed, 30 Sep 2026): growth stays a
+# step table (only capm_engine.py's discount-rate premium went
+# continuous - see that module's SIZE_PREMIUM_ANCHORS_USD comment for
+# why) - but a US$300M threshold is inserted here anyway, splitting the
+# old flat "< US$2B -> 20%" bucket into "US$300M-2B" and "< US$300M",
+# BOTH still at 20% (no behaviour change - every company gets the exact
+# same ceiling it always did), purely so this table's own tier
+# boundaries line up with the new 6-band size-premium LABELS a Deep
+# Dive caption now shows (a company sitting in capm_engine's "small-cap
+# (US$300M-2B)" band should not see a growth ceiling that implies a
+# different bucket boundary).
 MARKET_CAP_GROWTH_CEILINGS = [
     (200_000_000_000, 0.08),   # mega-cap
     (10_000_000_000, 0.12),    # large-cap
     (2_000_000_000, 0.16),     # mid-cap
-    (0, 0.20),                 # small-cap / fallback bucket
+    (300_000_000, 0.20),       # small-cap
+    (0, 0.20),                 # micro-cap
 ]
 
 
@@ -238,11 +251,18 @@ def growth_ceiling_for(info, currency=None):
 # equity) that only coincide in value because the owner chose the same
 # numbers for both today - hard-linking them would mean a future change
 # to one silently move the other.
+# Push 2 Part 1 point 3 (owner-directed, 30 Sep 2026): same US$300M
+# split as MARKET_CAP_GROWTH_CEILINGS above, same reasoning - both the
+# old "< US$2B" bucket's boundary and its 0.06 value are unchanged, a
+# US$300M threshold is just inserted between US$2B and 0 (still 0.06 on
+# both sides of it) so this table's tier boundaries agree with capm_
+# engine.py's new size-premium band labels.
 MARKET_CAP_GROWTH_END_RATES = [
     (200_000_000_000, 0.02),   # mega-cap
     (50_000_000_000,  0.03),   # large-cap
     (10_000_000_000,  0.04),   # mid-cap
-    (2_000_000_000,   0.05),   # small-cap
+    (2_000_000_000,   0.05),   # small-mid-cap
+    (300_000_000,      0.06),  # small-cap
     (0,                0.06),  # micro-cap
 ]
 
@@ -1390,6 +1410,18 @@ def dcf_intrinsic_value(
                 meta["market_cap_missing"] = bool(capm_meta.get("market_cap_missing"))
                 if meta["market_cap_missing"]:
                     meta["defaulted"] = True
+                # Push 2 (owner-directed, 30 Sep 2026): thread the size-
+                # premium breakdown through to the DCF-level meta so a
+                # caller (app.py's Deep Dive caption, auto_compounder_
+                # engine.py's Fair Value tab) can render "Discount X% =
+                # Y% risk-free + Z% size premium (band, US$capB)"
+                # instead of just the combined rate - see capm_engine.
+                # resolve_discount_rate()'s own docstring for where these
+                # come from.
+                meta["risk_free_used"] = capm_meta.get("risk_free_used")
+                meta["risk_free_source"] = capm_meta.get("rf_source")
+                meta["market_cap_usd"] = capm_meta.get("market_cap_usd")
+                meta["premium_used"] = capm_meta.get("premium_used")
             except Exception:
                 discount_rate = DEFAULT_DISCOUNT_RATE
                 meta["discount_source"] = "fallback"

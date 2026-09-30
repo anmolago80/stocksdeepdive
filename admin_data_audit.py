@@ -520,6 +520,16 @@ def check_a6_discount_tiers(tickers=None):
                 "tier_label": tier_meta.get("tier_label"),
                 "discount_rate": round(tier_rate, 4),
                 "rf_source": tier_meta.get("rf_source"),
+                # Push 2 (owner-directed, 30 Sep 2026): tier_label is now
+                # a display-only BAND name - the actual premium is a
+                # continuous log-linear interpolation (capm_engine.py's
+                # SIZE_PREMIUM_ANCHORS_USD), not a step-table lookup, so
+                # this panel now shows the interpolated premium and the
+                # USD-converted market cap it was computed from directly,
+                # rather than only the band name a caller has to trust.
+                "risk_free_used": tier_meta.get("risk_free_used"),
+                "premium_used": tier_meta.get("premium_used"),
+                "market_cap_usd": tier_meta.get("market_cap_usd"),
                 "intrinsic_value": round(iv_new, 2) if iv_new else None,
                 "mos_pct": round(mos_new, 2) if mos_new is not None else None,
             }

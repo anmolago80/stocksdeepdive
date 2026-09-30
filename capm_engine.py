@@ -44,6 +44,7 @@ bond-yield fetch glitch can't produce a nonsense valuation.
 
 import csv
 import logging
+import math
 import time
 
 import requests
@@ -187,6 +188,16 @@ def get_risk_free_rate(currency):
     is actually invoked."""
     ccy = (currency or "").upper()
     ticker = _RISK_FREE_TICKERS.get(ccy)
+    fallback_rate = RISK_FREE_FALLBACK.get(ccy, DEFAULT_RISK_FREE_FALLBACK)
+    # Push 2 Part 2b (owner-directed, 30 Sep 2026): a USD large-cap Deep
+    # Dive showed an implied risk-free rate identical to RISK_FREE_
+    # FALLBACK["AUD"] (5.3%), raising the question of whether the live
+    # ^TNX fetch is silently failing the same way the AU RBA fetch was
+    # (see get_au_risk_free_rate_live()'s own Part 2 logging below). This
+    # reason string is surfaced only for "^TNX" (the USD ticker) - the
+    # "[capm] US 10y risk-free: live/FALLBACK" line settles it either
+    # way from the next real production fetch's logs.
+    fallback_reason = "no ticker configured"
     if ticker:
         import nightly_scan
 
@@ -212,15 +223,31 @@ def get_risk_free_rate(currency):
                 "get_risk_free_rate(%s): %s fetch failed after retries - %s: %s",
                 ccy, ticker, type(_last_exc[0]).__name__, _last_exc[0],
             )
+            fallback_reason = f"{type(_last_exc[0]).__name__}: {_last_exc[0]}"
+        elif hist is None:
+            fallback_reason = "empty fetch result"
+        else:
+            fallback_reason = "empty history" if hist.empty else "out of sanity band"
         try:
             if hist is not None and not hist.empty:
                 raw = float(hist["Close"].iloc[-1])
                 rate = raw / _RISK_FREE_DIVISOR.get(ticker, 100.0)
                 if RISK_FREE_MIN < rate < RISK_FREE_MAX:   # sanity band - reject garbage
+                    if ticker == "^TNX":
+                        as_of = str(hist.index[-1].date()) if len(hist.index) else "unknown date"
+                        _growth_logger.warning(
+                            "[capm] US 10y risk-free: live %.2f%% (^TNX, as at %s)",
+                            rate * 100, as_of,
+                        )
                     return rate, "live"
-        except Exception:
-            pass
-    return RISK_FREE_FALLBACK.get(ccy, DEFAULT_RISK_FREE_FALLBACK), "default"
+        except Exception as e:
+            fallback_reason = f"{type(e).__name__}: {e}"
+    if ticker == "^TNX":
+        _growth_logger.warning(
+            "[capm] US 10y risk-free: FALLBACK %.2f%% - %s",
+            fallback_rate * 100, fallback_reason,
+        )
+    return fallback_rate, "default"
 
 
 def resolve_discount_rate(info, currency):
@@ -244,7 +271,10 @@ def resolve_discount_rate(info, currency):
     plus tier_label/premium_used/market_cap_missing for a caller that
     wants to disclose which tier a stock landed in (see deep_dive_engine.
     py/auto_compounder_engine.py's Fair Value section for where those are
-    now surfaced).
+    now surfaced), plus risk_free_used/market_cap_usd (Push 2, 30 Sep
+    2026 - continuous size premium) so a caller can render the full
+    "discount = risk-free + size premium" breakdown instead of just the
+    combined rate.
     """
     rate, tiered_meta = resolve_discount_rate_by_market_cap(info, currency)
     meta = {
@@ -255,6 +285,8 @@ def resolve_discount_rate(info, currency):
         "tier_label": tiered_meta.get("tier_label"),
         "premium_used": tiered_meta.get("premium_used"),
         "market_cap_missing": tiered_meta.get("market_cap_missing", False),
+        "risk_free_used": tiered_meta.get("risk_free_used"),
+        "market_cap_usd": tiered_meta.get("market_cap_usd"),
     }
     return rate, meta
 
@@ -299,28 +331,100 @@ _DISCOUNT_TIER_FX_TO_USD_APPROX = {
 }
 
 # Premiums are RELATIVE TO THE RISK-FREE RATE (not a flat add-on), so
-# every tier's discount rate tracks interest rates the same way the
+# every band's discount rate tracks interest rates the same way the
 # risk-free rate itself does - the owner's own explicit design goal.
-# (min USD market cap, premium over risk-free, label) triples, largest
-# threshold first - the first one a company's market cap clears wins.
 # MIN_DISCOUNT_RATE (7.5%) still applies as a floor below - the owner
-# has explicitly confirmed the top tier (rf + 2%, ~7.2% for USD at
+# has explicitly confirmed the top band (rf + 2%, ~7.2% for USD at
 # today's rate) is EXPECTED to sit below it and floor there on
-# purpose. DISCOUNT_CEIL (15%) does NOT apply to this tiered path -
-# the under-US$2B tier (rf + 6%, ~11.2% today) is now the effective
-# ceiling by design, so a separate flat ceiling above it would be
-# redundant. One named, commented table, per the owner's own
-# instruction - deliberately NOT merged with fcf_valuation_engine.py's
-# MARKET_CAP_GROWTH_CEILINGS: one governs the discount rate, the other
-# the FCF growth ceiling, and nothing requires their tier boundaries to
-# line up.
-MARKET_CAP_DISCOUNT_TIERS = [
-    (200_000_000_000, 0.02, "mega-cap (>= US$200B)"),
-    (50_000_000_000,  0.03, "large-cap (US$50B-200B)"),
-    (10_000_000_000,  0.04, "mid-cap (US$10B-50B)"),
-    (2_000_000_000,   0.05, "small-cap (US$2B-10B)"),
-    (0,                0.06, "micro-cap (< US$2B)"),
+# purpose. DISCOUNT_CEIL (15%) does NOT apply to this path - the
+# sub-US$300M band (rf + 6%, ~11.3% today) is the effective ceiling by
+# design, so a separate flat ceiling above it would be redundant.
+#
+# Push 2 (owner-directed, 30 Sep 2026): the step table above used to
+# jump straight from "small-cap (US$2B-10B)" to "micro-cap (< US$2B)"
+# at a hard US$2B cliff, so a US$1.99B company got the harshest premium
+# (+6%) and a US$2.01B company - economically identical - got +5%, a
+# full percentage point of discount-rate (and therefore intrinsic-
+# value) difference for a rounding error in market cap. Live symptom:
+# OCL.AX (~US$0.9B, an established mid-sized industrial, not a genuine
+# micro-cap) landed in the bottom tier and got the same premium as a
+# speculative sub-US$300M name. Replaced with log-linear interpolation
+# between these five FIXED anchor points (the exact same five values
+# the old step table used, so any company sitting exactly on an old
+# threshold gets the same number as before - see _interpolate_size_
+# premium()'s own docstring for the boundary-exactness guarantee) on
+# log10(market_cap_usd): a smooth curve with no cliffs anywhere, while
+# every anchor value itself is unchanged from the owner's original A6
+# design. (cap_usd, premium_over_risk_free) pairs, largest cap first.
+SIZE_PREMIUM_ANCHORS_USD = [
+    (200_000_000_000, 0.02),
+    (50_000_000_000,  0.03),
+    (10_000_000_000,  0.04),
+    (2_000_000_000,   0.05),
+    (300_000_000,     0.06),
 ]
+
+# Display-only band names (Push 2) - a 6-way split of the old 5-tier
+# label set, adding a "small-mid-cap (US$2B-10B)"/"small-cap (US$300M-
+# 2B)" distinction in place of the old single "small-cap (US$2B-10B)"/
+# "micro-cap (< US$2B)" pair, so a label like "small-cap (US$0.9B)"
+# never implies a stock sits in the same bucket as a genuine sub-
+# US$300M micro-cap. Labels only - the premium itself comes from
+# _interpolate_size_premium() above, not from this table; kept
+# separate so relabeling never risks touching the number.
+_SIZE_BAND_LABELS = [
+    (200_000_000_000, "mega-cap (>= US$200B)"),
+    (50_000_000_000,  "large-cap (US$50B-200B)"),
+    (10_000_000_000,  "mid-cap (US$10B-50B)"),
+    (2_000_000_000,   "small-mid-cap (US$2B-10B)"),
+    (300_000_000,     "small-cap (US$300M-2B)"),
+    (0,               "micro-cap (< US$300M)"),
+]
+
+
+def _interpolate_size_premium(market_cap_usd):
+    """Log-linear interpolation of the size premium (over risk-free)
+    between the fixed anchors in SIZE_PREMIUM_ANCHORS_USD, on
+    log10(market_cap_usd) - Push 2 (owner-directed, 30 Sep 2026). Above
+    the top anchor (US$200B) the premium is flat at 2.0%; below the
+    bottom anchor (US$300M, including a missing/zero market cap) it's
+    flat at 6.0%; between two anchors it's a straight line in LOG-cap
+    space, so a company halfway (in orders of magnitude) between two
+    anchors gets a premium halfway between their two premiums.
+
+    Boundary-exactness: at any of the five anchor values THEMSELVES,
+    this returns that anchor's exact premium (frac lands on exactly 0.0
+    or 1.0 - no floating-point step-function surprise) - so a company
+    sitting exactly on an old step-table threshold gets the identical
+    number it got before this change, only the values BETWEEN anchors
+    changed (from a step to a slope)."""
+    anchors = SIZE_PREMIUM_ANCHORS_USD   # descending by cap
+    if market_cap_usd <= 0:
+        return anchors[-1][1]
+    if market_cap_usd >= anchors[0][0]:
+        return anchors[0][1]
+    if market_cap_usd <= anchors[-1][0]:
+        return anchors[-1][1]
+    log_cap = math.log10(market_cap_usd)
+    for i in range(len(anchors) - 1):
+        hi_cap, hi_prem = anchors[i]
+        lo_cap, lo_prem = anchors[i + 1]
+        if lo_cap <= market_cap_usd <= hi_cap:
+            frac = (log_cap - math.log10(lo_cap)) / (math.log10(hi_cap) - math.log10(lo_cap))
+            return lo_prem + frac * (hi_prem - lo_prem)
+    return anchors[-1][1]   # unreachable given the short-circuits above; defensive only
+
+
+def _size_band_label(market_cap_usd):
+    """Display-only band name for market_cap_usd - see _SIZE_BAND_
+    LABELS' own comment. Independent of _interpolate_size_premium():
+    the label just names which band a company's cap falls in, the
+    premium is always the smooth interpolated value, never the band's
+    own old step value."""
+    for threshold, label in _SIZE_BAND_LABELS:
+        if market_cap_usd >= threshold:
+            return label
+    return _SIZE_BAND_LABELS[-1][1]
 
 # A6 addition (27 Sep 2026, owner-directed): with beta removed, the
 # risk-free rate becomes the main driver of every discount rate, so the
@@ -354,6 +458,40 @@ _RBA_F2_CSV_URL = "https://www.rba.gov.au/statistics/tables/csv/f02d-data.csv"
 _RBA_TIMEOUT_SECONDS = 6
 _RBA_10Y_COLUMN_HINTS = ("10-year", "10 year", "10yr")
 
+# Push 2 Part 2 (owner-directed, 30 Sep 2026): the RBA fetch's bare
+# `except Exception: pass` meant NOTHING was ever logged for this
+# function, on either the live or the fallback path - so an ASX Deep
+# Dive showing exactly RISK_FREE_FALLBACK["AUD"] (5.3%) as its
+# discount-rate risk-free component could mean "the live fetch is
+# genuinely failing" or "5.3% happens to be the real current yield too"
+# and neither this session nor the owner could tell which from the
+# code alone. Logged once per real fetch (this function is cache_data-
+# decorated, so the body - and therefore this log line - only runs on
+# a cache miss, never on a cache hit) at WARNING (see _log_growth_
+# estimate_labels_once()'s own docstring for why WARNING, not INFO, is
+# the level that actually reaches the Railway logs from this process).
+_au_risk_free_metadata_logged = False
+
+
+def _log_au_risk_free_metadata_rows_once(rows):
+    """One-time (per process) dump of the first 3 metadata rows' cell
+    texts when the 10-year column can't be found at all - Push 2 Part 2
+    (owner-directed, 30 Sep 2026): the FALLBACK log line alone says
+    "column not found" but not what the CSV actually contained, so a
+    next fix would still be guessing at the real column layout. This
+    gives the next session real evidence instead."""
+    global _au_risk_free_metadata_logged
+    if _au_risk_free_metadata_logged:
+        return
+    _au_risk_free_metadata_logged = True
+    try:
+        _growth_logger.warning(
+            "[capm] AU 10y risk-free: 10-year column not found - first 3 metadata "
+            "rows: %r", [row[:8] for row in rows[:3]],
+        )
+    except Exception:
+        pass
+
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_au_risk_free_rate_live():
@@ -374,52 +512,83 @@ def get_au_risk_free_rate_live():
     get_risk_free_rate() itself too (the beta-CAPM formula's own AUD
     risk-free source, still used nowhere in the live discount rate any
     more, but retained for any other caller) - not done here, out of
-    this change's scope."""
+    this change's scope.
+
+    Push 2 Part 2 (owner-directed, 30 Sep 2026): now logs the outcome
+    of EVERY real fetch at WARNING - `[capm] AU 10y risk-free: live
+    X.XX% (RBA F2, as at <date>)` on success, or `[capm] AU 10y risk-
+    free: FALLBACK 5.30% - <reason>` on failure, with `<reason>` one of
+    "HTTP <status>", the exception's own type+message, "10-year column
+    not found", or "no in-band value" - see this section's own module
+    comment for why this visibility matters now more than when this was
+    an admin-only diagnostic."""
+    fallback_rate = RISK_FREE_FALLBACK.get("AUD", DEFAULT_RISK_FREE_FALLBACK)
+    reason = None
     try:
         resp = requests.get(_RBA_F2_CSV_URL, timeout=_RBA_TIMEOUT_SECONDS)
-        resp.raise_for_status()
-        rows = list(csv.reader(resp.text.splitlines()))
-        # RBA statistical-table CSVs are WIDE: one column per bond series
-        # (2-year, 3-year, 5-year, 10-year, ...), several metadata rows
-        # (title, series ID, units, description) at the top carrying each
-        # column's description, then one row per date below. Find the
-        # 10-year column by a tolerant substring match on ANY metadata-row
-        # cell (mirrors auto_compounder_engine._find_row()'s own
-        # substring-match tolerance for exactly this "don't know the
-        # exact label in advance" situation) rather than assuming a label
-        # and its value share one row - they don't, in this layout.
-        target_col = None
-        for row in rows:
-            for i, cell in enumerate(row):
-                if any(hint in (cell or "").lower() for hint in _RBA_10Y_COLUMN_HINTS):
-                    target_col = i
+        if resp.status_code != 200:
+            reason = f"HTTP {resp.status_code}"
+        else:
+            rows = list(csv.reader(resp.text.splitlines()))
+            # RBA statistical-table CSVs are WIDE: one column per bond
+            # series (2-year, 3-year, 5-year, 10-year, ...), several
+            # metadata rows (title, series ID, units, description) at
+            # the top carrying each column's description, then one row
+            # per date below. Find the 10-year column by a tolerant
+            # substring match on ANY metadata-row cell (mirrors auto_
+            # compounder_engine._find_row()'s own substring-match
+            # tolerance for exactly this "don't know the exact label in
+            # advance" situation) rather than assuming a label and its
+            # value share one row - they don't, in this layout.
+            target_col = None
+            for row in rows:
+                for i, cell in enumerate(row):
+                    if any(hint in (cell or "").lower() for hint in _RBA_10Y_COLUMN_HINTS):
+                        target_col = i
+                        break
+                if target_col is not None:
                     break
-            if target_col is not None:
-                break
-        if target_col is not None:
-            # Scan from the LAST row upward (most recent date first - RBA's
-            # date rows run oldest-to-newest, top-to-bottom) for the first
-            # row with a usable numeric value in that column. A blank cell
-            # (public holiday / no quote that day) is skipped, not treated
-            # as a failure; a real-but-out-of-band value stops the scan
-            # rather than reaching further back into older, unrelated
-            # figures - same "reject garbage in either direction" stance
-            # get_risk_free_rate() already takes.
-            for row in reversed(rows):
-                if len(row) <= target_col:
-                    continue
-                cell = row[target_col]
-                try:
-                    raw = float(cell)
-                except (TypeError, ValueError):
-                    continue
-                rate = raw / 100.0
-                if RISK_FREE_MIN < rate < RISK_FREE_MAX:   # same sanity band as get_risk_free_rate
-                    return rate, "live"
-                break
-    except Exception:
-        pass
-    return RISK_FREE_FALLBACK.get("AUD", DEFAULT_RISK_FREE_FALLBACK), "default"
+            if target_col is None:
+                _log_au_risk_free_metadata_rows_once(rows)
+                reason = "10-year column not found"
+            else:
+                # Scan from the LAST row upward (most recent date first -
+                # RBA's date rows run oldest-to-newest, top-to-bottom)
+                # for the first row with a usable numeric value in that
+                # column. A blank cell (public holiday / no quote that
+                # day) is skipped, not treated as a failure; a real-but-
+                # out-of-band value stops the scan rather than reaching
+                # further back into older, unrelated figures - same
+                # "reject garbage in either direction" stance get_risk_
+                # free_rate() already takes.
+                found_value = False
+                for row in reversed(rows):
+                    if len(row) <= target_col:
+                        continue
+                    cell = row[target_col]
+                    try:
+                        raw = float(cell)
+                    except (TypeError, ValueError):
+                        continue
+                    found_value = True
+                    rate = raw / 100.0
+                    if RISK_FREE_MIN < rate < RISK_FREE_MAX:   # same sanity band as get_risk_free_rate
+                        as_of = row[0] if row else "unknown date"
+                        _growth_logger.warning(
+                            "[capm] AU 10y risk-free: live %.2f%% (RBA F2, as at %s)",
+                            rate * 100, as_of,
+                        )
+                        return rate, "live"
+                    break
+                reason = "no in-band value" if found_value else "10-year column not found"
+    except Exception as e:
+        reason = f"{type(e).__name__}: {e}"
+
+    _growth_logger.warning(
+        "[capm] AU 10y risk-free: FALLBACK %.2f%% - %s",
+        fallback_rate * 100, reason or "unknown error",
+    )
+    return fallback_rate, "default"
 
 
 def resolve_discount_rate_by_market_cap(info, currency):
@@ -469,13 +638,18 @@ def resolve_discount_rate_by_market_cap(info, currency):
         market_cap = 0
     market_cap_usd = market_cap * _DISCOUNT_TIER_FX_TO_USD_APPROX.get(ccy, 1.0)
 
-    premium, tier_label = MARKET_CAP_DISCOUNT_TIERS[-1][1], MARKET_CAP_DISCOUNT_TIERS[-1][2]
-    for threshold, prem, label in MARKET_CAP_DISCOUNT_TIERS:
-        if market_cap_usd >= threshold:
-            premium, tier_label = prem, label
-            break
+    # Push 2 (owner-directed, 30 Sep 2026): continuous log-linear
+    # interpolation replaces the old step table - see SIZE_PREMIUM_
+    # ANCHORS_USD's own comment. tier_label is now a band NAME (display
+    # only, from _size_band_label()) rather than the premium's own
+    # source - the premium always comes from the interpolation, never
+    # from a table lookup keyed on the same threshold.
+    premium = _interpolate_size_premium(market_cap_usd)
+    tier_label = _size_band_label(market_cap_usd)
     meta["tier_label"] = tier_label
     meta["premium_used"] = premium
+    meta["risk_free_used"] = rf
+    meta["market_cap_usd"] = market_cap_usd
 
     rate = rf + premium
     if rate < MIN_DISCOUNT_RATE:

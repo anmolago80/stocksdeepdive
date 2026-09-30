@@ -78,15 +78,28 @@ with mock.patch.object(ce, "get_risk_free_rate", side_effect=_rf):
     _aos_rate, _aos_meta = ce.resolve_discount_rate_by_market_cap(
         {"marketCap": 8_000_000_000, "currency": "USD"}, "USD")
 
+# Push 2 (owner-directed, 30 Sep 2026): NONE of ADP/CPRT/AOS's market
+# caps sit exactly on one of the five fixed anchors, so all three now
+# get an INTERPOLATED premium instead of their old flat tier value -
+# ADP US$105B (between the 50B/200B anchors) interpolates to ~2.46%,
+# landing just below MIN_DISCOUNT_RATE and flooring to 7.5% (was a flat
+# 8.0%); CPRT US$25.5B (between 10B/50B) interpolates to ~3.42% (was a
+# flat 9.0% total, now 8.42%); AOS US$8B (between 2B/10B, close to the
+# 10B side) interpolates to ~4.14% (was a flat 10.0% total, now 9.14%).
+# The old single "small-cap (US$2B-10B)" band label is also now "small-
+# mid-cap (US$2B-10B)" (display only - see capm_engine._SIZE_BAND_
+# LABELS' own comment).
 assert _adp_meta["tier_label"].startswith("large-cap"), _adp_meta["tier_label"]
-assert abs(_adp_rate - 0.080) < 1e-9, _adp_rate
+assert abs(_adp_rate - 0.075) < 1e-9, _adp_rate
+assert _adp_meta["discount_floored"] is True, _adp_meta
 assert _cprt_meta["tier_label"].startswith("mid-cap"), _cprt_meta["tier_label"]
-assert abs(_cprt_rate - 0.090) < 1e-9, _cprt_rate
-assert _aos_meta["tier_label"].startswith("small-cap"), _aos_meta["tier_label"]
-assert abs(_aos_rate - 0.100) < 1e-9, _aos_rate
-print(f"[tier_placement_adp_cprt_aos] ADP US$105B -> {_adp_meta['tier_label']} ({_adp_rate:.1%}), "
-      f"CPRT US$25.5B -> {_cprt_meta['tier_label']} ({_cprt_rate:.1%}), "
-      f"AOS US$8B -> {_aos_meta['tier_label']} ({_aos_rate:.1%}) OK")
+assert abs(_cprt_rate - 0.0842) < 1e-4, _cprt_rate
+assert _aos_meta["tier_label"].startswith("small-mid-cap"), _aos_meta["tier_label"]
+assert abs(_aos_rate - 0.0914) < 1e-4, _aos_rate
+print(f"[tier_placement_adp_cprt_aos] ADP US$105B -> {_adp_meta['tier_label']} ({_adp_rate:.2%}, "
+      f"floored), CPRT US$25.5B -> {_cprt_meta['tier_label']} ({_cprt_rate:.2%}), "
+      f"AOS US$8B -> {_aos_meta['tier_label']} ({_aos_rate:.2%}) - all three interpolated, none "
+      "landing exactly on a fixed anchor OK")
 
 
 # ======================================================================
@@ -292,7 +305,12 @@ _dcf_inputs = {i["label"]: i["value"] for i in _fv["valuation_inputs"]["TEST"]["
 # perpetual_rate (2.0%) - deliberately different values in this fixture
 # so a silent fallback to perpetual_rate would fail loudly.
 assert "10.3% for 5 yrs, then fades to 4.0% by yr 10" in _dcf_inputs["Base Case Growth"], _dcf_inputs
-assert _dcf_inputs.get("Discount Tier") == "mid-cap (US$10B-50B)", _dcf_inputs
+# Push 2 (owner-directed, 30 Sep 2026): "Discount Tier" relabelled
+# "Size premium" - this fixture's canonical_result carries no risk_
+# free_used/premium_used/market_cap_usd (predates Push 2), so _build_
+# fair_value() falls back to showing just the tier_label string under
+# the new key, same value as before, different label.
+assert _dcf_inputs.get("Size premium") == "mid-cap (US$10B-50B)", _dcf_inputs
 assert _dcf_inputs.get("Growth Source") == "Yahoo 5y analyst", _dcf_inputs
 print("[fair_value_dcf_row_is_canonical] the 'dcf' row's value/growth/discount/tier/source all "
       "come from canonical_dcf_result (Change 3), NOT dcf_result - confirmed the two are "
