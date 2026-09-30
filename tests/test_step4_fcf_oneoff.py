@@ -214,4 +214,58 @@ for _mod, _names in (
 print("[no_scoring_leakage] fcf_base_source/fcf_distorted_years/fcf_base_raw never referenced "
       "inside ranking_engine.calculate_long_score or top100_engine.composite_score OK")
 
+# ======================================================================
+# CHECK 6 (Push 3 point 7, owner-directed, 30 Sep 2026, stability-signal
+# retrofit): CSL-shaped fixture - OCF -35%, operating income -50% (an
+# impairment), revenue +5%, gross profit +4%. No D&A row (so the top
+# "ebitda_addback" tier can't apply) - the OLD stability signal would
+# have fallen straight to operating-income-alone (tier 2 pre-retrofit)
+# and wrongly read the write-down-driven -50% OI collapse as a genuine
+# operating deterioration, never firing. The retrofit's revenue+gross-
+# profit dual tier (both comfortably stable) correctly overrides that
+# and fires.
+# ======================================================================
+# 5 years so the full end-to-end base computation has enough CLEAN
+# years (>= FCF_ONEOFF_MIN_CLEAN_YEARS, 3) to median without needing
+# the EBITDA bridge (which itself requires a D&A row this fixture
+# deliberately omits) - years 1-4 flat/clean, only year 0 (latest)
+# carries the CSL-shaped one-off.
+CSL_OCF = [650.0, 1000.0, 1000.0, 1000.0, 1000.0]
+CSL_CAPEX = [-50.0] * 5
+CSL_CF = _mk_cashflow_df(CSL_OCF, CSL_CAPEX)
+
+
+def _mk_income_df_no_da(oi, revenue, gross_profit):
+    """Same shape as _mk_income_df() above but WITHOUT a D&A row -
+    forces _oneoff_metric_series() past the ebitda_addback tier."""
+    rows = {"Operating Income": oi, "Total Revenue": revenue, "Gross Profit": gross_profit}
+    cols = {}
+    n = len(oi)
+    for i in range(n):
+        cols[f"202{6 - i}-06-30"] = [rows[label][i] for label in rows]
+    return pd.DataFrame(cols, index=list(rows.keys()))
+
+
+CSL_OI = [250.0, 500.0, 500.0, 500.0, 500.0]              # year 0: -50%, the impairment's own visible effect
+CSL_REVENUE = [1050.0, 1000.0, 1000.0, 1000.0, 1000.0]     # year 0: +5%
+CSL_GROSS_PROFIT = [416.0, 400.0, 400.0, 400.0, 400.0]     # year 0: +4%
+CSL_INCOME = _mk_income_df_no_da(CSL_OI, CSL_REVENUE, CSL_GROSS_PROFIT)
+
+_metric_series, _secondary_series, _tier = fve._oneoff_metric_series(CSL_INCOME)
+assert _tier == "revenue_gross_profit", _tier   # confirms ebitda_addback tier was skipped (no D&A row)
+_csl_distorted = fve._detect_distorted_years(CSL_OCF, _metric_series, secondary_metric_series=_secondary_series)
+assert _csl_distorted == [True, False, False, False, False], _csl_distorted
+print(f"[csl_stability_signal_retrofit_fcf] CSL-shaped (OCF -35%, OI -50% impairment, revenue +5%, "
+      f"gross profit +4%, no D&A row) -> tier={_tier!r} (ebitda_addback correctly skipped), "
+      f"distorted={_csl_distorted} - the revenue+gross-profit dual signal correctly fires where "
+      "operating-income-alone would have wrongly read this as a genuine decline OK")
+
+_csl_base, _csl_series, _csl_src, _csl_bn, _csl_cb, _csl_meta = fve.normalized_base_and_series(
+    CSL_CF, info={}, income_df=CSL_INCOME,
+)
+assert _csl_meta["fcf_distorted_years"] == [0], _csl_meta
+print(f"[csl_stability_signal_retrofit_end_to_end] normalized_base_and_series() end-to-end: "
+      f"year 0 (latest) flagged distorted, base={_csl_base:.2f} (source={_csl_meta['fcf_base_source']!r}) OK")
+
+
 print("STEP4_FCF_ONEOFF_SWEEP_DONE")

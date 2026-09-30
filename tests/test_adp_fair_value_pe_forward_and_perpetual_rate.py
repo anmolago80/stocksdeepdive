@@ -73,9 +73,21 @@ _bundle = {
     "prices_10y": {"dates": [], "prices": []},
 }
 
-_result = ace._pe_forward_method(_bundle, _G_EARN, _DISCOUNT_RATE)
+# Push 3 (owner-directed, 30 Sep 2026): _pe_forward_method() now takes
+# a normalized_eps dict (see auto_compounder_engine._normalized_eps())
+# in place of reading trailing EPS internally - this bundle's shape
+# (income=None, trailingEps=1.0) makes _normalized_eps() fall through
+# to the SAME 1.0 TTM value this fixture was built around, via
+# ace._normalized_eps(_bundle) directly (the same call _build_fair_
+# value() itself makes internally), not hand-constructed, so this stays
+# in sync with the real function.
+_normalized_eps_fixture = ace._normalized_eps(_bundle)
+assert _normalized_eps_fixture["value"] == 1.0, _normalized_eps_fixture
+
+_result = ace._pe_forward_method(_bundle, _G_EARN, _DISCOUNT_RATE, _normalized_eps_fixture)
 assert _result is not None
-_value, _forecast_eps_5y, _actual_pe, _year5_price = _result
+_value, _forecast_eps_5y, _actual_pe, _year5_price, _reason = _result
+assert _reason is None, _reason
 
 assert abs(_forecast_eps_5y - 17.84) < 0.01, _forecast_eps_5y
 assert abs(_actual_pe - 24.10) < 0.01, _actual_pe

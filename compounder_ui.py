@@ -828,9 +828,16 @@ def _cp_valuation_methods_chart(ticker, valuation_methods):
     _method_vals = [v for (k, _), v in zip(used, values) if k != "price"]
     if len(_method_vals) >= 2:
         _avg = sum(_method_vals) / len(_method_vals)
+        # Push 3 point 3 (owner-directed, 30 Sep 2026): the average is
+        # ALREADY computed over available methods only (`used` only
+        # holds keys valuation_methods actually set - a method excluded
+        # for negative earnings/no analyst forecast was never added
+        # there in the first place) - the label now says so explicitly
+        # rather than silently averaging fewer methods with no visible
+        # sign that one dropped out.
         fig.add_hline(
             y=_avg, line_dash="dash", line_color="#e6edf5", line_width=1.5,
-            annotation_text=f"Average ${_avg:,.2f}",
+            annotation_text=f"Average of {len(_method_vals)} methods: ${_avg:,.2f}",
             annotation_position="top left",
             annotation_font=dict(size=12, color="#e6edf5"),
         )
@@ -1119,6 +1126,24 @@ def render_section(sections, ticker, section_label, gate=None, lang="en"):
             _cp_render_valuation_inputs(
                 ticker, used, section.get("valuation_inputs", {}), section.get("valuation_methods", {})
             )
+            # Push 3 point 3 (owner-directed, 30 Sep 2026): a method
+            # excluded for a REASON (negative earnings after EPS
+            # normalisation, or no analyst forward estimate) gets a
+            # one-line explanation here rather than just silently
+            # having no bar - see auto_compounder_engine._build_fair_
+            # value()'s own "valuation_method_reasons" comment.
+            _method_reasons = section.get("valuation_method_reasons", {}).get(ticker, {})
+            if _method_reasons:
+                _reason_labels = {
+                    "negative_earnings": "not meaningful — negative earnings",
+                    "no_analyst_forecast": "not available — no analyst forecast",
+                }
+                _method_names = dict((k, lbl) for k, lbl, _ in _CP_VALUATION_METHOD_ORDER)
+                _reason_lines = [
+                    f"{_method_names.get(k, k)}: {_reason_labels.get(v, v)}"
+                    for k, v in _method_reasons.items()
+                ]
+                st.caption(" · ".join(_reason_lines))
         else:
             st.warning(f"No valuation data yet for {ticker}.")
         # Fair Value shows ONLY the 4 methods, same as before the refactor -

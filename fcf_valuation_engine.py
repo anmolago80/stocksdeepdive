@@ -64,6 +64,7 @@ where each input came from and whether a default/average had to be assumed.
 """
 
 import logging
+import re
 import time
 
 import yfinance as yf
@@ -319,6 +320,49 @@ _REVENUE_LABELS = ("Total Revenue", "Revenue", "Operating Revenue", "totalRevenu
 _DA_LABELS = ("Reconciled Depreciation",)
 _PRETAX_INCOME_LABELS = ("Pretax Income", "Income Before Tax", "incomeBeforeTax")
 _TAX_PROVISION_LABELS = ("Tax Provision", "Income Tax Expense", "incomeTaxExpense")
+# Push 3 point 7 (owner-directed, 30 Sep 2026, stability-signal fix -
+# retrofitted into the ALREADY-SHIPPED Step 4 mechanism, not just the
+# new EPS one below): gross profit for the revenue+gross-profit dual
+# check - see _oneoff_metric_series()'s own docstring for why this
+# replaces plain operating-income/revenue as the middle tier.
+_GROSS_PROFIT_LABELS = ("Gross Profit", "grossProfit")
+# Any income-statement row whose label matches this is an add-back
+# candidate for the top (EBITDA) tier - CSL's own shape (a write-down
+# that collapsed operating income) is exactly what this catches: the
+# write-down amount is added BACK to operating income before computing
+# EBITDA, so a one-off impairment/restructuring charge doesn't itself
+# look like an operating deterioration.
+_ONEOFF_ADDBACK_LABEL_RE = re.compile(r"(?i)impair|write.?down|write.?off|restructur")
+
+
+def _addback_series(income_df):
+    """Push 3 point 7: per-year (most-recent-first) sum of every income-
+    statement row whose label matches _ONEOFF_ADDBACK_LABEL_RE - unlike
+    every other row lookup in this module, this deliberately does NOT
+    use a fixed alias list (impairment/write-down/restructuring line
+    labels vary far more than revenue/operating-income ones do across
+    tickers and data sources), so it scans every row in the statement.
+    Returns a list the same length as income_df's columns (0.0 for a
+    year with no matching row), or None if income_df has no rows at
+    all. Reported as a POSITIVE expense magnitude in this codebase's
+    income-statement shape (already subtracted to reach operating
+    income), so it's ADDED BACK, not subtracted."""
+    if income_df is None or getattr(income_df, "empty", True):
+        return None
+    n = income_df.shape[1]
+    total = [0.0] * n
+    matched = False
+    for label in income_df.index:
+        if _ONEOFF_ADDBACK_LABEL_RE.search(str(label)):
+            try:
+                vals = [float(v) for v in income_df.loc[label].tolist()]
+            except Exception:
+                continue
+            if len(vals) != n:
+                continue
+            matched = True
+            total = [t + (v if v == v else 0.0) for t, v in zip(total, vals)]
+    return total if matched else [0.0] * n
 
 
 def _row(cashflow_df, labels):
@@ -349,79 +393,137 @@ def _row(cashflow_df, labels):
 
 
 def _oneoff_metric_series(income_df):
-    """Step 4 (owner-directed, 30 Sep 2026): per-year (most-recent-first)
-    cross-check metric for _detect_distorted_years() below - EBITDA
-    (operating income + D&A) when both rows are available, else plain
-    operating income, else revenue - whichever ONE tier has a usable
-    row wins for the WHOLE series (never mixed tier-by-tier within one
-    ticker's own comparison, which would make a year-over-year %
-    change meaningless). Returns (metric_series, tier) - tier is
-    "ebitda"|"operating_income"|"revenue"|None. None/None when income_df
-    is missing or has none of these rows - the caller then can't run
-    the cross-check at all and falls through to the pre-existing (Task
-    10) outlier-swap logic unchanged."""
+    """Step 4 (owner-directed, 30 Sep 2026), RETROFITTED by Push 3 point 7
+    (owner-directed, 30 Sep 2026, stability-signal fix): per-year (most-
+    recent-first) cross-check metric(s) for _detect_distorted_years()
+    below. In order:
+      1. EBITDA (operating income + D&A) WITH one-off items (impairment/
+         write-down/write-off/restructuring rows - see _ONEOFF_ADDBACK_
+         LABEL_RE) added back, when both operating income and D&A rows
+         are available - CSL's own shape (a write-down that collapsed
+         operating income, and therefore the plain oi+da EBITDA this
+         tier used to compute) is exactly what the add-back catches.
+         Requires oi+da; the add-back itself defaults to 0 for any year
+         with no matching row, so a ticker with no one-off rows at all
+         (e.g. KO's own fixture) gets an IDENTICAL series to the pre-
+         retrofit plain-EBITDA tier.
+      2. Revenue AND gross profit, BOTH required, checked as a dual
+         signal (_detect_distorted_years() only calls a year "stable"
+         on this tier when NEITHER moved past the tolerance) - CSL's own
+         shape again: with no D&A row available, tier 1 can't apply, and
+         operating income ALONE (the pre-retrofit tier 2) would have
+         wrongly read as "the business deteriorated" when the drop was
+         actually the write-down; revenue/gross profit correctly show
+         the underlying business was fine.
+      3. Operating income alone - LAST RESORT (demoted from tier 2 pre-
+         retrofit), only reached when neither of the above can be
+         computed.
+    Returns (primary_series, secondary_series, tier) - tier is
+    "ebitda_addback"|"revenue_gross_profit"|"operating_income"|None.
+    secondary_series is only non-None for the "revenue_gross_profit"
+    tier (gross profit); every other tier is a single-signal check,
+    same as before this retrofit. (None, None, None) when income_df is
+    missing or has none of these rows - the caller then can't run the
+    cross-check at all and falls through to the pre-existing (Task 10)
+    outlier-swap logic unchanged."""
     if income_df is None or getattr(income_df, "empty", True):
-        return None, None
+        return None, None, None
     oi = _row(income_df, _OPERATING_INCOME_LABELS)
     da = _row(income_df, _DA_LABELS)
     if oi and da and len(oi) == len(da):
-        return [o + d for o, d in zip(oi, da)], "ebitda"
-    if oi:
-        return oi, "operating_income"
+        addback = _addback_series(income_df) or [0.0] * len(oi)
+        if len(addback) != len(oi):
+            addback = [0.0] * len(oi)
+        return [o + d + a for o, d, a in zip(oi, da, addback)], None, "ebitda_addback"
     rev = _row(income_df, _REVENUE_LABELS)
-    if rev:
-        return rev, "revenue"
-    return None, None
+    gp = _row(income_df, _GROSS_PROFIT_LABELS)
+    if rev and gp and len(rev) == len(gp):
+        return rev, gp, "revenue_gross_profit"
+    if oi:
+        return oi, None, "operating_income"
+    return None, None, None
 
 
-def _detect_distorted_years(ocf, metric_series):
-    """Step 4 (owner-directed, 30 Sep 2026, KO fix). Returns a list of
-    bool, same length/order as `ocf` (most-recent-first), True for a
-    year whose own reporting is judged a one-off cash distortion rather
-    than a genuine operating change.
+def _detect_distorted_years(primary, metric_series, secondary_metric_series=None,
+                             primary_drop_threshold=FCF_ONEOFF_OCF_DROP,
+                             metric_tolerance=FCF_ONEOFF_EBITDA_TOLERANCE,
+                             two_year_threshold=FCF_ONEOFF_TWO_YEAR_THRESHOLD,
+                             treat_negative_as_distorted=False):
+    """Step 4 (owner-directed, 30 Sep 2026, KO fix), GENERALISED by Push 3
+    point 7/point 1 (owner-directed, 30 Sep 2026) so the SAME function
+    drives both the FCF mechanism (normalized_base_and_series(), passing
+    OCF as `primary`, FCF_ONEOFF_*'s own defaults) and the new EPS one
+    (passing net income/diluted EPS as `primary`, EPS_ONEOFF_DROP/
+    EPS_ONEOFF_EBITDA_TOLERANCE via the threshold kwargs) rather than a
+    second copy of the same algorithm. Returns a list of bool, same
+    length/order as `primary` (most-recent-first), True for a year whose
+    own reporting is judged a one-off distortion rather than a genuine
+    operating change.
 
     Primary test, per year i (comparing against the immediately prior,
-    older year i+1): operating cash flow fell more than FCF_ONEOFF_
-    OCF_DROP (30%) while the cross-check metric (_oneoff_metric_series()
-    above) fell less than FCF_ONEOFF_EBITDA_TOLERANCE (10%) over the
-    SAME span - a real operating deterioration would show up in both; a
-    one-off item (an earn-out payment, a tax settlement, a working-
-    capital swing) hits OCF alone. If the metric ALSO fell >= 10%,
-    nothing is marked - see FCF_ONEOFF_EBITDA_TOLERANCE's own comment -
-    that's a genuine decline, not a one-off.
+    older year i+1): `primary` fell more than `primary_drop_threshold`
+    (OR, when treat_negative_as_distorted, `primary[i]` is itself
+    negative - the EPS mechanism's own "or is negative" rule) while the
+    cross-check metric (_oneoff_metric_series() above) fell less than
+    `metric_tolerance` over the SAME span - a real operating
+    deterioration would show up in both; a one-off item (an earn-out
+    payment, a tax settlement, a write-down, a working-capital swing)
+    hits the primary series alone. When `secondary_metric_series` is
+    given (the revenue+gross-profit dual-signal tier), a year only
+    counts as "the metric held up" when BOTH series stayed within
+    tolerance - either one dropping past it means a genuine decline. If
+    the metric(s) ALSO fell past tolerance, nothing is marked - see
+    FCF_ONEOFF_EBITDA_TOLERANCE's own comment - that's a genuine
+    decline, not a one-off.
 
     Two-year extension: once a year is marked distorted, the NEXT (more
     recent) year is marked too, without re-running the primary test on
-    it, as long as its own OCF is still more than FCF_ONEOFF_TWO_YEAR_
-    THRESHOLD (25%) below the last genuinely CLEAN year's OCF (not the
-    already-distorted one immediately before it) - KO's own shape: 2024
-    (the fairlife earn-out) and 2025 (the IRS tax deposit) both
-    depressed, 2023 clean. Implemented as a single oldest-to-newest
-    sweep so "last clean year" always means what it says."""
-    n = len(ocf)
+    it, as long as its own value is still more than `two_year_threshold`
+    below the last genuinely CLEAN year's value (not the already-
+    distorted one immediately before it) - KO's own shape: 2024 (the
+    fairlife earn-out) and 2025 (the IRS tax deposit) both depressed,
+    2023 clean. Implemented as a single oldest-to-newest sweep so "last
+    clean year" always means what it says."""
+    n = len(primary)
     distorted = [False] * n
     if n == 0:
         return distorted
-    last_clean_value = ocf[n - 1]   # oldest year in the window - nothing before it to test
+    last_clean_value = primary[n - 1]   # oldest year in the window - nothing before it to test
     for i in range(n - 2, -1, -1):  # walk oldest -> newest (i+1 = prior/older year)
         is_distorted = False
-        prior_ocf = ocf[i + 1]
-        if prior_ocf not in (None, 0):
-            ocf_drop = (prior_ocf - ocf[i]) / abs(prior_ocf)
-            if ocf_drop > FCF_ONEOFF_OCF_DROP:
-                if metric_series is not None and i + 1 < len(metric_series):
-                    this_m, prior_m = metric_series[i], metric_series[i + 1]
-                    if this_m is not None and prior_m not in (None, 0):
-                        metric_drop = (prior_m - this_m) / abs(prior_m)
-                        if metric_drop < FCF_ONEOFF_EBITDA_TOLERANCE:
-                            is_distorted = True
+        primary_signal = False
+        prior_val = primary[i + 1]
+        if prior_val not in (None, 0):
+            drop = (prior_val - primary[i]) / abs(prior_val)
+            if drop > primary_drop_threshold:
+                primary_signal = True
+        if treat_negative_as_distorted and primary[i] is not None and primary[i] < 0:
+            primary_signal = True
+        if primary_signal:
+            metric_ok = False
+            if metric_series is not None and i + 1 < len(metric_series):
+                this_m, prior_m = metric_series[i], metric_series[i + 1]
+                if this_m is not None and prior_m not in (None, 0):
+                    metric_drop = (prior_m - this_m) / abs(prior_m)
+                    if metric_drop < metric_tolerance:
+                        metric_ok = True
+            if metric_ok and secondary_metric_series is not None and i + 1 < len(secondary_metric_series):
+                this_s, prior_s = secondary_metric_series[i], secondary_metric_series[i + 1]
+                if this_s is not None and prior_s not in (None, 0):
+                    secondary_drop = (prior_s - this_s) / abs(prior_s)
+                    if secondary_drop >= metric_tolerance:
+                        metric_ok = False
+                else:
+                    metric_ok = False
+            if metric_ok:
+                is_distorted = True
         if not is_distorted and distorted[i + 1] and last_clean_value not in (None, 0):
-            still_depressed = (last_clean_value - ocf[i]) / abs(last_clean_value) > FCF_ONEOFF_TWO_YEAR_THRESHOLD
+            still_depressed = (last_clean_value - primary[i]) / abs(last_clean_value) > two_year_threshold
             if still_depressed:
                 is_distorted = True
         distorted[i] = is_distorted
         if not is_distorted:
-            last_clean_value = ocf[i]
+            last_clean_value = primary[i]
     return distorted
 
 
@@ -652,8 +754,8 @@ def normalized_base_and_series(cashflow_df, info=None, income_df=None):
         # every existing caller, so this block is a no-op for them.
         oneoff_meta = {"fcf_base_source": "ocf-normcapex", "fcf_distorted_years": [], "fcf_base_raw": None}
         if income_df is not None:
-            metric_series, _metric_tier = _oneoff_metric_series(income_df)
-            distorted = _detect_distorted_years(ocf, metric_series)
+            metric_series, secondary_series, _metric_tier = _oneoff_metric_series(income_df)
+            distorted = _detect_distorted_years(ocf, metric_series, secondary_metric_series=secondary_series)
             window_distorted = distorted[:FCF_ONEOFF_WINDOW_YEARS]
             if any(window_distorted):
                 window_series = series[:FCF_ONEOFF_WINDOW_YEARS]

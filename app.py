@@ -15129,6 +15129,15 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                 # fire for this row, same as before this change.
                 _scan_bundle = fundamentals_data.peek_cached_bundle(ticker)
                 _scan_income_df = _scan_bundle.get("income") if _scan_bundle else None
+                # Push 3 (30 Sep 2026, owner-directed): same opportunistic,
+                # cache-only pattern as the FCF one-off cross-check just
+                # above - the EPS-side twin (auto_compounder_engine.
+                # _normalized_eps()) for the "EPS Base Source" scanner
+                # column below. Never a live fetch; a cold cache just
+                # means "-" for this row, same as FCF Base Source.
+                _scan_eps_meta = (
+                    auto_compounder_engine._normalized_eps(_scan_bundle) if _scan_bundle else None
+                )
 
                 intrinsic_value, intrinsic_src, dcf_growth, iv_meta = resolve_intrinsic_value(
                     ticker, quality_score, info=info, cashflow_df=cashflow_df,
@@ -15414,6 +15423,12 @@ def _render_scan_results(page_label, state_prefix, empty_message,
                     # peek_cached_bundle() call above); "-" otherwise, same
                     # as every other optional column in this row.
                     "FCF Base Source": iv_meta.get("fcf_base_source") or "-",
+                    # Push 3 (30 Sep 2026, owner-directed): same "-" when
+                    # not available convention as FCF Base Source above -
+                    # only populated when the one-off EPS normalisation
+                    # mechanism actually fired (needs a warm income-
+                    # statement cache, same as FCF Base Source).
+                    "EPS Base Source": (_scan_eps_meta.get("source") if _scan_eps_meta else None) or "-",
                     "MOS": round(margin_of_safety, 2) if intrinsic_value > 0 else "N/A",
                     "IV/Price Multiple": (
                         round(intrinsic_value / current_price, 2)

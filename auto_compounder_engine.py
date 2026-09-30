@@ -217,7 +217,30 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # engine.py are already covered by VALUATION_SOURCE_HASH below - belt-
 # and-suspenders bump, same reasoning as every prior ENGINE_VERSION
 # bump above.
-ENGINE_VERSION = 51
+# 51->52 (Push 3, owner-directed, 30 Sep 2026): earnings one-off
+# normalisation - the EPS-side twin of Step 4's FCF mechanism. PE
+# Trailing now multiplies a NORMALISED EPS (median of the last 5 clean
+# fiscal years, one-off years excluded via _normalized_eps(), reusing
+# fcf_valuation_engine's own retrofitted distorted-year detection)
+# instead of raw trailing EPS; PE Forward now prefers Yahoo's own
+# analyst forward EPS estimate over trailing-EPS-compounded-at-g_earn,
+# and falls back to the SAME normalised EPS rather than the raw figure;
+# the Rational Compounder/Equity 10y method's net_income input is
+# likewise swapped for the normalised-EPS-derived figure. Any method
+# whose EPS input is <=0 after normalisation is withheld entirely
+# ("negative_earnings"/"no_analyst_forecast" reason) rather than
+# producing a nonsense negative "intrinsic value" - directly changes
+# PE Trailing/PE Forward/Equity 10y for every ticker with a genuine
+# one-off EPS distortion in its last 5 fiscal years (the CSL live
+# symptom: PE Trailing -$182.58, Rational Compounder -$42.28, four-
+# method average -$21.99, PE Forward missing entirely - all from one
+# write-down year). fcf_valuation_engine.py's own retrofitted _oneoff_
+# metric_series()/_detect_distorted_years() (Push 3 point 7, the same
+# stability-signal fix applied to the already-shipped FCF mechanism)
+# is already covered by VALUATION_SOURCE_HASH below. Belt-and-
+# suspenders bump, same reasoning as every prior ENGINE_VERSION bump
+# above.
+ENGINE_VERSION = 52
 
 
 def _valuation_source_hash():
@@ -581,6 +604,115 @@ def _eps_series(bundle):
                 for y, v in _series(bundle["income"], "net_income")
             ]
     return []
+
+
+# Push 3 (owner-directed, 30 Sep 2026): earnings one-off normalisation -
+# the EPS-side twin of fcf_valuation_engine.py's Step 4 FCF mechanism.
+# Live symptom: CSL.AX Fair Value tab - trailing EPS -$7.51 (a one-off
+# write-down) x average P/E 24.31 = PE Trailing "intrinsic value"
+# -$182.58; Rational Compounder -$42.28 with Equity Growth 0.0%; the
+# four-method average -$21.99; PE Forward missing entirely. A negative
+# EPS is not a low valuation, it is no valuation.
+#
+# Reuses fcf_valuation_engine._oneoff_metric_series()/_detect_distorted_
+# years() directly (both generalised by the same Push 3 point 7
+# retrofit that fixed the FCF mechanism's own stability signal) rather
+# than a second copy of the distorted-year algorithm - this codebase's
+# own established precedent for reusing a private-by-convention
+# function across modules (e.g. server.py importing api_v1._resolve_
+# universe()).
+EPS_ONEOFF_DROP = 0.40
+EPS_ONEOFF_EBITDA_TOLERANCE = 0.10
+EPS_ONEOFF_TWO_YEAR_THRESHOLD = 0.30
+EPS_ONEOFF_WINDOW_YEARS = 5
+EPS_ONEOFF_MIN_CLEAN_YEARS = 3
+
+
+def _normalized_eps(bundle):
+    """Push 3 (owner-directed, 30 Sep 2026): normalised diluted EPS - the
+    median of the last EPS_ONEOFF_WINDOW_YEARS (5) fiscal years' diluted
+    EPS, EXCLUDING years flagged as a one-off distortion (net income/
+    diluted EPS fell more than EPS_ONEOFF_DROP (40%) - or is itself
+    negative - vs the prior year while the SAME EBITDA/revenue+gross-
+    profit/operating-income stability signal fcf_valuation_engine's
+    Step 4 uses held up; a year already flagged is extended to the next
+    one if it's still more than EPS_ONEOFF_TWO_YEAR_THRESHOLD (30%)
+    below the last clean year - same two-year-shape rule as the FCF
+    mechanism). Requires >= EPS_ONEOFF_MIN_CLEAN_YEARS (3) clean years
+    in the window; falls back to the TTM figure when the window can't
+    produce one AND the TTM figure isn't itself negative; else no
+    normalised figure at all.
+
+    Returns a dict:
+      "value"           : float | None - the normalised EPS a caller
+                           actually values off (median5_clean, ttm, or
+                           None).
+      "raw"              : float | None - the latest fiscal year's own
+                           (un-adjusted) diluted EPS, for the "using $X
+                           (raw $Y)" caption.
+      "distorted_years"  : list[int] - 0-indexed positions (0 = latest)
+                           flagged within the 5-year window.
+      "source"           : "median5_clean" | "ttm" | "none".
+      "growth_series"    : [(year, eps), ...] newest-first, fiscal years
+                           only, with distorted years dropped - the same
+                           shape _eps_series() returns, for any caller
+                           building an EPS growth trend off this.
+
+    Does NOT fire on a genuine decline: when EPS and the stability
+    metric both fell together (a real operating deterioration), nothing
+    is marked distorted and this simply reflects the (correctly low, or
+    itself None-guarded downstream by the negative-earnings check) raw
+    figures - same "purely additive, never masks a real decline"
+    philosophy as the FCF mechanism."""
+    eps_series = _eps_series(bundle)  # [(year, eps_or_None), ...] newest-first, fiscal years only
+    values = [v for _, v in eps_series]
+    raw = values[0] if values and values[0] is not None else None
+
+    distorted_positions = set()
+    income_df = bundle.get("income")
+    if income_df is not None and len(values) >= 2:
+        metric_series, secondary_series, _tier = fcf_valuation_engine._oneoff_metric_series(income_df)
+        if metric_series is not None:
+            distorted = fcf_valuation_engine._detect_distorted_years(
+                values, metric_series, secondary_metric_series=secondary_series,
+                primary_drop_threshold=EPS_ONEOFF_DROP,
+                metric_tolerance=EPS_ONEOFF_EBITDA_TOLERANCE,
+                two_year_threshold=EPS_ONEOFF_TWO_YEAR_THRESHOLD,
+                treat_negative_as_distorted=True,
+            )
+            distorted_positions = {i for i, d in enumerate(distorted) if d}
+
+    window = values[:EPS_ONEOFF_WINDOW_YEARS]
+    window_distorted = {p for p in distorted_positions if p < len(window)}
+    clean_values = [v for i, v in enumerate(window) if v is not None and i not in window_distorted]
+
+    if len(clean_values) >= EPS_ONEOFF_MIN_CLEAN_YEARS:
+        sorted_clean = sorted(clean_values)
+        median_value = sorted_clean[len(sorted_clean) // 2]
+        growth_series = [
+            (y, v) for i, (y, v) in enumerate(eps_series)
+            if v is not None and i not in window_distorted
+        ]
+        return {
+            "value": median_value, "raw": raw,
+            "distorted_years": sorted(window_distorted),
+            "source": "median5_clean", "growth_series": growth_series,
+        }
+
+    ttm_value, _ttm_flagged = _eps_ttm(bundle)
+    if ttm_value is not None and ttm_value > 0:
+        return {
+            "value": ttm_value, "raw": raw,
+            "distorted_years": sorted(window_distorted),
+            "source": "ttm",
+            "growth_series": [(y, v) for y, v in eps_series if v is not None],
+        }
+
+    return {
+        "value": None, "raw": raw,
+        "distorted_years": sorted(window_distorted),
+        "source": "none", "growth_series": [],
+    }
 
 
 def _year_end_prices(prices_10y, statement_df=None):
@@ -3367,7 +3499,7 @@ def _equity_growth_rate(bundle):
     return g_eq, capped
 
 
-def _equity_10y_method(bundle, g_earn):
+def _equity_10y_method(bundle, g_earn, normalized_eps=None):
     """The workbook's real "Equity Method 10y" (Valuation!U = DE x fx,
     decoded from the actual cell): equity net of this year's earnings,
     compounded at the historical EQUITY growth rate for 10 years, PLUS net
@@ -3386,7 +3518,23 @@ def _equity_10y_method(bundle, g_earn):
     method is dropped entirely if the DCF has no growth figure to share.
     (E - NI) is deliberately NOT clamped at zero - it can legitimately go
     negative for a high-ROE company, and the workbook doesn't clamp it
-    either. g_eq itself IS gated - see _equity_growth_rate()."""
+    either. g_eq itself IS gated - see _equity_growth_rate().
+
+    Push 3 (owner-directed, 30 Sep 2026): `normalized_eps` (see
+    _normalized_eps()'s own docstring), when given, REPLACES the raw
+    net_income this formula compounds - a one-off write-down that
+    collapses a single year's net income shouldn't drag a 10-year
+    projection negative any more than it should PE Trailing's headline
+    value (the CSL live symptom: "Rational Compounder -$42.28 with
+    Equity Growth 0.0%" was exactly this - the raw net_income input
+    itself was the write-down-depressed figure). Converted back to a
+    total-dollar figure (normalized_eps["value"] * shares) so the rest
+    of the formula (which works in total-equity/total-NI dollars, not
+    per-share, until the final /shares) is unchanged. Returns a 5-tuple
+    now (was 4) - the extra `reason` is None when a value was produced,
+    else "negative_earnings" (normalized_eps was given but has no
+    usable value) so the caller can show why the method is withheld
+    instead of silently omitting it."""
     if g_earn is None:
         return None
     equity = _latest(bundle["balance"], "stockholders_equity")
@@ -3395,6 +3543,11 @@ def _equity_10y_method(bundle, g_earn):
     g_eq, g_eq_capped = _equity_growth_rate(bundle)
     if equity is None or net_income is None or not shares or g_eq is None:
         return None
+    if normalized_eps is not None:
+        _neps = normalized_eps.get("value")
+        if _neps is None or _neps <= 0:
+            return None, None, None, None, "negative_earnings"
+        net_income = _neps * shares
     discount = 0.03
     disc10 = (1 + discount) ** 10
     equity_term = (equity - net_income) * ((1 + g_eq) ** 10) / disc10
@@ -3405,10 +3558,10 @@ def _equity_10y_method(bundle, g_earn):
         annuity_fv = net_income * (((1 + g_earn) ** 10) - 1) / g_earn
     earnings_term = annuity_fv / disc10
     value_per_share = (equity_term + earnings_term) / shares
-    return value_per_share, g_eq, discount, g_eq_capped
+    return value_per_share, g_eq, discount, g_eq_capped, None
 
 
-def _pe_forward_method(bundle, g_earn, discount_rate):
+def _pe_forward_method(bundle, g_earn, discount_rate, normalized_eps=None):
     """Workbook's real pe_forward (Valuation!J = Forecast EPS(5y) x Actual
     P/E x fx): Forecast EPS(5y) = eps_ttm x (1+g_earn)^5 (net income
     compounded 5y / shares, i.e. trailing EPS grown at the DCF's own
@@ -3423,24 +3576,51 @@ def _pe_forward_method(bundle, g_earn, discount_rate):
     discount rate, is ~$276). Now discounted back 5 years at the SAME
     discount_rate the DCF box (dcf_result["discount_rate"]) already
     uses, so it's a genuine present value comparable to the other
-    methods on this chart, not a future price. Returns (value,
-    forecast_eps_5y, actual_pe, year5_price_undiscounted) - value is
-    None (method not offered) if trailing EPS/price/g_earn OR
-    discount_rate aren't all available; a year-5 estimate with no
-    discount rate to bring it back to today isn't a usable Intrinsic
-    Value, so it's withheld rather than shown undiscounted again."""
+    methods on this chart, not a future price.
+
+    Push 3 (owner-directed, 30 Sep 2026): Forecast EPS(5y) now prefers
+    Yahoo's own analyst forward EPS estimate (info["forwardEps"]) when
+    present - a genuine forward-looking consensus figure, unaffected by
+    a past one-off write-down the way trailing EPS is - over trailing-
+    EPS-compounded-at-g_earn. The CSL live symptom ("PE Forward is
+    missing entirely") was this method's OWN trailing-EPS guard
+    correctly refusing a negative trailing EPS, but with no fallback to
+    a forecast Yahoo already had on hand. `normalized_eps` (see
+    _normalized_eps()'s own docstring) replaces the raw trailing EPS
+    for the "Actual P/E" multiple (price / EPS) and for the
+    compounding fallback when Yahoo has no forward estimate - same
+    one-off-resistant figure PE Trailing now uses, so the multiple this
+    method applies isn't itself poisoned by the same write-down.
+    Returns a 5-tuple now (was 4): (value, forecast_eps_5y, actual_pe,
+    year5_price_undiscounted, reason) - reason is None when a value was
+    produced, "no_analyst_forecast" when Yahoo has no forward EPS AND
+    the normalised EPS isn't usable either (nothing to compound from),
+    "negative_earnings" when a forward EPS exists but there's no usable
+    EPS to build the "Actual P/E" multiple from. value is None (method
+    not offered) when g_earn/price/discount_rate aren't all available -
+    a year-5 estimate with no discount rate to bring it back to today
+    isn't a usable Intrinsic Value, so it's withheld rather than shown
+    undiscounted again."""
     if g_earn is None or discount_rate is None or discount_rate <= -1:
         return None
     info = bundle.get("info") or {}
-    trailing_eps, _ = _eps_ttm(bundle)
     price_now = info.get("currentPrice") or info.get("regularMarketPrice")
-    if trailing_eps is None or trailing_eps <= 0 or not price_now:
+    if not price_now:
         return None
-    forecast_eps_5y = trailing_eps * ((1 + g_earn) ** 5)
-    actual_pe = price_now / trailing_eps
+    base_eps = normalized_eps.get("value") if normalized_eps is not None else None
+    forward_eps = info.get("forwardEps")
+    if forward_eps is not None and forward_eps > 0:
+        forecast_eps_5y = forward_eps
+    elif base_eps is not None and base_eps > 0:
+        forecast_eps_5y = base_eps * ((1 + g_earn) ** 5)
+    else:
+        return None, None, None, None, "no_analyst_forecast"
+    if base_eps is None or base_eps <= 0:
+        return None, None, None, None, "negative_earnings"
+    actual_pe = price_now / base_eps
     year5_price = forecast_eps_5y * actual_pe
     value = year5_price / ((1 + discount_rate) ** 5)
-    return value, forecast_eps_5y, actual_pe, year5_price
+    return value, forecast_eps_5y, actual_pe, year5_price, None
 
 
 def _dcf_valuation_and_inputs(info, price, canonical_dcf_result):
@@ -3635,18 +3815,42 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
     g_earn = dcf_result.get("growth")
     avg_pe = _avg_pe_3pt(bundle)
 
-    pe_forward_result = _safe(_pe_forward_method, bundle, g_earn, dcf_result.get("discount_rate"))
-    pe_forward_value, forecast_eps_5y, actual_pe, pe_forward_year5_price = (
-        pe_forward_result if pe_forward_result else (None, None, None, None)
-    )
+    # Push 3 (owner-directed, 30 Sep 2026): computed ONCE, shared by all
+    # three EPS-driven methods below (PE Forward/PE Trailing/Equity 10y)
+    # - see _normalized_eps()'s own docstring.
+    normalized_eps = _normalized_eps(bundle)
+    method_reasons = {}
 
-    pe_trailing_value = (trailing_eps * avg_pe) if (trailing_eps is not None and avg_pe is not None) else None
+    pe_forward_result = _safe(
+        _pe_forward_method, bundle, g_earn, dcf_result.get("discount_rate"), normalized_eps)
+    pe_forward_value, forecast_eps_5y, actual_pe, pe_forward_year5_price, pe_forward_reason = (
+        pe_forward_result if pe_forward_result else (None, None, None, None, None)
+    )
+    if pe_forward_value is None and pe_forward_reason:
+        method_reasons["pe_forward"] = pe_forward_reason
+
+    # Push 3: PE Trailing now multiplies the NORMALISED EPS (median of
+    # the last 5 clean fiscal years, one-off years excluded), not the
+    # raw trailing EPS - the CSL live symptom (trailing EPS -$7.51 x
+    # avg P/E 24.31 = -$182.58 "intrinsic value") was exactly this raw
+    # multiplication; a negative EPS is not a low valuation, it's no
+    # valuation at all (point 3, below).
+    _neps_value = normalized_eps.get("value")
+    if _neps_value is None or _neps_value <= 0:
+        pe_trailing_value = None
+        method_reasons["pe_trailing"] = "negative_earnings"
+    elif avg_pe is None:
+        pe_trailing_value = None
+    else:
+        pe_trailing_value = _neps_value * avg_pe
     dcf_value, dcf_inputs = _dcf_valuation_and_inputs(info, price, canonical_dcf_result)
 
-    equity_10y_result = _safe(_equity_10y_method, bundle, g_earn)
-    equity_10y_value, equity_growth, equity_discount, equity_growth_capped = (
-        equity_10y_result if equity_10y_result else (None, None, None, False)
+    equity_10y_result = _safe(_equity_10y_method, bundle, g_earn, normalized_eps)
+    equity_10y_value, equity_growth, equity_discount, equity_growth_capped, equity_10y_reason = (
+        equity_10y_result if equity_10y_result else (None, None, None, False, None)
     )
+    if equity_10y_value is None and equity_10y_reason:
+        method_reasons["equity_10y"] = equity_10y_reason
 
     valuation_methods = {}
     if price is not None:
@@ -3670,9 +3874,25 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
         ]
     if "pe_trailing" in valuation_methods:
         valuation_inputs["pe_trailing"] = [
-            {"label": "EPS (Trailing/Diluted)", "value": trailing_eps, "format": "cur"},
+            {"label": "EPS (Normalised/Diluted)", "value": _neps_value, "format": "cur"},
             {"label": "Average P/E", "value": avg_pe, "format": "x"},
         ]
+        # Push 3 point 4 (owner-directed, 30 Sep 2026): same one-line
+        # caption pattern Step 4 uses for "FCF Basis" above - only shown
+        # when the normalisation actually fired (median5_clean).
+        if normalized_eps.get("source") == "median5_clean" and normalized_eps.get("distorted_years"):
+            _years_n = len(normalized_eps["distorted_years"])
+            _raw_txt = (
+                f"${normalized_eps['raw']:.2f}" if normalized_eps.get("raw") is not None else "n/a"
+            )
+            valuation_inputs["pe_trailing"].append({
+                "label": "EPS Basis",
+                "value": (
+                    f"Normalised - {_years_n} year{'s' if _years_n != 1 else ''} distorted by "
+                    f"one-off items; using ${_neps_value:.2f} (raw {_raw_txt})"
+                ),
+                "format": "raw",
+            })
     if "dcf" in valuation_methods:
         valuation_inputs["dcf"] = dcf_inputs
     if "equity_10y" in valuation_methods:
@@ -3691,6 +3911,27 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
         "metrics": [],
         "valuation_methods": {ticker: valuation_methods} if valuation_methods else {},
         "valuation_inputs": {ticker: valuation_inputs} if valuation_inputs else {},
+        # Push 3 point 3/4 (owner-directed, 30 Sep 2026): why a method
+        # with no bar is missing - "negative_earnings" (its EPS input
+        # was <=0 after normalisation) or "no_analyst_forecast" (PE
+        # Forward specifically: no Yahoo forward estimate AND no usable
+        # normalised EPS to compound from either) - so a caller can show
+        # "not meaningful - negative earnings"/"not available - no
+        # analyst forecast" instead of the bar simply not existing with
+        # no explanation.
+        "valuation_method_reasons": {ticker: method_reasons} if method_reasons else {},
+        # Push 3 point 4: eps_base_source/eps_distorted_years/eps_base_raw
+        # - same pure-provenance shape as Step 4's fcf_base_source/fcf_
+        # distorted_years/fcf_base_raw - for a Scanner "EPS Base Source"
+        # column and any other caller that wants the raw provenance
+        # rather than just the display caption above.
+        "eps_meta": {
+            ticker: {
+                "eps_base_source": normalized_eps.get("source"),
+                "eps_distorted_years": normalized_eps.get("distorted_years") or [],
+                "eps_base_raw": normalized_eps.get("raw"),
+            }
+        },
     }
 
 
