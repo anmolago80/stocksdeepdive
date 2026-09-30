@@ -51,13 +51,23 @@ never mixes two sessions' prices in a way that isn't honestly bounded:
      this whole feature exists for - a deploy kill resumed within
      minutes, not hours.
 
-NEVER resumable from a RateLimitCircuitBreaker abort - run_universe_
-scan() calls clear() itself in that exact except-path, before the
-exception propagates, so a checkpoint written mid-throttle can never
-be picked back up into the same throttle. clear() is also called on
-every NORMAL completion of the per-ticker loop (successful or
-degraded) - a finished loop has nothing left to resume, whether or not
-scan_store.save_scan() itself goes on to skip the save.
+RateLimitCircuitBreaker abort (audit fixes Commit 2, 30 Sep 2026,
+owner-directed - supersedes this module's original 27 Sep decision):
+the checkpoint IS kept when run_universe_scan() aborts on the rate-
+limit circuit breaker, specifically so the post-cooldown retry can
+resume from it instead of restarting the whole universe from ticker 0
+- losing most of a large universe's already-completed progress to a
+throttle cost more than the residual risk the three resume gates above
+don't already cover (a 45-minute cooldown, RATE_LIMIT_COOLDOWN_MINUTES
+in scheduler_engine.py, is well under CHECKPOINT_MAX_AGE_HOURS, and the
+same-ticker-list/same-run_night checks still apply exactly as they do
+for any other resume). The ORIGINAL reasoning this replaced - "never
+resume INTO the same throttle" - is why gate #3's 2h cap and the 45-
+minute cooldown exist as real, separate safety margins rather than
+relying on "just clear it" alone. clear() is still called on every
+NORMAL completion of the per-ticker loop (successful or degraded) - a
+finished loop has nothing left to resume, whether or not scan_store.
+save_scan() itself goes on to skip the save.
 """
 
 import json

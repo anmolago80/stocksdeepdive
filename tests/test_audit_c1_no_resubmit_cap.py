@@ -259,6 +259,15 @@ print("[c1_force_bypasses_batch_cap] force=True submits successfully even though
 daily_after_force = ts.get_daily_submission_state(_today)
 assert daily_after_force == {"batches": 3, "entrants": 210}, daily_after_force
 
+# Audit fixes Commit 2 (30 Sep 2026, owner-directed): the forced submit
+# above left a real in-flight batch (top100_batch_state) behind, which
+# submit_nightly_batch()'s OWN "batch still in progress" guard (added in
+# Commit 2, tested in test_audit_c2_backoff_breaker_batchguard.py) would
+# now refuse before ever reaching the entrant-cap check this section
+# means to isolate - so clear it here, exactly as poll_and_ingest_batch()
+# would once that batch's results actually came back.
+ts.clear_batch_state()
+
 # Now push entrants past the 240 cap even under force=True.
 big_pool = [{"ticker": f"BIG{i}", "company_name": f"Big {i} Co", "most_recent_quarter": None}
             for i in range(40)]

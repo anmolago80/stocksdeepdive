@@ -322,6 +322,86 @@ def _record_rate_limit_cooldown(log):
         f"before then")
 
 
+# Audit fixes Commit 2 (30 Sep 2026, owner-directed): per-universe catch-
+# up backoff. Problem A: a universe exempt from the 3/day scan_attempts
+# cap because NOTHING is servable for it right now (URGENT COMMIT 2's own
+# uncapped-catch-up exemption - see the catch-up block's own comment) had
+# no backoff at all - if its scan fails FAST (scrape down, "no tickers
+# resolved", the completeness guard), it re-enters eligible on literally
+# the NEXT 60-second tick, for the full CATCHUP_WINDOW_HOURS, re-running
+# the WHOLE _run_nightly (market-cap ranking refresh, reprice of every
+# real universe, derived rebuilds) every tick for up to 6 hours over one
+# universe that was never going to succeed that fast anyway.
+CATCHUP_BACKOFF_BASE_MINUTES = 5
+CATCHUP_BACKOFF_FAST_FAILURE_SECONDS = 60
+
+
+def _catchup_backoff_delay_minutes(count):
+    """5 -> 15 -> 45 -> 135 minutes (CATCHUP_BACKOFF_BASE_MINUTES *
+    3**(count-1)), capped at the full catch-up window - a universe that
+    keeps failing fast still gets one more eligible attempt per
+    remaining catch-up window, never permanently locked out for the
+    night."""
+    return min(
+        CATCHUP_BACKOFF_BASE_MINUTES * (3 ** max(count - 1, 0)),
+        CATCHUP_WINDOW_HOURS * 60,
+    )
+
+
+def _catchup_backoff_eligible(universe, state, now, log=print):
+    """True if `universe` may be attempted again right now, per its own
+    catchup_failures record in `state` (scheduler_state.json) - False,
+    with a "[scheduler] catch-up backoff: <universe> attempt n, next
+    eligible in Xm" log line, if a backoff window from its last recorded
+    FAST failure is still in effect. A universe with no record (never
+    failed fast, or already cleared by a success - see _record_catchup_
+    outcome() below) is always eligible."""
+    failures = (state.get("catchup_failures") or {}).get(universe)
+    if not failures:
+        return True
+    try:
+        last_attempt = datetime.fromisoformat(failures["last_attempt"])
+    except (KeyError, ValueError, TypeError):
+        return True
+    count = failures.get("count", 1)
+    delay_minutes = _catchup_backoff_delay_minutes(count)
+    next_eligible = last_attempt + timedelta(minutes=delay_minutes)
+    if now < next_eligible:
+        remaining_minutes = (next_eligible - now).total_seconds() / 60.0
+        log(f"[scheduler] catch-up backoff: {universe} attempt {count}, "
+            f"next eligible in {remaining_minutes:.0f}m")
+        return False
+    return True
+
+
+def _record_catchup_outcome(universe, succeeded, elapsed_seconds, state):
+    """Updates `state["catchup_failures"]` (mutated in place - the
+    caller is responsible for _save_state()) for one universe right
+    after a scan attempt, due-scan or catch-up alike - "cleared on the
+    first successful save" applies regardless of which block triggered
+    the attempt, and a fast failure during a REGULAR due-scan is exactly
+    as informative for tonight's later catch-up eligibility as one during
+    catch-up itself. A FAST failure (run_universe_scan/run_imported_scan
+    returned falsy in under CATCHUP_BACKOFF_FAST_FAILURE_SECONDS)
+    increments the count and resets last_attempt to now; a success
+    clears the record entirely; a SLOW failure (took a real amount of
+    time - a genuine partial attempt that ran out of tickers or hit some
+    other real problem, not an instant "nothing servable" bounce) is
+    left untouched, since it isn't the failure mode this backoff exists
+    to slow down."""
+    failures = state.setdefault("catchup_failures", {})
+    if succeeded:
+        failures.pop(universe, None)
+        return
+    if elapsed_seconds >= CATCHUP_BACKOFF_FAST_FAILURE_SECONDS:
+        return
+    prior = failures.get(universe) or {"count": 0}
+    failures[universe] = {
+        "count": prior.get("count", 0) + 1,
+        "last_attempt": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 # Fix 8b, AI fixes round 2 (2026-08-31): the round 2 instruction doc's
 # own recommended default cadence line, set as the code default so
 # broader coverage works out of the box without the owner touching
@@ -864,12 +944,23 @@ def _run_nightly(cfg, log, run_night=None):
     # attention top-up loop below draws from, same "collected here,
     # consumed after the loop" shape as _tickers_scanned_tonight above.
     _lite_universes_scanned_tonight = []
+    # Audit fixes Commit 2 (30 Sep 2026, owner-directed): one state load
+    # for the whole loop, one save after it - _record_catchup_outcome()
+    # below just mutates it in place per universe, same pattern as every
+    # other *_state()/_save_state() pairing in this module.
+    _catchup_state = _load_state()
+    breaker_tripped = False
     for universe in ordered:
+        _scan_started_at = time.time()
         try:
             if universe == nightly_scan.IMPORTED_UNIVERSE:
                 payload = nightly_scan.run_imported_scan(log=log)
             else:
                 payload = nightly_scan.run_universe_scan(universe, log=log, run_night=run_night)
+                _record_catchup_outcome(
+                    universe, succeeded=bool(payload),
+                    elapsed_seconds=time.time() - _scan_started_at,
+                    state=_catchup_state)
             # AI-readiness Phase 1 (AI_ROADMAP_stocksdeepdive.md): build the
             # public /s/<TICKER> snapshot + /api/v1 data for this universe
             # right after its scan lands - re-shapes rows the scan just
@@ -920,9 +1011,41 @@ def _run_nightly(cfg, log, run_night=None):
             # path a RateLimitCircuitBreaker is deliberately NOT that.
             log(f"[scheduler] {e} - aborting the rest of tonight's run too")
             _record_rate_limit_cooldown(log)
+            # Audit fixes Commit 2 (30 Sep 2026, owner-directed): a breaker
+            # trip means Yahoo itself is actively throttling this process -
+            # every remaining yfinance-calling stage below (sector top-up,
+            # attention top-up, the alert extra pass, the reprice pass,
+            # derived-universe rebuilds) would just re-trip it or, worse,
+            # burn through the same address during the cool-down window
+            # this cooldown is meant to protect. breaker_tripped guards
+            # each of those stages below; the checkpoint for the universe
+            # that tripped is deliberately NOT cleared here - see nightly_
+            # scan.run_universe_scan()'s own RateLimitCircuitBreaker
+            # except-path and scan_checkpoint_store.py's module docstring.
+            breaker_tripped = True
             break
         except Exception as e:
             log(f"[scheduler] nightly scan {universe} failed: {e}")
+            if universe != nightly_scan.IMPORTED_UNIVERSE:
+                _record_catchup_outcome(
+                    universe, succeeded=False,
+                    elapsed_seconds=time.time() - _scan_started_at,
+                    state=_catchup_state)
+    _save_state(_catchup_state)
+
+    # Audit fixes Commit 2 (30 Sep 2026, owner-directed): every stage
+    # below this point calls yfinance (directly or via a re-fetch/re-
+    # price path) except the alert/results-day passes, which only read
+    # rows already scanned above - so a breaker trip skips the ones that
+    # would just re-trip it, and logs exactly what was skipped rather
+    # than leaving the owner to infer it from silence.
+    _skipped_stages = []
+    if breaker_tripped:
+        _skipped_stages = [
+            "sector top-up", "attention top-up", "reprice pass",
+            "derived universes build",
+        ]
+        log(f"[scheduler] rate-limit breaker tripped - skipping: {', '.join(_skipped_stages)}")
 
     # Part 48.2(c): sector-cache top-up, once, over every ticker scanned
     # tonight above - see nightly_scan.run_sector_topup()'s own docstring
@@ -930,10 +1053,11 @@ def _run_nightly(cfg, log, run_night=None):
     # the scan loop (never inside it) since it needs the FULL de-duplicated
     # list of tonight's tickers, not just one universe's, to pick its
     # batch fairly across whichever universes ran tonight.
-    try:
-        nightly_scan.run_sector_topup(_tickers_scanned_tonight, log=log)
-    except Exception as e:
-        log(f"[scheduler] sector top-up failed: {e}")
+    if not breaker_tripped:
+        try:
+            nightly_scan.run_sector_topup(_tickers_scanned_tonight, log=log)
+        except Exception as e:
+            log(f"[scheduler] sector top-up failed: {e}")
 
     # Discovery drop-and-reweight fix, Part 2 (18 Sep 2026): attention
     # top-up, once per universe that was scanned attention_lite=True
@@ -948,16 +1072,21 @@ def _run_nightly(cfg, log, run_night=None):
     # derived universe (ASX 100/Small Ords/Russell 3000/etc.) and the
     # home page's "Tonight's top 5" both see the topped-up Long Scores,
     # not the pre-topup ones.
-    for _universe in _lite_universes_scanned_tonight:
-        try:
-            nightly_scan.run_attention_topup(_universe, log=log)
-        except Exception as e:
-            log(f"[scheduler] attention top-up {_universe} failed: {e}")
+    if not breaker_tripped:
+        for _universe in _lite_universes_scanned_tonight:
+            try:
+                nightly_scan.run_attention_topup(_universe, log=log)
+            except Exception as e:
+                log(f"[scheduler] attention top-up {_universe} failed: {e}")
 
     # Services batch, Part 1: tickers with an active alert that weren't
     # covered by any universe/imported scan above get one lightweight
     # snapshot each, then a single batched email+push covering every hit
-    # queued tonight (from the loop above AND this extra pass).
+    # queued tonight (from the loop above AND this extra pass). Not
+    # yfinance-gated: run_extra_ticker_pass() only re-checks rows already
+    # scanned above against alert rules, and send_batched_notifications()
+    # is a pure Mailgun/push send - neither calls Yahoo, so a breaker trip
+    # doesn't skip them.
     try:
         import alert_engine
         alert_engine.run_extra_ticker_pass(alert_prev_map, log=log)
@@ -973,7 +1102,11 @@ def _run_nightly(cfg, log, run_night=None):
     # (cheap - a small local table scan, one live re-score only for a
     # ticker that genuinely reported 1 or 3 days ago) - see
     # results_engine.check_results_day()'s own docstring for the day+1/
-    # day+3 pass logic and its idempotency guarantees.
+    # day+3 pass logic and its idempotency guarantees. Left ungated by
+    # breaker_tripped deliberately: it live-rescans only the handful of
+    # tickers that reported yesterday/3 days ago, not a yfinance sweep,
+    # and the owner needs results-day re-analysis even on a throttled
+    # night more than the cool-down needs one more fetch skipped.
     try:
         import results_engine
         results_engine.check_results_day(log=log)
@@ -993,29 +1126,39 @@ def _run_nightly(cfg, log, run_night=None):
     # already executes under (see _loop()'s _acquire_job_lock("nightly")
     # call) and strictly after every full scan above - satisfying the
     # addendum's "same single-process lock... same scheduler slot, after
-    # the scans" guard without any extra locking code needed here.
-    try:
-        scanned_tonight = {u for u in ordered if u != nightly_scan.IMPORTED_UNIVERSE}
-        to_reprice = [u for u in cfg.get("universe_cadence", {}).keys() if u not in scanned_tonight]
-        if to_reprice:
-            log(f"[scheduler] reprice pass: {len(to_reprice)} universe(s) not scanned "
-                f"tonight ({', '.join(to_reprice)})")
-            for universe in to_reprice:
-                try:
-                    nightly_scan.reprice_universe(universe, log=log, run_night=run_night)
-                except Exception as e:
-                    log(f"[scheduler] reprice {universe} failed: {e}")
-        else:
-            log("[scheduler] reprice pass: every real universe was scanned tonight, nothing to reprice")
-    except Exception as e:
-        log(f"[scheduler] reprice pass failed: {e}")
+    # the scans" guard without any extra locking code needed here. Skipped
+    # entirely on a breaker trip (audit fixes Commit 2) - reprice_universe()
+    # is itself a yfinance batch download, exactly what just got throttled.
+    if not breaker_tripped:
+        try:
+            scanned_tonight = {u for u in ordered if u != nightly_scan.IMPORTED_UNIVERSE}
+            to_reprice = [u for u in cfg.get("universe_cadence", {}).keys() if u not in scanned_tonight]
+            if to_reprice:
+                log(f"[scheduler] reprice pass: {len(to_reprice)} universe(s) not scanned "
+                    f"tonight ({', '.join(to_reprice)})")
+                for universe in to_reprice:
+                    try:
+                        nightly_scan.reprice_universe(universe, log=log, run_night=run_night)
+                    except Exception as e:
+                        log(f"[scheduler] reprice {universe} failed: {e}")
+            else:
+                log("[scheduler] reprice pass: every real universe was scanned tonight, nothing to reprice")
+        except Exception as e:
+            log(f"[scheduler] reprice pass failed: {e}")
 
     # Fix 8c, AI fixes round 2 (2026-08-31) - see _build_derived_
-    # universes()'s own docstring above.
-    try:
-        _build_derived_universes(log)
-    except Exception as e:
-        log(f"[scheduler] derived universes build failed: {e}")
+    # universes()'s own docstring above. Skipped on a breaker trip: it
+    # only re-filters rows scan_store already has (no network call of
+    # its own), but those rows would be incomplete/stale for whichever
+    # universe just tripped the breaker and any universe after it in
+    # `ordered` that never got a chance to scan - safer to leave a
+    # derived universe on its last-good build than rebuild it from a
+    # run that was cut short mid-throttle.
+    if not breaker_tripped:
+        try:
+            _build_derived_universes(log)
+        except Exception as e:
+            log(f"[scheduler] derived universes build failed: {e}")
 
 
 # Fix 8c, AI fixes round 2 (2026-08-31): derived universes (no scan slot
@@ -2273,10 +2416,23 @@ def _loop(log):
                         # so a persistently failing universe still can't
                         # hammer the lock indefinitely.
                         import scan_store
-                        nothing_servable = [u for u in missing if scan_store.load_scan(u) is None]
-                        capped_missing = [u for u in missing if u not in nothing_servable]
-
                         state = _load_state()
+                        nothing_servable_raw = [u for u in missing if scan_store.load_scan(u) is None]
+                        # Audit fixes Commit 2 (30 Sep 2026, owner-directed):
+                        # the nothing-servable cohort above is exactly the
+                        # uncapped-catch-up path Problem A's per-universe
+                        # backoff exists for (see _catchup_backoff_eligible()'s
+                        # own docstring) - a universe still inside its own
+                        # backoff window from a recent FAST failure is
+                        # excluded here rather than re-attempted (and
+                        # re-running this whole _run_nightly) on literally
+                        # the next tick.
+                        nothing_servable = [
+                            u for u in nothing_servable_raw
+                            if _catchup_backoff_eligible(u, state, now, log=log)
+                        ]
+                        capped_missing = [u for u in missing if u not in nothing_servable_raw]
+
                         attempts = state.get("scan_attempts", {})
                         n_today = attempts.get(today, 0)
                         cap_available = n_today < 3

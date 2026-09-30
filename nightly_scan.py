@@ -30,6 +30,7 @@ whole point of running overnight is that nobody is waiting.
 
 import math
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -211,9 +212,23 @@ class RateLimitCircuitBreaker(Exception):
     than just logging and moving on to the next universe."""
 
 
+_RATE_LIMIT_MESSAGE_RE = re.compile(r"429|rate.?limit|too many requests", re.IGNORECASE)
+
+
 def _yf_looks_rate_limited(exc):
+    # Audit fixes Commit 2, small-hardening item (30 Sep 2026, owner-
+    # directed): the old plain `"rate" in msg` substring test also
+    # matched any yfinance error mentioning "generate", "corporate",
+    # "operate", etc., misclassifying an unrelated failure as a rate-
+    # limit and feeding it into the consecutive-rate-limit counter that
+    # trips RateLimitCircuitBreaker. A word-boundary-aware regex for the
+    # actual rate-limit phrasings ("rate limit", "rate-limited",
+    # "ratelimit") fixes that without narrowing real matches - "crumb"
+    # stays a separate, deliberately loose check (see below) since a
+    # poisoned-crumb failure IS yfinance's own rate-limit symptom, just
+    # without the word "rate" in its message.
     msg = str(exc).lower()
-    return "429" in msg or "rate" in msg or "crumb" in msg or "too many requests" in msg
+    return bool(_RATE_LIMIT_MESSAGE_RE.search(msg)) or "crumb" in msg
 
 
 def _reset_poisoned_yf_crumb():
@@ -730,12 +745,20 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     Raises RateLimitCircuitBreaker (URGENT Commit 1, 27 Sep 2026,
     owner-reported) if RATE_LIMIT_CONSECUTIVE_ABORT_THRESHOLD consecutive
     tickers fail on rate-limiting during the per-ticker loop below - see
-    that exception's own docstring. Nothing is saved when this happens
-    (including no checkpoint - see scan_checkpoint_store.py's own
-    docstring for why a rate-limit abort's own checkpoint is cleared,
-    never left resumable); the caller (scheduler_engine._run_nightly())
-    is responsible for reacting to it (aborting the rest of that run,
-    recording a cool-
+    that exception's own docstring. Nothing is saved to scan_store when
+    this happens - the last known-good scan for this universe stays in
+    place. The CHECKPOINT, however, is deliberately KEPT (audit fixes
+    Commit 2, 30 Sep 2026, owner-directed - supersedes Commit 5's
+    original "never resumable from a breaker abort" choice; see scan_
+    checkpoint_store.py's own module docstring for the full history), so
+    the post-cooldown retry resumes from the last periodically-saved
+    checkpoint instead of restarting this universe from ticker 0 -
+    still gated by is_resumable()'s existing three checks (identical
+    ticker list, same run_night, under CHECKPOINT_MAX_AGE_HOURS old), so
+    a retry that lands on a different run_night or past the 2h cap still
+    discards it and starts fresh exactly as before. The caller
+    (scheduler_engine._run_nightly()) is responsible for reacting to the
+    exception itself (aborting the rest of that run, recording a cool-
     down)."""
     # Services batch 2, Part 2 (2026-09-01): calls get_universe_pool()
     # directly (what resolve_tickers() itself calls internally) instead
@@ -943,13 +966,19 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
                 f"{_consecutive_rate_limited} consecutive tickers failed on rate-limiting "
                 f"(Yahoo throttled) - stopping now rather than grinding the rest of this "
                 f"universe (and the next) into the same throttle. Not saving; last "
-                f"known-good scan for {universe} stays in place.")
-            # Commit 5 (27 Sep 2026, owner-directed): a checkpoint written
-            # mid-throttle must never be resumed INTO the same throttle -
-            # clear it here, before the exception propagates, same as the
-            # "save nothing from an aborted universe" rule just above
-            # applies to scan_store itself.
-            scan_checkpoint_store.clear(universe)
+                f"known-good scan for {universe} stays in place. Checkpoint kept - "
+                f"the post-cooldown retry resumes from it rather than restarting "
+                f"from ticker 0.")
+            # Audit fixes Commit 2 (30 Sep 2026, owner-directed): the
+            # checkpoint is deliberately NOT cleared here any more -
+            # Commit 5's original reasoning ("never resume INTO the same
+            # throttle") is superseded by the owner's own later decision
+            # that losing an already-throttled run's progress (which can
+            # be most of a large universe) costs more than the small risk
+            # a 45-minute cooldown (RATE_LIMIT_COOLDOWN_MINUTES) plus
+            # is_resumable()'s own same-ticker-list/same-run_night/<2h
+            # checks don't already cover. See scan_checkpoint_store.py's
+            # own module docstring for the full history of this decision.
             raise RateLimitCircuitBreaker(
                 f"{universe}: aborted after {_consecutive_rate_limited} consecutive "
                 f"rate-limited tickers"

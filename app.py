@@ -311,7 +311,12 @@ def _classify_fetch_failure(last_exc):
     if last_exc is None:
         return None
     msg = str(last_exc).lower()
-    if "429" in msg or "too many requests" in msg or "rate" in msg or "crumb" in msg:
+    # Audit fixes Commit 2, small-hardening item (30 Sep 2026, owner-
+    # directed): reuses nightly_scan.py's own _RATE_LIMIT_MESSAGE_RE
+    # rather than duplicating it - the old bare `"rate" in msg` test
+    # here misclassified any message mentioning "generate"/"corporate"/
+    # etc. as rate-limited.
+    if nightly_scan._RATE_LIMIT_MESSAGE_RE.search(msg) or "crumb" in msg:
         return "rate_limited"
     return "network"
 

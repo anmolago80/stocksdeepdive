@@ -1657,7 +1657,11 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     """Phase 2 of every nightly run, called only when poll_and_ingest_
     batch() found nothing in flight (never both submit AND have a
     batch pending - one in-flight batch at a time, top100_store's own
-    singleton row). Selects up to MAX_NIGHTLY_SCORES entrants that need
+    singleton row) - and, as of audit fixes Commit 2, also self-checks
+    top100_store.get_batch_state() right at the top of this function
+    (see that check's own comment below) so a caller that reaches here
+    WITHOUT going through poll_and_ingest_batch() first - refresh_all()
+    - can't bypass the guarantee either. Selects up to MAX_NIGHTLY_SCORES entrants that need
     scoring from `pool` (defaults to top100_store.current_pool() +
     current_asx_extension()), submits ONE Batches API request covering
     all of them, and persists the batch id + custom_id->entrant map.
@@ -1730,6 +1734,25 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     submission cost estimate (see _estimate_prompt_tokens()'s own
     docstring for why it's an estimate, not the billed figure) is
     logged right before the real submit call, regardless of force."""
+    # Audit fixes, Commit 2 (30 Sep 2026, owner-directed, tonight_sequence_
+    # v2 addendum): the "never both submit AND have a batch pending"
+    # guarantee described above only holds when every caller reaches this
+    # function through poll_and_ingest_batch()'s own "nothing in flight"
+    # check - refresh_all() (the owner's "Refresh all" button) calls this
+    # directly and never went through that check, so a Refresh-all fired
+    # while the 23:00 UTC nightly's own batch was still in_progress could
+    # double-submit: the first batch's custom_id_map gets overwritten by
+    # save_batch_state()'s own singleton-row UPSERT, orphaning it - paid
+    # for, but never ingested, since poll_and_ingest_batch() only ever
+    # tracks the ONE row top100_batch_state holds. Checked here, inside
+    # this function itself, so no caller (present or future) can bypass
+    # it by skipping poll_and_ingest_batch() - force=True is NOT exempt:
+    # the whole point is that a forced refresh is exactly the case that
+    # was slipping past the old caller-side-only guarantee.
+    in_flight = top100_store.get_batch_state()
+    if in_flight is not None:
+        log(f"[top100] batch {in_flight['batch_id']} still in progress - not submitting another")
+        return None
     pool = (top100_store.current_pool() + top100_store.current_asx_extension()) if pool is None else pool
     if not pool:
         return None
