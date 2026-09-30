@@ -563,32 +563,59 @@ _ONE_FOOT_YES_STYLE = ("#0e2a26", "#14532d", "#34d399")
 # #fbbf24) is IDENTICAL to _SHELF_CHIP_NOT_RATED below - reused by
 # reference rather than duplicated.
 
+# RUBRIC_VERSION v5 (30 Sep 2026, owner-approved mock, "mock_top100_v5_
+# munger_line.html") - munger_quality reuses the MONOPOLY chip's purple
+# for "yes" and the COMPETITIVE chip's grey for "no" (task's own "purple
+# family"/"competitive-grey family" wording); big_wave reuses the
+# DUOPOLY chip's blue for "tailwind", the COMPETITIVE chip's grey for
+# "flat", and _SHELF_CHIP_NOT_RATED's amber for "headwind" (task's own
+# "blue family (duopoly chip hex)"/"amber family (HIGH BAR hex)"
+# wording) - all by reference to the existing families above, none
+# duplicated.
+_MUNGER_YES_STYLE = _STRUCTURE_CHIP_STYLE["monopoly"]
+_MUNGER_NO_STYLE = _STRUCTURE_CHIP_STYLE["competitive"]
+_BIG_WAVE_TAILWIND_STYLE = _STRUCTURE_CHIP_STYLE["duopoly"]
+_BIG_WAVE_FLAT_STYLE = _STRUCTURE_CHIP_STYLE["competitive"]
+
 
 def _competitive_landscape_html(score_row, lang):
     """"Competitive landscape" box (RUBRIC_VERSION v4, 26 Sep 2026,
     owner-approved mock, "top100_v4_market_structure_onefoot_mock.
-    html") - sits between the inversion box and the headwind box,
-    same border/typography family as the headwind box. Two
-    INDEPENDENT verdicts (market_structure and one_foot_hurdle),
-    either of which may be absent - renders only the line(s) actually
-    present, joined by a line break when both are; "" when NEITHER is
-    present, which covers three cases identically: the model declined
-    both, this is a NOT RATED row, or this is a previous-rubric
-    FALLBACK score (v3-and-earlier rows have no v4 columns at all, so
-    both read None) - a reader should never see this box on an
-    analysis that predates these two questions existing, "which is
-    correct" per the task's own wording.
+    html"; two more lines added under RUBRIC_VERSION v5, 30 Sep 2026,
+    owner-approved mock, "mock_top100_v5_munger_line.html") - sits
+    between the inversion box and the headwind box, same border/
+    typography family as the headwind box. FOUR INDEPENDENT verdicts,
+    rendered top to bottom in this fixed order: market_structure ->
+    munger_quality ("Business quality") -> big_wave ("Big wave to
+    ride") -> one_foot_hurdle ("Easy decision?") - any of which may be
+    absent; renders only the line(s) actually present, joined by a
+    line break. "" when NONE is present, which covers three cases
+    identically: the model declined all four, this is a NOT RATED row,
+    or this is a previous-rubric FALLBACK score (a v4-and-earlier row
+    has no v5 munger_quality/big_wave columns at all, and a v3-and-
+    earlier row has none of the four - both simply read None) - a
+    reader should never see this box on an analysis that predates
+    these questions existing.
 
-    market_structure/one_foot_hurdle are read as the already-validated
-    lower-case strings top100_engine._parse_response_json() stored
-    (anything outside each field's own small fixed vocabulary was
-    already forced to None there) - this function never re-validates,
-    it only maps a known-good value to its chip style."""
+    The muted " · read {date}" suffix is appended to whichever line
+    ends up LAST in the rendered list (never hardcoded to one specific
+    verdict) - RUBRIC_VERSION v5 requires this now that any of the four
+    lines, not just one_foot_hurdle, can legitimately be the last one
+    actually present (e.g. a row with market_structure and munger_
+    quality but no big_wave/one_foot_hurdle).
+
+    Every value is read as the already-validated lower-case string
+    top100_engine._parse_response_json() stored (anything outside each
+    field's own small fixed vocabulary was already forced to None
+    there) - this function never re-validates, it only maps a
+    known-good value to its chip style."""
     if not score_row or score_row.get("not_rated"):
         return ""
     structure = score_row.get("market_structure")
+    munger = score_row.get("munger_quality")
+    wave = score_row.get("big_wave")
     hurdle = score_row.get("one_foot_hurdle")
-    if not structure and not hurdle:
+    if not structure and not munger and not wave and not hurdle:
         return ""
 
     lines = []
@@ -599,6 +626,26 @@ def _competitive_landscape_html(score_row, lang):
         comment = _normalize_comment_period(score_row.get("market_structure_comment"))
         lines.append(f"{chip} <b style='color:#e6edf5;'>{label}:</b> {comment}")
 
+    if munger:
+        if munger == "yes":
+            chip = _shelf_chip_html(_t("munger_yes_chip", lang), *_MUNGER_YES_STYLE)
+        else:
+            chip = _shelf_chip_html(_t("munger_no_chip", lang), *_MUNGER_NO_STYLE)
+        label = html.escape(_t("business_quality_label", lang))
+        comment = _normalize_comment_period(score_row.get("munger_comment"))
+        lines.append(f"{chip} <b style='color:#e6edf5;'>{label}:</b> {comment}")
+
+    if wave:
+        if wave == "tailwind":
+            chip = _shelf_chip_html(_t("big_wave_tailwind_chip", lang), *_BIG_WAVE_TAILWIND_STYLE)
+        elif wave == "headwind":
+            chip = _shelf_chip_html(_t("big_wave_headwind_chip", lang), *_SHELF_CHIP_NOT_RATED)
+        else:
+            chip = _shelf_chip_html(_t("big_wave_flat_chip", lang), *_BIG_WAVE_FLAT_STYLE)
+        label = html.escape(_t("big_wave_label", lang))
+        comment = _normalize_comment_period(score_row.get("big_wave_comment"))
+        lines.append(f"{chip} <b style='color:#e6edf5;'>{label}:</b> {comment}")
+
     if hurdle:
         if hurdle == "yes":
             chip = _shelf_chip_html(_t("one_foot_yes_chip", lang), *_ONE_FOOT_YES_STYLE)
@@ -606,8 +653,11 @@ def _competitive_landscape_html(score_row, lang):
             chip = _shelf_chip_html(_t("one_foot_no_chip", lang), *_SHELF_CHIP_NOT_RATED)
         label = html.escape(_t("easy_decision_label", lang))
         comment = _normalize_comment_period(score_row.get("one_foot_comment"))
-        date_html = _scored_date_suffix_html(score_row, lang)
-        lines.append(f"{chip} <b style='color:#e6edf5;'>{label}:</b> {comment}{date_html}")
+        lines.append(f"{chip} <b style='color:#e6edf5;'>{label}:</b> {comment}")
+
+    # The date suffix belongs on whichever line rendered LAST, whatever
+    # verdict that happens to be - never hardcoded to one specific line.
+    lines[-1] = lines[-1] + _scored_date_suffix_html(score_row, lang)
 
     return (
         "<div style='color:#9fb8d4;background:#0d1b2e;border:1px solid #1e3a5f;"
@@ -1228,6 +1278,7 @@ def render_top100_page(lang="en"):
         st.markdown(_t("methodology_body", lang))
         st.markdown(_t("methodology_decircularisation", lang))
         st.markdown(_t("methodology_headwind", lang))
+        st.markdown(_t("methodology_munger_wave", lang))
         st.markdown(f"**{_t('methodology_weights_heading', lang)}**")
         # Top 100 Ranking Rework: each dimension's own weight (sums to
         # top100_engine.DIMENSION_WEIGHT_TOTAL, 83 today), rescaled onto

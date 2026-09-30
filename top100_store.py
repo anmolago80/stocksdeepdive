@@ -292,6 +292,19 @@ def _conn():
             conn.execute(f"ALTER TABLE top100_scores ADD COLUMN {_col} TEXT")
         except sqlite3.OperationalError:
             pass
+    # RUBRIC_VERSION v5 (30 Sep 2026, owner-approved mock, "mock_top100_
+    # v5_munger_line.html") - two more questions, same purely-additive/
+    # nullable pattern as market_structure/one_foot_hurdle just above
+    # (no _migrate_scores_schema_v5() rebuild needed, same reason).
+    # Every existing v1-v4 row simply reads NULL here, which top100_
+    # render.py's competitive-landscape box already treats as "no line
+    # for this verdict" - the same status a genuinely-declined v5
+    # answer gets.
+    for _col in ("munger_quality", "munger_comment", "big_wave", "big_wave_comment"):
+        try:
+            conn.execute(f"ALTER TABLE top100_scores ADD COLUMN {_col} TEXT")
+        except sqlite3.OperationalError:
+            pass
     # Results-driven Top 100 refresh (27 Sep 2026, owner-directed) - see
     # this module's own module docstring section below for the full
     # redefinition. Same purely-additive/nullable pattern as every prior
@@ -476,7 +489,8 @@ def current_asx_extension():
 def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
                 inversion_scenario, inversion_severity, prompt, raw_response,
                 current_headwind=None, market_structure=None, market_structure_comment=None,
-                one_foot_hurdle=None, one_foot_comment=None, most_recent_quarter=None):
+                one_foot_hurdle=None, one_foot_comment=None, most_recent_quarter=None,
+                munger_quality=None, munger_comment=None, big_wave=None, big_wave_comment=None):
     """Upserts one ticker's AI score for (quarter, model,
     rubric_version) - rubric_version (top100_engine.RUBRIC_VERSION) is
     part of the cache key/PK (see _migrate_scores_schema_v2()'s own
@@ -526,6 +540,14 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
     back directly. Defaults to None so a caller passing the old
     argument list still works, and every pre-existing row simply reads
     NULL here (see this column's own ALTER TABLE comment above).
+    `munger_quality`/`munger_comment`/`big_wave`/`big_wave_comment`
+    (RUBRIC_VERSION v5, 30 Sep 2026): the Munger-quality verdict +
+    comment and the big-wave-to-ride verdict + comment - top100_engine.
+    _parse_response_json() has already validated each label against its
+    own small fixed vocabulary and nulled the matching comment whenever
+    its label is None, so this function stores exactly what it's given,
+    no further validation here. All four default to None so a caller
+    passing the old (v1-v4-era) argument list still works.
     `prompt`/`raw_response`: the FULL text sent/received, for
     reproducibility (the task's own instruction) - never truncated."""
     with _conn() as conn:
@@ -535,8 +557,9 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
                   inversion_scenario, inversion_severity, current_headwind,
                   market_structure, market_structure_comment,
                   one_foot_hurdle, one_foot_comment, most_recent_quarter,
+                  munger_quality, munger_comment, big_wave, big_wave_comment,
                   prompt, raw_response, scored_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(ticker, quarter, model, rubric_version) DO UPDATE SET
                  dims_json = excluded.dims_json,
                  not_rated = excluded.not_rated,
@@ -548,13 +571,18 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
                  market_structure_comment = excluded.market_structure_comment,
                  one_foot_hurdle = excluded.one_foot_hurdle,
                  one_foot_comment = excluded.one_foot_comment,
+                 munger_quality = excluded.munger_quality,
+                 munger_comment = excluded.munger_comment,
+                 big_wave = excluded.big_wave,
+                 big_wave_comment = excluded.big_wave_comment,
                  prompt = excluded.prompt,
                  raw_response = excluded.raw_response,
                  scored_at = excluded.scored_at""",
             (ticker, quarter, model, rubric_version, json.dumps(dims), int(bool(not_rated)),
              inversion_scenario, inversion_severity, current_headwind,
              market_structure, market_structure_comment, one_foot_hurdle, one_foot_comment,
-             most_recent_quarter, prompt, raw_response, datetime.now(timezone.utc).isoformat()),
+             most_recent_quarter, munger_quality, munger_comment, big_wave, big_wave_comment,
+             prompt, raw_response, datetime.now(timezone.utc).isoformat()),
         )
 
 
@@ -562,7 +590,8 @@ def get_score(ticker, quarter, model, rubric_version):
     """{"ticker","quarter","model","rubric_version","dims","not_rated",
     "inversion_scenario","inversion_severity","current_headwind",
     "market_structure","market_structure_comment","one_foot_hurdle",
-    "one_foot_comment","prompt","raw_response","scored_at"} for one
+    "one_foot_comment","munger_quality","munger_comment","big_wave",
+    "big_wave_comment","prompt","raw_response","scored_at"} for one
     ticker, or None if it hasn't been scored yet for this exact
     (quarter, model, rubric_version) - a row cached under a DIFFERENT
     rubric_version (e.g. a retired "v1") is never returned here, by

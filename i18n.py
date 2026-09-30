@@ -3712,6 +3712,24 @@ EN = {
     "top100.structure_competitive": "COMPETITIVE",
     "top100.one_foot_yes_chip": "✓ ONE-FOOT HURDLE",
     "top100.one_foot_no_chip": "✗ HIGH BAR",
+    # RUBRIC_VERSION v5 (30 Sep 2026, owner-approved mock, "mock_top100_
+    # v5_munger_line.html") - display-only, same "carried through,
+    # never scored" status as every other Top 100 display field.
+    "top100.business_quality_label": "Business quality:",
+    "top100.big_wave_label": "Big wave to ride:",
+    "top100.munger_yes_chip": "◆ MUNGER-QUALITY",
+    "top100.munger_no_chip": "◇ NOT MUNGER-QUALITY",
+    "top100.big_wave_tailwind_chip": "🌊 BIG WAVE",
+    "top100.big_wave_flat_chip": "〰 FLAT WATER",
+    "top100.big_wave_headwind_chip": "⛔ AGAINST THE TIDE",
+    "top100.methodology_munger_wave": (
+        "**Business quality vs big wave.** Two more descriptive verdicts, "
+        "both display-only with zero effect on ranking. The business-"
+        "quality verdict (Munger-quality or not) is judged on the "
+        "BUSINESS itself, never on today's price. The big-wave verdict "
+        "(tailwind, flat, or headwind) is judged on the company's "
+        "MARKET, never on the company's own execution or share of it."
+    ),
     "top100.previous_rubric_chip": "previous rubric",
     # Top 100 selection freshness fix (30 Sep 2026, owner-directed): a
     # small muted chip next to Value Score when the row's chosen scan
@@ -7013,6 +7031,22 @@ ES = {
     "top100.structure_competitive": "COMPETITIVO",
     "top100.one_foot_yes_chip": "✓ VALLA BAJA",
     "top100.one_foot_no_chip": "✗ LISTÓN ALTO",
+    "top100.business_quality_label": "Calidad del negocio:",
+    "top100.big_wave_label": "Ola que surfear:",
+    "top100.munger_yes_chip": "◆ CALIDAD MUNGER",
+    "top100.munger_no_chip": "◇ SIN CALIDAD MUNGER",
+    "top100.big_wave_tailwind_chip": "🌊 GRAN OLA",
+    "top100.big_wave_flat_chip": "〰 AGUAS CALMAS",
+    "top100.big_wave_headwind_chip": "⛔ CONTRA LA MAREA",
+    "top100.methodology_munger_wave": (
+        "**Calidad del negocio frente a gran ola.** Dos veredictos "
+        "descriptivos más, ambos solo informativos y sin efecto alguno "
+        "en la clasificación. El veredicto de calidad del negocio (con "
+        "o sin calidad Munger) se juzga sobre el NEGOCIO en sí, nunca "
+        "sobre el precio actual. El veredicto de la gran ola (a favor, "
+        "aguas calmas o en contra) se juzga sobre el MERCADO de la "
+        "empresa, nunca sobre su propia ejecución ni su cuota en él."
+    ),
     "top100.previous_rubric_chip": "rúbrica anterior",
     "top100.stale_valuation_chip": "valoración de hace {n} días",
     "top100.changes_strip_rule_changed": "cambió la regla de selección — la comparación se reanuda mañana",

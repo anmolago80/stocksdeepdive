@@ -728,11 +728,27 @@ NOT_RATED_MIN_NULLS = 3
 # would blank the page/AWAITING-shelve every company for up to a day -
 # see top100_render._enriched_pool()'s own "previous rubric" fallback,
 # shipped ALONGSIDE this bump specifically so that gap never recurs.
-# Weights, DIMENSIONS, max_tokens and the cache-key STRUCTURE are all
-# otherwise unchanged - both new question pairs are display-only, same
-# zero-effect-on-scoring status as the inversion/headwind fields (see
-# composite_score()'s own docstring).
-RUBRIC_VERSION = "v4"
+# v4 -> v5 (30 Sep 2026, owner-approved mock, "mock_top100_v5_munger_
+# line.html"): two more questions added to the response schema -
+# munger_quality/munger_comment (Munger's "great business at a fair
+# price" quality test - distinct from one_foot_hurdle, which is about
+# the DECISION at today's price, not the business itself) and
+# big_wave/big_wave_comment (Munger's "big wave to ride" - is there a
+# secular market tailwind carrying the business regardless of its own
+# execution) - see _response_schema()'s own comment for the exact
+# fields. Same delivery mechanism as v3->v4: every pooled company is
+# "unscored" under v5 until the next nightly run, the four new columns
+# are a purely additive ALTER TABLE (top100_store.py), no rubric_
+# version PK/schema migration needed, and v4 (and earlier) rows stay
+# preserved under their own key untouched. The v3->v4 "previous rubric"
+# fallback (top100_render._score_row_with_fallback()) already covers
+# this transition too - it keys off rubric_version generically, not a
+# hardcoded "v4" literal. Weights, DIMENSIONS, max_tokens and the
+# cache-key STRUCTURE are all otherwise unchanged - both new question
+# pairs are display-only, same zero-effect-on-scoring status as every
+# other synthesis field here (see composite_score()'s own docstring -
+# it is never touched by this bump).
+RUBRIC_VERSION = "v5"
 
 MODEL_TOP100 = "claude-opus-5-5"
 
@@ -825,7 +841,11 @@ CURRENT HEADWIND - a separate field from the inversion above, and easy to confus
 
 MARKET STRUCTURE (RUBRIC_VERSION v4) - classify the competitive structure of this company's PRIMARY PROFIT POOL: the specific market segment that actually generates the bulk of its profit, NOT the broadest possible industry definition (e.g. a payments network's primary profit pool is card-network processing, not "financial services" broadly). Output exactly one of "monopoly", "duopoly", "oligopoly", "competitive". If you don't have confident, specific knowledge of the competitive landscape, output the sentinel empty string "" - never guess a label you can't justify. Then, in at most 25 words, name the actual competitors/players that justify the label (empty string "" if you declined the label itself).
 
-ONE-FOOT HURDLE (RUBRIC_VERSION v4) - Buffett's "one-foot bar" test: would a well-informed investor consider this an EASY, OBVIOUS investment decision that requires no heroic assumptions about the future? Output exactly "yes" only if the case is genuinely easy and obvious; "no" if the thesis depends on hard-to-predict outcomes, however attractively priced the stock may be. If you don't have enough confident knowledge of the company to judge, output the sentinel empty string "" - never guess. Then, in at most 25 words, explain the verdict (empty string "" if you declined the verdict itself)."""
+ONE-FOOT HURDLE (RUBRIC_VERSION v4) - Buffett's "one-foot bar" test: would a well-informed investor consider this an EASY, OBVIOUS investment decision that requires no heroic assumptions about the future? Output exactly "yes" only if the case is genuinely easy and obvious; "no" if the thesis depends on hard-to-predict outcomes, however attractively priced the stock may be. If you don't have enough confident knowledge of the company to judge, output the sentinel empty string "" - never guess. Then, in at most 25 words, explain the verdict (empty string "" if you declined the verdict itself).
+
+MUNGER-QUALITY BUSINESS (RUBRIC_VERSION v5) - would Charlie Munger classify this as a great business worth owning for decades at a fair price, judged on the BUSINESS, not today's price: (1) simple enough to understand and predict, (2) a durable competitive advantage that widens rather than erodes, (3) high returns on capital with room to reinvest at similar returns, (4) able, honest management that thinks like owners, (5) no need for heroic assumptions. Output exactly "yes" only if all five hold clearly; "no" if any one clearly fails; the sentinel empty string "" if you cannot judge - never guess. This is distinct from the one-foot hurdle above, which asks whether the investment DECISION at today's price is easy - a Munger-quality business can fail the one-foot hurdle on price, and a cheap stock can pass the hurdle without being Munger-quality. Then, in at most 25 words, name which of the five criteria decided the verdict (empty string "" if you declined the verdict itself).
+
+BIG WAVE TO RIDE (RUBRIC_VERSION v5) - Munger's "big wave to ride": is there a SECULAR, multi-year trend in the company's primary market that carries the business regardless of its own execution? Output exactly "tailwind" for a structural trend (penetration still early, a demographic or regulatory shift, technology adoption) that should keep growing the market for 5+ years; "headwind" when the market or channel is structurally shrinking or being rerouted (substitution, disintermediation, regulation) - not a cyclical dip; "flat" for a mature, stable market with neither. Judge the market, not the company's share of it - a share gainer in a shrinking market is "headwind". The sentinel empty string "" if you cannot judge - never guess. Then, in at most 25 words, name the specific trend, or its absence (empty string "" if you declined the verdict itself)."""
 
 
 def _user_prompt(ticker, company_name):
@@ -836,8 +856,11 @@ def _user_prompt(ticker, company_name):
         "then write the one-sentence inversion synthesis (scenario + severity), "
         "the current headwind (at most 40 words, or an empty string), the "
         "market structure of its primary profit pool (plus a short comment "
-        "naming the competitors that justify it), and the one-foot-hurdle "
-        "verdict (plus a short comment explaining it)."
+        "naming the competitors that justify it), the one-foot-hurdle "
+        "verdict (plus a short comment explaining it), the Munger-quality "
+        "verdict (plus a short comment naming the deciding criterion), and "
+        "the big-wave-to-ride verdict (plus a short comment naming the "
+        "trend or its absence)."
     )
 
 
@@ -909,7 +932,15 @@ def _response_schema():
     constraint that forced the sentinel rewrite in the first place);
     the allowed-value check is enforced server-side in
     _parse_response_json() below instead, exactly like every other
-    range/vocabulary constraint in this schema."""
+    range/vocabulary constraint in this schema.
+
+    RUBRIC_VERSION v5 (30 Sep 2026, owner-approved mock, "mock_top100_
+    v5_munger_line.html"): added munger_quality/munger_comment and
+    big_wave/big_wave_comment - four more PLAIN strings, same ""->None
+    sentinel convention, same zero-union-type/zero-min-max discipline,
+    same small-fixed-vocabulary-enforced-server-side pattern as market_
+    structure/one_foot_hurdle just above ("yes"/"no" and "tailwind"/
+    "flat"/"headwind" respectively)."""
     props = {key: _dimension_schema() for key in DIMENSION_KEYS}
     props["inversion_scenario"] = {
         "type": "string",
@@ -939,6 +970,22 @@ def _response_schema():
         "type": "string",
         "description": "At most 25 words explaining the one_foot_hurdle verdict above. An empty string \"\" if one_foot_hurdle is \"\".",
     }
+    props["munger_quality"] = {
+        "type": "string",
+        "description": "Would Charlie Munger classify this as a great business worth owning for decades at a fair price, judged on the BUSINESS, not today's price - simple to understand, a durable widening advantage, high returns on capital with reinvestment room, able and honest owner-minded management, no heroic assumptions needed. Exactly \"yes\" only if all five hold clearly; \"no\" if any one clearly fails; an empty string \"\" if you cannot judge - never guess. Distinct from one_foot_hurdle, which is about the DECISION at today's price, not the business itself.",
+    }
+    props["munger_comment"] = {
+        "type": "string",
+        "description": "At most 25 words naming which of the five criteria decided the munger_quality verdict above. An empty string \"\" if munger_quality is \"\".",
+    }
+    props["big_wave"] = {
+        "type": "string",
+        "description": "Munger's 'big wave to ride' - is there a SECULAR, multi-year trend in the company's primary market that carries the business regardless of its own execution? Exactly \"tailwind\" for a structural trend still early enough to keep growing the market for 5+ years; \"headwind\" when the market or channel is structurally shrinking or being rerouted, not a cyclical dip; \"flat\" for a mature, stable market with neither. Judge the market, not the company's share of it. An empty string \"\" if you cannot judge - never guess.",
+    }
+    props["big_wave_comment"] = {
+        "type": "string",
+        "description": "At most 25 words naming the specific trend behind the big_wave verdict above, or its absence. An empty string \"\" if big_wave is \"\".",
+    }
     return {
         "type": "object",
         "properties": props,
@@ -946,6 +993,8 @@ def _response_schema():
             "inversion_scenario", "inversion_severity", "current_headwind",
             "market_structure", "market_structure_comment",
             "one_foot_hurdle", "one_foot_comment",
+            "munger_quality", "munger_comment",
+            "big_wave", "big_wave_comment",
         ],
         "additionalProperties": False,
     }
@@ -994,6 +1043,8 @@ def current_quarter(today=None):
 
 _ALLOWED_MARKET_STRUCTURES = ("monopoly", "duopoly", "oligopoly", "competitive")
 _ALLOWED_ONE_FOOT_HURDLE = ("yes", "no")
+_ALLOWED_MUNGER_QUALITY = ("yes", "no")
+_ALLOWED_BIG_WAVE = ("tailwind", "flat", "headwind")
 # Safety net only - the prompt's own target is ~25 words per comment;
 # this just bounds the worst case (a model ignoring that guidance)
 # rather than enforcing the target itself.
@@ -1016,11 +1067,23 @@ def _parse_response_json(text):
     """Parses one company's structured-output JSON text into
     (dims_dict, not_rated, inversion_scenario, inversion_severity,
     current_headwind, market_structure, market_structure_comment,
-    one_foot_hurdle, one_foot_comment). `dims_dict`: {key: {"score",
+    one_foot_hurdle, one_foot_comment, munger_quality, munger_comment,
+    big_wave, big_wave_comment). `dims_dict`: {key: {"score",
     "justification", "source_period"}, ...} for all ten keys. Raises
     ValueError on malformed JSON or a missing dimension - the caller
     (poll_and_ingest_batch) treats that exactly like any other
     per-ticker failure: logged, skipped, prior cache untouched.
+
+    munger_quality/big_wave (RUBRIC_VERSION v5, 30 Sep 2026, owner-
+    approved mock): same belt-and-braces vocabulary enforcement, same
+    label-decided-comment-nulled rule, and same hard-truncation via
+    _truncate_words() as market_structure/one_foot_hurdle just below -
+    copied exactly, not reinvented. Like those two, neither is a NOT-
+    RATED-forced-null field (this box is never rendered for a NOT RATED
+    company in the first place, so there is nothing for a stray value
+    to leak into) and neither ever reaches composite_score() or any
+    sort/selection path - display-only, same status as every other
+    synthesis field this function returns.
 
     market_structure/one_foot_hurdle (RUBRIC_VERSION v4, 26 Sep 2026,
     owner-approved mock): each has a small fixed vocabulary the wire
@@ -1151,8 +1214,31 @@ def _parse_response_json(text):
     else:
         one_foot_comment = _truncate_words(one_foot_comment)
 
+    munger_quality = data.get("munger_quality")
+    if isinstance(munger_quality, str):
+        munger_quality = munger_quality.strip().lower()
+    if munger_quality not in _ALLOWED_MUNGER_QUALITY:
+        munger_quality = None
+    munger_comment = data.get("munger_comment") or None
+    if munger_quality is None:
+        munger_comment = None
+    else:
+        munger_comment = _truncate_words(munger_comment)
+
+    big_wave = data.get("big_wave")
+    if isinstance(big_wave, str):
+        big_wave = big_wave.strip().lower()
+    if big_wave not in _ALLOWED_BIG_WAVE:
+        big_wave = None
+    big_wave_comment = data.get("big_wave_comment") or None
+    if big_wave is None:
+        big_wave_comment = None
+    else:
+        big_wave_comment = _truncate_words(big_wave_comment)
+
     return (dims, not_rated, inversion_scenario, inversion_severity, current_headwind,
-            market_structure, market_structure_comment, one_foot_hurdle, one_foot_comment)
+            market_structure, market_structure_comment, one_foot_hurdle, one_foot_comment,
+            munger_quality, munger_comment, big_wave, big_wave_comment)
 
 
 # -----------------------------------------------------------------
@@ -1400,7 +1486,8 @@ def poll_and_ingest_batch(log=print):
             try:
                 (dims, not_rated, inversion_scenario, inversion_severity, current_headwind,
                  market_structure, market_structure_comment,
-                 one_foot_hurdle, one_foot_comment) = _parse_response_json(text)
+                 one_foot_hurdle, one_foot_comment,
+                 munger_quality, munger_comment, big_wave, big_wave_comment) = _parse_response_json(text)
             except Exception as e:
                 failed += 1
                 log(f"[top100] {ticker}: could not parse batch result, skipped ({e})")
@@ -1413,6 +1500,8 @@ def poll_and_ingest_batch(log=print):
                 current_headwind=current_headwind,
                 market_structure=market_structure, market_structure_comment=market_structure_comment,
                 one_foot_hurdle=one_foot_hurdle, one_foot_comment=one_foot_comment,
+                munger_quality=munger_quality, munger_comment=munger_comment,
+                big_wave=big_wave, big_wave_comment=big_wave_comment,
                 prompt=json.dumps(prompt_params), raw_response=text,
             )
             saved += 1
@@ -1662,7 +1751,8 @@ def run_single_test_call(ticker, company_name=None):
     point is to test-score an arbitrary ticker, pooled or not). Returns
     {"ticker","dims","not_rated","inversion_scenario","inversion_
     severity","current_headwind","market_structure","market_structure_
-    comment","one_foot_hurdle","one_foot_comment","input_tokens",
+    comment","one_foot_hurdle","one_foot_comment","munger_quality",
+    "munger_comment","big_wave","big_wave_comment","input_tokens",
     "output_tokens","cost_usd"} - standard, non-batch pricing (this
     call does not go through the Batches API), reported honestly as
     such."""
@@ -1673,7 +1763,8 @@ def run_single_test_call(ticker, company_name=None):
     text = next((b.text for b in resp.content if b.type == "text"), "")
     (dims, not_rated, inversion_scenario, inversion_severity, current_headwind,
      market_structure, market_structure_comment,
-     one_foot_hurdle, one_foot_comment) = _parse_response_json(text)
+     one_foot_hurdle, one_foot_comment,
+     munger_quality, munger_comment, big_wave, big_wave_comment) = _parse_response_json(text)
     input_tokens = getattr(resp.usage, "input_tokens", 0) or 0
     output_tokens = getattr(resp.usage, "output_tokens", 0) or 0
     cost = (input_tokens / 1_000_000) * TOP100_INPUT_USD_PER_MTOK + \
@@ -1693,6 +1784,8 @@ def run_single_test_call(ticker, company_name=None):
         current_headwind=current_headwind,
         market_structure=market_structure, market_structure_comment=market_structure_comment,
         one_foot_hurdle=one_foot_hurdle, one_foot_comment=one_foot_comment,
+        munger_quality=munger_quality, munger_comment=munger_comment,
+        big_wave=big_wave, big_wave_comment=big_wave_comment,
         prompt=json.dumps(params), raw_response=text,
     )
     return {
@@ -1701,6 +1794,8 @@ def run_single_test_call(ticker, company_name=None):
         "current_headwind": current_headwind,
         "market_structure": market_structure, "market_structure_comment": market_structure_comment,
         "one_foot_hurdle": one_foot_hurdle, "one_foot_comment": one_foot_comment,
+        "munger_quality": munger_quality, "munger_comment": munger_comment,
+        "big_wave": big_wave, "big_wave_comment": big_wave_comment,
         "input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost,
     }
 
