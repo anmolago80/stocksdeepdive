@@ -201,6 +201,23 @@ def _pct_phrase(p, lang="en"):
     return f"bottom {max(1, round(p))}%"
 
 
+def _universe_display_label(universe, lang="en"):
+    """Snapshot label fix (30 Sep 2026, owner-directed, Commit 3 of the
+    growth/Top100 freshness fix): snapshot_store.save_snapshot() used to
+    silently keep a ticker's PREVIOUS scanned-universe label whenever one
+    existed, even for a row a visitor's own Deep Dive view just refreshed
+    (universe="live") - see that function's own docstring for the removed
+    override. Now that "live" genuinely reaches and stays on the stored
+    row, this is where it's translated into something presentable rather
+    than the raw internal marker "live" appearing on a public page.
+    Every other universe name (a real scanned index) passes through
+    unchanged - those are data, not prose, same as every other universe
+    name on this page."""
+    if universe == "live":
+        return "Vista en vivo" if lang == "es" else "Live view"
+    return universe
+
+
 def _percentile_line(pub, universe, lang="en"):
     """Compact one-line percentile summary for under the KPI row (spec
     item 7, polish pass 2026-09-02): "Value Score: top 36% of S&P 500 -
@@ -666,7 +683,7 @@ def render_snapshot(snap, base_url, lang="en", hreflang_alternates=None):
 
     body = f"""
 <main><div class="wrap">
-  <div class="kicker">{kicker_word} &middot; {e(universe)} &middot; generated {e(generated)} UTC</div>
+  <div class="kicker">{kicker_word} &middot; {e(_universe_display_label(universe, lang))} &middot; generated {e(generated)} UTC</div>
   <h1>{e(display_name)}</h1>
   <p class="lede{' sdd-snap-stale' if is_stale else ''}">{lede}</p>
   {hist_html}
@@ -847,7 +864,7 @@ def render_index(rows, base_url, page=1, per_page=200, lang="en",
         if page_rows:
             trs = "".join(
                 f'<tr><td><a href="/es/s/{e(r["ticker"])}">{e(r["ticker"])}</a></td>'
-                f'<td>{e(r["universe"])}</td>'
+                f'<td>{e(_universe_display_label(r["universe"], lang))}</td>'
                 f'<td>{e((r.get("generated_at") or "")[:10])}</td></tr>'
                 for r in page_rows
             )
@@ -891,7 +908,7 @@ def render_index(rows, base_url, page=1, per_page=200, lang="en",
     if page_rows:
         trs = "".join(
             f'<tr><td><a href="/s/{e(r["ticker"])}">{e(r["ticker"])}</a></td>'
-            f'<td>{e(r["universe"])}</td>'
+            f'<td>{e(_universe_display_label(r["universe"], lang))}</td>'
             f'<td>{e((r.get("generated_at") or "")[:10])}</td></tr>'
             for r in page_rows
         )

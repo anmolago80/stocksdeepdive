@@ -1058,6 +1058,10 @@ _DERIVED_UNIVERSE_PARENTS = {
     "Russell 3000": ["Russell 1000", "Russell 2000"],
 }
 
+# ASX100 integrity guard fix (30 Sep 2026, owner-directed) - see
+# _build_derived_universes()'s own comment at its call site.
+_DERIVED_INTEGRITY_DROP_MAX = 3
+
 
 def _build_derived_universes(log):
     import scan_store
@@ -1091,6 +1095,49 @@ def _build_derived_universes(log):
                     f"{len(wanted)} members have a scanned parent row yet, skipping")
                 continue
             rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
+
+            # ASX100 integrity guard fix (30 Sep 2026, owner-directed,
+            # Commit 3 of the growth/Top100 freshness fix): "Derived ASX
+            # 100 fails nightly on XYZ.AX not in ASX 200 and the file is
+            # frozen at 28 Sep" - a handful of stale/reclassified
+            # members used to fail verify_universe_before_save()'s
+            # strict-subset check below OUTRIGHT, refusing the whole
+            # save and leaving the file frozen at its last good state
+            # indefinitely. When the containment violation is SMALL
+            # (<= _DERIVED_INTEGRITY_DROP_MAX members not in the
+            # parent), drop just those members (logged by name) so the
+            # save proceeds with a clean, genuinely-contained list -
+            # a real membership drift LARGER than that still refuses
+            # exactly as before (below), since that size of mismatch is
+            # a real data problem, not a few stragglers. Scoped to the
+            # single-parent chain members only (ASX 100/50/20) - never
+            # "ASX Small Ordinaries", whose own check is a two-sided
+            # sibling comparison (in ASX 300 AND not in ASX 100), not a
+            # single "not in the parent" containment check this fix
+            # targets.
+            if (universe in scanner_engine.UNIVERSE_INTEGRITY_TRACKED_UNIVERSES
+                    and universe != "ASX Small Ordinaries"):
+                _drop_parent = scanner_engine._UNIVERSE_CONTAINMENT_PARENT.get(universe)
+                if _drop_parent is not None:
+                    _drop_country = ("Australia" if universe in scanner_engine.AUSTRALIA_UNIVERSES
+                                      else "USA")
+                    _drop_parent_df, _drop_parent_source = scanner_engine.get_universe_pool(
+                        _drop_country, _drop_parent)
+                    if _drop_parent_df is not None and not _drop_parent_df.empty:
+                        _drop_parent_tickers = set(_drop_parent_df["Ticker"])
+                        _outside_rows = [
+                            r for r in rows
+                            if (r.get("Ticker") or "").strip().upper() not in _drop_parent_tickers
+                        ]
+                        if _outside_rows and len(_outside_rows) <= _DERIVED_INTEGRITY_DROP_MAX:
+                            _dropped = [r.get("Ticker") for r in _outside_rows]
+                            log(f"[scheduler] derived universe {universe}: dropping "
+                                f"{len(_dropped)} member(s) not in {_drop_parent} "
+                                f"(integrity guard): {', '.join(_dropped)}")
+                            rows = [
+                                r for r in rows
+                                if (r.get("Ticker") or "").strip().upper() in _drop_parent_tickers
+                            ]
 
             # Commit 1 (23 Sep 2026, owner-reported): same integrity
             # guard nightly_scan.run_universe_scan() applies to the
@@ -1615,23 +1662,41 @@ def _universes_missing_today(cfg, ref_day):
     return missing
 
 
+_PINNED_MISSED_PIN_SAFETY_NET_DAYS = 9
+
+
 def _universes_needing_scan(cfg):
     """Universes whose SAVED scan is missing or stale - the source of
     truth is the result file, not a 'ran today' marker, so a deploy/
     restart that kills a scan mid-run self-heals on the next check
     instead of silently skipping a whole day.
 
-    Fix 8b, AI fixes round 2 (2026-08-31): staleness threshold now
-    depends on the universe's own cadence (cfg["universe_cadence"]) -
-    "daily" keeps the original >20h threshold; "weekly" and a specific
-    weekday (mon..sun) both use >6 days (144h), since neither is meant
-    to re-scan every night. A weekday-pinned universe is additionally
-    only ever considered due on ITS OWN weekday (UTC) - that's what
-    actually spreads several large weekly universes across separate
-    nights instead of letting them all go stale together in the same
-    ~6-day window and pile onto one night; a bare "weekly" (no pinned
-    day) has no such restriction - simply due whenever its 6 days are
-    up, on whichever night that falls.
+    Fix 8b, AI fixes round 2 (2026-08-31): staleness threshold depends
+    on the universe's own cadence - "daily" keeps the original >20h
+    threshold; a bare "weekly" (no pinned day) uses >6 days (144h),
+    since it isn't meant to re-scan every night.
+
+    Due-logic fix (30 Sep 2026, owner-directed, Commit 3 of the growth/
+    Top100 freshness fix): age is now computed from scan_store.
+    load_scan_meta()'s own generated_at ALONE - never blended with
+    repriced_at the way load_scan()'s own display-oriented "age_hours"
+    reading is (see load_scan_meta()'s own docstring for the full root
+    cause: a nightly reprice recomputes Long Score from the STORED
+    Intrinsic Value, never runs a fresh DCF, so a universe that only
+    ever gets repriced looked "fresh" under the blended reading
+    indefinitely and was never judged due for a real rescan again).
+
+    A weekday-pinned universe (mon..sun) is due on ITS OWN weekday
+    (UTC) whenever it hasn't already been credited to today (payload's
+    own run_night != today, or no payload at all) - a RULE, not an age
+    threshold, since the whole point of a weekly pin is "one shot a
+    week on this specific night" regardless of how old the last scan
+    happens to be on any other night. A missed-pin safety net still
+    applies on ANY night: if generated_at is older than
+    _PINNED_MISSED_PIN_SAFETY_NET_DAYS (9), it's due regardless of
+    today's weekday - covers a pin that was somehow skipped for more
+    than a week running, rather than waiting silently for its next
+    scheduled night to come back around.
 
     Commit H (20 Sep 2026): result is sorted by _scan_priority_key - a
     weekday-pinned universe first, then dailies, smallest-first within
@@ -1640,16 +1705,37 @@ def _universes_needing_scan(cfg):
     ~20h; a weekday-pinned one gets exactly one chance a week, so if a
     night's run is cut short - or simply doesn't finish before the UTC
     date rolls over - it's the pinned universe, not a daily one, that
-    can't afford to be the one left out)."""
+    can't afford to be the one left out). Cadence parsing, _scan_
+    priority_key, the 4h hard timeout and the 3-attempt catch-up budget
+    are all unchanged by this fix."""
     import scan_store
-    today_weekday = datetime.now(timezone.utc).weekday()  # Monday=0..Sunday=6
+    now = datetime.now(timezone.utc)
+    today_weekday = now.weekday()  # Monday=0..Sunday=6
+    today_str = now.strftime("%Y-%m-%d")
     due = []
     for u, cadence in cfg["universe_cadence"].items():
-        if cadence in _WEEKDAY_ABBR and _WEEKDAY_ABBR[cadence] != today_weekday:
-            continue  # not this universe's night
+        meta = scan_store.load_scan_meta(u)
+        gen_dt = None
+        if meta and meta.get("generated_at"):
+            try:
+                gen_dt = datetime.fromisoformat(meta["generated_at"])
+            except ValueError:
+                gen_dt = None
+        gen_age_days = ((now - gen_dt).total_seconds() / 86400.0) if gen_dt else None
+
+        if cadence in _WEEKDAY_ABBR:
+            is_pinned_night = _WEEKDAY_ABBR[cadence] == today_weekday
+            not_yet_credited_tonight = meta is None or meta.get("run_night") != today_str
+            missed_pin_safety_net = (
+                gen_age_days is not None and gen_age_days > _PINNED_MISSED_PIN_SAFETY_NET_DAYS
+            )
+            if (is_pinned_night and not_yet_credited_tonight) or missed_pin_safety_net:
+                due.append(u)
+            continue
+
         threshold_hours = 20 if cadence == "daily" else 144
-        payload = scan_store.load_scan(u)
-        if payload is None or payload.get("age_hours", 999) > threshold_hours:
+        age_hours = (gen_age_days * 24.0) if gen_age_days is not None else None
+        if age_hours is None or age_hours > threshold_hours:
             due.append(u)
     due.sort(key=lambda u: _scan_priority_key(u, cfg["universe_cadence"]))
     return due

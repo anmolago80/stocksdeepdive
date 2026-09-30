@@ -1507,14 +1507,24 @@ def _reprice_row(row, hist_df, universe_attention_lite=True):
 
     # Full-attention determination: Part 2's own per-row top-up marker
     # first, then the payload-level "this universe's scan wasn't
-    # attention_lite" flag, then - only if neither marker is available,
-    # e.g. legacy stored data from before this fix - a heuristic: if the
-    # stored Discovery is bigger than price/volume alone would produce,
-    # that surplus can only have come from real attention signals.
+    # attention_lite" flag - ONLY. Reprice-heuristic fix (30 Sep 2026,
+    # owner-directed, Commit 3 of the growth/Top100 freshness fix): the
+    # old third fallback - "if the stored Discovery is bigger than
+    # price/volume alone would produce, that surplus can only have come
+    # from real attention signals" - was REMOVED. That heuristic
+    # silently promoted a row to full-attention whenever normal night-
+    # to-night price/volume noise alone pushed fresh_pv below the
+    # stored value (nothing to do with whether real Trends/News/
+    # StockTwits signals were ever actually fetched for it), which then
+    # fed the STALE stored Discovery's own attention remainder into a
+    # discovery_measured=True blend - the exact kind of silently-wrong
+    # promotion this task's freshness fix as a whole exists to close.
+    # A row with neither explicit marker is now always treated as
+    # lite/unmeasured here, same as it would be with no legacy data at
+    # all - correct per this function's own second-addendum fix above
+    # (never GUESS full-attention from row shape alone).
     stored_discovery = row.get("Discovery (lite)")
     row_full_attention = bool(row.get("attention_full")) or not universe_attention_lite
-    if not row_full_attention and stored_discovery is not None:
-        row_full_attention = (stored_discovery - fresh_pv) > 0
 
     if row_full_attention:
         # Preserve the attention remainder on top of the freshly

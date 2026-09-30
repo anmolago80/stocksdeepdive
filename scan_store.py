@@ -141,6 +141,41 @@ def load_scan_raw(universe):
     return payload
 
 
+def load_scan_meta(universe):
+    """Scheduler due-logic fix (30 Sep 2026, owner-directed, Commit 3 of
+    the growth/Top100 freshness fix): generated_at/repriced_at/run_night/
+    degraded for `universe`, with NO 72h staleness cutoff (unlike load_
+    scan()) and NO rows read/returned at all - a lightweight metadata-
+    only read for scheduler_engine._universes_needing_scan()'s own due
+    check, which must judge "due" from generated_at (the last full
+    fundamentals scan) ALONE, never blended with repriced_at the way
+    load_scan()'s own combined freshness reading is.
+
+    That blend exists for DISPLAY (the Scanner page showing "still
+    current" for a weekly-cadence universe the nightly reprice pass kept
+    priced up to date) - but it's wrong for a SCHEDULING decision: a
+    nightly reprice recomputes Long Score from the stored Intrinsic
+    Value, never runs a fresh DCF, so a universe that only ever gets
+    repriced (never truly rescanned) looked "fresh" under the blended
+    reading indefinitely and was never judged due again - the root
+    cause of a live-reported "Top 100 still shows the old list" bug (see
+    top100_engine.select_top100_pool()'s own freshness-fix comment for
+    the selection-side half of that same incident).
+
+    Returns None if there's no file, it's corrupt, or it has no rows
+    (same "no rows = doesn't really exist yet" convention load_scan_raw()
+    already uses)."""
+    payload = load_scan_raw(universe)
+    if not payload:
+        return None
+    return {
+        "generated_at": payload.get("generated_at"),
+        "repriced_at": payload.get("repriced_at"),
+        "run_night": payload.get("run_night"),
+        "degraded": payload.get("degraded"),
+    }
+
+
 def list_saved_universes():
     """Every universe with a saved overnight scan on disk right now -
     the Top 100 tab's own "merge every universe's stored scan rows"

@@ -78,15 +78,23 @@ def save_snapshot(ticker, universe, row, moat=None):
     computes every field itself, so every value it saves is non-None
     (or genuinely None, e.g. no dividend history) and this merge is a
     no-op on that path - only the live hook's partial row is ever
-    missing keys. `universe` gets the SAME kind of treatment, but only
-    in the "live" direction: a ticker that already has a real scanned
-    universe keeps it instead of being reclassified "live" on every
-    daytime view; a genuinely never-scanned ticker still gets "live".
-    This is deliberately one-way - only ever triggered when THIS call's
-    own `universe` is "live" (the live hook's own marker; a real nightly
-    scan always passes its real universe name) - so a ticker's first
-    real nightly scan still overwrites a previously-live-only "live"
-    label with the real universe, exactly as before this fix."""
+    missing keys.
+
+    Snapshot label fix (30 Sep 2026, owner-directed, Commit 3 of the
+    growth/Top100 freshness fix): `universe` itself used to get a
+    similar "keep the old value" treatment - a ticker that already had
+    a real scanned universe kept that label even when THIS call's own
+    `universe` was "live" (app.py._save_live_snapshot()'s own marker
+    for "a visitor's Deep Dive view refreshed this row"), so the label
+    could silently go stale for weeks after a universe stopped
+    scanning a ticker (dropped from an index, a renamed/retired
+    universe) while a visitor's own live views kept the row's DATA
+    current. `universe` is now a plain overwrite, same as every other
+    column here - whatever the CALLER passes is what gets stored,
+    "live" included. snapshot_render.py's own _universe_display_label()
+    is where "live" is translated into a presentable "Live view" label
+    for a reader, rather than silently substituting a stale universe
+    name at the data layer."""
     if not ticker or not row:
         return
     ticker = ticker.strip().upper()
@@ -112,8 +120,6 @@ def save_snapshot(ticker, universe, row, moat=None):
         if "Trading Status" in row:
             merged_row["Trading Status"] = row["Trading Status"]
         row = merged_row
-        if universe == "live" and existing.get("universe"):
-            universe = existing["universe"]
     with _conn() as conn:
         conn.execute(
             """INSERT INTO snapshots
