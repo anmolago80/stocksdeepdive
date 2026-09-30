@@ -25797,7 +25797,16 @@ def _pvi_upgrade_saved_inputs(d):
 
 
 def _render_property_vs_index_tool(email):
-    """Task (18 Sep 2026): \U0001F3E0 Property vs \U0001F4C8 S&P 500. Engine is
+    # Audit fixes Commit 3, small-hardening item (30 Sep 2026, owner-
+    # directed): raw docstring - the \$ occurrences further down were
+    # producing a DeprecationWarning ("invalid escape sequence") on
+    # every process start. Harmless (docstrings are never rendered to a
+    # user - the emoji below is a plain non-raw f-string, unaffected),
+    # but noisy in every Railway boot log. \U0001F3E0/\U0001F4C8 inside
+    # this docstring are now literal 10-char sequences rather than
+    # resolved emoji, which is fine - nothing reads this docstring's
+    # own text as UI copy.
+    r"""Task (18 Sep 2026): \U0001F3E0 Property vs \U0001F4C8 S&P 500. Engine is
     property_vs_index_engine.py - deliberately self-contained (never
     imports debt_recycling_engine.py, see that module's own docstring
     for why) even though it mirrors debt_recycling_engine's own
@@ -29110,8 +29119,8 @@ def _is_owner_for_rescan():
 
 
 def _handle_rescan_now_click(universes):
-    """URGENT COMMIT 3 (25 Sep 2026, owner-reported): the Rescan now
-    button's own click handler - kept separate from the button's
+    """Audit fixes Commit 3 (30 Sep 2026, owner-directed): the Rescan
+    now button's own click handler - kept separate from the button's
     `if st.button(...):` block, same reasoning as top100_render.py's
     own _handle_refresh_all_click(): directly callable/testable on its
     own, bypassing the widget entirely, proving the SERVER-SIDE
@@ -29121,76 +29130,67 @@ def _handle_rescan_now_click(universes):
     getting here) - independent of that render-time check, does not
     trust having already been gated by the caller.
 
-    Runs nightly_scan.run_universe_scan() for each selected universe,
-    through the SAME "nightly" job lock scheduled/catch-up scans use
-    (scheduler_engine._acquire_job_lock/_release_job_lock - this
-    codebase's own precedent for reusing a private-by-convention
-    helper when the exact logic already lives there, e.g. server.py
-    calling api_v1._resolve_universe()), so a manual rescan can never
-    run concurrently with a scheduled nightly scan or a catch-up scan -
-    it either gets the lock and runs, or is refused outright (never
-    waits/blocks for the lock to free up; the owner can just try again
-    once whatever's running finishes). run_night=None (this function's
-    own default) - a manual rescan is a "hand-run scan" per that
-    function's own docstring, not credited to any particular scheduled
-    night. This is the manual override for exactly the incident this
-    task's own COMMIT 2 fixed automatically for the "nothing servable"
-    case - so a universe stuck for ANY reason (not just "nothing
-    servable", also merely stale, or the owner just wants it fresh
-    right now) never again has to wait on the scheduler's own clock."""
+    Queues the request (scheduler_engine._queue_rescan_request()) rather
+    than scanning here - this used to run nightly_scan.run_universe_
+    scan() synchronously in THIS Streamlit request thread, holding the
+    "nightly" job lock without ever refreshing its own heartbeat while
+    it ran. That is the exact concurrent-scan door URGENT Commit 3
+    (25 Sep 2026) already closed for the scheduler's own two independent
+    processes (server.py's and this Streamlit subprocess's own separate
+    _loop() threads) - reopened from a third angle here, since a
+    Streamlit request thread refreshing nothing for a multi-minute scan
+    looks identical to an abandoned holder to either of those processes'
+    own stale-heartbeat reclaim logic. The request is now picked up by
+    the scheduler loop itself on its next tick and run through the same
+    _record_job() heartbeat/hard-timeout/abandoned-worker machinery a
+    scheduled or catch-up scan already gets - see scheduler_engine.
+    _loop()'s own "queued Rescan-now" block."""
     if not _is_owner_for_rescan():
         st.error("This action isn't available.")
         return
-    if not universes:
-        st.info("Select at least one universe to rescan.")
-        return
     import scheduler_engine
-    if not scheduler_engine._acquire_job_lock("nightly", print):
-        st.warning(
-            "A scan is already running (scheduled, catch-up, or another "
-            "rescan) - try again in a few minutes."
-        )
-        return
+    _owner_email = None
     try:
-        failed = []
-        for _u in universes:
-            with st.spinner(f"Rescanning {_u}..."):
-                try:
-                    saved = nightly_scan.run_universe_scan(_u, log=print, run_night=None)
-                    if saved is None:
-                        failed.append(_u)
-                except Exception as e:
-                    failed.append(f"{_u} ({e})")
-        if failed:
-            st.warning(f"Rescanned {len(universes) - len(failed)}/{len(universes)} - "
-                       f"failed: {', '.join(failed)}. Check the server logs for detail.")
-        else:
-            st.success(f"Rescanned: {', '.join(universes)}")
-    finally:
-        scheduler_engine._release_job_lock("nightly")
+        _owner_email = paywall_engine.current_user_email()
+    except Exception:
+        pass
+    _ok, _reason = scheduler_engine._queue_rescan_request(
+        universes, requested_by=_owner_email, log=print)
+    if _ok:
+        st.success(
+            f"Queued: {', '.join(universes)} - the scheduler will start it "
+            "within a minute."
+        )
+    else:
+        (st.info if _reason and "already" in _reason else st.warning)(
+            _reason or "Could not queue the rescan - check the server logs."
+        )
 
 
 def _render_rescan_now_control():
     """Owner-only "Rescan now" control - a universe picker + button that
-    runs nightly_scan.run_universe_scan() for the selected universe(s)
-    immediately, bypassing the scheduler's own once-a-day/hourly clock
-    entirely. Two INDEPENDENT checks, on purpose, same as top100_
-    render.py's own _render_refresh_all_control(): this one, before
-    anything is even rendered - a non-owner sees NOTHING here at all,
-    not a disabled control, not an error, no trace - and a second one
-    inside _handle_rescan_now_click() itself, so a non-owner who
-    somehow triggers the click callback without this render check
-    having run still gets refused server-side before run_universe_scan()
-    - a real yfinance-backed scan, not free - is ever called for even
-    one universe. No visitor-reachable path can reach a rescan without
-    passing BOTH. Picker is scheduler_engine._cfg()['universe_cadence']
-    - the real, directly-scannable NIGHTLY_UNIVERSES entries (what
-    run_universe_scan() is actually built to handle) - not the
-    ASX containment-chain DERIVED universes (ASX 100/50/20/Small
-    Ordinaries), which are computed by _build_derived_universes() from
-    a parent scan, not scanned on their own; out of scope for this
-    control, which mirrors the task's own literal "runs
-    run_universe_scan()" instruction."""
+    queues the selected universe(s) for the scheduler to rescan on its
+    next tick (see _handle_rescan_now_click()'s own docstring for why
+    this is queued rather than run here directly). Two INDEPENDENT
+    checks, on purpose, same as top100_render.py's own _render_refresh_
+    all_control(): this one, before anything is even rendered - a
+    non-owner sees NOTHING here at all, not a disabled control, not an
+    error, no trace - and a second one inside _handle_rescan_now_click()
+    itself, so a non-owner who somehow triggers the click callback
+    without this render check having run still gets refused server-side
+    before even a queue-write happens. No visitor-reachable path can
+    reach a rescan without passing BOTH. Picker is scheduler_engine.
+    _cfg()['universe_cadence'] - the real, directly-scannable NIGHTLY_
+    UNIVERSES entries (what run_universe_scan() is actually built to
+    handle) - not the ASX containment-chain DERIVED universes (ASX
+    100/50/20/Small Ordinaries), which are computed by _build_derived_
+    universes() from a parent scan, not scanned on their own; out of
+    scope for this control, same as before this commit.
+
+    Also shows the current request's status (queued/running) and the
+    most recent completed run, straight from scheduler_engine.
+    _rescan_request_status() - so the owner isn't left guessing whether
+    their click landed once this page next reruns."""
     if not _is_owner_for_rescan():
         return
     import scheduler_engine
@@ -29203,14 +29203,39 @@ def _render_rescan_now_control():
         "Manually rescan one or more universes right now, bypassing the "
         "scheduler's own clock entirely - the fix for exactly today's "
         "situation, so a stuck universe never again has to wait for the "
-        "scheduler. Runs through the same job lock as a scheduled scan, "
-        "so it refuses rather than colliding if one is already running. "
-        "Expect roughly 1 minute per 25 tickers in the universe(s) you pick."
+        "scheduler. Queues the request for the scheduler loop to pick up "
+        "within a minute and run through the same job lock, heartbeat and "
+        "hard-timeout handling as a scheduled scan (audit fixes Commit 3, "
+        "30 Sep 2026) - note this also runs the full nightly pipeline for "
+        "the picked universe(s) (sector/attention top-up, reprice of every "
+        "other real universe not scanned tonight, derived-universe "
+        "rebuilds), same as a catch-up scan, not just the picked universe "
+        "in isolation. Expect roughly 1 minute per 25 tickers scanned, plus "
+        "the reprice pass."
     )
+    try:
+        _status = scheduler_engine._rescan_request_status()
+    except Exception:
+        _status = {"pending": None, "last_run": None}
+    _pending = _status.get("pending")
+    if _pending:
+        st.info(
+            f"Request {_pending.get('status', 'queued')}: "
+            f"{', '.join(_pending.get('universes', []))} - requested "
+            f"{_pending.get('requested_at', '-')}"
+            + (f", started {_pending['started_at']}" if _pending.get("started_at") else "")
+        )
+    _last_run = _status.get("last_run")
+    if _last_run and not _pending:
+        st.caption(
+            f"Last run: {', '.join(_last_run.get('universes', []))} - "
+            f"requested {_last_run.get('requested_at', '-')}, finished "
+            f"{_last_run.get('finished_at', '-')}"
+        )
     _rescan_selected = st.multiselect(
         "Universe(s) to rescan", _rescan_choices, key="admin_rescan_universes",
     )
-    if st.button("Rescan now", key="admin_rescan_now_btn"):
+    if st.button("Rescan now", key="admin_rescan_now_btn", disabled=bool(_pending)):
         _handle_rescan_now_click(_rescan_selected)
 
 

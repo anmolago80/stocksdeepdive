@@ -838,9 +838,82 @@ def _release_job_lock(job_name):
         pass
 
 
-def _run_nightly(cfg, log, run_night=None):
+# Audit fixes Commit 3 (30 Sep 2026, owner-directed): Rescan-now's public
+# interface, called from app.py - same private-by-convention-but-imported
+# pattern this codebase already uses for _cfg()/_acquire_job_lock()/
+# _release_job_lock() from that same call site. See queue_rescan_request()'s
+# own docstring for what replaced the old synchronous handler.
+
+def _queue_rescan_request(universes, requested_by=None, log=print):
+    """Writes a rescan request to scheduler_state.json for the scheduler
+    loop to pick up on its next tick (see _loop()'s own "queued Rescan-
+    now" block) - replaces the old synchronous nightly_scan.
+    run_universe_scan() call that used to run directly in app.py's
+    Streamlit request thread (URGENT Commit 3, 25 Sep 2026's own
+    concurrent-scan door, reopened from a third angle - see that block's
+    own comment). Returns (True, None) if queued; (False, reason) if
+    refused - a request is already queued or running (only one at a
+    time, same "one in-flight thing" shape as top100_store's own batch
+    state), universes is empty, or a filesystem error made the write
+    itself fail (see _save_state()'s own fail-open contract - this
+    still reports failure to the caller, since an owner clicking the
+    button deserves to know their click didn't stick, even though
+    _save_state() itself never raises)."""
+    if not universes:
+        return False, "Select at least one universe to rescan."
+    state = _load_state()
+    existing = state.get("rescan_request")
+    if existing:
+        return False, (
+            f"A rescan is already {existing.get('status', 'queued')} "
+            f"({', '.join(existing.get('universes', []))}, requested "
+            f"{existing.get('requested_at', 'earlier')}) - try again once it completes."
+        )
+    requested_at = datetime.now(timezone.utc).isoformat()
+    state["rescan_request"] = {
+        "universes": list(universes),
+        "requested_at": requested_at,
+        "requested_by": requested_by,
+        "status": "queued",
+    }
+    _save_state(state)
+    log(f"[scheduler] rescan queued: {', '.join(universes)} (requested by "
+        f"{requested_by or 'owner'} at {requested_at})")
+    # Fail-safe re-read: _save_state() never raises, so confirm the write
+    # actually landed rather than trusting it blindly - an owner-facing
+    # "queued" confirmation should mean the request is really on disk.
+    return (_load_state().get("rescan_request") is not None), None
+
+
+def _rescan_request_status():
+    """{"pending": <rescan_request dict or None>, "last_run": <rescan_
+    last_run dict or None>} - read by app.py's admin panel to show the
+    current queued/running request (if any) and the most recent
+    completed one, straight off scheduler_state.json - no separate
+    store, same "read the scheduler's own state file" pattern as every
+    other admin-panel status display in this module (e.g. _top100_
+    pending_batch_id())."""
+    state = _load_state()
+    return {
+        "pending": state.get("rescan_request"),
+        "last_run": state.get("rescan_last_run"),
+    }
+
+
+def _run_nightly(cfg, log, run_night=None, cancel_event=None):
     import nightly_scan
     import scanner_engine
+
+    # Audit fixes Commit 3 (30 Sep 2026, owner-directed): optional
+    # threading.Event, threaded straight through to every nightly_scan.
+    # run_universe_scan() call below (its own per-ticker loop checks it -
+    # see that function's own cancel_event docstring) - lets _record_job's
+    # hard-timeout path ask an abandoned worker thread to stop
+    # cooperatively instead of running the rest of tonight's universes to
+    # completion on a thread nothing is waiting on any more. None (every
+    # caller before this existed, and every call site that doesn't pass
+    # one - the regular due-scan/catch-up blocks below always do now, but
+    # a hand-run call from a test or a console still works unchanged).
 
     # Commit H (20 Sep 2026): captured ONCE, here, before any universe is
     # touched - this is what every universe scanned/repriced during this
@@ -951,12 +1024,20 @@ def _run_nightly(cfg, log, run_night=None):
     _catchup_state = _load_state()
     breaker_tripped = False
     for universe in ordered:
+        # Audit fixes Commit 3: checked BETWEEN universes too (on top of
+        # the per-ticker check inside run_universe_scan itself) so an
+        # abandoned worker stops before even starting the next universe's
+        # crumb warm-up, rather than only mid-loop through it.
+        if cancel_event is not None and cancel_event.is_set():
+            log(f"[scheduler] cancelled before {universe} (abandoned worker asked to stop)")
+            break
         _scan_started_at = time.time()
         try:
             if universe == nightly_scan.IMPORTED_UNIVERSE:
                 payload = nightly_scan.run_imported_scan(log=log)
             else:
-                payload = nightly_scan.run_universe_scan(universe, log=log, run_night=run_night)
+                payload = nightly_scan.run_universe_scan(
+                    universe, log=log, run_night=run_night, cancel_event=cancel_event)
                 _record_catchup_outcome(
                     universe, succeeded=bool(payload),
                     elapsed_seconds=time.time() - _scan_started_at,
@@ -1039,13 +1120,22 @@ def _run_nightly(cfg, log, run_night=None):
     # rows already scanned above - so a breaker trip skips the ones that
     # would just re-trip it, and logs exactly what was skipped rather
     # than leaving the owner to infer it from silence.
+    #
+    # Audit fixes Commit 3 (30 Sep 2026, owner-directed): a cooperative
+    # cancel (cancel_event set - see this function's own docstring) skips
+    # the SAME stages for the SAME reason - none of them are worth
+    # running on a thread the hard-timeout ceiling has already abandoned
+    # and asked to stop.
+    _cancelled = cancel_event is not None and cancel_event.is_set()
+    _skip_post_scan_stages = breaker_tripped or _cancelled
     _skipped_stages = []
-    if breaker_tripped:
+    if _skip_post_scan_stages:
         _skipped_stages = [
             "sector top-up", "attention top-up", "reprice pass",
             "derived universes build",
         ]
-        log(f"[scheduler] rate-limit breaker tripped - skipping: {', '.join(_skipped_stages)}")
+        _why = "rate-limit breaker tripped" if breaker_tripped else "cancelled (abandoned worker)"
+        log(f"[scheduler] {_why} - skipping: {', '.join(_skipped_stages)}")
 
     # Part 48.2(c): sector-cache top-up, once, over every ticker scanned
     # tonight above - see nightly_scan.run_sector_topup()'s own docstring
@@ -1053,7 +1143,7 @@ def _run_nightly(cfg, log, run_night=None):
     # the scan loop (never inside it) since it needs the FULL de-duplicated
     # list of tonight's tickers, not just one universe's, to pick its
     # batch fairly across whichever universes ran tonight.
-    if not breaker_tripped:
+    if not _skip_post_scan_stages:
         try:
             nightly_scan.run_sector_topup(_tickers_scanned_tonight, log=log)
         except Exception as e:
@@ -1072,7 +1162,7 @@ def _run_nightly(cfg, log, run_night=None):
     # derived universe (ASX 100/Small Ords/Russell 3000/etc.) and the
     # home page's "Tonight's top 5" both see the topped-up Long Scores,
     # not the pre-topup ones.
-    if not breaker_tripped:
+    if not _skip_post_scan_stages:
         for _universe in _lite_universes_scanned_tonight:
             try:
                 nightly_scan.run_attention_topup(_universe, log=log)
@@ -1129,7 +1219,7 @@ def _run_nightly(cfg, log, run_night=None):
     # the scans" guard without any extra locking code needed here. Skipped
     # entirely on a breaker trip (audit fixes Commit 2) - reprice_universe()
     # is itself a yfinance batch download, exactly what just got throttled.
-    if not breaker_tripped:
+    if not _skip_post_scan_stages:
         try:
             scanned_tonight = {u for u in ordered if u != nightly_scan.IMPORTED_UNIVERSE}
             to_reprice = [u for u in cfg.get("universe_cadence", {}).keys() if u not in scanned_tonight]
@@ -1154,7 +1244,7 @@ def _run_nightly(cfg, log, run_night=None):
     # `ordered` that never got a chance to scan - safer to leave a
     # derived universe on its last-good build than rebuild it from a
     # run that was cut short mid-throttle.
-    if not breaker_tripped:
+    if not _skip_post_scan_stages:
         try:
             _build_derived_universes(log)
         except Exception as e:
@@ -2011,8 +2101,84 @@ _TOP100_POLL_MIN_INTERVAL_SECONDS = 60 * 60
 # loop without this.
 _HEARTBEAT_LOG_INTERVAL_SECONDS = 30 * 60
 
+# Audit fixes Commit 3 (30 Sep 2026, owner-directed): abandoned-worker
+# tracking. Problem (a6323ee + 24de00e): on a hard timeout, _record_job
+# below logs, records "timeout", and re-raises - but every call site's
+# own `finally: _release_job_lock(...)` released the "nightly" lock
+# unconditionally regardless, so THIS SAME PROCESS's very next tick (a
+# due-scan, a catch-up, or a queued Rescan-now) could re-acquire it and
+# start a second full scan concurrently with the first one's still-
+# running (abandoned) worker thread - doubling yfinance load for the
+# rest of that run, the same failure mode URGENT Commit 3 (25 Sep 2026)
+# already fixed for the cross-process case, just from a same-process
+# trigger instead.
+#
+# In-process only, deliberately - same reasoning as _last_heartbeat/
+# _top100_boot_poll_attempted above (plain module globals, nothing
+# persisted): a daemon thread (every _record_job worker is one - see
+# that function's own docstring) is killed outright when ITS OWN
+# process exits, so there is nothing here to survive, or need to
+# survive, a restart. A genuinely different process (server.py's vs
+# app.py's own separate scheduler thread - see start()'s own docstring)
+# still relies on the existing cross-process heartbeat-staleness reclaim
+# (_JOB_LOCK_HEARTBEAT_STALE_SECONDS) once this process stops refreshing
+# the lock file's heartbeat past the timeout - a real but bounded
+# residual gap (up to 10 minutes), no worse than every other lock this
+# module manages, and outside this commit's own "scoped to lock handling
+# only" mandate for the SAME-process door this closes.
+_abandoned_workers = {}
 
-def _record_job(job_name, log, run_fn, lock_name=None):
+# How long an abandoned "nightly" worker is treated as still blocking a
+# fresh scan before this process gives up waiting on it entirely and
+# lets a new one start anyway - a safety valve against a worker stuck in
+# a blocking call the cooperative cancel_event can't interrupt (the
+# per-ticker check in nightly_scan.run_universe_scan() only fires
+# BETWEEN tickers, never inside one already in flight).
+ABANDONED_WORKER_MAX_HOURS = 4
+
+
+def _mark_worker_abandoned(job_name, thread, cancel_event):
+    """Records `job_name`'s worker `thread` (still alive - the caller,
+    _record_job's own timeout path, already confirmed this) as abandoned,
+    for _abandoned_worker_status() below to check on later ticks before
+    letting a fresh scan start. `cancel_event` (may be None) is nudged
+    `.set()` on every subsequent status check, not just here - covers a
+    worker that hadn't reached its own first per-ticker check yet at the
+    moment of abandonment."""
+    _abandoned_workers[job_name] = {
+        "thread": thread,
+        "cancel_event": cancel_event,
+        "pid": os.getpid(),
+        "started": datetime.now(timezone.utc).isoformat(),
+        "abandoned_at": time.time(),
+    }
+
+
+def _abandoned_worker_status(job_name):
+    """("alive", info) if `job_name` has a recorded abandoned worker
+    thread that is STILL running (and its cancel_event, if any, is
+    nudged again here) - the caller should skip starting a fresh scan
+    and log why. ("expired", info) if that worker has been abandoned for
+    over ABANDONED_WORKER_MAX_HOURS - the caller may proceed anyway (a
+    worker that ignores its cancel flag for that long is being treated
+    as permanently stuck, not merely slow). (None, None) if nothing is
+    recorded, or the recorded thread has since exited on its own
+    (silently clears the record - the ordinary, expected outcome once
+    cancellation reaches it, needs no special caller-side handling)."""
+    info = _abandoned_workers.get(job_name)
+    if info is None:
+        return None, None
+    if not info["thread"].is_alive():
+        _abandoned_workers.pop(job_name, None)
+        return None, None
+    if info["cancel_event"] is not None:
+        info["cancel_event"].set()
+    if time.time() - info["abandoned_at"] > ABANDONED_WORKER_MAX_HOURS * 3600:
+        return "expired", info
+    return "alive", info
+
+
+def _record_job(job_name, log, run_fn, lock_name=None, cancel_event=None):
     """Times run_fn(wrapped_log) and records the result to
     admin_metrics_store's job_status table for the Admin Dashboard's
     NIGHTLY JOBS table - WITHOUT changing any _run_* function's own
@@ -2086,7 +2252,20 @@ def _record_job(job_name, log, run_fn, lock_name=None):
     a blocking C-level network call - but it can never again hold up
     THIS thread past the ceiling, which is the actual guarantee this
     exists to make; a daemon thread is killed outright when the process
-    exits, so nothing lingers past a redeploy either."""
+    exits, so nothing lingers past a redeploy either.
+
+    Audit fixes Commit 3 (30 Sep 2026, owner-directed): `cancel_event`
+    (optional threading.Event, currently only ever passed for job_name
+    "nightly") closes the other half of the same problem. On a timeout,
+    the abandoned worker thread is now also registered via _mark_worker_
+    abandoned() (see that function's own docstring) BEFORE raising -
+    the caller's own lock-release logic checks _abandoned_worker_status()
+    on later ticks and skips starting a fresh scan while it's still
+    alive, and this function nudges cancel_event.set() on every such
+    check so the worker itself has a real chance to notice and exit
+    (nightly_scan.run_universe_scan()'s own per-ticker loop checks it -
+    see that function's own cancel_event docstring), rather than merely
+    being ignored forever."""
     lock_name = lock_name or job_name
     fail_count = [0]
 
@@ -2134,6 +2313,13 @@ def _record_job(job_name, log, run_fn, lock_name=None):
             log(f"[scheduler] {job_name}: TIMED OUT after {elapsed:.0f}s (hard limit "
                 f"{timeout_seconds}s) - logging and moving on, not waiting any further; "
                 f"the stuck call is abandoned, never force-killed")
+            # Audit fixes Commit 3: registers the still-alive worker so
+            # later ticks skip starting a fresh scan while it runs - see
+            # _mark_worker_abandoned()'s own docstring. The caller's own
+            # lock-release logic (due-scan/catch-up/queued-rescan blocks
+            # in _loop()) is what actually keeps the "nightly" lock held
+            # on a TimeoutError - this alone only tracks the thread.
+            _mark_worker_abandoned(job_name, worker, cancel_event)
             raise TimeoutError(f"{job_name} exceeded its {timeout_seconds}s hard timeout")
         if run_exc[0] is not None:
             raise run_exc[0]
@@ -2260,6 +2446,102 @@ def _top100_poll_status_for_heartbeat():
         return f"unknown ({e})"
 
 
+def _run_queued_rescan_tick(cfg, log, rl_cooldown_active, rl_cooldown_until,
+                             abandoned_status, abandoned_info):
+    """Audit fixes Commit 3 (30 Sep 2026, owner-directed): one tick's
+    worth of "is there a queued Rescan-now request, and if so should
+    THIS tick start it" - called from _loop() every tick, same as the
+    due-scan/catch-up blocks it sits alongside.
+
+    Problem (a6323ee + 24de00e): app.py's own owner-only Rescan-now
+    control used to run nightly_scan.run_universe_scan() synchronously
+    in the Streamlit request thread, holding the "nightly" job lock
+    without ever refreshing its own heartbeat while the scan ran - the
+    exact concurrent-scan door URGENT Commit 3 (25 Sep 2026) already
+    closed for the scheduler's own two independent processes (server.py
+    vs this Streamlit subprocess's own separate _loop() threads - see
+    start()'s docstring), reopened from a third angle: a multi-minute
+    scan in a Streamlit request thread refreshing nothing looks
+    identical to an abandoned holder to either process's own stale-
+    heartbeat reclaim logic, letting the SCHEDULER start a second,
+    concurrent scan of the same universe(s).
+
+    Fix: app.py's control now only calls _queue_rescan_request() (see
+    its own docstring), which just writes a request to scheduler_
+    state.json. THIS function picks it up, on the next tick, through
+    the SAME "nightly" job lock and _record_job() heartbeat/hard-
+    timeout/abandoned-worker handling the catch-up block gets -
+    "exactly like a catch-up" per this commit's own instruction, which
+    means a queued rescan also gets the FULL _run_nightly() pipeline
+    (sector/attention top-up, reprice pass, derived-universe rebuilds -
+    see that function's own docstring), not just the selected
+    universe(s) in isolation. A deliberate scope change from the old
+    synchronous handler's narrower behaviour - the admin control's own
+    caption says so.
+
+    `rl_cooldown_active`/`rl_cooldown_until` and `abandoned_status`/
+    `abandoned_info` are passed in already computed for this tick (see
+    _rate_limit_cooldown_status()/_abandoned_worker_status()'s own
+    docstrings) rather than re-derived here, same as every other block
+    in _loop() sharing them - one evaluation per tick, not one per
+    block. Extracted into its own top-level function (rather than left
+    inline in _loop(), which never returns) specifically so it's
+    directly callable/testable on its own, same reasoning as
+    _run_top100_poll and every other _run_* helper in this module."""
+    rescan_request = _load_state().get("rescan_request")
+    if not rescan_request:
+        return
+    if abandoned_status == "alive":
+        log(f"[scheduler] queued rescan skipping - abandoned scan worker "
+            f"still running (pid {abandoned_info['pid']}, "
+            f"started {abandoned_info['started']})")
+        return
+    if rl_cooldown_active:
+        log(f"[scheduler] queued rescan skipped - rate-limit cool-down "
+            f"active until {rl_cooldown_until}")
+        return
+    if not _acquire_job_lock("nightly", log):
+        log("[scheduler] queued rescan skipped - another process already holds the lock")
+        return
+    cancel_event = threading.Event()
+    timed_out = False
+    try:
+        universes = rescan_request["universes"]
+        state = _load_state()
+        state["rescan_request"] = {
+            **rescan_request,
+            "status": "running",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _save_state(state)
+        log(f"[scheduler] starting queued rescan ({', '.join(universes)}) requested "
+            f"by {rescan_request.get('requested_by') or 'owner'} at "
+            f"{rescan_request.get('requested_at')}")
+        _record_job(
+            "nightly", log,
+            lambda lg: _run_nightly({**cfg, "universes": universes}, lg, cancel_event=cancel_event),
+            cancel_event=cancel_event,
+        )
+    except TimeoutError:
+        # Same reasoning as the due-scan/catch-up blocks: the lock stays
+        # held, and state["rescan_request"] deliberately stays in
+        # "running" status (the abandoned_status check above is what
+        # keeps this from being picked up again) rather than being
+        # cleared below.
+        timed_out = True
+        raise
+    finally:
+        if not timed_out:
+            _release_job_lock("nightly")
+            done_state = _load_state()
+            done_state["rescan_last_run"] = {
+                **rescan_request,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            }
+            done_state.pop("rescan_request", None)
+            _save_state(done_state)
+
+
 def _loop(log):
     global _last_heartbeat, _top100_boot_poll_attempted, _last_heartbeat_log_at
     # CRITICAL (25 Sep 2026, owner-reported): unconditional, first line
@@ -2289,7 +2571,23 @@ def _loop(log):
                 # docstring.
                 _rl_cooldown_active, _rl_cooldown_until = _rate_limit_cooldown_status(state, now)
 
-                if now.hour >= cfg["scan_hour"]:
+                # Audit fixes Commit 3 (30 Sep 2026, owner-directed):
+                # computed once per tick, shared by the due-scan, catch-up
+                # AND queued-rescan blocks below (same "nightly" lock, same
+                # abandoned-worker concern) - see _abandoned_worker_status()'s
+                # own docstring. "alive" blocks all three from even
+                # attempting to acquire the lock this tick; "expired" or
+                # None lets them proceed exactly as before this existed.
+                _abandoned_status, _abandoned_info = _abandoned_worker_status("nightly")
+                if _abandoned_status == "alive":
+                    log(f"[scheduler] skipping - abandoned scan worker still running "
+                        f"(pid {_abandoned_info['pid']}, started {_abandoned_info['started']})")
+                elif _abandoned_status == "expired":
+                    log(f"[scheduler] abandoned scan worker (pid {_abandoned_info['pid']}, "
+                        f"started {_abandoned_info['started']}) exceeded the "
+                        f"{ABANDONED_WORKER_MAX_HOURS}h wait - proceeding as if it's gone")
+
+                if now.hour >= cfg["scan_hour"] and _abandoned_status != "alive":
                     due = _universes_needing_scan(cfg)
                     if due and _rl_cooldown_active:
                         log(f"[scheduler] nightly scan skipped - rate-limit cool-down "
@@ -2331,6 +2629,8 @@ def _loop(log):
                         # in-process state-file guard above - see
                         # _acquire_job_lock's docstring.
                         if _acquire_job_lock("nightly", log):
+                            _due_cancel_event = threading.Event()
+                            _due_timed_out = False
                             try:
                                 state["scan_attempts"] = {today: n_today + 1}
                                 state["last_scan_date"] = today
@@ -2339,10 +2639,24 @@ def _loop(log):
                                     f"[attempt {n_today + 1}/3 today]")
                                 _record_job(
                                     "nightly", log,
-                                    lambda lg: _run_nightly({**cfg, "universes": due}, lg),
+                                    lambda lg: _run_nightly(
+                                        {**cfg, "universes": due}, lg, cancel_event=_due_cancel_event),
+                                    cancel_event=_due_cancel_event,
                                 )
+                            except TimeoutError:
+                                # Audit fixes Commit 3: the lock is
+                                # deliberately NOT released below on a
+                                # timeout - _record_job has already
+                                # registered the abandoned worker (see
+                                # _mark_worker_abandoned), and releasing
+                                # here would let THIS SAME process's very
+                                # next tick re-acquire it and start a
+                                # second concurrent scan.
+                                _due_timed_out = True
+                                raise
                             finally:
-                                _release_job_lock("nightly")
+                                if not _due_timed_out:
+                                    _release_job_lock("nightly")
                         else:
                             log("[scheduler] nightly scan skipped - another process "
                                 "already holds the lock")
@@ -2381,7 +2695,7 @@ def _loop(log):
                 # pass, sector top-up, alerts - all run for what was
                 # caught up exactly as they do for a normal scan; this is
                 # not a parallel copy of that orchestration.
-                ref_night = _catchup_reference_night(cfg, now)
+                ref_night = _catchup_reference_night(cfg, now) if _abandoned_status != "alive" else None
                 if ref_night is not None:
                     missing = _universes_missing_today(cfg, ref_night)
                     if missing and _rl_cooldown_active:
@@ -2448,6 +2762,8 @@ def _loop(log):
 
                         if eligible:
                             if _acquire_job_lock("nightly", log):
+                                _catchup_cancel_event = threading.Event()
+                                _catchup_timed_out = False
                                 try:
                                     if counts_against_cap:
                                         state["scan_attempts"] = {today: n_today + 1}
@@ -2470,13 +2786,36 @@ def _loop(log):
                                     _record_job(
                                         "nightly", log,
                                         lambda lg: _run_nightly(
-                                            {**cfg, "universes": eligible}, lg, run_night=ref_night),
+                                            {**cfg, "universes": eligible}, lg, run_night=ref_night,
+                                            cancel_event=_catchup_cancel_event),
+                                        cancel_event=_catchup_cancel_event,
                                     )
+                                except TimeoutError:
+                                    # Audit fixes Commit 3: same reasoning
+                                    # as the due-scan block above - keep
+                                    # the lock held while the abandoned
+                                    # worker is tracked.
+                                    _catchup_timed_out = True
+                                    raise
                                 finally:
-                                    _release_job_lock("nightly")
+                                    if not _catchup_timed_out:
+                                        _release_job_lock("nightly")
                             else:
                                 log("[scheduler] catch-up scan skipped - another "
                                     "process already holds the lock")
+
+                # Audit fixes Commit 3 (30 Sep 2026, owner-directed): queued
+                # Rescan-now - see _run_queued_rescan_tick()'s own docstring
+                # for the full incident/design writeup. Extracted into its
+                # own top-level function (rather than left inline here, the
+                # shape every other block in this loop uses) specifically
+                # so it's directly callable/testable on its own, same
+                # reasoning as _run_top100_poll and every other _run_*
+                # helper in this module.
+                _run_queued_rescan_tick(
+                    cfg, log, _rl_cooldown_active, _rl_cooldown_until,
+                    _abandoned_status, _abandoned_info,
+                )
 
                 # AI-readiness roadmap Phase 5: nightly (every day, unlike
                 # the weekly digest below), one calendar-day-per-run guard

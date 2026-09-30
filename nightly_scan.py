@@ -719,7 +719,7 @@ def refresh_market_cap_ranking(log=print):
         log(f"[nightly_scan] market-cap ranking refresh failed: {e}")
 
 
-def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
+def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, cancel_event=None):
     """Scan every ticker in `universe` and persist the ranked result via
     scan_store. Returns the saved payload (or None if the universe couldn't
     be resolved). Goes attention-lite only when the resolved universe is
@@ -741,6 +741,18 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     ever mixing two scan sessions' prices. Invisible to every caller:
     same signature, same return contract, no caller-visible flag - the
     resume happens (or doesn't) entirely inside this function.
+
+    `cancel_event` (audit fixes Commit 3, 30 Sep 2026, owner-directed):
+    optional threading.Event - checked once per ticker in the loop
+    below, so a caller whose hard timeout has already fired (scheduler_
+    engine._record_job's own worker-thread ceiling) and abandoned this
+    call can still ask it to stop cooperatively - the loop returns
+    early (saving a checkpoint first, exactly like a normal mid-run
+    save) within one ticker of the flag being set, instead of running
+    the rest of the universe to completion on a thread nothing is
+    waiting on any more. None (the default) for every caller that
+    predates this - identical behaviour to before this parameter
+    existed.
 
     Raises RateLimitCircuitBreaker (URGENT Commit 1, 27 Sep 2026,
     owner-reported) if RATE_LIMIT_CONSECUTIVE_ABORT_THRESHOLD consecutive
@@ -924,6 +936,23 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     # only reads what they already tell it.
     _consecutive_rate_limited = 0
     for i, t in enumerate(tickers[_resume_index:], start=_resume_index):
+        # Audit fixes Commit 3 (30 Sep 2026, owner-directed): cooperative
+        # cancel - checked once per ticker, so a caller whose hard
+        # timeout already fired (scheduler_engine._record_job's own
+        # worker-thread ceiling, see that function's docstring) and
+        # abandoned this call can still stop it within one ticker rather
+        # than letting it run the rest of a large universe on a thread
+        # nothing is waiting on any more. Checkpoint first, same shape as
+        # the periodic every-25-tickers save below, so the eventual
+        # cooldown-window retry (or the next scheduled scan) resumes from
+        # here instead of losing this run's progress outright.
+        if cancel_event is not None and cancel_event.is_set():
+            log(f"[nightly_scan] {universe}: cancelled after {i}/{len(tickers)} tickers "
+                f"(abandoned worker asked to stop) - checkpoint saved, not saving to scan_store")
+            scan_checkpoint_store.save(
+                universe, run_night, _session_started_at, i, tickers, rows, skipped_no_price,
+            )
+            return None
         try:
             _rate_limited_flag = [False]
             row = analyze_ticker_lite(t, attention_lite=attention_lite, log=log,
