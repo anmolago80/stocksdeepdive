@@ -459,6 +459,21 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         # next to the Intrinsic Value figure. See resolver_engine.
         # dcf_looks_unreliable()'s own comment for why 3x is the bar.
         "dcf_unreliable": dcf_looks_unreliable(intrinsic_value, current_price),
+        # Growth-never-zero rewrite (30 Sep 2026, owner-directed): the
+        # PRE-CAP growth figure, alongside dcf_growth (the number the
+        # model actually compounds from) - see fcf_valuation_engine.
+        # estimate_growth()'s own "raw_rate" return value and app.py's
+        # Deep Dive caption for where this is shown ("reported 40% YoY
+        # - model uses 10%"-style wording).
+        "dcf_growth_raw": (
+            round(iv_meta.get("growth_raw") * 100, 1)
+            if iv_meta.get("growth_raw") is not None else None
+        ),
+        # Same rewrite: why the DCF itself was abandoned (only ever set
+        # when intrinsic_value has no usable DCF-based figure at all -
+        # see resolver_engine.resolve_intrinsic_value()'s pe-blend
+        # branch) - "negative_normalised_fcf"|"negative_fcf"|None.
+        "dcf_fcf_reason": iv_meta.get("fcf_reason"),
 
         "quality_score": quality_score,
         "quality_default": bool(quality_default),

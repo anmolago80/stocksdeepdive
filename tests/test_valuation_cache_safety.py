@@ -265,7 +265,12 @@ def _ok_ticker_factory(ticker):
         def growth_estimates(self):
             _ok_calls["n"] += 1
             import pandas as pd
-            return pd.DataFrame({"stock": [0.103]}, index=["+5y"])
+            # Growth-never-zero rewrite (30 Sep 2026): Yahoo's row label
+            # is "LTG" now, not "+5y" - see capm_engine.py's own comment
+            # on _LTG_LABEL_KEY. This fixture only exercises the TTL
+            # cache, not label priority, so a single correctly-labeled
+            # row is enough.
+            return pd.DataFrame({"stock": [0.103]}, index=["LTG"])
     return _T()
 
 

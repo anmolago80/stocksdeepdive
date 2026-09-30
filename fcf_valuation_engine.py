@@ -13,24 +13,31 @@ Model (a standard two-stage DCF):
     3. Add a Gordon-growth terminal value for everything beyond the horizon.
     intrinsic = sum(discounted stage-1 cash flows) + discounted terminal value
 
-GROWTH RATE, in priority order:
+GROWTH RATE, in priority order (growth-never-zero rewrite, 30 Sep 2026,
+owner-directed - see estimate_growth()'s own docstring for the full
+mechanics; growth NEVER resolves to a flat 0% any more):
     1. ANALYST CONSENSUS - Yahoo's own "Next 5 Years (per annum)" analyst
        growth estimate for this specific stock, when Yahoo has coverage
-       (capm_engine.get_growth_estimates_5y). This is the only input here
+       AND the value is positive (capm_engine.get_growth_estimates_5y,
+       which now also reads the "LTG" row label Yahoo has switched to -
+       see that function's own docstring). This is the only input here
        that comes from outside the stock's own reported financials.
-    2. HISTORICAL FCF CAGR   - only when Yahoo has no coverage for this name,
-       and only when it's a CLEAN, POSITIVE signal (low year-to-year
-       volatility) - see growth_from_history()'s own docstring for the
-       "average of the oldest 2 years -> average of the newest 2" formula
-       (growth-rewrite, 28 Sep 2026 - smooths a one-off spike/dip at
-       either edge of the window, still measured across the full history
-       span). No longer blended (min'd) with the analyst estimate when
-       both are available - Yahoo, when present, is used on its own.
-    3. info["earningsGrowth"] / info["revenueGrowth"] - single-point fallback
-       when there isn't enough clean FCF history and no analyst coverage.
-    4. DEFAULT_GROWTH (a conservative sector-neutral average) - used only when
-       nothing else is available. When this happens the value is flagged as a
-       DEFAULT so the app can render it in red.
+    2. HISTORICAL FCF CAGR - only when Yahoo's estimate is missing or
+       non-positive, and only when there are enough data points to trust
+       a trend (see growth_from_history()'s own docstring for the
+       "average of the oldest 2 years -> average of the newest 2"
+       formula). A NOISY (high year-to-year volatility) but still
+       positive signal is now USED, not rejected - just held to a
+       tighter, tier-relative cap (see HISTORY_VOLATILE_CAP_FRACTION).
+    3. A single-period reported growth figure (info["revenueGrowth"],
+       then info["earningsGrowth"]) - held to a tier-relative cap (see
+       REPORTED_GROWTH_CAP_FRACTION) regardless of market-cap tier, the
+       least trustworthy signal here (no multi-year smoothing, no
+       analyst consensus).
+    4. The market-cap-tiered growth-path END RATE itself (growth_end_
+       rate_for(), always strictly positive) - used only when nothing
+       else above is usable. Flagged as a DEFAULT so the app can render
+       it in red, but never 0%.
 
 DISCOUNT RATE - market-cap-tiered cost of equity, computed per stock
 (capm_engine.py, A6 design, owner-approved live 28 Sep 2026):
@@ -45,7 +52,6 @@ flat 3% for every stock.
 
 Defaults:
     growth_years     = 10
-    DEFAULT_GROWTH   = 0.05   (5% - the "assume an average" fallback)
 
 All three key inputs (growth, discount, perpetual) remain parameters - the
 app's "Valuation & FCF inputs" panel passes an explicit value when Auto mode
@@ -57,12 +63,19 @@ Returns (intrinsic_value_per_share, growth_rate_used, meta) where meta records
 where each input came from and whether a default/average had to be assumed.
 """
 
+import logging
 import time
 
 import yfinance as yf
 
 import capm_engine
 import share_class_engine
+
+# Growth-never-zero rewrite (owner-directed, 30 Sep 2026): same per-module
+# logger convention as capm_engine.py's "sdd.growth" - used only for the
+# defensive WARNING tripwire in estimate_growth() (see GROWTH_FLOOR's own
+# comment), never for a normal/expected code path.
+_growth_logger = logging.getLogger("sdd.growth")
 
 # Kept only as an absolute last-resort fallback if capm_engine itself throws
 # (e.g. both the live and fallback risk-free lookups somehow fail).
@@ -78,30 +91,57 @@ DEFAULT_DISCOUNT_RATE = 0.09
 DEFAULT_PERPETUAL_RATE = capm_engine.DEFAULT_PERPETUAL_GROWTH
 DEFAULT_GROWTH_YEARS = 10
 
-# The "assume an average" fallback growth, used only when neither historical
-# FCF nor info-based growth is available. Flagged as a default when used.
-DEFAULT_GROWTH = 0.05
-
 # Clamp estimated growth into a defensible band: no negative compounding in
 # stage 1, and a ceiling so a hot trailing number can't produce a fantasy
 # valuation. Terminal growth must stay below the discount rate or Gordon blows
 # up.
+#
+# Growth-never-zero rewrite (owner-directed, 30 Sep 2026): GROWTH_FLOOR
+# stays 0.0 as a pure mathematical clamp (stage 1 can't compound at a
+# negative rate), but it is now provably UNREACHABLE - every one of
+# estimate_growth()'s four priority paths (Yahoo/history/reported/tier-
+# end-rate default) requires or produces a strictly positive number
+# before this floor is even applied. See that function's own _finalize()
+# helper for the WARNING-level tripwire that fires if this floor is ever
+# actually hit - a defensive check, not an expected code path. DEFAULT_
+# GROWTH (the old flat 5% "nothing else available" fallback) is REMOVED
+# - priority 4 now resolves to the market-cap-tiered growth-path end
+# rate instead (see growth_end_rate_for(), always > 0).
 GROWTH_FLOOR = 0.00
 GROWTH_CEIL = 0.20
 
-# Reported-growth cap (owner-directed, 28 Sep 2026, TOYO false positive -
-# see estimate_growth()'s own comment on the "info" fallback for the full
-# story). A single-period info["earningsGrowth"]/info["revenueGrowth"]
-# figure is the least trustworthy growth signal this module has - no
-# multi-year smoothing, no analyst consensus, easily distorted by a
-# one-off swing - so it's held to a tighter cap than the market-cap-tiered
-# ceiling every other source gets, regardless of tier. Applied as
-# min(REPORTED_GROWTH_CAP, tier_ceiling) - equals REPORTED_GROWTH_CAP
-# (8%) under every tier in MARKET_CAP_GROWTH_CEILINGS today, since 8% is
-# already that table's own tightest (mega-cap) value, but written as a
-# min() so a future tier tighter than 8% is still respected rather than
-# silently overridden.
-REPORTED_GROWTH_CAP = 0.08
+# Growth-never-zero rewrite (owner-directed, 30 Sep 2026, replacing the
+# 28 Sep TOYO fix's flat REPORTED_GROWTH_CAP=0.08): a single-period
+# info["revenueGrowth"]/info["earningsGrowth"] figure - still the least
+# trustworthy growth signal this module has (no multi-year smoothing, no
+# analyst consensus, easily distorted by a one-off swing) - is now
+# capped at a FRACTION of the market-cap tier ceiling instead of a flat
+# number, so the cap stays proportionate if the tier table itself ever
+# changes. Applied as max(end_rate, ceiling * REPORTED_GROWTH_CAP_
+# FRACTION) - today's tiers (8/12/16/20%) give 4/6/8/10% caps, closing
+# the same TOYO-shaped false positive (reported growth riding a loose
+# tier ceiling straight to the top) the flat 8% constant closed, without
+# hard-coding a single number that stops tracking the tier table.
+# Raise to the FULL tier ceiling by changing this one constant to 1.0.
+REPORTED_GROWTH_CAP_FRACTION = 0.5
+
+# Same tier-relative treatment for a volatile-but-still-positive historical
+# FCF CAGR (see estimate_growth()'s "history_volatile" branch) - a noisy
+# multi-year trend is a real, multi-year signal (unlike a single reported
+# period), so it's USED rather than rejected outright, but held to the
+# same fractional cap as the reported-growth fallback rather than the
+# full tier ceiling a clean history signal gets.
+HISTORY_VOLATILE_CAP_FRACTION = 0.5
+
+# growth_from_history() needs at least this many data points before its
+# CAGR is trusted as a real trend at all: n=2 is EXACTLY 0% by
+# construction (see that function's own "oldest_avg==newest_avg
+# regardless" comment - both smoothing windows are the identical 2
+# points), and n=3 still has overlapping smoothing windows with only 1
+# elapsed index-period - both read as "not enough distinct years to
+# measure a trend", not a genuine (if flat) growth signal, so
+# estimate_growth() treats both as "no history" rather than a real 0%.
+MIN_HISTORY_POINTS_FOR_TREND = 4
 
 # Task 10: how far the latest year's capex-normalised OCF may deviate from
 # the median of the last up-to-3 years before it's treated as an outlier
@@ -486,18 +526,32 @@ def growth_from_history(fcf_history, dates=None):
     return cagr
 
 
-def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None):
+def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
+                     end_rate=None, currency=None):
     """
     Estimate a stage-1 growth rate and report where it came from.
 
-    Growth-rewrite (owner-directed, 28 Sep 2026): Yahoo's analyst 5-year
-    estimate is used ON ITS OWN whenever available - no longer min'd
-    against historical FCF growth. Historical FCF growth (growth_from_
-    history() - see its own docstring for the "average of the oldest 2
-    years -> average of the newest 2" formula) is used only when Yahoo
-    has no coverage for this name at all, and only when it's a CLEAN,
-    POSITIVE signal (low year-to-year volatility - a noisy or negative
-    CAGR, often a capex-spike artifact, is not trusted).
+    Growth-never-zero rewrite (owner-directed, 30 Sep 2026, replacing the
+    28 Sep growth-rewrite's own priority order): growth NEVER resolves to
+    a flat 0% any more - see GROWTH_FLOOR's own comment for why that
+    floor is now provably unreachable. `currency` is accepted for
+    interface symmetry with the DCF's own end_rate computation (growth_
+    end_rate_for(info, currency)) but isn't read directly here - it's
+    the CALLER's job to pass the already-computed `end_rate` (see below),
+    never this function's.
+
+    `end_rate` (should always be passed by a real caller): the SAME
+    floored market-cap-tiered growth-path end rate the DCF's own stage-1
+    fade loop uses - max(growth_end_rate_for(info, currency),
+    perpetual_rate) - computed ONCE by dcf_intrinsic_value() before
+    calling this function, and reused in both places so the two can
+    never diverge. Used here as (a) the volatile-history/reported-growth
+    caps' floor (max(end_rate, ceiling * fraction) - never cap BELOW a
+    stock's own fade target) and (b) the priority-4 fallback value
+    itself, which is why that fallback is never 0%. Falls back to
+    DEFAULT_PERPETUAL_RATE (always > 0) if omitted, for any caller that
+    hasn't been updated to pass it - no real call site in this codebase
+    should hit that fallback.
 
     `ceiling` overrides the module-level GROWTH_CEIL - pass the result of
     growth_ceiling_for(info, currency) to apply the market-cap-tiered
@@ -505,73 +559,117 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None):
     callers/tests that don't need size-awareness).
 
     The returned `governor` tells you what actually determined the FINAL
-    (post-ceiling) number:
-        "Yahoo"   - the analyst estimate was used, and it wasn't capped.
-        "History" - the historical FCF CAGR was used (Yahoo had no
-                    coverage), and it wasn't capped.
-        "Info"    - fell back to reported earningsGrowth/revenueGrowth,
-                    capped at REPORTED_GROWTH_CAP (8%) regardless of
-                    tier - see that constant's own comment.
-        "Default" - fell back to DEFAULT_GROWTH (flagged red in the UI).
-        "Cap"     - whichever signal would otherwise have been used was
-                    ABOVE the ceiling for this company's market-cap tier, so
-                    the ceiling itself is what's actually driving the
-                    number, not Yahoo or History.
+    (post-cap) number:
+        "Yahoo"           - the analyst estimate was used, uncapped.
+        "History"         - a clean historical FCF CAGR was used,
+                             uncapped.
+        "HistoryVolatile" - a historical FCF CAGR was used despite high
+                             year-to-year volatility, capped at
+                             max(end_rate, ceiling * HISTORY_VOLATILE_
+                             CAP_FRACTION).
+        "Info"            - a single-period reported revenueGrowth/
+                             earningsGrowth figure, capped at
+                             max(end_rate, ceiling * REPORTED_GROWTH_CAP_
+                             FRACTION) regardless of tier.
+        "Default"         - no usable signal anywhere - resolved to
+                             end_rate itself (flagged red in the UI via
+                             growth_default/defaulted), never 0%.
+        "Cap"             - a Yahoo or clean-history signal that would
+                             otherwise have been used was ABOVE the
+                             market-cap tier ceiling, so the ceiling
+                             itself is what's actually driving the
+                             number (the volatile-history/info/default
+                             paths already name their own cap explicitly
+                             via the governors above, so this label is
+                             reserved for the Yahoo/clean-history paths).
 
-    Priority:
-        1. "analyst" - Yahoo's 5-year estimate alone, whenever available -
-           the single, decisive signal now, not blended with history.
-        2. "history" - historical FCF CAGR alone, only when Yahoo has no
-           coverage, and ONLY when it's a CLEAN, POSITIVE signal (low
-           year-to-year volatility).
-        3. "info"    - reported earningsGrowth / revenueGrowth.
-        4. "history" (non-negative) as a last numeric resort, else
-        5. "default" - DEFAULT_GROWTH average (flagged red in the UI).
+    Priority, first usable match wins - see this module's own docstring
+    for the same list at a glance:
+        1. Yahoo's analyst_growth, if it's a real number AND > 0 (a
+           non-positive Yahoo estimate is real DATA, not noise, but
+           it's not a growth signal this stage-1 loop can compound on -
+           falls through to the next source instead).
+        2. Historical FCF CAGR (growth_from_history(fcf_series)), if
+           it's > 0 AND fcf_series has at least MIN_HISTORY_POINTS_FOR_
+           TREND points (fewer is "no history", not a real 0%/degenerate
+           trend - see that constant's own comment). A CLEAN signal
+           (coefficient of variation <= 0.60) gets the plain tier
+           ceiling; a volatile one is still USED, just capped tighter.
+        3. A single-period reported growth figure - info["revenueGrowth"]
+           tried first, then info["earningsGrowth"], first value > 0
+           wins.
+        4. Nothing usable above -> end_rate itself (always > 0).
 
-    Returns (growth_rate, source, governor), clamped to
-    [GROWTH_FLOOR, ceiling].
+    Returns (growth_rate, source, governor, raw_rate) - raw_rate is the
+    PRE-CAP figure (before any tier/fraction clamp was applied), for
+    display next to the number the model actually compounds from (see
+    this module's own meta["growth_raw"]). growth_rate is clamped to
+    [GROWTH_FLOOR, cap] - GROWTH_FLOOR is a defensive floor only; see its
+    own comment for why it should be unreachable after this rewrite.
     """
     info = info or {}
     ceiling = GROWTH_CEIL if ceiling is None else ceiling
+    if end_rate is None:
+        # Defensive fallback only - every real call site in this codebase
+        # computes end_rate once (dcf_intrinsic_value()'s own stage-1
+        # fade target) and passes it in. DEFAULT_PERPETUAL_RATE is always
+        # > 0, so priority 4 below still never resolves to 0 even here.
+        end_rate = DEFAULT_PERPETUAL_RATE
 
     def _finalize(raw_rate, source, natural_governor, cap=None):
         _cap = ceiling if cap is None else cap
         governor = "Cap" if raw_rate > _cap else natural_governor
-        return max(GROWTH_FLOOR, min(raw_rate, _cap)), source, governor
+        result = max(GROWTH_FLOOR, min(raw_rate, _cap))
+        if result <= 0:
+            # Tripwire, not an expected path - see GROWTH_FLOOR's own
+            # comment. Every priority branch below requires or produces
+            # a strictly positive raw_rate/cap, so this should never
+            # actually fire; logged (not raised) so a future regression
+            # shows up in the logs rather than silently reintroducing a
+            # flat 0% growth rate.
+            _growth_logger.warning(
+                "estimate_growth: result <= 0 (%.4f) after clamping - source=%s, "
+                "raw_rate=%.4f, cap=%.4f - should be unreachable after the "
+                "growth-never-zero rewrite (30 Sep 2026)", result, source, raw_rate, _cap,
+            )
+        return result, source, governor, raw_rate
 
-    if analyst_growth is not None:
+    if analyst_growth is not None and analyst_growth > 0:
         return _finalize(analyst_growth, "analyst", "Yahoo")
 
     g = growth_from_history(fcf_series)
-    clean = (
-        g is not None
-        and g > 0
-        and fcf_series
-        and _coeff_of_variation(fcf_series) <= 0.60
-    )
+    has_enough_history = fcf_series is not None and len(fcf_series) >= MIN_HISTORY_POINTS_FOR_TREND
+    if g is not None and g > 0 and has_enough_history:
+        if _coeff_of_variation(fcf_series) <= 0.60:
+            return _finalize(g, "history", "History")
+        return _finalize(
+            g, "history_volatile", "HistoryVolatile",
+            cap=max(end_rate, ceiling * HISTORY_VOLATILE_CAP_FRACTION),
+        )
 
-    if clean:
-        return _finalize(g, "history", "History")
-
-    # Reported-growth cap (owner-directed, 28 Sep 2026, TOYO false
-    # positive - live symptoms: price $4.47, DCF $41.67, growth 20% from
-    # this exact fallback, a micro-cap): a single-period info["earnings
-    # Growth"]/info["revenueGrowth"] figure used to be clamped only by
-    # the SAME market-cap-tier ceiling as every other source (up to 20%
-    # for a micro-cap) - the raw reported figure just rode that ceiling
-    # straight to a stage-1 growth rate 4x tighter sources like Yahoo's
-    # own analyst estimate could ever reach. See REPORTED_GROWTH_CAP's
-    # own comment for why min(REPORTED_GROWTH_CAP, ceiling) instead of a
-    # bare ceiling swap.
-    for key in ("earningsGrowth", "revenueGrowth"):
+    # Reported growth - revenueGrowth tried first, then earningsGrowth
+    # (SWAPPED from the 28 Sep TOYO fix's earningsGrowth-first order,
+    # owner-directed 30 Sep 2026): revenue is the less easily distorted
+    # of the two single-period figures (earnings can swing on a one-off
+    # item with no revenue change at all), so it's preferred when both
+    # are present. See REPORTED_GROWTH_CAP_FRACTION's own comment for
+    # why this is capped tier-relatively rather than a flat number.
+    for key in ("revenueGrowth", "earningsGrowth"):
         val = info.get(key)
-        if val is not None:
-            return _finalize(val, "info", "Info", cap=min(REPORTED_GROWTH_CAP, ceiling))
+        if val is not None and val > 0:
+            return _finalize(
+                val, "info", "Info",
+                cap=max(end_rate, ceiling * REPORTED_GROWTH_CAP_FRACTION),
+            )
 
-    if g is not None and g >= 0:
-        return _finalize(g, "history", "History")
-
-    return DEFAULT_GROWTH, "default", "Default"
+    # Nothing usable anywhere - the market-cap-tiered growth-path end
+    # rate itself, always > 0 (see growth_end_rate_for()/PERPETUAL_
+    # GROWTH_BY_CCY, both strictly positive) - never DEFAULT_GROWTH's old
+    # flat 5%, which had no relationship to this stock's own tier/
+    # currency. cap=end_rate pins the result to exactly end_rate
+    # regardless of the tier ceiling's own value, so this branch can
+    # never be mislabeled "Cap" by _finalize().
+    return _finalize(end_rate, "default", "Default", cap=end_rate)
 
 
 # DCF fix: static FX fallback, used only when a live rate can't be fetched -
@@ -722,12 +820,15 @@ def dcf_intrinsic_value(
         "growth_end_rate_used": float | None,  # the market-cap-tiered end rate the fade
                                        # targets, floored at perpetual_rate_used (a
                                        # stock never fades below its own terminal rate)
-        "yahoo_estimate_status": "ok" | "no_coverage" | "fetch_failed" | None,  # only
-                                       # set on the auto (growth_rate=None) path - see
-                                       # capm_engine.get_growth_estimates_5y()'s own
-                                       # docstring. None on the manual/Cap path (the
-                                       # Yahoo lookup is never attempted when a caller
-                                       # supplies growth_rate explicitly).
+        "yahoo_estimate_status": "ok" | "no_coverage" | "non_positive" | "fetch_failed" | None,
+                                       # only set on the auto (growth_rate=None) path -
+                                       # see capm_engine.get_growth_estimates_5y()'s own
+                                       # docstring ("non_positive" added 30 Sep 2026 -
+                                       # a real Yahoo value was found but was <=0, not
+                                       # usable as a growth signal). None on the
+                                       # manual/Cap path (the Yahoo lookup is never
+                                       # attempted when a caller supplies growth_rate
+                                       # explicitly).
         "capex_basis": "average" | "midpoint (capex rising)" | None,  # rising-
                                        # capex guard (28 Sep 2026, owner-directed) -
                                        # only set on the "ocf-normcapex" fcf_source
@@ -736,6 +837,20 @@ def dcf_intrinsic_value(
                                        # fcf_source (manual/fcf-median/info/none),
                                        # which have no per-year capex figure to
                                        # compare against.
+        "fcf_reason": "negative_normalised_fcf" | "negative_fcf" | None,  # growth-
+                                       # never-zero rewrite (30 Sep 2026, owner-
+                                       # directed) - "negative_normalised_fcf" when
+                                       # normalized_base_and_series() found a base
+                                       # but it was <=0 (whether or not the info
+                                       # ["freeCashflow"] fallback then rescued it);
+                                       # "negative_fcf" when the DCF was actually
+                                       # abandoned (fcf <= 0 at the final check) -
+                                       # see those two call sites' own comments.
+        "growth_raw": float | None,  # growth-never-zero rewrite (30 Sep 2026) - the
+                                       # PRE-CAP growth figure estimate_growth() found,
+                                       # before any tier/fraction clamp - see that
+                                       # function's own "raw_rate" return value. Only
+                                       # set on the auto (growth_rate=None) path.
     }
     """
     meta = {
@@ -769,6 +884,19 @@ def dcf_intrinsic_value(
         "growth_path": None,
         "yahoo_estimate_status": None,
         "capex_basis": None,
+        # Growth-never-zero rewrite (30 Sep 2026, owner-directed):
+        # "negative_normalised_fcf" | "negative_fcf" | None - see the two
+        # call sites below for the exact distinction (a normalised base
+        # that came back <=0 but got rescued by the info["freeCashflow"]
+        # fallback, vs. the DCF actually being abandoned because nothing
+        # usable was ever found). Display-only - never affects the DCF
+        # math itself.
+        "fcf_reason": None,
+        # Same rewrite: the PRE-CAP growth figure (before any tier/
+        # fraction clamp), alongside growth_rate_used (the number the
+        # model actually compounds from) - see estimate_growth()'s own
+        # "raw_rate" return value.
+        "growth_raw": None,
     }
 
     try:
@@ -805,10 +933,26 @@ def dcf_intrinsic_value(
                 meta["fcf_base_raw"] = round(fcf_series[0], 2) if fcf_series else None
                 meta["fcf_base_used"] = round(norm_base, 2)
         else:
+            # A6 negative-FCF disclosure (owner-directed, 30 Sep 2026):
+            # norm_base was found but was <=0 (capex genuinely exceeds
+            # operating cash flow) - distinct from norm_base being None
+            # (no OCF/capex data at all, e.g. no cash-flow statement).
+            # Recorded whether or not the info["freeCashflow"] fallback
+            # just below happens to rescue it - the normalised base was
+            # still negative, which is worth disclosing either way.
+            if norm_base is not None and norm_base <= 0:
+                meta["fcf_reason"] = "negative_normalised_fcf"
             fcf = info.get("freeCashflow", 0) or 0
             meta["fcf_source"] = "info" if fcf > 0 else "none"
 
         if fcf <= 0:
+            # The DCF is abandoned here - overrides "negative_normalised_
+            # fcf" above (a more specific, final reason) whenever the
+            # fallback didn't rescue it either. A manual override or a
+            # positive norm_base/info fallback never reaches this branch,
+            # so "negative_fcf" only ever means "there was truly no
+            # usable free cash flow anywhere for this ticker".
+            meta["fcf_reason"] = "negative_fcf"
             return 0, None, meta
 
         # --- Currency conversion: reported financials vs listing currency --
@@ -902,6 +1046,15 @@ def dcf_intrinsic_value(
         # --- Growth rate ----------------------------------------------------
         growth_ceiling = growth_ceiling_for(info, currency)
         meta["growth_ceiling_used"] = growth_ceiling
+        # Growth-never-zero rewrite (owner-directed, 30 Sep 2026): end_rate
+        # is now computed ONCE, here, before growth is resolved - the SAME
+        # value both estimate_growth()'s own priority-2/3 caps and
+        # priority-4 fallback use, AND the stage-1 fade loop's own target
+        # below (meta["growth_end_rate_used"]) - moved up from its old
+        # position right before that loop so the two can never diverge
+        # (previously two separate computations of the same formula, only
+        # coincidentally identical).
+        end_rate = max(growth_end_rate_for(info, currency), perpetual_rate)
         if growth_rate is not None:
             capped = growth_rate > growth_ceiling
             growth_rate = max(GROWTH_FLOOR, min(growth_rate, growth_ceiling))
@@ -917,17 +1070,22 @@ def dcf_intrinsic_value(
             # own docstring. Surfaced here (not just used to decide the
             # fallback) so the app can show the real reason instead of
             # always implying "no Yahoo coverage" when growth_source ends
-            # up "history".
+            # up "history". Growth-never-zero rewrite (30 Sep 2026): a
+            # THIRD status, "non_positive", now means the fetch found a
+            # real Yahoo LTG/+5y value that was <=0 - a real data fact,
+            # not a failure, but not usable as a growth signal either
+            # (estimate_growth()'s own priority 1 falls through on it).
             try:
                 analyst_growth, yahoo_estimate_status = capm_engine.get_growth_estimates_5y(ticker)
             except Exception:
                 analyst_growth, yahoo_estimate_status = None, "fetch_failed"
             meta["yahoo_estimate_status"] = yahoo_estimate_status
-            growth_rate, gsrc, governor = estimate_growth(
+            growth_rate, gsrc, governor, growth_raw = estimate_growth(
                 info, fcf_series=fcf_series, analyst_growth=analyst_growth,
-                ceiling=growth_ceiling)
+                ceiling=growth_ceiling, end_rate=end_rate, currency=currency)
             meta["growth_source"] = gsrc
             meta["growth_governor"] = governor
+            meta["growth_raw"] = round(growth_raw, 4)
             if gsrc == "default":
                 meta["growth_default"] = True
                 meta["defaulted"] = True
@@ -974,8 +1132,10 @@ def dcf_intrinsic_value(
         # by-(growth_years-5) guard as growth_years<=1 elsewhere in this
         # codebase. meta["growth_path"] carries all growth_years yearly
         # rates actually used; meta["growth_end_rate_used"] is the
-        # (floored) end_rate itself, for display.
-        end_rate = max(growth_end_rate_for(info, currency), perpetual_rate)
+        # (floored) end_rate itself, for display. end_rate itself was
+        # already computed once, above, before growth was resolved - see
+        # that computation's own comment for why (growth-never-zero
+        # rewrite, 30 Sep 2026).
         meta["growth_end_rate_used"] = round(end_rate, 4)
         fade = growth_rate > end_rate
 

@@ -278,22 +278,28 @@ def _growth_source_bucket(iv_meta):
     "cap" takes priority over the raw source: when growth_governor is
     "Cap", the market-cap ceiling is what actually determined the final
     number, whether the pre-cap signal was Yahoo's estimate or history.
-    Otherwise "yahoo_5y" for a genuine analyst estimate, and "history"
-    splits on capm_engine.get_growth_estimates_5y()'s own yahoo_
-    estimate_status - "no_coverage" (Yahoo genuinely has nothing on this
-    name) vs "fetch_failed" (the fetch itself broke, even after
+    Otherwise "yahoo_5y" for a genuine positive analyst estimate;
+    "yahoo_non_positive" (growth-never-zero rewrite, 30 Sep 2026) when
+    Yahoo had a real LTG/+5y estimate but it was <=0 - capm_engine.
+    get_growth_estimates_5y()'s own "non_positive" status - so it fell
+    through to the next source, distinct from genuinely having no
+    coverage at all. "history"/"history_volatile" split on that same
+    yahoo_estimate_status - "no_coverage" (Yahoo genuinely has nothing on
+    this name) vs "fetch_failed" (the fetch itself broke, even after
     retrying - Yahoo's real coverage is unknown). Everything else
     (info/default/manual/None) falls into "other"."""
     governor = iv_meta.get("growth_governor")
     source = iv_meta.get("growth_source")
+    yahoo_status = iv_meta.get("yahoo_estimate_status")
     if governor == "Cap":
         return "cap"
     if source == "analyst":
         return "yahoo_5y"
-    if source == "history":
+    if yahoo_status == "non_positive":
+        return "yahoo_non_positive"
+    if source in ("history", "history_volatile"):
         return (
-            "history_fetch_failed"
-            if iv_meta.get("yahoo_estimate_status") == "fetch_failed"
+            "history_fetch_failed" if yahoo_status == "fetch_failed"
             else "history_no_estimate"
         )
     return "other"
@@ -485,6 +491,13 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     if growth_summary_out is not None:
         _bucket = _growth_source_bucket(iv_meta)
         growth_summary_out[_bucket] = growth_summary_out.get(_bucket, 0) + 1
+    # Negative-FCF disclosure (A6, 30 Sep 2026, owner-directed): info-level,
+    # not error - a negative FCF is an expected, handled outcome (the P/E-
+    # blend fallback covers it), not a scan failure. One line per ticker so
+    # the owner can see how often the fallback actually fires on a given
+    # night without digging into each row's own dcf_fcf_reason.
+    if iv_meta and iv_meta.get("fcf_reason") == "negative_fcf":
+        log(f"[nightly_scan] {ticker}: negative_fcf - DCF abandoned, P/E-blend fallback in use")
     stock_type, stock_type_src, _tdef = resolve_stock_type(ticker, info=info)
     if stock_type_src == "auto":
         low52 = info.get("fiftyTwoWeekLow", 0) or 0
@@ -1117,16 +1130,19 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None):
     log(f"[nightly_scan] {universe}: saved {len(rows)} rows, skipped {skipped_no_price} "
         f"(no price)" + (" (degraded)" if degraded else "") +
         f" - {len(tickers)} tickers in {_mins}m {_secs}s")
-    # Growth-estimate-fetch resilience fix (owner-directed, 28 Sep 2026):
-    # one summary line per scan of which growth source each ticker
-    # actually resolved to - see _growth_source_bucket()'s own docstring
-    # for the bucket definitions. "other" (info/default/manual/None) is
-    # only shown when non-zero, same convention as the "(degraded)" tag
-    # just above - most nights it will be 0 and stays out of the line.
+    # Growth-estimate-fetch resilience fix (owner-directed, 28 Sep 2026),
+    # extended by the growth-never-zero rewrite (30 Sep 2026, "Yahoo
+    # non-positive N" bucket): one summary line per scan of which growth
+    # source each ticker actually resolved to - see _growth_source_
+    # bucket()'s own docstring for the bucket definitions. "other" (info/
+    # default/manual/None) is only shown when non-zero, same convention
+    # as the "(degraded)" tag just above - most nights it will be 0 and
+    # stays out of the line.
     if _growth_summary:
         _gs_other = _growth_summary.get("other", 0)
         log(f"[nightly_scan] {universe}: growth source - Yahoo 5y "
-            f"{_growth_summary.get('yahoo_5y', 0)}, historical avg (no estimate) "
+            f"{_growth_summary.get('yahoo_5y', 0)}, Yahoo non-positive "
+            f"{_growth_summary.get('yahoo_non_positive', 0)}, historical avg (no estimate) "
             f"{_growth_summary.get('history_no_estimate', 0)}, historical avg "
             f"(fetch failed) {_growth_summary.get('history_fetch_failed', 0)}, "
             f"cap {_growth_summary.get('cap', 0)}" +

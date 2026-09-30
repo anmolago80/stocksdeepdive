@@ -74,7 +74,7 @@ def resolve_intrinsic_value(
         meta["growth_default"]   : bool  (DCF fell back to average growth)
         meta["value_default"]    : bool  (the intrinsic value rests on an
                                           assumption - render it red)
-        meta["yahoo_estimate_status"] : "ok"|"no_coverage"|"fetch_failed"|None
+        meta["yahoo_estimate_status"] : "ok"|"no_coverage"|"non_positive"|"fetch_failed"|None
                                           (only set on the auto growth path -
                                           see capm_engine.get_growth_estimates_5y())
     """
@@ -132,6 +132,15 @@ def resolve_intrinsic_value(
             # fcf_valuation_engine.normalized_base_and_series()'s own
             # docstring for the rising-capex guard this reports on.
             "capex_basis": dcf_meta.get("capex_basis"),
+            # Growth-never-zero rewrite (30 Sep 2026) passthrough - same
+            # pure-provenance pattern as every other *_used/*_reason key
+            # above. growth_raw is the pre-cap figure estimate_growth()
+            # found; fcf_reason is only ever "negative_normalised_fcf"
+            # on THIS branch (dcf_value > 0 means the DCF succeeded, so
+            # "negative_fcf" - the abandon-the-DCF reason - can never
+            # appear here; see the pe-blend branch below for that one).
+            "growth_raw": dcf_meta.get("growth_raw"),
+            "fcf_reason": dcf_meta.get("fcf_reason"),
         }
         return dcf_value, "dcf", growth_used, meta
 
@@ -148,6 +157,14 @@ def resolve_intrinsic_value(
         "perpetual_rate_used": None,
         "growth_default": False,
         "value_default": pe_defaulted,
+        # Growth-never-zero rewrite (30 Sep 2026): why the DCF itself
+        # was abandoned before falling back to P/E-blend - pure
+        # passthrough of fcf_valuation_engine.dcf_intrinsic_value()'s
+        # own meta, same pattern as every other key above. "negative_
+        # fcf" here means there was truly no usable free cash flow
+        # anywhere for this ticker (see that function's own comment on
+        # this exact key).
+        "fcf_reason": dcf_meta.get("fcf_reason"),
     }
     return pe_value, "pe-blend", None, meta
 
@@ -237,9 +254,9 @@ def dcf_scenarios(ticker, quality_score, info=None, cashflow_df=None, currency=N
 # --------------------------------------------------------------------------- #
 # Owner-directed outlier guard (28 Sep 2026, TOYO false positive). A DCF that
 # lands more than 3x the current market price is far more likely to reflect
-# a bad/thin data input (see fcf_valuation_engine.py's REPORTED_GROWTH_CAP
-# and the rising-capex guard in normalized_base_and_series() - both aimed at
-# the same root causes) than a genuine 3x-undervalued stock. This is a
+# a bad/thin data input (see fcf_valuation_engine.py's REPORTED_GROWTH_CAP_
+# FRACTION and the rising-capex guard in normalized_base_and_series() - both
+# aimed at the same root causes) than a genuine 3x-undervalued stock. This is a
 # DISPLAY-ONLY sanity check - it must never feed Top 100 selection, scoring,
 # or ranking; callers only use it to show a warning next to the number.
 DCF_SANITY_MULTIPLE = 3.0

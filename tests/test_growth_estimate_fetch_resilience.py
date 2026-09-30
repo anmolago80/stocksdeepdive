@@ -78,13 +78,26 @@ def _fake_ticker_factory(sequence):
     return _FakeTicker, state
 
 
+# Growth-never-zero rewrite (30 Sep 2026): Yahoo's row label is "LTG" now
+# (see capm_engine.py's own comment on _LTG_LABEL_KEY), not "+5y" - this
+# fixture is seeded to match the live shape, not the pre-29-Sep-2026 one.
 _FIVE_Y_DF = pd.DataFrame(
     {"stock": [0.01, 0.02, 0.03, 0.04, 0.103]},
-    index=["0q", "+1q", "0y", "+1y", "+5y"],
+    index=["0q", "+1q", "0y", "+1y", "LTG"],
 )
 _NO_FIVE_Y_DF = pd.DataFrame(
     {"stock": [0.01, 0.02, 0.03, 0.04]},
     index=["0q", "+1q", "0y", "+1y"],
+)
+# Proves the old code's own bug is fixed: a label MATCH whose row is
+# all-NaN must fall through to the next candidate label instead of
+# stopping (the old unconditional `break` after the first match).
+# LTG is tried first and is NaN here; +5y (the old label, kept as a
+# fallback) carries the real value - fetch must return it, not "no_
+# coverage".
+_LTG_NAN_FALLS_THROUGH_TO_FIVE_Y_DF = pd.DataFrame(
+    {"stock": [0.01, 0.02, 0.03, 0.04, float("nan"), 0.114]},
+    index=["0q", "+1q", "0y", "+1y", "LTG", "+5y"],
 )
 
 
@@ -125,6 +138,24 @@ assert _state2["calls"] == 1, _state2["calls"]  # a clean (non-raising) miss is 
 print(f"[no_five_year_row_is_no_coverage] growth_estimates table with no +5y row (no "
       f"exception raised) -> status={_status2!r}, not 'fetch_failed' OK")
 
+# ======================================================================
+# CHECK (growth-never-zero rewrite, 30 Sep 2026): a label MATCH whose
+# value is NaN must fall through to the next candidate, not stop - the
+# exact bug the old unconditional `break` had. LTG matches first but is
+# NaN; +5y (old label, kept as a fallback) has the real value.
+# ======================================================================
+_FakeTickerLtgFallthrough, _stateLtgFallthrough = _fake_ticker_factory(
+    [_LTG_NAN_FALLS_THROUGH_TO_FIVE_Y_DF])
+with mock.patch.object(ce, "yf") as _fake_yf_ltg, \
+     mock.patch("time.sleep", return_value=None):
+    _fake_yf_ltg.Ticker.side_effect = _FakeTickerLtgFallthrough
+    _val_ltg, _status_ltg = ce.get_growth_estimates_5y("LTGFALLTHROUGHTEST")
+assert _status_ltg == "ok", _status_ltg
+assert _val_ltg is not None and abs(_val_ltg - 0.114) < 1e-9, _val_ltg
+print(f"[ltg_nan_falls_through_to_five_y] LTG row present but NaN, +5y row has the real "
+      f"value -> value={_val_ltg:.4f} status={_status_ltg!r} (old code's unconditional "
+      f"break would have returned 'no_coverage' here) OK")
+
 # Same check for a fetch that raises on EVERY attempt (exhausts retries) -
 # genuinely "fetch_failed", correctly distinct from the no-coverage case
 # just above.
@@ -155,11 +186,23 @@ print(f"[exhausted_retries_is_fetch_failed] every attempt 429'd ({_state3['calls
 _INFO = {"currentPrice": 100.0, "currency": "USD", "marketCap": 25_000_000_000}
 _CASHFLOW_NONE = None
 
+# Growth-never-zero rewrite (30 Sep 2026): estimate_growth() now requires
+# a REAL fcf_series of >= MIN_HISTORY_POINTS_FOR_TREND (4) points before
+# trusting growth_from_history()'s result (mocking growth_from_history()
+# alone, with cashflow_df=None, no longer reaches the "history" branch at
+# all - fcf_series itself would be empty). A minimal 4-column cashflow
+# statement supplies that length; growth_from_history()'s mocked return
+# value (0.12) is what actually determines the resolved rate either way.
+_HISTORY_CF = pd.DataFrame(
+    {f"202{6 - i}-06-30": [500.0 - i * 10, -20.0] for i in range(4)},
+    index=["Operating Cash Flow", "Capital Expenditure"],
+)
+
 with mock.patch.object(fve.capm_engine, "get_growth_estimates_5y", return_value=(None, "fetch_failed")), \
      mock.patch.object(fve, "growth_from_history", return_value=0.12), \
      mock.patch.object(fve, "_coeff_of_variation", return_value=0.0):
     _iv, _g, _meta = fve.dcf_intrinsic_value(
-        "TEST", info=_INFO, cashflow_df=_CASHFLOW_NONE, currency="USD",
+        "TEST", info=_INFO, cashflow_df=_HISTORY_CF, currency="USD",
         discount_rate=0.09, perpetual_rate=0.02, manual_fcf=12.20,
         diluted_shares_override=1,
     )
@@ -172,7 +215,7 @@ with mock.patch.object(fve.capm_engine, "get_growth_estimates_5y", return_value=
      mock.patch.object(fve, "growth_from_history", return_value=0.12), \
      mock.patch.object(fve, "_coeff_of_variation", return_value=0.0):
     _iv2, _g2, _meta2 = fve.dcf_intrinsic_value(
-        "TEST", info=_INFO, cashflow_df=_CASHFLOW_NONE, currency="USD",
+        "TEST", info=_INFO, cashflow_df=_HISTORY_CF, currency="USD",
         discount_rate=0.09, perpetual_rate=0.02, manual_fcf=12.20,
         diluted_shares_override=1,
     )
@@ -273,6 +316,22 @@ assert ns._growth_source_bucket({"growth_governor": "Info", "growth_source": "in
 assert ns._growth_source_bucket({"growth_governor": None, "growth_source": None}) == "other"
 print("[growth_source_bucket_classification] all 6 combos (yahoo_5y/history_no_estimate/"
       "history_fetch_failed/cap-over-analyst/cap-over-history/other) bucket correctly OK")
+
+# Growth-never-zero rewrite (30 Sep 2026): "non_positive" (a real Yahoo
+# estimate found but <=0, checked before the history branches) and
+# "history_volatile" (buckets the same as plain "history" for this
+# summary line - both are governed by the SAME yahoo_estimate_status
+# distinction).
+assert ns._growth_source_bucket(
+    {"growth_governor": "Default", "growth_source": "default", "yahoo_estimate_status": "non_positive"}
+) == "yahoo_non_positive"
+assert ns._growth_source_bucket(
+    {"growth_governor": "HistoryVolatile", "growth_source": "history_volatile",
+     "yahoo_estimate_status": "no_coverage"}
+) == "history_no_estimate"
+print("[growth_source_bucket_never_zero_additions] 'non_positive' yahoo_estimate_status buckets "
+      "as 'yahoo_non_positive' (checked before the history branches); 'history_volatile' source "
+      "buckets the same as plain 'history' OK")
 
 
 # ======================================================================

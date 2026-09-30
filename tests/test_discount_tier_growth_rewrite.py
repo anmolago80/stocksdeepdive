@@ -94,7 +94,7 @@ print(f"[tier_placement_adp_cprt_aos] ADP US$105B -> {_adp_meta['tier_label']} (
 # oldest -> newest), no Yahoo estimate -> ~7.3%
 # ======================================================================
 _aos_fcf_series = [536.0, 501.0, 590.0, 311.0]  # most-recent-first (reverses to 311/590/501/536)
-_aos_growth, _aos_gsrc, _aos_gov = fve.estimate_growth(
+_aos_growth, _aos_gsrc, _aos_gov, _aos_graw = fve.estimate_growth(
     {}, fcf_series=_aos_fcf_series, analyst_growth=None, ceiling=0.20)
 assert 0.071 < _aos_growth < 0.075, _aos_growth
 assert _aos_gsrc == "history" and _aos_gov == "History"
@@ -118,7 +118,7 @@ print("[yahoo_unit_both_shapes] Yahoo 0.12 (decimal) and Yahoo 12 (bare percenta
 # ======================================================================
 # CHECK: a Yahoo estimate above the market-cap growth ceiling -> capped
 # ======================================================================
-_capped_growth, _capped_src, _capped_gov = fve.estimate_growth(
+_capped_growth, _capped_src, _capped_gov, _capped_graw = fve.estimate_growth(
     {}, fcf_series=None, analyst_growth=0.25, ceiling=0.08)  # mega-cap ceiling = 8%
 assert abs(_capped_growth - 0.08) < 1e-9, _capped_growth
 assert _capped_src == "analyst" and _capped_gov == "Cap"

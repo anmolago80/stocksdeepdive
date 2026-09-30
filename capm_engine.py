@@ -543,9 +543,18 @@ def get_growth_estimates_5y(ticker):
         value  - a decimal rate (e.g. 0.12 for 12%, unit-normalized by
                  _normalize_yahoo_growth_estimate() above - see its own
                  docstring), or None.
-        status - "ok"           - value is a genuine Yahoo estimate.
+        status - "ok"           - value is a genuine, positive Yahoo
+                                  estimate.
+                 "non_positive" - a genuine Yahoo estimate (LTG/+5y) was
+                                  found, but it's <=0 - a real DATA fact
+                                  (Yahoo's own analysts expect a decline
+                                  or flat growth), not a failure, but not
+                                  usable as a stage-1 growth signal -
+                                  see estimate_growth()'s own priority-1
+                                  handling. Added 30 Sep 2026, growth-
+                                  never-zero rewrite.
                  "no_coverage"  - the fetch itself succeeded, but Yahoo
-                                  has no +5y analyst estimate for this
+                                  has no LTG/+5y analyst estimate for this
                                   name (or the table isn't shaped as
                                   expected) - a real DATA fact, not a
                                   failure.
@@ -600,6 +609,90 @@ def get_growth_estimates_5y(ticker):
     return value, status
 
 
+def _row_value(row, columns):
+    """First non-NaN value found across `columns` (in priority order) in
+    a growth_estimates row, or None."""
+    for col in columns:
+        if col in row.index:
+            v = row[col]
+            if v is not None and v == v:   # not NaN
+                return float(v)
+    return None
+
+
+# Growth-never-zero rewrite (owner-directed, 30 Sep 2026): Yahoo has
+# switched the "Next 5 Years (per annum)" row's own label from "+5y"/"5y"
+# to "LTG" (Long-Term Growth) - confirmed live 29 Sep 2026 (the module's
+# own _log_growth_estimate_labels_once() logged the new index shape:
+# ['0q','+1q','0y','+1y','LTG']). estimate_growth() and every nightly
+# scan since then read NOTHING here (every universe logged "growth
+# source - Yahoo 5y 0"), silently falling through to history/reported/
+# default for every ticker. LTG is now tried FIRST (Yahoo's own current
+# label for this exact metric); the old +5y/5y/5year labels are kept as
+# a fallback in case Yahoo reverts or a different account/version still
+# serves the old shape.
+_LTG_LABEL_KEY = "ltg"
+_FIVE_YEAR_LABEL_SUBSTR = "5year"
+_FIVE_YEAR_LABEL_EXACT = ("+5y", "5y")
+
+# Column lookup: "stockTrend" added (30 Sep 2026) alongside the existing
+# "Stock Trend" - a camelCase variant seen on some yfinance versions/
+# data sources; tried before the positional df.columns[0] fallback so a
+# genuinely-present, correctly-named column always wins over "whichever
+# column happens to be first".
+_GROWTH_ESTIMATE_VALUE_COLUMNS = ("stock", "Stock", "Stock Trend", "stockTrend")
+
+_growth_estimate_raw_value_logged = False
+
+
+def _log_growth_estimate_raw_value_once(label, raw_value):
+    """One-time (per process) log of the ACTUAL raw value found for the
+    first ticker that returns a usable LTG/+5y figure - unlike _log_
+    growth_estimate_labels_once() (which only logs the row LABELS), this
+    is what lets the owner confirm on the next real nightly run whether
+    Yahoo's LTG value is a decimal fraction (0.103) or a percent number
+    (10.3) - see estimate_growth() 1.1's own instruction: this sandbox
+    has no network access to run that live verification script itself,
+    so this log line is the mechanism that surfaces the real answer on
+    the next production nightly scan instead."""
+    global _growth_estimate_raw_value_logged
+    if _growth_estimate_raw_value_logged:
+        return
+    _growth_estimate_raw_value_logged = True
+    try:
+        _growth_logger.info(
+            "get_growth_estimates_5y: raw value for label %r (first ticker seen this "
+            "process): %r - confirms live LTG units (see estimate_growth() 1.1's own "
+            "verification note)", label, raw_value,
+        )
+    except Exception:
+        pass
+
+
+def _infer_yahoo_growth_scale(df, columns):
+    """Frame-level percent-vs-decimal scale decision (owner-directed, 30
+    Sep 2026) - replaces the old PER-VALUE abs(v)>=1.5 heuristic
+    (_normalize_yahoo_growth_estimate() below) for the three metrics most
+    likely to sit in the SAME growth_estimates row/table as LTG: 0y, +1y,
+    LTG itself. A per-value threshold can misclassify one genuinely low-
+    single-digit growth figure (e.g. LTG=1.2, ambiguous on its own)
+    even when its sibling metrics in the SAME table are unambiguously in
+    percent units (e.g. +1y=8.4) - this looks at all three together and
+    applies ONE scale decision to the whole table: if ANY of them has
+    abs(value) >= 1.5, the table is in percent units (divide by 100);
+    otherwise it's already a decimal fraction. Returns 100.0 (percent) or
+    1.0 (decimal), or None if none of the three rows exist at all (the
+    caller then falls back to the old per-value heuristic on whichever
+    single value it did find)."""
+    for key in ("0y", "+1y", _LTG_LABEL_KEY):
+        for lbl in df.index:
+            if str(lbl).lower().replace(" ", "") == key:
+                v = _row_value(df.loc[lbl], columns)
+                if v is not None and abs(v) >= 1.5:
+                    return 100.0
+    return None
+
+
 def _fetch_growth_estimates_5y_uncached(ticker):
     """The actual yfinance fetch + retry + parsing for get_growth_
     estimates_5y() above - split out so that function's own docstring
@@ -641,16 +734,36 @@ def _fetch_growth_estimates_5y_uncached(ticker):
     _log_growth_estimate_labels_once(df)
 
     try:
-        for label in [str(i) for i in df.index]:
-            key = label.lower().replace(" ", "")
-            if "5year" in key or key in ("+5y", "5y"):
-                row = df.loc[label]
-                for col in ("stock", "Stock", "Stock Trend", df.columns[0]):
-                    if col in row.index:
-                        v = row[col]
-                        if v is not None and v == v:   # not NaN
-                            return _normalize_yahoo_growth_estimate(float(v)), "ok"
-                break
+        labels = [str(i) for i in df.index]
+        # Priority: LTG first (Yahoo's current label), then +5y/5y/5year
+        # (the old shape). Collect ALL matching labels in each tier -
+        # iterate every candidate rather than stopping at the first
+        # label MATCH regardless of whether it had a usable value (the
+        # OLD code's unconditional `break` after the first match: a
+        # label that matched but whose row was all-NaN silently returned
+        # "no_coverage" instead of trying the next candidate).
+        ltg_labels = [lbl for lbl in labels if lbl.lower().replace(" ", "") == _LTG_LABEL_KEY]
+        five_year_labels = [
+            lbl for lbl in labels
+            if _FIVE_YEAR_LABEL_SUBSTR in lbl.lower().replace(" ", "")
+            or lbl.lower().replace(" ", "") in _FIVE_YEAR_LABEL_EXACT
+        ]
+        scale = _infer_yahoo_growth_scale(df, _GROWTH_ESTIMATE_VALUE_COLUMNS)
+        for lbl in ltg_labels + five_year_labels:
+            v = _row_value(df.loc[lbl], _GROWTH_ESTIMATE_VALUE_COLUMNS)
+            if v is None:
+                continue
+            _log_growth_estimate_raw_value_once(lbl, v)
+            normalized = (v / scale) if scale is not None else _normalize_yahoo_growth_estimate(v)
+            # Growth-never-zero rewrite (30 Sep 2026): a real value that's
+            # <=0 is a genuine DATA FACT (Yahoo's own analysts expect a
+            # decline or flat growth), not a fetch problem - distinct
+            # from "no_coverage" (nothing found at all). estimate_
+            # growth()'s own priority 1 falls through to the next source
+            # on a non-positive value, same as it always has for a plain
+            # None - this status just tells the CALLER (and the nightly
+            # summary line / Deep Dive caption) WHY it fell through.
+            return normalized, ("ok" if normalized > 0 else "non_positive")
     except Exception:
         pass
     return None, "no_coverage"

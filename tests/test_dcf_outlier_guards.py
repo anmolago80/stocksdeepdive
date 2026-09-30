@@ -102,32 +102,41 @@ print("[stable_capex_average_basis] ADP/CPRT/AOS-shaped (latest capex well under
 
 
 # ======================================================================
-# CHECK 2a (unit level): REPORTED_GROWTH_CAP - a reported 40% figure
-# caps to 8% (governor="Cap"), NOT the tier's own looser ceiling.
+# CHECK 2a (unit level, UPDATED by the growth-never-zero rewrite, 30 Sep
+# 2026): the flat REPORTED_GROWTH_CAP=8% is REMOVED (owner decision) -
+# in its place, REPORTED_GROWTH_CAP_FRACTION=0.5 caps a reported figure
+# at max(end_rate, ceiling * 0.5), never a flat number. A reported 40%
+# figure against a 20% micro-cap tier ceiling and no end_rate passed
+# (falls back to DEFAULT_PERPETUAL_RATE=0.025) caps to max(0.025, 0.10)
+# = 10% (governor="Cap") - not 8%.
 # ======================================================================
-_g, _gsrc, _gov = fve.estimate_growth({"earningsGrowth": 0.40}, fcf_series=None,
-                                       analyst_growth=None, ceiling=0.20)
-assert abs(_g - 0.08) < 1e-9, _g
+_g, _gsrc, _gov, _graw = fve.estimate_growth({"earningsGrowth": 0.40}, fcf_series=None,
+                                              analyst_growth=None, ceiling=0.20)
+assert abs(_g - 0.10) < 1e-9, _g
 assert _gsrc == "info" and _gov == "Cap", (_gsrc, _gov)
+assert abs(_graw - 0.40) < 1e-9, _graw
 print(f"[reported_growth_capped] info earningsGrowth=40% against a 20% micro-cap tier ceiling -> "
-      f"{_g:.2f} (8% REPORTED_GROWTH_CAP, not the looser 20% tier ceiling), source={_gsrc!r}, "
-      f"governor={_gov!r} OK")
+      f"{_g:.2f} (max(end_rate, 20% * REPORTED_GROWTH_CAP_FRACTION=0.5) = 10%, not the old flat 8%), "
+      f"source={_gsrc!r}, governor={_gov!r}, raw={_graw:.2f} OK")
 
 # A value already at/under the cap is NOT flagged "Cap" - the cap is a
 # ceiling, not a re-labeling of every "info" result.
-_g2, _gsrc2, _gov2 = fve.estimate_growth({"earningsGrowth": 0.05}, fcf_series=None,
-                                          analyst_growth=None, ceiling=0.20)
+_g2, _gsrc2, _gov2, _graw2 = fve.estimate_growth({"earningsGrowth": 0.05}, fcf_series=None,
+                                                  analyst_growth=None, ceiling=0.20)
 assert abs(_g2 - 0.05) < 1e-9 and _gov2 == "Info", (_g2, _gov2)
-print(f"[reported_growth_under_cap_uncapped] info earningsGrowth=5% (under the 8% cap) -> "
+print(f"[reported_growth_under_cap_uncapped] info earningsGrowth=5% (under the 10% cap) -> "
       f"{_g2:.2f}, governor={_gov2!r} (not 'Cap') OK")
 
-# "or the tier cap if lower" - a hypothetical future tier tighter than 8%
-# must still win via the min(REPORTED_GROWTH_CAP, ceiling) design.
-_g3, _gsrc3, _gov3 = fve.estimate_growth({"earningsGrowth": 0.30}, fcf_series=None,
-                                          analyst_growth=None, ceiling=0.05)
-assert abs(_g3 - 0.05) < 1e-9, _g3
-print(f"[reported_growth_respects_tighter_tier_cap] a hypothetical 5% tier ceiling (tighter than "
-      f"the 8% REPORTED_GROWTH_CAP) still wins via min() -> {_g3:.2f} OK")
+# The cap is TIER-RELATIVE, not a flat number: a tight 5% tier ceiling
+# caps at max(end_rate, 5% * 0.5 = 2.5%) - here end_rate also defaults
+# to DEFAULT_PERPETUAL_RATE=0.025, so the two coincide at 2.5%. The cap
+# NEVER falls below end_rate (max(), not the fraction alone) - see
+# REPORTED_GROWTH_CAP_FRACTION's own comment for why.
+_g3, _gsrc3, _gov3, _graw3 = fve.estimate_growth({"earningsGrowth": 0.30}, fcf_series=None,
+                                                  analyst_growth=None, ceiling=0.05)
+assert abs(_g3 - 0.025) < 1e-9, _g3
+print(f"[reported_growth_tier_relative_cap] a hypothetical 5% tier ceiling caps a 30% reported "
+      f"figure at max(end_rate=2.5%, 5%*0.5=2.5%) -> {_g3:.3f} OK")
 
 # Historical-avg growth and the tier caps themselves are UNCHANGED - the
 # 20/16/12/8% ceilings are read straight off the untouched table.
@@ -138,10 +147,14 @@ print("[tier_ceilings_unchanged] MARKET_CAP_GROWTH_CEILINGS (8/12/16/20%) untouc
 
 
 # ======================================================================
-# CHECK 3 (full pipeline): TOYO-shaped - reported growth 40% -> 8%,
+# CHECK 3 (full pipeline): TOYO-shaped - reported growth 40% -> 10%
+# (UPDATED by the growth-never-zero rewrite, 30 Sep 2026: micro-cap tier
+# ceiling 20% * REPORTED_GROWTH_CAP_FRACTION 0.5, not the old flat 8% -
+# see Check 2a above for the same number derived at the unit level),
 # rising capex -> midpoint basis, resulting IV > 3x an (artificially low,
 # matching the live incident's own $4.47-vs-$41.67 ~9x ratio) price ->
-# sanity flag fires.
+# sanity flag still fires (a HIGHER cap only makes the flag fire more
+# easily, never less).
 # ======================================================================
 with mock.patch.object(fve.capm_engine, "get_growth_estimates_5y", return_value=(None, "no_coverage")):
     _iv_toyo, _g_toyo, _m_toyo = fve.dcf_intrinsic_value(
@@ -150,11 +163,12 @@ with mock.patch.object(fve.capm_engine, "get_growth_estimates_5y", return_value=
     )
 assert _m_toyo["growth_source"] == "info", _m_toyo["growth_source"]
 assert _m_toyo["growth_governor"] == "Cap", _m_toyo["growth_governor"]
-assert abs(_g_toyo - 0.08) < 1e-6, _g_toyo
+assert abs(_g_toyo - 0.10) < 1e-6, _g_toyo
+assert abs(_m_toyo["growth_raw"] - 0.40) < 1e-6, _m_toyo["growth_raw"]
 assert _m_toyo["capex_basis"] == "midpoint (capex rising)", _m_toyo["capex_basis"]
 assert _m_toyo["fcf_base_normalized"] is False, _m_toyo["fcf_base_normalized"]
-assert abs(_iv_toyo - 147.51) < 0.5, _iv_toyo
-_toyo_price = _iv_toyo / 10  # ~$14.75 -> IV is ~10x price, matching the live incident's own ~9x
+assert abs(_iv_toyo - 163.81) < 0.5, _iv_toyo
+_toyo_price = _iv_toyo / 10  # ~$16.38 -> IV is ~10x price, matching the live incident's own ~9x
 assert resolver_engine.dcf_looks_unreliable(_iv_toyo, _toyo_price) is True
 print(f"[toyo_full_pipeline] growth 40% -> {_g_toyo:.2f} ({_m_toyo['growth_source']}/"
       f"{_m_toyo['growth_governor']}), capex_basis={_m_toyo['capex_basis']!r}, IV=${_iv_toyo:.2f} "

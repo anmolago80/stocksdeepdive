@@ -10722,36 +10722,48 @@ def page_deep_dive():
                     f"DCF growth: {_dd['dcf_growth']:.1f}% for 5 yrs, then fades to "
                     f"{_dd['dcf_growth_end_rate']:.1f}% by yr 10."
                 )
+            # Growth-never-zero rewrite (owner-directed, 30 Sep 2026):
+            # REPORTED_GROWTH_CAP's old flat 8% is gone - "info" is now
+            # capped tier-relatively (see fcf_valuation_engine.
+            # REPORTED_GROWTH_CAP_FRACTION's own comment), so the label no
+            # longer names a specific percentage; the raw-vs-capped
+            # caption just below shows the actual numbers instead.
+            # "history_volatile" and "default" are two new sources this
+            # same rewrite adds - growth NEVER resolves to a flat 0%/
+            # "default assumption" any more, it resolves to this stock's
+            # own tier end rate.
             _dd_growth_source_labels = {
                 "analyst": "Yahoo 5y analyst", "history": "historical avg",
-                # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
-                # positive): the "info" fallback (a single-period info.
-                # earningsGrowth/revenueGrowth figure) is now held to
-                # REPORTED_GROWTH_CAP (8%) regardless of market-cap tier -
-                # see fcf_valuation_engine.py's own comment on that
-                # constant. Label it here so the cap is visible, not silent.
-                "info": "reported growth (capped 8%)", "manual": "manual override",
-                "default": "default assumption",
+                "history_volatile": "historical avg (volatile, capped)",
+                "info": "reported growth (single period, capped)",
+                "manual": "manual override",
+                "default": "no growth signal - tier end rate",
             }
             _dd_tier = _dd.get("dcf_discount_tier")
             _dd_gsrc = _dd_growth_source_labels.get(_dd.get("dcf_growth_source"))
             # Growth-estimate-fetch resilience fix (owner-directed, 28 Sep
-            # 2026): "historical avg" alone reads as "Yahoo has no
+            # 2026), extended by the growth-never-zero rewrite (30 Sep
+            # 2026, "non_positive" status): "historical avg"/"reported
+            # growth"/"no growth signal" alone reads as "Yahoo has no
             # coverage for this stock" - true when dcf_yahoo_estimate_
-            # status is "no_coverage", but NOT true when it's
-            # "fetch_failed" (the fetch itself broke, even after
-            # retrying - Yahoo's actual coverage is unknown). Only
-            # applies when history is actually what drove the number
-            # (growth_source == "history") - a manual override or the
-            # info/default fallback never touched the Yahoo lookup at
-            # all (see fcf_valuation_engine.dcf_intrinsic_value()'s own
-            # comment: yahoo_estimate_status is None on those paths).
-            if _dd.get("dcf_growth_source") == "history":
+            # status is "no_coverage", but NOT true when it's "fetch_
+            # failed" (the fetch itself broke, even after retrying -
+            # Yahoo's actual coverage is unknown) or "non_positive" (a
+            # REAL Yahoo estimate was found, it was just <=0 - never
+            # label that "no Yahoo estimate", it genuinely has one).
+            # Applies whenever something OTHER than Yahoo's own positive
+            # estimate actually drove the number - a manual override or
+            # the "analyst" source itself never touched this distinction
+            # (see fcf_valuation_engine.dcf_intrinsic_value()'s own
+            # comment: yahoo_estimate_status is None on the manual path).
+            if _dd.get("dcf_growth_source") in ("history", "history_volatile", "info", "default"):
                 _dd_yahoo_status = _dd.get("dcf_yahoo_estimate_status")
                 if _dd_yahoo_status == "fetch_failed":
                     _dd_gsrc = f"{_dd_gsrc} (Yahoo fetch failed)"
                 elif _dd_yahoo_status == "no_coverage":
                     _dd_gsrc = f"{_dd_gsrc} (no Yahoo estimate)"
+                elif _dd_yahoo_status == "non_positive":
+                    _dd_gsrc = f"{_dd_gsrc} (Yahoo estimate was non-positive)"
             if _dd_tier or _dd_gsrc:
                 _dd_tier_gsrc_bits = []
                 if _dd_tier:
@@ -10759,6 +10771,22 @@ def page_deep_dive():
                 if _dd_gsrc:
                     _dd_tier_gsrc_bits.append(f"growth source: {_dd_gsrc}")
                 st.caption(" · ".join(_dd_tier_gsrc_bits).capitalize())
+            # Growth-never-zero rewrite, 1.2b (owner-directed, 30 Sep
+            # 2026): show the RAW pre-cap signal next to the capped
+            # figure the model actually compounds from, whenever a cap
+            # meaningfully changed the number - the raw figure is
+            # information for the reader, the capped one is what the DCF
+            # uses. Rounded-percent comparison (>=0.05pp) so an
+            # uncapped/barely-rounded match never shows a spurious "raw
+            # vs capped" line for a source that wasn't actually capped.
+            if (
+                _dd.get("dcf_growth_raw") is not None and _dd.get("dcf_growth") is not None
+                and abs(_dd["dcf_growth_raw"] - _dd["dcf_growth"]) >= 0.05
+            ):
+                st.caption(
+                    f"Raw signal: {_dd['dcf_growth_raw']:.1f}% - model uses "
+                    f"{_dd['dcf_growth']:.1f}% (capped)."
+                )
 
             # DCF fixes: floored discount rate + FX currency conversion - same
             # provenance-flag pattern as the outlier-base caption above. Neither
@@ -11419,11 +11447,27 @@ def page_deep_dive():
             else:
                 st.subheader("Margin of Safety: Price vs Intrinsic Value")
                 st.caption(_section_why("Margin of Safety"))
-                st.warning(
-                    "No intrinsic value could be computed for this ticker "
-                    "(DCF and P/E-blend both unavailable - likely a "
-                    "financial or a name with no positive EPS/FCF)."
-                )
+                # A6 negative-FCF disclosure (owner-directed, 30 Sep
+                # 2026): a specific reason when it's known, instead of
+                # always the generic catch-all below - see resolver_
+                # engine's own "fcf_reason" passthrough for how this is
+                # threaded ("negative_fcf" here specifically means the
+                # DCF was abandoned because there was truly no usable
+                # free cash flow anywhere for this ticker, and the P/E-
+                # blend fallback also came up empty).
+                if _dd.get("dcf_fcf_reason") == "negative_fcf":
+                    st.warning(
+                        "Free cash flow is negative (capex exceeds operating "
+                        "cash flow), so a DCF is not meaningful for this "
+                        "ticker; the P/E-blend fallback was also unavailable "
+                        "(likely a financial or a name with no positive EPS)."
+                    )
+                else:
+                    st.warning(
+                        "No intrinsic value could be computed for this ticker "
+                        "(DCF and P/E-blend both unavailable - likely a "
+                        "financial or a name with no positive EPS/FCF)."
+                    )
 
             # Services batch 2, Part 1 (2026-09-01): "What the price implies"
             # - below the Intrinsic Value figure, before Compounder View, per

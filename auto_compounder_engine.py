@@ -147,7 +147,25 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # invalidates the disk cache automatically (fcf_valuation_engine.py and
 # resolver_engine.py both changed), same belt-and-suspenders bump as
 # 43->44.
-ENGINE_VERSION = 45
+# 45->46 (growth-never-zero rewrite, 30 Sep 2026, owner-directed): Yahoo's
+# growth_estimates table now reads the "LTG" row label (Yahoo dropped
+# "+5y"/"5y" around late Sep 2026) as well as the old labels, and no
+# longer stops at the first-seen label (the old unconditional break()
+# silently dropped a valid fallback when the first match was NaN).
+# estimate_growth() (fcf_valuation_engine.py) never returns a flat 0%/
+# DEFAULT_GROWTH any more - REPORTED_GROWTH_CAP_FRACTION/HISTORY_
+# VOLATILE_CAP_FRACTION (both 0.5, tier-relative) replace the old flat
+# REPORTED_GROWTH_CAP=8%, and the absolute floor is now this stock's own
+# tiered end_rate instead of a flat DEFAULT_GROWTH=5%. New yahoo_
+# estimate_status "non_positive" and growth_source "history_volatile"
+# values, plus new meta keys growth_raw/fcf_reason, threaded through
+# fcf_valuation_engine.py/capm_engine.py/resolver_engine.py - all three
+# already covered by VALUATION_SOURCE_HASH below (belt-and-suspenders
+# bump, same as 43->44/44->45). app.py's/this file's own growth-source
+# label dicts and yahoo-status-suffix captions were relabelled to match -
+# not covered by VALUATION_SOURCE_HASH (labels only, no valuation-hash
+# impact), which is acceptable per this task's own spec.
+ENGINE_VERSION = 46
 
 
 def _valuation_source_hash():
@@ -1745,6 +1763,7 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
             "value": None, "growth": None, "perpetual_rate": None, "discount_rate": None,
             "discount_tier_label": None, "growth_source": None, "growth_path": None,
             "growth_end_rate": None, "yahoo_estimate_status": None, "capex_basis": None,
+            "growth_raw": None,
             "flagged": True,
         }
     value, growth_used, meta = result
@@ -1760,6 +1779,9 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         "discount_tier_label": meta.get("discount_tier_label"),
         "growth_source": meta.get("growth_source"),
         "growth_path": meta.get("growth_path"),
+        # Growth-rewrite (29 Sep 2026, owner-directed): pre-cap growth figure,
+        # for the raw-vs-capped display - see _dcf_valuation_and_inputs().
+        "growth_raw": meta.get("growth_raw"),
         # Growth-path option E (28 Sep 2026, owner-directed follow-up): the
         # fade's own end rate (tiered, floored at perpetual_rate) - see
         # _build_fair_value()'s display line for why this replaced
@@ -1841,6 +1863,9 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         "discount_rate": meta.get("discount_rate_used"),
         "discount_tier_label": meta.get("discount_tier_label"),
         "growth_source": meta.get("growth_source"),
+        # Growth-rewrite (29 Sep 2026, owner-directed): same passthrough as
+        # _run_dcf() above - see that function's comment.
+        "growth_raw": meta.get("growth_raw"),
         # Growth-path option E (28 Sep 2026, owner-directed follow-up): same
         # passthrough as _run_dcf() above - see that function's comment.
         "growth_end_rate": meta.get("growth_end_rate_used"),
@@ -3331,33 +3356,41 @@ def _dcf_valuation_and_inputs(info, price, canonical_dcf_result):
     else:
         _growth_display = _dcf_growth
         _growth_fmt = "pct"
-    # A6/growth-rewrite (28 Sep 2026, owner-directed): "one value
-    # everywhere" needs the SOURCE of each auto-resolved input on
-    # screen too, not just the number.
+    # A6/growth-rewrite (28 Sep 2026, owner-directed), relabelled by the
+    # growth-never-zero rewrite (30 Sep 2026, owner-directed) to match
+    # app.py's Deep Dive caption exactly (_dd_growth_source_labels) -
+    # "one value everywhere" needs the SAME source label everywhere too,
+    # not just the same number. Growth NEVER resolves to a flat 0%/
+    # "default assumption" any more, it resolves to this stock's own
+    # tier end rate.
     _growth_source_labels = {
         "analyst": "Yahoo 5y analyst", "history": "historical avg",
-        # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
-        # positive): same REPORTED_GROWTH_CAP (8%) label as app.py's
-        # Deep Dive caption - see fcf_valuation_engine.py's own
-        # comment on that constant.
-        "info": "reported growth (capped 8%)", "manual": "manual override",
-        "default": "default assumption",
+        "history_volatile": "historical avg (volatile, capped)",
+        "info": "reported growth (single period, capped)", "manual": "manual override",
+        "default": "no growth signal - tier end rate",
     }
     _growth_source_display = _growth_source_labels.get(canonical_dcf_result.get("growth_source"))
-    # Growth-estimate-fetch resilience fix (28 Sep 2026, owner-
-    # directed): "historical avg" alone reads as "Yahoo has no
-    # coverage for this stock" - only true when yahoo_estimate_
-    # status is "no_coverage"; a "fetch_failed" status means the
-    # fetch itself broke (even after retrying), so Yahoo's real
-    # coverage is unknown - see app.py's matching Deep Dive caption
-    # logic (same distinction, same reasoning) and capm_engine.
-    # get_growth_estimates_5y()'s own docstring.
-    if canonical_dcf_result.get("growth_source") == "history":
+    # Growth-estimate-fetch resilience fix (28 Sep 2026, owner-directed),
+    # extended by the growth-never-zero rewrite (30 Sep 2026, "non_
+    # positive" status): "historical avg"/"reported growth"/"no growth
+    # signal" alone reads as "Yahoo has no coverage for this stock" -
+    # true when yahoo_estimate_status is "no_coverage", but NOT true
+    # when it's "fetch_failed" (the fetch itself broke, even after
+    # retrying - Yahoo's actual coverage is unknown) or "non_positive"
+    # (a REAL Yahoo estimate was found, it was just <=0 - never label
+    # that "no Yahoo estimate", it genuinely has one). Applies whenever
+    # something OTHER than Yahoo's own positive estimate actually drove
+    # the number - see app.py's matching Deep Dive caption logic (same
+    # distinction, same reasoning) and capm_engine.get_growth_
+    # estimates_5y()'s own docstring.
+    if canonical_dcf_result.get("growth_source") in ("history", "history_volatile", "info", "default"):
         _yahoo_status = canonical_dcf_result.get("yahoo_estimate_status")
         if _yahoo_status == "fetch_failed":
             _growth_source_display = f"{_growth_source_display} (Yahoo fetch failed)"
         elif _yahoo_status == "no_coverage":
             _growth_source_display = f"{_growth_source_display} (no Yahoo estimate)"
+        elif _yahoo_status == "non_positive":
+            _growth_source_display = f"{_growth_source_display} (Yahoo estimate was non-positive)"
 
     dcf_inputs = [
         {"label": _perp_label, "value": canonical_dcf_result.get("perpetual_rate"), "format": "pct"},
@@ -3372,6 +3405,22 @@ def _dcf_valuation_and_inputs(info, price, canonical_dcf_result):
     if _growth_source_display:
         dcf_inputs.append(
             {"label": "Growth Source", "value": _growth_source_display, "format": "raw"})
+    # Growth-never-zero rewrite (30 Sep 2026, owner-directed): same raw-
+    # vs-capped disclosure as app.py's Deep Dive caption - only shown
+    # when a cap actually moved the number (>=0.05pp, same rounding-
+    # noise threshold as app.py's, converted to this function's fraction
+    # units), so an uncapped/barely-rounded match never shows a spurious
+    # "raw vs capped" row for a source that wasn't actually capped.
+    _dcf_growth_raw = canonical_dcf_result.get("growth_raw")
+    if (
+        _dcf_growth_raw is not None and _dcf_growth is not None
+        and abs(_dcf_growth_raw - _dcf_growth) >= 0.0005
+    ):
+        dcf_inputs.append({
+            "label": "Raw Growth Signal",
+            "value": f"{_dcf_growth_raw * 100:.1f}% (model uses {_dcf_growth * 100:.1f}%, capped)",
+            "format": "raw",
+        })
     # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
     # positive): show it whenever the rising-capex guard actually
     # fired - same non-default-only pattern as Discount Tier/Growth
