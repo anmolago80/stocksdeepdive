@@ -417,9 +417,27 @@ def normalized_base_and_series(cashflow_df, info=None):
             capex_basis = "midpoint (capex rising)"
         base = ocf[0] + base_capex                # latest OCF, base-year capex basis (may differ from series[0])
 
+        # Audit fixes Commit 4 (30 Sep 2026, owner-directed): the Task-10
+        # outlier-median swap below is skipped whenever the rising-capex
+        # guard just fired. `series` (and therefore `median`) is built
+        # ENTIRELY on the AVERAGE capex basis (see the docstring above -
+        # "UNCHANGED, still averaged for every year, base year
+        # included"), but `base` here can be on the MIDPOINT basis -
+        # comparing the two is apples-to-oranges for the base year
+        # itself, and swapping `base = median` in that case silently
+        # replaces the deliberately midpoint-guarded figure with an
+        # average-basis one - undoing the rising-capex guard exactly in
+        # the strongest ramps (where midpoint and average diverge the
+        # most, making the outlier test MORE likely to fire), while
+        # capex_basis kept reporting "midpoint (capex rising)" even
+        # though an average-basis number was what actually got used.
+        # Skipping the swap here (rather than rebuilding a base-basis
+        # median to compare against) keeps capex_basis always honestly
+        # describing the number `base` actually holds - see this
+        # function's own docstring.
         base_normalized = False
         recent = series[:3]
-        if len(recent) >= 2:
+        if capex_basis != "midpoint (capex rising)" and len(recent) >= 2:
             median = sorted(recent)[len(recent) // 2]
             if median != 0 and abs(base - median) / abs(median) > FCF_OUTLIER_THRESHOLD:
                 base = median
@@ -851,6 +869,24 @@ def dcf_intrinsic_value(
                                        # before any tier/fraction clamp - see that
                                        # function's own "raw_rate" return value. Only
                                        # set on the auto (growth_rate=None) path.
+        "share_count_flagged": bool,  # audit fixes Commit 4 (30 Sep 2026) - True when
+                                       # share_class_engine.whole_company_shares() applied
+                                       # a dual-class override (shares above is NOT plain
+                                       # info["sharesOutstanding"]). Always False when
+                                       # diluted_shares_override was passed explicitly.
+        "share_count_source": str | None,  # "bundle" | "implied" | "filed" | None -
+                                       # see whole_company_shares()'s own docstring.
+        "share_count_note": str | None,  # set only when a dual-class candidate was
+                                       # FOUND but REJECTED (ratio above the sanity
+                                       # ceiling, or an uncorroborated "implied" figure) -
+                                       # None when no candidate existed, and None when
+                                       # one was accepted (share_count_flagged=True is
+                                       # the accept signal, this is the reject reason).
+        "market_cap_missing": bool,  # audit fixes Commit 4 (30 Sep 2026) - True when
+                                       # info["marketCap"] was missing/non-positive, so
+                                       # the market-cap-tiered discount rate silently
+                                       # fell through to the smallest (micro-cap)
+                                       # tier's premium - also forces defaulted=True.
     }
     """
     meta = {
@@ -897,6 +933,30 @@ def dcf_intrinsic_value(
         # model actually compounds from) - see estimate_growth()'s own
         # "raw_rate" return value.
         "growth_raw": None,
+        # Audit fixes Commit 4 (30 Sep 2026, owner-directed): share_class_
+        # engine.whole_company_shares()'s own (flagged, source, note) used
+        # to be discarded here entirely (only `shares` itself was kept) -
+        # a caller had no way to know whether a dual-class override was
+        # applied, or a candidate was found but REJECTED (ratio above the
+        # sanity ceiling, or uncorroborated) versus never having found one
+        # at all. share_count_flagged mirrors the old, silently-dropped
+        # `_dc_flagged`; share_count_source is "bundle"/"implied"/"filed"/
+        # None; share_count_note is the human-readable rejection reason,
+        # only ever set when a candidate existed but was turned down -
+        # None both when no candidate existed AND when one was accepted
+        # (accepted needs no explanatory note, only share_count_flagged).
+        # None when diluted_shares_override was passed explicitly (the
+        # caller already resolved this itself, share_class_engine.
+        # whole_company_shares() is never even called on that path).
+        "share_count_flagged": False,
+        "share_count_source": None,
+        "share_count_note": None,
+        # Audit fixes Commit 4 (30 Sep 2026, owner-directed) - pure
+        # passthrough of capm_engine.resolve_discount_rate_by_market_
+        # cap()'s own market_cap_missing flag; True also forces
+        # meta["defaulted"] True (see the "tiered" discount-rate branch
+        # below) so the red "estimated inputs" treatment fires.
+        "market_cap_missing": False,
     }
 
     try:
@@ -907,9 +967,12 @@ def dcf_intrinsic_value(
         if diluted_shares_override:
             shares = diluted_shares_override
         else:
-            shares, _dc_flagged, _dc_source = share_class_engine.whole_company_shares(
+            shares, _dc_flagged, _dc_source, _dc_note = share_class_engine.whole_company_shares(
                 info, ticker=ticker,
             )
+            meta["share_count_flagged"] = _dc_flagged
+            meta["share_count_source"] = _dc_source
+            meta["share_count_note"] = _dc_note
         if shares <= 0:
             return 0, None, meta
 
@@ -1008,6 +1071,20 @@ def dcf_intrinsic_value(
                 meta["discount_source"] = "tiered-default" if capm_meta["defaulted"] else "tiered"
                 meta["discount_floored"] = bool(capm_meta.get("floored"))
                 meta["discount_tier_label"] = capm_meta.get("tier_label")
+                # Audit fixes Commit 4 (30 Sep 2026, owner-directed):
+                # capm_engine.resolve_discount_rate_by_market_cap() now
+                # sets its own meta["defaulted"] when marketCap was
+                # missing (see that function's own comment) - propagated
+                # here into the outer, DCF-level "defaulted" flag (the
+                # one that actually drives the red "estimated inputs"
+                # treatment on screen) specifically for THIS cause, not
+                # generically for every capm_meta["defaulted"] reason
+                # (a risk-free-rate fallback already has its own, older,
+                # narrower "tiered-default" discount_source label above -
+                # left exactly as it was, out of this commit's scope).
+                meta["market_cap_missing"] = bool(capm_meta.get("market_cap_missing"))
+                if meta["market_cap_missing"]:
+                    meta["defaulted"] = True
             except Exception:
                 discount_rate = DEFAULT_DISCOUNT_RATE
                 meta["discount_source"] = "fallback"

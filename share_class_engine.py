@@ -90,7 +90,35 @@ _KNOWN_MULTI_CLASS_TICKERS = frozenset(
 # module's own tiers now share.
 DUAL_CLASS_SHARE_RATIO = 1.3
 
+# Audit fixes Commit 4 (30 Sep 2026, owner-directed - fb0e140 follow-up):
+# a genuine second listed class rarely runs past 2-3x the primary
+# class's own share count (even HEI/HEI.A, this module's own root-cause
+# case, sits around 2.2x) - a candidate above this ceiling is far more
+# likely a bad/stale Yahoo field (impliedSharesOutstanding in
+# particular is not always populated correctly) than a real dual-class
+# situation, and silently accepting it would understate every per-share
+# figure computed from it instead of overstating - the opposite of the
+# problem this whole module exists to fix. Rejected rather than
+# clamped, so a caller sees plain sharesOutstanding (a known-real
+# number) instead of a fabricated intermediate value.
+DUAL_CLASS_SHARE_RATIO_MAX = 3.0
+
+# How closely a corroborating filed diluted-shares figure (tier 3's own
+# targeted fetch, reused here for verification rather than as a
+# separate candidate) must agree with an "implied" candidate (tier 2)
+# for that candidate to be trusted - only checked for a ticker already
+# on the cheap, cached SHARE_CLASS_PAIRS list (see whole_company_
+# shares()'s own docstring for why an arbitrary ticker outside that
+# list has no free corroboration source and is accepted on the bounded
+# ratio alone).
+DUAL_CLASS_CORROBORATION_TOLERANCE = 0.15
+
 _DILUTED_SHARES_ROW_NAMES = ("Diluted Average Shares", "Basic Average Shares")
+
+# Sentinel distinguishing "_evaluate_candidate() was not asked to check
+# corroboration at all" from "it was asked, and the corroborating fetch
+# came back None" - the latter must still reject the candidate.
+_UNCHECKED = object()
 
 
 def _row_from_income_df(income_df, row_names):
@@ -130,39 +158,101 @@ def _fetch_diluted_shares(ticker):
     return _row_from_income_df(income, _DILUTED_SHARES_ROW_NAMES)
 
 
+def _evaluate_candidate(candidate, shares, corroborated_by=_UNCHECKED):
+    """(accepted_shares_or_None, note_or_None) for one whole-company
+    share-count candidate against the ticker's own `shares` (info[
+    "sharesOutstanding"]).
+
+    - candidate missing, or its own ratio to `shares` doesn't even
+      clear DUAL_CLASS_SHARE_RATIO: (None, None) - not a candidate at
+      all, no note needed (the caller should keep trying its own next
+      tier, exactly as before this fix).
+    - ratio clears DUAL_CLASS_SHARE_RATIO but exceeds DUAL_CLASS_
+      SHARE_RATIO_MAX (audit fixes Commit 4, 30 Sep 2026, owner-
+      directed): rejected, with a note - a ratio this extreme is far
+      more likely a bad Yahoo field than a real second share class.
+    - `corroborated_by` (audit fixes Commit 4): when given (not the
+      _UNCHECKED sentinel - None is a valid "no filed figure found"
+      answer, distinct from "not checked at all"), the candidate is
+      ALSO rejected, with a note, unless corroborated_by agrees with
+      `candidate` within DUAL_CLASS_CORROBORATION_TOLERANCE. Omitted
+      (the default) for a candidate that already IS a filed diluted-
+      shares figure straight from an income statement (tiers "bundle"/
+      "filed" below) - that figure needs no separate corroboration,
+      it's already the authoritative source tier 2's own "implied"
+      candidate would otherwise be checked against."""
+    if not candidate or candidate <= shares * DUAL_CLASS_SHARE_RATIO:
+        return None, None
+    ratio = candidate / shares
+    if candidate > shares * DUAL_CLASS_SHARE_RATIO_MAX:
+        return None, (
+            f"implied share count ignored (ratio {ratio:.1f}x, above the "
+            f"{DUAL_CLASS_SHARE_RATIO_MAX:.0f}x sanity ceiling)"
+        )
+    if corroborated_by is not _UNCHECKED:
+        if not corroborated_by or abs(corroborated_by - candidate) > (
+                DUAL_CLASS_CORROBORATION_TOLERANCE * candidate):
+            return None, f"implied share count ignored (ratio {ratio:.1f}x, uncorroborated)"
+    return candidate, None
+
+
 def whole_company_shares(info, income_df=None, ticker=None):
-    """(shares, flagged, source). `shares` is info["sharesOutstanding"]
-    unless a whole-company figure that clears DUAL_CLASS_SHARE_RATIO was
-    found; `flagged` is True whenever it was; `source` is "bundle" |
-    "implied" | "filed" | None.
+    """(shares, flagged, source, note). `shares` is info["sharesOutstanding"]
+    unless a whole-company figure that clears DUAL_CLASS_SHARE_RATIO (and,
+    as of audit fixes Commit 4, stays within DUAL_CLASS_SHARE_RATIO_MAX and
+    - for the "implied" tier only - corroborates) was found; `flagged` is
+    True whenever it was; `source` is "bundle" | "implied" | "filed" | None.
+    `note` (new, audit fixes Commit 4, 30 Sep 2026, owner-directed) is a
+    short explanation string whenever a candidate was FOUND but REJECTED
+    (ratio above the sanity ceiling, or an "implied" candidate that a
+    known ticker's own filed diluted count didn't corroborate) - None
+    whenever no candidate existed at all, same as before this fix
+    (a caller like fcf_valuation_engine.dcf_intrinsic_value() threads
+    this into meta["share_count_note"] rather than discarding it).
 
     income_df: pass a caller's own already-fetched income statement
     (auto_compounder_engine's bundle["income"]) when available - tier 1,
     zero new cost. Callers with no income statement on hand (nightly_
     scan/deep_dive_engine's lite path) pass None and fall through to
     tiers 2-3 instead.
-    ticker: required for tier 3 only (the cached targeted fetch needs a
-    symbol to fetch); omit it (or omit income_df's absence entirely) to
-    stop after tier 2 - the auto_compounder_engine bundle path never
-    needs tier 3, since tier 1 (its own income statement) already has
-    the answer whenever one exists."""
+    ticker: required for tier 3 (the cached targeted fetch needs a
+    symbol to fetch) AND, as of Commit 4, to corroborate a tier-2
+    "implied" candidate for a ticker on the cheap, cached SHARE_CLASS_
+    PAIRS list - an arbitrary ticker outside that list has no free
+    corroboration source, so a bound-clearing implied candidate for it
+    is accepted on the ratio test alone (unchanged from before this
+    fix). Omit ticker to stop after tier 2 uncorroborated - the auto_
+    compounder_engine bundle path never needs tier 3, since tier 1 (its
+    own income statement) already has the answer whenever one exists."""
     shares = info.get("sharesOutstanding") or 0
     if shares <= 0:
-        return shares, False, None
+        return shares, False, None, None
 
     if income_df is not None:
         filed = _row_from_income_df(income_df, _DILUTED_SHARES_ROW_NAMES)
-        if filed and filed > shares * DUAL_CLASS_SHARE_RATIO:
-            return filed, True, "bundle"
-        return shares, False, None
+        accepted, note = _evaluate_candidate(filed, shares)
+        if accepted:
+            return accepted, True, "bundle", None
+        return shares, False, None, note
 
     implied = info.get("impliedSharesOutstanding")
-    if implied and implied > shares * DUAL_CLASS_SHARE_RATIO:
-        return implied, True, "implied"
+    if implied:
+        corroboration = _UNCHECKED
+        known_ticker = ticker and ticker.strip().upper() in _KNOWN_MULTI_CLASS_TICKERS
+        if known_ticker:
+            corroboration = _fetch_diluted_shares(ticker.strip().upper())
+        accepted, note = _evaluate_candidate(implied, shares, corroborated_by=corroboration)
+        if accepted:
+            return accepted, True, "implied", None
+        if note:
+            return shares, False, None, note
 
     if ticker and ticker.strip().upper() in _KNOWN_MULTI_CLASS_TICKERS:
         filed = _fetch_diluted_shares(ticker.strip().upper())
-        if filed and filed > shares * DUAL_CLASS_SHARE_RATIO:
-            return filed, True, "filed"
+        accepted, note = _evaluate_candidate(filed, shares)
+        if accepted:
+            return accepted, True, "filed", None
+        if note:
+            return shares, False, None, note
 
-    return shares, False, None
+    return shares, False, None, None

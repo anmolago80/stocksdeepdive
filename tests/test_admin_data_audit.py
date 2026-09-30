@@ -91,7 +91,10 @@ with mock.patch.object(ada, "yf") as mock_yf:
     mock_yf.Ticker.return_value.info = {
         "sharesOutstanding": 55_235_561, "impliedSharesOutstanding": 122_000_000,
     }
-    with mock.patch("share_class_engine.whole_company_shares", return_value=(122_000_000, True, "implied")), \
+    # Audit fixes Commit 4 (30 Sep 2026): whole_company_shares() now
+    # returns a 4-tuple (shares, flagged, source, note) - note is None
+    # here since this mock represents an ACCEPTED candidate.
+    with mock.patch("share_class_engine.whole_company_shares", return_value=(122_000_000, True, "implied", None)), \
          mock.patch("share_class_engine._fetch_diluted_shares", return_value=122_500_000):
         rows = ada.check_a3b_shares(tickers=["HEI"])
 assert len(rows) == 1
@@ -100,6 +103,7 @@ assert r["sharesOutstanding"] == 55_235_561
 assert r["impliedSharesOutstanding"] == 122_000_000
 assert r["whole_company_shares"] == 122_000_000 and r["whole_company_flagged"] is True
 assert r["whole_company_source"] == "implied"
+assert r["whole_company_note"] is None
 assert r["diluted_average_shares_filed"] == 122_500_000
 print("[check_a3b_shares] all 4 reported fields (sharesOutstanding/implied/filed-diluted/"
       "resolver-chosen) present and correctly sourced OK")

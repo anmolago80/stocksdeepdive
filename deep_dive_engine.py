@@ -474,6 +474,24 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         # see resolver_engine.resolve_intrinsic_value()'s pe-blend
         # branch) - "negative_normalised_fcf"|"negative_fcf"|None.
         "dcf_fcf_reason": iv_meta.get("fcf_reason"),
+        # Audit fixes Commit 4 (30 Sep 2026, owner-directed): pure
+        # passthrough of share_class_engine.whole_company_shares()'s own
+        # (flagged, source, note) via fcf_valuation_engine.dcf_intrinsic_
+        # value()'s meta - see that function's own docstring. flagged=True
+        # means the DCF's per-share figures used a whole-company share
+        # count above plain sharesOutstanding (a dual-class override was
+        # applied); a set note means a candidate was found but REJECTED
+        # (ratio above the sanity ceiling, or uncorroborated) - app.py's
+        # Deep Dive rendering shows a small caption in either case, next
+        # to Intrinsic Value and the Fair Value panel's own Shares row.
+        "dcf_share_count_flagged": bool(iv_meta.get("share_count_flagged")),
+        "dcf_share_count_source": iv_meta.get("share_count_source"),
+        "dcf_share_count_note": iv_meta.get("share_count_note"),
+        # Audit fixes Commit 4 (30 Sep 2026, owner-directed): pure
+        # passthrough of capm_engine's own market_cap_missing flag (via
+        # fcf_valuation_engine/resolver_engine) - app.py shows a caption
+        # when set, same pattern as every other flag above.
+        "dcf_market_cap_missing": bool(iv_meta.get("market_cap_missing")),
 
         "quality_score": quality_score,
         "quality_default": bool(quality_default),

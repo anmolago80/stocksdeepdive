@@ -165,13 +165,27 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # label dicts and yahoo-status-suffix captions were relabelled to match -
 # not covered by VALUATION_SOURCE_HASH (labels only, no valuation-hash
 # impact), which is acceptable per this task's own spec.
-ENGINE_VERSION = 46
+# 46->47 (audit fixes Commit 4, 30 Sep 2026, owner-directed): dual-class
+# share-count ratio ceiling + corroboration (share_class_engine.py),
+# the capex midpoint-vs-median consistency fix and missing-marketCap
+# defaulted flag (fcf_valuation_engine.py/capm_engine.py, already
+# covered by VALUATION_SOURCE_HASH) - but share_class_engine.py itself
+# was NOT in that hash's own file list despite directly changing every
+# per-share figure this module computes via _whole_company_shares()
+# (BVPS, the Equity Method 10y, the IV/BV series, the WACC equity
+# weight) - added below, closing that gap. Belt-and-suspenders bump,
+# same reasoning as every prior ENGINE_VERSION bump above.
+ENGINE_VERSION = 47
 
 
 def _valuation_source_hash():
     """Hash of the combined raw source of fcf_valuation_engine.py,
-    capm_engine.py and resolver_engine.py - the three modules the DCF's
-    actual math lives in. Included in _read_cache()'s own validity check
+    capm_engine.py, resolver_engine.py, and (audit fixes Commit 4,
+    30 Sep 2026, owner-directed) share_class_engine.py - the modules the
+    DCF's actual math (and, for share_class_engine.py, the whole-
+    company share count every per-share figure in THIS module also
+    divides by - see _whole_company_shares() above) lives in. Included
+    in _read_cache()'s own validity check
     (VALUATION_SOURCE_HASH below, computed once at import time) so ANY
     edit to the valuation formula invalidates every disk-cached Fair
     Value section automatically, closing the "forgot to bump ENGINE_
@@ -189,7 +203,8 @@ def _valuation_source_hash():
     _dir = os.path.dirname(os.path.abspath(__file__))
     h = hashlib.sha1()
     try:
-        for _fname in ("fcf_valuation_engine.py", "capm_engine.py", "resolver_engine.py"):
+        for _fname in ("fcf_valuation_engine.py", "capm_engine.py", "resolver_engine.py",
+                        "share_class_engine.py"):
             with open(os.path.join(_dir, _fname), "rb") as f:
                 h.update(f.read())
         return h.hexdigest()[:12]
@@ -648,12 +663,45 @@ def _whole_company_shares(bundle):
     this module always has a full fundamentals bundle (including the
     income statement) already fetched, so it passes bundle["income"]
     straight through - the cheapest of that module's three resolution
-    tiers, no network call either way. Returns (shares, flagged)."""
+    tiers, no network call either way. Returns (shares, flagged).
+
+    Reverse-split guard (audit fixes Commit 4, 30 Sep 2026, owner-
+    directed): the 1.3x test compares the income statement's OWN
+    "Diluted Average Shares" row (a figure from a past reporting
+    period) against today's live info["sharesOutstanding"] snapshot -
+    if the company did a reverse split (or a large forward split)
+    BETWEEN that reporting period and today, the resulting ratio can
+    clear 1.3x purely from the split, not a genuine second share
+    class. Guarded by _reverse_split_suspected() below: when the two
+    most recent balance-sheet "Ordinary Shares Number" columns moved by
+    more than 30% against each other, the whole test is skipped for
+    this ticker and plain sharesOutstanding is used instead - a split
+    that recent would already show up as exactly this kind of jump
+    inside the balance sheet's own two most recent columns."""
     info = bundle.get("info") or {}
-    shares, flagged, _source = share_class_engine.whole_company_shares(
+    if _reverse_split_suspected(bundle):
+        return info.get("sharesOutstanding") or 0, False
+    shares, flagged, _source, _note = share_class_engine.whole_company_shares(
         info, income_df=bundle.get("income"),
     )
     return shares, flagged
+
+
+def _reverse_split_suspected(bundle):
+    """True if the two most recent "Ordinary Shares Number" balance-
+    sheet columns differ by more than 30% from each other - see
+    _whole_company_shares()'s own docstring for why this guards the
+    1.3x dual-class test against a genuine stock split being
+    misread as a second share class. False (never suspected) when
+    fewer than two non-None values are available - the guard only
+    fires on evidence, it never blocks the test by default."""
+    values = [v for _, v in _series(bundle.get("balance"), "ordinary_shares_number") if v]
+    if len(values) < 2:
+        return False
+    newest, prior = values[0], values[1]
+    if not prior:
+        return False
+    return abs(newest - prior) / prior > 0.30
 
 
 def _bvps(bundle):

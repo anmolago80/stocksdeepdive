@@ -10711,6 +10711,24 @@ def page_deep_dive():
                     "guard against understating capex during a spend ramp."
                 )
 
+            # Audit fixes Commit 4 (30 Sep 2026, owner-directed): dual-
+            # class share-count override - flag it on screen either way
+            # (applied OR rejected), same pattern as the two captions
+            # above. See share_class_engine.whole_company_shares()'s own
+            # docstring and deep_dive_engine.py's dcf_share_count_* keys.
+            if _dd.get("dcf_share_count_flagged"):
+                st.caption(i18n.t("dd.share_count_flagged", _dd_lang))
+            elif _dd.get("dcf_share_count_note"):
+                st.caption(i18n.t("dd.share_count_rejected", _dd_lang,
+                                   reason=_dd["dcf_share_count_note"]))
+
+            # Audit fixes Commit 4 (30 Sep 2026, owner-directed): missing
+            # marketCap silently defaulted the discount-rate tier to the
+            # micro-cap premium - flag it on screen, same pattern as
+            # every other caption in this block.
+            if _dd.get("dcf_market_cap_missing"):
+                st.caption(i18n.t("dd.market_cap_missing", _dd_lang))
+
             # Growth-path option E (owner-directed follow-up to 0d7ee0b,
             # 28 Sep 2026): growth is flat for years 1-5, then fades to a
             # market-cap-tiered end rate (floored at the currency perpetual
@@ -29372,11 +29390,13 @@ def _render_data_audit_checks_panel():
             f"<td>{_r.get('whole_company_shares', '-')}</td>"
             f"<td>{_r.get('whole_company_source', '-')}</td>"
             f"<td>{'yes' if _r.get('whole_company_flagged') else 'no'}</td>"
+            f"<td>{_r.get('whole_company_note', '-')}</td>"
             "</tr>"
         )
     st.markdown(_sdd_table(
         ["Ticker", "sharesOutstanding", "impliedSharesOutstanding", "Diluted avg shares (filed)",
-         "Whole-company shares used", "Resolved via", "Corrected?"],
+         "Whole-company shares used", "Resolved via", "Corrected?",
+         "Rejected candidate (audit fixes Commit 4)"],
         _da_shares_rows,
     ), unsafe_allow_html=True)
 
@@ -29431,8 +29451,13 @@ def _render_data_audit_checks_panel():
         "risk-free rate + a premium set by market-cap tier (see capm_engine.MARKET_CAP_DISCOUNT_"
         "TIERS). Both columns run through the SAME fcf_valuation_engine.dcf_intrinsic_value() "
         "call for a given ticker, differing only in the discount_rate passed in - isolates the "
-        "one variable this comparison is about. Nothing here changes the live site; capm_engine."
-        "resolve_discount_rate_by_market_cap() is not called from any live valuation path."
+        "one variable this comparison is about. Stale-caption fix (audit fixes Commit 4, "
+        "30 Sep 2026): capm_engine.resolve_discount_rate_by_market_cap() IS the live discount-"
+        "rate model as of A6's own 28 Sep 2026 rollout - resolve_discount_rate() is now a thin "
+        "wrapper around it (see that function's own docstring). 'Current model' below (no "
+        "discount_rate override passed) auto-resolves through the SAME tiered path 'tier model' "
+        "(explicit tier_rate override) does - this panel isolates float-rounding/call-path "
+        "differences between the two call shapes, not two different discount-rate models."
     )
     _da_a6_rows = []
     for _r in _da_result.get("a6_discount_tiers", []):
@@ -30046,15 +30071,25 @@ def page_admin_dashboard():
     # peek_cached_bundle() - NEVER a live fetch; a ticker with nothing
     # cached is skipped and listed), for the same reason: auditing every
     # saved universe live would be far too slow and would hammer Yahoo
-    # for a read-only diagnostic. capm_engine.resolve_discount_rate_by_
-    # market_cap() is not called from any live valuation path (see its
-    # own docstring) - nothing here changes the live site.
-    st.markdown("### A6 - discount-rate tiers vs current beta model, bulk (dry-run, DESIGN ONLY)")
+    # for a read-only diagnostic. Nothing here changes the live site -
+    # both dcf_intrinsic_value() calls below read from the cached
+    # bundle only.
+    #
+    # Stale-caption fix (audit fixes Commit 4, 30 Sep 2026, owner-
+    # directed): capm_engine.resolve_discount_rate_by_market_cap() IS
+    # the live discount-rate model as of A6's own 28 Sep 2026 rollout
+    # (resolve_discount_rate() is now a thin wrapper around it) - see
+    # check_a6_discount_tiers()'s own updated docstring in admin_data_
+    # audit.py for the full "what do the two columns actually compare
+    # now" explanation, which applies here identically.
+    st.markdown("### A6 - discount-rate tiers, auto vs explicit override, bulk (dry-run, DESIGN ONLY)")
     st.caption(
         "For every ticker in the selected universe(s) with a cached fundamentals bundle: MOS "
-        "under the current live beta-based model vs the proposed market-cap-tier model (no "
-        "beta), both from the SAME dcf_intrinsic_value() call differing only in the discount "
-        "rate passed in. Counts how many move by more than 10 points of MOS, and how many of "
+        "under dcf_intrinsic_value()'s own auto discount-rate resolution vs an explicit market-"
+        "cap-tier override, both from the SAME dcf_intrinsic_value() call differing only in the "
+        "discount rate passed in - both already resolve through the same live tiered model (no "
+        "beta anywhere), so this isolates call-path/rounding differences, not two different "
+        "models. Counts how many move by more than 10 points of MOS, and how many of "
         "those are in the CURRENT Top 100 pool (top100_store.current_pool()) - a directional "
         "signal for how much this could reshuffle Top 100, not a full re-selection (Value Score "
         "also depends on components other than MOS, which this audit does not re-run)."

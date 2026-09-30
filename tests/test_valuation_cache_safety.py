@@ -98,20 +98,26 @@ print(f"[engine_version_bumped_44] auto_compounder_engine.ENGINE_VERSION = {ace.
 
 
 # ======================================================================
-# CHECK: VALUATION_SOURCE_HASH is a real hash of the three files' raw
+# CHECK: VALUATION_SOURCE_HASH is a real hash of the hashed files' raw
 # bytes (recomputed independently here, not just trusting the module's
 # own claim), and it's a stable, non-None 12-char hex string.
+# Audit fixes Commit 4 (30 Sep 2026, owner-directed): share_class_
+# engine.py added to the hashed file list (it directly changes every
+# per-share figure this module computes via _whole_company_shares(),
+# and was the one gap the original 3-file list left open) - this
+# test's own independent recomputation follows suit.
 # ======================================================================
 _repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _h = hashlib.sha1()
-for _fname in ("fcf_valuation_engine.py", "capm_engine.py", "resolver_engine.py"):
+for _fname in ("fcf_valuation_engine.py", "capm_engine.py", "resolver_engine.py",
+                "share_class_engine.py"):
     with open(os.path.join(_repo_dir, _fname), "rb") as f:
         _h.update(f.read())
 _expected_hash = _h.hexdigest()[:12]
 assert ace.VALUATION_SOURCE_HASH == _expected_hash, (ace.VALUATION_SOURCE_HASH, _expected_hash)
 assert ace.VALUATION_SOURCE_HASH is not None and len(ace.VALUATION_SOURCE_HASH) == 12
 print(f"[valuation_source_hash_matches_files] VALUATION_SOURCE_HASH={ace.VALUATION_SOURCE_HASH!r} "
-      "independently recomputed from the same 3 files' raw bytes and matches exactly OK")
+      "independently recomputed from the same 4 files' raw bytes and matches exactly OK")
 
 # A change to ANY of the three files (simulated here rather than actually
 # editing them) changes the hash - proves this isn't a constant that

@@ -364,10 +364,11 @@ def check_a3b_shares(tickers=None):
             row["info_error"] = str(e)
 
         try:
-            shares, flagged, source = share_class_engine.whole_company_shares(info, ticker=t)
+            shares, flagged, source, note = share_class_engine.whole_company_shares(info, ticker=t)
             row["whole_company_shares"] = shares
             row["whole_company_flagged"] = flagged
             row["whole_company_source"] = source
+            row["whole_company_note"] = note
         except Exception as e:
             row["resolver_error"] = str(e)
 
@@ -460,20 +461,32 @@ def check_a5_half_year(tickers=None):
 
 
 def check_a6_discount_tiers(tickers=None):
-    """A6 dry-run (27 Sep 2026, owner-directed, FINAL SPEC): for each of
-    `tickers`, the tier/discount rate/intrinsic value/MOS under (a) the
-    current live beta-based CAPM model (with the A1 fix already live -
-    capm_engine.resolve_discount_rate) and (b) the new market-cap-tier
-    model (capm_engine.resolve_discount_rate_by_market_cap), computed
-    by calling fcf_valuation_engine.dcf_intrinsic_value() TWICE for the
-    same ticker with the SAME fetched bundle/growth/perpetual-rate
-    inputs, differing only in the discount_rate= override passed in -
-    isolates the one variable this whole audit is actually about,
-    rather than risking two runs that also silently differ in FCF base
-    or growth source. DESIGN + DRY RUN ONLY - neither call here ever
-    writes anywhere; capm_engine.resolve_discount_rate_by_market_cap()
-    itself is not called from any live valuation path (see its own
-    docstring)."""
+    """A6 dry-run (27 Sep 2026, owner-directed, FINAL SPEC) - for each of
+    `tickers`, the tier/discount rate/intrinsic value/MOS via (a) dcf_
+    intrinsic_value()'s own AUTO discount-rate resolution (no override
+    passed) and (b) an EXPLICIT capm_engine.resolve_discount_rate_by_
+    market_cap() call, computed by calling fcf_valuation_engine.dcf_
+    intrinsic_value() TWICE for the same ticker with the SAME fetched
+    bundle/growth/perpetual-rate inputs, differing only in the
+    discount_rate= override passed in - isolates the one variable this
+    whole audit is actually about, rather than risking two runs that
+    also silently differ in FCF base or growth source.
+
+    Stale-docstring fix (audit fixes Commit 4, 30 Sep 2026, owner-
+    directed): this originally compared the OLD beta-based CAPM model
+    against the NEW market-cap-tier model, back when A6 was still
+    design-only. A6 went LIVE on 28 Sep 2026 - capm_engine.resolve_
+    discount_rate() is now a thin wrapper around resolve_discount_
+    rate_by_market_cap() itself (see that function's own docstring),
+    so "current_model" (a) below now auto-resolves through the exact
+    SAME tiered path "tier_model" (b) reaches via an explicit override -
+    this comparison today isolates call-path/rounding differences
+    between the auto and explicit-override shapes, not two different
+    discount-rate models. Kept as a comparison tool (still useful for
+    catching a genuine divergence between the two call shapes) rather
+    than removed, since nothing about ITS OWN mechanics changed - only
+    what the two columns represent did. DESIGN + DRY RUN ONLY - neither
+    call here ever writes anywhere."""
     tickers = tickers or A6_TICKERS
     out = []
     for t in tickers:

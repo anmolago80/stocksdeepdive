@@ -185,6 +185,26 @@ EN = {
         "wasn't available - see the notes below."
     ),
 
+    # Audit fixes Commit 4 (30 Sep 2026, owner-directed): dual-class
+    # share-count override - see share_class_engine.whole_company_
+    # shares()'s own docstring. Shown either way: an applied override
+    # (per-share figures use a whole-company count above plain
+    # sharesOutstanding) or a candidate found but rejected (ratio above
+    # the sanity ceiling, or uncorroborated).
+    "dd.share_count_flagged": (
+        "Note: this is a dual-class company - the DCF and per-share "
+        "figures use a whole-company share count, not just this listing's "
+        "own sharesOutstanding."
+    ),
+    "dd.share_count_rejected": (
+        "Note: a possible dual-class share count was found but not used "
+        "({reason}) - figures use this listing's own sharesOutstanding."
+    ),
+    "dd.market_cap_missing": (
+        "Note: market cap unavailable - micro-cap premium assumed for "
+        "the discount rate."
+    ),
+
     # Commit 2 (27 Sep 2026, owner-reported): shown instead of the
     # "check the ticker symbol" error + "Did you mean" chips when the
     # live price-history fetch itself failed (rate-limited or a
@@ -3993,6 +4013,21 @@ ES = {
     "dd.verdict.default_note": (
         "Se basa en un dato predeterminado o estimado porque no había una "
         "cifra reportada disponible - consulta las notas más abajo."
+    ),
+
+    "dd.share_count_flagged": (
+        "Nota: esta es una empresa de doble clase de acciones - el DCF y "
+        "las cifras por acción usan el número total de acciones de la "
+        "empresa, no solo el sharesOutstanding de esta cotización."
+    ),
+    "dd.share_count_rejected": (
+        "Nota: se encontró un posible número de acciones de doble clase "
+        "pero no se usó ({reason}) - las cifras usan el sharesOutstanding "
+        "de esta cotización."
+    ),
+    "dd.market_cap_missing": (
+        "Nota: capitalización de mercado no disponible - se asume la "
+        "prima de micro-capitalización para la tasa de descuento."
     ),
 
     "dd.error_fetch_failed": (

@@ -455,6 +455,17 @@ def resolve_discount_rate_by_market_cap(info, currency):
     market_cap = info.get("marketCap")
     if not market_cap or market_cap <= 0:
         meta["market_cap_missing"] = True
+        # Audit fixes Commit 4 (30 Sep 2026, owner-directed): market_cap_
+        # missing already meant the tier below silently defaults to the
+        # micro-cap premium (the LAST/smallest tier in MARKET_CAP_
+        # DISCOUNT_TIERS - see the loop just below) purely because
+        # market_cap_usd falls through every real threshold at 0 - but
+        # `defaulted` was never set for this case (only for a risk-free-
+        # rate fallback), so nothing downstream ever knew the discount
+        # rate itself rested on an assumption. Setting it here is what
+        # lets the caller (fcf_valuation_engine.dcf_intrinsic_value())
+        # fire the red "estimated inputs" treatment for this case too.
+        meta["defaulted"] = True
         market_cap = 0
     market_cap_usd = market_cap * _DISCOUNT_TIER_FX_TO_USD_APPROX.get(ccy, 1.0)
 

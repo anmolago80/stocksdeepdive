@@ -141,6 +141,17 @@ def resolve_intrinsic_value(
             # appear here; see the pe-blend branch below for that one).
             "growth_raw": dcf_meta.get("growth_raw"),
             "fcf_reason": dcf_meta.get("fcf_reason"),
+            # Audit fixes Commit 4 (30 Sep 2026) passthrough - same pure-
+            # provenance pattern as every other *_flagged/*_source key
+            # above. See share_class_engine.whole_company_shares()'s own
+            # docstring and fcf_valuation_engine.dcf_intrinsic_value()'s
+            # meta docstring for what each means - app.py's Fair Value
+            # panel shows a small caption next to the Shares row when
+            # either share_count_flagged or share_count_note is set.
+            "share_count_flagged": dcf_meta.get("share_count_flagged", False),
+            "share_count_source": dcf_meta.get("share_count_source"),
+            "share_count_note": dcf_meta.get("share_count_note"),
+            "market_cap_missing": dcf_meta.get("market_cap_missing", False),
         }
         return dcf_value, "dcf", growth_used, meta
 
