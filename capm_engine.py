@@ -575,11 +575,30 @@ def get_growth_estimates_5y(ticker):
                                   see estimate_growth()'s own priority-1
                                   handling. Added 30 Sep 2026, growth-
                                   never-zero rewrite.
+                 "ok_1y"        - LTG/+5y matched a row but every
+                                  candidate column in it was NaN (Yahoo
+                                  isn't populating long-term growth for
+                                  this name - confirmed real, 30 Sep 2026,
+                                  from a Dow 30/RMD.AX frame dump: the LTG
+                                  row existed, stockTrend matched, value
+                                  was NaN), so this falls back to the
+                                  SAME account's own +1y (next fiscal
+                                  year), then 0y (current fiscal year)
+                                  row instead - see _fetch_growth_
+                                  estimates_5y_uncached()'s own fallback
+                                  comment. Same tier cap and same >0 rule
+                                  as "ok" (estimate_growth()'s priority-1
+                                  branch only looks at the raw value, not
+                                  this status), just a shorter-horizon
+                                  Yahoo figure - kept distinct so the
+                                  label can honestly read "Yahoo analyst
+                                  (next year)" rather than implying a
+                                  genuine 5-year LTG figure was found.
                  "no_coverage"  - the fetch itself succeeded, but Yahoo
-                                  has no LTG/+5y analyst estimate for this
-                                  name (or the table isn't shaped as
-                                  expected) - a real DATA fact, not a
-                                  failure.
+                                  has no LTG/+5y (or +1y/0y fallback)
+                                  analyst estimate for this name (or the
+                                  table isn't shaped as expected) - a
+                                  real DATA fact, not a failure.
                  "fetch_failed" - the fetch raised (network error, rate
                                   limit, a poisoned yfinance crumb - see
                                   nightly_scan.py's own module comment
@@ -656,6 +675,18 @@ def _row_value(row, columns):
 _LTG_LABEL_KEY = "ltg"
 _FIVE_YEAR_LABEL_SUBSTR = "5year"
 _FIVE_YEAR_LABEL_EXACT = ("+5y", "5y")
+
+# LTG-fallback fix (owner-directed, 30 Sep 2026, from a Dow 30 rescan's
+# RMD.AX frame dump at 09:25 UTC): confirmed NOT a parse bug - the LTG
+# row exists, stockTrend is the correctly-matched column, but Yahoo
+# itself returned NaN for that ticker's own long-term-growth figure
+# (only indexTrend, the benchmark column, had a value). Rather than
+# falling all the way through to history/reported/default (estimate_
+# growth()'s priorities 2-4) whenever this happens, _fetch_growth_
+# estimates_5y_uncached() below now tries this SAME account's own
+# shorter-horizon analyst rows next - "+1y" (next fiscal year) first,
+# then "0y" (current fiscal year) - in that priority order.
+_ONE_YEAR_LABEL_EXACT = ("+1y", "0y")
 
 # Column lookup: "stockTrend" added (30 Sep 2026) alongside the existing
 # "Stock Trend" - a camelCase variant seen on some yfinance versions/
@@ -766,15 +797,27 @@ _growth_estimate_null_row_logged = False
 
 
 def _log_growth_estimate_null_row_once(ticker, label, row):
-    """One-time (per process) WARNING when a matched label (LTG/+5y/...)
-    has NO usable value across every candidate column in _GROWTH_
-    ESTIMATE_VALUE_COLUMNS - added 30 Sep 2026 (owner-directed, urgent).
-    If Yahoo's row label matching is fine but every candidate column
-    name is wrong/missing for the shape this account's yfinance is
-    actually serving, this is the ONLY diagnostic that shows that - the
-    raw-value diagnostic never fires in that case, since _row_value()
-    returned None and the loop just moves on to the next candidate
-    label with no trace otherwise."""
+    """One-time PER UNIVERSE (changed from per-process 30 Sep 2026,
+    LTG-fallback fix, owner-directed) WARNING when a matched label
+    (LTG/+5y/...) has NO usable value across every candidate column in
+    _GROWTH_ESTIMATE_VALUE_COLUMNS - added 30 Sep 2026 (owner-directed,
+    urgent). If Yahoo's row label matching is fine but every candidate
+    column name is wrong/missing for the shape this account's yfinance
+    is actually serving (or, as confirmed live by the RMD.AX frame dump,
+    Yahoo genuinely isn't populating the figure for that name), this is
+    the ONLY diagnostic that shows that - the raw-value diagnostic never
+    fires in that case, since _row_value() returned None and the loop
+    just moves on to the next candidate label with no trace otherwise.
+    Always includes the ticker (the %s below), so a universe-level log
+    still identifies which name tripped it.
+
+    Was a plain per-process once-flag (fired for at most one ticker in
+    the entire process's lifetime, silently going quiet for every
+    universe scanned after whichever one hit it first). nightly_scan.
+    run_universe_scan() now calls reset_growth_null_row_log() once at
+    the start of each universe's own scan, so this fires again for the
+    first ticker in EACH universe that needs it - real per-universe
+    coverage visibility instead of a single process-wide sample."""
     global _growth_estimate_null_row_logged
     if _growth_estimate_null_row_logged:
         return
@@ -787,6 +830,16 @@ def _log_growth_estimate_null_row_once(ticker, label, row):
         )
     except Exception:
         pass
+
+
+def reset_growth_null_row_log():
+    """Reset the per-universe 'matched label but NaN' one-time diagnostic
+    (see _log_growth_estimate_null_row_once's own docstring) - called by
+    nightly_scan.run_universe_scan() once at the start of each universe's
+    own scan (LTG-fallback fix, owner-directed, 30 Sep 2026), so it fires
+    at most once per universe instead of once per process."""
+    global _growth_estimate_null_row_logged
+    _growth_estimate_null_row_logged = False
 
 
 def _fetch_growth_estimates_5y_uncached(ticker):
@@ -864,6 +917,42 @@ def _fetch_growth_estimates_5y_uncached(ticker):
             # summary line / Deep Dive caption) WHY it fell through.
             result = (normalized, "ok" if normalized > 0 else "non_positive")
             break
+
+        # LTG fallback (owner-directed, 30 Sep 2026, from the RMD.AX
+        # 09:25 UTC frame dump - see _ONE_YEAR_LABEL_EXACT's own comment
+        # above). Only tried when an LTG/+5y label genuinely MATCHED
+        # (ltg_labels or five_year_labels non-empty) but every one of
+        # those rows was NaN across every candidate column (result is
+        # still None) - the exact RMD.AX shape: the label exists, the
+        # column is right, the value just isn't populated. Deliberately
+        # NOT tried when NEITHER label ever matched at all (both empty) -
+        # that's a genuinely different case ("Yahoo doesn't cover a 5y
+        # estimate for this name at all", pre-existing "no_coverage"
+        # behaviour, unchanged by this fix - see test_growth_estimate_
+        # fetch_resilience.py's own "no_five_year_row_is_no_coverage"
+        # check, which a broader trigger here would have silently
+        # broken). A genuine non-positive LTG/+5y value already broke
+        # out of the loop above as real, confirmed data - this fallback
+        # never overrides that either, it only covers "Yahoo matched the
+        # label but left it empty".
+        if result is None and (ltg_labels or five_year_labels):
+            one_year_labels = sorted(
+                (lbl for lbl in labels if lbl.lower().replace(" ", "") in _ONE_YEAR_LABEL_EXACT),
+                key=lambda lbl: _ONE_YEAR_LABEL_EXACT.index(lbl.lower().replace(" ", "")),
+            )
+            for lbl in one_year_labels:
+                v = _row_value(df.loc[lbl], _GROWTH_ESTIMATE_VALUE_COLUMNS)
+                if v is None:
+                    continue
+                normalized = (v / scale) if scale is not None else _normalize_yahoo_growth_estimate(v)
+                # Same >0 rule as the LTG/+5y tier - a non-positive +1y/0y
+                # figure isn't a usable stage-1 growth signal either, so
+                # keep trying the next fallback label rather than
+                # accepting it.
+                if normalized > 0:
+                    result = (normalized, "ok_1y")
+                    break
+
         _log_growth_estimate_raw_frame_once(
             ticker, df, ltg_labels, five_year_labels, scale,
             result[0] if result else None, result[1] if result else "no_coverage",

@@ -74,7 +74,7 @@ def resolve_intrinsic_value(
         meta["growth_default"]   : bool  (DCF fell back to average growth)
         meta["value_default"]    : bool  (the intrinsic value rests on an
                                           assumption - render it red)
-        meta["yahoo_estimate_status"] : "ok"|"no_coverage"|"non_positive"|"fetch_failed"|None
+        meta["yahoo_estimate_status"] : "ok"|"ok_1y"|"no_coverage"|"non_positive"|"fetch_failed"|None
                                           (only set on the auto growth path -
                                           see capm_engine.get_growth_estimates_5y())
     """

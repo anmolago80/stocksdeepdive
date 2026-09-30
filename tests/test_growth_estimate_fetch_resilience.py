@@ -372,9 +372,15 @@ with mock.patch.object(ns, "_yf_call_with_retry") as _ytw, \
     _summary = {}
     _row = ns.analyze_ticker_lite("FAKETICKER", log=lambda *a, **k: None, growth_summary_out=_summary)
 assert _row is not None
-assert _summary == {"history_fetch_failed": 1}, _summary
+# LTG-fallback fix (owner-directed, 30 Sep 2026) added a SECOND bucket per
+# ticker to the same growth_summary_out dict - _growth_coverage_bucket()'s
+# raw Yahoo-coverage tier ("yahoo_ltg"/"yahoo_1y"/"yahoo_none"), alongside
+# the pre-existing _growth_source_bucket()'s "what actually drove the
+# final number" tier. A "fetch_failed" yahoo_estimate_status buckets as
+# both "history_fetch_failed" (unchanged) and "yahoo_none" (new).
+assert _summary == {"history_fetch_failed": 1, "yahoo_none": 1}, _summary
 print("[analyze_ticker_lite_growth_summary_out] one full analyze_ticker_lite() call with "
-      f"a mocked fetch_failed iv_meta correctly increments the out-param: {_summary} OK")
+      f"a mocked fetch_failed iv_meta correctly increments BOTH out-param buckets: {_summary} OK")
 
 
 print("\nALL GROWTH-ESTIMATE-FETCH-RESILIENCE FIXTURES PASSED")

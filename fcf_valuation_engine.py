@@ -838,7 +838,7 @@ def dcf_intrinsic_value(
         "growth_end_rate_used": float | None,  # the market-cap-tiered end rate the fade
                                        # targets, floored at perpetual_rate_used (a
                                        # stock never fades below its own terminal rate)
-        "yahoo_estimate_status": "ok" | "no_coverage" | "non_positive" | "fetch_failed" | None,
+        "yahoo_estimate_status": "ok" | "ok_1y" | "no_coverage" | "non_positive" | "fetch_failed" | None,
                                        # only set on the auto (growth_rate=None) path -
                                        # see capm_engine.get_growth_estimates_5y()'s own
                                        # docstring ("non_positive" added 30 Sep 2026 -

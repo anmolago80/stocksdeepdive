@@ -10764,6 +10764,16 @@ def page_deep_dive():
             }
             _dd_tier = _dd.get("dcf_discount_tier")
             _dd_gsrc = _dd_growth_source_labels.get(_dd.get("dcf_growth_source"))
+            # LTG-fallback fix (owner-directed, 30 Sep 2026, from the
+            # RMD.AX frame dump): "analyst" covers BOTH a genuine LTG/+5y
+            # figure (yahoo_estimate_status "ok") and the +1y/0y fallback
+            # capm_engine.get_growth_estimates_5y() now uses when LTG
+            # matched but was NaN ("ok_1y") - estimate_growth() treats
+            # them identically (same tier cap, same >0 rule), but the
+            # reader should see which horizon Yahoo's figure actually
+            # covers rather than always reading "5y".
+            if _dd.get("dcf_growth_source") == "analyst" and _dd.get("dcf_yahoo_estimate_status") == "ok_1y":
+                _dd_gsrc = "Yahoo analyst (next year)"
             # Growth-estimate-fetch resilience fix (owner-directed, 28 Sep
             # 2026), extended by the growth-never-zero rewrite (30 Sep
             # 2026, "non_positive" status): "historical avg"/"reported

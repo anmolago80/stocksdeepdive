@@ -41,6 +41,7 @@ import yfinance as yf
 import admin_metrics_store
 import alert_engine
 import auto_compounder_engine
+import capm_engine
 import fundamentals_data
 import moat_engine
 import peer_context
@@ -320,6 +321,37 @@ def _growth_source_bucket(iv_meta):
     return "other"
 
 
+def _growth_coverage_bucket(iv_meta):
+    """Buckets one ticker's RAW capm_engine.get_growth_estimates_5y()
+    coverage tier for run_universe_scan()'s own scan-level summary line
+    (LTG-fallback fix, owner-directed, 30 Sep 2026, from the RMD.AX 09:25
+    UTC frame dump) - distinct from _growth_source_bucket() above, which
+    reports what actually drove the FINAL number after estimate_growth()'s
+    full Cap/History/Info/Default priority order. This reports Yahoo's
+    own raw per-ticker coverage, independent of what happened downstream:
+
+        "yahoo_ltg"  - a genuine LTG/+5y value was found
+                       (yahoo_estimate_status "ok").
+        "yahoo_1y"   - LTG/+5y matched a row but it was NaN; the +1y/0y
+                       fallback found a usable value instead
+                       (yahoo_estimate_status "ok_1y" - see capm_engine.
+                       get_growth_estimates_5y()'s own docstring).
+        "yahoo_none" - neither tier had a usable positive value for this
+                       ticker (no_coverage/non_positive/fetch_failed/
+                       None) - Yahoo simply doesn't have it right now.
+
+    Gives the owner per-universe coverage visibility ("how many of
+    tonight's tickers actually had Yahoo LTG data vs. the 1y fallback
+    vs. nothing at all") independent of whether history/info/cap ended
+    up driving the final growth figure for any of them."""
+    yahoo_status = iv_meta.get("yahoo_estimate_status")
+    if yahoo_status == "ok":
+        return "yahoo_ltg"
+    if yahoo_status == "ok_1y":
+        return "yahoo_1y"
+    return "yahoo_none"
+
+
 def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
                          perpetual_rate=None, growth_rate=None, manual_fcf=None, log=print,
                          rate_limited_out=None, growth_summary_out=None):
@@ -506,6 +538,8 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     if growth_summary_out is not None:
         _bucket = _growth_source_bucket(iv_meta)
         growth_summary_out[_bucket] = growth_summary_out.get(_bucket, 0) + 1
+        _coverage_bucket = _growth_coverage_bucket(iv_meta)
+        growth_summary_out[_coverage_bucket] = growth_summary_out.get(_coverage_bucket, 0) + 1
     # Negative-FCF disclosure (A6, 30 Sep 2026, owner-directed): info-level,
     # not error - a negative FCF is an expected, handled outcome (the P/E-
     # blend fallback covers it), not a scan failure. One line per ticker so
@@ -882,6 +916,12 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
     # particular run/resume attempted, not the full universe across a
     # killed-and-resumed run; a diagnostic summary, not a persisted count.
     _growth_summary = {}
+    # LTG-fallback fix (owner-directed, 30 Sep 2026): reset capm_engine's
+    # per-universe "matched label but NaN" one-time diagnostic at the
+    # start of each universe's own scan - see capm_engine.reset_growth_
+    # null_row_log()'s own docstring for why (was a plain per-process
+    # flag, silently going quiet after whichever universe hit it first).
+    capm_engine.reset_growth_null_row_log()
     _checkpoint = scan_checkpoint_store.load(universe)
     if _checkpoint:
         if scan_checkpoint_store.is_resumable(_checkpoint, tickers, run_night, log=log):
@@ -1205,6 +1245,16 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
             f"(fetch failed) {_growth_summary.get('history_fetch_failed', 0)}, "
             f"cap {_growth_summary.get('cap', 0)}" +
             (f", other {_gs_other}" if _gs_other else ""))
+        # LTG-fallback fix (owner-directed, 30 Sep 2026): a second line -
+        # Yahoo's own RAW per-ticker coverage tier (see _growth_coverage_
+        # bucket()'s own docstring), independent of what estimate_growth()
+        # ultimately did with it above, so the owner can see per-universe
+        # whether tonight's tickers actually had Yahoo LTG data, fell back
+        # to the +1y/0y tier, or had neither.
+        log(f"[nightly_scan] {universe}: Yahoo coverage - Yahoo LTG "
+            f"{_growth_summary.get('yahoo_ltg', 0)}, Yahoo 1y "
+            f"{_growth_summary.get('yahoo_1y', 0)}, Yahoo none "
+            f"{_growth_summary.get('yahoo_none', 0)}")
     try:
         score_history.record(rows)
         log(f"[nightly_scan] {universe}: recorded {len(rows)} rows to score_history")
