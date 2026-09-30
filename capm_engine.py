@@ -506,12 +506,23 @@ _growth_estimate_labels_logged = False
 
 
 def _log_growth_estimate_labels_once(df):
+    """WARNING, not INFO (30 Sep 2026, owner-directed, urgent fix): this
+    used to log at INFO, which is silent by default - server.py is the
+    ONLY process in this app that calls logging.basicConfig(level=INFO);
+    the Streamlit subprocess, where "Rescan now" actually runs, never
+    configures a handler at all, so Python's default root logger level
+    (WARNING) dropped every one of these records with no trace anywhere.
+    That's why this line "never appeared" for the owner despite the
+    growth-never-zero rewrite explicitly depending on it - not because
+    the code path wasn't hit, but because nothing was listening. All
+    three growth_estimates diagnostics in this module are WARNING now
+    for exactly this reason."""
     global _growth_estimate_labels_logged
     if _growth_estimate_labels_logged:
         return
     _growth_estimate_labels_logged = True
     try:
-        _growth_logger.info(
+        _growth_logger.warning(
             "get_growth_estimates_5y: yfinance growth_estimates index labels (first "
             "ticker seen this process): %s", [str(i) for i in df.index],
         )
@@ -654,13 +665,19 @@ def _log_growth_estimate_raw_value_once(label, raw_value):
     (10.3) - see estimate_growth() 1.1's own instruction: this sandbox
     has no network access to run that live verification script itself,
     so this log line is the mechanism that surfaces the real answer on
-    the next production nightly scan instead."""
+    the next production nightly scan instead.
+
+    WARNING, not INFO (30 Sep 2026, owner-directed, urgent fix) - same
+    reason as _log_growth_estimate_labels_once()'s own docstring: INFO
+    is silently dropped outside server.py's own process, which is why
+    this "never appeared" despite the underlying fetch code running
+    fine."""
     global _growth_estimate_raw_value_logged
     if _growth_estimate_raw_value_logged:
         return
     _growth_estimate_raw_value_logged = True
     try:
-        _growth_logger.info(
+        _growth_logger.warning(
             "get_growth_estimates_5y: raw value for label %r (first ticker seen this "
             "process): %r - confirms live LTG units (see estimate_growth() 1.1's own "
             "verification note)", label, raw_value,
@@ -691,6 +708,74 @@ def _infer_yahoo_growth_scale(df, columns):
                 if v is not None and abs(v) >= 1.5:
                     return 100.0
     return None
+
+
+_growth_estimate_raw_frame_logged = False
+
+
+def _log_growth_estimate_raw_frame_once(ticker, df, ltg_labels, five_year_labels, scale, value, status):
+    """One-time (per process) FULL dump of the growth_estimates frame for
+    the first ticker fetched this process, plus the complete parse
+    outcome - added 30 Sep 2026 (owner-directed, urgent) after a Dow 30
+    rescan logged "growth source - Yahoo 5y 0" identical to the pre-fix
+    29 Sep behaviour, AND neither of the two existing narrower
+    diagnostics (_log_growth_estimate_labels_once/_log_growth_estimate_
+    raw_value_once) appeared in the logs at all - both were INFO-level,
+    silently dropped by the Streamlit subprocess's unconfigured root
+    logger (see either of those functions' own docstrings for the full
+    story; both are WARNING now for the same reason this one is).
+    Deliberately NOT guessing at a fix beyond that logging-level bug
+    until this dump shows the actual frame shape Yahoo is serving in
+    production - logs repr(df) (the full frame, not just the labels),
+    dtypes, columns and index together with what the parse loop below
+    actually matched/inferred/returned, so the next real rescan's logs
+    are enough on their own to diagnose whatever the real problem is
+    (wrong column names, an unexpected frame shape, a still-poisoned
+    crumb serving stale/empty data, etc.) without another round trip."""
+    global _growth_estimate_raw_frame_logged
+    if _growth_estimate_raw_frame_logged:
+        return
+    _growth_estimate_raw_frame_logged = True
+    try:
+        _growth_logger.warning(
+            "get_growth_estimates_5y(%s): RAW FRAME DUMP (first ticker seen this "
+            "process) - repr=%r dtypes=%r columns=%r index=%r || parse outcome: "
+            "ltg_labels=%r five_year_labels=%r scale=%r value=%r status=%r",
+            ticker, df,
+            dict(df.dtypes) if hasattr(df, "dtypes") else None,
+            list(df.columns) if hasattr(df, "columns") else None,
+            [str(i) for i in df.index] if hasattr(df, "index") else None,
+            ltg_labels, five_year_labels, scale, value, status,
+        )
+    except Exception:
+        pass
+
+
+_growth_estimate_null_row_logged = False
+
+
+def _log_growth_estimate_null_row_once(ticker, label, row):
+    """One-time (per process) WARNING when a matched label (LTG/+5y/...)
+    has NO usable value across every candidate column in _GROWTH_
+    ESTIMATE_VALUE_COLUMNS - added 30 Sep 2026 (owner-directed, urgent).
+    If Yahoo's row label matching is fine but every candidate column
+    name is wrong/missing for the shape this account's yfinance is
+    actually serving, this is the ONLY diagnostic that shows that - the
+    raw-value diagnostic never fires in that case, since _row_value()
+    returned None and the loop just moves on to the next candidate
+    label with no trace otherwise."""
+    global _growth_estimate_null_row_logged
+    if _growth_estimate_null_row_logged:
+        return
+    _growth_estimate_null_row_logged = True
+    try:
+        _growth_logger.warning(
+            "get_growth_estimates_5y(%s): matched label %r but _row_value() found no "
+            "usable value across columns %r - row repr: %r",
+            ticker, label, _GROWTH_ESTIMATE_VALUE_COLUMNS, row,
+        )
+    except Exception:
+        pass
 
 
 def _fetch_growth_estimates_5y_uncached(ticker):
@@ -729,6 +814,7 @@ def _fetch_growth_estimates_5y_uncached(ticker):
             return None, "fetch_failed"
         return None, "no_coverage"
     if getattr(df, "empty", True):
+        _log_growth_estimate_raw_frame_once(ticker, df, [], [], None, None, "no_coverage")
         return None, "no_coverage"
 
     _log_growth_estimate_labels_once(df)
@@ -749,9 +835,11 @@ def _fetch_growth_estimates_5y_uncached(ticker):
             or lbl.lower().replace(" ", "") in _FIVE_YEAR_LABEL_EXACT
         ]
         scale = _infer_yahoo_growth_scale(df, _GROWTH_ESTIMATE_VALUE_COLUMNS)
+        result = None
         for lbl in ltg_labels + five_year_labels:
             v = _row_value(df.loc[lbl], _GROWTH_ESTIMATE_VALUE_COLUMNS)
             if v is None:
+                _log_growth_estimate_null_row_once(ticker, lbl, df.loc[lbl])
                 continue
             _log_growth_estimate_raw_value_once(lbl, v)
             normalized = (v / scale) if scale is not None else _normalize_yahoo_growth_estimate(v)
@@ -763,7 +851,14 @@ def _fetch_growth_estimates_5y_uncached(ticker):
             # on a non-positive value, same as it always has for a plain
             # None - this status just tells the CALLER (and the nightly
             # summary line / Deep Dive caption) WHY it fell through.
-            return normalized, ("ok" if normalized > 0 else "non_positive")
+            result = (normalized, "ok" if normalized > 0 else "non_positive")
+            break
+        _log_growth_estimate_raw_frame_once(
+            ticker, df, ltg_labels, five_year_labels, scale,
+            result[0] if result else None, result[1] if result else "no_coverage",
+        )
+        if result is not None:
+            return result
     except Exception:
         pass
     return None, "no_coverage"
