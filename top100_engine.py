@@ -16,13 +16,20 @@ THREE STAGES, each independently runnable and independently safe to
 fail (a broken stage never corrupts data an earlier stage already
 wrote):
 
-  1. SELECTION (select_top100_pool) - merges every saved universe's
-     scan rows (scan_store.list_saved_universes(), "imported" and any
-     currently-flagged/non-trading ticker excluded), de-duplicates by
-     ticker keeping each ticker's MAXIMUM Value Score ("Long Score" -
+  1. SELECTION (select_top100_pool) - merges every ELIGIBLE saved
+     universe's scan rows (scan_store.list_saved_universes(), minus
+     "imported", derived, orphaned and degraded files - see
+     _eligible_scan_payloads()'s own docstring - and any currently-
+     flagged/non-trading ticker), de-duplicates by ticker keeping each
+     ticker's FRESHEST candidate (newest generated_at, tie-broken by
+     Long Score - selection freshness fix, 30 Sep 2026, replacing the
+     old "keep the MAXIMUM Long Score across every file" rule, which
+     let a stale valuation win indefinitely - see POOL_MAX_FULL_SCAN_
+     AGE_DAYS's own comment), recomputes its Value Score ("Long Score" -
      see snapshot_store.py's own _PUBLIC_FIELD_MAP for why that's the
-     same number the rest of the site calls "Value Score"), keeps the
-     top 100, and persists via top100_store.save_pool().
+     same number the rest of the site calls "Value Score") with one
+     consistent formula for every ticker, keeps the top 100, and
+     persists via top100_store.save_pool().
 
   2. SCORING (submit_nightly_batch / poll_and_ingest_batch) - a TWO-
      PHASE Batch API flow, not a single blocking call: the Batches API
@@ -74,8 +81,10 @@ from datetime import datetime, timezone
 import yfinance as yf
 
 import nightly_scan
+import ranking_engine
 import scan_store
 import scanner_engine
+import scheduler_engine
 import sector_cache_store
 from share_class_engine import SHARE_CLASS_PAIRS
 import top100_store
@@ -118,6 +127,35 @@ POOL_SIZE = 100
 # count. select_top100_pool() tops up rated Australians to this many
 # whenever the global pool alone has fewer.
 TOP20_AU_TARGET = 20
+
+# Top 100 selection freshness fix (30 Sep 2026, owner-directed). Root
+# cause of the reported bug ("Top 100 still shows the old list"):
+# select_top100_pool() used to keep each ticker's MAX Long Score across
+# every saved universe file with no freshness check at all - a weekday-
+# pinned universe (Aristocrats, S&P 600) that only gets nightly-repriced
+# (never a real full rescan - reprice recomputes from the STORED
+# Intrinsic Value, never a fresh DCF) kept serving a stale valuation
+# indefinitely, while looking fresh because ITS OWN file's repriced_at
+# kept advancing. Fixed by picking, per ticker, the candidate row with
+# the NEWEST generated_at (the last full fundamentals scan) - never the
+# highest Long Score alone - among ELIGIBLE candidate files only (see
+# select_top100_pool()'s own docstring for exactly what "eligible"
+# excludes).
+#
+# A row whose winning candidate is older than this many days is still
+# used (there is nothing fresher to prefer), but flagged stale_
+# valuation=1 so the page can disclose it rather than silently serving
+# it as if it were current.
+POOL_MAX_FULL_SCAN_AGE_DAYS = 10
+
+# Tag stored on every pool row (top100_pool.pool_selection_rule) - lets
+# top100_render.py's changes strip detect a selection-RULE change (as
+# opposed to an ordinary night-to-night pool change) between current_
+# pool() and previous_pool(), and suppress the New/Dropped/Awaiting
+# diff for the one night that comparison would otherwise be artificial
+# (comparing pools chosen under two different rules). Bump this string
+# again if this selection rule itself changes in the future.
+POOL_SELECTION_RULE = "freshest_v1"
 
 # Top 100 Commit 3 (27 Sep 2026, owner-reported): explicit share-class
 # pairs - the SAME underlying company listed under two tickers. GOOG and
@@ -217,22 +255,107 @@ def _report_undocumented_same_name_duplicates(best_by_ticker, log=print):
                 f"by hand if genuine: {sorted(tickers)} all show company_name={name!r}")
 
 
+def _eligible_scan_payloads(log=print):
+    """Top 100 selection freshness fix (30 Sep 2026, owner-directed):
+    {universe: payload} for every saved universe file that's actually
+    ELIGIBLE to win a ticker's pool slot - loaded via scan_store.
+    load_scan_raw() ONCE per file (never re-opened), so the caller can
+    read generated_at/repriced_at/attention_lite/degraded straight off
+    the same payload dict it already has, with no second read.
+
+    Excluded, each logged once with a reason:
+      - "imported" (unchanged - never part of Top 100 at all).
+      - DERIVED universes (scheduler_engine._DERIVED_UNIVERSE_PARENTS) -
+        a derived file (e.g. "ASX 100") is itself just a filtered VIEW
+        of its parent(s)' own rows (e.g. "ASX 200"/"ASX 300"), rebuilt
+        from whatever the parents' OWN generated_at already is - letting
+        it win a ticker slot in its own right would only ever duplicate
+        or shadow the parent's own freshness, never add real information.
+      - ORPHANED universes - a saved file whose universe name isn't in
+        today's live NIGHTLY_UNIVERSES cadence map at all (renamed or
+        retired since that file was written) is no longer maintained by
+        anything; its rows can silently age forever with nothing to ever
+        refresh them, so they're excluded from winning outright rather
+        than competing on a frozen "freshness" that will never improve.
+      - `degraded` files (scan_store.save_scan()'s own flag - completed
+        for fewer tickers than its own completeness threshold, kept only
+        because no better prior scan existed) - a partial scan is exactly
+        the kind of lower-confidence data this fix exists to stop from
+        silently winning a slot over a complete, if slightly older, one.
+    """
+    cadence_map = scheduler_engine.nightly_universe_cadence()
+    out = {}
+    for universe in scan_store.list_saved_universes():
+        if universe == IMPORTED_UNIVERSE:
+            continue
+        if universe in scheduler_engine._DERIVED_UNIVERSE_PARENTS:
+            continue
+        if universe not in cadence_map:
+            log(f"[top100] selection: skipping {universe!r} - orphaned "
+                f"(not in the current NIGHTLY_UNIVERSES cadence map)")
+            continue
+        payload = scan_store.load_scan_raw(universe)
+        if not payload:
+            continue
+        if payload.get("degraded"):
+            log(f"[top100] selection: skipping {universe!r} - degraded scan")
+            continue
+        out[universe] = payload
+    return out
+
+
+def _recompute_value_score(row):
+    """Top 100 selection freshness fix, 2.2 (30 Sep 2026, owner-
+    directed): "one ranking rule" - Long Score recomputed from the
+    chosen row's own stored components with discovery_measured=False
+    for EVERY ticker, the only rule available for every universe (a
+    lite-scanned universe's own stored Long Score never had a real
+    Discovery signal to measure in the first place - see ranking_
+    engine.calculate_long_score()'s own discovery_measured docstring -
+    while a full-attention universe's stored Long Score DID use a real
+    one; blending the two AS STORED would rank a lite row and a full
+    row for the same company under two different formulas). Never
+    raises - a row missing Quality/MOS entirely (shouldn't happen for
+    anything that reached this far) resolves via calculate_long_score's
+    own None-tolerant clamping, same as every other caller."""
+    return ranking_engine.calculate_long_score(
+        row.get("Quality"), row.get("MOS %") or 0.0, row.get("Psychology"),
+        row.get("Discovery (lite)") or 0, discovery_measured=False,
+    )
+
+
 def select_top100_pool(log=print):
-    """Merges every saved universe's scan rows (scan_store.
-    list_saved_universes(), "imported" excluded), de-duplicates by
-    ticker keeping each ticker's MAXIMUM "Long Score" (Value Score),
-    excludes any currently-flagged/non-trading row, keeps the top
-    POOL_SIZE by Value Score, and persists the result via top100_
-    store.save_pool(as_of=today's UTC date). Returns the saved GLOBAL
-    pool only (unchanged contract - the ASX extension below is never
-    part of this return value) - [{"ticker","company_name","universe",
-    "value_score","mos_pct","price","intrinsic_value","currency",
-    "psychology","sector","dividend_yield_pct","most_recent_quarter"},
-    ...], Value Score descending. Never raises -
+    """Merges every ELIGIBLE saved universe's scan rows (see
+    _eligible_scan_payloads() above for exactly what's excluded and
+    why), de-duplicates by ticker, excludes any currently-flagged/non-
+    trading row, keeps the top POOL_SIZE by (recomputed) Value Score,
+    and persists the result via top100_store.save_pool(as_of=today's
+    UTC date). Returns the saved GLOBAL pool only (unchanged contract -
+    the ASX extension below is never part of this return value) -
+    [{"ticker","company_name","universe","value_score","mos_pct",
+    "price","intrinsic_value","currency","psychology","sector",
+    "dividend_yield_pct","most_recent_quarter","generated_at",
+    "stale_valuation"}, ...], Value Score descending. Never raises -
     a single bad universe file is skipped (scan_store.load_scan_raw()
     itself already returns None on any read error), and an empty
     result (no saved scans yet) simply persists/returns an empty pool
     rather than crashing.
+
+    Top 100 selection freshness fix (30 Sep 2026, owner-directed):
+    per ticker, picks the candidate row with the NEWEST generated_at
+    (the last full fundamentals scan) among every eligible file that
+    carries this ticker - NEVER the highest Long Score alone, which is
+    what let a stale valuation win indefinitely (see this module's own
+    POOL_MAX_FULL_SCAN_AGE_DAYS comment for the full root cause). Ties
+    on generated_at (same file, or two files scanned in the same
+    second) break on the row's own stored Long Score. A ticker whose
+    every candidate is older than POOL_MAX_FULL_SCAN_AGE_DAYS still
+    gets its freshest available candidate (there is nothing better to
+    prefer) - flagged stale_valuation=1 so the page can disclose it,
+    the row is never dropped or hidden for this alone. Value Score
+    itself is then RECOMPUTED (see _recompute_value_score() above) -
+    the winning row's own original stored Long Score is kept alongside
+    as value_score_source_row, for audit.
 
     ASX EXTENSION (Top 20 Australia guaranteed-twenty, 25 Sep 2026,
     owner-approved mock): the global pool/selection above is otherwise
@@ -249,27 +372,68 @@ def select_top100_pool(log=print):
     the changes strip, any exactly-100 assertion) is unaffected by its
     existence - only top100_store.current_asx_extension() and
     top100_render.py's own Australia-tab code ever read it."""
-    best_by_ticker = {}
-    for universe in scan_store.list_saved_universes():
-        if universe == IMPORTED_UNIVERSE:
-            continue
-        payload = scan_store.load_scan_raw(universe)
-        if not payload:
-            continue
+    eligible = _eligible_scan_payloads(log=log)
+    now = datetime.now(timezone.utc)
+
+    # ticker -> the winning candidate's (generated_at datetime, row's own
+    # stored Long Score, row dict, universe name, generated_at raw string)
+    # - kept as a single running "best so far" per ticker (freshest first,
+    # Long Score tie-break) rather than a list of every candidate, since
+    # nothing downstream needs the losing candidates.
+    best_candidate = {}
+    for universe, payload in eligible.items():
+        gen_raw = payload.get("generated_at")
+        try:
+            gen_dt = datetime.fromisoformat(gen_raw) if gen_raw else None
+        except ValueError:
+            gen_dt = None
+        if gen_dt is None:
+            # No usable timestamp at all (shouldn't happen for a file
+            # save_scan() itself wrote) - treat as "as old as possible"
+            # so a ticker with any other timestamped candidate always
+            # prefers it, never this one.
+            gen_dt = datetime.min.replace(tzinfo=timezone.utc)
         for row in payload.get("rows") or []:
             ticker = (row.get("Ticker") or "").strip().upper()
-            value_score = row.get("Long Score")
-            if not ticker or value_score is None:
+            row_long_score = row.get("Long Score")
+            if not ticker or row_long_score is None:
                 continue
             if _is_flagged_stale(row):
                 continue
-            prev = best_by_ticker.get(ticker)
-            if prev is None or value_score > prev["value_score"]:
-                best_by_ticker[ticker] = {
+            prev = best_candidate.get(ticker)
+            key = (gen_dt, row_long_score)
+            if prev is None or key > (prev[0], prev[1]):
+                best_candidate[ticker] = (gen_dt, row_long_score, row, universe, gen_raw)
+
+    best_by_ticker = {}
+    for ticker, (gen_dt, row_long_score, row, universe, gen_raw) in best_candidate.items():
+        age_days = (now - gen_dt).total_seconds() / 86400.0
+        stale_valuation = age_days > POOL_MAX_FULL_SCAN_AGE_DAYS
+        recomputed_value_score = _recompute_value_score(row)
+        best_by_ticker[ticker] = {
                     "ticker": ticker,
                     "company_name": row.get("Company Name"),
                     "universe": universe,
-                    "value_score": value_score,
+                    "value_score": recomputed_value_score,
+                    # Audit trail (2.2): the winning row's own stored
+                    # Long Score, BEFORE the discovery_measured=False
+                    # recompute above - never read by any sort/
+                    # selection/composite_score(), display/debugging
+                    # only.
+                    "value_score_source_row": row_long_score,
+                    # Freshness fields (this fix's own load-bearing
+                    # addition) - generated_at is the winning candidate's
+                    # own file timestamp; source_universe_generated_at is
+                    # kept identical to it today (there is only ever one
+                    # source per selection), added as its own column so
+                    # a future selection rule that draws a row's display
+                    # fields and its generated_at from two DIFFERENT
+                    # places has somewhere to record that divergence
+                    # without another schema change.
+                    "generated_at": gen_raw,
+                    "source_universe_generated_at": gen_raw,
+                    "stale_valuation": stale_valuation,
+                    "pool_selection_rule": POOL_SELECTION_RULE,
                     "mos_pct": row.get("MOS %"),
                     "price": row.get("Price"),
                     "intrinsic_value": row.get("Intrinsic Value"),
@@ -363,9 +527,11 @@ def select_top100_pool(log=print):
 
     _fill_missing_sectors(pool + extension, log=log)
     top100_store.save_pool(pool + extension, as_of)
+    stale_count = sum(1 for r in pool if r.get("stale_valuation"))
     log(f"[top100] selected {len(pool)} companies for {as_of} "
         f"(from {len(best_by_ticker)} deduped candidates across "
-        f"{len([u for u in scan_store.list_saved_universes() if u != IMPORTED_UNIVERSE])} universes); "
+        f"{len(eligible)} eligible universes, freshest-row-wins); "
+        f"stale valuations (>{POOL_MAX_FULL_SCAN_AGE_DAYS}d, no fresher candidate): {stale_count}; "
         f"ASX extension: {len(extension)} added ({au_in_pool} pool Australians -> "
         f"{au_in_pool + len(extension)} total for Top 20 Australia)")
     return pool

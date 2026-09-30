@@ -327,6 +327,29 @@ def _shelf_chip_html(text, bg, border, color):
     )
 
 
+def _stale_valuation_chip_html(row, lang):
+    """Top 100 selection freshness fix (30 Sep 2026, owner-directed):
+    a small muted chip - "valuation N days old" - next to Value Score
+    when this row's stale_valuation flag is set (top100_engine.
+    select_top100_pool() couldn't find a candidate fresher than
+    POOL_MAX_FULL_SCAN_AGE_DAYS for this ticker). Reuses the same
+    muted grey-blue AWAITING chip family (not the amber NOT-RATED
+    family - this is a freshness disclosure, not a quality verdict).
+    Never hides the row; "" (no chip) when stale_valuation isn't set
+    or generated_at is missing/unparseable."""
+    if not row.get("stale_valuation"):
+        return ""
+    gen_raw = row.get("generated_at")
+    if not gen_raw:
+        return ""
+    try:
+        gen_dt = _dt.datetime.fromisoformat(gen_raw)
+    except ValueError:
+        return ""
+    age_days = int((_dt.datetime.now(_dt.timezone.utc) - gen_dt).total_seconds() // 86400)
+    return _shelf_chip_html(_t("stale_valuation_chip", lang, n=age_days), *_SHELF_CHIP_AWAITING)
+
+
 def _finer_industry_by_ticker():
     """{ticker: industry_string} from compounder_data.json's own hand-
     researched coverage (build_compounder_data.py) - Andrew's finer-
@@ -683,6 +706,9 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     # analysis predates the current rubric" without a legend.
     if row.get("is_fallback_score"):
         header_bits.append(_shelf_chip_html(_t("previous_rubric_chip", lang), *_SHELF_CHIP_AWAITING))
+    stale_chip = _stale_valuation_chip_html(row, lang)
+    if stale_chip:
+        header_bits.append(stale_chip)
 
     spread_pct = _tradability_spread_pct(ticker)
     tradable_chip = ""
@@ -933,10 +959,11 @@ def _shelf_row_html(row, lang, origin_badge_html=None):
             f" · {html.escape(_t('col_mos', lang))}: "
             f"<b style='color:#e6edf5;'>{row['mos_pct']:.1f}%</b>"
         )
+    stale_chip = _stale_valuation_chip_html(row, lang)
     return (
         "<div style='display:flex;gap:10px;align-items:baseline;font-size:12.5px;"
         "padding:4px 0;color:#8aa0b8;flex-wrap:wrap;'>"
-        + chip +
+        + chip + stale_chip +
         f"<a href='/deep-dive?ticker={html.escape(ticker)}' target='_self' "
         "style='color:#2dd4bf;font-weight:800;font-size:13px;text-decoration:none;'>"
         f"{html.escape(ticker)}</a>"
@@ -1040,7 +1067,26 @@ def _changes_strip(enriched, lang):
     _SYSTEM_PROMPT, DIMENSIONS, weights, RUBRIC_VERSION or any cache
     key, so no existing score is invalidated or resubmitted and this
     costs nothing in API spend. Rows with zero entries are omitted
-    entirely (never an empty "New (0)" row)."""
+    entirely (never an empty "New (0)" row).
+
+    Selection-rule-change suppression (30 Sep 2026, owner-directed):
+    when current_pool() was chosen under a DIFFERENT selection rule
+    than previous_pool() (top100_engine.POOL_SELECTION_RULE tagged on
+    every row, e.g. the freshness-fix deploy that introduced
+    "freshest_v1") the New/Dropped/Awaiting diff below would be
+    comparing two pools picked by different rules - an artificial,
+    meaningless changes list for one night only. Rendered as a single
+    caption instead, exactly once (the very next selection run tags
+    previous_pool() with the same rule too, so this never fires
+    again)."""
+    previous = top100_store.previous_pool()
+    if previous and enriched:
+        current_rule = enriched[0].get("pool_selection_rule")
+        previous_rule = previous[0].get("pool_selection_rule")
+        if current_rule and current_rule != previous_rule:
+            st.caption(_t("changes_strip_rule_changed", lang))
+            return
+
     changes = top100_engine.pool_changes()
     new, dropped = changes["new"], changes["dropped"]
 

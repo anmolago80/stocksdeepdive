@@ -213,6 +213,40 @@ def _conn():
         conn.execute("ALTER TABLE top100_pool ADD COLUMN also_trades_as TEXT")
     except sqlite3.OperationalError:
         pass
+    # Top 100 selection freshness fix (30 Sep 2026, owner-directed): the
+    # winning candidate row's own scan file generated_at (ISO string) -
+    # what actually decided this ticker won its slot (freshest wins, not
+    # highest Long Score - see top100_engine.select_top100_pool()'s own
+    # docstring). source_universe_generated_at is kept alongside it,
+    # identical today (there is only ever one source per selection) -
+    # a separate column so a future selection rule that draws a row's
+    # display fields and its generated_at from two different places has
+    # somewhere to record that divergence without another schema change.
+    # stale_valuation is 1 when this ticker's freshest available
+    # candidate is still older than top100_engine.POOL_MAX_FULL_SCAN_
+    # AGE_DAYS (no fresher one existed) - the row is never dropped for
+    # this alone, only flagged. value_score_source_row is the winning
+    # row's own STORED Long Score, before the discovery_measured=False
+    # recompute that now fills value_score - audit only, never read by
+    # any sort/selection/composite_score(). pool_selection_rule tags
+    # which selection RULE chose this row (top100_engine.
+    # POOL_SELECTION_RULE) - top100_render.py's changes strip reads it
+    # to detect a rule change between current_pool() and previous_
+    # pool() and suppress the New/Dropped/Awaiting diff for the one
+    # night that comparison would otherwise be artificial. All five are
+    # purely additive - same guarded-ALTER-TABLE pattern as every column
+    # above.
+    for _col, _decl in (
+        ("generated_at", "TEXT"),
+        ("source_universe_generated_at", "TEXT"),
+        ("stale_valuation", "INTEGER NOT NULL DEFAULT 0"),
+        ("value_score_source_row", "REAL"),
+        ("pool_selection_rule", "TEXT"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE top100_pool ADD COLUMN {_col} {_decl}")
+        except sqlite3.OperationalError:
+            pass
     conn.execute(
         """CREATE TABLE IF NOT EXISTS top100_scores (
             ticker TEXT NOT NULL,
@@ -296,23 +330,31 @@ def save_pool(rows, as_of):
     "company_name", "universe", "value_score", "mos_pct", "price",
     "intrinsic_value", "currency", "psychology", "sector",
     "dividend_yield_pct", "most_recent_quarter", "also_trades_as",
-    "asx_extension"}, ...], `as_of`: "YYYY-MM-DD". `asx_extension`
+    "asx_extension", "generated_at", "source_universe_generated_at",
+    "stale_valuation", "value_score_source_row", "pool_selection_rule"},
+    ...], `as_of`: "YYYY-MM-DD". `asx_extension`
     (Top 20 Australia guaranteed-twenty) defaults to False when a row
     doesn't carry it - every caller before this feature existed passes
     plain pool rows and keeps working unchanged; `most_recent_quarter`
     (results-driven Top 100 refresh, 27 Sep 2026) and `also_trades_as`
     (Top 100 Commit 3, 27 Sep 2026 - the other ticker in a share-class
     pair this row won on average traded volume) likewise default to
-    None for any caller that doesn't carry them. Also prunes snapshots
-    beyond POOL_SNAPSHOT_RETENTION in the same call, so callers never
-    have to remember to prune separately."""
+    None for any caller that doesn't carry them. The five freshness
+    columns (selection freshness fix, 30 Sep 2026) default to None/0/
+    None the same way - a caller that predates this fix (there is none
+    left in this codebase, but a test fixture might reasonably omit
+    them) still inserts cleanly. Also prunes snapshots beyond POOL_
+    SNAPSHOT_RETENTION in the same call, so callers never have to
+    remember to prune separately."""
     with _conn() as conn:
         conn.executemany(
             """INSERT INTO top100_pool
                  (as_of, ticker, company_name, universe, value_score,
                   mos_pct, price, intrinsic_value, currency, psychology, sector,
-                  dividend_yield_pct, most_recent_quarter, also_trades_as, asx_extension)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  dividend_yield_pct, most_recent_quarter, also_trades_as, asx_extension,
+                  generated_at, source_universe_generated_at, stale_valuation,
+                  value_score_source_row, pool_selection_rule)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(as_of, ticker) DO UPDATE SET
                  company_name = excluded.company_name,
                  universe = excluded.universe,
@@ -326,13 +368,21 @@ def save_pool(rows, as_of):
                  dividend_yield_pct = excluded.dividend_yield_pct,
                  most_recent_quarter = excluded.most_recent_quarter,
                  also_trades_as = excluded.also_trades_as,
-                 asx_extension = excluded.asx_extension""",
+                 asx_extension = excluded.asx_extension,
+                 generated_at = excluded.generated_at,
+                 source_universe_generated_at = excluded.source_universe_generated_at,
+                 stale_valuation = excluded.stale_valuation,
+                 value_score_source_row = excluded.value_score_source_row,
+                 pool_selection_rule = excluded.pool_selection_rule""",
             [
                 (as_of, r["ticker"], r.get("company_name"), r.get("universe"),
                  r.get("value_score"), r.get("mos_pct"), r.get("price"),
                  r.get("intrinsic_value"), r.get("currency"), r.get("psychology"),
                  r.get("sector"), r.get("dividend_yield_pct"), r.get("most_recent_quarter"),
-                 r.get("also_trades_as"), int(bool(r.get("asx_extension"))))
+                 r.get("also_trades_as"), int(bool(r.get("asx_extension"))),
+                 r.get("generated_at"), r.get("source_universe_generated_at"),
+                 int(bool(r.get("stale_valuation"))), r.get("value_score_source_row"),
+                 r.get("pool_selection_rule"))
                 for r in rows
             ],
         )

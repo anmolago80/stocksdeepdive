@@ -3713,6 +3713,18 @@ EN = {
     "top100.one_foot_yes_chip": "✓ ONE-FOOT HURDLE",
     "top100.one_foot_no_chip": "✗ HIGH BAR",
     "top100.previous_rubric_chip": "previous rubric",
+    # Top 100 selection freshness fix (30 Sep 2026, owner-directed): a
+    # small muted chip next to Value Score when the row's chosen scan
+    # is older than POOL_MAX_FULL_SCAN_AGE_DAYS (top100_engine.py) with
+    # no fresher candidate available - never hides the row, purely a
+    # freshness disclosure.
+    "top100.stale_valuation_chip": "valuation {n} days old",
+    # Selection-rule change (same fix): the first night after this
+    # deploy, the changes strip's own New/Dropped/Awaiting diff would be
+    # comparing pools chosen under two DIFFERENT selection rules (an
+    # artificial, meaningless diff) - shown instead of the usual strip
+    # for exactly one night.
+    "top100.changes_strip_rule_changed": "selection rule changed — comparison resumes tomorrow",
     "top100.shelf_heading": "Awaiting score / not rated",
     "top100.shelf_chip_awaiting": "⏳ AWAITING",
     "top100.shelf_caption_awaiting": "scored automatically at the next nightly run",
@@ -7002,6 +7014,8 @@ ES = {
     "top100.one_foot_yes_chip": "✓ VALLA BAJA",
     "top100.one_foot_no_chip": "✗ LISTÓN ALTO",
     "top100.previous_rubric_chip": "rúbrica anterior",
+    "top100.stale_valuation_chip": "valoración de hace {n} días",
+    "top100.changes_strip_rule_changed": "cambió la regla de selección — la comparación se reanuda mañana",
     "top100.shelf_heading": "Esperando puntuación / no evaluadas",
     "top100.shelf_chip_awaiting": "⏳ EN ESPERA",
     "top100.shelf_caption_awaiting": "se puntúa automáticamente en la próxima ejecución nocturna",
