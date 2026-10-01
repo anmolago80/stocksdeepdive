@@ -110,6 +110,23 @@ print(f"[schema_dry_check] 0 union types, no min/max anywhere (item: {len(item_s
 
 
 # ======================================================================
+# CHECK 1b: prompt fix (1 Oct 2026, owner-directed) - _SYSTEM_PROMPT no
+# longer opens with the leftover single-company sentence ("You are
+# given one company's ticker and name") now that _user_prompt() hands
+# the model up to 5 companies and a {"companies": [...]} schema -
+# a contradictory instruction was an avoidable risk on the first full
+# v6 night.
+# ======================================================================
+assert "one company's ticker" not in te._SYSTEM_PROMPT, (
+    "the leftover single-company sentence must be gone from _SYSTEM_PROMPT"
+)
+assert "short list of companies" in te._SYSTEM_PROMPT, (
+    "_SYSTEM_PROMPT must describe the request as a short list of companies, not one"
+)
+print("[prompt_matches_pack] _SYSTEM_PROMPT no longer claims the request contains one company OK")
+
+
+# ======================================================================
 # CHECK 2: a 5-company packed response parses and saves 5 scores with
 # correct per-entrant score keys.
 # ======================================================================

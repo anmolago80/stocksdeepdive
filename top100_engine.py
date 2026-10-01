@@ -928,7 +928,7 @@ def _estimate_request_tokens(entrants):
     return max(1, (len(system_text) + len(schema_text) + len(user_text)) // _CHARS_PER_TOKEN_ESTIMATE)
 
 
-_SYSTEM_PROMPT = """You are screening publicly-listed companies for a factual, descriptive "Top 100" quality shortlist on an investing research site. You are given one company's ticker and name. Score it on TEN qualitative dimensions, each as an integer from 1 to 5 - 5 is ALWAYS the good outcome for a long-term holder of the stock, 1 is ALWAYS the bad outcome, on every dimension, no exceptions. Your response format has NO null/blank values anywhere - every field below names the exact SENTINEL value that stands in for "no value" wherever one is needed.
+_SYSTEM_PROMPT = """You are screening publicly-listed companies for a factual, descriptive "Top 100" quality shortlist on an investing research site. You are given a short list of companies (ticker, name, sector). Score EACH ONE independently, purely on its own facts, on TEN qualitative dimensions, each as an integer from 1 to 5 - 5 is ALWAYS the good outcome for a long-term holder of the stock, 1 is ALWAYS the bad outcome, on every dimension, no exceptions. Your response format has NO null/blank values anywhere - every field below names the exact SENTINEL value that stands in for "no value" wherever one is needed.
 
 For each dimension also give a ONE-LINE justification, AT MOST ABOUT 25 WORDS, naming the specific source period it is based on (e.g. "FY25 annual report", "Q2 2026 investor call", "the company's own FY24 10-K risk factors section") - or an empty string "" for source_period if the dimension's score is 0 (see the honesty rule).
 
