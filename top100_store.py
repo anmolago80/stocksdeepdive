@@ -40,7 +40,7 @@ Callers never touch SQL directly.
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 def _data_dir():
@@ -357,6 +357,24 @@ def _conn():
             utc_date TEXT PRIMARY KEY,
             batches INTEGER NOT NULL DEFAULT 0,
             entrants INTEGER NOT NULL DEFAULT 0
+        )"""
+    )
+    # Honest cost accounting (1 Oct 2026, owner-directed) - one row per
+    # ingested batch, so the Admin Dashboard's own "last 7 days" cost
+    # panel has real, persisted figures to sum rather than re-deriving
+    # anything from the scheduler's own log lines. See top100_engine.
+    # poll_and_ingest_batch()'s own docstring for what writes this.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS top100_ingest_log (
+            batch_id TEXT PRIMARY KEY,
+            ingested_at TEXT NOT NULL,
+            scored INTEGER NOT NULL DEFAULT 0,
+            failed INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cost_usd REAL NOT NULL DEFAULT 0
         )"""
     )
     return conn
@@ -872,3 +890,62 @@ def get_daily_submission_state(utc_date):
     if not row:
         return {"batches": 0, "entrants": 0}
     return {"batches": row["batches"], "entrants": row["entrants"]}
+
+
+# -----------------------------------------------------------------
+# Ingest cost log (honest cost accounting, 1 Oct 2026, owner-directed) -
+# one row per ingested batch, written by top100_engine.poll_and_
+# ingest_batch() right after it logs the same figures, so the Admin
+# Dashboard's own cost panel has a persisted number to sum instead of
+# re-parsing log lines.
+# -----------------------------------------------------------------
+
+def record_ingest_cost(batch_id, scored, failed, input_tokens, cache_creation_tokens,
+                        cache_read_tokens, output_tokens, cost_usd):
+    """Upserts one batch's ingest telemetry - re-ingesting the same
+    batch_id (shouldn't happen in practice; top100_batch_state is a
+    singleton and is cleared before this is called) overwrites rather
+    than double-counts."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO top100_ingest_log
+                 (batch_id, ingested_at, scored, failed, input_tokens,
+                  cache_creation_tokens, cache_read_tokens, output_tokens, cost_usd)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(batch_id) DO UPDATE SET
+                 ingested_at = excluded.ingested_at,
+                 scored = excluded.scored,
+                 failed = excluded.failed,
+                 input_tokens = excluded.input_tokens,
+                 cache_creation_tokens = excluded.cache_creation_tokens,
+                 cache_read_tokens = excluded.cache_read_tokens,
+                 output_tokens = excluded.output_tokens,
+                 cost_usd = excluded.cost_usd""",
+            (batch_id, datetime.now(timezone.utc).isoformat(), scored, failed, input_tokens,
+             cache_creation_tokens, cache_read_tokens, output_tokens, cost_usd),
+        )
+
+
+def ingest_cost_last_n_days(days=7):
+    """{"batches", "scored", "failed", "cost_usd", "cache_creation_
+    tokens", "cache_read_tokens"} summed over every ingest-log row
+    whose ingested_at falls within the last `days` days (UTC, now
+    inclusive) - {"batches": 0, "scored": 0, "failed": 0, "cost_usd":
+    0.0, "cache_creation_tokens": 0, "cache_read_tokens": 0} if nothing
+    has ingested yet in that window, never None, so the Admin
+    Dashboard panel needs no extra None-check. Plain string comparison
+    against ISO-format ingested_at (same convention every other date-
+    keyed table/query in this module already relies on)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(scored), 0), COALESCE(SUM(failed), 0), "
+            "COALESCE(SUM(cost_usd), 0), COALESCE(SUM(cache_creation_tokens), 0), "
+            "COALESCE(SUM(cache_read_tokens), 0) "
+            "FROM top100_ingest_log WHERE ingested_at >= ?",
+            (cutoff,),
+        ).fetchone()
+    return {
+        "batches": row[0], "scored": row[1], "failed": row[2], "cost_usd": row[3],
+        "cache_creation_tokens": row[4], "cache_read_tokens": row[5],
+    }

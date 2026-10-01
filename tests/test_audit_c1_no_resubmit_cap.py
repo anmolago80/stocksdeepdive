@@ -66,7 +66,16 @@ def _make_succeeded_result(custom_id, ticker):
     })
     text = _json.dumps(data)
     content_block = mock.Mock(type="text", text=text)
-    usage = mock.Mock(input_tokens=1000, output_tokens=500)
+    # Honest cost accounting (1 Oct 2026): real usage objects always carry
+    # cache_creation_input_tokens/cache_read_input_tokens alongside input_
+    # tokens/output_tokens - set explicitly here (0, matching this fixture's
+    # no-caching scenario) so poll_and_ingest_batch()'s own getattr(...,
+    # default 0) reads a real int, not a Mock auto-vivified attribute
+    # (which `0 or <Mock>` would silently promote to a Mock, breaking the
+    # += below with a TypeError that this function's own try/except would
+    # otherwise swallow partway through the results loop).
+    usage = mock.Mock(input_tokens=1000, output_tokens=500,
+                       cache_creation_input_tokens=0, cache_read_input_tokens=0)
     message = mock.Mock(content=[content_block], usage=usage)
     result = mock.Mock(type="succeeded", message=message)
     return mock.Mock(custom_id=custom_id, result=result)

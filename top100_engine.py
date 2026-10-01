@@ -761,6 +761,22 @@ MODEL_TOP100 = "claude-opus-5-5"
 # failure modes, for a number that changes rarely).
 TOP100_INPUT_USD_PER_MTOK = 4.00
 TOP100_OUTPUT_USD_PER_MTOK = 20.00
+
+# Honest cost accounting (1 Oct 2026, owner-directed). Root cause of the
+# Console-vs-site-log gap this fixes: poll_and_ingest_batch() used to sum
+# only usage.input_tokens, which EXCLUDES usage.cache_creation_input_
+# tokens/cache_read_input_tokens - separate fields on the same usage
+# object. With cache_control still on _request_params()'s system block
+# (dropped below, this same push - see that function's own comment) and
+# every batch request executing in PARALLEL, most requests miss the
+# cache and the ~10k-token system+schema prefix was billed as a cache
+# WRITE (1.25x input) on nearly every one of the 108 nightly requests,
+# never once counted. Per Anthropic's published pricing: a cache write
+# costs 1.25x the standard input rate, a cache read 0.10x - applied in
+# estimate_batch_cost_usd() below, alongside the plain input/output
+# terms it already had.
+CACHE_WRITE_MULTIPLIER = 1.25
+CACHE_READ_MULTIPLIER = 0.10
 BATCH_DISCOUNT = 0.5
 
 MAX_NIGHTLY_SCORES = 120
@@ -822,10 +838,23 @@ _ESTIMATED_OUTPUT_TOKENS_PER_ENTRANT = 1200
 
 
 def _estimate_prompt_tokens(ticker, company_name):
+    """Honest cost accounting (1 Oct 2026, owner-directed): previously
+    summed only the system prompt + user message, silently treating
+    the structured-output response SCHEMA (_response_schema(), itself
+    roughly as large as the system prompt once every dimension's
+    description text is serialized) as free - the other half of why
+    the old pre-submission estimate undershot the real billed cost.
+    Both are now counted, and _request_params() no longer marks the
+    system block cacheable (see that function's own comment) - so
+    every one of these tokens is billed as plain input, not a cache
+    write/read, on the real request too; this estimate's own caller
+    (submit_nightly_batch()) prices it at the plain input rate for
+    exactly that reason, no CACHE_WRITE_MULTIPLIER needed here."""
     params = _request_params(ticker, company_name)
     system_text = params["system"][0]["text"]
     user_text = params["messages"][0]["content"]
-    return max(1, (len(system_text) + len(user_text)) // _CHARS_PER_TOKEN_ESTIMATE)
+    schema_text = json.dumps(params["output_config"]["format"]["schema"])
+    return max(1, (len(system_text) + len(schema_text) + len(user_text)) // _CHARS_PER_TOKEN_ESTIMATE)
 
 
 _SYSTEM_PROMPT = """You are screening publicly-listed companies for a factual, descriptive "Top 100" quality shortlist on an investing research site. You are given one company's ticker and name. Score it on TEN qualitative dimensions, each as an integer from 1 to 5 - 5 is ALWAYS the good outcome for a long-term holder of the stock, 1 is ALWAYS the bad outcome, on every dimension, no exceptions. Your response format has NO null/blank values anywhere - every field below names the exact SENTINEL value that stands in for "no value" wherever one is needed.
@@ -1058,7 +1087,27 @@ def _request_params(ticker, company_name):
     """The exact MessageCreateParamsNonStreaming-shaped dict for one
     company - shared by submit_nightly_batch() (wrapped in a Batches
     Request) and run_single_test_call() (sent directly, for the
-    task's own one real API test call)."""
+    task's own one real API test call).
+
+    Honest cost accounting (1 Oct 2026, owner-directed): the system
+    block's own "cache_control": {"type": "ephemeral"} is REMOVED here.
+    Verified against the Anthropic Console for 30 Sep 2026: 1,511,091
+    total tokens / $4.66 billed, versus 269k tokens / $2.47 this
+    module's own (pre-fix) ingest log showed for that day's two
+    batches - the gap is the ~10k-token system+schema prefix, sent
+    with every one of the 108 requests, counted as a cache WRITE
+    (1.25x input) on nearly all of them: the Batches API runs every
+    request in PARALLEL, so one request's cache write is rarely still
+    warm by the time a sibling request needs to read it - a cache hit
+    would need the opposite, sequential execution, to be the common
+    case. No usage/cache-hit-ratio history is persisted anywhere in
+    this codebase (top100_scores stores the prompt/response TEXT, never
+    the usage object - see top100_store.save_score()'s own docstring),
+    so there is no evidence this ever paid for itself; dropped rather
+    than kept on an unverified hope of a hit. If a future measurement
+    (via top100_store.ingest_cost_last_n_days()'s own cache-write/
+    cache-read breakdown, now recorded going forward) ever shows reads
+    outweighing writes, this is the one line to restore."""
     return {
         "model": MODEL_TOP100,
         # SMALL FIX (25 Sep 2026, owner-reported): was 2000 - 19/100
@@ -1073,7 +1122,7 @@ def _request_params(ticker, company_name):
         # _SYSTEM_PROMPT's own new ~25-word-per-justification cap
         # (added the same day) further reduces the typical case.
         "max_tokens": 4000,
-        "system": [{"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+        "system": [{"type": "text", "text": _SYSTEM_PROMPT}],
         "messages": [{"role": "user", "content": _user_prompt(ticker, company_name)}],
         "output_config": {"format": {"type": "json_schema", "schema": _response_schema()}},
     }
@@ -1523,9 +1572,12 @@ def poll_and_ingest_batch(log=print):
     didn't fire.
 
     Returns None if there was nothing to poll, or a summary dict
-    {"saved"/"scored", "failed", "input_tokens", "output_tokens",
-    "cost_usd"} - "saved" is kept alongside "scored" (same value) so
-    no existing caller of this function's return dict breaks."""
+    {"saved"/"scored", "failed", "input_tokens", "cache_creation_
+    tokens", "cache_read_tokens", "output_tokens", "cost_usd"} -
+    "saved" is kept alongside "scored" (same value) so no existing
+    caller of this function's return dict breaks. The ingest line is
+    also persisted via top100_store.record_ingest_cost() so the Admin
+    Dashboard's own last-7-days cost panel has something to read."""
     state = top100_store.get_batch_state()
     if state is None:
         return None
@@ -1544,6 +1596,7 @@ def poll_and_ingest_batch(log=print):
     custom_id_map = state["custom_id_map"]
     saved, failed = 0, 0
     total_input_tokens, total_output_tokens = 0, 0
+    total_cache_creation_tokens, total_cache_read_tokens = 0, 0
     errored_count = 0
     errored_rest_type_counts = {}
     failure_reasons = []  # [(ticker, reason), ...] - audit fixes Commit 1
@@ -1621,6 +1674,12 @@ def poll_and_ingest_batch(log=print):
             saved += 1
             total_input_tokens += getattr(msg.usage, "input_tokens", 0) or 0
             total_output_tokens += getattr(msg.usage, "output_tokens", 0) or 0
+            # Honest cost accounting (1 Oct 2026, owner-directed): these
+            # two were never read before this - see CACHE_WRITE_
+            # MULTIPLIER's own module-level comment for the root cause
+            # this fixes.
+            total_cache_creation_tokens += getattr(msg.usage, "cache_creation_input_tokens", 0) or 0
+            total_cache_read_tokens += getattr(msg.usage, "cache_read_input_tokens", 0) or 0
     except Exception as e:
         log(f"[top100] batch result retrieval failed partway through: {e}")
 
@@ -1635,10 +1694,23 @@ def poll_and_ingest_batch(log=print):
         )
 
     top100_store.clear_batch_state()
-    cost = estimate_batch_cost_usd(total_input_tokens, total_output_tokens)
+    cost = estimate_batch_cost_usd(
+        total_input_tokens, total_output_tokens,
+        total_cache_creation_tokens, total_cache_read_tokens,
+    )
     log(f"[top100] batch {state['batch_id']} ingested: {saved} scored, {failed} failed - "
-        f"{total_input_tokens:,} input + {total_output_tokens:,} output tokens, "
+        f"in {total_input_tokens:,} / cache-write {total_cache_creation_tokens:,} / "
+        f"cache-read {total_cache_read_tokens:,} / out {total_output_tokens:,} tokens, "
         f"est. ${cost:.4f} (batch-priced)")
+    try:
+        top100_store.record_ingest_cost(
+            batch_id=state["batch_id"], scored=saved, failed=failed,
+            input_tokens=total_input_tokens, cache_creation_tokens=total_cache_creation_tokens,
+            cache_read_tokens=total_cache_read_tokens, output_tokens=total_output_tokens,
+            cost_usd=cost,
+        )
+    except Exception as e:
+        log(f"[top100] could not record ingest cost log: {e}")
     if saved == 0 and failed > 0:
         # Audit fixes, Commit 1 (30 Sep 2026, owner-directed): the
         # resubmit-loop fix's own log line - _run_top100_poll (scheduler_
@@ -1650,6 +1722,8 @@ def poll_and_ingest_batch(log=print):
             f"NOT resubmitting (reason sample: {sample})")
     return {"saved": saved, "scored": saved, "failed": failed,
             "input_tokens": total_input_tokens, "output_tokens": total_output_tokens,
+            "cache_creation_tokens": total_cache_creation_tokens,
+            "cache_read_tokens": total_cache_read_tokens,
             "cost_usd": cost}
 
 
@@ -1980,12 +2054,28 @@ def run_single_test_call(ticker, company_name=None):
     }
 
 
-def estimate_batch_cost_usd(input_tokens, output_tokens):
+def estimate_batch_cost_usd(input_tokens, output_tokens,
+                             cache_creation_input_tokens=0, cache_read_input_tokens=0):
     """Batch API pricing (BATCH_DISCOUNT, 50% of standard) applied to
     real token counts - the nightly log's own cost-telemetry line, and
-    poll_and_ingest_batch()'s own summary."""
-    standard = (input_tokens / 1_000_000) * TOP100_INPUT_USD_PER_MTOK + \
-        (output_tokens / 1_000_000) * TOP100_OUTPUT_USD_PER_MTOK
+    poll_and_ingest_batch()'s own summary.
+
+    Honest cost accounting (1 Oct 2026, owner-directed): `input_tokens`
+    is priced at the plain standard rate; `cache_creation_input_tokens`
+    (a cache MISS - the content had to be written to the cache) at
+    CACHE_WRITE_MULTIPLIER x that rate; `cache_read_input_tokens` (a
+    cache HIT) at CACHE_READ_MULTIPLIER x - all three, plus output
+    tokens, THEN get the batch discount, same as before. The two new
+    params default to 0 so every existing caller (admin_data_audit's
+    own worst-case estimate in app.py, run_single_test_call's non-batch
+    cost line) that only ever passes plain input/output tokens is
+    unaffected."""
+    standard = (
+        (input_tokens / 1_000_000) * TOP100_INPUT_USD_PER_MTOK
+        + (cache_creation_input_tokens / 1_000_000) * TOP100_INPUT_USD_PER_MTOK * CACHE_WRITE_MULTIPLIER
+        + (cache_read_input_tokens / 1_000_000) * TOP100_INPUT_USD_PER_MTOK * CACHE_READ_MULTIPLIER
+        + (output_tokens / 1_000_000) * TOP100_OUTPUT_USD_PER_MTOK
+    )
     return standard * BATCH_DISCOUNT
 
 

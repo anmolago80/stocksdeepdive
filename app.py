@@ -30099,6 +30099,31 @@ def page_admin_dashboard():
                 "min ago (expected every few minutes). A redeploy restarts it."
             )
 
+    # --- TOP 100 SCORING COST (honest cost accounting, 1 Oct 2026,
+    # owner-directed) - last-7-days cost from top100_ingest_log, the
+    # in-app number to compare against the Anthropic Console's own
+    # usage page for the same window. See top100_engine.poll_and_
+    # ingest_batch()'s own docstring for what writes that table. -----
+    st.markdown("### Top 100 scoring cost")
+    with st.container(border=True):
+        try:
+            _t100_cost = top100_store.ingest_cost_last_n_days(7)
+        except Exception:
+            _t100_cost = None
+        if _t100_cost and _t100_cost["batches"]:
+            _t100_c1, _t100_c2, _t100_c3 = st.columns(3)
+            _t100_c1.metric("Est. cost, last 7 days", f"${_t100_cost['cost_usd']:.2f}")
+            _t100_c2.metric("Batches ingested", _t100_cost["batches"])
+            _t100_c3.metric("Companies scored", _t100_cost["scored"])
+            st.caption(
+                f"{_t100_cost['cache_creation_tokens']:,} cache-write + "
+                f"{_t100_cost['cache_read_tokens']:,} cache-read input tokens in that "
+                "window - compare the cost figure above with the Anthropic Console's "
+                "own usage page for the same 7 days."
+            )
+        else:
+            st.caption("No batch ingested in the last 7 days yet.")
+
     # --- WEEKLY SCAN CALENDAR (Part 53.1) -----------------------------
     st.markdown("### Weekly scan calendar")
     st.caption(
