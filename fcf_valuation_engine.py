@@ -1110,12 +1110,27 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
     No-uphill-fade invariant (1 Oct 2026): for the "analyst_1y"/
     "analyst_1y_blend" paths, growth_rate is always >= end_rate by
     construction (each explicitly floors at end_rate before returning).
-    The "analyst"/"history"/"history_volatile"/"info" paths do NOT carry
-    this same floor (each predates this invariant and is left untouched
-    by this task's own scope guard) - a genuine signal below end_rate on
-    any of those four paths still produces growth_rate < end_rate_used,
-    an "uphill fade" the caller's own stage-1 loop does not protect
-    against either. Reported, not fixed - see this task's own report.
+    The "analyst"/"history"/"history_volatile"/"info"/"default" paths do
+    NOT carry this same floor - a genuine signal below end_rate on any
+    of those paths can still produce a raw growth_rate BELOW the
+    end_rate this function was given. This function itself does not
+    raise that raw growth_rate (unlike analyst_1y/analyst_1y_blend,
+    deliberately - see Commit 4 of instruction_dcf_unreliable_pool_
+    step4_nightly.md: lowering the base to chase a tier end rate would
+    be the wrong fix). Instead, the CALLER (dcf_intrinsic_value(), right
+    after calling this function) lowers meta["growth_end_rate_used"]
+    itself to min(end_rate, growth_rate) - a PLAIN min(), not also
+    re-floored at perpetual_rate, even though end_rate's own original
+    computation already is - for exactly these paths when growth_rate <
+    end_rate, so the invariant growth_used >= growth_end_rate_used holds
+    UNCONDITIONALLY on every auto path at the REPORTED/meta level (a
+    plain min() against growth_rate can never exceed growth_rate; a
+    second re-floor against perpetual_rate could, whenever growth_rate
+    itself falls below perpetual_rate) - see dcf_intrinsic_value()'s own
+    comment at that call site for the full reasoning (the stage-1 fade
+    loop already goes flat rather than fading uphill when growth_rate <=
+    end_rate; this change is about correctly reporting/describing that
+    flat path, not altering the DCF math itself).
 
     extra_out (1 Oct 2026, optional, mutated in place like nightly_scan.
     py's own growth_summary_out param): when given, the "analyst_1y"/
@@ -1766,6 +1781,54 @@ def dcf_intrinsic_value(
             if gsrc == "default":
                 meta["growth_default"] = True
                 meta["defaulted"] = True
+            # No-uphill-fade fix (owner-directed, 1 Oct 2026, Commit 4 of
+            # instruction_dcf_unreliable_pool_step4_nightly.md): the
+            # "analyst"(ok)/"history"/"history_volatile"/"info"/
+            # "default" paths carry no floor at end_rate (see estimate_
+            # growth()'s own "No-uphill-fade invariant" docstring,
+            # reported not fixed by the growth-1y-blend task's own scope
+            # guard) - when one of them resolves BELOW end_rate, the
+            # stage-1 loop below never actually fades uphill (`fade =
+            # growth_rate > end_rate` stays False, so the path goes flat
+            # at growth_rate for the whole horizon - see that loop's own
+            # comment), but meta["growth_end_rate_used"] still reported
+            # the ORIGINAL (higher) tier end rate, misdescribing what the
+            # model actually did (the KNSL symptom: "2.5% for 5 yrs, then
+            # fades to 5.0% by yr 10" when the path was actually flat at
+            # 2.5% the whole way). Owner decision: don't raise the base -
+            # lower the REPORTED end rate to match it instead: min(end_
+            # rate, growth_rate) - NOT also re-floored at perpetual_rate
+            # here, even though the instruction's own phrasing says
+            # "still floored at the perpetual rate as today": end_rate
+            # ITSELF was already computed as max(tier_end_rate,
+            # perpetual_rate) above, before growth was ever resolved, so
+            # that floor is already baked into the value this min() reads
+            # - "as today" describes that existing, unchanged computation,
+            # not a second, independent floor applied AFTER the min().
+            # Re-flooring here would be self-defeating: whenever
+            # growth_rate itself falls below perpetual_rate (a real,
+            # reachable case - perpetual_rate is independent of
+            # growth_rate), max(min(end_rate, growth_rate), perpetual_
+            # rate) could exceed growth_rate again, reintroducing the
+            # exact invariant violation this fix exists to close. A plain
+            # min(end_rate, growth_rate) can never exceed growth_rate by
+            # construction, so growth_used >= growth_end_rate_used holds
+            # unconditionally once this fires - see this task's own
+            # invariant sweep (tests/test_no_uphill_fade_all_sources.py)
+            # for the verification. A company growing 1% is now modelled
+            # (and described) as flat at 1%, never accelerating just
+            # because its market-cap tier says it should fade up to a
+            # higher end rate. The two analyst_1y paths keep their own
+            # end-rate FLOOR from the growth-1y-blend task unchanged (a
+            # one-year consensus is cyclical, not structural) - excluded
+            # here on purpose, though the min() below would be a no-op
+            # for them anyway since growth_rate already can't be below
+            # end_rate on those two paths by construction. "manual" is
+            # also excluded - out of this task's own stated scope
+            # (analyst/history/history_volatile/info/default only).
+            if gsrc in ("analyst", "history", "history_volatile", "info", "default") and growth_rate < end_rate:
+                end_rate = min(end_rate, growth_rate)
+                meta["growth_governor"] = "end rate lowered to base - no uphill fade"
 
         fcf_per_share = fcf / shares
         # Surfaced so the app can actually show what went into the model -
