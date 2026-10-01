@@ -86,6 +86,22 @@ you're happy. You can also run one manually anytime: `python nightly_scan.py "AS
 (locally it writes next to the code; on Railway use the service shell and it writes to
 the volume).
 
+### Step 3b — Alpaca US quotes (optional, real bid/ask for the Trading Cost tab)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ALPACA_API_KEY` | — | your Alpaca Market Data API key ID |
+| `ALPACA_SECRET_KEY` | — | its matching secret |
+| `ALPACA_DATA_FEED` | `iex` | optional — the Alpaca feed to sample bid/ask from |
+| `ALPACA_PAPER` | unset | set to `1` if the key pair is a paper-account one |
+
+The US quote recorder uses Alpaca's free-tier Market Data API (IEX feed) for real-time
+bid/ask, because Yahoo's quote endpoints don't return a usable one for US symbols
+without a paid entitlement. Set both keys and the next US sampling window picks it up
+automatically — leave either unset and the site works exactly as it does today (the
+recorder falls back to its existing Yahoo path, nothing else changes). The ASX quote
+recorder always uses Yahoo, with or without these variables set.
+
 ### Step 4 — verify
 
 1. After the next scheduled night (or a manual run), the Scanner page shows

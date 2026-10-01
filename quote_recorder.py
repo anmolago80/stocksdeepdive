@@ -124,6 +124,7 @@ import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+import alpaca_quotes
 import quote_snapshot_store
 import scan_store
 import trading_cost_engine
@@ -581,6 +582,84 @@ def _fetch_quotes_with_bid_ask_fallback(tickers, market, log=print):
     return quotes
 
 
+def _alpaca_quote_dict(bid, ask, bid_size, ask_size, price, market_is_open):
+    """One Alpaca-sourced quote -> the SAME light-info-dict shape
+    _quote_light_dict() produces from a Yahoo row, so _process_one()'s
+    existing quality gates (_classify_market_state/_classify/
+    _is_frozen) read it exactly as they always read a Yahoo one -
+    marketState is set from Alpaca's own clock (market_state() below)
+    standing in for Yahoo's "REGULAR" signal, per the task spec, rather
+    than left absent (absent would fall through to the volume
+    fallback, which Alpaca never supplies). Tagged with "_source" - an
+    extra key every existing gate function ignores (they only ever
+    read their own specific keys) - so _process_one() can record which
+    source actually produced the captured quote."""
+    return {
+        "bid": bid,
+        "ask": ask,
+        "regularMarketPrice": price,
+        "regularMarketVolume": None,
+        "marketState": "REGULAR" if market_is_open else "CLOSED",
+        "bidSize": bid_size,
+        "askSize": ask_size,
+        "currency": "USD",
+        "_source": "alpaca-iex",
+    }
+
+
+def _fetch_quotes_for_market(tickers, market, log=print):
+    """Quote-fetch entry point for one market's sampling pass - for
+    MARKET_US, routes through Alpaca's IEX feed (real-time bid/ask,
+    unlike Yahoo's light endpoint for US symbols - see this module's
+    own docstring) whenever alpaca_quotes.available(), falling back to
+    today's existing Yahoo bulk/individual path (_fetch_quotes_with_
+    bid_ask_fallback() above) only for whatever Alpaca didn't cover.
+    MARKET_ASX, and MARKET_US with no Alpaca keys set, go straight to
+    that same existing Yahoo path, byte-identical to before this
+    function existed - fail-open, nothing else changes without keys."""
+    if market != MARKET_US or not alpaca_quotes.available():
+        return _fetch_quotes_with_bid_ask_fallback(tickers, market, log=log)
+
+    alpaca_quotes_by_ticker = alpaca_quotes.latest_quotes(tickers, log=log)
+    alpaca_prices_by_ticker = alpaca_quotes.latest_trade_price(tickers, log=log)
+    is_open = alpaca_quotes.market_state(log=log).get("is_open")
+
+    quotes = {}
+    for ticker in tickers:
+        aq = alpaca_quotes_by_ticker.get(ticker)
+        if aq is None:
+            continue
+        bid, ask = aq.get("bid"), aq.get("ask")
+        if not (isinstance(bid, (int, float)) and isinstance(ask, (int, float))
+                and bid > 0 and ask > 0):
+            continue
+        price = alpaca_prices_by_ticker.get(ticker)
+        if price is None:
+            # Trade endpoint didn't cover this one symbol - fall back
+            # to Yahoo's own last price for it alone (task spec), via
+            # the same single-ticker fetch the existing fallback path
+            # already uses. Rare in practice (most symbols that have a
+            # quote also have a recent trade); never raises.
+            single = _fetch_quote_single(ticker, log=log)
+            price = single.get("regularMarketPrice") if single else None
+        quotes[ticker] = _alpaca_quote_dict(
+            bid=bid, ask=ask, bid_size=aq.get("bid_size"), ask_size=aq.get("ask_size"),
+            price=price, market_is_open=is_open,
+        )
+
+    missing = [t for t in tickers if t not in quotes]
+    if missing:
+        log(f"[quote_recorder] {market}: {len(quotes)} ticker(s) covered by Alpaca (IEX), "
+            f"{len(missing)} via Yahoo fallback")
+        yahoo_quotes = _fetch_quotes_with_bid_ask_fallback(missing, market, log=log)
+        for ticker, q in yahoo_quotes.items():
+            q["_source"] = "yfinance.quote_bulk"
+            quotes[ticker] = q
+    else:
+        log(f"[quote_recorder] {market}: {len(quotes)} ticker(s) covered by Alpaca (IEX)")
+    return quotes
+
+
 def _record_market(market, log=print):
     """The actual recording pass for one market - every per-ticker step
     individually guarded (a bad ticker is logged and skipped, never
@@ -620,6 +699,7 @@ def _record_market(market, log=print):
         REJECT_PRICE_OFF_MID: 0, REJECT_MARKET_NOT_REGULAR: 0,
         REJECT_NO_VOLUME: 0, REJECT_FROZEN_QUOTE: 0,
     }
+    capture_sources = {}  # {"alpaca-iex": N, "yfinance.quote_bulk": N} - US-with-Alpaca summary line only
 
     def _process_one(ticker, info):
         """One ticker through the SAME quality gates this loop always
@@ -640,6 +720,7 @@ def _record_market(market, log=print):
                 bid, ask, last_price, quote_snapshot_store.latest_snapshot(ticker)):
             reason = REJECT_FROZEN_QUOTE
         if reason is None:
+            source = info.get("_source", "yfinance.quote_bulk")
             quote_snapshot_store.record_snapshot(
                 ticker=ticker,
                 snap_date=local_date,
@@ -650,13 +731,14 @@ def _record_market(market, log=print):
                 ask_size=_get_info_field(info, "askSize"),
                 last_price=float(last_price) if isinstance(last_price, (int, float)) else None,
                 currency=_get_info_field(info, "currency") or currency_fallback,
-                source="yfinance.quote_bulk",
+                source=source,
             )
+            capture_sources[source] = capture_sources.get(source, 0) + 1
         return reason
 
     log(f"[quote_recorder] {market}: sampling {len(tickers)} ticker(s) for {local_date}")
 
-    quotes = _fetch_quotes_with_bid_ask_fallback(tickers, market, log=log)
+    quotes = _fetch_quotes_for_market(tickers, market, log=log)
 
     pending_retry = []  # [(ticker, first_pass_reason), ...]
     for ticker in tickers:
@@ -681,7 +763,7 @@ def _record_market(market, log=print):
         retry_tickers = [t for t, _r in pending_retry]
         log(f"[quote_recorder] {market}: retrying {len(retry_tickers)} gate-rejected ticker(s)")
         time.sleep(_BULK_REQUEST_PAUSE)
-        retry_quotes = _fetch_quotes_with_bid_ask_fallback(retry_tickers, market, log=log)
+        retry_quotes = _fetch_quotes_for_market(retry_tickers, market, log=log)
         for ticker, first_reason in pending_retry:
             try:
                 info = retry_quotes.get(ticker)
@@ -708,7 +790,13 @@ def _record_market(market, log=print):
     total_rejected = sum(counts.values())
     _reasons = ", ".join(f"{k}={v}" for k, v in counts.items() if v)
     _suffix = f" ({_reasons})" if _reasons else ""
-    log(f"[quote_recorder] {market}: captured {captured}, rejected {total_rejected}{_suffix}")
+    if market == MARKET_US and alpaca_quotes.available():
+        _alpaca_n = capture_sources.get("alpaca-iex", 0)
+        _yahoo_n = captured - _alpaca_n
+        log(f"[quote_recorder] {market}: captured {captured} (alpaca {_alpaca_n}, "
+            f"yahoo {_yahoo_n}), rejected {total_rejected}{_suffix}")
+    else:
+        log(f"[quote_recorder] {market}: captured {captured}, rejected {total_rejected}{_suffix}")
     quote_snapshot_store.record_run_summary(
         run_date=local_date, market=market, captured_count=captured,
         rejection_counts=counts, ran_at_utc=now_utc.isoformat(),

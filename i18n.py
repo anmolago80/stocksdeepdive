@@ -3461,6 +3461,7 @@ EN = {
         "it covers every day including before real recording began."
     ),
     "compounder.trading_cost.bid_ask_now_snapshot_label": "recorded {datetime}",
+    "compounder.trading_cost.bid_ask_now_snapshot_label_alpaca": "recorded via Alpaca IEX, {datetime}",
     "compounder.trading_cost.bid_ask_now_stale_label": "last recorded {date}",
     "compounder.trading_cost.bid_ask_now_no_data": "No snapshot recorded yet",
     # Trading Cost Commit 4 (27 Sep 2026, owner-reported: PAYX/CPRT/AOS
@@ -6871,6 +6872,7 @@ ES = {
         "incluso antes de que comenzara el registro real."
     ),
     "compounder.trading_cost.bid_ask_now_snapshot_label": "registrado {datetime}",
+    "compounder.trading_cost.bid_ask_now_snapshot_label_alpaca": "registrado via Alpaca IEX, {datetime}",
     "compounder.trading_cost.bid_ask_now_stale_label": "último registro: {date}",
     "compounder.trading_cost.bid_ask_now_no_data": "Aún no hay captura registrada",
     "compounder.trading_cost.recording_status_not_yet_sampled": (

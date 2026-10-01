@@ -2250,11 +2250,14 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
     if latest and latest.get("snap_at_utc"):
         latest_dt_local = _dt.datetime.fromisoformat(latest["snap_at_utc"]).astimezone(tz)
         days_old = _trading_days_since(latest["snap_date"], tz)
-        latest_caption = (
-            _t("bid_ask_now_stale_label", date=_format_date_only(latest_dt_local, lang))
-            if days_old > _STALE_SNAPSHOT_TRADING_DAYS
-            else _t("bid_ask_now_snapshot_label", datetime=_format_snapshot_datetime(latest_dt_local, lang))
-        )
+        if days_old > _STALE_SNAPSHOT_TRADING_DAYS:
+            latest_caption = _t("bid_ask_now_stale_label", date=_format_date_only(latest_dt_local, lang))
+        elif latest.get("source") == "alpaca-iex":
+            latest_caption = _t(
+                "bid_ask_now_snapshot_label_alpaca", datetime=_format_snapshot_datetime(latest_dt_local, lang)
+            )
+        else:
+            latest_caption = _t("bid_ask_now_snapshot_label", datetime=_format_snapshot_datetime(latest_dt_local, lang))
     if latest and latest.get("bid") is not None and latest.get("ask") is not None:
         now_spread_pct = trading_cost_engine._recorded_spread_pct(latest["bid"], latest["ask"])
 
@@ -2462,7 +2465,11 @@ def render_trading_cost_tab(ticker, price_history, lang="en"):
                 _plain_tile(_t("tile_spread_pct"), _fmt_pct1(now_spread_pct))
 
             _exact_dt = _format_snapshot_datetime(latest_dt_local, lang) if latest_dt_local else ""
-            st.caption(_t("bid_ask_now_snapshot_label", datetime=_exact_dt) + " · " + _t("rail_not_live_note"))
+            _snapshot_label_key = (
+                "bid_ask_now_snapshot_label_alpaca" if latest.get("source") == "alpaca-iex"
+                else "bid_ask_now_snapshot_label"
+            )
+            st.caption(_t(_snapshot_label_key, datetime=_exact_dt) + " · " + _t("rail_not_live_note"))
         else:
             st.markdown("—")
             st.caption(_recording_status_message(ticker, lang))
