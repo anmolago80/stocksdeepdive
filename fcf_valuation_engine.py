@@ -783,8 +783,43 @@ def normalized_base_and_series(cashflow_df, info=None, income_df=None):
         # function's own docstring.
         base_normalized = False
         recent = series[:3]
+        # Thin-history median fix (owner-directed, 1 Oct 2026, Commit 3
+        # of instruction_dcf_unreliable_pool_step4_nightly.md): with
+        # exactly 2 comparison points, `sorted(recent)[len(recent)//2]`
+        # (index 1) always picked the LARGER of the two values. `base`
+        # IS `recent[0]` here (this branch only runs when capex_basis is
+        # "average", the only case where base_capex==avg_capex), so the
+        # old code effectively compared base against max(base, other) -
+        # zero deviation, and therefore no swap, whenever base ITSELF
+        # was the inflated one. An inflated latest year could never be
+        # swapped out even though the outlier check exists specifically
+        # to catch a distorted base.
+        #
+        # Fix: with exactly 2 points, compare base against the single
+        # OTHER point (`recent[1]`) directly, instead of against
+        # whichever of the two happens to be larger. This is two-sided
+        # by construction - an inflated base (recent[1] is the lower,
+        # correct reference) swaps DOWN to it, and a DEPRESSED base
+        # (recent[1] is the higher, correct reference) swaps UP to it -
+        # both directions now actually compare against the real other
+        # data point rather than against itself. (The instruction's own
+        # "use the lower value as the reference" describes the result
+        # in the originally-reported inflated-latest shape, where
+        # recent[1] - the correct reference - happens to be the lower
+        # of the two; a literal unconditional min(recent) would instead
+        # make base its own reference whenever base is already the
+        # smaller value, permanently zeroing the deviation and making a
+        # depressed-latest swap impossible - the opposite of the
+        # instruction's own two-sided test requirement, so this reads
+        # "the other point" rather than "the smaller of the two" to
+        # satisfy both.)
+        #
+        # 3+ points keep the real median unchanged; fewer than 2 (the
+        # `len(recent) >= 2` guard) is unchanged - no swap either way.
+        # FCF_OUTLIER_THRESHOLD (40%) and every other condition here are
+        # untouched.
         if capex_basis != "midpoint (capex rising)" and len(recent) >= 2:
-            median = sorted(recent)[len(recent) // 2]
+            median = recent[1] if len(recent) == 2 else sorted(recent)[len(recent) // 2]
             if median != 0 and abs(base - median) / abs(median) > FCF_OUTLIER_THRESHOLD:
                 base = median
                 base_normalized = True
