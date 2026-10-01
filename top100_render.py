@@ -18,6 +18,7 @@ import streamlit as st
 import compounder_ui
 import i18n
 import quote_snapshot_store
+import resolver_engine
 import top100_engine
 import top100_store
 import trading_cost_engine
@@ -348,6 +349,33 @@ def _stale_valuation_chip_html(row, lang):
         return ""
     age_days = int((_dt.datetime.now(_dt.timezone.utc) - gen_dt).total_seconds() // 86400)
     return _shelf_chip_html(_t("stale_valuation_chip", lang, n=age_days), *_SHELF_CHIP_AWAITING)
+
+
+def _dcf_unreliable_chip_html(row, lang):
+    """DCF-unreliable pool exclusion (1 Oct 2026, owner-directed, Part
+    B finding) - defensive chip. top100_engine.select_top100_pool()'s
+    own per-row exclusion (plus the loud assertion right before
+    top100_store.save_pool()) should make a DCF-unreliable row
+    unreachable from a FRESH selection, but a row saved by an OLDER
+    nightly run (before this fix existed) can still be sitting in
+    top100_pool until the NEXT selection replaces it - so this is
+    re-derived here from the row's own intrinsic_value/price
+    (resolver_engine.dcf_looks_unreliable(), the exact
+    DCF_SANITY_MULTIPLE=3.0x check nightly_scan.py's "DCF Unreliable"
+    field is built from) rather than trusting a raw flag that was
+    never carried into the curated row shape. Amber (NOT-RATED chip
+    family) - this is a data-quality warning, not a freshness
+    disclosure like the muted stale-valuation chip above."""
+    if not resolver_engine.dcf_looks_unreliable(row.get("intrinsic_value"), row.get("price")):
+        return ""
+    bg, border, color = _SHELF_CHIP_NOT_RATED
+    tooltip = _t("dcf_unreliable_tooltip", lang)
+    return (
+        "<span title='" + html.escape(tooltip) + "' style='display:inline-flex;align-items:center;"
+        f"border-radius:999px;padding:1px 9px;font-size:10.5px;font-weight:700;"
+        f"background:{bg};border:1px solid {border};color:{color};cursor:default;'>"
+        f"{html.escape(_t('dcf_unreliable_chip', lang))}</span>"
+    )
 
 
 def _finer_industry_by_ticker():
@@ -759,6 +787,9 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     stale_chip = _stale_valuation_chip_html(row, lang)
     if stale_chip:
         header_bits.append(stale_chip)
+    dcf_unreliable_chip = _dcf_unreliable_chip_html(row, lang)
+    if dcf_unreliable_chip:
+        header_bits.append(dcf_unreliable_chip)
 
     spread_pct = _tradability_spread_pct(ticker)
     tradable_chip = ""
@@ -1071,10 +1102,11 @@ def _shelf_row_html(row, lang, origin_badge_html=None):
             f"<b style='color:#e6edf5;'>{row['mos_pct']:.1f}%</b>"
         )
     stale_chip = _stale_valuation_chip_html(row, lang)
+    dcf_unreliable_chip = _dcf_unreliable_chip_html(row, lang)
     return (
         "<div style='display:flex;gap:10px;align-items:baseline;font-size:12.5px;"
         "padding:4px 0;color:#8aa0b8;flex-wrap:wrap;'>"
-        + chip + stale_chip +
+        + chip + stale_chip + dcf_unreliable_chip +
         f"<a href='/deep-dive?ticker={html.escape(ticker)}' target='_self' "
         "style='color:#2dd4bf;font-weight:800;font-size:13px;text-decoration:none;'>"
         f"{html.escape(ticker)}</a>"
@@ -1478,6 +1510,7 @@ def render_top100_page(lang="en"):
         st.markdown(_t("methodology_headwind", lang))
         st.markdown(_t("methodology_munger_wave", lang))
         st.markdown(_t("methodology_filters", lang))
+        st.markdown(_t("methodology_dcf_unreliable", lang))
         st.markdown(f"**{_t('methodology_weights_heading', lang)}**")
         # Top 100 Ranking Rework: each dimension's own weight (sums to
         # top100_engine.DIMENSION_WEIGHT_TOTAL, 83 today), rescaled onto

@@ -3888,6 +3888,28 @@ EN = {
         "shown on each card above - it only hides or shows rows "
         "already on the page, never changes a rank or a score."
     ),
+    # DCF-unreliable pool exclusion (1 Oct 2026, owner-directed, Part B
+    # finding): companies whose model intrinsic value lands implausibly
+    # far above the price are excluded from selection entirely (see
+    # top100_engine._is_dcf_unreliable()'s own docstring) - this
+    # sentence names that rule for a reader who notices a company is
+    # simply absent, never wondering if it was silently demoted.
+    "top100.methodology_dcf_unreliable": (
+        "**DCF-unreliable exclusion.** A company whose model value "
+        "comes out more than 3x its current price is treated as a "
+        "data artefact, not a real discount, and is excluded from the "
+        "Top 100 pool entirely - it never costs a scoring call or "
+        "occupies a slot another company could have filled."
+    ),
+    # Same pool-exclusion rule's defensive chip (top100_render._dcf_
+    # unreliable_chip_html()) - should never actually render once the
+    # exclusion above is live, but covers a pool row saved by an older
+    # nightly run before this fix existed.
+    "top100.dcf_unreliable_chip": "DCF unreliable",
+    "top100.dcf_unreliable_tooltip": (
+        "Model value more than 3× the price — treated as a data "
+        "artefact, not a discount."
+    ),
     "top100.previous_rubric_chip": "previous rubric",
     # Top 100 selection freshness fix (30 Sep 2026, owner-directed): a
     # small muted chip next to Value Score when the row's chosen scan
@@ -7296,6 +7318,19 @@ ES = {
         "mostrados en cada tarjeta - solo oculta o muestra filas que "
         "ya están en la página, nunca cambia un puesto ni una "
         "puntuación."
+    ),
+    "top100.methodology_dcf_unreliable": (
+        "**Exclusión por DCF no confiable.** Una empresa cuyo valor del "
+        "modelo resulta más de 3 veces su precio actual se trata como "
+        "un artefacto de datos, no como un descuento real, y queda "
+        "excluida por completo del grupo del Top 100 - nunca consume "
+        "una llamada de puntuación ni ocupa un puesto que otra empresa "
+        "podría haber llenado."
+    ),
+    "top100.dcf_unreliable_chip": "DCF no confiable",
+    "top100.dcf_unreliable_tooltip": (
+        "Valor del modelo superior a 3× el precio — se trata como un "
+        "artefacto de datos, no un descuento."
     ),
     "top100.previous_rubric_chip": "rúbrica anterior",
     "top100.stale_valuation_chip": "valoración de hace {n} días",
