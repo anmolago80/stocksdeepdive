@@ -138,20 +138,20 @@ assert abs(_g3 - 0.025) < 1e-9, _g3
 print(f"[reported_growth_tier_relative_cap] a hypothetical 5% tier ceiling caps a 30% reported "
       f"figure at max(end_rate=2.5%, 5%*0.5=2.5%) -> {_g3:.3f} OK")
 
-# Historical-avg growth and the tier caps themselves are UNCHANGED - the
-# 20/16/12/8% ceilings are read straight off the untouched table. Push 2
-# (owner-directed, 30 Sep 2026) inserted a US$300M split so this table's
-# boundaries line up with capm_engine.py's new size-premium band labels -
-# same 8/12/16/20% VALUES, just a fifth row (both sides of the split
-# still 20%, per the owner's own instruction: growth stays a step table,
-# only the discount premium went continuous).
-assert fve.MARKET_CAP_GROWTH_CEILINGS == [
-    (200_000_000_000, 0.08), (10_000_000_000, 0.12), (2_000_000_000, 0.16),
-    (300_000_000, 0.20), (0, 0.20),
-], fve.MARKET_CAP_GROWTH_CEILINGS
-print("[tier_ceilings_unchanged] MARKET_CAP_GROWTH_CEILINGS values (8/12/16/20/20%) untouched by "
-      "this fix - the Push 2 US$300M split is a label-parity addition only, same numbers on both "
-      "sides of it OK")
+# Continuous growth ceiling/end rate (owner-directed, 1 Oct 2026):
+# MARKET_CAP_GROWTH_CEILINGS (the old step table this test used to assert
+# literally) was replaced by GROWTH_CEILING_ANCHORS_USD, a log-linear-
+# interpolated curve - see fcf_valuation_engine.py's own "Continuous-in-
+# market-cap" comment. The ANCHOR values themselves (at the geometric
+# midpoint of each old tier) are asserted here instead of a step table;
+# tests/test_continuous_growth_ceilings.py covers the interpolated curve
+# itself (monotonicity, flat ends, the owner's own expected sweep).
+assert fve.GROWTH_CEILING_ANCHORS_USD == [
+    (200_000_000_000, 0.08), (44_700_000_000, 0.12), (4_470_000_000, 0.16),
+    (775_000_000, 0.20),
+], fve.GROWTH_CEILING_ANCHORS_USD
+print("[ceiling_anchors_unchanged] GROWTH_CEILING_ANCHORS_USD values (8/12/16/20%) match the "
+      "owner's own geometric-midpoint anchors OK")
 
 
 # ======================================================================

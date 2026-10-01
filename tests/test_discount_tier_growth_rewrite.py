@@ -141,11 +141,20 @@ print(f"[yahoo_estimate_above_cap] Yahoo 25% analyst estimate against an 8% mega
 
 # ======================================================================
 # CHECK: growth PATH option E (follow-up to the same-day amendment above,
-# owner-directed 28 Sep 2026) - FCF/share 12.20, g1 10.275%, discount
-# 8.17%, large tier (end 3%), perpetual 2.0% -> path
-# [10.27 x5, 8.82, 7.36, 5.91, 4.46, 3.00], IV ~ $329.16. marketCap must
-# be supplied (US$105B, same large-tier fixture as tier_placement_adp_
-# cprt_aos above) so growth_end_rate_for() can resolve the tier.
+# owner-directed 28 Sep 2026) - FCF/share 12.20, g1 (requested) 10.275%,
+# discount 8.17%, perpetual 2.0%. marketCap US$105B (same large-tier
+# fixture as tier_placement_adp_cprt_aos above).
+#
+# Continuous growth ceiling/end rate (owner-directed, 1 Oct 2026):
+# US$105B no longer resolves to the OLD flat large-tier ceiling (12%,
+# g1 unaffected) / end rate (3% exactly) - it's between the 44.7B/200B
+# ceiling anchors and the 100B/200B end-rate anchors, so BOTH now
+# interpolate: ceiling ~9.72% (BELOW the requested 10.275% g1, so this
+# fixture now also exercises the Cap governor, not just the fade - see
+# fcf_valuation_engine.estimate_growth()'s own Cap branch) and end rate
+# ~2.93% (not 3.00%). Expected numbers recomputed from the real
+# functions (not hand-derived) and asserted with the same tolerances the
+# original fixture used.
 # ======================================================================
 _iv, _g_used, _meta = fve.dcf_intrinsic_value(
     "TEST", info={"currentPrice": 100.0, "currency": "USD", "marketCap": 105_000_000_000},
@@ -153,21 +162,22 @@ _iv, _g_used, _meta = fve.dcf_intrinsic_value(
     discount_rate=0.0817, perpetual_rate=0.02, growth_rate=0.10275,
     manual_fcf=12.20, diluted_shares_override=1,
 )
-_expected_path = [0.1027, 0.1027, 0.1027, 0.1027, 0.1027, 0.0882, 0.0736, 0.0591, 0.0445, 0.03]
+assert abs(fve.growth_ceiling_for({"marketCap": 105_000_000_000, "currency": "USD"}) - 0.0972) < 1e-3
+_expected_path = [0.0972, 0.0972, 0.0972, 0.0972, 0.0972, 0.0836, 0.0700, 0.0565, 0.0429, 0.0293]
 _path = _meta["growth_path"]
 assert len(_path) == 10, _path
 for _i, (_got, _want) in enumerate(zip(_path, _expected_path)):
     assert abs(_got - _want) < 1e-3, (_i, _got, _want)
 assert _path[:5] == [_path[0]] * 5, _path  # flat for years 1-5
-assert _path[-1] == 0.03, _path  # year 10 == the tiered end rate (3%), NOT perpetual (2%)
+assert abs(_path[-1] - 0.0293) < 1e-3, _path  # year 10 == the interpolated end rate (~2.93%), NOT perpetual (2%)
 assert all(_path[i] > _path[i + 1] for i in range(5, 9)), _path  # strictly fading years 6-10
-assert abs(_meta["growth_end_rate_used"] - 0.03) < 1e-9, _meta["growth_end_rate_used"]
+assert abs(_meta["growth_end_rate_used"] - 0.0293) < 1e-3, _meta["growth_end_rate_used"]
 assert abs(_meta["perpetual_rate_used"] - 0.02) < 1e-9, _meta["perpetual_rate_used"]  # terminal value unchanged
-assert 320 < _iv < 335, _iv  # owner's own estimate: ~$329.16
+assert 310 < _iv < 325, _iv  # recomputed under the continuous ceiling/end-rate (was ~$329.16 under the old step tiers)
 print(f"[growth_path_option_e_large_tier] path (%): {[round(p * 100, 2) for p in _path]} "
-      f"(owner's own expectation: [10.27 x5, 8.82, 7.36, 5.91, 4.46, 3.00]) - "
-      f"IV ${_iv:.2f} (owner's own expectation: ~$329.16), fade target={_meta['growth_end_rate_used']:.2%} "
-      f"(large tier), terminal rate unchanged at {_meta['perpetual_rate_used']:.2%} OK")
+      f"(g1 capped to ~9.72% by the now-interpolated ceiling, fading to ~2.93%, not the old "
+      f"exact 3.00% tier value) - IV ${_iv:.2f}, fade target={_meta['growth_end_rate_used']:.2%}, "
+      f"terminal rate unchanged at {_meta['perpetual_rate_used']:.2%} OK")
 
 # g1 <= end_rate (micro tier, end=6%, g1=4%): keep g1 flat for all 10
 # years - never fade upward. marketCap supplied below $2B (micro tier).
@@ -214,9 +224,13 @@ _iv_5y, _, _meta_5y = fve.dcf_intrinsic_value(
     manual_fcf=12.20, diluted_shares_override=1, growth_years=5,
 )
 assert len(_meta_5y["growth_path"]) == 5, _meta_5y["growth_path"]
-assert all(abs(p - 0.10275) < 1e-3 for p in _meta_5y["growth_path"]), _meta_5y["growth_path"]
+# Continuous growth ceiling (1 Oct 2026): US$105B now interpolates to a
+# ~9.72% ceiling (see growth_path_option_e_large_tier above), capping
+# the requested 10.275% g1 - not the old flat 12% large-tier ceiling.
+assert all(abs(p - 0.0972) < 1e-3 for p in _meta_5y["growth_path"]), _meta_5y["growth_path"]
 print("[growth_years_five_no_fade_stage] growth_years=5 (no years left for a fade stage) - "
-      f"growth_path is flat {_meta_5y['growth_path']} throughout, no crash OK")
+      f"growth_path is flat {_meta_5y['growth_path']} throughout (g1 capped to ~9.72% by the "
+      "now-interpolated ceiling), no crash OK")
 
 
 # ======================================================================

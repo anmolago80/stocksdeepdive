@@ -34,10 +34,10 @@ mechanics; growth NEVER resolves to a flat 0% any more):
        REPORTED_GROWTH_CAP_FRACTION) regardless of market-cap tier, the
        least trustworthy signal here (no multi-year smoothing, no
        analyst consensus).
-    4. The market-cap-tiered growth-path END RATE itself (growth_end_
-       rate_for(), always strictly positive) - used only when nothing
-       else above is usable. Flagged as a DEFAULT so the app can render
-       it in red, but never 0%.
+    4. The market-cap-interpolated growth-path END RATE itself (growth_
+       end_rate_for(), always strictly positive) - used only when
+       nothing else above is usable. Flagged as a DEFAULT so the app
+       can render it in red, but never 0%.
 
 DISCOUNT RATE - market-cap-tiered cost of equity, computed per stock
 (capm_engine.py, A6 design, owner-approved live 28 Sep 2026):
@@ -64,6 +64,7 @@ where each input came from and whether a default/average had to be assumed.
 """
 
 import logging
+import math
 import re
 import time
 
@@ -175,54 +176,110 @@ FCF_ONEOFF_TWO_YEAR_THRESHOLD = 0.25
 FCF_ONEOFF_WINDOW_YEARS = 5
 FCF_ONEOFF_MIN_CLEAN_YEARS = 3
 
-# Market-cap-tiered version of the ceiling above. A flat 20% ceiling let a
-# mega-cap grow FCF at nearly the same clip as a micro-cap for a full
-# 10-year stage-1 horizon - structurally implausible (compounding off a huge
-# revenue base runs out of room well before a small company would). The
-# ceiling tightens as market cap grows; small caps keep the original 20%
-# headroom.
+# Continuous-in-market-cap growth ceiling/end rate (owner-directed, 1 Oct
+# 2026 23:09 AEST, "all you are doing is interpolating"): the step tables
+# this replaced had the same cliff problem capm_engine.py's size premium
+# had before its own Push 2 fix - a company at $9.9B got a 16% ceiling, at
+# $10.1B 12%, with nothing about the business changing across that 2%
+# price move. Same log-linear-interpolation mechanism as capm_engine.
+# _interpolate_size_premium() (see that function's own docstring for the
+# general approach), applied here as a local copy (_log_interpolate()
+# below) rather than a shared import - capm_engine.py's version is tightly
+# coupled to its own module-local SIZE_PREMIUM_ANCHORS_USD table and is a
+# live, already-working discount-rate path; duplicating the ~15-line
+# interpolation body here, with this comment pointing at the original, is
+# lower-risk than threading a new shared helper through a function that
+# already has its own tests and callers.
 #
 # Thresholds are USD-equivalent so they're consistent across currencies.
-# FX_TO_USD_APPROX is a rough, static snapshot used only to BUCKET a company
-# into a size tier - not a live rate - so being off by a few percent doesn't
-# change which tier a company lands in except right at a boundary, which is
-# an acceptable edge case for a sanity-backstop ceiling.
+# FX_TO_USD_APPROX is a rough, static snapshot used only to BUCKET a
+# company for interpolation - not a live rate - so being off by a few
+# percent only shifts the result slightly, never jumps it across a band.
 FX_TO_USD_APPROX = {
     "USD": 1.0,
     "AUD": 0.65,
 }
 
-# (min USD market cap, ceiling) pairs, largest threshold first - the first
-# one a company's market cap clears wins.
-#
-# Push 2 Part 1 point 3 (owner-directed, 30 Sep 2026): growth stays a
-# step table (only capm_engine.py's discount-rate premium went
-# continuous - see that module's SIZE_PREMIUM_ANCHORS_USD comment for
-# why) - but a US$300M threshold is inserted here anyway, splitting the
-# old flat "< US$2B -> 20%" bucket into "US$300M-2B" and "< US$300M",
-# BOTH still at 20% (no behaviour change - every company gets the exact
-# same ceiling it always did), purely so this table's own tier
-# boundaries line up with the new 6-band size-premium LABELS a Deep
-# Dive caption now shows (a company sitting in capm_engine's "small-cap
-# (US$300M-2B)" band should not see a growth ceiling that implies a
-# different bucket boundary).
-MARKET_CAP_GROWTH_CEILINGS = [
-    (200_000_000_000, 0.08),   # mega-cap
-    (10_000_000_000, 0.12),    # large-cap
-    (2_000_000_000, 0.16),     # mid-cap
-    (300_000_000, 0.20),       # small-cap
-    (0, 0.20),                 # micro-cap
+# (market cap USD, value) pairs, LARGEST CAP FIRST - same convention as
+# capm_engine.SIZE_PREMIUM_ANCHORS_USD. Anchors sit at the GEOMETRIC
+# MIDPOINT of each of the old step table's tiers (owner choice: "midpoints,
+# not tier floors", so the typical company already sitting mid-tier keeps
+# today's value exactly; only a company near an old boundary sees its
+# number move, and only by a little) - e.g. the old mid-cap tier ran
+# $2B-$10B, so its anchor sits at sqrt(2B * 10B) = $4.47B. The top and
+# bottom anchors ($200B and $775M = sqrt(300M*2B)) are flat beyond
+# themselves: >= $200B stays at the mega-cap value, <= $775M stays at the
+# small-cap value - see _log_interpolate()'s own docstring.
+GROWTH_CEILING_ANCHORS_USD = [
+    (200_000_000_000, 0.08),   # mega: 8% from $200B upward (flat above)
+    (44_700_000_000,  0.12),   # large midpoint: sqrt(10B * 200B)
+    (4_470_000_000,   0.16),   # mid midpoint: sqrt(2B * 10B)
+    (775_000_000,     0.20),   # small midpoint: sqrt(300M * 2B); flat below
 ]
+
+# Same midpoint convention as GROWTH_CEILING_ANCHORS_USD above, for the
+# stage-1 fade's own END RATE (growth_end_rate_for() below) - a
+# DELIBERATELY SEPARATE anchor table from the ceiling's, not derived from
+# it, even though today's values happen to match capm_engine.SIZE_PREMIUM_
+# ANCHORS_USD one-for-one at every anchor: growth end rate and discount-
+# rate premium are two different knobs (one shapes the cash-flow growth
+# path, the other the cost of equity) that only coincide in value because
+# the owner chose the same numbers for both - hard-linking them would mean
+# a future change to one silently move the other.
+GROWTH_END_RATE_ANCHORS_USD = [
+    (200_000_000_000, 0.02),   # flat above $200B
+    (100_000_000_000, 0.03),   # sqrt(50B * 200B)
+    (22_400_000_000,  0.04),   # sqrt(10B * 50B)
+    (4_470_000_000,   0.05),   # sqrt(2B * 10B)
+    (775_000_000,     0.06),   # sqrt(300M * 2B); flat below
+]
+
+
+def _log_interpolate(anchors, market_cap_usd):
+    """Log-linear interpolation of a value between the fixed (market cap
+    USD, value) `anchors` (descending by cap), on log10(market_cap_usd) -
+    the same mechanism as capm_engine._interpolate_size_premium() (see
+    that function's own docstring; this is a local copy, not a shared
+    import - see GROWTH_CEILING_ANCHORS_USD's own comment above for why).
+
+    Above the top anchor the value is flat at the top anchor's own value;
+    at or below the bottom anchor (including a non-positive market cap)
+    it's flat at the bottom anchor's value; between two anchors it's a
+    straight line in LOG-cap space, so a company halfway (in orders of
+    magnitude) between two anchors gets a value halfway between theirs.
+
+    Boundary-exactness: at any anchor's OWN market cap, this returns that
+    anchor's exact value (frac lands on exactly 0.0 or 1.0 - no floating-
+    point surprise), so a company sitting exactly on an anchor never sees
+    a value a hair off the one named in the anchor table."""
+    if market_cap_usd <= 0:
+        return anchors[-1][1]
+    if market_cap_usd >= anchors[0][0]:
+        return anchors[0][1]
+    if market_cap_usd <= anchors[-1][0]:
+        return anchors[-1][1]
+    log_cap = math.log10(market_cap_usd)
+    for i in range(len(anchors) - 1):
+        hi_cap, hi_val = anchors[i]
+        lo_cap, lo_val = anchors[i + 1]
+        if lo_cap <= market_cap_usd <= hi_cap:
+            frac = (log_cap - math.log10(lo_cap)) / (math.log10(hi_cap) - math.log10(lo_cap))
+            return lo_val + frac * (hi_val - lo_val)
+    return anchors[-1][1]   # unreachable given the short-circuits above; defensive only
 
 
 def growth_ceiling_for(info, currency=None):
     """
-    Market-cap-tiered growth ceiling - replaces the flat GROWTH_CEIL as the
-    upper bound estimate_growth() (and a manual override) is clamped to.
+    Market-cap-interpolated growth ceiling - replaces the flat GROWTH_CEIL
+    as the upper bound estimate_growth() (and a manual override) is
+    clamped to. A continuous log-linear curve through GROWTH_CEILING_
+    ANCHORS_USD (see that table's own comment), not a step function - see
+    this module's own "Continuous-in-market-cap" comment above for why.
     Falls back to the original flat GROWTH_CEIL whenever market cap isn't
     available - same fail-safe philosophy as everything else in this
     module: a missing data point should never block a valuation, just make
-    it slightly less size-aware.
+    it slightly less size-aware. Rounded to 4 decimals so stored meta is
+    stable.
     """
     info = info or {}
     market_cap = info.get("marketCap")
@@ -232,51 +289,21 @@ def growth_ceiling_for(info, currency=None):
     ccy = (currency or info.get("currency") or "USD").upper()
     market_cap_usd = market_cap * FX_TO_USD_APPROX.get(ccy, 1.0)
 
-    for threshold, ceiling in MARKET_CAP_GROWTH_CEILINGS:
-        if market_cap_usd >= threshold:
-            return ceiling
-    return GROWTH_CEIL
-
-
-# Growth-path option E (owner-directed, 28 Sep 2026, follow-up to
-# 0d7ee0b): the stage-1 fade (years 6-10) targets a market-cap-tiered
-# END RATE, not the currency perpetual rate - a mega-cap's growth
-# plausibly settles near the broad economy's own trend growth faster
-# than a micro-cap's, which can still be compounding off a much smaller
-# base. Same five tiers/thresholds as capm_engine.MARKET_CAP_DISCOUNT_
-# TIERS (mega/large/mid/small/micro, $200B/$50B/$10B/$2B/$0) - a
-# DELIBERATELY SEPARATE table, not imported from there, even though
-# today's values happen to match the discount tiers' own premiums one-
-# for-one: growth end rate and discount-rate premium are two different
-# knobs (one shapes the cash-flow growth path, the other the cost of
-# equity) that only coincide in value because the owner chose the same
-# numbers for both today - hard-linking them would mean a future change
-# to one silently move the other.
-# Push 2 Part 1 point 3 (owner-directed, 30 Sep 2026): same US$300M
-# split as MARKET_CAP_GROWTH_CEILINGS above, same reasoning - both the
-# old "< US$2B" bucket's boundary and its 0.06 value are unchanged, a
-# US$300M threshold is just inserted between US$2B and 0 (still 0.06 on
-# both sides of it) so this table's tier boundaries agree with capm_
-# engine.py's new size-premium band labels.
-MARKET_CAP_GROWTH_END_RATES = [
-    (200_000_000_000, 0.02),   # mega-cap
-    (50_000_000_000,  0.03),   # large-cap
-    (10_000_000_000,  0.04),   # mid-cap
-    (2_000_000_000,   0.05),   # small-mid-cap
-    (300_000_000,      0.06),  # small-cap
-    (0,                0.06),  # micro-cap
-]
+    return round(_log_interpolate(GROWTH_CEILING_ANCHORS_USD, market_cap_usd), 4)
 
 
 def growth_end_rate_for(info, currency=None):
     """
-    Market-cap-tiered growth-path END RATE - the rate the stage-1 fade
-    (years 6-growth_years) targets, NOT the currency perpetual/terminal
-    rate the Gordon terminal value still uses (a separate input - see
-    dcf_intrinsic_value()'s own stage-1 loop comment). Falls back to
-    DEFAULT_PERPETUAL_RATE whenever market cap isn't available - same
-    fail-safe philosophy as growth_ceiling_for() above; a missing data
-    point should never block a valuation.
+    Market-cap-interpolated growth-path END RATE - the rate the stage-1
+    fade (years 6-growth_years) targets, NOT the currency perpetual/
+    terminal rate the Gordon terminal value still uses (a separate input -
+    see dcf_intrinsic_value()'s own stage-1 loop comment). A continuous
+    log-linear curve through GROWTH_END_RATE_ANCHORS_USD (see that
+    table's own comment), not a step function. Falls back to DEFAULT_
+    PERPETUAL_RATE whenever market cap isn't available - same fail-safe
+    philosophy as growth_ceiling_for() above; a missing data point should
+    never block a valuation. Rounded to 4 decimals so stored meta is
+    stable.
     """
     info = info or {}
     market_cap = info.get("marketCap")
@@ -286,10 +313,7 @@ def growth_end_rate_for(info, currency=None):
     ccy = (currency or info.get("currency") or "USD").upper()
     market_cap_usd = market_cap * FX_TO_USD_APPROX.get(ccy, 1.0)
 
-    for threshold, end_rate in MARKET_CAP_GROWTH_END_RATES:
-        if market_cap_usd >= threshold:
-            return end_rate
-    return DEFAULT_PERPETUAL_RATE
+    return round(_log_interpolate(GROWTH_END_RATE_ANCHORS_USD, market_cap_usd), 4)
 
 
 # Cash-flow-statement row labels vary across yfinance versions / listings -

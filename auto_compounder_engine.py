@@ -2137,6 +2137,13 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         "growth_governor": meta.get("growth_governor"),
         "growth_1y_consensus": meta.get("growth_1y_consensus"),
         "growth_history_capped": meta.get("growth_history_capped"),
+        # Continuous growth ceiling/end rate (1 Oct 2026, owner-directed):
+        # the market-cap-interpolated ceiling actually applied (fcf_
+        # valuation_engine.growth_ceiling_for()) - see _dcf_valuation_
+        # and_inputs()'s own "Growth Source" row, where the analyst_1y_
+        # blend text now names this number instead of the bare words
+        # "tier ceiling".
+        "growth_ceiling_used": meta.get("growth_ceiling_used"),
         # Growth-rewrite (29 Sep 2026, owner-directed): same passthrough as
         # _run_dcf() above - see that function's comment.
         "growth_raw": meta.get("growth_raw"),
@@ -3741,10 +3748,20 @@ def _dcf_valuation_and_inputs(info, price, canonical_dcf_result):
     elif canonical_dcf_result.get("growth_source") == "analyst_1y_blend":
         _1y = canonical_dcf_result.get("growth_1y_consensus")
         _hist = canonical_dcf_result.get("growth_history_capped")
+        _ceil = canonical_dcf_result.get("growth_ceiling_used")
+        # Continuous growth ceiling (1 Oct 2026, owner-directed): the
+        # bare words "tier ceiling" named a step-table concept that no
+        # longer exists - this now names the actual interpolated number
+        # (e.g. "ceiling 13.5%"), one decimal, same as every other
+        # percentage in this row. Falls back to the old bare phrasing
+        # only if growth_ceiling_used is somehow unavailable (shouldn't
+        # happen - dcf_intrinsic_value() always sets it - but a missing
+        # number should never blank this row).
+        _ceil_phrase = f"capped at ceiling {_ceil * 100:.1f}%" if _ceil is not None else "capped at tier ceiling"
         if _1y is not None and _hist is not None:
             _growth_source_display = (
                 f"Analyst next-year consensus ({_1y * 100:.1f}%) blended "
-                f"with FCF history ({_hist * 100:.1f}%, capped at tier ceiling)"
+                f"with FCF history ({_hist * 100:.1f}%, {_ceil_phrase})"
             )
     # Growth-estimate-fetch resilience fix (28 Sep 2026, owner-directed),
     # extended by the growth-never-zero rewrite (30 Sep 2026, "non_

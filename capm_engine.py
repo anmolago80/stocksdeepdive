@@ -319,7 +319,8 @@ def resolve_perpetual_rate(currency, discount_rate=None):
 # =====================================================================
 
 # Same static USD-bucketing FX snapshot fcf_valuation_engine.py's own
-# MARKET_CAP_GROWTH_CEILINGS tiers use (see that module for the full
+# growth ceiling/end-rate interpolation (GROWTH_CEILING_ANCHORS_USD /
+# GROWTH_END_RATE_ANCHORS_USD) uses (see that module for the full
 # rationale) - duplicated here as a small local constant rather than
 # imported, the same precedent fcf_valuation_engine.py itself already
 # set for _FCF_LABELS/_OCF_LABELS/_CAPEX_LABELS: fcf_valuation_engine

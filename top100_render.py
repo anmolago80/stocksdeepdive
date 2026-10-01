@@ -439,7 +439,7 @@ def _industry_tag_html(sector, finer_industry):
 def _global_value_score_ranks(pool):
     """{ticker: 1-based rank} by Value Score descending across the
     FULL global pool (all 100, currency-agnostic) - the number the
-    teal "TOP 100 · #<n>" badge shows (point 3's own "global rank
+    teal "TOP 200 · #<n>" badge shows (point 3's own "global rank
     #<n>" wording), independent of whatever sort view the Australia
     tab itself is currently using."""
     ranked = sorted(pool, key=lambda r: (-(r["value_score"] or 0), r["ticker"]))
@@ -738,7 +738,7 @@ def _render_row(rank, row, lang, finer_industry, sort_mode, origin_badge_html=No
     company name, present on normal and red-alert rows alike.
 
     `origin_badge_html` (Top 20 Australia guaranteed-twenty, 25 Sep
-    2026, owner-approved mock): the teal "TOP 100 · #<n>" / violet
+    2026, owner-approved mock): the teal "TOP 200 · #<n>" / violet
     "ASX EXTENSION" badge HTML (or None - every other tab passes
     nothing, unaffected) - Top 20 Australia's own caller (_render_
     top20_australia_tab()) computes this fresh per row, right after
@@ -1005,7 +1005,7 @@ def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filte
     twenty: every AUD pool row plus (point 1) the ASX extension's own
     next-best-by-Value-Score Australians. Ranked by the active sort +
     bottom-shelf rules exactly like every other tab (point 3), with an
-    origin badge on every row: teal "TOP 100 · #<n>" (point 3, re-
+    origin badge on every row: teal "TOP 200 · #<n>" (point 3, re-
     derived HERE from the live global pool's own Value Score ordering -
     never the stored asx_extension flag - so a company graduating
     into/out of the global 100 flips the badge automatically) or
@@ -1410,12 +1410,13 @@ def _render_filter_bar(lang, enriched):
     separately by each tab's own render function with this same
     returned dict.
 
-    The "Showing N of 100" result caption + "clear filters" button
+    The "Showing N of M" result caption + "clear filters" button
     render here ONCE, against the GLOBAL `enriched` pool (every row,
     rated or not - a shelf/not_rated row's own score_row naturally
     fails any non-FILTER_ALL check, so it's correctly excluded from the
-    matched count while the unfiltered "100" total still counts it) -
-    matching the owner-approved mock's own single result line; each
+    matched count while the unfiltered total, `len(enriched)`, still
+    counts it) - matching the owner-approved mock's own single result
+    line (M always reflects the LIVE pool size, never a literal); each
     tab additionally applies the SAME filters dict to its own row list
     (never duplicating this caption/button per tab)."""
     st.caption(_t("filter_heading", lang))

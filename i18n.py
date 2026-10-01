@@ -116,7 +116,7 @@ EN = {
     # entry description - same one-line-description treatment as the
     # three above, since Top 100 is a primary desktop tab with no
     # existing "More"-panel copy of its own to reuse.
-    "nav.more_top100_desc": "A hundred companies, selected by value and ranked by Claude's analysis.",
+    "nav.more_top100_desc": "Two hundred companies, selected by value and ranked by Claude's analysis.",
 
     "header.tagline": "Research any stock in seconds.",
     "header.search_placeholder": (
@@ -3674,10 +3674,10 @@ EN = {
     ),
     "top100.methodology_heading": "Methodology",
     "top100.methodology_pipeline": (
-        "**Two stages.** The numbers pick the 100; the analysis alone "
+        "**Two stages.** The numbers pick the 200; the analysis alone "
         "ranks them; price sorts, never scores. Selection and the "
         "Value Score are pure arithmetic over this site's own scanned "
-        "fundamentals - no AI judgment anywhere near which 100 "
+        "fundamentals - no AI judgment anywhere near which 200 "
         "companies make the pool. Ranking WITHIN that pool (the "
         "Research Score, and which names surface in the Top 20 tabs) "
         "draws purely on Claude's qualitative analysis; price (margin "
@@ -3771,10 +3771,10 @@ EN = {
     "top100.col_severity": "Inversion severity",
     "top100.methodology_au_extension": (
         "**Top 20 · Australia** always fields a full twenty: when the global "
-        "100 alone has fewer than 20 Australians, the next-best ASX "
+        "200 alone has fewer than 20 Australians, the next-best ASX "
         "companies by Value Score are added as an \"ASX extension\" and "
         "scored identically - they appear ONLY on that tab, and never "
-        "affect the Full 100, Top 20 · Mixed, Top 20 · USA, or any other "
+        "affect the Full 200, Top 20 · Mixed, Top 20 · USA, or any other "
         "list on this site."
     ),
     "top100.no_data": "No Top 200 selection has run yet - check back after the next nightly scan.",
@@ -3810,7 +3810,7 @@ EN = {
     "top100.tab_mixed": "Top 20 · Mixed",
     "top100.tab_au": "Top 20 · Australia",
     "top100.tab_us": "Top 20 · USA",
-    "top100.tab_full": "Full 100",
+    "top100.tab_full": "Full 200",
     "top100.empty_tab": "Nothing to show here yet.",
     "top100.col_value_score": "Value Score",
     "top100.col_mos": "MOS",
@@ -3935,7 +3935,7 @@ EN = {
     "top100.shelf_caption_scoring_failed": "scoring failed — will retry after the next rubric change",
     "top100.shelf_chip_not_rated": "◇ NOT RATED",
     "top100.shelf_caption_not_rated": "Not enough public information for an analytical score.",
-    "top100.origin_pool_badge": "🌐 TOP 100 · #{rank}",
+    "top100.origin_pool_badge": "🌐 TOP 200 · #{rank}",
     "top100.origin_pool_tooltip": "In the global Top 200 by Value Score — global rank #{rank}.",
     "top100.origin_extension_badge": "＋ ASX EXTENSION",
     "top100.origin_extension_tooltip": (
@@ -4107,7 +4107,7 @@ ES = {
     "nav.more_research_desc": "Una empresa a la vez, con la tesis y el veredicto completos.",
     "nav.more_comparison_desc": "Dos o más acciones, alineadas sobre los mismos cálculos.",
     "nav.more_blog_desc": "Artículos sobre acciones concretas y cómo funcionan los modelos.",
-    "nav.more_top100_desc": "Cien empresas, seleccionadas por valor y clasificadas por el análisis de Claude.",
+    "nav.more_top100_desc": "Doscientas empresas, seleccionadas por valor y clasificadas por el análisis de Claude.",
 
     "header.tagline": "Analiza cualquier acción en segundos.",
     "header.search_placeholder": (
@@ -7120,11 +7120,11 @@ ES = {
     ),
     "top100.methodology_heading": "Metodología",
     "top100.methodology_pipeline": (
-        "**Dos etapas.** Los números eligen a las 100; solo el análisis "
+        "**Dos etapas.** Los números eligen a las 200; solo el análisis "
         "las ordena; el precio ordena, nunca puntúa. La selección y el "
         "Value Score son aritmética pura sobre los datos fundamentales "
         "ya escaneados por este sitio - ningún juicio de IA interviene "
-        "en qué 100 empresas forman el conjunto. El orden DENTRO de ese "
+        "en qué 200 empresas forman el conjunto. El orden DENTRO de ese "
         "conjunto (la Puntuación de Investigación, y qué nombres "
         "aparecen en las pestañas Top 20) se basa únicamente en el "
         "análisis cualitativo de Claude; el precio (margen de "
@@ -7228,10 +7228,10 @@ ES = {
     "top100.col_severity": "Severidad de inversión",
     "top100.methodology_au_extension": (
         "**Top 20 · Australia** siempre presenta veinte completas: cuando "
-        "las 100 globales por sí solas tienen menos de 20 australianas, se "
+        "las 200 globales por sí solas tienen menos de 20 australianas, se "
         "agregan las siguientes mejores empresas ASX por Value Score como "
         "una \"extensión ASX\" y se puntúan de forma idéntica - aparecen "
-        "SOLO en esa pestaña, y nunca afectan las 100 completas, el Top 20 "
+        "SOLO en esa pestaña, y nunca afectan las 200 completas, el Top 20 "
         "· Mixto, el Top 20 · EE. UU. ni ninguna otra lista de este sitio."
     ),
     "top100.no_data": "Aún no se ha ejecutado ninguna selección del Top 200 - vuelve a mirar después del próximo escaneo nocturno.",
@@ -7265,7 +7265,7 @@ ES = {
     "top100.tab_mixed": "Top 20 · Mixto",
     "top100.tab_au": "Top 20 · Australia",
     "top100.tab_us": "Top 20 · EE. UU.",
-    "top100.tab_full": "Las 100",
+    "top100.tab_full": "Las 200",
     "top100.empty_tab": "Aún no hay nada que mostrar aquí.",
     "top100.col_value_score": "Value Score",
     "top100.col_mos": "MOS",
@@ -7341,7 +7341,7 @@ ES = {
     "top100.shelf_caption_scoring_failed": "la puntuación falló — se reintentará tras el próximo cambio de rúbrica",
     "top100.shelf_chip_not_rated": "◇ NO EVALUADA",
     "top100.shelf_caption_not_rated": "No hay suficiente información pública para una puntuación analítica.",
-    "top100.origin_pool_badge": "🌐 TOP 100 · #{rank}",
+    "top100.origin_pool_badge": "🌐 TOP 200 · #{rank}",
     "top100.origin_pool_tooltip": "En el Top 200 global por Value Score — puesto global #{rank}.",
     "top100.origin_extension_badge": "＋ EXTENSIÓN ASX",
     "top100.origin_extension_tooltip": (
