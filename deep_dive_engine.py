@@ -483,6 +483,20 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         "dcf_market_cap_usd": iv_meta.get("market_cap_usd"),
         "dcf_premium_used": iv_meta.get("premium_used"),
         "dcf_growth_source": iv_meta.get("growth_source"),
+        # Growth 1y-blend fix (1 Oct 2026, owner-directed, KNSL live
+        # case): the two raw inputs behind "analyst_1y"/"analyst_1y_
+        # blend" - see fcf_valuation_engine.estimate_growth()'s own
+        # docstring - for app.py's Deep Dive tooltip. Percent-scaled
+        # the same way dcf_growth_raw just below is; None/None for
+        # every other growth_source.
+        "dcf_growth_1y_consensus": (
+            round(iv_meta.get("growth_1y_consensus") * 100, 1)
+            if iv_meta.get("growth_1y_consensus") is not None else None
+        ),
+        "dcf_growth_history_capped": (
+            round(iv_meta.get("growth_history_capped") * 100, 1)
+            if iv_meta.get("growth_history_capped") is not None else None
+        ),
         # Growth-path option E (28 Sep 2026, owner-directed follow-up to
         # 0d7ee0b): the fade's own end rate (tiered, floored at the
         # currency perpetual rate) - app.py's caption needs this instead

@@ -27,6 +27,20 @@ POINTS_FOR_TREND=4 points; volatile -> ½-ceiling cap) -> reported
 (revenue then earnings, ½-ceiling cap) -> tier end rate (flagged,
 never 0%).
 
+REVISED AGAIN (growth 1y-blend fix, owner-directed, 1 Oct 2026 20:37
+AEST, KNSL/Kinsale Capital live case): a BARE "ok_1y" next-year
+consensus is cycle-dominated, so it's now blended with clean FCF
+history (>= MIN_HISTORY_POINTS_FOR_TREND points, history capped at
+the tier ceiling BEFORE averaging) whenever enough history exists;
+with no usable history the consensus is used alone, floored at
+end_rate. This changes CHECK 2 (governor text; the 6% consensus no
+longer reads "Yahoo" since it's now floored-not-passthrough) and
+CHECK 3 (history is no longer inert for "ok_1y" - the blend fires,
+changing source/governor/raw even though the final number happens to
+land on the same ceiling-capped value either way). See
+fcf_valuation_engine.estimate_growth()'s own docstring for the exact
+blend formula.
+
 Run: python3 tests/test_analyst_1y_governor.py
 """
 import os
@@ -61,8 +75,12 @@ print(f"[mega_1y_12pct_capped_at_ceiling] mega-cap next-year analyst 12% -> "
 
 
 # ======================================================================
-# CHECK 2: mega-cap, next-year analyst 6% -> passes through UNCAPPED
-# (below the 8% ceiling) - governor "Yahoo", not "Cap".
+# CHECK 2: mega-cap, next-year analyst 6%, no history -> floored at
+# end_rate (not relevant here since 6% > 2% end_rate already) and
+# passed through under the ceiling (8%) - governor is now the blend
+# fix's "floored at end rate" text (no history -> no blend branch),
+# not "Yahoo" (that governor string belongs to the untouched plain
+# "analyst"/"ok" LTG path, not "ok_1y" any more).
 # ======================================================================
 g2, src2, gov2, raw2 = fve.estimate_growth(
     {}, fcf_series=None, analyst_growth=0.06, ceiling=MEGA_CEILING,
@@ -70,33 +88,56 @@ g2, src2, gov2, raw2 = fve.estimate_growth(
 )
 assert abs(g2 - 0.06) < 1e-9, g2
 assert src2 == "analyst_1y", src2
-assert gov2 == "Yahoo", gov2
+assert gov2 == "next-year consensus, floored at end rate", gov2
 print(f"[mega_1y_6pct_uncapped] mega-cap next-year analyst 6% (under the 8% "
-      f"ceiling) -> passes through unchanged at {g2*100:.1f}%, governor={gov2!r} OK")
+      f"ceiling), no history -> passes through unchanged at {g2*100:.1f}%, "
+      f"governor={gov2!r} OK")
 
 
 # ======================================================================
-# CHECK 3: small-cap, next-year analyst 45% -> capped at the plain 20%
-# ceiling REGARDLESS of history - a strong corroborating history no
-# longer loosens anything (that mechanism is gone entirely).
+# CHECK 3: small-cap, next-year analyst 45% -> the FINAL number still
+# lands on the plain 20% ceiling regardless of history (unchanged),
+# but history is NO LONGER inert for "ok_1y" after the growth 1y-blend
+# fix (1 Oct 2026): with >= MIN_HISTORY_POINTS_FOR_TREND clean history
+# present, the blend branch fires (source becomes "analyst_1y_blend",
+# governor becomes the blend text, raw becomes the pre-clamp blended
+# average) even though min(blend, ceiling) and min(consensus, ceiling)
+# both happen to resolve to the same 20% here. Computed via
+# growth_from_history() directly (not hand-derived) for the same
+# reason CHECK 4/5 below do.
 # ======================================================================
 _strong_hist = [200.0, 175.0, 150.0, 130.0]  # would have corroborated under the old Cap1y logic
+_g_strong_hist = fve.growth_from_history(_strong_hist)
+assert _g_strong_hist is not None and _g_strong_hist > 0, _g_strong_hist
+_history_capped_3 = min(_g_strong_hist, SMALL_CEILING)
+_raw3_expected = max(SMALL_END_RATE, min((0.45 + _history_capped_3) / 2.0, SMALL_CEILING))
 g3, src3, gov3, raw3 = fve.estimate_growth(
     {}, fcf_series=_strong_hist, analyst_growth=0.45,
     ceiling=SMALL_CEILING, end_rate=SMALL_END_RATE, yahoo_estimate_status="ok_1y",
 )
 assert abs(g3 - SMALL_CEILING) < 1e-9, g3
-assert src3 == "analyst_1y", src3
-assert gov3 == "Cap", gov3
-# Confirm history truly played no role: an EMPTY history gives the identical result.
+assert src3 == "analyst_1y_blend", src3
+assert gov3 == "next-year consensus blended with history (history capped at ceiling)", gov3
+assert abs(raw3 - _raw3_expected) < 1e-9, (raw3, _raw3_expected)
+# With history ABSENT, the blend branch can't fire at all - falls back
+# to the bare-consensus-floored-at-end-rate branch (CHECK 2's branch),
+# which the plain ceiling clamp still brings to the identical FINAL
+# number here, but via a different source/governor/raw - no longer
+# "identical regardless of history" (that was the pre-blend-fix
+# behaviour this task deliberately changed).
 g3b, src3b, gov3b, raw3b = fve.estimate_growth(
     {}, fcf_series=None, analyst_growth=0.45,
     ceiling=SMALL_CEILING, end_rate=SMALL_END_RATE, yahoo_estimate_status="ok_1y",
 )
-assert (g3, src3, gov3, raw3) == (g3b, src3b, gov3b, raw3b)
+assert abs(g3b - SMALL_CEILING) < 1e-9, g3b
+assert src3b == "analyst_1y", src3b
+assert gov3b == "Cap", gov3b
+assert abs(raw3b - 0.45) < 1e-9, raw3b
+assert g3 == g3b and (src3, gov3) != (src3b, gov3b)
 print(f"[small_1y_45pct_capped_regardless_of_history] small-cap next-year analyst "
       f"45% -> {g3*100:.1f}% (plain 20% ceiling) whether a strong corroborating "
-      f"history is present or absent - identical result either way OK")
+      f"history is present (source={src3!r}) or absent (source={src3b!r}) - same "
+      f"final number, different path through the new blend logic OK")
 
 
 # ======================================================================

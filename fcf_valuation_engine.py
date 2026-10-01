@@ -893,7 +893,8 @@ def growth_from_history(fcf_history, dates=None):
 
 
 def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
-                     end_rate=None, currency=None, yahoo_estimate_status=None):
+                     end_rate=None, currency=None, yahoo_estimate_status=None,
+                     extra_out=None):
     """
     Estimate a stage-1 growth rate and report where it came from.
 
@@ -958,6 +959,15 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
         plain ceiling alone, same as a genuine LTG value - see priority
         1's own comment.)
 
+        (1 Oct 2026 20:37 AEST, owner decision, KNSL/Kinsale Capital live
+        case: the "analyst_1y" tier above was itself found to be the
+        wrong number alone - see priority 1's "ok_1y" paragraph below.
+        Two NEW governor strings replace "Yahoo" for this one tier only:
+        "next-year consensus blended with history (history capped at
+        ceiling)" when clean history is available, "next-year
+        consensus, floored at end rate" when it isn't - a genuine "ok"
+        LTG value is NOT affected, it still reports "Yahoo"/"Cap".)
+
     Priority, first usable match wins - see this module's own docstring
     for the same list at a glance:
         1. Yahoo's analyst_growth, if it's a real number AND > 0 (a
@@ -975,14 +985,32 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
            genuine 5-year figure) - the source is tagged "analyst_1y"
            (distinct from plain "analyst" - see meta["growth_source"]'s
            own docstring, so a Deep Dive/Fair Value label can still say
-           "next year" rather than implying a 5-year figure), but is
-           governed EXACTLY like a genuine "ok" LTG value - the plain
-           market-cap tier ceiling only, no separate fractional cap.
+           "next year" rather than implying a 5-year figure).
+
+           Owner decision, 1 Oct 2026 20:37 AEST (KNSL/Kinsale Capital
+           live case): a bare one-year consensus is cycle-dominated
+           (KNSL 2026 ~= flat on a strong 2025) - the wrong kind of
+           number to use alone as a 10-year DCF base rate, so it is now
+           BLENDED with clean FCF history when enough exists (>=
+           MIN_HISTORY_POINTS_FOR_TREND points, the same gate priority 2
+           below uses): history is capped at the tier ceiling BEFORE
+           averaging with the consensus, then the blend itself is
+           floored at end_rate and capped at the tier ceiling - source
+           becomes "analyst_1y_blend" in this case. With no usable
+           history, the consensus is used alone (source stays
+           "analyst_1y") but floored at end_rate so an analyst-sourced
+           base never starts the fade already running uphill - see
+           meta["growth_1y_consensus"]/meta["growth_history_capped"]
+           for the two raw inputs behind either path (the second is
+           None when no history was blended in). A genuine "ok" LTG
+           value is governed EXACTLY like before this decision - the
+           plain market-cap tier ceiling only, no floor, no blend.
            (Revised 30 Sep 2026, 20:55 AEST, owner decision - see this
            function's own docstring intro above: a tighter per-source
            cap briefly existed here the same day and was removed - the
            tier ceiling is the one safety limit for every analyst-
-           sourced figure, next-year or 5-year alike.)
+           sourced figure, next-year or 5-year alike. That removal
+           stands; the 1 Oct change is a separate, additional fix.)
         2. Historical FCF CAGR (growth_from_history(fcf_series)), if
            it's > 0 AND fcf_series has at least MIN_HISTORY_POINTS_FOR_
            TREND points (fewer is "no history", not a real 0%/degenerate
@@ -1000,6 +1028,23 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
     this module's own meta["growth_raw"]). growth_rate is clamped to
     [GROWTH_FLOOR, cap] - GROWTH_FLOOR is a defensive floor only; see its
     own comment for why it should be unreachable after this rewrite.
+
+    No-uphill-fade invariant (1 Oct 2026): for the "analyst_1y"/
+    "analyst_1y_blend" paths, growth_rate is always >= end_rate by
+    construction (each explicitly floors at end_rate before returning).
+    The "analyst"/"history"/"history_volatile"/"info" paths do NOT carry
+    this same floor (each predates this invariant and is left untouched
+    by this task's own scope guard) - a genuine signal below end_rate on
+    any of those four paths still produces growth_rate < end_rate_used,
+    an "uphill fade" the caller's own stage-1 loop does not protect
+    against either. Reported, not fixed - see this task's own report.
+
+    extra_out (1 Oct 2026, optional, mutated in place like nightly_scan.
+    py's own growth_summary_out param): when given, the "analyst_1y"/
+    "analyst_1y_blend" paths populate extra_out["growth_1y_consensus"]
+    (the raw next-year consensus) and extra_out["growth_history_capped"]
+    (the ceiling-capped history CAGR actually blended in, or None when
+    no history was used) - every other path leaves `extra_out` alone.
     """
     info = info or {}
     ceiling = GROWTH_CEIL if ceiling is None else ceiling
@@ -1029,16 +1074,44 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
         return result, source, governor, raw_rate
 
     if analyst_growth is not None and analyst_growth > 0:
-        # Step 1d (owner-directed, 30 Sep 2026), governor REVISED 30 Sep
-        # 2026 20:55 AEST (owner decision - see this function's own
-        # docstring intro): the next-year analyst tier ("ok_1y") is
-        # tagged with its own source label, "analyst_1y" - distinct from
-        # a genuine LTG figure so labels still say "next year" - but is
-        # governed by the plain market-cap tier ceiling alone, exactly
-        # like "ok". No separate fractional cap, no history-
-        # corroboration branch.
-        source = "analyst_1y" if yahoo_estimate_status == "ok_1y" else "analyst"
-        return _finalize(analyst_growth, source, "Yahoo")
+        if yahoo_estimate_status == "ok_1y":
+            # Owner decision, 1 Oct 2026 20:37 AEST (KNSL/Kinsale Capital
+            # live case): a BARE next-year consensus is cycle-dominated
+            # (KNSL 2026 ~= flat on a strong 2025) and is the wrong kind
+            # of number to use alone as a 10-year DCF base rate - it was
+            # previously governed exactly like a genuine "ok" LTG value
+            # (see the removed Step 1d comment this replaces), which let
+            # one unusual year set the whole growth path. Now blended
+            # with clean FCF history when there's enough of it (the SAME
+            # MIN_HISTORY_POINTS_FOR_TREND gate priority 2 below uses),
+            # capping the history side at the tier ceiling BEFORE
+            # averaging - a 35% history on a 20%-ceiling name
+            # contributes 20, not 35, to the blend. With no usable
+            # history, the consensus is used alone but floored at
+            # end_rate - an analyst-sourced base should never start the
+            # fade already running uphill. Genuine "ok" LTG is untouched
+            # - it still falls to the plain _finalize() call below,
+            # ceiling-only, no floor, no blend.
+            h = growth_from_history(fcf_series)
+            has_enough_history_1y = (
+                fcf_series is not None and len(fcf_series) >= MIN_HISTORY_POINTS_FOR_TREND
+            )
+            if h is not None and h > 0 and has_enough_history_1y:
+                history_capped = min(h, ceiling)
+                base = max(end_rate, min((analyst_growth + history_capped) / 2.0, ceiling))
+                if extra_out is not None:
+                    extra_out["growth_1y_consensus"] = analyst_growth
+                    extra_out["growth_history_capped"] = history_capped
+                return _finalize(
+                    base, "analyst_1y_blend",
+                    "next-year consensus blended with history (history capped at ceiling)",
+                )
+            base = max(analyst_growth, end_rate)
+            if extra_out is not None:
+                extra_out["growth_1y_consensus"] = analyst_growth
+                extra_out["growth_history_capped"] = None
+            return _finalize(base, "analyst_1y", "next-year consensus, floored at end rate")
+        return _finalize(analyst_growth, "analyst", "Yahoo")
 
     g = growth_from_history(fcf_series)
     has_enough_history = fcf_series is not None and len(fcf_series) >= MIN_HISTORY_POINTS_FOR_TREND
@@ -1596,13 +1669,22 @@ def dcf_intrinsic_value(
             except Exception:
                 analyst_growth, yahoo_estimate_status = None, "fetch_failed"
             meta["yahoo_estimate_status"] = yahoo_estimate_status
+            _growth_extra = {}
             growth_rate, gsrc, governor, growth_raw = estimate_growth(
                 info, fcf_series=fcf_series, analyst_growth=analyst_growth,
                 ceiling=growth_ceiling, end_rate=end_rate, currency=currency,
-                yahoo_estimate_status=yahoo_estimate_status)
+                yahoo_estimate_status=yahoo_estimate_status, extra_out=_growth_extra)
             meta["growth_source"] = gsrc
             meta["growth_governor"] = governor
             meta["growth_raw"] = round(growth_raw, 4)
+            # Owner decision, 1 Oct 2026 (KNSL/Kinsale Capital): the two
+            # raw inputs behind the "analyst_1y"/"analyst_1y_blend"
+            # blend, for the Deep Dive/Fair Value/Scanner tooltip - see
+            # estimate_growth()'s own docstring. None/None for every
+            # other growth_source, same as every other optional meta
+            # field in this dict.
+            meta["growth_1y_consensus"] = _growth_extra.get("growth_1y_consensus")
+            meta["growth_history_capped"] = _growth_extra.get("growth_history_capped")
             if gsrc == "default":
                 meta["growth_default"] = True
                 meta["defaulted"] = True

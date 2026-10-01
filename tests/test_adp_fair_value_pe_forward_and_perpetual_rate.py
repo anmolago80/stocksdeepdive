@@ -84,10 +84,17 @@ _bundle = {
 _normalized_eps_fixture = ace._normalized_eps(_bundle)
 assert _normalized_eps_fixture["value"] == 1.0, _normalized_eps_fixture
 
+# PE Forward year-5 fix (1 Oct 2026, owner-directed, KNSL/Kinsale
+# Capital live case): _pe_forward_method() now returns a 6-tuple (added
+# forward_eps_used) - see that function's own docstring. This fixture's
+# bundle has no "forwardEps" key at all, so it exercises the UNCHANGED
+# trailing-EPS-compounded branch (forward_eps_used stays None) - the
+# formula-level assertions below remain numerically valid.
 _result = ace._pe_forward_method(_bundle, _G_EARN, _DISCOUNT_RATE, _normalized_eps_fixture)
 assert _result is not None
-_value, _forecast_eps_5y, _actual_pe, _year5_price, _reason = _result
+_value, _forecast_eps_5y, _actual_pe, _year5_price, _reason, _forward_eps_used = _result
 assert _reason is None, _reason
+assert _forward_eps_used is None, _forward_eps_used
 
 assert abs(_forecast_eps_5y - 17.84) < 0.01, _forecast_eps_5y
 assert abs(_actual_pe - 24.10) < 0.01, _actual_pe

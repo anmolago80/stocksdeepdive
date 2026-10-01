@@ -10882,6 +10882,23 @@ def page_deep_dive():
                     if _dd.get("growth_governor") == "Cap"
                     else i18n.t("dd.growth_source_analyst_1y", _dd_lang)
                 )
+            # Growth 1y-blend fix (1 Oct 2026, owner-directed, KNSL/
+            # Kinsale Capital live case): a bare next-year consensus is
+            # cycle-dominated, so it's now blended with FCF history when
+            # enough exists - this label names both raw inputs so the
+            # reader sees where the number actually came from, never
+            # just "Yahoo analyst (next year)" implying an unblended
+            # figure. _dd_growth_source_labels has no "analyst_1y_blend"
+            # key at all (deliberately - this source always needs the
+            # two numbers interpolated, never a bare label).
+            elif _dd.get("dcf_growth_source") == "analyst_1y_blend":
+                _1y = _dd.get("dcf_growth_1y_consensus")
+                _hist = _dd.get("dcf_growth_history_capped")
+                if _1y is not None and _hist is not None:
+                    _dd_gsrc = i18n.t(
+                        "dd.growth_source_analyst_1y_blend", _dd_lang,
+                        consensus=f"{_1y:.1f}", history=f"{_hist:.1f}",
+                    )
             # Growth-estimate-fetch resilience fix (owner-directed, 28 Sep
             # 2026), extended by the growth-never-zero rewrite (30 Sep
             # 2026, "non_positive" status): "historical avg"/"reported

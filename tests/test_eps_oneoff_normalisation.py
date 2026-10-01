@@ -107,15 +107,27 @@ print(f"[csl_before_after_pe_trailing] BEFORE (raw -$7.51 EPS x avg P/E {_avg_pe
       f"${_pe_trailing_before:.2f} (negative, the exact live symptom) -> AFTER (normalised $7.80 "
       f"EPS x same avg P/E) = ${_methods['pe_trailing']:.2f} (positive) OK")
 
-# PE Forward: Yahoo's own forwardEps (9.00) used - unaffected by the
-# trailing-EPS write-down.
+# PE Forward: Yahoo's own forwardEps (9.00) used as the STARTING point
+# - unaffected by the trailing-EPS write-down - then compounded the
+# remaining 4 years at g_earn (growth 1y-blend / PE Forward year-5 fix,
+# 1 Oct 2026, owner-directed, KNSL/Kinsale Capital live case: forwardEps
+# is Yahoo's NEXT-FISCAL-YEAR consensus, not a year-5 figure, so it's no
+# longer used directly as forecast_eps_5y - see _pe_forward_method()'s
+# own docstring). g_earn here is _dcf_result["growth"] = 0.08, so
+# forecast_eps_5y = 9.00 x 1.08^4 = 12.24, shown as a combined
+# "Forward EPS (next FY): $9.00 -> Forecast EPS (yr 5): $12.24" string
+# under the (renamed) "Forecast EPS (yr 5)" label - not the bare 9.00
+# this test asserted before the fix.
 assert "pe_forward" in _methods, (_methods, _reasons)
 assert _methods["pe_forward"] > 0, _methods["pe_forward"]
 _pe_forward_inputs = {i["label"]: i["value"] for i in _fv["valuation_inputs"]["CSLTEST"]["pe_forward"]}
-assert abs(_pe_forward_inputs["Forecast EPS (5y)"] - 9.00) < 1e-9, _pe_forward_inputs
+_csl_eps5_value = _pe_forward_inputs["Forecast EPS (yr 5)"]
+assert isinstance(_csl_eps5_value, str), _csl_eps5_value
+assert "$9.00" in _csl_eps5_value and "$12.24" in _csl_eps5_value, _csl_eps5_value
 print(f"[csl_pe_forward_uses_analyst_estimate] PE Forward = ${_methods['pe_forward']:.2f}, "
-      f"Forecast EPS(5y) = Yahoo's own forwardEps ($9.00), not trailing-EPS-compounded - "
-      "unaffected by the write-down OK")
+      f"Forecast EPS(yr 5) row reads {_csl_eps5_value!r} - Yahoo's own forwardEps ($9.00) "
+      "compounded 4 more years at g_earn=8% (not trailing-EPS-compounded, and not forwardEps "
+      "used bare any more) OK")
 
 # Average over 3 methods (no balance-sheet data -> equity_10y absent).
 assert "equity_10y" not in _methods, _methods
@@ -208,10 +220,15 @@ _clean_fv = ace._build_fair_value(_clean_bundle, "CLEANTEST", _dcf_result, _cano
 _clean_pe_forward_inputs = {
     i["label"]: i["value"] for i in _clean_fv["valuation_inputs"]["CLEANTEST"]["pe_forward"]
 }
-assert abs(_clean_pe_forward_inputs["Forecast EPS (5y)"] - 6.5) < 1e-9, _clean_pe_forward_inputs
-print("[forward_eps_unaffected_by_normalisation] a clean (non-distorted) ticker's PE Forward also "
-      "uses Yahoo's own forwardEps directly (6.5) - identical behaviour whether or not the EPS "
-      "normalisation mechanism itself fired OK")
+# Same g_earn=0.08 as CHECK 1's _dcf_result -> forecast_eps_5y = 6.5 x 1.08^4 = 8.84
+# (PE Forward year-5 fix, 1 Oct 2026: forwardEps is compounded 4 more years, not used bare).
+_clean_eps5_value = _clean_pe_forward_inputs["Forecast EPS (yr 5)"]
+assert isinstance(_clean_eps5_value, str), _clean_eps5_value
+assert "$6.50" in _clean_eps5_value and "$8.84" in _clean_eps5_value, _clean_eps5_value
+print(f"[forward_eps_unaffected_by_normalisation] a clean (non-distorted) ticker's PE Forward also "
+      f"starts from Yahoo's own forwardEps (6.5, then compounded to yr 5) - row reads "
+      f"{_clean_eps5_value!r} - identical behaviour whether or not the EPS normalisation "
+      "mechanism itself fired OK")
 
 
 # ======================================================================

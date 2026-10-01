@@ -2126,6 +2126,17 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         "market_cap_usd": meta.get("market_cap_usd"),
         "premium_used": meta.get("premium_used"),
         "growth_source": meta.get("growth_source"),
+        # Growth 1y-blend fix (1 Oct 2026, owner-directed, KNSL live
+        # case): the two raw inputs behind "analyst_1y"/"analyst_1y_
+        # blend", plus the governor string itself - see
+        # fcf_valuation_engine.estimate_growth()'s own docstring and
+        # _dcf_valuation_and_inputs()'s own "Growth Source" row for
+        # where these are displayed. governor is needed there to tell
+        # "analyst_1y" (capped) from "analyst_1y" (uncapped), same as
+        # app.py's Deep Dive caption already does for this source.
+        "growth_governor": meta.get("growth_governor"),
+        "growth_1y_consensus": meta.get("growth_1y_consensus"),
+        "growth_history_capped": meta.get("growth_history_capped"),
         # Growth-rewrite (29 Sep 2026, owner-directed): same passthrough as
         # _run_dcf() above - see that function's comment.
         "growth_raw": meta.get("growth_raw"),
@@ -3591,14 +3602,32 @@ def _pe_forward_method(bundle, g_earn, discount_rate, normalized_eps=None):
     compounding fallback when Yahoo has no forward estimate - same
     one-off-resistant figure PE Trailing now uses, so the multiple this
     method applies isn't itself poisoned by the same write-down.
-    Returns a 5-tuple now (was 4): (value, forecast_eps_5y, actual_pe,
-    year5_price_undiscounted, reason) - reason is None when a value was
-    produced, "no_analyst_forecast" when Yahoo has no forward EPS AND
-    the normalised EPS isn't usable either (nothing to compound from),
-    "negative_earnings" when a forward EPS exists but there's no usable
-    EPS to build the "Actual P/E" multiple from. value is None (method
-    not offered) when g_earn/price/discount_rate aren't all available -
-    a year-5 estimate with no discount rate to bring it back to today
+
+    Bug fix (1 Oct 2026, owner-directed, KNSL/Kinsale Capital live
+    case): info["forwardEps"] is Yahoo's NEXT-FISCAL-YEAR consensus,
+    not a year-5 figure - Push 3 above used it directly as
+    forecast_eps_5y with no further compounding, then discounted it
+    back 5 years, undervaluing every covered company by ~35-40% on
+    this method. Now compounded the remaining 4 years at the DCF's own
+    g_earn (forward_eps is already "1 year out"; the trailing-EPS
+    fallback just below needs all 5 years since it starts from TODAY's
+    EPS). Discounting (5 years at discount_rate) and the "Actual P/E"
+    multiple are both unchanged.
+
+    Returns a 6-tuple now (was 5): (value, forecast_eps_5y, actual_pe,
+    year5_price_undiscounted, reason, forward_eps_used) - reason is
+    None when a value was produced, "no_analyst_forecast" when Yahoo
+    has no forward EPS AND the normalised EPS isn't usable either
+    (nothing to compound from), "negative_earnings" when a forward EPS
+    exists but there's no usable EPS to build the "Actual P/E" multiple
+    from. forward_eps_used is Yahoo's own raw next-FY figure, set only
+    when that branch actually fired (None on the trailing-EPS-
+    compounded fallback, which has no separate "next FY" figure to
+    show) - lets the caller display both "Forward EPS (next FY)" and
+    "Forecast EPS (yr 5)" side by side instead of implying forwardEps
+    itself already was the year-5 number. value is None (method not
+    offered) when g_earn/price/discount_rate aren't all available - a
+    year-5 estimate with no discount rate to bring it back to today
     isn't a usable Intrinsic Value, so it's withheld rather than shown
     undiscounted again."""
     if g_earn is None or discount_rate is None or discount_rate <= -1:
@@ -3609,18 +3638,20 @@ def _pe_forward_method(bundle, g_earn, discount_rate, normalized_eps=None):
         return None
     base_eps = normalized_eps.get("value") if normalized_eps is not None else None
     forward_eps = info.get("forwardEps")
+    forward_eps_used = None
     if forward_eps is not None and forward_eps > 0:
-        forecast_eps_5y = forward_eps
+        forecast_eps_5y = forward_eps * ((1 + g_earn) ** 4)
+        forward_eps_used = forward_eps
     elif base_eps is not None and base_eps > 0:
         forecast_eps_5y = base_eps * ((1 + g_earn) ** 5)
     else:
-        return None, None, None, None, "no_analyst_forecast"
+        return None, None, None, None, "no_analyst_forecast", None
     if base_eps is None or base_eps <= 0:
-        return None, None, None, None, "negative_earnings"
+        return None, None, None, None, "negative_earnings", None
     actual_pe = price_now / base_eps
     year5_price = forecast_eps_5y * actual_pe
     value = year5_price / ((1 + discount_rate) ** 5)
-    return value, forecast_eps_5y, actual_pe, year5_price, None
+    return value, forecast_eps_5y, actual_pe, year5_price, None, forward_eps_used
 
 
 def _dcf_valuation_and_inputs(info, price, canonical_dcf_result):
@@ -3686,6 +3717,35 @@ def _dcf_valuation_and_inputs(info, price, canonical_dcf_result):
         "default": "no growth signal - tier end rate",
     }
     _growth_source_display = _growth_source_labels.get(canonical_dcf_result.get("growth_source"))
+    # Step 1d (owner-directed, 30 Sep 2026): "analyst_1y" is a distinct
+    # source from plain "analyst" (reads "Yahoo analyst (next year)"
+    # instead of implying a 5-year figure) but has no entry in
+    # _growth_source_labels above - mirrors app.py's Deep Dive caption
+    # (_dd_growth_source_labels / _dd_gsrc) in substance, same reasoning,
+    # but hardcoded English (not i18n.t()) since this whole Fair Value
+    # tab has no i18n layer at all - see _cp_render_valuation_inputs(),
+    # every label here is plain hardcoded English, and this module does
+    # not import i18n.
+    if canonical_dcf_result.get("growth_source") == "analyst_1y":
+        _growth_source_display = (
+            "Yahoo analyst (next year, capped)"
+            if canonical_dcf_result.get("growth_governor") == "Cap"
+            else "Yahoo analyst (next year)"
+        )
+    # Growth 1y-blend fix (1 Oct 2026, owner-directed, KNSL/Kinsale
+    # Capital live case): same reasoning as app.py's Deep Dive caption -
+    # this source always needs the two numbers interpolated, never a
+    # bare label, so it's handled here rather than in
+    # _growth_source_labels above. English-only text for the same
+    # no-i18n-layer reason given above.
+    elif canonical_dcf_result.get("growth_source") == "analyst_1y_blend":
+        _1y = canonical_dcf_result.get("growth_1y_consensus")
+        _hist = canonical_dcf_result.get("growth_history_capped")
+        if _1y is not None and _hist is not None:
+            _growth_source_display = (
+                f"Analyst next-year consensus ({_1y * 100:.1f}%) blended "
+                f"with FCF history ({_hist * 100:.1f}%, capped at tier ceiling)"
+            )
     # Growth-estimate-fetch resilience fix (28 Sep 2026, owner-directed),
     # extended by the growth-never-zero rewrite (30 Sep 2026, "non_
     # positive" status): "historical avg"/"reported growth"/"no growth
@@ -3823,8 +3883,9 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
 
     pe_forward_result = _safe(
         _pe_forward_method, bundle, g_earn, dcf_result.get("discount_rate"), normalized_eps)
-    pe_forward_value, forecast_eps_5y, actual_pe, pe_forward_year5_price, pe_forward_reason = (
-        pe_forward_result if pe_forward_result else (None, None, None, None, None)
+    (pe_forward_value, forecast_eps_5y, actual_pe, pe_forward_year5_price, pe_forward_reason,
+     pe_forward_eps_next_fy) = (
+        pe_forward_result if pe_forward_result else (None, None, None, None, None, None)
     )
     if pe_forward_value is None and pe_forward_reason:
         method_reasons["pe_forward"] = pe_forward_reason
@@ -3866,8 +3927,25 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
 
     valuation_inputs = {}
     if "pe_forward" in valuation_methods:
+        # Bug fix (1 Oct 2026, owner-directed, KNSL/Kinsale Capital live
+        # case): forecast_eps_5y is now forward_eps compounded 4 more
+        # years (see _pe_forward_method()'s own docstring), never just
+        # Yahoo's bare next-FY figure - showing BOTH numbers here, not
+        # only the compounded one, so the reader sees the next-FY
+        # consensus this is actually built from. Only set when the
+        # forward_eps branch fired; the trailing-EPS-compounded
+        # fallback keeps the single-figure row it always had.
+        if pe_forward_eps_next_fy is not None:
+            _pe_forward_eps_value = (
+                f"Forward EPS (next FY): ${pe_forward_eps_next_fy:.2f} → "
+                f"Forecast EPS (yr 5): ${forecast_eps_5y:.2f}"
+            )
+            _pe_forward_eps_fmt = "raw"
+        else:
+            _pe_forward_eps_value = forecast_eps_5y
+            _pe_forward_eps_fmt = "cur"
         valuation_inputs["pe_forward"] = [
-            {"label": "Forecast EPS (5y)", "value": forecast_eps_5y, "format": "cur"},
+            {"label": "Forecast EPS (yr 5)", "value": _pe_forward_eps_value, "format": _pe_forward_eps_fmt},
             {"label": "Actual P/E", "value": actual_pe, "format": "x"},
             {"label": "Year 5 Price (undiscounted)", "value": pe_forward_year5_price, "format": "cur"},
             {"label": "Discount Rate (this calc)", "value": dcf_result.get("discount_rate"), "format": "pct"},

@@ -219,6 +219,17 @@ EN = {
     # otherwise.
     "dd.growth_source_analyst_1y": "Yahoo analyst (next year)",
     "dd.growth_source_analyst_1y_capped": "Yahoo analyst (next year, capped)",
+    # Growth 1y-blend fix (owner-directed, 1 Oct 2026 20:37 AEST, KNSL/
+    # Kinsale Capital live case): a bare next-year consensus is cycle-
+    # dominated, so it's now blended with FCF history when enough
+    # exists - see fcf_valuation_engine.estimate_growth()'s own
+    # docstring. {consensus}/{history} are already-formatted percentage
+    # strings (one decimal place), interpolated by app.py's own Deep
+    # Dive caption.
+    "dd.growth_source_analyst_1y_blend": (
+        "Analyst next-year consensus ({consensus}%) blended with FCF "
+        "history ({history}%, capped at tier ceiling)"
+    ),
 
     # Push 2 (owner-directed, 30 Sep 2026): the Deep Dive discount
     # caption used to just name a step-table tier ("discount tier: mid-
@@ -4159,6 +4170,10 @@ ES = {
 
     "dd.growth_source_analyst_1y": "analista Yahoo (próximo año)",
     "dd.growth_source_analyst_1y_capped": "analista Yahoo (próximo año, limitado)",
+    "dd.growth_source_analyst_1y_blend": (
+        "Consenso del próximo año del analista ({consensus}%) combinado "
+        "con el historial de FCF ({history}%, limitado al techo del nivel)"
+    ),
 
     "dd.discount_breakdown": (
         "Descuento {rate}% = {rf}% tasa libre de riesgo ({rf_note}) + "

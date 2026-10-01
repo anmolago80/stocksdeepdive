@@ -113,6 +113,13 @@ def resolve_intrinsic_value(
             "growth_source": dcf_meta.get("growth_source"),
             "growth_governor": dcf_meta.get("growth_governor"),
             "growth_ceiling_used": dcf_meta.get("growth_ceiling_used"),
+            # Growth 1y-blend fix (1 Oct 2026, owner-directed, KNSL live
+            # case): the two raw inputs behind the "analyst_1y"/
+            # "analyst_1y_blend" growth_source - see fcf_valuation_
+            # engine.estimate_growth()'s own docstring. None/None for
+            # every other growth_source.
+            "growth_1y_consensus": dcf_meta.get("growth_1y_consensus"),
+            "growth_history_capped": dcf_meta.get("growth_history_capped"),
             "fcf_source": dcf_meta.get("fcf_source"),
             "fcf_used": dcf_meta.get("fcf_used"),
             "fcf_per_share_used": dcf_meta.get("fcf_per_share_used"),
