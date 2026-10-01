@@ -74,7 +74,6 @@ wrote):
 
 import json
 import os
-import re
 import time
 from datetime import datetime, timezone
 
@@ -527,6 +526,17 @@ def select_top100_pool(log=print):
 
     _fill_missing_sectors(pool + extension, log=log)
     top100_store.save_pool(pool + extension, as_of)
+    try:
+        # Newcomer persistence filter (1 Oct 2026, owner decision): every
+        # ticker in TONIGHT's selection (pool + extension) gets its
+        # pool_presence streak updated here, right after the selection
+        # itself is persisted - see top100_store.update_pool_presence()'s
+        # own docstring for the increment/reset rule. Wrapped in its own
+        # try/except: a failure here must never fail pool selection
+        # itself over a display/gating-only side table.
+        top100_store.update_pool_presence([r["ticker"] for r in pool + extension], as_of)
+    except Exception as e:
+        log(f"[top100] could not update pool presence: {e}")
     stale_count = sum(1 for r in pool if r.get("stale_valuation"))
     log(f"[top100] selected {len(pool)} companies for {as_of} "
         f"(from {len(best_by_ticker)} deduped candidates across "
@@ -748,7 +758,44 @@ NOT_RATED_MIN_NULLS = 3
 # pairs are display-only, same zero-effect-on-scoring status as every
 # other synthesis field here (see composite_score()'s own docstring -
 # it is never touched by this bump).
-RUBRIC_VERSION = "v5"
+#
+# v5 -> v6 (1 Oct 2026, owner-directed, "shorter rubric + packed
+# requests" cost task): NOT a new question - every dimension, label
+# vocabulary, sentinel convention and output field is byte-for-byte
+# identical to v5. This bump exists because the WIRE SHAPE of the
+# request/response changed: up to TOP100_COMPANIES_PER_REQUEST
+# companies are now packed into one request (see that constant's own
+# comment), the response schema is wrapped in a top-level {"companies":
+# [...]} array with a "ticker" field added to each item so results can
+# be matched regardless of order (see _response_schema()'s own
+# comment), and _SYSTEM_PROMPT itself was trimmed (repeated phrasing +
+# the four worked-example "Calibration:" lines cut, every rule/
+# criterion/sentinel kept - see _SYSTEM_PROMPT's own comment for the
+# exact diff). None of that changes what the model is actually asked
+# to judge, but it DOES change what a v5-cached score is an answer to
+# (a single-company prompt, not a 5-packed one) - rubric_version is
+# already part of the cache key for exactly this kind of "the
+# questions are the same but how they were asked changed" bump (same
+# reasoning as every prior version here), so this follows the same
+# delivery mechanism as v2->v3/v3->v4/v4->v5: every pooled company is
+# "unscored" under v6 until the next nightly run (one full re-score,
+# ~115 names, budget ~$2.5 under the new packed shape), the previous-
+# rubric fallback covers the gap exactly as before, and v5 (and
+# earlier) rows stay preserved under their own key untouched.
+RUBRIC_VERSION = "v6"
+
+# v6 packed requests (1 Oct 2026, owner-directed): how many companies'
+# worth of scoring one Batches API request now carries. Before this,
+# every request's own ~10k-token system+schema prefix was paid once PER
+# COMPANY; packing N companies into one request still pays that prefix
+# only once per REQUEST, so the real saving scales with this constant,
+# not with a shorter rubric alone (see _SYSTEM_PROMPT's own trim for
+# that separate, smaller saving). Each request's own max_tokens scales
+# with however many entrants IT actually carries (see _request_params()
+# below) - the last request of a night, when the unscored count doesn't
+# divide evenly by this constant, simply packs fewer and gets a
+# proportionally smaller budget, never a wasted full-size one.
+TOP100_COMPANIES_PER_REQUEST = 5
 
 MODEL_TOP100 = "claude-opus-5-5"
 
@@ -789,6 +836,21 @@ MAX_NIGHTLY_SCORES = 120
 # company whose results signal is missing or stuck re-scores on age
 # alone.
 RESCORE_MAX_AGE_DAYS = 200
+
+# Newcomer persistence filter (1 Oct 2026, owner decision): a ticker
+# entering the Top 100 pool for the first time (no score under ANY
+# rubric version, and not in the pool the previous night) is not
+# submitted until it has appeared in the pool on this many CONSECUTIVE
+# nightly selections - see _true_newcomer_gated()'s own docstring.
+# Rationale (owner's own words): churn at the pool boundary (positions
+# ~90-100) was the main driver of daily submissions; a name that holds
+# its place this many nights is far more likely to stay, so the
+# ~$0.05-0.10 cost per company is spent once instead of on names that
+# fall out the next day. Applies ONLY to never-scored newcomers -
+# results-driven re-scores, the RESCORE_MAX_AGE_DAYS safety net,
+# rubric-version re-scores (including this v6 bump's own full re-
+# score) and the previous-rubric fallback are all unaffected.
+NEWCOMER_PERSISTENCE_NIGHTS = 3
 
 # Audit fixes, Commit 1 (30 Sep 2026, owner-directed, "close the no-
 # resubmit-loop door"): scheduler_engine._run_top100_poll used to
@@ -837,7 +899,7 @@ _CHARS_PER_TOKEN_ESTIMATE = 4
 _ESTIMATED_OUTPUT_TOKENS_PER_ENTRANT = 1200
 
 
-def _estimate_prompt_tokens(ticker, company_name):
+def _estimate_request_tokens(entrants):
     """Honest cost accounting (1 Oct 2026, owner-directed): previously
     summed only the system prompt + user message, silently treating
     the structured-output response SCHEMA (_response_schema(), itself
@@ -849,8 +911,17 @@ def _estimate_prompt_tokens(ticker, company_name):
     every one of these tokens is billed as plain input, not a cache
     write/read, on the real request too; this estimate's own caller
     (submit_nightly_batch()) prices it at the plain input rate for
-    exactly that reason, no CACHE_WRITE_MULTIPLIER needed here."""
-    params = _request_params(ticker, company_name)
+    exactly that reason, no CACHE_WRITE_MULTIPLIER needed here.
+
+    v6 packed requests (1 Oct 2026, owner-directed): `entrants` is now
+    one PACKED REQUEST's worth (up to TOP100_COMPANIES_PER_REQUEST
+    rows), not one company - the system prompt and schema are counted
+    ONCE for the whole group here, exactly as they are on the real
+    request, which is the actual saving mechanism of the pack (see
+    TOP100_COMPANIES_PER_REQUEST's own comment): submit_nightly_batch()
+    calls this once per packed group and sums across groups, rather
+    than once per company as it did pre-v6."""
+    params = _request_params(entrants)
     system_text = params["system"][0]["text"]
     user_text = params["messages"][0]["content"]
     schema_text = json.dumps(params["output_config"]["format"]["schema"])
@@ -885,12 +956,10 @@ THE TEN DIMENSIONS AND THEIR ANCHORS (1 = worst for a holder, 5 = best for a hol
 3. REGULATORY & LEGAL - regulation AND litigation exposure together.
    5: regulation is a tailwind that compels purchase of the company's product, or forms a protective moat around it.
    1: an existential political or procurement risk, or a major litigation overhang - a plausible single regulatory/policy change or court outcome could eliminate a large share of revenue.
-   Calibration: "PAYX regulatory & legal 4 - payroll complexity only ever increases; each new rule adds compliance demand." "INTU regulatory & legal 2 - IRS Direct File: a live, political, existential threat to TurboTax consumer."
 
 4. CUSTOMER CONCENTRATION.
    5: thousands of small, individually-replaceable customers; no single customer is material to revenue.
    1: one customer is more than roughly 30% of revenue, or a small handful of customers collectively dominate it.
-   Calibration: "OCL.AX customer concentration 1 - effectively all revenue is government procurement; the Defence loss was this risk."
 
 5. PRICING POWER & COST PASS-THROUGH (absorbs inflation exposure - see the de-circularisation principle above, never re-score today's margin level).
    5: has repeatedly raised prices above inflation without losing meaningful volume, and can pass through cost increases (including inflationary ones) quickly.
@@ -899,7 +968,6 @@ THE TEN DIMENSIONS AND THEIR ANCHORS (1 = worst for a holder, 5 = best for a hol
 6. ACCOUNTING QUALITY (capitalisation rate + cash conversion).
    5: free cash flow conversion of roughly 80-120% of net income, with minimal capitalisation of what are effectively normal operating costs (e.g. R&D, software development) onto the balance sheet.
    1: aggressive capitalisation of operating-like costs materially inflates reported free cash flow; cash conversion sits far below net income.
-   Calibration: "OCL.AX accounting 2 - capitalises 52% of R&D, which inflated screener FCF by 56%."
 
 7. BALANCE SHEET & FIXED CHARGES - financial AND operating rigidity together (see the de-circularisation principle above, never re-score the raw debt-to-equity ratio alone).
    5: net cash or low net debt/EBITDA, high interest coverage, no concentrated near-term refinancing wall, and a flexible (largely variable) cost structure that can flex down in a downturn.
@@ -912,7 +980,6 @@ THE TEN DIMENSIONS AND THEIR ANCHORS (1 = worst for a holder, 5 = best for a hol
 9. CAPITAL ALLOCATION - incremental ROIC on recent major deployments; buybacks vs SBC dilution (see the de-circularisation principle above, never re-score the company's current ROIC level).
    5: a disciplined, accretive incremental-ROIC record on recent major deployments (M&A, capex); buybacks genuinely reduce the share count net of stock-based-compensation dilution; no pattern of value-destroying write-downs.
    1: a pattern of value-destroying acquisitions or repeated impairments, or buybacks that merely offset SBC dilution without shrinking the real share count.
-   Calibration: "SEK.AX capital allocation 2 - repeated impairments on Zhaopin, OCC and Brasil Online aren't bad luck; they're the record."
 
 10. REINVESTMENT RUNWAY - can incremental capital still deploy at current returns (see the de-circularisation principle above, never re-score the recent growth rate).
     5: a long runway of high-return reinvestment opportunities still ahead (an expanding or under-penetrated market) at returns well above the cost of capital.
@@ -931,20 +998,36 @@ MUNGER-QUALITY BUSINESS (RUBRIC_VERSION v5) - would Charlie Munger classify this
 BIG WAVE TO RIDE (RUBRIC_VERSION v5) - Munger's "big wave to ride": is there a SECULAR, multi-year trend in the company's primary market that carries the business regardless of its own execution? Output exactly "tailwind" for a structural trend (penetration still early, a demographic or regulatory shift, technology adoption) that should keep growing the market for 5+ years; "headwind" when the market or channel is structurally shrinking or being rerouted (substitution, disintermediation, regulation) - not a cyclical dip; "flat" for a mature, stable market with neither. Judge the market, not the company's share of it - a share gainer in a shrinking market is "headwind". The sentinel empty string "" if you cannot judge - never guess. Then, in at most 25 words, name the specific trend, or its absence (empty string "" if you declined the verdict itself)."""
 
 
-def _user_prompt(ticker, company_name):
-    name = company_name or ticker
-    return (
-        f"Company: {name} (ticker: {ticker})\n\n"
-        "Score this company on all ten dimensions per your instructions, "
-        "then write the one-sentence inversion synthesis (scenario + severity), "
-        "the current headwind (at most 40 words, or an empty string), the "
-        "market structure of its primary profit pool (plus a short comment "
-        "naming the competitors that justify it), the one-foot-hurdle "
-        "verdict (plus a short comment explaining it), the Munger-quality "
-        "verdict (plus a short comment naming the deciding criterion), and "
-        "the big-wave-to-ride verdict (plus a short comment naming the "
-        "trend or its absence)."
-    )
+def _user_prompt(entrants):
+    """v6 packed requests (1 Oct 2026, owner-directed): one user message
+    listing every entrant in this request (up to TOP100_COMPANIES_PER_
+    REQUEST, usually fewer for the night's last, partial group) by
+    ticker/company name/sector, instead of the old one-company-per-
+    message form. `entrants`: [{"ticker", "company_name", "sector"},
+    ...] - run_single_test_call() passes a single-item list so the one
+    request/response/parse path is shared by every caller, batched or
+    not."""
+    lines = [
+        f"Score EACH of the following {len(entrants)} companies "
+        "independently - judge each purely on its own facts, never let "
+        "one company's score or justification influence another's. For "
+        "every company, give all ten dimension scores, the one-sentence "
+        "inversion synthesis (scenario + severity), the current headwind "
+        "(at most 40 words, or an empty string), the market structure of "
+        "its primary profit pool (plus a short comment naming the "
+        "competitors that justify it), the one-foot-hurdle verdict (plus "
+        "a short comment explaining it), the Munger-quality verdict "
+        "(plus a short comment naming the deciding criterion), and the "
+        "big-wave-to-ride verdict (plus a short comment naming the trend "
+        "or its absence). Echo each company's own ticker back in your "
+        "response so results can be matched regardless of order.\n",
+    ]
+    for e in entrants:
+        ticker = e["ticker"]
+        name = e.get("company_name") or ticker
+        sector = (e.get("sector") or "").strip() or "unknown sector"
+        lines.append(f"- {ticker}: {name} ({sector})")
+    return "\n".join(lines)
 
 
 def _dimension_schema():
@@ -981,7 +1064,7 @@ def _dimension_schema():
     }
 
 
-def _response_schema():
+def _company_item_schema():
     """v2: the ten dimension objects plus the inversion synthesis pair
     (inversion_scenario/inversion_severity) at the top level - no more
     "summary" (v1's "strongest dimension + what to check" note), since
@@ -1023,8 +1106,24 @@ def _response_schema():
     sentinel convention, same zero-union-type/zero-min-max discipline,
     same small-fixed-vocabulary-enforced-server-side pattern as market_
     structure/one_foot_hurdle just above ("yes"/"no" and "tailwind"/
-    "flat"/"headwind" respectively)."""
+    "flat"/"headwind" respectively).
+
+    RUBRIC_VERSION v6 (1 Oct 2026, owner-directed, packed requests):
+    this is now the PER-COMPANY ITEM schema - _response_schema() below
+    wraps an array of these inside a top-level {"companies": [...]}
+    object, so up to TOP100_COMPANIES_PER_REQUEST of them travel in one
+    request/response. The only field added here for that purpose is
+    "ticker" (a plain string, required) so poll_and_ingest_batch() can
+    match each item back to the entrant it answers for regardless of
+    the order the model returns them in. Every dimension/field below
+    this point is otherwise byte-for-byte identical to v5 - diffed by
+    hand against the v5 schema as part of this bump, zero wording
+    changes."""
     props = {key: _dimension_schema() for key in DIMENSION_KEYS}
+    props["ticker"] = {
+        "type": "string",
+        "description": "The exact ticker of the company this item answers for, copied verbatim from the list in the user message - used to match this result back to its entrant regardless of response order.",
+    }
     props["inversion_scenario"] = {
         "type": "string",
         "description": "One-sentence inversion scenario, or an empty string \"\" if this company is NOT RATED (see the honesty rule) - never invent a scenario for a company you don't know well enough to score.",
@@ -1072,7 +1171,7 @@ def _response_schema():
     return {
         "type": "object",
         "properties": props,
-        "required": DIMENSION_KEYS + [
+        "required": ["ticker"] + DIMENSION_KEYS + [
             "inversion_scenario", "inversion_severity", "current_headwind",
             "market_structure", "market_structure_comment",
             "one_foot_hurdle", "one_foot_comment",
@@ -1083,11 +1182,48 @@ def _response_schema():
     }
 
 
-def _request_params(ticker, company_name):
+def _response_schema():
+    """v6 packed requests (1 Oct 2026, owner-directed): the top-level
+    wrapper - a single "companies" array holding one _company_item_
+    schema() per entrant in this request. An array-of-objects wrapper
+    is NOT a union type (confirmed against the task's own schema dry-
+    check rule) - it carries zero union types and no min/max/minLength/
+    maxLength/minItems/maxItems anywhere, same zero-union-type/zero-
+    min-max discipline the per-item schema itself has kept since v3
+    (see _company_item_schema()'s own docstring, formerly this
+    function's own docstring before the v6 wrap)."""
+    return {
+        "type": "object",
+        "properties": {
+            "companies": {
+                "type": "array",
+                "items": _company_item_schema(),
+            },
+        },
+        "required": ["companies"],
+        "additionalProperties": False,
+    }
+
+
+def _request_params(entrants):
     """The exact MessageCreateParamsNonStreaming-shaped dict for one
-    company - shared by submit_nightly_batch() (wrapped in a Batches
-    Request) and run_single_test_call() (sent directly, for the
-    task's own one real API test call).
+    REQUEST - `entrants`: [{"ticker", "company_name", "sector"}, ...],
+    up to TOP100_COMPANIES_PER_REQUEST of them (run_single_test_call()
+    passes a single-item list) - shared by submit_nightly_batch()
+    (wrapped in a Batches Request, one per packed group) and run_
+    single_test_call() (sent directly, for the task's own one real API
+    test call).
+
+    v6 packed requests (1 Oct 2026, owner-directed): max_tokens now
+    scales with len(entrants) - 4000 tokens per company (the same per-
+    company budget this constant has had since 25 Sep 2026, see its
+    own comment below) times however many companies THIS request
+    actually carries, so a full TOP100_COMPANIES_PER_REQUEST-sized
+    request gets 4000*5=20000 and the night's final, smaller group
+    gets proportionally less, never a wasted full-size budget. Well
+    under Claude Opus 5.5's own 128k-token standard max-output ceiling
+    (platform.claude.com/docs/en/models/opus-5-5/overview, checked 1
+    Oct 2026) - no output-300k-2026-03-24 beta header needed.
 
     Honest cost accounting (1 Oct 2026, owner-directed): the system
     block's own "cache_control": {"type": "ephemeral"} is REMOVED here.
@@ -1120,10 +1256,12 @@ def _request_params(ticker, company_name):
         # tokens - raised to 4000 (2x) to comfortably fit all ten
         # justifications + the inversion synthesis even before
         # _SYSTEM_PROMPT's own new ~25-word-per-justification cap
-        # (added the same day) further reduces the typical case.
-        "max_tokens": 4000,
+        # (added the same day) further reduces the typical case. v6
+        # packed requests (1 Oct 2026): now 4000 PER ENTRANT in this
+        # request (see this function's own docstring).
+        "max_tokens": 4000 * len(entrants),
         "system": [{"type": "text", "text": _SYSTEM_PROMPT}],
-        "messages": [{"role": "user", "content": _user_prompt(ticker, company_name)}],
+        "messages": [{"role": "user", "content": _user_prompt(entrants)}],
         "output_config": {"format": {"type": "json_schema", "schema": _response_schema()}},
     }
 
@@ -1166,16 +1304,39 @@ def _truncate_words(text, max_words=_COMMENT_MAX_WORDS):
     return " ".join(words[:max_words])
 
 
-def _parse_response_json(text):
-    """Parses one company's structured-output JSON text into
-    (dims_dict, not_rated, inversion_scenario, inversion_severity,
-    current_headwind, market_structure, market_structure_comment,
-    one_foot_hurdle, one_foot_comment, munger_quality, munger_comment,
-    big_wave, big_wave_comment). `dims_dict`: {key: {"score",
-    "justification", "source_period"}, ...} for all ten keys. Raises
-    ValueError on malformed JSON or a missing dimension - the caller
-    (poll_and_ingest_batch) treats that exactly like any other
-    per-ticker failure: logged, skipped, prior cache untouched.
+def _parse_one_company(data):
+    """Parses one company's own ALREADY-EXTRACTED item dict (one entry
+    of the packed response's "companies" array) into (dims_dict,
+    not_rated, inversion_scenario, inversion_severity, current_
+    headwind, market_structure, market_structure_comment, one_foot_
+    hurdle, one_foot_comment, munger_quality, munger_comment, big_wave,
+    big_wave_comment). `dims_dict`: {key: {"score", "justification",
+    "source_period"}, ...} for all ten keys. Raises ValueError on a
+    missing dimension - the caller (_parse_response_json below) treats
+    that as THIS ITEM's own failure only, never the other items in the
+    same packed response.
+
+    v6 packed requests (1 Oct 2026, owner-directed): this is the exact
+    per-company parsing body RUBRIC_VERSION v2-v5 already had, moved
+    unchanged into its own function so _parse_response_json() below
+    can apply it to each item of the packed "companies" array
+    independently - one malformed company must never cost the other
+    (up to) TOP100_COMPANIES_PER_REQUEST-1 companies in the same
+    request their own, perfectly good results. The ticker-matching
+    itself (reading/validating each item's own "ticker" field) lives
+    in _parse_response_json(), not here - this function only ever sees
+    the dimension/synthesis fields of one already-identified item.
+
+    munger_quality/big_wave (RUBRIC_VERSION v5, 30 Sep 2026, owner-
+    approved mock): same belt-and-braces vocabulary enforcement, same
+    label-decided-comment-nulled rule, and same hard-truncation via
+    _truncate_words() as market_structure/one_foot_hurdle just below -
+    copied exactly, not reinvented. Like those two, neither is a NOT-
+    RATED-forced-null field (this box is never rendered for a NOT RATED
+    company in the first place, so there is nothing for a stray value
+    to leak into) and neither ever reaches composite_score() or any
+    sort/selection path - display-only, same status as every other
+    synthesis field this function returns.
 
     munger_quality/big_wave (RUBRIC_VERSION v5, 30 Sep 2026, owner-
     approved mock): same belt-and-braces vocabulary enforcement, same
@@ -1191,7 +1352,7 @@ def _parse_response_json(text):
     market_structure/one_foot_hurdle (RUBRIC_VERSION v4, 26 Sep 2026,
     owner-approved mock): each has a small fixed vocabulary the wire
     schema can't itself enforce (structured outputs supports neither
-    enums nor min/max - see _response_schema()'s own comment), so it's
+    enums nor min/max - see _company_item_schema()'s own comment), so it's
     enforced HERE, server-side, the same belt-and-braces spot every
     other range/vocabulary rule in this function already lives: a
     value outside the allowed set is treated as a decline (None), same
@@ -1227,8 +1388,8 @@ def _parse_response_json(text):
     instruction.
 
     Range enforcement (24 Sep 2026, owner-reported): the structured-
-    outputs schema (_dimension_schema()/_response_schema() above) can
-    no longer declare "1-5" via minimum/maximum - Claude's structured-
+    outputs schema (_dimension_schema()/_company_item_schema() above)
+    can no longer declare "1-5" via minimum/maximum - Claude's structured-
     outputs JSON Schema subset doesn't support numerical constraints on
     ANY type - so the 1-5 range is enforced HERE instead, server-side,
     the same "belt and braces, code-enforced, can't be defeated by the
@@ -1250,7 +1411,6 @@ def _parse_response_json(text):
     None right here, in the SAME spot the old out-of-range check
     already lived - every line below this comment, and everything that
     reads dims_dict/not_rated/inversion_* afterward, is unchanged."""
-    data = json.loads(text)
     dims = {}
     null_count = 0
     for key in DIMENSION_KEYS:
@@ -1344,9 +1504,77 @@ def _parse_response_json(text):
             munger_quality, munger_comment, big_wave, big_wave_comment)
 
 
+def _parse_response_json(text):
+    """v6 packed requests (1 Oct 2026, owner-directed): parses the
+    whole packed response text into {ticker: (the same 13-tuple
+    _parse_one_company() above returns), ...} - one entry per item in
+    the response's top-level "companies" array whose own "ticker"
+    field is a non-empty string AND whose dimension/synthesis fields
+    parse cleanly via _parse_one_company(). ticker matching is by
+    exact string (uppercased/stripped) - order-independent, since the
+    model is free to return the packed companies in any order.
+
+    Per-item failure isolation (the task's own explicit requirement):
+    a single malformed item (not a dict, no usable "ticker", or a
+    missing dimension inside it) is simply left OUT of the returned
+    dict rather than raising - it never prevents any other item in the
+    same response from being parsed and returned. The caller (poll_
+    and_ingest_batch) is responsible for comparing this dict's keys
+    against the request's own expected ticker list and recording a
+    per-ticker "missing_from_response" failure for anything this
+    request was supposed to answer for but didn't.
+
+    Raises ValueError only when the response ITSELF is unparseable
+    JSON, or has no top-level "companies" list at all - a REQUEST-
+    level failure (the whole structured-output call came back
+    malformed), which the caller treats as every entrant THIS request
+    carried having failed, not a single ticker's problem."""
+    data = json.loads(text)
+    companies = data.get("companies")
+    if not isinstance(companies, list):
+        raise ValueError("response has no top-level \"companies\" array")
+    out = {}
+    for item in companies:
+        if not isinstance(item, dict):
+            continue
+        ticker = item.get("ticker")
+        if not isinstance(ticker, str) or not ticker.strip():
+            continue
+        ticker = ticker.strip().upper()
+        try:
+            out[ticker] = _parse_one_company(item)
+        except Exception:
+            continue
+    return out
+
+
 # -----------------------------------------------------------------
 # Batch submit / poll (two-phase, non-blocking).
 # -----------------------------------------------------------------
+
+def _true_newcomer_gated(ticker, model, presence_map):
+    """Newcomer persistence filter (1 Oct 2026, owner decision): True
+    when `ticker` should be HELD BACK from tonight's "new_or_rubric"
+    bucket because it's a genuinely never-scored newcomer that hasn't
+    yet held its pool slot for NEWCOMER_PERSISTENCE_NIGHTS consecutive
+    nightly selections.
+
+    Applies ONLY to a true newcomer - a ticker that already carries a
+    score under ANY OTHER rubric version (top100_store.
+    latest_score_previous_rubric() returns non-None) is a rubric-bump
+    entrant, not a newcomer, and is NEVER gated here: it has already
+    proven it belongs in the pool, and the v6 full re-score (this same
+    bump) must not be held back waiting on a presence streak that has
+    nothing to do with it. `presence_map` - from top100_store.
+    pool_presence_map() - is read once per _unscored_tickers() call and
+    passed in, not re-queried per ticker. A ticker absent from
+    presence_map (never seen by update_pool_presence()/seed_pool_
+    presence() at all) reads as 0 consecutive nights - fully gated,
+    same as a ticker on its own very first night."""
+    if top100_store.latest_score_previous_rubric(ticker, model, RUBRIC_VERSION) is not None:
+        return False
+    return presence_map.get(ticker, 0) < NEWCOMER_PERSISTENCE_NIGHTS
+
 
 def _unscored_tickers(pool, model):
     """Results-driven Top 100 refresh (27 Sep 2026, owner-directed):
@@ -1357,7 +1585,16 @@ def _unscored_tickers(pool, model):
         genuinely new pool entrant, OR every pooled ticker right after
         a rubric bump, until the nightly run catches up - the fallback
         render path covers the gap in the meantime, see top100_render.
-        _score_row_with_fallback()).
+        _score_row_with_fallback()). Newcomer persistence filter (1 Oct
+        2026, owner decision): a TRUE newcomer (no score under ANY
+        rubric at all - see _true_newcomer_gated()'s own docstring for
+        how that's distinguished from a rubric-bump entrant) is simply
+        left OUT of this list entirely while _true_newcomer_gated()
+        returns True for it - it never gets a "deferred" reason tuple,
+        since this function's own [(row, reason), ...] contract has no
+        slot for "not submitting yet" - see submit_nightly_batch()'s
+        own _count_persistence_deferred() for how the deferred count
+        is reported separately, for logging/the admin panel only.
       - "new_results": the pool row's own most_recent_quarter and the
         latest current-rubric score's stored most_recent_quarter are
         BOTH non-null and DIFFER - the company has published a new
@@ -1401,6 +1638,7 @@ def _unscored_tickers(pool, model):
     resubmitted the identical batch forever."""
     latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
     failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+    presence_map = top100_store.pool_presence_map([row["ticker"] for row in pool])
     now = datetime.now(timezone.utc)
 
     def _failure_blocks(ticker):
@@ -1426,6 +1664,8 @@ def _unscored_tickers(pool, model):
             continue
         score = latest.get(row["ticker"])
         if score is None:
+            if _true_newcomer_gated(row["ticker"], model, presence_map):
+                continue
             out.append((row, "new_or_rubric"))
             continue
         row_mrq = row.get("most_recent_quarter")
@@ -1446,6 +1686,47 @@ def _unscored_tickers(pool, model):
         if age_days is None or age_days > RESCORE_MAX_AGE_DAYS:
             out.append((row, "age"))
     return out
+
+
+def _count_persistence_deferred(pool, model):
+    """Newcomer persistence filter (1 Oct 2026, owner decision): how
+    many pooled tickers are CURRENTLY true newcomers held back by
+    _true_newcomer_gated() - computed independently of _unscored_
+    tickers() (which already silently leaves them out of its own
+    result - see that function's own docstring) purely for submit_
+    nightly_batch()'s own nightly log line and the Admin Dashboard's
+    "deferred" count. Deliberately excludes a ticker that's also
+    excluded for an unrelated reason (a recent/permanent scoring
+    failure) - those are not "deferred by persistence", they're
+    excluded for a different, pre-existing reason, so counting them
+    here would double up with the failure-retry machinery's own
+    "N failed" telemetry."""
+    latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+    failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+    presence_map = top100_store.pool_presence_map([row["ticker"] for row in pool])
+    now = datetime.now(timezone.utc)
+    count = 0
+    for row in pool:
+        ticker = row["ticker"]
+        if ticker in failures:
+            failure = failures[ticker]
+            if (failure.get("attempts") or 0) >= TOP100_FAILURE_MAX_ATTEMPTS:
+                continue
+            failed_at = failure.get("failed_at")
+            if failed_at:
+                try:
+                    failed_dt = datetime.fromisoformat(failed_at)
+                    if failed_dt.tzinfo is None:
+                        failed_dt = failed_dt.replace(tzinfo=timezone.utc)
+                    if (now - failed_dt).total_seconds() < TOP100_FAILURE_RETRY_HOURS * 3600:
+                        continue
+                except Exception:
+                    pass
+        if latest.get(ticker) is not None:
+            continue
+        if _true_newcomer_gated(ticker, model, presence_map):
+            count += 1
+    return count
 
 
 def _score_key_for_entrant(row, reason, today=None):
@@ -1555,6 +1836,27 @@ def poll_and_ingest_batch(log=print):
     batch already in flight across this deploy still ingests correctly
     instead of crashing.
 
+    v6 packed requests (1 Oct 2026, owner-directed): one Batches API
+    RESULT now corresponds to one REQUEST carrying up to TOP100_
+    COMPANIES_PER_REQUEST entrants, not one entrant - custom_id_map's
+    own per-custom_id value is now {"entrants": {ticker: {"score_key",
+    "most_recent_quarter"}, ...}} (a dict of up to 5 tickers), not a
+    single ticker's info. A result's own usage (input/output/cache
+    tokens) is counted ONCE per result here, exactly as it's billed -
+    this is the real saving the pack exists for. _parse_response_json()
+    returns {ticker: (13-tuple), ...} for whichever of this request's
+    entrants parsed cleanly; each of THIS request's own expected
+    tickers that isn't a key of that dict (a genuinely missing item, OR
+    the whole request-level parse failing) gets its own "missing_from_
+    response"/"parse_error" failure recorded - one bad company, or one
+    malformed item, never costs the other (up to) 4 entrants in the
+    same request their own perfectly good scores. A batch already in
+    flight across this deploy, submitted under the pre-v6 single-
+    entrant custom_id_map shape, is still handled (the "ticker" dict
+    branch below) - though no Top 100 batch was in flight when this
+    bump shipped (confirmed via the scheduler's own idle heartbeat), so
+    this is a defensive fallback, not a tested live transition.
+
     Audit fixes, Commit 1 (30 Sep 2026, owner-directed): every FAILED
     result (errored, non-"succeeded" status, or a JSON parse failure)
     now records a top100_store.record_score_failure() row for its
@@ -1605,17 +1907,26 @@ def poll_and_ingest_batch(log=print):
             entry = custom_id_map.get(result.custom_id)
             if not entry:
                 continue
-            if isinstance(entry, dict):
-                ticker = entry.get("ticker")
-                score_key = entry.get("score_key")
-                entrant_most_recent_quarter = entry.get("most_recent_quarter")
-            else:
-                # Legacy in-flight batch (submitted before 27 Sep 2026) -
+            # v6 packed requests (1 Oct 2026): entrants_map is always
+            # {ticker: {"score_key", "most_recent_quarter"}, ...} for
+            # whichever ticker(s) THIS request carried - one entry for
+            # the common case, up to TOP100_COMPANIES_PER_REQUEST.
+            if isinstance(entry, dict) and "entrants" in entry:
+                entrants_map = entry["entrants"]
+            elif isinstance(entry, dict) and "ticker" in entry:
+                # Legacy in-flight batch, pre-v6 single-entrant shape -
                 # see this function's own docstring above.
-                ticker = entry
-                score_key = state.get("quarter")
-                entrant_most_recent_quarter = None
-            if not ticker:
+                entrants_map = {entry["ticker"]: {
+                    "score_key": entry.get("score_key"),
+                    "most_recent_quarter": entry.get("most_recent_quarter"),
+                }}
+            elif isinstance(entry, str) and entry:
+                # Even older legacy in-flight batch (pre-27 Sep 2026) -
+                # a flat {custom_id: ticker} string map.
+                entrants_map = {entry: {"score_key": state.get("quarter"), "most_recent_quarter": None}}
+            else:
+                continue
+            if not entrants_map:
                 continue
             if result.result.type == "errored":
                 # Commit 1 (24 Sep 2026, owner-reported): the real
@@ -1628,50 +1939,34 @@ def poll_and_ingest_batch(log=print):
                 # _serialize_batch_result_error()'s own docstring. Now
                 # logs the FULL serialized error (truncated) for the
                 # first _ERRORED_DETAIL_LIMIT results, then one summary
-                # line for the rest, counted by (inner) error type.
-                failed += 1
-                errored_count += 1
+                # line for the rest, counted by (inner) error type. v6
+                # packed requests: the WHOLE request errored, so every
+                # one of its own entrants is a failure, not just one.
                 err = getattr(result.result, "error", None)
                 err_type = _batch_result_error_type(err)
-                failure_reasons.append((ticker, err_type))
-                if errored_count <= _ERRORED_DETAIL_LIMIT:
-                    detail = _serialize_batch_result_error(err)
-                    log(f"[top100] {ticker}: batch result errored #{errored_count} - {detail}")
-                else:
-                    errored_rest_type_counts[err_type] = errored_rest_type_counts.get(err_type, 0) + 1
+                for ticker in entrants_map:
+                    failed += 1
+                    errored_count += 1
+                    failure_reasons.append((ticker, err_type))
+                    if errored_count <= _ERRORED_DETAIL_LIMIT:
+                        detail = _serialize_batch_result_error(err)
+                        log(f"[top100] {ticker}: batch result errored #{errored_count} - {detail}")
+                    else:
+                        errored_rest_type_counts[err_type] = errored_rest_type_counts.get(err_type, 0) + 1
                 continue
             if result.result.type != "succeeded":
-                failed += 1
-                failure_reasons.append((ticker, result.result.type))
-                log(f"[top100] {ticker}: batch result {result.result.type}, skipped")
+                for ticker in entrants_map:
+                    failed += 1
+                    failure_reasons.append((ticker, result.result.type))
+                    log(f"[top100] {ticker}: batch result {result.result.type}, skipped")
                 continue
             msg = result.result.message
             text = next((b.text for b in msg.content if b.type == "text"), "")
-            prompt_params = _request_params(ticker, ticker)
-            try:
-                (dims, not_rated, inversion_scenario, inversion_severity, current_headwind,
-                 market_structure, market_structure_comment,
-                 one_foot_hurdle, one_foot_comment,
-                 munger_quality, munger_comment, big_wave, big_wave_comment) = _parse_response_json(text)
-            except Exception as e:
-                failed += 1
-                failure_reasons.append((ticker, f"parse_error: {e}"))
-                log(f"[top100] {ticker}: could not parse batch result, skipped ({e})")
-                continue
-            top100_store.save_score(
-                ticker=ticker, quarter=score_key, model=state["model"],
-                rubric_version=RUBRIC_VERSION, dims=dims, not_rated=not_rated,
-                most_recent_quarter=entrant_most_recent_quarter,
-                inversion_scenario=inversion_scenario, inversion_severity=inversion_severity,
-                current_headwind=current_headwind,
-                market_structure=market_structure, market_structure_comment=market_structure_comment,
-                one_foot_hurdle=one_foot_hurdle, one_foot_comment=one_foot_comment,
-                munger_quality=munger_quality, munger_comment=munger_comment,
-                big_wave=big_wave, big_wave_comment=big_wave_comment,
-                prompt=json.dumps(prompt_params), raw_response=text,
-            )
-            top100_store.clear_score_failure(ticker, state["model"], RUBRIC_VERSION)
-            saved += 1
+            # v6 packed requests: usage is counted ONCE per RESULT
+            # (i.e. once per up-to-5-company request) regardless of how
+            # many of its own entrants actually parsed below - this is
+            # exactly how it's billed, and the real saving mechanism of
+            # the pack (see TOP100_COMPANIES_PER_REQUEST's own comment).
             total_input_tokens += getattr(msg.usage, "input_tokens", 0) or 0
             total_output_tokens += getattr(msg.usage, "output_tokens", 0) or 0
             # Honest cost accounting (1 Oct 2026, owner-directed): these
@@ -1680,6 +1975,50 @@ def poll_and_ingest_batch(log=print):
             # this fixes.
             total_cache_creation_tokens += getattr(msg.usage, "cache_creation_input_tokens", 0) or 0
             total_cache_read_tokens += getattr(msg.usage, "cache_read_input_tokens", 0) or 0
+            try:
+                parsed_by_ticker = _parse_response_json(text)
+            except Exception as e:
+                # Request-level parse failure (malformed/missing
+                # "companies" array) - every entrant THIS request
+                # carried failed, not just one.
+                for ticker in entrants_map:
+                    failed += 1
+                    failure_reasons.append((ticker, f"parse_error: {e}"))
+                log(f"[top100] batch result for {sorted(entrants_map)}: could not parse, skipped ({e})")
+                continue
+            prompt_params = _request_params([
+                {"ticker": t, "company_name": t, "sector": None} for t in entrants_map
+            ])
+            for ticker, entrant_info in entrants_map.items():
+                if ticker not in parsed_by_ticker:
+                    # Per-ticker failure isolation (the task's own
+                    # explicit requirement): this one entrant's own item
+                    # was missing from (or malformed within) the packed
+                    # response - the other entrants in the same request,
+                    # already in parsed_by_ticker, are saved below exactly
+                    # as if nothing had gone wrong.
+                    failed += 1
+                    failure_reasons.append((ticker, "missing_from_response"))
+                    log(f"[top100] {ticker}: missing from packed batch response, skipped")
+                    continue
+                (dims, not_rated, inversion_scenario, inversion_severity, current_headwind,
+                 market_structure, market_structure_comment,
+                 one_foot_hurdle, one_foot_comment,
+                 munger_quality, munger_comment, big_wave, big_wave_comment) = parsed_by_ticker[ticker]
+                top100_store.save_score(
+                    ticker=ticker, quarter=entrant_info.get("score_key"), model=state["model"],
+                    rubric_version=RUBRIC_VERSION, dims=dims, not_rated=not_rated,
+                    most_recent_quarter=entrant_info.get("most_recent_quarter"),
+                    inversion_scenario=inversion_scenario, inversion_severity=inversion_severity,
+                    current_headwind=current_headwind,
+                    market_structure=market_structure, market_structure_comment=market_structure_comment,
+                    one_foot_hurdle=one_foot_hurdle, one_foot_comment=one_foot_comment,
+                    munger_quality=munger_quality, munger_comment=munger_comment,
+                    big_wave=big_wave, big_wave_comment=big_wave_comment,
+                    prompt=json.dumps(prompt_params), raw_response=text,
+                )
+                top100_store.clear_score_failure(ticker, state["model"], RUBRIC_VERSION)
+                saved += 1
     except Exception as e:
         log(f"[top100] batch result retrieval failed partway through: {e}")
 
@@ -1805,9 +2144,17 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     only - the ENTRANT check still applies even to a forced refresh,
     since that's the actual spend ceiling this guard exists to
     protect, not a "how many times a night" throttle. A rough pre-
-    submission cost estimate (see _estimate_prompt_tokens()'s own
+    submission cost estimate (see _estimate_request_tokens()'s own
     docstring for why it's an estimate, not the billed figure) is
-    logged right before the real submit call, regardless of force."""
+    logged right before the real submit call, regardless of force.
+
+    v6 packed requests (1 Oct 2026, owner-directed): tonight's
+    entrants are grouped into packs of up to TOP100_COMPANIES_PER_
+    REQUEST before any request is built - see the packing block's own
+    comment below for exactly how. custom_id_map's own per-custom_id
+    value is now {"entrants": {ticker: {"score_key", "most_recent_
+    quarter"}, ...}}, one dict per PACK rather than per company (see
+    poll_and_ingest_batch()'s own docstring for how that's read back)."""
     # Audit fixes, Commit 2 (30 Sep 2026, owner-directed, tonight_sequence_
     # v2 addendum): the "never both submit AND have a batch pending"
     # guarantee described above only holds when every caller reaches this
@@ -1852,14 +2199,35 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         counts = {"new_or_rubric": 0, "new_results": 0, "age": 0}
         for _, reason in entrants:
             counts[reason] += 1
-        log(f"[top100] {len(entrants)} to score tonight — new/rubric: {counts['new_or_rubric']}, "
-            f"new results: {counts['new_results']}, age>{RESCORE_MAX_AGE_DAYS}d: {counts['age']}")
+        # Newcomer persistence filter (1 Oct 2026, owner decision): the
+        # deferred count is computed separately from `entrants` itself -
+        # _unscored_tickers() already left these tickers out entirely
+        # (see its own docstring), so this re-derives just the count,
+        # for the log line and the Admin Dashboard panel only.
+        deferred = _count_persistence_deferred(pool, model)
+        log(f"[top100] {len(entrants)} to score tonight (re-score {counts['new_results'] + counts['age']}, "
+            f"newcomers {counts['new_or_rubric']}, deferred (persistence) {deferred})")
 
-    est_input_tokens = sum(_estimate_prompt_tokens(row["ticker"], row.get("company_name"))
-                            for row, _ in entrants)
+    # v6 packed requests (1 Oct 2026, owner-directed): group tonight's
+    # entrants into packs of up to TOP100_COMPANIES_PER_REQUEST - one
+    # Batches API Request per pack, not per company (the actual saving
+    # mechanism - see that constant's own comment). The night's final
+    # pack is simply smaller when len(entrants) doesn't divide evenly -
+    # never padded with a dummy entrant, never dropped.
+    packs = [entrants[i:i + TOP100_COMPANIES_PER_REQUEST]
+             for i in range(0, len(entrants), TOP100_COMPANIES_PER_REQUEST)]
+
+    est_input_tokens = sum(
+        _estimate_request_tokens([
+            {"ticker": row["ticker"], "company_name": row.get("company_name"), "sector": row.get("sector")}
+            for row, _reason in pack
+        ])
+        for pack in packs
+    )
     est_output_tokens = len(entrants) * _ESTIMATED_OUTPUT_TOKENS_PER_ENTRANT
     est_cost = estimate_batch_cost_usd(est_input_tokens, est_output_tokens)
-    log(f"[top100] estimated cost for tonight's {len(entrants)}-company batch: ${est_cost:.4f} "
+    log(f"[top100] estimated cost for tonight's {len(entrants)}-company batch "
+        f"({len(packs)} packed request{'s' if len(packs) != 1 else ''}): ${est_cost:.4f} "
         f"(batch-priced, rough pre-submission estimate - real cost logged after ingest)")
 
     try:
@@ -1872,18 +2240,24 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
 
     custom_id_map = {}
     requests = []
-    for i, (row, reason) in enumerate(entrants):
-        ticker = row["ticker"]
-        custom_id = f"t100-{i}-{re.sub(r'[^A-Za-z0-9]', '', ticker)}"
-        score_key = _natural_score_key(row, today) if force else _score_key_for_entrant(row, reason, today)
-        custom_id_map[custom_id] = {
-            "ticker": ticker,
-            "score_key": score_key,
-            "most_recent_quarter": row.get("most_recent_quarter"),
-        }
+    for i, pack in enumerate(packs):
+        custom_id = f"t100-{i}"
+        pack_entrants_meta = {}
+        pack_request_entrants = []
+        for row, reason in pack:
+            ticker = row["ticker"]
+            score_key = _natural_score_key(row, today) if force else _score_key_for_entrant(row, reason, today)
+            pack_entrants_meta[ticker] = {
+                "score_key": score_key,
+                "most_recent_quarter": row.get("most_recent_quarter"),
+            }
+            pack_request_entrants.append({
+                "ticker": ticker, "company_name": row.get("company_name"), "sector": row.get("sector"),
+            })
+        custom_id_map[custom_id] = {"entrants": pack_entrants_meta}
         requests.append(Request(
             custom_id=custom_id,
-            params=MessageCreateParamsNonStreaming(**_request_params(ticker, row.get("company_name"))),
+            params=MessageCreateParamsNonStreaming(**_request_params(pack_request_entrants)),
         ))
 
     try:
@@ -1896,7 +2270,7 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     top100_store.save_batch_state(batch.id, today.isoformat(), model, custom_id_map)
     top100_store.record_daily_submission(today.isoformat(), len(entrants))
     log(f"[top100] submitted batch {batch.id}: {len(entrants)} compan{'y' if len(entrants) == 1 else 'ies'} "
-        f"for {model}")
+        f"in {len(packs)} packed request{'s' if len(packs) != 1 else ''} for {model}")
     return batch.id
 
 
@@ -1974,6 +2348,64 @@ def diagnose_batch_01xa_once(log=print):
         log(f"[top100] one-off diagnostic: could not write marker file: {e}")
 
 
+def _pool_presence_v6_seed_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".top100_pool_presence_v6_seed_done")
+
+
+def seed_pool_presence_for_v6_once(log=print):
+    """One-off, marker-guarded boot seeding (1 Oct 2026, owner decision,
+    newcomer persistence filter): the v5->v6 RUBRIC_VERSION bump is the
+    first night _true_newcomer_gated() is active at all - without this,
+    every ticker ALREADY in the pool before this shipped would read as
+    a brand-new, zero-night newcomer (no pool_presence row yet) and get
+    wrongly deferred, even though many have been in the pool and scored
+    for months. Seeds top100_store.pool_presence for every ticker in
+    the latest pool snapshot (current_pool() + current_asx_extension())
+    with consecutive_nights=3 (exempt from the gate immediately) if the
+    ticker already carries a score under ANY PREVIOUS rubric (top100_
+    store.latest_score_previous_rubric() - a v4/v5 score proves it has
+    been in the pool and scored before, so the v6 full re-score itself
+    must never be held back by this unrelated filter), else consecutive_
+    nights=1 (a genuinely never-scored newcomer starts its real 3-night
+    count from today, exactly as if it had just entered the pool for
+    the first time). Uses top100_store.seed_pool_presence()'s own
+    INSERT OR IGNORE, so this is safe even if update_pool_presence()
+    (the ordinary nightly writer) somehow already ran first for a given
+    ticker. Same marker-guarded, "never allowed to stop the site
+    serving" pattern as diagnose_batch_01xa_once() above - see that
+    function's own docstring; wired into server.py's lifespan() the
+    same way."""
+    marker = _pool_presence_v6_seed_marker_path()
+    if os.path.exists(marker):
+        return
+    try:
+        pool = top100_store.current_pool() + top100_store.current_asx_extension()
+        today = datetime.now(timezone.utc).date().isoformat()
+        presence = {}
+        seeded_3 = seeded_1 = 0
+        for row in pool:
+            ticker = row["ticker"]
+            if top100_store.latest_score_previous_rubric(ticker, MODEL_TOP100, RUBRIC_VERSION) is not None:
+                presence[ticker] = 3
+                seeded_3 += 1
+            else:
+                presence[ticker] = 1
+                seeded_1 += 1
+        top100_store.seed_pool_presence(presence, today)
+        log(f"[top100] pool presence seeded for RUBRIC_VERSION {RUBRIC_VERSION}: "
+            f"{seeded_3} ticker(s) set to 3 (prior-rubric history), "
+            f"{seeded_1} ticker(s) set to 1 (true newcomers)")
+    except Exception as e:
+        log(f"[top100] pool presence seeding failed: {e}")
+
+    try:
+        with open(marker, "w") as f:
+            f.write(datetime.now(timezone.utc).isoformat())
+    except OSError as e:
+        log(f"[top100] pool presence seeding: could not write marker file: {e}")
+
+
 def run_nightly(log=print):
     """The scheduler's own entry point (scheduler_engine._run_top100 -
     same "let it raise, retry-cap sees a real failure" contract as
@@ -2009,25 +2441,39 @@ def run_single_test_call(ticker, company_name=None):
     "munger_comment","big_wave","big_wave_comment","input_tokens",
     "output_tokens","cost_usd"} - standard, non-batch pricing (this
     call does not go through the Batches API), reported honestly as
-    such."""
+    such.
+
+    v6 packed requests (1 Oct 2026, owner-directed): internally routed
+    through the same list-based _request_params()/_parse_response_
+    json() path submit_nightly_batch() uses, with a one-entrant list -
+    this function's own external contract (arguments, return shape) is
+    completely unchanged; only the internal plumbing is shared now."""
     import anthropic
     client = anthropic.Anthropic()
-    params = _request_params(ticker, company_name)
-    resp = client.messages.create(**params)
-    text = next((b.text for b in resp.content if b.type == "text"), "")
-    (dims, not_rated, inversion_scenario, inversion_severity, current_headwind,
-     market_structure, market_structure_comment,
-     one_foot_hurdle, one_foot_comment,
-     munger_quality, munger_comment, big_wave, big_wave_comment) = _parse_response_json(text)
-    input_tokens = getattr(resp.usage, "input_tokens", 0) or 0
-    output_tokens = getattr(resp.usage, "output_tokens", 0) or 0
-    cost = (input_tokens / 1_000_000) * TOP100_INPUT_USD_PER_MTOK + \
-        (output_tokens / 1_000_000) * TOP100_OUTPUT_USD_PER_MTOK
     pool_row = next(
         (r for r in top100_store.current_pool() + top100_store.current_asx_extension()
          if r["ticker"] == ticker),
         None,
     )
+    entrants = [{
+        "ticker": ticker,
+        "company_name": company_name or (pool_row.get("company_name") if pool_row else None),
+        "sector": pool_row.get("sector") if pool_row else None,
+    }]
+    params = _request_params(entrants)
+    resp = client.messages.create(**params)
+    text = next((b.text for b in resp.content if b.type == "text"), "")
+    parsed_by_ticker = _parse_response_json(text)
+    if ticker not in parsed_by_ticker:
+        raise ValueError(f"{ticker} missing from the model's own response")
+    (dims, not_rated, inversion_scenario, inversion_severity, current_headwind,
+     market_structure, market_structure_comment,
+     one_foot_hurdle, one_foot_comment,
+     munger_quality, munger_comment, big_wave, big_wave_comment) = parsed_by_ticker[ticker]
+    input_tokens = getattr(resp.usage, "input_tokens", 0) or 0
+    output_tokens = getattr(resp.usage, "output_tokens", 0) or 0
+    cost = (input_tokens / 1_000_000) * TOP100_INPUT_USD_PER_MTOK + \
+        (output_tokens / 1_000_000) * TOP100_OUTPUT_USD_PER_MTOK
     most_recent_quarter = pool_row.get("most_recent_quarter") if pool_row else None
     score_key = _natural_score_key({"most_recent_quarter": most_recent_quarter})
     top100_store.save_score(

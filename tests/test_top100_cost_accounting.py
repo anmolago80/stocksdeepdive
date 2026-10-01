@@ -94,11 +94,14 @@ print(f"[cost_write_vs_read] 100k cache-write tokens (${cost_all_write:.4f}) cos
 # convention (this codebase's own established approximation, not a
 # live Anthropic tokenizer call - see _CHARS_PER_TOKEN_ESTIMATE's own
 # docstring), so this is a self-consistency check on the formula
-# _estimate_prompt_tokens() now uses (system + schema + user, where
-# before this fix the schema was silently excluded).
+# _estimate_request_tokens() now uses (system + schema + user, where
+# before this fix the schema was silently excluded). v6 packed
+# requests (1 Oct 2026): this function now takes a one-entrant LIST
+# (_request_params()'s own new list-based signature), not a bare
+# ticker/company_name pair - updated here to match, same formula.
 # ======================================================================
-_FAKE_TICKER, _FAKE_NAME = "AAAA", "Test Company Ltd"
-real_tokens_per_entrant = te._estimate_prompt_tokens(_FAKE_TICKER, _FAKE_NAME)
+_FAKE_ENTRANTS = [{"ticker": "AAAA", "company_name": "Test Company Ltd", "sector": "Technology"}]
+real_tokens_per_entrant = te._estimate_request_tokens(_FAKE_ENTRANTS)
 
 # Pad the system prompt text (via a patched _request_params) so the
 # per-request total lands at ~10k tokens chars/4, matching the
@@ -107,16 +110,16 @@ _pad_chars = max(0, 10_000 * te._CHARS_PER_TOKEN_ESTIMATE - real_tokens_per_entr
 _real_request_params = te._request_params
 
 
-def _padded_request_params(ticker, company_name):
-    params = _real_request_params(ticker, company_name)
+def _padded_request_params(entrants):
+    params = _real_request_params(entrants)
     params["system"][0]["text"] = params["system"][0]["text"] + ("x" * _pad_chars)
     return params
 
 
 with mock.patch("top100_engine._request_params", side_effect=_padded_request_params):
-    per_entrant_tokens = te._estimate_prompt_tokens(_FAKE_TICKER, _FAKE_NAME)
+    per_entrant_tokens = te._estimate_request_tokens(_FAKE_ENTRANTS)
 assert abs(per_entrant_tokens - 10_000) <= 10_000 * 0.05, per_entrant_tokens
-print(f"[synthetic_10k_prompt] padded _estimate_prompt_tokens() == {per_entrant_tokens} "
+print(f"[synthetic_10k_prompt] padded _estimate_request_tokens() == {per_entrant_tokens} "
       "(~10k tokens, system+schema+user, chars/4) OK")
 
 N_REQUESTS = 108
@@ -141,7 +144,7 @@ print(f"[within_15_pct] pre-submit estimate ({pre_submit_total_input:,} tokens) 
 # anywhere in this codebase (top100_store.save_score() never stores
 # the usage object), so there is no evidence it ever paid for itself.
 # ======================================================================
-params = te._request_params("AAPL", "Apple Inc.")
+params = te._request_params([{"ticker": "AAPL", "company_name": "Apple Inc.", "sector": "Technology"}])
 system_block = params["system"][0]
 assert "cache_control" not in system_block, system_block
 assert set(system_block.keys()) == {"type", "text"}, system_block
@@ -154,16 +157,21 @@ print("[no_cache_control] _request_params()'s system block carries no cache_cont
 # n_days() persistence (reusing tests/test_audit_c1_no_resubmit_cap.py's
 # own mock.patch("anthropic.Anthropic") convention).
 # ======================================================================
-def _make_succeeded_result(custom_id, cache_creation=0, cache_read=0):
-    data = {k: {"score": 4, "justification": "j", "source_period": "FY25"} for k in te.DIMENSION_KEYS}
-    data.update({
+def _make_succeeded_result(custom_id, ticker, cache_creation=0, cache_read=0):
+    # v6 packed requests (1 Oct 2026): the wire response is now
+    # {"companies": [<item with its own "ticker">]} - even a single-
+    # entrant result, since _request_params() always builds the
+    # packed schema now.
+    item = {k: {"score": 4, "justification": "j", "source_period": "FY25"} for k in te.DIMENSION_KEYS}
+    item.update({
+        "ticker": ticker,
         "inversion_scenario": "", "inversion_severity": 0, "current_headwind": "",
         "market_structure": "", "market_structure_comment": "",
         "one_foot_hurdle": "", "one_foot_comment": "",
         "munger_quality": "", "munger_comment": "",
         "big_wave": "", "big_wave_comment": "",
     })
-    text = json.dumps(data)
+    text = json.dumps({"companies": [item]})
     content_block = mock.Mock(type="text", text=text)
     usage = mock.Mock(input_tokens=1000, output_tokens=500,
                        cache_creation_input_tokens=cache_creation,
@@ -173,13 +181,13 @@ def _make_succeeded_result(custom_id, cache_creation=0, cache_read=0):
     return mock.Mock(custom_id=custom_id, result=result)
 
 
-custom_id_map = {"c1": {"ticker": "COST1", "score_key": "D2026-10-01", "most_recent_quarter": None},
-                  "c2": {"ticker": "COST2", "score_key": "D2026-10-01", "most_recent_quarter": None}}
+custom_id_map = {"c1": {"entrants": {"COST1": {"score_key": "D2026-10-01", "most_recent_quarter": None}}},
+                  "c2": {"entrants": {"COST2": {"score_key": "D2026-10-01", "most_recent_quarter": None}}}}
 ts.save_batch_state("msgbatch_cost_test", "2026-10-01", te.MODEL_TOP100, custom_id_map)
 
 _batch = mock.Mock(processing_status="ended")
-_results = [_make_succeeded_result("c1", cache_creation=2000, cache_read=0),
-            _make_succeeded_result("c2", cache_creation=0, cache_read=2000)]
+_results = [_make_succeeded_result("c1", "COST1", cache_creation=2000, cache_read=0),
+            _make_succeeded_result("c2", "COST2", cache_creation=0, cache_read=2000)]
 
 logs = []
 with mock.patch("anthropic.Anthropic") as MockClient:

@@ -52,11 +52,12 @@ def _dims_all_scored():
     return {k: {"score": 4, "justification": "j", "source_period": "FY25"} for k in te.DIMENSION_KEYS}
 
 
-def _response_json(munger_quality="yes", munger_comment="Simple, widening moat, high ROIC.",
+def _response_json(ticker="TEST", munger_quality="yes", munger_comment="Simple, widening moat, high ROIC.",
                     big_wave="tailwind", big_wave_comment="Early penetration, long runway.",
                     market_structure="oligopoly", one_foot_hurdle="no"):
     import json
     data = {k: {"score": 4, "justification": "j", "source_period": "FY25"} for k in te.DIMENSION_KEYS}
+    data["ticker"] = ticker
     data["inversion_scenario"] = "A severe downturn."
     data["inversion_severity"] = 3
     data["current_headwind"] = "Margin pressure."
@@ -68,18 +69,42 @@ def _response_json(munger_quality="yes", munger_comment="Simple, widening moat, 
     data["munger_comment"] = munger_comment
     data["big_wave"] = big_wave
     data["big_wave_comment"] = big_wave_comment
-    return json.dumps(data)
+    # v6 packed requests (1 Oct 2026): the wire response is now
+    # {"companies": [<item>]} - even this file's own single-company
+    # fixtures go through that same wrapper now.
+    return json.dumps({"companies": [data]})
 
 
 # ---------------------------------------------------------------
 # 1. Schema dry-check
+#
+# v6 packed requests (1 Oct 2026, owner-directed): te._response_schema()
+# is now the top-level {"companies": [...]} WRAPPER, not the per-company
+# properties this section originally dry-checked - those live in te.
+# _company_item_schema() now (RUBRIC_VERSION's own munger_quality/
+# big_wave fields are otherwise byte-for-byte unchanged from v5, which
+# is exactly what this section still confirms). RUBRIC_VERSION itself
+# moved on to "v6" in the same bump that introduced the pack - the
+# munger_quality/big_wave fields this file is really about must simply
+# still be present in whatever the CURRENT rubric is, not literally "v5".
 # ---------------------------------------------------------------
-schema = te._response_schema()
+wrapper_schema = te._response_schema()
+schema = te._company_item_schema()
 props = schema["properties"]
 
 
 def _is_union(p):
     return isinstance(p.get("type"), list) or "anyOf" in p or "oneOf" in p
+
+
+def _walk_unions(node):
+    if not isinstance(node, dict):
+        return 0
+    count = 1 if _is_union(node) else 0
+    for v in node.values():
+        if isinstance(v, dict):
+            count += _walk_unions(v)
+    return count
 
 
 union_count = sum(1 for p in props.values() if _is_union(p))
@@ -88,23 +113,37 @@ minmax_keys = [k for k, p in props.items()
 
 assert union_count == 0, f"expected 0 union-typed properties, got {union_count}"
 assert minmax_keys == [], f"expected no min/max-constrained properties, got {minmax_keys}"
-assert te.RUBRIC_VERSION == "v5", f"expected RUBRIC_VERSION v5, got {te.RUBRIC_VERSION!r}"
+assert _walk_unions(wrapper_schema) == 0, "the top-level {\"companies\": [...]} wrapper must carry 0 unions too"
+assert te.RUBRIC_VERSION not in ("v1", "v2", "v3", "v4"), (
+    f"RUBRIC_VERSION {te.RUBRIC_VERSION!r} predates the v4->v5 bump that introduced "
+    "munger_quality/big_wave - this suite's own fields wouldn't exist yet"
+)
 assert "munger_quality" in props and "munger_comment" in props
 assert "big_wave" in props and "big_wave_comment" in props
 assert set(["munger_quality", "munger_comment", "big_wave", "big_wave_comment"]).issubset(set(schema["required"]))
-params = te._request_params("TEST", "Test Co")
-assert params["max_tokens"] == 4000
-print("[schema] RUBRIC_VERSION v5, 0 union types, no min/max, max_tokens unchanged OK")
+params = te._request_params([{"ticker": "TEST", "company_name": "Test Co", "sector": None}])
+assert params["max_tokens"] == 4000, "4000 tokens for a single-entrant request, unchanged"
+print(f"[schema] RUBRIC_VERSION {te.RUBRIC_VERSION!r} (>= v5), 0 union types (item + wrapper), "
+      "no min/max, max_tokens unchanged for a single entrant OK")
 
 
 # ---------------------------------------------------------------
 # 2. _parse_response_json(): clean values, tolerance, out-of-vocab,
 #    truncation, sentinel handling
+#
+# v6 packed requests (1 Oct 2026): _parse_response_json() now returns
+# {ticker: (13-tuple), ...} for the packed "companies" array, not a
+# bare tuple - _response_json()'s own fixture always uses ticker="TEST"
+# (its own default), so this helper just unwraps that one entry.
 # ---------------------------------------------------------------
+def _parse_one(text, ticker="TEST"):
+    return te._parse_response_json(text)[ticker]
+
+
 # Clean parse of every allowed value
 for mq in ("yes", "no"):
     text = _response_json(munger_quality=mq, munger_comment="Reason.")
-    parsed = te._parse_response_json(text)
+    parsed = _parse_one(text)
     munger_quality, munger_comment = parsed[9], parsed[10]
     assert munger_quality == mq, f"expected munger_quality={mq!r}, got {munger_quality!r}"
     assert munger_comment == "Reason."
@@ -112,7 +151,7 @@ print("[parse] munger_quality yes/no clean parse OK")
 
 for bw in ("tailwind", "flat", "headwind"):
     text = _response_json(big_wave=bw, big_wave_comment="Trend.")
-    parsed = te._parse_response_json(text)
+    parsed = _parse_one(text)
     big_wave, big_wave_comment = parsed[11], parsed[12]
     assert big_wave == bw, f"expected big_wave={bw!r}, got {big_wave!r}"
     assert big_wave_comment == "Trend."
@@ -120,14 +159,14 @@ print("[parse] big_wave tailwind/flat/headwind clean parse OK")
 
 # Case/whitespace tolerance
 text = _response_json(munger_quality="  YES  ", big_wave=" Tailwind ")
-parsed = te._parse_response_json(text)
+parsed = _parse_one(text)
 assert parsed[9] == "yes", parsed[9]
 assert parsed[11] == "tailwind", parsed[11]
 print("[parse] case/whitespace tolerance OK")
 
 # Sentinel "" -> None (independently per field), comment also nulled
 text = _response_json(munger_quality="", munger_comment="", big_wave="", big_wave_comment="")
-parsed = te._parse_response_json(text)
+parsed = _parse_one(text)
 assert parsed[9] is None and parsed[10] is None
 assert parsed[11] is None and parsed[12] is None
 print("[parse] sentinel \"\" -> None for both fields + their comments OK")
@@ -136,7 +175,7 @@ print("[parse] sentinel \"\" -> None for both fields + their comments OK")
 # the model didn't null it itself - each field independently
 text = _response_json(munger_quality="maybe", munger_comment="A stray comment.",
                        big_wave="strong", big_wave_comment="Another stray comment.")
-parsed = te._parse_response_json(text)
+parsed = _parse_one(text)
 assert parsed[9] is None, "out-of-vocab munger_quality must decline to None"
 assert parsed[10] is None, "munger_comment must be force-nulled when munger_quality is invalid"
 assert parsed[11] is None, "out-of-vocab big_wave must decline to None"
@@ -146,7 +185,7 @@ print("[parse] out-of-vocabulary values decline to None with comment force-nulle
 # One field valid, the other invalid - independence
 text = _response_json(munger_quality="yes", munger_comment="Valid.",
                        big_wave="bogus", big_wave_comment="Should be nulled.")
-parsed = te._parse_response_json(text)
+parsed = _parse_one(text)
 assert parsed[9] == "yes" and parsed[10] == "Valid."
 assert parsed[11] is None and parsed[12] is None
 print("[parse] independent field validation (one valid, one invalid) OK")
@@ -154,7 +193,7 @@ print("[parse] independent field validation (one valid, one invalid) OK")
 # Hard truncation at 40 words (_COMMENT_MAX_WORDS), safety net only
 long_comment = " ".join(f"word{i}" for i in range(60))
 text = _response_json(munger_comment=long_comment, big_wave_comment=long_comment)
-parsed = te._parse_response_json(text)
+parsed = _parse_one(text)
 assert len(parsed[10].split()) == te._COMMENT_MAX_WORDS, len(parsed[10].split())
 assert len(parsed[12].split()) == te._COMMENT_MAX_WORDS, len(parsed[12].split())
 print("[parse] hard truncation at _COMMENT_MAX_WORDS words OK")

@@ -338,6 +338,13 @@ async def lifespan(app: FastAPI):
     # as every other one-off cleanup above.
     with suppress(Exception):
         top100_engine.diagnose_batch_01xa_once()
+    # Newcomer persistence filter (1 Oct 2026, owner decision, v6 cost
+    # task): one-off, marker-guarded seeding of pool_presence for the
+    # first night the filter is active - see top100_engine.seed_pool_
+    # presence_for_v6_once()'s own docstring. Same "never allowed to
+    # stop the site serving" rule as every other one-off above.
+    with suppress(Exception):
+        top100_engine.seed_pool_presence_for_v6_once()
     _client = httpx.AsyncClient(
         base_url=UPSTREAM, timeout=httpx.Timeout(None, connect=10.0),
         follow_redirects=False, limits=httpx.Limits(max_connections=200),

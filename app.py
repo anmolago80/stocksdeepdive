@@ -30123,6 +30123,23 @@ def page_admin_dashboard():
             )
         else:
             st.caption("No batch ingested in the last 7 days yet.")
+        # Newcomer persistence filter (1 Oct 2026, owner decision, v6
+        # cost task) - how many pooled tickers are CURRENTLY true
+        # newcomers held back by top100_engine._true_newcomer_gated()
+        # until they hold their pool slot for NEWCOMER_PERSISTENCE_
+        # NIGHTS consecutive nightly selections. See top100_engine.
+        # _count_persistence_deferred()'s own docstring.
+        try:
+            _t100_deferred_pool = top100_store.current_pool() + top100_store.current_asx_extension()
+            _t100_deferred = top100_engine._count_persistence_deferred(_t100_deferred_pool, top100_engine.MODEL_TOP100)
+        except Exception:
+            _t100_deferred = None
+        if _t100_deferred is not None:
+            st.caption(
+                f"Deferred (newcomer persistence filter): {_t100_deferred} ticker"
+                f"{'s' if _t100_deferred != 1 else ''} currently held back, waiting to hold "
+                f"their pool slot for {top100_engine.NEWCOMER_PERSISTENCE_NIGHTS} consecutive nights."
+            )
 
     # --- WEEKLY SCAN CALENDAR (Part 53.1) -----------------------------
     st.markdown("### Weekly scan calendar")

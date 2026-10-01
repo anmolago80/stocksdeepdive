@@ -3707,7 +3707,10 @@ EN = {
         "on demand via the owner's own \"refresh all\" button below; "
         "only newly-entered companies and those with new results to "
         "read are sent to the API on an ordinary night (capped at 120 "
-        "a night). Scoring runs through Anthropic's Batch API."
+        "a night). Scoring runs through Anthropic's Batch API, and to "
+        "reduce cost, companies are assessed in small groups rather "
+        "than one at a time - each company is still scored "
+        "independently within its group."
     ),
     "top100.methodology_decircularisation": (
         "**Never double-counted.** This site separately computes a purely "
@@ -7096,7 +7099,9 @@ ES = {
         "empresas nuevas y las que tienen resultados nuevos que leer se "
         "envían a la API en una noche normal (con un límite de 120 por "
         "noche). La puntuación se ejecuta a través de la API por lotes "
-        "de Anthropic."
+        "de Anthropic, y para reducir el costo, las empresas se evalúan "
+        "en grupos pequeños en lugar de una por una - cada empresa "
+        "sigue siendo puntuada de forma independiente dentro de su grupo."
     ),
     "top100.methodology_decircularisation": (
         "**Nunca contado dos veces.** Este sitio calcula por separado un "

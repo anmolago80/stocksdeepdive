@@ -56,15 +56,22 @@ def _dims():
 
 def _make_succeeded_result(custom_id, ticker):
     import json as _json
-    data = {k: {"score": 4, "justification": "j", "source_period": "FY25"} for k in te.DIMENSION_KEYS}
-    data.update({
+    # v6 packed requests (1 Oct 2026): the real wire response is now
+    # {"companies": [<item with its own "ticker">]}, not a bare flat
+    # object - even a single-entrant result (this fixture's own case)
+    # comes back through that same wrapper, since _request_params()
+    # always builds the packed schema now (TOP100_COMPANIES_PER_
+    # REQUEST entrants or fewer - see that function's own docstring).
+    item = {k: {"score": 4, "justification": "j", "source_period": "FY25"} for k in te.DIMENSION_KEYS}
+    item.update({
+        "ticker": ticker,
         "inversion_scenario": "", "inversion_severity": 0, "current_headwind": "",
         "market_structure": "", "market_structure_comment": "",
         "one_foot_hurdle": "", "one_foot_comment": "",
         "munger_quality": "", "munger_comment": "",
         "big_wave": "", "big_wave_comment": "",
     })
-    text = _json.dumps(data)
+    text = _json.dumps({"companies": [item]})
     content_block = mock.Mock(type="text", text=text)
     # Honest cost accounting (1 Oct 2026): real usage objects always carry
     # cache_creation_input_tokens/cache_read_input_tokens alongside input_
@@ -91,8 +98,12 @@ def _make_errored_result(custom_id):
 
 def _seed_batch_state(entries):
     """entries: {custom_id: ticker} - writes a batch-state row directly,
-    same shape submit_nightly_batch() would leave behind."""
-    custom_id_map = {cid: {"ticker": t, "score_key": "D2026-09-30", "most_recent_quarter": None}
+    same shape submit_nightly_batch() would leave behind. v6 packed
+    requests (1 Oct 2026): one ticker per custom_id here (this file's
+    own fixtures never test multi-entrant packing), but still in the
+    current {"entrants": {ticker: {...}}} shape poll_and_ingest_batch()
+    now expects - see that function's own docstring."""
+    custom_id_map = {cid: {"entrants": {t: {"score_key": "D2026-09-30", "most_recent_quarter": None}}}
                       for cid, t in entries.items()}
     ts.save_batch_state("msgbatch_test", "2026-09-30", te.MODEL_TOP100, custom_id_map)
 
@@ -166,6 +177,11 @@ print("[c1_partial_failure] partial batch: succeeded ticker has no failure row, 
 pool = [{"ticker": "CCCC", "company_name": "CCCC Co", "most_recent_quarter": None},
         {"ticker": "DDDD", "company_name": "DDDD Co", "most_recent_quarter": None},
         {"ticker": "EEEE", "company_name": "EEEE Co", "most_recent_quarter": None}]
+# Newcomer persistence filter (1 Oct 2026, owner decision) is an
+# orthogonal feature this file predates - seed these three tickers past
+# NEWCOMER_PERSISTENCE_NIGHTS so this check's own retry-window assertions
+# aren't ALSO gated as brand-new newcomers with no pool_presence row.
+ts.seed_pool_presence({"CCCC": 3, "DDDD": 3, "EEEE": 3}, "2026-09-29")
 unscored = te._unscored_tickers(pool, te.MODEL_TOP100)
 unscored_tickers = {row["ticker"] for row, _ in unscored}
 assert "DDDD" not in unscored_tickers, "DDDD just failed - must be excluded within the retry window"
@@ -236,6 +252,9 @@ ts.record_daily_submission(_today, 100)  # 2 batches, 200 entrants so far
 
 fake_pool = [{"ticker": f"CAP{i}", "company_name": f"Cap {i} Co", "most_recent_quarter": None}
              for i in range(10)]
+# Same orthogonal-feature seeding as CHECK 2 above - this check is about
+# the daily submission cap, not the newcomer persistence filter.
+ts.seed_pool_presence({f"CAP{i}": 3 for i in range(10)}, "2026-09-29")
 cap_logs = []
 result_capped = te.submit_nightly_batch(pool=fake_pool, log=cap_logs.append)
 assert result_capped is None, "submission must be refused once the batch-count cap is hit"

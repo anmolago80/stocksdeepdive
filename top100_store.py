@@ -377,6 +377,23 @@ def _conn():
             cost_usd REAL NOT NULL DEFAULT 0
         )"""
     )
+    # Newcomer persistence filter (1 Oct 2026, owner decision, v6 cost
+    # task) - one row per ticker ever seen in a pool selection, tracking
+    # how many CONSECUTIVE nightly selections it has just appeared in.
+    # top100_engine._true_newcomer_gated() reads this to decide whether
+    # a never-scored newcomer may be submitted yet; update_pool_presence()
+    # (called from select_top100_pool(), every night) is the only writer
+    # besides the one-off v6 seeding helper below. No PK change needed
+    # over any prior table here, so this is a plain CREATE TABLE IF NOT
+    # EXISTS, same convention as top100_ingest_log just above.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS pool_presence (
+            ticker TEXT PRIMARY KEY,
+            first_seen_utc_date TEXT NOT NULL,
+            consecutive_nights INTEGER NOT NULL DEFAULT 1,
+            last_seen_utc_date TEXT NOT NULL
+        )"""
+    )
     return conn
 
 
@@ -949,3 +966,111 @@ def ingest_cost_last_n_days(days=7):
         "batches": row[0], "scored": row[1], "failed": row[2], "cost_usd": row[3],
         "cache_creation_tokens": row[4], "cache_read_tokens": row[5],
     }
+
+
+# -----------------------------------------------------------------
+# Newcomer persistence filter (1 Oct 2026, owner decision, v6 cost
+# task) - see pool_presence's own CREATE TABLE comment in _conn()
+# above for what this tracks and why.
+# -----------------------------------------------------------------
+
+def update_pool_presence(tickers, utc_date):
+    """Called once per nightly pool selection (top100_engine.select_
+    top100_pool(), right after save_pool()) with every ticker in THAT
+    selection - `tickers`: the full pool+extension ticker list,
+    `utc_date`: that selection's own as_of date ("YYYY-MM-DD"). For
+    each ticker:
+      - no existing row (never seen before) -> starts at consecutive_
+        nights=1.
+      - last_seen_utc_date was exactly the calendar day before
+        `utc_date` -> increments the streak by 1.
+      - last_seen_utc_date IS `utc_date` already (this ticker's
+        presence was already updated today - shouldn't happen in
+        practice, selection runs once a night) -> left unchanged.
+      - any other gap (the ticker dropped out of the pool for one or
+        more nights and has now reappeared, or its stored date is
+        unparseable) -> RESETS the streak to 1, per the task's own
+        explicit "reset to 1 when a ticker drops out and reappears"
+        rule. first_seen_utc_date is never touched once set - it
+        records when this ticker was first ever seen, not when its
+        current streak started.
+    Never touches a ticker that ISN'T in `tickers` - a ticker currently
+    out of the pool simply keeps its last recorded row untouched until
+    (if ever) it reappears in a future selection."""
+    if not tickers:
+        return
+    try:
+        target_date = datetime.strptime(utc_date, "%Y-%m-%d").date()
+    except ValueError:
+        return
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        placeholders = ",".join("?" * len(tickers))
+        existing = {
+            r["ticker"]: r for r in conn.execute(
+                f"SELECT * FROM pool_presence WHERE ticker IN ({placeholders})", tickers,
+            ).fetchall()
+        }
+        rows_to_write = []
+        for ticker in tickers:
+            row = existing.get(ticker)
+            if row is None:
+                rows_to_write.append((ticker, utc_date, 1, utc_date))
+                continue
+            try:
+                last_dt = datetime.strptime(row["last_seen_utc_date"], "%Y-%m-%d").date()
+                gap_days = (target_date - last_dt).days
+            except (ValueError, TypeError):
+                gap_days = None
+            if gap_days == 1:
+                consecutive = row["consecutive_nights"] + 1
+            elif gap_days == 0:
+                consecutive = row["consecutive_nights"]
+            else:
+                consecutive = 1
+            rows_to_write.append((ticker, row["first_seen_utc_date"], consecutive, utc_date))
+        conn.executemany(
+            """INSERT INTO pool_presence (ticker, first_seen_utc_date, consecutive_nights, last_seen_utc_date)
+                 VALUES (?, ?, ?, ?)
+               ON CONFLICT(ticker) DO UPDATE SET
+                 consecutive_nights = excluded.consecutive_nights,
+                 last_seen_utc_date = excluded.last_seen_utc_date""",
+            rows_to_write,
+        )
+
+
+def pool_presence_map(tickers):
+    """{ticker: consecutive_nights} for every ticker in `tickers` that
+    has a pool_presence row - a ticker not present in the returned dict
+    has never been seen by update_pool_presence()/seed_pool_presence()
+    at all, which every caller (top100_engine._true_newcomer_gated())
+    treats as 0 consecutive nights - fully gated, same as a ticker on
+    its own first night."""
+    if not tickers:
+        return {}
+    with _conn() as conn:
+        placeholders = ",".join("?" * len(tickers))
+        rows = conn.execute(
+            f"SELECT ticker, consecutive_nights FROM pool_presence WHERE ticker IN ({placeholders})",
+            tickers,
+        ).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def seed_pool_presence(ticker_to_nights, utc_date):
+    """One-off v6 seeding helper (top100_engine.seed_pool_presence_
+    for_v6_once()'s own writer, called exactly once - see that
+    function's own docstring for why) - `ticker_to_nights`: {ticker:
+    consecutive_nights (1 or 3)}. INSERT OR IGNORE so a ticker that
+    somehow already has a pool_presence row (update_pool_presence()
+    having already run for it before this seeding got a chance to)
+    is never clobbered by this one-time baseline."""
+    if not ticker_to_nights:
+        return
+    with _conn() as conn:
+        conn.executemany(
+            """INSERT OR IGNORE INTO pool_presence
+                 (ticker, first_seen_utc_date, consecutive_nights, last_seen_utc_date)
+                 VALUES (?, ?, ?, ?)""",
+            [(ticker, utc_date, nights, utc_date) for ticker, nights in ticker_to_nights.items()],
+        )
