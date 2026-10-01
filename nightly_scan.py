@@ -42,6 +42,7 @@ import admin_metrics_store
 import alert_engine
 import auto_compounder_engine
 import capm_engine
+import fcf_valuation_engine
 import fundamentals_data
 import moat_engine
 import peer_context
@@ -369,7 +370,7 @@ def _growth_coverage_bucket(iv_meta):
 
 def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
                          perpetual_rate=None, growth_rate=None, manual_fcf=None, log=print,
-                         rate_limited_out=None, growth_summary_out=None):
+                         rate_limited_out=None, growth_summary_out=None, oneoff_summary_out=None):
     """Core value/quality/psychology scoring for one ticker - the same
     resolvers and Long Score the site uses. Returns a plain dict, or None
     if no usable price data. Also used by digest_engine for the weekly
@@ -422,7 +423,18 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     pattern as rate_limited_out above), never read. run_universe_scan()
     is the only caller that passes this, to log one summary line at the
     end of each universe's scan; every other caller leaves it None and
-    is completely unaffected."""
+    is completely unaffected.
+
+    `oneoff_summary_out` (Commit 2 of instruction_dcf_unreliable_pool_
+    step4_nightly.md, owner-directed, 1 Oct 2026): an optional dict a
+    caller passes in (e.g. `{}`) to accumulate "candidates"/
+    "income_fetched"/"distorted_years" counts for the Step 4 one-off
+    detection mechanism - see fcf_valuation_engine.needs_oneoff_check()'s
+    own docstring for why this ticker's cash-flow-only pre-check decides
+    whether the (otherwise skipped) income-statement fetch below
+    happens at all. Mutated in place, same out-param pattern as
+    growth_summary_out above; run_universe_scan() is the only caller
+    that passes this."""
     tk = yf.Ticker(ticker)
     df = _yf_call_with_retry(lambda: tk.history(period="6mo"), log, ticker, "history",
                               rate_limited_out=rate_limited_out)
@@ -544,12 +556,43 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     greed = max(((current_price - ma50) / ma50) * 100, 0)
 
     quality, _src, quality_default = resolve_quality_score(ticker, info=info)
+    # Step 4 one-off detection, nightly path (Commit 2 of instruction_
+    # dcf_unreliable_pool_step4_nightly.md, owner-directed, 1 Oct 2026):
+    # the KO/CSL fix (fcf_valuation_engine.normalized_base_and_series()'s
+    # distorted-year mechanism) only fires when income_df is given, and
+    # this call never gave it one - dormant on every Scanner/Top 100 row.
+    # Owner's 27 Sep rule stands: no new Yahoo call per ticker per night
+    # unconditionally, so the income statement is fetched ONLY when
+    # needs_oneoff_check(cashflow_df) (a pure, network-free pre-check on
+    # data already in hand) says it's worth looking closer - through
+    # _yf_call_with_retry(), the same retry/backoff/crumb-reset machinery
+    # every other yfinance call in this module already goes through.
+    # Any fetch failure -> income_df stays None, identical to today.
+    income_df = None
+    if fcf_valuation_engine.needs_oneoff_check(cashflow_df):
+        if oneoff_summary_out is not None:
+            oneoff_summary_out["candidates"] = oneoff_summary_out.get("candidates", 0) + 1
+        income_df = _yf_call_with_retry(
+            lambda: fundamentals_data.get_bundle(ticker).get("income"),
+            log, ticker, "one-off check income statement",
+        )
+        # "income_fetched" counts a genuinely USABLE statement, not every
+        # attempt - a total fetch failure (all retries exhausted) leaves
+        # income_df None/empty, same as any other yfinance failure in
+        # this module, and isn't counted as "fetched" here.
+        if oneoff_summary_out is not None and income_df is not None and not income_df.empty:
+            oneoff_summary_out["income_fetched"] = oneoff_summary_out.get("income_fetched", 0) + 1
     intrinsic, _ivsrc, _g, iv_meta = resolve_intrinsic_value(
         ticker, quality, info=info, cashflow_df=cashflow_df,
         currency=info.get("currency"),
         discount_rate=discount_rate, perpetual_rate=perpetual_rate,
         growth_rate=growth_rate, manual_fcf=manual_fcf,
+        income_df=income_df,
     )
+    if oneoff_summary_out is not None and iv_meta and iv_meta.get("fcf_distorted_years"):
+        oneoff_summary_out["distorted_years"] = (
+            oneoff_summary_out.get("distorted_years", 0) + len(iv_meta["fcf_distorted_years"])
+        )
     if growth_summary_out is not None:
         _bucket = _growth_source_bucket(iv_meta)
         growth_summary_out[_bucket] = growth_summary_out.get(_bucket, 0) + 1
@@ -931,6 +974,13 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
     # particular run/resume attempted, not the full universe across a
     # killed-and-resumed run; a diagnostic summary, not a persisted count.
     _growth_summary = {}
+    # Step 4 one-off detection, nightly path (Commit 2 of instruction_
+    # dcf_unreliable_pool_step4_nightly.md, owner-directed, 1 Oct 2026):
+    # per-universe "candidates"/"income_fetched"/"distorted_years"
+    # counts for this run's own summary log line - see analyze_ticker_
+    # lite()'s own oneoff_summary_out docstring and fcf_valuation_
+    # engine.needs_oneoff_check()'s docstring for what each count means.
+    _oneoff_summary = {}
     # LTG-fallback fix (owner-directed, 30 Sep 2026): reset capm_engine's
     # per-universe "matched label but NaN" one-time diagnostic at the
     # start of each universe's own scan - see capm_engine.reset_growth_
@@ -1012,7 +1062,8 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
             _rate_limited_flag = [False]
             row = analyze_ticker_lite(t, attention_lite=attention_lite, log=log,
                                        rate_limited_out=_rate_limited_flag,
-                                       growth_summary_out=_growth_summary)
+                                       growth_summary_out=_growth_summary,
+                                       oneoff_summary_out=_oneoff_summary)
             if row:
                 _consecutive_rate_limited = 0
                 # Fix 9 item 2 (2026-09-01): hard backstop, on top of item
@@ -1294,6 +1345,16 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
             f"{_growth_summary.get('yahoo_ltg', 0)}, Yahoo 1y "
             f"{_growth_summary.get('yahoo_1y', 0)}, Yahoo none "
             f"{_growth_summary.get('yahoo_none', 0)}")
+    # Step 4 one-off detection, nightly path (Commit 2 of instruction_
+    # dcf_unreliable_pool_step4_nightly.md, owner-directed, 1 Oct 2026):
+    # always logged (even all-zero) so the owner can confirm the
+    # mechanism ran at all on a quiet night - same "log every run"
+    # convention as _growth_summary's own two lines just above, which
+    # only skip logging when the dict is entirely empty (never built,
+    # as opposed to built with all-zero counts).
+    log(f"[scan] one-off check: {_oneoff_summary.get('candidates', 0)} candidates, "
+        f"{_oneoff_summary.get('income_fetched', 0)} income statements fetched, "
+        f"{_oneoff_summary.get('distorted_years', 0)} distorted year(s) normalised")
     try:
         score_history.record(rows)
         log(f"[nightly_scan] {universe}: recorded {len(rows)} rows to score_history")

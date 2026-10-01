@@ -444,6 +444,49 @@ def _oneoff_metric_series(income_df):
     return None, None, None
 
 
+def needs_oneoff_check(cashflow_df):
+    """Step 4 nightly-path trigger (owner-directed, 1 Oct 2026, Commit 2
+    of instruction_dcf_unreliable_pool_step4_nightly.md): a cheap, pure,
+    network-free pre-check so nightly_scan.py/deep_dive_engine.py can
+    decide whether a ticker is WORTH the one extra income-statement
+    fetch Step 4 itself needs, without ever paying that cost
+    unconditionally (owner's 27 Sep 2026 rule: no new Yahoo call per
+    ticker per night just-in-case).
+
+    True when the cash-flow statement ALONE shows the latest year's OCF
+    (index 0) fell more than FCF_ONEOFF_OCF_DROP (30%) against the prior
+    year (index 1), OR the second-latest year (index 1) fell more than
+    that against ITS prior year (index 2) - the same primary-signal drop
+    test _detect_distorted_years() runs for positions 0 and 1 of its own
+    5-year window, minus the EBITDA/revenue cross-check (which needs the
+    income statement this function exists to avoid fetching speculatively).
+    Checking both positions (not just the latest) catches a KO-shaped
+    two-year distortion (2024 AND 2025 both depressed vs clean 2023) at
+    the cash-flow-only stage, even though neither position alone is
+    checked against the OLDER clean year the way the two-year-extension
+    rule inside _detect_distorted_years() does - this function only
+    needs to flag "worth fetching the income statement to look closer",
+    not reproduce the full distortion call.
+
+    A False here does NOT mean Step 4 wouldn't flag anything (the real
+    check, run after the income statement is actually fetched, also
+    requires the cross-check metric to have held up) - it means Step 4's
+    OWN primary signal can't possibly fire for this ticker from the
+    cash-flow data alone, so fetching the income statement would be
+    pure waste. Never raises - fewer than 2 usable OCF years (nothing
+    to compare) returns False, same as "no distortion possible"."""
+    ocf = _row(cashflow_df, _OCF_LABELS)
+    ocf = [v for v in (ocf or []) if v == v]
+    for i in (0, 1):
+        if i + 1 < len(ocf):
+            prior_val = ocf[i + 1]
+            if prior_val not in (None, 0):
+                drop = (prior_val - ocf[i]) / abs(prior_val)
+                if drop > FCF_ONEOFF_OCF_DROP:
+                    return True
+    return False
+
+
 def _detect_distorted_years(primary, metric_series, secondary_metric_series=None,
                              primary_drop_threshold=FCF_ONEOFF_OCF_DROP,
                              metric_tolerance=FCF_ONEOFF_EBITDA_TOLERANCE,

@@ -43,6 +43,7 @@ from resolver_engine import (
 from ranking_engine import calculate_long_score, MOS_CLAMP, PSY_CLAMP, DISCOVERY_CAP
 from trends_engine import get_trend_score
 from news_engine import get_news_score, get_yahoo_news_score
+import fcf_valuation_engine
 import moat_engine
 import social_engine
 import indicators_engine
@@ -239,7 +240,21 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     # same fail-open philosophy as every other opportunistic-only data
     # source in this app.
     _bundle = fundamentals_data.peek_cached_bundle(ticker)
-    income_df = _bundle.get("income") if _bundle else None
+    if _bundle:
+        income_df = _bundle.get("income")
+    elif fcf_valuation_engine.needs_oneoff_check(cashflow_df):
+        # Step 4 one-off detection, Deep Dive path (Commit 2 of
+        # instruction_dcf_unreliable_pool_step4_nightly.md, owner-
+        # directed, 1 Oct 2026): a cold compounder-page cache used to
+        # mean this mechanism never fired for a cold-cache Deep Dive
+        # view at all. Deep Dive is one ticker, so paying for one real
+        # fetch on the minority of tickers whose cash-flow-only pre-
+        # check actually flags something is a cost of one extra call,
+        # not a per-scan multiplier the way it would be in nightly_scan.
+        # Any fetch failure -> income_df stays None, identical to today.
+        income_df = fundamentals_data.get_bundle(ticker).get("income")
+    else:
+        income_df = None
     intrinsic_value, intrinsic_src, dcf_growth, iv_meta = resolve_intrinsic_value(
         ticker, quality_score, info=info, cashflow_df=cashflow_df,
         currency=info.get("currency"),
