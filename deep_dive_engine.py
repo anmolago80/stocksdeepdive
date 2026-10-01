@@ -289,14 +289,32 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     _moat = moat_engine.compute_moat(ticker)
     moat_band = moat_engine.moat_band(_moat["score"])
 
+    # Deep Dive/Scanner Value Score line (1 Oct 2026, owner-directed:
+    # "Deep Dive keeps its own live score as the headline; the Scanner/
+    # Top 100 number is shown directly beneath it"). `long_score`
+    # (measured, live attention) is completely UNCHANGED - still the
+    # headline `dd["long_score"]`, still what feeds Trade Setup's gate
+    # evaluation below. `long_score_lite` is a new, additional value -
+    # the identical discovery_measured=False formula top100_engine.
+    # _recompute_value_score() and nightly_scan.py's attention_lite path
+    # use - computed alongside it purely so app.py can show it as an
+    # informational second line, never substituting for the headline.
     if moat_engine.MOAT_IN_VALUE_SCORE:
         long_score = calculate_long_score(
             quality_score, margin_of_safety, psychology_score, discovery_score,
             mode="moat_blend", moat_score=_moat["score"],
         )
+        long_score_lite = calculate_long_score(
+            quality_score, margin_of_safety, psychology_score, discovery_score,
+            mode="moat_blend", moat_score=_moat["score"], discovery_measured=False,
+        )
     else:
         long_score = calculate_long_score(
             quality_score, margin_of_safety, psychology_score, discovery_score
+        )
+        long_score_lite = calculate_long_score(
+            quality_score, margin_of_safety, psychology_score, discovery_score,
+            discovery_measured=False,
         )
 
     if intrinsic_value <= 0:
@@ -574,6 +592,15 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         "moat_band_label": moat_band[1] if moat_band else ("N/A (fund)" if _moat["mode"] == "na" else "N/A"),
 
         "long_score": round(long_score, 2),
+
+        # Deep Dive/Scanner Value Score line (1 Oct 2026, owner-directed):
+        # the identical discovery_measured=False figure top100_engine.
+        # _recompute_value_score() and nightly_scan.py's attention_lite
+        # path compute for this same company - a new, purely additional
+        # field. "long_score" above (the headline, Trade Setup's own
+        # input) is completely unchanged; nothing reads "long_score_lite"
+        # except app.py's new blue sub-line beneath the Value Score tile.
+        "long_score_lite": round(long_score_lite, 2),
 
         # Points each factor actually contributed to the final Long Score
         # (clamped value x its weight) - the bars sum to long_score.

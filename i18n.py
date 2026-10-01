@@ -315,6 +315,43 @@ EN = {
     "dd.kpi.long_score": "Long Score",
     "dd.kpi.signal": "Signal",
 
+    # Deep Dive/Scanner Value Score line (1 Oct 2026, owner-directed): the
+    # headline tile's "?" tooltip, explaining both the headline (live-
+    # attention) number and the Scanner/Top 100 sub-line beneath it in
+    # one sentence each - replaces METRIC_HELP["Value Score"]/["Long
+    # Score"] for this one tile only (that dict stays English-only
+    # everywhere else). Same text serves both the factual "Value Score"
+    # tile and the admin "Long Score" tile, since the sentence itself
+    # never names either label.
+    "dd.kpi.value_score_help": (
+        "A 0-100 score blending business quality, valuation against "
+        "intrinsic value, market psychology and live news/social/search "
+        "attention, weighted so no single factor can dominate. The figure "
+        "below it (when shown) is the same formula used across the "
+        "Scanner and Top 100, without today's live attention, so this "
+        "company can be compared row-for-row with those pages - see "
+        "Methodology."
+    ),
+    "dd.kpi.value_score_help_moat": (
+        "A 0-100 score blending business quality, valuation against "
+        "intrinsic value, market psychology, moat durability and live "
+        "news/social/search attention, weighted so no single factor can "
+        "dominate. The figure below it (when shown) is the same formula "
+        "used across the Scanner and Top 100, without today's live "
+        "attention, so this company can be compared row-for-row with "
+        "those pages - see Methodology."
+    ),
+    # Sub-line beneath the headline tile when the headline (live
+    # attention) and the Scanner/Top 100 figure (lite, no live
+    # Discovery) differ by >= 0.1 - see app.py's _dd_headline_and_score.
+    # Carries a literal "{score}" placeholder: called WITHOUT a `score=`
+    # kwarg so i18n.t() returns it unformatted, and app.py's own
+    # _dd_value_score_lite_subline_html() substitutes the bold blue
+    # number span itself (see that function's docstring for why).
+    "dd.kpi.value_score_subline": (
+        "Scanner & Top 100 score: {score} (without today's live attention)"
+    ),
+
     "dd.gauge.quality": "Quality - {label}",
     "dd.gauge.psychology": "Psychology - {label}",
     "dd.gauge.discovery": "Discovery - {label}",
@@ -4147,6 +4184,29 @@ ES = {
     "dd.kpi.value_score": "Puntaje Value",
     "dd.kpi.long_score": "Puntaje Long",
     "dd.kpi.signal": "Señal",
+
+    "dd.kpi.value_score_help": (
+        "Un puntaje de 0 a 100 que combina la calidad del negocio, la "
+        "valoración frente al valor intrínseco, la psicología del "
+        "mercado y la atención en vivo (noticias, redes sociales y "
+        "búsquedas), ponderada para que ningún factor domine. La cifra "
+        "de abajo (cuando aparece) es la misma fórmula que usan Scanner "
+        "y Top 100, sin la atención en vivo de hoy, para poder comparar "
+        "esta empresa línea a línea con esas páginas - ver Metodología."
+    ),
+    "dd.kpi.value_score_help_moat": (
+        "Un puntaje de 0 a 100 que combina la calidad del negocio, la "
+        "valoración frente al valor intrínseco, la psicología del "
+        "mercado, la durabilidad del moat y la atención en vivo "
+        "(noticias, redes sociales y búsquedas), ponderada para que "
+        "ningún factor domine. La cifra de abajo (cuando aparece) es la "
+        "misma fórmula que usan Scanner y Top 100, sin la atención en "
+        "vivo de hoy, para poder comparar esta empresa línea a línea "
+        "con esas páginas - ver Metodología."
+    ),
+    "dd.kpi.value_score_subline": (
+        "Puntuación en Scanner y Top 100: {score} (sin la atención de hoy)"
+    ),
 
     "dd.gauge.quality": "Calidad - {label}",
     "dd.gauge.psychology": "Psicología - {label}",

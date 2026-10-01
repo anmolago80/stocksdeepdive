@@ -239,6 +239,13 @@ METRIC_HELP = {
     # already used safely (see page_comparison()'s "Value Score is a
     # weighted calculation (see Methodology)" line) - ingredients (which
     # factors feed the score) stay named, the weights don't.
+    # Deep Dive/Scanner Value Score line (1 Oct 2026): these two entries
+    # are no longer read anywhere on the Deep Dive headline tile -
+    # i18n.t("dd.kpi.value_score_help"/"_moat") replaced them there so
+    # the tooltip can explain both the headline and the Scanner/Top 100
+    # sub-line in one sentence each. Left here, unchanged, as the
+    # accurate English reference for these two keys, same convention as
+    # every other METRIC_HELP entry.
     "Value Score": (
         "A 0-100 weighted calculation blending business quality, valuation "
         "against intrinsic value, market psychology, market attention and "
@@ -9300,6 +9307,30 @@ def _render_dd_colored_metric(container, label, value, help_text, key, color):
             )
 
 
+def _dd_value_score_lite_subline_html(template, score_text):
+    """The small blue-on-grey sub-line beneath the Value Score/Long Score
+    tile (1 Oct 2026, owner-directed mock): "Scanner & Top 100 score:
+    **53.5** (without today's live attention)" - 13px, muted grey
+    (#8aa0b8, the same muted tone this page's other small captions use),
+    with the score itself in the site's blue (#7dd3fc, bold) so it reads
+    as a distinct second figure rather than part of the sentence.
+
+    `template` is the i18n string called WITHOUT a `score=` kwarg (see
+    the two dd.kpi.value_score_subline call sites below), so its literal
+    "{score}" placeholder survives i18n.t()'s own .format() - html.escape
+    doesn't touch curly braces, so escaping `template` first and only
+    then substituting the (deliberately unescaped) bold span is safe.
+    Built as one single-line HTML string (never multi-line/indented -
+    see CLAUDE.md's Streamlit note: indented HTML inside st.markdown(...,
+    unsafe_allow_html=True) renders as a literal code block)."""
+    score_html = f'<b style="color:#7dd3fc;font-weight:600">{html.escape(score_text)}</b>'
+    return (
+        '<div style="font-size:13px;color:#8aa0b8;margin-top:2px">'
+        + html.escape(template).replace("{score}", score_html)
+        + "</div>"
+    )
+
+
 def _render_dd_mini_valuation_bar(dd, lang="en"):
     """Deep Dive first-screen instruction, Part 1: a slim (~28px) Price vs
     Intrinsic Value bar directly under the verdict sentence - the "one
@@ -10624,6 +10655,30 @@ def page_deep_dive():
             "STRONG LONG": "#34d399", "LONG": "#34d399",
             "WATCHLIST": "#fbbf24", "AVOID": "#fb7185",
         }.get(_dd_signal)
+        # Deep Dive/Scanner Value Score line (1 Oct 2026, owner-directed):
+        # headline tile's own "?" tooltip now comes from i18n (dd.kpi.
+        # value_score_help[_moat]) rather than METRIC_HELP - the one tile
+        # on this page whose explanation is explicitly asked to cover two
+        # numbers (the live-attention headline + the Scanner/Top 100
+        # figure beneath it) in one sentence each. METRIC_HELP's own
+        # "Value Score"/"Long Score" entries are no longer read anywhere;
+        # left in place as an accurate English reference, same convention
+        # as every other METRIC_HELP entry.
+        _dd_score_help = i18n.t(
+            "dd.kpi.value_score_help_moat" if moat_engine.MOAT_IN_VALUE_SCORE
+            else "dd.kpi.value_score_help",
+            _dd_lang,
+        )
+        # Sub-line condition: only when the headline (measured, live
+        # attention) and the Scanner/Top 100 figure (lite, no live
+        # Discovery) genuinely differ (>=0.1, avoiding a "63.50 vs 63.50"
+        # no-op line from float noise) - see deep_dive_engine.analyze()'s
+        # "long_score_lite" docstring.
+        _dd_score_lite = _dd.get("long_score_lite")
+        _dd_show_lite_subline = bool(
+            _dd_score_lite is not None
+            and abs(_dd_score_lite - _dd["long_score"]) >= 0.1
+        )
         if _factual():
             _m1, _m2, _m3, _m4 = st.columns(4)
             _m1.metric(i18n.t("dd.kpi.price", _dd_lang), f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
@@ -10651,8 +10706,17 @@ def page_deep_dive():
             )
             _render_dd_colored_metric(
                 _m4, i18n.t("dd.kpi.value_score", _dd_lang), f"{_dd['long_score']:.1f}",
-                METRIC_HELP["Value Score"], "dd_kpi_score", _dd_score_color,
+                _dd_score_help, "dd_kpi_score", _dd_score_color,
             )
+            if _dd_show_lite_subline:
+                with _m4:
+                    st.markdown(
+                        _dd_value_score_lite_subline_html(
+                            i18n.t("dd.kpi.value_score_subline", _dd_lang),
+                            f"{_dd_score_lite:.1f}",
+                        ),
+                        unsafe_allow_html=True,
+                    )
         else:
             _m1, _m2, _m3, _m4, _m5 = st.columns(5)
             _m1.metric(i18n.t("dd.kpi.price", _dd_lang), f"{_dd['price']:,.2f} {_dd['currency']}", help=METRIC_HELP["Price"])
@@ -10677,8 +10741,17 @@ def page_deep_dive():
             )
             _render_dd_colored_metric(
                 _m4, i18n.t("dd.kpi.long_score", _dd_lang), f"{_dd['long_score']:.1f}",
-                METRIC_HELP["Long Score"], "dd_kpi_score", _dd_score_color,
+                _dd_score_help, "dd_kpi_score", _dd_score_color,
             )
+            if _dd_show_lite_subline:
+                with _m4:
+                    st.markdown(
+                        _dd_value_score_lite_subline_html(
+                            i18n.t("dd.kpi.value_score_subline", _dd_lang),
+                            f"{_dd_score_lite:.1f}",
+                        ),
+                        unsafe_allow_html=True,
+                    )
             _m5.metric(i18n.t("dd.kpi.signal", _dd_lang), _dd_signal, help=METRIC_HELP["Signal"])
 
             # Task 10: flag it on screen whenever the DCF's base cash flow used

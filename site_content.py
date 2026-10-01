@@ -54,7 +54,12 @@ One number summarising measures of business quality, valuation against intrinsic
 market psychology, market attention{moat_in_list}, weighted so no one factor can dominate
 the result. The number is shown without signal labels or recommendations - a description
 of the underlying calculations, not investment advice. Where no intrinsic value could be
-computed, that is stated plainly and the affected values are marked."""
+computed, that is stated plainly and the affected values are marked.
+
+Deep Dive's Value Score includes today's live market attention (search interest, news,
+social chatter). Scanner and Top 100 use the same formula without it, since a live reading
+for every company on those pages isn't practical - Deep Dive shows that figure too, directly
+beneath its own score, so the two can be compared."""
         timing_section = """#### Psychology and discovery readings
 
 Alongside the valuation models, the site reports what the crowd has been doing:
@@ -66,13 +71,19 @@ display entry levels, targets or trade verdicts."""
         score_section = f"""#### The Long Score (0–100)
 
 One number answering "is this a good business to own at this price?" It blends measures of
-business quality, valuation against intrinsic value, market psychology, market attention{moat_in_list}
-into a single score, weighted so no one factor can dominate the result.
+business quality, valuation against intrinsic value, market psychology, market
+attention{moat_in_list} into a single score, weighted so no one factor can dominate the
+result.
 
 Above 70 = **STRONG LONG**, above 50 = **LONG**, above 30 = **WATCHLIST**, otherwise
 **AVOID**. If no intrinsic value could be computed at all, the signal is capped at
 WATCHLIST - a thesis whose value leg can't be verified doesn't get a full
-recommendation."""
+recommendation.
+
+Deep Dive's Long Score includes today's live market attention (search interest, news,
+social chatter). Scanner and Top 100 use the same formula without it, since a live reading
+for every company on those pages isn't practical - Deep Dive shows that figure too, directly
+beneath its own score, so the two can be compared."""
         timing_section = """#### Value vs timing - two separate verdicts
 
 The **Investment Signal** answers "good business to own?" The **Trade Setup** answers
@@ -297,7 +308,13 @@ intrínseco, la psicología del mercado, la atención del mercado{moat_in_list},
 para que ningún factor domine el resultado. El número se muestra sin etiquetas de señal
 ni recomendaciones - es una descripción de los cálculos subyacentes, no asesoramiento de
 inversión. Cuando no se pudo calcular ningún valor intrínseco, eso se indica claramente y
-los valores afectados se marcan."""
+los valores afectados se marcan.
+
+El Value Score de Deep Dive incluye la atención de mercado en vivo de hoy (interés de
+búsqueda, noticias, comentarios en redes sociales). Scanner y Top 100 usan la misma
+fórmula sin ella, ya que una lectura en vivo para cada empresa de esas páginas no es
+práctica - Deep Dive también muestra esa cifra, justo debajo de su propio puntaje, para
+que ambas puedan compararse."""
         timing_section = """#### Lecturas de psicología y descubrimiento
 
 Junto con los modelos de valoración, el sitio informa qué ha estado haciendo la multitud:
@@ -310,14 +327,20 @@ ni veredictos de trading."""
         score_section = f"""#### El Long Score (0–100)
 
 Un número que responde "¿es esta una buena empresa para poseer a este precio?" Combina medidas
-de la calidad del negocio, la valoración frente al valor intrínseco, la psicología del mercado,
-la atención del mercado{moat_in_list} en un solo puntaje, ponderadas para que ningún factor
-domine el resultado.
+de la calidad del negocio, la valoración frente al valor intrínseco, la psicología del
+mercado, la atención del mercado{moat_in_list} en un solo puntaje, ponderadas para que
+ningún factor domine el resultado.
 
 Por encima de 70 = **STRONG LONG**, por encima de 50 = **LONG**, por encima de 30 = **WATCHLIST**,
 de lo contrario **AVOID**. Si no se pudo calcular ningún valor intrínseco en absoluto, la señal
 se limita a WATCHLIST - una tesis cuya pata de valor no puede verificarse no recibe una
-recomendación completa."""
+recomendación completa.
+
+El Long Score de Deep Dive incluye la atención de mercado en vivo de hoy (interés de
+búsqueda, noticias, comentarios en redes sociales). Scanner y Top 100 usan la misma
+fórmula sin ella, ya que una lectura en vivo para cada empresa de esas páginas no es
+práctica - Deep Dive también muestra esa cifra, justo debajo de su propio puntaje, para
+que ambas puedan compararse."""
         timing_section = """#### Valor frente al momento de entrada - dos veredictos separados
 
 La **Señal de Inversión** responde "¿es una buena empresa para poseer?" El **Trade Setup** responde
