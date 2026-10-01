@@ -120,13 +120,26 @@ _ERROR_LOG_CHAR_LIMIT = 500
 # constant is the source of truth this is kept in sync with by hand.
 IMPORTED_UNIVERSE = "imported"
 
-POOL_SIZE = 100
+# Pool expansion (1 Oct 2026, owner decision, Commit 5 of instruction_
+# dcf_unreliable_pool_step4_nightly.md): 100 -> 200. The old cut-off sat
+# near Value Score 50 and systematically excluded fairly-priced
+# compounders (CPRT at 45.5 was the live case); at 200 the cut-off is
+# ~40 and the Research Score, not MOS, decides where a company ranks
+# within the pool. "Top 100" display text (page titles/nav/headings/
+# captions/methodology, i18n.py + site_content.py) was updated to "Top
+# 200" alongside this bump - no module, function, env var (TOP100_*),
+# store table, key or test name was renamed.
+POOL_SIZE = 200
 
 # Top 20 Australia guaranteed-twenty (25 Sep 2026, owner-approved mock,
 # "top20_australia_extended_mock.html") - the ASX EXTENSION's own target
 # count. select_top100_pool() tops up rated Australians to this many
 # whenever the global pool alone has fewer.
-TOP20_AU_TARGET = 20
+#
+# Pool expansion (1 Oct 2026, owner decision): doubled 20 -> 40 alongside
+# POOL_SIZE's own 100 -> 200 bump, so the ASX extension's own target stays
+# proportional to the (now doubled) global pool.
+TOP20_AU_TARGET = 40
 
 # Top 100 selection freshness fix (30 Sep 2026, owner-directed). Root
 # cause of the reported bug ("Top 100 still shows the old list"):
@@ -389,6 +402,21 @@ def select_top100_pool(log=print):
     the changes strip, any exactly-100 assertion) is unaffected by its
     existence - only top100_store.current_asx_extension() and
     top100_render.py's own Australia-tab code ever read it."""
+    # Pool expansion one-off persistence seed (1 Oct 2026, owner decision,
+    # Commit 5): captured BEFORE anything below mutates top100_pool - at
+    # this point top100_store.current_pool()/current_asx_extension() are
+    # still LAST NIGHT's saved selection (today's save_pool() call, later
+    # in this function, hasn't run yet) - see _seed_pool_expansion_once()
+    # below for what this baseline is used for and why it's marker-
+    # guarded to fire exactly once (the first run under the 100->200
+    # bump), not every night.
+    _pool_expansion_pending = not os.path.exists(_pool_expansion_v200_marker_path())
+    _pool_expansion_baseline = (
+        {r["ticker"] for r in top100_store.current_pool()} |
+        {r["ticker"] for r in top100_store.current_asx_extension()}
+        if _pool_expansion_pending else set()
+    )
+
     eligible = _eligible_scan_payloads(log=log)
     now = datetime.now(timezone.utc)
 
@@ -580,6 +608,46 @@ def select_top100_pool(log=print):
 
     _fill_missing_sectors(pool + extension, log=log)
     top100_store.save_pool(pool + extension, as_of)
+
+    if _pool_expansion_pending:
+        # Pool expansion one-off persistence seed (1 Oct 2026, owner
+        # decision, Commit 5): every ticker in TONIGHT's selection that
+        # wasn't in the baseline captured above (last night's saved 100/
+        # ASX-20 pool) is a brand-new entrant purely because the pool
+        # grew 100->200 - seeded straight to consecutive_nights=3 so the
+        # newcomer-persistence-filter gate (NEWCOMER_PERSISTENCE_NIGHTS,
+        # three nights) doesn't defer scoring the whole expansion by
+        # three nights, same marker-guarded one-off pattern as seed_pool_
+        # presence_for_v6_once() above. Called BEFORE update_pool_
+        # presence() below (not after): top100_store.seed_pool_presence()
+        # is an INSERT OR IGNORE, so once it writes last_seen_utc_date=
+        # as_of/consecutive_nights=3 for an expansion ticker, update_pool_
+        # presence()'s own "last_seen_utc_date IS utc_date already -> left
+        # unchanged" rule leaves that 3 untouched a moment later - doing
+        # it the other way around would let update_pool_presence() write
+        # consecutive_nights=1 FIRST (no prior row), and then this seed's
+        # own INSERT OR IGNORE would no-op against that existing row,
+        # leaving the expansion gated exactly as this seed exists to
+        # prevent. Genuine churn from tomorrow night onward is gated as
+        # normal - this block never fires again once its marker exists.
+        try:
+            tonight_tickers = {r["ticker"] for r in pool} | {r["ticker"] for r in extension}
+            expansion_tickers = sorted(tonight_tickers - _pool_expansion_baseline)
+            if expansion_tickers:
+                top100_store.seed_pool_presence(
+                    {t: NEWCOMER_PERSISTENCE_NIGHTS for t in expansion_tickers}, as_of,
+                )
+            log(f"[top100] pool expansion: seeded {len(expansion_tickers)} "
+                f"expansion tickers past the persistence gate")
+        except Exception as e:
+            log(f"[top100] pool expansion seeding failed: {e}")
+        finally:
+            try:
+                with open(_pool_expansion_v200_marker_path(), "w") as f:
+                    f.write(datetime.now(timezone.utc).isoformat())
+            except OSError as e:
+                log(f"[top100] pool expansion seeding: could not write marker file: {e}")
+
     try:
         # Newcomer persistence filter (1 Oct 2026, owner decision): every
         # ticker in TONIGHT's selection (pool + extension) gets its
@@ -680,7 +748,7 @@ def pool_changes(current=None, previous=None):
     dropped = []
     for ticker in sorted(previous_tickers - current_tickers):
         if ticker in current_universe_tickers:
-            reason = "still scanned, but its Value Score fell outside the top 100"
+            reason = "still scanned, but its Value Score fell outside the top 200"
         else:
             reason = "no longer appears in any scanned universe"
         dropped.append({"ticker": ticker, "reason": reason})
@@ -880,7 +948,13 @@ CACHE_WRITE_MULTIPLIER = 1.25
 CACHE_READ_MULTIPLIER = 0.10
 BATCH_DISCOUNT = 0.5
 
-MAX_NIGHTLY_SCORES = 120
+# Pool expansion (1 Oct 2026, owner decision): doubled 120 -> 240
+# alongside POOL_SIZE's own 100 -> 200 bump - the per-UTC-day cap of 2
+# batches / TOP100_MAX_ENTRANTS_PER_UTC_DAY (= 2 * this constant, see
+# below) stays unchanged in SHAPE, so a 215-name expansion night (the
+# first night this ships: ~115 names needing a v6 re-score + ~100 new
+# expansion entrants) still fits inside one UTC day's two-batch cap.
+MAX_NIGHTLY_SCORES = 240
 
 # Results-driven Top 100 refresh (27 Sep 2026, owner-directed): the
 # age-based safety net for _unscored_tickers()'s rule (c) - two half-
@@ -2400,6 +2474,19 @@ def diagnose_batch_01xa_once(log=print):
             f.write(datetime.now(timezone.utc).isoformat())
     except OSError as e:
         log(f"[top100] one-off diagnostic: could not write marker file: {e}")
+
+
+def _pool_expansion_v200_marker_path():
+    """Pool expansion one-off persistence seed (1 Oct 2026, owner
+    decision, Commit 5 of instruction_dcf_unreliable_pool_step4_
+    nightly.md) - marker file guarding select_top100_pool()'s own one-
+    time expansion-persistence seeding (see that function's own comment
+    at the seeding call site) to fire exactly once, the first nightly
+    run under the POOL_SIZE 100->200 bump, never again afterward. Same
+    "one file per one-off" convention as _pool_presence_v6_seed_marker_
+    path() above."""
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".top100_pool_expansion_v200_seed_done")
 
 
 def _pool_presence_v6_seed_marker_path():

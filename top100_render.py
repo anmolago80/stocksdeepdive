@@ -1152,7 +1152,7 @@ def _render_bottom_shelf(shelf_rows, lang, origin_badge_fn=None):
 # without this map being updated) falls back to the raw string rather
 # than crashing or showing a blank tooltip.
 _DROPPED_REASON_I18N_KEYS = {
-    "still scanned, but its Value Score fell outside the top 100": "changes_strip_reason_cutoff",
+    "still scanned, but its Value Score fell outside the top 200": "changes_strip_reason_cutoff",
     "no longer appears in any scanned universe": "changes_strip_reason_delisted",
 }
 

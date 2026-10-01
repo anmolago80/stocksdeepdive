@@ -208,8 +208,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTVOL = tempfile.mkdtemp(prefix="deepdive_valuescore_lite_line_test_")
 
 _EXPECTED_SUBLINE_SNIPPET = {
-    "en": "Scanner &amp; Top 100 score:",
-    "es": "Puntuación en Scanner y Top 100:",
+    "en": "Scanner &amp; Top 200 score:",
+    "es": "Puntuación en Scanner y Top 200:",
 }
 
 for lang in ("en", "es"):

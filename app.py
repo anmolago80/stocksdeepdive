@@ -23918,7 +23918,7 @@ def page_top100():
     task's own instruction) means owner-only, until the owner has
     reviewed several nights of real scores and flips TOP100_PUBLIC to
     true to open the page to everyone."""
-    _content_page_shell("\U0001F3C6 Top 100", current="top100")
+    _content_page_shell("\U0001F3C6 Top 200", current="top100")
     _bump_page_view("top100")
 
     if not top100_render.TOP100_PUBLIC:
@@ -30121,7 +30121,7 @@ def page_admin_dashboard():
     # in-app number to compare against the Anthropic Console's own
     # usage page for the same window. See top100_engine.poll_and_
     # ingest_batch()'s own docstring for what writes that table. -----
-    st.markdown("### Top 100 scoring cost")
+    st.markdown("### Top 200 scoring cost")
     with st.container(border=True):
         try:
             _t100_cost = top100_store.ingest_cost_last_n_days(7)
@@ -30351,8 +30351,8 @@ def page_admin_dashboard():
         "discount rate passed in - both already resolve through the same live tiered model (no "
         "beta anywhere), so this isolates call-path/rounding differences, not two different "
         "models. Counts how many move by more than 10 points of MOS, and how many of "
-        "those are in the CURRENT Top 100 pool (top100_store.current_pool()) - a directional "
-        "signal for how much this could reshuffle Top 100, not a full re-selection (Value Score "
+        "those are in the CURRENT Top 200 pool (top100_store.current_pool()) - a directional "
+        "signal for how much this could reshuffle Top 200, not a full re-selection (Value Score "
         "also depends on components other than MOS, which this audit does not re-run)."
     )
     with st.container(border=True):
@@ -30459,7 +30459,7 @@ def page_admin_dashboard():
             )
             if _a6_pool_tickers:
                 st.markdown(
-                    f"Of those, **{len(_a6_pool_big_movers)} are in the current Top 100 pool** "
+                    f"Of those, **{len(_a6_pool_big_movers)} are in the current Top 200 pool** "
                     f"({len(_a6_pool_tickers)} tickers) - a directional signal only (see caption "
                     "above), not a re-run of the actual selection."
                 )
@@ -31747,7 +31747,7 @@ PG_TOOLS = st.Page(page_tools, title="Money Tools", url_path="tools")
 # access check has to live inside the page function itself rather than
 # only in whether a nav button to it is shown. page_top100() carries
 # that check (Commit 3): owner-only unless TOP100_PUBLIC is set.
-PG_TOP100 = st.Page(page_top100, title="Top 100", url_path="top-100")
+PG_TOP100 = st.Page(page_top100, title="Top 200", url_path="top-100")
 # Currency Risk (25 Sep 2026, owner-approved mock): registered like Top
 # 100 above - a real, directly-linkable page, public (no sign-in, no
 # owner gate - page_currency_risk() itself carries no such check).

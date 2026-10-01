@@ -339,7 +339,7 @@ EN = {
         "intrinsic value, market psychology and live news/social/search "
         "attention, weighted so no single factor can dominate. The figure "
         "below it (when shown) is the same formula used across the "
-        "Scanner and Top 100, without today's live attention, so this "
+        "Scanner and Top 200, without today's live attention, so this "
         "company can be compared row-for-row with those pages - see "
         "Methodology."
     ),
@@ -348,7 +348,7 @@ EN = {
         "intrinsic value, market psychology, moat durability and live "
         "news/social/search attention, weighted so no single factor can "
         "dominate. The figure below it (when shown) is the same formula "
-        "used across the Scanner and Top 100, without today's live "
+        "used across the Scanner and Top 200, without today's live "
         "attention, so this company can be compared row-for-row with "
         "those pages - see Methodology."
     ),
@@ -360,7 +360,7 @@ EN = {
     # _dd_value_score_lite_subline_html() substitutes the bold blue
     # number span itself (see that function's docstring for why).
     "dd.kpi.value_score_subline": (
-        "Scanner & Top 100 score: {score} (without today's live attention)"
+        "Scanner & Top 200 score: {score} (without today's live attention)"
     ),
 
     "dd.gauge.quality": "Quality - {label}",
@@ -944,7 +944,7 @@ EN = {
     # for the now-public Top 100 page - same key-naming/structure as
     # home.top5.* right above, just a different section.
     "home.top100_teaser.kicker": "AI-SCORED QUALITY SHORTLIST",
-    "home.top100_teaser.heading": "Top 100 — today's top 5 by Research Score",
+    "home.top100_teaser.heading": "Top 200 — today's top 5 by Research Score",
     "home.top100_teaser.col_rank": "#",
     "home.top100_teaser.col_ticker": "Ticker",
     "home.top100_teaser.col_company": "Company",
@@ -955,7 +955,7 @@ EN = {
         "combined with valuation — a sort result from described "
         "calculations, not a recommendation. {link}"
     ),
-    "home.top100_teaser.cta": "See the full Top 100",
+    "home.top100_teaser.cta": "See the full Top 200",
 
     # Next-batch instruction, Part 1: full home-page ES coverage - the
     # hero, toolkit cards, "how it works" steps, results-day/calendar
@@ -3659,7 +3659,7 @@ EN = {
     # Top 100 tab, Commit 2 (Sep 2026) - nav.top100 lives with the rest
     # of nav.* near the top of this dict; kept here instead purely to
     # keep this whole feature's EN copy in one place to review/edit.
-    "nav.top100": "\U0001F3C6 Top 100",
+    "nav.top100": "\U0001F3C6 Top 200",
     "nav.currency_risk": "\U0001F4B1 Currency Risk",
     # v2 amendment (Sep 2026): subtitle carries the task's own EXACT
     # disclosure sentence, shown both as the page's own top banner AND
@@ -3688,7 +3688,7 @@ EN = {
         "**Selection.** After the nightly scan, every saved public universe's "
         "scan rows are merged (the TradingView-CSV import queue is never "
         "included), de-duplicated by ticker keeping each ticker's highest "
-        "Value Score, and the top 100 are kept.\n\n"
+        "Value Score, and the top 200 are kept.\n\n"
         "**AI scoring.** Each company is scored by Claude on ten analytical "
         "dimensions - AI exposure, competitive position, regulatory & legal, "
         "customer concentration, pricing power & cost pass-through, "
@@ -3777,7 +3777,7 @@ EN = {
         "affect the Full 100, Top 20 · Mixed, Top 20 · USA, or any other "
         "list on this site."
     ),
-    "top100.no_data": "No Top 100 selection has run yet - check back after the next nightly scan.",
+    "top100.no_data": "No Top 200 selection has run yet - check back after the next nightly scan.",
     "top100.currency_banner": (
         "{count} of these {total} companies are priced in USD. Over 5 years, "
         "currency movement can matter more to an AUD return than which stock "
@@ -3796,7 +3796,7 @@ EN = {
     "top100.changes_strip_dropped_label": "▼ Dropped ({n})",
     "top100.changes_strip_awaiting_label": "⏳ Awaiting first score ({n})",
     "top100.changes_strip_reason_cutoff": (
-        "still scanned, but its Value Score fell outside the top 100"
+        "still scanned, but its Value Score fell outside the top 200"
     ),
     "top100.changes_strip_reason_delisted": "no longer appears in any scanned universe",
     "top100.changes_strip_awaiting_tooltip": (
@@ -3898,7 +3898,7 @@ EN = {
         "**DCF-unreliable exclusion.** A company whose model value "
         "comes out more than 3x its current price is treated as a "
         "data artefact, not a real discount, and is excluded from the "
-        "Top 100 pool entirely - it never costs a scoring call or "
+        "Top 200 pool entirely - it never costs a scoring call or "
         "occupies a slot another company could have filled."
     ),
     # Same pool-exclusion rule's defensive chip (top100_render._dcf_
@@ -3936,10 +3936,10 @@ EN = {
     "top100.shelf_chip_not_rated": "◇ NOT RATED",
     "top100.shelf_caption_not_rated": "Not enough public information for an analytical score.",
     "top100.origin_pool_badge": "🌐 TOP 100 · #{rank}",
-    "top100.origin_pool_tooltip": "In the global Top 100 by Value Score — global rank #{rank}.",
+    "top100.origin_pool_tooltip": "In the global Top 200 by Value Score — global rank #{rank}.",
     "top100.origin_extension_badge": "＋ ASX EXTENSION",
     "top100.origin_extension_tooltip": (
-        "Outside the global Top 100 — added from the ASX scans so Australia "
+        "Outside the global Top 200 — added from the ASX scans so Australia "
         "always fields a full twenty; scored identically."
     ),
     # Top 100 Commit 3 (27 Sep 2026, owner-reported): share-class dedupe
@@ -4063,7 +4063,7 @@ EN = {
         "any movement in the underlying asset itself."
     ),
     "currency_risk.section_c_caption": (
-        "Described calculations, not advice - the position-sizing companion to the Top 100's "
+        "Described calculations, not advice - the position-sizing companion to the Top 200's "
         "own currency-exposure caption."
     ),
     "currency_risk.position_label": "Position size ({base})",
@@ -4267,7 +4267,7 @@ ES = {
         "mercado y la atención en vivo (noticias, redes sociales y "
         "búsquedas), ponderada para que ningún factor domine. La cifra "
         "de abajo (cuando aparece) es la misma fórmula que usan Scanner "
-        "y Top 100, sin la atención en vivo de hoy, para poder comparar "
+        "y Top 200, sin la atención en vivo de hoy, para poder comparar "
         "esta empresa línea a línea con esas páginas - ver Metodología."
     ),
     "dd.kpi.value_score_help_moat": (
@@ -4276,12 +4276,12 @@ ES = {
         "mercado, la durabilidad del moat y la atención en vivo "
         "(noticias, redes sociales y búsquedas), ponderada para que "
         "ningún factor domine. La cifra de abajo (cuando aparece) es la "
-        "misma fórmula que usan Scanner y Top 100, sin la atención en "
+        "misma fórmula que usan Scanner y Top 200, sin la atención en "
         "vivo de hoy, para poder comparar esta empresa línea a línea "
         "con esas páginas - ver Metodología."
     ),
     "dd.kpi.value_score_subline": (
-        "Puntuación en Scanner y Top 100: {score} (sin la atención de hoy)"
+        "Puntuación en Scanner y Top 200: {score} (sin la atención de hoy)"
     ),
 
     "dd.gauge.quality": "Calidad - {label}",
@@ -4759,7 +4759,7 @@ ES = {
     # Top 100 Commit 4 (25 Sep 2026, owner-reported): homepage teaser
     # for the now-public Top 100 page - matches the EN keys above.
     "home.top100_teaser.kicker": "LISTA DE CALIDAD PUNTUADA POR IA",
-    "home.top100_teaser.heading": "Top 100 — el top 5 de hoy por Research Score",
+    "home.top100_teaser.heading": "Top 200 — el top 5 de hoy por Research Score",
     "home.top100_teaser.col_rank": "#",
     "home.top100_teaser.col_ticker": "Ticker",
     "home.top100_teaser.col_company": "Empresa",
@@ -4771,7 +4771,7 @@ ES = {
         "ordenamiento a partir de cálculos descritos, no una "
         "recomendación. {link}"
     ),
-    "home.top100_teaser.cta": "Ver el Top 100 completo",
+    "home.top100_teaser.cta": "Ver el Top 200 completo",
 
     # Next-batch instruction, Part 1: ES translations matching the EN keys
     # added above, term for term against the live EN copy.
@@ -7110,7 +7110,7 @@ ES = {
 
     # Top 100 - ES DRAFT, not professionally reviewed (same convention
     # as every other ES batch in this file).
-    "nav.top100": "\U0001F3C6 Top 100",
+    "nav.top100": "\U0001F3C6 Top 200",
     "nav.currency_risk": "\U0001F4B1 Riesgo cambiario",
     "top100.subtitle": (
         "Las puntuaciones cualitativas y los escenarios de inversión son "
@@ -7136,7 +7136,7 @@ ES = {
         "cada universo público guardado (la cola de importación de CSV de "
         "TradingView nunca se incluye), se eliminan duplicados por acción "
         "conservando el Value Score más alto de cada una, y se conservan las "
-        "100 primeras.\n\n"
+        "200 primeras.\n\n"
         "**Puntuación por IA.** Cada empresa es evaluada por Claude en diez "
         "dimensiones analíticas - exposición a la IA, posición competitiva, "
         "regulatorio y legal, concentración de clientes, poder de fijación "
@@ -7234,7 +7234,7 @@ ES = {
         "SOLO en esa pestaña, y nunca afectan las 100 completas, el Top 20 "
         "· Mixto, el Top 20 · EE. UU. ni ninguna otra lista de este sitio."
     ),
-    "top100.no_data": "Aún no se ha ejecutado ninguna selección del Top 100 - vuelve a mirar después del próximo escaneo nocturno.",
+    "top100.no_data": "Aún no se ha ejecutado ninguna selección del Top 200 - vuelve a mirar después del próximo escaneo nocturno.",
     "top100.currency_banner": (
         "{count} de estas {total} empresas cotizan en USD. En 5 años, el "
         "movimiento cambiario puede importar más para un retorno en AUD que "
@@ -7250,7 +7250,7 @@ ES = {
     "top100.changes_strip_dropped_label": "▼ Salieron ({n})",
     "top100.changes_strip_awaiting_label": "⏳ Esperando primera puntuación ({n})",
     "top100.changes_strip_reason_cutoff": (
-        "sigue escaneada, pero su Value Score quedó fuera del top 100"
+        "sigue escaneada, pero su Value Score quedó fuera del top 200"
     ),
     "top100.changes_strip_reason_delisted": "ya no aparece en ningún universo escaneado",
     "top100.changes_strip_awaiting_tooltip": (
@@ -7323,7 +7323,7 @@ ES = {
         "**Exclusión por DCF no confiable.** Una empresa cuyo valor del "
         "modelo resulta más de 3 veces su precio actual se trata como "
         "un artefacto de datos, no como un descuento real, y queda "
-        "excluida por completo del grupo del Top 100 - nunca consume "
+        "excluida por completo del grupo del Top 200 - nunca consume "
         "una llamada de puntuación ni ocupa un puesto que otra empresa "
         "podría haber llenado."
     ),
@@ -7342,10 +7342,10 @@ ES = {
     "top100.shelf_chip_not_rated": "◇ NO EVALUADA",
     "top100.shelf_caption_not_rated": "No hay suficiente información pública para una puntuación analítica.",
     "top100.origin_pool_badge": "🌐 TOP 100 · #{rank}",
-    "top100.origin_pool_tooltip": "En el Top 100 global por Value Score — puesto global #{rank}.",
+    "top100.origin_pool_tooltip": "En el Top 200 global por Value Score — puesto global #{rank}.",
     "top100.origin_extension_badge": "＋ EXTENSIÓN ASX",
     "top100.origin_extension_tooltip": (
-        "Fuera del Top 100 global — agregada desde los escaneos ASX para que "
+        "Fuera del Top 200 global — agregada desde los escaneos ASX para que "
         "Australia siempre presente veinte completas; puntuada de forma "
         "idéntica."
     ),
@@ -7466,7 +7466,7 @@ ES = {
     ),
     "currency_risk.section_c_caption": (
         "Cálculos descritos, no asesoramiento - el complemento de dimensionamiento de "
-        "posición de la propia leyenda de exposición cambiaria del Top 100."
+        "posición de la propia leyenda de exposición cambiaria del Top 200."
     ),
     "currency_risk.position_label": "Tamaño de la posición ({base})",
     "currency_risk.scenario_average_label": "Si {base} revierte al promedio del período ({rate})",

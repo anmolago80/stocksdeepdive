@@ -247,8 +247,8 @@ print("[c1_shelf_caption_normal] a ticker with no failure (or <3 attempts) still
 # with the exact log line.
 # ======================================================================
 _today = datetime.now(timezone.utc).date().isoformat()
-ts.record_daily_submission(_today, 100)
-ts.record_daily_submission(_today, 100)  # 2 batches, 200 entrants so far
+ts.record_daily_submission(_today, 200)
+ts.record_daily_submission(_today, 200)  # 2 batches, 400 entrants so far
 
 fake_pool = [{"ticker": f"CAP{i}", "company_name": f"Cap {i} Co", "most_recent_quarter": None}
              for i in range(10)]
@@ -277,7 +277,7 @@ with mock.patch("anthropic.Anthropic") as MockClient, \
     fake_batch = mock.Mock(id="msgbatch_forced")
     instance.messages.batches.create.return_value = fake_batch
     forced_logs = []
-    # Still at 2/2 batches, 200/240 entrants from Check 4 above.
+    # Still at 2/2 batches, 400/480 entrants from Check 4 above.
     result_forced = te.submit_nightly_batch(pool=fake_pool[:10], log=forced_logs.append, force=True)
 assert result_forced == "msgbatch_forced", (result_forced, forced_logs)
 assert not any("daily submission cap reached" in line for line in forced_logs), forced_logs
@@ -285,7 +285,7 @@ print("[c1_force_bypasses_batch_cap] force=True submits successfully even though
       "batch-count cap (2/2) is already reached OK")
 
 daily_after_force = ts.get_daily_submission_state(_today)
-assert daily_after_force == {"batches": 3, "entrants": 210}, daily_after_force
+assert daily_after_force == {"batches": 3, "entrants": 410}, daily_after_force
 
 # Audit fixes Commit 2 (30 Sep 2026, owner-directed): the forced submit
 # above left a real in-flight batch (top100_batch_state) behind, which
@@ -296,15 +296,15 @@ assert daily_after_force == {"batches": 3, "entrants": 210}, daily_after_force
 # would once that batch's results actually came back.
 ts.clear_batch_state()
 
-# Now push entrants past the 240 cap even under force=True.
+# Now push entrants past the 480 cap even under force=True.
 big_pool = [{"ticker": f"BIG{i}", "company_name": f"Big {i} Co", "most_recent_quarter": None}
-            for i in range(40)]
+            for i in range(80)]
 entrant_cap_logs = []
 result_entrant_capped = te.submit_nightly_batch(pool=big_pool, log=entrant_cap_logs.append, force=True)
 assert result_entrant_capped is None, "the entrant cap must refuse even a forced submission"
 assert any("daily submission cap reached" in line for line in entrant_cap_logs), entrant_cap_logs
 print("[c1_entrant_cap_blocks_force] force=True is refused once the entrant cap "
-      "(240) would be exceeded, even though the batch-count cap doesn't apply to it OK")
+      "(480) would be exceeded, even though the batch-count cap doesn't apply to it OK")
 
 
 # ======================================================================

@@ -57,7 +57,7 @@ of the underlying calculations, not investment advice. Where no intrinsic value 
 computed, that is stated plainly and the affected values are marked.
 
 Deep Dive's Value Score includes today's live market attention (search interest, news,
-social chatter). Scanner and Top 100 use the same formula without it, since a live reading
+social chatter). Scanner and Top 200 use the same formula without it, since a live reading
 for every company on those pages isn't practical - Deep Dive shows that figure too, directly
 beneath its own score, so the two can be compared."""
         timing_section = """#### Psychology and discovery readings
@@ -81,7 +81,7 @@ WATCHLIST - a thesis whose value leg can't be verified doesn't get a full
 recommendation.
 
 Deep Dive's Long Score includes today's live market attention (search interest, news,
-social chatter). Scanner and Top 100 use the same formula without it, since a live reading
+social chatter). Scanner and Top 200 use the same formula without it, since a live reading
 for every company on those pages isn't practical - Deep Dive shows that figure too, directly
 beneath its own score, so the two can be compared."""
         timing_section = """#### Value vs timing - two separate verdicts
@@ -311,7 +311,7 @@ inversión. Cuando no se pudo calcular ningún valor intrínseco, eso se indica 
 los valores afectados se marcan.
 
 El Value Score de Deep Dive incluye la atención de mercado en vivo de hoy (interés de
-búsqueda, noticias, comentarios en redes sociales). Scanner y Top 100 usan la misma
+búsqueda, noticias, comentarios en redes sociales). Scanner y Top 200 usan la misma
 fórmula sin ella, ya que una lectura en vivo para cada empresa de esas páginas no es
 práctica - Deep Dive también muestra esa cifra, justo debajo de su propio puntaje, para
 que ambas puedan compararse."""
@@ -337,7 +337,7 @@ se limita a WATCHLIST - una tesis cuya pata de valor no puede verificarse no rec
 recomendación completa.
 
 El Long Score de Deep Dive incluye la atención de mercado en vivo de hoy (interés de
-búsqueda, noticias, comentarios en redes sociales). Scanner y Top 100 usan la misma
+búsqueda, noticias, comentarios en redes sociales). Scanner y Top 200 usan la misma
 fórmula sin ella, ya que una lectura en vivo para cada empresa de esas páginas no es
 práctica - Deep Dive también muestra esa cifra, justo debajo de su propio puntaje, para
 que ambas puedan compararse."""
