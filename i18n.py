@@ -3842,6 +3842,41 @@ EN = {
         "(tailwind, flat, or headwind) is judged on the company's "
         "MARKET, never on the company's own execution or share of it."
     ),
+    # Top 100 filter row (render-only, zero Opus cost, owner-approved
+    # mock "mock_top100_filters.html", 1 Oct 2026) - four independent
+    # segmented-control filters on the four verdicts above. Field
+    # labels are their own short phrasing (not a byte-for-byte reuse of
+    # business_quality_label/big_wave_label above, which carry a
+    # trailing colon meant for the card's own verdict line, not a
+    # filter widget); easy_decision_label/market_structure_label ARE
+    # reused as-is since those two already read correctly as a filter
+    # label with no change. Option vocabulary (All/Yes/No/Tailwind/
+    # Flat/Headwind) is its own small, reusable set, deliberately
+    # plainer than the decorated card chips (◆ MUNGER-QUALITY etc.) -
+    # a filter's own options read better unadorned; market structure's
+    # options reuse structure_monopoly/duopoly/oligopoly/competitive
+    # above verbatim, the one dimension where the chip text already is
+    # a single plain word.
+    "top100.filter_heading": "Filter",
+    "top100.filter_munger_label": "Business quality (Munger)",
+    "top100.filter_wave_label": "Big wave to ride",
+    "top100.filter_option_all": "All",
+    "top100.filter_option_yes": "Yes",
+    "top100.filter_option_no": "No",
+    "top100.filter_option_tailwind": "Tailwind",
+    "top100.filter_option_flat": "Flat",
+    "top100.filter_option_headwind": "Headwind",
+    "top100.filter_result_all": "Showing **{n} of {total}** companies",
+    "top100.filter_result_active": (
+        "Showing **{n} of {total}** companies · rank numbers kept from the full list"
+    ),
+    "top100.filter_no_matches": "No companies match these filters.",
+    "top100.filter_clear_button": "Clear filters",
+    "top100.methodology_filters": (
+        "**Filters.** The filter row uses the same verdicts already "
+        "shown on each card above - it only hides or shows rows "
+        "already on the page, never changes a rank or a score."
+    ),
     "top100.previous_rubric_chip": "previous rubric",
     # Top 100 selection freshness fix (30 Sep 2026, owner-directed): a
     # small muted chip next to Value Score when the row's chosen scan
@@ -7225,6 +7260,27 @@ ES = {
         "sobre el precio actual. El veredicto de la gran ola (a favor, "
         "aguas calmas o en contra) se juzga sobre el MERCADO de la "
         "empresa, nunca sobre su propia ejecución ni su cuota en él."
+    ),
+    "top100.filter_heading": "Filtro",
+    "top100.filter_munger_label": "Calidad del negocio (Munger)",
+    "top100.filter_wave_label": "Gran ola",
+    "top100.filter_option_all": "Todo",
+    "top100.filter_option_yes": "Sí",
+    "top100.filter_option_no": "No",
+    "top100.filter_option_tailwind": "Viento a favor",
+    "top100.filter_option_flat": "Aguas calmas",
+    "top100.filter_option_headwind": "Viento en contra",
+    "top100.filter_result_all": "Mostrando **{n} de {total}** empresas",
+    "top100.filter_result_active": (
+        "Mostrando **{n} de {total}** empresas · se mantienen los puestos de la lista completa"
+    ),
+    "top100.filter_no_matches": "Ninguna empresa coincide con estos filtros.",
+    "top100.filter_clear_button": "Limpiar filtros",
+    "top100.methodology_filters": (
+        "**Filtros.** La fila de filtros usa los mismos veredictos ya "
+        "mostrados en cada tarjeta - solo oculta o muestra filas que "
+        "ya están en la página, nunca cambia un puesto ni una "
+        "puntuación."
     ),
     "top100.previous_rubric_chip": "rúbrica anterior",
     "top100.stale_valuation_chip": "valoración de hace {n} días",

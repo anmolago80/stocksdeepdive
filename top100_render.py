@@ -907,12 +907,19 @@ def _enriched_asx_extension():
     return _enrich_rows(extension, scores, failures)
 
 
-def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None):
+def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None, filters=None):
     """Top 20 by the active sort (point 2, "applying to every tab
     including Full 100"). Point 3: unrated companies are excluded from
     the Top 20 tabs entirely - never shown here, not even in a shelf -
     which falls straight out of _sort_and_gate_rated() only ever
-    returning rated rows."""
+    returning rated rows.
+
+    `filters` (Top 100 filter row, 1 Oct 2026): applied AFTER rank
+    1..20 is assigned to this tab's own list, via _ranked_rows_after_
+    filters() - a row the filter hides never shifts a later row's rank
+    up, and this tab's "20" ceiling itself is untouched (the filter
+    only ever hides rows already inside the top 20, never reaches
+    further down the list to replace one)."""
     rows = _sort_and_gate_rated(enriched, sort_mode)
     if currency:
         rows = [r for r in rows if r["currency"] == currency]
@@ -920,24 +927,38 @@ def _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency=None):
     if not rows:
         st.caption(_t("empty_tab", lang))
         return
-    for i, row in enumerate(rows, start=1):
+    ranked = _ranked_rows_after_filters(rows, filters)
+    if not ranked:
+        st.caption(_t("filter_no_matches", lang))
+        return
+    for i, row in ranked:
         _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode)
 
 
-def _render_full100_tab(enriched, lang, finer_industry, sort_mode):
+def _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=None):
     """Full 100: the rated companies under the active sort, then
     (point 3) a labelled bottom shelf of unrated companies ordered by
     Value Score among themselves - shown under every sort view except
     "Best value today" (the >=70 gate excludes an unrated company from
     that view exactly as it excludes any rated company that misses the
     cut, so a company with no Research Score at all has nothing to
-    show there either)."""
+    show there either).
+
+    `filters` (Top 100 filter row, 1 Oct 2026): applied to the rated
+    list only, preserving each surviving row's rank from the FULL
+    (pre-filter) list - see _ranked_rows_after_filters(). The bottom
+    shelf itself is never filtered (it carries no verdicts to filter
+    on) and always renders in full, per the task's own rule."""
     rows = _sort_and_gate_rated(enriched, sort_mode)
     if not rows:
         st.caption(_t("empty_tab", lang))
     else:
-        for i, row in enumerate(rows, start=1):
-            _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode)
+        ranked = _ranked_rows_after_filters(rows, filters)
+        if not ranked:
+            st.caption(_t("filter_no_matches", lang))
+        else:
+            for i, row in ranked:
+                _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode)
 
     if sort_mode != SORT_VALUE_TODAY:
         shelf_rows = sorted(
@@ -947,7 +968,7 @@ def _render_full100_tab(enriched, lang, finer_industry, sort_mode):
         _render_bottom_shelf(shelf_rows, lang)
 
 
-def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode):
+def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=None):
     """Top 20 · Australia guaranteed-twenty (25 Sep 2026, owner-
     approved mock, "top20_australia_extended_mock.html") - a GUARANTEED
     twenty: every AUD pool row plus (point 1) the ASX extension's own
@@ -961,7 +982,11 @@ def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode):
     homepage teaser and the changes strip are all UNTOUCHED - they
     read `enriched` (i.e. _enriched_pool()) alone, which never
     contains an extension row; this function is the only one that also
-    reads _enriched_asx_extension()."""
+    reads _enriched_asx_extension().
+
+    `filters` (Top 100 filter row, 1 Oct 2026): applied the same way as
+    every other tab - after rank is assigned to this tab's own combined
+    (pool + extension) list, never touching the bottom shelf."""
     pool_au = [r for r in enriched if r["currency"] == "AUD"]
     extension = _enriched_asx_extension()
     combined = pool_au + extension
@@ -979,9 +1004,13 @@ def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode):
     if not rows:
         st.caption(_t("empty_tab", lang))
     else:
-        for i, row in enumerate(rows, start=1):
-            _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode,
-                        origin_badge_html=origin_badge(row))
+        ranked = _ranked_rows_after_filters(rows, filters)
+        if not ranked:
+            st.caption(_t("filter_no_matches", lang))
+        else:
+            for i, row in ranked:
+                _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode,
+                            origin_badge_html=origin_badge(row))
 
     if sort_mode != SORT_VALUE_TODAY:
         shelf_rows = sorted(
@@ -1271,6 +1300,143 @@ def _render_refresh_all_control(lang):
         _handle_refresh_all_click(lang)
 
 
+# Top 100 filter row (render-only, zero Opus cost, owner-approved mock
+# "mock_top100_filters.html", 1 Oct 2026). FOUR independent, AND-
+# combined display filters on the four v4/v5 verdict fields already
+# shown in _competitive_landscape_html() above - no engine/store/
+# ranking change, filters only ever hide/show rows already on the
+# page. FILTER_ALL ("all") means "no constraint on this field" for
+# every one of the four.
+FILTER_ALL = "all"
+
+_FILTER_SESSION_KEYS = (
+    "top100_filter_munger", "top100_filter_wave",
+    "top100_filter_hurdle", "top100_filter_structure",
+)
+
+
+def _passes_filters(score_row, filters):
+    """True iff `score_row` satisfies every active filter in `filters`
+    (dict of field -> selected value, FILTER_ALL meaning no constraint
+    on that field). A row with no score_row at all (the bottom-shelf/
+    AWAITING case), a not_rated row (whose four verdict fields are
+    force-set to None - see top100_engine's own parsing), a previous-
+    rubric fallback row lacking this field, and a genuinely declined
+    verdict are all indistinguishable here - every one of them simply
+    has score_row.get(field) is None, which only a FILTER_ALL selection
+    lets through, exactly the task's own rule. Never called on the
+    bottom shelf itself - that shelf is never filtered (see
+    _render_full100_tab/_render_top20_australia_tab below)."""
+    for field, selected in filters.items():
+        if selected == FILTER_ALL:
+            continue
+        if not score_row or score_row.get(field) != selected:
+            return False
+    return True
+
+
+def _ranked_rows_after_filters(rows, filters):
+    """[(rank, row), ...] for `rows` (already in this tab's final
+    sorted/sliced order) with each row's RANK assigned from its
+    position in THIS list (1-based) BEFORE the filter is applied, then
+    filtered - so a row the filter hides never shifts a later row's
+    rank up to fill the gap ("never renumber", the task's own rule).
+    Every filter FILTER_ALL is a no-op: same rows/ranks as always
+    rendered before this feature existed."""
+    ranked = list(enumerate(rows, start=1))
+    if not filters:
+        return ranked
+    return [(i, row) for i, row in ranked if _passes_filters(row.get("score_row"), filters)]
+
+
+def _segmented_filter(label_key, field_values, option_label_keys, session_key, lang):
+    """One All/.../... st.segmented_control filter widget - same
+    widget/pattern as _render_sort_bar()'s own picker just below, each
+    with its own session-state key= for persistence across reruns and
+    every tab. Returns the selected field VALUE (one of `field_values`)
+    or FILTER_ALL."""
+    all_label = _t("filter_option_all", lang)
+    option_labels = [all_label] + [_t(k, lang) for k in option_label_keys]
+    label_text = _t(label_key, lang)
+    st.caption(label_text)
+    choice = st.segmented_control(
+        label_text, option_labels, default=all_label,
+        key=session_key, label_visibility="collapsed",
+    ) or all_label
+    if choice == all_label:
+        return FILTER_ALL
+    return field_values[option_labels.index(choice) - 1]
+
+
+def _render_filter_bar(lang, enriched):
+    """The filter row itself - FOUR independent segmented-control
+    filters, AND-combined, directly beneath the sort bar, shared across
+    every tab (same session-state-key persistence convention
+    _render_sort_bar() already uses). Display-only: never touches
+    top100_engine/top100_store/ranking_engine and never re-ranks or
+    renumbers a row - see _ranked_rows_after_filters() above, called
+    separately by each tab's own render function with this same
+    returned dict.
+
+    The "Showing N of 100" result caption + "clear filters" button
+    render here ONCE, against the GLOBAL `enriched` pool (every row,
+    rated or not - a shelf/not_rated row's own score_row naturally
+    fails any non-FILTER_ALL check, so it's correctly excluded from the
+    matched count while the unfiltered "100" total still counts it) -
+    matching the owner-approved mock's own single result line; each
+    tab additionally applies the SAME filters dict to its own row list
+    (never duplicating this caption/button per tab)."""
+    st.caption(_t("filter_heading", lang))
+    _c1, _c2, _c3, _c4 = st.columns(4)
+    with _c1:
+        munger = _segmented_filter(
+            "filter_munger_label", top100_engine._ALLOWED_MUNGER_QUALITY,
+            ("filter_option_yes", "filter_option_no"), "top100_filter_munger", lang,
+        )
+    with _c2:
+        wave = _segmented_filter(
+            "filter_wave_label", top100_engine._ALLOWED_BIG_WAVE,
+            ("filter_option_tailwind", "filter_option_flat", "filter_option_headwind"),
+            "top100_filter_wave", lang,
+        )
+    with _c3:
+        hurdle = _segmented_filter(
+            "easy_decision_label", top100_engine._ALLOWED_ONE_FOOT_HURDLE,
+            ("filter_option_yes", "filter_option_no"), "top100_filter_hurdle", lang,
+        )
+    with _c4:
+        structure = _segmented_filter(
+            "market_structure_label", top100_engine._ALLOWED_MARKET_STRUCTURES,
+            tuple(f"structure_{s}" for s in top100_engine._ALLOWED_MARKET_STRUCTURES),
+            "top100_filter_structure", lang,
+        )
+    filters = {
+        "munger_quality": munger, "big_wave": wave,
+        "one_foot_hurdle": hurdle, "market_structure": structure,
+    }
+
+    total = len(enriched)
+    matched = sum(1 for r in enriched if _passes_filters(r.get("score_row"), filters))
+    any_active = any(v != FILTER_ALL for v in filters.values())
+    if any_active:
+        _cap_col, _btn_col = st.columns([5, 1])
+        with _cap_col:
+            st.caption(_t("filter_result_active", lang, n=matched, total=total))
+        with _btn_col:
+            # Streamlit trap (CLAUDE.md): unsafe_allow_html strips
+            # onclick, so "clear filters" is a real st.button, never a
+            # styled <a>/onclick link - clicking it drops the four
+            # session-state keys and reruns immediately so every tab's
+            # own widgets reset to "All" on this same interaction.
+            if st.button(_t("filter_clear_button", lang), key="top100_filter_clear"):
+                for k in _FILTER_SESSION_KEYS:
+                    st.session_state.pop(k, None)
+                st.rerun()
+    else:
+        st.caption(_t("filter_result_all", lang, n=matched, total=total))
+    return filters
+
+
 def _render_sort_bar(lang):
     """Point 2's four-way sort bar, above the tabs, applying to every
     tab - one shared selection (st.segmented_control's own key= gives
@@ -1311,6 +1477,7 @@ def render_top100_page(lang="en"):
         st.markdown(_t("methodology_decircularisation", lang))
         st.markdown(_t("methodology_headwind", lang))
         st.markdown(_t("methodology_munger_wave", lang))
+        st.markdown(_t("methodology_filters", lang))
         st.markdown(f"**{_t('methodology_weights_heading', lang)}**")
         # Top 100 Ranking Rework: each dimension's own weight (sums to
         # top100_engine.DIMENSION_WEIGHT_TOTAL, 83 today), rescaled onto
@@ -1355,15 +1522,16 @@ def render_top100_page(lang="en"):
     _changes_strip(enriched, lang)
 
     sort_mode = _render_sort_bar(lang)
+    filters = _render_filter_bar(lang, enriched)
 
     tabs = st.tabs([
         _t("tab_mixed", lang), _t("tab_au", lang), _t("tab_us", lang), _t("tab_full", lang),
     ])
     with tabs[0]:
-        _render_top20_tab(enriched, lang, finer_industry, sort_mode)
+        _render_top20_tab(enriched, lang, finer_industry, sort_mode, filters=filters)
     with tabs[1]:
-        _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode)
+        _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=filters)
     with tabs[2]:
-        _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency="USD")
+        _render_top20_tab(enriched, lang, finer_industry, sort_mode, currency="USD", filters=filters)
     with tabs[3]:
-        _render_full100_tab(enriched, lang, finer_industry, sort_mode)
+        _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=filters)
