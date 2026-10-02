@@ -1497,6 +1497,13 @@ def render_top100_page(lang="en"):
     this after its own owner/TOP100_PUBLIC gate (see that function's
     own docstring) and _content_page_shell()/_bump_page_view()."""
     today = _dt.datetime.now(_dt.timezone.utc).strftime("%d %b %Y")
+    # Commit 2 (2 Oct 2026, owner-directed): one muted caption directly
+    # under the page title (_content_page_shell()'s own "Top 200"
+    # heading, rendered by app.py's page_top100() right before this
+    # function is called) - so a reader knows what #1 means before
+    # scanning the list, without digging into the methodology expander
+    # below. Render-only, no change to selection/scoring/sort order.
+    st.caption(_t("ranking_caption", lang))
     st.markdown(
         "<div style='color:#8aa0b8;font-size:12.5px;margin-bottom:10px;'>"
         f"{html.escape(_t('subtitle', lang, model=top100_engine.MODEL_TOP100, date=today))}</div>",

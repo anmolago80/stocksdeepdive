@@ -389,6 +389,15 @@ EN = {
     "dd.gauge.psychology": "Psychology - {label}",
     "dd.gauge.discovery": "Discovery - {label}",
     "dd.gauge.moat": "Moat - {label}",
+    # Commit 3 (2 Oct 2026, owner-directed): shown next to the Moat
+    # gauge - how many of the 4 possible pillars (Excess-return spread,
+    # Persistence, Pricing power, Reinvestment) actually got computed
+    # for this ticker, derived from the existing components list (a
+    # dropped pillar is simply absent from it) - no scoring change,
+    # display only. {mode} is dd.moat_pillars_mode_financials below when
+    # moat_mode=="financials", else "".
+    "dd.moat_pillars_measured": "{measured} of 4 pillars measured{mode}",
+    "dd.moat_pillars_mode_financials": " (financials mode)",
     # Moat/MOS follow-up (13 Sep 2026): no {label} suffix here (unlike
     # Quality/Psychology/Discovery/Moat) - "Margin of Safety - UNDERVALUED"
     # overflowed the gauge's own 220-unit-wide SVG viewBox and got clipped
@@ -4331,6 +4340,8 @@ ES = {
     "dd.gauge.psychology": "Psicología - {label}",
     "dd.gauge.discovery": "Descubrimiento - {label}",
     "dd.gauge.moat": "Foso - {label}",
+    "dd.moat_pillars_measured": "{measured} de 4 pilares medidos{mode}",
+    "dd.moat_pillars_mode_financials": " (modo financiero)",
     "dd.gauge.mos": "Margen de Seguridad",
     "dd.gauge.value_score": "Puntaje Value",
     "dd.gauge.long_score": "Puntaje Long - {label}",
