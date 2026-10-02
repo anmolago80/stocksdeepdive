@@ -205,6 +205,24 @@ EN = {
         "the discount rate."
     ),
 
+    # Financials mode (owner-directed, 2 Oct 2026, VERSION A): shown
+    # whenever this ticker is a bank/insurer (financials_classifier.
+    # is_financials()) and the DCF ran on net income instead of free
+    # cash flow - see fcf_valuation_engine.normalized_base_and_series()'s
+    # own docstring. dd.financials_mode_retention is a SEPARATE,
+    # optional second line (display only, never affects the DCF's own
+    # math) - {g}/{roe} are already-formatted percentage strings (one
+    # decimal place, no "%" in the format string itself, same
+    # convention as dd.discount_breakdown above); {pct} is a whole-
+    # number percentage.
+    "dd.financials_mode": (
+        "Financials mode: net income used in place of free cash flow "
+        "(premium/float/deposit flows are not shareholder cash)."
+    ),
+    "dd.financials_mode_retention": (
+        "Retains ~{pct}% of earnings to fund {g}% growth at {roe}% ROE."
+    ),
+
     # Step 1d (owner-directed, 30 Sep 2026; governor REVISED 30 Sep 2026
     # 20:55 AEST - the tier ceiling alone now governs this tier, same as
     # a genuine LTG value, so the separate Cap1y governor/history-
@@ -3676,6 +3694,16 @@ EN = {
         "for your evaluation; they never alter the site's own scores; "
         "described screening, not advice."
     ),
+    # Commit 2 (2 Oct 2026, owner-directed): one muted caption directly
+    # under the page title, so a reader opens the page already knowing
+    # what #1 means before scanning the list - the ranking is by
+    # business quality (Research Score), and price only enters through
+    # each card's own Margin of Safety.
+    "top100.ranking_caption": (
+        "Ranked by business quality (Research Score). Price enters only "
+        "through each card's Margin of safety - #1 is the strongest "
+        "business, not the cheapest stock."
+    ),
     "top100.methodology_heading": "Methodology",
     "top100.methodology_pipeline": (
         "**Two stages.** The numbers pick the 200; the analysis alone "
@@ -4192,6 +4220,16 @@ ES = {
     "dd.market_cap_missing": (
         "Nota: capitalización de mercado no disponible - se asume la "
         "prima de micro-capitalización para la tasa de descuento."
+    ),
+
+    "dd.financials_mode": (
+        "Modo financiero: se usa el beneficio neto en lugar del flujo de "
+        "caja libre (los flujos de primas/depósitos no son efectivo del "
+        "accionista)."
+    ),
+    "dd.financials_mode_retention": (
+        "Retiene ~{pct}% de las ganancias para financiar un crecimiento "
+        "del {g}% con un ROE del {roe}%."
     ),
 
     "dd.growth_source_analyst_1y": "analista Yahoo (próximo año)",
@@ -7122,6 +7160,11 @@ ES = {
         "generados por Claude ({model}, {date}) - juicios analíticos "
         "subjetivos mostrados para tu evaluación; nunca alteran las "
         "puntuaciones propias del sitio; cribado descrito, no un consejo."
+    ),
+    "top100.ranking_caption": (
+        "Clasificado por calidad del negocio (Puntaje de Investigación). "
+        "El precio solo entra a través del Margen de seguridad de cada "
+        "tarjeta - el #1 es el negocio más sólido, no la acción más barata."
     ),
     "top100.methodology_heading": "Metodología",
     "top100.methodology_pipeline": (

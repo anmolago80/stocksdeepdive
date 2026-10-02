@@ -83,6 +83,7 @@ import time
 
 import auto_compounder_engine as _ace
 import capm_engine
+import financials_classifier
 import fundamentals_data
 
 # Bumped whenever a pillar formula/band in this module changes, so a
@@ -264,12 +265,18 @@ def _is_financials(info):
     meaningless for a balance sheet that IS the business (a bank's
     "invested capital" is deposits and loans, not plant/equipment), so
     this mode substitutes ROE - cost of equity for ROIC - WACC
-    throughout. AUB.AX (an insurance broker) must take this path."""
-    sector = (info.get("sector") or "").strip()
-    if sector == "Financial Services":
-        return True
-    industry = (info.get("industry") or "").lower()
-    return ("bank" in industry) or ("insurance" in industry)
+    throughout. AUB.AX (an insurance broker) must take this path.
+
+    MOVED to financials_classifier.is_financials() (2 Oct 2026, owner-
+    directed) - fcf_valuation_engine.py's own financials-mode DCF
+    (net income substitutes for free cash flow) needs the EXACT same
+    classification for the exact same ticker, so both now read from one
+    shared function rather than two copies that could drift apart. This
+    wrapper is kept so every existing call site in this module (and its
+    own "_is_financials" name) is unaffected - see financials_
+    classifier.py's own module docstring for why it lives in its own
+    dependency-free module instead of being imported here directly."""
+    return financials_classifier.is_financials(info)
 
 
 def moat_band(score):

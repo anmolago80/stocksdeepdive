@@ -90,6 +90,12 @@ def resolve_intrinsic_value(
                                           normalized_base_and_series()'s own docstring
         meta["fcf_distorted_years"] : list[int] - 0-indexed positions (0=latest) flagged
                                           as a one-off cash distortion, empty when unused
+        meta["is_financials_mode"] : bool - financials mode (2 Oct 2026, owner-directed) -
+                                          True whenever financials_classifier.is_financials()
+                                          said yes for this ticker, whether the DCF ended up
+                                          on the net-income path or its OCF fallback - see
+                                          fcf_valuation_engine.normalized_base_and_series()'s
+                                          own docstring
 
     income_df (Step 4, 30 Sep 2026, owner-directed): optional income
     statement, passed straight through to dcf_intrinsic_value()/
@@ -200,6 +206,11 @@ def resolve_intrinsic_value(
             # *_used key above. See fcf_valuation_engine.normalized_
             # base_and_series()'s own docstring.
             "fcf_base_capped_by_uplift": dcf_meta.get("fcf_base_capped_by_uplift", False),
+            # Financials mode (2 Oct 2026, owner-directed) passthrough -
+            # pure provenance, same pattern as every other *_mode/*_source
+            # key above. See fcf_valuation_engine.normalized_base_and_
+            # series()'s own docstring.
+            "is_financials_mode": dcf_meta.get("is_financials_mode", False),
         }
         return dcf_value, "dcf", growth_used, meta
 

@@ -109,7 +109,9 @@ moat**, 40 and below = **Weak/no moat**.
 
 The primary model is a discounted cash flow built from the company's own reported free cash
 flows, benchmarked against today's price to estimate a fair value. Where a full DCF isn't
-possible, a simpler estimate is used instead and labelled as such.
+possible, a simpler estimate is used instead and labelled as such. For a bank or insurer,
+operating cash flow includes premium/float/deposit flows that aren't shareholder cash, so the
+model substitutes net income instead - labelled **Financials mode** wherever it applies.
 
 A stock trading meaningfully below intrinsic value is labelled **UNDERVALUED**; meaningfully
 above, **EXPENSIVE**; between, **FAIR**.
@@ -368,7 +370,9 @@ no solo qué tan buena es ahora mismo.{moat_fold_note} Por encima de 70 = **Foso
 El modelo principal es un flujo de caja descontado (DCF) construido a partir de los flujos de
 caja libre reportados por la propia empresa, comparado con el precio de hoy para estimar un
 valor razonable. Cuando no es posible un DCF completo, se usa una estimación más simple en su
-lugar, etiquetada como tal.
+lugar, etiquetada como tal. En un banco o una aseguradora, el flujo de caja operativo incluye
+flujos de primas/depósitos que no son efectivo del accionista, así que el modelo usa el
+beneficio neto en su lugar - etiquetado como **Modo financiero** donde aplique.
 
 Una acción que cotiza significativamente por debajo del valor intrínseco se etiqueta como
 **INFRAVALORADA**; significativamente por encima, **CARA**; entre ambos, **JUSTA**.

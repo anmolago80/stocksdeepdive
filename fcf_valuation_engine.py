@@ -71,6 +71,7 @@ import time
 import yfinance as yf
 
 import capm_engine
+import financials_classifier
 import share_class_engine
 
 # Growth-never-zero rewrite (owner-directed, 30 Sep 2026): same per-module
@@ -362,6 +363,15 @@ _CAPEX_LABELS = (
     "Capital Expenditure", "CapitalExpenditures", "Capital Expenditures",
     "capitalExpenditures",
 )
+# Financials mode (owner-directed, 2 Oct 2026, VERSION A - see
+# financials_classifier.py's own docstring for why): a bank/insurer's
+# operating cash flow includes float/deposit flows that aren't
+# shareholder cash, so net income - not OCF - is the DCF base for a
+# financials-mode ticker. Local copy, not a reuse of auto_compounder_
+# engine.py's own "net_income" row-alias list, which is for compounder
+# display, not the DCF, and orders fallbacks differently - same mirror-
+# not-import reasoning as every other label tuple in this module.
+_NET_INCOME_LABELS = ("Net Income Common Stockholders", "Net Income")
 # Step 4 (owner-directed, 30 Sep 2026): income-statement row labels for
 # the distorted-year cross-check and EBITDA bridge below - same mirror-
 # not-import reasoning as the cash-flow labels above, spelled to match
@@ -750,9 +760,18 @@ def _coeff_of_variation(series):
     return (var ** 0.5) / scale
 
 
-def normalized_base_and_series(cashflow_df, info=None, income_df=None):
+def _ocf_based_base_and_series(cashflow_df, info=None, income_df=None):
     """
     Produce a *normalised* current free cash flow and an FCF series for growth.
+
+    Financials mode (owner-directed, 2 Oct 2026): this is the STANDARD
+    (OCF-based) computation, renamed from normalized_base_and_series()
+    when that name became a thin dispatcher - see the new normalized_
+    base_and_series() wrapper below and _financials_base_and_series()
+    for the net-income path a bank/insurer takes instead. Nothing in
+    this function's own logic changed; every doc comment below
+    describing it as "normalized_base_and_series" below is now reached
+    only via that wrapper, not directly.
 
     The single most recent year is a bad base when a company had a one-off
     capex spike (e.g. COH building a new plant): that year's FCF craters and,
@@ -1023,6 +1042,137 @@ def normalized_base_and_series(cashflow_df, info=None, income_df=None):
         "fcf_base_source": "none", "fcf_distorted_years": [], "fcf_base_raw": None,
         "fcf_base_capped_by_uplift": False,
     }
+
+
+def _financials_base_and_series(income_df):
+    """
+    Financials-mode base/series (owner-directed, 2 Oct 2026, VERSION A -
+    see financials_classifier.py's own docstring): for a bank/insurer,
+    net income substitutes for free cash flow - operating cash flow for
+    a financial includes float/deposit flows that aren't shareholder
+    cash (KNSL live case: OCF ~US$1.0B vs net income ~US$412M, giving a
+    DCF of ~US$930/share against PE Forward/PE Trailing/Rational
+    Compounder clustering US$340-410). No capex normalisation applies
+    in this mode - net income already sits below D&A and capex is not
+    a shareholder-cash deduction for a bank's loan book - so this reuses
+    only the Task-10 outlier-median swap and Step 4 distorted-year
+    mechanism from _ocf_based_base_and_series() above, fed the raw net-
+    income series instead of OCF-minus-capex. The EBITDA bridge
+    (_ebitda_bridge_base()) is NOT reachable here - it needs avg_capex,
+    which has no meaning for a financial - so a distorted window with
+    fewer than FCF_ONEOFF_MIN_CLEAN_YEARS clean years simply falls
+    through to the Task-10-level base instead of substituting a bridge
+    value.
+
+    Returns None when fewer than 2 usable (non-NaN) POSITIVE net-income
+    points exist - the caller (normalized_base_and_series() below) then
+    falls back to the standard OCF path, tagged source=
+    "ocf_fallback_financials". A negative latest net income is left to
+    the existing negative-FCF handling (fcf_reason) in dcf_intrinsic_
+    value() unchanged - it is not itself a reason to return None here as
+    long as >= 2 OTHER positive points exist for the base/series.
+
+    Returns the same 6-tuple shape as _ocf_based_base_and_series():
+    (base_fcf, fcf_series_recent_first, source, base_normalized,
+    capex_basis, oneoff_meta) - source is always "net_income_financials"
+    here (the wrapper renames it to "ocf_fallback_financials" on
+    fallback, never this function), capex_basis is always None (capex
+    doesn't apply), and oneoff_meta carries "is_financials_mode": True
+    so a caller always has one field to detect financials mode
+    regardless of which path within it fired.
+    """
+    ni = _row(income_df, _NET_INCOME_LABELS)
+    ni = [v for v in (ni or []) if v == v]
+    if len([v for v in ni if v > 0]) < 2:
+        return None
+
+    series = list(ni)   # net income, most-recent-first - no capex normalisation in this mode
+    base = series[0]
+
+    base_normalized = False
+    recent = series[:3]
+    if len(recent) >= 2:
+        median = recent[1] if len(recent) == 2 else sorted(recent)[len(recent) // 2]
+        if median != 0 and abs(base - median) / abs(median) > FCF_OUTLIER_THRESHOLD:
+            base = median
+            base_normalized = True
+
+    oneoff_meta = {
+        "fcf_base_source": "net_income_financials", "fcf_distorted_years": [],
+        "fcf_base_raw": None, "fcf_base_capped_by_uplift": False,
+        "is_financials_mode": True,
+    }
+
+    metric_series, secondary_series, _metric_tier = _oneoff_metric_series(income_df)
+    distorted = _detect_distorted_years(series, metric_series, secondary_metric_series=secondary_series)
+    window_distorted = distorted[:FCF_ONEOFF_WINDOW_YEARS]
+    if any(window_distorted):
+        window_series = series[:FCF_ONEOFF_WINDOW_YEARS]
+        clean_values = [v for v, d in zip(window_series, window_distorted) if not d]
+        distorted_positions = [i for i, d in enumerate(window_distorted) if d]
+        if len(clean_values) >= FCF_ONEOFF_MIN_CLEAN_YEARS:
+            oneoff_base = sorted(clean_values)[len(clean_values) // 2]
+            clean_growth_series = [
+                v for i, v in enumerate(series)
+                if i >= len(distorted) or not distorted[i]
+            ]
+            fcf_base_raw = series[0]
+            capped_by_uplift = False
+            if fcf_base_raw > 0 and oneoff_base > FCF_ONEOFF_UPLIFT_CAP_MULTIPLE * fcf_base_raw:
+                oneoff_base = FCF_ONEOFF_UPLIFT_CAP_MULTIPLE * fcf_base_raw
+                capped_by_uplift = True
+            return (
+                oneoff_base, clean_growth_series, "net_income_financials", False, None,
+                {
+                    "fcf_base_source": "median5_clean",
+                    "fcf_distorted_years": distorted_positions,
+                    "fcf_base_raw": fcf_base_raw,
+                    "fcf_base_capped_by_uplift": capped_by_uplift,
+                    "is_financials_mode": True,
+                },
+            )
+        # Fewer than FCF_ONEOFF_MIN_CLEAN_YEARS clean years and no EBITDA
+        # bridge available in this mode (see docstring) - fall through
+        # and use the Task-10-level base/series computed above as-is.
+
+    return base, series, "net_income_financials", base_normalized, None, oneoff_meta
+
+
+def normalized_base_and_series(cashflow_df, info=None, income_df=None):
+    """
+    Dispatch to the financials-mode (net income) or standard (OCF)
+    base/series computation, per financials_classifier.is_financials()
+    - the single shared classifier moat_engine.py also uses, so the two
+    valuation paths can never put the same ticker on different sides of
+    the financials-mode line (owner-directed, 2 Oct 2026, VERSION A).
+
+    Returns the identical 6-tuple shape either way: (base_fcf,
+    fcf_series_recent_first, source, base_normalized, capex_basis,
+    oneoff_meta) - see _ocf_based_base_and_series()'s and
+    _financials_base_and_series()'s own docstrings for what each field
+    means on their respective paths.
+
+    Fallback: a financials-mode ticker with fewer than 2 usable positive
+    net-income points (including when income_df itself is None - every
+    EXISTING caller before this task) falls back to the standard OCF
+    path unchanged, but tagged source="ocf_fallback_financials" with
+    oneoff_meta["is_financials_mode"]=True, so a caller can still tell
+    this was a financial whose DCF ended up OCF-based via the fallback,
+    not the net-income path.
+    """
+    info = info or {}
+    if financials_classifier.is_financials(info):
+        result = _financials_base_and_series(income_df) if income_df is not None else None
+        if result is not None:
+            return result
+        base, series, _source, base_normalized, capex_basis, oneoff_meta = _ocf_based_base_and_series(
+            cashflow_df, info=info, income_df=income_df
+        )
+        oneoff_meta = dict(oneoff_meta)
+        oneoff_meta["is_financials_mode"] = True
+        return base, series, "ocf_fallback_financials", base_normalized, capex_basis, oneoff_meta
+
+    return _ocf_based_base_and_series(cashflow_df, info=info, income_df=income_df)
 
 
 def growth_from_history(fcf_history, dates=None):
@@ -1602,6 +1752,14 @@ def dcf_intrinsic_value(
                                        # the market-cap-tiered discount rate silently
                                        # fell through to the smallest (micro-cap)
                                        # tier's premium - also forces defaulted=True.
+        "is_financials_mode": bool,  # financials mode (2 Oct 2026, owner-directed,
+                                       # VERSION A) - True whenever normalized_base_
+                                       # and_series() put this ticker on the net-
+                                       # income path OR its ocf_fallback_financials
+                                       # fallback (financials_classifier.is_financials()
+                                       # said yes either way) - False for every
+                                       # standard OCF ticker. Display-only flag; see
+                                       # fcf_source for which of the two it actually was.
     }
     """
     meta = {
@@ -1675,6 +1833,7 @@ def dcf_intrinsic_value(
         # meta["defaulted"] True (see the "tiered" discount-rate branch
         # below) so the red "estimated inputs" treatment fires.
         "market_cap_missing": False,
+        "is_financials_mode": False,
     }
 
     try:
@@ -1701,6 +1860,11 @@ def dcf_intrinsic_value(
         norm_base, fcf_series, base_src, base_normalized, capex_basis, oneoff_meta = normalized_base_and_series(
             cashflow_df, info=info, income_df=income_df
         )
+        # Financials mode (2 Oct 2026, owner-directed) - set unconditionally
+        # here, even on the manual-override/no-base branches below, since
+        # it's the classifier's answer for this ticker, not a property of
+        # which base ended up used.
+        meta["is_financials_mode"] = oneoff_meta.get("is_financials_mode", False)
 
         if manual_fcf is not None and manual_fcf > 0:
             fcf = float(manual_fcf)

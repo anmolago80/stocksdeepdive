@@ -240,7 +240,18 @@ _CACHE_TTL_SECONDS = 24 * 3600
 # is already covered by VALUATION_SOURCE_HASH below. Belt-and-
 # suspenders bump, same reasoning as every prior ENGINE_VERSION bump
 # above.
-ENGINE_VERSION = 52
+# 52->53 (owner-directed, 2 Oct 2026, VERSION A): financials-mode DCF -
+# a bank/insurer's DCF now runs on net income instead of OCF-minus-
+# capex (financials_classifier.is_financials(), fcf_valuation_engine's
+# new _financials_base_and_series()/normalized_base_and_series()
+# dispatcher) - directly changes every financial's "dcf" row/Margin of
+# Safety/Value Score at the next nightly (the KNSL live case: OCF-based
+# DCF ~US$930/share vs net-income-based ~US$378/share, in line with
+# PE Forward/PE Trailing/Rational Compounder's own US$340-410 cluster).
+# fcf_valuation_engine.py's own change is covered by VALUATION_SOURCE_
+# HASH below; belt-and-suspenders bump, same reasoning as every prior
+# ENGINE_VERSION bump above.
+ENGINE_VERSION = 53
 
 
 def _valuation_source_hash():
@@ -1999,6 +2010,7 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
             "market_cap_usd": None, "premium_used": None,
             "fcf_base_source": None, "fcf_distorted_years": [], "fcf_base_raw_per_share": None,
             "fcf_per_share_used": None, "fcf_base_capped_by_uplift": False,
+            "is_financials_mode": False,
             "flagged": True,
         }
     value, growth_used, meta = result
@@ -2048,6 +2060,11 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         # Step 4 uplift safety valve (2 Oct 2026, owner decision) - same
         # passthrough pattern as every other *_source key above.
         "fcf_base_capped_by_uplift": meta.get("fcf_base_capped_by_uplift", False),
+        # Financials mode (2 Oct 2026, owner-directed) - see
+        # fcf_valuation_engine.normalized_base_and_series()'s own
+        # docstring and _dcf_valuation_and_inputs()'s financials-mode
+        # caption for where this is displayed.
+        "is_financials_mode": bool(meta.get("is_financials_mode")),
         "flagged": bool(meta.get("defaulted") or meta.get("growth_default")),
     }
 
@@ -2167,6 +2184,10 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         # Step 4 uplift safety valve (2 Oct 2026, owner decision) - same
         # passthrough pattern as the three fields just above.
         "fcf_base_capped_by_uplift": meta.get("fcf_base_capped_by_uplift", False),
+        # Financials mode (2 Oct 2026, owner-directed) - see _run_dcf()'s
+        # own comment and _dcf_valuation_and_inputs()'s financials-mode
+        # caption for where this is displayed.
+        "is_financials_mode": bool(meta.get("is_financials_mode")),
     }
 
 
@@ -3873,6 +3894,42 @@ def _dcf_valuation_and_inputs(info, price, canonical_dcf_result):
             _dcf_fcf_basis_label += " (uplift capped)"
         dcf_inputs.append(
             {"label": "FCF Basis", "value": _dcf_fcf_basis_label, "format": "raw"})
+    # Financials mode (2 Oct 2026, owner-directed, VERSION A): disclose
+    # whenever this ticker's DCF ran on net income instead of free cash
+    # flow - see financials_classifier.is_financials()'s own docstring
+    # and fcf_valuation_engine.normalized_base_and_series()'s. Plain
+    # hardcoded English, same as every other row in this function (this
+    # tab has no i18n layer - see this function's own docstring); the
+    # i18n'd EN/ES equivalent is app.py's Deep Dive intrinsic-value
+    # caption, not this Fair Value tab row.
+    if canonical_dcf_result.get("is_financials_mode"):
+        dcf_inputs.append({
+            "label": "Financials Mode",
+            "value": "Net income used in place of free cash flow (premium/float/deposit "
+                      "flows are not shareholder cash)",
+            "format": "raw",
+        })
+        # Display-only retention line (2 Oct 2026, owner-directed): g/ROE
+        # is the share of earnings a bank/insurer must retain (rather
+        # than pay out) to fund its OWN modelled growth rate at its
+        # current ROE - sourced from Yahoo's own info["returnOnEquity"]
+        # at display time only, never a new engine computation (this
+        # task's own instruction: "display only, no effect on the
+        # value"). Shown only when roe > g > 0 - a near-term growth rate
+        # above ROE, or a non-positive ROE/growth, would require
+        # retaining more than 100% of earnings (or isn't a meaningful
+        # retention ratio at all), so the line is simply omitted rather
+        # than showing a nonsensical percentage.
+        _fm_roe = info.get("returnOnEquity")
+        _fm_g = canonical_dcf_result.get("growth")
+        if _fm_roe is not None and _fm_g is not None and _fm_roe > _fm_g > 0:
+            _fm_retain_pct = (_fm_g / _fm_roe) * 100.0
+            dcf_inputs.append({
+                "label": "Retention",
+                "value": f"Retains ~{_fm_retain_pct:.0f}% of earnings to fund "
+                         f"{_fm_g * 100:.1f}% growth at {_fm_roe * 100:.1f}% ROE",
+                "format": "raw",
+            })
     # Same fix: DISPLAY-ONLY sanity flag - reuses the existing
     # flagged-line red-text convention (_cp_render_valuation_inputs
     # above), never feeds Top 100 selection/scoring. See resolver_

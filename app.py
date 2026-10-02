@@ -10838,6 +10838,26 @@ def page_deep_dive():
             if _dd.get("dcf_market_cap_missing"):
                 st.caption(i18n.t("dd.market_cap_missing", _dd_lang))
 
+            # Financials mode (owner-directed, 2 Oct 2026, VERSION A):
+            # flag it on screen whenever this ticker's DCF ran on net
+            # income instead of free cash flow - see fcf_valuation_
+            # engine.normalized_base_and_series()'s own docstring and
+            # deep_dive_engine.py's dcf_is_financials_mode/dcf_roe keys.
+            # The retention line is DISPLAY ONLY (g/ROE, never affects
+            # the DCF's own math) - shown only when roe > g > 0, same
+            # guard as auto_compounder_engine._dcf_valuation_and_
+            # inputs()'s matching Fair Value tab row.
+            if _dd.get("dcf_is_financials_mode"):
+                st.caption(i18n.t("dd.financials_mode", _dd_lang))
+                _dd_roe = _dd.get("dcf_roe")
+                _dd_g = _dd.get("dcf_growth")
+                if _dd_roe is not None and _dd_g is not None and _dd_roe * 100 > _dd_g > 0:
+                    _dd_retain_pct = (_dd_g / (_dd_roe * 100)) * 100.0
+                    st.caption(i18n.t(
+                        "dd.financials_mode_retention", _dd_lang,
+                        pct=f"{_dd_retain_pct:.0f}", g=f"{_dd_g:.1f}", roe=f"{_dd_roe * 100:.1f}",
+                    ))
+
             # Growth-path option E (owner-directed follow-up to 0d7ee0b,
             # 28 Sep 2026): growth is flat for years 1-5, then fades to a
             # market-cap-tiered end rate (floored at the currency perpetual

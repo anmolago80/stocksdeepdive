@@ -574,6 +574,15 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         # fcf_valuation_engine/resolver_engine) - app.py shows a caption
         # when set, same pattern as every other flag above.
         "dcf_market_cap_missing": bool(iv_meta.get("market_cap_missing")),
+        # Financials mode (2 Oct 2026, owner-directed, VERSION A): pure
+        # passthrough of financials_classifier.is_financials() via
+        # fcf_valuation_engine/resolver_engine - app.py's Deep Dive
+        # intrinsic-value caption shows the financials-mode line and
+        # retention/ROE line when set. dcf_roe is read directly from
+        # Yahoo's own info["returnOnEquity"] for app.py's retention-line
+        # display only - it is NOT used anywhere in the DCF's own math.
+        "dcf_is_financials_mode": bool(iv_meta.get("is_financials_mode")),
+        "dcf_roe": info.get("returnOnEquity"),
 
         "quality_score": quality_score,
         "quality_default": bool(quality_default),
