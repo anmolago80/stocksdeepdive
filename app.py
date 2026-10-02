@@ -10806,10 +10806,19 @@ def page_deep_dive():
                         i18n.t("dd.fcf_oneoff_years_one", _dd_lang) if _dd_distorted_n == 1
                         else i18n.t("dd.fcf_oneoff_years_multi", _dd_lang, n=_dd_distorted_n)
                     )
-                    st.caption(i18n.t(
+                    _dd_oneoff_caption = i18n.t(
                         "dd.fcf_oneoff_normalized", _dd_lang, years=_dd_years_label,
                         normalised=f"{_dd_used_ps:.2f}", raw=f"{_dd_raw_ps:.2f}",
-                    ))
+                    )
+                    # Step 4 uplift safety valve (2 Oct 2026, owner
+                    # decision): appended whenever the substituted base
+                    # got capped at FCF_ONEOFF_UPLIFT_CAP_MULTIPLE (3.0x)
+                    # times the raw latest-year figure - see
+                    # fcf_valuation_engine.normalized_base_and_series()'s
+                    # own docstring.
+                    if _dd.get("dcf_fcf_base_capped_by_uplift"):
+                        _dd_oneoff_caption += " " + i18n.t("dd.fcf_oneoff_capped_suffix", _dd_lang)
+                    st.caption(_dd_oneoff_caption)
 
             # Audit fixes Commit 4 (30 Sep 2026, owner-directed): dual-
             # class share-count override - flag it on screen either way

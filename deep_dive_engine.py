@@ -468,6 +468,9 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         "dcf_fcf_distorted_years": iv_meta.get("fcf_distorted_years") or [],
         "dcf_fcf_base_raw_per_share": iv_meta.get("fcf_base_raw_per_share"),
         "dcf_fcf_per_share_used": iv_meta.get("fcf_per_share_used"),
+        # Step 4 uplift safety valve (2 Oct 2026, owner decision) - same
+        # pure passthrough pattern as the four fields just above.
+        "dcf_fcf_base_capped_by_uplift": bool(iv_meta.get("fcf_base_capped_by_uplift")),
         # DCF fixes: same pure passthrough, no scoring logic touched - see
         # resolver_engine.py's identical comment on these same keys.
         "dcf_discount_floored": bool(iv_meta.get("discount_floored")),

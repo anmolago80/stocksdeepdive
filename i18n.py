@@ -266,6 +266,10 @@ EN = {
         "FCF base normalised - operating cash flow in {years} distorted "
         "by one-off items; base ${normalised}/share vs raw ${raw}/share."
     ),
+    # Step 4 uplift safety valve (2 Oct 2026, owner decision): appended
+    # to the caption above whenever the substituted base got capped -
+    # see normalized_base_and_series()'s own docstring.
+    "dd.fcf_oneoff_capped_suffix": "(capped at 3x the raw figure - a larger gap looks like a cycle, not a one-off)",
 
     # Commit 2 (27 Sep 2026, owner-reported): shown instead of the
     # "check the ticker symbol" error + "Did you mean" chips when the
@@ -4212,6 +4216,7 @@ ES = {
         "se vio distorsionado por partidas no recurrentes; base "
         "${normalised}/acción frente a ${raw}/acción sin ajustar."
     ),
+    "dd.fcf_oneoff_capped_suffix": "(limitado a 3x la cifra bruta - una diferencia mayor parece un ciclo, no algo puntual)",
 
     "dd.error_fetch_failed": (
         "Los datos de mercado no están disponibles temporalmente - "

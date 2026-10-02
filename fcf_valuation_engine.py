@@ -158,17 +158,45 @@ FCF_OUTLIER_THRESHOLD = 0.40
 # This targets the ROOT CAUSE instead of just an outlier-vs-recent-
 # median comparison: a year is "distorted" when its own operating cash
 # flow fell more than FCF_ONEOFF_OCF_DROP (30%) against the immediately
-# prior year while EBITDA (fallback: operating income; fallback:
-# revenue) held up (fell less than FCF_ONEOFF_EBITDA_TOLERANCE, 10%) -
-# a real operating deterioration would show up in both; a one-off cash
-# item hits OCF alone. FCF_ONEOFF_TWO_YEAR_THRESHOLD (25%) extends a
-# detected distortion into the following (more recent) year too, as
-# long as ITS OWN OCF is still that far below the last genuinely clean
-# year - the two-year one-off shape. See _detect_distorted_years()'s
-# own docstring for the exact algorithm.
+# prior year while EBITDA held up (fell less than FCF_ONEOFF_EBITDA_
+# TOLERANCE, 10%) - a real operating deterioration would show up in
+# both; a one-off cash item hits OCF alone. FCF_ONEOFF_TWO_YEAR_
+# THRESHOLD (25%) extends a detected distortion into the following
+# (more recent) year too, as long as ITS OWN OCF is still that far
+# below the last genuinely clean year AND its own EBITDA is also still
+# within tolerance of the last clean year's EBITDA - the two-year one-
+# off shape. See _detect_distorted_years()'s own docstring for the
+# exact algorithm.
+#
+# TIGHTENED 2 Oct 2026 (owner decision, 18:15 AEST, incident report
+# analysis (a)/(b) - 486 DCF-unreliable rows and inflated intrinsic
+# values the night before, including real blue-chips). An initial draft
+# of this tightening also removed the operating-income/revenue fallback
+# cross-check tiers in _oneoff_metric_series() - REVERTED the same day,
+# 18:40 AEST: the owner's own admin audit (1,329 tickers, median dIV
+# +0.4%, only 17 > +50%) showed Step 4 was NOT over-firing broadly and
+# the 486 DCF-unreliable rows predated it (cyclical miners etc.), so
+# those tiers stay exactly as they were - CSL's own fixture depends on
+# tier 2. Two changes DID stick:
+#   1. The two-year extension above now also re-tests the EXTENDED
+#      year's own cross-check metric against tolerance (see _detect_
+#      distorted_years()'s own docstring) - a year whose metric has
+#      also fallen ends the distortion run rather than being carried
+#      into it.
+#   2. An uplift safety valve (see normalized_base_and_series()'s own
+#      docstring) caps any substituted base at FCF_ONEOFF_UPLIFT_CAP_
+#      MULTIPLE (3.0x, revised same-day from an initial 1.5x once the
+#      admin audit showed KO/~2.06x, BALL/~2.4x and INCY/~3.0x are all
+#      genuine one-offs that must NOT be capped) times the raw latest-
+#      year figure - only a substitution past that points to an actual
+#      multi-year cycle rather than a one-off.
 FCF_ONEOFF_OCF_DROP = 0.30
 FCF_ONEOFF_EBITDA_TOLERANCE = 0.10
 FCF_ONEOFF_TWO_YEAR_THRESHOLD = 0.25
+# Uplift safety valve multiple (2 Oct 2026, owner decision, revised
+# same-day 18:40 AEST from an initial 1.5x to 3.0x) - see
+# normalized_base_and_series()'s own docstring.
+FCF_ONEOFF_UPLIFT_CAP_MULTIPLE = 3.0
 # How many of the most recent years this mechanism considers, and the
 # minimum number of CLEAN (non-distorted) years within that window
 # required before trusting their median as the base - fewer than this
@@ -418,9 +446,19 @@ def _row(cashflow_df, labels):
 
 def _oneoff_metric_series(income_df):
     """Step 4 (owner-directed, 30 Sep 2026), RETROFITTED by Push 3 point 7
-    (owner-directed, 30 Sep 2026, stability-signal fix): per-year (most-
-    recent-first) cross-check metric(s) for _detect_distorted_years()
-    below. In order:
+    (owner-directed, 30 Sep 2026, stability-signal fix). UNCHANGED by the
+    2 Oct 2026 tightening (owner amendment, 18:40 AEST): an earlier draft
+    of that tightening removed tiers 2/3 here, but the owner's own A6-
+    style admin audit (1,329 tickers, median dIV +0.4%, only 17 > +50%)
+    showed Step 4 was NOT over-firing broadly and the 486 DCF-unreliable
+    rows predated it (cyclical miners etc.) - so this function is back to
+    its pre-tightening shape; CSL's own fixture still depends on tier 2.
+    See _detect_distorted_years()'s own docstring and normalized_base_
+    and_series()'s own docstring for what DID change in this tightening
+    (the two-year extension re-test, and the uplift safety-valve cap).
+
+    Per-year (most-recent-first) cross-check metric(s) for
+    _detect_distorted_years() below. In order:
       1. EBITDA (operating income + D&A) WITH one-off items (impairment/
          write-down/write-off/restructuring rows - see _ONEOFF_ADDBACK_
          LABEL_RE) added back, when both operating income and D&A rows
@@ -543,19 +581,37 @@ def _detect_distorted_years(primary, metric_series, secondary_metric_series=None
     FCF_ONEOFF_EBITDA_TOLERANCE's own comment - that's a genuine
     decline, not a one-off.
 
-    Two-year extension: once a year is marked distorted, the NEXT (more
-    recent) year is marked too, without re-running the primary test on
-    it, as long as its own value is still more than `two_year_threshold`
-    below the last genuinely CLEAN year's value (not the already-
-    distorted one immediately before it) - KO's own shape: 2024 (the
-    fairlife earn-out) and 2025 (the IRS tax deposit) both depressed,
-    2023 clean. Implemented as a single oldest-to-newest sweep so "last
-    clean year" always means what it says."""
+    Two-year extension, TIGHTENED 2 Oct 2026 (owner decision, 18:15 AEST,
+    incident report analysis (b)): once a year is marked distorted, the
+    NEXT (more recent) year may be marked too, but ONLY if it ALSO
+    passes the cross-check metric itself - its own metric_series value
+    is within `metric_tolerance` of the last genuinely CLEAN year's
+    metric value (not the already-distorted one immediately before it) -
+    in ADDITION to the pre-existing "still more than `two_year_threshold`
+    below the last clean year's own PRIMARY value" test. Previously the
+    extension never re-checked the metric at all, so a year whose own
+    EBITDA had ALSO fallen - a genuine down-cycle year, not a one-off -
+    could still be extended into the distortion run and dropped from the
+    base/growth series. Now a year failing the metric re-test ends the
+    run: it is left un-distorted (so its own real, lower figure counts
+    toward the clean median, same "never masks a real decline"
+    philosophy as the primary test), and it becomes the new "last clean
+    year" reference for anything after it. KO's own shape still passes
+    both re-tests at every step (the fairlife earn-out and the IRS tax
+    deposit years both held EBITDA within tolerance of 2023's), so KO
+    continues to normalise unchanged.
+
+    Implemented as a single oldest-to-newest sweep so "last clean year"
+    (for both the primary value and the metric) always means what it
+    says."""
     n = len(primary)
     distorted = [False] * n
     if n == 0:
         return distorted
     last_clean_value = primary[n - 1]   # oldest year in the window - nothing before it to test
+    last_clean_metric = (
+        metric_series[n - 1] if metric_series is not None and n - 1 < len(metric_series) else None
+    )
     for i in range(n - 2, -1, -1):  # walk oldest -> newest (i+1 = prior/older year)
         is_distorted = False
         primary_signal = False
@@ -587,10 +643,19 @@ def _detect_distorted_years(primary, metric_series, secondary_metric_series=None
         if not is_distorted and distorted[i + 1] and last_clean_value not in (None, 0):
             still_depressed = (last_clean_value - primary[i]) / abs(last_clean_value) > two_year_threshold
             if still_depressed:
-                is_distorted = True
+                metric_also_ok = False
+                if metric_series is not None and i < len(metric_series):
+                    this_m = metric_series[i]
+                    if this_m is not None and last_clean_metric not in (None, 0):
+                        metric_drop2 = (last_clean_metric - this_m) / abs(last_clean_metric)
+                        if metric_drop2 < metric_tolerance:
+                            metric_also_ok = True
+                if metric_also_ok:
+                    is_distorted = True
         distorted[i] = is_distorted
         if not is_distorted:
             last_clean_value = primary[i]
+            last_clean_metric = metric_series[i] if metric_series is not None and i < len(metric_series) else None
     return distorted
 
 
@@ -749,6 +814,26 @@ def normalized_base_and_series(cashflow_df, info=None, income_df=None):
     unaffected - only a genuinely one-off-distorted ticker's base
     changes.
 
+    TIGHTENED 2 Oct 2026 (owner decision, 18:15 AEST, incident report
+    analysis (a)/(b); REVISED same-day 18:40 AEST once the owner's own
+    admin audit showed Step 4 wasn't over-firing broadly - see
+    _oneoff_metric_series()'s own docstring for what got reverted): the
+    cross-check tier gate that was briefly added here (skip Step 4
+    entirely without a genuine EBITDA tier) is GONE - all three
+    _oneoff_metric_series() tiers are back in play, exactly as before
+    this tightening. What stuck: whenever the mechanism fires and
+    substitutes a clean-year base, that base is capped at
+    FCF_ONEOFF_UPLIFT_CAP_MULTIPLE (3.0x) times the raw (un-adjusted)
+    latest-year figure when that raw figure is positive - a genuine
+    one-off shouldn't inflate the base past that; a larger gap points
+    to an actual multi-year cycle, not a one-off, and capping prevents
+    the substitution from overstating the DCF. The 3.0x multiple itself
+    was revised same-day from an initial 1.5x after the admin audit
+    showed real one-offs (KO ~2.06x, BALL ~2.4x, INCY ~3.0x) sitting
+    well above 1.5x that must NOT be capped. oneoff_meta["fcf_base_
+    capped_by_uplift"] records whether the cap actually fired. Task 10's
+    own median swap above is untouched.
+
     Returns (base_fcf, fcf_series_recent_first, source, base_normalized,
     capex_basis, oneoff_meta) where source is one of "ocf-normcapex" |
     "fcf-median" | "info" | "none" (UNCHANGED semantics - still names
@@ -759,14 +844,17 @@ def normalized_base_and_series(cashflow_df, info=None, income_df=None):
     fired instead), and capex_basis is "average" | "midpoint (capex
     rising)" | None (None for every source other than "ocf-normcapex").
     oneoff_meta = {"fcf_base_source": str, "fcf_distorted_years": list,
-    "fcf_base_raw": float|None} - fcf_base_source is "median5_clean" or
-    "ebitda_bridge" when this mechanism fired, else the SAME string as
-    `source` above (so a caller always has one field to display
-    regardless of path); fcf_distorted_years is the list of 0-indexed
-    positions (0 = latest year) flagged within the window, empty when
-    the mechanism didn't fire; fcf_base_raw is the un-adjusted latest-
-    year figure (ocf[0] + base_capex, the same value "base" would have
-    been without this mechanism), None when it didn't fire.
+    "fcf_base_raw": float|None, "fcf_base_capped_by_uplift": bool} -
+    fcf_base_source is "median5_clean" or "ebitda_bridge" when this
+    mechanism fired, else the SAME string as `source` above (so a
+    caller always has one field to display regardless of path);
+    fcf_distorted_years is the list of 0-indexed positions (0 = latest
+    year) flagged within the window, empty when the mechanism didn't
+    fire; fcf_base_raw is the un-adjusted latest-year figure (ocf[0] +
+    base_capex, the same value "base" would have been without this
+    mechanism), None when it didn't fire; fcf_base_capped_by_uplift is
+    True only when the uplift cap above actually reduced the
+    substituted base, always False otherwise.
     """
     info = info or {}
 
@@ -848,13 +936,22 @@ def normalized_base_and_series(cashflow_df, info=None, income_df=None):
                 base = median
                 base_normalized = True
 
-        # Step 4 (owner-directed, 30 Sep 2026, KO fix): the distorted-
-        # year mechanism, when it fires, SUPERSEDES everything computed
-        # above for this ticker - see this function's own docstring for
-        # why (a two-year-spanning one-off distortion defeats Task 10's
-        # narrower 3-year-vs-latest comparison). income_df is None for
-        # every existing caller, so this block is a no-op for them.
-        oneoff_meta = {"fcf_base_source": "ocf-normcapex", "fcf_distorted_years": [], "fcf_base_raw": None}
+        # Step 4 (owner-directed, 30 Sep 2026, KO fix; TIGHTENED 2 Oct
+        # 2026, see this function's own docstring): the distorted-year
+        # mechanism, when it fires, SUPERSEDES everything computed above
+        # for this ticker - a two-year-spanning one-off distortion
+        # defeats Task 10's narrower 3-year-vs-latest comparison.
+        # income_df is None for every existing caller, so this block is
+        # a no-op for them. (The tier gate this block originally had
+        # here - "skip entirely unless metric_tier is ebitda_addback" -
+        # was REVERTED same-day, 18:40 AEST: the owner's own admin audit
+        # showed Step 4 wasn't over-firing, so all three _oneoff_metric_
+        # series() tiers are back in play, exactly as before this
+        # tightening - CSL's own fixture depends on tier 2.)
+        oneoff_meta = {
+            "fcf_base_source": "ocf-normcapex", "fcf_distorted_years": [],
+            "fcf_base_raw": None, "fcf_base_capped_by_uplift": False,
+        }
         if income_df is not None:
             metric_series, secondary_series, _metric_tier = _oneoff_metric_series(income_df)
             distorted = _detect_distorted_years(ocf, metric_series, secondary_metric_series=secondary_series)
@@ -878,12 +975,26 @@ def normalized_base_and_series(cashflow_df, info=None, income_df=None):
                         v for i, v in enumerate(series)
                         if i >= len(distorted) or not distorted[i]
                     ]
+                    fcf_base_raw = ocf[0] + base_capex
+                    # Safety valve (2 Oct 2026, owner decision, REVISED
+                    # same-day 18:40 AEST from an initial 1.5x to 3.0x
+                    # after the owner's own admin audit showed KO
+                    # (~2.06x), BALL (~2.4x) and INCY (~3.0x) are all
+                    # genuine one-offs that must NOT be capped - only a
+                    # substitution exceeding 3x the raw latest-year
+                    # figure points to an actual multi-year cycle rather
+                    # than a one-off, so only THAT gets capped.
+                    capped_by_uplift = False
+                    if fcf_base_raw is not None and fcf_base_raw > 0 and oneoff_base > FCF_ONEOFF_UPLIFT_CAP_MULTIPLE * fcf_base_raw:
+                        oneoff_base = FCF_ONEOFF_UPLIFT_CAP_MULTIPLE * fcf_base_raw
+                        capped_by_uplift = True
                     return (
                         oneoff_base, clean_growth_series, "ocf-normcapex", False, "average",
                         {
                             "fcf_base_source": oneoff_source,
                             "fcf_distorted_years": distorted_positions,
-                            "fcf_base_raw": ocf[0] + base_capex,
+                            "fcf_base_raw": fcf_base_raw,
+                            "fcf_base_capped_by_uplift": capped_by_uplift,
                         },
                     )
 
@@ -898,16 +1009,19 @@ def normalized_base_and_series(cashflow_df, info=None, income_df=None):
         base = recent[len(recent) // 2]          # median of up to 3 latest
         return base, fcf, "fcf-median", False, None, {
             "fcf_base_source": "fcf-median", "fcf_distorted_years": [], "fcf_base_raw": None,
+            "fcf_base_capped_by_uplift": False,
         }
 
     info_fcf = info.get("freeCashflow", 0) or 0
     if info_fcf > 0:
         return info_fcf, [], "info", False, None, {
             "fcf_base_source": "info", "fcf_distorted_years": [], "fcf_base_raw": None,
+            "fcf_base_capped_by_uplift": False,
         }
 
     return None, [], "none", False, None, {
         "fcf_base_source": "none", "fcf_distorted_years": [], "fcf_base_raw": None,
+        "fcf_base_capped_by_uplift": False,
     }
 
 
@@ -1512,6 +1626,9 @@ def dcf_intrinsic_value(
         "fcf_base_normalized": False,
         "fcf_base_raw": None,
         "fcf_base_used": None,
+        # Step 4 uplift safety valve (2 Oct 2026, owner decision) - see
+        # normalized_base_and_series()'s own docstring.
+        "fcf_base_capped_by_uplift": False,
         "fcf_used": None,
         "fcf_per_share_used": None,
         "discount_floored": False,
@@ -1612,6 +1729,10 @@ def dcf_intrinsic_value(
                     round(oneoff_meta["fcf_base_raw"], 2) if oneoff_meta["fcf_base_raw"] is not None else None
                 )
                 meta["fcf_base_used"] = round(norm_base, 2)
+                # Step 4 uplift safety valve (2 Oct 2026, owner decision)
+                # - pure passthrough, see normalized_base_and_series()'s
+                # own docstring.
+                meta["fcf_base_capped_by_uplift"] = oneoff_meta.get("fcf_base_capped_by_uplift", False)
         else:
             # A6 negative-FCF disclosure (owner-directed, 30 Sep 2026):
             # norm_base was found but was <=0 (capex genuinely exceeds

@@ -195,6 +195,11 @@ def resolve_intrinsic_value(
             "fcf_base_source": dcf_meta.get("fcf_base_source"),
             "fcf_distorted_years": dcf_meta.get("fcf_distorted_years"),
             "fcf_base_raw_per_share": dcf_meta.get("fcf_base_raw_per_share"),
+            # Step 4 uplift safety valve (2 Oct 2026, owner decision) -
+            # pure passthrough, same pattern as every other *_source/
+            # *_used key above. See fcf_valuation_engine.normalized_
+            # base_and_series()'s own docstring.
+            "fcf_base_capped_by_uplift": dcf_meta.get("fcf_base_capped_by_uplift", False),
         }
         return dcf_value, "dcf", growth_used, meta
 

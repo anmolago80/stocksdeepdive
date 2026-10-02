@@ -1998,7 +1998,7 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
             "risk_free_used": None, "risk_free_source": None,
             "market_cap_usd": None, "premium_used": None,
             "fcf_base_source": None, "fcf_distorted_years": [], "fcf_base_raw_per_share": None,
-            "fcf_per_share_used": None,
+            "fcf_per_share_used": None, "fcf_base_capped_by_uplift": False,
             "flagged": True,
         }
     value, growth_used, meta = result
@@ -2045,6 +2045,9 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         "fcf_distorted_years": meta.get("fcf_distorted_years") or [],
         "fcf_base_raw_per_share": meta.get("fcf_base_raw_per_share"),
         "fcf_per_share_used": meta.get("fcf_per_share_used"),
+        # Step 4 uplift safety valve (2 Oct 2026, owner decision) - same
+        # passthrough pattern as every other *_source key above.
+        "fcf_base_capped_by_uplift": meta.get("fcf_base_capped_by_uplift", False),
         "flagged": bool(meta.get("defaulted") or meta.get("growth_default")),
     }
 
@@ -2161,6 +2164,9 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         "fcf_base_source": meta.get("fcf_base_source"),
         "fcf_distorted_years": meta.get("fcf_distorted_years") or [],
         "fcf_base_raw_per_share": meta.get("fcf_base_raw_per_share"),
+        # Step 4 uplift safety valve (2 Oct 2026, owner decision) - same
+        # passthrough pattern as the three fields just above.
+        "fcf_base_capped_by_uplift": meta.get("fcf_base_capped_by_uplift", False),
     }
 
 
@@ -3858,6 +3864,13 @@ def _dcf_valuation_and_inputs(info, price, canonical_dcf_result):
             "Normalized (one-off years excluded)" if _dcf_fcf_base_source == "median5_clean"
             else "EBITDA bridge (insufficient clean history)"
         )
+        # Step 4 uplift safety valve (2 Oct 2026, owner decision): flag
+        # it on screen whenever the substituted base got capped at
+        # FCF_ONEOFF_UPLIFT_CAP_MULTIPLE (3.0x) times the raw latest-
+        # year figure - see fcf_valuation_engine.normalized_base_and_
+        # series()'s own docstring.
+        if canonical_dcf_result.get("fcf_base_capped_by_uplift"):
+            _dcf_fcf_basis_label += " (uplift capped)"
         dcf_inputs.append(
             {"label": "FCF Basis", "value": _dcf_fcf_basis_label, "format": "raw"})
     # Same fix: DISPLAY-ONLY sanity flag - reuses the existing
