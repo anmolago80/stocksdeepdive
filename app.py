@@ -174,6 +174,11 @@ import peer_context
 # computed).
 import data_export_engine
 
+# Valuation Change Audit (2 Oct 2026, owner-directed, Commit 2 of the
+# 23:00 UTC incident response) - see valuation_audit_engine.py's own
+# module docstring.
+import valuation_audit_engine
+
 # Services batch 2, Part 4 (2026-09-01): results calendar. No Anthropic
 # API call anywhere in this feature; no engine touched
 # (calendar_render.py only reshapes results_store's own tables).
@@ -29788,6 +29793,96 @@ def _render_data_audit_checks_panel():
     ), unsafe_allow_html=True)
 
 
+def _render_valuation_change_audit_panel():
+    """Valuation Change Audit (2 Oct 2026, owner-directed, Commit 2 of
+    the 23:00 UTC incident response) - owner-only, read-only. Lets the
+    owner inspect what a night's valuation-engine changes actually did
+    to the pool, since the owner's own sandbox can't reach production
+    data directly. No gate of its own - this is only ever called from
+    inside page_admin_dashboard(), after that function's own strict
+    owner check at the top has already returned early for anyone else.
+    Never fetches anything live and never triggers a scan/batch/
+    Refresh All - see valuation_audit_engine.build_change_audit()'s own
+    docstring for its two read-only data sources."""
+    st.markdown("### Valuation change audit")
+    st.caption(
+        "Owner-only. Compares score_history's own latest recorded day "
+        "against an earlier day, and shows each ticker's latest saved "
+        "scan row for the growth/FCF/discount provenance behind its "
+        "intrinsic value - read-only, nothing here can trigger a scan "
+        "or a Top 100 batch."
+    )
+    _days_back = st.slider(
+        "Compare against how many days back", min_value=1, max_value=7, value=1,
+        key="admin_dash_valaudit_days_back",
+    )
+    try:
+        _audit = valuation_audit_engine.build_change_audit(days_back=_days_back)
+    except Exception as e:
+        st.error(f"Valuation change audit failed: {e}")
+        return
+
+    _date_a, _date_b = _audit.get("date_a"), _audit.get("date_b")
+    _rows = _audit.get("rows") or []
+    _summary = _audit.get("summary") or {}
+    if not _date_a:
+        st.info("No score_history data recorded yet - nothing to compare.")
+        return
+    st.caption(f"Date A (latest): {_date_a}  |  Date B ({_days_back}d back): {_date_b or 'not enough history yet'}")
+
+    _s1, _s2, _s3, _s4, _s5 = st.columns(5)
+    with _s1:
+        st.metric("Tickers", _summary.get("ticker_count", 0))
+    with _s2:
+        _median = _summary.get("median_d_iv_pct")
+        st.metric("Median dIV %", f"{_median:+.1f}%" if _median is not None else "-")
+    with _s3:
+        st.metric("dIV > +50%", _summary.get("over_50_count", 0))
+    with _s4:
+        st.metric("dIV > +100%", _summary.get("over_100_count", 0))
+    with _s5:
+        st.metric("DCF-unreliable", _summary.get("dcf_unreliable_count", 0))
+
+    if _summary.get("over_50_count"):
+        with st.expander(f"Breakdown of the {_summary['over_50_count']} tickers with dIV > +50%"):
+            st.markdown("**By FCF base source**")
+            st.write(_summary.get("over_50_by_fcf_base_source") or {})
+            st.markdown("**By Step 4 distorted-years (empty vs non-empty)**")
+            st.write(_summary.get("over_50_by_distorted_years") or {})
+            st.markdown("**By growth source**")
+            st.write(_summary.get("over_50_by_growth_source") or {})
+
+    _filter_text = st.text_input("Filter by ticker", key="admin_dash_valaudit_filter")
+    _unreliable_only = st.checkbox("DCF-unreliable only", key="admin_dash_valaudit_unreliable_only")
+
+    _shown = _rows
+    if _filter_text:
+        _needle = _filter_text.strip().upper()
+        _shown = [r for r in _shown if _needle in (r.get("ticker") or "")]
+    if _unreliable_only:
+        _shown = [r for r in _shown if r.get("dcf_unreliable")]
+
+    _display_cols = [
+        "ticker", "universe", "price_b", "price_a", "iv_b", "iv_a", "d_iv_pct",
+        "mos_b", "mos_a", "dcf_unreliable", "growth_source", "growth_used",
+        "growth_ceiling_used", "growth_end_rate_used", "fcf_source",
+        "fcf_base_source", "fcf_distorted_years", "fcf_base_raw", "fcf_base_used",
+        "capex_basis", "share_count_flagged", "fx_converted",
+    ]
+    _table_df = pd.DataFrame(_shown, columns=_display_cols)
+    st.dataframe(_table_df, hide_index=True, width="stretch")
+    st.caption(f"Showing {len(_shown)} of {len(_rows)} ticker(s).")
+
+    if _rows:
+        st.download_button(
+            "Download full audit (CSV)",
+            data=data_export_engine.table_to_csv_bytes(pd.DataFrame(_rows, columns=_display_cols)),
+            file_name=f"StocksDeepDive_valuation_audit_{_date_a}_vs_{_date_b or 'na'}.csv",
+            mime="text/csv",
+            key="admin_dash_valaudit_csv",
+        )
+
+
 def page_admin_dashboard():
     """Mega-batch Part 35.2: the owner Admin Dashboard - matches the
     owner-approved mock at mocks/admin_dashboard_mock.html. Replaces the
@@ -31716,6 +31811,15 @@ def page_admin_dashboard():
                 st.caption("No sign-ups with a recorded src yet.")
         except Exception:
             st.caption("No sign-up-by-src data yet.")
+
+    # --- VALUATION CHANGE AUDIT (2 Oct 2026, owner-directed, Commit 2 of
+    # the 23:00 UTC incident response) - see _render_valuation_change_
+    # audit_panel()'s own docstring. Read-only against score_history/
+    # saved scan rows (no network, no scan/batch trigger) - placed as
+    # the final section of this page, same pattern as every other
+    # owner-only diagnostic panel above.
+    st.markdown("---")
+    _render_valuation_change_audit_panel()
 
 
 # -----------------------------------

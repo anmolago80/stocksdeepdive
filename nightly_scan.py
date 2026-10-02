@@ -745,6 +745,34 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         # Intrinsic Value column. See resolver_engine.
         # dcf_looks_unreliable()'s own comment.
         "DCF Unreliable": dcf_looks_unreliable(intrinsic, current_price),
+        # Valuation change audit (2 Oct 2026, owner-directed, Commit 2 of
+        # the 23:00 UTC incident response): pure passthrough of
+        # resolve_intrinsic_value()'s own iv_meta/growth_used return
+        # values - no new resolution logic, same provenance-only pattern
+        # every other *_source/*_used key in this dict already follows.
+        # None/None for a ticker that fell through to the P/E-blend
+        # branch (iv_meta's own fallback shape - see resolver_engine.
+        # resolve_intrinsic_value()'s docstring), same as every other
+        # field here already handles "not applicable" with None. Exists
+        # purely so valuation_audit_engine.py's admin-only page can show
+        # what actually drove last night's number for a given ticker -
+        # never read by calculate_long_score()/composite_score()/
+        # select_top100_pool() or any other ranking/selection logic.
+        "Growth Source": iv_meta.get("growth_source"),
+        "Growth Raw": iv_meta.get("growth_raw"),
+        "Growth Used": _g,
+        "Growth Ceiling Used": iv_meta.get("growth_ceiling_used"),
+        "Growth End Rate Used": iv_meta.get("growth_end_rate_used"),
+        "FCF Source": iv_meta.get("fcf_source"),
+        "FCF Base Raw": iv_meta.get("fcf_base_raw"),
+        "FCF Base Used": iv_meta.get("fcf_base_used"),
+        "FCF Base Source": iv_meta.get("fcf_base_source"),
+        "FCF Base Normalized": bool(iv_meta.get("fcf_base_normalized", False)),
+        "FCF Distorted Years": iv_meta.get("fcf_distorted_years") or [],
+        "Capex Basis": iv_meta.get("capex_basis"),
+        "Discount Source": iv_meta.get("discount_source"),
+        "Share Count Flagged": bool(iv_meta.get("share_count_flagged", False)),
+        "FX Converted": iv_meta.get("fx_converted"),
         "MOS %": round(mos, 1) if intrinsic > 0 else None,
         "Psychology": round(psychology, 1),
         "Discovery (lite)": round(discovery, 1),
