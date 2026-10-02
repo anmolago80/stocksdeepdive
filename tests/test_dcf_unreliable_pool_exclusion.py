@@ -18,20 +18,38 @@ eligibility only, no change to _recompute_value_score()/
 calculate_long_score()/MOS clamp/stored scores. Logs one summary line:
 "[top100] selection: excluded N DCF-unreliable row(s): T1, T2, ...".
 
+UPDATED 2 Oct 2026 (hotfix, owner-directed, after the 23:00 UTC 'CARG'
+crash): the per-row skip above only checked the scan-time-stored "DCF
+Unreliable" flag; nightly repricing between scan-save and selection
+could make a row's CURRENT intrinsic_value/price ratio cross 3x after
+that flag was computed, and the (now-removed) defensive assert at the
+end of select_top100_pool() - which re-derived the same check from the
+curated row and raised instead of skipping - fired on exactly that
+condition and crashed the whole nightly job with no pool saved. The
+per-row skip now ALSO calls resolver_engine.dcf_looks_unreliable() on
+the row's current raw "Intrinsic Value"/"Price", so a row is excluded
+(never raised) whichever reason applies, counted separately in the new
+log format: "excluded N DCF-unreliable row(s) (M by stored flag, K by
+current price): T1, T2, ...". top100_engine.py no longer contains any
+runtime assert.
+
 This file covers:
   - excluded rows never enter the pool; non-excluded rows' Value Scores
     are byte-identical to a baseline run where the excluded rows never
     existed at all (proves the exclusion changes NOTHING about how any
     other row scores)
-  - the summary log line names every excluded ticker
+  - the summary log line names every excluded ticker and the stored-
+    flag/current-price breakdown
   - back-fill: with a small POOL_SIZE, an excluded row's slot is filled
     by the next-best valid candidate, not left empty
   - a ticker with two candidate rows (one flagged, one clean) across
     two universes still enters the pool via its clean row
   - the ASX extension (drawn from the same best_by_ticker dict) honours
     the same exclusion
-  - the defensive end-of-function assertion fires if a DCF-unreliable
-    row somehow reached the final pool/extension list
+  - a row with stored flag False but a current (repriced) intrinsic_
+    value/price ratio over 3x is excluded, not raised - the exact
+    'CARG' staleness race the 23:00 UTC crash hit
+  - the old runtime assert is confirmed gone from top100_engine.py
   - top100_render._dcf_unreliable_chip_html() renders the chip for a
     row shaped like a pre-fix-saved DCF-unreliable pool row, and stays
     empty for a normal row
@@ -222,29 +240,55 @@ _clear("ASX 200")
 
 
 # ======================================================================
-# CHECK 5: defensive assertion - if a DCF-unreliable row somehow
-# survived to the final pool/extension list (simulated by monkey-
-# patching _is_dcf_unreliable to always return False, i.e. "the
-# per-row skip is broken"), the loud assertion before save_pool()
-# fires rather than silently persisting the artefact.
+# CHECK 5 (rewritten 2 Oct 2026, hotfix for the 23:00 UTC 'CARG' crash):
+# a row whose STORED "DCF Unreliable" flag is False (i.e. it looked
+# fine at scan time) but whose CURRENT raw Intrinsic Value/Price ratio
+# is now over the 3x sanity multiple (simulating a nightly reprice that
+# happened between scan-save and selection) is excluded from the pool,
+# not raised - no runtime assert anywhere in this path any more.
 # ======================================================================
-_save_universe("S&P 500", [_row("SNEAKY", long_score=80.0, mos=70.0, price=10.0, iv=97.0,
-                                 dcf_unreliable=True)], _now_dt)
-_raised = False
-try:
-    with mock.patch.object(te.scheduler_engine, "nightly_universe_cadence",
-                            return_value=dict(_FAKE_CADENCE)), \
-         mock.patch.object(te, "_is_dcf_unreliable", return_value=False):
-        te.select_top100_pool(log=lambda *a, **k: None)
-except AssertionError as e:
-    _raised = True
-    assert "SNEAKY" in str(e), e
-assert _raised, "the defensive assertion should have fired when the per-row skip is bypassed"
-print("[defensive_assertion_fires] with the per-row skip simulated as broken, the "
-      "end-of-function assertion catches the DCF-unreliable row before save_pool() - "
-      "loud failure, not a silent re-introduction of the artefact OK")
+_save_universe("S&P 500", [
+    _row("REPRICED", long_score=80.0, mos=20.0, price=10.0, iv=40.0, dcf_unreliable=False),
+    _row("CLEANSTILL", long_score=70.0, mos=20.0, price=50.0, iv=55.0, dcf_unreliable=False),
+], _now_dt)
+_logs5 = []
+with mock.patch.object(te.scheduler_engine, "nightly_universe_cadence",
+                        return_value=dict(_FAKE_CADENCE)):
+    pool5 = te.select_top100_pool(log=_logs5.append)
+pool5_tickers = {r["ticker"] for r in pool5}
+assert "REPRICED" not in pool5_tickers, pool5_tickers
+assert "CLEANSTILL" in pool5_tickers, pool5_tickers
+_log_line5 = next(l for l in _logs5 if "DCF-unreliable" in l)
+assert "excluded 1 DCF-unreliable row(s) (0 by stored flag, 1 by current price)" in _log_line5, _log_line5
+assert "REPRICED" in _log_line5, _log_line5
+print("[stale_flag_but_current_price_unreliable_excluded] REPRICED has stored flag=False "
+      "but current iv=40/price=10 (4x) - excluded without raising, counted as 'by current "
+      f"price' in the log line: {_log_line5!r} OK")
 
 _clear("S&P 500")
+
+# ======================================================================
+# CHECK 5b: the old runtime assert this hotfix removed is confirmed gone
+# from the source (the 23:00 UTC crash was exactly this assert firing on
+# a legitimately-reachable condition it had assumed was unreachable).
+# Scoped to select_top100_pool() itself (an AST walk of just that
+# function's body), not the whole module - top100_engine.py also has an
+# unrelated module-level sanity assert on the DIMENSIONS weight
+# constants (load-time invariant, nothing to do with per-row data
+# conditions), which this hotfix has no reason to touch.
+# ======================================================================
+import ast as _ast
+_engine_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "top100_engine.py")
+_engine_src = open(_engine_path).read()
+assert "assert not resolver_engine.dcf_looks_unreliable(row.get(\"intrinsic_value\")" not in _engine_src
+_tree = _ast.parse(_engine_src)
+_select_fn = next(n for n in _ast.walk(_tree)
+                   if isinstance(n, _ast.FunctionDef) and n.name == "select_top100_pool")
+assert not any(isinstance(n, _ast.Assert) for n in _ast.walk(_select_fn)), (
+    "select_top100_pool() should contain no runtime assert statements after the hotfix")
+print("[old_assert_confirmed_gone] grep/AST-confirmed: no Assert node remains inside "
+      "select_top100_pool() OK")
 
 
 # ======================================================================

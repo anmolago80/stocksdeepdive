@@ -426,14 +426,28 @@ def select_top100_pool(log=print):
     # Long Score tie-break) rather than a list of every candidate, since
     # nothing downstream needs the losing candidates.
     best_candidate = {}
-    # DCF-unreliable pool exclusion (1 Oct 2026, owner-directed): row-
-    # level skip count + the distinct excluded tickers (insertion order,
-    # capped at 20 for the log line) - see _is_dcf_unreliable()'s own
-    # docstring. A ticker excluded here from ONE universe's row can
-    # still enter the pool via a different universe's unflagged row for
-    # the same ticker, same as any other per-row candidate skip.
+    # DCF-unreliable pool exclusion (1 Oct 2026, owner-directed; extended
+    # 2 Oct 2026 after the 23:00 UTC crash - see the now-removed assert
+    # near the end of this function for what broke). A row is excluded
+    # here if EITHER nightly_scan.py's stored "DCF Unreliable" flag is
+    # truthy (scan-time price) OR resolver_engine.dcf_looks_unreliable()
+    # is true against the row's CURRENT raw Intrinsic Value/Price (which
+    # can differ from scan time - nightly repricing runs between scan-
+    # save and this selection). Checking both here, before best_candidate
+    # is ever built, means a row can never reach the pool on a stale
+    # "looked fine at scan time" flag - closing the staleness race that
+    # let 'CARG' through the old per-row skip and into the (now deleted)
+    # end-of-function assert, crashing the whole job with no pool saved.
+    # Counts both reasons separately for the summary log line below; the
+    # distinct excluded tickers (insertion order, capped at 20 for the
+    # log line) are shared across both reasons, same cap the old single-
+    # reason line already used. A ticker excluded here from ONE
+    # universe's row can still enter the pool via a different universe's
+    # clean row for the same ticker, same as any other per-row skip.
     dcf_unreliable_excluded_count = 0
     dcf_unreliable_excluded_tickers = []
+    dcf_unreliable_by_stored_flag = 0
+    dcf_unreliable_by_current_price = 0
     for universe, payload in eligible.items():
         gen_raw = payload.get("generated_at")
         try:
@@ -447,27 +461,46 @@ def select_top100_pool(log=print):
             # prefers it, never this one.
             gen_dt = datetime.min.replace(tzinfo=timezone.utc)
         for row in payload.get("rows") or []:
-            ticker = (row.get("Ticker") or "").strip().upper()
-            row_long_score = row.get("Long Score")
-            if not ticker or row_long_score is None:
+            # Defensive per-row guard (2 Oct 2026, owner-directed): the
+            # Top 100 job must never crash on one bad row's data - any
+            # exception evaluating a single row's eligibility is logged
+            # and that row is skipped, not raised, so one malformed
+            # candidate can never take down the entire nightly selection
+            # the way the old end-of-function assert did.
+            try:
+                ticker = (row.get("Ticker") or "").strip().upper()
+                row_long_score = row.get("Long Score")
+                if not ticker or row_long_score is None:
+                    continue
+                if _is_flagged_stale(row):
+                    continue
+                stored_unreliable = _is_dcf_unreliable(row)
+                current_unreliable = resolver_engine.dcf_looks_unreliable(
+                    row.get("Intrinsic Value"), row.get("Price"))
+                if stored_unreliable or current_unreliable:
+                    dcf_unreliable_excluded_count += 1
+                    if stored_unreliable:
+                        dcf_unreliable_by_stored_flag += 1
+                    else:
+                        dcf_unreliable_by_current_price += 1
+                    if ticker not in dcf_unreliable_excluded_tickers:
+                        dcf_unreliable_excluded_tickers.append(ticker)
+                    continue
+                prev = best_candidate.get(ticker)
+                key = (gen_dt, row_long_score)
+                if prev is None or key > (prev[0], prev[1]):
+                    best_candidate[ticker] = (gen_dt, row_long_score, row, universe, gen_raw)
+            except Exception as e:
+                log(f"[top100] selection: skipping row with eligibility-check "
+                    f"error ({row.get('Ticker', '?')!r} in {universe}): {e}")
                 continue
-            if _is_flagged_stale(row):
-                continue
-            if _is_dcf_unreliable(row):
-                dcf_unreliable_excluded_count += 1
-                if ticker not in dcf_unreliable_excluded_tickers:
-                    dcf_unreliable_excluded_tickers.append(ticker)
-                continue
-            prev = best_candidate.get(ticker)
-            key = (gen_dt, row_long_score)
-            if prev is None or key > (prev[0], prev[1]):
-                best_candidate[ticker] = (gen_dt, row_long_score, row, universe, gen_raw)
 
     if dcf_unreliable_excluded_count:
         _shown = dcf_unreliable_excluded_tickers[:20]
         _more = f" (+{len(dcf_unreliable_excluded_tickers) - 20} more)" if len(dcf_unreliable_excluded_tickers) > 20 else ""
         log(f"[top100] selection: excluded {dcf_unreliable_excluded_count} "
-            f"DCF-unreliable row(s): {', '.join(_shown)}{_more}")
+            f"DCF-unreliable row(s) ({dcf_unreliable_by_stored_flag} by stored flag, "
+            f"{dcf_unreliable_by_current_price} by current price): {', '.join(_shown)}{_more}")
 
     best_by_ticker = {}
     for ticker, (gen_dt, row_long_score, row, universe, gen_raw) in best_candidate.items():
@@ -589,22 +622,20 @@ def select_top100_pool(log=print):
             row["asx_extension"] = True
         extension = au_candidates
 
-    # DCF-unreliable pool exclusion (1 Oct 2026, owner-directed):
-    # defensive check - the per-row skip above (where "DCF Unreliable"
-    # is read straight off the raw scan row) should make this
-    # unreachable, since best_by_ticker itself never contains an
-    # excluded row. Re-derived here from the curated intrinsic_value/
-    # price pair (resolver_engine.dcf_looks_unreliable(), the same
-    # DCF_SANITY_MULTIPLE=3.0x check nightly_scan.py's own "DCF
-    # Unreliable" field is built from) rather than trusting a raw flag
-    # that was never carried into the curated row shape - an assertion,
-    # not a second silent skip, so a regression here is loud rather
-    # than quietly re-introducing the artefact this task exists to fix.
-    for row in pool + extension:
-        assert not resolver_engine.dcf_looks_unreliable(row.get("intrinsic_value"), row.get("price")), (
-            f"DCF-unreliable row reached the Top 100 pool despite the per-row "
-            f"exclusion above: {row.get('ticker')!r}"
-        )
+    # (1 Oct 2026 owner-directed defensive assert removed 2 Oct 2026: it
+    # re-derived this same dcf_looks_unreliable() check from the curated
+    # intrinsic_value/price pair and raised if it ever fired, on the
+    # premise that the per-row skip above made it unreachable. It
+    # wasn't - the per-row skip only checked the scan-time "DCF
+    # Unreliable" flag, and a row's price can be repriced between scan-
+    # save and this function running, so a row could legitimately
+    # become unreliable-by-current-price after the old skip ran but
+    # before this assert, crashing the whole nightly job (no pool
+    # saved) on 'CARG' at 23:00 UTC on 1 Oct. The fix is upstream, not
+    # here: the per-row loop above now also checks current price, so a
+    # row like that is excluded before best_candidate is ever built and
+    # never reaches this point - no assert needed, and a hard crash is
+    # never an acceptable outcome for a data-staleness condition.)
 
     _fill_missing_sectors(pool + extension, log=log)
     top100_store.save_pool(pool + extension, as_of)
