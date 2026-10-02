@@ -629,6 +629,13 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         "moat_flags": _moat["flags"],
         "moat_years": _moat["years"],
         "moat_contributions": moat_engine.moat_contributions(_moat["components"]),
+        # Commit 3 (2 Oct 2026, owner-directed): how many of the 4
+        # possible pillars actually got computed for this ticker (a
+        # dropped pillar is simply absent from _moat["components"] -
+        # see moat_engine._compute_moat_from_bundle()'s own comment) -
+        # pure passthrough, no new computation, for app.py's "{measured}
+        # of 4 pillars measured" caption next to the Moat gauge.
+        "moat_pillars_measured": len(_moat["components"]),
         "moat_band_color": moat_band[0] if moat_band else None,
         "moat_band_label": moat_band[1] if moat_band else ("N/A (fund)" if _moat["mode"] == "na" else "N/A"),
 

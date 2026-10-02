@@ -11566,6 +11566,18 @@ def page_deep_dive():
                     )
                 )
                 _moat_lang = st.session_state.get("lang", "en")
+                # Commit 3 (2 Oct 2026, owner-directed): "{measured} of 4
+                # pillars measured{mode}" next to the gauge, derived from
+                # deep_dive_engine.py's moat_pillars_measured (a pure
+                # passthrough of len(components) - no scoring change).
+                st.caption(i18n.t(
+                    "dd.moat_pillars_measured", _moat_lang,
+                    measured=_dd.get("moat_pillars_measured", 0),
+                    mode=(
+                        i18n.t("dd.moat_pillars_mode_financials", _moat_lang)
+                        if _dd.get("moat_mode") == "financials" else ""
+                    ),
+                ))
                 _moat_col1, _moat_col2 = st.columns(2)
                 with _moat_col1:
                     st.markdown(
