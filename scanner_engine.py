@@ -85,6 +85,7 @@ import re
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
+from urllib.parse import urljoin
 
 import pandas as pd
 import requests
@@ -2569,72 +2570,83 @@ def _log_japan_fetch_diagnostic(label, url, status=None, content_type=None,
 
 NIKKEI225_WIKI_URL = "https://en.wikipedia.org/wiki/Nikkei_225"
 
-# Director's suggestion, unverified from this sandbox (same status as
-# capm_engine.py's own MOF JGB CSV URL) - the Japan Exchange Group's
-# own published TOPIX New Index Series constituents file, which
-# carries each stock's size classification (Core30/Large70/Mid400/
-# Small 1/Small 2). The exact published filename/path is known to
-# change periodically on jpx.co.jp - a moved URL simply fails the
-# fetch below (treated as "unavailable", not scanning), same as any
-# other live-feed URL in this app going stale.
-TOPIX_CONSTITUENTS_URL = (
-    "https://www.jpx.co.jp/english/markets/indices/topix/tvdivq0000006pov-att/topixweight_j.csv"
-)
+# Director addendum 2, Part 2, item 2 (3 Oct 2026) - facts the Director
+# verified directly from the live pages (this sandbox still has no
+# outbound network access, so none of this is independently re-
+# verified here; it is taken on the Director's word, same provenance
+# as the iShares ETF URLs supplied for Lists & display Commit 1):
+# Nikkei 225's constituents on en.wikipedia.org/wiki/Nikkei_225 are
+# BULLETED LIST ITEMS grouped by sector, not an HTML <table> - each
+# entry reads like "Honda Motor Co., Ltd. (TYO: 7267)". The previous
+# _parse_table()-based implementation (a table scrape) could never
+# have worked against the real page at all.
+_NIKKEI225_TYO_CODE_RE = re.compile(r"\(TYO:\s*([0-9A-Za-z]{3,5})\)")
+_NIKKEI225_MIN_CODES = 200
+
+# TOPIX 500 = the Core30 + Large70 + Mid400 size groups of JPX's own
+# published "topixweight_j.csv" (構成銘柄別ウエイト一覧), linked from
+# the TOPIX page below - never hard-coded to a folder path (JPX moves
+# the file's own URL periodically; the previous hard-coded path was
+# itself unverified and is why TOPIX 500 never scanned on the live
+# run). Columns per the Director's own verification: コード (code),
+# 銘柄名 (name), ニューインデックス区分 (size classification, values
+# "TOPIX Core30"/"TOPIX Large70"/"TOPIX Mid400"/"TOPIX Small 1"/"TOPIX
+# Small 2") - Shift-JIS/cp932 encoded, not UTF-8.
+TOPIX_INDEX_PAGE_URL = "https://www.jpx.co.jp/markets/indices/topix/"
+_TOPIX_CSV_LINK_RE = re.compile(r'href="([^"]*topixweight_j\.csv)"')
 _TOPIX_SIZE_GROUP_HINTS = ("core30", "large70", "mid400")
-_TOPIX_SIZE_GROUP_COLUMN_HINTS = ("size", "classification", "category", "group")
-_TOPIX_CODE_COLUMN_HINTS = ("code", "ticker", "symbol")
+_TOPIX_SIZE_GROUP_COLUMN_HINTS = ("ニューインデックス区分", "size", "classification", "category", "group")
+_TOPIX_CODE_COLUMN_HINTS = ("コード", "code", "ticker", "symbol")
+_TOPIX_MIN_ROWS = 400
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_nikkei225():
-    """Director addendum 2, Part 1, item A (3 Oct 2026): rewritten from a
-    bare _get()+_parse_table() pair (which swallowed every failure with
-    no diagnostic at all) to a manual fetch+parse so every field the
-    Director asked for - URL, HTTP status, content type, tables found on
-    the page, the most rows any single table parsed to, first 200 chars
-    of the body - is available to log on failure, via _log_japan_fetch_
-    diagnostic() above. Matching logic is otherwise identical to
-    _parse_table()'s own (ticker/sector column hints, 200-230 row
-    window) - duplicated rather than threading instrumentation through
-    that shared helper's own, much broader call list."""
+    """Director addendum 2, Part 2, item 2 (3 Oct 2026): rewritten
+    against the REAL page shape the Director verified directly -
+    bulleted list items ("Honda Motor Co., Ltd. (TYO: 7267)"), not a
+    table (see this section's own module comment). Finds every "(TYO:
+    <code>)" occurrence anywhere in the page body (regex over the raw
+    HTML text - the list markup itself doesn't matter, only the
+    parenthesised exchange:code text each entry carries), de-duplicates
+    preserving first-seen order, and requires at least _NIKKEI225_MIN_
+    CODES (200) or treats the fetch as a failure - same "never build a
+    constituent list from memory, keep last known good instead" rule
+    as every other universe in this section. Keeps the Director
+    addendum 2 Part 1 item A failure diagnostics (URL/status/content-
+    type/rows found/first 200 chars) - `tables_found` stays None here
+    (this is no longer a table-based parse) rather than being repurposed
+    to mean something else.
+
+    ALL FIXTURES THIS IS TESTED AGAINST ARE SYNTHETIC - this sandbox
+    still has no outbound network access to verify against the real
+    page; the real proof is the first live scan (per the Director's
+    own instruction)."""
     url = NIKKEI225_WIKI_URL
     status, content_type, body_preview = None, None, None
-    tables_found, rows_parsed = None, None
+    rows_parsed = None
     try:
         resp = requests.get(url, headers=_JAPAN_FETCH_HEADERS, timeout=15)
         status = resp.status_code
         content_type = resp.headers.get("Content-Type")
         body_preview = resp.text[:200]
         resp.raise_for_status()
-        try:
-            tables = pd.read_html(io.StringIO(resp.text))
-        except Exception:
-            tables = []
-        tables_found = len(tables)
-        rows_parsed = 0
-        for table in tables:
-            ticker_col = _find_column(table.columns, ["code", "ticker", "symbol"])
-            if ticker_col is None:
-                continue
-            sector_col = _find_column(table.columns, ["sector", "industry"])
-            cols = [ticker_col] + ([sector_col] if sector_col else [])
-            df = table[cols].copy()
-            df.columns = ["Ticker", "Sector"] if sector_col else ["Ticker"]
-            df = df.dropna(subset=["Ticker"])
-            rows_parsed = max(rows_parsed, len(df))
-            if df.empty or len(df) < 200 or len(df) > 230:
-                continue
-            df["Ticker"] = df["Ticker"].apply(
-                lambda t: symbol_mapping.to_yahoo_symbol(str(t).strip(), "TSE")
-            )
-            df["Sector"] = df["Sector"].astype(str).str.strip() if "Sector" in df.columns else None
-            return df[["Ticker", "Sector"]]
+        seen = set()
+        codes = []
+        for code in _NIKKEI225_TYO_CODE_RE.findall(resp.text):
+            if code not in seen:
+                seen.add(code)
+                codes.append(code)
+        rows_parsed = len(codes)
+        if rows_parsed >= _NIKKEI225_MIN_CODES:
+            tickers = [symbol_mapping.to_yahoo_symbol(c, "TSE") for c in codes]
+            return pd.DataFrame({"Ticker": tickers, "Sector": [None] * len(tickers)})
     except Exception as e:
         if status is None:
             status = f"{type(e).__name__}: {e}"
     _log_japan_fetch_diagnostic(
         "Nikkei 225", url, status=status, content_type=content_type,
-        tables_found=tables_found, rows_parsed=rows_parsed, body_preview=body_preview,
+        tables_found=None, rows_parsed=rows_parsed, body_preview=body_preview,
     )
     return None
 
@@ -2642,8 +2654,10 @@ def fetch_nikkei225():
 def _topix_size_group(cell):
     """Normalises one size-classification cell to 'core30'/'large70'/
     'mid400'/None - tolerant substring match (spaces stripped first,
-    so "Core 30"/"Core30" both match), same reasoning as every other
-    "format not verified from this sandbox" parser in this module."""
+    case-folded), so "TOPIX Core30"/"Core 30"/"core30" all match the
+    same way - see this section's own module comment for the real
+    column's values ("TOPIX Core30" etc, per the Director's own
+    verification)."""
     low = str(cell or "").strip().lower().replace(" ", "")
     for hint in _TOPIX_SIZE_GROUP_HINTS:
         if hint in low:
@@ -2653,67 +2667,92 @@ def _topix_size_group(cell):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_topix500():
-    """TOPIX 500 = the Core30 + Large70 + Mid400 size groups of the
-    JPX's own published TOPIX New Index Series constituents file - see
-    this section's own module comment for the unverified-URL caveat
-    and the "never built from memory, no static fallback" rule this
-    universe follows. Returns None (never a fallback list) on ANY
-    fetch/parse failure, logging the exact "[universe] TOPIX 500:
-    constituent list unavailable (<reason>) - not scanning" line this
-    task's own instruction specifies - nightly_scan.run_universe_
-    scan() already treats a None pool as "no tickers resolved", which
-    keeps whatever was already saved on disk untouched (the "keep the
-    last known good list" half of this rule)."""
+    """Director addendum 2, Part 2, item 2 (3 Oct 2026): rewritten
+    against the REAL discovery mechanism the Director verified directly
+    - the constituents file's own URL is never hard-coded (JPX moves
+    it periodically, which is exactly why the previous hard-coded path
+    never scanned on the live run); instead this fetches the TOPIX
+    index page (TOPIX_INDEX_PAGE_URL) and follows whichever link's
+    address ends in "topixweight_j.csv", resolved against the page's
+    own URL (a relative href is expected). The file itself is Shift-
+    JIS/cp932 encoded (not UTF-8 - decoding it as UTF-8 would corrupt
+    every Japanese column header/value) with columns コード/銘柄名/
+    ニューインデックス区分, the last holding values like "TOPIX
+    Core30"/"TOPIX Large70"/"TOPIX Mid400" - see this section's own
+    module comment. Returns None (never a fallback list) on ANY fetch/
+    parse failure, logging the exact "[universe] TOPIX 500: constituent
+    list unavailable (<reason>) - not scanning" line this task's own
+    instruction specifies - nightly_scan.run_universe_scan() already
+    treats a None pool as "no tickers resolved", which keeps whatever
+    was already saved on disk untouched (the "keep the last known good
+    list" half of this rule).
+
+    ALL FIXTURES THIS IS TESTED AGAINST ARE SYNTHETIC - this sandbox
+    still has no outbound network access to verify against the real
+    page/file; the real proof is the first live scan."""
     reason = "unknown error"
-    url = TOPIX_CONSTITUENTS_URL
+    url = TOPIX_INDEX_PAGE_URL
     status, content_type, body_preview = None, None, None
     tables_found, rows_parsed = None, None
     try:
-        resp = requests.get(url, timeout=10, headers=_JAPAN_FETCH_HEADERS)
-        status = resp.status_code
-        content_type = resp.headers.get("Content-Type")
-        body_preview = resp.text[:200]
-        if resp.status_code != 200:
-            reason = f"HTTP {resp.status_code}"
-            tables_found, rows_parsed = 0, 0
+        page_resp = requests.get(TOPIX_INDEX_PAGE_URL, timeout=10, headers=_JAPAN_FETCH_HEADERS)
+        status = page_resp.status_code
+        content_type = page_resp.headers.get("Content-Type")
+        body_preview = page_resp.text[:200]
+        if page_resp.status_code != 200:
+            reason = f"HTTP {page_resp.status_code} fetching the TOPIX index page"
         else:
-            df = None
-            try:
-                df = pd.read_csv(io.StringIO(resp.text))
-            except Exception:
-                try:
-                    df = pd.read_excel(io.BytesIO(resp.content))
-                except Exception:
-                    df = None
-            tables_found = 0 if df is None else 1
-            rows_parsed = 0 if df is None else len(df)
-            if df is None or df.empty:
-                reason = "file could not be parsed as CSV or Excel"
+            link_match = _TOPIX_CSV_LINK_RE.search(page_resp.text)
+            if link_match is None:
+                reason = "topixweight_j.csv link not found on the TOPIX index page"
             else:
-                code_col = _find_column(df.columns, _TOPIX_CODE_COLUMN_HINTS)
-                group_col = _find_column(df.columns, _TOPIX_SIZE_GROUP_COLUMN_HINTS)
-                if code_col is None or group_col is None:
-                    reason = "code or size-classification column not found"
+                csv_url = urljoin(TOPIX_INDEX_PAGE_URL, link_match.group(1))
+                url = csv_url
+                csv_resp = requests.get(csv_url, timeout=10, headers=_JAPAN_FETCH_HEADERS)
+                status = csv_resp.status_code
+                content_type = csv_resp.headers.get("Content-Type")
+                if csv_resp.status_code != 200:
+                    reason = f"HTTP {csv_resp.status_code} fetching {csv_url}"
+                    tables_found, rows_parsed = 0, 0
                 else:
-                    df = df.copy()
-                    df["_group"] = df[group_col].apply(_topix_size_group)
-                    kept = df[df["_group"].isin(_TOPIX_SIZE_GROUP_HINTS)]
-                    if kept.empty:
-                        reason = "no Core30/Large70/Mid400 rows found"
+                    try:
+                        decoded = csv_resp.content.decode("cp932")
+                    except UnicodeDecodeError:
+                        decoded = csv_resp.content.decode("cp932", errors="replace")
+                    body_preview = decoded[:200]
+                    try:
+                        df = pd.read_csv(io.StringIO(decoded))
+                    except Exception:
+                        df = None
+                    tables_found = 0 if df is None else 1
+                    rows_parsed = 0 if df is None else len(df)
+                    if df is None or df.empty:
+                        reason = "topixweight_j.csv could not be parsed as CSV"
                     else:
-                        out = kept[[code_col]].copy()
-                        out.columns = ["Ticker"]
-                        out["Ticker"] = out["Ticker"].apply(
-                            lambda t: symbol_mapping.to_yahoo_symbol(str(t).strip(), "TSE")
-                        )
-                        out["Sector"] = None
-                        if len(out) < 400:
-                            reason = (
-                                f"only {len(out)} Core30/Large70/Mid400 row(s) found "
-                                "(expected roughly 500)"
-                            )
+                        code_col = _find_column(df.columns, _TOPIX_CODE_COLUMN_HINTS)
+                        group_col = _find_column(df.columns, _TOPIX_SIZE_GROUP_COLUMN_HINTS)
+                        if code_col is None or group_col is None:
+                            reason = "code or size-classification column not found"
                         else:
-                            return out[["Ticker", "Sector"]]
+                            df = df.copy()
+                            df["_group"] = df[group_col].apply(_topix_size_group)
+                            kept = df[df["_group"].isin(_TOPIX_SIZE_GROUP_HINTS)]
+                            if kept.empty:
+                                reason = "no Core30/Large70/Mid400 rows found"
+                            else:
+                                out = kept[[code_col]].copy()
+                                out.columns = ["Ticker"]
+                                out["Ticker"] = out["Ticker"].apply(
+                                    lambda t: symbol_mapping.to_yahoo_symbol(str(t).strip(), "TSE")
+                                )
+                                out["Sector"] = None
+                                if len(out) < _TOPIX_MIN_ROWS:
+                                    reason = (
+                                        f"only {len(out)} Core30/Large70/Mid400 row(s) found "
+                                        f"(expected at least {_TOPIX_MIN_ROWS})"
+                                    )
+                                else:
+                                    return out[["Ticker", "Sector"]]
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
         if status is None:

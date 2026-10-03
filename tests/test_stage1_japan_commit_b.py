@@ -54,19 +54,33 @@ import symbol_mapping
 # ======================================================================
 # T1: fetch_nikkei225() against a saved Wikipedia-shaped HTML fixture.
 # ======================================================================
-def _wiki_table_html(codes, sector_col_name="Sector"):
-    df = pd.DataFrame({
-        "Code": codes,
-        "Company": [f"Company {c}" for c in codes],
-        sector_col_name: ["Industrials"] * len(codes),
-    })
-    return f"<html><body>{df.to_html(index=False)}</body></html>"
+def _nikkei_bulleted_list_html(codes):
+    # Director addendum 2, Part 2, item 2 (3 Oct 2026, verified directly
+    # from the live page): Nikkei 225's real constituents are bulleted
+    # list items ("Honda Motor Co., Ltd. (TYO: 7267)"), not a table -
+    # see scanner_engine.fetch_nikkei225()'s own docstring. This fixture
+    # replaces the old (wrong) HTML-<table> shape this test used before
+    # that fix.
+    return "<html><body><ul>" + "".join(
+        f"<li>Company {c} Co., Ltd. (TYO: {c})</li>" for c in codes
+    ) + "</ul></body></html>"
+
+
+class _FakeNikkeiResp:
+    def __init__(self, text):
+        self.status_code = 200
+        self.text = text
+        self.content = text.encode()
+        self.headers = {"Content-Type": "text/html; charset=UTF-8"}
+
+    def raise_for_status(self):
+        pass
 
 
 _nikkei_codes = [f"{1000 + i}" for i in range(225)]
-_nikkei_fixture_html = _wiki_table_html(_nikkei_codes)
+_nikkei_fixture_html = _nikkei_bulleted_list_html(_nikkei_codes)
 
-with mock.patch.object(se, "_get", side_effect=lambda url: _nikkei_fixture_html):
+with mock.patch.object(se.requests, "get", return_value=_FakeNikkeiResp(_nikkei_fixture_html)):
     se.fetch_nikkei225.clear()
     df_nikkei = se.fetch_nikkei225()
 assert df_nikkei is not None and len(df_nikkei) == 225, df_nikkei
@@ -79,32 +93,63 @@ print(f"[T1_fetch_nikkei225] 225-row Wikipedia-shaped fixture -> {len(df_nikkei)
 # T1: fetch_topix500() against a saved JPX-file-shaped CSV fixture -
 # Core30/Large70/Mid400 kept, Small1/Small2 filtered out.
 # ======================================================================
-def _topix_csv_fixture(n_core30, n_large70, n_mid400, n_small):
+def _topix_csv_fixture_cp932(n_core30, n_large70, n_mid400, n_small):
+    # Director addendum 2, Part 2, item 2 (3 Oct 2026, verified directly
+    # from the live file): topixweight_j.csv has Japanese columns コード/
+    # 銘柄名/ニューインデックス区分 (values "TOPIX Core30" etc), Shift-
+    # JIS/cp932 encoded - see scanner_engine.fetch_topix500()'s own
+    # docstring. Replaces the old (wrong) English-column/UTF-8 shape
+    # this test used before that fix.
     rows = []
     code = 2000
     for _ in range(n_core30):
-        rows.append((code, "Core30")); code += 1
+        rows.append((code, "TOPIX Core30")); code += 1
     for _ in range(n_large70):
-        rows.append((code, "Large70")); code += 1
+        rows.append((code, "TOPIX Large70")); code += 1
     for _ in range(n_mid400):
-        rows.append((code, "Mid400")); code += 1
+        rows.append((code, "TOPIX Mid400")); code += 1
     for _ in range(n_small):
-        rows.append((code, "Small 1")); code += 1
-    lines = ["Code,Size Classification"]
-    lines += [f"{c},{g}" for c, g in rows]
-    return "\n".join(lines)
+        rows.append((code, "TOPIX Small 1")); code += 1
+    lines = ["コード,銘柄名,ニューインデックス区分"]
+    lines += [f"{c},テスト銘柄{c},{g}" for c, g in rows]
+    return "\n".join(lines).encode("cp932")
 
 
-class _FakeTopixResp:
+_TOPIX_INDEX_PAGE_HTML = (
+    '<html><body><a href="/markets/indices/topix/tvdivq0000006pov-att/'
+    'topixweight_j.csv">構成銘柄別ウエイト一覧</a></body></html>'
+)
+
+
+class _FakeTopixPageResp:
     def __init__(self, status_code, text):
         self.status_code = status_code
         self.text = text
         self.content = text.encode("utf-8")
+        self.headers = {"Content-Type": "text/html; charset=UTF-8"}
+
+    def raise_for_status(self):
+        pass
 
 
-_topix_csv_ok = _topix_csv_fixture(30, 70, 400, 50)
+class _FakeTopixCsvResp:
+    def __init__(self, status_code, content_bytes):
+        self.status_code = status_code
+        self.content = content_bytes
+        self.headers = {"Content-Type": "application/octet-stream"}
+
+
+def _topix_get_fixture(csv_bytes):
+    def _get(url, headers=None, timeout=None):
+        if url == se.TOPIX_INDEX_PAGE_URL:
+            return _FakeTopixPageResp(200, _TOPIX_INDEX_PAGE_HTML)
+        return _FakeTopixCsvResp(200, csv_bytes)
+    return _get
+
+
+_topix_csv_ok = _topix_csv_fixture_cp932(30, 70, 400, 50)
 with mock.patch.object(se, "requests") as _mreq:
-    _mreq.get.return_value = _FakeTopixResp(200, _topix_csv_ok)
+    _mreq.get.side_effect = _topix_get_fixture(_topix_csv_ok)
     se.fetch_topix500.clear()
     df_topix = se.fetch_topix500()
 assert df_topix is not None and len(df_topix) == 500, df_topix
@@ -117,7 +162,7 @@ print(f"[T1_fetch_topix500_filter] 550-row JPX-shaped fixture (30 Core30 + 70 La
 # which nightly_scan.run_universe_scan() already treats as "no tickers
 # resolved" (no save_scan() call at all, so whatever's on disk stays).
 with mock.patch.object(se, "requests") as _mreq:
-    _mreq.get.return_value = _FakeTopixResp(500, "")
+    _mreq.get.return_value = _FakeTopixPageResp(500, "")
     se.fetch_topix500.clear()
     df_topix_fail = se.fetch_topix500()
 assert df_topix_fail is None, df_topix_fail
