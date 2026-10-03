@@ -30198,6 +30198,15 @@ def _render_private_universes_panel():
         _summary_rows.append({
             "Universe": _u,
             "Last scan (UTC)": (_payload or {}).get("generated_at") or "never",
+            # Lists & display Commit 1 (3 Oct 2026, Director-directed):
+            # scan_store.save_scan()'s own "source" field already carries
+            # exactly which source (Wikipedia/fund-file/last known-good,
+            # with its own as-of date for the last two) resolved this
+            # universe's pool on its last successful scan - see
+            # scanner_engine.get_universe_pool()'s FTSE/TSX/Nikkei/TOPIX
+            # branches. No new plumbing needed, just surfacing it here,
+            # the one place this task's own instruction requires it.
+            "Source": (_payload or {}).get("source") or "unknown",
             "Rows saved": len(_rows),
             "Pool size": _pool_size if _pool_size is not None else "unknown",
             "Median MOS %": _median_mos(_mos_values),

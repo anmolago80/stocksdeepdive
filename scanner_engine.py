@@ -78,6 +78,7 @@ shipped.
 
 import concurrent.futures
 import io
+import json
 import logging
 import os
 import time
@@ -643,7 +644,7 @@ def _disk_cache_label(universe_name, cache_path):
         return f"{universe_name} scrape unavailable - last cached list instead"
 
 
-def _clean_ishares_holdings_df(raw, min_rows=1, max_rows=None):
+def _clean_ishares_holdings_df(raw, min_rows=1, max_rows=None, normalize_fn=None):
     """Shared cleaning for an iShares holdings-CSV export already read into
     a DataFrame (skiprows=9 past the metadata block) - used by BOTH the
     live IWM/IWB fetch and the Russell 2000 static-file fallback (Part
@@ -660,11 +661,19 @@ def _clean_ishares_holdings_df(raw, min_rows=1, max_rows=None):
     shares - small-cap indices do contain them - so this only excludes
     the exact "-" placeholder, not every ticker containing a dash.)
 
+    `normalize_fn` (Lists & display Commit 1, 3 Oct 2026): defaults to
+    _normalize_us_ticker, unchanged for every existing US caller
+    (Russell 2000/1000) - the new non-US fund-holdings fetchers
+    (ISF/MIDD/XIU/XIC) pass _normalize_lse_ticker/_normalize_tsx_ticker
+    instead, so a UK/Canadian raw ticker is mapped through symbol_
+    mapping.to_yahoo_symbol() rather than the US dash-for-dot rule.
+
     Returns None if there's no ticker-like column, nothing survives
     cleaning, or the resulting row count falls outside [min_rows,
     max_rows] (max_rows=None skips that upper check) - the same min/max-
     row guard discipline _parse_table() already uses for Wikipedia
     tables, applied here for CSV exports."""
+    normalize_fn = normalize_fn or _normalize_us_ticker
     ticker_col = _find_column(raw.columns, ["ticker"])
     if ticker_col is None:
         return None
@@ -683,7 +692,7 @@ def _clean_ishares_holdings_df(raw, min_rows=1, max_rows=None):
     if max_rows is not None and len(df) > max_rows:
         return None
 
-    df["Ticker"] = df["Ticker"].apply(_normalize_us_ticker)
+    df["Ticker"] = df["Ticker"].apply(normalize_fn)
     df["Sector"] = None
     return df[["Ticker", "Sector"]].drop_duplicates(subset="Ticker").reset_index(drop=True)
 
@@ -2126,49 +2135,41 @@ def fetch_asx100():
 
 # -----------------------------------------------------------------
 # Stage 1b (3 Oct 2026, Director-directed): FTSE 100/FTSE 250 (LSE,
-# suffix .L) and TSX 60/TSX Composite (TSX, suffix .TO) - same fetch
-# pattern as every other universe above (Wikipedia constituent table
-# via _get()/_parse_table(), a small static fallback so a scan never
-# comes back completely empty), ticker normalisation going through
-# symbol_mapping.to_yahoo_symbol() (Stage 1a) instead of a module-
-# local normalize_fn. These four universes are PRIVATE by default -
-# see scan_store.is_private_universe() - so none of this is reachable
-# from the public Scanner page; only the nightly scan/reprice pipeline
-# and the Admin "Private universes" panel ever call get_universe_pool()
-# with one of these names.
+# suffix .L) and TSX 60/TSX Composite (TSX, suffix .TO) - ticker
+# normalisation goes through symbol_mapping.to_yahoo_symbol() (Stage
+# 1a) instead of a module-local normalize_fn. These four universes
+# are PRIVATE by default - see scan_store.is_private_universe() - so
+# none of this is reachable from the public Scanner page; only the
+# nightly scan/reprice pipeline and the Admin "Private universes"
+# panel ever call get_universe_pool() with one of these names.
 #
-# This sandbox has no live network access to either Wikipedia page, so
-# the exact ticker/sector column keywords below are the same tolerant,
-# multi-keyword, best-guess matching _parse_table() already uses for
-# every other fetcher in this module (never verified against a live
-# response) - the static fallback lists are real, well-known
-# constituents as of this task's own writing, not a placeholder.
+# Lists & display Commit 1 (3 Oct 2026, Director-directed): the four
+# small lists that used to sit here (_FTSE100_STATIC_FALLBACK etc.)
+# were written from memory, per this task's own report - DELETED, per
+# this task's own instruction ("remove them"). Replaced by the 4-step
+# chain get_universe_pool() runs for each of these four universes
+# below: (1) Wikipedia, live; (2) the index fund's own published
+# holdings file, live (cross-check only - see the ISF/MIDD/XIU/XIC
+# fetchers further down); (3) the last known-good list, saved to disk
+# after any successful (1) or (2) on some prior night (see
+# _save_last_good_universe_list()); (4) none of the above -> this
+# universe simply does not scan tonight, exactly like Nikkei 225/
+# TOPIX 500 already do (nightly_scan.run_universe_scan() already
+# treats a None pool as "no tickers resolved" and leaves whatever was
+# already saved on disk untouched - the "keep the last known good
+# list" behaviour, met by construction, no new code needed for it).
+#
+# This sandbox has no live network access to either Wikipedia page or
+# any iShares holdings export, so the exact ticker/sector column
+# keywords below are the same tolerant, multi-keyword, best-guess
+# matching _parse_table() already uses for every other fetcher in
+# this module (never verified against a live response).
 # -----------------------------------------------------------------
 
 FTSE100_WIKI_URL = "https://en.wikipedia.org/wiki/FTSE_100_Index"
 FTSE250_WIKI_URL = "https://en.wikipedia.org/wiki/FTSE_250_Index"
 TSX60_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/TSX_60"
 TSX_COMPOSITE_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/TSX_Composite_Index"
-
-_FTSE100_STATIC_FALLBACK = [
-    "AZN.L", "SHEL.L", "HSBA.L", "ULVR.L", "BP.L",
-    "GSK.L", "DGE.L", "RIO.L", "BATS.L", "REL.L",
-]
-_FTSE250_STATIC_FALLBACK = [
-    "BWY.L", "TATE.L", "HWDN.L", "GFTU.L", "WOSG.L",
-    "BBOX.L", "DLN.L", "CLI.L", "DPLM.L", "VTY.L",
-]
-_TSX60_STATIC_FALLBACK = [
-    "RY.TO", "TD.TO", "ENB.TO", "CNR.TO", "BMO.TO",
-    "BNS.TO", "SU.TO", "TRP.TO", "CM.TO", "SHOP.TO",
-]
-# A strict superset of _TSX60_STATIC_FALLBACK above - TSX 60 subset TSX
-# Composite must hold even on the static-fallback path (verify_
-# universe_before_save()'s own check doesn't distinguish a live fetch
-# from a fallback list - see that function's own docstring).
-_TSX_COMPOSITE_STATIC_FALLBACK = _TSX60_STATIC_FALLBACK + [
-    "CP.TO", "MFC.TO", "GIB-A.TO", "ATD.TO",
-]
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -2217,6 +2218,237 @@ def fetch_tsxcomposite():
     df = _parse_table(html, ["symbol", "ticker"], ["sector", "industry"],
                       _normalize_tsx_ticker, min_rows=150, max_rows=260)
     return _asx_backfill_missing_subset_tickers(df, fetch_tsx60(), "TSX Composite", "TSX 60")
+
+
+# -----------------------------------------------------------------
+# Lists & display Commit 1 (3 Oct 2026, Director-directed): generic,
+# any-universe "last known-good constituent list" disk persistence -
+# written to /data/universe_lists/<slug>.json (RAILWAY_VOLUME_MOUNT_
+# PATH, same mount every other persisted file in this app uses,
+# falling back to this directory locally) after EVERY successful live
+# fetch (source 1 or 2, for any universe that calls these), read only
+# when every live source for that universe fails on a given night.
+# Deliberately separate from the Russell 2000 CSV cache above (_r2k_
+# cache_path()) - that one is a narrower, Russell-2000-specific public
+# contract left exactly as-is; this is a new, generic JSON store any
+# universe can opt into, starting with the six used below (FTSE 100/
+# 250, TSX 60/Composite, Nikkei 225, TOPIX 500).
+# -----------------------------------------------------------------
+
+_UNIVERSE_LIST_MAX_AGE_WARN_DAYS = 35
+
+
+def _universe_list_cache_dir():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    path = os.path.join(base, "universe_lists")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _universe_list_cache_path(slug):
+    return os.path.join(_universe_list_cache_dir(), f"{slug}.json")
+
+
+def _save_last_good_universe_list(slug, symbols, source):
+    """Persists `symbols` (a plain list of Yahoo-shaped tickers) to
+    /data/universe_lists/<slug>.json, overwriting whatever was there -
+    called after EVERY successful live fetch (Wikipedia or a fund-
+    holdings file), per this task's own instruction, so a later night
+    where every live source fails still has a real, dated list to fall
+    back to instead of skipping the scan outright. Best-effort: a
+    write failure (e.g. a read-only filesystem in a test) is swallowed,
+    same fail-soft convention as every other disk write in this
+    module - never raises, never blocks the caller's own return."""
+    payload = {
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "symbols": list(symbols),
+    }
+    try:
+        path = _universe_list_cache_path(slug)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(payload, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _load_last_good_universe_list(slug):
+    """Returns the saved {"fetched_at", "source", "symbols"} dict for
+    `slug`, or None if nothing has ever been saved (or the file is
+    missing/corrupt/empty) - never raises."""
+    try:
+        with open(_universe_list_cache_path(slug)) as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not data.get("symbols"):
+            return None
+        return data
+    except (OSError, ValueError):
+        return None
+
+
+def _last_good_universe_df_and_label(universe_name, last_good):
+    """Builds the (df, source_label) pair for a last-good-list hit.
+    Logs the list's own age at INFO, escalating to a WARNING once it's
+    older than _UNIVERSE_LIST_MAX_AGE_WARN_DAYS days - per this task's
+    own instruction ("Log its age; warn when older than 35 days")."""
+    symbols = last_good["symbols"]
+    fetched_at = last_good.get("fetched_at")
+    age_days, as_of = None, "unknown date"
+    try:
+        fetched_dt = datetime.fromisoformat(fetched_at)
+        age_days = (datetime.now(timezone.utc) - fetched_dt).days
+        as_of = fetched_dt.strftime("%d %b %Y")
+    except (TypeError, ValueError):
+        pass
+    age_note = f"{age_days} day(s) old" if age_days is not None else "age unknown"
+    source = last_good.get("source", "unknown")
+    base_msg = (
+        f"[universe] {universe_name}: using last known-good list "
+        f"(source: {source}, as of {as_of}, {age_note})"
+    )
+    if age_days is not None and age_days > _UNIVERSE_LIST_MAX_AGE_WARN_DAYS:
+        _log.warning(base_msg + f" - older than {_UNIVERSE_LIST_MAX_AGE_WARN_DAYS} days, consider a manual refresh")
+    else:
+        _log.info(base_msg)
+    df = pd.DataFrame({"Ticker": symbols, "Sector": [None] * len(symbols)})
+    label = f"Last known-good list (source: {source}, as of {as_of})"
+    return df, label
+
+
+def _log_universe_source_diff(universe_name, wiki_df, fund_df):
+    """When BOTH the live Wikipedia scrape and the fund-holdings file
+    succeed on the same night, logs their difference so the Director
+    can judge which list is more trustworthy - per this task's own
+    instruction. The Wikipedia list is always the one actually used;
+    this is a cross-check only, never itself a save-blocking gate -
+    never raises."""
+    try:
+        wiki_set = set(wiki_df["Ticker"])
+        fund_set = set(fund_df["Ticker"])
+        diff = sorted(wiki_set ^ fund_set)
+        msg = (
+            f"[universe] {universe_name}: wikipedia {len(wiki_set)}, fund file "
+            f"{len(fund_set)}, in one not the other: {len(diff)}"
+            + (f" ({', '.join(diff[:10])})" if diff else "")
+        )
+        _log.info(msg)
+    except Exception:
+        pass
+
+
+def _resolve_universe_with_fund_crosscheck(universe_name, slug, wiki_fetch_fn, fund_fetch_fn, fund_label):
+    """The 4-step chain this task's own instruction specifies for FTSE
+    100/250 and TSX 60/Composite (see this section's own module
+    comment above): (1) Wikipedia live; (2) the fund-holdings file
+    live, cross-checked against Wikipedia's own list whenever both
+    succeed; (3) the last known-good list saved on some prior night;
+    (4) not scanning tonight. Returns (df_or_None, source_label)."""
+    wiki_df = wiki_fetch_fn()
+    fund_df = fund_fetch_fn() if fund_fetch_fn else None
+
+    if wiki_df is not None and fund_df is not None:
+        _log_universe_source_diff(universe_name, wiki_df, fund_df)
+
+    if wiki_df is not None:
+        _save_last_good_universe_list(slug, list(wiki_df["Ticker"]), f"Wikipedia {universe_name} (live)")
+        return wiki_df, f"Wikipedia {universe_name} (live)"
+
+    if fund_df is not None:
+        _save_last_good_universe_list(slug, list(fund_df["Ticker"]), f"{fund_label} holdings file (live)")
+        return fund_df, (
+            f"Wikipedia {universe_name} unavailable - {fund_label} holdings file (live) instead"
+        )
+
+    last_good = _load_last_good_universe_list(slug)
+    if last_good is not None:
+        return _last_good_universe_df_and_label(universe_name, last_good)
+
+    _log.warning(
+        f"[universe] {universe_name}: constituent list unavailable (Wikipedia and "
+        f"fund-file fetch both failed, no last known-good list on disk) - not scanning"
+    )
+    return None, f"{universe_name} constituent list unavailable - not scanning"
+
+
+# Fund-holdings cross-check (source 2 above) - the SAME _fetch_ishares_
+# csv()/_clean_ishares_holdings_df() mechanism the Russell 2000/1000
+# (IWM/IWB) fetchers above already use, generalised to accept a
+# market-specific normalize_fn (added below) instead of always
+# applying _normalize_us_ticker. Director's suggestions for which fund
+# to use, UNVERIFIED from this sandbox (no live network route to
+# ishares.com/blackrock.com from here, same standing constraint as
+# every other live-feed URL in this app - see e.g. TOPIX_CONSTITUENTS_
+# URL/capm_engine._MOF_JGB_CSV_URL's own comments): iShares Core FTSE
+# 100 UCITS ETF (ISF), iShares FTSE 250 UCITS ETF (MIDD), iShares
+# S&P/TSX 60 Index ETF (XIU), iShares Core S&P/TSX Capped Composite
+# Index ETF (XIC). The exact URL/product-id path below is a best-
+# effort construction from the same iShares CSV-export URL shape
+# IWM_HOLDINGS_CSV_URL/IWB_HOLDINGS_CSV_URL already use - NOT confirmed
+# against a live response, and may need correcting from the Director's
+# own Railway logs once this runs for real. A wrong URL simply fails
+# this fetch (falls through to the next source) - same graceful-
+# degradation design as every other fetcher in this module, never a
+# hard error; this source is a cross-check only in any case (Wikipedia
+# stays the list actually used whenever it succeeds).
+ISF_HOLDINGS_CSV_URL = (
+    "https://www.ishares.com/uk/individual/en/products/251795/"
+    "ishares-ftse-100-ucits-etf-gbp-dist-fund"
+    "?switchLocale=y&siteEntryPassthrough=true&fileType=csv&fileName=ISF_holdings&dataType=fund"
+)
+MIDD_HOLDINGS_CSV_URL = (
+    "https://www.ishares.com/uk/individual/en/products/251824/"
+    "ishares-ftse-250-ucits-etf-fund"
+    "?switchLocale=y&siteEntryPassthrough=true&fileType=csv&fileName=MIDD_holdings&dataType=fund"
+)
+XIU_HOLDINGS_CSV_URL = (
+    "https://www.blackrock.com/ca/investors/en/products/239837/"
+    "ishares-sptsx-60-index-etf"
+    "?fileType=csv&fileName=XIU_holdings&dataType=fund"
+)
+XIC_HOLDINGS_CSV_URL = (
+    "https://www.blackrock.com/ca/investors/en/products/239834/"
+    "ishares-core-sptsx-capped-composite-index-etf"
+    "?fileType=csv&fileName=XIC_holdings&dataType=fund"
+)
+
+
+def _fetch_ishares_fund_holdings(url, normalize_fn, min_rows=1, max_rows=None):
+    """Shared live-fetch for a non-US iShares holdings-CSV export -
+    same _fetch_ishares_csv() browser-headers+retry mechanism and the
+    same _clean_ishares_holdings_df() row cleaning (cash/FX/escrow-
+    placeholder rows dropped) the Russell 2000/1000 fetchers use,
+    generalised here to re-normalise the surviving tickers with a
+    caller-supplied market-specific normalize_fn (LSE/TSX) instead of
+    always assuming US tickers. Returns None on ANY failure - same
+    fail-soft convention as every fetcher in this module."""
+    try:
+        text = _fetch_ishares_csv(url)
+        raw = pd.read_csv(io.StringIO(text), skiprows=9, on_bad_lines="skip")
+    except Exception:
+        return None
+    return _clean_ishares_holdings_df(raw, min_rows=min_rows, max_rows=max_rows, normalize_fn=normalize_fn)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_ftse100_ishares():
+    return _fetch_ishares_fund_holdings(ISF_HOLDINGS_CSV_URL, _normalize_lse_ticker, min_rows=1, max_rows=200)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_ftse250_ishares():
+    return _fetch_ishares_fund_holdings(MIDD_HOLDINGS_CSV_URL, _normalize_lse_ticker, min_rows=1, max_rows=400)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_tsx60_ishares():
+    return _fetch_ishares_fund_holdings(XIU_HOLDINGS_CSV_URL, _normalize_tsx_ticker, min_rows=1, max_rows=120)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_tsxcomposite_ishares():
+    return _fetch_ishares_fund_holdings(XIC_HOLDINGS_CSV_URL, _normalize_tsx_ticker, min_rows=1, max_rows=400)
 
 
 # -----------------------------------------------------------------
@@ -3138,63 +3370,63 @@ def get_universe_pool(country, universe):
     # AU-vs-USA country inference being wrong for these four names has
     # no effect on which branch runs. ---
 
+    # Lists & display Commit 1 (3 Oct 2026, Director-directed): each of
+    # the four below now runs the shared 4-step chain (Wikipedia -> fund
+    # file cross-check -> last known-good list -> not scanning) instead
+    # of the memory-written static lists this task's own report flagged
+    # and this commit deleted - see _resolve_universe_with_fund_
+    # crosscheck()'s own docstring above.
     if universe == "FTSE 100":
-        df = fetch_ftse100()
-        if df is not None:
-            return df, "Wikipedia FTSE 100 (live)"
-        fallback_df = pd.DataFrame({
-            "Ticker": _FTSE100_STATIC_FALLBACK, "Sector": [None] * len(_FTSE100_STATIC_FALLBACK),
-        })
-        return fallback_df, (
-            f"Web scrape unavailable - static {len(_FTSE100_STATIC_FALLBACK)}-ticker fallback list"
+        return _resolve_universe_with_fund_crosscheck(
+            "FTSE 100", "ftse_100", fetch_ftse100, fetch_ftse100_ishares, "iShares Core FTSE 100 UCITS ETF (ISF)"
         )
 
     if universe == "FTSE 250":
-        df = fetch_ftse250()
-        if df is not None:
-            return df, "Wikipedia FTSE 250 (live)"
-        fallback_df = pd.DataFrame({
-            "Ticker": _FTSE250_STATIC_FALLBACK, "Sector": [None] * len(_FTSE250_STATIC_FALLBACK),
-        })
-        return fallback_df, (
-            f"Web scrape unavailable - static {len(_FTSE250_STATIC_FALLBACK)}-ticker fallback list"
+        return _resolve_universe_with_fund_crosscheck(
+            "FTSE 250", "ftse_250", fetch_ftse250, fetch_ftse250_ishares, "iShares FTSE 250 UCITS ETF (MIDD)"
         )
 
     if universe == "TSX 60":
-        df = fetch_tsx60()
-        if df is not None:
-            return df, "Wikipedia S&P/TSX 60 (live)"
-        fallback_df = pd.DataFrame({
-            "Ticker": _TSX60_STATIC_FALLBACK, "Sector": [None] * len(_TSX60_STATIC_FALLBACK),
-        })
-        return fallback_df, (
-            f"Web scrape unavailable - static {len(_TSX60_STATIC_FALLBACK)}-ticker fallback list"
+        return _resolve_universe_with_fund_crosscheck(
+            "TSX 60", "tsx_60", fetch_tsx60, fetch_tsx60_ishares, "iShares S&P/TSX 60 Index ETF (XIU)"
         )
 
     if universe == "TSX Composite":
-        df = fetch_tsxcomposite()
-        if df is not None:
-            return df, "Derived: Wikipedia S&P/TSX 60 (live) backfilled against any live TSX Composite rows"
-        fallback_df = pd.DataFrame({
-            "Ticker": _TSX_COMPOSITE_STATIC_FALLBACK,
-            "Sector": [None] * len(_TSX_COMPOSITE_STATIC_FALLBACK),
-        })
-        return fallback_df, (
-            f"Web scrape unavailable - static {len(_TSX_COMPOSITE_STATIC_FALLBACK)}-ticker fallback list"
+        return _resolve_universe_with_fund_crosscheck(
+            "TSX Composite", "tsx_composite", fetch_tsxcomposite, fetch_tsxcomposite_ishares,
+            "iShares Core S&P/TSX Capped Composite Index ETF (XIC)",
         )
 
+    # Stage 1 Japan, Commit B's own rule ("never build a constituent
+    # list from memory") stays in force for these two - no fund-file
+    # cross-check source exists for either (Wikipedia doesn't carry a
+    # TOPIX 500 table at all, and no single ETF tracks the Nikkei 225
+    # the way ISF/XIU track FTSE 100/TSX 60) - but Lists & display
+    # Commit 1 now also gives both the SAME last-known-good disk
+    # persistence as FTSE/TSX above, so a failed fetch_nikkei225()/
+    # fetch_topix500() falls back to a real, dated prior list instead
+    # of skipping outright whenever one is available.
     if universe == "Nikkei 225":
         df = fetch_nikkei225()
         if df is not None:
+            _save_last_good_universe_list("nikkei_225", list(df["Ticker"]), "Wikipedia Nikkei 225 (live)")
             return df, "Wikipedia Nikkei 225 (live)"
-        # Never built from memory - no fallback list (see this
-        # universe's own fetcher comment above).
+        last_good = _load_last_good_universe_list("nikkei_225")
+        if last_good is not None:
+            return _last_good_universe_df_and_label("Nikkei 225", last_good)
         return None, "Wikipedia Nikkei 225 scrape unavailable - not scanning"
 
     if universe == "TOPIX 500":
         df = fetch_topix500()
         if df is not None:
+            _save_last_good_universe_list(
+                "topix_500", list(df["Ticker"]),
+                "JPX TOPIX New Index Series constituents file (live, Core30+Large70+Mid400)",
+            )
             return df, "JPX TOPIX New Index Series constituents file (live, Core30+Large70+Mid400)"
+        last_good = _load_last_good_universe_list("topix_500")
+        if last_good is not None:
+            return _last_good_universe_df_and_label("TOPIX 500", last_good)
         # fetch_topix500() itself already logged the required
         # "[universe] TOPIX 500: constituent list unavailable (...) -
         # not scanning" line - never built from memory, no fallback list.
