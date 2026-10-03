@@ -30139,6 +30139,110 @@ def _render_valuation_change_audit_panel():
         )
 
 
+def _median_mos(values):
+    """Plain median of a non-empty list of numbers, or None for an
+    empty list - a one-off helper for _render_private_universes_panel()
+    below, which has no other use for a full statistics import."""
+    if not values:
+        return None
+    s = sorted(values)
+    n = len(s)
+    mid = n // 2
+    return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2
+
+
+def _render_private_universes_panel():
+    """"Private universes" admin panel (Stage 1b, 3 Oct 2026, Director-
+    directed) - owner-only, read-only. FTSE 100/FTSE 250/TSX 60/TSX
+    Composite (or whatever PRIVATE_UNIVERSES currently names - see
+    scan_store.is_private_universe()'s own docstring) are scanned and
+    valued exactly like any other universe but are deliberately kept
+    off every public page, sitemap entry, and public API listing - this
+    panel is the one place their scan health and rows are visible at
+    all. Reads via scan_store.list_saved_universes(include_private=
+    True)/load_scan_raw(universe, allow_private=True) - the two
+    explicitly-allowed internal reads this task's own reader inventory
+    names for this panel. No gate of its own - called only from inside
+    page_admin_dashboard(), after that function's own owner check."""
+    st.markdown("### Private universes")
+    st.caption(
+        "Owner-only. Scanned and valued like any other universe, but "
+        "deliberately kept off the Scanner, the homepage, digests/"
+        "alerts, Compare, Top 100 selection, and every public page/"
+        "API/sitemap - see the PRIVATE_UNIVERSES env var."
+    )
+
+    _private_universes = sorted(
+        u for u in scan_store.list_saved_universes(include_private=True)
+        if scan_store.is_private_universe(u)
+    )
+    if not _private_universes:
+        st.info("No private universe has a saved scan yet.")
+        return
+
+    _summary_rows = []
+    _all_private_rows = []
+    for _u in _private_universes:
+        _payload = scan_store.load_scan_raw(_u, allow_private=True)
+        _rows = (_payload or {}).get("rows") or []
+        for _r in _rows:
+            _all_private_rows.append(dict(_r, Universe=_u))
+
+        _mos_values = [r["MOS %"] for r in _rows if isinstance(r.get("MOS %"), (int, float))]
+        try:
+            _country = "United Kingdom" if _u.startswith("FTSE") else "Canada"
+            _pool_df, _ = scanner_engine.get_universe_pool(_country, _u)
+            _pool_size = len(_pool_df) if _pool_df is not None else None
+        except Exception:
+            _pool_size = None
+        _summary_rows.append({
+            "Universe": _u,
+            "Last scan (UTC)": (_payload or {}).get("generated_at") or "never",
+            "Rows saved": len(_rows),
+            "Pool size": _pool_size if _pool_size is not None else "unknown",
+            "Median MOS %": _median_mos(_mos_values),
+            "DCF-unreliable": sum(1 for r in _rows if r.get("DCF Unreliable")),
+            "price_unit_suspect": sum(1 for r in _rows if r.get("price_unit_suspect")),
+            "MOS-sweep flags": len(scan_store.mos_sweep_guard(_rows)),
+        })
+
+    st.dataframe(pd.DataFrame(_summary_rows), hide_index=True, width="stretch")
+
+    st.markdown("#### Open a ticker's Deep Dive")
+    _pu_ticker = st.text_input(
+        "Ticker", key="admin_dash_private_universes_ticker",
+        placeholder="e.g. BARC.L or RY.TO",
+    ).strip().upper()
+    if st.button("Open Deep Dive", key="admin_dash_private_universes_open") and _pu_ticker:
+        _dispatch_search(_pu_ticker)
+
+    st.markdown("#### Private rows")
+    if not _all_private_rows:
+        st.info("No rows saved for any private universe yet.")
+        return
+    _display_cols = [
+        "Universe", "Ticker", "Company Name", "Price", "Currency",
+        "Intrinsic Value", "MOS %", "Value Score", "Growth Source", "Discount Source",
+    ]
+    _table_rows = [
+        {
+            "Universe": r.get("Universe"),
+            "Ticker": r.get("Ticker"),
+            "Company Name": r.get("Company Name"),
+            "Price": r.get("Price"),
+            "Currency": fcf_valuation_engine.trading_currency_for(r.get("Ticker")),
+            "Intrinsic Value": r.get("Intrinsic Value"),
+            "MOS %": r.get("MOS %"),
+            "Value Score": r.get("Long Score"),
+            "Growth Source": r.get("Growth Source"),
+            "Discount Source": r.get("Discount Source"),
+        }
+        for r in _all_private_rows
+    ]
+    st.dataframe(pd.DataFrame(_table_rows, columns=_display_cols), hide_index=True, width="stretch")
+    st.caption(f"{len(_table_rows)} row(s) across {len(_private_universes)} private universe(s).")
+
+
 def page_admin_dashboard():
     """Mega-batch Part 35.2: the owner Admin Dashboard - matches the
     owner-approved mock at mocks/admin_dashboard_mock.html. Replaces the
@@ -32102,6 +32206,13 @@ def page_admin_dashboard():
     # page" pattern as every panel above.
     st.markdown("---")
     _render_stored_score_viewer_panel()
+
+    # --- PRIVATE UNIVERSES (Stage 1b, 3 Oct 2026, Director-directed) -
+    # see _render_private_universes_panel()'s own docstring. Same "no
+    # gate of its own, final section of this page" pattern as every
+    # panel above.
+    st.markdown("---")
+    _render_private_universes_panel()
 
 
 # -----------------------------------

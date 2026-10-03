@@ -131,10 +131,27 @@ import trading_cost_engine
 
 MARKET_ASX = "ASX"
 MARKET_US = "US"
+# Stage 1b - UK/TSX windows. Anchor universe mirrors the existing US
+# pattern (US anchors on its own S&P 500 scan) - FTSE 100 and TSX
+# Composite are both PRIVATE by default (scan_store.is_private_
+# universe()), and tickers_for_market() below is deliberately left at
+# scan_store.load_scan_raw()'s own default deny, so these two markets'
+# rosters read empty and these windows stay idle while the universes
+# are private - see this task's own report for that consequence.
+MARKET_UK = "UK"
+MARKET_TSX = "TSX"
 
-_MARKET_UNIVERSE = {MARKET_ASX: "ASX 200", MARKET_US: "S&P 500"}
-_MARKET_TZ = {MARKET_ASX: ZoneInfo("Australia/Sydney"), MARKET_US: ZoneInfo("America/New_York")}
-_MARKET_CURRENCY_FALLBACK = {MARKET_ASX: "AUD", MARKET_US: "USD"}
+_MARKET_UNIVERSE = {
+    MARKET_ASX: "ASX 200", MARKET_US: "S&P 500",
+    MARKET_UK: "FTSE 100", MARKET_TSX: "TSX Composite",
+}
+_MARKET_TZ = {
+    MARKET_ASX: ZoneInfo("Australia/Sydney"), MARKET_US: ZoneInfo("America/New_York"),
+    MARKET_UK: ZoneInfo("Europe/London"), MARKET_TSX: ZoneInfo("America/Toronto"),
+}
+_MARKET_CURRENCY_FALLBACK = {
+    MARKET_ASX: "AUD", MARKET_US: "USD", MARKET_UK: "GBP", MARKET_TSX: "CAD",
+}
 
 # Same pacing as nightly_scan.py's own sector/attention top-up passes -
 # reused for the two remaining PER-TICKER loops this job still has
@@ -176,6 +193,20 @@ _REGULAR_MARKET_STATE = "REGULAR"
 WINDOW_START_HOUR = 13
 WINDOW_END_HOUR = 16
 
+# Per-market window (Stage 1b): (start_hour, start_minute, end_hour,
+# end_minute), each in the market's OWN local time (_MARKET_TZ above).
+# ASX/US keep the exact bound set above, unchanged. UK: 08:00-16:30
+# Europe/London (owner-specified). TSX: same hours as the US window
+# (owner-specified) - via Yahoo, since _fetch_quotes_for_market's own
+# Alpaca gate is `market != MARKET_US`, so TSX already falls through to
+# Yahoo with no further code change.
+_MARKET_WINDOW = {
+    MARKET_ASX: (WINDOW_START_HOUR, 0, WINDOW_END_HOUR, 0),
+    MARKET_US: (WINDOW_START_HOUR, 0, WINDOW_END_HOUR, 0),
+    MARKET_UK: (8, 0, 16, 30),
+    MARKET_TSX: (WINDOW_START_HOUR, 0, WINDOW_END_HOUR, 0),
+}
+
 
 def _get_info_field(info, *keys):
     """First non-None value found under any of `keys` in a yfinance
@@ -190,18 +221,23 @@ def _get_info_field(info, *keys):
 
 
 def is_due_now(market, now=None):
-    """True if `market` (MARKET_ASX/MARKET_US) is inside today's
-    sampling window in ITS OWN local time - a weekday, and local hour
-    in [WINDOW_START_HOUR, WINDOW_END_HOUR). `now` is injectable (UTC
-    or any tz-aware datetime) for testing; defaults to the real current
-    time. Pure - no I/O, no state - the scheduler's own state-file date
-    guard (mirroring every other daily job in scheduler_engine.py) is
-    what actually prevents firing twice in one day."""
+    """True if `market` (MARKET_ASX/MARKET_US/MARKET_UK/MARKET_TSX) is
+    inside today's sampling window in ITS OWN local time - a weekday,
+    and local time within `_MARKET_WINDOW[market]` (minute-resolution,
+    needed for the UK's own :30 close). `now` is injectable (UTC or any
+    tz-aware datetime) for testing; defaults to the real current time.
+    Pure - no I/O, no state - the scheduler's own state-file date guard
+    (mirroring every other daily job in scheduler_engine.py) is what
+    actually prevents firing twice in one day."""
     now = now or datetime.now(timezone.utc)
     local = now.astimezone(_MARKET_TZ[market])
     if local.weekday() >= 5:  # Sat/Sun
         return False
-    return WINDOW_START_HOUR <= local.hour < WINDOW_END_HOUR
+    start_hour, start_minute, end_hour, end_minute = _MARKET_WINDOW[market]
+    minutes_now = local.hour * 60 + local.minute
+    start = start_hour * 60 + start_minute
+    end = end_hour * 60 + end_minute
+    return start <= minutes_now < end
 
 
 def tickers_for_market(market):
@@ -815,3 +851,21 @@ def run_asx_recorder(log=print):
 def run_us_recorder(log=print):
     """scheduler_engine.py entry point for the US-local sampling slot."""
     _record_market(MARKET_US, log=log)
+
+
+def run_uk_recorder(log=print):
+    """scheduler_engine.py entry point for the UK-local sampling slot
+    (Stage 1b). tickers_for_market(MARKET_UK) reads the FTSE 100 scan
+    via scan_store.load_scan_raw() at its own default deny - while
+    FTSE 100 stays private this returns [] and the run records 0
+    tickers, which is expected, not a bug (see MARKET_UK's own comment
+    above)."""
+    _record_market(MARKET_UK, log=log)
+
+
+def run_tsx_recorder(log=print):
+    """scheduler_engine.py entry point for the TSX-local sampling slot
+    (Stage 1b), via Yahoo - Alpaca only covers MARKET_US (see
+    _fetch_quotes_for_market's own gate). Same private-universe idle
+    consequence as run_uk_recorder() above, via TSX Composite."""
+    _record_market(MARKET_TSX, log=log)

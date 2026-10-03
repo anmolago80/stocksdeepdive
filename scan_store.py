@@ -18,6 +18,41 @@ import os
 import re
 from datetime import datetime, timezone
 
+# Stage 1b (3 Oct 2026, Director-directed): FTSE 100/FTSE 250/TSX 60/
+# TSX Composite are scanned and valued like any other universe but are
+# PRIVATE - visible only on the Admin dashboard until Andrew removes a
+# name from this list. New env var PRIVATE_UNIVERSES, comma-separated;
+# unset means the code default below; set to an empty string or "none"
+# (case-insensitive) means nothing is private. Read in exactly ONE
+# helper, is_private_universe(name), so every reader of a saved scan
+# makes the same decision the same way - see that function's own
+# docstring for the full "default DENY unless explicitly allowed" list
+# of readers this task's own report names.
+_DEFAULT_PRIVATE_UNIVERSES = "FTSE 100, FTSE 250, TSX 60, TSX Composite"
+
+
+def _private_universe_set():
+    raw = os.environ.get("PRIVATE_UNIVERSES")
+    if raw is None:
+        raw = _DEFAULT_PRIVATE_UNIVERSES
+    raw = raw.strip()
+    if not raw or raw.lower() == "none":
+        return set()
+    return {name.strip() for name in raw.split(",") if name.strip()}
+
+
+def is_private_universe(name):
+    """True iff `name` is in the PRIVATE_UNIVERSES set - see this
+    module's own header comment for the env var's exact semantics
+    (unset -> code default FTSE 100/FTSE 250/TSX 60/TSX Composite;
+    ""/"none" -> nothing private). Re-reads the env var on every call
+    (cheap - a handful of string ops, never a file/network read) rather
+    than caching it at import time, so a changed Railway variable takes
+    effect on the next request without a redeploy being required for
+    the privacy decision itself (only for a changed NIGHTLY_UNIVERSES,
+    which scheduler_engine.py already documents as redeploy-free too)."""
+    return (name or "") in _private_universe_set()
+
 
 def _data_dir():
     base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
@@ -75,7 +110,7 @@ def save_scan(universe, rows, source_label, attention_lite=True, degraded=False,
     return payload
 
 
-def load_scan(universe):
+def load_scan(universe, allow_private=False):
     """The stored overnight scan for `universe`, or None. Adds a
     human-readable freshness label; anything older than 3 days is treated
     as gone (stale rankings are worse than none).
@@ -90,7 +125,21 @@ def load_scan(universe):
     itself is left completely untouched by this - it still means exactly
     what it always meant ("last full fundamentals scan"), the Scanner
     page's own two-part date line (app.py) reads both timestamps
-    separately to show "fundamentals scan of X - prices updated Y"."""
+    separately to show "fundamentals scan of X - prices updated Y".
+
+    Stage 1b (3 Oct 2026, Director-directed): `allow_private=False` (the
+    default) means a private universe (is_private_universe(universe))
+    is treated EXACTLY like a universe with no saved scan at all - None,
+    before the file is even opened. This is the single enforcement
+    point every public-facing reader (Scanner, homepage, digests,
+    Compare, snapshot_store, derived universes, select_top100_pool())
+    gets for free just by calling load_scan() with its own default; the
+    nightly scan's own internal integrity-guard checks and the
+    scheduler's due-logic are the only callers that pass
+    allow_private=True - see this task's own report for the full
+    reader inventory and why each one does or doesn't."""
+    if not allow_private and is_private_universe(universe):
+        return None
     try:
         with open(_path(universe)) as f:
             payload = json.load(f)
@@ -120,7 +169,7 @@ def load_scan(universe):
     return payload
 
 
-def load_scan_raw(universe):
+def load_scan_raw(universe, allow_private=False):
     """Like load_scan() above, but skips the 72h staleness cutoff -
     returns the stored payload regardless of age (or None if there's no
     file at all, it's corrupt, or it has no rows). Added for the nightly
@@ -130,7 +179,16 @@ def load_scan_raw(universe):
     repricing - reading them for that purpose must not be gated by the
     same freshness check the price refresh exists to fix. Not exposed to
     the Scanner page itself - only nightly_scan.reprice_universe() calls
-    this."""
+    this.
+
+    Stage 1b (3 Oct 2026, Director-directed): same allow_private=False
+    default/enforcement as load_scan() above - see that function's own
+    docstring. nightly_scan.py's own reprice/catch-up/one-off-check call
+    sites and the new Admin "Private universes" panel pass
+    allow_private=True; top100_engine.py, moat_export.py, admin_data_
+    audit.py's bulk scan and every other caller keep the default deny."""
+    if not allow_private and is_private_universe(universe):
+        return None
     try:
         with open(_path(universe)) as f:
             payload = json.load(f)
@@ -141,7 +199,7 @@ def load_scan_raw(universe):
     return payload
 
 
-def load_scan_meta(universe):
+def load_scan_meta(universe, allow_private=False):
     """Scheduler due-logic fix (30 Sep 2026, owner-directed, Commit 3 of
     the growth/Top100 freshness fix): generated_at/repriced_at/run_night/
     degraded for `universe`, with NO 72h staleness cutoff (unlike load_
@@ -164,8 +222,14 @@ def load_scan_meta(universe):
 
     Returns None if there's no file, it's corrupt, or it has no rows
     (same "no rows = doesn't really exist yet" convention load_scan_raw()
-    already uses)."""
-    payload = load_scan_raw(universe)
+    already uses).
+
+    Stage 1b (3 Oct 2026, Director-directed): `allow_private` passed
+    straight through to load_scan_raw() - scheduler_engine._universes_
+    needing_scan() (the only caller) passes True, since the scheduler
+    must be able to judge a PRIVATE universe due for its own scan too -
+    see load_scan()'s own docstring for the general enforcement point."""
+    payload = load_scan_raw(universe, allow_private=allow_private)
     if not payload:
         return None
     return {
@@ -176,7 +240,7 @@ def load_scan_meta(universe):
     }
 
 
-def list_saved_universes():
+def list_saved_universes(include_private=False):
     """Every universe with a saved overnight scan on disk right now -
     the Top 100 tab's own "merge every universe's stored scan rows"
     selection step (top100_engine.py) reads this rather than a
@@ -188,7 +252,15 @@ def list_saved_universes():
     its filename slug via _slug() above, which is lossy/one-way - e.g.
     "S&P 500" and "S and P 500" would collide) - a corrupt/unreadable
     file is skipped rather than failing the whole listing, matching
-    load_scan_raw()'s own fail-soft convention for a single bad file."""
+    load_scan_raw()'s own fail-soft convention for a single bad file.
+
+    Stage 1b (3 Oct 2026, Director-directed): `include_private=False`
+    (the default) drops every name is_private_universe() flags - so
+    top100_engine.select_top100_pool()'s own candidate collection
+    (which iterates this list) never even sees a private universe's
+    name to begin with, same "deny by default" enforcement as load_
+    scan()'s own docstring. The Admin "Private universes" panel is the
+    one caller that passes True."""
     out = []
     try:
         entries = os.listdir(_data_dir())
@@ -203,12 +275,12 @@ def list_saved_universes():
         except (OSError, ValueError):
             continue
         universe = payload.get("universe")
-        if universe:
+        if universe and (include_private or not is_private_universe(universe)):
             out.append(universe)
     return sorted(out)
 
 
-def find_ticker_row(ticker):
+def find_ticker_row(ticker, allow_private=False):
     """The freshest saved overnight-scan row for `ticker`, across every
     universe with a scan on disk, or None if no fresh scan covers it.
 
@@ -230,12 +302,21 @@ def find_ticker_row(ticker):
     first - deterministic run to run, not "most recently scanned" (every
     fresh scan this returns is equally current within the 72h window
     load_scan() already enforces, so there's no real "freshest of the
-    fresh" to break the tie on)."""
+    fresh" to break the tie on).
+
+    Stage 1b (3 Oct 2026, Director-directed): `allow_private=False` (the
+    default) skips every private universe entirely, via list_saved_
+    universes()'s/load_scan()'s own matching defaults - this is
+    Compare's own scan-row lookup, one of the explicitly-denied readers
+    in this task's own report. A ticker that's ALSO saved under a public
+    universe (e.g. covered by both a private and a public scan) still
+    resolves normally, from the public universe's own row - the private
+    row is simply never reached by this default-deny iteration."""
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return None
-    for universe in list_saved_universes():
-        payload = load_scan(universe)
+    for universe in list_saved_universes(include_private=allow_private):
+        payload = load_scan(universe, allow_private=allow_private)
         if not payload:
             continue
         for row in payload.get("rows") or []:

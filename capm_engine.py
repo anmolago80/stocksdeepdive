@@ -369,8 +369,13 @@ _DISCOUNT_TIER_FX_TO_USD_APPROX = {
     # `market_cap_usd = market_cap * _DISCOUNT_TIER_FX_TO_USD_APPROX.
     # get(ccy, 1.0)` line just below - no behaviour change to that line
     # itself, only two new dict entries.
-    "GBP": 1.33,
-    "CAD": 0.72,
+    # Stage 1b (3 Oct 2026, Director-directed): recalibrated from the
+    # live USD->GBP/USD->CAD rates actually logged in production
+    # (0.7553 / 1.4247) - see fcf_valuation_engine.FX_TO_USD_APPROX's
+    # own comment for the exact arithmetic. Was 1.33/0.72 (Stage 1a's
+    # own initial estimate).
+    "GBP": 1.32,
+    "CAD": 0.70,
 }
 
 # Premiums are RELATIVE TO THE RISK-FREE RATE (not a flat add-on), so

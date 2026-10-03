@@ -447,7 +447,10 @@ _DEFAULT_NIGHTLY_UNIVERSES = (
     "ASX 200:daily, ASX 300:daily, ASX All Technology:daily, S&P 500:daily, "
     "Nasdaq 100:daily, Dow Jones 30:daily, All Ordinaries:mon, "
     "S&P 400 MidCap:tue, Small Caps (S&P 600):wed, Russell 1000:thu, "
-    "S&P 500 Dividend Aristocrats:fri, Russell 2000:sat"
+    "S&P 500 Dividend Aristocrats:fri, Russell 2000:sat, "
+    # Stage 1b - private universes (see scan_store.is_private_universe()).
+    # Every existing entry above is unchanged.
+    "FTSE 100:sun, FTSE 250:sun, TSX 60:tue, TSX Composite:tue"
 )
 
 _WEEKDAY_ABBR = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
@@ -1052,20 +1055,33 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
                     r.get("Ticker") for r in payload["rows"] if r.get("Ticker"))
                 if payload.get("attention_lite"):
                     _lite_universes_scanned_tonight.append(universe)
-                try:
-                    import snapshot_store
-                    snapshot_store.build_snapshots_from_scan(
-                        universe, payload["rows"], log=log)
-                except Exception as e:
-                    log(f"[scheduler] snapshot build {universe} failed: {e}")
-                # Services batch, Part 1: evaluate this universe's alerts
-                # right away (queues hits only - nothing is emailed/pushed
-                # here, see the batched send after the loop below).
-                try:
-                    import alert_engine
-                    alert_engine.check_universe_rows(payload["rows"], alert_prev_map, log=log)
-                except Exception as e:
-                    log(f"[scheduler] alert check {universe} failed: {e}")
+                # Stage 1b (3 Oct 2026, Director-directed): a private
+                # universe's scan is still saved to disk (above, via
+                # run_universe_scan() -> scan_store.save_scan(), same as
+                # any other universe - the Admin "Private universes"
+                # panel needs it) but must never produce a PUBLIC /s/
+                # <ticker> page, sitemap entry or public API listing, and
+                # must never fire an alert - see this task's own report
+                # for the full reader inventory.
+                import scan_store
+                if scan_store.is_private_universe(universe):
+                    log(f"[scheduler] {universe}: private universe - skipping "
+                        f"public snapshot build and alert check")
+                else:
+                    try:
+                        import snapshot_store
+                        snapshot_store.build_snapshots_from_scan(
+                            universe, payload["rows"], log=log)
+                    except Exception as e:
+                        log(f"[scheduler] snapshot build {universe} failed: {e}")
+                    # Services batch, Part 1: evaluate this universe's alerts
+                    # right away (queues hits only - nothing is emailed/pushed
+                    # here, see the batched send after the loop below).
+                    try:
+                        import alert_engine
+                        alert_engine.check_universe_rows(payload["rows"], alert_prev_map, log=log)
+                    except Exception as e:
+                        log(f"[scheduler] alert check {universe} failed: {e}")
                 # Services batch, Part 2: refresh insider/buyback data for
                 # up to INSIDER_NIGHTLY_CAP stale tickers from this
                 # universe - see insider_engine.py's own module docstring
@@ -1499,6 +1515,24 @@ def _run_quote_recorder_us(log):
     above, same contract, same module."""
     import quote_recorder
     quote_recorder.run_us_recorder(log=log)
+
+
+def _run_quote_recorder_uk(log):
+    """UK-local mid-session quote sampler (Stage 1b) - see
+    _run_quote_recorder_asx above, same contract, same module. Records
+    0 tickers while FTSE 100 stays private (quote_recorder.run_uk_
+    recorder()'s own docstring) - that is expected, not a failure."""
+    import quote_recorder
+    quote_recorder.run_uk_recorder(log=log)
+
+
+def _run_quote_recorder_tsx(log):
+    """TSX-local mid-session quote sampler (Stage 1b), via Yahoo - see
+    _run_quote_recorder_asx above, same contract, same module. Records
+    0 tickers while TSX Composite stays private - see quote_recorder.
+    run_tsx_recorder()'s own docstring."""
+    import quote_recorder
+    quote_recorder.run_tsx_recorder(log=log)
 
 
 def _mark_top100_pending(scan_day, finished_at, reason):
@@ -1978,7 +2012,7 @@ def _universes_missing_today(cfg, ref_day):
         elif cadence == "weekly":
             continue  # no pinned day - left to the general due-scan check
         # cadence == "daily" falls through: scheduled every night
-        payload = scan_store.load_scan_raw(u)
+        payload = scan_store.load_scan_raw(u, allow_private=True)
         credited_day = None
         if payload:
             credited_day = payload.get("run_night")
@@ -2045,7 +2079,7 @@ def _universes_needing_scan(cfg):
     today_str = now.strftime("%Y-%m-%d")
     due = []
     for u, cadence in cfg["universe_cadence"].items():
-        meta = scan_store.load_scan_meta(u)
+        meta = scan_store.load_scan_meta(u, allow_private=True)
         gen_dt = None
         if meta and meta.get("generated_at"):
             try:
@@ -2821,7 +2855,7 @@ def _loop(log):
                         # hammer the lock indefinitely.
                         import scan_store
                         state = _load_state()
-                        nothing_servable_raw = [u for u in missing if scan_store.load_scan(u) is None]
+                        nothing_servable_raw = [u for u in missing if scan_store.load_scan(u, allow_private=True) is None]
                         # Audit fixes Commit 2 (30 Sep 2026, owner-directed):
                         # the nothing-servable cohort above is exactly the
                         # uncapped-catch-up path Problem A's per-universe
@@ -3026,6 +3060,66 @@ def _loop(log):
                                 _release_job_lock("quote_recorder_us")
                         else:
                             log("[scheduler] US quote recorder skipped - another process "
+                                "already holds the lock")
+
+                # Stage 1b: UK (08:00-16:30 Europe/London) and TSX (same
+                # hours as the US window, via Yahoo) sampling slots -
+                # identical due-check/lock/retry-cap shape as ASX/US
+                # above, own state keys. Both markets' own anchor
+                # universe (FTSE 100 / TSX Composite) is private by
+                # default, so quote_recorder.tickers_for_market() reads
+                # [] and these runs record 0 tickers until Andrew sets
+                # PRIVATE_UNIVERSES to open them up - expected, logged
+                # by quote_recorder itself, not treated as a failure
+                # here.
+                if (quote_recorder is not None
+                        and quote_recorder.is_due_now(quote_recorder.MARKET_UK, now=now)
+                        and state.get("last_quote_recorder_uk_date") != today):
+                    attempts = state.get("quote_recorder_uk_attempts", {})
+                    n_today = attempts.get(today, 0)
+                    if n_today < _DAILY_JOB_RETRY_CAP:
+                        if _acquire_job_lock("quote_recorder_uk", log):
+                            try:
+                                state = _load_state()
+                                state["quote_recorder_uk_attempts"] = {today: n_today + 1}
+                                _save_state(state)
+                                log(f"[scheduler] starting UK quote recorder "
+                                    f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
+                                _record_job("quote_recorder_uk", log, _run_quote_recorder_uk)
+                                state = _load_state()
+                                state["last_quote_recorder_uk_date"] = today
+                                _save_state(state)
+                            except Exception as e:
+                                log(f"[scheduler] UK quote recorder failed: {e}")
+                            finally:
+                                _release_job_lock("quote_recorder_uk")
+                        else:
+                            log("[scheduler] UK quote recorder skipped - another process "
+                                "already holds the lock")
+
+                if (quote_recorder is not None
+                        and quote_recorder.is_due_now(quote_recorder.MARKET_TSX, now=now)
+                        and state.get("last_quote_recorder_tsx_date") != today):
+                    attempts = state.get("quote_recorder_tsx_attempts", {})
+                    n_today = attempts.get(today, 0)
+                    if n_today < _DAILY_JOB_RETRY_CAP:
+                        if _acquire_job_lock("quote_recorder_tsx", log):
+                            try:
+                                state = _load_state()
+                                state["quote_recorder_tsx_attempts"] = {today: n_today + 1}
+                                _save_state(state)
+                                log(f"[scheduler] starting TSX quote recorder "
+                                    f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
+                                _record_job("quote_recorder_tsx", log, _run_quote_recorder_tsx)
+                                state = _load_state()
+                                state["last_quote_recorder_tsx_date"] = today
+                                _save_state(state)
+                            except Exception as e:
+                                log(f"[scheduler] TSX quote recorder failed: {e}")
+                            finally:
+                                _release_job_lock("quote_recorder_tsx")
+                        else:
+                            log("[scheduler] TSX quote recorder skipped - another process "
                                 "already holds the lock")
 
                 # Mega-batch Part 10: nightly off-site DB backup - same

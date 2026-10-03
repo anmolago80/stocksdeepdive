@@ -617,6 +617,17 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         growth_rate=growth_rate, manual_fcf=manual_fcf,
         income_df=income_df,
     )
+
+    # Stage 1b (3 Oct 2026, Director-directed, section 6 carry-over) -
+    # same fix as deep_dive_engine.analyze()'s own identical comment:
+    # the price_unit_suspect guard already withholds IV/MOS on the Fair
+    # Value tab but not on this scan row. Forcing intrinsic to 0 reuses
+    # the row's own existing "Intrinsic Value"/"MOS %" contract just
+    # below (`if intrinsic > 0 else None`) - no new branch, no new
+    # return shape.
+    if _price_unit_meta.get("price_unit_suspect"):
+        intrinsic = 0
+
     if oneoff_summary_out is not None and iv_meta and iv_meta.get("fcf_distorted_years"):
         oneoff_summary_out["distorted_years"] = (
             oneoff_summary_out.get("distorted_years", 0) + len(iv_meta["fcf_distorted_years"])
@@ -768,6 +779,12 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         "Quality Default": bool(quality_default),
         "Intrinsic Value": round(intrinsic, 2) if intrinsic > 0 else None,
         "Intrinsic Default": bool(iv_meta.get("value_default", False)),
+        # Stage 1b (3 Oct 2026, Director-directed): pure passthrough of
+        # fundamentals_data.normalize_pence_quote()'s own guard - see
+        # the "if _price_unit_meta.get(...)" comment above for why
+        # Intrinsic Value/MOS % are already None on this row when set.
+        "price_unit_suspect": bool(_price_unit_meta.get("price_unit_suspect")),
+        "price_unit_suspect_reason": _price_unit_meta.get("price_unit_suspect_reason"),
         # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
         # positive): DISPLAY-ONLY sanity flag for the Scanner row - never
         # read by calculate_long_score()/composite_score() or any
@@ -1265,7 +1282,7 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
             f"retry lines above this one for the underlying cause), not a universe-resolution "
             f"problem - {tickers[0]} onward all failed the same way")
     if degraded:
-        prior = scan_store.load_scan(universe)
+        prior = scan_store.load_scan(universe, allow_private=True)
         prior_rows = len(prior.get("rows") or []) if prior else 0
         if prior_rows > 0:
             log(f"[nightly_scan] {universe}: only {len(rows)}/{len(tickers)} valid rows "
@@ -1335,7 +1352,7 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
             # above (see its own "no prior scan exists yet - saving
             # anyway, flagged degraded" branch): a wrong-shaped universe
             # still beats an empty one.
-            _integrity_prior_scan = scan_store.load_scan(universe)
+            _integrity_prior_scan = scan_store.load_scan(universe, allow_private=True)
             _integrity_prior_rows = len((_integrity_prior_scan or {}).get("rows") or [])
             if _integrity_prior_scan is None:
                 log(f"[nightly_scan] {universe}: integrity guard FAILED - {_integrity_reason} - "
@@ -1513,7 +1530,7 @@ def run_attention_topup(universe, log=print):
     per parent. Returns the count of rows actually updated, for the
     caller's log line - same shape as run_sector_topup's own return
     above."""
-    payload = scan_store.load_scan_raw(universe)
+    payload = scan_store.load_scan_raw(universe, allow_private=True)
     if not payload or not payload.get("rows"):
         log(f"[nightly_scan] {universe}: attention top-up skipped, no saved scan")
         return 0
@@ -1894,7 +1911,7 @@ def reprice_universe(universe, log=print, run_night=None):
     logging guard) in the same "[[nightly_scan] ...: N tickers in Xm Ys"
     style the rest of this module already uses."""
     start = time.time()
-    existing = scan_store.load_scan_raw(universe)
+    existing = scan_store.load_scan_raw(universe, allow_private=True)
     if existing is None:
         log(f"[nightly_scan] reprice {universe}: no prior scan on disk, skipping")
         return None
@@ -1965,7 +1982,11 @@ def reprice_universe(universe, log=print, run_night=None):
     # freshly-repriced rows, same as a full scan does in scheduler_
     # engine._run_nightly() - otherwise the snapshot/API surfaces would
     # keep showing this universe's pre-reprice prices indefinitely.
-    if payload and payload.get("rows"):
+    # Stage 1b (3 Oct 2026, Director-directed): never for a private
+    # universe - same "snapshot_store writes" denial as the full-scan
+    # path in scheduler_engine._run_nightly() - see that call site's
+    # own comment.
+    if payload and payload.get("rows") and not scan_store.is_private_universe(universe):
         try:
             import snapshot_store
             snapshot_store.build_snapshots_from_scan(universe, payload["rows"], log=log)
@@ -2242,7 +2263,7 @@ def cleanup_sector_universe_pollution(log=print):
     for universe, expected_sectors in sector_universes.items():
         checked.append(universe)
         try:
-            payload = scan_store.load_scan_raw(universe)
+            payload = scan_store.load_scan_raw(universe, allow_private=True)
             if not payload or not payload.get("rows"):
                 # Owner-requested (21 Sep 2026): a per-universe log line
                 # every run, not just when something gets invalidated -
@@ -2341,7 +2362,7 @@ def cleanup_universe_integrity_pollution(log=print):
         checked.append(universe)
         _integrity_source = f"Universe integrity: {universe}"
         try:
-            payload = scan_store.load_scan_raw(universe)
+            payload = scan_store.load_scan_raw(universe, allow_private=True)
             if not payload or not payload.get("rows"):
                 log(f"[nightly_scan] commit1 cleanup: {universe}: no saved scan on file - nothing to check")
                 continue

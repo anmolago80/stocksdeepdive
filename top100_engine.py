@@ -315,10 +315,19 @@ def _eligible_scan_payloads(log=print):
     """
     cadence_map = scheduler_engine.nightly_universe_cadence()
     out = {}
-    for universe in scan_store.list_saved_universes():
+    # Stage 1b (3 Oct 2026, Director-directed): list_saved_universes()'s
+    # own default (include_private=False) already excludes a private
+    # universe silently - include_private=True here instead, so this
+    # function can log the skip explicitly (same visibility as the
+    # "orphaned" skip just below) rather than the candidate simply never
+    # appearing with no trace of why.
+    for universe in scan_store.list_saved_universes(include_private=True):
         if universe == IMPORTED_UNIVERSE:
             continue
         if universe in scheduler_engine._DERIVED_UNIVERSE_PARENTS:
+            continue
+        if scan_store.is_private_universe(universe):
+            log(f"[top100] skipped private universe {universe!r}")
             continue
         if universe not in cadence_map:
             log(f"[top100] selection: skipping {universe!r} - orphaned "

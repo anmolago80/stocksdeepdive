@@ -958,6 +958,13 @@ EN = {
     "home.top5.heading": "Tonight's top 5 — {country}",
     "home.top5.country_au": "Australia",
     "home.top5.country_us": "USA",
+    # Stage 1b (3 Oct 2026, Director-directed): FTSE/TSX universes are
+    # PRIVATE by default (see scan_store.is_private_universe()) and so
+    # never reach this homepage teaser while private - added here
+    # anyway, same place/style as every other country label, so nothing
+    # is missing the day Andrew removes them from PRIVATE_UNIVERSES.
+    "home.top5.country_uk": "United Kingdom",
+    "home.top5.country_ca": "Canada",
     "home.top5.col_ticker": "Ticker",
     "home.top5.col_price": "Price",
     "home.top5.col_value_score": "Value Score",
@@ -2243,6 +2250,13 @@ EN = {
     ),
     "scanner.country_au": "Australia",
     "scanner.country_us": "USA",
+    # Stage 1b (3 Oct 2026, Director-directed): FTSE/TSX universes are
+    # PRIVATE by default - the Scanner's own country picker already
+    # skips a private universe's country entirely (see scan_store.
+    # is_private_universe()), so these labels aren't reachable there
+    # yet either, but added here for the same future-proofing reason.
+    "scanner.country_uk": "United Kingdom",
+    "scanner.country_ca": "Canada",
     "scanner.universe_label": "Universe",
     "scanner.pick_country_info": "Tick at least one country above to pick a universe to scan.",
     "scanner.run_scan_button": "Run Scan",
@@ -4794,6 +4808,8 @@ ES = {
     "home.top5.heading": "El top 5 de esta noche — {country}",
     "home.top5.country_au": "Australia",
     "home.top5.country_us": "EE. UU.",
+    "home.top5.country_uk": "Reino Unido",
+    "home.top5.country_ca": "Canadá",
     "home.top5.col_ticker": "Ticker",
     "home.top5.col_price": "Precio",
     "home.top5.col_value_score": "Value Score",
@@ -5963,6 +5979,8 @@ ES = {
     ),
     "scanner.country_au": "Australia",
     "scanner.country_us": "EE. UU.",
+    "scanner.country_uk": "Reino Unido",
+    "scanner.country_ca": "Canadá",
     "scanner.universe_label": "Universo",
     "scanner.pick_country_info": "Marca al menos un país arriba para elegir un universo que escanear.",
     "scanner.run_scan_button": "Ejecutar escaneo",

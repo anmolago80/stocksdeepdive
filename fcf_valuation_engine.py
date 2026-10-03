@@ -239,8 +239,12 @@ FX_TO_USD_APPROX = {
     # ticker in this stage actually uses - see fx_rate()'s own Stage 1a
     # comment below for where EUR actually matters: converting a EUR-
     # reporting LSE name's STATEMENTS into its GBP trading currency).
-    "GBP": 1.33,
-    "CAD": 0.72,
+    # Stage 1b (3 Oct 2026, Director-directed): recalibrated from the
+    # live USD->GBP/USD->CAD rates actually logged in production (0.7553
+    # / 1.4247) - GBP = 1/0.7553 = 1.3240 -> 1.32; CAD = 1/1.4247 =
+    # 0.7019 -> 0.70. Was 1.33/0.72 (Stage 1a's own initial estimate).
+    "GBP": 1.32,
+    "CAD": 0.70,
     "EUR": 1.15,
 }
 
@@ -1621,8 +1625,12 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
 _FX_STATIC_FALLBACK = {
     ("USD", "AUD"): 1.52,
     ("AUD", "USD"): 0.66,
-    ("GBP", "USD"): 1.33,
-    ("CAD", "USD"): 0.72,
+    # Stage 1b (3 Oct 2026, Director-directed): recalibrated from the
+    # live USD->GBP/USD->CAD rates actually logged in production - see
+    # FX_TO_USD_APPROX's own comment above for the exact arithmetic.
+    # Was 1.33/0.72 (Stage 1a's own initial estimate).
+    ("GBP", "USD"): 1.32,
+    ("CAD", "USD"): 0.70,
     ("EUR", "USD"): 1.15,
 }
 

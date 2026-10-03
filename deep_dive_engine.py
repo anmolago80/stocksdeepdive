@@ -285,6 +285,21 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         income_df=income_df,
     )
 
+    # Stage 1b (3 Oct 2026, Director-directed, section 6 carry-over):
+    # the price_unit_suspect guard already withholds IV/MOS on the Fair
+    # Value tab (auto_compounder_engine.build_sections() returning None
+    # - see that function's own comment) but NOT here, on the Deep Dive
+    # headline, where price_unit_meta was only ever surfaced as a
+    # diagnostic passthrough (see "price_unit_suspect"/"price_unit_
+    # suspect_reason" in this function's own return dict below). Forcing
+    # intrinsic_value to 0 here reuses the SAME "no usable IV" contract
+    # every other zero-FCF/no-data case on this page already has -
+    # "intrinsic_value"/"mos" below both already read `if intrinsic_
+    # value > 0 else None`, and `valuation` already reads "N/A" for
+    # intrinsic_value <= 0 - no new branch needed, no new return shape.
+    if price_unit_meta.get("price_unit_suspect"):
+        intrinsic_value = 0
+
     stock_type, stock_type_src, type_default = resolve_stock_type(ticker, info=info)
 
     if intrinsic_value > 0:

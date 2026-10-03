@@ -93,6 +93,7 @@ import alert_engine
 import market_cap_engine
 import sector_cache_store
 import source_health_store
+import symbol_mapping
 
 _log = logging.getLogger("sdd.scanner")
 
@@ -344,6 +345,21 @@ def _normalize_us_ticker(ticker):
 def _normalize_asx_ticker(ticker):
     t = str(ticker).strip().upper()
     return t if t.endswith(".AX") else f"{t}.AX"
+
+
+def _normalize_lse_ticker(ticker):
+    """Stage 1b (3 Oct 2026, Director-directed): every FTSE 100/250
+    symbol goes through symbol_mapping.to_yahoo_symbol() (Stage 1a) -
+    trailing-dot/class-share handling, SYMBOL_OVERRIDES checked first,
+    idempotent on an already-Yahoo-shaped symbol - never a second,
+    duplicated transform here."""
+    return symbol_mapping.to_yahoo_symbol(str(ticker).strip(), "LSE")
+
+
+def _normalize_tsx_ticker(ticker):
+    """Same as _normalize_lse_ticker() above, for TSX 60/Composite -
+    see symbol_mapping.to_yahoo_symbol()'s own docstring."""
+    return symbol_mapping.to_yahoo_symbol(str(ticker).strip(), "TSX")
 
 
 def _parse_table(html_text, ticker_keywords, sector_keywords, normalize_fn, min_rows=1, max_rows=None):
@@ -2108,6 +2124,101 @@ def fetch_asx100():
     return _asx_backfill_missing_subset_tickers(df, fetch_asx50(), "ASX 100", "ASX 50")
 
 
+# -----------------------------------------------------------------
+# Stage 1b (3 Oct 2026, Director-directed): FTSE 100/FTSE 250 (LSE,
+# suffix .L) and TSX 60/TSX Composite (TSX, suffix .TO) - same fetch
+# pattern as every other universe above (Wikipedia constituent table
+# via _get()/_parse_table(), a small static fallback so a scan never
+# comes back completely empty), ticker normalisation going through
+# symbol_mapping.to_yahoo_symbol() (Stage 1a) instead of a module-
+# local normalize_fn. These four universes are PRIVATE by default -
+# see scan_store.is_private_universe() - so none of this is reachable
+# from the public Scanner page; only the nightly scan/reprice pipeline
+# and the Admin "Private universes" panel ever call get_universe_pool()
+# with one of these names.
+#
+# This sandbox has no live network access to either Wikipedia page, so
+# the exact ticker/sector column keywords below are the same tolerant,
+# multi-keyword, best-guess matching _parse_table() already uses for
+# every other fetcher in this module (never verified against a live
+# response) - the static fallback lists are real, well-known
+# constituents as of this task's own writing, not a placeholder.
+# -----------------------------------------------------------------
+
+FTSE100_WIKI_URL = "https://en.wikipedia.org/wiki/FTSE_100_Index"
+FTSE250_WIKI_URL = "https://en.wikipedia.org/wiki/FTSE_250_Index"
+TSX60_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/TSX_60"
+TSX_COMPOSITE_WIKI_URL = "https://en.wikipedia.org/wiki/S%26P/TSX_Composite_Index"
+
+_FTSE100_STATIC_FALLBACK = [
+    "AZN.L", "SHEL.L", "HSBA.L", "ULVR.L", "BP.L",
+    "GSK.L", "DGE.L", "RIO.L", "BATS.L", "REL.L",
+]
+_FTSE250_STATIC_FALLBACK = [
+    "BWY.L", "TATE.L", "HWDN.L", "GFTU.L", "WOSG.L",
+    "BBOX.L", "DLN.L", "CLI.L", "DPLM.L", "VTY.L",
+]
+_TSX60_STATIC_FALLBACK = [
+    "RY.TO", "TD.TO", "ENB.TO", "CNR.TO", "BMO.TO",
+    "BNS.TO", "SU.TO", "TRP.TO", "CM.TO", "SHOP.TO",
+]
+# A strict superset of _TSX60_STATIC_FALLBACK above - TSX 60 subset TSX
+# Composite must hold even on the static-fallback path (verify_
+# universe_before_save()'s own check doesn't distinguish a live fetch
+# from a fallback list - see that function's own docstring).
+_TSX_COMPOSITE_STATIC_FALLBACK = _TSX60_STATIC_FALLBACK + [
+    "CP.TO", "MFC.TO", "GIB-A.TO", "ATD.TO",
+]
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_ftse100():
+    try:
+        html = _get(FTSE100_WIKI_URL)
+    except Exception:
+        return None
+    return _parse_table(html, ["ticker", "epic", "symbol"], ["ftse sector", "sector", "industry"],
+                        _normalize_lse_ticker, min_rows=80, max_rows=110)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_ftse250():
+    try:
+        html = _get(FTSE250_WIKI_URL)
+    except Exception:
+        return None
+    return _parse_table(html, ["ticker", "epic", "symbol"], ["ftse sector", "sector", "industry"],
+                        _normalize_lse_ticker, min_rows=200, max_rows=280)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_tsx60():
+    try:
+        html = _get(TSX60_WIKI_URL)
+    except Exception:
+        return None
+    return _parse_table(html, ["symbol", "ticker"], ["sector", "industry"],
+                        _normalize_tsx_ticker, min_rows=45, max_rows=65)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_tsxcomposite():
+    """No dedicated live constituent-TABLE source could be confirmed for
+    the full ~230-name TSX Composite from this sandbox (same "tried
+    anyway, harmless on failure" stance as fetch_asx100()'s own
+    docstring for the same reason) - backfilled against fetch_tsx60()
+    so the subset relationship holds even on a partial live result,
+    same pattern as _asx_backfill_missing_subset_tickers()'s other
+    callers above."""
+    try:
+        html = _get(TSX_COMPOSITE_WIKI_URL)
+    except Exception:
+        return None
+    df = _parse_table(html, ["symbol", "ticker"], ["sector", "industry"],
+                      _normalize_tsx_ticker, min_rows=150, max_rows=260)
+    return _asx_backfill_missing_subset_tickers(df, fetch_tsx60(), "TSX Composite", "TSX 60")
+
+
 # Smallest to largest - the standing nesting order this module's docstring
 # describes (ASX 20 subset ASX 50 subset ASX 100 subset ASX 200 subset ASX
 # 300 subset All Ordinaries). Named here as one list, not spread across
@@ -2214,6 +2325,11 @@ _UNIVERSE_CONTAINMENT_PARENT = dict(zip(
 UNIVERSE_INTEGRITY_TRACKED_UNIVERSES = [
     "All Ordinaries", "ASX 300", "ASX 200", "ASX 100", "ASX 50", "ASX 20",
     "ASX Small Ordinaries",
+    # Stage 1b additions - FTSE 250 (sibling check vs FTSE 100, same
+    # pattern as ASX Small Ordinaries) and TSX 60 (strict-subset check
+    # vs TSX Composite, checked directly against a fresh fetch rather
+    # than via _UNIVERSE_CONTAINMENT_PARENT, which is AU-chain-only).
+    "FTSE 250", "TSX 60",
 ]
 UNIVERSE_INTEGRITY_HEALTH_SOURCES = [
     f"Universe integrity: {u}" for u in UNIVERSE_INTEGRITY_TRACKED_UNIVERSES
@@ -2289,6 +2405,42 @@ def verify_universe_before_save(universe, tickers, log=None):
                         f"= ASX 300 minus ASX 100): {', '.join(sorted(overlap)[:10])}"
                     )
             return True, f"{len(tickers)} ticker(s), in ASX 300 and outside ASX 100"
+
+        if universe == "FTSE 250":
+            # Sibling check, not containment: FTSE 100 and FTSE 250 are
+            # disjoint index bands (same pattern as ASX Small Ordinaries
+            # vs ASX 100 above), so there's no "must be in" half - only
+            # "must not overlap".
+            df100 = fetch_ftse100()
+            if df100 is None or df100.empty:
+                return True, "inconclusive: FTSE 100 (reference) unavailable"
+            overlap = tickers & set(df100["Ticker"])
+            if overlap:
+                return False, (
+                    f"{len(overlap)} ticker(s) also in FTSE 100 (FTSE 100 and "
+                    f"FTSE 250 must be disjoint): {', '.join(sorted(overlap)[:10])}"
+                )
+            return True, f"{len(tickers)} ticker(s), no overlap with FTSE 100"
+
+        if universe == "TSX 60":
+            # Checked directly against a fresh fetch_tsxcomposite() call
+            # rather than via _UNIVERSE_CONTAINMENT_PARENT/get_universe_
+            # pool(country, parent), which is derived strictly from the
+            # AU-only _AU_CONTAINMENT_CHAIN - this keeps that AU-specific
+            # mechanism untouched.
+            df_comp = fetch_tsxcomposite()
+            if df_comp is None or df_comp.empty:
+                return True, "inconclusive: TSX Composite (reference) unavailable"
+            composite = set(df_comp["Ticker"])
+            if tickers == composite:
+                return False, f"identical to TSX Composite ({len(tickers)} ticker(s)) - not a genuine TSX 60 list"
+            outside = tickers - composite
+            if outside:
+                return False, (
+                    f"{len(outside)} ticker(s) not in TSX Composite: "
+                    f"{', '.join(sorted(outside)[:10])}"
+                )
+            return True, f"{len(tickers)} ticker(s), strict subset of TSX Composite ({len(composite)} ticker(s))"
 
         parent = _UNIVERSE_CONTAINMENT_PARENT.get(universe)
         if parent is None:
@@ -2822,6 +2974,58 @@ def get_universe_pool(country, universe):
         if df is None:
             return None, "S&P 500 itself unavailable - sector filter could not run, serving last known-good scan"
         return None, f"sector filter matched {len(df)} row(s) - skipped, serving last known-good scan"
+
+    # --- Stage 1b (3 Oct 2026, Director-directed): FTSE/TSX, PRIVATE
+    # by default - see scan_store.is_private_universe(). country is
+    # unused for dispatch here (same as every branch above - this
+    # function switches purely on `universe`), so the caller's own
+    # AU-vs-USA country inference being wrong for these four names has
+    # no effect on which branch runs. ---
+
+    if universe == "FTSE 100":
+        df = fetch_ftse100()
+        if df is not None:
+            return df, "Wikipedia FTSE 100 (live)"
+        fallback_df = pd.DataFrame({
+            "Ticker": _FTSE100_STATIC_FALLBACK, "Sector": [None] * len(_FTSE100_STATIC_FALLBACK),
+        })
+        return fallback_df, (
+            f"Web scrape unavailable - static {len(_FTSE100_STATIC_FALLBACK)}-ticker fallback list"
+        )
+
+    if universe == "FTSE 250":
+        df = fetch_ftse250()
+        if df is not None:
+            return df, "Wikipedia FTSE 250 (live)"
+        fallback_df = pd.DataFrame({
+            "Ticker": _FTSE250_STATIC_FALLBACK, "Sector": [None] * len(_FTSE250_STATIC_FALLBACK),
+        })
+        return fallback_df, (
+            f"Web scrape unavailable - static {len(_FTSE250_STATIC_FALLBACK)}-ticker fallback list"
+        )
+
+    if universe == "TSX 60":
+        df = fetch_tsx60()
+        if df is not None:
+            return df, "Wikipedia S&P/TSX 60 (live)"
+        fallback_df = pd.DataFrame({
+            "Ticker": _TSX60_STATIC_FALLBACK, "Sector": [None] * len(_TSX60_STATIC_FALLBACK),
+        })
+        return fallback_df, (
+            f"Web scrape unavailable - static {len(_TSX60_STATIC_FALLBACK)}-ticker fallback list"
+        )
+
+    if universe == "TSX Composite":
+        df = fetch_tsxcomposite()
+        if df is not None:
+            return df, "Derived: Wikipedia S&P/TSX 60 (live) backfilled against any live TSX Composite rows"
+        fallback_df = pd.DataFrame({
+            "Ticker": _TSX_COMPOSITE_STATIC_FALLBACK,
+            "Sector": [None] * len(_TSX_COMPOSITE_STATIC_FALLBACK),
+        })
+        return fallback_df, (
+            f"Web scrape unavailable - static {len(_TSX_COMPOSITE_STATIC_FALLBACK)}-ticker fallback list"
+        )
 
     return None, "Unknown universe"
 
