@@ -3511,7 +3511,21 @@ def _equity_growth_rate(bundle):
          from the actual dates of the oldest and newest columns used,
          falling back to the column count only when a date can't be
          read at all (same "don't fake it" discipline the DCF's own
-         growth gating already follows elsewhere)."""
+         growth gating already follows elsewhere).
+
+    Owner decision (3 Oct 2026): the earnings-shaped growth_ceiling_for()
+    cap (and the GROWTH_FLOOR floor) are REMOVED from this function -
+    both now belong to the three-way governor _equity_10y_method()
+    applies (history vs ROE x retention vs earnings growth + 10 points),
+    not to this function alone. Returns (raw_cagr, None) - raw_cagr is
+    the clean per-share CAGR, UNCLAMPED (it can be negative), whenever
+    the CoV <= 0.60 gate passes; (None, None) whenever the series isn't
+    usable at all (same gating as before: fewer than 2 dated equity
+    figures, no today's share count, a non-positive oldest figure, zero
+    elapsed time, or a CoV > 0.60 series too volatile to trust). The
+    second element is kept (always None) only so existing callers'
+    `g_eq, _ = _equity_growth_rate(bundle)`-shaped unpacking keeps
+    working unchanged."""
     equity_dated = [(d, v) for d, v in _series_with_dates(bundle["balance"], "stockholders_equity") if v]
     shares_by_date = {
         d: v for d, v in _series_with_dates(bundle["balance"], "ordinary_shares_number") if v and d
@@ -3519,7 +3533,7 @@ def _equity_growth_rate(bundle):
     info = bundle.get("info") or {}
     today_shares = info.get("sharesOutstanding")
     if len(equity_dated) < 2 or not today_shares:
-        return None, False
+        return None, None
     per_share = []
     for d, v in equity_dated:
         shares_y = shares_by_date.get(d) or today_shares
@@ -3531,26 +3545,69 @@ def _equity_growth_rate(bundle):
     else:
         n = len(equity_dated) - 1
     if oldest <= 0 or n <= 0:
-        return None, False
+        return None, None
     try:
         raw = (newest / oldest) ** (1 / n) - 1
     except (ValueError, ZeroDivisionError):
-        return None, False
+        return None, None
     if fcf_valuation_engine._coeff_of_variation(per_share) > 0.60:
-        return None, False  # too volatile to trust the CAGR at all
-    ceiling = fcf_valuation_engine.growth_ceiling_for(info, info.get("currency"))
-    capped = raw > ceiling
-    g_eq = max(fcf_valuation_engine.GROWTH_FLOOR, min(raw, ceiling))
-    return g_eq, capped
+        return None, None  # too volatile to trust the CAGR at all
+    return raw, None
+
+
+# Owner decision (3 Oct 2026): the book side's growth rate is now the
+# LOWEST of three caps (see _equity_10y_method() below) rather than the
+# historical CAGR alone capped at an earnings-shaped ceiling - a cap
+# designed for earnings, not book. EQUITY_RETENTION_WINDOW_YEARS (5) is
+# the window the ROE x retention cap's own payout-ratio average uses.
+EQUITY_RETENTION_WINDOW_YEARS = 5
+
+
+def _avg_payout_ratio_5y(bundle, normalized_eps):
+    """The 5-year average payout ratio (dividend-per-share / that same
+    fiscal year's normalised diluted EPS, paired by the same year-label
+    convention _value_created() already pairs _dividends_per_share_
+    by_year() against _eps_series()'s own fiscal-year labels) - the
+    input the new ROE x retention cap's "retention = 1 - avg payout"
+    needs. A year with no EPS (<=0, or missing from the window) is
+    skipped; a year with no dividend payment at all counts as a
+    genuine 0% payout that year (not skipped), UNLESS the ticker has no
+    dividend history whatsoever, in which case this returns None so the
+    caller can default retention to 1.0 rather than fabricate a 0%
+    payout for a stock that has simply never paid one."""
+    dividends = bundle.get("dividends") or {}
+    if not (dividends.get("dates") or dividends.get("amounts")):
+        return None
+    growth_series = (normalized_eps or {}).get("growth_series") or []
+    dps_by_year = _dividends_per_share_by_year(dividends)
+    ratios = []
+    for year, eps in growth_series[:EQUITY_RETENTION_WINDOW_YEARS]:
+        if eps is None or eps <= 0:
+            continue
+        ratios.append(dps_by_year.get(year, 0.0) / eps)
+    if not ratios:
+        return None
+    return sum(ratios) / len(ratios)
+
+
+def _earnings_power_multiple(g_earn):
+    """The ten-year earnings-sum multiple the Rational Compounder's
+    "Earnings power" line shows: ((1+g_earn)^10 - 1) / g_earn - the FV
+    factor of a $1/yr growing annuity, i.e. how many times today's
+    earnings the next 10 years of (undiscounted) earnings sum to. The
+    g_earn -> 0 limit of that formula is 10 (ten flat $1 payments)."""
+    if abs(g_earn) < 1e-9:
+        return 10.0
+    return (((1 + g_earn) ** 10) - 1) / g_earn
 
 
 def _equity_10y_method(bundle, g_earn, normalized_eps=None):
     """The workbook's real "Equity Method 10y" (Valuation!U = DE x fx,
     decoded from the actual cell): equity net of this year's earnings,
-    compounded at the historical EQUITY growth rate for 10 years, PLUS net
-    income projected as a growing annuity over 10 years at the
-    OWNER-EARNINGS growth rate the site's own DCF used for this ticker -
-    both discounted at a flat 3% ("inflation for this calc only", matching
+    compounded at the BOOK growth rate for 10 years, PLUS net income
+    projected as a growing annuity over 10 years at the OWNER-EARNINGS
+    growth rate the site's own DCF used for this ticker - both
+    discounted at a flat 3% ("inflation for this calc only", matching
     the workbook's own CT cell and the hand-built data's displayed 3.0%
     discount rate) - per share.
 
@@ -3563,7 +3620,35 @@ def _equity_10y_method(bundle, g_earn, normalized_eps=None):
     method is dropped entirely if the DCF has no growth figure to share.
     (E - NI) is deliberately NOT clamped at zero - it can legitimately go
     negative for a high-ROE company, and the workbook doesn't clamp it
-    either. g_eq itself IS gated - see _equity_growth_rate().
+    either.
+
+    Owner decision (3 Oct 2026): g_eq (the book side's growth rate) used
+    to be the historical per-share equity CAGR capped at an EARNINGS-
+    shaped ceiling (fcf_valuation_engine.growth_ceiling_for) - a cap
+    designed for earnings, not book; equity legitimately grows faster
+    than earnings for a high-ROE retainer (ROE x retention). That cap is
+    removed (growth_ceiling_for is no longer used here). g_eq is now the
+    LOWEST of three candidates, floored at 0:
+
+        g_eq = max(0, min(hist_equity_cagr, roe x retention, g_earn + 0.10))
+
+      - hist_equity_cagr: the existing clean per-share equity CAGR (same
+        CoV <= 0.60 gate as before, via _equity_growth_rate() - an
+        unclean series still drops the method entirely, as today).
+      - roe x retention: info["returnOnEquity"] (trailing) x retention,
+        where retention = 1 - the 5-year average payout ratio (see
+        _avg_payout_ratio_5y(); no dividend history -> retention 1.0).
+        Skipped entirely (not a candidate) when returnOnEquity is
+        missing.
+      - g_earn + 10 points: the same owner-earnings growth rate this
+        method's earnings annuity already uses, plus a flat 10-point
+        allowance for book to run ahead of earnings.
+
+    Which candidate bound is recorded as `governor` - one of "history",
+    "roe_x_retention", "earnings_plus10", or "floor" (the min of the
+    three was itself negative, floored to 0) - alongside the three
+    candidate values themselves (`candidates`, a dict; "roe_x_retention"
+    is None when that cap was skipped), both returned for display.
 
     Push 3 (owner-directed, 30 Sep 2026): `normalized_eps` (see
     _normalized_eps()'s own docstring), when given, REPLACES the raw
@@ -3575,8 +3660,13 @@ def _equity_10y_method(bundle, g_earn, normalized_eps=None):
     itself was the write-down-depressed figure). Converted back to a
     total-dollar figure (normalized_eps["value"] * shares) so the rest
     of the formula (which works in total-equity/total-NI dollars, not
-    per-share, until the final /shares) is unchanged. Returns a 5-tuple
-    now (was 4) - the extra `reason` is None when a value was produced,
+    per-share, until the final /shares) is unchanged.
+
+    Returns a 7-tuple now (was 5): (value, g_eq, discount,
+    g_eq_flagged, reason, governor, candidates) - g_eq_flagged is True
+    whenever something other than the plain historical rate governed
+    (i.e. governor != "history"), same "estimate, shown in red"
+    convention as before. reason is None when a value was produced,
     else "negative_earnings" (normalized_eps was given but has no
     usable value) so the caller can show why the method is withheld
     instead of silently omitting it."""
@@ -3585,14 +3675,34 @@ def _equity_10y_method(bundle, g_earn, normalized_eps=None):
     equity = _latest(bundle["balance"], "stockholders_equity")
     net_income = _latest(bundle["income"], "net_income")
     shares, _ = _whole_company_shares(bundle)  # audit A3
-    g_eq, g_eq_capped = _equity_growth_rate(bundle)
-    if equity is None or net_income is None or not shares or g_eq is None:
+    hist_equity_cagr, _ = _equity_growth_rate(bundle)
+    if equity is None or net_income is None or not shares or hist_equity_cagr is None:
         return None
     if normalized_eps is not None:
         _neps = normalized_eps.get("value")
         if _neps is None or _neps <= 0:
-            return None, None, None, None, "negative_earnings"
+            return None, None, None, None, "negative_earnings", None, None
         net_income = _neps * shares
+
+    info = bundle.get("info") or {}
+    roe = info.get("returnOnEquity")
+    avg_payout = _avg_payout_ratio_5y(bundle, normalized_eps)
+    retention = 1.0 if avg_payout is None else max(0.0, min(1.0, 1.0 - avg_payout))
+    roe_x_retention = (roe * retention) if roe is not None else None
+    earnings_plus10 = g_earn + 0.10
+
+    candidates = {
+        "history": hist_equity_cagr, "roe_x_retention": roe_x_retention,
+        "earnings_plus10": earnings_plus10,
+    }
+    _available = {k: v for k, v in candidates.items() if v is not None}
+    _governor, _min_value = min(_available.items(), key=lambda kv: kv[1])
+    if _min_value < 0:
+        g_eq, governor = 0.0, "floor"
+    else:
+        g_eq, governor = _min_value, _governor
+    g_eq_flagged = governor != "history"
+
     discount = 0.03
     disc10 = (1 + discount) ** 10
     equity_term = (equity - net_income) * ((1 + g_eq) ** 10) / disc10
@@ -3603,7 +3713,7 @@ def _equity_10y_method(bundle, g_earn, normalized_eps=None):
         annuity_fv = net_income * (((1 + g_earn) ** 10) - 1) / g_earn
     earnings_term = annuity_fv / disc10
     value_per_share = (equity_term + earnings_term) / shares
-    return value_per_share, g_eq, discount, g_eq_capped, None
+    return value_per_share, g_eq, discount, g_eq_flagged, None, governor, candidates
 
 
 # Owner decision (3 Oct 2026): PE Forward's multiplier is now the median
@@ -4077,8 +4187,9 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
     dcf_value, dcf_inputs = _dcf_valuation_and_inputs(info, price, canonical_dcf_result)
 
     equity_10y_result = _safe(_equity_10y_method, bundle, g_earn, normalized_eps)
-    equity_10y_value, equity_growth, equity_discount, equity_growth_capped, equity_10y_reason = (
-        equity_10y_result if equity_10y_result else (None, None, None, False, None)
+    (equity_10y_value, equity_growth, equity_discount, equity_growth_capped, equity_10y_reason,
+     equity_growth_governor, equity_growth_candidates) = (
+        equity_10y_result if equity_10y_result else (None, None, None, False, None, None, None)
     )
     if equity_10y_value is None and equity_10y_reason:
         method_reasons["equity_10y"] = equity_10y_reason
@@ -4168,6 +4279,44 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
             },
             {"label": "Discount Rate (this calc)", "value": equity_discount, "format": "pct"},
         ]
+        # Owner decision (3 Oct 2026): the book side's growth rate is the
+        # lowest of three caps (see _equity_10y_method()'s own
+        # docstring) - this row says WHICH one governed and shows the
+        # other candidates for context, not just the single number
+        # above. The earnings side is a separate, unrelated figure (the
+        # ten-year earnings-sum multiple) - shown on its own line so the
+        # two growth concepts (book vs earnings) are never conflated.
+        if equity_growth_governor is not None and equity_growth_candidates is not None:
+            _governor_phrase = {
+                "history": "at its own historical rate",
+                "roe_x_retention": "capped by ROE×retention",
+                "earnings_plus10": "capped by earnings +10 pts",
+                "floor": "floored at 0% (history is negative)",
+            }.get(equity_growth_governor, equity_growth_governor)
+            _candidate_labels = {
+                "history": "history", "roe_x_retention": "ROE×retention",
+                "earnings_plus10": "earnings+10pts",
+            }
+            _other_bits = [
+                f"{_candidate_labels[k]} {v * 100:.1f}%"
+                for k, v in equity_growth_candidates.items()
+                if v is not None and k != equity_growth_governor
+            ]
+            _book_growth_value = f"Book growth {equity_growth * 100:.1f}%/yr ({_governor_phrase}"
+            if _other_bits:
+                _book_growth_value += "; " + ", ".join(_other_bits)
+            _book_growth_value += ")"
+            valuation_inputs["equity_10y"].append({
+                "label": "Book Growth Governor", "value": _book_growth_value, "format": "raw",
+            })
+        valuation_inputs["equity_10y"].append({
+            "label": "Earnings Power",
+            "value": (
+                f"Earnings power: 10-yr earnings sum ≈ "
+                f"{_earnings_power_multiple(g_earn):.1f}× today's earnings"
+            ),
+            "format": "raw",
+        })
 
     return {
         "metrics": [],

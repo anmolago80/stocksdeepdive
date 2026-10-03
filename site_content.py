@@ -145,7 +145,10 @@ history, four independent fair-value methods (trailing P/E, forward P/E, DCF, an
 and risk. Every threshold and colour band on those pages comes from the original
 research, not a generic screen. Forward P/E applies the median of the last five
 fiscal years' P/E ratios rather than today's, so a short-term de-rating or spike
-doesn't carry straight into a five-year forecast.
+doesn't carry straight into a five-year forecast. The 10-year equity method grows
+book value at the lowest of three rates - its own historical growth, ROE times
+retained earnings, or the DCF's earnings growth plus 10 points - so a high-ROE
+retainer's book value isn't held down to an earnings-sized ceiling.
 
 #### Limitations, honestly
 
@@ -409,7 +412,11 @@ futuro, DCF y un método de patrimonio a 10 años), y juicio escrito al estilo B
 gestión, el foso y el riesgo. Cada umbral y banda de color en esas páginas proviene de la
 investigación original, no de un filtro genérico. El P/E futuro aplica la mediana de los últimos
 cinco años fiscales en lugar del múltiplo de hoy, para que una caída o un repunte de corto plazo no
-se traslade directamente a una proyección a cinco años.
+se traslade directamente a una proyección a cinco años. El método de patrimonio a 10 años hace
+crecer el valor contable a la tasa más baja de tres: su propio crecimiento histórico, el ROE
+multiplicado por las ganancias retenidas, o el crecimiento de ganancias del DCF más 10 puntos, para
+que el valor contable de una empresa con alto ROE no quede limitado a un techo pensado para
+ganancias.
 
 #### Limitaciones, con honestidad
 
