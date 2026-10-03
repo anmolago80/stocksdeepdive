@@ -51,10 +51,15 @@ def _company_item(ticker, score=4):
 # ======================================================================
 # CHECK 1-5: inspect_batch_results() pure parsing on fixtures - full
 # match, partial match (one of two expected missing), empty companies[]
-# array, errored result, and a ticker echoed under a DIFFERENT string
-# than expected ("RG1" instead of the expected "RG1.AX") - this last
-# case must land in partially_matched even though items_count equals
-# len(expected), since the STRING itself never matches.
+# array, errored result, and a request where ONE item echoes its
+# ticker under a stem-matching DIFFERENT string than expected ("RG1"
+# for the expected "RG1.AX" - now resolved by _parse_response_json()'s
+# own _normalize_echoed_ticker(), 3 Oct 2026, owner-directed) while a
+# SECOND expected ticker in the same request is still genuinely
+# missing - this must still land in partially_matched (one real gap),
+# while tickers_echoed shows the NORMALISED string ("RG1.AX"), proving
+# the stem resolution actually ran rather than just happening to count
+# right.
 # ======================================================================
 full_text = json.dumps({"companies": [_company_item("AAPL"), _company_item("MSFT")]})
 partial_text = json.dumps({"companies": [_company_item("AAPL")]})
@@ -77,7 +82,7 @@ expected_map = {
     "t100-1": ["AAPL", "MSFT"],
     "t100-2": ["ADBE"],
     "t100-3": ["PAYX"],
-    "t100-4": ["RG1.AX"],
+    "t100-4": ["RG1.AX", "OTHER.AX"],
 }
 rows, summary = te.inspect_batch_results(results, expected_map)
 assert summary == {"total": 5, "fully_matched": 1, "partially_matched": 2, "empty": 1, "errored": 1}, summary
@@ -86,17 +91,31 @@ assert _by_id["t100-0"]["excerpt"] is None, "a fully-matched request shows no ex
 assert _by_id["t100-1"]["excerpt"] is not None
 assert _by_id["t100-2"]["excerpt"] is not None
 assert _by_id["t100-3"]["excerpt"] == "overloaded_error: ..."
-assert _by_id["t100-4"]["tickers_echoed"] == ["RG1"], _by_id["t100-4"]
-assert _by_id["t100-4"]["expected_tickers"] == ["RG1.AX"], _by_id["t100-4"]
-print("[inspector_fixtures] full/partial/empty/errored/mismatched-ticker-string all classify "
-      f"correctly - summary {summary} OK")
+# "RG1" resolved to "RG1.AX" (the ONLY expected ticker whose stem
+# matches) - tickers_echoed shows the normalised string, not the raw
+# one, and the request is still partially_matched because OTHER.AX
+# never showed up at all.
+assert _by_id["t100-4"]["tickers_echoed"] == ["RG1.AX"], _by_id["t100-4"]
+assert _by_id["t100-4"]["expected_tickers"] == ["RG1.AX", "OTHER.AX"], _by_id["t100-4"]
+assert _by_id["t100-4"]["match_basis"] == "ticker string match", _by_id["t100-4"]
+assert _by_id["t100-2"]["match_basis"] == "ticker string match", _by_id["t100-2"]
+print("[inspector_fixtures] full/partial/empty/errored classify correctly, and a stem-"
+      f"normalised ticker echo ('RG1' -> 'RG1.AX') still correctly flags the request "
+      f"partially_matched when a SECOND expected ticker is genuinely missing - summary "
+      f"{summary} OK")
 
 # No expected_map at all (a batch ingested before the custom_id_map_json
-# column existed) - never crashes, buckets purely by item presence.
+# column existed) - never crashes, buckets purely by item presence, and
+# every succeeded row is labelled "count match only" rather than looking
+# like a verified ticker-string match.
 rows_noexp, summary_noexp = te.inspect_batch_results(results, expected_map=None)
 assert summary_noexp["errored"] == 1 and summary_noexp["empty"] == 1
 assert summary_noexp["fully_matched"] == 3, summary_noexp  # t100-0/1/4 all have >=1 item, no expected to compare against
-print(f"[inspector_no_expected_map] missing expected_map never crashes, buckets by presence only - "
+_by_id_noexp = {r["custom_id"]: r for r in rows_noexp}
+assert _by_id_noexp["t100-0"]["match_basis"] == "count match only - expected map unavailable"
+assert _by_id_noexp["t100-4"]["tickers_echoed"] == ["RG1"], _by_id_noexp["t100-4"]  # no map -> no normalisation
+print(f"[inspector_no_expected_map] missing expected_map never crashes, buckets by presence only, "
+      f"and is labelled 'count match only' rather than a verified ticker-string match - "
       f"summary {summary_noexp} OK")
 
 

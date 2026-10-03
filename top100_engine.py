@@ -1091,7 +1091,7 @@ _SYSTEM_PROMPT = """You are screening publicly-listed companies for a factual, d
 
 For each dimension also give a ONE-LINE justification, AT MOST ABOUT 25 WORDS, naming the specific source period it is based on (e.g. "FY25 annual report", "Q2 2026 investor call", "the company's own FY24 10-K risk factors section") - or an empty string "" for source_period if the dimension's score is 0 (see the honesty rule).
 
-HONESTY RULE, the single most important instruction in this prompt: output 0 for a dimension's score (not a number 1-5, and never a middle value like 3 to "play it safe") for ANY dimension you do not have confident, specific, public-record knowledge of for THIS company. 0 is not a real score - it is the sentinel meaning "cannot score honestly". Guessing a plausible-sounding score is worse than admitting you don't know - a 0 is the honest answer, a fabricated 3 is not. If three or more of your ten scores end up 0, that is expected and correct for a company with a thin public record - do not distort your other scores to avoid it. This applies especially to MANAGEMENT QUALITY (dimension 8 below): score it 0 freely whenever the people running the company aren't publicly well known - most companies have no public record of their management's integrity, candour or execution track record, and that is the honest, expected answer, not a failure.
+HONESTY RULE, the single most important instruction in this prompt: output 0 for a dimension's score (not a number 1-5, and never a middle value like 3 to "play it safe") for ANY dimension you do not have confident, specific, public-record knowledge of for THIS company. 0 is not a real score - it is the sentinel meaning "cannot score honestly". Guessing a plausible-sounding score is worse than admitting you don't know - a 0 is the honest answer, a fabricated 3 is not. If three or more of your ten scores end up 0, that is expected and correct for a company with a thin public record - do not distort your other scores to avoid it. This applies especially to MANAGEMENT QUALITY (dimension 8 below): score it 0 freely whenever the people running the company aren't publicly well known - most companies have no public record of their management's integrity, candour or execution track record, and that is the honest, expected answer, not a failure. The `ticker` field is an EXACT echo of the ticker you were given for that company - copy it verbatim, never leave it empty and never apply the empty-string sentinel to it, including for a NOT RATED company.
 
 DE-CIRCULARISATION PRINCIPLE - read this before scoring anything: this site separately computes a purely NUMERIC "Quality" factor straight from public financial-statement data (return on equity, net profit margin, return on invested capital, revenue growth, earnings growth, free cash flow sign, and the debt-to-equity ratio). Your job is to add judgment that numeric pipeline CANNOT see - never to restate what it already measures. Concretely, for five of the ten dimensions below:
   - Competitive position: do NOT score whether the company is currently profitable or how profitable it is (the numeric pipeline already has that) - score only the DURABILITY of its edge relative to named peers.
@@ -1663,25 +1663,72 @@ def _parse_one_company(data):
             munger_quality, munger_comment, big_wave, big_wave_comment)
 
 
-def _parse_response_json(text):
+def _normalize_echoed_ticker(raw_ticker, expected_tickers=None):
+    """Ticker-echo normalisation (3 Oct 2026, owner-directed, batch
+    inspector finding on msgbatch_01Jbz1uEmi1zesnrEbVHtchE): the model
+    sometimes echoes a ticker under a different STRING than the one it
+    was given - a dash/dot variant ("BRK-B" for "BRK.B"), or the bare
+    stem with an exchange suffix dropped ("RG1" for "RG1.AX"). Resolves
+    `raw_ticker` (already stripped/uppercased) against `expected_
+    tickers` (this request's own entrant list) when given: tries the
+    dash<->dot swap first, then a stem match (everything before the
+    first "."), but ONLY ever substitutes when EXACTLY ONE expected
+    ticker matches - an ambiguous match (more than one candidate, or
+    none) is left as the model's own literal string rather than
+    guessed. Returns raw_ticker unchanged when expected_tickers isn't
+    given, or when raw_ticker already matches one of them exactly."""
+    t = raw_ticker.strip().upper()
+    if not expected_tickers or t in expected_tickers:
+        return t
+    variants = {t, t.replace("-", "."), t.replace(".", "-")}
+    exact = [e for e in expected_tickers if e in variants]
+    if len(exact) == 1:
+        return exact[0]
+    stem = t.split(".")[0]
+    stem_matches = [e for e in expected_tickers if e.split(".")[0] == stem]
+    if len(stem_matches) == 1:
+        return stem_matches[0]
+    return t
+
+
+def _parse_response_json(text, expected_tickers=None, log=None):
     """v6 packed requests (1 Oct 2026, owner-directed): parses the
     whole packed response text into {ticker: (the same 13-tuple
     _parse_one_company() above returns), ...} - one entry per item in
     the response's top-level "companies" array whose own "ticker"
     field is a non-empty string AND whose dimension/synthesis fields
     parse cleanly via _parse_one_company(). ticker matching is by
-    exact string (uppercased/stripped) - order-independent, since the
-    model is free to return the packed companies in any order.
+    exact string (uppercased/stripped, then _normalize_echoed_ticker()'s
+    dash/dot/stem resolution when `expected_tickers` is given) -
+    order-independent for a company that DID echo a usable ticker,
+    since the model is free to return the packed companies in any
+    order.
+
+    Positional fallback (3 Oct 2026, owner-directed, batch inspector
+    finding): a company with a BLANK/missing "ticker" field (the model
+    applied the honesty rule's "" sentinel convention to the echo
+    field itself, mostly on an all-zero NOT RATED company) is matched
+    by its POSITION in the response against `expected_tickers`' own
+    position - items are returned in the request's own input order, so
+    the i-th item answers for the i-th entrant. Only attempted when
+    `expected_tickers` is given AND len(companies) == len(expected_
+    tickers) - a count mismatch means position no longer reliably maps
+    to entrant, so a blank-ticker item is left unmatched rather than
+    guessed (the caller then records its entrant as missing, exactly
+    as before this fix). Never overwrites an entrant already matched
+    by an explicit ticker string. `log`, when given, is called once per
+    positional match (for the caller's own log stream) - this function
+    stays silent (and side-effect-free beyond that) otherwise.
 
     Per-item failure isolation (the task's own explicit requirement):
-    a single malformed item (not a dict, no usable "ticker", or a
-    missing dimension inside it) is simply left OUT of the returned
-    dict rather than raising - it never prevents any other item in the
-    same response from being parsed and returned. The caller (poll_
-    and_ingest_batch) is responsible for comparing this dict's keys
-    against the request's own expected ticker list and recording a
-    per-ticker "missing_from_response" failure for anything this
-    request was supposed to answer for but didn't.
+    a single malformed item (not a dict, or a missing dimension inside
+    it) is simply left OUT of the returned dict rather than raising -
+    it never prevents any other item in the same response from being
+    parsed and returned. The caller (poll_and_ingest_batch) is
+    responsible for comparing this dict's keys against the request's
+    own expected ticker list and recording a per-ticker "missing_from_
+    response" failure for anything this request was supposed to answer
+    for but didn't.
 
     Raises ValueError only when the response ITSELF is unparseable
     JSON, or has no top-level "companies" list at all - a REQUEST-
@@ -1693,17 +1740,33 @@ def _parse_response_json(text):
     if not isinstance(companies, list):
         raise ValueError("response has no top-level \"companies\" array")
     out = {}
-    for item in companies:
+    blank_items = []  # [(index, item), ...] - tried again below, positionally
+    for idx, item in enumerate(companies):
         if not isinstance(item, dict):
             continue
         ticker = item.get("ticker")
         if not isinstance(ticker, str) or not ticker.strip():
+            blank_items.append((idx, item))
             continue
-        ticker = ticker.strip().upper()
+        ticker = _normalize_echoed_ticker(ticker, expected_tickers)
         try:
             out[ticker] = _parse_one_company(item)
         except Exception:
             continue
+    count_mismatch = expected_tickers is not None and len(companies) != len(expected_tickers)
+    if blank_items and expected_tickers is not None and not count_mismatch:
+        for idx, item in blank_items:
+            candidate = expected_tickers[idx]
+            if candidate in out:
+                continue
+            try:
+                parsed = _parse_one_company(item)
+            except Exception:
+                continue
+            out[candidate] = parsed
+            if log is not None:
+                log(f"[top100] {candidate}: ticker field blank in response - "
+                    f"matched by position (item {idx + 1} of {len(companies)})")
     return out
 
 
@@ -2135,7 +2198,8 @@ def poll_and_ingest_batch(log=print):
             total_cache_creation_tokens += getattr(msg.usage, "cache_creation_input_tokens", 0) or 0
             total_cache_read_tokens += getattr(msg.usage, "cache_read_input_tokens", 0) or 0
             try:
-                parsed_by_ticker = _parse_response_json(text)
+                parsed_by_ticker = _parse_response_json(
+                    text, expected_tickers=list(entrants_map.keys()), log=log)
             except Exception as e:
                 # Request-level parse failure (malformed/missing
                 # "companies" array) - every entrant THIS request
@@ -2675,12 +2739,23 @@ def inspect_batch_results(results, expected_map=None):
             continue
         text = r.get("text") or ""
         try:
-            parsed = _parse_response_json(text)
+            parsed = _parse_response_json(text, expected_tickers=expected)
         except Exception:
             parsed = {}
         echoed = sorted(parsed.keys())
         row["tickers_echoed"] = echoed
         row["items_count"] = len(echoed)
+        # Classification is always by ticker STRING match when the
+        # expected map exists (expected_tickers_for_batch() backfills it
+        # for every batch submitted from now on - see that function's
+        # own docstring) - row["match_basis"] names explicitly which
+        # basis this particular row used, so a batch ingested before
+        # that column existed never silently looks "fully matched" on
+        # nothing more than "at least one item parsed".
+        row["match_basis"] = (
+            "ticker string match" if expected is not None
+            else "count match only - expected map unavailable"
+        )
         missing = (set(expected) - set(echoed)) if expected is not None else set()
         if not echoed:
             row["excerpt"] = text[:_BATCH_INSPECTOR_EXCERPT_CHARS] or None
@@ -2877,7 +2952,7 @@ def run_single_test_call(ticker, company_name=None):
     params = _request_params(entrants)
     resp = client.messages.create(**params)
     text = next((b.text for b in resp.content if b.type == "text"), "")
-    parsed_by_ticker = _parse_response_json(text)
+    parsed_by_ticker = _parse_response_json(text, expected_tickers=[ticker])
     if ticker not in parsed_by_ticker:
         raise ValueError(f"{ticker} missing from the model's own response")
     (dims, not_rated, inversion_scenario, inversion_severity, current_headwind,
