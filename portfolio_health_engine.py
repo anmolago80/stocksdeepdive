@@ -57,6 +57,7 @@ import streamlit as st
 import yfinance as yf
 
 import auto_compounder_engine
+import fundamentals_data
 import nightly_scan
 import portfolio_news_engine as pne
 
@@ -235,6 +236,20 @@ def fetch_snapshot(ticker, discount_rate=None, perpetual_rate=None, growth_rate=
         hist = tk.history(period="2y")
     except Exception:
         hist = None
+
+    # Lists & display Commit 2 (3 Oct 2026, Director-directed): this
+    # function's own price/52wk/MA200 fallback chain below (_num() over
+    # `info`, `tk.fast_info`, raw `hist` closes) is a second, separate
+    # raw fetch from `lite` (analyze_ticker_lite() above already goes
+    # through normalize_pence_quote()) - a GBp-quoted London ticker
+    # whose `lite` price came back None (the ETF-empty-`.info` case this
+    # fallback chain exists for) would fall straight through to a raw
+    # pence `info`/`hist` value, 100x too high. `info`/`hist` are
+    # already in hand from the two fetches just above, so this costs no
+    # extra network call.
+    info, hist, _, _price_unit_meta = fundamentals_data.normalize_pence_quote(
+        ticker, info, history_df=hist)
+
     try:
         cf = tk.cashflow
         if cf is not None and not cf.empty:

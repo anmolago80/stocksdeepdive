@@ -15147,6 +15147,20 @@ def _render_scan_results(page_label, state_prefix, empty_message,
 
                 info = get_ticker_info(ticker)
 
+                # Lists & display Commit 2 (3 Oct 2026, Director-directed):
+                # this live Run Scan/Comparison loop has its own, separate
+                # get_price_history()/get_ticker_info() fetch (see Commit
+                # L's own comment below on why this path never went
+                # through nightly_scan.analyze_ticker_lite()) - so, unlike
+                # that pipeline, it never got deep_dive_engine.analyze()'s
+                # fundamentals_data.normalize_pence_quote() GBp->GBP pass
+                # either. A GBp-quoted London ticker reached every score
+                # below (fear/greed/MOS/quality) still priced in pence -
+                # 100x too high. `info` is already in hand from the line
+                # above, so this costs no extra network call.
+                info, df, _, _price_unit_meta = fundamentals_data.normalize_pence_quote(
+                    ticker, info, history_df=df)
+
                 # Fear/Greed/MA50/Volume Ratio/Activity all originally ran over a
                 # 3-month window. History is now pulled as 6 months so the Trade
                 # Filter's 60-day resistance/support has a full window behind it -

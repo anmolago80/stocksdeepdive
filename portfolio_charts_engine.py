@@ -30,6 +30,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
+import fundamentals_data
 import portfolio_health_engine as phe
 
 
@@ -60,7 +61,8 @@ def fetch_history_from(ticker, start_date_iso):
     double-counting implication here - only the split-adjustment half
     of it matters for this particular use."""
     try:
-        h = yf.Ticker(ticker).history(start=start_date_iso, auto_adjust=True)
+        tk = yf.Ticker(ticker)
+        h = tk.history(start=start_date_iso, auto_adjust=True)
     except Exception:
         return pd.DataFrame()
     if h is None or h.empty:
@@ -69,6 +71,23 @@ def fetch_history_from(ticker, start_date_iso):
     if h.index.tz is not None:
         h.index = h.index.tz_localize(None)
     h = h[~h.index.duplicated(keep="last")]
+
+    # Lists & display Commit 2 (3 Oct 2026, Director-directed): this
+    # function never fetched `.info` before (only OHLCV), so a GBp-
+    # quoted London holding's value-over-time chart was contributing a
+    # raw pence Close - 100x too high - into compute_value_vs_index_
+    # series()'s V(t)/I(t) math above. Unlike the other fetch sites
+    # fixed in this commit, `.info` isn't already in hand here, so this
+    # is a genuine new network call - one extra request per (ticker,
+    # start_date_iso) cache entry, same 30-minute amortization as the
+    # history fetch itself. A no-op for every non-GBp ticker, including
+    # the ^AXJO/^GSPC benchmark indices this same function also serves
+    # (see _benchmark_for()'s caller) - neither has a "GBp" currency.
+    try:
+        info = tk.info or {}
+    except Exception:
+        info = {}
+    _, h, _, _ = fundamentals_data.normalize_pence_quote(ticker, info, history_df=h)
     return h
 
 
@@ -198,7 +217,8 @@ def fetch_dividend_history(ticker):
     same source (`yf.Ticker(...).dividends`) fundamentals_data.py already
     uses for the Deep Dive page's dividend chart."""
     try:
-        d = yf.Ticker(ticker).dividends
+        tk = yf.Ticker(ticker)
+        d = tk.dividends
     except Exception:
         return pd.Series(dtype=float)
     if d is None or d.empty:
@@ -206,6 +226,17 @@ def fetch_dividend_history(ticker):
     d = d.copy()
     if d.index.tz is not None:
         d.index = d.index.tz_localize(None)
+
+    # Lists & display Commit 2 (3 Oct 2026, Director-directed): same
+    # GBp->GBP gap as fetch_history_from() above, for per-share dividend
+    # amounts feeding the "dividends actually received" figure - a
+    # genuine new `.info` fetch (not already in hand here either), same
+    # 30-minute cache amortization. A no-op for every non-GBp ticker.
+    try:
+        info = tk.info or {}
+    except Exception:
+        info = {}
+    _, _, d, _ = fundamentals_data.normalize_pence_quote(ticker, info, dividends=d)
     return d
 
 

@@ -38,6 +38,8 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 import compare_config
+import fcf_valuation_engine
+import fundamentals_data
 import scan_store
 import scanner_engine
 import snapshot_render
@@ -208,9 +210,22 @@ def _fetch_price_history_df(ticker):
     shape as app.py's _fetch_with_retry and a small per-ticker in-memory
     TTL cache (1800s, matching get_price_history's own @st.cache_data
     ttl) - see the section comment above for why this duplicates rather
-    than imports app.py's version. Returns (DataFrame, fetched_at_epoch);
-    the DataFrame is empty (never None) on total failure, exactly like
-    app.py's own fallback - this never raises.
+    than imports app.py's version. Returns (DataFrame, fetched_at_epoch,
+    currency); the DataFrame is empty (never None) on total failure,
+    exactly like app.py's own fallback - this never raises.
+
+    Lists & display Commit 2 (3 Oct 2026, Director-directed): this used
+    to return raw, un-normalised pence for every London (GBp/GBX-quoted)
+    ticker - the ONE price-returning endpoint in this file that never
+    called fundamentals_data.normalize_pence_quote(), because it never
+    fetched .info at all (only .history()). Now fetches .info on the
+    SAME yf.Ticker() object (one extra property read, not a second
+    network round-trip) to learn the raw currency, and runs the history
+    DataFrame through normalize_pence_quote() exactly like deep_dive_
+    engine.analyze()/nightly_scan.analyze_ticker_lite() already do for
+    their own raw fetches - a no-op for every non-GBp/GBX ticker (see
+    that function's own docstring), so this is purely additive for
+    every existing USD/AUD/GBP/CAD/JPY ticker.
 
     _HISTORY_CACHE_MAX: this cache has no per-entry eviction on its own
     (unlike _hits above, which self-trims by time window on every read) -
@@ -223,33 +238,51 @@ def _fetch_price_history_df(ticker):
     now = time.time()
     cached = _history_cache.get(ticker)
     if cached and now - cached[0] < _HISTORY_CACHE_TTL:
-        return cached[1], cached[0]
+        return cached[1], cached[0], cached[2]
     df = pd.DataFrame()
+    currency = None
     for attempt in range(3):
         try:
-            fetched = yf.Ticker(ticker).history(period="6mo")
+            tk = yf.Ticker(ticker)
+            fetched = tk.history(period="6mo")
             if fetched is not None and not fetched.empty:
                 df = fetched
+                try:
+                    info = tk.info or {}
+                except Exception:
+                    info = {}
+                currency = info.get("currency")
+                if currency in ("GBp", "GBX"):
+                    _, df, _, _pence_meta = fundamentals_data.normalize_pence_quote(
+                        ticker, dict(info), history_df=df,
+                    )
+                    if not _pence_meta.get("price_unit_suspect"):
+                        currency = "GBP"
                 break
         except Exception:
             df = pd.DataFrame()
+            currency = None
         if attempt < 2:
             time.sleep(0.5 * (attempt + 1))
     if len(_history_cache) > _HISTORY_CACHE_MAX:
         for k in [k for k, v in _history_cache.items() if now - v[0] >= _HISTORY_CACHE_TTL]:
             del _history_cache[k]
-    _history_cache[ticker] = (now, df)
-    return df, now
+    _history_cache[ticker] = (now, df, currency)
+    return df, now, currency
 
 
 def _infer_currency(ticker):
-    """Same suffix convention app.py's own _pos_default_currency already
-    uses (".AX" -> AUD, else USD) - avoids a second live yfinance .info
-    call just for a currency code on an endpoint whose whole point is
-    price history, not fundamentals. Same limitation as that existing
-    helper: not accurate for other non-US exchange suffixes (.L, .TO,
-    etc.) - pre-existing gap in the codebase's convention, not new here."""
-    return "AUD" if ticker.upper().endswith(".AX") else "USD"
+    """Suffix-based fallback ONLY - used when _fetch_price_history_df()'s
+    own live .info fetch didn't yield a currency at all (a total fetch
+    failure, the only case left once that function started fetching
+    .info itself - Lists & display Commit 2, 3 Oct 2026, Director-
+    directed). Reuses fcf_valuation_engine.trading_currency_for()'s own
+    suffix table (".AX"->AUD, ".L"->GBP, ".TO"->CAD, ".T"->JPY, else
+    USD) instead of this function's own old two-way AUD/USD guess, so a
+    total-failure fallback is at least as accurate as every other
+    currency-inference fallback in this codebase, not a second,
+    narrower guess."""
+    return fcf_valuation_engine.trading_currency_for(ticker)
 
 
 # -----------------------------------
@@ -369,6 +402,14 @@ def get_history(ticker: str, request: Request):
     _fetch_price_history_df for why this is a duplicated fetch call
     rather than a shared import (app.py runs in a separate process).
 
+    Lists & display Commit 2 (3 Oct 2026, Director-directed):
+    _fetch_price_history_df() now also returns the ticker's real
+    currency (normalised out of pence for a GBp/GBX-quoted London
+    name, via fundamentals_data.normalize_pence_quote() - see that
+    function's own comment) - used here instead of the old two-way
+    AUD/USD guess. _infer_currency()'s suffix table is now only the
+    fallback for a ticker whose live fetch failed outright.
+
     Fails soft, always 200: an unknown ticker, an empty fetch (yfinance
     hiccup, delisted symbol) or a malformed ticker string all return the
     same envelope shape with empty points/ma50 lists rather than a
@@ -392,7 +433,7 @@ def get_history(ticker: str, request: Request):
     empty = {"ticker": ticker, "currency": None, "points": [], "ma50": []}
     if not _HISTORY_TICKER_RE.match(ticker):
         return _envelope(empty)
-    df, fetched_at = _fetch_price_history_df(ticker)
+    df, fetched_at, currency = _fetch_price_history_df(ticker)
     if df is None or df.empty or "Close" not in df.columns:
         return _envelope(empty)
     closes = df["Close"].dropna()
@@ -405,7 +446,7 @@ def get_history(ticker: str, request: Request):
     return _envelope(
         {
             "ticker": ticker,
-            "currency": _infer_currency(ticker),
+            "currency": currency or _infer_currency(ticker),
             "points": points,
             "ma50": ma50,
         },

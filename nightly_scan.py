@@ -785,6 +785,14 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         # Intrinsic Value/MOS % are already None on this row when set.
         "price_unit_suspect": bool(_price_unit_meta.get("price_unit_suspect")),
         "price_unit_suspect_reason": _price_unit_meta.get("price_unit_suspect_reason"),
+        # Lists & display Commit 2 (3 Oct 2026, Director-directed):
+        # "GBp" or None - carried forward on the row so _reprice_row()
+        # (a price-only batch pass with no .info fetch of its own, so it
+        # can't re-detect this from a live currency code) knows whether
+        # TONIGHT's freshly downloaded close for this exact ticker also
+        # needs the /100 treatment, without re-fetching .info for every
+        # ticker in the reprice batch.
+        "price_quote_unit": _price_unit_meta.get("price_quote_unit"),
         # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO false
         # positive): DISPLAY-ONLY sanity flag for the Scanner row - never
         # read by calculate_long_score()/composite_score() or any
@@ -1764,6 +1772,15 @@ def _reprice_row(row, hist_df, universe_attention_lite=True):
     close_series = window_3mo["Close"].dropna()
     if close_series.empty:
         return None
+    # Lists & display Commit 2 (3 Oct 2026, Director-directed): this
+    # pass's own yf.download() is a raw batch price fetch, same pence-
+    # quoted-for-GBp-tickers convention as every other raw fetch in this
+    # app - row["price_quote_unit"] ("GBp" or None) was captured by the
+    # last FULL scan's own normalize_pence_quote() call and carried
+    # across reprices for exactly this (see that row field's own
+    # comment at its write site). A no-op for every non-GBp ticker.
+    if row.get("price_quote_unit") == "GBp":
+        close_series = close_series / 100.0
     current_price = float(close_series.iloc[-1])
     if not math.isfinite(current_price) or current_price <= 0:
         return None
