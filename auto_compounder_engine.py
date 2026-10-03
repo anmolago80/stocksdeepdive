@@ -3606,6 +3606,63 @@ def _equity_10y_method(bundle, g_earn, normalized_eps=None):
     return value_per_share, g_eq, discount, g_eq_capped, None
 
 
+# Owner decision (3 Oct 2026): PE Forward's multiplier is now the median
+# of the last PE_FORWARD_5Y_WINDOW (5) fiscal-year P/Es, not today's
+# single-day multiple - a de-rating or a spike should not carry straight
+# into a five-year forecast. PE_FORWARD_5Y_MIN_YEARS (3) usable years are
+# required before the median is trusted; below that, the method falls
+# back to today's P/E (flagged). PE_FORWARD_5Y_FLOOR/_CEIL clamp the
+# multiple actually applied either way, so one extreme year (a near-zero
+# EPS, a deep de-rating) can't send a 5-year-out forecast off a cliff.
+PE_FORWARD_5Y_WINDOW = 5
+PE_FORWARD_5Y_MIN_YEARS = 3
+PE_FORWARD_5Y_FLOOR = 5.0
+PE_FORWARD_5Y_CEIL = 40.0
+
+
+def _fair_pe_5y(bundle, normalized_eps):
+    """The "5-yr average P/E" PE Forward now applies: the MEDIAN of up to
+    PE_FORWARD_5Y_WINDOW (5) fiscal-year P/Es, each = that fiscal year's
+    own period-end price (via _year_end_prices(), matched to the
+    statement's real end date, never a calendar-year bucket) divided by
+    that year's normalised diluted EPS (normalized_eps()'s own
+    "growth_series" - the same newest-first fiscal-year series
+    _eps_series() returns, but with one-off-distorted years already
+    excluded - see that function's own docstring). A year is skipped
+    when its EPS is <= 0 or no matched year-end price exists.
+
+    Median rather than mean so one odd year (a single de-rating, a
+    single spike) can't dominate the 5-year read the way a mean would.
+
+    Returns (fair_pe, reason): reason is None when the median was
+    computed from >= PE_FORWARD_5Y_MIN_YEARS (3) usable years; the
+    median itself is NOT clamped here (the caller clamps the multiple
+    it actually applies, whichever source it came from - see
+    _pe_forward_method()). Returns (None, "insufficient_history") when
+    fewer than 3 years are usable - nothing in that window differs
+    enough from "today's P/E" to be trusted as a 5-year average, so the
+    caller falls back to today's multiple instead."""
+    growth_series = (normalized_eps or {}).get("growth_series") or []
+    prices_by_year = _year_end_prices(bundle.get("prices_10y") or {}, bundle.get("income"))
+    pes = []
+    for year, eps in growth_series[:PE_FORWARD_5Y_WINDOW]:
+        if eps is None or eps <= 0:
+            continue
+        price = prices_by_year.get(year)
+        if price is None:
+            continue
+        pes.append(price / eps)
+    if len(pes) < PE_FORWARD_5Y_MIN_YEARS:
+        return None, "insufficient_history"
+    sorted_pes = sorted(pes)
+    n = len(sorted_pes)
+    median_pe = (
+        sorted_pes[n // 2] if n % 2 == 1
+        else (sorted_pes[n // 2 - 1] + sorted_pes[n // 2]) / 2
+    )
+    return median_pe, None
+
+
 def _pe_forward_method(bundle, g_earn, discount_rate, normalized_eps=None):
     """Workbook's real pe_forward (Valuation!J = Forecast EPS(5y) x Actual
     P/E x fx): Forecast EPS(5y) = eps_ttm x (1+g_earn)^5 (net income
@@ -3632,7 +3689,7 @@ def _pe_forward_method(bundle, g_earn, discount_rate, normalized_eps=None):
     correctly refusing a negative trailing EPS, but with no fallback to
     a forecast Yahoo already had on hand. `normalized_eps` (see
     _normalized_eps()'s own docstring) replaces the raw trailing EPS
-    for the "Actual P/E" multiple (price / EPS) and for the
+    for the "today's P/E" multiple (price / EPS) and for the
     compounding fallback when Yahoo has no forward estimate - same
     one-off-resistant figure PE Trailing now uses, so the multiple this
     method applies isn't itself poisoned by the same write-down.
@@ -3645,25 +3702,40 @@ def _pe_forward_method(bundle, g_earn, discount_rate, normalized_eps=None):
     this method. Now compounded the remaining 4 years at the DCF's own
     g_earn (forward_eps is already "1 year out"; the trailing-EPS
     fallback just below needs all 5 years since it starts from TODAY's
-    EPS). Discounting (5 years at discount_rate) and the "Actual P/E"
+    EPS). Discounting (5 years at discount_rate) and the "today's P/E"
     multiple are both unchanged.
 
-    Returns a 6-tuple now (was 5): (value, forecast_eps_5y, actual_pe,
-    year5_price_undiscounted, reason, forward_eps_used) - reason is
-    None when a value was produced, "no_analyst_forecast" when Yahoo
-    has no forward EPS AND the normalised EPS isn't usable either
-    (nothing to compound from), "negative_earnings" when a forward EPS
-    exists but there's no usable EPS to build the "Actual P/E" multiple
-    from. forward_eps_used is Yahoo's own raw next-FY figure, set only
-    when that branch actually fired (None on the trailing-EPS-
-    compounded fallback, which has no separate "next FY" figure to
-    show) - lets the caller display both "Forward EPS (next FY)" and
-    "Forecast EPS (yr 5)" side by side instead of implying forwardEps
-    itself already was the year-5 number. value is None (method not
-    offered) when g_earn/price/discount_rate aren't all available - a
-    year-5 estimate with no discount rate to bring it back to today
-    isn't a usable Intrinsic Value, so it's withheld rather than shown
-    undiscounted again."""
+    Owner decision (3 Oct 2026): the YEAR-5 PRICE this method builds
+    (forecast_eps_5y x multiple) now multiplies by fair_pe_5y - the
+    median of the last 5 fiscal-year P/Es (see _fair_pe_5y() above),
+    clamped to [PE_FORWARD_5Y_FLOOR, PE_FORWARD_5Y_CEIL] - not by
+    today's single-day multiple, which carries short-term noise (a
+    de-rating or a spike) straight into a five-year forecast. today's
+    multiple (now `today_pe`, was `actual_pe`) is still computed and
+    still returned, for display alongside fair_pe_5y, but no longer
+    drives the valuation itself. When fewer than
+    PE_FORWARD_5Y_MIN_YEARS (3) fiscal years are usable, fair_pe_5y
+    falls back to today's own multiple (still clamped), tagged via
+    pe_forward_multiple_source = "current (insufficient history)" so
+    the caller can say so.
+
+    Returns an 8-tuple now (was 6): (value, forecast_eps_5y,
+    fair_pe_5y, today_pe, year5_price_undiscounted, reason,
+    forward_eps_used, pe_forward_multiple_source) - reason is None when
+    a value was produced, "no_analyst_forecast" when Yahoo has no
+    forward EPS AND the normalised EPS isn't usable either (nothing to
+    compound from), "negative_earnings" when a forward EPS exists but
+    there's no usable EPS to build today's P/E multiple from.
+    forward_eps_used is Yahoo's own raw next-FY figure, set only when
+    that branch actually fired (None on the trailing-EPS-compounded
+    fallback, which has no separate "next FY" figure to show) - lets
+    the caller display both "Forward EPS (next FY)" and "Forecast EPS
+    (yr 5)" side by side instead of implying forwardEps itself already
+    was the year-5 number. value is None (method not offered) when
+    g_earn/price/discount_rate aren't all available - a year-5 estimate
+    with no discount rate to bring it back to today isn't a usable
+    Intrinsic Value, so it's withheld rather than shown undiscounted
+    again."""
     if g_earn is None or discount_rate is None or discount_rate <= -1:
         return None
     info = bundle.get("info") or {}
@@ -3679,13 +3751,23 @@ def _pe_forward_method(bundle, g_earn, discount_rate, normalized_eps=None):
     elif base_eps is not None and base_eps > 0:
         forecast_eps_5y = base_eps * ((1 + g_earn) ** 5)
     else:
-        return None, None, None, None, "no_analyst_forecast", None
+        return None, None, None, None, None, "no_analyst_forecast", None, None
     if base_eps is None or base_eps <= 0:
-        return None, None, None, None, "negative_earnings", None
-    actual_pe = price_now / base_eps
-    year5_price = forecast_eps_5y * actual_pe
+        return None, None, None, None, None, "negative_earnings", None, None
+    today_pe = price_now / base_eps
+    fair_pe_5y, _ = _fair_pe_5y(bundle, normalized_eps)
+    if fair_pe_5y is None:
+        fair_pe_5y = today_pe
+        pe_forward_multiple_source = "current (insufficient history)"
+    else:
+        pe_forward_multiple_source = "5yr_average"
+    fair_pe_5y = max(PE_FORWARD_5Y_FLOOR, min(PE_FORWARD_5Y_CEIL, fair_pe_5y))
+    year5_price = forecast_eps_5y * fair_pe_5y
     value = year5_price / ((1 + discount_rate) ** 5)
-    return value, forecast_eps_5y, actual_pe, year5_price, None, forward_eps_used
+    return (
+        value, forecast_eps_5y, fair_pe_5y, today_pe, year5_price, None,
+        forward_eps_used, pe_forward_multiple_source,
+    )
 
 
 def _dcf_valuation_and_inputs(info, price, canonical_dcf_result):
@@ -3970,9 +4052,10 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
 
     pe_forward_result = _safe(
         _pe_forward_method, bundle, g_earn, dcf_result.get("discount_rate"), normalized_eps)
-    (pe_forward_value, forecast_eps_5y, actual_pe, pe_forward_year5_price, pe_forward_reason,
-     pe_forward_eps_next_fy) = (
-        pe_forward_result if pe_forward_result else (None, None, None, None, None, None)
+    (pe_forward_value, forecast_eps_5y, pe_forward_fair_pe_5y, pe_forward_today_pe,
+     pe_forward_year5_price, pe_forward_reason, pe_forward_eps_next_fy,
+     pe_forward_multiple_source) = (
+        pe_forward_result if pe_forward_result else (None, None, None, None, None, None, None, None)
     )
     if pe_forward_value is None and pe_forward_reason:
         method_reasons["pe_forward"] = pe_forward_reason
@@ -4031,9 +4114,23 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
         else:
             _pe_forward_eps_value = forecast_eps_5y
             _pe_forward_eps_fmt = "cur"
+        # Owner decision (3 Oct 2026): the multiple this method actually
+        # applies is now fair_pe_5y (median of the last 5 fiscal-year
+        # P/Es, see _fair_pe_5y()), not today's single-day multiple -
+        # shown alongside today's own P/E so both are visible. Flagged
+        # (shown red) when there weren't enough usable fiscal years and
+        # the method fell back to today's P/E instead.
+        _pe_forward_multiple_value = (
+            f"{pe_forward_fair_pe_5y:.1f}x (today {pe_forward_today_pe:.1f}x)"
+            if pe_forward_fair_pe_5y is not None and pe_forward_today_pe is not None
+            else pe_forward_fair_pe_5y
+        )
         valuation_inputs["pe_forward"] = [
             {"label": "Forecast EPS (yr 5)", "value": _pe_forward_eps_value, "format": _pe_forward_eps_fmt},
-            {"label": "Actual P/E", "value": actual_pe, "format": "x"},
+            {
+                "label": "5-yr average P/E", "value": _pe_forward_multiple_value, "format": "raw",
+                "flagged": pe_forward_multiple_source == "current (insufficient history)",
+            },
             {"label": "Year 5 Price (undiscounted)", "value": pe_forward_year5_price, "format": "cur"},
             {"label": "Discount Rate (this calc)", "value": dcf_result.get("discount_rate"), "format": "pct"},
         ]

@@ -143,7 +143,9 @@ hand-built workbook analysis of selected quality compounders - a decade of earni
 history, four independent fair-value methods (trailing P/E, forward P/E, DCF, and a
 10-year equity method), and written Buffett/Munger-style judgment on management, moat
 and risk. Every threshold and colour band on those pages comes from the original
-research, not a generic screen.
+research, not a generic screen. Forward P/E applies the median of the last five
+fiscal years' P/E ratios rather than today's, so a short-term de-rating or spike
+doesn't carry straight into a five-year forecast.
 
 #### Limitations, honestly
 
@@ -405,7 +407,9 @@ cuaderno de trabajo, hecho a mano por el autor, de compounders de calidad selecc
 de historial de ganancias, cuatro métodos independientes de valor razonable (P/E histórico, P/E
 futuro, DCF y un método de patrimonio a 10 años), y juicio escrito al estilo Buffett/Munger sobre la
 gestión, el foso y el riesgo. Cada umbral y banda de color en esas páginas proviene de la
-investigación original, no de un filtro genérico.
+investigación original, no de un filtro genérico. El P/E futuro aplica la mediana de los últimos
+cinco años fiscales en lugar del múltiplo de hoy, para que una caída o un repunte de corto plazo no
+se traslade directamente a una proyección a cinco años.
 
 #### Limitaciones, con honestidad
 

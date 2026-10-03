@@ -58,9 +58,15 @@ _G_EARN_BLEND = 0.1125
 _result_blend = ace._pe_forward_method(
     _knsl_bundle, _G_EARN_BLEND, _KNSL_DISCOUNT_RATE, _knsl_normalized_eps)
 assert _result_blend is not None
-_value_b, _eps5_b, _pe_b, _year5_b, _reason_b, _fwd_used_b = _result_blend
+(_value_b, _eps5_b, _fair_pe_b, _pe_b, _year5_b, _reason_b, _fwd_used_b,
+ _source_b) = _result_blend
 assert _reason_b is None, _reason_b
 assert _fwd_used_b == _KNSL_FORWARD_EPS, _fwd_used_b
+# This fixture's growth_series is empty (no fiscal-year history), so
+# fair_pe_5y falls back to today's own P/E (clamped to [5, 40]) -
+# numerically identical to the pre-fix actual_pe-driven value below.
+assert _source_b == "current (insufficient history)", _source_b
+assert abs(_fair_pe_b - _pe_b) < 1e-9, (_fair_pe_b, _pe_b)
 
 _expected_eps5_b = _KNSL_FORWARD_EPS * (1 + _G_EARN_BLEND) ** 4
 assert abs(_eps5_b - _expected_eps5_b) < 0.01, (_eps5_b, _expected_eps5_b)
@@ -80,7 +86,8 @@ _G_EARN_BARE = 0.025
 _result_bare = ace._pe_forward_method(
     _knsl_bundle, _G_EARN_BARE, _KNSL_DISCOUNT_RATE, _knsl_normalized_eps)
 assert _result_bare is not None
-_value_bare, _eps5_bare, _pe_bare, _year5_bare, _reason_bare, _fwd_used_bare = _result_bare
+(_value_bare, _eps5_bare, _fair_pe_bare, _pe_bare, _year5_bare, _reason_bare, _fwd_used_bare,
+ _source_bare) = _result_bare
 assert _reason_bare is None, _reason_bare
 assert abs(_value_bare - 272) < 3.0, _value_bare
 print(f"[knsl_bare_growth_2_5pct] same fixture at g_earn={_G_EARN_BARE:.2%} (the DCF's "
@@ -113,7 +120,8 @@ _csl_normalized_eps = {"value": 8.0, "raw": -3.5, "distorted_years": [0],
                         "source": "median5_clean", "growth_series": []}
 _result_csl = ace._pe_forward_method(_csl_bundle, 0.08, 0.085, _csl_normalized_eps)
 assert _result_csl is not None
-_value_csl, _eps5_csl, _pe_csl, _year5_csl, _reason_csl, _fwd_used_csl = _result_csl
+(_value_csl, _eps5_csl, _fair_pe_csl, _pe_csl, _year5_csl, _reason_csl, _fwd_used_csl,
+ _source_csl) = _result_csl
 assert _reason_csl is None, _reason_csl
 assert _value_csl is not None and _value_csl > 0, _value_csl
 assert _fwd_used_csl == 15.0, _fwd_used_csl
@@ -143,7 +151,8 @@ assert _adp_normalized_eps["value"] == 1.0, _adp_normalized_eps
 _result_adp = ace._pe_forward_method(
     _adp_bundle, _G_EARN_ADP, _DISCOUNT_RATE_ADP, _adp_normalized_eps)
 assert _result_adp is not None
-_value_adp, _eps5_adp, _pe_adp, _year5_adp, _reason_adp, _fwd_used_adp = _result_adp
+(_value_adp, _eps5_adp, _fair_pe_adp, _pe_adp, _year5_adp, _reason_adp, _fwd_used_adp,
+ _source_adp) = _result_adp
 assert _reason_adp is None, _reason_adp
 assert _fwd_used_adp is None, _fwd_used_adp  # no forwardEps -> trailing branch, no "next FY" figure
 assert abs(_eps5_adp - 17.84) < 0.01, _eps5_adp

@@ -90,17 +90,30 @@ assert _normalized_eps_fixture["value"] == 1.0, _normalized_eps_fixture
 # bundle has no "forwardEps" key at all, so it exercises the UNCHANGED
 # trailing-EPS-compounded branch (forward_eps_used stays None) - the
 # formula-level assertions below remain numerically valid.
+#
+# 5-yr average P/E fix (3 Oct 2026, owner-directed): _pe_forward_method()
+# now returns an 8-tuple (added fair_pe_5y, today_pe replaces the old
+# actual_pe position, pe_forward_multiple_source) - see that function's
+# own docstring. This fixture's bundle has an empty prices_10y series and
+# normalized_eps_fixture's growth_series is empty too (no fiscal-year
+# history to pair), so fair_pe_5y falls back to today_pe (clamped to
+# [5, 40]) - numerically identical to the old actual_pe-driven value,
+# since 24.10 is well inside that clamp.
 _result = ace._pe_forward_method(_bundle, _G_EARN, _DISCOUNT_RATE, _normalized_eps_fixture)
 assert _result is not None
-_value, _forecast_eps_5y, _actual_pe, _year5_price, _reason, _forward_eps_used = _result
+(_value, _forecast_eps_5y, _fair_pe_5y, _today_pe, _year5_price, _reason, _forward_eps_used,
+ _multiple_source) = _result
 assert _reason is None, _reason
 assert _forward_eps_used is None, _forward_eps_used
+assert _multiple_source == "current (insufficient history)", _multiple_source
+assert abs(_fair_pe_5y - _today_pe) < 1e-9, (_fair_pe_5y, _today_pe)
 
 assert abs(_forecast_eps_5y - 17.84) < 0.01, _forecast_eps_5y
-assert abs(_actual_pe - 24.10) < 0.01, _actual_pe
+assert abs(_today_pe - 24.10) < 0.01, _today_pe
 assert abs(_year5_price - 429.844) < 0.5, _year5_price
 print(f"[undiscounted_year5_matches_owner_report] Forecast EPS(5y)={_forecast_eps_5y:.2f} x "
-      f"Actual P/E={_actual_pe:.2f} = ${_year5_price:.2f} (owner reported $429.88) OK")
+      f"today's P/E={_today_pe:.2f} (no fiscal-year history -> falls back from fair_pe_5y) = "
+      f"${_year5_price:.2f} (owner reported $429.88) OK")
 
 assert 274 < _value < 278, _value
 print(f"[discounted_value_matches_owner_estimate] discounted at {_DISCOUNT_RATE:.1%} over 5y: "
