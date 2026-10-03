@@ -2531,6 +2531,40 @@ def set_resubmit_paused(paused, log=print):
     log(f"[top100] resubmission pause {'ENABLED' if paused else 'disabled'} by owner")
 
 
+def _resubmit_pause_v2_release_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".top100_resubmit_pause_v2_release_done")
+
+
+def release_resubmit_pause_on_this_deploy_once(log=print):
+    """One-off, marker-guarded boot action (3 Oct 2026, owner-directed,
+    degenerate-response guard task item 6) - mirrors set_resubmit_
+    pause_on_this_deploy_once() above, in reverse: that hook turned the
+    pause ON for the ticker-echo-fix deploy so no bad retries went out
+    while the parsing fix landed; the degenerate-response guard +
+    retroactive sweep in THIS deploy is the owner-approved release
+    point, so this hook turns the pause back OFF automatically - the
+    owner doesn't have to touch the Admin Dashboard toggle to let
+    tonight's cleared/unmatched tickers go back out.
+
+    Guarded by its OWN marker (distinct from both is_resubmit_paused()'s
+    own marker and set_resubmit_pause_on_this_deploy_once()'s "v1"
+    marker) so it fires exactly once, on the first boot after THIS
+    deploy, and is NEVER re-applied on a later boot - if the owner
+    re-pauses resubmission later for their own reasons, this hook must
+    never silently clear that pause again."""
+    marker = _resubmit_pause_v2_release_marker_path()
+    if os.path.exists(marker):
+        return
+    set_resubmit_paused(False, log=log)
+    log("[top100] resubmission pause: OFF (owner-approved release of retries)")
+    try:
+        with open(marker, "w") as f:
+            f.write(datetime.now(timezone.utc).isoformat())
+    except OSError as e:
+        log(f"[top100] could not write resubmit-pause-v2-release marker: {e}")
+
+
 # -----------------------------------------------------------------
 # Degenerate-response sweep (3 Oct 2026, owner-directed) - retroactive,
 # one-off, marker-guarded clean-up of v6 rows already saved from a

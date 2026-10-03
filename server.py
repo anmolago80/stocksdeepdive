@@ -365,6 +365,14 @@ async def lifespan(app: FastAPI):
     # every other one-off above.
     with suppress(Exception):
         top100_engine.run_degenerate_sweep_once()
+    # Degenerate-response guard, task item 6 (3 Oct 2026, owner-
+    # directed): the owner-approved release point for the resubmission
+    # pause set_resubmit_pause_on_this_deploy_once() turned ON for the
+    # ticker-echo-fix deploy - see top100_engine.release_resubmit_
+    # pause_on_this_deploy_once()'s own docstring. Same "never allowed
+    # to stop the site serving" rule as every other one-off above.
+    with suppress(Exception):
+        top100_engine.release_resubmit_pause_on_this_deploy_once()
     _client = httpx.AsyncClient(
         base_url=UPSTREAM, timeout=httpx.Timeout(None, connect=10.0),
         follow_redirects=False, limits=httpx.Limits(max_connections=200),

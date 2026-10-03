@@ -241,4 +241,35 @@ print("[matched_by_recorded] matched_by is stored as 'ticker' for an explicit ec
       "'position' for the blank-ticker positional fallback, read back by latest_score_for_"
       "ticker() OK")
 
+# ======================================================================
+# CHECK 7 (task item 6): release_resubmit_pause_on_this_deploy_once()
+# turns the resubmission pause OFF automatically on this deploy's
+# first boot, logs the exact owner-specified line, is marker-guarded
+# (fires once, ever), and - critically - never re-clears a pause the
+# owner re-applied afterward for their own reasons.
+# ======================================================================
+assert os.path.exists(te._resubmit_pause_v2_release_marker_path()) is False
+te.set_resubmit_paused(True, log=lambda *a, **k: None)  # simulate the prior deploy's own ON step
+assert te.is_resubmit_paused() is True
+_release_log = []
+te.release_resubmit_pause_on_this_deploy_once(log=_release_log.append)
+assert te.is_resubmit_paused() is False, "the pause must be OFF after the release hook runs"
+assert any("[top100] resubmission pause: OFF (owner-approved release of retries)" == ln
+           for ln in _release_log), _release_log
+print("[resubmit_pause_released] release_resubmit_pause_on_this_deploy_once() turns the pause "
+      "OFF and logs the exact owner-specified line OK")
+
+# Never re-applied on a later boot: if the owner re-pauses afterward,
+# a second call (marker now in place) must not touch it.
+te.set_resubmit_paused(True, log=lambda *a, **k: None)
+assert te.is_resubmit_paused() is True
+_release_log_2 = []
+te.release_resubmit_pause_on_this_deploy_once(log=_release_log_2.append)
+assert _release_log_2 == [], "a second call after the marker exists must do and log nothing"
+assert te.is_resubmit_paused() is True, (
+    "the release hook must never re-clear a pause the owner re-applied after its one firing")
+print("[resubmit_pause_release_once_only] a second call, after the marker exists, never "
+      "re-clears a pause the owner re-applied afterward OK")
+te.set_resubmit_paused(False, log=lambda *a, **k: None)  # leave state clean for other tests
+
 print("\nALL TOP 100 DEGENERATE-RESPONSE GUARD FIXTURES PASSED")
