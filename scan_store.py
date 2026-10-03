@@ -283,6 +283,53 @@ def list_saved_universes(include_private=False):
     return sorted(out)
 
 
+def ticker_universes_including_private(ticker):
+    """Every currently-saved universe (private or public) whose overnight
+    scan file contains `ticker` right now - ignores load_scan_raw()'s own
+    allow_private gate (passes True) AND the 72h freshness cutoff
+    (load_scan_raw, not load_scan), because privacy is about where a
+    ticker is scanned, not whether that scan is fresh enough to display.
+    Not itself a privacy decision - see is_private_only_ticker() below,
+    which is. Internal helper; callers outside this module should use
+    is_private_only_ticker()."""
+    ticker = (ticker or "").strip().upper()
+    if not ticker:
+        return []
+    out = []
+    for universe in list_saved_universes(include_private=True):
+        payload = load_scan_raw(universe, allow_private=True)
+        if not payload:
+            continue
+        for row in payload.get("rows") or []:
+            if (row.get("Ticker") or "").strip().upper() == ticker:
+                out.append(universe)
+                break
+    return out
+
+
+def is_private_only_ticker(ticker):
+    """True iff `ticker` is currently saved in at least one overnight scan
+    AND every one of those scans is a private universe
+    (is_private_universe()) - i.e. there is no public scan this ticker
+    could legitimately be shown alongside. False if the ticker isn't in
+    any saved scan at all, or if it's in at least one public universe's
+    scan (same ticker scanned under both a private and a public universe
+    is NOT private-only - it's already legitimately public via the
+    public scan). "Can't confirm private" is treated the same as
+    "confirmed public", never as "confirmed private".
+
+    Director addendum 2, Part 2, item C (3 Oct 2026): score_history.py
+    has no universe column of its own (see delete_bad_price_rows()'s own
+    docstring there) - its readers can't filter by universe without a
+    separate lookup. This is that lookup, keyed off the ticker alone, for
+    any score_history reader that shows rows outside the Admin dashboard
+    (e.g. /track-record, /calendar, Deep Dive's score-history caption/
+    chart) to decide whether a given ticker's row may only ever have come
+    from a private-only nightly scan."""
+    universes = ticker_universes_including_private(ticker)
+    return bool(universes) and all(is_private_universe(u) for u in universes)
+
+
 def find_ticker_row(ticker, allow_private=False):
     """The freshest saved overnight-scan row for `ticker`, across every
     universe with a scan on disk, or None if no fresh scan covers it.

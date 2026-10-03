@@ -3050,7 +3050,18 @@ def _render_score_history_caption(ticker, current_score):
     nothing if this ticker has no stored history that far back yet (a brand
     new ticker, or fewer than ~30 days since the overnight scan started
     covering it) - a missing history row should never be shown as if it
-    were a zero change."""
+    were a zero change.
+
+    Director addendum 2, Part 2, item C (3 Oct 2026): score_history has
+    no universe column of its own, so this (and _render_score_history_
+    chart below) is the Deep Dive page's own gate - silently does
+    nothing for a ticker that's only ever been recorded under a private
+    universe (scan_store.is_private_only_ticker()), same "silently do
+    nothing" convention this function already uses for "no history yet".
+    Distinct from peer_context.py's own "private_market" gate just above
+    in this file, which only hides the peer-comparison panel."""
+    if scan_store.is_private_only_ticker(ticker):
+        return
     try:
         past = score_history.get(ticker, 30)
         if not past or past.get("long_score") is None or current_score is None:
@@ -3077,7 +3088,13 @@ def _render_score_history_chart(ticker, score_word="Value Score"):
     the others (or a second, dual axis) would misrepresent the numbers
     exactly the way this site's other charts never do. Renders nothing
     at all when fewer than 5 recorded points exist - a 2-3 point "chart"
-    reads as noise, not a trend."""
+    reads as noise, not a trend.
+
+    Director addendum 2, Part 2, item C (3 Oct 2026): same private-only-
+    ticker gate as _render_score_history_caption() above - see that
+    function's own docstring."""
+    if scan_store.is_private_only_ticker(ticker):
+        return
     try:
         series = score_history.series(ticker, limit_days=730)  # ~24 months
     except Exception:

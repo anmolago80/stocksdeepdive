@@ -37,6 +37,7 @@ from datetime import datetime, timezone, timedelta, date as _date
 import blog_render
 import i18n
 import results_store
+import scan_store
 import snapshot_store
 
 SITE_NAME = blog_render.SITE_NAME
@@ -88,11 +89,27 @@ def build_entries(tickers=None):
         last_report = w.get("last_report_date")
         if last_report:
             event = results_store.get_event(ticker, last_report)
+            # Director addendum 2, Part 2, item C (3 Oct 2026): before_
+            # value_score/after_value_score are read straight from score_
+            # history (results_engine._reanalyze() -> score_history.
+            # before_date()), which has no universe column of its own -
+            # a ticker scanned ONLY in a private universe can reach a
+            # fresh earnings_watch entry via scheduler_engine's own all_
+            # tracked_tickers() union, and its before/after score would
+            # otherwise be shown here regardless. The watched ticker/
+            # dates themselves aren't private data (an earnings date is
+            # public market information, and being "watched" doesn't
+            # imply private-universe membership) - only the computed
+            # score numbers are nulled out, via scan_store.
+            # is_private_only_ticker() (see its own docstring).
+            _private = scan_store.is_private_only_ticker(ticker)
             entries.append({
                 "ticker": ticker, "company_name": name, "universe": universe,
                 "date": last_report, "status": "reported", "confirmed": True,
-                "before_value_score": ((event or {}).get("before") or {}).get("value_score"),
-                "after_value_score": ((event or {}).get("after") or {}).get("value_score"),
+                "before_value_score": None if _private else
+                    ((event or {}).get("before") or {}).get("value_score"),
+                "after_value_score": None if _private else
+                    ((event or {}).get("after") or {}).get("value_score"),
                 "has_event": event is not None,
             })
         next_report = w.get("next_report_date")

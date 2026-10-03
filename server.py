@@ -2574,7 +2574,16 @@ async def track_record(request: Request):
     path = request.url.path.rstrip("/") or "/"
     lang = "es" if path == "/es/track-record" else "en"
     _count_view("track_record", lang=lang)
-    rows = score_history.tracked_summary()
+    # Director addendum 2, Part 2, item C (3 Oct 2026): score_history has
+    # no universe column of its own, so tracked_summary() can't filter by
+    # universe itself - this is the public read path's own gate, dropping
+    # any ticker that's only ever been recorded under a private universe
+    # (FTSE 100/250, TSX 60/Composite, Nikkei 225, TOPIX 500 by default -
+    # see scan_store.is_private_only_ticker()'s own docstring). Filtering
+    # here reads/deletes nothing from score_history itself - every row
+    # stays on disk; this just decides what this one public page shows.
+    rows = [r for r in score_history.tracked_summary()
+            if not scan_store.is_private_only_ticker(r.get("ticker"))]
     hreflang_alternates = [
         ("en", f"{base_url}/track-record"),
         ("es", f"{base_url}/es/track-record"),
