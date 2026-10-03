@@ -345,6 +345,17 @@ async def lifespan(app: FastAPI):
     # stop the site serving" rule as every other one-off above.
     with suppress(Exception):
         top100_engine.seed_pool_presence_for_v6_once()
+    # Resubmission pause (3 Oct 2026, owner-directed, resubmission-loop
+    # investigation): one-off, marker-guarded - sets the pause ON for
+    # the first boot after THIS deploy only, per the owner's own
+    # explicit instruction, so tonight's run doesn't re-send the 69
+    # tickers that came back "missing from packed batch response" on
+    # 2 Oct until the root cause is understood. See top100_engine.
+    # set_resubmit_pause_on_this_deploy_once()'s own docstring - same
+    # "never allowed to stop the site serving" rule as every other
+    # one-off above.
+    with suppress(Exception):
+        top100_engine.set_resubmit_pause_on_this_deploy_once()
     _client = httpx.AsyncClient(
         base_url=UPSTREAM, timeout=httpx.Timeout(None, connect=10.0),
         follow_redirects=False, limits=httpx.Limits(max_connections=200),

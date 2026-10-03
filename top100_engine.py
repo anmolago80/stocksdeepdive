@@ -2205,7 +2205,7 @@ def poll_and_ingest_batch(log=print):
             batch_id=state["batch_id"], scored=saved, failed=failed,
             input_tokens=total_input_tokens, cache_creation_tokens=total_cache_creation_tokens,
             cache_read_tokens=total_cache_read_tokens, output_tokens=total_output_tokens,
-            cost_usd=cost,
+            cost_usd=cost, custom_id_map=custom_id_map,
         )
     except Exception as e:
         log(f"[top100] could not record ingest cost log: {e}")
@@ -2223,6 +2223,82 @@ def poll_and_ingest_batch(log=print):
             "cache_creation_tokens": total_cache_creation_tokens,
             "cache_read_tokens": total_cache_read_tokens,
             "cost_usd": cost}
+
+
+# -----------------------------------------------------------------
+# Resubmission pause (3 Oct 2026, owner-directed, resubmission-loop
+# investigation): the 2 Oct 23:00 UTC run packed 215 companies into 43
+# requests and came back with 146 scored / 69 "missing from packed
+# batch response" - 146 ~ 29*5 suggests whole REQUESTS (not individual
+# tickers) came back empty, a pattern _unscored_tickers()'s own 24h/3-
+# attempt failure memory (TOP100_FAILURE_RETRY_HOURS/_MAX_ATTEMPTS)
+# doesn't fully protect against: those 69 tickers have only ONE failure
+# attempt recorded, so a nightly run roughly 24h later would become
+# eligible to resubmit them again automatically, before the root cause
+# is understood. This is a SEPARATE, explicit, admin-togglable hold -
+# a marker file on the same Railway volume every other one-off/
+# singleton marker in this module already lives on (see _batch_01xa_
+# diagnostic_marker_path()/_pool_expansion_v200_marker_path() just
+# below for the identical pattern) - rather than an env var, so the
+# owner can flip it from the Admin Dashboard without a redeploy.
+# -----------------------------------------------------------------
+
+def _resubmit_pause_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".top100_resubmit_paused")
+
+
+def is_resubmit_paused():
+    """Default OFF (no marker file) - see set_resubmit_paused()."""
+    return os.path.exists(_resubmit_pause_marker_path())
+
+
+def _resubmit_pause_v1_set_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".top100_resubmit_pause_v1_set_done")
+
+
+def set_resubmit_pause_on_this_deploy_once(log=print):
+    """One-off, marker-guarded boot action (3 Oct 2026, owner-directed) -
+    same "never allowed to stop the site serving" pattern every other
+    one-off cleanup in this module already uses (see diagnose_batch_
+    01xa_once()/seed_pool_presence_for_v6_once() just below). Owner's
+    own explicit instruction: "SET IT ON in this commit's deploy (via
+    the marker, not an env var)" - this is the ONE time the pause marker
+    gets written automatically rather than by an owner click. Guarded by
+    its OWN marker (distinct from is_resubmit_paused()'s own marker) so
+    it fires exactly once, on the first boot after THIS deploy, and
+    never re-enables the pause on a later boot even after the owner has
+    since turned it back off via the Admin Dashboard toggle."""
+    marker = _resubmit_pause_v1_set_marker_path()
+    if os.path.exists(marker):
+        return
+    set_resubmit_paused(True, log=log)
+    try:
+        with open(marker, "w") as f:
+            f.write(datetime.now(timezone.utc).isoformat())
+    except OSError as e:
+        log(f"[top100] could not write resubmit-pause-v1-set marker: {e}")
+
+
+def set_resubmit_paused(paused, log=print):
+    """Admin Dashboard toggle. Writing the marker (paused=True) holds
+    back ONLY the resubmission case described in submit_nightly_batch()
+    - newcomers and results-driven re-scores (_unscored_tickers()'s own
+    "new_results"/"age" reasons that AREN'T also shadowed by a failure
+    record) are never affected, regardless of this flag."""
+    marker = _resubmit_pause_marker_path()
+    try:
+        if paused:
+            with open(marker, "w") as f:
+                f.write(datetime.now(timezone.utc).isoformat())
+        else:
+            if os.path.exists(marker):
+                os.remove(marker)
+    except OSError as e:
+        log(f"[top100] could not {'set' if paused else 'clear'} resubmission pause marker: {e}")
+        raise
+    log(f"[top100] resubmission pause {'ENABLED' if paused else 'disabled'} by owner")
 
 
 def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
@@ -2313,7 +2389,14 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     comment below for exactly how. custom_id_map's own per-custom_id
     value is now {"entrants": {ticker: {"score_key", "most_recent_
     quarter"}, ...}}, one dict per PACK rather than per company (see
-    poll_and_ingest_batch()'s own docstring for how that's read back)."""
+    poll_and_ingest_batch()'s own docstring for how that's read back).
+
+    Resubmission pause (3 Oct 2026, owner-directed): when is_resubmit_
+    paused() is True, any entrant whose ONLY reason to appear in
+    _unscored_tickers()'s own output is a prior failure now eligible to
+    retry is held back here, before packing - see is_resubmit_paused()'s
+    own module-level comment for why. force=True is unaffected (an
+    explicit owner-initiated refresh)."""
     # Audit fixes, Commit 2 (30 Sep 2026, owner-directed, tonight_sequence_
     # v2 addendum): the "never both submit AND have a batch pending"
     # guarantee described above only holds when every caller reaches this
@@ -2340,7 +2423,33 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     if force:
         entrants = [(row, "forced") for row in pool][:MAX_NIGHTLY_SCORES]
     else:
-        entrants = _unscored_tickers(pool, model)[:MAX_NIGHTLY_SCORES]
+        entrants = _unscored_tickers(pool, model)
+        # Resubmission pause (3 Oct 2026, owner-directed) - see
+        # is_resubmit_paused()'s own module-level comment. Holds back
+        # ONLY an entrant whose reason is "new_or_rubric" (no score at
+        # all under the current rubric) AND which also has a failure
+        # row on file - i.e. its ONLY reason for appearing here is a
+        # prior attempt that failed and is now eligible to retry
+        # (either the 24h window passed, or it hasn't hit 3 attempts
+        # yet - see _unscored_tickers()/_failure_blocks() above). A
+        # genuinely brand-new entrant (no failure row at all - e.g.
+        # every pooled ticker right after a rubric bump) is NEVER held
+        # back by this, and neither is "new_results"/"age" (those have
+        # a real existing score driving the resubmission, not a bare
+        # retry).
+        if is_resubmit_paused():
+            failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+            held = [
+                (row, reason) for row, reason in entrants
+                if reason == "new_or_rubric" and failures.get(row["ticker"]) is not None
+            ]
+            if held:
+                held_tickers = {row["ticker"] for row, _ in held}
+                entrants = [e for e in entrants if e[0]["ticker"] not in held_tickers]
+                log(f"[top100] resubmission paused by owner: {len(held)} held "
+                    f"({', '.join(sorted(held_tickers)[:10])}"
+                    f"{', ...' if len(held_tickers) > 10 else ''})")
+        entrants = entrants[:MAX_NIGHTLY_SCORES]
     if not entrants:
         log(f"[top100] every pooled company already scored under the current rubric for {model} "
             "- nothing to submit")
@@ -2505,6 +2614,139 @@ def diagnose_batch_01xa_once(log=print):
             f.write(datetime.now(timezone.utc).isoformat())
     except OSError as e:
         log(f"[top100] one-off diagnostic: could not write marker file: {e}")
+
+
+_BATCH_INSPECTOR_EXCERPT_CHARS = 600
+
+
+def inspect_batch_results(results, expected_map=None):
+    """Pure parsing logic for the Admin Dashboard's Batch inspector
+    panel - no network, no Anthropic client. `results` is a list of
+    plain dicts, one per Batches API result, already pulled off the
+    real SDK object by run_batch_inspector() below: {"custom_id",
+    "type" ("succeeded"|"errored"|"canceled"|"expired"), "stop_reason"
+    (succeeded only), "output_tokens" (succeeded only), "text"
+    (succeeded only - the raw response text), "error_detail" (non-
+    succeeded only - _serialize_batch_result_error()'s own output)}.
+    `expected_map` is {custom_id: [ticker, ...], ...} from top100_
+    store.expected_tickers_for_batch() - None/missing entries mean
+    "not available for this batch" (see that function's own docstring).
+
+    Returns (rows, summary). Each row: {"custom_id", "type",
+    "stop_reason", "output_tokens", "expected_tickers" (list or None),
+    "tickers_echoed" (list, the ticker strings the response ACTUALLY
+    used as companies[] keys - a ticker echoed as "RG1" instead of the
+    expected "RG1.AX" shows up here under its own, different string),
+    "items_count", "excerpt" (first _BATCH_INSPECTOR_EXCERPT_CHARS
+    chars of the raw text/error, or None when the request fully
+    matched its expected tickers)}.
+
+    summary = {"total", "fully_matched", "partially_matched", "empty",
+    "errored"} - mutually exclusive, sums to total. A request is
+    "errored" whenever result.type != "succeeded" (covers errored/
+    canceled/expired alike); "empty" when it succeeded but its own
+    companies[] array parsed to zero items; "partially_matched" when
+    expected tickers are known and at least one of them is missing from
+    tickers_echoed BY STRING (catches both a genuinely dropped item and
+    a mismatched-ticker-string echo); "fully_matched" otherwise (every
+    expected ticker's own exact string was found, or expected tickers
+    simply aren't known for this batch and at least one item parsed)."""
+    expected_map = expected_map or {}
+    rows = []
+    fully_matched = partially_matched = empty = errored = 0
+    for r in results:
+        custom_id = r.get("custom_id")
+        rtype = r.get("type")
+        expected = expected_map.get(custom_id)
+        row = {
+            "custom_id": custom_id,
+            "type": rtype,
+            "stop_reason": r.get("stop_reason"),
+            "output_tokens": r.get("output_tokens"),
+            "expected_tickers": list(expected) if expected is not None else None,
+        }
+        if rtype != "succeeded":
+            row["tickers_echoed"] = []
+            row["items_count"] = 0
+            detail = r.get("error_detail") or ""
+            row["excerpt"] = detail[:_BATCH_INSPECTOR_EXCERPT_CHARS] or None
+            errored += 1
+            rows.append(row)
+            continue
+        text = r.get("text") or ""
+        try:
+            parsed = _parse_response_json(text)
+        except Exception:
+            parsed = {}
+        echoed = sorted(parsed.keys())
+        row["tickers_echoed"] = echoed
+        row["items_count"] = len(echoed)
+        missing = (set(expected) - set(echoed)) if expected is not None else set()
+        if not echoed:
+            row["excerpt"] = text[:_BATCH_INSPECTOR_EXCERPT_CHARS] or None
+            empty += 1
+        elif missing:
+            row["excerpt"] = text[:_BATCH_INSPECTOR_EXCERPT_CHARS] or None
+            partially_matched += 1
+        else:
+            row["excerpt"] = None
+            fully_matched += 1
+        rows.append(row)
+    summary = {
+        "total": len(results), "fully_matched": fully_matched,
+        "partially_matched": partially_matched, "empty": empty, "errored": errored,
+    }
+    return rows, summary
+
+
+def run_batch_inspector(batch_id, log=print):
+    """Live wrapper - fetches `batch_id`'s results from the Anthropic
+    Batches API (retrievable for 29 days after the batch ended, same
+    retention diagnose_batch_01xa_once() above already relies on; this
+    works for an ALREADY-INGESTED batch exactly like that one-off does,
+    since poll_and_ingest_batch() only ever deletes its OWN top100_
+    batch_state row, never anything on Anthropic's side) and runs
+    inspect_batch_results() against the real data. expected_map comes
+    from top100_store.expected_tickers_for_batch(batch_id) - None/
+    missing for a batch ingested before that column existed.
+
+    Returns (rows, summary), or (None, None) if the fetch itself
+    failed (network/SDK/bad batch id - the caller shows the exception
+    message). Logs exactly one "[batch_inspector]" summary line on
+    success, so the owner can read the same figures from the Railway
+    log without opening the page."""
+    try:
+        import anthropic
+        client = anthropic.Anthropic()
+        raw_results = []
+        for result in client.messages.batches.results(batch_id):
+            rtype = result.result.type
+            if rtype == "succeeded":
+                msg = result.result.message
+                text = next((b.text for b in msg.content if b.type == "text"), "")
+                raw_results.append({
+                    "custom_id": result.custom_id, "type": rtype,
+                    "stop_reason": getattr(msg, "stop_reason", None),
+                    "output_tokens": getattr(msg.usage, "output_tokens", None),
+                    "text": text,
+                })
+            else:
+                err = getattr(result.result, "error", None)
+                raw_results.append({
+                    "custom_id": result.custom_id, "type": rtype,
+                    "error_detail": _serialize_batch_result_error(err),
+                })
+    except Exception as e:
+        log(f"[batch_inspector] batch {batch_id}: fetch failed - {e}")
+        return None, None
+
+    expected_map = top100_store.expected_tickers_for_batch(batch_id)
+    rows, summary = inspect_batch_results(raw_results, expected_map)
+    log(f"[batch_inspector] batch {batch_id}: {summary['total']} requests - "
+        f"fully matched {summary['fully_matched']}, partially matched {summary['partially_matched']}, "
+        f"empty {summary['empty']}, errored {summary['errored']}"
+        + (" (expected tickers not available for this batch)" if expected_map is None else ""))
+    return rows, summary
 
 
 def _pool_expansion_v200_marker_path():

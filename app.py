@@ -29834,6 +29834,100 @@ def _render_data_audit_checks_panel():
     ), unsafe_allow_html=True)
 
 
+def _render_resubmit_pause_panel():
+    """Resubmission pause toggle (3 Oct 2026, owner-directed) - owner-
+    only. Flips top100_engine.set_resubmit_paused(), which holds back
+    ONLY a ticker whose sole reason to be submitted tonight is a prior
+    failure now eligible to retry (see that function's own module-
+    level comment) - newcomers and results-driven re-scores are never
+    affected. No gate of its own - called only from inside page_admin_
+    dashboard(), after that function's own owner check."""
+    st.markdown("### Top 100 resubmission pause")
+    _paused = top100_engine.is_resubmit_paused()
+    st.caption(
+        "Owner-only. While ON, a ticker held back by a prior batch "
+        "failure is NOT resubmitted once its retry window passes - "
+        "newcomers and results-driven re-scores (new quarter published, "
+        "score older than 200 days) are unaffected either way."
+    )
+    if _paused:
+        st.warning("Resubmission is currently PAUSED.")
+    else:
+        st.success("Resubmission is currently running normally.")
+    _toggle = st.checkbox(
+        "Pause resubmission of previously-failed tickers",
+        value=_paused, key="admin_dash_resubmit_pause_toggle",
+    )
+    if _toggle != _paused:
+        try:
+            top100_engine.set_resubmit_paused(_toggle)
+        except OSError as e:
+            st.error(f"Could not update the pause marker: {e}")
+        else:
+            st.rerun()
+
+
+def _render_batch_inspector_panel():
+    """Batch inspector (3 Oct 2026, owner-directed, resubmission-loop
+    investigation) - owner-only, read-only against the Anthropic
+    Batches API (results retrievable for 29 days - see top100_engine.
+    run_batch_inspector()'s own docstring). No gate of its own - called
+    only from inside page_admin_dashboard(), after that function's own
+    owner check."""
+    st.markdown("### Top 100 batch inspector")
+    st.caption(
+        "Owner-only. Fetches one batch's results directly from the "
+        "Anthropic Batches API and shows, per packed request: result "
+        "type, stop reason, output tokens, how many companies came "
+        "back vs. how many were expected, and the ticker strings the "
+        "response actually used (catches a ticker echoed under a "
+        "different string, e.g. \"RG1\" instead of \"RG1.AX\")."
+    )
+    _default_batch_id = top100_store.most_recent_ingested_batch_id() or ""
+    _batch_id = st.text_input(
+        "Batch id", value=_default_batch_id, key="admin_dash_batch_inspector_id",
+    )
+    if st.button("Run inspector", key="admin_dash_batch_inspector_run") and _batch_id:
+        with st.spinner(f"Fetching batch {_batch_id}..."):
+            _rows, _summary = top100_engine.run_batch_inspector(_batch_id.strip())
+        if _rows is None:
+            st.error("Fetch failed - see the Railway log's [batch_inspector] line for the exception.")
+        else:
+            st.session_state["admin_dash_batch_inspector_rows"] = _rows
+            st.session_state["admin_dash_batch_inspector_summary"] = _summary
+            st.session_state["admin_dash_batch_inspector_last_id"] = _batch_id.strip()
+
+    _rows = st.session_state.get("admin_dash_batch_inspector_rows")
+    _summary = st.session_state.get("admin_dash_batch_inspector_summary")
+    if _rows is not None and _summary is not None:
+        st.caption(f"Last run: batch {st.session_state.get('admin_dash_batch_inspector_last_id')}")
+        _c1, _c2, _c3, _c4, _c5 = st.columns(5)
+        with _c1:
+            st.metric("Requests", _summary["total"])
+        with _c2:
+            st.metric("Fully matched", _summary["fully_matched"])
+        with _c3:
+            st.metric("Partially matched", _summary["partially_matched"])
+        with _c4:
+            st.metric("Empty", _summary["empty"])
+        with _c5:
+            st.metric("Errored", _summary["errored"])
+
+        for _row in _rows:
+            if _row["type"] == "succeeded" and not _row["excerpt"]:
+                continue  # fully matched - nothing to inspect
+            with st.expander(
+                f"{_row['custom_id']} - {_row['type']} - "
+                f"{_row['items_count']}/{len(_row['expected_tickers']) if _row['expected_tickers'] is not None else '?'} items"
+            ):
+                st.write(f"Stop reason: {_row['stop_reason'] or '-'}")
+                st.write(f"Output tokens: {_row['output_tokens'] if _row['output_tokens'] is not None else '-'}")
+                st.write(f"Expected tickers: {_row['expected_tickers'] if _row['expected_tickers'] is not None else 'not available for this batch'}")
+                st.write(f"Tickers echoed: {_row['tickers_echoed']}")
+                if _row["excerpt"]:
+                    st.code(_row["excerpt"], language=None)
+
+
 def _render_valuation_change_audit_panel():
     """Valuation Change Audit (2 Oct 2026, owner-directed, Commit 2 of
     the 23:00 UTC incident response) - owner-only, read-only. Lets the
@@ -31861,6 +31955,15 @@ def page_admin_dashboard():
     # owner-only diagnostic panel above.
     st.markdown("---")
     _render_valuation_change_audit_panel()
+
+    # --- TOP 100 RESUBMISSION PAUSE + BATCH INSPECTOR (3 Oct 2026,
+    # owner-directed, resubmission-loop investigation) - see each
+    # panel's own docstring. Same "no gate of its own, final sections
+    # of this page" pattern as the valuation audit panel just above.
+    st.markdown("---")
+    _render_resubmit_pause_panel()
+    st.markdown("---")
+    _render_batch_inspector_panel()
 
 
 # -----------------------------------

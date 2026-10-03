@@ -377,6 +377,23 @@ def _conn():
             cost_usd REAL NOT NULL DEFAULT 0
         )"""
     )
+    # Batch inspector (3 Oct 2026, owner-directed, resubmission-loop
+    # investigation): top100_batch_state's own custom_id_map_json is
+    # DELETED by clear_batch_state() right after a batch ingests (see
+    # poll_and_ingest_batch()'s own call), so once a batch is ingested
+    # there is no longer any record of which tickers each custom_id
+    # (packed request) was actually EXPECTED to carry - only the Admin
+    # Dashboard's new Batch inspector panel needs this, to tell "this
+    # request came back with fewer items than it was given" from "this
+    # request's own expected count is simply unknown". Purely additive,
+    # no PK change, same guarded-ALTER-TABLE pattern as every other
+    # column added to an existing table in this module. NULL for every
+    # batch ingested before this column existed - the inspector reports
+    # "not available" for those rather than guessing.
+    try:
+        conn.execute("ALTER TABLE top100_ingest_log ADD COLUMN custom_id_map_json TEXT")
+    except sqlite3.OperationalError:
+        pass
     # Newcomer persistence filter (1 Oct 2026, owner decision, v6 cost
     # task) - one row per ticker ever seen in a pool selection, tracking
     # how many CONSECUTIVE nightly selections it has just appeared in.
@@ -918,17 +935,29 @@ def get_daily_submission_state(utc_date):
 # -----------------------------------------------------------------
 
 def record_ingest_cost(batch_id, scored, failed, input_tokens, cache_creation_tokens,
-                        cache_read_tokens, output_tokens, cost_usd):
+                        cache_read_tokens, output_tokens, cost_usd, custom_id_map=None):
     """Upserts one batch's ingest telemetry - re-ingesting the same
     batch_id (shouldn't happen in practice; top100_batch_state is a
     singleton and is cleared before this is called) overwrites rather
-    than double-counts."""
+    than double-counts.
+
+    Batch inspector (3 Oct 2026, owner-directed): `custom_id_map` is the
+    SAME {custom_id: {"entrants": {ticker: {...}}}} dict top100_batch_
+    state held for this batch before poll_and_ingest_batch() cleared it
+    - passed through here (still in scope at the one call site, right
+    before that clear) purely so the Admin Dashboard's Batch inspector
+    panel can still answer "which tickers was this request EXPECTED to
+    carry" for a batch that has already been ingested. None (the
+    default) for any caller that doesn't have it on hand - stored as
+    NULL, and the inspector reports "not available" for those rows
+    rather than guessing."""
     with _conn() as conn:
         conn.execute(
             """INSERT INTO top100_ingest_log
                  (batch_id, ingested_at, scored, failed, input_tokens,
-                  cache_creation_tokens, cache_read_tokens, output_tokens, cost_usd)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  cache_creation_tokens, cache_read_tokens, output_tokens, cost_usd,
+                  custom_id_map_json)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(batch_id) DO UPDATE SET
                  ingested_at = excluded.ingested_at,
                  scored = excluded.scored,
@@ -937,10 +966,51 @@ def record_ingest_cost(batch_id, scored, failed, input_tokens, cache_creation_to
                  cache_creation_tokens = excluded.cache_creation_tokens,
                  cache_read_tokens = excluded.cache_read_tokens,
                  output_tokens = excluded.output_tokens,
-                 cost_usd = excluded.cost_usd""",
+                 cost_usd = excluded.cost_usd,
+                 custom_id_map_json = excluded.custom_id_map_json""",
             (batch_id, datetime.now(timezone.utc).isoformat(), scored, failed, input_tokens,
-             cache_creation_tokens, cache_read_tokens, output_tokens, cost_usd),
+             cache_creation_tokens, cache_read_tokens, output_tokens, cost_usd,
+             json.dumps(custom_id_map) if custom_id_map is not None else None),
         )
+
+
+def most_recent_ingested_batch_id():
+    """The batch_id of the most recently ingested Top 100 batch (by
+    ingested_at), or None if nothing has ever ingested - the Admin
+    Dashboard's Batch inspector panel uses this as its default input so
+    the owner doesn't have to copy a batch id out of the Railway log by
+    hand for the common case (inspecting last night's own run)."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT batch_id FROM top100_ingest_log ORDER BY ingested_at DESC LIMIT 1"
+        ).fetchone()
+    return row[0] if row else None
+
+
+def expected_tickers_for_batch(batch_id):
+    """{custom_id: [ticker, ...], ...} for the given batch_id, from the
+    custom_id_map this batch was ingested with (see record_ingest_
+    cost()'s own docstring) - or None if that batch's row has no
+    custom_id_map_json (ingested before this column existed, or
+    batch_id not found at all). The Batch inspector panel uses this to
+    tell a partially-matched request from one whose expected count is
+    simply unknown."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT custom_id_map_json FROM top100_ingest_log WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+    if not row or not row[0]:
+        return None
+    try:
+        raw = json.loads(row[0])
+    except (TypeError, ValueError):
+        return None
+    out = {}
+    for custom_id, entry in raw.items():
+        entrants = (entry or {}).get("entrants") if isinstance(entry, dict) else None
+        out[custom_id] = sorted(entrants.keys()) if entrants else []
+    return out
 
 
 def ingest_cost_last_n_days(days=7):
