@@ -821,6 +821,16 @@ def _normalize_pence_price_fields(info):
         val = info.get(field)
         if isinstance(val, (int, float)) and val == val:   # not NaN
             info[field] = val / 100.0
+    # Lists & display Commit 4 (3 Oct 2026, Director-directed): forwardEps
+    # is about to be popped below for the same "unit not confirmed" reason
+    # as trailingEps/bookValue - stashed first as an internal marker so
+    # _resolve_forward_eps_unit() (called later in get_bundle(), AFTER
+    # trailingEps has been re-derived in pounds from this ticker's own
+    # statements) has the raw value to resolve against. Never left in
+    # `info`'s own public shape under its real name until resolved.
+    _raw_forward_eps = info.get("forwardEps")
+    if isinstance(_raw_forward_eps, (int, float)) and _raw_forward_eps == _raw_forward_eps:
+        info["_raw_forward_eps_unconfirmed"] = _raw_forward_eps
     for field in _PENCE_UNCONFIRMED_UNIT_INFO_FIELDS:
         info.pop(field, None)
     info["currency"] = "GBP"
@@ -892,6 +902,81 @@ def _derive_eps_bookvalue_from_statements(info, income, balance):
         info["bookValue"] = equity / shares
 
     return info
+
+
+# Lists & display Commit 4 (3 Oct 2026, Director-directed): Stage 1a
+# dropped forwardEps on every GBp ticker because its unit was unconfirmed
+# (same "do not assume" rule as trailingEps/bookValue), leaving PE Forward
+# blank for most London stocks. Resolved here against a figure whose unit
+# IS known - the statement-derived trailing EPS in pounds _derive_eps_
+# bookvalue_from_statements() just computed - rather than against the
+# raw, still-GBp info["trailingEps"] (which was already popped and never
+# trusted in the first place).
+_FWD_EPS_POUNDS_RATIO_BAND = (0.2, 5.0)
+_FWD_EPS_PENCE_RATIO_BAND = (20.0, 500.0)
+
+
+def _resolve_forward_eps_unit(ticker, info, log=print):
+    """Resolves info["_raw_forward_eps_unconfirmed"] (stashed by
+    _normalize_pence_price_fields() before the real forwardEps field was
+    popped) against info["trailingEps"] - MUST run after _derive_eps_
+    bookvalue_from_statements() so that figure is already the statement-
+    derived, pounds-denominated one (get_bundle()'s own call order).
+
+    r = raw forwardEps / trailing EPS (pounds):
+      0.2 <= r <= 5   -> forwardEps is already in pounds, used as-is.
+      20 <= r <= 500  -> forwardEps is in pence, divided by 100.
+      otherwise (including a zero/negative/missing trailing EPS) ->
+        forwardEps left unset (n/a) - no confident unit, no guess.
+
+    Sets info["forwardEps"] only when confidently resolved (absent
+    otherwise - never a fabricated placeholder), and always removes the
+    internal "_raw_forward_eps_unconfirmed" marker either way. Logs
+    exactly one "[units] <ticker> forwardEps raw=... trailing_gbp=...
+    ratio=... unit=... used=..." line per call (per this task's own
+    specified format) whenever there was a raw value to resolve at all -
+    even on the "unknown" branch, so a future ambiguous reading is
+    self-diagnosing without a follow-up investigation, same philosophy
+    as _check_price_unit_guard()'s own log line.
+
+    A no-op (info unchanged, returns (info, None)) for any ticker with no
+    stashed raw forwardEps at all - every non-GBp ticker, and a GBp
+    ticker whose raw info never had a forwardEps to begin with. The pre-
+    existing GBp PRICE rule (currency code only, never magnitude) is
+    untouched - this only ever touches forwardEps.
+
+    Returns (info, forward_eps_unit) where forward_eps_unit is
+    "pounds"|"pence"|"unknown"|None (None = nothing to resolve)."""
+    raw = info.pop("_raw_forward_eps_unconfirmed", None)
+    if raw is None:
+        return info, None
+
+    trailing = info.get("trailingEps")
+    ratio = None
+    unit = "unknown"
+    used = None
+    if isinstance(trailing, (int, float)) and trailing > 0:
+        ratio = raw / trailing
+        lo, hi = _FWD_EPS_POUNDS_RATIO_BAND
+        plo, phi = _FWD_EPS_PENCE_RATIO_BAND
+        if lo <= ratio <= hi:
+            unit = "pounds"
+            used = raw
+        elif plo <= ratio <= phi:
+            unit = "pence"
+            used = raw / 100.0
+
+    if used is not None:
+        info["forwardEps"] = used
+    if log is not None:
+        _trailing_str = f"{trailing:.4g}" if isinstance(trailing, (int, float)) else "n/a"
+        _ratio_str = f"{ratio:.4g}" if ratio is not None else "n/a"
+        _used_str = f"{used:.4g}" if used is not None else "n/a"
+        log(
+            f"[units] {ticker} forwardEps raw={raw:.4g} trailing_gbp={_trailing_str} "
+            f"ratio={_ratio_str} unit={unit} used={_used_str}"
+        )
+    return info, unit
 
 
 def _normalize_and_validate_pence_dividends(dividends, info, log=print):
@@ -1278,6 +1363,12 @@ def get_bundle(ticker, force_refresh=False):
     # was just normalised to. A no-op for every non-GBp ticker.
     info = _derive_eps_bookvalue_from_statements(info, income, balance)
 
+    # Lists & display Commit 4 (3 Oct 2026, Director-directed): forward
+    # P/E resolution for pence-quoted London tickers - must run AFTER the
+    # trailingEps re-derivation just above (resolved against that, not
+    # the raw GBp-unit info field). A no-op for every non-GBp ticker.
+    info, forward_eps_unit = _resolve_forward_eps_unit(ticker, info)
+
     try:
         hist = tk.history(period="10y", interval="1mo")
     except Exception:
@@ -1362,6 +1453,10 @@ def get_bundle(ticker, force_refresh=False):
             "price_unit_suspect": price_unit_suspect,
             "price_unit_suspect_reason": price_unit_suspect_reason,
             "dividend_unit_suspect": dividend_unit_suspect,
+            # Lists & display Commit 4 (3 Oct 2026, Director-directed):
+            # "pounds"|"pence"|"unknown"|None (None = not a GBp ticker) -
+            # see _resolve_forward_eps_unit()'s own docstring.
+            "forward_eps_unit": forward_eps_unit,
         },
     }
     _write_cache(ticker, bundle)
