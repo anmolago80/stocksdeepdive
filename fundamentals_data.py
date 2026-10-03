@@ -991,23 +991,47 @@ def _resolve_forward_eps_unit(ticker, info, log=print):
     return info, unit
 
 
-def _normalize_and_validate_pence_dividends(dividends, info, log=print):
-    """Stage 1a (3 Oct 2026, Director-directed): for a GBp-normalised
-    ticker, `dividends` (the per-event history series, fetched in the
-    quote currency - pence, same as the raw price fields) gets the same
-    /100 treatment, THEN validated: the trailing-12-month total (from
-    the now-pounds amounts) implies a dividend yield against
-    info["currentPrice"] (already normalised to pounds by this point) -
-    that implied yield must agree with Yahoo's own info["dividendYield"]
-    within 20% relative, or the pence-normalised amounts aren't trusted
-    after all (dividend_unit_suspect=True, dividends/dividendRate/
-    trailingAnnualDividendRate all cleared to "n/a" by the caller - see
-    get_bundle()'s own call site for exactly where that happens).
+# Director addendum 2 (3 Oct 2026), Part 1, item B: live evidence found
+# ~56 of 350 London companies had their dividends wrongly blanked -
+# Yahoo's own dividendYield is a percent NUMBER for some tickers and a
+# decimal fraction for others, and the old single-guess magnitude
+# heuristic (">=1.5 -> percent, else fraction") picked the wrong one
+# for any genuine yield between roughly 0% and 1.5% read as a fraction
+# (e.g. Yahoo's 0.7000 for a 0.70%-yielding stock was kept AS a 70%
+# fraction instead of divided to 0.0070, which then "disagreed" with
+# the correctly-computed 0.0070 implied yield by 99% - entirely an
+# artefact of guessing the wrong one of the two readings, not a real
+# unit mismatch). Logged once per ticker (module-level set below) -
+# the old code could run this check twice for the same ticker in one
+# pipeline (normalize_pence_quote() AND get_bundle() each call it
+# separately for the same GBp ticker) and logged twice.
+_DIVIDEND_SUSPECT_LOGGED_TICKERS = set()
+
+
+def _normalize_and_validate_pence_dividends(dividends, info, ticker=None, log=print):
+    """Stage 1a (3 Oct 2026, Director-directed), revised by Director
+    addendum 2 Part 1 item B (3 Oct 2026): for a GBp-normalised ticker,
+    `dividends` (the per-event history series, fetched in the quote
+    currency - pence, same as the raw price fields) gets the same /100
+    treatment, THEN validated: the trailing-12-month total (from the
+    now-pounds amounts) implies a dividend yield against
+    info["currentPrice"] (already normalised to pounds by this point).
+
+    Yahoo's own info["dividendYield"] is checked against BOTH of its two
+    possible readings - as a decimal fraction (0.034) and as a bare
+    percent number divided by 100 (3.4 -> 0.034) - and treated as
+    agreeing if EITHER reading is within 20% relative of the implied
+    yield (addendum 2's own instruction: "Treat the two as agreeing when
+    Yahoo's figure matches ours within 20% EITHER as a fraction OR as a
+    percent"). Only flagged (dividend_unit_suspect=True, dividends/
+    dividendRate/trailingAnnualDividendRate all cleared to "n/a" by the
+    caller - see get_bundle()'s own call site for exactly where that
+    happens) when NEITHER reading agrees.
 
     A no-op (dividends unchanged, dividend_unit_suspect=False) for any
     non-GBp ticker, a GBp ticker with no dividend history at all
-    (nothing to validate), or one with no info["dividendYield"]/price
-    to compare against (can't validate either way - left as the plain
+    (nothing to validate), or one with no info["dividendYield"]/price to
+    compare against (can't validate either way - left as the plain
     /100-normalised amounts, not flagged, since "can't confirm" isn't
     the same claim as "confirmed wrong").
 
@@ -1040,24 +1064,26 @@ def _normalize_and_validate_pence_dividends(dividends, info, log=print):
         return normalised, False
 
     implied_yield = ttm_total / price
-    # Yahoo's own dividendYield has itself been seen in both a decimal
-    # fraction (0.034) and a bare-percentage (3.4) shape elsewhere in
-    # this codebase (see capm_engine._normalize_yahoo_growth_estimate's
-    # own docstring for the general pattern) - normalise the same way
-    # here before comparing.
-    y_yield_frac = y_yield / 100.0 if abs(y_yield) >= 1.5 else y_yield
-    if y_yield_frac <= 0:
+
+    # Two candidate readings of Yahoo's own number - fraction as-is, or
+    # as a bare percent (divide by 100) - either one agreeing within 20%
+    # relative is enough; only flag when NEITHER does.
+    frac_candidate = y_yield
+    pct_candidate = y_yield / 100.0
+    agree_as_fraction = abs(implied_yield - frac_candidate) / frac_candidate <= 0.20
+    agree_as_percent = abs(implied_yield - pct_candidate) / pct_candidate <= 0.20
+    if agree_as_fraction or agree_as_percent:
         return normalised, False
 
-    rel_diff = abs(implied_yield - y_yield_frac) / y_yield_frac
-    if rel_diff > 0.20:
+    _t = ticker or "?"
+    if _t not in _DIVIDEND_SUSPECT_LOGGED_TICKERS:
+        _DIVIDEND_SUSPECT_LOGGED_TICKERS.add(_t)
         log(
-            f"[units] dividend_unit_suspect: implied yield {implied_yield:.4f} vs "
-            f"Yahoo dividendYield {y_yield_frac:.4f} - disagree by {rel_diff:.0%}"
+            f"[units] {_t} dividend_unit_suspect: implied yield {implied_yield:.4f} vs "
+            f"Yahoo dividendYield as fraction={frac_candidate:.4f} as percent={pct_candidate:.4f} "
+            "- neither agrees within 20%"
         )
-        return {"dates": [], "amounts": []}, True
-
-    return normalised, False
+    return {"dates": [], "amounts": []}, True
 
 
 def _check_price_unit_guard(ticker, info, raw_price_before_divide, log=print):
@@ -1197,7 +1223,7 @@ def normalize_pence_quote(ticker, info, history_df=None, dividends=None, log=pri
             "amounts": [float(v) for v in dividends.values],
         }
         _normalised_dict, dividend_unit_suspect = _normalize_and_validate_pence_dividends(
-            divs_dict, info, log=log
+            divs_dict, info, ticker=ticker, log=log
         )
         meta["dividend_unit_suspect"] = dividend_unit_suspect
         if dividend_unit_suspect:
@@ -1445,7 +1471,7 @@ def get_bundle(ticker, force_refresh=False):
     dividend_unit_suspect = False
     if price_quote_unit == "GBp":
         dividends, dividend_unit_suspect = _normalize_and_validate_pence_dividends(
-            dividends, info
+            dividends, info, ticker=ticker
         )
         if dividend_unit_suspect:
             info.pop("dividendRate", None)
