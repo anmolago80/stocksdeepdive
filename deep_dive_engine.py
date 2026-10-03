@@ -257,7 +257,10 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         income_df = None
     intrinsic_value, intrinsic_src, dcf_growth, iv_meta = resolve_intrinsic_value(
         ticker, quality_score, info=info, cashflow_df=cashflow_df,
-        currency=info.get("currency"),
+        # Stage 1a (3 Oct 2026, Director-directed): trading_currency_
+        # for() adds the .L/.TO suffix fallback this bare info.get()
+        # never had - a no-op whenever info["currency"] is populated.
+        currency=fcf_valuation_engine.trading_currency_for(ticker, info),
         discount_rate=discount_rate, perpetual_rate=perpetual_rate,
         growth_rate=growth_rate, manual_fcf=manual_fcf,
         income_df=income_df,

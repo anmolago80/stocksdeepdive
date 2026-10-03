@@ -337,3 +337,41 @@ def invalidate(universe):
         return True
     except OSError:
         return False
+
+
+# Stage 1a (3 Oct 2026, Director-directed, UK/Canada data layer), T9 -
+# Stage 1c (a later, separate task) will use this to sweep saved scan
+# rows for an implausible MOS - NOTHING in this codebase calls it yet,
+# same "built ahead of its own caller" status as symbol_mapping.py's
+# to_yahoo_symbol()/log_no_yahoo_price() from the same stage. Pure, no
+# I/O of its own - operates on whatever row list a caller (eventually
+# Stage 1c) already has in hand, e.g. from load_scan()/load_scan_raw().
+MOS_SWEEP_HIGH = 95.0
+MOS_SWEEP_LOW = -500.0
+
+
+def mos_sweep_guard(rows):
+    """Returns the subset of `rows` whose "MOS %" field (this module's
+    own saved-scan-row convention - see nightly_scan.py's own `"MOS %":
+    round(mos, 1)` write site, a plain percentage number like 25.0, not
+    a 0.25 fraction) is implausible: > MOS_SWEEP_HIGH (95%) or <
+    MOS_SWEEP_LOW (-500%) - a company genuinely isn't 95%+ undervalued
+    or 500%+ overvalued by this site's own DCF/PE-blend methods in any
+    legitimate case; a row that far out is far more likely a data/unit
+    bug (e.g. exactly the GBp pence-quoting bug this stage's own Step B
+    fixes) than a real valuation call.
+
+    A row missing "MOS %" entirely, or carrying a non-numeric value
+    there (None, a stale/malformed entry), is never included - this is
+    a guard against an implausible NUMBER, not a completeness check;
+    "no MOS at all" is a different, already-handled case (NOT RATED/
+    AWAITING elsewhere in this codebase) that this function has no
+    opinion on. Order of `rows` is preserved; nothing is mutated."""
+    out = []
+    for row in rows:
+        mos = row.get("MOS %")
+        if not isinstance(mos, (int, float)):
+            continue
+        if mos > MOS_SWEEP_HIGH or mos < MOS_SWEEP_LOW:
+            out.append(row)
+    return out

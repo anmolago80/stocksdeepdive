@@ -227,6 +227,21 @@ FCF_ONEOFF_MIN_CLEAN_YEARS = 3
 FX_TO_USD_APPROX = {
     "USD": 1.0,
     "AUD": 0.65,
+    # Stage 1a (3 Oct 2026, Director-directed, UK/Canada data layer):
+    # same static-snapshot status as AUD's own 0.65 above - approximate,
+    # unverified, used only to bucket a company's market cap for the
+    # growth-ceiling/end-rate interpolation below, never a live rate.
+    # Market cap -> USD for GBP/CAD tickers goes through this exact same
+    # static multiply AUD already uses today (see growth_ceiling_for()/
+    # growth_end_rate_for()'s own `market_cap_usd = market_cap * FX_TO_
+    # USD_APPROX.get(ccy, 1.0)` line - unchanged by this addition, only
+    # two new dict entries). EUR is here too (not a trading currency any
+    # ticker in this stage actually uses - see fx_rate()'s own Stage 1a
+    # comment below for where EUR actually matters: converting a EUR-
+    # reporting LSE name's STATEMENTS into its GBP trading currency).
+    "GBP": 1.33,
+    "CAD": 0.72,
+    "EUR": 1.15,
 }
 
 # (market cap USD, value) pairs, LARGEST CAP FIRST - same convention as
@@ -295,6 +310,58 @@ def _log_interpolate(anchors, market_cap_usd):
             frac = (log_cap - math.log10(lo_cap)) / (math.log10(hi_cap) - math.log10(lo_cap))
             return lo_val + frac * (hi_val - lo_val)
     return anchors[-1][1]   # unreachable given the short-circuits above; defensive only
+
+
+# Stage 1a (3 Oct 2026, Director-directed, UK/Canada data layer): the
+# suffix a ticker genuinely isn't given a currency for any other way -
+# only used as the LAST resort, after info["currency"] (which, after
+# fundamentals_data.py's own GBp->GBP pence-normalisation, already
+# reads "GBP" rather than "GBp" for a London-listed name - see that
+# module's _normalize_pence_price_fields()'s own docstring). Checked
+# longest-suffix-first isn't needed here since none of these three
+# overlap (".AX" ends every Australian ticker, ".L" every London one,
+# ".TO" every Toronto one - no ticker can end in more than one).
+_TICKER_SUFFIX_CURRENCY = {".AX": "AUD", ".L": "GBP", ".TO": "CAD"}
+
+
+def trading_currency_for(ticker, info=None):
+    """ONE function that decides a ticker's trading (listing) currency -
+    Stage 1a's own explicit instruction, replacing the scattered,
+    independently-maintained ".AX"-suffix checks this codebase's own
+    Step A inventory found repeated across ~25 call sites (every one of
+    which decided AUD-vs-USD only, with no .L/.TO handling at all).
+
+    Order: info["currency"] (already correct for the overwhelming
+    majority of tickers - Yahoo's own info blob almost always carries
+    it, and by the time this runs it's already been through
+    fundamentals_data.py's own GBp->GBP normalisation for a London-
+    listed name) - else the ticker's own suffix, via _TICKER_SUFFIX_
+    CURRENCY above - else "USD". `info` may be None/missing/empty; this
+    never raises on a missing key, only falls through to the next rule.
+
+    Deliberately NOT wired into every one of this codebase's own ~25
+    pre-existing UI/display/benchmark-index/news-region/insider-data-
+    source ".AX" checks (peer_context.py/compounder_ui.py/portfolio_
+    charts_engine.py/insider_engine.py/... - see Step A's own
+    inventory) - those decide something OTHER than a valuation
+    currency (which peer universe, which benchmark index, which data
+    source to query, a display symbol) and replacing them is a
+    separate, much larger UI-layer change this task's own scope
+    doesn't call for; wired instead into the genuine valuation-currency
+    decision points this task's own inventory identified (fcf_
+    valuation_engine.py/capm_engine.py/auto_compounder_engine.py/
+    resolver_engine.py/nightly_scan.py/deep_dive_engine.py/app.py's
+    Fair Value displays) - see this commit's own report for the full
+    list and the scoping rationale."""
+    info = info or {}
+    ccy = info.get("currency")
+    if ccy:
+        return ccy.upper()
+    t = (ticker or "").upper()
+    for suffix, mapped in _TICKER_SUFFIX_CURRENCY.items():
+        if t.endswith(suffix):
+            return mapped
+    return "USD"
 
 
 def growth_ceiling_for(info, currency=None):
@@ -1534,9 +1601,29 @@ def estimate_growth(info, fcf_series=None, analyst_growth=None, ceiling=None,
 # constant in this module/app (RISK_FREE_FALLBACK, _SP500_STATIC_FALLBACK,
 # etc.). Flagged via meta["fx_fallback"] when actually used, same as any
 # other assumption on this site.
+#
+# Stage 1a (3 Oct 2026, Director-directed, UK/Canada data layer): GBP/
+# CAD/EUR pairs added, quoted the same way FX_TO_USD_APPROX already is
+# (1 GBP = 1.33 USD, 1 CAD = 0.72 USD, 1 EUR = 1.15 USD) - needed so
+# fundamentals_data.py's statement-currency conversion (financial ->
+# trading currency, e.g. a USD-reporting LSE name like SHEL.L/BP.L/
+# HSBA.L, or a EUR-reporting LSE name, converted into its own GBP
+# trading currency) has a real fallback instead of silently no-opping
+# at 1.0 (fx_rate()'s own pre-existing last-resort behaviour for an
+# unknown pair) when the live yf.Ticker("{FROM}{TO}=X") fetch fails -
+# exactly the class of bug this whole Stage 1a task exists to close.
+# Only (CCY, "USD") entries are stored directly; fx_rate()'s own
+# reciprocal lookup just below handles ("USD", CCY) automatically, and
+# the new cross-rate-via-USD fallback (same technique currency_risk_
+# engine.get_fx_history()'s own _fetch_live() already uses for a pair
+# with no direct Yahoo symbol) handles a CCY-to-CCY pair neither of
+# these two forms covers directly, e.g. EUR->GBP.
 _FX_STATIC_FALLBACK = {
     ("USD", "AUD"): 1.52,
     ("AUD", "USD"): 0.66,
+    ("GBP", "USD"): 1.33,
+    ("CAD", "USD"): 0.72,
+    ("EUR", "USD"): 1.15,
 }
 
 # Per-process cache so one page render (which can call fx_rate for several
@@ -1556,13 +1643,34 @@ _fx_cache = {}
 _FX_CACHE_TTL_SECONDS = 1800
 
 
-def fx_rate(from_ccy, to_ccy):
+def _static_rate_to_usd(ccy):
+    """Internal helper for fx_rate()'s cross-rate-via-USD fallback just
+    below (Stage 1a, 3 Oct 2026, Director-directed) - the "1 ccy = X USD"
+    quote from _FX_STATIC_FALLBACK, trying the direct (ccy, "USD") entry
+    then its reciprocal ("USD", ccy). None if neither exists."""
+    if (ccy, "USD") in _FX_STATIC_FALLBACK:
+        return _FX_STATIC_FALLBACK[(ccy, "USD")]
+    if ("USD", ccy) in _FX_STATIC_FALLBACK:
+        return 1.0 / _FX_STATIC_FALLBACK[("USD", ccy)]
+    return None
+
+
+def fx_rate(from_ccy, to_ccy, log=print):
     """
     Exchange rate to convert an amount FROM from_ccy INTO to_ccy (multiply
     by this). Returns (rate, source) where source is "live" or "fallback".
 
     Same currency in both slots is always (1.0, "live") - not really a live
     fetch, but not an assumption either, so it's never flagged red.
+
+    `log` (Stage 1a, 3 Oct 2026, Director-directed; optional, defaults to
+    print so every EXISTING caller's behaviour is unchanged beyond the new
+    log line itself): called once, with "[fx] {FROM}->{TO} fallback {rate}
+    (live fetch failed)", whenever this call actually falls back (any of
+    the three fallback branches below) - so a GBP/CAD/EUR pair silently
+    defaulting (or, now, ANY pair, including the pre-existing USD/AUD
+    ones) leaves a trail in the Railway log instead of only the existing,
+    silent meta["fx_fallback"] flag. Pass log=None to suppress.
     """
     from_ccy = (from_ccy or "").upper()
     to_ccy = (to_ccy or "").upper()
@@ -1594,11 +1702,27 @@ def fx_rate(from_ccy, to_ccy):
         elif (to_ccy, from_ccy) in _FX_STATIC_FALLBACK:
             result = (1.0 / _FX_STATIC_FALLBACK[(to_ccy, from_ccy)], "fallback")
         else:
-            # Unknown pair and no live rate - a 1.0 no-op is the least-bad
-            # option (leaves the original unit-mismatch bug for THIS pair
-            # only, rather than inventing a number with no basis at all);
-            # still flagged as a fallback so it's visibly not a real rate.
-            result = (1.0, "fallback")
+            # Cross-rate via USD (Stage 1a, 3 Oct 2026, Director-directed)
+            # - same technique currency_risk_engine.get_fx_history()'s own
+            # _fetch_live() already uses for a pair with no direct Yahoo
+            # symbol: 1 FROM = from_usd USD, 1 USD = 1/to_usd TO, so
+            # 1 FROM = from_usd/to_usd TO. Covers e.g. EUR->GBP (a EUR-
+            # reporting LSE name's statements converted into its GBP
+            # trading currency), which neither of the two direct-pair
+            # checks above resolves on their own.
+            from_usd = _static_rate_to_usd(from_ccy)
+            to_usd = _static_rate_to_usd(to_ccy)
+            if from_usd is not None and to_usd is not None:
+                result = (from_usd / to_usd, "fallback")
+            else:
+                # Unknown pair and no live rate - a 1.0 no-op is the
+                # least-bad option (leaves the original unit-mismatch bug
+                # for THIS pair only, rather than inventing a number with
+                # no basis at all); still flagged as a fallback so it's
+                # visibly not a real rate.
+                result = (1.0, "fallback")
+        if log is not None:
+            log(f"[fx] {from_ccy}->{to_ccy} fallback {result[0]:.4g} (live fetch failed)")
 
     _fx_cache[cache_key] = (result, time.time())
     return result

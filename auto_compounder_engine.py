@@ -913,7 +913,14 @@ def _basics(bundle):
         market_cap = info.get("marketCap")
         if market_cap is None and price is not None and shares:
             market_cap = price * shares
-    currency = info.get("currency") or "USD"
+    # Stage 1a (3 Oct 2026, Director-directed): trading_currency_for()
+    # adds the .L/.TO suffix fallback this bare info.get() chain never
+    # had - a no-op whenever info["currency"] is already populated (the
+    # overwhelming majority of tickers). No `ticker` parameter reaches
+    # this helper - info.get("symbol") (yfinance's own info blob
+    # convention) is the best available proxy for the rare case where
+    # info["currency"] is ALSO missing.
+    currency = fcf_valuation_engine.trading_currency_for(info.get("symbol"), info)
     return {
         "price": price, "shares": shares, "market_cap": market_cap,
         "currency": currency, "info": info, "dual_class_flagged": dual_class_flagged,
@@ -1922,7 +1929,10 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
     one change is what keeps every growth-driven auto figure aligned
     with whichever settings actually produced it."""
     info = bundle.get("info") or {}
-    currency = info.get("currency") or "USD"
+    # Stage 1a (3 Oct 2026, Director-directed): trading_currency_for()
+    # adds the .L/.TO suffix fallback - a no-op whenever info["currency"]
+    # is already populated (the overwhelming majority of tickers).
+    currency = fcf_valuation_engine.trading_currency_for(ticker, info)
 
     # Double-FX-conversion fix: fundamentals_data.get_bundle() already
     # converts every statement DataFrame in this bundle (including
@@ -2099,7 +2109,9 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
     has no usable "dcf" row to show either way, so a placeholder
     quality_score here can never reach anything this page displays."""
     info = bundle.get("info") or {}
-    currency = info.get("currency") or "USD"
+    # Stage 1a (3 Oct 2026, Director-directed): same trading_currency_
+    # for() swap as _run_dcf() above.
+    currency = fcf_valuation_engine.trading_currency_for(ticker, info)
 
     dcf_info = info
     if (info.get("financialCurrency") or "").upper() != currency.upper():
@@ -4468,6 +4480,24 @@ def build_sections(ticker, force_refresh=False, discount_rate=None,
 
     bundle = fundamentals_data.get_bundle(ticker, force_refresh=force_refresh)
     if not bundle:
+        return None
+
+    # Stage 1a (3 Oct 2026, Director-directed, UK/Canada data layer):
+    # price_unit_suspect (fundamentals_data._check_price_unit_guard()'s
+    # own runtime guard - see that function's own docstring) means this
+    # ticker's GBp->GBP pence normalisation didn't cross-check cleanly
+    # against marketCap, so price x shares, and therefore every per-
+    # share ratio/IV/MOS this module would otherwise compute, can't be
+    # trusted. Returns None exactly like "bundle fetch failed entirely"
+    # just above - every existing caller already treats that as "no
+    # Compounder View data for this ticker" (app.py's own `(sections or
+    # {})`/`if sections is None` call sites), so this is the Director's
+    # own "return no intrinsic value / MOS for that ticker with reason
+    # 'price unit could not be confirmed'" - no new return shape, no
+    # caller change needed. The [units] log line explaining WHY was
+    # already printed once, at bundle-build time, by _check_price_unit_
+    # guard() itself.
+    if (bundle.get("meta") or {}).get("price_unit_suspect"):
         return None
 
     ref = _reference_lookup()

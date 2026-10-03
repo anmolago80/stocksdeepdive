@@ -15277,7 +15277,11 @@ def _render_scan_results(page_label, state_prefix, empty_message,
 
                 intrinsic_value, intrinsic_src, dcf_growth, iv_meta = resolve_intrinsic_value(
                     ticker, quality_score, info=info, cashflow_df=cashflow_df,
-                    currency=info.get("currency"),
+                    # Stage 1a (3 Oct 2026, Director-directed): trading_
+                    # currency_for() adds the .L/.TO suffix fallback this
+                    # bare info.get() never had - a no-op whenever
+                    # info["currency"] is already populated.
+                    currency=fcf_valuation_engine.trading_currency_for(ticker, info),
                     discount_rate=_t_discount, perpetual_rate=_t_perpetual,
                     growth_rate=_growth_for_ticker, manual_fcf=_manual_fcf,
                     income_df=_scan_income_df,
@@ -30746,7 +30750,10 @@ def page_admin_dashboard():
                     try:
                         _info = (_bundle or {}).get("info") or {}
                         _cashflow_df = (_bundle or {}).get("cashflow")
-                        _currency = _info.get("currency")
+                        # Stage 1a (3 Oct 2026, Director-directed):
+                        # trading_currency_for() adds the .L/.TO suffix
+                        # fallback this bare info.get() never had.
+                        _currency = fcf_valuation_engine.trading_currency_for(_tk, _info)
                         _price = _info.get("currentPrice")
 
                         _iv_old, _, _meta_old = fcf_valuation_engine.dcf_intrinsic_value(

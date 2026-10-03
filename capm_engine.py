@@ -78,9 +78,17 @@ MIN_DISCOUNT_RATE = 0.075
 # Terminal growth by the stock's OWN currency - roughly that economy's
 # long-run inflation target / nominal trend growth, not the stock's own
 # growth. Unknown currencies fall back to DEFAULT_PERPETUAL_GROWTH.
+#
+# Stage 1a (3 Oct 2026, Director-directed, UK/Canada data layer): GBP/CAD
+# added at 2.0% - same figure as USD's own long-run-inflation-target
+# rationale (both the BoE and the BoC target ~2% CPI inflation), per the
+# Director's own instruction ("GBP 2.0%, CAD 2.0%"). AUD's own 2.5% is
+# untouched.
 PERPETUAL_GROWTH_BY_CCY = {
     "AUD": 0.025,
     "USD": 0.020,
+    "GBP": 0.020,
+    "CAD": 0.020,
 }
 DEFAULT_PERPETUAL_GROWTH = 0.025
 
@@ -138,6 +146,30 @@ RISK_FREE_MAX = 0.15
 # is confirmed live (see A1 point 4 in the audit).
 RISK_FREE_FALLBACK = {"USD": 0.050, "AUD": 0.053}
 DEFAULT_RISK_FREE_FALLBACK = 0.04
+
+# Stage 1a (3 Oct 2026, Director-directed, UK/Canada data layer): GBP/CAD
+# fallback 10-year yields - same "approximate, occasionally-updated"
+# status as every other fallback constant above, never pinned to one
+# day's exact reading. Kept in their OWN dict (not merged into RISK_FREE_
+# FALLBACK) only because the live-fetch functions below (get_uk_risk_
+# free_rate_live()/get_ca_risk_free_rate_live()) use a DIFFERENT sanity
+# band than get_risk_free_rate()'s own RISK_FREE_MIN/RISK_FREE_MAX (see
+# UK_CA_RISK_FREE_MIN/MAX below) - the Director's own instruction gives
+# GBP/CAD a tighter 0.5%-12% band, not the existing USD/AUD 1%-15% one -
+# so keeping the two fallback dicts separate makes each sanity band's own
+# matching fallback dict obvious at the call site, rather than silently
+# sharing one dict across two different bands.
+GBP_CAD_RISK_FREE_FALLBACK = {"GBP": 0.045, "CAD": 0.035}
+
+# Sanity band for the live UK/Canada fetches below - deliberately
+# DIFFERENT from RISK_FREE_MIN/RISK_FREE_MAX (1%-15%, USD/AUD's own
+# band): the Director's own instruction specifies 0.5%-12% for these two
+# new sources, and widening/narrowing USD/AUD's existing band to match
+# would be an unrequested, untested change to currencies this commit must
+# leave byte-identical (see this module's own test suite's T7 regression
+# requirement).
+UK_CA_RISK_FREE_MIN = 0.005
+UK_CA_RISK_FREE_MAX = 0.12
 
 
 @st.cache_data(ttl=10800, show_spinner=False)
@@ -329,6 +361,16 @@ def resolve_perpetual_rate(currency, discount_rate=None):
 _DISCOUNT_TIER_FX_TO_USD_APPROX = {
     "USD": 1.0,
     "AUD": 0.65,
+    # Stage 1a (3 Oct 2026, Director-directed): "GBP and CAD go through
+    # the same conversion AUD uses today" - a pure static multiplier,
+    # never a live fetch (see this dict's own module comment above for
+    # why; same approximate/unverified status as AUD's own 0.65). Used
+    # identically to how AUD is used today inside this function's own
+    # `market_cap_usd = market_cap * _DISCOUNT_TIER_FX_TO_USD_APPROX.
+    # get(ccy, 1.0)` line just below - no behaviour change to that line
+    # itself, only two new dict entries.
+    "GBP": 1.33,
+    "CAD": 0.72,
 }
 
 # Premiums are RELATIVE TO THE RISK-FREE RATE (not a flat add-on), so
@@ -592,6 +634,162 @@ def get_au_risk_free_rate_live():
     return fallback_rate, "default"
 
 
+# =====================================================================
+# Stage 1a (3 Oct 2026, Director-directed, UK/Canada data layer): GBP/CAD
+# risk-free rates. Same shape as get_au_risk_free_rate_live() just above
+# (live fetch, cached once a day, fail-soft to a flagged fallback
+# constant, logged on every real fetch) - no paid dependency, per the
+# Director's own instruction. Both sources are the Director's own
+# SUGGESTION, explicitly flagged as "not verifiable from your sandbox" -
+# this sandbox has no outbound network access (same EGRESS_BLOCKED
+# constraint the RBA fetch above already documents), so neither URL/
+# response shape below has been exercised against the real service; the
+# first real Railway log line after deploy ("[capm] GBP risk-free ..."/
+# "[capm] CAD risk-free ...") is what actually confirms it, exactly as
+# the Director's own section 10 calls for. Written defensively (tolerant
+# parsing, short timeout, hard fallback on ANY failure) so a wrong guess
+# at either response shape degrades to "flagged as defaulted" rather
+# than ever corrupting a rate - same posture as every other live feed in
+# this module.
+# =====================================================================
+
+# Bank of England Interactive Database (IADB), series IUDMNZC - the
+# Director's own suggested 10-year nominal zero-coupon gilt yield series.
+# IADB's CSV export endpoint returns a narrow (date, value) table: a
+# header row, then one row per date, oldest first - unlike the RBA's own
+# wide one-column-per-series layout, so this parses it directly by
+# column position (date in column 0, the series value in column 1)
+# rather than needing the RBA parser's own metadata-row substring scan.
+_BOE_IADB_CSV_URL = (
+    "https://www.bankofengland.co.uk/boeapps/iadb/fromshowcolumns.asp"
+    "?csv.x=yes&Datefrom=01/Jan/2020&Dateto=now&SeriesCodes=IUDMNZC"
+    "&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N"
+)
+_BOE_TIMEOUT_SECONDS = 6
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_uk_risk_free_rate_live():
+    """Best-effort live UK 10-year gilt yield from the Bank of England's
+    own IADB CSV export (series IUDMNZC), cached once a day (a daily
+    series - no point refetching more often). Returns (rate, source) in
+    the same shape as get_au_risk_free_rate_live() - "live" or "default"
+    (the flagged GBP_CAD_RISK_FREE_FALLBACK["GBP"] constant).
+
+    Sanity band: UK_CA_RISK_FREE_MIN/MAX (0.5%-12%), the Director's own
+    instruction - deliberately NOT the same RISK_FREE_MIN/MAX band
+    get_risk_free_rate()/get_au_risk_free_rate_live() use for USD/AUD
+    (see UK_CA_RISK_FREE_MIN's own module comment for why the two bands
+    are kept separate).
+
+    Logs the outcome of EVERY real fetch (this function is cache_data-
+    decorated, so the body only runs on a cache miss) at WARNING, same
+    "[capm] <CCY> risk-free X.XX% (<source>)"/"(fallback)" format the
+    Director's own instruction specifies - see this section's own module
+    comment for the as-yet-unverified-from-any-sandbox caveat."""
+    fallback_rate = GBP_CAD_RISK_FREE_FALLBACK.get("GBP", DEFAULT_RISK_FREE_FALLBACK)
+    reason = None
+    try:
+        resp = requests.get(_BOE_IADB_CSV_URL, timeout=_BOE_TIMEOUT_SECONDS)
+        if resp.status_code != 200:
+            reason = f"HTTP {resp.status_code}"
+        else:
+            rows = [r for r in csv.reader(resp.text.splitlines()) if r]
+            found_value = False
+            # IADB's own date rows run oldest-to-newest, top-to-bottom -
+            # scan from the last row upward for the first usable numeric
+            # value, same "skip a blank/non-numeric row, stop (don't dig
+            # further back) on a real but out-of-band value" stance the
+            # RBA parser above already takes.
+            for row in reversed(rows):
+                if len(row) < 2:
+                    continue
+                try:
+                    raw = float(row[1])
+                except (TypeError, ValueError):
+                    continue
+                found_value = True
+                rate = raw / 100.0
+                if UK_CA_RISK_FREE_MIN < rate < UK_CA_RISK_FREE_MAX:
+                    _growth_logger.warning(
+                        "[capm] GBP risk-free %.2f%% (BoE IADB IUDMNZC, as at %s)",
+                        rate * 100, row[0],
+                    )
+                    return rate, "live"
+                break
+            reason = "no in-band value" if found_value else "no usable row found"
+    except Exception as e:
+        reason = f"{type(e).__name__}: {e}"
+
+    _growth_logger.warning(
+        "[capm] GBP risk-free %.2f%% (fallback - %s)",
+        fallback_rate * 100, reason or "unknown error",
+    )
+    return fallback_rate, "default"
+
+
+# Bank of Canada Valet API, series BD.CDN.10YR.DQ.YLD - the Director's
+# own suggested 10-year Government of Canada bond yield series. Returns
+# JSON: {"observations": [{"d": "YYYY-MM-DD", "BD.CDN.10YR.DQ.YLD":
+# {"v": "3.25"}}, ...]}, oldest first - ?recent=5 keeps the response tiny
+# (5 most recent observations) while still tolerating the odd published
+# gap (a holiday with no observation that day).
+_BOC_VALET_URL = (
+    "https://www.bankofcanada.ca/valet/observations/BD.CDN.10YR.DQ.YLD/json?recent=5"
+)
+_BOC_SERIES_KEY = "BD.CDN.10YR.DQ.YLD"
+_BOC_TIMEOUT_SECONDS = 6
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_ca_risk_free_rate_live():
+    """Best-effort live Canada 10-year government bond yield from the
+    Bank of Canada's own Valet API (series BD.CDN.10YR.DQ.YLD), cached
+    once a day. Returns (rate, source) in the same shape as the UK/AU
+    live-fetch functions above - "live" or "default" (the flagged
+    GBP_CAD_RISK_FREE_FALLBACK["CAD"] constant). Same UK_CA_RISK_FREE_
+    MIN/MAX sanity band and logging format as get_uk_risk_free_rate_
+    live() - see that function's own docstring."""
+    fallback_rate = GBP_CAD_RISK_FREE_FALLBACK.get("CAD", DEFAULT_RISK_FREE_FALLBACK)
+    reason = None
+    try:
+        resp = requests.get(_BOC_VALET_URL, timeout=_BOC_TIMEOUT_SECONDS)
+        if resp.status_code != 200:
+            reason = f"HTTP {resp.status_code}"
+        else:
+            data = resp.json()
+            observations = data.get("observations") or []
+            found_value = False
+            # Most recent first - Valet's own "recent=N" param already
+            # returns the N most recent observations, oldest first, so
+            # scan from the end for the first usable numeric value, same
+            # stance as the UK/AU parsers above.
+            for obs in reversed(observations):
+                cell = (obs.get(_BOC_SERIES_KEY) or {}).get("v")
+                try:
+                    raw = float(cell)
+                except (TypeError, ValueError):
+                    continue
+                found_value = True
+                rate = raw / 100.0
+                if UK_CA_RISK_FREE_MIN < rate < UK_CA_RISK_FREE_MAX:
+                    _growth_logger.warning(
+                        "[capm] CAD risk-free %.2f%% (BoC Valet %s, as at %s)",
+                        rate * 100, _BOC_SERIES_KEY, obs.get("d", "unknown date"),
+                    )
+                    return rate, "live"
+                break
+            reason = "no in-band value" if found_value else "no usable observation found"
+    except Exception as e:
+        reason = f"{type(e).__name__}: {e}"
+
+    _growth_logger.warning(
+        "[capm] CAD risk-free %.2f%% (fallback - %s)",
+        fallback_rate * 100, reason or "unknown error",
+    )
+    return fallback_rate, "default"
+
+
 def resolve_discount_rate_by_market_cap(info, currency):
     """A6, owner-approved LIVE 28 Sep 2026: market-cap-tiered cost of
     equity - no beta anywhere in this formula. This IS the live
@@ -616,6 +814,14 @@ def resolve_discount_rate_by_market_cap(info, currency):
 
     if ccy == "AUD":
         rf, rf_src = get_au_risk_free_rate_live()
+    elif ccy == "GBP":
+        # Stage 1a (3 Oct 2026, Director-directed) - see get_uk_risk_
+        # free_rate_live()'s own docstring.
+        rf, rf_src = get_uk_risk_free_rate_live()
+    elif ccy == "CAD":
+        # Stage 1a (3 Oct 2026, Director-directed) - see get_ca_risk_
+        # free_rate_live()'s own docstring.
+        rf, rf_src = get_ca_risk_free_rate_live()
     else:
         rf, rf_src = get_risk_free_rate(ccy)
     meta["rf_source"] = rf_src

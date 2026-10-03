@@ -685,6 +685,19 @@ def _overlay_fresh_price(info, tk, income=None):
     stale cached marketCap is still never used, but a real, current one
     is always available.
 
+    Stage 1a (3 Oct 2026, Director-directed, UK/Canada data layer): when
+    `info["_price_quote_unit"] == "GBp"` (set by _normalize_pence_price_
+    fields() when this bundle was first built - see that function's own
+    docstring), the FRESH fast_info quote gets the same /100 treatment
+    the rest of this ticker's price fields already got, since Yahoo's
+    live feed itself is untouched by that normalisation - it still
+    returns this ticker's price in pence on every call, cached bundle or
+    not. Runs on EVERY call (this function's own "deliberately called
+    unconditionally" contract, unchanged), including a cache-hit replay,
+    which is exactly why the marker has to survive the cache round-trip
+    on `info` itself rather than living only in the bundle's separate
+    `meta` dict (this function never sees `meta`).
+
     `income` (optional, the bundle's annual income-statement DataFrame):
     passed through to _shares_outstanding_fallback() so a ticker whose
     .info blob is simply missing sharesOutstanding (confirmed live on
@@ -700,6 +713,8 @@ def _overlay_fresh_price(info, tk, income=None):
     (returns info unchanged) if no fresh price is available."""
     fresh_price = _fetch_fresh_price(tk)
     if fresh_price is not None:
+        if info.get("_price_quote_unit") == "GBp":
+            fresh_price = fresh_price / 100.0
         info["currentPrice"] = fresh_price
         shares = _shares_outstanding_fallback(info, income)
         if isinstance(shares, (int, float)) and shares > 0:
@@ -708,6 +723,284 @@ def _overlay_fresh_price(info, tk, income=None):
         else:
             info.pop("marketCap", None)
     return info
+
+
+# =====================================================================
+# Stage 1a (3 Oct 2026, Director-directed, UK/Canada data layer): Yahoo
+# quotes most London Stock Exchange prices in PENCE, with currency ==
+# "GBp" (occasionally "GBX") - detected by that EXACT currency code
+# only, NEVER by magnitude (a handful of LSE names, e.g. some
+# investment trusts, genuinely quote in whole pounds with currency ==
+# "GBP" and must pass through untouched). Normalised ONCE, here, where
+# Yahoo data enters the app - see get_bundle()'s own call site for
+# exactly where in its pipeline this runs (after the fresh-price
+# overlay, before the financial/listing-currency statement conversion
+# that already existed).
+#
+# Every consumer elsewhere in this app (fcf_valuation_engine.py/
+# capm_engine.py/auto_compounder_engine.py/...) already uppercases
+# info.get("currency") before using it as a dict key ("GBp".upper() ==
+# "GBP"), which accidentally already masks the CURRENCY-CODE half of
+# this bug - a GBp ticker already gets treated as "GBP" for FX/risk-
+# free/perpetual-rate lookup purposes even without this fix. The
+# actual, un-masked bug is the PRICE VALUE itself: nothing anywhere
+# divided by 100, so every per-share price/ratio for a GBp ticker was
+# exactly 100x too high.
+# =====================================================================
+
+_PENCE_CURRENCY_CODES = ("GBp", "GBX")
+
+# Every info-blob field that is a PRICE (per-share, in the quote
+# currency) - divided by 100 for a pence-quoted ticker. Explicitly NOT
+# included: marketCap, enterpriseValue, sharesOutstanding (never per-
+# share prices), and anything from the financial statements (handled by
+# the pre-existing _convert_statement_currency() instead - statements
+# are never denominated in pence regardless of the LISTING currency's
+# own pence/pounds convention). trailingEps/forwardEps/bookValue/
+# dividendRate/trailingAnnualDividendRate are handled separately below
+# (their unit on a GBp ticker isn't confirmed to follow this same
+# plain-pence convention).
+_PENCE_PRICE_INFO_FIELDS = (
+    "currentPrice", "regularMarketPrice", "previousClose",
+    "regularMarketPreviousClose", "open", "regularMarketOpen",
+    "dayHigh", "regularMarketDayHigh", "dayLow", "regularMarketDayLow",
+    "fiftyTwoWeekHigh", "fiftyTwoWeekLow", "fiftyDayAverage",
+    "twoHundredDayAverage", "bid", "ask",
+    "targetMeanPrice", "targetHighPrice", "targetLowPrice", "targetMedianPrice",
+)
+
+# dividendRate/trailingAnnualDividendRate: same plain per-share-in-
+# quote-currency convention as the price fields above (Yahoo's own
+# stats page always pairs these directly against the price) - so these
+# DO get the same divide-by-100 treatment, unlike trailingEps/
+# forwardEps/bookValue just below, whose unit isn't confirmed to follow
+# that same convention.
+_PENCE_DIVIDEND_INFO_FIELDS = ("dividendRate", "trailingAnnualDividendRate")
+
+# Per-share fundamentals whose unit on a GBp ticker is NOT confirmed -
+# the Director's own explicit instruction: "do not assume". Dropped
+# (never left in place carrying an unconfirmed unit) rather than
+# divided. trailingEps/bookValue are then re-derived from this
+# ticker's own statements by _derive_eps_bookvalue_from_statements()
+# below (see get_bundle()'s own call site for where); forwardEps has no
+# statement-derived substitute (no forecast line in a financial
+# statement) and is simply left dropped.
+_PENCE_UNCONFIRMED_UNIT_INFO_FIELDS = ("trailingEps", "forwardEps", "bookValue")
+
+
+def _is_pence_quoted(raw_currency):
+    """True iff `raw_currency` (info.get("currency"), READ BEFORE anyone
+    has upper()-cased it) is EXACTLY "GBp" or "GBX" - never a magnitude
+    guess. Some LSE names genuinely quote in whole pounds (currency ==
+    "GBP") and must return False here."""
+    return raw_currency in _PENCE_CURRENCY_CODES
+
+
+def _normalize_pence_price_fields(info):
+    """Stage 1a GBp->GBP normalisation, price-field half. Mutates and
+    returns (info, price_quote_unit) where price_quote_unit is "GBp" or
+    None. A no-op (info unchanged, None returned) when info["currency"]
+    isn't exactly "GBp"/"GBX" - see _is_pence_quoted()'s own docstring -
+    so every existing USD/AUD ticker's info is completely untouched by
+    this function (T7's own regression requirement).
+
+    Divides every field in _PENCE_PRICE_INFO_FIELDS/_PENCE_DIVIDEND_
+    INFO_FIELDS by 100 (only the ones actually present - a missing
+    field stays missing, never fabricated), rewrites info["currency"]
+    to "GBP", and sets info["_price_quote_unit"] = "GBp" - an INTERNAL
+    marker (not part of this module's own public bundle shape) that
+    _overlay_fresh_price() reads on every subsequent call (including a
+    cache-hit replay, since `info` - and this marker with it - round-
+    trips through the JSON cache file faithfully) so a fresh fast_info
+    quote, which Yahoo still returns in pence regardless of this
+    normalisation, gets the same /100 treatment every time."""
+    raw_ccy = info.get("currency")
+    if not _is_pence_quoted(raw_ccy):
+        return info, None
+    for field in _PENCE_PRICE_INFO_FIELDS + _PENCE_DIVIDEND_INFO_FIELDS:
+        val = info.get(field)
+        if isinstance(val, (int, float)) and val == val:   # not NaN
+            info[field] = val / 100.0
+    for field in _PENCE_UNCONFIRMED_UNIT_INFO_FIELDS:
+        info.pop(field, None)
+    info["currency"] = "GBP"
+    info["_price_quote_unit"] = "GBp"
+    return info, "GBp"
+
+
+def _latest_statement_row_value(df, label_hints, exclude_hints=()):
+    """Tolerant substring match on a statement DataFrame's own row
+    labels (same "don't know the exact label in advance" convention
+    capm_engine's own RBA/BoE column-finders use) - the latest (first)
+    column's value of the first row whose lowercased label contains any
+    of `label_hints` and none of `exclude_hints`. None if no matching
+    row has a usable (non-NaN) value in its latest column."""
+    if df is None or df.empty:
+        return None
+    for row_label in df.index:
+        label = str(row_label).lower()
+        if any(h in label for h in label_hints) and not any(e in label for e in exclude_hints):
+            try:
+                series = df.loc[row_label].dropna()
+                if not series.empty:
+                    return float(series.iloc[0])
+            except Exception:
+                continue
+    return None
+
+
+def _derive_eps_bookvalue_from_statements(info, income, balance):
+    """Stage 1a (3 Oct 2026, Director-directed): for a GBp-normalised
+    ticker, trailingEps/bookValue were just POPPED from `info` (see
+    _normalize_pence_price_fields() above) because their unit on a GBp
+    ticker isn't confirmed - re-derives both directly from this
+    ticker's own statements instead of trusting the raw info field.
+    Mutates and returns `info`. A no-op for any ticker without
+    info["_price_quote_unit"] == "GBp" - every existing USD/AUD
+    ticker's info is untouched (T7's own regression requirement).
+
+    Must run AFTER the pre-existing financial-currency->listing-
+    currency statement conversion (get_bundle()'s own call site order),
+    so `income`/`balance` are already in the same GBP listing currency
+    _normalize_pence_price_fields() just normalised the price to.
+
+    trailingEps: latest column's Net Income / info["sharesOutstanding"]
+    - a plain basic-EPS approximation, not Yahoo's own (possibly non-
+    GAAP-adjusted) trailingEps, but genuinely sourced from this
+    ticker's own statements rather than an unconfirmed-unit guess.
+    bookValue: latest column's Stockholders Equity / sharesOutstanding,
+    same convention. Leaves a field simply absent (never fabricates a
+    number) when the needed row or a usable share count can't be found
+    - same fail-safe philosophy as every other derived field in this
+    module."""
+    if info.get("_price_quote_unit") != "GBp":
+        return info
+    shares = info.get("sharesOutstanding")
+    if not isinstance(shares, (int, float)) or shares <= 0:
+        return info
+
+    net_income = _latest_statement_row_value(
+        income, ("net income",), exclude_hints=("discontinued", "noncontrolling", "minority")
+    )
+    if net_income is not None:
+        info["trailingEps"] = net_income / shares
+
+    equity = _latest_statement_row_value(
+        balance, ("stockholders equity", "total equity", "common stock equity")
+    )
+    if equity is not None:
+        info["bookValue"] = equity / shares
+
+    return info
+
+
+def _normalize_and_validate_pence_dividends(dividends, info, log=print):
+    """Stage 1a (3 Oct 2026, Director-directed): for a GBp-normalised
+    ticker, `dividends` (the per-event history series, fetched in the
+    quote currency - pence, same as the raw price fields) gets the same
+    /100 treatment, THEN validated: the trailing-12-month total (from
+    the now-pounds amounts) implies a dividend yield against
+    info["currentPrice"] (already normalised to pounds by this point) -
+    that implied yield must agree with Yahoo's own info["dividendYield"]
+    within 20% relative, or the pence-normalised amounts aren't trusted
+    after all (dividend_unit_suspect=True, dividends/dividendRate/
+    trailingAnnualDividendRate all cleared to "n/a" by the caller - see
+    get_bundle()'s own call site for exactly where that happens).
+
+    A no-op (dividends unchanged, dividend_unit_suspect=False) for any
+    non-GBp ticker, a GBp ticker with no dividend history at all
+    (nothing to validate), or one with no info["dividendYield"]/price
+    to compare against (can't validate either way - left as the plain
+    /100-normalised amounts, not flagged, since "can't confirm" isn't
+    the same claim as "confirmed wrong").
+
+    Returns (dividends, dividend_unit_suspect)."""
+    if info.get("_price_quote_unit") != "GBp":
+        return dividends, False
+    amounts = dividends.get("amounts") or []
+    dates = dividends.get("dates") or []
+    if not amounts:
+        return dividends, False
+
+    pence_amounts = [a / 100.0 for a in amounts]
+    normalised = {"dates": dates, "amounts": pence_amounts}
+
+    price = info.get("currentPrice")
+    y_yield = info.get("dividendYield")
+    if not (isinstance(price, (int, float)) and price > 0
+            and isinstance(y_yield, (int, float)) and y_yield > 0):
+        return normalised, False
+
+    try:
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=366)
+        ttm_total = sum(
+            amt for d, amt in zip(dates, pence_amounts)
+            if datetime.datetime.fromisoformat(d) >= cutoff
+        )
+    except Exception:
+        return normalised, False
+    if ttm_total <= 0:
+        return normalised, False
+
+    implied_yield = ttm_total / price
+    # Yahoo's own dividendYield has itself been seen in both a decimal
+    # fraction (0.034) and a bare-percentage (3.4) shape elsewhere in
+    # this codebase (see capm_engine._normalize_yahoo_growth_estimate's
+    # own docstring for the general pattern) - normalise the same way
+    # here before comparing.
+    y_yield_frac = y_yield / 100.0 if abs(y_yield) >= 1.5 else y_yield
+    if y_yield_frac <= 0:
+        return normalised, False
+
+    rel_diff = abs(implied_yield - y_yield_frac) / y_yield_frac
+    if rel_diff > 0.20:
+        log(
+            f"[units] dividend_unit_suspect: implied yield {implied_yield:.4f} vs "
+            f"Yahoo dividendYield {y_yield_frac:.4f} - disagree by {rel_diff:.0%}"
+        )
+        return {"dates": [], "amounts": []}, True
+
+    return normalised, False
+
+
+def _check_price_unit_guard(ticker, info, raw_price_before_divide, log=print):
+    """Stage 1a (3 Oct 2026, Director-directed) runtime guard -
+    VALIDATION, not detection (detection is the exact "GBp"/"GBX"
+    currency-code check in _is_pence_quoted() above; this never decides
+    WHETHER to normalise, only whether the result makes sense). For a
+    ticker _normalize_pence_price_fields() just normalised, cross-checks
+    price (now in pounds) x sharesOutstanding against marketCap - if
+    they disagree by more than 5%, something about this normalisation
+    can't be trusted, so the caller (get_bundle()) flags the whole
+    bundle rather than let a silently-wrong IV/MOS compute on top of it.
+
+    Logs exactly one line per normalised ticker, success or failure:
+    "[units] <TICKER> GBp->GBP raw=<raw> price=<normalised> mcap_check=
+    <ratio> ok"/"SUSPECT" - `raw` is the PRE-divide price (what Yahoo
+    actually returned), `price` the post-divide pounds figure, `mcap_
+    check` = (price * shares) / marketCap (1.00 == perfect agreement).
+
+    Returns (price_unit_suspect: bool, reason: str or None). A no-op
+    (False, None, nothing logged) when marketCap or sharesOutstanding
+    isn't available at all - nothing to cross-check against, same
+    "missing data never blocks a valuation on its own" philosophy as
+    the rest of this app; this guard can only ever ADD a red flag,
+    never silently clear one."""
+    price = info.get("currentPrice")
+    shares = info.get("sharesOutstanding")
+    market_cap = info.get("marketCap")
+    if not (isinstance(price, (int, float)) and isinstance(shares, (int, float))
+            and isinstance(market_cap, (int, float)) and market_cap > 0 and shares > 0):
+        return False, None
+    mcap_check = (price * shares) / market_cap
+    suspect = abs(mcap_check - 1.0) > 0.05
+    log(
+        f"[units] {ticker} GBp->GBP raw={raw_price_before_divide} price={price:.2f} "
+        f"mcap_check={mcap_check:.2f} {'SUSPECT' if suspect else 'ok'}"
+    )
+    if suspect:
+        return True, "price unit could not be confirmed"
+    return False, None
 
 
 def get_bundle(ticker, force_refresh=False):
@@ -776,6 +1069,27 @@ def get_bundle(ticker, force_refresh=False):
     # neutral apart from that fallback becoming available.
     info = _overlay_fresh_price(info, tk, income=income)
 
+    # Stage 1a (3 Oct 2026, Director-directed, UK/Canada data layer):
+    # GBp->GBP pence normalisation - see _normalize_pence_price_
+    # fields()'s own docstring. Runs right after the fresh-price overlay
+    # (so the overlaid price is included) and BEFORE the financial/
+    # listing-currency statement conversion just below (so that block's
+    # own `list_ccy` read sees "GBP", not "GBp" - though every consumer
+    # already .upper()s it either way, so this ordering only matters for
+    # this function's own price-value math, not that one's currency-
+    # code comparison). `raw_price_for_guard` is the PRE-divide price,
+    # captured before the mutation, for the runtime guard's own log line
+    # just below.
+    raw_price_for_guard = info.get("currentPrice")
+    info, price_quote_unit = _normalize_pence_price_fields(info)
+    price_unit_suspect, price_unit_suspect_reason = (False, None)
+    if price_quote_unit == "GBp":
+        price_unit_suspect, price_unit_suspect_reason = _check_price_unit_guard(
+            ticker, info, raw_price_for_guard
+        )
+        if price_unit_suspect:
+            flags.append("price_unit_suspect")
+
     # income_q: quarterly income statement, yfinance-only regardless of
     # which annual source won above (EODHD has no quarterly endpoint this
     # module uses) - see _fetch_yfinance_quarterly_income's docstring for
@@ -828,6 +1142,14 @@ def get_bundle(ticker, force_refresh=False):
         income_q = _convert_statement_currency(income_q, fin_ccy, list_ccy)
         flags.append("currency_converted")
 
+    # Stage 1a (3 Oct 2026, Director-directed): trailingEps/bookValue
+    # re-derivation for a GBp-normalised ticker - see _derive_eps_
+    # bookvalue_from_statements()'s own docstring. Must run AFTER the
+    # financial/listing-currency conversion just above, so `income`/
+    # `balance` are already in the same GBP listing currency the price
+    # was just normalised to. A no-op for every non-GBp ticker.
+    info = _derive_eps_bookvalue_from_statements(info, income, balance)
+
     try:
         hist = tk.history(period="10y", interval="1mo")
     except Exception:
@@ -836,6 +1158,15 @@ def get_bundle(ticker, force_refresh=False):
     prices_10y = _monthly_series(hist)
     if not prices_10y["dates"]:
         flags.append("price_history_unavailable")
+    elif price_quote_unit == "GBp":
+        # Same /100 treatment as the plain info price fields - this
+        # ticker's own monthly close series is fetched in pence too,
+        # since nothing about tk.history() itself is affected by the
+        # info-blob normalisation above.
+        prices_10y = {
+            "dates": prices_10y["dates"],
+            "prices": [p / 100.0 for p in prices_10y["prices"]],
+        }
 
     try:
         div = tk.dividends
@@ -849,6 +1180,24 @@ def get_bundle(ticker, force_refresh=False):
     except Exception:
         dividends = {"dates": [], "amounts": []}
         flags.append("dividends_unavailable")
+
+    # Stage 1a (3 Oct 2026, Director-directed): dividend pence
+    # normalisation + validation against info["dividendYield"] - see
+    # _normalize_and_validate_pence_dividends()'s own docstring. On
+    # disagreement, the dividend SERIES is cleared to n/a by that
+    # function itself; dividendRate/trailingAnnualDividendRate (already
+    # /100-divided by _normalize_pence_price_fields() above, on the
+    # SAME unconfirmed assumption the series validation just rejected)
+    # are cleared here too, for the same reason.
+    dividend_unit_suspect = False
+    if price_quote_unit == "GBp":
+        dividends, dividend_unit_suspect = _normalize_and_validate_pence_dividends(
+            dividends, info
+        )
+        if dividend_unit_suspect:
+            info.pop("dividendRate", None)
+            info.pop("trailingAnnualDividendRate", None)
+            flags.append("dividend_unit_suspect")
 
     try:
         spx_hist = yf.Ticker("^GSPC").history(period="10y", interval="1mo")
@@ -872,6 +1221,19 @@ def get_bundle(ticker, force_refresh=False):
             "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "flags": flags,
             "bundle_version": BUNDLE_VERSION,
+            # Stage 1a (3 Oct 2026, Director-directed, UK/Canada data
+            # layer) - see _normalize_pence_price_fields()/_check_price_
+            # unit_guard()/_normalize_and_validate_pence_dividends()'s
+            # own docstrings. price_quote_unit is "GBp" or None (never a
+            # non-None value for a non-GBp ticker); price_unit_suspect/
+            # price_unit_suspect_reason let a consumer withhold IV/MOS
+            # for a ticker whose pence normalisation didn't cross-check
+            # against marketCap; dividend_unit_suspect marks the
+            # dividend series/rate as not-trusted-as-pence after all.
+            "price_quote_unit": price_quote_unit,
+            "price_unit_suspect": price_unit_suspect,
+            "price_unit_suspect_reason": price_unit_suspect_reason,
+            "dividend_unit_suspect": dividend_unit_suspect,
         },
     }
     _write_cache(ticker, bundle)

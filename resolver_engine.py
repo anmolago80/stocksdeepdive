@@ -24,7 +24,7 @@ from stock_classifier import CLASSIFICATIONS
 from auto_quality_engine import get_quality_score as _auto_quality
 from auto_intrinsic_value_engine import get_intrinsic_value as _auto_intrinsic
 from auto_stock_type_engine import get_stock_type as _auto_stock_type
-from fcf_valuation_engine import dcf_intrinsic_value, GROWTH_FLOOR, GROWTH_CEIL
+from fcf_valuation_engine import dcf_intrinsic_value, GROWTH_FLOOR, GROWTH_CEIL, trading_currency_for
 import capm_engine
 
 
@@ -283,7 +283,11 @@ def dcf_scenarios(ticker, quality_score, info=None, cashflow_df=None, currency=N
     if base_label != "dcf" or base_growth is None:
         return None
 
-    ccy = currency or (info or {}).get("currency") or "USD"
+    # Stage 1a (3 Oct 2026, Director-directed): trading_currency_for()
+    # adds the .L/.TO suffix fallback this bare info.get() chain never
+    # had - a no-op for every ticker whose info["currency"] is already
+    # populated (the overwhelming majority).
+    ccy = currency or trading_currency_for(ticker, info)
     d0 = base_meta.get("discount_rate_used")
     p0 = base_meta.get("perpetual_rate_used")
     g0 = base_growth

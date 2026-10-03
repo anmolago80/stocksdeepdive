@@ -584,7 +584,10 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
             oneoff_summary_out["income_fetched"] = oneoff_summary_out.get("income_fetched", 0) + 1
     intrinsic, _ivsrc, _g, iv_meta = resolve_intrinsic_value(
         ticker, quality, info=info, cashflow_df=cashflow_df,
-        currency=info.get("currency"),
+        # Stage 1a (3 Oct 2026, Director-directed): trading_currency_
+        # for() adds the .L/.TO suffix fallback this bare info.get()
+        # never had - a no-op whenever info["currency"] is populated.
+        currency=fcf_valuation_engine.trading_currency_for(ticker, info),
         discount_rate=discount_rate, perpetual_rate=perpetual_rate,
         growth_rate=growth_rate, manual_fcf=manual_fcf,
         income_df=income_df,
@@ -628,7 +631,9 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     try:
         _reverse_dcf = reverse_dcf_engine.compute(
             ticker, current_price, info=info, cashflow_df=cashflow_df,
-            currency=info.get("currency"),
+            # Stage 1a (3 Oct 2026, Director-directed): same trading_
+            # currency_for() swap as resolve_intrinsic_value() above.
+            currency=fcf_valuation_engine.trading_currency_for(ticker, info),
             discount_rate=discount_rate, perpetual_rate=perpetual_rate,
             growth_rate=growth_rate, manual_fcf=manual_fcf,
         )
