@@ -29928,6 +29928,56 @@ def _render_batch_inspector_panel():
                     st.code(_row["excerpt"], language=None)
 
 
+def _render_recompute_ticker_panel():
+    """"Recompute this ticker now" (3 Oct 2026, owner-directed) -
+    owner-only. Invalidates fundamentals_data's 24h bundle cache for
+    ONE ticker and rebuilds it from a live fetch, via fundamentals_
+    data.get_bundle(ticker, force_refresh=True) - the exact same
+    "admin rebuild action, mirroring compounder_data.json's own
+    rebuild pattern" that function's own docstring already documents
+    (force_refresh=True skips the cached read and _write_cache()s the
+    fresh result at the end, which overwrites the old cache file -
+    nothing else to invalidate separately). Scoped to this one ticker
+    only - never a universe-wide refresh, never touches the Scanner/
+    Top 100 scoring path, never triggers a scan/batch/Refresh All.
+    Lets the owner see a deploy's effect on the Fair Value/Deep Dive
+    tabs immediately instead of waiting up to 24h for that ticker's
+    own cache to expire naturally. No gate of its own - called only
+    from inside page_admin_dashboard(), after that function's own
+    owner check."""
+    st.markdown("### Recompute this ticker now")
+    st.caption(
+        "Owner-only. Invalidates and rebuilds ONE ticker's cached "
+        "fundamentals bundle from a live fetch - use this right after "
+        "a deploy to see its effect on that ticker's Fair Value/Deep "
+        "Dive tabs immediately, instead of waiting up to 24h for the "
+        "cache to expire on its own. Never a universe-wide refresh; "
+        "never touches the Scanner/Top 100 scoring path."
+    )
+    _ticker = st.text_input(
+        "Ticker", key="admin_dash_recompute_ticker_input",
+        placeholder="e.g. KNSL or BHP.AX",
+    ).strip().upper()
+    if st.button("Recompute now", key="admin_dash_recompute_ticker_button") and _ticker:
+        print(f"[admin] recompute {_ticker}")
+        with st.spinner(f"Recomputing {_ticker}..."):
+            try:
+                _bundle = fundamentals_data.get_bundle(_ticker, force_refresh=True)
+            except Exception as e:
+                _bundle = None
+                _error = str(e)
+            else:
+                _error = None
+        if _bundle is None:
+            st.error(f"Could not rebuild {_ticker}'s bundle"
+                     + (f": {_error}" if _error else " - no data returned."))
+        else:
+            st.success(
+                f"{_ticker}'s fundamentals bundle has been rebuilt from a live fetch - "
+                "Fair Value/Deep Dive will reflect it on the next view."
+            )
+
+
 def _render_valuation_change_audit_panel():
     """Valuation Change Audit (2 Oct 2026, owner-directed, Commit 2 of
     the 23:00 UTC incident response) - owner-only, read-only. Lets the
@@ -31964,6 +32014,13 @@ def page_admin_dashboard():
     _render_resubmit_pause_panel()
     st.markdown("---")
     _render_batch_inspector_panel()
+
+    # --- RECOMPUTE THIS TICKER NOW (3 Oct 2026, owner-directed) - see
+    # _render_recompute_ticker_panel()'s own docstring. Same "no gate
+    # of its own, final section of this page" pattern as every panel
+    # above.
+    st.markdown("---")
+    _render_recompute_ticker_panel()
 
 
 # -----------------------------------
