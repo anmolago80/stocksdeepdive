@@ -6403,6 +6403,24 @@ def _render_insider_panel(ticker):
     # panel always renders something for any ticker (a filings table or a
     # "nothing on record" caption), so its chip is unconditional.
     st.markdown('<div id="sdd-anchor-insider"></div>', unsafe_allow_html=True)
+
+    # Lists & display Commit 3 (3 Oct 2026, Director-directed): insider
+    # filings only ever come from ASX announcements (.AX) or SEC EDGAR
+    # (US-listed issuers) - insider_engine.py has no third source. A
+    # London/Toronto/Tokyo ticker previously got no distinct message here:
+    # it silently fell into the SEC path, found no CIK, and showed the
+    # same "No filings found" caption as a genuine no-data US ticker -
+    # indistinguishable from "nothing to report" when the truth is "not
+    # tracked for this market." One neutral line instead; the refresh call
+    # that used to produce per-view "no SEC CIK match" log spam for these
+    # suffixes is skipped entirely (see insider_engine.refresh()'s own
+    # early-return for the same suffix list).
+    if peer_context.market_for(ticker) in ("United Kingdom", "Canada", "Japan"):
+        st.markdown(f"##### {i18n.t('dd.heading.insider', st.session_state.get('lang', 'en'))}")
+        st.caption(_section_why("Insider & capital"))
+        st.caption(i18n.t("dd.insider.not_available_market", st.session_state.get('lang', 'en')))
+        return
+
     try:
         insider_engine.refresh(ticker)
     except Exception:
@@ -9723,7 +9741,18 @@ def _render_peer_context(dd):
     st.markdown(f"##### {i18n.t('dd.peer.heading', _peer_lang)}")
 
     if not res.get("available"):
-        st.caption(i18n.t("dd.peer.no_data", _peer_lang, ticker=ticker))
+        # Lists & display Commit 3 (3 Oct 2026, Director-directed): a
+        # distinct, intentional neutral line for "this ticker's own
+        # market's universes are private" (peer_context.compute()'s new
+        # "private_market" reason), separate from the generic "not
+        # scanned yet" copy every other not-yet-covered ticker shows -
+        # never reads a private scan row to decide this (see that
+        # function's own comment on checking is_private_universe()
+        # BEFORE ever calling scan_store.load_scan()).
+        if res.get("reason") == "private_market":
+            st.caption(i18n.t("dd.peer.not_available_market", _peer_lang))
+        else:
+            st.caption(i18n.t("dd.peer.no_data", _peer_lang, ticker=ticker))
         return
 
     own_values = res["own_values"]

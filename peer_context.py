@@ -48,6 +48,56 @@ _US_PRIORITY = ["S&P 500", "S&P 1500", "Nasdaq 100",
 # USA_UNIVERSES (scanner_engine.py) since its scraper never resolved any
 # tickers in production; it would never have matched here anyway.
 
+# Lists & display Commit 3 (3 Oct 2026, Director-directed): "a stock is
+# compared with companies from its OWN country's universes" - the exact
+# same process ASX tickers already get above, extended to UK/Canada/
+# Japan. These three universe pairs are PRIVATE by default (see scan_
+# store.is_private_universe()) - compute() below checks that live,
+# BEFORE ever calling scan_store.load_scan() for one of them, so a
+# private universe's rows are never read into this (public) code path
+# at all, not merely hidden after the fact. The moment Andrew removes
+# one of these names from PRIVATE_UNIVERSES, this same code starts
+# serving real peer context for that market with no further change -
+# is_private_universe() re-reads the env var on every call.
+_UK_PRIORITY = ["FTSE 100", "FTSE 250"]
+_CA_PRIORITY = ["TSX 60", "TSX Composite"]
+_JP_PRIORITY = ["Nikkei 225", "TOPIX 500"]
+
+
+def market_for(ticker):
+    """"United Kingdom"/"Canada"/"Japan"/"Australia"/"USA" by ticker
+    suffix (.L/.TO/.T/.AX, else USA) - the one place this module (and
+    this task's own instruction) decides which country's universes a
+    ticker belongs to. A UK/Canadian/Japanese ticker must never be
+    ranked against US or ASX universes - see compute()'s own dispatch,
+    which uses this instead of the old is_au-only two-way check."""
+    t = (ticker or "").upper()
+    if t.endswith(".AX"):
+        return "Australia"
+    if t.endswith(".L"):
+        return "United Kingdom"
+    if t.endswith(".TO"):
+        return "Canada"
+    if t.endswith(".T"):
+        return "Japan"
+    return "USA"
+
+
+_MARKET_PRIORITY = {
+    "Australia": _AU_PRIORITY,
+    "United Kingdom": _UK_PRIORITY,
+    "Canada": _CA_PRIORITY,
+    "Japan": _JP_PRIORITY,
+    "USA": _US_PRIORITY,
+}
+_MARKET_ALL_UNIVERSES = {
+    "Australia": scanner_engine.AUSTRALIA_UNIVERSES,
+    "United Kingdom": _UK_PRIORITY,
+    "Canada": _CA_PRIORITY,
+    "Japan": _JP_PRIORITY,
+    "USA": scanner_engine.USA_UNIVERSES,
+}
+
 # (scan row field, public percentile key) - all five are "higher = better"
 # in this app's own convention (Psychology included: fear enters with a
 # positive sign, see site_content.py's methodology text), so none of them
@@ -252,9 +302,27 @@ def compute(ticker):
     if not ticker:
         return {"available": False, "reason": "not_scanned"}
 
-    is_au = ticker.endswith(".AX")
-    priority = _AU_PRIORITY if is_au else _US_PRIORITY
-    all_universes = scanner_engine.AUSTRALIA_UNIVERSES if is_au else scanner_engine.USA_UNIVERSES
+    market = market_for(ticker)
+    priority = _MARKET_PRIORITY[market]
+    all_universes = _MARKET_ALL_UNIVERSES[market]
+
+    # Lists & display Commit 3 (3 Oct 2026, Director-directed): while
+    # this ticker's own market's universes are all private, the public
+    # Deep Dive page shows no peer context for it at all - checked here,
+    # BEFORE _locate() ever calls scan_store.load_scan() for one of
+    # these universe names, so a private universe's rows are never read
+    # on this path in the first place (not merely hidden after a read -
+    # "never reads private scan rows into a public page", per this
+    # task's own instruction). A market with a MIX of private/public
+    # universes (not the current case for UK/CA/JP, which are either
+    # all-private or all-public together) would still work correctly:
+    # this only short-circuits when EVERY universe for this market is
+    # private, so _locate()'s own ordinary default-deny reads (via
+    # scan_store.load_scan()'s own allow_private=False default) remain
+    # the gate for a partially-private market, exactly as for any other
+    # universe today.
+    if market != "USA" and all(scan_store.is_private_universe(u) for u in priority):
+        return {"available": False, "reason": "private_market"}
 
     universe, payload, own_row = _locate(ticker, priority, all_universes)
     if own_row is None:

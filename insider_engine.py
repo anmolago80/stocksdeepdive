@@ -590,11 +590,26 @@ def refresh(ticker, force=False, log=print):
     """Refresh insider/buyback data for one ticker if stale (>24h) or
     force=True. Returns True if a refresh actually ran. ASX tickers go
     through refresh_asx, everything else through refresh_sec - a ticker
-    never hits both paths in one call."""
+    never hits both paths in one call.
+
+    Lists & display Commit 3 (3 Oct 2026, Director-directed): neither
+    source here covers London/Toronto/Tokyo - ASX announcements only
+    cover .AX, and SEC EDGAR has no CIK for a non-US-listed issuer - so a
+    .L/.TO/.T ticker used to fall into refresh_sec(), find no CIK match
+    every single time, and log "no SEC CIK match - skipping" on every
+    on-demand Deep Dive view, pure log spam for a market this feature
+    never covered. Marked fetched (so should_refetch's 24h gate still
+    applies normally) and returned before either path runs - no SEC
+    call, no log line. The Deep Dive panel shows its own neutral "not
+    available for this market" line instead (app.py _render_insider_
+    panel's own gate, kept in sync with this suffix list)."""
     if not ticker:
         return False
     if not force and not insider_store.should_refetch(ticker, max_age_hours=REFETCH_STALE_HOURS):
         return False
+    if ticker.upper().endswith((".L", ".TO", ".T")):
+        insider_store.mark_fetched(ticker)
+        return True
     try:
         if ticker.upper().endswith(".AX"):
             refresh_asx(ticker, log=log)

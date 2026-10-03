@@ -595,6 +595,7 @@ EN = {
 
     "dd.peer.heading": "Peer context",
     "dd.peer.no_data": "No peer data yet for {ticker} - not in a scanned overnight universe yet.",
+    "dd.peer.not_available_market": "Peer comparison not available for this market yet.",
     "dd.peer.provenance": "vs last night's overnight scan (attention-lite).",
     "dd.peer.no_rankable": "No rankable scores for this ticker yet.",
     "dd.peer.closest_peers": "Closest peers - {source}",
@@ -606,6 +607,7 @@ EN = {
 
     "dd.heading.dividends": "Dividends",
     "dd.heading.insider": "Insider & capital",
+    "dd.insider.not_available_market": "Insider filings not available for this market yet.",
 
     # Deep Dive first-screen instruction, Part 3: the compact popover
     # triggers in the new Watchlist/Alerts/Checklist action row under the
@@ -4516,6 +4518,7 @@ ES = {
 
     "dd.peer.heading": "Comparación con pares",
     "dd.peer.no_data": "Aún no hay datos de pares para {ticker} - todavía no está en un universo escaneado durante la noche.",
+    "dd.peer.not_available_market": "La comparación con pares aún no está disponible para este mercado.",
     "dd.peer.provenance": "frente al escaneo nocturno de anoche (atención simplificada).",
     "dd.peer.no_rankable": "Aún no hay puntajes clasificables para este ticker.",
     "dd.peer.closest_peers": "Pares más cercanos - {source}",
@@ -4527,6 +4530,7 @@ ES = {
 
     "dd.heading.dividends": "Dividendos",
     "dd.heading.insider": "Movimientos de insiders y capital",
+    "dd.insider.not_available_market": "Los informes de insiders aún no están disponibles para este mercado.",
 
     "dd.actions.watchlist_button": "☆ Seguimiento",
     "dd.actions.alerts_button": "\U0001F514 Alertas",
