@@ -965,6 +965,9 @@ EN = {
     # is missing the day Andrew removes them from PRIVATE_UNIVERSES.
     "home.top5.country_uk": "United Kingdom",
     "home.top5.country_ca": "Canada",
+    # Stage 1 Japan, Commit B (3 Oct 2026, Director-directed) - same
+    # future-proofing status as the UK/CA labels just above.
+    "home.top5.country_jp": "Japan",
     "home.top5.col_ticker": "Ticker",
     "home.top5.col_price": "Price",
     "home.top5.col_value_score": "Value Score",
@@ -2257,6 +2260,9 @@ EN = {
     # yet either, but added here for the same future-proofing reason.
     "scanner.country_uk": "United Kingdom",
     "scanner.country_ca": "Canada",
+    # Stage 1 Japan, Commit B (3 Oct 2026, Director-directed) - same
+    # future-proofing status as the UK/CA labels just above.
+    "scanner.country_jp": "Japan",
     "scanner.universe_label": "Universe",
     "scanner.pick_country_info": "Tick at least one country above to pick a universe to scan.",
     "scanner.run_scan_button": "Run Scan",
@@ -4810,6 +4816,7 @@ ES = {
     "home.top5.country_us": "EE. UU.",
     "home.top5.country_uk": "Reino Unido",
     "home.top5.country_ca": "Canadá",
+    "home.top5.country_jp": "Japón",
     "home.top5.col_ticker": "Ticker",
     "home.top5.col_price": "Precio",
     "home.top5.col_value_score": "Value Score",
@@ -5981,6 +5988,7 @@ ES = {
     "scanner.country_us": "EE. UU.",
     "scanner.country_uk": "Reino Unido",
     "scanner.country_ca": "Canadá",
+    "scanner.country_jp": "Japón",
     "scanner.universe_label": "Universo",
     "scanner.pick_country_info": "Marca al menos un país arriba para elegir un universo que escanear.",
     "scanner.run_scan_button": "Ejecutar escaneo",

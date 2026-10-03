@@ -2219,6 +2219,162 @@ def fetch_tsxcomposite():
     return _asx_backfill_missing_subset_tickers(df, fetch_tsx60(), "TSX Composite", "TSX 60")
 
 
+# -----------------------------------------------------------------
+# Stage 1 Japan, Commit B (3 Oct 2026, Director-directed): Nikkei 225
+# (Wikipedia, same fetch pattern as every other Wikipedia fetcher
+# above) and TOPIX 500 (the Core30 + Large70 + Mid400 size groups of
+# the Japan Exchange Group's own published TOPIX New Index Series
+# constituents file - Wikipedia doesn't list these, per the task's own
+# instruction). Both PRIVATE by default - see scan_store.is_private_
+# universe(). Every code through symbol_mapping.to_yahoo_symbol(raw,
+# "TSE") (Stage 1 Japan Commit A).
+#
+# "Never build a constituent list from memory" (this task's own
+# instruction, in those words): UNLIKE the FTSE/TSX fetchers above,
+# NEITHER universe below carries a static fallback list - a failed
+# live fetch/parse simply means the universe doesn't scan tonight
+# (get_universe_pool() returns None below; nightly_scan.run_universe_
+# scan() already treats that as "no tickers resolved" and saves
+# nothing, which leaves whatever was already saved on disk completely
+# untouched - the "keep the last known good list" half of this task's
+# own rule, met by construction, with no new code needed for it). This
+# is a deliberate departure from Stage 1b's own FTSE100/250/TSX60/
+# Composite fetchers, which DO carry a small memory-sourced fallback
+# list written before this stricter rule existed - flagged plainly in
+# this commit's own report, per the task's own instruction, as due to
+# be replaced.
+#
+# This sandbox has no live network access to either the Wikipedia page
+# or the JPX file, so none of this has been exercised against a real
+# response - the first real Railway log line after deploy is what
+# actually confirms it, same caveat every other live feed in this
+# commit/Stage 1b already carries.
+# -----------------------------------------------------------------
+
+NIKKEI225_WIKI_URL = "https://en.wikipedia.org/wiki/Nikkei_225"
+
+# Director's suggestion, unverified from this sandbox (same status as
+# capm_engine.py's own MOF JGB CSV URL) - the Japan Exchange Group's
+# own published TOPIX New Index Series constituents file, which
+# carries each stock's size classification (Core30/Large70/Mid400/
+# Small 1/Small 2). The exact published filename/path is known to
+# change periodically on jpx.co.jp - a moved URL simply fails the
+# fetch below (treated as "unavailable", not scanning), same as any
+# other live-feed URL in this app going stale.
+TOPIX_CONSTITUENTS_URL = (
+    "https://www.jpx.co.jp/english/markets/indices/topix/tvdivq0000006pov-att/topixweight_j.csv"
+)
+_TOPIX_SIZE_GROUP_HINTS = ("core30", "large70", "mid400")
+_TOPIX_SIZE_GROUP_COLUMN_HINTS = ("size", "classification", "category", "group")
+_TOPIX_CODE_COLUMN_HINTS = ("code", "ticker", "symbol")
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_nikkei225():
+    try:
+        html = _get(NIKKEI225_WIKI_URL)
+    except Exception:
+        return None
+    return _parse_table(
+        html, ["code", "ticker", "symbol"], ["sector", "industry"],
+        lambda t: symbol_mapping.to_yahoo_symbol(str(t).strip(), "TSE"),
+        min_rows=200, max_rows=230,
+    )
+
+
+def _topix_size_group(cell):
+    """Normalises one size-classification cell to 'core30'/'large70'/
+    'mid400'/None - tolerant substring match (spaces stripped first,
+    so "Core 30"/"Core30" both match), same reasoning as every other
+    "format not verified from this sandbox" parser in this module."""
+    low = str(cell or "").strip().lower().replace(" ", "")
+    for hint in _TOPIX_SIZE_GROUP_HINTS:
+        if hint in low:
+            return hint
+    return None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_topix500():
+    """TOPIX 500 = the Core30 + Large70 + Mid400 size groups of the
+    JPX's own published TOPIX New Index Series constituents file - see
+    this section's own module comment for the unverified-URL caveat
+    and the "never built from memory, no static fallback" rule this
+    universe follows. Returns None (never a fallback list) on ANY
+    fetch/parse failure, logging the exact "[universe] TOPIX 500:
+    constituent list unavailable (<reason>) - not scanning" line this
+    task's own instruction specifies - nightly_scan.run_universe_
+    scan() already treats a None pool as "no tickers resolved", which
+    keeps whatever was already saved on disk untouched (the "keep the
+    last known good list" half of this rule)."""
+    reason = "unknown error"
+    try:
+        resp = requests.get(TOPIX_CONSTITUENTS_URL, timeout=10, headers=_HEADERS)
+        if resp.status_code != 200:
+            reason = f"HTTP {resp.status_code}"
+        else:
+            df = None
+            try:
+                df = pd.read_csv(io.StringIO(resp.text))
+            except Exception:
+                try:
+                    df = pd.read_excel(io.BytesIO(resp.content))
+                except Exception:
+                    df = None
+            if df is None or df.empty:
+                reason = "file could not be parsed as CSV or Excel"
+            else:
+                code_col = _find_column(df.columns, _TOPIX_CODE_COLUMN_HINTS)
+                group_col = _find_column(df.columns, _TOPIX_SIZE_GROUP_COLUMN_HINTS)
+                if code_col is None or group_col is None:
+                    reason = "code or size-classification column not found"
+                else:
+                    df = df.copy()
+                    df["_group"] = df[group_col].apply(_topix_size_group)
+                    kept = df[df["_group"].isin(_TOPIX_SIZE_GROUP_HINTS)]
+                    if kept.empty:
+                        reason = "no Core30/Large70/Mid400 rows found"
+                    else:
+                        out = kept[[code_col]].copy()
+                        out.columns = ["Ticker"]
+                        out["Ticker"] = out["Ticker"].apply(
+                            lambda t: symbol_mapping.to_yahoo_symbol(str(t).strip(), "TSE")
+                        )
+                        out["Sector"] = None
+                        if len(out) < 400:
+                            reason = (
+                                f"only {len(out)} Core30/Large70/Mid400 row(s) found "
+                                "(expected roughly 500)"
+                            )
+                        else:
+                            return out[["Ticker", "Sector"]]
+    except Exception as e:
+        reason = f"{type(e).__name__}: {e}"
+    _log.warning(f"[universe] TOPIX 500: constituent list unavailable ({reason}) - not scanning")
+    return None
+
+
+def log_nikkei_topix_overlap(log=None):
+    """Logs how many tickers Nikkei 225 and TOPIX 500 have in common -
+    informational only, per this task's own instruction ("no subset
+    guard is required" - these two are NOT a containment pair, unlike
+    the ASX chain or FTSE 250/TSX 60 above). Silent (no log line) if
+    either pool is currently unavailable - an inconclusive comparison
+    isn't worth a log line of its own, unlike the integrity guards
+    above, since this is pure visibility, never a save-blocking
+    check."""
+    log = log or (lambda *a, **k: None)
+    try:
+        nikkei_df = fetch_nikkei225()
+        topix_df = fetch_topix500()
+        if nikkei_df is None or topix_df is None:
+            return
+        overlap = set(nikkei_df["Ticker"]) & set(topix_df["Ticker"])
+        log(f"[universe] Nikkei 225 / TOPIX 500 overlap: {len(overlap)} ticker(s)")
+    except Exception:
+        pass
+
+
 # Smallest to largest - the standing nesting order this module's docstring
 # describes (ASX 20 subset ASX 50 subset ASX 100 subset ASX 200 subset ASX
 # 300 subset All Ordinaries). Named here as one list, not spread across
@@ -3026,6 +3182,23 @@ def get_universe_pool(country, universe):
         return fallback_df, (
             f"Web scrape unavailable - static {len(_TSX_COMPOSITE_STATIC_FALLBACK)}-ticker fallback list"
         )
+
+    if universe == "Nikkei 225":
+        df = fetch_nikkei225()
+        if df is not None:
+            return df, "Wikipedia Nikkei 225 (live)"
+        # Never built from memory - no fallback list (see this
+        # universe's own fetcher comment above).
+        return None, "Wikipedia Nikkei 225 scrape unavailable - not scanning"
+
+    if universe == "TOPIX 500":
+        df = fetch_topix500()
+        if df is not None:
+            return df, "JPX TOPIX New Index Series constituents file (live, Core30+Large70+Mid400)"
+        # fetch_topix500() itself already logged the required
+        # "[universe] TOPIX 500: constituent list unavailable (...) -
+        # not scanning" line - never built from memory, no fallback list.
+        return None, "JPX TOPIX constituents file unavailable - not scanning"
 
     return None, "Unknown universe"
 

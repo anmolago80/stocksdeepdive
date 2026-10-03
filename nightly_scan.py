@@ -961,6 +961,12 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
     # only logs a warning here, it never blocks this or any other scan.
     if universe == "All Ordinaries":
         scanner_engine.verify_au_index_containment(log=log)
+    # Stage 1 Japan, Commit B (3 Oct 2026, Director-directed): logs the
+    # Nikkei 225 / TOPIX 500 overlap count whenever either is scanned -
+    # informational only, no subset guard (these two aren't a
+    # containment pair, unlike the ASX chain above).
+    if universe in ("Nikkei 225", "TOPIX 500"):
+        scanner_engine.log_nikkei_topix_overlap(log=log)
     pool_df, source = scanner_engine.get_universe_pool(country, universe)
     # Commit L (21 Sep 2026, owner-reported): sector-universe filter
     # health, tracked here - nightly-only, never on a web request, since

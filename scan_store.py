@@ -28,7 +28,10 @@ from datetime import datetime, timezone
 # makes the same decision the same way - see that function's own
 # docstring for the full "default DENY unless explicitly allowed" list
 # of readers this task's own report names.
-_DEFAULT_PRIVATE_UNIVERSES = "FTSE 100, FTSE 250, TSX 60, TSX Composite"
+# Stage 1 Japan, Commit B (3 Oct 2026, Director-directed): Nikkei 225/
+# TOPIX 500 added to the code default - every Stage 1b privacy rule
+# applies to them unchanged (see is_private_universe()'s own docstring).
+_DEFAULT_PRIVATE_UNIVERSES = "FTSE 100, FTSE 250, TSX 60, TSX Composite, Nikkei 225, TOPIX 500"
 
 
 def _private_universe_set():

@@ -140,17 +140,25 @@ MARKET_US = "US"
 # are private - see this task's own report for that consequence.
 MARKET_UK = "UK"
 MARKET_TSX = "TSX"
+# Stage 1 Japan, Commit B - same idle-while-private consequence as
+# MARKET_UK/MARKET_TSX above: Nikkei 225 is private by default and
+# tickers_for_market() is deliberately left at default deny, so this
+# window samples an empty roster until Andrew opens the universe up.
+MARKET_JP = "JP"
 
 _MARKET_UNIVERSE = {
     MARKET_ASX: "ASX 200", MARKET_US: "S&P 500",
     MARKET_UK: "FTSE 100", MARKET_TSX: "TSX Composite",
+    MARKET_JP: "Nikkei 225",
 }
 _MARKET_TZ = {
     MARKET_ASX: ZoneInfo("Australia/Sydney"), MARKET_US: ZoneInfo("America/New_York"),
     MARKET_UK: ZoneInfo("Europe/London"), MARKET_TSX: ZoneInfo("America/Toronto"),
+    MARKET_JP: ZoneInfo("Asia/Tokyo"),
 }
 _MARKET_CURRENCY_FALLBACK = {
     MARKET_ASX: "AUD", MARKET_US: "USD", MARKET_UK: "GBP", MARKET_TSX: "CAD",
+    MARKET_JP: "JPY",
 }
 
 # Same pacing as nightly_scan.py's own sector/attention top-up passes -
@@ -205,6 +213,20 @@ _MARKET_WINDOW = {
     MARKET_US: (WINDOW_START_HOUR, 0, WINDOW_END_HOUR, 0),
     MARKET_UK: (8, 0, 16, 30),
     MARKET_TSX: (WINDOW_START_HOUR, 0, WINDOW_END_HOUR, 0),
+    # Stage 1 Japan, Commit B (owner-specified): 09:00-15:30 Asia/Tokyo,
+    # the TSE's own cash-session hours - see _MARKET_LUNCH_BREAK below
+    # for the midday close this market (uniquely, among these markets)
+    # observes.
+    MARKET_JP: (9, 0, 15, 30),
+}
+
+# Stage 1 Japan, Commit B: the TSE's own midday trading halt, in the
+# same (start_hour, start_minute, end_hour, end_minute) shape as
+# _MARKET_WINDOW above - is_due_now() treats a market with no entry
+# here (every market except MARKET_JP today) as having no break at
+# all.
+_MARKET_LUNCH_BREAK = {
+    MARKET_JP: (11, 30, 12, 30),
 }
 
 
@@ -221,14 +243,18 @@ def _get_info_field(info, *keys):
 
 
 def is_due_now(market, now=None):
-    """True if `market` (MARKET_ASX/MARKET_US/MARKET_UK/MARKET_TSX) is
-    inside today's sampling window in ITS OWN local time - a weekday,
-    and local time within `_MARKET_WINDOW[market]` (minute-resolution,
-    needed for the UK's own :30 close). `now` is injectable (UTC or any
-    tz-aware datetime) for testing; defaults to the real current time.
-    Pure - no I/O, no state - the scheduler's own state-file date guard
-    (mirroring every other daily job in scheduler_engine.py) is what
-    actually prevents firing twice in one day."""
+    """True if `market` (MARKET_ASX/MARKET_US/MARKET_UK/MARKET_TSX/
+    MARKET_JP) is inside today's sampling window in ITS OWN local
+    time - a weekday, local time within `_MARKET_WINDOW[market]`
+    (minute-resolution, needed for the UK's own :30 close), and NOT
+    inside `_MARKET_LUNCH_BREAK[market]` if that market has one
+    (Stage 1 Japan, Commit B - the TSE's own midday trading halt;
+    every other market has no entry there and so has no break at
+    all). `now` is injectable (UTC or any tz-aware datetime) for
+    testing; defaults to the real current time. Pure - no I/O, no
+    state - the scheduler's own state-file date guard (mirroring every
+    other daily job in scheduler_engine.py) is what actually prevents
+    firing twice in one day."""
     now = now or datetime.now(timezone.utc)
     local = now.astimezone(_MARKET_TZ[market])
     if local.weekday() >= 5:  # Sat/Sun
@@ -237,7 +263,16 @@ def is_due_now(market, now=None):
     minutes_now = local.hour * 60 + local.minute
     start = start_hour * 60 + start_minute
     end = end_hour * 60 + end_minute
-    return start <= minutes_now < end
+    if not (start <= minutes_now < end):
+        return False
+    break_window = _MARKET_LUNCH_BREAK.get(market)
+    if break_window:
+        b_start_h, b_start_m, b_end_h, b_end_m = break_window
+        b_start = b_start_h * 60 + b_start_m
+        b_end = b_end_h * 60 + b_end_m
+        if b_start <= minutes_now < b_end:
+            return False
+    return True
 
 
 def tickers_for_market(market):
@@ -869,3 +904,13 @@ def run_tsx_recorder(log=print):
     _fetch_quotes_for_market's own gate). Same private-universe idle
     consequence as run_uk_recorder() above, via TSX Composite."""
     _record_market(MARKET_TSX, log=log)
+
+
+def run_jp_recorder(log=print):
+    """scheduler_engine.py entry point for the Tokyo-local sampling
+    slot (Stage 1 Japan, Commit B), via Yahoo - Alpaca only covers
+    MARKET_US. Same private-universe idle consequence as run_uk_
+    recorder() above, via Nikkei 225. is_due_now(MARKET_JP, ...)'s own
+    09:00-15:30 window already skips the 11:30-12:30 lunch break (see
+    _MARKET_LUNCH_BREAK) - nothing extra needed here."""
+    _record_market(MARKET_JP, log=log)

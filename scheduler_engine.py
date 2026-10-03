@@ -450,7 +450,10 @@ _DEFAULT_NIGHTLY_UNIVERSES = (
     "S&P 500 Dividend Aristocrats:fri, Russell 2000:sat, "
     # Stage 1b - private universes (see scan_store.is_private_universe()).
     # Every existing entry above is unchanged.
-    "FTSE 100:sun, FTSE 250:sun, TSX 60:tue, TSX Composite:tue"
+    "FTSE 100:sun, FTSE 250:sun, TSX 60:tue, TSX Composite:tue, "
+    # Stage 1 Japan, Commit B - also private. Every entry above
+    # (Stage 1b's own included) is unchanged.
+    "Nikkei 225:mon, TOPIX 500:fri"
 )
 
 _WEEKDAY_ABBR = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
@@ -1533,6 +1536,15 @@ def _run_quote_recorder_tsx(log):
     run_tsx_recorder()'s own docstring."""
     import quote_recorder
     quote_recorder.run_tsx_recorder(log=log)
+
+
+def _run_quote_recorder_jp(log):
+    """Tokyo-local mid-session quote sampler (Stage 1 Japan, Commit B),
+    via Yahoo - see _run_quote_recorder_asx above, same contract, same
+    module. Records 0 tickers while Nikkei 225 stays private - see
+    quote_recorder.run_jp_recorder()'s own docstring."""
+    import quote_recorder
+    quote_recorder.run_jp_recorder(log=log)
 
 
 def _mark_top100_pending(scan_day, finished_at, reason):
@@ -3120,6 +3132,36 @@ def _loop(log):
                                 _release_job_lock("quote_recorder_tsx")
                         else:
                             log("[scheduler] TSX quote recorder skipped - another process "
+                                "already holds the lock")
+
+                # Stage 1 Japan, Commit B: Tokyo window (09:00-15:30
+                # Asia/Tokyo, skipping the 11:30-12:30 lunch break - see
+                # quote_recorder.is_due_now()/_MARKET_LUNCH_BREAK), via
+                # Yahoo. Same idle-while-private consequence as the UK/
+                # TSX blocks above, via Nikkei 225.
+                if (quote_recorder is not None
+                        and quote_recorder.is_due_now(quote_recorder.MARKET_JP, now=now)
+                        and state.get("last_quote_recorder_jp_date") != today):
+                    attempts = state.get("quote_recorder_jp_attempts", {})
+                    n_today = attempts.get(today, 0)
+                    if n_today < _DAILY_JOB_RETRY_CAP:
+                        if _acquire_job_lock("quote_recorder_jp", log):
+                            try:
+                                state = _load_state()
+                                state["quote_recorder_jp_attempts"] = {today: n_today + 1}
+                                _save_state(state)
+                                log(f"[scheduler] starting JP quote recorder "
+                                    f"[attempt {n_today + 1}/{_DAILY_JOB_RETRY_CAP} today]")
+                                _record_job("quote_recorder_jp", log, _run_quote_recorder_jp)
+                                state = _load_state()
+                                state["last_quote_recorder_jp_date"] = today
+                                _save_state(state)
+                            except Exception as e:
+                                log(f"[scheduler] JP quote recorder failed: {e}")
+                            finally:
+                                _release_job_lock("quote_recorder_jp")
+                        else:
+                            log("[scheduler] JP quote recorder skipped - another process "
                                 "already holds the lock")
 
                 # Mega-batch Part 10: nightly off-site DB backup - same

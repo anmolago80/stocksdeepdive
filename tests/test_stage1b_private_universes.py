@@ -333,9 +333,17 @@ for u, cadence in _before_map.items():
 _new_entries = {u: c for u, c in _after_map.items() if u not in _before_map}
 for u, cadence in _new_entries.items():
     print(f"    {u:28s} {'(new)':8s} {cadence}")
-assert _new_entries == {
+# Containment, not exact equality: Stage 1 Japan's own later Commit B
+# legitimately adds two more entries (Nikkei 225:mon, TOPIX 500:fri) on
+# top of this stage's own 4 - this check's own job is only to confirm
+# THIS stage's 4 entries are present with the right cadence and that
+# nothing pre-existing changed, not that nothing else was ever added
+# after this stage shipped.
+_stage1b_entries = {
     "FTSE 100": "sun", "FTSE 250": "sun", "TSX 60": "tue", "TSX Composite": "tue",
-}, _new_entries
+}
+for u, cadence in _stage1b_entries.items():
+    assert _new_entries.get(u) == cadence, (u, cadence, _new_entries.get(u))
 print("[T7_schedule] every pre-existing entry's cadence is unchanged; the 4 new "
       "entries land on sun (FTSE)/tue (TSX) exactly as specified OK")
 
