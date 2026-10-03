@@ -74,6 +74,7 @@ import tempfile
 
 import build_compounder_data
 import capm_engine
+import currency_format
 import fcf_valuation_engine
 import fundamentals_data
 import resolver_engine
@@ -4268,13 +4269,15 @@ def _build_fair_value(bundle, ticker, dcf_result, canonical_dcf_result=None):
         if normalized_eps.get("source") == "median5_clean" and normalized_eps.get("distorted_years"):
             _years_n = len(normalized_eps["distorted_years"])
             _raw_txt = (
-                f"${normalized_eps['raw']:.2f}" if normalized_eps.get("raw") is not None else "n/a"
+                currency_format.format_money(normalized_eps["raw"], ticker, decimals=2)
+                if normalized_eps.get("raw") is not None else "n/a"
             )
+            _used_txt = currency_format.format_money(_neps_value, ticker, decimals=2)
             valuation_inputs["pe_trailing"].append({
                 "label": "EPS Basis",
                 "value": (
                     f"Normalised - {_years_n} year{'s' if _years_n != 1 else ''} distorted by "
-                    f"one-off items; using ${_neps_value:.2f} (raw {_raw_txt})"
+                    f"one-off items; using {_used_txt} (raw {_raw_txt})"
                 ),
                 "format": "raw",
             })

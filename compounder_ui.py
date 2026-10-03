@@ -39,6 +39,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+import currency_format
 import i18n
 import quote_recorder
 import quote_snapshot_store
@@ -318,7 +319,14 @@ def _cp_clean_comment(text):
     return "\n\n".join(parts)
 
 
-def _cp_format(value, fmt):
+def _cp_format(value, fmt, ticker=None):
+    """Lists & display Commit 5 (3 Oct 2026, Director-directed): `ticker`
+    is optional and additive - every pre-existing call site that omits
+    it keeps today's bare "$"/2dp "cur" formatting byte-identical (USD/
+    AUD tickers never pass it either, same reason). Callers that DO know
+    which company a "cur" value belongs to pass `ticker` so a GBP/CAD/
+    JPY figure shows its own currency symbol instead of an ambiguous
+    "$" - see currency_format.format_money()."""
     if value is None:
         return "N/A"
     if fmt == "pct":
@@ -326,6 +334,8 @@ def _cp_format(value, fmt):
     if fmt == "x":
         return f"{value:,.2f}x"
     if fmt == "cur":
+        if ticker is not None:
+            return currency_format.format_money(value, ticker)
         return f"${value:,.0f}" if abs(value) >= 1000 else f"${value:,.2f}"
     if fmt == "raw":
         # A pre-formatted display string (e.g. the DCF's growth-fade
@@ -501,7 +511,7 @@ def _cp_year_bar_chart(ticker, series, key, title, yaxis_title, fmt="num", color
         return None
     years = list(reversed(entry["years"]))
     values = list(reversed(entry["values"]))
-    text = [_cp_format(v, fmt) for v in values]
+    text = [_cp_format(v, fmt, ticker=ticker) for v in values]
     fig = go.Figure(go.Bar(x=years, y=values, marker_color=color, text=text, textposition="outside"))
     fig.update_layout(
         title=title, height=300, showlegend=False,
@@ -823,7 +833,8 @@ def _cp_valuation_methods_chart(ticker, valuation_methods):
         return None, []
     fig = go.Figure(go.Bar(
         x=labels, y=values, marker_color=colors,
-        text=[f"${v:,.2f}" for v in values], textposition="outside",
+        text=[currency_format.format_money(v, ticker, decimals=2) for v in values],
+        textposition="outside",
     ))
     _method_vals = [v for (k, _), v in zip(used, values) if k != "price"]
     if len(_method_vals) >= 2:
@@ -837,7 +848,10 @@ def _cp_valuation_methods_chart(ticker, valuation_methods):
         # sign that one dropped out.
         fig.add_hline(
             y=_avg, line_dash="dash", line_color="#e6edf5", line_width=1.5,
-            annotation_text=f"Average of {len(_method_vals)} methods: ${_avg:,.2f}",
+            annotation_text=(
+                f"Average of {len(_method_vals)} methods: "
+                f"{currency_format.format_money(_avg, ticker, decimals=2)}"
+            ),
             annotation_position="top left",
             annotation_font=dict(size=12, color="#e6edf5"),
         )
@@ -858,10 +872,10 @@ def _cp_render_valuation_inputs(ticker, used, valuation_inputs, valuation_method
         with col:
             st.markdown(f"<div style='text-align:center;font-size:12px;font-weight:600;color:#aebfd4;'>{label}</div>", unsafe_allow_html=True)
             lines = [] if key == "price" else [
-                (f"Intrinsic Value: {_cp_format(method_values.get(key), 'cur')}", False)
+                (f"Intrinsic Value: {_cp_format(method_values.get(key), 'cur', ticker=ticker)}", False)
             ]
             for item in entry.get(key, []):
-                text = f"{item['label']}: {_cp_format(item['value'], item['format'])}"
+                text = f"{item['label']}: {_cp_format(item['value'], item['format'], ticker=ticker)}"
                 lines.append((text, bool(item.get("flagged"))))
             if lines:
                 # Flagged lines (e.g. a growth rate that hit its cap) render
@@ -887,7 +901,7 @@ def _cp_render_valuation_inputs(ticker, used, valuation_inputs, valuation_method
 # wherever it's called from.
 # -----------------------------------
 
-def band_gauge(label, value, fmt, thresholds, flagged=False, comment=None):
+def band_gauge(label, value, fmt, thresholds, flagged=False, comment=None, ticker=None):
     """One metric: name (red * when flagged), a thin colour-banded strip
     with a white marker at the value's position (clamped 2-98% so it's
     always visible even at an extreme reading), the formatted value below
@@ -942,7 +956,7 @@ def band_gauge(label, value, fmt, thresholds, flagged=False, comment=None):
         "width:3px;margin-left:-1.5px;background:#ffffff;'></div></div>"
         "<div style='display:flex;justify-content:space-between;align-items:baseline;'>"
         "<span style='font-family:ui-monospace,Menlo,SFMono-Regular,monospace;"
-        f"font-size:14px;font-weight:700;color:{value_color};'>{_cp_format(value, fmt)}</span>"
+        f"font-size:14px;font-weight:700;color:{value_color};'>{_cp_format(value, fmt, ticker=ticker)}</span>"
         f"{verdict_html}</div></div>",
         unsafe_allow_html=True,
     )
@@ -1173,6 +1187,7 @@ def render_section(sections, ticker, section_label, gate=None, lang="en"):
                 band_gauge(
                     m["label"], value, m["format"], m["thresholds"],
                     flagged=bool(m.get("flagged")), comment=m.get("comment"),
+                    ticker=ticker,
                 )
 
     if plain:
@@ -1203,7 +1218,7 @@ def render_section(sections, ticker, section_label, gate=None, lang="en"):
                 if flagged else None
             )
             with cols[i % 4]:
-                st.metric(label, _cp_format(value, m["format"]), help=help_text)
+                st.metric(label, _cp_format(value, m["format"], ticker=ticker), help=help_text)
                 with st.expander("What this measures", expanded=False):
                     _cp_note(_cp_clean_comment(m["comment"]), size="12.5px")
 

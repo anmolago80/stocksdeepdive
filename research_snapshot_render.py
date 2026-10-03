@@ -103,6 +103,7 @@ import os
 import re
 
 import blog_render
+import currency_format
 import snapshot_store
 
 e = html.escape
@@ -233,9 +234,18 @@ def ticker_for_slug(slug, data):
     return slug_map(data).get(slug)
 
 
-def _fmt(value, fmt):
+def _fmt(value, fmt, ticker=None):
     """Identical to compounder_ui._cp_format() - see module docstring for
-    why this is duplicated rather than imported."""
+    why this is duplicated rather than imported. Lists & display Commit
+    5 (3 Oct 2026, Director-directed): `ticker` is optional and
+    additive, same as that function's own matching change - omitted
+    (every pre-existing call), the bare "$"/2dp "cur" formatting is
+    byte-identical to before; passed, a GBP/CAD/JPY ticker's "cur"
+    value shows its own currency symbol via currency_format.
+    format_money() instead of an ambiguous "$". currency_format.py is
+    pure-Python (no streamlit/plotly), so importing it here doesn't
+    pull the heavy dependencies this module's own docstring says it
+    deliberately avoids."""
     if value is None:
         return None
     if fmt == "text":
@@ -245,6 +255,8 @@ def _fmt(value, fmt):
     if fmt == "x":
         return f"{value:,.2f}x"
     if fmt == "cur":
+        if ticker is not None:
+            return currency_format.format_money(value, ticker)
         return f"${value:,.0f}" if abs(value) >= 1000 else f"${value:,.2f}"
     return f"{value:,.2f}"
 
@@ -256,7 +268,7 @@ def _section_html(section_label, section, ticker, lang):
         val = (m.get("values") or {}).get(ticker)
         if val is None:
             continue
-        shown = _fmt(val, m.get("format") or "num")
+        shown = _fmt(val, m.get("format") or "num", ticker=ticker)
         if shown is None:
             continue
         rows.append(f"<tr><td>{e(m.get('label') or m.get('key') or '')}</td><td>{e(shown)}</td></tr>")
@@ -371,7 +383,7 @@ def public_sections_data(ticker, data, lang="en"):
             val = (m.get("values") or {}).get(ticker)
             if val is None:
                 continue
-            shown = _fmt(val, m.get("format") or "num")
+            shown = _fmt(val, m.get("format") or "num", ticker=ticker)
             if shown is None:
                 continue
             rows.append({"label": m.get("label") or m.get("key") or "", "value": shown})

@@ -69,6 +69,7 @@ from datetime import datetime, timezone, date
 import pandas as pd
 import requests
 
+import currency_format
 import results_store
 import email_auth
 import i18n
@@ -126,23 +127,47 @@ METRIC_ORDER = ["value_score", "quality", "moat", "mos_pct",
                  "intrinsic_value", "eps_ttm", "fcf_base"]
 
 
-def _delta_text(kind, delta):
+def _delta_text(kind, delta, ticker=None):
     sign = "+" if delta >= 0 else ""
     if kind in ("pts", "pct"):
         return f"{sign}{delta:.1f}pts"
     if kind == "money":
+        if ticker is not None:
+            return sign + currency_format.format_money(delta, ticker, decimals=2)
         return f"{sign}${delta:,.2f}"
     if kind == "money_compact":
         return f"{sign}{fmt_money_compact(delta)}"
     return f"{sign}{delta:.1f}"
 
 
-def what_moved(before, after, top_n=5):
+def fmt_metric(meta, v, ticker=None):
+    """Lists & display Commit 5 (3 Oct 2026, Director-directed): the
+    shared entry point for formatting one METRIC_META value - used by
+    what_moved() below and by app.py's before/after card (both places
+    this site renders a results-day metric). `ticker` is optional and
+    additive: omitted, this is exactly `meta["fmt"](v)` (byte-identical
+    USD/AUD formatting, same as before this commit); passed, a "money"-
+    kind metric (intrinsic_value/eps_ttm) for a GBP/CAD/JPY ticker shows
+    its own currency symbol via currency_format.format_money() instead
+    of an ambiguous "$". fcf_base ("money_compact") is deliberately left
+    alone here - it's in the ticker's raw REPORTING currency, not its
+    listing currency (see _reanalyze()'s own B2.10 comment), a different
+    axis currency_format.py doesn't model; its existing fcf_currency
+    text-suffix convention (the `_ccy_sfx`/`_ccy_suffix` below) stays
+    the only currency label for that one metric."""
+    if ticker is not None and meta["kind"] == "money":
+        return currency_format.format_money(v, ticker, decimals=2)
+    return meta["fmt"](v)
+
+
+def what_moved(before, after, top_n=5, ticker=None):
     """Ranked (largest absolute % change first) list of
     {"metric","label","before","after","delta","text"} for every metric
     present in BOTH before and after (a metric with only one side known
     can't have "moved" - see module docstring's data-source caveat).
-    Pure function, no I/O - directly unit-testable."""
+    Pure function, no I/O - directly unit-testable. `ticker` is optional
+    and additive (Lists & display Commit 5, 3 Oct 2026) - see
+    fmt_metric()'s own docstring."""
     items = []
     for key in METRIC_ORDER:
         meta = METRIC_META[key]
@@ -164,8 +189,9 @@ def what_moved(before, after, top_n=5):
         items.append({
             "metric": key, "label": meta["label"], "before": b, "after": a,
             "delta": delta,
-            "text": (f"{meta['label']} moved from {meta['fmt'](b)}{_ccy_sfx} to "
-                     f"{meta['fmt'](a)}{_ccy_sfx} ({_delta_text(meta['kind'], delta)})"),
+            "text": (f"{meta['label']} moved from {fmt_metric(meta, b, ticker)}{_ccy_sfx} to "
+                     f"{fmt_metric(meta, a, ticker)}{_ccy_sfx} "
+                     f"({_delta_text(meta['kind'], delta, ticker)})"),
             "_rank": rank,
         })
     items.sort(key=lambda it: it["_rank"], reverse=True)
@@ -408,7 +434,7 @@ def _reanalyze(ticker, report_date, log=print):
         "eps_ttm": eps_after, "fcf_base": fcf_after,
         "fcf_currency": fcf_currency,
     }
-    moved = what_moved(before, after)
+    moved = what_moved(before, after, ticker=ticker)
     stale = _statements_stale(cashflow_df, report_date)
     return before, after, moved, stale
 

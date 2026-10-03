@@ -104,6 +104,7 @@ def _section_why(label):
             return _es
     return SECTION_WHY_CAPTIONS[label]
 import auto_compounder_engine
+import currency_format
 import fundamentals_data
 import checklist_store
 import site_content
@@ -3236,9 +3237,9 @@ def _render_results_day_card(ticker):
         _ccy_suffix = f" {_fcf_ccy}" if _fcf_ccy else ""
         rows_html.append(
             "<tr>" + _td(meta["label"])
-            + _td((meta["fmt"](b) + _ccy_suffix) if b is not None else _na)
-            + _td((meta["fmt"](a) + _ccy_suffix) if a is not None else _na)
-            + _td(_results_delta_cell(delta, kind=meta["kind"]))
+            + _td((results_engine.fmt_metric(meta, b, ticker) + _ccy_suffix) if b is not None else _na)
+            + _td((results_engine.fmt_metric(meta, a, ticker) + _ccy_suffix) if a is not None else _na)
+            + _td(_results_delta_cell(delta, kind=meta["kind"], ticker=ticker))
             + "</tr>"
         )
     if not rows_html:
@@ -12650,18 +12651,22 @@ def _insider_cell(ticker, value):
             f"{'+' if value >= 0 else '-'}{ccy}{abs(value) / 1000:,.0f}k</span>")
 
 
-def _results_delta_cell(delta, kind="pts"):
+def _results_delta_cell(delta, kind="pts", ticker=None):
     """The "Change" column of the results-day before/after card (Services
     batch Part 4) - same green/red-by-sign convention as _signed_cell,
     but unit-aware (kind from results_engine.METRIC_META) so a $ metric
     reads as a dollar delta and a points/percent metric reads as "pts",
-    instead of _signed_cell's fixed "%" suffix."""
+    instead of _signed_cell's fixed "%" suffix. `ticker` is optional and
+    additive (Lists & display Commit 5, 3 Oct 2026): omitted, the
+    "money" branch is byte-identical bare-"$" formatting; passed, a
+    GBP/CAD/JPY ticker's delta shows its own currency symbol."""
     if delta is None:
         return "<span style='color:#8aa0b8;'>-</span>"
     c = _BAR_GREEN if delta > 0 else (_BAR_RED if delta < 0 else "#8aa0b8")
     sign = "+" if delta >= 0 else ""
     if kind == "money":
-        text = f"{sign}${delta:,.2f}"
+        text = (sign + currency_format.format_money(delta, ticker, decimals=2)
+                if ticker is not None else f"{sign}${delta:,.2f}")
     elif kind == "money_compact":
         text = f"{sign}{results_engine.fmt_money_compact(delta)}"
     else:  # "pts"/"pct" - both point-scale deltas on this card

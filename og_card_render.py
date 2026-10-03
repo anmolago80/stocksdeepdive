@@ -32,6 +32,8 @@ from datetime import datetime, timezone
 
 from PIL import Image, ImageDraw, ImageFont
 
+import currency_format
+
 CARD_W, CARD_H = 1200, 630
 
 FOOTER_TEXT = "Every input shown · described calculations, not advice · stocksdeepdive.com"
@@ -137,8 +139,20 @@ def _fmt_date(generated_at):
         return str(generated_at)[:10]
 
 
-def _fmt_money(v):
-    return f"${v:,.2f}" if isinstance(v, (int, float)) else "–"
+def _fmt_money(v, ticker=None):
+    """Lists & display Commit 5 (3 Oct 2026, Director-directed): `ticker`
+    is optional and additive - omitted, byte-identical bare-"$" 2dp
+    formatting as before (every USD/AUD card). Passed, a GBP/CAD/JPY
+    ticker's card shows its own currency symbol via currency_format.
+    format_money() - that module makes no network call either (its
+    trading_currency_for(ticker) call below passes no `info`, so it
+    falls straight to the ticker-suffix table, never a live fetch),
+    keeping this module's own "NO network calls" rule intact."""
+    if not isinstance(v, (int, float)):
+        return "–"
+    if ticker is not None:
+        return currency_format.format_money(v, ticker, decimals=2)
+    return f"${v:,.2f}"
 
 
 def render_ticker_card(ticker, public, generated_at, moat=None):
@@ -188,8 +202,8 @@ def render_ticker_card(ticker, public, generated_at, moat=None):
     fair_value = public.get("intrinsic_value")
     value_score = public.get("value_score")
     quality = public.get("quality")
-    _kv(56, "Price", _fmt_money(price), _TEXT)
-    _kv(322, "Fair value", _fmt_money(fair_value), _TEAL)
+    _kv(56, "Price", _fmt_money(price, ticker=ticker), _TEXT)
+    _kv(322, "Fair value", _fmt_money(fair_value, ticker=ticker), _TEAL)
     _kv(588, "Value score",
         f"{value_score:.1f}" if isinstance(value_score, (int, float)) else "–", _GREEN)
     _kv(854, "Quality",
@@ -299,7 +313,7 @@ def render_research_ticker_card(ticker, company_name, fair_value, generated_at=N
 
     if isinstance(fair_value, (int, float)):
         d.text((56, 340), "Fair value (hand-built research)", font=_font(24), fill=_MUTED)
-        d.text((56, 366), _fmt_money(fair_value), font=_font(64), fill=_TEAL)
+        d.text((56, 366), _fmt_money(fair_value, ticker=ticker), font=_font(64), fill=_TEAL)
 
     d.text((56, CARD_H - 46), FOOTER_TEXT, font=_font(22), fill=_FAINT)
     return _to_png_bytes(img)
