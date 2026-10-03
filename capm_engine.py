@@ -667,6 +667,23 @@ _BOE_IADB_CSV_URL = (
 )
 _BOE_TIMEOUT_SECONDS = 6
 
+# Stage 1a-fix (3 Oct 2026, Director-directed, F4): live evidence showed
+# "[capm] GBP risk-free 4.50% (fallback - HTTP 403)" - the Bank of
+# England's own IADB endpoint rejects a request with no User-Agent/
+# Accept header (requests' own bare default, "python-requests/x.x",
+# reads as a bot to a lot of ordinary web servers, the BoE's own
+# apparently included), same class of fix as any other "worked in a
+# browser, 403'd from a bare script" case. A normal desktop-browser
+# User-Agent + Accept is enough; the fallback (0.045) and this
+# function's own log line format are both unchanged.
+_BOE_REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/csv,text/plain,*/*",
+}
+
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_uk_risk_free_rate_live():
@@ -690,7 +707,9 @@ def get_uk_risk_free_rate_live():
     fallback_rate = GBP_CAD_RISK_FREE_FALLBACK.get("GBP", DEFAULT_RISK_FREE_FALLBACK)
     reason = None
     try:
-        resp = requests.get(_BOE_IADB_CSV_URL, timeout=_BOE_TIMEOUT_SECONDS)
+        resp = requests.get(
+            _BOE_IADB_CSV_URL, timeout=_BOE_TIMEOUT_SECONDS, headers=_BOE_REQUEST_HEADERS
+        )
         if resp.status_code != 200:
             reason = f"HTTP {resp.status_code}"
         else:
@@ -731,9 +750,18 @@ def get_uk_risk_free_rate_live():
 # Bank of Canada Valet API, series BD.CDN.10YR.DQ.YLD - the Director's
 # own suggested 10-year Government of Canada bond yield series. Returns
 # JSON: {"observations": [{"d": "YYYY-MM-DD", "BD.CDN.10YR.DQ.YLD":
-# {"v": "3.25"}}, ...]}, oldest first - ?recent=5 keeps the response tiny
-# (5 most recent observations) while still tolerating the odd published
-# gap (a holiday with no observation that day).
+# {"v": "3.25"}}, ...]} - ?recent=5 keeps the response tiny (5 most
+# recent observations) while still tolerating the odd published gap (a
+# holiday with no observation that day).
+#
+# Stage 1a-fix (3 Oct 2026, Director-directed, F5): get_ca_risk_free_
+# rate_live() below used to ASSUME this array comes back oldest-first
+# and just take observations[-1] (via reversed()'s first element) -
+# live evidence showed a 9-day-old reading being used on 3 Oct (the
+# log line dated 2026-09-24), meaning that assumption was wrong for
+# the real Valet response. Fixed to pick by each observation's own "d"
+# date field instead of by array position - correct regardless of
+# which order Valet actually returns them in.
 _BOC_VALET_URL = (
     "https://www.bankofcanada.ca/valet/observations/BD.CDN.10YR.DQ.YLD/json?recent=5"
 )
@@ -749,7 +777,13 @@ def get_ca_risk_free_rate_live():
     live-fetch functions above - "live" or "default" (the flagged
     GBP_CAD_RISK_FREE_FALLBACK["CAD"] constant). Same UK_CA_RISK_FREE_
     MIN/MAX sanity band and logging format as get_uk_risk_free_rate_
-    live() - see that function's own docstring."""
+    live() - see that function's own docstring.
+
+    Stage 1a-fix (3 Oct 2026, Director-directed, F5): picks the
+    chronologically MOST RECENT observation by its own "d" date field,
+    never by array position - see this section's own module comment for
+    why the old position-based pick (reversed()[0], i.e. observations[
+    -1]) was wrong."""
     fallback_rate = GBP_CAD_RISK_FREE_FALLBACK.get("CAD", DEFAULT_RISK_FREE_FALLBACK)
     reason = None
     try:
@@ -759,27 +793,32 @@ def get_ca_risk_free_rate_live():
         else:
             data = resp.json()
             observations = data.get("observations") or []
-            found_value = False
-            # Most recent first - Valet's own "recent=N" param already
-            # returns the N most recent observations, oldest first, so
-            # scan from the end for the first usable numeric value, same
-            # stance as the UK/AU parsers above.
-            for obs in reversed(observations):
+            # Find the observation with the LATEST "d" date that also
+            # carries a usable numeric value - date-based, never
+            # position-based (see this function's own docstring/this
+            # section's module comment for why).
+            best_date, best_rate = None, None
+            for obs in observations:
+                date_str = obs.get("d")
                 cell = (obs.get(_BOC_SERIES_KEY) or {}).get("v")
                 try:
                     raw = float(cell)
                 except (TypeError, ValueError):
                     continue
-                found_value = True
-                rate = raw / 100.0
-                if UK_CA_RISK_FREE_MIN < rate < UK_CA_RISK_FREE_MAX:
-                    _growth_logger.warning(
-                        "[capm] CAD risk-free %.2f%% (BoC Valet %s, as at %s)",
-                        rate * 100, _BOC_SERIES_KEY, obs.get("d", "unknown date"),
-                    )
-                    return rate, "live"
-                break
-            reason = "no in-band value" if found_value else "no usable observation found"
+                if not date_str:
+                    continue
+                if best_date is None or date_str > best_date:
+                    best_date, best_rate = date_str, raw / 100.0
+            if best_rate is None:
+                reason = "no usable observation found"
+            elif UK_CA_RISK_FREE_MIN < best_rate < UK_CA_RISK_FREE_MAX:
+                _growth_logger.warning(
+                    "[capm] CAD risk-free %.2f%% (BoC Valet %s, as at %s)",
+                    best_rate * 100, _BOC_SERIES_KEY, best_date,
+                )
+                return best_rate, "live"
+            else:
+                reason = "no in-band value"
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
 

@@ -974,11 +974,28 @@ def _check_price_unit_guard(ticker, info, raw_price_before_divide, log=print):
     can't be trusted, so the caller (get_bundle()) flags the whole
     bundle rather than let a silently-wrong IV/MOS compute on top of it.
 
+    Stage 1a-fix (3 Oct 2026, Director-directed, F2): the log line now
+    also carries shares/mcap/ratio, not just the (price*shares)/mcap
+    ratio under the name "mcap_check" - the live SHEL.L/TSCO.L SUSPECT
+    readings (ratio 0.01, not ~1.00 as expected for a ticker whose own
+    marketCap is already pounds-denominated) needed those raw figures
+    to actually confirm the root cause: get_bundle()'s own call site
+    used to run _overlay_fresh_price() BEFORE this ticker's "_price_
+    quote_unit" marker was set (see get_bundle()'s own comment at its
+    call site), so on a ticker's first-ever fetch the fresh fast_info
+    quote was still in pence when it got multiplied into marketCap,
+    corrupting it to a 100x-too-large pence-scale figure that this
+    guard's OWN price (already correctly divided by then) could never
+    agree with. Fixed by reordering that call site; this log line's
+    extra fields are kept so the next live SUSPECT reading (if any)
+    is self-diagnosing without a follow-up investigation.
+
     Logs exactly one line per normalised ticker, success or failure:
-    "[units] <TICKER> GBp->GBP raw=<raw> price=<normalised> mcap_check=
-    <ratio> ok"/"SUSPECT" - `raw` is the PRE-divide price (what Yahoo
-    actually returned), `price` the post-divide pounds figure, `mcap_
-    check` = (price * shares) / marketCap (1.00 == perfect agreement).
+    "[units] <TICKER> GBp->GBP raw=<raw> price=<normalised>
+    shares=<shares> mcap=<marketCap> ratio=<ratio> ok"/"SUSPECT" -
+    `raw` is the PRE-divide price (what Yahoo actually returned),
+    `price` the post-divide pounds figure, `ratio` = (price * shares) /
+    marketCap (1.00 == perfect agreement).
 
     Returns (price_unit_suspect: bool, reason: str or None). A no-op
     (False, None, nothing logged) when marketCap or sharesOutstanding
@@ -992,15 +1009,108 @@ def _check_price_unit_guard(ticker, info, raw_price_before_divide, log=print):
     if not (isinstance(price, (int, float)) and isinstance(shares, (int, float))
             and isinstance(market_cap, (int, float)) and market_cap > 0 and shares > 0):
         return False, None
-    mcap_check = (price * shares) / market_cap
-    suspect = abs(mcap_check - 1.0) > 0.05
+    ratio = (price * shares) / market_cap
+    suspect = abs(ratio - 1.0) > 0.05
     log(
         f"[units] {ticker} GBp->GBP raw={raw_price_before_divide} price={price:.2f} "
-        f"mcap_check={mcap_check:.2f} {'SUSPECT' if suspect else 'ok'}"
+        f"shares={shares:.0f} mcap={market_cap:.0f} ratio={ratio:.2f} "
+        f"{'SUSPECT' if suspect else 'ok'}"
     )
     if suspect:
         return True, "price unit could not be confirmed"
     return False, None
+
+
+def normalize_pence_quote(ticker, info, history_df=None, dividends=None, log=print):
+    """Stage 1a-fix (3 Oct 2026, Director-directed, F1): the SAME GBp->
+    GBP pence normalisation get_bundle() applies inline to its own
+    bundle (see that function's own call site), exposed here as a
+    public, no-fetch, pure-mutation entry point for every OTHER path in
+    this codebase that reads a raw Yahoo info/.history()/.dividends()
+    quote OUTSIDE get_bundle()'s own pipeline - confirmed live on
+    SHEL.L/TSCO.L: the Deep Dive headline (deep_dive_engine.analyze(),
+    via app.py's get_ticker_info()/get_price_history() - a raw,
+    uncached-by-this-module yfinance fetch, a DIFFERENT path from
+    fundamentals_data.get_bundle()'s own bundle) and nightly_scan.
+    analyze_ticker_lite() (its own standalone tk.info/tk.history() fetch,
+    duplicated rather than imported from app.py - see that function's
+    own docstring) both showed a pence price next to a genuinely-pounds
+    Intrinsic Value, because Stage 1a's own pence fix only ever reached
+    get_bundle()'s bundle, never these two callers' raw fetches. Both
+    now call this immediately after their own raw fetch, before any
+    price/currency-derived computation (current_price, MOS, fear/greed,
+    dividend_ttm, reverse DCF, ...) runs on top of it - see this fix
+    commit's own report for the exact call sites.
+
+    Mutates and returns (info, history_df, dividends, meta):
+      - info: the same mutation _normalize_pence_price_fields()/_check_
+        price_unit_guard() apply inside get_bundle() - price fields
+        /100, currency rewritten to "GBP", trailingEps/forwardEps/
+        bookValue dropped (no statement re-derivation here - unlike
+        get_bundle(), these callers' own cashflow_df-based DCF already
+        converts a GBp ticker's FCF correctly via fcf_valuation_
+        engine's own financialCurrency->trading-currency fx_rate() call,
+        independent of this function; EPS/book value are display-only
+        fields on these two pages, left dropped rather than guessed,
+        same "do not assume" rule as get_bundle()'s own fields).
+      - history_df: a COPY with Open/High/Low/Close/Adj Close divided
+        by 100 (whichever columns are actually present) - same price
+        convention as the plain info fields. None in, None out.
+      - dividends: a COPY of a raw yfinance dividends Series, divided
+        by 100 and validated against info["dividendYield"] the same way
+        _normalize_and_validate_pence_dividends() validates get_
+        bundle()'s own dividend series - cleared to an empty Series on
+        disagreement (dividend_unit_suspect=True). None in, None out.
+      - meta: {"price_quote_unit", "price_unit_suspect",
+        "price_unit_suspect_reason", "dividend_unit_suspect"} - same
+        shape as get_bundle()'s own bundle["meta"].
+
+    A no-op (info/history_df/dividends unchanged, every meta flag
+    False/None) for any ticker whose raw info["currency"] isn't exactly
+    "GBp"/"GBX" - see _is_pence_quoted()'s own docstring - so every
+    existing USD/AUD ticker's Deep Dive headline/nightly scan row is
+    completely unaffected by this function. Never raises - every step
+    already fails safe on missing/malformed data, same philosophy as
+    every other function in this module."""
+    raw_price_for_guard = info.get("currentPrice")
+    info, price_quote_unit = _normalize_pence_price_fields(info)
+
+    meta = {
+        "price_quote_unit": price_quote_unit,
+        "price_unit_suspect": False,
+        "price_unit_suspect_reason": None,
+        "dividend_unit_suspect": False,
+    }
+    if price_quote_unit != "GBp":
+        return info, history_df, dividends, meta
+
+    suspect, reason = _check_price_unit_guard(ticker, info, raw_price_for_guard, log=log)
+    meta["price_unit_suspect"] = suspect
+    meta["price_unit_suspect_reason"] = reason
+
+    if history_df is not None and not history_df.empty:
+        history_df = history_df.copy()
+        for col in ("Open", "High", "Low", "Close", "Adj Close"):
+            if col in history_df.columns:
+                history_df[col] = history_df[col] / 100.0
+
+    if dividends is not None and not dividends.empty:
+        divs_dict = {
+            "dates": [d.isoformat() for d in dividends.index.to_pydatetime()],
+            "amounts": [float(v) for v in dividends.values],
+        }
+        _normalised_dict, dividend_unit_suspect = _normalize_and_validate_pence_dividends(
+            divs_dict, info, log=log
+        )
+        meta["dividend_unit_suspect"] = dividend_unit_suspect
+        if dividend_unit_suspect:
+            dividends = dividends.iloc[0:0]
+            info.pop("dividendRate", None)
+            info.pop("trailingAnnualDividendRate", None)
+        else:
+            dividends = dividends / 100.0
+
+    return info, history_df, dividends, meta
 
 
 def get_bundle(ticker, force_refresh=False):
@@ -1057,31 +1167,49 @@ def get_bundle(ticker, force_refresh=False):
     if statement_years == 0:
         flags.append("no_statements")
 
+    # Stage 1a-fix (3 Oct 2026, Director-directed, F2): GBp->GBP pence
+    # normalisation now runs BEFORE the fresh-price overlay just below -
+    # reordered from Stage 1a's own original sequence (overlay, then
+    # normalise), which is what produced the live SHEL.L/TSCO.L
+    # mcap_check=0.01 bug. Root cause: _overlay_fresh_price() recomputes
+    # info["marketCap"] = fresh_price * shares on EVERY call, and only
+    # divides fresh_price by 100 first when info["_price_quote_unit"]
+    # == "GBp" is ALREADY set - a marker _normalize_pence_price_fields()
+    # itself sets. On a ticker's first-ever fetch (this cold-fetch path,
+    # not the cache-hit path above, which already has the marker from a
+    # prior run), the marker didn't exist yet when the overlay used to
+    # run first, so the overlay multiplied the still-in-pence fresh
+    # quote straight into marketCap - corrupting it to a 100x-too-large
+    # pence-scale figure. The later currentPrice/100 division (old
+    # order: normalise ran AFTER the overlay) fixed the price but never
+    # touched that already-corrupted marketCap (by design - marketCap
+    # is never itself divided, see _PENCE_PRICE_INFO_FIELDS's own
+    # exclusion list), so _check_price_unit_guard()'s price*shares/
+    # marketCap cross-check came out at price/raw_price = 1/100 = 0.01
+    # instead of ~1.00. Normalising FIRST means the marker is already
+    # set by the time the overlay runs, so its own fresh_price/100
+    # branch fires and marketCap gets recomputed from the CORRECT,
+    # already-divided price - exactly as today's T1-T3 fixtures already
+    # expect (those fixtures' own fast_info raises AttributeError, so
+    # _fetch_fresh_price returns None and the overlay never exercises
+    # this path at all - which is why this ordering bug shipped past
+    # Stage 1a's own test suite and only showed up against a real,
+    # live fast_info quote). `raw_price_for_guard` is the PRE-divide
+    # price - .info's own currentPrice, captured before either step
+    # touches it - for the runtime guard's own log line below.
+    raw_price_for_guard = info.get("currentPrice")
+    info, price_quote_unit = _normalize_pence_price_fields(info)
+
     # Same fresh-quote overlay as the cache-hit path above (see
     # _overlay_fresh_price's docstring) - .info's own price/marketCap
     # fields can lag even on a live fetch, so this isn't just a
-    # cache-staleness patch. Moved to run AFTER the statements fetch just
-    # above (was before it) so _shares_outstanding_fallback() has this
-    # ticker's own income statement on hand as a fallback share count
-    # when .info's sharesOutstanding is missing (see that function's
-    # docstring - the CPRT incident) - nothing else here reads `info`
-    # between the old and new call sites, so the reorder is behaviour-
-    # neutral apart from that fallback becoming available.
+    # cache-staleness patch. Runs AFTER the statements fetch (so
+    # _shares_outstanding_fallback() has this ticker's own income
+    # statement on hand - see that function's own docstring, the CPRT
+    # incident) and AFTER pence normalisation (see this block's own
+    # comment just above - the F2 fix).
     info = _overlay_fresh_price(info, tk, income=income)
 
-    # Stage 1a (3 Oct 2026, Director-directed, UK/Canada data layer):
-    # GBp->GBP pence normalisation - see _normalize_pence_price_
-    # fields()'s own docstring. Runs right after the fresh-price overlay
-    # (so the overlaid price is included) and BEFORE the financial/
-    # listing-currency statement conversion just below (so that block's
-    # own `list_ccy` read sees "GBP", not "GBp" - though every consumer
-    # already .upper()s it either way, so this ordering only matters for
-    # this function's own price-value math, not that one's currency-
-    # code comparison). `raw_price_for_guard` is the PRE-divide price,
-    # captured before the mutation, for the runtime guard's own log line
-    # just below.
-    raw_price_for_guard = info.get("currentPrice")
-    info, price_quote_unit = _normalize_pence_price_fields(info)
     price_unit_suspect, price_unit_suspect_reason = (False, None)
     if price_quote_unit == "GBp":
         price_unit_suspect, price_unit_suspect_reason = _check_price_unit_guard(

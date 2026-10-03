@@ -445,21 +445,46 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     if cashflow_df is None:
         cashflow_df = pd.DataFrame()
 
+    # Services batch 3, Part A1 dividend fetch, moved up (was below, see
+    # its own comment just below) so it can go through the Stage 1a-fix
+    # normalisation call together with `info`/`df` - same bare
+    # `tk.dividends` read as before (no retry - a dividend fetch failure
+    # here was never retried pre-fix either), just reordered.
+    try:
+        _div_hist = tk.dividends
+    except Exception:
+        _div_hist = None
+
+    # Stage 1a-fix (3 Oct 2026, Director-directed, F1): this function's
+    # own tk.info/tk.history()/tk.dividends() is a raw, standalone
+    # yfinance fetch (duplicated rather than imported from app.py - see
+    # this module's own docstring on why) - a COMPLETELY SEPARATE path
+    # from fundamentals_data.get_bundle()'s own bundle, which is the
+    # only place Stage 1a's GBp->GBP pence fix actually landed.
+    # fundamentals_data.normalize_pence_quote() applies the SAME
+    # normalisation get_bundle() uses, in place, right here, before
+    # current_price/fear/greed/MOS/reverse-DCF/dividend_ttm are computed
+    # from `info`/`df`/`_div_hist` - see that function's own docstring.
+    # A complete no-op for any non-GBp ticker (every existing USD/AUD
+    # scan row is unaffected).
+    info, df, _div_hist, _price_unit_meta = fundamentals_data.normalize_pence_quote(
+        ticker, info, history_df=df, dividends=_div_hist, log=log
+    )
+
     # Services batch 3, Part A1: dividend headline numbers for the
     # snapshot/API/MCP surfaces (see snapshot_store._PUBLIC_FIELD_MAP).
     # Cheap enough to compute for every caller including the weekly
-    # digest email (one extra `tk.dividends` call; exDividendDate comes
-    # from `info`, already fetched above) - unlike Payout Ratio below,
-    # which needs a full fundamentals bundle and is deliberately kept out
-    # of this shared function (see _attach_dividend_payout's docstring).
-    # Same trailing-365-day/next-future-exDividendDate logic as
-    # portfolio_charts_engine.dividend_ttm_per_share()/
-    # fetch_next_ex_dividend() - duplicated rather than imported since
-    # that module is Streamlit-cache-coupled (`@st.cache_data`) and this
-    # function also runs standalone, outside any Streamlit script (see
-    # this module's own docstring).
+    # digest email (exDividendDate comes from `info`, already fetched
+    # above) - unlike Payout Ratio below, which needs a full
+    # fundamentals bundle and is deliberately kept out of this shared
+    # function (see _attach_dividend_payout's docstring). Same
+    # trailing-365-day/next-future-exDividendDate logic as portfolio_
+    # charts_engine.dividend_ttm_per_share()/fetch_next_ex_dividend() -
+    # duplicated rather than imported since that module is Streamlit-
+    # cache-coupled (`@st.cache_data`) and this function also runs
+    # standalone, outside any Streamlit script (see this module's own
+    # docstring).
     try:
-        _div_hist = tk.dividends
         if _div_hist is not None and not _div_hist.empty:
             _div_hist = _div_hist.copy()
             if _div_hist.index.tz is not None:

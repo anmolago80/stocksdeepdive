@@ -164,6 +164,25 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
 
     info = get_ticker_info(ticker)
 
+    # Stage 1a-fix (3 Oct 2026, Director-directed, F1): get_ticker_info()/
+    # get_price_history() are a raw, uncached-by-fundamentals_data
+    # yfinance fetch (app.py's own @st.cache_data wrappers around
+    # yf.Ticker(...).info/.history()) - a COMPLETELY SEPARATE path from
+    # fundamentals_data.get_bundle()'s own bundle, which is the only
+    # place Stage 1a's GBp->GBP pence fix actually landed. Confirmed
+    # live on SHEL.L/TSCO.L: this headline kept showing a raw pence
+    # price (e.g. 3,589.00) next to a genuinely-pounds Intrinsic Value
+    # (75.97), because nothing on THIS path was ever normalised.
+    # fundamentals_data.normalize_pence_quote() applies the SAME GBp->
+    # GBP normalisation get_bundle() uses, in place, right here, before
+    # current_price/fear/greed/MOS/reverse-DCF are computed from `info`/
+    # `df` - see that function's own docstring. A complete no-op for any
+    # non-GBp ticker (every existing USD/AUD Deep Dive view is
+    # unaffected).
+    info, df, _unused_dividends, price_unit_meta = fundamentals_data.normalize_pence_quote(
+        ticker, info, history_df=df
+    )
+
     # Fear/Greed/Activity/Volume Ratio/MA50 - same 3-month-window formulas
     # as the main scan (see app.py's per-ticker loop for the identical
     # logic). This same ma50 also feeds the Trade Filter below, exactly as
@@ -439,6 +458,14 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         "name": info.get("longName") or info.get("shortName") or ticker,
         "currency": info.get("currency") or "-",
         "price": round(current_price, 2),
+        # Stage 1a-fix (3 Oct 2026, Director-directed, F1): pure
+        # passthrough of fundamentals_data.normalize_pence_quote()'s own
+        # meta - diagnostic only, same "list it, don't gate on it"
+        # treatment this fix gives Deep Dive/nightly_scan (unlike the
+        # Compounder View's build_sections(), which already withholds
+        # IV/MOS on this flag - see auto_compounder_engine.py).
+        "price_unit_suspect": bool(price_unit_meta.get("price_unit_suspect")),
+        "price_unit_suspect_reason": price_unit_meta.get("price_unit_suspect_reason"),
 
         "intrinsic_value": round(intrinsic_value, 2) if intrinsic_value > 0 else None,
         "intrinsic_source": intrinsic_src,

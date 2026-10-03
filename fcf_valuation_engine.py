@@ -1642,6 +1642,31 @@ _FX_STATIC_FALLBACK = {
 _fx_cache = {}
 _FX_CACHE_TTL_SECONDS = 1800
 
+# Stage 1a-fix (3 Oct 2026, Director-directed, F6): separate from
+# _fx_cache's own 30-minute fetch TTL above - this tracks, per pair,
+# the UTC calendar date fx_rate() last logged a line for, so a page
+# with many renders a day doesn't spam the Railway log once every 30
+# minutes, only once per pair per day, live or fallback alike (see
+# fx_rate()'s own docstring - live evidence showed NO "[fx] ..." line
+# at all for a pair whose live fetch succeeded, since the old code
+# only ever logged on a fallback).
+_fx_log_date = {}
+
+
+def _log_fx_rate_once_per_day(cache_key, result, log):
+    if log is None:
+        return
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    if _fx_log_date.get(cache_key) == today:
+        return
+    _fx_log_date[cache_key] = today
+    rate, source = result
+    from_ccy, to_ccy = cache_key
+    if source == "live":
+        log(f"[fx] {from_ccy}->{to_ccy} live {rate:.4f}")
+    else:
+        log(f"[fx] {from_ccy}->{to_ccy} fallback {rate:.4g} (live fetch failed)")
+
 
 def _static_rate_to_usd(ccy):
     """Internal helper for fx_rate()'s cross-rate-via-USD fallback just
@@ -1665,12 +1690,16 @@ def fx_rate(from_ccy, to_ccy, log=print):
 
     `log` (Stage 1a, 3 Oct 2026, Director-directed; optional, defaults to
     print so every EXISTING caller's behaviour is unchanged beyond the new
-    log line itself): called once, with "[fx] {FROM}->{TO} fallback {rate}
-    (live fetch failed)", whenever this call actually falls back (any of
-    the three fallback branches below) - so a GBP/CAD/EUR pair silently
-    defaulting (or, now, ANY pair, including the pre-existing USD/AUD
-    ones) leaves a trail in the Railway log instead of only the existing,
-    silent meta["fx_fallback"] flag. Pass log=None to suppress.
+    log line itself): Stage 1a-fix (3 Oct 2026, Director-directed, F6) -
+    now called once PER PAIR PER UTC CALENDAR DAY, on a LIVE rate too, not
+    only a fallback (live evidence showed zero "[fx] ..." lines for
+    NTR.TO's own USD->CAD conversion, because the old code only ever
+    logged when falling back and that particular live fetch had
+    succeeded) - "[fx] {FROM}->{TO} live {rate}" or "[fx] {FROM}->{TO}
+    fallback {rate} (live fetch failed)". The once-per-day throttle (see
+    _fx_log_date above) is independent of _fx_cache's own 30-minute fetch
+    TTL, so a popular pair's log line doesn't repeat every half hour.
+    Pass log=None to suppress entirely.
     """
     from_ccy = (from_ccy or "").upper()
     to_ccy = (to_ccy or "").upper()
@@ -1684,6 +1713,7 @@ def fx_rate(from_ccy, to_ccy, log=print):
     if cached is not None:
         result, fetched_at = cached
         if time.time() - fetched_at < _FX_CACHE_TTL_SECONDS:
+            _log_fx_rate_once_per_day(cache_key, result, log)
             return result
 
     result = None
@@ -1721,10 +1751,9 @@ def fx_rate(from_ccy, to_ccy, log=print):
                 # no basis at all); still flagged as a fallback so it's
                 # visibly not a real rate.
                 result = (1.0, "fallback")
-        if log is not None:
-            log(f"[fx] {from_ccy}->{to_ccy} fallback {result[0]:.4g} (live fetch failed)")
 
     _fx_cache[cache_key] = (result, time.time())
+    _log_fx_rate_once_per_day(cache_key, result, log)
     return result
 
 
