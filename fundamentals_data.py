@@ -324,6 +324,18 @@ def _convert_statement_currency(df, from_ccy, to_ccy):
         converted = numeric.copy()
         for col in numeric.columns:
             rate, _source = currency_risk_engine.historical_fx_rate(from_ccy, to_ccy, col)
+            # Exchange-rate fallback-of-1 fix (3 Oct 2026, Director-
+            # directed, Commit 6): get_bundle()'s own up-front gate
+            # should already have skipped calling this function at all
+            # for a pair with no basis for a rate - this is a defensive
+            # backstop only (see historical_fx_rate()'s own comment on
+            # why rate can still be None here in a rare edge case).
+            # NaN, never a silent 1.0/None-multiply crash, for that one
+            # column - same "fails soft, flags rather than invents"
+            # philosophy as every other guard in this module.
+            if rate is None:
+                converted[col] = float("nan")
+                continue
             converted[col] = numeric[col] * rate
         non_monetary = [label for label in numeric.index if _is_non_monetary_row(label)]
         if non_monetary:
@@ -1344,16 +1356,38 @@ def get_bundle(ticker, force_refresh=False):
     # forwardEps into line with that existing, correct assumption.)
     fin_ccy = (info.get("financialCurrency") or "").upper()
     list_ccy = (info.get("currency") or "").upper()
+    fx_unavailable, fx_unavailable_reason = (False, None)
     if fin_ccy and list_ccy and fin_ccy != list_ccy:
-        # B2.1 fix: each column now fetches ITS OWN period-end rate
-        # inside _convert_statement_currency() - no single up-front
-        # `fx` value to gate on any more (see that function's own
-        # docstring for why a flat rate here was the bug).
-        income = _convert_statement_currency(income, fin_ccy, list_ccy)
-        balance = _convert_statement_currency(balance, fin_ccy, list_ccy)
-        cashflow = _convert_statement_currency(cashflow, fin_ccy, list_ccy)
-        income_q = _convert_statement_currency(income_q, fin_ccy, list_ccy)
-        flags.append("currency_converted")
+        # Exchange-rate fallback-of-1 fix (3 Oct 2026, Director-directed,
+        # Commit 6): confirm this fin_ccy->list_ccy pair can actually be
+        # converted at all (live, static, or cross-rate-via-USD) BEFORE
+        # converting every statement DataFrame - live evidence: "[fx]
+        # GEL->GBP fallback 1 (live fetch failed)", a FTSE 100 company
+        # reporting in Georgian lari valued as if 1 GEL = 1 GBP. Checked
+        # once here, up front, rather than inside _convert_statement_
+        # currency()'s own per-column historical_fx_rate() calls - that
+        # function has many existing callers that all assume it always
+        # returns a DataFrame, so this gates BEFORE calling it rather
+        # than changing its return contract. A pair unresolvable today
+        # is unresolvable for every column regardless of that column's
+        # own period-end date (unresolvability is a property of the
+        # currency pair, not the date - the live/static/cross-rate
+        # checks fx_rate() runs are all date-independent).
+        _fx_check, _ = fcf_valuation_engine.fx_rate(fin_ccy, list_ccy)
+        if _fx_check is None:
+            fx_unavailable = True
+            fx_unavailable_reason = f"no exchange rate for {fin_ccy}"
+            flags.append("fx_unavailable")
+        else:
+            # B2.1 fix: each column now fetches ITS OWN period-end rate
+            # inside _convert_statement_currency() - no single up-front
+            # `fx` value to gate on any more (see that function's own
+            # docstring for why a flat rate here was the bug).
+            income = _convert_statement_currency(income, fin_ccy, list_ccy)
+            balance = _convert_statement_currency(balance, fin_ccy, list_ccy)
+            cashflow = _convert_statement_currency(cashflow, fin_ccy, list_ccy)
+            income_q = _convert_statement_currency(income_q, fin_ccy, list_ccy)
+            flags.append("currency_converted")
 
     # Stage 1a (3 Oct 2026, Director-directed): trailingEps/bookValue
     # re-derivation for a GBp-normalised ticker - see _derive_eps_
@@ -1457,6 +1491,16 @@ def get_bundle(ticker, force_refresh=False):
             # "pounds"|"pence"|"unknown"|None (None = not a GBp ticker) -
             # see _resolve_forward_eps_unit()'s own docstring.
             "forward_eps_unit": forward_eps_unit,
+            # Exchange-rate fallback-of-1 fix (3 Oct 2026, Director-
+            # directed, Commit 6) - same "withhold IV/MOS for this
+            # ticker" contract as price_unit_suspect above: auto_
+            # compounder_engine.build_sections() checks this flag the
+            # same way it already checks price_unit_suspect and returns
+            # None (no Fair Value tab / Compounder View at all) when set,
+            # since every monetary figure that page shows is built from
+            # these now-unconverted (or inconvertible) statements.
+            "fx_unavailable": fx_unavailable,
+            "fx_unavailable_reason": fx_unavailable_reason,
         },
     }
     _write_cache(ticker, bundle)

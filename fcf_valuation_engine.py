@@ -1688,6 +1688,13 @@ def _log_fx_rate_once_per_day(cache_key, result, log):
     from_ccy, to_ccy = cache_key
     if source == "live":
         log(f"[fx] {from_ccy}->{to_ccy} live {rate:.4f}")
+    elif source == "unavailable":
+        # Exchange-rate fallback-of-1 fix (3 Oct 2026, Director-directed,
+        # Commit 6): rate is None here - no live rate, no static
+        # fallback, no cross-rate via USD - the exact required log line,
+        # distinct from the ordinary "fallback {rate}" line below (which
+        # always has a real number behind it).
+        log(f"[fx] {from_ccy}->{to_ccy} unavailable - valuation withheld")
     else:
         log(f"[fx] {from_ccy}->{to_ccy} fallback {rate:.4g} (live fetch failed)")
 
@@ -1707,7 +1714,14 @@ def _static_rate_to_usd(ccy):
 def fx_rate(from_ccy, to_ccy, log=print):
     """
     Exchange rate to convert an amount FROM from_ccy INTO to_ccy (multiply
-    by this). Returns (rate, source) where source is "live" or "fallback".
+    by this). Returns (rate, source) where source is "live", "fallback",
+    or "unavailable" (Commit 6, 3 Oct 2026, Director-directed) - the last
+    one means rate is None: no live rate, no static fallback, no cross-
+    rate via USD either, so there is genuinely no basis for a number.
+    Every caller MUST check for None before using it (never multiply by
+    it) - see dcf_intrinsic_value()'s own currency-conversion block and
+    resolve_intrinsic_value()'s fx_unavailable check for the "withhold
+    the valuation rather than invent a number" handling this replaces.
 
     Same currency in both slots is always (1.0, "live") - not really a live
     fetch, but not an assumption either, so it's never flagged red.
@@ -1769,12 +1783,22 @@ def fx_rate(from_ccy, to_ccy, log=print):
             if from_usd is not None and to_usd is not None:
                 result = (from_usd / to_usd, "fallback")
             else:
-                # Unknown pair and no live rate - a 1.0 no-op is the
-                # least-bad option (leaves the original unit-mismatch bug
-                # for THIS pair only, rather than inventing a number with
-                # no basis at all); still flagged as a fallback so it's
-                # visibly not a real rate.
-                result = (1.0, "fallback")
+                # Exchange-rate fallback-of-1 fix (3 Oct 2026, Director-
+                # directed, Commit 6): live evidence - "[fx] GEL->GBP
+                # fallback 1 (live fetch failed)" - a FTSE 100 company
+                # reporting in Georgian lari was valued as if 1 GEL =
+                # 1 GBP, because the old code's "1.0 no-op" here silently
+                # inflated/deflated every converted figure by the real
+                # exchange rate with nothing flagging it as wrong. Unknown
+                # pair, no live rate, no static fallback, no cross-rate via
+                # USD (already tried just above) - there is genuinely no
+                # basis for a number, so this now returns None rather than
+                # inventing one; every caller must treat None as "this
+                # ticker's statements cannot be converted; withhold the
+                # valuation" (see dcf_intrinsic_value()'s own currency-
+                # conversion block and resolve_intrinsic_value()'s "fx_
+                # unavailable" check), never multiply by it.
+                result = (None, "unavailable")
 
     _fx_cache[cache_key] = (result, time.time())
     _log_fx_rate_once_per_day(cache_key, result, log)
@@ -1869,6 +1893,13 @@ def dcf_intrinsic_value(
         "fx_converted":   str | None,  # DCF fix: "USD->AUD" etc. when financials/listing currency differ
         "fx_rate_used":   float | None,  # the rate actually applied
         "fx_fallback":    bool,   # True if fx_rate() had to use the static fallback table
+        "fx_unavailable": bool,   # Commit 6 (3 Oct 2026): True when fx_rate() had NO basis at
+                                       # all for fin_ccy->listing_ccy (live/static/cross-rate-via-
+                                       # USD all failed) - the DCF is abandoned (iv=0) and
+                                       # resolve_intrinsic_value() must NOT fall back to the
+                                       # P/E-blend method either, since the statements genuinely
+                                       # cannot be converted by any method
+        "fx_reason":      str | None,  # "no exchange rate for <CCY>" when fx_unavailable is True
         "growth_path":    list[float] | None,  # growth-path option E (28 Sep 2026, owner-
                                        # approved): the growth_years yearly rates
                                        # actually used in stage 1 - flat at growth_rate
@@ -1970,6 +2001,8 @@ def dcf_intrinsic_value(
         "fx_converted": None,
         "fx_rate_used": None,
         "fx_fallback": False,
+        "fx_unavailable": False,
+        "fx_reason": None,
         "growth_path": None,
         "yahoo_estimate_status": None,
         "capex_basis": None,
@@ -2115,6 +2148,22 @@ def dcf_intrinsic_value(
         listing_ccy = (currency or info.get("currency") or "").upper()
         if fin_ccy and listing_ccy and fin_ccy != listing_ccy:
             _fx, _fx_src = fx_rate(fin_ccy, listing_ccy)
+            if _fx is None:
+                # Exchange-rate fallback-of-1 fix (3 Oct 2026, Director-
+                # directed, Commit 6): fx_rate() has no basis for a
+                # number for this pair - converting fcf would either
+                # crash (None * float) or, under the old behaviour,
+                # silently use 1.0 and misvalue the ticker by the real
+                # exchange rate (the live GEL->GBP evidence this fix
+                # exists for). Abandon the DCF here, same "no usable
+                # value" shape as the negative_fcf branch above, but a
+                # DISTINCT reason/flag so resolve_intrinsic_value() knows
+                # NOT to fall back to the P/E-blend method either - the
+                # statements genuinely cannot be converted, so there is
+                # no usable value by ANY method, not just this one.
+                meta["fx_unavailable"] = True
+                meta["fx_reason"] = f"no exchange rate for {fin_ccy}"
+                return 0, None, meta
             fcf = fcf * _fx
             meta["fx_converted"] = f"{fin_ccy}->{listing_ccy}"
             meta["fx_rate_used"] = round(_fx, 4)

@@ -234,6 +234,20 @@ def historical_fx_rate(base, quote, target_date):
     try:
         import fcf_valuation_engine
         rate, _src = fcf_valuation_engine.fx_rate(base, quote)
+        if rate is None:
+            # Exchange-rate fallback-of-1 fix (3 Oct 2026, Director-
+            # directed, Commit 6): fx_rate() itself now returns None
+            # when it has no basis at all for this pair (see that
+            # function's own docstring) - propagate None rather than
+            # mislabeling it "live_fallback" with a rate that doesn't
+            # exist. fundamentals_data.get_bundle() already gates on
+            # this same pair before ever calling _convert_statement_
+            # currency() (which is this function's only real caller),
+            # so reaching this in practice means that up-front gate's
+            # own fx_rate() call and this one disagreed (e.g. a live
+            # fetch that flapped between the two calls) - rare, but
+            # still handled rather than silently inventing a number.
+            return None, "unavailable"
         return rate, "live_fallback"
     except Exception:
         return 1.0, "live_fallback"

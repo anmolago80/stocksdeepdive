@@ -1986,6 +1986,29 @@ def _run_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None, growth_rat
         _listing_ccy = currency.upper()
         if _fin_ccy and _listing_ccy and _fin_ccy != _listing_ccy:
             _fx, _ = fcf_valuation_engine.fx_rate(_fin_ccy, _listing_ccy)
+            if _fx is None:
+                # Exchange-rate fallback-of-1 fix (3 Oct 2026, Director-
+                # directed, Commit 6): no basis for a number for this
+                # pair (see fcf_valuation_engine.fx_rate()'s own
+                # docstring) - multiplying by None would crash, and the
+                # bundle-level gate in fundamentals_data.get_bundle()
+                # should already have caught this same pair before this
+                # function ever ran; this is a defensive backstop, not
+                # the primary fix. No usable DCF value for this ticker.
+                return {
+                    "value": None, "growth": None, "perpetual_rate": None, "discount_rate": None,
+                    "discount_tier_label": None, "growth_source": None, "growth_path": None,
+                    "growth_end_rate": None, "yahoo_estimate_status": None, "capex_basis": None,
+                    "growth_raw": None,
+                    "risk_free_used": None, "risk_free_source": None,
+                    "market_cap_usd": None, "premium_used": None,
+                    "fcf_base_source": None, "fcf_distorted_years": [], "fcf_base_raw_per_share": None,
+                    "fcf_per_share_used": None, "fcf_base_capped_by_uplift": False,
+                    "is_financials_mode": False,
+                    "flagged": True,
+                    "fx_unavailable": True,
+                    "fx_reason": f"no exchange rate for {_fin_ccy}",
+                }
             _dcf_manual_fcf = manual_fcf * _fx
 
     # Audit A3 (27 Sep 2026): this DCF's per-share value used to divide
@@ -2125,6 +2148,16 @@ def _run_canonical_dcf(bundle, ticker, discount_rate=None, perpetual_rate=None,
         _listing_ccy = currency.upper()
         if _fin_ccy and _listing_ccy and _fin_ccy != _listing_ccy:
             _fx, _ = fcf_valuation_engine.fx_rate(_fin_ccy, _listing_ccy)
+            if _fx is None:
+                # Exchange-rate fallback-of-1 fix (3 Oct 2026, Director-
+                # directed, Commit 6): same defensive backstop as
+                # _run_dcf()'s own guard above - multiplying by None
+                # would crash, and the bundle-level gate in fundamentals_
+                # data.get_bundle() should already have caught this pair.
+                # No usable "dcf" row for this ticker, same contract this
+                # function's own "if source != 'dcf' ..." check below
+                # already uses for every other no-value case.
+                return None
             _dcf_manual_fcf = manual_fcf * _fx
 
     result = _safe(
@@ -4501,6 +4534,18 @@ def build_sections(ticker, force_refresh=False, discount_rate=None,
     # already printed once, at bundle-build time, by _check_price_unit_
     # guard() itself.
     if (bundle.get("meta") or {}).get("price_unit_suspect"):
+        return None
+
+    # Exchange-rate fallback-of-1 fix (3 Oct 2026, Director-directed,
+    # Commit 6): fundamentals_data.get_bundle() already checked whether
+    # this ticker's financialCurrency->listing-currency pair can be
+    # converted at all before returning this bundle - see that
+    # function's own "fx_unavailable" gate. Same "return no intrinsic
+    # value/MOS for that ticker" contract as price_unit_suspect just
+    # above: every monetary figure this page shows is built from these
+    # statements, so there is no usable Fair Value tab for this ticker
+    # either way, not just no usable DCF row.
+    if (bundle.get("meta") or {}).get("fx_unavailable"):
         return None
 
     ref = _reference_lookup()

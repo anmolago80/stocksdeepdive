@@ -168,6 +168,8 @@ def resolve_intrinsic_value(
             "fx_converted": dcf_meta.get("fx_converted"),
             "fx_rate_used": dcf_meta.get("fx_rate_used"),
             "fx_fallback": dcf_meta.get("fx_fallback", False),
+            "fx_unavailable": dcf_meta.get("fx_unavailable", False),
+            "fx_reason": dcf_meta.get("fx_reason"),
             # Outlier-guard fix (28 Sep 2026) passthrough - "average" or
             # "midpoint (capex rising)", same pure-provenance pattern as
             # every other *_used/*_basis key above - see
@@ -214,6 +216,37 @@ def resolve_intrinsic_value(
         }
         return dcf_value, "dcf", growth_used, meta
 
+    # Exchange-rate fallback-of-1 fix (3 Oct 2026, Director-directed,
+    # Commit 6): the DCF wasn't abandoned for a valuation reason (no
+    # usable FCF) - it's abandoned because the statements genuinely
+    # cannot be converted into the listing currency (no live rate, no
+    # static fallback, no cross-rate via USD either - see fcf_
+    # valuation_engine.fx_rate()'s own docstring). The P/E-blend method
+    # below needs no FX conversion of its own (EPS/quality/sector inputs
+    # are already in listing currency), so it WOULD still produce a
+    # number here - but that number would imply a false confidence this
+    # ticker can be valued at all, when the real problem is "we don't
+    # know this currency's exchange rate", not "DCF doesn't apply to
+    # this kind of company". Skip the P/E-blend fallback entirely and
+    # return no intrinsic value / no MOS, with the reason, exactly as
+    # this task's own instruction specifies.
+    if dcf_meta.get("fx_unavailable"):
+        return 0, "none", None, {
+            "growth_source": None,
+            "growth_governor": None,
+            "growth_ceiling_used": None,
+            "fcf_source": "none",
+            "discount_source": None,
+            "perpetual_source": None,
+            "discount_rate_used": None,
+            "perpetual_rate_used": None,
+            "growth_default": False,
+            "value_default": False,
+            "fcf_reason": None,
+            "fx_unavailable": True,
+            "fx_reason": dcf_meta.get("fx_reason"),
+        }
+
     # Fall back to the P/E-blend method for names DCF can't value.
     pe_value, pe_defaulted = _auto_intrinsic(ticker, quality_score, info=info)
     meta = {
@@ -235,6 +268,8 @@ def resolve_intrinsic_value(
         # anywhere for this ticker (see that function's own comment on
         # this exact key).
         "fcf_reason": dcf_meta.get("fcf_reason"),
+        "fx_unavailable": False,
+        "fx_reason": None,
     }
     return pe_value, "pe-blend", None, meta
 
