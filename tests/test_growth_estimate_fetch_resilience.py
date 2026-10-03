@@ -325,10 +325,18 @@ assert ns._growth_source_bucket(
 ) == "history_fetch_failed"
 assert ns._growth_source_bucket({"growth_governor": "Cap", "growth_source": "analyst"}) == "cap"
 assert ns._growth_source_bucket({"growth_governor": "Cap", "growth_source": "history"}) == "cap"
-assert ns._growth_source_bucket({"growth_governor": "Info", "growth_source": "info"}) == "other"
+# Director addendum 2, Part 2, item E (3 Oct 2026): "info" is now named
+# "reported_growth" rather than folded into "other" - see _growth_
+# source_bucket()'s own docstring. "other" is now reserved for a
+# genuinely unset/unrecognised source only.
+assert ns._growth_source_bucket({"growth_governor": "Info", "growth_source": "info"}) == "reported_growth"
+assert ns._growth_source_bucket({"growth_governor": "Default", "growth_source": "default"}) == "default_tier_end_rate"
+assert ns._growth_source_bucket({"growth_governor": "Manual", "growth_source": "manual"}) == "manual_override"
+assert ns._growth_source_bucket({"growth_governor": "Cap", "growth_source": "analyst_1y_blend"}) == "yahoo_analyst_1y_blend"
 assert ns._growth_source_bucket({"growth_governor": None, "growth_source": None}) == "other"
-print("[growth_source_bucket_classification] all 8 combos (yahoo_analyst_ltg/yahoo_analyst_1y/"
-      "history_no_estimate/history_fetch_failed/cap-over-analyst/cap-over-history/other) bucket "
+print("[growth_source_bucket_classification] all combos (yahoo_analyst_ltg/yahoo_analyst_1y/"
+      "yahoo_analyst_1y_blend/history_no_estimate/history_fetch_failed/cap-over-analyst/"
+      "cap-over-history/reported_growth/default_tier_end_rate/manual_override/other) bucket "
       "correctly OK")
 
 # Growth-never-zero rewrite (30 Sep 2026): "non_positive" (a real Yahoo

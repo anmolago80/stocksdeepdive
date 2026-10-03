@@ -316,13 +316,31 @@ def _growth_source_bucket(iv_meta):
     coverage at all. "history"/"history_volatile" split on that same
     yahoo_estimate_status - "no_coverage" (Yahoo genuinely has nothing on
     this name) vs "fetch_failed" (the fetch itself broke, even after
-    retrying - Yahoo's real coverage is unknown). Everything else
-    (info/default/manual/None) falls into "other"."""
+    retrying - Yahoo's real coverage is unknown).
+
+    Director addendum 2, Part 2, item E (3 Oct 2026): the live scan's
+    "other 63"/"other 134" counts were almost entirely "analyst_1y_
+    blend" (estimate_growth()'s next-year-consensus-blended-with-history
+    path, added 1 Oct 2026 - this function predated it and never learned
+    the new source string, so every blended ticker fell through to
+    "other"), "info" (a plain reported revenueGrowth/earningsGrowth
+    figure), and "default" (nothing usable anywhere - the market-cap-
+    tiered end rate itself) - all three are real, already-named sources
+    in fcf_valuation_engine.estimate_growth()'s own meta["growth_source"]
+    contract, not actually unknown. Naming them explicitly here is a
+    PURE reporting change - this function's return value only ever feeds
+    growth_summary_out's diagnostic counts (see run_universe_scan()'s own
+    comment where it's aggregated and logged just below), never scoring/
+    selection. "other" now means only a genuinely unset/unrecognised
+    growth_source (None, or a future value this function hasn't learned
+    yet) - expected to be at or near zero every night."""
     governor = iv_meta.get("growth_governor")
     source = iv_meta.get("growth_source")
     yahoo_status = iv_meta.get("yahoo_estimate_status")
     if source == "analyst_1y":
         return "yahoo_analyst_1y"
+    if source == "analyst_1y_blend":
+        return "yahoo_analyst_1y_blend"
     if governor == "Cap":
         return "cap"
     if source == "analyst":
@@ -334,6 +352,12 @@ def _growth_source_bucket(iv_meta):
             "history_fetch_failed" if yahoo_status == "fetch_failed"
             else "history_no_estimate"
         )
+    if source == "info":
+        return "reported_growth"
+    if source == "default":
+        return "default_tier_end_rate"
+    if source == "manual":
+        return "manual_override"
     return "other"
 
 
@@ -1406,10 +1430,21 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
     # extended by the growth-never-zero rewrite (30 Sep 2026, "Yahoo
     # non-positive N" bucket): one summary line per scan of which growth
     # source each ticker actually resolved to - see _growth_source_
-    # bucket()'s own docstring for the bucket definitions. "other" (info/
-    # default/manual/None) is only shown when non-zero, same convention
-    # as the "(degraded)" tag just above - most nights it will be 0 and
-    # stays out of the line.
+    # bucket()'s own docstring for the bucket definitions.
+    #
+    # Director addendum 2, Part 2, item E (3 Oct 2026): "other" used to
+    # silently swallow "analyst_1y_blend"/"info"/"default" (all three
+    # real, already-named sources - see _growth_source_bucket()'s own
+    # docstring) alongside a genuinely unset source, which is why the
+    # live scan's "other" counts (63 of ~100 FTSE 100 tickers, 134 of 219
+    # TSX Composite) looked alarmingly large. Every one of those is now
+    # named explicitly below; "other" is kept (only shown when non-zero,
+    # same convention as the "(degraded)" tag just above) as a safety
+    # net for a future growth_source this function hasn't learned yet -
+    # expected at or near 0 every night now. No change to any growth
+    # calculation - estimate_growth()/capm_engine are untouched; this is
+    # purely how an already-resolved growth_source is counted and named
+    # in this one diagnostic log line.
     if _growth_summary:
         _gs_other = _growth_summary.get("other", 0)
         # Step 1d (owner-directed, 30 Sep 2026): "Yahoo 5y" renamed to
@@ -1418,10 +1453,14 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
         # see _growth_source_bucket()'s own docstring.
         log(f"[nightly_scan] {universe}: growth source - Yahoo analyst (LTG) "
             f"{_growth_summary.get('yahoo_analyst_ltg', 0)}, Yahoo analyst (1y) "
-            f"{_growth_summary.get('yahoo_analyst_1y', 0)}, Yahoo non-positive "
-            f"{_growth_summary.get('yahoo_non_positive', 0)}, historical avg (no estimate) "
-            f"{_growth_summary.get('history_no_estimate', 0)}, historical avg "
-            f"(fetch failed) {_growth_summary.get('history_fetch_failed', 0)}, "
+            f"{_growth_summary.get('yahoo_analyst_1y', 0)}, Yahoo analyst (1y, "
+            f"blended with history) {_growth_summary.get('yahoo_analyst_1y_blend', 0)}, "
+            f"Yahoo non-positive {_growth_summary.get('yahoo_non_positive', 0)}, "
+            f"historical avg (no estimate) {_growth_summary.get('history_no_estimate', 0)}, "
+            f"historical avg (fetch failed) {_growth_summary.get('history_fetch_failed', 0)}, "
+            f"reported growth (revenue/earnings) {_growth_summary.get('reported_growth', 0)}, "
+            f"default (tier end rate) {_growth_summary.get('default_tier_end_rate', 0)}, "
+            f"manual override {_growth_summary.get('manual_override', 0)}, "
             f"cap {_growth_summary.get('cap', 0)}" +
             (f", other {_gs_other}" if _gs_other else ""))
         # LTG-fallback fix (owner-directed, 30 Sep 2026): a second line -
