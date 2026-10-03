@@ -2483,6 +2483,51 @@ def fetch_tsxcomposite_ishares():
 # commit/Stage 1b already carries.
 # -----------------------------------------------------------------
 
+# Director addendum 2 (3 Oct 2026), Part 1, item A: the live scan's own
+# log line ("[nightly_scan] Nikkei 225: no tickers resolved (Wikipedia
+# Nikkei 225 scrape unavailable - not scanning)" / "[universe] TOPIX
+# 500: constituent list unavailable (HTTP 404) - not scanning") gave no
+# way to tell WHY either fetch actually failed - this sandbox has no
+# outbound network access (confirmed directly: both en.wikipedia.org and
+# jpx.co.jp return a 403 from this sandbox's own proxy, not from the
+# real site), so neither fetcher's parsing logic could be fixed against
+# a real response without guessing at a page/file shape this session has
+# never actually seen - the Director's own explicit instruction for this
+# exact situation. A separate, full-browser header set (not the bot UA
+# other fetchers in this file use) is sent for these two specifically,
+# since a generic scraper UA is a plausible reason either site would
+# answer differently than a real browser - scoped to just these two
+# fetchers rather than changing _HEADERS for every other working feed
+# in this file.
+_JAPAN_FETCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+}
+
+
+def _log_japan_fetch_diagnostic(label, url, status=None, content_type=None,
+                                 tables_found=None, rows_parsed=None, body_preview=None):
+    """Director addendum 2, Part 1, item A: every failure path in
+    fetch_nikkei225()/fetch_topix500() below calls this (in addition to
+    - never instead of - each function's own pre-existing required
+    "[universe] <name>: constituent list unavailable (...) - not
+    scanning"/no-tickers-resolved line) so the next real Railway log
+    actually shows what the live response looked like, not just that it
+    failed. `tables_found`/`rows_parsed` are None when the request
+    itself never completed (so there was nothing to parse at all)."""
+    _log.warning(
+        f"[universe] {label}: fetch diagnostic - url={url} status={status} "
+        f"content_type={content_type} tables_found={tables_found} "
+        f"rows_parsed={rows_parsed} first200={body_preview!r}"
+    )
+
+
 NIKKEI225_WIKI_URL = "https://en.wikipedia.org/wiki/Nikkei_225"
 
 # Director's suggestion, unverified from this sandbox (same status as
@@ -2503,15 +2548,56 @@ _TOPIX_CODE_COLUMN_HINTS = ("code", "ticker", "symbol")
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_nikkei225():
+    """Director addendum 2, Part 1, item A (3 Oct 2026): rewritten from a
+    bare _get()+_parse_table() pair (which swallowed every failure with
+    no diagnostic at all) to a manual fetch+parse so every field the
+    Director asked for - URL, HTTP status, content type, tables found on
+    the page, the most rows any single table parsed to, first 200 chars
+    of the body - is available to log on failure, via _log_japan_fetch_
+    diagnostic() above. Matching logic is otherwise identical to
+    _parse_table()'s own (ticker/sector column hints, 200-230 row
+    window) - duplicated rather than threading instrumentation through
+    that shared helper's own, much broader call list."""
+    url = NIKKEI225_WIKI_URL
+    status, content_type, body_preview = None, None, None
+    tables_found, rows_parsed = None, None
     try:
-        html = _get(NIKKEI225_WIKI_URL)
-    except Exception:
-        return None
-    return _parse_table(
-        html, ["code", "ticker", "symbol"], ["sector", "industry"],
-        lambda t: symbol_mapping.to_yahoo_symbol(str(t).strip(), "TSE"),
-        min_rows=200, max_rows=230,
+        resp = requests.get(url, headers=_JAPAN_FETCH_HEADERS, timeout=15)
+        status = resp.status_code
+        content_type = resp.headers.get("Content-Type")
+        body_preview = resp.text[:200]
+        resp.raise_for_status()
+        try:
+            tables = pd.read_html(io.StringIO(resp.text))
+        except Exception:
+            tables = []
+        tables_found = len(tables)
+        rows_parsed = 0
+        for table in tables:
+            ticker_col = _find_column(table.columns, ["code", "ticker", "symbol"])
+            if ticker_col is None:
+                continue
+            sector_col = _find_column(table.columns, ["sector", "industry"])
+            cols = [ticker_col] + ([sector_col] if sector_col else [])
+            df = table[cols].copy()
+            df.columns = ["Ticker", "Sector"] if sector_col else ["Ticker"]
+            df = df.dropna(subset=["Ticker"])
+            rows_parsed = max(rows_parsed, len(df))
+            if df.empty or len(df) < 200 or len(df) > 230:
+                continue
+            df["Ticker"] = df["Ticker"].apply(
+                lambda t: symbol_mapping.to_yahoo_symbol(str(t).strip(), "TSE")
+            )
+            df["Sector"] = df["Sector"].astype(str).str.strip() if "Sector" in df.columns else None
+            return df[["Ticker", "Sector"]]
+    except Exception as e:
+        if status is None:
+            status = f"{type(e).__name__}: {e}"
+    _log_japan_fetch_diagnostic(
+        "Nikkei 225", url, status=status, content_type=content_type,
+        tables_found=tables_found, rows_parsed=rows_parsed, body_preview=body_preview,
     )
+    return None
 
 
 def _topix_size_group(cell):
@@ -2540,10 +2626,17 @@ def fetch_topix500():
     keeps whatever was already saved on disk untouched (the "keep the
     last known good list" half of this rule)."""
     reason = "unknown error"
+    url = TOPIX_CONSTITUENTS_URL
+    status, content_type, body_preview = None, None, None
+    tables_found, rows_parsed = None, None
     try:
-        resp = requests.get(TOPIX_CONSTITUENTS_URL, timeout=10, headers=_HEADERS)
+        resp = requests.get(url, timeout=10, headers=_JAPAN_FETCH_HEADERS)
+        status = resp.status_code
+        content_type = resp.headers.get("Content-Type")
+        body_preview = resp.text[:200]
         if resp.status_code != 200:
             reason = f"HTTP {resp.status_code}"
+            tables_found, rows_parsed = 0, 0
         else:
             df = None
             try:
@@ -2553,6 +2646,8 @@ def fetch_topix500():
                     df = pd.read_excel(io.BytesIO(resp.content))
                 except Exception:
                     df = None
+            tables_found = 0 if df is None else 1
+            rows_parsed = 0 if df is None else len(df)
             if df is None or df.empty:
                 reason = "file could not be parsed as CSV or Excel"
             else:
@@ -2582,6 +2677,12 @@ def fetch_topix500():
                             return out[["Ticker", "Sector"]]
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
+        if status is None:
+            status = reason
+    _log_japan_fetch_diagnostic(
+        "TOPIX 500", url, status=status, content_type=content_type,
+        tables_found=tables_found, rows_parsed=rows_parsed, body_preview=body_preview,
+    )
     _log.warning(f"[universe] TOPIX 500: constituent list unavailable ({reason}) - not scanning")
     return None
 
