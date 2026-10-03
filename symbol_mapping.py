@@ -54,7 +54,7 @@ def _tsx_stem(raw):
 def to_yahoo_symbol(raw, exchange, overrides=None):
     """Pure function, no network: `raw` (a symbol as scraped off a
     Wikipedia constituent table) -> the Yahoo Finance symbol for it,
-    given `exchange` ("LSE" or "TSX" - any other value raises
+    given `exchange` ("LSE", "TSX" or "TSE" - any other value raises
     ValueError, since there's no rule to apply).
 
     Order of checks:
@@ -63,21 +63,28 @@ def to_yahoo_symbol(raw, exchange, overrides=None):
          whitespace strip). A hit here is returned verbatim, before
          any transform or idempotency check runs.
       2. Idempotent: if `raw` already ends with the exchange's own
-         Yahoo suffix (".L" for LSE, ".TO" for TSX - case-insensitive
-         check, original casing returned), it's returned UNCHANGED -
-         calling this on an already-Yahoo-shaped symbol is always a
-         safe no-op, never a double suffix.
+         Yahoo suffix (".L" for LSE, ".TO" for TSX, ".T" for TSE -
+         case-insensitive check, original casing returned), it's
+         returned UNCHANGED - calling this on an already-Yahoo-shaped
+         symbol is always a safe no-op, never a double suffix.
       3. LSE: strip a trailing dot, hyphenate any remaining inner dot,
          append ".L" - see _lse_stem()'s own docstring.
       4. TSX: hyphenate every dot, append ".TO" - see _tsx_stem()'s own
          docstring.
+      5. TSE (Stage 1 Japan, 3 Oct 2026, Director-directed): plain
+         suffix append, no stem transform - a Tokyo Stock Exchange code
+         (numeric, "7203", or alphanumeric, "130A") has no dot to strip
+         or hyphenate, unlike an LSE/TSX symbol.
 
     Examples: to_yahoo_symbol("RR.", "LSE") == "RR.L";
     to_yahoo_symbol("BT.A", "LSE") == "BT-A.L";
     to_yahoo_symbol("BAM.A", "TSX") == "BAM-A.TO";
     to_yahoo_symbol("RCI.B", "TSX") == "RCI-B.TO";
     to_yahoo_symbol("CAR.UN", "TSX") == "CAR-UN.TO";
-    to_yahoo_symbol("RR.L", "LSE") == "RR.L" (idempotent - unchanged)."""
+    to_yahoo_symbol("RR.L", "LSE") == "RR.L" (idempotent - unchanged);
+    to_yahoo_symbol("7203", "TSE") == "7203.T";
+    to_yahoo_symbol("130A", "TSE") == "130A.T";
+    to_yahoo_symbol("7203.T", "TSE") == "7203.T" (idempotent - unchanged)."""
     overrides = overrides if overrides is not None else SYMBOL_OVERRIDES
     raw = (raw or "").strip()
     if raw in overrides:
@@ -91,8 +98,14 @@ def to_yahoo_symbol(raw, exchange, overrides=None):
         if raw.upper().endswith(".TO"):
             return raw
         return f"{_tsx_stem(raw)}.TO"
+    if exchange == "TSE":
+        if raw.upper().endswith(".T"):
+            return raw
+        return f"{raw}.T"
 
-    raise ValueError(f"to_yahoo_symbol: unknown exchange {exchange!r} - expected 'LSE' or 'TSX'")
+    raise ValueError(
+        f"to_yahoo_symbol: unknown exchange {exchange!r} - expected 'LSE', 'TSX' or 'TSE'"
+    )
 
 
 def log_no_yahoo_price(index_name, yahoo_symbol, wiki_symbol, log=print):

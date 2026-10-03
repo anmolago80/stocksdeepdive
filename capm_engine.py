@@ -89,6 +89,11 @@ PERPETUAL_GROWTH_BY_CCY = {
     "USD": 0.020,
     "GBP": 0.020,
     "CAD": 0.020,
+    # Stage 1 Japan (3 Oct 2026, Director-directed, owner decision):
+    # 1.0% - deliberately lower than every other currency here, Japan's
+    # own long-run near-zero-inflation/nominal-growth history, not a
+    # typo or a rounding of the others' 2.0%/2.5%.
+    "JPY": 0.010,
 }
 DEFAULT_PERPETUAL_GROWTH = 0.025
 
@@ -376,6 +381,12 @@ _DISCOUNT_TIER_FX_TO_USD_APPROX = {
     # own initial estimate).
     "GBP": 1.32,
     "CAD": 0.70,
+    # Stage 1 Japan (3 Oct 2026, Director-directed): same static,
+    # bucketing-only status as every other entry - Director-supplied
+    # JPY->USD 0.0067, matching fcf_valuation_engine.FX_TO_USD_APPROX's
+    # own JPY entry (kept in sync by hand, same precedent GBP/CAD above
+    # already set).
+    "JPY": 0.0067,
 }
 
 # Premiums are RELATIVE TO THE RISK-FREE RATE (not a flat add-on), so
@@ -834,6 +845,124 @@ def get_ca_risk_free_rate_live():
     return fallback_rate, "default"
 
 
+# =====================================================================
+# Stage 1 Japan (3 Oct 2026, Director-directed): JGB 10-year yield from
+# the Ministry of Finance's own published CSV - the Director's own
+# SUGGESTION, explicitly flagged as "not verifiable from your sandbox"
+# (same EGRESS_BLOCKED constraint the RBA/BoE/BoC fetches above already
+# document - the first real Railway log line after deploy is what
+# actually confirms the URL/response shape). Written defensively: a
+# tolerant header-cell substring scan for the 10-year column (same
+# technique get_au_risk_free_rate_live() already uses, since this
+# format is unverified and may not put it at a fixed column index),
+# and a DATE-based pick of the most recent row - never a position-based
+# pick (reversed()[0]) - per this task's own instruction and the exact
+# lesson of this module's own BoC fix (Stage 1a-fix F5: see get_ca_
+# risk_free_rate_live()'s own docstring for the live 9-day-stale bug a
+# position-based pick caused there).
+# =====================================================================
+_MOF_JGB_CSV_URL = "https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/jgbcme.csv"
+_MOF_TIMEOUT_SECONDS = 6
+_MOF_10Y_COLUMN_HINTS = ("10y", "10-year", "10 year")
+
+# Sanity band (Director's own instruction): deliberately NOT UK_CA_RISK_
+# FREE_MIN/MAX (0.5%-12%) - Japanese 10-year yields have spent long
+# periods near or below the UK/Canada band's own 0.5% floor, so reusing
+# that band would reject a genuine low-but-positive live JGB reading as
+# "out of band" and silently mask it behind the fallback. 0.1%-8% is
+# its own, JPY-only band - never applied to any other currency.
+JP_RISK_FREE_MIN = 0.001
+JP_RISK_FREE_MAX = 0.08
+
+# Fallback 10-year JGB yield (Director-supplied, approximate - same
+# "occasionally-updated, never pinned to one day's exact reading"
+# status as every other currency's own fallback constant above).
+JP_RISK_FREE_FALLBACK = {"JPY": 0.017}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_jp_risk_free_rate_live():
+    """Best-effort live Japan 10-year government bond yield from the
+    Ministry of Finance's own published JGB CSV, cached once a day (a
+    daily series - no point refetching more often). Returns (rate,
+    source) in the same shape as the other live-fetch functions above -
+    "live" or "default" (the flagged JP_RISK_FREE_FALLBACK["JPY"]
+    constant).
+
+    Sanity band: JP_RISK_FREE_MIN/MAX (0.1%-8%) - see that pair's own
+    module comment for why this is deliberately its own band, not UK_
+    CA_RISK_FREE_MIN/MAX. Picks the row with the latest date that also
+    carries a usable numeric 10-year value - date-based, never
+    position-based (see this section's own module comment).
+
+    Logs the outcome of EVERY real fetch (this function is cache_data-
+    decorated, so the body only runs on a cache miss) at WARNING, same
+    "[capm] JPY risk-free X.XX% (MOF JGB CSV, as at ...)"/"(fallback -
+    ...)" format every other currency's own live-fetch function here
+    already uses."""
+    fallback_rate = JP_RISK_FREE_FALLBACK.get("JPY", DEFAULT_RISK_FREE_FALLBACK)
+    reason = None
+    try:
+        resp = requests.get(
+            _MOF_JGB_CSV_URL, timeout=_MOF_TIMEOUT_SECONDS, headers=_BOE_REQUEST_HEADERS
+        )
+        if resp.status_code != 200:
+            reason = f"HTTP {resp.status_code}"
+        else:
+            rows = [r for r in csv.reader(resp.text.splitlines()) if r]
+            # Tolerant header-cell scan for the 10-year column, same
+            # technique get_au_risk_free_rate_live() uses - this format
+            # is unverified, so the column's exact index/label can't be
+            # assumed in advance.
+            target_col = None
+            for row in rows:
+                for i, cell in enumerate(row):
+                    if any(hint in (cell or "").lower() for hint in _MOF_10Y_COLUMN_HINTS):
+                        target_col = i
+                        break
+                if target_col is not None:
+                    break
+            if target_col is None:
+                reason = "10-year column not found"
+            else:
+                # Latest-date pick, never position-based - see this
+                # section's own module comment. A row whose first cell
+                # doesn't look like a date (the header row itself, or a
+                # stray metadata row) is skipped by requiring it to
+                # start with a digit.
+                best_date, best_rate = None, None
+                for row in rows:
+                    if len(row) <= target_col:
+                        continue
+                    date_str = row[0].strip() if row[0] else ""
+                    if not date_str or not date_str[0].isdigit():
+                        continue
+                    try:
+                        raw = float(row[target_col])
+                    except (TypeError, ValueError):
+                        continue
+                    if best_date is None or date_str > best_date:
+                        best_date, best_rate = date_str, raw / 100.0
+                if best_rate is None:
+                    reason = "no usable row found"
+                elif JP_RISK_FREE_MIN < best_rate < JP_RISK_FREE_MAX:
+                    _growth_logger.warning(
+                        "[capm] JPY risk-free %.2f%% (MOF JGB CSV, as at %s)",
+                        best_rate * 100, best_date,
+                    )
+                    return best_rate, "live"
+                else:
+                    reason = "no in-band value"
+    except Exception as e:
+        reason = f"{type(e).__name__}: {e}"
+
+    _growth_logger.warning(
+        "[capm] JPY risk-free %.2f%% (fallback - %s)",
+        fallback_rate * 100, reason or "unknown error",
+    )
+    return fallback_rate, "default"
+
+
 def resolve_discount_rate_by_market_cap(info, currency):
     """A6, owner-approved LIVE 28 Sep 2026: market-cap-tiered cost of
     equity - no beta anywhere in this formula. This IS the live
@@ -866,6 +995,10 @@ def resolve_discount_rate_by_market_cap(info, currency):
         # Stage 1a (3 Oct 2026, Director-directed) - see get_ca_risk_
         # free_rate_live()'s own docstring.
         rf, rf_src = get_ca_risk_free_rate_live()
+    elif ccy == "JPY":
+        # Stage 1 Japan (3 Oct 2026, Director-directed) - see get_jp_
+        # risk_free_rate_live()'s own docstring.
+        rf, rf_src = get_jp_risk_free_rate_live()
     else:
         rf, rf_src = get_risk_free_rate(ccy)
     meta["rf_source"] = rf_src

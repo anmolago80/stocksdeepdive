@@ -246,6 +246,12 @@ FX_TO_USD_APPROX = {
     "GBP": 1.32,
     "CAD": 0.70,
     "EUR": 1.15,
+    # Stage 1 Japan (3 Oct 2026, Director-directed): same static-snapshot
+    # status as every other entry above - approximate, unverified,
+    # bucketing-only. Director-supplied JPY->USD 0.0067 (roughly 1 USD
+    # = JPY150, a plausible yen rate, not pinned to a verified live
+    # reading from this sandbox).
+    "JPY": 0.0067,
 }
 
 # (market cap USD, value) pairs, LARGEST CAP FIRST - same convention as
@@ -325,7 +331,13 @@ def _log_interpolate(anchors, market_cap_usd):
 # longest-suffix-first isn't needed here since none of these three
 # overlap (".AX" ends every Australian ticker, ".L" every London one,
 # ".TO" every Toronto one - no ticker can end in more than one).
-_TICKER_SUFFIX_CURRENCY = {".AX": "AUD", ".L": "GBP", ".TO": "CAD"}
+# Stage 1 Japan (3 Oct 2026, Director-directed): ".T" added - same
+# last-resort-only status as the other three suffixes (info["currency"]
+# "JPY" already passes straight through for a Tokyo-listed name's own
+# Yahoo .info blob; this is only the fallback for when that's missing).
+# Still no overlap risk: no ticker on this site ends in more than one
+# of ".AX"/".L"/".TO"/".T".
+_TICKER_SUFFIX_CURRENCY = {".AX": "AUD", ".L": "GBP", ".TO": "CAD", ".T": "JPY"}
 
 
 def trading_currency_for(ticker, info=None):
@@ -1632,6 +1644,10 @@ _FX_STATIC_FALLBACK = {
     ("GBP", "USD"): 1.32,
     ("CAD", "USD"): 0.70,
     ("EUR", "USD"): 1.15,
+    # Stage 1 Japan (3 Oct 2026, Director-directed): same Director-
+    # supplied, unverified-from-this-sandbox status as FX_TO_USD_
+    # APPROX["JPY"] above - 1 JPY = 0.0067 USD.
+    ("JPY", "USD"): 0.0067,
 }
 
 # Per-process cache so one page render (which can call fx_rate for several
