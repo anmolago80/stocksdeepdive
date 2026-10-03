@@ -356,6 +356,15 @@ async def lifespan(app: FastAPI):
     # one-off above.
     with suppress(Exception):
         top100_engine.set_resubmit_pause_on_this_deploy_once()
+    # Degenerate-response guard (3 Oct 2026, owner-directed): one-off,
+    # marker-guarded retroactive sweep clearing any v6 score row saved
+    # from a sentinel-filled template (all ten dimension scores
+    # identical, every free-text field empty) rather than a real
+    # judgement - see top100_engine.run_degenerate_sweep_once()'s own
+    # docstring. Same "never allowed to stop the site serving" rule as
+    # every other one-off above.
+    with suppress(Exception):
+        top100_engine.run_degenerate_sweep_once()
     _client = httpx.AsyncClient(
         base_url=UPSTREAM, timeout=httpx.Timeout(None, connect=10.0),
         follow_redirects=False, limits=httpx.Limits(max_connections=200),

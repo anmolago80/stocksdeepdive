@@ -321,6 +321,33 @@ def _conn():
         conn.execute("ALTER TABLE top100_scores ADD COLUMN most_recent_quarter TEXT")
     except sqlite3.OperationalError:
         pass
+    # Degenerate-response guard (3 Oct 2026, owner-directed, live
+    # evidence: msgbatch_01Jbz1uEmi1zesnrEbVHtchE's t100-3/t100-17 -
+    # sentinel-filled templates, not real judgements, saved as NOT
+    # RATED). Same purely-additive/nullable pattern as every prior
+    # column above - 0/NULL on every pre-existing row (never a
+    # degenerate-accepted row before this existed), 1 only on a row
+    # top100_engine._save_degenerate_as_not_rated() wrote after a
+    # SECOND consecutive degenerate attempt - see that function's own
+    # docstring. top100_render.py's shelf reads it to show a
+    # "degenerate x2" caption distinct from an ordinary NOT RATED row.
+    try:
+        conn.execute("ALTER TABLE top100_scores ADD COLUMN degenerate_accepted INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    # Stored score viewer (3 Oct 2026, owner-directed): records HOW this
+    # row's ticker was resolved from the packed response - "ticker" (the
+    # model echoed a usable ticker string) or "position" (blank-ticker
+    # positional fallback, see _parse_response_json()'s own docstring).
+    # NULL for every row saved before this column existed, and for any
+    # row saved through a path that doesn't pass it (e.g. the Admin
+    # "Recompute this ticker now" panel, which doesn't go through the
+    # batch-response parser at all) - the viewer shows "not recorded"
+    # rather than guessing.
+    try:
+        conn.execute("ALTER TABLE top100_scores ADD COLUMN matched_by TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
         """CREATE TABLE IF NOT EXISTS top100_batch_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -570,7 +597,8 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
                 inversion_scenario, inversion_severity, prompt, raw_response,
                 current_headwind=None, market_structure=None, market_structure_comment=None,
                 one_foot_hurdle=None, one_foot_comment=None, most_recent_quarter=None,
-                munger_quality=None, munger_comment=None, big_wave=None, big_wave_comment=None):
+                munger_quality=None, munger_comment=None, big_wave=None, big_wave_comment=None,
+                degenerate_accepted=False, matched_by=None):
     """Upserts one ticker's AI score for (quarter, model,
     rubric_version) - rubric_version (top100_engine.RUBRIC_VERSION) is
     part of the cache key/PK (see _migrate_scores_schema_v2()'s own
@@ -629,7 +657,12 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
     no further validation here. All four default to None so a caller
     passing the old (v1-v4-era) argument list still works.
     `prompt`/`raw_response`: the FULL text sent/received, for
-    reproducibility (the task's own instruction) - never truncated."""
+    reproducibility (the task's own instruction) - never truncated.
+    `matched_by` (stored score viewer, 3 Oct 2026): "ticker" or
+    "position", whichever way top100_engine._parse_response_json()
+    resolved this ticker from the packed response - None for a caller
+    that doesn't pass it (e.g. a pre-existing row, or a save made
+    outside the batch-ingest path)."""
     with _conn() as conn:
         conn.execute(
             """INSERT INTO top100_scores
@@ -638,8 +671,8 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
                   market_structure, market_structure_comment,
                   one_foot_hurdle, one_foot_comment, most_recent_quarter,
                   munger_quality, munger_comment, big_wave, big_wave_comment,
-                  prompt, raw_response, scored_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  degenerate_accepted, matched_by, prompt, raw_response, scored_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(ticker, quarter, model, rubric_version) DO UPDATE SET
                  dims_json = excluded.dims_json,
                  not_rated = excluded.not_rated,
@@ -655,6 +688,8 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
                  munger_comment = excluded.munger_comment,
                  big_wave = excluded.big_wave,
                  big_wave_comment = excluded.big_wave_comment,
+                 degenerate_accepted = excluded.degenerate_accepted,
+                 matched_by = excluded.matched_by,
                  prompt = excluded.prompt,
                  raw_response = excluded.raw_response,
                  scored_at = excluded.scored_at""",
@@ -662,7 +697,24 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
              inversion_scenario, inversion_severity, current_headwind,
              market_structure, market_structure_comment, one_foot_hurdle, one_foot_comment,
              most_recent_quarter, munger_quality, munger_comment, big_wave, big_wave_comment,
-             prompt, raw_response, datetime.now(timezone.utc).isoformat()),
+             int(bool(degenerate_accepted)), matched_by, prompt, raw_response,
+             datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def delete_score(ticker, quarter, model, rubric_version):
+    """Deletes one ticker's stored score row for this exact (quarter,
+    model, rubric_version) key - degenerate-response guard (3 Oct
+    2026, owner-directed): used only by top100_engine.run_degenerate_
+    sweep_once() to clear a row whose content was a sentinel-filled
+    template, not a real judgement, so it's re-sent in the next batch
+    rather than left on record as a genuine (if NOT RATED) score. A
+    no-op (no error) if no such row exists."""
+    with _conn() as conn:
+        conn.execute(
+            "DELETE FROM top100_scores WHERE ticker = ? AND quarter = ? "
+            "AND model = ? AND rubric_version = ?",
+            (ticker, quarter, model, rubric_version),
         )
 
 
@@ -688,6 +740,7 @@ def get_score(ticker, quarter, model, rubric_version):
     out = dict(row)
     out["dims"] = json.loads(out.pop("dims_json"))
     out["not_rated"] = bool(out["not_rated"])
+    out["degenerate_accepted"] = bool(out.get("degenerate_accepted"))
     return out
 
 
@@ -715,6 +768,7 @@ def scores_for_quarter_model(quarter, model, rubric_version):
         d = dict(r)
         d["dims"] = json.loads(d.pop("dims_json"))
         d["not_rated"] = bool(d["not_rated"])
+        d["degenerate_accepted"] = bool(d.get("degenerate_accepted"))
         out[d["ticker"]] = d
     return out
 
@@ -744,6 +798,7 @@ def latest_scores_for_model(model, rubric_version):
         d = dict(r)
         d["dims"] = json.loads(d.pop("dims_json"))
         d["not_rated"] = bool(d["not_rated"])
+        d["degenerate_accepted"] = bool(d.get("degenerate_accepted"))
         out[d["ticker"]] = d  # ascending scored_at + overwrite -> newest row wins per ticker
     return out
 
@@ -785,6 +840,32 @@ def latest_score_previous_rubric(ticker, model, current_rubric_version):
     out = dict(row)
     out["dims"] = json.loads(out.pop("dims_json"))
     out["not_rated"] = bool(out["not_rated"])
+    out["degenerate_accepted"] = bool(out.get("degenerate_accepted"))
+    return out
+
+
+def latest_score_for_ticker(ticker, model):
+    """Stored score viewer (3 Oct 2026, owner-directed): the single
+    most recent row for `ticker` under `model`, across ALL rubric
+    versions - unlike latest_scores_for_model()/latest_score_previous_
+    rubric(), which are each scoped to one rubric_version (current or
+    "any other"), this is "whatever this ticker's newest row actually
+    is", so the owner's admin panel shows the real latest record even
+    if it happens to sit under a now-retired rubric. None if this
+    ticker has never been scored under this model at all. Read-only."""
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM top100_scores WHERE ticker = ? AND model = ? "
+            "ORDER BY scored_at DESC LIMIT 1",
+            (ticker, model),
+        ).fetchone()
+    if not row:
+        return None
+    out = dict(row)
+    out["dims"] = json.loads(out.pop("dims_json"))
+    out["not_rated"] = bool(out["not_rated"])
+    out["degenerate_accepted"] = bool(out.get("degenerate_accepted"))
     return out
 
 

@@ -1092,7 +1092,16 @@ def _shelf_row_html(row, lang, origin_badge_html=None):
             caption = _t("shelf_caption_awaiting", lang)
     else:
         chip = _shelf_chip_html(_t("shelf_chip_not_rated", lang), *_SHELF_CHIP_NOT_RATED)
-        caption = _t("shelf_caption_not_rated", lang)
+        if score_row.get("degenerate_accepted"):
+            # Degenerate-response guard (3 Oct 2026, owner-directed): this
+            # row was accepted as NOT RATED only after a second consecutive
+            # sentinel-filled (degenerate) response - see top100_engine.py's
+            # _save_degenerate_as_not_rated(). Flag it distinctly so the
+            # owner can tell "model genuinely declined" apart from "model
+            # returned a template twice".
+            caption = _t("shelf_caption_not_rated", lang) + " " + _t("shelf_caption_degenerate_x2", lang)
+        else:
+            caption = _t("shelf_caption_not_rated", lang)
     ticker = row["ticker"]
     badge_html = origin_badge_html or ""
     mos_html = ""

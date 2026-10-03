@@ -1045,6 +1045,20 @@ TOP100_FAILURE_MAX_ATTEMPTS = 3
 TOP100_MAX_SUBMISSIONS_PER_UTC_DAY = 2
 TOP100_MAX_ENTRANTS_PER_UTC_DAY = 2 * MAX_NIGHTLY_SCORES
 
+# Degenerate-response guard (3 Oct 2026, owner-directed, live evidence:
+# msgbatch_01Jbz1uEmi1zesnrEbVHtchE's t100-3/t100-17 - sentinel-filled
+# templates, not real judgements, saved as NOT RATED). A degenerate
+# item is never saved on its FIRST attempt (recorded as a "degenerate_
+# response" failure instead, retried at the next batch like any other
+# failure); TOP100_DEGENERATE_ACCEPT_ATTEMPTS (2) names the point at
+# which _save_degenerate_as_not_rated() accepts it anyway rather than
+# retrying forever - checked as "the STORED failure reason coming into
+# this run was already degenerate_response" (poll_and_ingest_batch()'s
+# own per-ticker branch), not a raw attempts-count compare, since
+# `attempts` itself counts every failure reason, not this one
+# specifically.
+TOP100_DEGENERATE_ACCEPT_ATTEMPTS = 2
+
 # Rough pre-submission cost estimate ONLY (the real, billed cost is
 # logged after ingest from poll_and_ingest_batch()'s own actual token
 # counts - see estimate_batch_cost_usd()'s own docstring). ~4 chars/
@@ -1691,7 +1705,54 @@ def _normalize_echoed_ticker(raw_ticker, expected_tickers=None):
     return t
 
 
-def _parse_response_json(text, expected_tickers=None, log=None):
+_DEGENERATE_FREE_TEXT_FIELDS = (
+    "inversion_scenario", "current_headwind", "market_structure_comment",
+    "one_foot_comment", "munger_comment", "big_wave_comment",
+)
+
+
+def _is_degenerate_item(item):
+    """True when `item` (one raw company object straight off the wire,
+    BEFORE _parse_one_company()'s own sentinel-mapping/normalisation)
+    is a sentinel-filled TEMPLATE, not an actual judgement (3 Oct 2026,
+    owner-directed, live evidence from msgbatch_01Jbz1uEmi1zesnrEbVHtchE:
+    t100-3 - 5 items, every one of the ten dimension scores 0, every
+    free-text field "" - and t100-17, the identical shape with every
+    score 1 instead): (a) all TEN dimension scores are IDENTICAL (all
+    0, all 1, ...) AND (b) every free-text field - the ten per-
+    dimension justifications, plus inversion_scenario/current_headwind/
+    market_structure_comment/one_foot_comment/munger_comment/big_wave_
+    comment - is empty.
+
+    A legitimate NOT RATED response (>= 3 zero dimensions, but at
+    least one dimension scored differently, or carrying a real
+    justification) fails condition (a) or (b) and is NOT degenerate -
+    this only catches the exact all-identical/all-blank shape, never a
+    genuine decline. A malformed item (missing a dimension key, a
+    non-integer score) returns False here too - that is _parse_one_
+    company()'s own failure to raise on, not this guard's job."""
+    scores = []
+    for key in DIMENSION_KEYS:
+        dim = item.get(key)
+        if not isinstance(dim, dict):
+            return False
+        try:
+            score = int(dim.get("score"))
+        except (TypeError, ValueError):
+            return False
+        scores.append(score)
+        if str(dim.get("justification") or "").strip():
+            return False
+    if len(set(scores)) != 1:
+        return False
+    for field in _DEGENERATE_FREE_TEXT_FIELDS:
+        if str(item.get(field) or "").strip():
+            return False
+    return True
+
+
+def _parse_response_json(text, expected_tickers=None, log=None, degenerate_out=None,
+                          matched_by_out=None):
     """v6 packed requests (1 Oct 2026, owner-directed): parses the
     whole packed response text into {ticker: (the same 13-tuple
     _parse_one_company() above returns), ...} - one entry per item in
@@ -1720,6 +1781,14 @@ def _parse_response_json(text, expected_tickers=None, log=None):
     positional match (for the caller's own log stream) - this function
     stays silent (and side-effect-free beyond that) otherwise.
 
+    Degenerate-response guard (3 Oct 2026, owner-directed): an item
+    for which _is_degenerate_item() is True - whether matched by an
+    explicit ticker string or by position - is never added to the
+    returned dict and is instead recorded into `degenerate_out` (a
+    set, when given) under its resolved ticker, so the caller can
+    treat it as its own distinct failure reason ("degenerate_response")
+    rather than either a saved score or a plain "missing" one.
+
     Per-item failure isolation (the task's own explicit requirement):
     a single malformed item (not a dict, or a missing dimension inside
     it) is simply left OUT of the returned dict rather than raising -
@@ -1734,7 +1803,16 @@ def _parse_response_json(text, expected_tickers=None, log=None):
     JSON, or has no top-level "companies" list at all - a REQUEST-
     level failure (the whole structured-output call came back
     malformed), which the caller treats as every entrant THIS request
-    carried having failed, not a single ticker's problem."""
+    carried having failed, not a single ticker's problem.
+
+    `matched_by_out` (stored score viewer, 3 Oct 2026, owner-directed):
+    a dict, when given, mutated to record HOW each resolved ticker
+    (saved score or degenerate) was matched - "ticker" for an explicit
+    echoed ticker string, "position" for the blank-ticker positional
+    fallback - so the caller can persist it onto the saved score row
+    for the admin Stored score viewer panel. Purely an out-parameter,
+    same pattern as `degenerate_out`; never changes this function's
+    return shape."""
     data = json.loads(text)
     companies = data.get("companies")
     if not isinstance(companies, list):
@@ -1749,21 +1827,40 @@ def _parse_response_json(text, expected_tickers=None, log=None):
             blank_items.append((idx, item))
             continue
         ticker = _normalize_echoed_ticker(ticker, expected_tickers)
+        if _is_degenerate_item(item):
+            if degenerate_out is not None:
+                degenerate_out.add(ticker)
+            if matched_by_out is not None:
+                matched_by_out[ticker] = "ticker"
+            continue
         try:
             out[ticker] = _parse_one_company(item)
         except Exception:
             continue
+        if matched_by_out is not None:
+            matched_by_out[ticker] = "ticker"
     count_mismatch = expected_tickers is not None and len(companies) != len(expected_tickers)
     if blank_items and expected_tickers is not None and not count_mismatch:
         for idx, item in blank_items:
             candidate = expected_tickers[idx]
-            if candidate in out:
+            if candidate in out or (degenerate_out is not None and candidate in degenerate_out):
+                continue
+            if _is_degenerate_item(item):
+                if degenerate_out is not None:
+                    degenerate_out.add(candidate)
+                if matched_by_out is not None:
+                    matched_by_out[candidate] = "position"
+                if log is not None:
+                    log(f"[top100] {candidate}: degenerate response, blank ticker - "
+                        f"matched by position (item {idx + 1} of {len(companies)})")
                 continue
             try:
                 parsed = _parse_one_company(item)
             except Exception:
                 continue
             out[candidate] = parsed
+            if matched_by_out is not None:
+                matched_by_out[candidate] = "position"
             if log is not None:
                 log(f"[top100] {candidate}: ticker field blank in response - "
                     f"matched by position (item {idx + 1} of {len(companies)})")
@@ -2031,6 +2128,41 @@ def _batch_result_error_type(result_error):
     return inner_type or getattr(result_error, "type", "unknown")
 
 
+def _save_degenerate_as_not_rated(ticker, entrant_info, state, prompt_params, raw_text,
+                                   matched_by=None, log=print):
+    """Degenerate-response guard (3 Oct 2026, owner-directed): accepts
+    `ticker` as NOT RATED after TOP100_DEGENERATE_ACCEPT_ATTEMPTS (2)
+    consecutive degenerate-response attempts, rather than retrying it
+    forever. Saves a SYNTHETIC all-null dims dict (never the model's
+    own degenerate scores/text, which carry no real judgement
+    regardless of which sentinel value - 0s, 1s, ... - they happened
+    to repeat) with every synthesis field None and degenerate_
+    accepted=True, so top100_render.py's bottom-shelf row can show a
+    distinct "degenerate x2" caption rather than looking like an
+    ordinary NOT RATED decline. The raw response text is still stored
+    (for audit, same as every other save_score() call) even though its
+    content wasn't trusted. Clears the ticker's failure row - it's
+    been resolved one way or another, not left pending another
+    retry."""
+    synthetic_dims = {
+        key: {"score": None, "justification": "", "source_period": None}
+        for key in DIMENSION_KEYS
+    }
+    top100_store.save_score(
+        ticker=ticker, quarter=entrant_info.get("score_key"), model=state["model"],
+        rubric_version=RUBRIC_VERSION, dims=synthetic_dims, not_rated=True,
+        most_recent_quarter=entrant_info.get("most_recent_quarter"),
+        inversion_scenario=None, inversion_severity=None, current_headwind=None,
+        market_structure=None, market_structure_comment=None,
+        one_foot_hurdle=None, one_foot_comment=None,
+        munger_quality=None, munger_comment=None, big_wave=None, big_wave_comment=None,
+        degenerate_accepted=True, matched_by=matched_by,
+        prompt=json.dumps(prompt_params), raw_response=raw_text,
+    )
+    top100_store.clear_score_failure(ticker, state["model"], RUBRIC_VERSION)
+    log(f"[top100] {ticker}: degenerate response x2 - accepted as NOT RATED (flagged degenerate x2)")
+
+
 def poll_and_ingest_batch(log=print):
     """Phase 1 of every nightly run: if a batch is in flight (top100_
     store.get_batch_state() is not None), checks its status.
@@ -2124,6 +2256,13 @@ def poll_and_ingest_batch(log=print):
     errored_count = 0
     errored_rest_type_counts = {}
     failure_reasons = []  # [(ticker, reason), ...] - audit fixes Commit 1
+    # Degenerate-response guard (3 Oct 2026, owner-directed): read ONCE,
+    # before the per-result loop, so each degenerate ticker can be
+    # checked against whatever it already recorded BEFORE this run -
+    # "the SECOND consecutive degenerate attempt" means the stored
+    # reason was already "degenerate_response" coming into this run,
+    # not merely "this ticker has failed twice for any reason".
+    _existing_failures = top100_store.score_failures_for_model(state["model"], RUBRIC_VERSION)
     try:
         for result in client.messages.batches.results(state["batch_id"]):
             entry = custom_id_map.get(result.custom_id)
@@ -2197,9 +2336,12 @@ def poll_and_ingest_batch(log=print):
             # this fixes.
             total_cache_creation_tokens += getattr(msg.usage, "cache_creation_input_tokens", 0) or 0
             total_cache_read_tokens += getattr(msg.usage, "cache_read_input_tokens", 0) or 0
+            _degenerate_tickers = set()
+            _matched_by = {}
             try:
                 parsed_by_ticker = _parse_response_json(
-                    text, expected_tickers=list(entrants_map.keys()), log=log)
+                    text, expected_tickers=list(entrants_map.keys()), log=log,
+                    degenerate_out=_degenerate_tickers, matched_by_out=_matched_by)
             except Exception as e:
                 # Request-level parse failure (malformed/missing
                 # "companies" array) - every entrant THIS request
@@ -2213,6 +2355,29 @@ def poll_and_ingest_batch(log=print):
                 {"ticker": t, "company_name": t, "sector": None} for t in entrants_map
             ])
             for ticker, entrant_info in entrants_map.items():
+                if ticker in _degenerate_tickers:
+                    # Degenerate-response guard (3 Oct 2026, owner-
+                    # directed): a sentinel-filled template (all ten
+                    # dimension scores identical, every free-text field
+                    # empty), not a real judgement - never saved as a
+                    # score. Accepted as NOT RATED only on the SECOND
+                    # consecutive degenerate attempt (the stored failure
+                    # reason was already "degenerate_response" coming
+                    # into this run); otherwise recorded as a failure
+                    # and retried next batch, same retry window as every
+                    # other failure reason.
+                    _prior = _existing_failures.get(ticker)
+                    if _prior and _prior.get("reason") == "degenerate_response":
+                        _save_degenerate_as_not_rated(
+                            ticker, entrant_info, state, prompt_params, text,
+                            matched_by=_matched_by.get(ticker), log=log)
+                        saved += 1
+                    else:
+                        failed += 1
+                        failure_reasons.append((ticker, "degenerate_response"))
+                        log(f"[top100] {ticker}: degenerate response (sentinel-filled template) - "
+                            "not saved, will retry")
+                    continue
                 if ticker not in parsed_by_ticker:
                     # Per-ticker failure isolation (the task's own
                     # explicit requirement): this one entrant's own item
@@ -2238,6 +2403,7 @@ def poll_and_ingest_batch(log=print):
                     one_foot_hurdle=one_foot_hurdle, one_foot_comment=one_foot_comment,
                     munger_quality=munger_quality, munger_comment=munger_comment,
                     big_wave=big_wave, big_wave_comment=big_wave_comment,
+                    matched_by=_matched_by.get(ticker),
                     prompt=json.dumps(prompt_params), raw_response=text,
                 )
                 top100_store.clear_score_failure(ticker, state["model"], RUBRIC_VERSION)
@@ -2363,6 +2529,85 @@ def set_resubmit_paused(paused, log=print):
         log(f"[top100] could not {'set' if paused else 'clear'} resubmission pause marker: {e}")
         raise
     log(f"[top100] resubmission pause {'ENABLED' if paused else 'disabled'} by owner")
+
+
+# -----------------------------------------------------------------
+# Degenerate-response sweep (3 Oct 2026, owner-directed) - retroactive,
+# one-off, marker-guarded clean-up of v6 rows already saved from a
+# sentinel-filled template (see _is_degenerate_item()'s own docstring
+# for the live evidence) - CL/WDAY/DUOL/RRL.AX are expected among the
+# tickers it clears. Same "one file per one-off, never allowed to stop
+# the site serving" convention as every other boot-time one-off in
+# this module (set_resubmit_pause_on_this_deploy_once()/seed_pool_
+# presence_for_v6_once() elsewhere here) - fires once, ever, never
+# again on a later deploy (unlike the resubmit-pause marker, this is a
+# one-time data clean-up, not a per-deploy policy switch).
+# -----------------------------------------------------------------
+
+def _is_degenerate_stored_row(score_row):
+    """Same test as _is_degenerate_item() (see that function's own
+    docstring), reapplied to an ALREADY-STORED score_row (top100_
+    store.get_score()/latest_scores_for_model()'s own shape - `dims`
+    a dict, score already sentinel-mapped to None for the wire's 0) -
+    for the retroactive sweep, which has no raw wire item to re-parse,
+    only what was actually persisted."""
+    dims = score_row.get("dims") or {}
+    if set(dims.keys()) != set(DIMENSION_KEYS):
+        return False
+    scores = [(dims.get(k) or {}).get("score") for k in DIMENSION_KEYS]
+    if len(set(scores)) != 1:
+        return False
+    if any(str((dims.get(k) or {}).get("justification") or "").strip() for k in DIMENSION_KEYS):
+        return False
+    for field in _DEGENERATE_FREE_TEXT_FIELDS:
+        if str(score_row.get(field) or "").strip():
+            return False
+    return True
+
+
+def _degenerate_sweep_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".top100_degenerate_sweep_v1_done")
+
+
+def run_degenerate_sweep_once(model=MODEL_TOP100, log=print):
+    """One-off, marker-guarded boot action: scans every stored v6 score
+    row (top100_store.latest_scores_for_model()) for the degenerate
+    pattern (_is_degenerate_stored_row()) and, for each match, deletes
+    the row (top100_store.delete_score()) and records a "degenerate_
+    response" failure for it (top100_store.record_score_failure()) so
+    it's picked up and re-sent by _unscored_tickers() in the next
+    batch, alongside the 69 unmatched tickers from the same incident.
+    Idempotent by construction - run twice with nothing new matching
+    (either because the first run already cleared everything, or
+    because the marker already short-circuits it), logs "found 0
+    matching rows" rather than re-clearing anything. Never raises -
+    any failure here is logged and otherwise swallowed, same as every
+    other one-off boot hook in this module (this must never be allowed
+    to stop the site serving)."""
+    marker = _degenerate_sweep_marker_path()
+    if os.path.exists(marker):
+        return
+    cleared = []
+    try:
+        rows = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+        for ticker, row in rows.items():
+            if _is_degenerate_stored_row(row):
+                top100_store.delete_score(ticker, row["quarter"], model, RUBRIC_VERSION)
+                top100_store.record_score_failure(ticker, model, RUBRIC_VERSION, "degenerate_response")
+                cleared.append(ticker)
+    except Exception as e:
+        log(f"[top100] degenerate sweep failed, will not retry automatically: {e}")
+        return
+    try:
+        with open(marker, "w") as f:
+            f.write(datetime.now(timezone.utc).isoformat())
+    except OSError as e:
+        log(f"[top100] could not write degenerate-sweep marker: {e}")
+    if cleared:
+        log(f"[top100] degenerate sweep: cleared {len(cleared)} v6 rows: {', '.join(sorted(cleared))}")
+    else:
+        log("[top100] degenerate sweep: found 0 matching v6 rows")
 
 
 def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
@@ -2703,7 +2948,12 @@ def inspect_batch_results(results, expected_map=None):
     expected "RG1.AX" shows up here under its own, different string),
     "items_count", "excerpt" (first _BATCH_INSPECTOR_EXCERPT_CHARS
     chars of the raw text/error, or None when the request fully
-    matched its expected tickers)}.
+    matched its expected tickers), "full_text" (the COMPLETE raw text/
+    error detail, untruncated, for EVERY request regardless of match
+    status - stored score viewer's own ticker-search box, 3 Oct 2026,
+    owner-directed, reads this so the owner can see a fully-matched
+    request's own raw response too, not only a non-matching one's
+    excerpt)}.
 
     summary = {"total", "fully_matched", "partially_matched", "empty",
     "errored"} - mutually exclusive, sums to total. A request is
@@ -2734,10 +2984,12 @@ def inspect_batch_results(results, expected_map=None):
             row["items_count"] = 0
             detail = r.get("error_detail") or ""
             row["excerpt"] = detail[:_BATCH_INSPECTOR_EXCERPT_CHARS] or None
+            row["full_text"] = detail
             errored += 1
             rows.append(row)
             continue
         text = r.get("text") or ""
+        row["full_text"] = text
         try:
             parsed = _parse_response_json(text, expected_tickers=expected)
         except Exception:
@@ -2952,7 +3204,8 @@ def run_single_test_call(ticker, company_name=None):
     params = _request_params(entrants)
     resp = client.messages.create(**params)
     text = next((b.text for b in resp.content if b.type == "text"), "")
-    parsed_by_ticker = _parse_response_json(text, expected_tickers=[ticker])
+    _matched_by = {}
+    parsed_by_ticker = _parse_response_json(text, expected_tickers=[ticker], matched_by_out=_matched_by)
     if ticker not in parsed_by_ticker:
         raise ValueError(f"{ticker} missing from the model's own response")
     (dims, not_rated, inversion_scenario, inversion_severity, current_headwind,
@@ -2975,6 +3228,7 @@ def run_single_test_call(ticker, company_name=None):
         one_foot_hurdle=one_foot_hurdle, one_foot_comment=one_foot_comment,
         munger_quality=munger_quality, munger_comment=munger_comment,
         big_wave=big_wave, big_wave_comment=big_wave_comment,
+        matched_by=_matched_by.get(ticker),
         prompt=json.dumps(params), raw_response=text,
     )
     return {

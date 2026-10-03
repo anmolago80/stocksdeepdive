@@ -29927,6 +29927,73 @@ def _render_batch_inspector_panel():
                 if _row["excerpt"]:
                     st.code(_row["excerpt"], language=None)
 
+        # Ticker search box (degenerate-response guard, 3 Oct 2026,
+        # owner-directed): unlike the expanders above - which only show
+        # an excerpt, and only for a non-fully-matched request - this
+        # shows the COMPLETE raw text of whichever request echoed a
+        # given ticker, for ANY request (including one that fully
+        # matched, so the owner can inspect a clean response's own
+        # wording too).
+        st.markdown("---")
+        _search_ticker = st.text_input(
+            "Find a ticker's full raw response", key="admin_dash_batch_inspector_search",
+            placeholder="e.g. CL",
+        ).strip().upper()
+        if _search_ticker:
+            _hits = [r for r in _rows if _search_ticker in r.get("tickers_echoed", [])]
+            if not _hits:
+                st.warning(f"{_search_ticker} was not echoed by any request in this batch.")
+            for _hit in _hits:
+                st.write(f"**{_hit['custom_id']}** ({_hit['type']}) - full raw response:")
+                st.code(_hit.get("full_text") or "(empty)", language=None)
+
+
+def _render_stored_score_viewer_panel():
+    """Stored score viewer (3 Oct 2026, owner-directed, degenerate-
+    response guard task) - owner-only, read-only against the LOCAL
+    top100_scores table (top100_store.latest_score_for_ticker()), never
+    the Anthropic Batches API - lets the owner inspect any card's full
+    source (rubric version, every dimension score + justification, all
+    synthesis text fields, the raw model response, and matched_by - how
+    this row's ticker was resolved from the packed response: "ticker"
+    for an explicit echo, "position" for the blank-ticker positional
+    fallback, None for a row saved before this column existed or
+    through a path that doesn't record it) without needing the Batches
+    API at all. No gate of its own - called only from inside page_
+    admin_dashboard(), after that function's own owner check."""
+    st.markdown("### Stored score viewer")
+    st.caption(
+        "Owner-only. Shows a ticker's single most recent stored score "
+        "row (any rubric version) exactly as saved - every dimension "
+        "score/justification, all synthesis text fields, matched_by, "
+        "and the full raw model response - without going through the "
+        "Anthropic Batches API."
+    )
+    _ticker = st.text_input(
+        "Ticker", key="admin_dash_score_viewer_ticker", placeholder="e.g. CL or WDAY",
+    ).strip().upper()
+    if not _ticker:
+        return
+    _row = top100_store.latest_score_for_ticker(_ticker, top100_engine.MODEL_TOP100)
+    if _row is None:
+        st.warning(f"No stored score row for {_ticker} under model {top100_engine.MODEL_TOP100}.")
+        return
+    st.write(f"Rubric version: **{_row['rubric_version']}** · scored at {_row['scored_at']} · "
+             f"score key: {_row['quarter']}")
+    st.write(f"not_rated: {_row['not_rated']} · degenerate_accepted: {_row['degenerate_accepted']} · "
+             f"matched_by: {_row.get('matched_by') or 'not recorded'}")
+    st.write("Dimension scores:")
+    st.json(_row["dims"])
+    for _field in (
+        "inversion_scenario", "inversion_severity", "current_headwind",
+        "market_structure", "market_structure_comment",
+        "one_foot_hurdle", "one_foot_comment",
+        "munger_quality", "munger_comment", "big_wave", "big_wave_comment",
+    ):
+        st.write(f"{_field}: {_row.get(_field)}")
+    st.write("Raw response excerpt:")
+    st.code((_row.get("raw_response") or "")[:2000] or "(empty)", language=None)
+
 
 def _render_recompute_ticker_panel():
     """"Recompute this ticker now" (3 Oct 2026, owner-directed) -
@@ -32021,6 +32088,13 @@ def page_admin_dashboard():
     # above.
     st.markdown("---")
     _render_recompute_ticker_panel()
+
+    # --- STORED SCORE VIEWER (3 Oct 2026, owner-directed, degenerate-
+    # response guard task) - see _render_stored_score_viewer_panel()'s
+    # own docstring. Same "no gate of its own, final section of this
+    # page" pattern as every panel above.
+    st.markdown("---")
+    _render_stored_score_viewer_panel()
 
 
 # -----------------------------------

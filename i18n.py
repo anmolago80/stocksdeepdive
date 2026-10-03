@@ -3976,6 +3976,7 @@ EN = {
     "top100.shelf_caption_scoring_failed": "scoring failed — will retry after the next rubric change",
     "top100.shelf_chip_not_rated": "◇ NOT RATED",
     "top100.shelf_caption_not_rated": "Not enough public information for an analytical score.",
+    "top100.shelf_caption_degenerate_x2": "(the model returned a blank template twice; accepted as NOT RATED)",
     "top100.origin_pool_badge": "🌐 TOP 200 · #{rank}",
     "top100.origin_pool_tooltip": "In the global Top 200 by Value Score — global rank #{rank}.",
     "top100.origin_extension_badge": "＋ ASX EXTENSION",
