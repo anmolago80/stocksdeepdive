@@ -181,7 +181,7 @@ with mock.patch.object(se, "fetch_ftse100", return_value=None), \
      mock.patch.object(se, "fetch_ftse100_ishares", return_value=None):
     df, source = se.get_universe_pool("United Kingdom", "FTSE 100")
 assert df is not None and set(df["Ticker"]) == {"AZN.L", "SHEL.L"}, df
-assert source.startswith("Last known-good list"), source
+assert "(saved list, " in source, source  # Director addendum 2 Part 2 item D relabel
 _fresh_logs = [msg for lvl, msg in _handler.pop_all() if "using last known-good list" in msg]
 assert _fresh_logs and "day(s) old" in _fresh_logs[0] and "older than" not in _fresh_logs[0], _fresh_logs
 print(f"[T5a_last_good_fresh] both live sources fail -> fresh last-good list served, age logged "
@@ -241,7 +241,7 @@ assert se._load_last_good_universe_list("nikkei_225") is not None
 with mock.patch.object(se, "fetch_nikkei225", return_value=None):
     df2, source2 = se.get_universe_pool("Japan", "Nikkei 225")
 assert df2 is not None and set(df2["Ticker"]) == {"7203.T", "6758.T"}, df2
-assert source2.startswith("Last known-good list"), source2
+assert "(saved list, " in source2, source2  # Director addendum 2 Part 2 item D relabel
 print("[T7a_nikkei_last_good] Nikkei 225 - live success saves a last-good list; a later failed "
       "fetch reuses it instead of skipping OK")
 
@@ -254,7 +254,7 @@ assert se._load_last_good_universe_list("topix_500") is not None
 with mock.patch.object(se, "fetch_topix500", return_value=None):
     df4, source4 = se.get_universe_pool("Japan", "TOPIX 500")
 assert df4 is not None and len(df4) == 400, df4
-assert source4.startswith("Last known-good list"), source4
+assert "(saved list, " in source4, source4  # Director addendum 2 Part 2 item D relabel
 # Still never a fallback list when there is truly nothing saved either.
 _clear_last_good("topix_500")
 with mock.patch.object(se, "fetch_topix500", return_value=None):

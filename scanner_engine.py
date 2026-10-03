@@ -81,6 +81,7 @@ import io
 import json
 import logging
 import os
+import re
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -2288,11 +2289,29 @@ def _load_last_good_universe_list(slug):
         return None
 
 
+def _strip_universe_source_suffix_tag(source):
+    """Director addendum 2 (3 Oct 2026), Part 2, item D: strips a
+    trailing " (live)"/" (fund file)" tag (if present) from a stored
+    `source` string before re-tagging it "(saved list, <date>)" below -
+    avoids a double-tagged label like "Wikipedia FTSE 100 (live) (saved
+    list, 02 Oct 2026)" for a universe whose last-good list was saved
+    from a live (or fund-file) fetch on some prior night."""
+    return re.sub(r"\s*\((?:live|fund file)\)\s*$", "", source or "").strip() or "unknown"
+
+
 def _last_good_universe_df_and_label(universe_name, last_good):
     """Builds the (df, source_label) pair for a last-good-list hit.
     Logs the list's own age at INFO, escalating to a WARNING once it's
     older than _UNIVERSE_LIST_MAX_AGE_WARN_DAYS days - per this task's
-    own instruction ("Log its age; warn when older than 35 days")."""
+    own instruction ("Log its age; warn when older than 35 days").
+
+    Director addendum 2 (3 Oct 2026), Part 2, item D: the returned
+    label now ends with the exact "(saved list, <date>)" tag the
+    Director asked for - one of three standard suffixes every universe
+    source label in this section now uses ("(live)"/"(fund file)"/
+    "(saved list, <date>)"), replacing the old free-text "Last known-
+    good list (source: ..., as of ...)" wording. The log line itself is
+    untouched (still names the source + age/staleness explicitly)."""
     symbols = last_good["symbols"]
     fetched_at = last_good.get("fetched_at")
     age_days, as_of = None, "unknown date"
@@ -2313,7 +2332,7 @@ def _last_good_universe_df_and_label(universe_name, last_good):
     else:
         _log.info(base_msg)
     df = pd.DataFrame({"Ticker": symbols, "Sector": [None] * len(symbols)})
-    label = f"Last known-good list (source: {source}, as of {as_of})"
+    label = f"{_strip_universe_source_suffix_tag(source)} (saved list, {as_of})"
     return df, label
 
 
@@ -2344,7 +2363,27 @@ def _resolve_universe_with_fund_crosscheck(universe_name, slug, wiki_fetch_fn, f
     comment above): (1) Wikipedia live; (2) the fund-holdings file
     live, cross-checked against Wikipedia's own list whenever both
     succeed; (3) the last known-good list saved on some prior night;
-    (4) not scanning tonight. Returns (df_or_None, source_label)."""
+    (4) not scanning tonight. Returns (df_or_None, source_label).
+
+    Director addendum 2 (3 Oct 2026), Part 2, item D: every label this
+    function (and _last_good_universe_df_and_label() below) returns now
+    ends with exactly one of three standard tags - "(live)" for a
+    Wikipedia fetch, "(fund file)" for the ETF-holdings fetch used as
+    PRIMARY source (Wikipedia having failed), "(saved list, <date>)"
+    for a last-good disk hit - replacing the old free-text variety
+    ("... (live) instead", "Last known-good list (source: ..., as of
+    ...)"). For wiki_fetch_fn()=fetch_tsxcomposite() specifically: that
+    function's own live Wikipedia TSX Composite scrape IS the primary
+    source whenever it succeeds (a 150-260-row window) - it is then
+    topped up (never replaced) with any TSX 60 ticker it was missing,
+    via _asx_backfill_missing_subset_tickers() (that function's own
+    "backfilled: <tickers>" INFO log line is the disclosure for that
+    step) - so "Wikipedia TSX Composite (live)" is the correct, non-
+    misleading label for that result; it is NOT "Wikipedia TSX 60
+    backfilled against Composite" (the superset passed to the backfill
+    helper is the Composite scrape, TSX 60 is only ever the subset
+    used to fill small gaps in it - see this task's own report for the
+    live evidence that prompted this note)."""
     wiki_df = wiki_fetch_fn()
     fund_df = fund_fetch_fn() if fund_fetch_fn else None
 
@@ -2356,9 +2395,9 @@ def _resolve_universe_with_fund_crosscheck(universe_name, slug, wiki_fetch_fn, f
         return wiki_df, f"Wikipedia {universe_name} (live)"
 
     if fund_df is not None:
-        _save_last_good_universe_list(slug, list(fund_df["Ticker"]), f"{fund_label} holdings file (live)")
+        _save_last_good_universe_list(slug, list(fund_df["Ticker"]), f"{fund_label} holdings file (fund file)")
         return fund_df, (
-            f"Wikipedia {universe_name} unavailable - {fund_label} holdings file (live) instead"
+            f"Wikipedia {universe_name} unavailable - {fund_label} holdings file (fund file)"
         )
 
     last_good = _load_last_good_universe_list(slug)
@@ -3522,9 +3561,9 @@ def get_universe_pool(country, universe):
         if df is not None:
             _save_last_good_universe_list(
                 "topix_500", list(df["Ticker"]),
-                "JPX TOPIX New Index Series constituents file (live, Core30+Large70+Mid400)",
+                "JPX TOPIX New Index Series constituents file, Core30+Large70+Mid400 (live)",
             )
-            return df, "JPX TOPIX New Index Series constituents file (live, Core30+Large70+Mid400)"
+            return df, "JPX TOPIX New Index Series constituents file, Core30+Large70+Mid400 (live)"
         last_good = _load_last_good_universe_list("topix_500")
         if last_good is not None:
             return _last_good_universe_df_and_label("TOPIX 500", last_good)
