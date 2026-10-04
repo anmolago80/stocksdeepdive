@@ -658,11 +658,16 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
     passing the old (v1-v4-era) argument list still works.
     `prompt`/`raw_response`: the FULL text sent/received, for
     reproducibility (the task's own instruction) - never truncated.
-    `matched_by` (stored score viewer, 3 Oct 2026): "ticker" or
-    "position", whichever way top100_engine._parse_response_json()
-    resolved this ticker from the packed response - None for a caller
-    that doesn't pass it (e.g. a pre-existing row, or a save made
-    outside the batch-ingest path)."""
+    `matched_by` (stored score viewer, 3 Oct 2026; "whole_response"
+    added by Commit 1, 4 Oct 2026): "ticker" or "position", whichever
+    way top100_engine._parse_response_json() resolved this ticker from
+    the packed response, or "whole_response" when the entire packed
+    response was degenerate and every one of its entrants - not just
+    whichever one an explicit/positional ticker happened to land on -
+    was recorded under the same reason (see _whole_response_is_
+    degenerate()'s own docstring) - None for a caller that doesn't pass
+    it (e.g. a pre-existing row, or a save made outside the batch-
+    ingest path)."""
     with _conn() as conn:
         conn.execute(
             """INSERT INTO top100_scores

@@ -30026,8 +30026,10 @@ def _render_stored_score_viewer_panel():
     synthesis text fields, the raw model response, and matched_by - how
     this row's ticker was resolved from the packed response: "ticker"
     for an explicit echo, "position" for the blank-ticker positional
-    fallback, None for a row saved before this column existed or
-    through a path that doesn't record it) without needing the Batches
+    fallback, "whole_response" when the entire packed request was
+    degenerate (Commit 1, 4 Oct 2026), None for a row saved before
+    this column existed or through a path that doesn't record it)
+    without needing the Batches
     API at all. No gate of its own - called only from inside page_
     admin_dashboard(), after that function's own owner check."""
     st.markdown("### Stored score viewer")

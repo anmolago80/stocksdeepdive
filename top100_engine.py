@@ -1760,8 +1760,70 @@ def _is_degenerate_item(item):
     return True
 
 
+def _item_free_text_all_empty(item):
+    """Same free-text surface _is_degenerate_item() checks (the ten
+    per-dimension justifications, plus _DEGENERATE_FREE_TEXT_FIELDS),
+    without that function's own "all ten scores identical" requirement.
+    Used only by _parse_response_json()'s whole-response-degenerate
+    check below (condition B: too few items AND every field blank) -
+    never to decide a single item's own fate, which stays
+    _is_degenerate_item()'s job alone."""
+    for key in DIMENSION_KEYS:
+        dim = item.get(key)
+        if isinstance(dim, dict) and str(dim.get("justification") or "").strip():
+            return False
+    for field in _DEGENERATE_FREE_TEXT_FIELDS:
+        if str(item.get(field) or "").strip():
+            return False
+    return True
+
+
+def _whole_response_is_degenerate(companies, expected_tickers):
+    """Commit 1 (4 Oct 2026, owner-directed - "a wholly blank packed
+    response fails every company in it the same way"): True when a
+    packed request's ENTIRE response is a failure, not just some of
+    its own items - live evidence: request t100-0 (batch
+    msgbatch_01CZd7EPW99kfK1SNqaFUEfG), 3 entrants (APAM/ASIC/HIPO),
+    one blank-shaped item returned. Under the per-item logic alone,
+    APAM (the one item present, degenerate-shaped, explicit ticker)
+    was correctly recorded "degenerate_response", but ASIC/HIPO (no
+    item at all) fell through to "missing_from_response" - two
+    different failure reasons for what is really one broken request.
+
+    True under EITHER:
+      (a) `companies` is non-empty, every entry is a dict, and every
+          one is degenerate per _is_degenerate_item() (the model
+          returned only sentinel-filled templates); or
+      (b) `companies` has FEWER entries than `expected_tickers` (the
+          model stopped early / returned nothing for some entrants)
+          AND every entry that IS present is a dict with every free-
+          text field blank (_item_free_text_all_empty()) - a looser
+          check than (a) since a short response's few real items
+          needn't share one identical score to still be worthless
+          templates. An empty `companies` list satisfies this
+          vacuously (0 items, nothing to violate "every field blank").
+
+    False whenever at least one returned item carries a real
+    judgement (a non-empty justification or comment anywhere) - that
+    keeps today's per-item behaviour (one bad entrant never costs its
+    packmates their own good scores) exactly as before this commit.
+    `expected_tickers` is required (no entrant list, no "too few
+    items" comparison possible) - always False when it's None."""
+    if expected_tickers is None:
+        return False
+    if companies and all(isinstance(item, dict) for item in companies) \
+            and all(_is_degenerate_item(item) for item in companies):
+        return True  # condition (a)
+    if len(companies) < len(expected_tickers):
+        return all(  # condition (b) - vacuously True for an empty list
+            isinstance(item, dict) and _item_free_text_all_empty(item)
+            for item in companies
+        )
+    return False
+
+
 def _parse_response_json(text, expected_tickers=None, log=None, degenerate_out=None,
-                          matched_by_out=None):
+                          matched_by_out=None, request_label=None):
     """v6 packed requests (1 Oct 2026, owner-directed): parses the
     whole packed response text into {ticker: (the same 13-tuple
     _parse_one_company() above returns), ...} - one entry per item in
@@ -1821,11 +1883,36 @@ def _parse_response_json(text, expected_tickers=None, log=None, degenerate_out=N
     fallback - so the caller can persist it onto the saved score row
     for the admin Stored score viewer panel. Purely an out-parameter,
     same pattern as `degenerate_out`; never changes this function's
-    return shape."""
+    return shape.
+
+    Whole-response-degenerate guard (Commit 1, 4 Oct 2026, owner-
+    directed): checked BEFORE any per-item parsing, via
+    _whole_response_is_degenerate() (see its own docstring) - when the
+    packed response is degenerate AS A WHOLE, every one of `expected_
+    tickers` is recorded into `degenerate_out` (not just whichever
+    items happened to carry an explicit/positional ticker) and this
+    function returns {} immediately, so every entrant of this request
+    gets the SAME failure reason ("degenerate_response") rather than
+    some getting "missing_from_response" for what is really one
+    broken response. `request_label` (the request's own custom_id,
+    e.g. "t100-0"), when given, names the request in the one log line
+    this emits for it. Never fires when `expected_tickers` is None (no
+    entrant list to compare against or record)."""
     data = json.loads(text)
     companies = data.get("companies")
     if not isinstance(companies, list):
         raise ValueError("response has no top-level \"companies\" array")
+    if expected_tickers is not None and _whole_response_is_degenerate(companies, expected_tickers):
+        if degenerate_out is not None:
+            degenerate_out.update(expected_tickers)
+        if matched_by_out is not None:
+            for t in expected_tickers:
+                matched_by_out.setdefault(t, "whole_response")
+        if log is not None:
+            log(f"[top100] request {request_label or '?'}: whole response degenerate "
+                f"({len(companies)} items for {len(expected_tickers)} entrants) - "
+                f"all {len(expected_tickers)} recorded as degenerate_response")
+        return {}
     out = {}
     blank_items = []  # [(index, item), ...] - tried again below, positionally
     for idx, item in enumerate(companies):
@@ -2350,7 +2437,8 @@ def poll_and_ingest_batch(log=print):
             try:
                 parsed_by_ticker = _parse_response_json(
                     text, expected_tickers=list(entrants_map.keys()), log=log,
-                    degenerate_out=_degenerate_tickers, matched_by_out=_matched_by)
+                    degenerate_out=_degenerate_tickers, matched_by_out=_matched_by,
+                    request_label=result.custom_id)
             except Exception as e:
                 # Request-level parse failure (malformed/missing
                 # "companies" array) - every entrant THIS request
