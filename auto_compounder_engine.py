@@ -76,6 +76,7 @@ import build_compounder_data
 import capm_engine
 import currency_format
 import fcf_valuation_engine
+import financials_classifier
 import fundamentals_data
 import resolver_engine
 import share_class_engine
@@ -1158,17 +1159,24 @@ _EBIT_VERIFY_TOLERANCE_PCT = 0.03
 _EBIT_MATERIALITY_TOLERANCE_PCT = 0.01
 
 
-def _ac_is_financials(info):
-    """Mirrors moat_engine._is_financials(info) exactly (Financial
-    Services sector, or bank/insurance industry). Duplicated rather than
-    imported: moat_engine.py already imports this module as `_ace`, so
-    the reverse import would be circular. Both copies check the same two
-    `info` fields with the same logic - if one changes, change both."""
-    sector = (info.get("sector") or "").strip()
-    if sector == "Financial Services":
-        return True
-    industry = (info.get("industry") or "").lower()
-    return ("bank" in industry) or ("insurance" in industry)
+def _ac_is_financials(info, ticker=None):
+    """Addendum 2 item 2 (5 Oct 2026, Director-directed): routed through
+    financials_classifier.is_financials() - the ONE classifier Commit 3
+    of instruction_financials_income_store_and_top200_guard.md already
+    made moat_engine._is_financials() and fcf_valuation_engine use, so
+    the Compounder View now agrees with the Scanner and Deep Dive for
+    an overridden ticker (e.g. V, in financials_classifier.py's own
+    _OVERRIDE_OUT_TICKERS) in both switch states, instead of silently
+    keeping its own stale copy of the sector/industry rule.
+
+    `ticker`: optional, passed straight through to financials_
+    classifier.is_financials() for its switch-gated override table -
+    None (a call site with no ticker handy) means the override table
+    never applies even with the switch on, same as every other caller
+    of that function. financials_classifier.py has zero project
+    imports, so this import can never be circular (unlike importing
+    moat_engine, which already imports this module as `_ace`)."""
+    return financials_classifier.is_financials(info, ticker=ticker)
 
 
 def _matches_within_tolerance(p_test, candidate):
@@ -2289,7 +2297,7 @@ def _build_fundamentals(bundle, ticker, ref):
     # HEI/HEICO root cause this test exists for.
     dual_class_mcap_fix = bool(b.get("dual_class_flagged"))
 
-    is_financials = _ac_is_financials(bundle.get("info") or {})
+    is_financials = _ac_is_financials(bundle.get("info") or {}, ticker=ticker)
     operating_income, operating_income_estimated = ebit_ttm(bundle, is_financials, revenue, bundle.get("info"))
     pretax_income = _latest(income, "pretax_income")
     tax_provision = _latest(income, "tax_provision")
@@ -3343,7 +3351,7 @@ def _build_cost_of_capital(bundle, ticker, ref):
     pretax_income = _latest(bundle["income"], "pretax_income")
     tax_provision = _latest(bundle["income"], "tax_provision")
     revenue = _latest(bundle["income"], "revenue")
-    is_financials = _ac_is_financials(info)
+    is_financials = _ac_is_financials(info, ticker=ticker)
     operating_income, _operating_income_estimated = ebit_ttm(bundle, is_financials, revenue, info)
     equity = _latest(bundle["balance"], "stockholders_equity")
     cash = _latest(bundle["balance"], "cash")
