@@ -101,7 +101,10 @@ async def _run_track_record():
          mock.patch.object(server, "_count_view"), \
          mock.patch.object(server.track_record_render, "render_track_record") as _render:
         _render.return_value = "<html></html>"
-        await server.track_record(_FakeRequest())
+        # track_record() is a plain def now ("one slow page must never
+        # freeze the whole site", 4 Oct 2026) - called directly, not
+        # awaited.
+        server.track_record(_FakeRequest())
         passed_rows = _render.call_args[0][0]
     tickers_shown = {r["ticker"] for r in passed_rows}
     return tickers_shown

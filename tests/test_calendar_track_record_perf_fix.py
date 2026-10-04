@@ -194,7 +194,11 @@ async def _run_track_record():
          mock.patch.object(server.track_record_render, "render_track_record") as _render:
         _render.return_value = "<html></html>"
         _t0 = time.monotonic()
-        await server.track_record(_FakeRequest())
+        # track_record() is a plain def now ("one slow page must never
+        # freeze the whole site", 4 Oct 2026 - it runs in Starlette's own
+        # thread pool instead of the event loop) - called directly, not
+        # awaited.
+        server.track_record(_FakeRequest())
         _elapsed = time.monotonic() - _t0
         return _render.call_args[0][0], _elapsed
 

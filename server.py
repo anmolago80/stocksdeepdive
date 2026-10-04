@@ -69,6 +69,15 @@ from fastapi import FastAPI, Request, Response, WebSocket
 from fastapi.responses import (FileResponse, HTMLResponse, PlainTextResponse,
                                RedirectResponse, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
+# "One slow page must never freeze the whole site" (4 Oct 2026): every
+# route below that does blocking synchronous work (file/JSON reads,
+# SQLite, rendering a large HTML/XML string, pywebpush/Mailgun network
+# calls) now runs that work through this - off the single asyncio event
+# loop, in Starlette's own worker thread pool - instead of directly in
+# the coroutine body, where it would stall every other request (the
+# Streamlit proxy and websocket included) for its own full duration.
+# See each route's own comment for what it moves and why that's safe.
+from starlette.concurrency import run_in_threadpool
 
 import blog_comments_store
 import blog_render
@@ -1007,6 +1016,39 @@ async def _pulse_counting_middleware(request: Request, call_next):
     return response
 
 
+# "One slow page must never freeze the whole site" (4 Oct 2026, Director-
+# directed, written on Andrew's request): a request slower than this
+# logs a one-line warning so a future slow route - whatever it turns out
+# to be - shows up in the Railway logs immediately, the same way this
+# task's own live evidence (GET /es/calendar running 133s, GET /robots.txt
+# blocked for the same 133s) would have been visible the moment it
+# started, not only after Andrew noticed the site had frozen.
+_SLOW_REQUEST_THRESHOLD_SECONDS = 5.0
+
+
+@app.middleware("http")
+async def _slow_request_logging_middleware(request: Request, call_next):
+    """Logs ONLY - never changes the response, its status code, or its
+    headers (this task's own explicit rule: "Log only. Change nothing
+    about the response."). Measures wall-clock time around call_next()
+    (the same measurement point _pulse_counting_middleware already uses
+    for its own bookkeeping, just timed here instead of counted) and, for
+    anything at or above _SLOW_REQUEST_THRESHOLD_SECONDS, logs exactly:
+    "[slow] GET /calendar 12.3s" - method, PATH ONLY (never the query
+    string, which can carry a ticker/email/token value that doesn't
+    belong in a log line), one-decimal elapsed seconds. A separate
+    middleware from _pulse_counting_middleware above rather than folded
+    into it - that one's own try/except-wrapped body is already large
+    and serves a different purpose (visitor analytics); this one is
+    small, single-purpose, and easy to verify in isolation."""
+    t0 = time.monotonic()
+    response = await call_next(request)
+    elapsed = time.monotonic() - t0
+    if elapsed >= _SLOW_REQUEST_THRESHOLD_SECONDS:
+        log.warning("[slow] %s %s %.1fs", request.method, request.url.path, elapsed)
+    return response
+
+
 # -----------------------------------
 # HELPERS
 # -----------------------------------
@@ -1356,7 +1398,8 @@ async def push_subscribe(request: Request):
         body = await request.json()
     except Exception:
         return Response(status_code=400)
-    if not push_store.subscribe(email, body):
+    ok = await run_in_threadpool(push_store.subscribe, email, body)
+    if not ok:
         return Response(status_code=400)
     return Response(status_code=204)
 
@@ -1376,13 +1419,20 @@ async def push_unsubscribe(request: Request):
     # Only ever unsubscribe a device that actually belongs to the caller -
     # a signed-in visitor has no business deleting anyone else's
     # subscription even if they somehow knew (or guessed) its endpoint.
-    if endpoint and push_store.endpoint_owner(endpoint) == email:
-        push_store.unsubscribe(endpoint)
+    await run_in_threadpool(_unsubscribe_push_sync, endpoint, email)
     return Response(status_code=204)
 
 
+def _unsubscribe_push_sync(endpoint, email):
+    if endpoint and push_store.endpoint_owner(endpoint) == email:
+        push_store.unsubscribe(endpoint)
+
+
 @app.post("/push/send-test", include_in_schema=False)
-async def push_send_test(request: Request):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def push_send_test(request: Request):
     """Backs the admin-only "send test notification to my devices" button
     (app.py gates who ever sees that button; this route itself just
     requires sign-in and always targets the caller's OWN devices, never
@@ -1458,12 +1508,24 @@ async def home(request: Request):
     _needs_streamlit()'s comment above.)"""
     if _needs_streamlit(request) or not _renders_html("/"):
         return await _proxy(request)
+    base_url = _base_url(request)
+    html_out = await run_in_threadpool(_render_home_sync, base_url)
+    return _html(html_out)
+
+
+def _render_home_sync(base_url):
+    """The blocking part of home() - _count_view() (SQLite write),
+    blog_store.list_posts() (SQLite read) and _coverage() (file read +
+    JSON parse) - moved here so home() can run it through run_in_
+    threadpool(). Safe off the event loop: blog_store opens a fresh
+    sqlite3 connection per call (never a shared one), and _coverage()
+    only reads a file, never writes one."""
     _count_view("home")
-    return _html(blog_render.render_home(
-        _base_url(request),
+    return blog_render.render_home(
+        base_url,
         posts=blog_store.list_posts(limit=3),
         coverage=_coverage(),
-    ))
+    )
 
 
 @app.get("/robots.txt", include_in_schema=False)
@@ -1493,15 +1555,20 @@ async def llms_full_txt(request: Request):
     gate and no noindex header - same "no gate at all" treatment as
     /llms.txt itself and /s/*, not the opt-in _renders_html() gate the
     three legacy content pages use."""
+    text = await run_in_threadpool(_render_llms_full_txt_sync, _base_url(request))
+    return PlainTextResponse(text, headers={"Cache-Control": "public, max-age=3600"})
+
+
+def _render_llms_full_txt_sync(base_url):
+    """snapshot_store.all_snapshots() (SQLite, full-table read) is the
+    blocking part - moved off the loop via run_in_threadpool. Safe: a
+    fresh connection per call, read-only."""
     import scheduler_engine
-    return PlainTextResponse(
-        blog_render.render_llms_full_txt(
-            _base_url(request),
-            site_content.methodology_md(_FACTUAL),
-            snapshot_store.all_snapshots(),
-            universe_cadence=scheduler_engine._cfg()["universe_cadence"],
-        ),
-        headers={"Cache-Control": "public, max-age=3600"},
+    return blog_render.render_llms_full_txt(
+        base_url,
+        site_content.methodology_md(_FACTUAL),
+        snapshot_store.all_snapshots(),
+        universe_cadence=scheduler_engine._cfg()["universe_cadence"],
     )
 
 
@@ -1541,7 +1608,10 @@ def _snapshot_sitemap_urls(base_url):
 
 
 @app.get("/sitemap.xml", include_in_schema=False)
-async def sitemap(request: Request):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def sitemap(request: Request):
     """Fix 7, AI fixes round 2 (2026-08-31): investigated the reported
     "/s/OCL.AX exists but sitemap.xml doesn't list it" symptom directly -
     _snapshot_sitemap_urls() below has never filtered by universe (a
@@ -1686,7 +1756,10 @@ async def feed_alias():
 
 
 @app.get("/blog/feed.xml", include_in_schema=False)
-async def feed(request: Request):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def feed(request: Request):
     xml = blog_render.render_feed(blog_store.list_posts(), _base_url(request))
     return Response(xml, media_type="application/rss+xml",
                     headers={"Cache-Control": "public, max-age=900"})
@@ -1694,7 +1767,10 @@ async def feed(request: Request):
 
 @app.get("/blog", include_in_schema=False)
 @app.get("/es/blog", include_in_schema=False)
-async def blog_index(request: Request):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def blog_index(request: Request):
     # Español instruction, Part 3: /es/blog is the SAME set of posts as
     # /blog, just reordered (ES first) and with EN posts labelled "en
     # inglés" - never a filtered subset, per the instruction's explicit
@@ -1736,7 +1812,10 @@ async def blog_media(name: str):
 
 
 @app.get("/blog/{slug}", include_in_schema=False)
-async def blog_post(slug: str, request: Request):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def blog_post(slug: str, request: Request):
     slug = slug.strip().lower().rstrip("/")
     base = _base_url(request)
 
@@ -1801,7 +1880,11 @@ async def blog_subscribe_send_code(request: Request):
     # returned message's template; defaults to "en" for any older client
     # script that doesn't send it.
     lang = str(body.get("lang") or "en").strip().lower()
-    ok, msg = email_auth.send_code(email, client_ip=_client_ip(request), lang=lang)
+    # email_auth.send_code() does a synchronous requests.post() to
+    # Mailgun (timeout=15) plus SQLite rate-limit bookkeeping - moved
+    # off the loop via run_in_threadpool.
+    ok, msg = await run_in_threadpool(
+        email_auth.send_code, email, client_ip=_client_ip(request), lang=lang)
     return {"ok": ok, "message": msg}
 
 
@@ -1824,14 +1907,18 @@ async def blog_subscribe_verify_code(request: Request):
     code = str(body.get("code") or "").strip()
     src = body.get("src") or None
     lang = str(body.get("lang") or "en").strip().lower()
-    tok, msg = email_auth.verify_code(email, code, src=src, lang=lang)
+    tok, msg = await run_in_threadpool(email_auth.verify_code, email, code, src=src, lang=lang)
     if not tok:
         return {"ok": False, "message": msg}
+    await run_in_threadpool(_follow_all_tickers_sync, email)
+    return {"ok": True, "message": msg, "token": tok}
+
+
+def _follow_all_tickers_sync(email):
     try:
         follow_store.follow(email, follow_store.ALL_TICKERS)
     except Exception:
         pass
-    return {"ok": True, "message": msg, "token": tok}
 
 
 @app.post("/blog/{slug}/comments", include_in_schema=False)
@@ -1843,7 +1930,7 @@ async def blog_comment_submit(slug: str, request: Request):
     if not _same_origin(request):
         return Response(status_code=403)
     slug = slug.strip().lower().rstrip("/")
-    post = blog_store.get_post(slug)
+    post = await run_in_threadpool(blog_store.get_post, slug)
     if not post:
         return Response(status_code=404)
     try:
@@ -1854,8 +1941,8 @@ async def blog_comment_submit(slug: str, request: Request):
     body = str(form.get("body") or "").strip()
     honeypot = str(form.get("website") or "").strip()
     ip_hash = blog_comments_store.hash_ip(_client_ip(request))
-    result = blog_comments_store.add_comment(slug, name, body, ip_hash,
-                                             honeypot=honeypot)
+    result = await run_in_threadpool(
+        blog_comments_store.add_comment, slug, name, body, ip_hash, honeypot=honeypot)
     if result["ok"]:
         target = f"/blog/{slug}?comment=thanks#comments"
     else:
@@ -1897,8 +1984,12 @@ async def newsletter_subscribe(request: Request):
         sep = "&" if "?" in return_to else "?"
         return RedirectResponse(f"{return_to}{sep}newsletter=sent", status_code=303)
 
-    ok, msg = newsletter_store.subscribe(email, lang=lang, src=src,
-                                          client_ip=_client_ip(request))
+    # newsletter_store.subscribe() does a synchronous requests.post() to
+    # Mailgun (confirm email) plus SQLite - moved off the loop via
+    # run_in_threadpool.
+    ok, msg = await run_in_threadpool(
+        newsletter_store.subscribe, email, lang=lang, src=src,
+        client_ip=_client_ip(request))
     sep = "&" if "?" in return_to else "?"
     flag = "sent" if ok else "error"
     target = f"{return_to}{sep}newsletter={flag}&nmsg={quote(msg)}"
@@ -1906,7 +1997,10 @@ async def newsletter_subscribe(request: Request):
 
 
 @app.get("/newsletter/confirm", include_in_schema=False)
-async def newsletter_confirm(request: Request):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def newsletter_confirm(request: Request):
     """Mega-batch Part 36: the emailed confirm link. GET (a clicked email
     link is inherently GET) - confirm() itself is idempotent, so a mail
     client's link-prefetch hitting this harmlessly re-confirms an already-
@@ -1918,7 +2012,10 @@ async def newsletter_confirm(request: Request):
 
 
 @app.get("/newsletter/unsubscribe", include_in_schema=False)
-async def newsletter_unsubscribe(request: Request):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def newsletter_unsubscribe(request: Request):
     """Mega-batch Part 36: one-click, immediate, no sign-in (Verify 3) -
     the DELETE happens on this GET itself, per the instruction's own
     "instantly" requirement, rather than requiring a second confirm
@@ -2056,10 +2153,18 @@ async def content_page(request: Request):
     # methodology indexable too, with no separate env var to remember.
     if not spec or not _renders_html(en_path):
         return await _proxy(request)
+    base_url = _base_url(request)
+    html_out = await run_in_threadpool(
+        _render_content_page_sync, spec, en_path, lang, path, base_url)
+    return _html(html_out)
+
+
+def _render_content_page_sync(spec, en_path, lang, path, base_url):
+    """_count_view() (SQLite write) and blog_render.render_content_page()
+    (string build) - moved off the loop via run_in_threadpool."""
     _count_view(spec["page"], lang=lang)
     note = (site_content.METHODOLOGY_FACTUAL_NOTE
             if en_path == "/methodology" and _FACTUAL and lang == "en" else None)
-    base_url = _base_url(request)
     # hreflang: both directions of the EN<->ES pair, plus x-default=EN
     # per the instruction's architecture rule - a crawler (or a browser
     # respecting Accept-Language) can jump straight to the right one.
@@ -2068,7 +2173,7 @@ async def content_page(request: Request):
         ("es", f"{base_url}/es{en_path}"),
         ("x-default", f"{base_url}{en_path}"),
     ]
-    return _html(blog_render.render_content_page(
+    return blog_render.render_content_page(
         title=_content_title(spec, lang),
         markdown_text=_content_markdown(en_path, lang),
         description=_content_description(spec, lang),
@@ -2077,7 +2182,7 @@ async def content_page(request: Request):
         intro_note=note,
         lang=lang,
         hreflang_alternates=hreflang_alternates,
-    ))
+    )
 
 
 @app.get("/deep-dive", include_in_schema=False)
@@ -2100,11 +2205,19 @@ async def tool_landing(request: Request):
     if (_needs_streamlit(request) or path not in blog_render.TOOL_PAGES
             or not _renders_html(path)):
         return await _proxy(request)
+    html_out = await run_in_threadpool(_render_tool_landing_sync, path, _base_url(request))
+    return _html(html_out)
+
+
+def _render_tool_landing_sync(path, base_url):
+    """_count_view() (SQLite write), _coverage() (file read + JSON parse,
+    /research only) and blog_render.render_tool_landing() (string build)
+    - moved off the loop via run_in_threadpool."""
     _count_view(path.lstrip("/"))
-    return _html(blog_render.render_tool_landing(
-        path, _base_url(request),
+    return blog_render.render_tool_landing(
+        path, base_url,
         coverage=_coverage() if path == "/research" else None,
-    ))
+    )
 
 
 # -----------------------------------
@@ -2126,8 +2239,16 @@ async def money_tools_index(request: Request):
     lang = "es" if path == "/es/tools" else "en"
     if _needs_streamlit(request):
         return await _proxy(request)
+    html_out = await run_in_threadpool(_render_money_tools_index_sync, _base_url(request), lang)
+    return _html(html_out)
+
+
+def _render_money_tools_index_sync(base_url, lang):
+    """_count_view() (SQLite write) - moved off the loop via
+    run_in_threadpool; render_money_tools_index() itself is a pure
+    string build from a static spec dict, no store I/O of its own."""
     _count_view("money_tools_index", lang=lang)
-    return _html(money_tools_render.render_money_tools_index(_base_url(request), lang=lang))
+    return money_tools_render.render_money_tools_index(base_url, lang=lang)
 
 
 @app.get("/tools/{slug}", include_in_schema=False)
@@ -2143,9 +2264,17 @@ async def money_tool_landing(slug: str, request: Request):
             blog_render.render_not_found(_base_url(request), lang=lang), status=404)
     if _needs_streamlit(request):
         return await _proxy(request)
+    html_out = await run_in_threadpool(
+        _render_money_tool_landing_sync, slug, _base_url(request), lang)
+    return _html(html_out)
+
+
+def _render_money_tool_landing_sync(slug, base_url, lang):
+    """_count_view() (SQLite write) - moved off the loop via
+    run_in_threadpool; render_money_tool_landing() itself is a pure
+    string build, no store I/O of its own."""
     _count_view(f"money_tool_{slug}", lang=lang)
-    return _html(money_tools_render.render_money_tool_landing(
-        slug, _base_url(request), lang=lang))
+    return money_tools_render.render_money_tool_landing(slug, base_url, lang=lang)
 
 
 # -----------------------------------
@@ -2163,7 +2292,10 @@ _TICKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,14}$")
 
 @app.get("/s/", include_in_schema=False)
 @app.get("/es/s/", include_in_schema=False)
-async def snapshot_index(request: Request):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def snapshot_index(request: Request):
     """/es/s/ (Español completion, Part 3): same inline lang-twin scheme
     as /es/calendar and /es/track-record above."""
     base_url = _base_url(request)
@@ -2183,7 +2315,10 @@ async def snapshot_index(request: Request):
 
 @app.get("/s/{ticker}", include_in_schema=False)
 @app.get("/es/s/{ticker}", include_in_schema=False)
-async def snapshot_page(ticker: str, request: Request):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def snapshot_page(ticker: str, request: Request):
     """/es/s/<ticker> (Español completion, Part 3): same inline lang-twin
     scheme - chrome/labels translate, the underlying scored data is the
     same snapshot either way."""
@@ -2219,7 +2354,10 @@ async def snapshot_page(ticker: str, request: Request):
 # order - FastAPI's default {param} converter only matches one segment.
 @app.get("/s/universe/{slug}", include_in_schema=False)
 @app.get("/es/s/universe/{slug}", include_in_schema=False)
-async def universe_snapshot_page(slug: str, request: Request):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def universe_snapshot_page(slug: str, request: Request):
     base = _base_url(request)
     path = request.url.path.rstrip("/") or "/"
     lang = "es" if path.startswith("/es/") else "en"
@@ -2247,7 +2385,10 @@ async def universe_snapshot_page(slug: str, request: Request):
 # comment.
 @app.get("/s/research/{slug}", include_in_schema=False)
 @app.get("/es/s/research/{slug}", include_in_schema=False)
-async def research_snapshot_page(slug: str, request: Request):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def research_snapshot_page(slug: str, request: Request):
     base = _base_url(request)
     path = request.url.path.rstrip("/") or "/"
     lang = "es" if path.startswith("/es/") else "en"
@@ -2376,7 +2517,10 @@ def _og_default_png():
 
 
 @app.get("/og/default.png", include_in_schema=False)
-async def og_default_card():
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def og_default_card():
     """The site-default card - also the universal fail-safe every route
     below falls back to (per the instruction's own "any exception in
     card rendering returns the static default card; nothing here may
@@ -2390,7 +2534,10 @@ async def og_default_card():
 
 
 @app.get("/og/blog/{slug}.png", include_in_schema=False)
-async def og_blog_card(slug: str):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def og_blog_card(slug: str):
     """A published post's own title card. An unknown/draft slug (never
     published, mistyped, or a draft preview link someone shared before
     realising it isn't public) gets the site-default card, HTTP 200 -
@@ -2416,7 +2563,10 @@ async def og_blog_card(slug: str):
 
 
 @app.get("/og/{ticker}.png", include_in_schema=False)
-async def og_ticker_card(ticker: str):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def og_ticker_card(ticker: str):
     """The per-ticker card (`render_ticker_card` in og_card_render.py) -
     data comes ONLY from snapshot_store.get_snapshot(ticker), the same
     already-scanned row /s/{ticker} and the research/deep-dive pages
@@ -2450,7 +2600,10 @@ async def og_ticker_card(ticker: str):
 
 
 @app.get("/og/research/{ticker}.png", include_in_schema=False)
-async def og_research_ticker_card(ticker: str):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def og_research_ticker_card(ticker: str):
     """The unversioned entry point for the hand-covered Rational
     Compounder research card - always a 302 to the current canonical
     /og/research/{ticker}/{token}.png below for a hand-covered ticker
@@ -2481,7 +2634,10 @@ async def og_research_ticker_card(ticker: str):
 
 
 @app.get("/og/research/{ticker}/{token}.png", include_in_schema=False)
-async def og_research_ticker_card_versioned(ticker: str, token: str):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def og_research_ticker_card_versioned(ticker: str, token: str):
     """The hand-covered Rational Compounder research card - a SEPARATE
     route/image from /og/{ticker}.png above, because one image per
     ticker can't correctly serve both /research (hand-built figures)
@@ -2567,7 +2723,10 @@ async def og_research_ticker_card_versioned(ticker: str, token: str):
 
 @app.get("/track-record", include_in_schema=False)
 @app.get("/es/track-record", include_in_schema=False)
-async def track_record(request: Request):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def track_record(request: Request):
     """/es/track-record (Español completion, Part 3): same inline lang-
     twin scheme as /es/calendar just below."""
     base_url = _base_url(request)
@@ -2604,7 +2763,10 @@ async def track_record(request: Request):
 
 @app.get("/calendar", include_in_schema=False)
 @app.get("/es/calendar", include_in_schema=False)
-async def results_calendar(request: Request):
+# Plain def, not async def - runs in Starlette's own worker thread
+# pool automatically (no event-loop change needed); see the
+# run_in_threadpool import's own comment at the top of this file.
+def results_calendar(request: Request):
     """Services batch 2, Part 4: indexable, server-rendered twin of the
     Streamlit /results-calendar page - same "always real HTML, no
     INDEXABLE_PAGES/_renders_html gate" treatment as /s/* and
