@@ -1001,6 +1001,24 @@ def _run_nightly(cfg, log, run_night=None, cancel_event=None):
     except Exception as e:
         log(f"[scheduler] market-cap ranking cache clear failed: {e}")
 
+    # Commit 2 of instruction_financials_income_store_and_top200_guard.md
+    # (4 Oct 2026, Director-directed): the budgeted paid pre-pass (way 3
+    # of financials_income_store's three fill mechanisms) runs ONCE per
+    # nightly run, inside this run's own lock (this function already
+    # runs under _record_job's lock - see that call site), BEFORE any
+    # universe is scanned tonight, so this same run's scan loop can see
+    # a freshly-filled store for a ticker it's about to touch anyway.
+    # Ways 1/2 (free) are wired into nightly_scan.analyze_ticker_lite()
+    # itself and need no call here. A failure here degrades to "the
+    # store doesn't gain anything new tonight" - never blocks the real
+    # scan below, same fail-open philosophy as every other pre-loop step
+    # in this function.
+    try:
+        import financials_income_store
+        financials_income_store.run_nightly_prepass(cfg["universes"], log=log)
+    except Exception as e:
+        log(f"[scheduler] financials income pre-pass failed: {e}")
+
     # The "imported" virtual universe (screen_import_store's TradingView
     # CSV queue - see nightly_scan.run_imported_scan) always runs LAST,
     # after every configured index universe, regardless of where

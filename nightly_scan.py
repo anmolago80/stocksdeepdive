@@ -43,6 +43,8 @@ import alert_engine
 import auto_compounder_engine
 import capm_engine
 import fcf_valuation_engine
+import financials_classifier
+import financials_income_store
 import fundamentals_data
 import moat_engine
 import peer_context
@@ -631,6 +633,66 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         # this module, and isn't counted as "fetched" here.
         if oneoff_summary_out is not None and income_df is not None and not income_df.empty:
             oneoff_summary_out["income_fetched"] = oneoff_summary_out.get("income_fetched", 0) + 1
+
+    # Commit 2 of instruction_financials_income_store_and_top200_guard.md
+    # (4 Oct 2026, Director-directed): keeps financials_income_store
+    # fresh for every financials-mode ticker this process happens to
+    # touch tonight, via the two FREE ways only - no new Yahoo call of
+    # its own. The paid way (a budgeted fetch for tickers NOT otherwise
+    # touched tonight) runs once per night as its own pre-pass BEFORE
+    # the per-universe loop - see financials_income_store.
+    # run_nightly_prepass() and scheduler_engine._run_nightly()'s own
+    # call site. Nothing here reads the store to value anything yet
+    # (that's a later commit) - this purely keeps it filled.
+    if financials_classifier.is_financials(info):
+        _cf_latest_period = (
+            str(cashflow_df.columns[0])
+            if cashflow_df is not None and not cashflow_df.empty else None
+        )
+        financials_income_store.refresh_if_newer(ticker, _cf_latest_period)
+        if financials_income_store.is_stale_or_missing(ticker):
+            if income_df is not None and not income_df.empty:
+                # Way 1 (free): the one-off check above already paid for
+                # this fetch - fundamentals_data.get_bundle()'s own income
+                # table is already converted to listing currency (see
+                # that function's own _convert_statement_currency call
+                # site), so currency_converted=True here is correct.
+                # peek_cached_bundle() is a second, zero-network read of
+                # the SAME bundle get_bundle() just cached moments ago -
+                # used only to recover the listing currency without
+                # reshaping the existing fetch above.
+                _ccy_bundle = fundamentals_data.peek_cached_bundle(ticker)
+                financials_income_store.save(
+                    ticker, income_df,
+                    currency=(_ccy_bundle.get("info") or {}).get("currency") if _ccy_bundle else None,
+                    source="yfinance_bundle_oneoff",
+                    latest_cf_period=_cf_latest_period, currency_converted=True,
+                )
+            else:
+                # Way 2 (free): whatever fundamentals bundle already
+                # happens to be cached for this ticker (a Compounder View
+                # visit, a prior night's one-off check, ...) - zero new
+                # fetch, used only when its income table is at least as
+                # fresh as tonight's own cash-flow statement.
+                _cached_bundle = fundamentals_data.peek_cached_bundle(ticker)
+                if _cached_bundle is not None:
+                    _cached_income = _cached_bundle.get("income")
+                    _cached_meta = _cached_bundle.get("meta") or {}
+                    _cached_latest = (
+                        str(_cached_income.columns[0])
+                        if _cached_income is not None and not _cached_income.empty else None
+                    )
+                    if (_cached_income is not None and not _cached_income.empty
+                            and _cached_meta.get("source") == "yfinance"
+                            and (_cf_latest_period is None or _cached_latest is None
+                                 or _cached_latest >= _cf_latest_period)):
+                        financials_income_store.save(
+                            ticker, _cached_income,
+                            currency=(_cached_bundle.get("info") or {}).get("currency"),
+                            source="yfinance_bundle_cached",
+                            latest_cf_period=_cf_latest_period, currency_converted=True,
+                        )
+
     intrinsic, _ivsrc, _g, iv_meta = resolve_intrinsic_value(
         ticker, quality, info=info, cashflow_df=cashflow_df,
         # Stage 1a (3 Oct 2026, Director-directed): trading_currency_
