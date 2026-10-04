@@ -105,6 +105,7 @@ def _section_why(label):
     return SECTION_WHY_CAPTIONS[label]
 import auto_compounder_engine
 import currency_format
+import financials_dry_run
 import fundamentals_data
 import checklist_store
 import site_content
@@ -30215,6 +30216,123 @@ def _render_valuation_change_audit_panel():
         )
 
 
+def _render_financials_dry_run_panel():
+    """"Financials dry run" (Commit 5 of instruction_financials_
+    income_store_and_top200_guard.md, 4 Oct 2026, Director-directed) -
+    inside the existing "Valuation change audit" area, owner-only,
+    read-only. Shows shadow values nightly_scan.py's analyze_ticker_
+    lite() computed during the scan for every financials-mode ticker
+    (either under today's classifier rule or the switch-ON rule) - see
+    financials_dry_run.py's own module docstring for the zero-new-
+    network-call guarantee and why nothing here can ever have touched
+    a scan row, score_history, a snapshot or the Top 100 pool. This is
+    what Andrew approves from before the Director sets
+    FINANCIALS_STORE_LIVE=1 on Railway. No gate of its own - called
+    only from inside page_admin_dashboard(), after that function's own
+    strict owner check at the top has already returned early for
+    anyone else."""
+    st.markdown("#### Financials dry run")
+    st.caption(
+        "Owner-only. Shadow values computed during the scan for every "
+        "financials-mode ticker, showing what the FINANCIALS_STORE_LIVE "
+        "switch-ON code would value it at - read-only, never written "
+        "to a scan row, score_history, a snapshot or the Top 100 pool."
+    )
+    _universes = financials_dry_run.list_universes()
+    if not _universes:
+        st.info("No financials dry run saved yet - this fills in after the next nightly scan.")
+        return
+
+    _universe_choice = st.selectbox(
+        "Universe", ["All"] + _universes, key="admin_dash_findry_universe",
+    )
+    _rows = []
+    for _u in (_universes if _universe_choice == "All" else [_universe_choice]):
+        _payload = financials_dry_run.load(_u)
+        if _payload:
+            _rows.extend(_payload.get("rows") or [])
+    if not _rows:
+        st.info("No rows saved for this universe yet.")
+        return
+
+    _with_shadow = sum(1 for r in _rows if r.get("shadow_intrinsic_value") is not None)
+    _awaiting = sum(1 for r in _rows if r.get("status") == "awaiting_income_fetch")
+    _lt2 = sum(1 for r in _rows if r.get("status") == "lt2_positive_years")
+    _fetch_failed = sum(1 for r in _rows if r.get("status") == "fetch_failed")
+    _diffs = [
+        r["shadow_intrinsic_value"] - r["now_intrinsic_value"] for r in _rows
+        if r.get("shadow_intrinsic_value") is not None and r.get("now_intrinsic_value") is not None
+    ]
+    _median_div = _median_mos(_diffs)
+    _leave_unreliable = sum(
+        1 for r in _rows if r.get("now_dcf_unreliable") and not r.get("shadow_dcf_unreliable")
+    )
+    _join_unreliable = sum(
+        1 for r in _rows if not r.get("now_dcf_unreliable") and r.get("shadow_dcf_unreliable")
+    )
+    _mode_changes = sum(1 for r in _rows if r.get("now_moat_mode") != r.get("shadow_moat_mode"))
+    _top100_value_changes = sum(
+        1 for r in _rows if r.get("in_current_top100")
+        and r.get("shadow_intrinsic_value") != r.get("now_intrinsic_value")
+    )
+    _top100_ineligible = sum(
+        1 for r in _rows if r.get("in_current_top100") and r.get("pool_ineligible_if_switch_on")
+    )
+
+    _c1, _c2, _c3, _c4 = st.columns(4)
+    with _c1:
+        st.metric("Financials", len(_rows))
+        st.metric("With a shadow value", _with_shadow)
+    with _c2:
+        st.metric("Awaiting income fetch", _awaiting)
+        st.metric("Fewer than 2 positive years", _lt2)
+    with _c3:
+        st.metric("Median dIV", f"{_median_div:+.2f}" if _median_div is not None else "-")
+        st.metric("Change mode by override", _mode_changes)
+    with _c4:
+        st.metric("Top 100 members: value changes", _top100_value_changes)
+        st.metric("Top 100 members: would become ineligible", _top100_ineligible)
+    st.caption(
+        f"Leave DCF-unreliable list: {_leave_unreliable}  |  Join DCF-unreliable list: "
+        f"{_join_unreliable}  |  Fetch failed (Deep Dive on-view attempts only - the "
+        f"nightly pre-pass's own per-run failures aren't persisted per-ticker): {_fetch_failed}"
+    )
+
+    _sort_choice = st.selectbox(
+        "Sort table by", ["Ticker", "Intrinsic-value change", "Status"],
+        key="admin_dash_findry_sort",
+    )
+    if _sort_choice == "Intrinsic-value change":
+        def _div_key(r):
+            s, n = r.get("shadow_intrinsic_value"), r.get("now_intrinsic_value")
+            return abs(s - n) if (s is not None and n is not None) else -1
+        _rows = sorted(_rows, key=_div_key, reverse=True)
+    elif _sort_choice == "Status":
+        _rows = sorted(_rows, key=lambda r: r.get("status") or "")
+    else:
+        _rows = sorted(_rows, key=lambda r: r.get("ticker") or "")
+
+    _display_cols = [
+        "universe", "ticker", "company", "price",
+        "now_intrinsic_value", "now_mos_pct", "now_fcf_source",
+        "now_dcf_unreliable", "now_moat_mode", "now_quality",
+        "shadow_mode", "shadow_intrinsic_value", "shadow_mos_pct",
+        "shadow_fcf_source", "shadow_dcf_unreliable", "shadow_moat_mode",
+        "shadow_quality", "status", "pool_ineligible_if_switch_on", "in_current_top100",
+    ]
+    _table_df = pd.DataFrame(_rows, columns=_display_cols)
+    st.dataframe(_table_df, hide_index=True, width="stretch")
+    st.caption(f"Showing {len(_rows)} ticker(s).")
+
+    st.download_button(
+        "Download dry run (CSV)",
+        data=data_export_engine.table_to_csv_bytes(_table_df),
+        file_name=f"StocksDeepDive_financials_dry_run_{_universe_choice.replace(' ', '')}.csv",
+        mime="text/csv",
+        key="admin_dash_findry_csv",
+    )
+
+
 def _median_mos(values):
     """Plain median of a non-empty list of numbers, or None for an
     empty list - a one-off helper for _render_private_universes_panel()
@@ -32268,6 +32386,13 @@ def page_admin_dashboard():
     # owner-only diagnostic panel above.
     st.markdown("---")
     _render_valuation_change_audit_panel()
+
+    # --- FINANCIALS DRY RUN (Commit 5 of instruction_financials_
+    # income_store_and_top200_guard.md, 4 Oct 2026, Director-directed) -
+    # inside the Valuation change audit area, see _render_financials_
+    # dry_run_panel()'s own docstring. Same "no gate of its own" pattern
+    # as every panel on this page.
+    _render_financials_dry_run_panel()
 
     # --- TOP 100 RESUBMISSION PAUSE + BATCH INSPECTOR (3 Oct 2026,
     # owner-directed, resubmission-loop investigation) - see each

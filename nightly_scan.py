@@ -44,6 +44,7 @@ import auto_compounder_engine
 import capm_engine
 import fcf_valuation_engine
 import financials_classifier
+import financials_dry_run
 import financials_income_store
 import fundamentals_data
 import moat_engine
@@ -59,6 +60,7 @@ import snapshot_store
 import source_health_store
 import indicators_engine
 import social_engine
+import top100_store
 import trade_filter_engine
 from ranking_engine import calculate_long_score
 from resolver_engine import (
@@ -396,7 +398,8 @@ def _growth_coverage_bucket(iv_meta):
 
 def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
                          perpetual_rate=None, growth_rate=None, manual_fcf=None, log=print,
-                         rate_limited_out=None, growth_summary_out=None, oneoff_summary_out=None):
+                         rate_limited_out=None, growth_summary_out=None, oneoff_summary_out=None,
+                         shadow_out=None):
     """Core value/quality/psychology scoring for one ticker - the same
     resolvers and Long Score the site uses. Returns a plain dict, or None
     if no usable price data. Also used by digest_engine for the weekly
@@ -460,7 +463,22 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     whether the (otherwise skipped) income-statement fetch below
     happens at all. Mutated in place, same out-param pattern as
     growth_summary_out above; run_universe_scan() is the only caller
-    that passes this."""
+    that passes this.
+
+    `shadow_out` (Commit 5 of instruction_financials_income_store_and_
+    top200_guard.md, 4 Oct 2026, Director-directed): an optional list
+    a caller passes in (e.g. `[]`) to collect one financials_dry_run.
+    compute_shadow_row() dict per ticker that financials_dry_run.
+    should_compute() says needs one - deliberately kept OUT of this
+    function's own return dict, which is the exact dict scan_store.
+    save_scan() persists as a real scan row: the shadow computation
+    must never write to a scan row (this instruction's own explicit
+    rule), so it is appended to this SEPARATE list instead. Mutated in
+    place, same out-param pattern as growth_summary_out/oneoff_
+    summary_out above; run_universe_scan() is the only caller that
+    passes this, stamping "universe"/"in_current_top100" onto each
+    collected row afterward and saving the whole list via financials_
+    dry_run.save() - see that call site's own comment."""
     tk = yf.Ticker(ticker)
     df = _yf_call_with_retry(lambda: tk.history(period="6mo"), log, ticker, "history",
                               rate_limited_out=rate_limited_out)
@@ -762,6 +780,39 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
             stock_type = "TURNAROUND"
 
     mos = ((intrinsic - current_price) / intrinsic) * 100 if intrinsic > 0 else 0.0
+
+    # Commit 5 of instruction_financials_income_store_and_top200_
+    # guard.md (4 Oct 2026, Director-directed): the owner's dry run -
+    # see financials_dry_run.py's own module docstring for the zero-
+    # new-network-call guarantee and why this never touches the row
+    # dict this function returns (that dict is what scan_store.
+    # save_scan() persists as a real scan row - the shadow computation
+    # must never write to one). shadow_out is None for every caller
+    # except run_universe_scan(), so digest_engine/portfolio_health_
+    # engine/the Deep Dive's own analyze_ticker_lite() uses (if any)
+    # are completely unaffected.
+    if shadow_out is not None and financials_dry_run.should_compute(info, ticker):
+        try:
+            shadow_out.append(financials_dry_run.compute_shadow_row(
+                ticker,
+                company_name=info.get("longName") or info.get("shortName") or ticker,
+                price=round(current_price, 2),
+                info=info, cashflow_df=cashflow_df,
+                currency=fcf_valuation_engine.trading_currency_for(ticker, info),
+                discount_rate=discount_rate, perpetual_rate=perpetual_rate,
+                growth_rate=growth_rate, manual_fcf=manual_fcf,
+                now_intrinsic_value=round(intrinsic, 2) if intrinsic > 0 else None,
+                now_mos_pct=round(mos, 1) if intrinsic > 0 else None,
+                now_fcf_source=iv_meta.get("fcf_source"),
+                now_dcf_unreliable=dcf_looks_unreliable(intrinsic, current_price),
+                now_moat_mode=(
+                    "financials" if financials_classifier.is_financials(info, ticker=ticker)
+                    else "standard"
+                ),
+                now_quality=quality,
+            ))
+        except Exception as e:
+            log(f"[nightly_scan] {ticker}: financials_dry_run shadow computation failed: {e}")
 
     # Services batch 2, Part 1 (2026-09-01): "What the price implies" -
     # reverse DCF, computed here so it reaches the snapshot pages/API/MCP
@@ -1181,6 +1232,15 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
     # lite()'s own oneoff_summary_out docstring and fcf_valuation_
     # engine.needs_oneoff_check()'s docstring for what each count means.
     _oneoff_summary = {}
+    # Commit 5 of instruction_financials_income_store_and_top200_
+    # guard.md (4 Oct 2026, Director-directed): collects every
+    # financials_dry_run.compute_shadow_row() dict analyze_ticker_
+    # lite() appends via its own shadow_out param below - "universe"/
+    # "in_current_top100" are stamped onto each row AFTER the per-
+    # ticker loop (see that code's own comment), then the whole list
+    # is saved via financials_dry_run.save(universe, ...), entirely
+    # separate from `rows` (the real scan rows) and scan_store.
+    _shadow_rows = []
     # LTG-fallback fix (owner-directed, 30 Sep 2026): reset capm_engine's
     # per-universe "matched label but NaN" one-time diagnostic at the
     # start of each universe's own scan - see capm_engine.reset_growth_
@@ -1263,7 +1323,8 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
             row = analyze_ticker_lite(t, attention_lite=attention_lite, log=log,
                                        rate_limited_out=_rate_limited_flag,
                                        growth_summary_out=_growth_summary,
-                                       oneoff_summary_out=_oneoff_summary)
+                                       oneoff_summary_out=_oneoff_summary,
+                                       shadow_out=_shadow_rows)
             if row:
                 _consecutive_rate_limited = 0
                 # Fix 9 item 2 (2026-09-01): hard backstop, on top of item
@@ -1371,6 +1432,26 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
         _sec = _r.get("Sector")
         if _sec:
             sector_cache_store.learn(_r.get("Ticker"), _sec, source="scan")
+
+    # Commit 5 of instruction_financials_income_store_and_top200_
+    # guard.md (4 Oct 2026, Director-directed): save this universe's
+    # own shadow dry run - written for every scan attempt that gets
+    # this far (even one the integrity guard further below ultimately
+    # decides not to persist to scan_store), since this file is purely
+    # diagnostic, owner-only, never read by any public/scoring/
+    # selection path. "in_current_top100" is a single read of top100_
+    # store.current_pool() for the whole universe, not a per-ticker
+    # fetch - top100_store has zero network calls of its own (pure
+    # SQLite read).
+    if _shadow_rows:
+        try:
+            _pool_tickers = {r.get("ticker") for r in top100_store.current_pool()}
+        except Exception:
+            _pool_tickers = set()
+        for _sr in _shadow_rows:
+            _sr["universe"] = universe
+            _sr["in_current_top100"] = _sr["ticker"] in _pool_tickers
+        financials_dry_run.save(universe, _shadow_rows)
 
     rows.sort(key=lambda r: r.get("Long Score") or 0, reverse=True)
 

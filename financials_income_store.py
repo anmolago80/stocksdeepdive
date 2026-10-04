@@ -218,6 +218,26 @@ def deep_dive_attempted_recently(ticker, within_hours=24):
         return False
 
 
+def last_deep_dive_attempt(ticker):
+    """Commit 5 of instruction_financials_income_store_and_top200_
+    guard.md (4 Oct 2026, Director-directed): financials_dry_run.py's
+    own read of record_deep_dive_attempt()'s last recorded attempt
+    (success or failure) for this ticker, regardless of age - used
+    only to tell a dry-run "fetch_failed" status apart from
+    "awaiting_income_fetch" (no attempt recorded at all, or the only
+    one recorded succeeded). Returns the stored dict ({"ticker",
+    "success", "attempted_at"}) or None if there's no record. Never
+    raises."""
+    path = _attempt_path(ticker)
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def _save_direct_fetch(ticker, income_df, bundle, source):
     """Shared by run_nightly_prepass()'s way 3 and fetch_for_deep_dive():
     converts a RAW (statement-currency) direct yfinance fetch to

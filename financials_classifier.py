@@ -72,6 +72,28 @@ def is_financials_store_live():
     return raw in ("1", "on")
 
 
+def _override_table_verdict(industry_raw, ticker):
+    """Commit 3's override table (rules 2-4 of is_financials()'s own
+    docstring), factored out so Commit 5's is_financials_shadow() can
+    apply the identical table without depending on the LIVE switch -
+    "Keep ONE classifier for both - do not split it" extends to the
+    shadow computation too, not just moat_engine/fcf_valuation_engine.
+    Returns True/False when the table has a verdict, None when it
+    doesn't (caller falls through to the existing sector/industry
+    rule) - `ticker` falsy always returns None, same as before this
+    refactor (is_financials() never read the table without a ticker)."""
+    if not ticker:
+        return None
+    t = ticker.strip().upper()
+    if t in _OVERRIDE_OUT_TICKERS:
+        return False
+    if t in _OVERRIDE_IN_TICKERS:
+        return True
+    if industry_raw == _FINANCIAL_DATA_EXCHANGES_INDUSTRY:
+        return False
+    return None
+
+
 def is_financials(info, ticker=None):
     """True for a bank/insurer (Financial Services sector, or "bank"/
     "insurance" in the industry string) - see this module's own
@@ -91,8 +113,9 @@ def is_financials(info, ticker=None):
     function took `info` alone before this commit. With the switch OFF
     (the default), `ticker` is never read and the answer is exactly
     what this function returned before this commit, for every fixture.
-    With the switch ON, applies the override table in this order,
-    before falling through to the existing rule unchanged:
+    With the switch ON, applies the override table (_override_table_
+    verdict() above) in this order, before falling through to the
+    existing rule unchanged:
       1. REIT/real-estate exclusion (above, unconditional).
       2. `ticker` in the OUT table -> standard mode (False).
       3. `ticker` in the IN table -> financials mode (True).
@@ -110,13 +133,39 @@ def is_financials(info, ticker=None):
         return False
 
     if is_financials_store_live() and ticker:
-        t = ticker.strip().upper()
-        if t in _OVERRIDE_OUT_TICKERS:
-            return False
-        if t in _OVERRIDE_IN_TICKERS:
-            return True
-        if industry_raw == _FINANCIAL_DATA_EXCHANGES_INDUSTRY:
-            return False
+        verdict = _override_table_verdict(industry_raw, ticker)
+        if verdict is not None:
+            return verdict
+
+    sector = (info.get("sector") or "").strip()
+    if sector == "Financial Services":
+        return True
+    return ("bank" in industry) or ("insurance" in industry)
+
+
+def is_financials_shadow(info, ticker=None):
+    """Commit 5 of instruction_financials_income_store_and_top200_
+    guard.md (4 Oct 2026, Director-directed): "what is_financials()
+    would answer if FINANCIALS_STORE_LIVE were ON" - used ONLY by
+    financials_dry_run.py to show, in the owner-only dry run, which
+    tickers would change mode under the switch, WITHOUT reading or
+    depending on is_financials_store_live() at all (the dry run must
+    work regardless of the live switch's actual state, and must never
+    need to flip it to compute a hypothetical answer).
+
+    Identical logic to is_financials(), with the switch check removed -
+    the override table always applies here, given a ticker. Returns
+    the exact same answer as is_financials(info, ticker=ticker) would
+    if the switch were ON; with no ticker given, falls through to the
+    existing rule exactly like is_financials() does."""
+    industry_raw = info.get("industry") or ""
+    industry = industry_raw.lower()
+    if "reit" in industry or "real estate" in industry:
+        return False
+
+    verdict = _override_table_verdict(industry_raw, ticker)
+    if verdict is not None:
+        return verdict
 
     sector = (info.get("sector") or "").strip()
     if sector == "Financial Services":

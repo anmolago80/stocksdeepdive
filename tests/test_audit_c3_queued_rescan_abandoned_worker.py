@@ -240,7 +240,8 @@ _calls = []
 
 
 def _analyze_stub(ticker, attention_lite=True, discount_rate=None, log=print,
-                   rate_limited_out=None, growth_summary_out=None, oneoff_summary_out=None):
+                   rate_limited_out=None, growth_summary_out=None, oneoff_summary_out=None,
+                   shadow_out=None):
     _calls.append(ticker)
     if len(_calls) == 1:
         _cancel_after_first.set()
