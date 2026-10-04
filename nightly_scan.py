@@ -620,7 +620,30 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     # every other yfinance call in this module already goes through.
     # Any fetch failure -> income_df stays None, identical to today.
     income_df = None
-    if fcf_valuation_engine.needs_oneoff_check(cashflow_df):
+    # Commit 4 of instruction_financials_income_store_and_top200_
+    # guard.md (4 Oct 2026, Director-directed): with the switch ON, a
+    # financials-mode ticker's net income series comes from financials_
+    # income_store instead of a fetch of its own here - "the scan loop
+    # makes no income fetch of its own for this purpose (the existing
+    # one-off check is untouched and still does what it does for non-
+    # financials)." No store entry at all falls straight through with
+    # income_df left None - normalized_base_and_series()'s own existing
+    # fallback (income_df is None, or fewer than two positive net-
+    # income years) already produces today's OCF-based value tagged
+    # "ocf_fallback_financials", unchanged. With the switch OFF, this
+    # branch is never taken and every financials-mode ticker goes
+    # through the exact same needs_oneoff_check()-gated path as every
+    # other ticker, identical to before this instruction.
+    _income_df_fresh_fetch = False
+    _financials_mode_live = (
+        financials_classifier.is_financials_store_live()
+        and financials_classifier.is_financials(info, ticker=ticker)
+    )
+    if _financials_mode_live:
+        _store_entry = financials_income_store.get(ticker)
+        if _store_entry is not None:
+            income_df = _store_entry["income"]
+    elif fcf_valuation_engine.needs_oneoff_check(cashflow_df):
         if oneoff_summary_out is not None:
             oneoff_summary_out["candidates"] = oneoff_summary_out.get("candidates", 0) + 1
         income_df = _yf_call_with_retry(
@@ -631,8 +654,10 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         # attempt - a total fetch failure (all retries exhausted) leaves
         # income_df None/empty, same as any other yfinance failure in
         # this module, and isn't counted as "fetched" here.
-        if oneoff_summary_out is not None and income_df is not None and not income_df.empty:
-            oneoff_summary_out["income_fetched"] = oneoff_summary_out.get("income_fetched", 0) + 1
+        if income_df is not None and not income_df.empty:
+            _income_df_fresh_fetch = True
+            if oneoff_summary_out is not None:
+                oneoff_summary_out["income_fetched"] = oneoff_summary_out.get("income_fetched", 0) + 1
 
     # Commit 2 of instruction_financials_income_store_and_top200_guard.md
     # (4 Oct 2026, Director-directed): keeps financials_income_store
@@ -651,7 +676,7 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         )
         financials_income_store.refresh_if_newer(ticker, _cf_latest_period)
         if financials_income_store.is_stale_or_missing(ticker):
-            if income_df is not None and not income_df.empty:
+            if _income_df_fresh_fetch:
                 # Way 1 (free): the one-off check above already paid for
                 # this fetch - fundamentals_data.get_bundle()'s own income
                 # table is already converted to listing currency (see

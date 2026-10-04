@@ -44,6 +44,8 @@ from ranking_engine import calculate_long_score, MOS_CLAMP, PSY_CLAMP, DISCOVERY
 from trends_engine import get_trend_score
 from news_engine import get_news_score, get_yahoo_news_score
 import fcf_valuation_engine
+import financials_classifier
+import financials_income_store
 import moat_engine
 import social_engine
 import indicators_engine
@@ -258,22 +260,51 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
     # and the mechanism doesn't fire (identical to today's behaviour),
     # same fail-open philosophy as every other opportunistic-only data
     # source in this app.
-    _bundle = fundamentals_data.peek_cached_bundle(ticker)
-    if _bundle:
-        income_df = _bundle.get("income")
-    elif fcf_valuation_engine.needs_oneoff_check(cashflow_df):
-        # Step 4 one-off detection, Deep Dive path (Commit 2 of
-        # instruction_dcf_unreliable_pool_step4_nightly.md, owner-
-        # directed, 1 Oct 2026): a cold compounder-page cache used to
-        # mean this mechanism never fired for a cold-cache Deep Dive
-        # view at all. Deep Dive is one ticker, so paying for one real
-        # fetch on the minority of tickers whose cash-flow-only pre-
-        # check actually flags something is a cost of one extra call,
-        # not a per-scan multiplier the way it would be in nightly_scan.
-        # Any fetch failure -> income_df stays None, identical to today.
-        income_df = fundamentals_data.get_bundle(ticker).get("income")
+    # Commit 4 of instruction_financials_income_store_and_top200_
+    # guard.md (4 Oct 2026, Director-directed): with the switch ON, a
+    # financials-mode ticker reads the SAME financials_income_store
+    # the nightly scan fills, instead of this pre-existing cached-
+    # bundle/one-off-check path below. No store entry at all -> may
+    # fetch the income statement ONLY for this one ticker (one call,
+    # at most once per 24h regardless of outcome - see financials_
+    # income_store.fetch_for_deep_dive()'s own docstring for why: this
+    # page and /api/v1/deep-dive/{ticker} are hit by crawlers). A
+    # fetch failure falls through with income_df left None - resolve_
+    # intrinsic_value()'s own existing OCF fallback (tagged
+    # "ocf_fallback_financials") still produces a value; the caption
+    # below is what tells the reader why. With the switch OFF, this
+    # branch is never taken and every financials-mode ticker goes
+    # through the exact same pre-existing path as before this
+    # instruction.
+    _financials_mode_live = (
+        financials_classifier.is_financials_store_live()
+        and financials_classifier.is_financials(info, ticker=ticker)
+    )
+    if _financials_mode_live:
+        _fin_entry = financials_income_store.get(ticker)
+        if _fin_entry is not None:
+            income_df = _fin_entry["income"]
+        elif not financials_income_store.deep_dive_attempted_recently(ticker):
+            income_df = financials_income_store.fetch_for_deep_dive(ticker)
+        else:
+            income_df = None
     else:
-        income_df = None
+        _bundle = fundamentals_data.peek_cached_bundle(ticker)
+        if _bundle:
+            income_df = _bundle.get("income")
+        elif fcf_valuation_engine.needs_oneoff_check(cashflow_df):
+            # Step 4 one-off detection, Deep Dive path (Commit 2 of
+            # instruction_dcf_unreliable_pool_step4_nightly.md, owner-
+            # directed, 1 Oct 2026): a cold compounder-page cache used to
+            # mean this mechanism never fired for a cold-cache Deep Dive
+            # view at all. Deep Dive is one ticker, so paying for one real
+            # fetch on the minority of tickers whose cash-flow-only pre-
+            # check actually flags something is a cost of one extra call,
+            # not a per-scan multiplier the way it would be in nightly_scan.
+            # Any fetch failure -> income_df stays None, identical to today.
+            income_df = fundamentals_data.get_bundle(ticker).get("income")
+        else:
+            income_df = None
     intrinsic_value, intrinsic_src, dcf_growth, iv_meta = resolve_intrinsic_value(
         ticker, quality_score, info=info, cashflow_df=cashflow_df,
         # Stage 1a (3 Oct 2026, Director-directed): trading_currency_
@@ -586,6 +617,17 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         # next to the Intrinsic Value figure. See resolver_engine.
         # dcf_looks_unreliable()'s own comment for why 3x is the bar.
         "dcf_unreliable": dcf_looks_unreliable(intrinsic_value, current_price),
+        # Commit 4 of instruction_financials_income_store_and_top200_
+        # guard.md (4 Oct 2026, Director-directed): DISPLAY-ONLY, never
+        # feeds quality/scoring - tells the page to show "fallback:
+        # cash-flow basis - float not removed" next to the Intrinsic
+        # Value figure. True only when this ticker is financials-mode
+        # with the switch ON AND the DCF still ended up on the OCF
+        # path (no store entry/fetch, or fewer than two positive net-
+        # income years) - never true with the switch off.
+        "fallback_financials_caption": bool(
+            _financials_mode_live and iv_meta.get("fcf_source") == "ocf_fallback_financials"
+        ),
         # Growth-never-zero rewrite (30 Sep 2026, owner-directed): the
         # PRE-CAP growth figure, alongside dcf_growth (the number the
         # model actually compounds from) - see fcf_valuation_engine.

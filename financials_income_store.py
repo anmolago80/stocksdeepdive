@@ -177,6 +177,93 @@ def is_stale_or_missing(ticker):
     return entry is None or bool(entry.get("stale"))
 
 
+def _attempt_path(ticker):
+    return os.path.join(_store_dir(), f"{_safe_name(ticker)}.deepdive_attempt.json")
+
+
+def record_deep_dive_attempt(ticker, success, attempted_at=None):
+    """Commit 4 of instruction_financials_income_store_and_top200_
+    guard.md (4 Oct 2026, Director-directed): records a Deep Dive on-
+    view fetch attempt - success OR failure - in a file SEPARATE from
+    the income entry itself (a failed attempt has no income table to
+    hold this timestamp in). "Deep Dive pages and /api/v1/deep-dive/
+    {ticker} are hit by crawlers; without this limit every crawler
+    visit to a financial with no stored table would cost a Yahoo
+    call" - see deep_dive_attempted_recently()."""
+    _atomic_write(_attempt_path(ticker), {
+        "ticker": ticker, "success": bool(success),
+        "attempted_at": attempted_at or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    })
+
+
+def deep_dive_attempted_recently(ticker, within_hours=24):
+    """True when record_deep_dive_attempt() ran for this ticker less
+    than `within_hours` ago, success or failure alike - "at most one
+    [on-view] attempt per ticker per 24 hours" (this task's own rule).
+    False (never blocks) on any missing/corrupt/malformed record -
+    same fail-open philosophy as the rest of this module."""
+    path = _attempt_path(ticker)
+    try:
+        if not os.path.exists(path):
+            return False
+        with open(path) as f:
+            obj = json.load(f)
+        attempted_at = obj.get("attempted_at")
+        if not attempted_at:
+            return False
+        age = (datetime.datetime.now(datetime.timezone.utc)
+               - datetime.datetime.fromisoformat(attempted_at)).total_seconds()
+        return 0 <= age < within_hours * 3600
+    except Exception:
+        return False
+
+
+def _save_direct_fetch(ticker, income_df, bundle, source):
+    """Shared by run_nightly_prepass()'s way 3 and fetch_for_deep_dive():
+    converts a RAW (statement-currency) direct yfinance fetch to
+    listing currency using whatever fundamentals bundle already
+    happens to be cached for this ticker (even a stale one - only its
+    `info`'s currency fields are read, and a currency code essentially
+    never changes), then saves. A ticker with no cached bundle at all
+    is stored UNCONVERTED (currency_converted=False, source suffixed
+    "_unconverted") - self-heals the next time this ticker is normally
+    scanned (way 1, which always has a fresh `info` fetch)."""
+    info = (bundle or {}).get("info") or {}
+    fin_ccy = (info.get("financialCurrency") or info.get("currency") or "").upper()
+    listing_ccy = (info.get("currency") or "").upper()
+    if fin_ccy and listing_ccy:
+        converted = (fundamentals_data._convert_statement_currency(income_df, fin_ccy, listing_ccy)
+                     if fin_ccy != listing_ccy else income_df)
+        save(ticker, converted, currency=listing_ccy, source=source, currency_converted=True)
+    else:
+        save(ticker, income_df, currency=None, source=f"{source}_unconverted",
+             currency_converted=False)
+
+
+def fetch_for_deep_dive(ticker):
+    """Commit 4's own Deep Dive on-view fetch - ONE ticker, ONE call
+    (yf.Ticker(ticker).income_stmt, never the whole get_bundle()),
+    distinct from run_nightly_prepass()'s budgeted/circuit-broken batch
+    fetch (way 3): a single Deep Dive view never needs that machinery,
+    only record_deep_dive_attempt()'s 24h limit. Writes the entry on
+    success (currency-resolved via _save_direct_fetch(), above);
+    records the attempt either way. Returns the income DataFrame on
+    success, None on failure - never raises."""
+    import yfinance as yf
+
+    try:
+        income_df = yf.Ticker(ticker).income_stmt
+    except Exception:
+        income_df = None
+    success = income_df is not None and not income_df.empty
+    record_deep_dive_attempt(ticker, success)
+    if not success:
+        return None
+    bundle = fundamentals_data.peek_cached_bundle(ticker)
+    _save_direct_fetch(ticker, income_df, bundle, source="yfinance_deepdive")
+    return income_df
+
+
 # ======================================================================
 # Candidate selection + the paid pre-pass (way 3).
 # ======================================================================
@@ -351,17 +438,7 @@ def run_nightly_prepass(due_universes, log=print, budget=None):
             continue
 
         consecutive_rate_limited = 0
-        info = (bundle or {}).get("info") or {}
-        fin_ccy = (info.get("financialCurrency") or info.get("currency") or "").upper()
-        listing_ccy = (info.get("currency") or "").upper()
-        if fin_ccy and listing_ccy:
-            converted = (fundamentals_data._convert_statement_currency(income_df, fin_ccy, listing_ccy)
-                         if fin_ccy != listing_ccy else income_df)
-            save(ticker, converted, currency=listing_ccy, source="yfinance_direct",
-                 currency_converted=True)
-        else:
-            save(ticker, income_df, currency=None, source="yfinance_direct_unconverted",
-                 currency_converted=False)
+        _save_direct_fetch(ticker, income_df, bundle, source="yfinance_direct")
         outcome_by_ticker[ticker] = "fetched"
         fetched += 1
 

@@ -222,6 +222,15 @@ EN = {
     "dd.financials_mode_retention": (
         "Retains ~{pct}% of earnings to fund {g}% growth at {roe}% ROE."
     ),
+    # Commit 4 of instruction_financials_income_store_and_top200_
+    # guard.md (4 Oct 2026, Director-directed): shown next to the
+    # Intrinsic Value figure only for a financials-mode ticker, switch
+    # ON, whose DCF still ended up on the OCF path (no stored/fetched
+    # income series, or fewer than two positive net-income years) - the
+    # value itself is never withheld, this just discloses its basis.
+    "dd.financials_fallback_caption": (
+        "fallback: cash-flow basis - float not removed"
+    ),
 
     # Step 1d (owner-directed, 30 Sep 2026; governor REVISED 30 Sep 2026
     # 20:55 AEST - the tier ceiling alone now governs this tier, same as
@@ -4262,6 +4271,9 @@ ES = {
     "dd.financials_mode_retention": (
         "Retiene ~{pct}% de las ganancias para financiar un crecimiento "
         "del {g}% con un ROE del {roe}%."
+    ),
+    "dd.financials_fallback_caption": (
+        "alternativa: base de flujo de caja - el float no se ha eliminado"
     ),
 
     "dd.growth_source_analyst_1y": "analista Yahoo (próximo año)",

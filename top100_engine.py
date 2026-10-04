@@ -79,6 +79,7 @@ from datetime import datetime, timezone
 
 import yfinance as yf
 
+import financials_classifier
 import nightly_scan
 import ranking_engine
 import resolver_engine
@@ -221,6 +222,30 @@ def _is_dcf_unreliable(row):
     score(), stored scores) are untouched - this is pool ELIGIBILITY
     only, same class of rule as _is_flagged_stale()."""
     return bool(row.get("DCF Unreliable"))
+
+
+def _is_fallback_financials(row):
+    """Commit 4 of instruction_financials_income_store_and_top200_
+    guard.md (4 Oct 2026, Director-directed), switch-gated: True when
+    this row's "FCF Source" is "ocf_fallback_financials" - a
+    financials-mode ticker (bank/insurer/...) whose DCF ended up on
+    the OCF path anyway (no financials_income_store entry, or fewer
+    than two usable positive net-income years - see fcf_valuation_
+    engine.normalized_base_and_series()'s own fallback). Excluded from
+    the Top 100 pool the same way a DCF-unreliable row is: operating
+    cash flow for a financial includes float/deposit flows that aren't
+    shareholder cash, so a fallback value is a worse base to rank/score
+    from, not a genuine net-income-based valuation.
+
+    ONLY called when financials_classifier.is_financials_store_live()
+    is True (see this function's own call site) - with the switch OFF,
+    "ocf_fallback_financials" is a pre-existing tag nightly_scan.py
+    already produced before this instruction existed (fewer than two
+    positive net-income years happens independently of the switch), so
+    this exclusion must never fire then: select_top100_pool()'s output
+    stays byte-identical with the switch off, fallback rows in the
+    fixture or not, exactly as before this instruction."""
+    return row.get("FCF Source") == "ocf_fallback_financials"
 
 
 def _dedupe_share_classes(best_by_ticker, log=print):
@@ -457,6 +482,13 @@ def select_top100_pool(log=print):
     dcf_unreliable_excluded_tickers = []
     dcf_unreliable_by_stored_flag = 0
     dcf_unreliable_by_current_price = 0
+    # Commit 4 of instruction_financials_income_store_and_top200_
+    # guard.md: read ONCE per call, not per row - is_financials_store_
+    # live() is a cheap env lookup but there's no reason to repeat it
+    # for every row in every universe.
+    _financials_store_live = financials_classifier.is_financials_store_live()
+    fallback_financials_excluded_count = 0
+    fallback_financials_excluded_tickers = []
     for universe, payload in eligible.items():
         gen_raw = payload.get("generated_at")
         try:
@@ -495,6 +527,11 @@ def select_top100_pool(log=print):
                     if ticker not in dcf_unreliable_excluded_tickers:
                         dcf_unreliable_excluded_tickers.append(ticker)
                     continue
+                if _financials_store_live and _is_fallback_financials(row):
+                    fallback_financials_excluded_count += 1
+                    if ticker not in fallback_financials_excluded_tickers:
+                        fallback_financials_excluded_tickers.append(ticker)
+                    continue
                 prev = best_candidate.get(ticker)
                 key = (gen_dt, row_long_score)
                 if prev is None or key > (prev[0], prev[1]):
@@ -510,6 +547,13 @@ def select_top100_pool(log=print):
         log(f"[top100] selection: excluded {dcf_unreliable_excluded_count} "
             f"DCF-unreliable row(s) ({dcf_unreliable_by_stored_flag} by stored flag, "
             f"{dcf_unreliable_by_current_price} by current price): {', '.join(_shown)}{_more}")
+
+    if fallback_financials_excluded_count:
+        _fshown = fallback_financials_excluded_tickers[:20]
+        _fmore = (f" (+{len(fallback_financials_excluded_tickers) - 20} more)"
+                  if len(fallback_financials_excluded_tickers) > 20 else "")
+        log(f"[top100] selection: excluded {fallback_financials_excluded_count} "
+            f"fallback-financials row(s): {', '.join(_fshown)}{_fmore}")
 
     best_by_ticker = {}
     for ticker, (gen_dt, row_long_score, row, universe, gen_raw) in best_candidate.items():

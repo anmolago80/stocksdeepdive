@@ -11133,6 +11133,15 @@ def page_deep_dive():
                 unsafe_allow_html=True,
             )
 
+        # Commit 4 of instruction_financials_income_store_and_top200_
+        # guard.md (4 Oct 2026, Director-directed): DISPLAY-ONLY caption,
+        # never withholds the value itself - see deep_dive_engine.py's
+        # own "fallback_financials_caption" docstring for exactly when
+        # this is True (switch ON, financials-mode ticker, DCF still on
+        # the OCF path).
+        if _dd.get("fallback_financials_caption"):
+            st.caption(i18n.t("dd.financials_fallback_caption", _dd_lang))
+
         # --- Research cross-link (Task 5): when this ticker has hand-built
         # Rational Compounder coverage, point straight at it. st.switch_page
         # clears all non-embed query params on navigation by default (see
