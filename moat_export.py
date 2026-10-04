@@ -198,7 +198,7 @@ def _section_ebit_audit(unique_tickers, bundles, ticker_universes, log):
         if moat_engine._is_fund(info):
             excluded.append({"ticker": tk, "section": "section1_ebit_audit", "reason": "fund_or_etf"})
             continue
-        if moat_engine._is_financials(info):
+        if moat_engine._is_financials(info, ticker=tk):
             excluded.append({"ticker": tk, "section": "section1_ebit_audit", "reason": "financials"})
             continue
         live = moat_engine.compute_moat_dry_run(tk, force_switch=None, bundle=bundle)
@@ -333,7 +333,7 @@ def _section_tangible_capital(unique_tickers, bundles, ticker_universes, log):
         if moat_engine._is_fund(info):
             excluded.append({"ticker": tk, "section": "section3_tangible_capital", "reason": "fund_or_etf"})
             continue
-        if moat_engine._is_financials(info):
+        if moat_engine._is_financials(info, ticker=tk):
             excluded.append({"ticker": tk, "section": "section3_tangible_capital", "reason": "financials"})
             continue
         try:

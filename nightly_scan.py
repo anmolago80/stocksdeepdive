@@ -644,7 +644,7 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     # run_nightly_prepass() and scheduler_engine._run_nightly()'s own
     # call site. Nothing here reads the store to value anything yet
     # (that's a later commit) - this purely keeps it filled.
-    if financials_classifier.is_financials(info):
+    if financials_classifier.is_financials(info, ticker=ticker):
         _cf_latest_period = (
             str(cashflow_df.columns[0])
             if cashflow_df is not None and not cashflow_df.empty else None

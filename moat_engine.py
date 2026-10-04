@@ -260,7 +260,7 @@ def _is_fund(info):
     return "ETF" in name.upper()
 
 
-def _is_financials(info):
+def _is_financials(info, ticker=None):
     """Financial Services (or bank/insurance industry) - ROIC is
     meaningless for a balance sheet that IS the business (a bank's
     "invested capital" is deposits and loans, not plant/equipment), so
@@ -275,8 +275,14 @@ def _is_financials(info):
     wrapper is kept so every existing call site in this module (and its
     own "_is_financials" name) is unaffected - see financials_
     classifier.py's own module docstring for why it lives in its own
-    dependency-free module instead of being imported here directly."""
-    return financials_classifier.is_financials(info)
+    dependency-free module instead of being imported here directly.
+
+    `ticker` (Commit 3 of instruction_financials_income_store_and_
+    top200_guard.md, 4 Oct 2026): passed straight through to
+    financials_classifier.is_financials() for its switch-gated override
+    table - None (every call site that doesn't have one handy) means
+    the override table never applies even with the switch on."""
+    return financials_classifier.is_financials(info, ticker=ticker)
 
 
 def moat_band(score):
@@ -1056,7 +1062,7 @@ def _compute_moat_from_bundle(ticker, bundle, info, force_switch=None, force_pri
     if income is None or balance is None or getattr(income, "empty", True) or getattr(balance, "empty", True):
         return _na_result(["insufficient statement data"])
 
-    is_financials = _is_financials(info)
+    is_financials = _is_financials(info, ticker=ticker)
     mode = "financials" if is_financials else "standard"
     basics = _ace._basics(bundle)
 
@@ -1248,7 +1254,7 @@ def compute_moat_dry_run(ticker, force_switch, bundle=None, force_pricing_level=
         force_tangible_roic=force_tangible_roic, force_sliding=force_sliding,
     )
     result["ticker"] = ticker
-    result["is_financials"] = _is_financials(info)
+    result["is_financials"] = _is_financials(info, ticker=ticker)
     return result
 
 
@@ -1327,7 +1333,7 @@ def compute_moat_diagnostics(ticker):
     if income is None or balance is None or getattr(income, "empty", True) or getattr(balance, "empty", True):
         return None
 
-    is_financials = _is_financials(info)
+    is_financials = _is_financials(info, ticker=ticker)
     mode = "financials" if is_financials else "standard"
     basics = _ace._basics(bundle)
 

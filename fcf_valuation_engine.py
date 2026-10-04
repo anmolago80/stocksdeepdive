@@ -1221,7 +1221,7 @@ def _financials_base_and_series(income_df):
     return base, series, "net_income_financials", base_normalized, None, oneoff_meta
 
 
-def normalized_base_and_series(cashflow_df, info=None, income_df=None):
+def normalized_base_and_series(cashflow_df, info=None, income_df=None, ticker=None):
     """
     Dispatch to the financials-mode (net income) or standard (OCF)
     base/series computation, per financials_classifier.is_financials()
@@ -1242,9 +1242,16 @@ def normalized_base_and_series(cashflow_df, info=None, income_df=None):
     oneoff_meta["is_financials_mode"]=True, so a caller can still tell
     this was a financial whose DCF ended up OCF-based via the fallback,
     not the net-income path.
+
+    `ticker` (Commit 3 of instruction_financials_income_store_and_
+    top200_guard.md, 4 Oct 2026): passed straight through to
+    financials_classifier.is_financials() for its switch-gated override
+    table - None (every caller before this commit, and any caller that
+    doesn't have one handy) means the override table never applies even
+    with the switch on, same as a missing ticker there.
     """
     info = info or {}
-    if financials_classifier.is_financials(info):
+    if financials_classifier.is_financials(info, ticker=ticker):
         result = _financials_base_and_series(income_df) if income_df is not None else None
         if result is not None:
             return result
@@ -2068,7 +2075,7 @@ def dcf_intrinsic_value(
         # (latest operating cash flow minus AVERAGE capex) so a one-off capex
         # spike doesn't collapse the valuation.
         norm_base, fcf_series, base_src, base_normalized, capex_basis, oneoff_meta = normalized_base_and_series(
-            cashflow_df, info=info, income_df=income_df
+            cashflow_df, info=info, income_df=income_df, ticker=ticker
         )
         # Financials mode (2 Oct 2026, owner-directed) - set unconditionally
         # here, even on the manual-override/no-base branches below, since
