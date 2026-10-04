@@ -330,6 +330,53 @@ def is_private_only_ticker(ticker):
     return bool(universes) and all(is_private_universe(u) for u in universes)
 
 
+def build_private_only_ticker_index():
+    """The set of every ticker for which is_private_only_ticker(ticker)
+    would return True right now - same decision, computed once for
+    every ticker in one pass over the saved scans instead of once per
+    ticker.
+
+    Incident (4 Oct 2026, immediately after the Director addendum 2 item
+    C push): calendar_render.build_entries() and server.py's
+    /track-record route each called is_private_only_ticker() in a loop
+    over every watched/tracked ticker (hundreds). That function's own
+    ticker_universes_including_private() re-reads and re-parses EVERY
+    saved universe file from disk for EACH ticker it's asked about - with
+    ~20 saved universes (some, like TOPIX 500, hundreds of rows) and
+    several hundred watched tickers, that's thousands of full-file
+    reads+parses per request, which is what made /calendar take ~133s
+    and block the whole process (nightly_scan.py/scheduler_engine.py run
+    in the same event loop - see this app's own single-process
+    docstring elsewhere). This function reads each saved universe file
+    exactly once (via list_saved_universes()/load_scan_raw(), same as
+    ticker_universes_including_private() - allow_private=True, no 72h
+    staleness cutoff, since privacy is about where a ticker is scanned,
+    not whether that scan is fresh enough to display) and builds the
+    ticker -> set-of-universes map locally, then applies the exact same
+    "non-empty and every universe private" test is_private_only_ticker()
+    uses. Any caller that needs this decision for MANY tickers in one
+    request should call this once and test membership (O(1) per ticker)
+    instead of calling is_private_only_ticker() in a loop; a caller that
+    only ever needs ONE ticker's decision (e.g. Deep Dive's score-history
+    caption/chart, one ticker per page view) is unaffected by this
+    incident's own blowup (O(universes), not O(tickers x universes)) and
+    can keep calling is_private_only_ticker() directly."""
+    ticker_to_universes = {}
+    for universe in list_saved_universes(include_private=True):
+        payload = load_scan_raw(universe, allow_private=True)
+        if not payload:
+            continue
+        for row in payload.get("rows") or []:
+            t = (row.get("Ticker") or "").strip().upper()
+            if not t:
+                continue
+            ticker_to_universes.setdefault(t, set()).add(universe)
+    return {
+        t for t, universes in ticker_to_universes.items()
+        if universes and all(is_private_universe(u) for u in universes)
+    }
+
+
 def find_ticker_row(ticker, allow_private=False):
     """The freshest saved overnight-scan row for `ticker`, across every
     universe with a scan on disk, or None if no fresh scan covers it.

@@ -82,6 +82,16 @@ def build_entries(tickers=None):
         wanted = {t.strip().upper() for t in tickers if t and t.strip()}
         watched = [w for w in watched if w["ticker"] in wanted]
 
+    # Incident fix (4 Oct 2026): computed ONCE for the whole call, not
+    # once per watched ticker - see scan_store.build_private_only_
+    # ticker_index()'s own docstring for the outage this replaces
+    # (is_private_only_ticker() in a per-ticker loop re-read every saved
+    # universe file from disk for every ticker, ~133s and a blocked
+    # process on /calendar with ~20 universes x hundreds of watched
+    # tickers). Same decision, same privacy guarantee, O(universes)
+    # file reads total instead of O(tickers x universes).
+    _private_only_tickers = scan_store.build_private_only_ticker_index()
+
     entries = []
     for w in watched:
         ticker = w["ticker"]
@@ -100,9 +110,10 @@ def build_entries(tickers=None):
             # dates themselves aren't private data (an earnings date is
             # public market information, and being "watched" doesn't
             # imply private-universe membership) - only the computed
-            # score numbers are nulled out, via scan_store.
-            # is_private_only_ticker() (see its own docstring).
-            _private = scan_store.is_private_only_ticker(ticker)
+            # score numbers are nulled out, via the index above (same
+            # decision as scan_store.is_private_only_ticker(), see its
+            # own docstring).
+            _private = ticker in _private_only_tickers
             entries.append({
                 "ticker": ticker, "company_name": name, "universe": universe,
                 "date": last_report, "status": "reported", "confirmed": True,

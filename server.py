@@ -2582,8 +2582,14 @@ async def track_record(request: Request):
     # see scan_store.is_private_only_ticker()'s own docstring). Filtering
     # here reads/deletes nothing from score_history itself - every row
     # stays on disk; this just decides what this one public page shows.
+    # Incident fix (4 Oct 2026): is_private_only_ticker() in a per-row
+    # loop re-read every saved universe file for every one of up to 500
+    # tickers - build_private_only_ticker_index() computes the same
+    # decision for every ticker in one pass (see its own docstring for
+    # the /calendar outage this same pattern caused).
+    _private_only_tickers = scan_store.build_private_only_ticker_index()
     rows = [r for r in score_history.tracked_summary()
-            if not scan_store.is_private_only_ticker(r.get("ticker"))]
+            if (r.get("ticker") or "").strip().upper() not in _private_only_tickers]
     hreflang_alternates = [
         ("en", f"{base_url}/track-record"),
         ("es", f"{base_url}/es/track-record"),
