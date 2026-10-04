@@ -147,24 +147,59 @@ def mark_stale(ticker):
         return False
 
 
+def latest_statement_period(df):
+    """The latest period-end column label on a yfinance-shaped
+    statement DataFrame (income, cashflow, ...) - columns are most-
+    recent-first, the same convention every caller in this codebase
+    already uses (e.g. nightly_scan.py's own cashflow_df.columns[0]
+    derivation). None for a None/empty frame, or if the columns can't
+    be read.
+
+    Shared helper (Addendum 2 item 6, 5 Oct 2026, Director-directed)
+    so refresh_if_newer() below, run_nightly_prepass()'s own Way 2
+    acceptance gate, and financials_dry_run.py's new "latest period"
+    display column all read the identical notion of "latest period"
+    directly off a statement's own data, rather than a separately
+    recorded field that may or may not have been set."""
+    if df is None or getattr(df, "empty", True):
+        return None
+    try:
+        return str(df.columns[0])
+    except Exception:
+        return None
+
+
 def refresh_if_newer(ticker, latest_cf_period):
     """Called from the main per-ticker scan loop, which has a FRESH
-    cash-flow statement in hand tonight: if this ticker's stored entry
-    was fetched against an OLDER cash-flow period than the one just
-    seen, flags it stale (picked up by run_nightly_prepass() as a
-    priority-1 candidate on a FUTURE night - "at most one refresh
+    cash-flow statement in hand tonight: flags this ticker's stored
+    entry stale when the latest period end IN ITS OWN STORED INCOME
+    TABLE is older than `latest_cf_period` (Addendum 2 item 6, 5 Oct
+    2026, Director-directed) - picked up by run_nightly_prepass() as a
+    priority-1 candidate on a FUTURE night ("at most one refresh
     attempt per ticker per night" holds because there is only one
     pre-pass per night and it already ran before this loop started
     tonight). A no-op when there's nothing to compare (no latest_cf_
-    period given, or no existing entry, or its own latest_cf_period was
-    never recorded)."""
+    period given, no existing entry, or its income table is empty/
+    unreadable).
+
+    Deliberately does NOT read the entry's own `latest_cf_period`
+    field any more (that field is still recorded by save(), but is no
+    longer load-bearing for staleness) - item 4's own finding was that
+    run_nightly_prepass()'s Way 2 fill never set it, so every entry
+    saved that way (229 of 229 live entries as of 4-5 Oct 2026) could
+    never be marked stale under the old field-comparison rule,
+    however old its income table got. Comparing the table's OWN
+    latest period instead makes staleness detection independent of
+    how (or whether) an entry recorded that field, and automatically
+    covers every existing entry - no migration step, since the fix is
+    in how staleness is CHECKED, not in what's stored."""
     if not latest_cf_period:
         return
     existing = get(ticker)
     if existing is None:
         return
-    stored_period = existing.get("latest_cf_period")
-    if stored_period and str(latest_cf_period) > str(stored_period):
+    stored_latest = latest_statement_period(existing.get("income"))
+    if stored_latest and str(latest_cf_period) > str(stored_latest):
         mark_stale(ticker)
 
 
@@ -425,11 +460,29 @@ def run_nightly_prepass(due_universes, log=print, budget=None):
             cached_meta = bundle.get("meta") or {}
             if (cached_income is not None and not cached_income.empty
                     and cached_meta.get("source") == "yfinance"):
-                save(ticker, cached_income, currency=(bundle.get("info") or {}).get("currency"),
-                     source="yfinance_bundle_cached", currency_converted=True)
-                outcome_by_ticker[ticker] = "from_store"
-                from_store += 1
-                continue
+                # Addendum 2 item 6 (5 Oct 2026, Director-directed):
+                # don't accept a cached income table that's already
+                # known, right here, to be older than this SAME cached
+                # bundle's own cash-flow statement - that would just
+                # save an already-stale entry outright. When the
+                # bundle's cashflow is missing/empty (not known at
+                # pre-pass time - no fresh cash-flow statement is
+                # fetched here at all, only whatever's already
+                # cached), accept the income table anyway and let
+                # refresh_if_newer()'s own check at scan time catch it
+                # later if it turns out to be wrong.
+                _cached_cf_latest = latest_statement_period(bundle.get("cashflow"))
+                _cached_income_latest = latest_statement_period(cached_income)
+                _known_stale = (
+                    _cached_cf_latest is not None and _cached_income_latest is not None
+                    and str(_cached_income_latest) < str(_cached_cf_latest)
+                )
+                if not _known_stale:
+                    save(ticker, cached_income, currency=(bundle.get("info") or {}).get("currency"),
+                         source="yfinance_bundle_cached", currency_converted=True)
+                    outcome_by_ticker[ticker] = "from_store"
+                    from_store += 1
+                    continue
 
         if breaker_tripped or fetched >= budget:
             outcome_by_ticker[ticker] = "budget_deferred"

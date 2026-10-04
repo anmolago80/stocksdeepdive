@@ -30318,6 +30318,11 @@ def _render_financials_dry_run_panel():
         # vs listing currency, so a mismatch is visible right on this
         # table (e.g. a USD-reporting AUD-listed insurer).
         "reporting_currency", "listing_currency",
+        # Addendum 2 item 6 (5 Oct 2026, Director-directed): the
+        # store entry's own latest period and which of the three
+        # ways filled it, so staleness/provenance is visible right
+        # on this table too.
+        "store_latest_period", "store_source",
         "now_intrinsic_value", "now_mos_pct", "now_fcf_source",
         "now_dcf_unreliable", "now_moat_mode", "now_quality",
         "shadow_mode", "shadow_intrinsic_value", "shadow_mos_pct",

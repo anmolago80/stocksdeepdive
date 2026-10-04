@@ -240,6 +240,18 @@ def compute_shadow_row(ticker, company_name, price, info, cashflow_df, currency,
         # exactly what that function would compare.
         "reporting_currency": (info.get("financialCurrency") or currency or "").upper() or None,
         "listing_currency": (currency or info.get("currency") or "").upper() or None,
+        # Addendum 2 item 6 (5 Oct 2026, Director-directed): the store
+        # entry's own latest period (derived straight from its income
+        # table, same helper the staleness check itself now uses - see
+        # financials_income_store.latest_statement_period()'s own
+        # docstring) and which of the three ways filled it. None/None
+        # when there's no entry at all (status "awaiting_income_fetch"
+        # or "fetch_failed").
+        "store_latest_period": (
+            financials_income_store.latest_statement_period(entry.get("income"))
+            if entry is not None else None
+        ),
+        "store_source": entry.get("source") if entry is not None else None,
         "now_intrinsic_value": now_intrinsic_value,
         "now_mos_pct": now_mos_pct,
         "now_fcf_source": now_fcf_source,
