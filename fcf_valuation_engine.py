@@ -1824,6 +1824,7 @@ def dcf_intrinsic_value(
     manual_fcf=None,
     diluted_shares_override=None,
     income_df=None,
+    income_df_currency_converted=False,
 ):
     """
     Returns (intrinsic_value_per_share, growth_rate_used, meta).
@@ -1841,6 +1842,28 @@ def dcf_intrinsic_value(
     added to the bulk nightly path - see that module's own analyze_
     ticker_lite() docstring for the established cost-avoidance
     philosophy this follows).
+
+    income_df_currency_converted (Addendum 2 item 1 of instruction_
+    financials_income_store_and_top200_guard.md, 5 Oct 2026, Director-
+    directed): False (the default, and every caller that predates this -
+    switch OFF stays on this default, unconditionally, so nothing there
+    changes) means `income_df` - if given - is still in REPORTING
+    (financial statement) currency, exactly like `cashflow_df` always
+    is, so the currency-conversion block below applies to it normally.
+    True means the caller already read financials_income_store's own
+    `currency_converted` flag for this exact table and it was True - the
+    net-income base below is therefore ALREADY in listing currency (see
+    financials_income_store.py's own module docstring on what that flag
+    means) and must NOT be converted a second time. Only ever True when
+    financials_classifier.is_financials_store_live() (the switch) is ON
+    AND the base actually came from financials_income_store (set by
+    nightly_scan.py/deep_dive_engine.py/financials_dry_run.py's own
+    income_df-sourcing blocks, never by this function itself) - a caller
+    on the pre-existing one-off-check fetch path (fundamentals_data.
+    get_bundle(), itself already listing-currency-converted) still
+    leaves this False, deliberately, since fixing that pre-existing,
+    switch-independent double-conversion is explicitly out of this
+    addendum's scope ("Switch OFF: change nothing").
 
     intrinsic_value is 0 when FCF or shares are unavailable/non-positive, so
     callers can fall back to another method.
@@ -2153,7 +2176,18 @@ def dcf_intrinsic_value(
         # undocumented special case for the manual path.
         fin_ccy = (info.get("financialCurrency") or currency or "").upper()
         listing_ccy = (currency or info.get("currency") or "").upper()
-        if fin_ccy and listing_ccy and fin_ccy != listing_ccy:
+        # Addendum 2 item 1 (5 Oct 2026, Director-directed): a net-income
+        # base that came from an ALREADY listing-currency-converted
+        # income_df must not be converted again - see this function's
+        # own income_df_currency_converted docstring. Only ever skips
+        # the block for the net-income-financials path itself; the OCF
+        # fallback (meta["fcf_source"] == "ocf_fallback_financials")
+        # always comes from cashflow_df, which is never pre-converted,
+        # so it still needs this conversion exactly as before.
+        _already_converted = (
+            income_df_currency_converted and meta.get("fcf_source") == "net_income_financials"
+        )
+        if fin_ccy and listing_ccy and fin_ccy != listing_ccy and not _already_converted:
             _fx, _fx_src = fx_rate(fin_ccy, listing_ccy)
             if _fx is None:
                 # Exchange-rate fallback-of-1 fix (3 Oct 2026, Director-
@@ -2176,6 +2210,12 @@ def dcf_intrinsic_value(
             meta["fx_rate_used"] = round(_fx, 4)
             if _fx_src == "fallback":
                 meta["fx_fallback"] = True
+        elif _already_converted:
+            # Addendum 2 item 1: distinct from "no conversion needed"
+            # (same currency, fx_converted stays None) - this tells a
+            # caller the base WAS in a different currency but the
+            # conversion already happened upstream, once, in the store.
+            meta["fx_converted_upstream"] = f"{fin_ccy}->{listing_ccy}"
 
         # --- Discount rate (CAPM, per stock) --------------------------------
         if discount_rate is not None:

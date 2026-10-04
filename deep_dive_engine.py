@@ -280,12 +280,24 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         financials_classifier.is_financials_store_live()
         and financials_classifier.is_financials(info, ticker=ticker)
     )
+    # Addendum 2 item 1 (5 Oct 2026, Director-directed): read per-entry,
+    # same reasoning as nightly_scan.py's own _income_df_currency_
+    # converted - a Way-3/Deep-Dive direct fetch with no cached bundle
+    # to resolve currency from saves UNCONVERTED, so this is never
+    # assumed True just because the table came from the store.
+    _income_df_currency_converted = False
     if _financials_mode_live:
         _fin_entry = financials_income_store.get(ticker)
         if _fin_entry is not None:
             income_df = _fin_entry["income"]
+            _income_df_currency_converted = bool(_fin_entry.get("currency_converted"))
         elif not financials_income_store.deep_dive_attempted_recently(ticker):
             income_df = financials_income_store.fetch_for_deep_dive(ticker)
+            if income_df is not None:
+                _fetched_entry = financials_income_store.get(ticker)
+                _income_df_currency_converted = (
+                    bool(_fetched_entry.get("currency_converted")) if _fetched_entry is not None else False
+                )
         else:
             income_df = None
     else:
@@ -314,6 +326,7 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         discount_rate=discount_rate, perpetual_rate=perpetual_rate,
         growth_rate=growth_rate, manual_fcf=manual_fcf,
         income_df=income_df,
+        income_df_currency_converted=_income_df_currency_converted,
     )
 
     # Stage 1b (3 Oct 2026, Director-directed, section 6 carry-over):

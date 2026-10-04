@@ -47,6 +47,7 @@ def resolve_intrinsic_value(
     growth_rate=None,
     manual_fcf=None,
     income_df=None,
+    income_df_currency_converted=False,
 ):
     """
     Resolution order for intrinsic value:
@@ -102,6 +103,11 @@ def resolve_intrinsic_value(
     normalized_base_and_series() for the distorted-year cross-check -
     None (the default) means that mechanism never fires, identical to
     before it existed.
+
+    income_df_currency_converted (Addendum 2 item 1 of instruction_
+    financials_income_store_and_top200_guard.md, 5 Oct 2026): pure
+    passthrough to dcf_intrinsic_value() - see that function's own
+    docstring. False (the default) for every caller that predates this.
     """
     dcf_value, growth_used, dcf_meta = dcf_intrinsic_value(
         ticker,
@@ -113,6 +119,7 @@ def resolve_intrinsic_value(
         growth_rate=growth_rate,
         manual_fcf=manual_fcf,
         income_df=income_df,
+        income_df_currency_converted=income_df_currency_converted,
     )
     if dcf_value > 0:
         meta = {

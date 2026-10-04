@@ -71,7 +71,7 @@ def _run_analyze(quality, intrinsic_value, closes, volumes,
 
     def _ri(ticker, quality_score, info=None, cashflow_df=None, currency=None,
              discount_rate=None, perpetual_rate=None, growth_rate=None,
-             manual_fcf=None, income_df=None):
+             manual_fcf=None, income_df=None, income_df_currency_converted=False):
         return (intrinsic_value, "dcf", 0.05, {})
 
     def _rs(ticker, info=None):

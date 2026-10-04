@@ -653,6 +653,16 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
     # through the exact same needs_oneoff_check()-gated path as every
     # other ticker, identical to before this instruction.
     _income_df_fresh_fetch = False
+    # Addendum 2 item 1 (5 Oct 2026, Director-directed): True ONLY when
+    # income_df came from financials_income_store AND that store entry's
+    # own currency_converted flag says so - see fcf_valuation_engine.
+    # dcf_intrinsic_value()'s own income_df_currency_converted docstring
+    # for why the pre-existing one-off-check fetch path just below (the
+    # `elif` branch) deliberately never sets this True, even though its
+    # own income_df is ALSO already converted: that pre-existing double-
+    # conversion is a separate, switch-independent bug, out of this
+    # addendum's stated scope ("Switch OFF: change nothing").
+    _income_df_currency_converted = False
     _financials_mode_live = (
         financials_classifier.is_financials_store_live()
         and financials_classifier.is_financials(info, ticker=ticker)
@@ -661,6 +671,7 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         _store_entry = financials_income_store.get(ticker)
         if _store_entry is not None:
             income_df = _store_entry["income"]
+            _income_df_currency_converted = bool(_store_entry.get("currency_converted"))
     elif fcf_valuation_engine.needs_oneoff_check(cashflow_df):
         if oneoff_summary_out is not None:
             oneoff_summary_out["candidates"] = oneoff_summary_out.get("candidates", 0) + 1
@@ -745,6 +756,7 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         discount_rate=discount_rate, perpetual_rate=perpetual_rate,
         growth_rate=growth_rate, manual_fcf=manual_fcf,
         income_df=income_df,
+        income_df_currency_converted=_income_df_currency_converted,
     )
 
     # Stage 1b (3 Oct 2026, Director-directed, section 6 carry-over) -

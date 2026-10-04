@@ -30314,6 +30314,10 @@ def _render_financials_dry_run_panel():
 
     _display_cols = [
         "universe", "ticker", "company", "price",
+        # Addendum 2 item 1 (5 Oct 2026, Director-directed): reporting
+        # vs listing currency, so a mismatch is visible right on this
+        # table (e.g. a USD-reporting AUD-listed insurer).
+        "reporting_currency", "listing_currency",
         "now_intrinsic_value", "now_mos_pct", "now_fcf_source",
         "now_dcf_unreliable", "now_moat_mode", "now_quality",
         "shadow_mode", "shadow_intrinsic_value", "shadow_mos_pct",

@@ -195,12 +195,21 @@ def compute_shadow_row(ticker, company_name, price, info, cashflow_df, currency,
     violating the zero-new-network-call guarantee)."""
     entry = financials_income_store.get(ticker)
     shadow_income_df = entry["income"] if entry is not None else None
+    # Addendum 2 item 1 (5 Oct 2026, Director-directed): the store
+    # entry's OWN currency_converted flag, not an assumption - a Way-3
+    # direct fetch with no cached bundle to resolve currency from saves
+    # UNCONVERTED (currency_converted=False, see financials_income_
+    # store._save_direct_fetch()'s own docstring), so this must be read
+    # per-entry, never hardcoded True just because it came from the
+    # store.
+    _income_df_currency_converted = bool(entry.get("currency_converted")) if entry is not None else False
 
     with _switch_on():
         shadow_iv, _shadow_growth, shadow_meta = fcf_valuation_engine.dcf_intrinsic_value(
             ticker, info=info, cashflow_df=cashflow_df, currency=currency,
             discount_rate=discount_rate, perpetual_rate=perpetual_rate,
             growth_rate=growth_rate, manual_fcf=manual_fcf, income_df=shadow_income_df,
+            income_df_currency_converted=_income_df_currency_converted,
         )
 
     shadow_mode = bool(shadow_meta.get("is_financials_mode"))
@@ -225,6 +234,12 @@ def compute_shadow_row(ticker, company_name, price, info, cashflow_df, currency,
         "ticker": ticker,
         "company": company_name,
         "price": price,
+        # Addendum 2 item 1 (5 Oct 2026, Director-directed): same
+        # fin_ccy/listing_ccy derivation fcf_valuation_engine.
+        # dcf_intrinsic_value() itself uses, so these columns show
+        # exactly what that function would compare.
+        "reporting_currency": (info.get("financialCurrency") or currency or "").upper() or None,
+        "listing_currency": (currency or info.get("currency") or "").upper() or None,
         "now_intrinsic_value": now_intrinsic_value,
         "now_mos_pct": now_mos_pct,
         "now_fcf_source": now_fcf_source,
