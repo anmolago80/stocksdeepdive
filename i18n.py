@@ -4195,6 +4195,19 @@ EN = {
         "Described calculations, not advice - the position-sizing companion to the Top 200's "
         "own currency-exposure caption."
     ),
+
+    # SECTION B, COMMIT B3 of instruction_top200_amendments_and_
+    # currency_view.md (5 Oct 2026): the extra "margin of safety in
+    # your currency" table, shown only when arriving from a Deep Dive
+    # currency-risk note with a ticker.
+    "currency_risk.mos_view_heading": "Margin of safety, {base} view ({ticker})",
+    "currency_risk.mos_view_col_scenario": "Scenario",
+    "currency_risk.mos_view_col_effect": "Currency effect",
+    "currency_risk.mos_view_col_margin": "Resulting margin of safety",
+    "currency_risk.mos_view_caption": (
+        "{ticker}'s own margin of safety, described in {stock} terms converted through "
+        "each scenario above - a described calculation, not a forecast."
+    ),
     "currency_risk.position_label": "Position size ({base})",
     "currency_risk.scenario_average_label": "If {base} reverts to the period average ({rate})",
     "currency_risk.scenario_plus_1sigma_label": "If {base} reaches +1σ ({rate})",
@@ -7677,6 +7690,18 @@ ES = {
     "currency_risk.section_c_caption": (
         "Cálculos descritos, no asesoramiento - el complemento de dimensionamiento de "
         "posición de la propia leyenda de exposición cambiaria del Top 200."
+    ),
+
+    # SECTION B, COMMIT B3 of instruction_top200_amendments_and_
+    # currency_view.md (5 Oct 2026): the extra "margin of safety in
+    # your currency" table.
+    "currency_risk.mos_view_heading": "Margen de seguridad, vista en {base} ({ticker})",
+    "currency_risk.mos_view_col_scenario": "Escenario",
+    "currency_risk.mos_view_col_effect": "Efecto de la moneda",
+    "currency_risk.mos_view_col_margin": "Margen de seguridad resultante",
+    "currency_risk.mos_view_caption": (
+        "El margen de seguridad de {ticker}, descrito en términos de {stock} convertido "
+        "mediante cada escenario anterior - un cálculo descrito, no una predicción."
     ),
     "currency_risk.position_label": "Tamaño de la posición ({base})",
     "currency_risk.scenario_average_label": "Si {base} revierte al promedio del período ({rate})",

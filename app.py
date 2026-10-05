@@ -24214,7 +24214,41 @@ def page_currency_risk():
     _content_page_shell(i18n.t("currency_risk.page_title", st.session_state.get("lang", "en")),
                          current="currency_risk")
     _bump_page_view("currency_risk")
-    currency_risk_render.render_currency_risk_page(lang=st.session_state.get("lang", "en"))
+
+    # SECTION B, COMMIT B3 of instruction_top200_amendments_and_
+    # currency_view.md (5 Oct 2026, Director-directed): "for a signed-in
+    # visitor with a home currency, the From picker starts on it. For
+    # everyone else the page is exactly as today." - including while
+    # CURRENCY_VIEW_LIVE is off and this isn't the owner, which is why
+    # that gate is checked FIRST, before even looking up a home
+    # currency (an owner-only-while-off visitor who isn't the owner
+    # must see the page exactly as it always has been, full stop).
+    _email = paywall_engine.current_user_email()
+    _home_currency = None
+    if _email and currency_view_engine.visible_to(_email, ai_gate.is_owner):
+        _home_currency = account_currency_store.get_home_currency(_email)
+
+    # One-shot jump from a Deep Dive currency-risk note's "See the
+    # currency view" button (app.py's _render_currency_note(), COMMIT
+    # B2) - same "switch_page clears query params" one-shot-session-key
+    # pattern page_research()'s own research_jump_ticker already uses.
+    # "the pair and the ticker carried over" (COMMIT B2's own wording) -
+    # "without a ticker, or signed out: no extra table" (COMMIT B3's own
+    # wording) is why this is only even looked at for a signed-in
+    # visitor who passed the same gate above.
+    _jump = st.session_state.pop("currency_risk_jump", None) if _email and _home_currency else None
+    _jump_ticker = None
+    if isinstance(_jump, dict) and _jump.get("ticker"):
+        _jump_ticker = _jump["ticker"]
+        if _jump.get("base") in currency_risk_engine.CURRENCIES:
+            st.session_state["cr_base"] = _jump["base"]
+        if _jump.get("quote") in currency_risk_engine.CURRENCIES:
+            st.session_state["cr_quote"] = _jump["quote"]
+
+    currency_risk_render.render_currency_risk_page(
+        lang=st.session_state.get("lang", "en"),
+        default_base=_home_currency, jump_ticker=_jump_ticker,
+    )
 
 
 def page_methodology():

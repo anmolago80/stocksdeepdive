@@ -22,7 +22,9 @@ import streamlit as st
 
 import compounder_ui
 import currency_risk_engine as cre
+import currency_view_engine as cve
 import i18n
+import snapshot_store
 
 
 def _t(key, lang, **fmt):
@@ -52,21 +54,42 @@ def _tiles_grid_html(tiles):
     )
 
 
-def _render_selector_bar(lang):
+def _render_selector_bar(lang, default_base=None):
     """Pair selector (two dropdowns, same-currency guarded downstream)
     + range chips - one shared state (st.selectbox/segmented_control's
-    own key= persistence), read fresh on every rerun."""
+    own key= persistence), read fresh on every rerun.
+
+    default_base (SECTION B, COMMIT B3 of instruction_top200_
+    amendments_and_currency_view.md, 5 Oct 2026): "for a signed-in
+    visitor with a home currency, the From picker starts on it."
+    Exactly like DEFAULT_BASE itself, this is only ever consulted the
+    FIRST time this widget is instantiated in a session - st.selectbox's
+    own key= persistence means a value already in st.session_state["cr_
+    base"] (the visitor's own later choice, or a currency-risk-note
+    jump's one-shot override written directly into session_state by
+    app.py's page_currency_risk()) always wins over `index=`, so this
+    never fights either of those. None (every other visitor) reproduces
+    today's exact default - DEFAULT_BASE."""
     cols = st.columns([1, 1, 2])
     with cols[0]:
-        base = st.selectbox(
-            _t("base_label", lang), cre.CURRENCIES,
-            index=cre.CURRENCIES.index(cre.DEFAULT_BASE), key="cr_base",
-        )
+        # Passing index= AND having st.session_state["cr_base"] already
+        # set (a currency-risk-note jump's one-shot override, written
+        # directly into session_state by app.py's page_currency_risk()
+        # before this widget is created) is harmless - session_state
+        # always wins - but Streamlit logs a policy warning about it on
+        # every such rerun. Omitting index= whenever the key is already
+        # present avoids that noise without changing which value wins.
+        _base_kwargs = {} if "cr_base" in st.session_state else {
+            "index": cre.CURRENCIES.index(
+                default_base if default_base in cre.CURRENCIES else cre.DEFAULT_BASE
+            )
+        }
+        base = st.selectbox(_t("base_label", lang), cre.CURRENCIES, key="cr_base", **_base_kwargs)
     with cols[1]:
-        quote = st.selectbox(
-            _t("quote_label", lang), cre.CURRENCIES,
-            index=cre.CURRENCIES.index(cre.DEFAULT_QUOTE), key="cr_quote",
-        )
+        _quote_kwargs = {} if "cr_quote" in st.session_state else {
+            "index": cre.CURRENCIES.index(cre.DEFAULT_QUOTE)
+        }
+        quote = st.selectbox(_t("quote_label", lang), cre.CURRENCIES, key="cr_quote", **_quote_kwargs)
     with cols[2]:
         labels = {k: _t(f"range_{k}", lang) for k in cre.RANGE_KEYS}
         options = [labels[k] for k in cre.RANGE_KEYS]
@@ -261,10 +284,76 @@ def _render_section_c(base, quote, current_rate, average, sigma, lang):
     st.caption(_t("section_c_caption", lang))
 
 
-def render_currency_risk_page(lang="en"):
+def _render_mos_view_table(base, quote, ticker, lang):
+    """SECTION B, COMMIT B3 of instruction_top200_amendments_and_
+    currency_view.md (5 Oct 2026, Director-directed): "one extra small
+    table under section C, 'Margin of safety, {base} view', with the
+    three scenarios, the currency effect and the resulting margin" -
+    only ever called when a ticker was carried over from a Deep Dive
+    currency-risk note (app.py's page_currency_risk() never passes
+    jump_ticker otherwise). Reads the ticker's own cached margin of
+    safety from snapshot_store.get_snapshot() - the same scan-row read
+    app.py's own Deep Dive page already uses for this exact ticker
+    (snapshot_store.get_snapshot(ticker)["data"]) - no network call, no
+    DCF recompute. Renders nothing (silently) if the ticker has never
+    been scanned, has no margin of safety, or its own trading currency
+    doesn't match the page's current `quote` (the visitor changed the
+    To picker away from the ticker's own currency after landing here) -
+    there is no sensible "AUD view of this ticker's margin" to show in
+    that case, and this must never guess one.
+
+    cve.mos_view()'s own single-source-of-truth call into currency_
+    risk_engine.position_impact() is the SAME function section C's own
+    tiles above just used - never a second, independently-computed
+    effect."""
+    snap = (snapshot_store.get_snapshot(ticker) or {}).get("data") or {}
+    mos = snap.get("mos_pct")
+    ticker_currency = (snap.get("currency") or "").upper()
+    if mos is None or not ticker_currency or ticker_currency != quote:
+        return
+    view = cve.mos_view(mos, base, quote)
+    if not view:
+        return
+    st.markdown(f"#### {_t('mos_view_heading', lang, base=base, ticker=ticker)}")
+    rows = []
+    for key, label_key, view_val in (
+        ("average", "scenario_average_label", view["view_at_average"]),
+        ("plus_1sigma", "scenario_plus_1sigma_label", None),
+        ("minus_1sigma", "scenario_minus_1sigma_label", None),
+    ):
+        sc = view["effects"]["scenarios"].get(key)
+        if not sc:
+            continue
+        if view_val is None:
+            # the two +-1sigma rows: recover each one's OWN view (not
+            # just the min/max range) from the same value_factor
+            # mos_view() already computed it from - never a second,
+            # independently-derived number.
+            view_val = (1.0 - (1.0 - mos / 100.0) / sc["value_factor"]) * 100.0
+        rows.append({
+            _t("mos_view_col_scenario", lang): _t(label_key, lang, base=base,
+                                                   rate=f"{sc['scenario_rate']:.4f}"),
+            _t("mos_view_col_effect", lang): f"{sc['pct_change']:+.1f}%",
+            _t("mos_view_col_margin", lang): f"{view_val:+.1f}%",
+        })
+    st.dataframe(rows, hide_index=True, width='stretch')
+    st.caption(_t("mos_view_caption", lang, ticker=ticker, stock=quote))
+
+
+def render_currency_risk_page(lang="en", default_base=None, jump_ticker=None):
     """The Currency Risk page's full content - app.py's page_currency_
     risk() calls this after its own _content_page_shell()/_bump_page_
-    view() (same split as top100_render.render_top100_page())."""
+    view() (same split as top100_render.render_top100_page()).
+
+    default_base/jump_ticker: SECTION B, COMMIT B3 (5 Oct 2026) -
+    default_base pre-selects the From picker for a signed-in visitor
+    with a home currency (None reproduces today's exact default);
+    jump_ticker, only ever set when arriving from a Deep Dive currency-
+    risk note, adds the one extra small table under section C. Neither
+    parameter changes anything else about this page - a call with both
+    left at their defaults (every pre-existing caller before this
+    commit, and every signed-out/non-owner-while-the-switch-is-off
+    visitor after it) renders byte-identical to before this commit."""
     st.markdown(
         "<div style='color:#8aa0b8;font-size:12.5px;margin-bottom:10px;'>"
         f"{html.escape(_t('subtitle', lang))}</div>",
@@ -272,7 +361,7 @@ def render_currency_risk_page(lang="en"):
     )
     st.caption(_t("disclaimer", lang))
 
-    base, quote, range_key = _render_selector_bar(lang)
+    base, quote, range_key = _render_selector_bar(lang, default_base=default_base)
     if base == quote:
         st.warning(_t("same_currency_warning", lang))
         return
@@ -306,3 +395,6 @@ def render_currency_risk_page(lang="en"):
         st.caption(_t("not_enough_data_for_distribution", lang))
 
     _render_section_c(base, quote, stats["today"], stats["average"], stats["sigma"], lang)
+
+    if jump_ticker:
+        _render_mos_view_table(base, quote, jump_ticker, lang)
