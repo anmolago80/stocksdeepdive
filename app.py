@@ -1010,6 +1010,30 @@ def _render_lang_picker(key_prefix):
         st.rerun()
 
 
+def _currency_picker_body(email, home, key_prefix):
+    """The home-currency picker's actual content (caption + selectbox +
+    save-on-change) - factored out of _render_currency_picker() in
+    SECTION B COMMIT B2 so the Deep Dive note's own "change" link
+    (_render_currency_note() below) can reopen "the same picker as B1"
+    (the task's own words) at ITS location on the page, rather than a
+    second, separately-written copy of this logic. Always wrapped by
+    the caller in whatever container (st.popover, st.expander, ...)
+    fits that call site; this function itself renders no container."""
+    _lang = st.session_state.get("lang", "en")
+    st.caption(i18n.t("account.home_currency_caption", _lang))
+    _options = currency_risk_engine.CURRENCIES
+    _choice = st.selectbox(
+        i18n.t("account.home_currency_label", _lang),
+        _options,
+        index=(_options.index(home) if home in _options else None),
+        placeholder=i18n.t("account.home_currency_placeholder", _lang),
+        key=f"{key_prefix}_currency_select",
+    )
+    if _choice and _choice != home:
+        account_currency_store.set_home_currency(email, _choice)
+        st.rerun()
+
+
 def _render_currency_picker(key_prefix):
     """SECTION B, COMMIT B1 of instruction_top200_amendments_and_
     currency_view.md (5 Oct 2026, Director-directed): the home-currency
@@ -1034,18 +1058,90 @@ def _render_currency_picker(key_prefix):
         else i18n.t("account.home_currency_unset", _lang)
     )
     with st.popover(_label, key=f"{key_prefix}_currency_popover"):
-        st.caption(i18n.t("account.home_currency_caption", _lang))
-        _options = currency_risk_engine.CURRENCIES
-        _choice = st.selectbox(
-            i18n.t("account.home_currency_label", _lang),
-            _options,
-            index=(_options.index(home) if home in _options else None),
-            placeholder=i18n.t("account.home_currency_placeholder", _lang),
-            key=f"{key_prefix}_currency_select",
-        )
-        if _choice and _choice != home:
-            account_currency_store.set_home_currency(email, _choice)
-            st.rerun()
+        _currency_picker_body(email, home, key_prefix)
+
+
+def _render_currency_note(_dd):
+    """SECTION B, COMMIT B2 of instruction_top200_amendments_and_
+    currency_view.md (5 Oct 2026, Director-directed): the currency-risk
+    note directly under the margin of safety on the Deep Dive. Display
+    only - never touches _dd, intrinsic value, margin of safety, or any
+    score; it only reads _dd["mos"]/_dd["currency"] already computed
+    above this call site.
+
+    Gate order matters: the switch-OFF -> owner-only gate applies before
+    anything else (a non-owner must see NOTHING, not even the signed-out
+    nudge, while the switch is off) - exactly "only the owner sees ...
+    the note" from the task. Only once that passes do the five display
+    cases from the task's own COMMIT B2 spec apply, in order: no MOS (the
+    caller already guards this - _dd_valuation only calls this function
+    inside its own `if _dd["intrinsic_value"]:` branch - but mos itself
+    can still be None for other reasons, so it's re-checked here too);
+    not signed in; signed in with no home currency set; same currency as
+    the stock (or an unavailable pair - no history/not enough of it, per
+    currency_view_engine.mos_view()'s own "never an estimate" rule); the
+    full note."""
+    email = paywall_engine.current_user_email()
+    if not currency_view_engine.visible_to(email, ai_gate.is_owner):
+        return
+    mos = _dd.get("mos")
+    if mos is None:
+        return
+    lang = st.session_state.get("lang", "en")
+    ticker = _dd.get("ticker") or ""
+
+    if not email:
+        st.caption(i18n.t("dd.currency_note.signed_out", lang))
+        return
+
+    home = account_currency_store.get_home_currency(email)
+    if not home:
+        st.caption(i18n.t("dd.currency_note.no_home_set", lang))
+        _show_key = f"_dd_currency_picker_open_{ticker}"
+        if st.button(i18n.t("dd.currency_note.set_home_button", lang),
+                     key=f"dd_set_home_{ticker}"):
+            st.session_state[_show_key] = True
+        if st.session_state.get(_show_key):
+            _currency_picker_body(email, home, key_prefix=f"dd_{ticker}")
+        return
+
+    stock_currency = (_dd.get("currency") or "").upper()
+    if not stock_currency or home == stock_currency:
+        return
+
+    view = currency_view_engine.mos_view(mos, home, stock_currency)
+    if not view:
+        st.caption(i18n.t("dd.currency_note.not_available", lang,
+                           home=home, stock=stock_currency))
+        return
+
+    st.caption(i18n.t(
+        "dd.currency_note.full", lang, home=home, stock=stock_currency,
+        avg=f"{view['view_at_average']:.1f}",
+        low=f"{view['view_low']:.1f}", high=f"{view['view_high']:.1f}",
+    ))
+    _col1, _col2, _col3 = st.columns([1, 1, 4])
+    with _col1:
+        _change_key = f"_dd_currency_picker_open_{ticker}"
+        if st.button(i18n.t("dd.currency_note.change_button", lang),
+                     key=f"dd_change_home_{ticker}"):
+            st.session_state[_change_key] = not st.session_state.get(_change_key, False)
+        if st.session_state.get(_change_key):
+            _currency_picker_body(email, home, key_prefix=f"dd_{ticker}")
+    with _col2:
+        if st.button(i18n.t("dd.currency_note.see_tool_button", lang),
+                     key=f"dd_see_currency_tool_{ticker}"):
+            # One-shot session key, same "switch_page clears query
+            # params" pattern research_jump_ticker already established
+            # (see page_research()'s own comment) - COMMIT B3 reads and
+            # pops this to pre-select the From/To pickers and show the
+            # ticker-specific table under section C; until B3 lands,
+            # this just lands on the ordinary Currency Risk page with
+            # its own defaults (harmless no-op).
+            st.session_state["currency_risk_jump"] = {
+                "ticker": ticker, "base": home, "quote": stock_currency,
+            }
+            st.switch_page(PG_CURRENCY_RISK)
 
 
 def _admin_ever_seen() -> bool:
@@ -11786,6 +11882,7 @@ def page_deep_dive():
                     "Green (25%+) = UNDERVALUED. Amber (0-25%) = FAIR. "
                     "Red (below 0%) = EXPENSIVE - trading above intrinsic value."
                 )
+                _render_currency_note(_dd)
             else:
                 st.subheader("Margin of Safety: Price vs Intrinsic Value")
                 st.caption(_section_why("Margin of Safety"))

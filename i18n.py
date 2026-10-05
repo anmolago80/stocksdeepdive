@@ -545,6 +545,32 @@ EN = {
         "the model estimates the business is worth."
     ),
 
+    # SECTION B, COMMIT B2 of instruction_top200_amendments_and_
+    # currency_view.md (5 Oct 2026): the currency-risk note directly
+    # under the margin of safety. Currency codes only, no dollar sign
+    # (the task's own rule) - note "about {avg}%"/"between {low}% and
+    # {high}%" are already-formatted one-decimal strings supplied by
+    # app.py's _render_currency_note(), not raw floats.
+    "dd.currency_note.signed_out": (
+        "Investing from another currency? Sign in to see what currency "
+        "movement does to this margin of safety."
+    ),
+    "dd.currency_note.no_home_set": "Set your home currency to see the currency view.",
+    "dd.currency_note.set_home_button": "Set home currency",
+    "dd.currency_note.not_available": (
+        "The currency view is not available for {stock}/{home} "
+        "(not enough exchange-rate history for this pair)."
+    ),
+    "dd.currency_note.full": (
+        "Home currency {home}. This stock is priced in {stock}. If the "
+        "exchange rate returns to its 10-year average, the margin of "
+        "safety reads about {avg}%. Within the usual range of the rate "
+        "it reads between {low}% and {high}%. A described calculation, "
+        "not a forecast."
+    ),
+    "dd.currency_note.change_button": "change",
+    "dd.currency_note.see_tool_button": "See the currency view",
+
     # Part 43 (12 Sep 2026): these four headers used to say "(points
     # contributed by each factor)"/"(weighted terms)" - itself a hint at
     # the recipe - now "relative influence", matching the Option 2
@@ -4515,6 +4541,29 @@ ES = {
         "En términos simples: cuánto más barato es el precio de hoy "
         "que lo que el modelo estima que vale el negocio."
     ),
+
+    # SECTION B, COMMIT B2 of instruction_top200_amendments_and_
+    # currency_view.md (5 Oct 2026): the currency-risk note directly
+    # under the margin of safety.
+    "dd.currency_note.signed_out": (
+        "¿Inviertes desde otra moneda? Inicia sesión para ver qué le "
+        "hace el movimiento de la moneda a este margen de seguridad."
+    ),
+    "dd.currency_note.no_home_set": "Elige tu moneda local para ver la vista de moneda.",
+    "dd.currency_note.set_home_button": "Elegir moneda local",
+    "dd.currency_note.not_available": (
+        "La vista de moneda no está disponible para {stock}/{home} "
+        "(no hay suficiente historial del tipo de cambio para este par)."
+    ),
+    "dd.currency_note.full": (
+        "Moneda local {home}. Esta acción cotiza en {stock}. Si el tipo "
+        "de cambio vuelve a su promedio de 10 años, el margen de "
+        "seguridad sería de aproximadamente {avg}%. Dentro del rango "
+        "habitual del tipo de cambio, estaría entre {low}% y {high}%. "
+        "Un cálculo descrito, no una predicción."
+    ),
+    "dd.currency_note.change_button": "cambiar",
+    "dd.currency_note.see_tool_button": "Ver la vista de moneda",
 
     "dd.chart.driving_score": "Qué impulsa el {score_word}",
     "dd.chart.points_score": "Puntos hacia el {score_word}",
