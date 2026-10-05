@@ -30321,6 +30321,115 @@ def _render_top200_coverage_panel():
             ])
 
 
+def _render_top200_partial_rating_dry_run_panel():
+    """COMMIT 5 of instruction_top200_unrated_and_blank_replies_
+    combined.md (5 Oct 2026, Director-directed, PART C - "rating on
+    what is known") - owner-only, read-only, beside the COMMIT 1
+    coverage panel as the task's own placement instruction asks. Five
+    tables from top100_engine.partial_rating_dry_run() (stored data
+    only - no network call, no new scoring, no write to any score
+    row, no change to anything the public sees), plus a CSV download
+    of Table 3 ("the full table" - the one table with a full per-
+    company row: ticker, company, market, k, unscored dimensions, and
+    both methods' rank), since Andrew's own request names one CSV, not
+    five, and Table 3 is the table that directly answers the
+    question this dry run exists to answer ("where would they rank").
+    No button needed - everything here is a pure read of already-
+    stored data, nothing to trigger."""
+    st.markdown("### Rating on what is known (dry run)")
+    st.caption(
+        "Owner-only, read-only. This does NOT change the NOT RATED rule, "
+        "the ranking score, selection, the public page, or the prompt - "
+        "it only shows what a lower minimum-scored-dimensions bar would "
+        "do, under two methods, from stored data already on file."
+    )
+    try:
+        _result = top100_engine.partial_rating_dry_run(model=top100_engine.MODEL_TOP100)
+    except Exception as e:
+        st.caption(f"Could not compute the dry run: {e}")
+        return
+
+    st.markdown("**Table 1 - how thin are the unrated** (UNRATED_MODEL companies by k, per market)")
+    _table1 = _result["table1_by_k"]
+    if not _table1:
+        st.caption("No UNRATED_MODEL companies on file.")
+    else:
+        st.table([
+            {"Market": market, **{str(k): counts.get(k, 0) for k in range(8)}}
+            for market, counts in sorted(_table1.items())
+        ])
+
+    st.markdown("**Table 2 - what a lower bar would do**")
+    st.table([
+        {
+            "Minimum scored dimensions": min_k,
+            "Market": market,
+            "Would become rated": b["would_be_rated"],
+            "Would stay unrated": b["stays_unrated"],
+        }
+        for min_k in (7, 6, 5)
+        for market, b in sorted(_result["table2_lower_bar"][min_k].items())
+    ])
+
+    st.markdown("**Table 3 - where they would rank** (minimum of 6 scored dimensions)")
+    _table3 = _result["table3_landing"]
+    if not _table3:
+        st.caption("No UNRATED_MODEL company has 6 or more scored dimensions.")
+    else:
+        st.table([
+            {
+                "Ticker": r["ticker"], "Company": r["company"], "Market": r["market"], "k": r["k"],
+                "Unscored dimensions": ", ".join(r["unscored_dimensions"]),
+                "Method 1 score": r["method1_score"], "Method 1 rank": r["method1_rank"],
+                "Method 2 score": r["method2_score"], "Method 2 rank": r["method2_rank"],
+                "Top 50 (either method)": "yes" if (r["lands_top50_method1"] or r["lands_top50_method2"]) else "",
+            }
+            for r in sorted(_table3, key=lambda r: r["method2_rank"])
+        ])
+        import csv
+        import io
+        _buf = io.StringIO()
+        _writer = csv.writer(_buf)
+        _writer.writerow([
+            "ticker", "company", "market", "k", "unscored_dimensions",
+            "method1_score", "method1_rank", "method2_score", "method2_rank",
+            "lands_top50_method1", "lands_top50_method2", "empty_fields",
+        ])
+        for r in sorted(_table3, key=lambda r: r["method2_rank"]):
+            _writer.writerow([
+                r["ticker"], r["company"], r["market"], r["k"],
+                ";".join(r["unscored_dimensions"]),
+                r["method1_score"], r["method1_rank"], r["method2_score"], r["method2_rank"],
+                "yes" if r["lands_top50_method1"] else "no",
+                "yes" if r["lands_top50_method2"] else "no",
+                ";".join(r["empty_fields"]),
+            ])
+        st.download_button(
+            "Download Table 3 as CSV", data=_buf.getvalue(),
+            file_name="top200_partial_rating_table3.csv", mime="text/csv",
+        )
+
+    st.markdown("**Table 4 - effect on companies already rated** (1 or 2 gaps today)")
+    _table4 = _result["table4_existing_gaps"]
+    if not _table4:
+        st.caption("No RATED company currently has exactly 1 or 2 unscored dimensions.")
+    else:
+        st.table([
+            {
+                "Ticker": r["ticker"], "Company": r["company"], "Market": r["market"],
+                "Gaps today": r["gaps"], "Rank today": r["today_rank"],
+                "Rank under Method 2": r["method2_rank"], "Change": r["change"],
+            }
+            for r in sorted(_table4, key=lambda r: r["today_rank"])
+        ])
+
+    st.markdown("**Table 5 - Top 20 tabs** (members with fewer than 8 scored dimensions)")
+    st.table([
+        {"Tab": tab.upper(), "Members": b["members"], "Fewer than 8 scored": b["below_8"]}
+        for tab, b in sorted(_result["table5_top20_tabs"].items())
+    ])
+
+
 def _render_top200_backfill_preview_panel():
     """COMMIT 3 of instruction_top200_unrated_and_blank_replies_
     combined.md (5 Oct 2026, Director-directed, switch TOP200_
@@ -32797,6 +32906,15 @@ def page_admin_dashboard():
     # its own, final section of this page" pattern as every panel above.
     st.markdown("---")
     _render_top200_coverage_panel()
+
+    # --- RATING ON WHAT IS KNOWN (COMMIT 5 of instruction_top200_
+    # unrated_and_blank_replies_combined.md, 5 Oct 2026, Director-
+    # directed, PART C) - see _render_top200_partial_rating_dry_run_
+    # panel()'s own docstring. Placed right beside the COMMIT 1 panel
+    # per the task's own instruction. Same "no gate of its own, final
+    # section of this page" pattern as every panel above.
+    st.markdown("---")
+    _render_top200_partial_rating_dry_run_panel()
 
     # --- TOP 200 BACKFILL PREVIEW (COMMIT 3 of instruction_top200_
     # unrated_and_blank_replies_combined.md, 5 Oct 2026, Director-

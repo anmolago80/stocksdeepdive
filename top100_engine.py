@@ -2993,6 +2993,11 @@ def poll_and_ingest_batch(log=print):
     _coverage_rows = top100_store.current_pool() + top100_store.current_asx_extension()
     _log_coverage(_coverage_rows, log=log)
     _log_zeros_breakdown(_coverage_rows, log=log)
+    # COMMIT 5 of instruction_top200_unrated_and_blank_replies_combined.md
+    # (5 Oct 2026, Director-directed): the dry run's own one log line,
+    # "after each ingest" - see _log_partial_rating_dry_run()'s own
+    # docstring. Read-only, no write, never raises.
+    _log_partial_rating_dry_run(log=log)
     return {"saved": saved, "scored": saved, "failed": failed,
             "input_tokens": total_input_tokens, "output_tokens": total_output_tokens,
             "cache_creation_tokens": total_cache_creation_tokens,
@@ -4477,6 +4482,273 @@ def schema_mode_breakdown(model=MODEL_TOP100):
     return out
 
 
+# -----------------------------------------------------------------
+# COMMIT 5 of instruction_top200_unrated_and_blank_replies_combined.md
+# (5 Oct 2026, Director-directed, PART C - "rating on what is known")
+# - owner-only, read-only dry run. From stored data only: no network
+# call, no new scoring, no write to any score row, no change to
+# anything the public sees. Confirmed as buildable per STEP C0.2
+# (stored NOT RATED rows DO keep the real dimension scores/
+# justifications the model gave for whichever of the ten it actually
+# scored - see composite_score()'s own docstring/_parse_one_company()
+# for where this is proven).
+# -----------------------------------------------------------------
+
+def _k_scored(score_row):
+    """Number of dimensions (0-10) with a real (non-null) score on a
+    stored row - "10 minus the zeros" in the task's own words."""
+    dims = score_row.get("dims") or {}
+    return sum(1 for key in DIMENSION_KEYS if (dims.get(key) or {}).get("score") is not None)
+
+
+def _unscored_dimension_keys(score_row):
+    """The dimension keys with no real score on a stored row - for
+    Table 3's "which dimensions are unscored" column."""
+    dims = score_row.get("dims") or {}
+    return [key for key in DIMENSION_KEYS if (dims.get(key) or {}).get("score") is None]
+
+
+def _composite_score_gap_as_middle(dims, gap_score=3):
+    """Method 2 ("gap counted as the middle score", COMMIT 5's own
+    task wording): each dimension with no real score is counted as 3
+    (the middle of the 1-5 scale) instead of being left out and the
+    remaining weight rescaled (Method 1 - see _composite_score_from_
+    dims()). Always returns a 0-100 number (every dimension counts
+    toward the full DIMENSION_WEIGHT_TOTAL regardless of how many were
+    actually scored) - never None, unlike Method 1."""
+    total = 0.0
+    for key in DIMENSION_KEYS:
+        score = (dims.get(key) or {}).get("score")
+        if score is None:
+            score = gap_score
+        weight = DIMENSION_WEIGHT[key]
+        total += weight * (score - 1) / 4.0
+    return round(total * (100.0 / DIMENSION_WEIGHT_TOTAL), 2)
+
+
+def _partial_rating_company_name_map(model=MODEL_TOP100):
+    """ticker -> company_name from the CURRENT pool + ASX extension
+    only (the one place this engine module already has that string) -
+    a ticker scored in the past that has since left the pool entirely
+    simply has no name available here; callers fall back to the
+    ticker itself in that case. Read-only, no network call."""
+    rows = top100_store.current_pool() + top100_store.current_asx_extension()
+    return {r["ticker"]: r.get("company_name") for r in rows if r.get("company_name")}
+
+
+def _partial_rating_top20_tab_membership(model=MODEL_TOP100):
+    """{"mixed": [score_row, ...], "au": [...], "us": [...]} - today's
+    ACTUAL membership of the three Top 20-shaped tabs (Full 100/200 is
+    deliberately excluded - the task's own "Top 20 tabs" wording),
+    reproduced via the SAME private render functions the real page
+    itself calls (top100_render._enriched_pool()/_enriched_asx_
+    extension()/_sort_and_gate_rated()) rather than re-deriving the
+    ranking/gating logic a second time - this codebase's own
+    precedent for reusing a private-by-convention function from
+    outside its module (see CLAUDE.md's own note on api_v1._resolve_
+    universe(), and COMMIT 3's backfill_preview()/app.py's own preview
+    panel doing the same). Ordered by SORT_RESEARCH (the page's own
+    default/first sort option) - sort mode changes ORDER, not which
+    rows are RATED, so this is a stable choice of "today's" view for
+    a display-only table. Deferred import (function-local, not at
+    module level) avoids the circular import: top100_render.py
+    already imports this module at ITS own top level."""
+    import top100_render
+    enriched = top100_render._enriched_pool()
+    extension = top100_render._enriched_asx_extension()
+    mixed = top100_render._sort_and_gate_rated(enriched, top100_render.SORT_RESEARCH)[:20]
+    us = top100_render._sort_and_gate_rated(
+        [r for r in enriched if r["currency"] == "USD"], top100_render.SORT_RESEARCH)[:20]
+    pool_au = [r for r in enriched if r["currency"] == "AUD"]
+    au = top100_render._sort_and_gate_rated(pool_au + extension, top100_render.SORT_RESEARCH)
+    return {
+        "mixed": [r["score_row"] for r in mixed if r.get("score_row")],
+        "us": [r["score_row"] for r in us if r.get("score_row")],
+        "au": [r["score_row"] for r in au if r.get("score_row")],
+    }
+
+
+def partial_rating_dry_run(model=MODEL_TOP100):
+    """The owner-only "Rating on what is known" dry run - Admin
+    Dashboard, read-only, from stored data only. No network call, no
+    new scoring, no write to any score row (nothing in this function
+    calls any top100_store.save_* function), no change to selection,
+    the public page, or the prompt. Every company considered is one
+    with a stored row under (model, RUBRIC_VERSION) - top100_store.
+    latest_scores_for_model()'s own return value, the exact same read
+    _unscored_tickers()/_enriched_pool() already use elsewhere in this
+    module, so this dry run can never disagree with them about what
+    is currently stored.
+
+    Returns a dict with five tables (named exactly as in the task) plus
+    a "summary" for the one log line poll_and_ingest_batch() prints
+    after every ingest:
+
+    "table1_by_k": {market: {k: count}} for k in 0..7 - UNRATED_MODEL
+    companies only (company_status() == "unrated_model"; UNRATED_
+    FAILED is a different end-state, never counted here), by how many
+    of their ten dimensions carry a real score.
+
+    "table2_lower_bar": {min_k: {market: {"would_be_rated", "stays_
+    unrated"}}} for min_k in (7, 6, 5) - of today's UNRATED_MODEL
+    companies, how many would cross a lower k-threshold.
+
+    "table3_landing": one row per UNRATED_MODEL company with k >= 6
+    (the task's own "at a minimum of 6" threshold for this table) -
+    ticker, company, market, k, unscored_dimensions (keys), method1_
+    score/method1_rank, method2_score/method2_rank (rank = place among
+    TODAY'S rated companies' own scores under that method, 1 = best),
+    lands_top50_method1/lands_top50_method2 (bool), and empty_fields -
+    always ["inversion_scenario", "inversion_severity", "current_
+    headwind"] for every row here, since _parse_one_company() forces
+    exactly those three to None, unconditionally, for every NOT RATED
+    row regardless of k (see that function's own docstring) - market_
+    structure/one_foot_hurdle/munger_quality/big_wave are NOT forced
+    and may well be filled (STEP C0.4), so they are never listed here.
+
+    "table4_existing_gaps": one row per RATED company with exactly 1 or
+    2 null dimensions today - ticker, company, market, gaps (1 or 2),
+    today_rank (under Method 1 - i.e. its real, already-stored
+    composite_score()), method2_rank, and the change (today_rank minus
+    method2_rank; positive means Method 2 would move it UP the
+    ranking). Andrew needs this because switching everyone to Method 2
+    would also move companies that are already rated today, not only
+    the newly-rated ones in Table 3.
+
+    "table5_top20_tabs": {"mixed"/"au"/"us": {"members", "below_8"}} -
+    of each Top 20-shaped tab's own CURRENT, real membership (see
+    _partial_rating_top20_tab_membership()), how many have fewer than
+    8 scored dimensions. The Full 100/200 tab is deliberately excluded
+    - the task's own "Top 20 tabs" wording."""
+    latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+    failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+    name_map = _partial_rating_company_name_map(model)
+
+    unrated_model_rows = [
+        row for row in latest.values()
+        if company_status(row, failures.get(row["ticker"])) == "unrated_model"
+    ]
+    rated_rows = [row for row in latest.values() if not row.get("not_rated")]
+
+    # Table 1 - how thin are the unrated.
+    table1 = {}
+    for row in unrated_model_rows:
+        market = peer_context.market_for(row["ticker"])
+        k = _k_scored(row)
+        table1.setdefault(market, {}).setdefault(k, 0)
+        table1[market][k] += 1
+
+    # Table 2 - what a lower bar would do.
+    table2 = {}
+    for min_k in (7, 6, 5):
+        by_market = {}
+        for row in unrated_model_rows:
+            market = peer_context.market_for(row["ticker"])
+            bucket = by_market.setdefault(market, {"would_be_rated": 0, "stays_unrated": 0})
+            if _k_scored(row) >= min_k:
+                bucket["would_be_rated"] += 1
+            else:
+                bucket["stays_unrated"] += 1
+        table2[min_k] = by_market
+
+    # Baseline for "place among today's rated companies": today's
+    # RATED companies' own scores under each method - Method 1 is
+    # simply their real, already-stored composite_score(); Method 2 is
+    # recomputed for every one of them too (a RATED company can itself
+    # have 1-2 gaps, which Method 2 treats differently from Method 1 -
+    # see Table 4).
+    rated_method1 = [composite_score(row) for row in rated_rows]
+    rated_method1 = [c for c in rated_method1 if c is not None]
+    rated_method2 = [_composite_score_gap_as_middle(row["dims"]) for row in rated_rows]
+
+    def _rank_among_rated(candidate_score, rated_scores):
+        return 1 + sum(1 for s in rated_scores if s > candidate_score)
+
+    # Table 3 - where they would rank (minimum of 6 scored dimensions).
+    table3 = []
+    for row in unrated_model_rows:
+        k = _k_scored(row)
+        if k < 6:
+            continue
+        ticker = row["ticker"]
+        method1_score = _composite_score_from_dims(row["dims"])
+        method2_score = _composite_score_gap_as_middle(row["dims"])
+        method1_rank = _rank_among_rated(method1_score, rated_method1) if method1_score is not None else None
+        method2_rank = _rank_among_rated(method2_score, rated_method2)
+        table3.append({
+            "ticker": ticker,
+            "company": name_map.get(ticker, ticker),
+            "market": peer_context.market_for(ticker),
+            "k": k,
+            "unscored_dimensions": _unscored_dimension_keys(row),
+            "method1_score": method1_score, "method1_rank": method1_rank,
+            "method2_score": method2_score, "method2_rank": method2_rank,
+            "lands_top50_method1": method1_rank is not None and method1_rank <= 50,
+            "lands_top50_method2": method2_rank <= 50,
+            "empty_fields": ["inversion_scenario", "inversion_severity", "current_headwind"],
+        })
+
+    # Table 4 - effect on companies already rated (1 or 2 gaps today).
+    table4 = []
+    for row in rated_rows:
+        k = _k_scored(row)
+        gaps = 10 - k
+        if gaps not in (1, 2):
+            continue
+        ticker = row["ticker"]
+        today_score = composite_score(row)
+        method2_score = _composite_score_gap_as_middle(row["dims"])
+        today_rank = _rank_among_rated(today_score, rated_method1)
+        method2_rank = _rank_among_rated(method2_score, rated_method2)
+        table4.append({
+            "ticker": ticker,
+            "company": name_map.get(ticker, ticker),
+            "market": peer_context.market_for(ticker),
+            "gaps": gaps,
+            "today_rank": today_rank, "method2_rank": method2_rank,
+            "change": today_rank - method2_rank,
+        })
+
+    # Table 5 - Top 20 tabs.
+    table5 = {}
+    for tab_name, members in _partial_rating_top20_tab_membership(model).items():
+        table5[tab_name] = {
+            "members": len(members),
+            "below_8": sum(1 for row in members if _k_scored(row) < 8),
+        }
+
+    summary = {
+        "unrated_model": len(unrated_model_rows),
+        "would_be_rated_min7": sum(b["would_be_rated"] for b in table2[7].values()),
+        "would_be_rated_min6": sum(b["would_be_rated"] for b in table2[6].values()),
+        "would_be_rated_min5": sum(b["would_be_rated"] for b in table2[5].values()),
+        "landing_top50_min6_method1": sum(1 for r in table3 if r["lands_top50_method1"]),
+        "landing_top50_min6_method2": sum(1 for r in table3 if r["lands_top50_method2"]),
+    }
+    return {
+        "table1_by_k": table1, "table2_lower_bar": table2, "table3_landing": table3,
+        "table4_existing_gaps": table4, "table5_top20_tabs": table5, "summary": summary,
+    }
+
+
+def _log_partial_rating_dry_run(log=print, model=MODEL_TOP100):
+    """The task's own one log line, called after every ingest (COMMIT
+    5's own requirement) - never raises (same "must never stop the
+    site serving" discipline as every other post-ingest log call in
+    poll_and_ingest_batch())."""
+    try:
+        result = partial_rating_dry_run(model=model)
+    except Exception as e:
+        log(f"[top100] partial-rating dry run failed, skipping: {e}")
+        return
+    s = result["summary"]
+    log(f"[top100] partial-rating dry run: unrated_model {s['unrated_model']} | "
+        f"would be rated at min 7: {s['would_be_rated_min7']} | "
+        f"min 6: {s['would_be_rated_min6']} | min 5: {s['would_be_rated_min5']} | "
+        f"landing in top 50 at min 6: method1 {s['landing_top50_min6_method1']}, "
+        f"method2 {s['landing_top50_min6_method2']}")
+
+
 def coverage_for_rows(rows, model=MODEL_TOP100):
     """The status + market of every row in `rows` (pool + ASX
     extension, or whatever selection the caller wants a coverage
@@ -4767,14 +5039,32 @@ def composite_score(score_row):
     5 -> 1.0) - a true fraction-of-the-dimension's-own-weight, not the
     score/5 a first glance might suggest (which would map a 1 to 20%
     of the weight rather than 0%, silently rewarding the worst
-    possible reading on a dimension)."""
+    possible reading on a dimension).
+
+    COMMIT 5 of instruction_top200_unrated_and_blank_replies_combined.md
+    (5 Oct 2026, Director-directed, STEP C0.1): the actual rescale
+    arithmetic now lives in _composite_score_from_dims() below - this
+    function is unchanged for every existing caller (same not_rated
+    short-circuit, same return value), it just delegates the number-
+    crunching so the owner-only dry run can apply the IDENTICAL
+    formula ("Method 1, today's method extended") to a stored NOT
+    RATED row's own dims, which this function itself always refuses."""
     if score_row is None or score_row.get("not_rated"):
         return None
+    return _composite_score_from_dims(score_row["dims"])
 
+
+def _composite_score_from_dims(dims):
+    """The leave-out-and-rescale arithmetic composite_score() itself
+    applies, extracted so COMMIT 5's dry run ("Method 1 - today's
+    method extended") can run the exact same formula on a stored NOT
+    RATED row's own dims - something composite_score() itself always
+    refuses (see its own not_rated short-circuit). None when zero
+    dimensions are scored (nothing to rescale)."""
     available_weight = 0.0
     ai_component = 0.0
     for key in DIMENSION_KEYS:
-        dim = score_row["dims"].get(key) or {}
+        dim = dims.get(key) or {}
         score = dim.get("score")
         if score is None:
             continue
@@ -4783,5 +5073,4 @@ def composite_score(score_row):
         ai_component += weight * (score - 1) / 4.0
     if available_weight <= 0:
         return None
-
     return round(ai_component * (100.0 / available_weight), 2)
