@@ -29992,6 +29992,30 @@ def _render_batch_inspector_panel():
         with _c5:
             st.metric("Errored", _summary["errored"])
 
+        # CSV download + blank-request raw-text dump (A3, 5 Oct 2026,
+        # owner-directed, diagnostics only - "make the blank replies
+        # readable for Andrew and the Director"). One CSV row per
+        # request (custom id, entrant tickers in order, entrant count,
+        # items returned, tickers echoed, stop reason, input/output
+        # tokens, blank yes/no - see top100_engine.batch_inspector_
+        # csv()'s own docstring), plus the FULL raw reply text for
+        # every request this batch's own blank check flagged. Changes
+        # nothing about what is sent to the model or how a reply is
+        # parsed/scored.
+        st.download_button(
+            "Download CSV",
+            data=top100_engine.batch_inspector_csv(_rows),
+            file_name=f"batch_{st.session_state.get('admin_dash_batch_inspector_last_id')}_inspector.csv",
+            mime="text/csv",
+            key="admin_dash_batch_inspector_csv_download",
+        )
+        _blank_rows = [r for r in _rows if r.get("blank")]
+        if _blank_rows:
+            st.markdown(f"**{len(_blank_rows)} blank request(s) in this batch - full raw reply text:**")
+            for _br in _blank_rows:
+                st.write(f"**{_br['custom_id']}** - entrants: {_br['expected_tickers']}")
+                st.code(_br.get("full_text") or "(empty)", language=None)
+
         for _row in _rows:
             if _row["type"] == "succeeded" and not _row["excerpt"]:
                 continue  # fully matched - nothing to inspect

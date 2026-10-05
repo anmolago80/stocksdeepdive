@@ -1883,6 +1883,25 @@ def _whole_response_is_degenerate(companies, expected_tickers):
     return False
 
 
+def _log_request_diagnostic(log, custom_id, tickers_in_order, items_returned,
+                             stop_reason, output_tokens, blank):
+    """A3 (5 Oct 2026, owner-directed, diagnostics only - "make the
+    blank replies readable for Andrew and the Director"): ONE log line
+    per request, emitted by poll_and_ingest_batch() for EVERY result
+    regardless of outcome (succeeded, errored, or any other non-
+    succeeded status) - custom id, entrant tickers in order, items
+    returned, stop reason, output tokens, blank yes/no. Changes
+    nothing about what is sent to the model or how a response is
+    parsed/scored - purely an additional, separate log line alongside
+    the existing per-ticker/per-batch ones. `log` may be None (no-op)
+    for a caller that doesn't want this line."""
+    if log is None:
+        return
+    log(f"[top100] diag request {custom_id}: tickers={tickers_in_order} "
+        f"items={items_returned} stop_reason={stop_reason} "
+        f"output_tokens={output_tokens} blank={'yes' if blank else 'no'}")
+
+
 def _parse_response_json(text, expected_tickers=None, log=None, degenerate_out=None,
                           matched_by_out=None, request_label=None,
                           request_blank_out=None, existing_failures=None):
@@ -2552,12 +2571,18 @@ def poll_and_ingest_batch(log=print):
                         log(f"[top100] {ticker}: batch result errored #{errored_count} - {detail}")
                     else:
                         errored_rest_type_counts[err_type] = errored_rest_type_counts.get(err_type, 0) + 1
+                _log_request_diagnostic(log, result.custom_id, list(entrants_map.keys()),
+                                         items_returned=0, stop_reason=None,
+                                         output_tokens=None, blank=False)
                 continue
             if result.result.type != "succeeded":
                 for ticker in entrants_map:
                     failed += 1
                     failure_reasons.append((ticker, result.result.type))
                     log(f"[top100] {ticker}: batch result {result.result.type}, skipped")
+                _log_request_diagnostic(log, result.custom_id, list(entrants_map.keys()),
+                                         items_returned=0, stop_reason=None,
+                                         output_tokens=None, blank=False)
                 continue
             msg = result.result.message
             text = next((b.text for b in msg.content if b.type == "text"), "")
@@ -2595,6 +2620,20 @@ def poll_and_ingest_batch(log=print):
                 continue
             if _request_blank_tickers:
                 blank_request_ids.append(result.custom_id)
+            try:
+                _raw_companies = json.loads(text).get("companies")
+            except Exception:
+                _raw_companies = None
+            _log_request_diagnostic(
+                log, result.custom_id, list(entrants_map.keys()),
+                items_returned=len(_raw_companies) if isinstance(_raw_companies, list) else 0,
+                stop_reason=getattr(msg, "stop_reason", None),
+                output_tokens=getattr(msg.usage, "output_tokens", None),
+                blank=bool(_request_blank_tickers) or (
+                    isinstance(_raw_companies, list)
+                    and _whole_response_is_degenerate(_raw_companies, list(entrants_map.keys()))
+                ),
+            )
             prompt_params = _request_params([
                 {"ticker": t, "company_name": t, "sector": None} for t in entrants_map
             ])
@@ -3309,26 +3348,36 @@ def inspect_batch_results(results, expected_map=None):
     plain dicts, one per Batches API result, already pulled off the
     real SDK object by run_batch_inspector() below: {"custom_id",
     "type" ("succeeded"|"errored"|"canceled"|"expired"), "stop_reason"
-    (succeeded only), "output_tokens" (succeeded only), "text"
-    (succeeded only - the raw response text), "error_detail" (non-
-    succeeded only - _serialize_batch_result_error()'s own output)}.
-    `expected_map` is {custom_id: [ticker, ...], ...} from top100_
-    store.expected_tickers_for_batch() - None/missing entries mean
-    "not available for this batch" (see that function's own docstring).
+    (succeeded only), "input_tokens"/"output_tokens" (succeeded only),
+    "text" (succeeded only - the raw response text), "error_detail"
+    (non-succeeded only - _serialize_batch_result_error()'s own
+    output)}. `expected_map` is {custom_id: [ticker, ...], ...} from
+    top100_store.expected_tickers_for_batch() - None/missing entries
+    mean "not available for this batch" (see that function's own
+    docstring).
 
     Returns (rows, summary). Each row: {"custom_id", "type",
-    "stop_reason", "output_tokens", "expected_tickers" (list or None),
-    "tickers_echoed" (list, the ticker strings the response ACTUALLY
-    used as companies[] keys - a ticker echoed as "RG1" instead of the
-    expected "RG1.AX" shows up here under its own, different string),
-    "items_count", "excerpt" (first _BATCH_INSPECTOR_EXCERPT_CHARS
-    chars of the raw text/error, or None when the request fully
-    matched its expected tickers), "full_text" (the COMPLETE raw text/
-    error detail, untruncated, for EVERY request regardless of match
-    status - stored score viewer's own ticker-search box, 3 Oct 2026,
-    owner-directed, reads this so the owner can see a fully-matched
-    request's own raw response too, not only a non-matching one's
-    excerpt)}.
+    "stop_reason", "input_tokens", "output_tokens", "expected_tickers"
+    (list or None - entrant tickers IN ORDER, the request's own input
+    order), "tickers_echoed" (list, the ticker strings the response
+    ACTUALLY used as companies[] keys - a ticker echoed as "RG1"
+    instead of the expected "RG1.AX" shows up here under its own,
+    different string), "items_count", "excerpt" (first
+    _BATCH_INSPECTOR_EXCERPT_CHARS chars of the raw text/error, or None
+    when the request fully matched its expected tickers), "full_text"
+    (the COMPLETE raw text/error detail, untruncated, for EVERY
+    request regardless of match status - stored score viewer's own
+    ticker-search box, 3 Oct 2026, owner-directed, reads this so the
+    owner can see a fully-matched request's own raw response too, not
+    only a non-matching one's excerpt), "blank" (bool - A3, 5 Oct 2026,
+    "make the blank replies readable": True exactly when top100_
+    engine._whole_response_is_degenerate() would classify this
+    request's response as the whole-blank shape - i.e. the SAME test
+    poll_and_ingest_batch() itself uses to record "request_blank",
+    reproduced here read-only against the already-fetched text/
+    expected tickers, never re-parsing anything differently; always
+    False for a non-succeeded result or when expected tickers aren't
+    known for this batch)}.
 
     summary = {"total", "fully_matched", "partially_matched", "empty",
     "errored"} - mutually exclusive, sums to total. A request is
@@ -3351,8 +3400,10 @@ def inspect_batch_results(results, expected_map=None):
             "custom_id": custom_id,
             "type": rtype,
             "stop_reason": r.get("stop_reason"),
+            "input_tokens": r.get("input_tokens"),
             "output_tokens": r.get("output_tokens"),
             "expected_tickers": list(expected) if expected is not None else None,
+            "blank": False,
         }
         if rtype != "succeeded":
             row["tickers_echoed"] = []
@@ -3372,6 +3423,13 @@ def inspect_batch_results(results, expected_map=None):
         echoed = sorted(parsed.keys())
         row["tickers_echoed"] = echoed
         row["items_count"] = len(echoed)
+        if expected is not None:
+            try:
+                _companies = json.loads(text).get("companies")
+                if isinstance(_companies, list):
+                    row["blank"] = _whole_response_is_degenerate(_companies, expected)
+            except Exception:
+                pass
         # Classification is always by ticker STRING match when the
         # expected map exists (expected_tickers_for_batch() backfills it
         # for every batch submitted from now on - see that function's
@@ -3429,6 +3487,7 @@ def run_batch_inspector(batch_id, log=print):
                 raw_results.append({
                     "custom_id": result.custom_id, "type": rtype,
                     "stop_reason": getattr(msg, "stop_reason", None),
+                    "input_tokens": getattr(msg.usage, "input_tokens", None),
                     "output_tokens": getattr(msg.usage, "output_tokens", None),
                     "text": text,
                 })
@@ -3449,6 +3508,41 @@ def run_batch_inspector(batch_id, log=print):
         f"empty {summary['empty']}, errored {summary['errored']}"
         + (" (expected tickers not available for this batch)" if expected_map is None else ""))
     return rows, summary
+
+
+def batch_inspector_csv(rows):
+    """A3 (5 Oct 2026, owner-directed, diagnostics only - "make the
+    blank replies readable for Andrew and the Director"): `rows` (run_
+    batch_inspector()'s own output) rendered as CSV text, one row per
+    request - custom id, entrant tickers IN ORDER (expected_tickers,
+    semicolon-joined so a single CSV cell survives the comma-delimited
+    format), entrant count, items returned, tickers echoed (same join
+    convention), stop reason, input tokens, output tokens, blank yes/
+    no. Pure formatting - no network, no parsing beyond what rows
+    already carries. Returns the CSV text (str); the caller (the Admin
+    Batch inspector panel) hands it to st.download_button."""
+    import csv
+    import io
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "custom_id", "entrant_tickers", "entrant_count", "items_returned",
+        "tickers_echoed", "stop_reason", "input_tokens", "output_tokens", "blank",
+    ])
+    for row in rows:
+        expected = row.get("expected_tickers")
+        writer.writerow([
+            row.get("custom_id"),
+            ";".join(expected) if expected is not None else "",
+            len(expected) if expected is not None else "",
+            row.get("items_count"),
+            ";".join(row.get("tickers_echoed") or []),
+            row.get("stop_reason") or "",
+            row.get("input_tokens") if row.get("input_tokens") is not None else "",
+            row.get("output_tokens") if row.get("output_tokens") is not None else "",
+            "yes" if row.get("blank") else "no",
+        ])
+    return buf.getvalue()
 
 
 def _pool_expansion_v200_marker_path():
