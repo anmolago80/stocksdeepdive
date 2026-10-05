@@ -20192,6 +20192,126 @@ def _render_stress_rebalance_sandbox(_active_portfolio, weights, histories, inde
                 ))
 
 
+def _render_currency_exposure_table(_holdings, _analyses, lang):
+    """SECTION B, COMMIT B4 of instruction_top200_amendments_and_
+    currency_view.md (5 Oct 2026, Director-directed): a currency-
+    exposure table beside the stress test - one row per trading
+    currency held, value/share/rate-vs-average/scenario effects all in
+    the visitor's own home currency, a total row for the foreign
+    holdings, via the SAME currency_view_engine.scenario_effects() the
+    Deep Dive note (COMMIT B2) and the Currency Risk tool (COMMIT B3)
+    already use - never a second, independently-computed rate, and
+    never portfolio_health_engine.to_aud()/fx_to_aud() (those are
+    AUD-only by construction; this has to work for any home currency).
+
+    Gate order matches every other COMMIT B2-B4 surface: switch-OFF ->
+    owner-only first; then "no home currency set: the one-line prompt
+    from B2 in place of the table" (the task's own words - reuses
+    dd.currency_note.no_home_set verbatim, and the same inline picker
+    _render_currency_note()'s own "no home set" case opens, rather than
+    a second copy of that prompt+picker).
+
+    Per-currency grouping uses shares x current_price - the SAME two
+    fields _build_portfolio_rows() reads, just left in the holding's
+    OWN trading currency instead of being converted through to_aud()
+    first. A currency with no cached FX history for this home/stock
+    pair shows "not available" and contributes nothing to any total -
+    "never an estimate" (the task's own rule, same as every other not-
+    available case in this section) - its holdings are not silently
+    dropped from the table, only from the totals/share-of-portfolio
+    denominator, since their home-currency value is genuinely unknown."""
+    email = paywall_engine.current_user_email()
+    if not email or not currency_view_engine.visible_to(email, ai_gate.is_owner):
+        return
+    home = account_currency_store.get_home_currency(email)
+    st.markdown(f"##### {i18n.t('portfolio.currency_exposure.heading', lang)}")
+    if not home:
+        st.caption(i18n.t("dd.currency_note.no_home_set", lang))
+        _show_key = "_pf_currency_picker_open"
+        if st.button(i18n.t("dd.currency_note.set_home_button", lang), key="pf_set_home_currency"):
+            st.session_state[_show_key] = True
+        if st.session_state.get(_show_key):
+            _currency_picker_body(email, home, key_prefix="pf")
+        return
+
+    native_value_by_currency = {}
+    for h in _holdings:
+        _snap = (_analyses.get(_hkey(h)) or {}).get("snapshot") or {}
+        price = _snap.get("price")
+        if price is None:
+            continue
+        currency = (h.get("currency") or "").upper()
+        if not currency:
+            continue
+        shares = h.get("shares") or 0
+        native_value_by_currency[currency] = native_value_by_currency.get(currency, 0.0) + shares * price
+
+    if not native_value_by_currency:
+        st.caption(i18n.t("portfolio.stress.na", lang))
+        return
+
+    _rows_data = []  # (currency, value_home, effects_or_None, is_foreign)
+    for currency, native_value in sorted(native_value_by_currency.items()):
+        if currency == home:
+            _rows_data.append((currency, native_value, None, False))
+            continue
+        effects = currency_view_engine.scenario_effects(home, currency)
+        if not effects:
+            _rows_data.append((currency, None, None, True))
+            continue
+        value_home = native_value / effects["current_rate"]
+        _rows_data.append((currency, value_home, effects, True))
+
+    total_home = sum(v for _c, v, _e, _f in _rows_data if v is not None)
+    total_foreign_home = sum(v for _c, v, _e, f in _rows_data if v is not None and f)
+
+    def _fmt_home(v):
+        return f"{home} {v:,.0f}"
+
+    _scenario_cols = (
+        ("average", i18n.t("portfolio.currency_exposure.col_scenario_average", lang)),
+        ("plus_1sigma", i18n.t("portfolio.currency_exposure.col_scenario_plus", lang)),
+        ("minus_1sigma", i18n.t("portfolio.currency_exposure.col_scenario_minus", lang)),
+    )
+    rows = []
+    _foreign_scenario_totals = {k: 0.0 for k, _ in _scenario_cols}
+    for currency, value_home, effects, is_foreign in _rows_data:
+        row = {
+            i18n.t("portfolio.currency_exposure.col_currency", lang): currency,
+            i18n.t("portfolio.currency_exposure.col_value", lang):
+                _fmt_home(value_home) if value_home is not None
+                else i18n.t("portfolio.currency_exposure.not_available", lang),
+            i18n.t("portfolio.currency_exposure.col_share", lang):
+                f"{value_home / total_home * 100:.1f}%" if (value_home is not None and total_home) else "—",
+            i18n.t("portfolio.currency_exposure.col_rate_vs_average", lang):
+                f"{(effects['current_rate'] / effects['average'] - 1) * 100:+.1f}%" if effects else "—",
+        }
+        for key, label in _scenario_cols:
+            if effects and effects["scenarios"].get(key) and value_home is not None:
+                amount = value_home * (effects["scenarios"][key]["value_factor"] - 1.0)
+                row[label] = _fmt_home(amount)
+                _foreign_scenario_totals[key] += amount
+            else:
+                row[label] = "—"
+        rows.append(row)
+
+    if total_foreign_home:
+        _total_row = {
+            i18n.t("portfolio.currency_exposure.col_currency", lang):
+                i18n.t("portfolio.currency_exposure.total_foreign_label", lang),
+            i18n.t("portfolio.currency_exposure.col_value", lang): _fmt_home(total_foreign_home),
+            i18n.t("portfolio.currency_exposure.col_share", lang):
+                f"{total_foreign_home / total_home * 100:.1f}%" if total_home else "—",
+            i18n.t("portfolio.currency_exposure.col_rate_vs_average", lang): "—",
+        }
+        for key, label in _scenario_cols:
+            _total_row[label] = _fmt_home(_foreign_scenario_totals[key])
+        rows.append(_total_row)
+
+    st.dataframe(rows, hide_index=True, width='stretch')
+    st.caption(i18n.t("portfolio.currency_exposure.caption", lang, home=home))
+
+
 def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
     """Part 3b - the "Stress Test" tab: headline cards -> drawdown/run-
     up mini charts -> crisis/rally replay tables -> shock grid ->
@@ -20369,6 +20489,9 @@ def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):
 
     # --- 6. Per-holding detail --------------------------------------------
     _render_stress_per_holding_table(result, _st_, lang=_lang)
+
+    # --- 6b. Currency exposure (SECTION B, COMMIT B4) ---------------------
+    _render_currency_exposure_table(_holdings, _analyses, _lang)
 
     # --- 7. Monte Carlo -----------------------------------------------
     # Mega-batch amendment (6 Sep, applied retroactively to this Part 3

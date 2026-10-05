@@ -3102,6 +3102,25 @@ EN = {
     "portfolio.stress.window.ai_rally_2023_24": "2023-24 AI rally",
     "portfolio.stress.na": "—",
 
+    # SECTION B, COMMIT B4 of instruction_top200_amendments_and_
+    # currency_view.md (5 Oct 2026): the currency-exposure table beside
+    # the stress test.
+    "portfolio.currency_exposure.heading": "Currency exposure",
+    "portfolio.currency_exposure.col_currency": "Currency",
+    "portfolio.currency_exposure.col_value": "Value",
+    "portfolio.currency_exposure.col_share": "Share of portfolio",
+    "portfolio.currency_exposure.col_rate_vs_average": "Rate vs. 10-year average",
+    "portfolio.currency_exposure.col_scenario_average": "If the rate reverts to average",
+    "portfolio.currency_exposure.col_scenario_plus": "If the rate reaches +1σ",
+    "portfolio.currency_exposure.col_scenario_minus": "If the rate falls to -1σ",
+    "portfolio.currency_exposure.not_available": "not available",
+    "portfolio.currency_exposure.total_foreign_label": "Total foreign holdings",
+    "portfolio.currency_exposure.caption": (
+        "Described calculations, not a forecast - every value is in your home currency "
+        "({home}), using the same method as the Currency Risk tool and the Deep Dive "
+        "currency note."
+    ),
+
     # Mega-batch Part 17: "Switch Analyzer" tab - opportunity-cost of
     # selling holding A to buy candidate B, once the real toll of selling
     # (CGT + brokerage) is accounted for. See switch_analyzer_engine.py
@@ -6771,6 +6790,25 @@ ES = {
     "portfolio.stress.window.covid_recovery": "Recuperación post-COVID",
     "portfolio.stress.window.ai_rally_2023_24": "Repunte de la IA 2023-24",
     "portfolio.stress.na": "—",
+
+    # SECTION B, COMMIT B4 of instruction_top200_amendments_and_
+    # currency_view.md (5 Oct 2026): la tabla de exposición cambiaria
+    # junto a la prueba de estrés.
+    "portfolio.currency_exposure.heading": "Exposición cambiaria",
+    "portfolio.currency_exposure.col_currency": "Moneda",
+    "portfolio.currency_exposure.col_value": "Valor",
+    "portfolio.currency_exposure.col_share": "Parte de la cartera",
+    "portfolio.currency_exposure.col_rate_vs_average": "Tipo vs. promedio de 10 años",
+    "portfolio.currency_exposure.col_scenario_average": "Si el tipo vuelve al promedio",
+    "portfolio.currency_exposure.col_scenario_plus": "Si el tipo alcanza +1σ",
+    "portfolio.currency_exposure.col_scenario_minus": "Si el tipo cae a -1σ",
+    "portfolio.currency_exposure.not_available": "no disponible",
+    "portfolio.currency_exposure.total_foreign_label": "Total en monedas extranjeras",
+    "portfolio.currency_exposure.caption": (
+        "Cálculos descritos, no una predicción - cada valor está en tu moneda local "
+        "({home}), con el mismo método que la herramienta de riesgo cambiario y la nota "
+        "de moneda del Deep Dive."
+    ),
 
     # Owner's picks (7 Sep): "El Peaje" is the OWNER'S OWN suggested ES
     # rename for "The Toll" - applied here per the instruction, but
