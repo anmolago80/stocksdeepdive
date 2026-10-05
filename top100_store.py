@@ -976,6 +976,27 @@ def score_failures_for_model(model, rubric_version):
             for r in rows}
 
 
+def convert_score_failure_reason(model, rubric_version, from_reason, to_reason):
+    """Plain UPDATE (not record_score_failure()'s upsert-and-increment)
+    that rewrites `reason` for every row currently stored under
+    `from_reason`, leaving `attempts` and `failed_at` untouched - a
+    one-off reclassification migration, not a new failure event.
+    Returns the list of tickers converted."""
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT ticker FROM top100_score_failures WHERE model = ? AND rubric_version = ? AND reason = ?",
+            (model, rubric_version, from_reason),
+        ).fetchall()
+        tickers = [r["ticker"] for r in rows]
+        if tickers:
+            conn.execute(
+                "UPDATE top100_score_failures SET reason = ? WHERE model = ? AND rubric_version = ? AND reason = ?",
+                (to_reason, model, rubric_version, from_reason),
+            )
+    return tickers
+
+
 # -----------------------------------------------------------------
 # Daily submission cap (audit fixes, Commit 1, 30 Sep 2026) - hard
 # spend ceiling, keyed by UTC date. See top100_engine.submit_nightly_

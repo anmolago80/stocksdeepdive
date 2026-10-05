@@ -1070,9 +1070,11 @@ def _shelf_row_html(row, lang, origin_badge_html=None):
     distinction.
 
     Scoring-failed caption (audit fixes, Commit 1, 30 Sep 2026, owner-
-    directed): when score_row is None AND row["score_failure"] shows
-    top100_engine.TOP100_FAILURE_MAX_ATTEMPTS or more attempts under
-    the CURRENT rubric, the chip stays the same AWAITING chip (this
+    directed; reason-aware exhaustion check, Commit A1, 5 Oct 2026):
+    when score_row is None AND row["score_failure"] is exhausted per
+    top100_engine._failure_exhausted() (TOP100_FAILURE_MAX_ATTEMPTS
+    for most reasons, TOP100_REQUEST_BLANK_MAX_RETRIES for "request_
+    blank") under the CURRENT rubric, the chip stays the same AWAITING chip (this
     ticker genuinely has no score, same as any other newcomer) but the
     caption changes to name the real reason - otherwise a reader would
     be told this ticker will be "scored automatically at the next
@@ -1086,7 +1088,7 @@ def _shelf_row_html(row, lang, origin_badge_html=None):
     if score_row is None:
         chip = _shelf_chip_html(_t("shelf_chip_awaiting", lang), *_SHELF_CHIP_AWAITING)
         failure = row.get("score_failure")
-        if failure and (failure.get("attempts") or 0) >= top100_engine.TOP100_FAILURE_MAX_ATTEMPTS:
+        if failure and top100_engine._failure_exhausted(failure):
             caption = _t("shelf_caption_scoring_failed", lang)
         else:
             caption = _t("shelf_caption_awaiting", lang)

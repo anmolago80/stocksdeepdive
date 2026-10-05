@@ -374,6 +374,18 @@ async def lifespan(app: FastAPI):
     # every other one-off above.
     with suppress(Exception):
         top100_engine.run_degenerate_sweep_once()
+    # A1 (5 Oct 2026, owner-directed): one-off, marker-guarded sweep
+    # converting every currently-stored "degenerate_response" failure
+    # row to the new "request_blank" reason, so a ticker already
+    # carrying one such strike from a whole-blank request (the ~23
+    # from 4 Oct) can't be pushed to NOT RATED by a second blank
+    # request tonight - see top100_engine.run_request_blank_strike_
+    # conversion_once()'s own docstring for the identification method
+    # and why the conversion is safe-direction-only. Same "never
+    # allowed to stop the site serving" rule as every other one-off
+    # above.
+    with suppress(Exception):
+        top100_engine.run_request_blank_strike_conversion_once()
     # Degenerate-response guard, task item 6 (3 Oct 2026, owner-
     # directed): the owner-approved release point for the resubmission
     # pause set_resubmit_pause_on_this_deploy_once() turned ON for the

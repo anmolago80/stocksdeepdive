@@ -1112,6 +1112,23 @@ TOP100_MAX_ENTRANTS_PER_UTC_DAY = 2 * MAX_NIGHTLY_SCORES
 # specifically.
 TOP100_DEGENERATE_ACCEPT_ATTEMPTS = 2
 
+# A blank request is not a strike against its companies (5 Oct 2026,
+# owner-directed, live evidence: about one request in three comes back
+# wholly blank regardless of which companies are inside it - see
+# _whole_response_is_degenerate()'s own docstring for the condition.
+# Before this, a whole-blank request fed the SAME "degenerate_response"
+# failure reason as a genuine per-item degenerate, so two unlucky blank
+# requests could get a perfectly good, well-known company (CL, WDAY,
+# PIC.AX on 5 Oct) accepted as NOT RATED by chance. "request_blank" is
+# a separate failure reason that NEVER feeds TOP100_DEGENERATE_ACCEPT_
+# ATTEMPTS's NOT-RATED path - see poll_and_ingest_batch()'s own branch
+# order. It gets more retries than an ordinary failure (this constant,
+# not TOP100_FAILURE_MAX_ATTEMPTS) because the fault is almost
+# certainly the request, not the company, and a retry after one is
+# sent solo (one company per request, see submit_nightly_batch()) to
+# test that theory.
+TOP100_REQUEST_BLANK_MAX_RETRIES = 5
+
 # Rough pre-submission cost estimate ONLY (the real, billed cost is
 # logged after ingest from poll_and_ingest_batch()'s own actual token
 # counts - see estimate_batch_cost_usd()'s own docstring). ~4 chars/
@@ -1867,7 +1884,8 @@ def _whole_response_is_degenerate(companies, expected_tickers):
 
 
 def _parse_response_json(text, expected_tickers=None, log=None, degenerate_out=None,
-                          matched_by_out=None, request_label=None):
+                          matched_by_out=None, request_label=None,
+                          request_blank_out=None, existing_failures=None):
     """v6 packed requests (1 Oct 2026, owner-directed): parses the
     whole packed response text into {ticker: (the same 13-tuple
     _parse_one_company() above returns), ...} - one entry per item in
@@ -1929,33 +1947,89 @@ def _parse_response_json(text, expected_tickers=None, log=None, degenerate_out=N
     same pattern as `degenerate_out`; never changes this function's
     return shape.
 
-    Whole-response-degenerate guard (Commit 1, 4 Oct 2026, owner-
-    directed): checked BEFORE any per-item parsing, via
-    _whole_response_is_degenerate() (see its own docstring) - when the
-    packed response is degenerate AS A WHOLE, every one of `expected_
-    tickers` is recorded into `degenerate_out` (not just whichever
-    items happened to carry an explicit/positional ticker) and this
-    function returns {} immediately, so every entrant of this request
-    gets the SAME failure reason ("degenerate_response") rather than
-    some getting "missing_from_response" for what is really one
-    broken response. `request_label` (the request's own custom_id,
-    e.g. "t100-0"), when given, names the request in the one log line
-    this emits for it. Never fires when `expected_tickers` is None (no
-    entrant list to compare against or record)."""
+    Whole-response-blank guard (Commit 1, 4 Oct 2026; reclassified to
+    its own failure reason, Commit A1, 5 Oct 2026, owner-directed -
+    "a blank request is not a strike against its companies"): checked
+    BEFORE any per-item parsing, via _whole_response_is_degenerate()
+    (see its own docstring) - when the packed response is degenerate
+    AS A WHOLE, every one of `expected_tickers` is recorded into
+    `request_blank_out` (a SEPARATE set from `degenerate_out` - a
+    whole-blank request says nothing about any one entrant, so it must
+    never feed TOP100_DEGENERATE_ACCEPT_ATTEMPTS's NOT-RATED path the
+    way a genuine per-item degenerate does), not just whichever items
+    happened to carry an explicit/positional ticker, and this function
+    returns {} immediately, so every entrant of this request gets the
+    SAME failure reason ("request_blank") rather than some getting
+    "missing_from_response" for what is really one broken response.
+    Falls back to `degenerate_out` when `request_blank_out` is not
+    given (back-compat for a caller that hasn't adopted the new
+    reason). `existing_failures` ({ticker: {"reason", "attempts", ...}},
+    from top100_store.score_failures_for_model()), when given, is used
+    only to compute the "attempt A/N" figure in the log line below -
+    the stored attempts count for a ticker already carrying a
+    "request_blank" failure, plus one for this one; a packed (multi-
+    entrant) request only ever contains entrants with NO existing
+    request_blank failure (such a ticker is retried solo - see
+    submit_nightly_batch()'s own packing), so this is 1 for a packed
+    request and the stored count + 1 for a solo retry. `request_label`
+    (the request's own custom_id, e.g. "t100-0"), when given, names the
+    request in the one log line this emits for it. Never fires when
+    `expected_tickers` is None (no entrant list to compare against or
+    record)."""
     data = json.loads(text)
     companies = data.get("companies")
     if not isinstance(companies, list):
         raise ValueError("response has no top-level \"companies\" array")
     if expected_tickers is not None and _whole_response_is_degenerate(companies, expected_tickers):
-        if degenerate_out is not None:
-            degenerate_out.update(expected_tickers)
-        if matched_by_out is not None:
-            for t in expected_tickers:
-                matched_by_out.setdefault(t, "whole_response")
-        if log is not None:
-            log(f"[top100] request {request_label or '?'}: whole response degenerate "
-                f"({len(companies)} items for {len(expected_tickers)} entrants) - "
-                f"all {len(expected_tickers)} recorded as degenerate_response")
+        # A1 (5 Oct 2026, owner-directed): "whole response degenerate"
+        # is a vacuous concept for a SOLO (one-entrant) request that
+        # was never itself a request_blank retry - there, "the whole
+        # response is bad" and "this one company's own item is bad"
+        # are the exact same fact, which is the pre-existing per-item
+        # degenerate guard's job (test_top100_degenerate_guard.py's own
+        # ZERO1/ONE1 checks), not this new reason. Routed as request_
+        # blank only when either (a) this is a genuinely PACKED request
+        # (more than one entrant - packing is the thing being blamed),
+        # or (b) at least one entrant is ALREADY mid a request_blank
+        # retry chain (a solo retry that comes back blank again must
+        # keep accumulating under request_blank, per TOP100_REQUEST_
+        # BLANK_MAX_RETRIES - it must never fall back to the two-strike
+        # degenerate_response path just because it happens to be solo).
+        _route_as_request_blank = request_blank_out is not None and (
+            len(expected_tickers) > 1
+            or any((existing_failures or {}).get(t, {}).get("reason") == "request_blank"
+                   for t in expected_tickers)
+        )
+        if _route_as_request_blank:
+            if request_blank_out is not None:
+                request_blank_out.update(expected_tickers)
+            if matched_by_out is not None:
+                for t in expected_tickers:
+                    matched_by_out.setdefault(t, "whole_response")
+            if log is not None:
+                attempt = 1
+                if existing_failures:
+                    attempts_seen = [
+                        (existing_failures.get(t) or {}).get("attempts", 0) + 1
+                        for t in expected_tickers
+                        if (existing_failures.get(t) or {}).get("reason") == "request_blank"
+                    ]
+                    if attempts_seen:
+                        attempt = max(attempts_seen)
+                log(f"[top100] request {request_label or '?'}: blank "
+                    f"({len(companies)} items for {len(expected_tickers)} entrants) - "
+                    f"{len(expected_tickers)} recorded as request_blank, "
+                    f"attempt {attempt}/{TOP100_REQUEST_BLANK_MAX_RETRIES}")
+        else:
+            if degenerate_out is not None:
+                degenerate_out.update(expected_tickers)
+            if matched_by_out is not None:
+                for t in expected_tickers:
+                    matched_by_out.setdefault(t, "whole_response")
+            if log is not None:
+                log(f"[top100] request {request_label or '?'}: whole response degenerate "
+                    f"({len(companies)} items for {len(expected_tickers)} entrants) - "
+                    f"all {len(expected_tickers)} recorded as degenerate_response")
         return {}
     out = {}
     blank_items = []  # [(index, item), ...] - tried again below, positionally
@@ -2035,6 +2109,23 @@ def _true_newcomer_gated(ticker, model, presence_map):
     return presence_map.get(ticker, 0) < NEWCOMER_PERSISTENCE_NIGHTS
 
 
+def _failure_exhausted(failure):
+    """A1 (5 Oct 2026, owner-directed): reason-aware replacement for a
+    flat `attempts >= TOP100_FAILURE_MAX_ATTEMPTS` compare - a
+    "request_blank" failure (the request itself was blank, not a
+    strike against this ticker) gets TOP100_REQUEST_BLANK_MAX_RETRIES
+    (5) attempts before it's permanently skipped for this rubric;
+    every other reason keeps the existing TOP100_FAILURE_MAX_ATTEMPTS
+    (3). `failure` is one score_failures_for_model() entry ({"reason",
+    "attempts", ...}), or None (never exhausted - nothing recorded)."""
+    if not failure:
+        return False
+    attempts = failure.get("attempts") or 0
+    limit = (TOP100_REQUEST_BLANK_MAX_RETRIES if failure.get("reason") == "request_blank"
+             else TOP100_FAILURE_MAX_ATTEMPTS)
+    return attempts >= limit
+
+
 def _unscored_tickers(pool, model):
     """Results-driven Top 100 refresh (27 Sep 2026, owner-directed):
     which pooled rows need an API call tonight, and WHY. Returns
@@ -2104,7 +2195,7 @@ def _unscored_tickers(pool, model):
         failure = failures.get(ticker)
         if failure is None:
             return False
-        if (failure.get("attempts") or 0) >= TOP100_FAILURE_MAX_ATTEMPTS:
+        if _failure_exhausted(failure):
             return True
         failed_at = failure.get("failed_at")
         if not failed_at:
@@ -2169,7 +2260,7 @@ def _count_persistence_deferred(pool, model):
         ticker = row["ticker"]
         if ticker in failures:
             failure = failures[ticker]
-            if (failure.get("attempts") or 0) >= TOP100_FAILURE_MAX_ATTEMPTS:
+            if _failure_exhausted(failure):
                 continue
             failed_at = failure.get("failed_at")
             if failed_at:
@@ -2396,6 +2487,12 @@ def poll_and_ingest_batch(log=print):
     errored_count = 0
     errored_rest_type_counts = {}
     failure_reasons = []  # [(ticker, reason), ...] - audit fixes Commit 1
+    # A1 (5 Oct 2026, owner-directed): per-batch request/blank tally for
+    # the new aggregate log line below - R counts every request this
+    # batch carried (whatever its own outcome), B/blank_request_ids
+    # only the ones _parse_response_json() found wholly blank.
+    total_requests = 0
+    blank_request_ids = []
     # Degenerate-response guard (3 Oct 2026, owner-directed): read ONCE,
     # before the per-result loop, so each degenerate ticker can be
     # checked against whatever it already recorded BEFORE this run -
@@ -2429,6 +2526,7 @@ def poll_and_ingest_batch(log=print):
                 continue
             if not entrants_map:
                 continue
+            total_requests += 1
             if result.result.type == "errored":
                 # Commit 1 (24 Sep 2026, owner-reported): the real
                 # Anthropic error was never logged before this - only
@@ -2477,12 +2575,15 @@ def poll_and_ingest_batch(log=print):
             total_cache_creation_tokens += getattr(msg.usage, "cache_creation_input_tokens", 0) or 0
             total_cache_read_tokens += getattr(msg.usage, "cache_read_input_tokens", 0) or 0
             _degenerate_tickers = set()
+            _request_blank_tickers = set()
             _matched_by = {}
             try:
                 parsed_by_ticker = _parse_response_json(
                     text, expected_tickers=list(entrants_map.keys()), log=log,
                     degenerate_out=_degenerate_tickers, matched_by_out=_matched_by,
-                    request_label=result.custom_id)
+                    request_label=result.custom_id,
+                    request_blank_out=_request_blank_tickers,
+                    existing_failures=_existing_failures)
             except Exception as e:
                 # Request-level parse failure (malformed/missing
                 # "companies" array) - every entrant THIS request
@@ -2492,10 +2593,29 @@ def poll_and_ingest_batch(log=print):
                     failure_reasons.append((ticker, f"parse_error: {e}"))
                 log(f"[top100] batch result for {sorted(entrants_map)}: could not parse, skipped ({e})")
                 continue
+            if _request_blank_tickers:
+                blank_request_ids.append(result.custom_id)
             prompt_params = _request_params([
                 {"ticker": t, "company_name": t, "sector": None} for t in entrants_map
             ])
             for ticker, entrant_info in entrants_map.items():
+                if ticker in _request_blank_tickers:
+                    # A1 (5 Oct 2026, owner-directed): a whole-blank
+                    # request is never a strike against the companies
+                    # inside it - always recorded as its own "request_
+                    # blank" failure reason, NEVER fed to _save_
+                    # degenerate_as_not_rated() regardless of how many
+                    # consecutive request_blank attempts this ticker
+                    # already carries (that NOT-RATED path is
+                    # TOP100_DEGENERATE_ACCEPT_ATTEMPTS's alone, for the
+                    # genuine per-item degenerate case below). _unscored_
+                    # tickers()'s own _failure_exhausted() helper is what
+                    # eventually stops retrying after TOP100_REQUEST_
+                    # BLANK_MAX_RETRIES - this function only records the
+                    # failure, it never stops retrying by itself.
+                    failed += 1
+                    failure_reasons.append((ticker, "request_blank"))
+                    continue
                 if ticker in _degenerate_tickers:
                     # Degenerate-response guard (3 Oct 2026, owner-
                     # directed): a sentinel-filled template (all ten
@@ -2571,6 +2691,9 @@ def poll_and_ingest_batch(log=print):
         f"in {total_input_tokens:,} / cache-write {total_cache_creation_tokens:,} / "
         f"cache-read {total_cache_read_tokens:,} / out {total_output_tokens:,} tokens, "
         f"est. ${cost:.4f} (batch-priced)")
+    log(f"[top100] batch {state['batch_id']}: {total_requests} requests, "
+        f"{len(blank_request_ids)} blank (ids {', '.join(blank_request_ids)}), "
+        f"{saved} scored, {failed} failed")
     try:
         top100_store.record_ingest_cost(
             batch_id=state["batch_id"], scored=saved, failed=failed,
@@ -2785,6 +2908,66 @@ def run_degenerate_sweep_once(model=MODEL_TOP100, log=print):
         log("[top100] degenerate sweep: found 0 matching v6 rows")
 
 
+def _request_blank_strike_conversion_marker_path():
+    base = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+    return os.path.join(base, ".top100_request_blank_strike_conversion_v1_done")
+
+
+def run_request_blank_strike_conversion_once(model=MODEL_TOP100, log=print):
+    """One-off, marker-guarded boot action (A1, 5 Oct 2026, owner-
+    directed): converts every CURRENTLY-STORED "degenerate_response"
+    failure row under (model, RUBRIC_VERSION) to the new "request_
+    blank" reason (top100_store.convert_score_failure_reason()), so a
+    ticker that already carries one such strike from a whole-blank
+    request (the ~23 from 4 Oct) cannot be pushed to NOT RATED by a
+    second blank request tonight - TOP100_DEGENERATE_ACCEPT_ATTEMPTS's
+    own NOT-RATED path only ever fires for the "degenerate_response"
+    reason now (see poll_and_ingest_batch()'s own branch order), so
+    converting the stored reason is what actually defuses it.
+
+    Identification method (see this commit's own report for the full
+    disclosure): top100_store's score_failures table has no per-
+    request/matched_by metadata - it cannot tell a strike that came
+    from a genuine per-item degenerate response apart from one that
+    came from a whole-blank request by ticker name alone. This sweep
+    is therefore BLANKET, not surgical: every stored "degenerate_
+    response" row is converted, not just the ~23 from 4 Oct. This is
+    safe in only one direction - it can only ever grant a ticker MORE
+    retries before any acceptance decision, never fewer, and never
+    turns a ticker that would NOT have been accepted into one that
+    would - so a row that happened to be a genuine per-item degenerate
+    strike simply gets one extra retry cycle under its new reason
+    rather than being accepted on its very next consecutive failure,
+    which is strictly more lenient, never less safe, for the owner's
+    own stated risk preference in this instruction's evidence section.
+
+    Idempotent by construction (same pattern as run_degenerate_sweep_
+    once() right above) - run twice with nothing left to convert, logs
+    "found 0 matching rows". Never raises - any failure here is logged
+    and otherwise swallowed, same as every other one-off boot hook in
+    this module."""
+    marker = _request_blank_strike_conversion_marker_path()
+    if os.path.exists(marker):
+        return
+    converted = []
+    try:
+        converted = top100_store.convert_score_failure_reason(
+            model, RUBRIC_VERSION, "degenerate_response", "request_blank")
+    except Exception as e:
+        log(f"[top100] request_blank strike conversion failed, will not retry automatically: {e}")
+        return
+    try:
+        with open(marker, "w") as f:
+            f.write(datetime.now(timezone.utc).isoformat())
+    except OSError as e:
+        log(f"[top100] could not write request-blank-strike-conversion marker: {e}")
+    if converted:
+        log(f"[top100] request_blank strike conversion: converted {len(converted)} "
+            f"degenerate_response row(s) to request_blank: {', '.join(sorted(converted))}")
+    else:
+        log("[top100] request_blank strike conversion: found 0 matching rows")
+
+
 def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     """Phase 2 of every nightly run, called only when poll_and_ingest_
     batch() found nothing in flight (never both submit AND have a
@@ -2966,8 +3149,25 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     # mechanism - see that constant's own comment). The night's final
     # pack is simply smaller when len(entrants) doesn't divide evenly -
     # never padded with a dummy entrant, never dropped.
-    packs = [entrants[i:i + TOP100_COMPANIES_PER_REQUEST]
-             for i in range(0, len(entrants), TOP100_COMPANIES_PER_REQUEST)]
+    #
+    # A1 solo retry (5 Oct 2026, owner-directed): an entrant whose
+    # CURRENT stored failure reason is "request_blank" is packed ALONE
+    # (its own one-company request), never grouped with any other
+    # entrant - this isolates the retry from whatever made the earlier
+    # packed request come back blank, and tells us whether a single-
+    # company request also comes back blank. Every other entrant is
+    # packed exactly as before this commit.
+    _failures_for_packing = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+    _solo_tickers = {
+        row["ticker"] for row, _reason in entrants
+        if (_failures_for_packing.get(row["ticker"]) or {}).get("reason") == "request_blank"
+    }
+    solo_entrants = [e for e in entrants if e[0]["ticker"] in _solo_tickers]
+    normal_entrants = [e for e in entrants if e[0]["ticker"] not in _solo_tickers]
+    packs = [[e] for e in solo_entrants] + [
+        normal_entrants[i:i + TOP100_COMPANIES_PER_REQUEST]
+        for i in range(0, len(normal_entrants), TOP100_COMPANIES_PER_REQUEST)
+    ]
 
     est_input_tokens = sum(
         _estimate_request_tokens([
