@@ -30474,11 +30474,23 @@ def _render_top200_backfill_preview_panel():
         with _pc3:
             st.metric("New to score", _summary["new_to_score"])
         st.caption(f"Est. cost to score the new-to-score pulled-in companies: ${_summary['est_cost_usd']:.4f}")
+        # A3 amendment of instruction_top200_amendments_and_currency_
+        # view.md (5 Oct 2026, Director-directed): "public list would
+        # show P of 200 (scored-set rated R + stand-ins S); waiting W;
+        # set aside K" - added to the dry-run line (top100_engine's own
+        # select_top100_pool() log output) and here.
+        st.caption(
+            f"Public list would show **{_summary['public_list_count']} of {top100_engine.POOL_SIZE}** "
+            f"(scored-set rated {_summary['scored_set_rated']} + stand-ins {len(_summary['standin_tickers'])}); "
+            f"waiting {_summary['scored_set_waiting']}; "
+            f"set aside {len(_summary['set_aside_model']) + len(_summary['set_aside_failed'])}"
+        )
         st.table(
             [{"Ticker": t, "Kind": "model"} for t in _summary["set_aside_model"]]
             + [{"Ticker": t, "Kind": "failed"} for t in _summary["set_aside_failed"]]
         )
         st.caption(f"Pulled in: {', '.join(_summary['pulled_in']) or '(none)'}")
+        st.caption(f"Stand-ins: {', '.join(_summary['standin_tickers']) or '(none)'}")
         st.markdown("---")
         st.markdown("#### Public page preview (default sort, English)")
         _rated = top100_render._sort_and_gate_rated(_preview["pool"], top100_render.SORT_RESEARCH)

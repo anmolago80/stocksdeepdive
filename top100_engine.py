@@ -731,20 +731,36 @@ def select_top100_pool(log=print):
     _set_aside_rows = []
     if is_backfill_live():
         _backfill = _apply_backfill(_merit_ordered, model=MODEL_TOP100)
-        pool = _backfill["counted"]
+        # A3 amendment of instruction_top200_amendments_and_currency_
+        # view.md (5 Oct 2026, Director-directed): standins are merged
+        # straight into `pool` - ordinary pool members from here on
+        # (no new column, no special flag), so they're saved via the
+        # same save_pool() call below, picked up by update_pool_
+        # presence()'s own re-score-trigger bookkeeping automatically,
+        # and rendered by the UNCHANGED public page exactly like any
+        # other RATED row: current_pool() includes them, _sort_and_
+        # gate_rated() sorts every RATED row (standin or not) by
+        # composite together, and a WAITING row's own composite is
+        # already None so it's already excluded from that same sort -
+        # no new rendering code needed for the ranked list itself.
+        pool = _backfill["counted"] + _backfill["standins"]
         for _row, _status in _backfill["set_aside"]:
             _row["backfill_set_aside"] = True
             _row["backfill_set_aside_status"] = _status
             _set_aside_rows.append(_row)
         _summary = _backfill_summary(_merit_ordered, _backfill, model=MODEL_TOP100)
         if _backfill["short"]:
-            log(f"[top100] backfill WARNING: only {len(pool)} of {POOL_SIZE} places filled "
-                f"within {POOL_SIZE + TOP200_BACKFILL_MAX} candidates")
+            log(f"[top100] backfill WARNING: only {len(_backfill['counted'])} of {POOL_SIZE} "
+                f"places filled within {POOL_SIZE + TOP200_BACKFILL_MAX} candidates")
         log(f"[top100] backfill: set aside {len(_summary['set_aside_model']) + len(_summary['set_aside_failed'])} "
             f"(model {len(_summary['set_aside_model'])}, failed {len(_summary['set_aside_failed'])}): "
             f"{', '.join(sorted(_summary['set_aside_model'] + _summary['set_aside_failed']))}; "
             f"pulled in {len(_summary['pulled_in'])}: {', '.join(_summary['pulled_in'])}; "
-            f"new to score {_summary['new_to_score']}")
+            f"new to score {_summary['new_to_score']}; "
+            f"public list {_summary['public_list_count']} of {POOL_SIZE} "
+            f"(scored-set rated {_summary['scored_set_rated']} + stand-ins {len(_summary['standin_tickers'])}); "
+            f"waiting {_summary['scored_set_waiting']}; "
+            f"set aside {len(_summary['set_aside_model']) + len(_summary['set_aside_failed'])}")
     else:
         pool = _merit_ordered[:POOL_SIZE]
         try:
@@ -755,7 +771,12 @@ def select_top100_pool(log=print):
                 f"(model {len(_dry_summary['set_aside_model'])}, failed {len(_dry_summary['set_aside_failed'])}): "
                 f"{', '.join(sorted(_dry_summary['set_aside_model'] + _dry_summary['set_aside_failed']))}; "
                 f"would pull in {len(_dry_summary['pulled_in'])}: {', '.join(_dry_summary['pulled_in'])}; "
-                f"new to score {_dry_summary['new_to_score']}, est. cost ${_dry_summary['est_cost_usd']:.4f}")
+                f"new to score {_dry_summary['new_to_score']}, est. cost ${_dry_summary['est_cost_usd']:.4f}; "
+                f"public list would show {_dry_summary['public_list_count']} of {POOL_SIZE} "
+                f"(scored-set rated {_dry_summary['scored_set_rated']} + "
+                f"stand-ins {len(_dry_summary['standin_tickers'])}); "
+                f"waiting {_dry_summary['scored_set_waiting']}; "
+                f"set aside {len(_dry_summary['set_aside_model']) + len(_dry_summary['set_aside_failed'])}")
         except Exception as e:
             log(f"[top100] backfill dry run failed (non-fatal): {e}")
     as_of = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -787,11 +808,36 @@ def select_top100_pool(log=print):
     extension = []
     if au_in_pool < TOP20_AU_TARGET:
         needed = TOP20_AU_TARGET - au_in_pool
-        au_candidates = sorted(
+        _au_sorted_candidates = sorted(
             (r for t, r in best_by_ticker.items()
              if t.endswith(".AX") and t not in pool_tickers and t not in _set_aside_tickers),
             key=lambda r: r["value_score"], reverse=True,
-        )[:needed]
+        )
+        au_candidates = _au_sorted_candidates[:needed]
+        # A3 amendment of instruction_top200_amendments_and_currency_
+        # view.md (5 Oct 2026, Director-directed, "the same rule
+        # applies to the Top 20 tabs and the ASX extension") - the
+        # SAME stand-in rule as the main 200: if the extension's own
+        # `needed` slots contain WAITING members, walk further down
+        # the SAME AU-only merit order for up to that many further
+        # RATED-only AU standins, so the Top 20 Australia tab can
+        # still show its own guaranteed 40 wherever enough RATED AU
+        # candidates exist. Only when the switch is actually live -
+        # with it OFF there are no set-aside tickers to exclude in the
+        # first place, and this must never fire for the switch-OFF
+        # byte-identical-to-007d669 guarantee.
+        if is_backfill_live():
+            _au_latest = top100_store.latest_scores_for_model(MODEL_TOP100, RUBRIC_VERSION)
+            _au_failures = top100_store.score_failures_for_model(MODEL_TOP100, RUBRIC_VERSION)
+            _au_waiting_count = sum(
+                1 for row in au_candidates
+                if company_status(_au_latest.get(row["ticker"]), _au_failures.get(row["ticker"])) == "waiting"
+            )
+            _au_already = {r["ticker"] for r in au_candidates}
+            _au_standins = _standins_from_remaining(
+                _au_sorted_candidates[needed:], _au_already, _set_aside_tickers,
+                _au_waiting_count, model=MODEL_TOP100)
+            au_candidates = au_candidates + _au_standins
         for row in au_candidates:
             row["asx_extension"] = True
         extension = au_candidates
@@ -4289,19 +4335,42 @@ def _apply_backfill(merit_ordered, model=MODEL_TOP100):
     counts. Stops counting at POOL_SIZE, and never looks past position
     POOL_SIZE + TOP200_BACKFILL_MAX regardless.
 
+    A3 amendment of instruction_top200_amendments_and_currency_view.md
+    (5 Oct 2026, Director-directed, "the public list is filled to 200
+    with rated companies"): once the scored set above is built, if W of
+    its own "counted" rows are WAITING, the SAME walk continues (same
+    merit order, same POOL_SIZE + TOP200_BACKFILL_MAX ceiling, picking
+    up exactly where the scored-set walk left off) for up to W further
+    candidates that are ALREADY RATED - every UNRATED_MODEL/UNRATED_
+    FAILED/WAITING candidate encountered along the way is skipped
+    (never added to `set_aside` a second time, never counted) - these
+    are "standins": never newly scored (a standin always already has a
+    current-rubric score), present purely so the public ranked list
+    can still show up to 200 RATED companies when the scored set itself
+    contains WAITING rows. A WAITING candidate itself is NEVER a
+    standin - only "rated" candidates qualify.
+
     Returns {"counted": [row, ...], "set_aside": [(row, status), ...],
-    "short": bool}. "counted" is Value Score descending (merit_
-    ordered's own order, filtered) - a WAITING candidate counts and
-    keeps its place exactly where it already sat in merit order, so no
-    replacement is ever pulled in for it. "short" is True when fewer
+    "standins": [row, ...], "short": bool}. "counted" is Value Score
+    descending (merit_ordered's own order, filtered) - a WAITING
+    candidate counts and keeps its place exactly where it already sat
+    in merit order, so no replacement is ever pulled into THE SCORED
+    SET for it (standins are a separate, additional set, never a
+    replacement inside `counted` itself). "short" is True when fewer
     than POOL_SIZE candidates were counted within the walked window -
-    the caller logs the WARNING line for that case."""
+    the caller logs the WARNING line for that case; "short" is about
+    the SCORED SET only and is never affected by how many standins
+    were found (a standin can never make up for an unfilled scored-set
+    slot - that would mean scoring something, which standins never
+    do)."""
     latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
     failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
     counted = []
     set_aside = []
     limit = POOL_SIZE + TOP200_BACKFILL_MAX
+    walked = 0
     for row in merit_ordered[:limit]:
+        walked += 1
         status = company_status(latest.get(row["ticker"]), failures.get(row["ticker"]))
         if status in ("unrated_model", "unrated_failed"):
             set_aside.append((row, status))
@@ -4309,20 +4378,75 @@ def _apply_backfill(merit_ordered, model=MODEL_TOP100):
         counted.append(row)
         if len(counted) >= POOL_SIZE:
             break
-    return {"counted": counted, "set_aside": set_aside, "short": len(counted) < POOL_SIZE}
+
+    waiting_count = sum(
+        1 for row in counted
+        if company_status(latest.get(row["ticker"]), failures.get(row["ticker"])) == "waiting"
+    )
+    counted_tickers = {r["ticker"] for r in counted}
+    set_aside_tickers = {r["ticker"] for r, _status in set_aside}
+    standins = _standins_from_remaining(
+        merit_ordered[walked:limit], counted_tickers, set_aside_tickers, waiting_count, model=model)
+    return {
+        "counted": counted, "set_aside": set_aside, "standins": standins,
+        "short": len(counted) < POOL_SIZE,
+    }
+
+
+def _standins_from_remaining(remaining_candidates, already_tickers, set_aside_tickers, waiting_count,
+                              model=MODEL_TOP100):
+    """A3 amendment of instruction_top200_amendments_and_currency_view.md
+    (5 Oct 2026, Director-directed) - the shared stand-in walk, used by
+    _apply_backfill() for the main 200 AND, identically, by select_
+    top100_pool()'s own ASX-extension block ("the same rule applies to
+    the Top 20 tabs and the ASX extension"). Walks `remaining_
+    candidates` (already in the right merit order - the tail of
+    whatever list the caller was walking) and returns up to
+    `waiting_count` rows that are ALREADY RATED, skipping any ticker
+    already in `already_tickers`/`set_aside_tickers` and any candidate
+    that is UNRATED_MODEL/UNRATED_FAILED/WAITING - a standin is never
+    newly scored, never a WAITING candidate, and never re-adds anyone
+    to the caller's own set-aside bookkeeping (that stays the caller's
+    responsibility, recorded once, during its own primary walk)."""
+    if waiting_count <= 0:
+        return []
+    latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+    failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+    standins = []
+    for row in remaining_candidates:
+        if len(standins) >= waiting_count:
+            break
+        ticker = row["ticker"]
+        if ticker in already_tickers or ticker in set_aside_tickers:
+            continue
+        if company_status(latest.get(ticker), failures.get(ticker)) == "rated":
+            standins.append(row)
+    return standins
 
 
 def _backfill_summary(merit_ordered, backfill, model=MODEL_TOP100):
-    """Shared by the live backfill log line and the switch-OFF dry-run
-    line - {"set_aside_model": [...], "set_aside_failed": [...],
-    "pulled_in": [...], "new_to_score": int, "est_cost_usd": float}.
+    """Shared by the live backfill log line, the switch-OFF dry-run
+    line, and the owner preview panel - {"set_aside_model": [...],
+    "set_aside_failed": [...], "pulled_in": [...], "new_to_score": int,
+    "est_cost_usd": float, "standin_tickers": [...], "scored_set_rated":
+    int, "scored_set_waiting": int, "public_list_count": int}.
     "pulled_in": tickers in backfill["counted"] that were NOT among
     the first POOL_SIZE positions of `merit_ordered` (i.e. genuinely
     brought in to fill a gap left by a set-aside candidate).
     "new_to_score": how many of those pulled-in tickers are WAITING
     (never scored at all yet under this rubric - the ones a future
     batch will actually have to pay for); est_cost_usd estimates
-    scoring exactly those at the current per-company batch rate."""
+    scoring exactly those at the current per-company batch rate.
+
+    A3 amendment of instruction_top200_amendments_and_currency_view.md
+    (5 Oct 2026, Director-directed): "standin_tickers" is backfill[
+    "standins"]'s own tickers, sorted; "scored_set_rated"/"scored_set_
+    waiting" are R/W from the task's own "public list would show P of
+    200 (scored-set rated R + stand-ins S)" wording; "public_list_
+    count" is R + len(standins) - the actual number of RATED companies
+    the public page would show (never more than POOL_SIZE, since
+    R <= POOL_SIZE - waiting_count and standins is capped at exactly
+    waiting_count by _apply_backfill() itself)."""
     baseline_tickers = {r["ticker"] for r in merit_ordered[:POOL_SIZE]}
     counted_tickers = {r["ticker"] for r in backfill["counted"]}
     pulled_in = sorted(counted_tickers - baseline_tickers)
@@ -4337,9 +4461,19 @@ def _backfill_summary(merit_ordered, backfill, model=MODEL_TOP100):
     ]
     new_to_score_rows = [pulled_in_rows_by_ticker[t] for t in new_to_score]
     est_cost_usd = estimate_degenerate_resend_cost_usd(new_to_score_rows) if new_to_score_rows else 0.0
+
+    scored_set_waiting = sum(
+        1 for row in backfill["counted"]
+        if company_status(latest.get(row["ticker"]), failures.get(row["ticker"])) == "waiting"
+    )
+    scored_set_rated = len(backfill["counted"]) - scored_set_waiting
+    standin_tickers = sorted(r["ticker"] for r in backfill["standins"])
     return {
         "set_aside_model": set_aside_model, "set_aside_failed": set_aside_failed,
         "pulled_in": pulled_in, "new_to_score": len(new_to_score), "est_cost_usd": est_cost_usd,
+        "standin_tickers": standin_tickers,
+        "scored_set_rated": scored_set_rated, "scored_set_waiting": scored_set_waiting,
+        "public_list_count": scored_set_rated + len(standin_tickers),
     }
 
 
@@ -4373,7 +4507,12 @@ def backfill_preview(log=print, model=MODEL_TOP100):
     merit_ordered = sorted(best_by_ticker.values(), key=lambda r: r["value_score"], reverse=True)
     backfill = _apply_backfill(merit_ordered, model=model)
     summary = _backfill_summary(merit_ordered, backfill, model=model)
-    pool = backfill["counted"]
+    # A3 amendment of instruction_top200_amendments_and_currency_view.md
+    # (5 Oct 2026, Director-directed): standins are ordinary pool
+    # members in the preview too, exactly mirroring select_top100_
+    # pool()'s own switch-ON branch, so the Admin preview can never
+    # disagree with what the live switch would actually produce.
+    pool = backfill["counted"] + backfill["standins"]
     pool_tickers = {r["ticker"] for r in pool}
     set_aside_rows = []
     for row, status in backfill["set_aside"]:
@@ -4385,11 +4524,23 @@ def backfill_preview(log=print, model=MODEL_TOP100):
     extension = []
     if au_in_pool < TOP20_AU_TARGET:
         needed = TOP20_AU_TARGET - au_in_pool
-        extension = sorted(
+        _au_sorted_candidates = sorted(
             (r for t, r in best_by_ticker.items()
              if t.endswith(".AX") and t not in pool_tickers and t not in set_aside_tickers),
             key=lambda r: r["value_score"], reverse=True,
-        )[:needed]
+        )
+        extension = _au_sorted_candidates[:needed]
+        # A3 amendment: the same stand-in rule as the ASX extension
+        # block in select_top100_pool() itself.
+        _preview_latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+        _preview_failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+        _au_waiting_count = sum(
+            1 for row in extension
+            if company_status(_preview_latest.get(row["ticker"]), _preview_failures.get(row["ticker"])) == "waiting"
+        )
+        _au_already = {r["ticker"] for r in extension}
+        extension = extension + _standins_from_remaining(
+            _au_sorted_candidates[needed:], _au_already, set_aside_tickers, _au_waiting_count, model=model)
 
     latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
     failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
