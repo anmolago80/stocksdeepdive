@@ -4227,6 +4227,7 @@ EN = {
         "{ticker}'s own margin of safety, described in {stock} terms converted through "
         "each scenario above - a described calculation, not a forecast."
     ),
+    "currency_risk.mos_view_close_button": "Close",
     "currency_risk.position_label": "Position size ({base})",
     "currency_risk.scenario_average_label": "If {base} reverts to the period average ({rate})",
     "currency_risk.scenario_plus_1sigma_label": "If {base} reaches +1σ ({rate})",
@@ -7741,6 +7742,7 @@ ES = {
         "El margen de seguridad de {ticker}, descrito en términos de {stock} convertido "
         "mediante cada escenario anterior - un cálculo descrito, no una predicción."
     ),
+    "currency_risk.mos_view_close_button": "Cerrar",
     "currency_risk.position_label": "Tamaño de la posición ({base})",
     "currency_risk.scenario_average_label": "Si {base} revierte al promedio del período ({rate})",
     "currency_risk.scenario_plus_1sigma_label": "Si {base} alcanza +1σ ({rate})",

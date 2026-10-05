@@ -215,6 +215,75 @@ check("ticker/quote pair collapses to the same-currency warning path, no table, 
 print("[b3_mismatched_currency_no_table] a ticker whose own currency doesn't match the "
       "selected pair never gets a guessed table OK")
 
+# ======================================================================
+# CHECK 7 (Director's 5 Oct 2026 follow-up fix): the table (and its
+# active-ticker state) PERSISTS across a rerun triggered by any OTHER
+# widget on the page - it must not be tied to the one-shot
+# currency_risk_jump key any more - and only goes away via the real
+# Close button, or a fresh jump to a different ticker.
+# ======================================================================
+os.environ["CURRENCY_VIEW_LIVE"] = "1"
+acs.set_home_currency("persist@example.com", "AUD")
+_seed_snapshot("AAPL", 66.1, "USD")
+_seed_snapshot("MSFT", 20.0, "USD")
+
+_script7 = f"""
+import os, sys
+sys.path.insert(0, {REPO_ROOT!r})
+os.environ["RAILWAY_VOLUME_MOUNT_PATH"] = {TESTVOL!r}
+import streamlit as st
+import paywall_engine as pw
+pw.current_user_email = lambda: "persist@example.com"
+import app
+app.page_currency_risk()
+"""
+_patches7 = [
+    mock.patch.object(cre, "get_fx_history", return_value=_FAKE_HISTORY),
+    mock.patch.object(cre, "period_stats", return_value=_FAKE_STATS),
+]
+for p in _patches7:
+    p.start()
+try:
+    _at7 = AppTest.from_string(_script7, default_timeout=60)
+    _at7.session_state["currency_risk_jump"] = {"ticker": "AAPL", "base": "AUD", "quote": "USD"}
+    _at7.run()
+    assert not _at7.exception, f"first run raised: {_at7.exception}"
+    check("CHECK 7 setup: the table appears on the landing run",
+          "Margin of safety," in _page_text(_at7))
+
+    # Interact with a DIFFERENT widget on the page (the range chips, cr_range) -
+    # no jump this time, simulating any ordinary rerun.
+    _at7.segmented_control(key="cr_range").set_value("20y")
+    _at7.run()
+    assert not _at7.exception, f"rerun after changing the range chip raised: {_at7.exception}"
+    check("changing another widget (the range chips) on the page KEEPS the table - "
+          "the active ticker is no longer tied to the one-shot currency_risk_jump key",
+          "Margin of safety," in _page_text(_at7))
+
+    # The real Close button removes it.
+    _close_buttons = [b for b in _at7.button if b.label == "Close"]
+    check("a real 'Close' button is offered", len(_close_buttons) == 1)
+    _close_buttons[0].click()
+    _at7.run()
+    assert not _at7.exception, f"rerun after Close raised: {_at7.exception}"
+    check("clicking Close removes the table", "Margin of safety," not in _page_text(_at7))
+
+    # A fresh jump to a DIFFERENT ticker overwrites the (now-closed) active
+    # ticker, rather than requiring it to already be open.
+    _at7.session_state["currency_risk_jump"] = {"ticker": "MSFT", "base": "AUD", "quote": "USD"}
+    _at7.run()
+    assert not _at7.exception, f"rerun after a fresh jump to MSFT raised: {_at7.exception}"
+    _text7b = _page_text(_at7)
+    check("a fresh jump to a different ticker (MSFT) opens the table again, for MSFT",
+          "Margin of safety," in _text7b and "MSFT" in _text7b and "AAPL" not in _text7b)
+finally:
+    for p in _patches7:
+        p.stop()
+    os.environ.pop("CURRENCY_VIEW_LIVE", None)
+print("[b3_table_persists_across_reruns] the table and its active-ticker state survive "
+      "a rerun from any other widget, and only close via the real Close button or a "
+      "fresh jump to a different ticker OK")
+
 print()
 print(f"PASS={passed} FAIL={failed}")
 if os.path.exists(acs.DB_PATH):

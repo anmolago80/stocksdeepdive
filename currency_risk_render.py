@@ -285,22 +285,29 @@ def _render_section_c(base, quote, current_rate, average, sigma, lang):
 
 
 def _render_mos_view_table(base, quote, ticker, lang):
-    """SECTION B, COMMIT B3 of instruction_top200_amendments_and_
-    currency_view.md (5 Oct 2026, Director-directed): "one extra small
-    table under section C, 'Margin of safety, {base} view', with the
-    three scenarios, the currency effect and the resulting margin" -
-    only ever called when a ticker was carried over from a Deep Dive
-    currency-risk note (app.py's page_currency_risk() never passes
-    jump_ticker otherwise). Reads the ticker's own cached margin of
-    safety from snapshot_store.get_snapshot() - the same scan-row read
-    app.py's own Deep Dive page already uses for this exact ticker
-    (snapshot_store.get_snapshot(ticker)["data"]) - no network call, no
-    DCF recompute. Renders nothing (silently) if the ticker has never
-    been scanned, has no margin of safety, or its own trading currency
-    doesn't match the page's current `quote` (the visitor changed the
-    To picker away from the ticker's own currency after landing here) -
-    there is no sensible "AUD view of this ticker's margin" to show in
-    that case, and this must never guess one.
+    """SECTION B, COMMIT B3 (amended per the Director's 5 Oct 2026
+    follow-up) of instruction_top200_amendments_and_currency_view.md:
+    "one extra small table under section C, 'Margin of safety, {base}
+    view', with the three scenarios, the currency effect and the
+    resulting margin" - only ever called when render_currency_risk_
+    page() has an active ticker in st.session_state["cr_active_
+    ticker"] (set from a Deep Dive currency-risk note's jump, and
+    PERSISTED - unlike the one-shot currency_risk_jump session key
+    itself - across every later rerun of this page, e.g. changing the
+    range chips or the position-size input in section C above, until
+    the visitor closes it with the real Close button below or a
+    different jump overwrites it). Reads the ticker's own cached
+    margin of safety from snapshot_store.get_snapshot() - the same
+    scan-row read app.py's own Deep Dive page already uses for this
+    exact ticker (snapshot_store.get_snapshot(ticker)["data"]) - no
+    network call, no DCF recompute. Renders nothing (silently) if the
+    ticker has never been scanned, has no margin of safety, or its own
+    trading currency doesn't match the page's current `quote` (the
+    visitor changed the To picker away from the ticker's own currency)
+    - there is no sensible "AUD view of this ticker's margin" to show
+    in that case, and this must never guess one; the active ticker
+    itself is left alone in that case (changing `quote` back brings the
+    table straight back, rather than having silently closed it).
 
     cve.mos_view()'s own single-source-of-truth call into currency_
     risk_engine.position_impact() is the SAME function section C's own
@@ -314,7 +321,13 @@ def _render_mos_view_table(base, quote, ticker, lang):
     view = cve.mos_view(mos, base, quote)
     if not view:
         return
-    st.markdown(f"#### {_t('mos_view_heading', lang, base=base, ticker=ticker)}")
+    _head_col, _close_col = st.columns([5, 1])
+    with _head_col:
+        st.markdown(f"#### {_t('mos_view_heading', lang, base=base, ticker=ticker)}")
+    with _close_col:
+        if st.button(_t("mos_view_close_button", lang), key=f"cr_mos_view_close_{ticker}"):
+            st.session_state["cr_active_ticker"] = None
+            st.rerun()
     rows = []
     for key, label_key, view_val in (
         ("average", "scenario_average_label", view["view_at_average"]),
@@ -349,11 +362,20 @@ def render_currency_risk_page(lang="en", default_base=None, jump_ticker=None):
     default_base pre-selects the From picker for a signed-in visitor
     with a home currency (None reproduces today's exact default);
     jump_ticker, only ever set when arriving from a Deep Dive currency-
-    risk note, adds the one extra small table under section C. Neither
-    parameter changes anything else about this page - a call with both
-    left at their defaults (every pre-existing caller before this
-    commit, and every signed-out/non-owner-while-the-switch-is-off
-    visitor after it) renders byte-identical to before this commit."""
+    risk note, seeds the PERSISTED st.session_state["cr_active_ticker"]
+    (amended per the Director's 5 Oct 2026 follow-up - the one extra
+    table under section C used to depend on jump_ticker being passed
+    on THIS exact call, which made it vanish the moment any other
+    widget on the page triggered a rerun; it now reads the persisted
+    active ticker instead, which survives every rerun until the
+    visitor closes it with _render_mos_view_table()'s own Close button
+    or a fresh jump_ticker overwrites it with a different ticker).
+    Neither parameter changes anything else about this page - a call
+    with both left at their defaults (every pre-existing caller before
+    COMMIT B3, and every signed-out/non-owner-while-the-switch-is-off
+    visitor after it) renders byte-identical to before that commit."""
+    if jump_ticker:
+        st.session_state["cr_active_ticker"] = jump_ticker
     st.markdown(
         "<div style='color:#8aa0b8;font-size:12.5px;margin-bottom:10px;'>"
         f"{html.escape(_t('subtitle', lang))}</div>",
@@ -396,5 +418,6 @@ def render_currency_risk_page(lang="en", default_base=None, jump_ticker=None):
 
     _render_section_c(base, quote, stats["today"], stats["average"], stats["sigma"], lang)
 
-    if jump_ticker:
-        _render_mos_view_table(base, quote, jump_ticker, lang)
+    _active_ticker = st.session_state.get("cr_active_ticker")
+    if _active_ticker:
+        _render_mos_view_table(base, quote, _active_ticker, lang)
