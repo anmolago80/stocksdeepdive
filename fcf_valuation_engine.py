@@ -510,19 +510,30 @@ def _addback_series(income_df):
     return total if matched else [0.0] * n
 
 
-def _row(cashflow_df, labels):
-    """Return the first matching row (as a list of floats, most-recent-first)
-    from a cash-flow DataFrame, or None. Tries an exact label match first,
-    then falls back to a case-insensitive substring match (mirrors
-    auto_compounder_engine._find_row()'s tolerance) so a source whose exact
-    spelling isn't in `labels` - e.g. an EODHD key we haven't enumerated -
-    still resolves instead of silently returning None."""
+def _row_with_label(cashflow_df, labels):
+    """Same matching behaviour as _row() below (exact label match
+    first, then a case-insensitive substring fallback) but returns
+    (label actually matched, values) instead of only the values.
+
+    Addendum 2 item 7 (5 Oct 2026, Director-directed) diagnostic: the
+    substring fallback can, in principle, match a row other than the
+    one intended (e.g. "Net Income Attributable To Noncontrolling
+    Interest" or "Net Income Discontinuous Operations" ahead of the
+    real "Net Income Common Stockholders"/"Net Income" row, if the
+    exact labels aren't present and the wrong one happens to come
+    first in the statement's own row order) - exposing which label
+    actually won makes a future mismatch like that visible on the dry
+    run's own ni_row_label/ni_values columns instead of only
+    inferable from its effect on the valuation.
+
+    Returns (None, None) for an empty/None frame, or when nothing
+    matches at all."""
     if cashflow_df is None or getattr(cashflow_df, "empty", True):
-        return None
+        return None, None
     for label in labels:
         if label in cashflow_df.index:
             try:
-                return [float(v) for v in cashflow_df.loc[label].tolist()]
+                return label, [float(v) for v in cashflow_df.loc[label].tolist()]
             except Exception:
                 continue
     lower_idx = {str(i).lower(): i for i in cashflow_df.index}
@@ -531,10 +542,23 @@ def _row(cashflow_df, labels):
         for li, orig in lower_idx.items():
             if nl in li or li in nl:
                 try:
-                    return [float(v) for v in cashflow_df.loc[orig].tolist()]
+                    return str(orig), [float(v) for v in cashflow_df.loc[orig].tolist()]
                 except Exception:
                     continue
-    return None
+    return None, None
+
+
+def _row(cashflow_df, labels):
+    """Return the first matching row (as a list of floats, most-recent-first)
+    from a cash-flow DataFrame, or None. Tries an exact label match first,
+    then falls back to a case-insensitive substring match (mirrors
+    auto_compounder_engine._find_row()'s tolerance) so a source whose exact
+    spelling isn't in `labels` - e.g. an EODHD key we haven't enumerated -
+    still resolves instead of silently returning None. Thin wrapper
+    around _row_with_label() above, which also exposes which label
+    matched."""
+    _, values = _row_with_label(cashflow_df, labels)
+    return values
 
 
 def _oneoff_metric_series(income_df):

@@ -143,6 +143,49 @@ def is_financials(info, ticker=None):
     return ("bank" in industry) or ("insurance" in industry)
 
 
+_SHADOW_REASON_VERDICT = {
+    "reit_exclusion": False,
+    "ticker_table_out": False,
+    "ticker_table_in": True,
+    "industry_rule": False,
+}
+
+
+def shadow_mode_reason(info, ticker=None):
+    """Which rule decides is_financials_shadow()'s answer for this
+    ticker, in the exact order that function checks them (Addendum 2
+    item 7 of instruction_financials_income_store_and_top200_guard.md,
+    5 Oct 2026, Director-directed follow-up: "financials dry run -
+    three follow-ups from the first real data") - Andrew needs to see
+    which tickers were made standard by the industry rule alone (e.g.
+    COIN/FDS in the S&P 500 export) as opposed to the explicit
+    override list, since those are two different kinds of judgment
+    call with two different confidence levels.
+
+    One of:
+      "reit_exclusion"   - the REIT/real-estate exclusion fired.
+      "ticker_table_out"  - `ticker` is in _OVERRIDE_OUT_TICKERS.
+      "ticker_table_in"   - `ticker` is in _OVERRIDE_IN_TICKERS.
+      "industry_rule"     - Yahoo industry "Financial Data & Stock
+                             Exchanges", not caught by the IN table.
+      "existing_rule"      - none of the above fired; the answer comes
+                             from the pre-Commit-3 sector/industry
+                             rule, unchanged by the override table."""
+    industry_raw = info.get("industry") or ""
+    industry = industry_raw.lower()
+    if "reit" in industry or "real estate" in industry:
+        return "reit_exclusion"
+    if ticker:
+        t = ticker.strip().upper()
+        if t in _OVERRIDE_OUT_TICKERS:
+            return "ticker_table_out"
+        if t in _OVERRIDE_IN_TICKERS:
+            return "ticker_table_in"
+        if industry_raw == _FINANCIAL_DATA_EXCHANGES_INDUSTRY:
+            return "industry_rule"
+    return "existing_rule"
+
+
 def is_financials_shadow(info, ticker=None):
     """Commit 5 of instruction_financials_income_store_and_top200_
     guard.md (4 Oct 2026, Director-directed): "what is_financials()
@@ -157,17 +200,16 @@ def is_financials_shadow(info, ticker=None):
     the override table always applies here, given a ticker. Returns
     the exact same answer as is_financials(info, ticker=ticker) would
     if the switch were ON; with no ticker given, falls through to the
-    existing rule exactly like is_financials() does."""
-    industry_raw = info.get("industry") or ""
-    industry = industry_raw.lower()
-    if "reit" in industry or "real estate" in industry:
-        return False
-
-    verdict = _override_table_verdict(industry_raw, ticker)
-    if verdict is not None:
-        return verdict
+    existing rule exactly like is_financials() does. Thin wrapper
+    around shadow_mode_reason() above (Addendum 2 item 7, 5 Oct 2026),
+    which also exposes WHICH rule decided - one shared decision, not
+    two copies that could drift apart from each other."""
+    reason = shadow_mode_reason(info, ticker=ticker)
+    if reason in _SHADOW_REASON_VERDICT:
+        return _SHADOW_REASON_VERDICT[reason]
 
     sector = (info.get("sector") or "").strip()
     if sector == "Financial Services":
         return True
+    industry = (info.get("industry") or "").lower()
     return ("bank" in industry) or ("insurance" in industry)

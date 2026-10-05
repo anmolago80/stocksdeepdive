@@ -219,10 +219,17 @@ _row_ok = fdr.compute_shadow_row(
 assert _row_ok["shadow_fcf_source"] == "net_income_financials", _row_ok["shadow_fcf_source"]
 assert _row_ok["status"] == "ok", _row_ok["status"]
 assert _row_ok["pool_ineligible_if_switch_on"] is False
-assert _row_ok["shadow_quality"] == "changes"
+# Addendum 2 item 7 (5 Oct 2026, Director-directed follow-up): shadow_quality
+# (always the literal "changes") was removed in favour of now_moat/shadow_moat
+# - see tests/test_financials_dry_run_followups.py for the replacement
+# columns' own coverage. "none" of either key means no fundamentals bundle
+# was cached for this ticker in this fresh test volume - "n/a", not an
+# estimate, same contract as before.
+assert "shadow_quality" not in _row_ok, _row_ok
+assert _row_ok["now_moat"] is None and _row_ok["shadow_moat"] is None, _row_ok
 print(f"[C4e_good_entry_ok] a good store entry (2+ positive years) -> status=ok, net-income "
       f"path, not pool-ineligible, shadow IV={_row_ok['shadow_intrinsic_value']} - shadow_quality "
-      "is always the literal string 'changes', never a recomputed number OK")
+      "is gone (replaced by now_moat/shadow_moat, Addendum 2 item 7) OK")
 _clear_store()
 
 
@@ -277,7 +284,7 @@ with mock.patch.object(ns, "_yf_call_with_retry") as _ytw, \
 assert _row is not None
 _shadow_only_keys = {"shadow_mode", "shadow_intrinsic_value", "shadow_mos_pct",
                       "shadow_fcf_source", "shadow_dcf_unreliable", "shadow_moat_mode",
-                      "shadow_quality", "status", "pool_ineligible_if_switch_on",
+                      "now_moat", "shadow_moat", "status", "pool_ineligible_if_switch_on",
                       "in_current_top100", "now_intrinsic_value", "now_mos_pct",
                       "now_fcf_source", "now_dcf_unreliable", "now_moat_mode", "now_quality"}
 assert not (_shadow_only_keys & set(_row.keys())), _shadow_only_keys & set(_row.keys())

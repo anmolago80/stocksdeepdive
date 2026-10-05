@@ -30323,11 +30323,26 @@ def _render_financials_dry_run_panel():
         # ways filled it, so staleness/provenance is visible right
         # on this table too.
         "store_latest_period", "store_source",
+        # Addendum 2 item 7 (5 Oct 2026, Director-directed follow-up),
+        # item 1 (the ARES row) - which income-statement row label
+        # resolved, and its own values, for every row.
+        "ni_row_label", "ni_values",
         "now_intrinsic_value", "now_mos_pct", "now_fcf_source",
         "now_dcf_unreliable", "now_moat_mode", "now_quality",
+        # Addendum 2 item 7, item 3 - replaces the old literal-
+        # "changes" shadow_quality: Moat, not Quality, is what the
+        # override table actually changes (see financials_dry_run.
+        # compute_shadow_row()'s own docstring).
+        "now_moat", "shadow_moat",
         "shadow_mode", "shadow_intrinsic_value", "shadow_mos_pct",
         "shadow_fcf_source", "shadow_dcf_unreliable", "shadow_moat_mode",
-        "shadow_quality", "status", "pool_ineligible_if_switch_on", "in_current_top100",
+        # Addendum 2 item 7, item 2 (the IVZ row) - display-only reason
+        # for a "ni_path_abandoned" status.
+        "shadow_reason", "status",
+        # Addendum 2 item 7, item 3 - which rule decided the shadow
+        # classification for this ticker.
+        "shadow_mode_reason",
+        "pool_ineligible_if_switch_on", "in_current_top100",
     ]
     _table_df = pd.DataFrame(_rows, columns=_display_cols)
     st.dataframe(_table_df, hide_index=True, width="stretch")

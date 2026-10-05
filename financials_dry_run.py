@@ -45,6 +45,8 @@ import tempfile
 import financials_classifier
 import financials_income_store
 import fcf_valuation_engine
+import fundamentals_data
+import moat_engine
 from resolver_engine import dcf_looks_unreliable
 
 _DRY_RUN_DIR_NAME = "financials_dry_run"
@@ -163,6 +165,58 @@ def should_compute(info, ticker):
     return current_mode or shadow_mode
 
 
+def _ni_diagnostics(entry):
+    """Addendum 2 item 7 (5 Oct 2026, Director-directed follow-up) -
+    "ni_row_label" (the income-statement row label fcf_valuation_
+    engine._row_with_label() actually matched against _NET_INCOME_
+    LABELS) and "ni_values" (that row's own values, most-recent-first,
+    paired with their period-end column labels) for the store entry's
+    income table. (None, None) when there's no entry, or its income
+    table has no matching row at all - makes a future substring-
+    fallback mismatch (see _row_with_label()'s own docstring) visible
+    on the dry run itself rather than only inferable from its effect
+    on the valuation."""
+    if entry is None:
+        return None, None
+    income_df = entry.get("income")
+    if income_df is None or getattr(income_df, "empty", True):
+        return None, None
+    label, values = fcf_valuation_engine._row_with_label(
+        income_df, fcf_valuation_engine._NET_INCOME_LABELS,
+    )
+    if label is None:
+        return None, None
+    periods = [str(c) for c in income_df.columns]
+    paired = list(zip(periods, values)) if values is not None else []
+    return label, paired
+
+
+def _moat_scores(ticker, bundle):
+    """now_moat/shadow_moat (Addendum 2 item 7, 5 Oct 2026, Director-
+    directed follow-up) - the Moat score before and after the switch,
+    computed from `bundle` ONLY (never fetches its own - callers pass
+    fundamentals_data.peek_cached_bundle()'s own cache-only result, so
+    this is None/None whenever nothing is cached yet for this ticker,
+    never a new network call). Both go through moat_engine.compute_
+    moat_dry_run() - the SAME real Moat dispatch (ROE-vs-ROIC
+    substitution for an overridden/financials-mode ticker) the live
+    "Moat" column uses, under _switch_on() for the shadow read, so
+    there is no second, hand-maintained copy of that logic to drift
+    from the real one - same reasoning as this module's own DCF
+    shadow value. Returns (None, None) when `bundle` itself is None,
+    or when compute_moat_dry_run() can't score this ticker at all
+    (e.g. a fund, or fewer than 2 usable statement years) - "n/a" is
+    for the caller to render, never an estimate here."""
+    if bundle is None:
+        return None, None
+    now_result = moat_engine.compute_moat_dry_run(ticker, force_switch=None, bundle=bundle)
+    with _switch_on():
+        shadow_result = moat_engine.compute_moat_dry_run(ticker, force_switch=None, bundle=bundle)
+    now_moat = now_result.get("score") if now_result else None
+    shadow_moat = shadow_result.get("score") if shadow_result else None
+    return now_moat, shadow_moat
+
+
 def compute_shadow_row(ticker, company_name, price, info, cashflow_df, currency,
                         now_intrinsic_value, now_mos_pct, now_fcf_source,
                         now_dcf_unreliable, now_moat_mode, now_quality,
@@ -178,21 +232,27 @@ def compute_shadow_row(ticker, company_name, price, info, cashflow_df, currency,
     status: "awaiting_income_fetch" (no store entry yet, financials-
     mode under the switch-ON rule), "lt2_positive_years" (a store
     entry exists but normalized_base_and_series() still fell back -
-    fewer than two positive net-income years), "fetch_failed" (no
-    store entry, and financials_income_store's own Deep Dive attempt
-    marker's last recorded try failed - this can only ever reflect a
-    Deep Dive on-view attempt, never the nightly pre-pass's own per-
-    run failures, which aren't persisted per-ticker; see the report's
-    own note on this), or "ok" (standard mode under the switch-ON
-    rule, or financials-mode with a usable net-income series).
+    fewer than two positive net-income years), "ni_path_abandoned"
+    (Addendum 2 item 7, 5 Oct 2026: the net-income path produced a
+    non-positive base - most often because the latest year's net
+    income is negative, though a store entry with no usable OCF
+    either can reach it too - see fcf_source "info" below), "fetch_
+    failed" (no store entry, and financials_income_store's own Deep
+    Dive attempt marker's last recorded try failed - this can only
+    ever reflect a Deep Dive on-view attempt, never the nightly pre-
+    pass's own per-run failures, which aren't persisted per-ticker;
+    see the report's own note on this), or "ok" (standard mode under
+    the switch-ON rule, or financials-mode with a usable net-income
+    series).
 
-    shadow_quality is always the literal string "changes" - per the
-    instruction's own "quality if it can be computed without a new
-    network call, otherwise mark it 'changes' and say so": a true
-    recomputed quality score needs moat_engine's own ROE-vs-ROIC
-    bundle-backed run, which this function deliberately does not
-    attempt (that would cost a new fetch on a cold moat_engine cache,
-    violating the zero-new-network-call guarantee)."""
+    now_moat/shadow_moat (Addendum 2 item 7) replace the old literal-
+    "changes" shadow_quality column: per that follow-up's own finding
+    (grep-verified, see its report), Quality and Long Score never read
+    financials_classifier at all - only Moat does - so Moat, not
+    Quality, is the real before/after this dry run needs to show. See
+    _moat_scores()'s own docstring for the zero-new-network-call
+    contract; either is None (displayed "n/a") when nothing is cached
+    yet for this ticker, never an estimate."""
     entry = financials_income_store.get(ticker)
     shadow_income_df = entry["income"] if entry is not None else None
     # Addendum 2 item 1 (5 Oct 2026, Director-directed): the store
@@ -220,6 +280,16 @@ def compute_shadow_row(ticker, company_name, price, info, cashflow_df, currency,
     )
     shadow_dcf_unreliable = dcf_looks_unreliable(shadow_iv, price)
 
+    # Addendum 2 item 7 (5 Oct 2026, Director-directed follow-up,
+    # item 2 - the IVZ row): a financials-mode ticker whose net-income
+    # path produced a non-positive base falls through, inside dcf_
+    # intrinsic_value() itself, to info["freeCashflow"] - the SAME
+    # fallback a standard-mode ticker with no usable OCF/capex data
+    # uses, tagged fcf_source "info". Status "ok" is misleading for
+    # such a row (its base is not the net-income figure this whole
+    # dry run exists to show) - shadow_reason carries why, display
+    # only, never fed back into the DCF itself.
+    shadow_reason = None
     if not shadow_mode:
         status = "ok"
     elif entry is None:
@@ -227,8 +297,25 @@ def compute_shadow_row(ticker, company_name, price, info, cashflow_df, currency,
         status = "fetch_failed" if (attempt and attempt.get("success") is False) else "awaiting_income_fetch"
     elif shadow_fcf_source == "ocf_fallback_financials":
         status = "lt2_positive_years"
+    elif shadow_fcf_source == "info":
+        status = "ni_path_abandoned"
+        if shadow_meta.get("fcf_reason") == "negative_normalised_fcf":
+            shadow_reason = (
+                "net income path abandoned: latest year's net income was "
+                "negative; fell through to info[\"freeCashflow\"]"
+            )
+        else:
+            shadow_reason = (
+                "net income path never produced a usable base (no positive "
+                "net income AND no usable operating cash flow); fell "
+                "through to info[\"freeCashflow\"]"
+            )
     else:
         status = "ok"
+
+    ni_row_label, ni_values = _ni_diagnostics(entry)
+    bundle = fundamentals_data.peek_cached_bundle(ticker)
+    now_moat, shadow_moat = _moat_scores(ticker, bundle)
 
     return {
         "ticker": ticker,
@@ -252,20 +339,36 @@ def compute_shadow_row(ticker, company_name, price, info, cashflow_df, currency,
             if entry is not None else None
         ),
         "store_source": entry.get("source") if entry is not None else None,
+        # Addendum 2 item 7, item 1 (the ARES row) - see _ni_diagnostics()'s
+        # own docstring.
+        "ni_row_label": ni_row_label,
+        "ni_values": ni_values,
         "now_intrinsic_value": now_intrinsic_value,
         "now_mos_pct": now_mos_pct,
         "now_fcf_source": now_fcf_source,
         "now_dcf_unreliable": bool(now_dcf_unreliable),
         "now_moat_mode": now_moat_mode,
         "now_quality": now_quality,
+        # Addendum 2 item 7, item 3 - replaces the old literal-"changes"
+        # shadow_quality: Quality/Long Score never read financials_
+        # classifier (grep-verified - see the report), Moat is the real
+        # thing the override changes. See _moat_scores()'s own
+        # docstring for the zero-new-network-call/None-means-n/a
+        # contract.
+        "now_moat": now_moat,
+        "shadow_moat": shadow_moat,
         "shadow_mode": "financials" if shadow_mode else "standard",
         "shadow_intrinsic_value": round(shadow_iv, 2) if shadow_iv and shadow_iv > 0 else None,
         "shadow_mos_pct": shadow_mos_pct,
         "shadow_fcf_source": shadow_fcf_source,
         "shadow_dcf_unreliable": bool(shadow_dcf_unreliable),
         "shadow_moat_mode": "financials" if shadow_mode else "standard",
-        "shadow_quality": "changes",
+        "shadow_reason": shadow_reason,
         "status": status,
+        # Addendum 2 item 7, item 3 - which rule decided is_financials_
+        # shadow()'s answer for this ticker (see financials_classifier.
+        # shadow_mode_reason()'s own docstring).
+        "shadow_mode_reason": financials_classifier.shadow_mode_reason(info, ticker=ticker),
         "pool_ineligible_if_switch_on": shadow_fcf_source == "ocf_fallback_financials",
         "in_current_top100": False,
     }
