@@ -77,6 +77,9 @@ import compounder_ui
 from compounder_ui import sdd_plotly_chart
 import top100_render
 import currency_risk_render
+import currency_risk_engine
+import currency_view_engine
+import account_currency_store
 from simple_view_copy import SECTION_WHY_CAPTIONS, SECTION_WHY_CAPTIONS_ES
 import stress_etf_help_copy
 import switch_analyzer_engine
@@ -1005,6 +1008,44 @@ def _render_lang_picker(key_prefix):
         st.session_state["lang"] = _new_lang
         st.session_state["_pending_lang_cookie"] = _new_lang
         st.rerun()
+
+
+def _render_currency_picker(key_prefix):
+    """SECTION B, COMMIT B1 of instruction_top200_amendments_and_
+    currency_view.md (5 Oct 2026, Director-directed): the home-currency
+    control, mounted as the account bar's fourth widget slot (paywall_
+    engine's extra_widget4), beside the EN/ES picker - only ever called
+    from render_account_bar's signed-in branches (see paywall_engine.
+    render_account_bar's own extra_widget4 docstring note), so "shown
+    only when signed in" is already guaranteed by the call site; this
+    function only has to add the switch-OFF -> owner-only gate on top of
+    that.
+
+    Real Streamlit widgets throughout (a button-shaped st.popover
+    trigger + a real st.selectbox inside it) - never raw HTML, so there
+    is no onclick-stripping trap to avoid here."""
+    email = paywall_engine.current_user_email()
+    if not currency_view_engine.visible_to(email, ai_gate.is_owner):
+        return
+    _lang = st.session_state.get("lang", "en")
+    home = account_currency_store.get_home_currency(email)
+    _label = (
+        i18n.t("account.home_currency_set", _lang, currency=home) if home
+        else i18n.t("account.home_currency_unset", _lang)
+    )
+    with st.popover(_label, key=f"{key_prefix}_currency_popover"):
+        st.caption(i18n.t("account.home_currency_caption", _lang))
+        _options = currency_risk_engine.CURRENCIES
+        _choice = st.selectbox(
+            i18n.t("account.home_currency_label", _lang),
+            _options,
+            index=(_options.index(home) if home in _options else None),
+            placeholder=i18n.t("account.home_currency_placeholder", _lang),
+            key=f"{key_prefix}_currency_select",
+        )
+        if _choice and _choice != home:
+            account_currency_store.set_home_currency(email, _choice)
+            st.rerun()
 
 
 def _admin_ever_seen() -> bool:
@@ -4089,6 +4130,7 @@ def _render_header(compact, page_label=None, ultra_compact=False, current=None, 
         extra_widget=feedback_widget,
         extra_widget2=_render_admin_unlock if _show_unlock else None,
         extra_widget3=lambda: _render_lang_picker(key_prefix=page_label or "header"),
+        extra_widget4=lambda: _render_currency_picker(key_prefix=page_label or "header"),
         lang=_lang,
     )
 
@@ -7845,6 +7887,7 @@ def page_home():
                            and not st.session_state.get("full_view_unlocked"))
                        else None),
         extra_widget3=lambda: _render_lang_picker(key_prefix="home"),
+        extra_widget4=lambda: _render_currency_picker(key_prefix="home"),
         lang=st.session_state.get("lang", "en"),
     )
 

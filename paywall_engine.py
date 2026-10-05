@@ -771,14 +771,16 @@ div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"]:has([class*="
 # -----------------------------------
 
 def _right_widget_columns(left_widths, extra_widget=None, extra_widget2=None,
-                          trailing_width=None, total=12.0, extra_widget3=None):
+                          trailing_width=None, total=12.0, extra_widget3=None,
+                          extra_widget4=None):
     """
     Shared column plumbing for the account bar rows: the given left-edge
     widths, then a flexible spacer, then one dedicated column per provided
     extra widget (2.6 for the feedback popover, 1.4 for the compact second
-    widget, 2.6 for the compact third/language-picker widget), then an
-    optional trailing column (Sign out). Each widget gets its OWN column,
-    so none of them can ever overlap each other.
+    widget, 2.6 for the compact third/language-picker widget, 2.2 for the
+    fourth/home-currency-picker widget), then an optional trailing column
+    (Sign out). Each widget gets its OWN column, so none of them can ever
+    overlap each other.
 
     The language picker (extra_widget3) is a two-option st.segmented_control
     ("EN"/"ES"). It used to be 1.0, which isn't enough room for both pills
@@ -791,10 +793,17 @@ def _right_widget_columns(left_widths, extra_widget=None, extra_widget2=None,
     popover's own width) was the smallest value that kept both pills on one
     line across the whole range, and it only comes at the spacer's expense
     since `total` stays 12.0.
+
+    The home-currency picker (extra_widget4, SECTION B COMMIT B1, 5 Oct
+    2026) is a single st.popover trigger ("Home currency: AUD"/"Home
+    currency: choose") - a single button-shaped element, not a two-pill
+    control, so it doesn't need the language picker's full 2.6; 2.2 is
+    enough room for "Home currency: choose" (its longest label) without
+    wrapping, screenshot-tested the same way.
     Returns (left_cols, widget_cols, trailing_col_or_None).
     """
     _rw = (([2.6] if extra_widget else []) + ([1.4] if extra_widget2 else [])
-           + ([2.6] if extra_widget3 else []))
+           + ([2.6] if extra_widget3 else []) + ([2.2] if extra_widget4 else []))
     _trail = [trailing_width] if trailing_width else []
     _spacer = max(0.5, total - sum(left_widths) - sum(_rw) - sum(_trail))
     # Owner review round fix #6: the account row's pieces (name text,
@@ -813,7 +822,7 @@ def _right_widget_columns(left_widths, extra_widget=None, extra_widget2=None,
     _n_left = len(left_widths)
     _widget_cols = []
     _i = _n_left + 1
-    for _w in (extra_widget, extra_widget2, extra_widget3):
+    for _w in (extra_widget, extra_widget2, extra_widget3, extra_widget4):
         if _w:
             _widget_cols.append((cols[_i], _w))
             _i += 1
@@ -821,24 +830,29 @@ def _right_widget_columns(left_widths, extra_widget=None, extra_widget2=None,
 
 
 def _render_name_and_signout(name, extra_widget=None, extra_widget2=None,
-                             extra_widget3=None, lang="en"):
+                             extra_widget3=None, extra_widget4=None, lang="en"):
     """
     Shared layout for "signed in, nothing else to show but Sign out" -
     used both when the paywall is off entirely and when a subscriber
     already has an active subscription, so those two cases render
     identically instead of drifting apart over time.
 
-    extra_widget / extra_widget2 / extra_widget3: optional zero-arg
-        callables (e.g. the page's feedback button, the RC view unlock,
-        and the EN/ES language picker) each rendered in their OWN column
-        immediately to the left of Sign out.
+    extra_widget / extra_widget2 / extra_widget3 / extra_widget4: optional
+        zero-arg callables (e.g. the page's feedback button, the RC view
+        unlock, the EN/ES language picker, and the home-currency picker)
+        each rendered in their OWN column immediately to the left of Sign
+        out. extra_widget4 (SECTION B COMMIT B1) is only ever passed in
+        from the signed-in branches of render_account_bar below - this
+        function itself is only ever called once a visitor is already
+        signed in, which is exactly the "shown only when signed in" rule
+        the home-currency control needs.
     lang: "en"/"es" - translates just the Sign out label (Español
         instruction, Part 1).
     """
     import i18n
     _left, _widgets, _c3 = _right_widget_columns(
         [1.4], extra_widget, extra_widget2, trailing_width=1.1,
-        extra_widget3=extra_widget3)
+        extra_widget3=extra_widget3, extra_widget4=extra_widget4)
     with _left[0]:
         with st.container(key="pw_account_name_box"):
             st.markdown(
@@ -854,7 +868,7 @@ def _render_name_and_signout(name, extra_widget=None, extra_widget2=None,
 
 
 def render_account_bar(extra_widget=None, extra_widget2=None, extra_widget3=None,
-                       lang="en"):
+                       lang="en", extra_widget4=None):
     """
     Sign In (or the signed-in name + Sign out) shows whenever Google
     sign-in is configured, regardless of PAYWALL_ENABLED - Andrew can start
@@ -868,6 +882,14 @@ def render_account_bar(extra_widget=None, extra_widget2=None, extra_widget3=None
         their own when Sign out isn't shown), each in its OWN column - used
         for the page's feedback button, the RC view unlock, and the EN/ES
         language picker.
+    extra_widget4: optional zero-arg callable, the home-currency picker
+        (SECTION B COMMIT B1 of instruction_top200_amendments_and_
+        currency_view.md, 5 Oct 2026) - "shown only when signed in", so,
+        unlike extra_widget/2/3, it is deliberately NOT passed through to
+        either of the two not-logged-in branches below (no sign-in method
+        configured at all; signed out with a sign-in method available).
+        It only ever renders from the three branches that already require
+        is_logged_in() to be true.
     lang: "en"/"es" - Español instruction, Part 1. Translates the Sign In/
         Sign out/Subscribe labels in this bar; the email sign-in popover's
         own internal copy stays English (deferred, see i18n.py).
@@ -877,6 +899,9 @@ def render_account_bar(extra_widget=None, extra_widget2=None, extra_widget3=None
         # No sign-in method configured at all - no account bar, but the
         # widgets (if any) still need to render somewhere - same
         # standalone right-aligned row they used to have on their own.
+        # extra_widget4 deliberately omitted here - see its own docstring
+        # note above ("shown only when signed in", and there is no signed-
+        # in state reachable at all when no sign-in method is configured).
         if extra_widget or extra_widget2 or extra_widget3:
             _left, _widgets, _ = _right_widget_columns(
                 [0.5], extra_widget, extra_widget2, extra_widget3=extra_widget3)
@@ -943,19 +968,21 @@ def render_account_bar(extra_widget=None, extra_widget2=None, extra_widget3=None
     if not PAYWALL_ENABLED:
         _render_name_and_signout(name, extra_widget=extra_widget,
                                  extra_widget2=extra_widget2,
-                                 extra_widget3=extra_widget3, lang=lang)
+                                 extra_widget3=extra_widget3,
+                                 extra_widget4=extra_widget4, lang=lang)
         return
 
     email = current_user_email()
     if is_subscribed(email):
         _render_name_and_signout(name, extra_widget=extra_widget,
                                  extra_widget2=extra_widget2,
-                                 extra_widget3=extra_widget3, lang=lang)
+                                 extra_widget3=extra_widget3,
+                                 extra_widget4=extra_widget4, lang=lang)
         return
 
     _left, _widgets, _c3 = _right_widget_columns(
         [1.2, 1.0], extra_widget, extra_widget2, trailing_width=1.1,
-        extra_widget3=extra_widget3)
+        extra_widget3=extra_widget3, extra_widget4=extra_widget4)
     with _left[0]:
         with st.container(key="pw_account_name_box"):
             st.markdown(

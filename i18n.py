@@ -136,6 +136,18 @@ EN = {
     "account.sign_out": "Sign out",
     "account.subscribe": "Subscribe",
 
+    # SECTION B, COMMIT B1 of instruction_top200_amendments_and_
+    # currency_view.md (5 Oct 2026): the home-currency account-bar
+    # control's own strings.
+    "account.home_currency_set": "Home currency: {currency}",
+    "account.home_currency_unset": "Home currency: choose",
+    "account.home_currency_caption": (
+        "The currency you invest from. Saved to your account and used "
+        "across the site."
+    ),
+    "account.home_currency_label": "Home currency",
+    "account.home_currency_placeholder": "Choose a currency",
+
     "gate.not_configured": (
         "\U0001F512 Subscriptions aren't fully set up yet - {feature_label} "
         "will unlock here once they are. Check back soon."
@@ -4219,6 +4231,18 @@ ES = {
     "account.sign_in": "Iniciar sesión",
     "account.sign_out": "Cerrar sesión",
     "account.subscribe": "Suscribirse",
+
+    # SECTION B, COMMIT B1 of instruction_top200_amendments_and_
+    # currency_view.md (5 Oct 2026): the home-currency account-bar
+    # control's own strings.
+    "account.home_currency_set": "Moneda local: {currency}",
+    "account.home_currency_unset": "Moneda local: elegir",
+    "account.home_currency_caption": (
+        "La moneda desde la que inviertes. Se guarda en tu cuenta y se "
+        "usa en todo el sitio."
+    ),
+    "account.home_currency_label": "Moneda local",
+    "account.home_currency_placeholder": "Elige una moneda",
 
     "gate.not_configured": (
         "\U0001F512 Las suscripciones aún no están completamente "
