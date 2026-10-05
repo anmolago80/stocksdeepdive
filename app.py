@@ -30076,6 +30076,53 @@ def _render_stored_score_viewer_panel():
     st.code((_row.get("raw_response") or "")[:2000] or "(empty)", language=None)
 
 
+def _render_degenerate_accepted_panel():
+    """A2 (5 Oct 2026, owner-directed, "owner button to re-send the
+    companies already locked out") - owner-only. Lists every stored
+    score row with degenerate_accepted=True for the current rubric
+    (top100_engine.degenerate_accepted_rows() - built on top100_store.
+    latest_scores_for_model(), so a genuine NOT RATED is never listed,
+    by construction), the count, and the estimated cost of scoring
+    them again at the current rate (top100_engine.estimate_degenerate_
+    resend_cost_usd()). The "Clear and re-send" button deletes exactly
+    the rows this panel displayed (top100_engine.clear_degenerate_
+    accepted_rows(), the same top100_store.delete_score() path the 3
+    Oct retroactive sweep used) so the normal nightly run picks them
+    up - nothing happens until this button is clicked, no automatic
+    sweep at boot, and the button itself triggers no batch. No gate of
+    its own - called only from inside page_admin_dashboard(), after
+    that function's own owner check, same as every panel on this
+    page."""
+    st.markdown("### Companies locked out by a degenerate response")
+    st.caption(
+        "Owner-only. Lists every stored score saved as NOT RATED only "
+        "because of a second consecutive degenerate/blank response "
+        "(degenerate_accepted), not a genuine decline - these will not "
+        "be scored again until their next quarterly result or 200 "
+        "days unless cleared here. Clearing deletes the row so the "
+        "normal nightly run re-sends it; nothing happens until you "
+        "click the button below, and it submits no batch itself."
+    )
+    _rows = top100_engine.degenerate_accepted_rows(top100_engine.MODEL_TOP100)
+    if not _rows:
+        st.write("None currently - no stored row is flagged degenerate_accepted.")
+        return
+    _cost = top100_engine.estimate_degenerate_resend_cost_usd(_rows)
+    _c1, _c2 = st.columns(2)
+    with _c1:
+        st.metric("Locked out", len(_rows))
+    with _c2:
+        st.metric("Est. cost to re-send", f"${_cost:.4f}")
+    st.table([
+        {"Ticker": r["ticker"], "Company": r["company_name"], "Saved": r["scored_at"]}
+        for r in _rows
+    ])
+    if st.button("Clear and re-send", key="admin_dash_clear_degenerate_accepted_button"):
+        _cleared = top100_engine.clear_degenerate_accepted_rows(_rows, top100_engine.MODEL_TOP100, log=print)
+        st.success(f"Cleared {len(_cleared)} row(s): {', '.join(sorted(_cleared))}. "
+                   "They will be picked up by the next nightly run.")
+
+
 def _render_recompute_ticker_panel():
     """"Recompute this ticker now" (3 Oct 2026, owner-directed) -
     owner-only. Invalidates fundamentals_data's 24h bundle cache for
@@ -32440,6 +32487,13 @@ def page_admin_dashboard():
     # page" pattern as every panel above.
     st.markdown("---")
     _render_stored_score_viewer_panel()
+
+    # --- COMPANIES LOCKED OUT BY A DEGENERATE RESPONSE (Commit A2, 5
+    # Oct 2026, owner-directed) - see _render_degenerate_accepted_
+    # panel()'s own docstring. Same "no gate of its own, final section
+    # of this page" pattern as every panel above.
+    st.markdown("---")
+    _render_degenerate_accepted_panel()
 
     # --- PRIVATE UNIVERSES (Stage 1b, 3 Oct 2026, Director-directed) -
     # see _render_private_universes_panel()'s own docstring. Same "no

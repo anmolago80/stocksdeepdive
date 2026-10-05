@@ -3643,6 +3643,81 @@ def estimate_batch_cost_usd(input_tokens, output_tokens,
     return standard * BATCH_DISCOUNT
 
 
+def degenerate_accepted_rows(model=MODEL_TOP100):
+    """A2 (5 Oct 2026, owner-directed, "owner button to re-send the
+    companies already locked out"): every stored score row with
+    degenerate_accepted=True under the CURRENT rubric for `model` -
+    {"ticker", "company_name", "quarter", "scored_at"}, one dict per
+    row, sorted by ticker. Built on top100_store.latest_scores_for_
+    model() (already read-only, one row per ticker) rather than a new
+    query - a genuine NOT RATED (three or more zero dimensions with
+    real justifications, degenerate_accepted False) is never included,
+    by construction: this filters on exactly the column _save_
+    degenerate_as_not_rated() sets, nothing else. `company_name` comes
+    from the current pool/ASX extension when the ticker is still
+    pooled, else falls back to the ticker itself (a company that has
+    since dropped out of the pool but still carries an old degenerate-
+    accepted row shouldn't disappear from this list silently)."""
+    latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+    pool_by_ticker = {
+        row["ticker"]: row
+        for row in (top100_store.current_pool() + top100_store.current_asx_extension())
+    }
+    out = []
+    for ticker, row in latest.items():
+        if not row.get("degenerate_accepted"):
+            continue
+        out.append({
+            "ticker": ticker,
+            "company_name": (pool_by_ticker.get(ticker) or {}).get("company_name") or ticker,
+            "quarter": row.get("quarter"),
+            "scored_at": row.get("scored_at"),
+        })
+    out.sort(key=lambda r: r["ticker"])
+    return out
+
+
+def estimate_degenerate_resend_cost_usd(rows):
+    """Rough pre-action cost estimate for A2's "Clear and re-send"
+    button - same packed-request estimate submit_nightly_batch() itself
+    logs before submitting (_estimate_request_tokens()/_ESTIMATED_
+    OUTPUT_TOKENS_PER_ENTRANT, packed up to TOP100_COMPANIES_PER_
+    REQUEST at a time), applied to `rows` (degenerate_accepted_rows()'
+    own output) as if they were tonight's only entrants. An order-of-
+    magnitude figure for the owner to see BEFORE clicking the button,
+    not a billing-accurate one - same caveat as every other pre-
+    submission estimate in this module."""
+    if not rows:
+        return 0.0
+    entrants = [{"ticker": r["ticker"], "company_name": r["company_name"], "sector": None} for r in rows]
+    packs = [entrants[i:i + TOP100_COMPANIES_PER_REQUEST]
+             for i in range(0, len(entrants), TOP100_COMPANIES_PER_REQUEST)]
+    est_input_tokens = sum(_estimate_request_tokens(pack) for pack in packs)
+    est_output_tokens = len(entrants) * _ESTIMATED_OUTPUT_TOKENS_PER_ENTRANT
+    return estimate_batch_cost_usd(est_input_tokens, est_output_tokens)
+
+
+def clear_degenerate_accepted_rows(rows, model=MODEL_TOP100, log=print):
+    """A2's "Clear and re-send" action: deletes each of `rows`
+    (degenerate_accepted_rows()' own output - never re-queried here,
+    so the button deletes EXACTLY what the panel displayed, not
+    whatever matches the filter at click time) via top100_store.
+    delete_score() - the same path the 3 Oct retroactive sweep
+    (run_degenerate_sweep_once()) used - so the normal nightly
+    _unscored_tickers() picks them up and re-sends them like any other
+    never-scored entrant. Triggers no batch itself; nothing happens
+    until the next scheduled or owner-initiated submission. Logs the
+    exact owner-specified line. Returns the list of tickers cleared."""
+    cleared = []
+    for row in rows:
+        top100_store.delete_score(row["ticker"], row["quarter"], model, RUBRIC_VERSION)
+        cleared.append(row["ticker"])
+    if cleared:
+        log(f"[top100] owner cleared {len(cleared)} degenerate-accepted row(s): "
+            f"{', '.join(sorted(cleared))}")
+    return cleared
+
+
 def refresh_all(log=print):
     """Owner-only "refresh all" button - re-selects the pool, then
     submits EVERY pooled company (not just entrants _unscored_tickers()
