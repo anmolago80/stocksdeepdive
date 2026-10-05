@@ -638,8 +638,19 @@ def analyze(ticker, get_price_history, get_ticker_info, get_cashflow_df,
         # with the switch ON AND the DCF still ended up on the OCF
         # path (no store entry/fetch, or fewer than two positive net-
         # income years) - never true with the switch off.
+        #
+        # B1 (5 Oct 2026, Director-directed, instruction_top200_blank_
+        # replies_and_financials_gap.md): extended to the info["free
+        # Cashflow"] fallback too (fcf_source "info" - IVZ's own live
+        # example, shadow value 75.74 at price 30.66) - that fallback
+        # is the SAME cash-flow basis the OCF path already discloses
+        # here, just reached via a different branch of dcf_intrinsic_
+        # value() (see that function's own fcf_source assignment). The
+        # caption's own wording ("cash-flow basis - float not removed")
+        # already covers this case correctly without any change.
         "fallback_financials_caption": bool(
-            _financials_mode_live and iv_meta.get("fcf_source") == "ocf_fallback_financials"
+            _financials_mode_live
+            and iv_meta.get("fcf_source") in ("ocf_fallback_financials", "info")
         ),
         # Growth-never-zero rewrite (30 Sep 2026, owner-directed): the
         # PRE-CAP growth figure, alongside dcf_growth (the number the

@@ -248,6 +248,44 @@ def _is_fallback_financials(row):
     return row.get("FCF Source") == "ocf_fallback_financials"
 
 
+def _financials_pool_ineligible(row):
+    """COMMIT B1 of instruction_top200_blank_replies_and_financials_gap.md
+    (5 Oct 2026, Director-directed), switch-gated: True when this row's
+    net-income path was abandoned - "FCF Source" is anything other than
+    "net_income_financials" - for a FINANCIALS-MODE row. Supersedes
+    _is_fallback_financials() above, which only caught the single
+    source "ocf_fallback_financials" and missed "info" (the Director's
+    own reported example, IVZ) and "none" (a financials-mode DCF with
+    no usable base at all): the same OCF/float-pollution problem that
+    motivated excluding "ocf_fallback_financials" in Commit 4 applies
+    just as much to a financials-mode row that fell all the way through
+    to info["freeCashflow"] or to no base at all - it is still not a
+    genuine net-income-based valuation.
+
+    "ocf_fallback_financials" is itself mode-exclusive (no standard-mode
+    path ever produces it - see fcf_valuation_engine.normalized_base_
+    and_series()'s own fallback), so it is excluded unconditionally,
+    same as _is_fallback_financials() always did - this keeps pre-B1
+    fixtures that never set "Is Financials Mode" working unchanged.
+    "info" and "none" ARE shared with standard mode (an ordinary OCF-
+    unavailable fallback), so for those two this only excludes the row
+    when nightly_scan.py's new "Is Financials Mode" field (this
+    instruction's own addition, sourced from fcf_valuation_engine.
+    dcf_intrinsic_value()'s "is_financials_mode" meta) is explicitly
+    True.
+
+    ONLY called when financials_classifier.is_financials_store_live()
+    is True (see this function's own call site) - with the switch OFF,
+    select_top100_pool()'s output stays byte-identical, exactly as
+    _is_fallback_financials() already guaranteed."""
+    source = row.get("FCF Source")
+    if source == "ocf_fallback_financials":
+        return True
+    if source in ("info", "none"):
+        return bool(row.get("Is Financials Mode"))
+    return False
+
+
 def _dedupe_share_classes(best_by_ticker, log=print):
     """Top 100 Commit 3 (27 Sep 2026, owner-reported): collapses every
     SHARE_CLASS_PAIRS pair BOTH of whose tickers are still in
@@ -527,7 +565,7 @@ def select_top100_pool(log=print):
                     if ticker not in dcf_unreliable_excluded_tickers:
                         dcf_unreliable_excluded_tickers.append(ticker)
                     continue
-                if _financials_store_live and _is_fallback_financials(row):
+                if _financials_store_live and _financials_pool_ineligible(row):
                     fallback_financials_excluded_count += 1
                     if ticker not in fallback_financials_excluded_tickers:
                         fallback_financials_excluded_tickers.append(ticker)

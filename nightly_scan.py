@@ -993,6 +993,19 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         "Growth Ceiling Used": iv_meta.get("growth_ceiling_used"),
         "Growth End Rate Used": iv_meta.get("growth_end_rate_used"),
         "FCF Source": iv_meta.get("fcf_source"),
+        # B1 (5 Oct 2026, Director-directed, instruction_top200_blank_
+        # replies_and_financials_gap.md): pure passthrough of fcf_
+        # valuation_engine.dcf_intrinsic_value()'s own "is_financials_
+        # mode" meta flag (via resolver_engine's propagation), carried
+        # here purely so top100_engine._financials_pool_ineligible()
+        # can tell a financials-mode row (bank/insurer/...) apart from
+        # a standard-mode one that also happens to land on fcf_source
+        # "info"/"none" via the ordinary OCF-unavailable fallback -
+        # the new pool-ineligibility rule must only ever fire for the
+        # former. Never read by calculate_long_score()/composite_
+        # score()/select_top100_pool()'s own ranking - eligibility
+        # only, same class of field as "FCF Source" itself.
+        "Is Financials Mode": bool(iv_meta.get("is_financials_mode", False)),
         "FCF Base Raw": iv_meta.get("fcf_base_raw"),
         "FCF Base Used": iv_meta.get("fcf_base_used"),
         "FCF Base Source": iv_meta.get("fcf_base_source"),

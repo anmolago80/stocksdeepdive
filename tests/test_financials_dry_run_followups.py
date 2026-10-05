@@ -138,15 +138,20 @@ assert _ivz_row["shadow_fcf_source"] == "info", _ivz_row["shadow_fcf_source"]
 assert _ivz_row["shadow_mode"] == "financials", _ivz_row["shadow_mode"]
 assert _ivz_row["status"] == "ni_path_abandoned", _ivz_row["status"]
 assert _ivz_row["shadow_reason"] is not None and "negative" in _ivz_row["shadow_reason"]
-# Item 2's own pool-eligibility answer: fcf_source "info" is NOT
-# "ocf_fallback_financials", so the Commit 4 pool-exclusion rule does
-# NOT catch it - report current behaviour, this test only confirms it.
-assert _ivz_row["pool_ineligible_if_switch_on"] is False, _ivz_row
+# Item 2's own pool-eligibility answer, as it stood BEFORE Commit B1
+# (instruction_top200_blank_replies_and_financials_gap.md, 5 Oct
+# 2026): fcf_source "info" was NOT "ocf_fallback_financials", so the
+# Commit 4 pool-exclusion rule didn't catch it - this was exactly the
+# gap B1 closed (IVZ was B1's own live example). pool_ineligible_if_
+# switch_on is now True for this fixture: top100_engine._financials_
+# pool_ineligible() excludes a financials-mode row on "info"/"none"
+# too, not just the literal "ocf_fallback_financials" string.
+assert _ivz_row["pool_ineligible_if_switch_on"] is True, _ivz_row
 print(f"[item2_negative_latest_year_reaches_info] IVZ-shaped fixture: fcf_source="
       f"{_ivz_row['shadow_fcf_source']!r}, status={_ivz_row['status']!r}, "
       f"shadow_reason={_ivz_row['shadow_reason']!r} - and pool_ineligible_if_switch_on="
-      f"{_ivz_row['pool_ineligible_if_switch_on']} (current behaviour: NOT excluded, since "
-      "this isn't the 'ocf_fallback_financials' tag the Commit 4 rule checks for) OK")
+      f"{_ivz_row['pool_ineligible_if_switch_on']} (Commit B1: now excluded - this is the "
+      "live gap B1 closed, this fixture IS the IVZ example) OK")
 _clear_store()
 
 

@@ -297,9 +297,21 @@ def compute_shadow_row(ticker, company_name, price, info, cashflow_df, currency,
         status = "fetch_failed" if (attempt and attempt.get("success") is False) else "awaiting_income_fetch"
     elif shadow_fcf_source == "ocf_fallback_financials":
         status = "lt2_positive_years"
-    elif shadow_fcf_source == "info":
+    elif shadow_fcf_source in ("info", "none"):
+        # B1 (5 Oct 2026, Director-directed, instruction_top200_blank_
+        # replies_and_financials_gap.md, "your out-of-scope item"):
+        # ni_path_abandoned now also covers fcf_source "none" - the net
+        # income path was abandoned AND info["freeCashflow"] itself was
+        # non-positive/unavailable, so the DCF has no usable base at
+        # all (dcf_intrinsic_value() returns 0/None for this ticker).
         status = "ni_path_abandoned"
-        if shadow_meta.get("fcf_reason") == "negative_normalised_fcf":
+        if shadow_fcf_source == "none":
+            shadow_reason = (
+                "net income path never produced a usable base, and "
+                "info[\"freeCashflow\"] was also non-positive or "
+                "unavailable - DCF abandoned entirely"
+            )
+        elif shadow_meta.get("fcf_reason") == "negative_normalised_fcf":
             shadow_reason = (
                 "net income path abandoned: latest year's net income was "
                 "negative; fell through to info[\"freeCashflow\"]"
@@ -369,6 +381,18 @@ def compute_shadow_row(ticker, company_name, price, info, cashflow_df, currency,
         # shadow()'s answer for this ticker (see financials_classifier.
         # shadow_mode_reason()'s own docstring).
         "shadow_mode_reason": financials_classifier.shadow_mode_reason(info, ticker=ticker),
-        "pool_ineligible_if_switch_on": shadow_fcf_source == "ocf_fallback_financials",
+        # B1 (5 Oct 2026, Director-directed, instruction_top200_blank_
+        # replies_and_financials_gap.md): extended beyond the literal
+        # "ocf_fallback_financials" string to also cover "info" (IVZ's
+        # own live example) and "none" - the three non-net-income FCF
+        # sources top100_engine._financials_pool_ineligible() excludes
+        # a financials-mode row for. Gated on shadow_mode explicitly
+        # (not just the fcf_source string) since "info"/"none" are NOT
+        # mode-exclusive - a standard-mode ticker reaching either via
+        # the ordinary OCF-unavailable fallback must never read as
+        # pool-ineligible here.
+        "pool_ineligible_if_switch_on": (
+            shadow_mode and shadow_fcf_source in ("ocf_fallback_financials", "info", "none")
+        ),
         "in_current_top100": False,
     }
