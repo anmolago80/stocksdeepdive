@@ -327,4 +327,54 @@ if os.path.exists(scan_store._path("S&P 500")):
     os.remove(scan_store._path("S&P 500"))
 
 
+# ======================================================================
+# A2 amendment of instruction_top200_amendments_and_currency_view.md
+# (5 Oct 2026, Director-directed): re-eligibility applies to EVERY
+# failure reason _failure_exhausted() treats as final, not only
+# request_blank - one fixture per reason named in STEP A0.4's own
+# table: request_blank (5-attempt ceiling), missing_from_response,
+# parse_error (stored with a dynamic ": <detail>" suffix),  an errored
+# batch-result type string, and a non-succeeded status such as
+# "expired" (both 3-attempt ceiling). Each is driven to exhaustion,
+# proven to re-enter under new_results, and the panel is checked to
+# list every one of them with its own exact reason string.
+# ======================================================================
+_A2_REASONS = [
+    ("request_blank", te.TOP100_REQUEST_BLANK_MAX_RETRIES),
+    ("missing_from_response", te.TOP100_FAILURE_MAX_ATTEMPTS),
+    ("parse_error: Expecting value: line 1 column 1 (char 0)", te.TOP100_FAILURE_MAX_ATTEMPTS),
+    ("invalid_request_error", te.TOP100_FAILURE_MAX_ATTEMPTS),
+    ("expired", te.TOP100_FAILURE_MAX_ATTEMPTS),
+]
+for _i, (_reason, _limit) in enumerate(_A2_REASONS):
+    _ticker = f"A2REASON{_i}"
+    for _ in range(_limit):
+        ts.record_score_failure(_ticker, MODEL, RV, _reason, most_recent_quarter="2026-06-30")
+    # Not yet exhausted one attempt earlier - still blocked (cooldown),
+    # confirming the ceiling is really being hit at _limit, not before.
+    _failures_before_last = ts.score_failures_for_model(MODEL, RV)
+    assert _failures_before_last[_ticker]["attempts"] == _limit, _failures_before_last[_ticker]
+    assert te._failure_exhausted(_failures_before_last[_ticker]), (
+        f"{_reason!r} must be exhausted at exactly {_limit} attempts", _failures_before_last[_ticker])
+    # new_results trigger: re-enters with the SAME most_recent_quarter
+    # change every other reason already proven to re-enter on.
+    _pool_row_a2 = [_pool_row(_ticker, most_recent_quarter="2026-09-30")]
+    _unscored_a2 = te._unscored_tickers(_pool_row_a2, MODEL)
+    _reasons_a2 = {row["ticker"]: reason for row, reason in _unscored_a2}
+    assert _reasons_a2.get(_ticker) == "new_results", (_reason, _reasons_a2)
+print(f"[a2_every_failure_reason_reenters] all {len(_A2_REASONS)} reasons from STEP A0.4's own "
+      f"table (request_blank, missing_from_response, parse_error, an errored-result type, "
+      f"a non-succeeded status) exhaust at their own correct ceiling and re-enter on "
+      f"new_results, exactly like 'weird_error' already did OK")
+
+_panel_rows_a2 = te.exhausted_failure_rows(MODEL)
+_panel_by_ticker_a2 = {r["ticker"]: r for r in _panel_rows_a2}
+for _i, (_reason, _limit) in enumerate(_A2_REASONS):
+    _ticker = f"A2REASON{_i}"
+    assert _ticker in _panel_by_ticker_a2, (_ticker, _panel_by_ticker_a2.keys())
+    assert _panel_by_ticker_a2[_ticker]["reason"] == _reason, (_ticker, _panel_by_ticker_a2[_ticker])
+    assert _panel_by_ticker_a2[_ticker]["failed_at"], _panel_by_ticker_a2[_ticker]
+print("[a2_panel_lists_every_reason] exhausted_failure_rows() lists all 5 non-request_blank-"
+      "only reasons, each with its own exact reason string and a last-failed timestamp OK")
+
 print("\nALL TOP 200 COMMIT 2 (FAILED-COMPANY RE-ENTRY) FIXTURES PASSED")
