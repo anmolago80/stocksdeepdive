@@ -116,18 +116,25 @@ print("[inspect_batch_results_blank_field] blank=True only for the whole-blank p
 # ======================================================================
 _csv_text = te.batch_inspector_csv(_rows)
 _parsed_csv = list(csv.reader(io.StringIO(_csv_text)))
+# COMMIT 4 of instruction_top200_unrated_and_blank_replies_combined.md
+# (5 Oct 2026) adds two trailing columns, "schema_mode" and
+# "packed_or_solo" - the header and the "blank" column's own index
+# (no longer the last column) are updated accordingly; every other
+# assertion in this file is unchanged.
 assert _parsed_csv[0] == [
     "custom_id", "entrant_tickers", "entrant_count", "items_returned",
     "tickers_echoed", "stop_reason", "input_tokens", "output_tokens", "blank",
+    "schema_mode", "packed_or_solo",
 ], _parsed_csv[0]
+_BLANK_COL = _parsed_csv[0].index("blank")
 _csv_by_id = {row[0]: row for row in _parsed_csv[1:]}
 assert _csv_by_id["t100-normal"][1] == "AAPL;MSFT", _csv_by_id["t100-normal"]
 assert _csv_by_id["t100-normal"][2] == "2", _csv_by_id["t100-normal"]
-assert _csv_by_id["t100-normal"][-1] == "no", _csv_by_id["t100-normal"]
+assert _csv_by_id["t100-normal"][_BLANK_COL] == "no", _csv_by_id["t100-normal"]
 assert _csv_by_id["t100-blank"][1] == "BLANK1;BLANK2", _csv_by_id["t100-blank"]
-assert _csv_by_id["t100-blank"][-1] == "yes", _csv_by_id["t100-blank"]
+assert _csv_by_id["t100-blank"][_BLANK_COL] == "yes", _csv_by_id["t100-blank"]
 assert _csv_by_id["t100-err"][1] == "ERR1", _csv_by_id["t100-err"]
-assert _csv_by_id["t100-err"][-1] == "no", _csv_by_id["t100-err"]
+assert _csv_by_id["t100-err"][_BLANK_COL] == "no", _csv_by_id["t100-err"]
 print("[batch_inspector_csv] header + rows correct, tickers semicolon-joined, blank "
       "rendered yes/no for all three request types OK")
 

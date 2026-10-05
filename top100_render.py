@@ -17,6 +17,7 @@ import streamlit as st
 
 import compounder_ui
 import i18n
+import peer_context
 import quote_snapshot_store
 import resolver_engine
 import top100_engine
@@ -992,11 +993,22 @@ def _render_full100_tab(enriched, lang, finer_industry, sort_mode, filters=None)
                 _render_row(i, row, lang, finer_industry.get(row["ticker"]), sort_mode)
 
     if sort_mode != SORT_VALUE_TODAY:
-        shelf_rows = sorted(
-            (r for r in enriched if r["composite"] is None),
-            key=_key_value_score,
-        )
-        _render_bottom_shelf(shelf_rows, lang)
+        if top100_engine.is_backfill_live():
+            # COMMIT 3: with the switch ON, `enriched` (current_pool())
+            # can only ever contain RATED/WAITING rows (an UNRATED_
+            # MODEL/UNRATED_FAILED candidate was set aside at selection
+            # time, never saved into the ordinary pool) - so the old
+            # mixed shelf would show WAITING rows ONLY, which must never
+            # be shown publicly. Render the dedicated "Not rated"
+            # section instead, from the separately-stored set-aside
+            # rows - never the old shelf.
+            _render_not_rated_section(top100_store.current_backfill_set_aside(), lang)
+        else:
+            shelf_rows = sorted(
+                (r for r in enriched if r["composite"] is None),
+                key=_key_value_score,
+            )
+            _render_bottom_shelf(shelf_rows, lang)
 
 
 def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filters=None):
@@ -1044,11 +1056,18 @@ def _render_top20_australia_tab(enriched, lang, finer_industry, sort_mode, filte
                             origin_badge_html=origin_badge(row))
 
     if sort_mode != SORT_VALUE_TODAY:
-        shelf_rows = sorted(
-            (r for r in combined if r["composite"] is None),
-            key=_key_value_score,
-        )
-        _render_bottom_shelf(shelf_rows, lang, origin_badge_fn=origin_badge)
+        if top100_engine.is_backfill_live():
+            # COMMIT 3 - same reasoning as _render_full100_tab()'s own
+            # switch-ON branch, filtered to .AX set-aside rows only
+            # (this tab's own AU-only scope).
+            _render_not_rated_section(
+                [r for r in top100_store.current_backfill_set_aside() if r["ticker"].endswith(".AX")], lang)
+        else:
+            shelf_rows = sorted(
+                (r for r in combined if r["composite"] is None),
+                key=_key_value_score,
+            )
+            _render_bottom_shelf(shelf_rows, lang, origin_badge_fn=origin_badge)
 
 
 # Bottom-shelf chip colours (point 3) - exact hex values from the mock's
@@ -1151,6 +1170,104 @@ def _render_bottom_shelf(shelf_rows, lang, origin_badge_fn=None):
         "</div>",
         unsafe_allow_html=True,
     )
+
+
+def _not_rated_row_detail(row, latest, failures):
+    """COMMIT 3 of instruction_top200_unrated_and_blank_replies_
+    combined.md (5 Oct 2026) - {"ticker", "company_name", "market",
+    "date", "reason_key", "degenerate"} for one set-aside pool row
+    (top100_store.current_backfill_set_aside()' own shape). Reuses
+    EXACTLY the same score_row/score_failure reason branches _shelf_
+    row_html() already uses for an ordinary NOT RATED/AWAITING shelf
+    row - the task's own "reuse whatever reason text today's NOT RATED
+    row already shows, do not write new explanatory text per company"
+    instruction - rather than inventing a second reason vocabulary.
+    `date` is the score's own scored_at for a genuine NOT RATED
+    (model's judgement or degenerate-accepted), or the failure's own
+    failed_at for an exhausted failure with no score row at all."""
+    ticker = row["ticker"]
+    score_row = latest.get(ticker)
+    failure = failures.get(ticker)
+    if score_row is not None:
+        degenerate = bool(score_row.get("degenerate_accepted"))
+        return {
+            "ticker": ticker, "company_name": row.get("company_name"),
+            "market": peer_context.market_for(ticker),
+            "date": score_row.get("scored_at"),
+            "reason_key": "shelf_caption_not_rated", "degenerate": degenerate,
+        }
+    return {
+        "ticker": ticker, "company_name": row.get("company_name"),
+        "market": peer_context.market_for(ticker),
+        "date": failure.get("failed_at") if failure else None,
+        "reason_key": "shelf_caption_scoring_failed", "degenerate": False,
+    }
+
+
+def _not_rated_row_html(detail, lang):
+    """One row of the public "Not rated" section (COMMIT 3) - ticker,
+    company, market and date, plus the reused reason caption (see
+    _not_rated_row_detail()'s own docstring) - never a new per-company
+    explanation."""
+    reason = _t(detail["reason_key"], lang)
+    if detail["degenerate"]:
+        reason = reason + " " + _t("shelf_caption_degenerate_x2", lang)
+    date_text = (detail["date"] or "")[:10]
+    return (
+        "<div style='display:flex;gap:10px;align-items:baseline;font-size:12.5px;"
+        "padding:4px 0;color:#8aa0b8;flex-wrap:wrap;'>"
+        f"<a href='/deep-dive?ticker={html.escape(detail['ticker'])}' target='_self' "
+        "style='color:#2dd4bf;font-weight:800;font-size:13px;text-decoration:none;'>"
+        f"{html.escape(detail['ticker'])}</a>"
+        f"<span>{html.escape(detail['company_name'] or detail['ticker'])}</span>"
+        f"<span style='color:#5b7290;'>{html.escape(detail['market'])}</span>"
+        f"<span style='color:#5b7290;'>{html.escape(date_text)}</span>"
+        f"<span style='color:#5b7290;font-size:11px;'>{html.escape(reason)}</span>"
+        "</div>"
+    )
+
+
+def _render_not_rated_section(set_aside_rows, lang):
+    """COMMIT 3 of instruction_top200_unrated_and_blank_replies_
+    combined.md (5 Oct 2026, Director-directed, switch TOP200_
+    BACKFILL_LIVE) - the public "Not rated" section: collapsed by
+    default (st.expander, matching this page's own existing
+    collapsible-section convention - see the methodology/"why here"
+    sections), containing the set-aside companies in two groups
+    ("Not enough information to rate" for UNRATED_MODEL, "Could not
+    be rated" for UNRATED_FAILED). An empty group is not shown; if
+    both are empty the whole section is not shown. Called ONLY from a
+    switch-ON branch - with the switch OFF `set_aside_rows` is always
+    [] (top100_store.current_backfill_set_aside() returns [] when no
+    row was ever saved with backfill_set_aside=1), so this function is
+    never even reached with the switch OFF, let alone rendering
+    anything - the "byte-identical to 007d669" guarantee holds by
+    construction, not by an empty-input no-op alone."""
+    if not set_aside_rows:
+        return
+    latest = top100_store.latest_scores_for_model(top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
+    failures = top100_store.score_failures_for_model(top100_engine.MODEL_TOP100, top100_engine.RUBRIC_VERSION)
+    details = [_not_rated_row_detail(r, latest, failures) for r in set_aside_rows]
+    model_group = [d for d in details if d["reason_key"] == "shelf_caption_not_rated" and not d["degenerate"]]
+    failed_group = [d for d in details if d["reason_key"] == "shelf_caption_scoring_failed" or d["degenerate"]]
+    if not model_group and not failed_group:
+        return
+    with st.expander(_t("not_rated_section_heading", lang), expanded=False):
+        st.caption(_t("not_rated_section_caption", lang))
+        if model_group:
+            st.markdown(f"**{html.escape(_t('not_rated_group_model_heading', lang))}**")
+            st.caption(_t("not_rated_group_model_caption", lang))
+            st.markdown(
+                "".join(_not_rated_row_html(d, lang) for d in sorted(model_group, key=lambda d: d["ticker"])),
+                unsafe_allow_html=True,
+            )
+        if failed_group:
+            st.markdown(f"**{html.escape(_t('not_rated_group_failed_heading', lang))}**")
+            st.caption(_t("not_rated_group_failed_caption", lang))
+            st.markdown(
+                "".join(_not_rated_row_html(d, lang) for d in sorted(failed_group, key=lambda d: d["ticker"])),
+                unsafe_allow_html=True,
+            )
 
 
 # Top 100 Commit 5 (25 Sep 2026, owner-reported, industry mock): a

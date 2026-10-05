@@ -4008,6 +4008,24 @@ EN = {
     "top100.shelf_chip_not_rated": "◇ NOT RATED",
     "top100.shelf_caption_not_rated": "Not enough public information for an analytical score.",
     "top100.shelf_caption_degenerate_x2": "(the model returned a blank template twice; accepted as NOT RATED)",
+    # COMMIT 3 of instruction_top200_unrated_and_blank_replies_combined.md
+    # (5 Oct 2026, Director-directed, switch TOP200_BACKFILL_LIVE) - the
+    # public "Not rated" section's own strings, exact wording from the
+    # instruction. "the model" (not "the rating model") to match this
+    # page's own existing name for it (see shelf_caption_degenerate_x2
+    # and the methodology copy above) - the task's own "use that name
+    # in place of 'the rating model'" instruction.
+    "top100.not_rated_section_heading": "Not rated",
+    "top100.not_rated_section_caption": (
+        "These companies ranked high enough on the numbers to be considered for the "
+        "Top 200 but have no rating. They are not part of the ranking above."
+    ),
+    "top100.not_rated_group_model_heading": "Not enough information to rate",
+    "top100.not_rated_group_model_caption": (
+        "The model judged that it did not know the company well enough to rate it."
+    ),
+    "top100.not_rated_group_failed_heading": "Could not be rated",
+    "top100.not_rated_group_failed_caption": "Rating was attempted and failed. It will be tried again later.",
     "top100.origin_pool_badge": "🌐 TOP 200 · #{rank}",
     "top100.origin_pool_tooltip": "In the global Top 200 by Value Score — global rank #{rank}.",
     "top100.origin_extension_badge": "＋ ASX EXTENSION",
@@ -7443,6 +7461,23 @@ ES = {
     "top100.shelf_caption_scoring_failed": "la puntuación falló — se reintentará tras el próximo cambio de rúbrica",
     "top100.shelf_chip_not_rated": "◇ NO EVALUADA",
     "top100.shelf_caption_not_rated": "No hay suficiente información pública para una puntuación analítica.",
+    # COMMIT 3 of instruction_top200_unrated_and_blank_replies_combined.md
+    # (5 Oct 2026) - same strings as the EN block above, following this
+    # file's own existing convention.
+    "top100.not_rated_section_heading": "No evaluadas",
+    "top100.not_rated_section_caption": (
+        "Estas empresas puntuaron lo suficiente en los números como para ser consideradas "
+        "para el Top 200, pero no tienen una calificación. No forman parte de la "
+        "clasificación anterior."
+    ),
+    "top100.not_rated_group_model_heading": "Información insuficiente para calificar",
+    "top100.not_rated_group_model_caption": (
+        "El modelo determinó que no conocía la empresa lo bastante bien como para calificarla."
+    ),
+    "top100.not_rated_group_failed_heading": "No se pudo calificar",
+    "top100.not_rated_group_failed_caption": (
+        "Se intentó la calificación y falló. Se volverá a intentar más adelante."
+    ),
     "top100.origin_pool_badge": "🌐 TOP 200 · #{rank}",
     "top100.origin_pool_tooltip": "En el Top 200 global por Value Score — puesto global #{rank}.",
     "top100.origin_extension_badge": "＋ EXTENSIÓN ASX",

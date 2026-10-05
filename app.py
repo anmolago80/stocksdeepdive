@@ -30113,10 +30113,26 @@ def _render_degenerate_accepted_panel():
     accepted_rows(), the same top100_store.delete_score() path the 3
     Oct retroactive sweep used) so the normal nightly run picks them
     up - nothing happens until this button is clicked, no automatic
-    sweep at boot, and the button itself triggers no batch. No gate of
-    its own - called only from inside page_admin_dashboard(), after
-    that function's own owner check, same as every panel on this
-    page."""
+    sweep at boot, and the button itself triggers no batch.
+
+    COMMIT 2 of instruction_top200_unrated_and_blank_replies_combined.md
+    (5 Oct 2026, Director-directed, "A2's panel extended to list+clear
+    exhausted-attempt companies too") - a SECOND, separately rendered
+    list below the one above: every exhausted FAILURE (top100_engine.
+    exhausted_failure_rows() - reads top100_store.score_failures_for_
+    model() alone, never top100_scores, so a NOT RATED-by-model row is
+    structurally impossible here) with its own "Clear and re-send"
+    button (top100_engine.clear_exhausted_failure_rows()). The two
+    lists are deliberately kept SEPARATE, each with its own "Kind"
+    label in its own caption, rather than merged into one table -
+    a degenerate-accepted row and an exhausted-failure row are
+    different things (one is a saved score, the other has no score at
+    all) with different clear actions, and conflating them risked
+    exactly the kind of column confusion the task warned against.
+    Both sections render independently - either one being empty never
+    hides the other. No gate of its own - called only from inside
+    page_admin_dashboard(), after that function's own owner check,
+    same as every panel on this page."""
     st.markdown("### Companies locked out by a degenerate response")
     st.caption(
         "Owner-only. Lists every stored score saved as NOT RATED only "
@@ -30130,21 +30146,277 @@ def _render_degenerate_accepted_panel():
     _rows = top100_engine.degenerate_accepted_rows(top100_engine.MODEL_TOP100)
     if not _rows:
         st.write("None currently - no stored row is flagged degenerate_accepted.")
+    else:
+        _cost = top100_engine.estimate_degenerate_resend_cost_usd(_rows)
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            st.metric("Locked out", len(_rows))
+        with _c2:
+            st.metric("Est. cost to re-send", f"${_cost:.4f}")
+        st.table([
+            {"Ticker": r["ticker"], "Company": r["company_name"], "Saved": r["scored_at"]}
+            for r in _rows
+        ])
+        if st.button("Clear and re-send", key="admin_dash_clear_degenerate_accepted_button"):
+            _cleared = top100_engine.clear_degenerate_accepted_rows(_rows, top100_engine.MODEL_TOP100, log=print)
+            st.success(f"Cleared {len(_cleared)} row(s): {', '.join(sorted(_cleared))}. "
+                       "They will be picked up by the next nightly run.")
+
+    st.markdown("#### Companies with exhausted scoring attempts")
+    st.caption(
+        "Kind: exhausted failure (never scored at all - different from the "
+        "degenerate-accepted rows above, which DO have a saved score). "
+        "These already become eligible again automatically on a new "
+        "quarterly result or after 200 days (COMMIT 2's own re-entry "
+        "trigger) - this button clears them immediately instead of "
+        "waiting for that. Clearing resets attempts to 0 so the normal "
+        "nightly run re-sends it; nothing happens until you click the "
+        "button below, and it submits no batch itself."
+    )
+    _failed_rows = top100_engine.exhausted_failure_rows(top100_engine.MODEL_TOP100)
+    if not _failed_rows:
+        st.write("None currently - no failure has reached its own exhaustion ceiling.")
         return
-    _cost = top100_engine.estimate_degenerate_resend_cost_usd(_rows)
-    _c1, _c2 = st.columns(2)
-    with _c1:
-        st.metric("Locked out", len(_rows))
-    with _c2:
-        st.metric("Est. cost to re-send", f"${_cost:.4f}")
+    _failed_cost = top100_engine.estimate_degenerate_resend_cost_usd(_failed_rows)
+    _fc1, _fc2 = st.columns(2)
+    with _fc1:
+        st.metric("Exhausted", len(_failed_rows))
+    with _fc2:
+        st.metric("Est. cost to re-send", f"${_failed_cost:.4f}")
     st.table([
-        {"Ticker": r["ticker"], "Company": r["company_name"], "Saved": r["scored_at"]}
-        for r in _rows
+        {"Ticker": r["ticker"], "Company": r["company_name"], "Reason": r["reason"],
+         "Attempts": r["attempts"], "Last failed": r["failed_at"]}
+        for r in _failed_rows
     ])
-    if st.button("Clear and re-send", key="admin_dash_clear_degenerate_accepted_button"):
-        _cleared = top100_engine.clear_degenerate_accepted_rows(_rows, top100_engine.MODEL_TOP100, log=print)
-        st.success(f"Cleared {len(_cleared)} row(s): {', '.join(sorted(_cleared))}. "
+    if st.button("Clear and re-send", key="admin_dash_clear_exhausted_failure_button"):
+        _failed_cleared = top100_engine.clear_exhausted_failure_rows(
+            _failed_rows, top100_engine.MODEL_TOP100, log=print)
+        st.success(f"Cleared {len(_failed_cleared)} row(s): {', '.join(sorted(_failed_cleared))}. "
                    "They will be picked up by the next nightly run.")
+
+
+def _render_top200_coverage_panel():
+    """COMMIT 1 of instruction_top200_unrated_and_blank_replies_combined.md
+    (5 Oct 2026, Director-directed) - owner-only, read-only. Shows the
+    per-market RATED/UNRATED_MODEL/UNRATED_FAILED/WAITING breakdown
+    (top100_engine.coverage_for_rows()), the WAITING detail list
+    (top100_engine.waiting_detail_for_rows()), the UNRATED_FAILED detail
+    list with the "large company - check" flag (top100_engine.
+    unrated_failed_detail_for_rows()), and the zero-dimension breakdown
+    (top100_engine.zeros_breakdown_for_rows()). No button, no write, no
+    network call - every number here is already computed by the same
+    functions the nightly log lines call. Same "no gate of its own,
+    final section of this page" pattern as every panel above."""
+    st.markdown("### Top 200 coverage")
+    st.caption(
+        "Owner-only, read-only. Per-market breakdown of the current pool "
+        "+ Australia extension: RATED (has a real score), UNRATED_MODEL "
+        "(model itself declined to rate - not a failure), UNRATED_FAILED "
+        "(scoring attempts exhausted for this ticker), and WAITING "
+        "(not yet resolved either way). Nothing here submits a batch or "
+        "writes anything."
+    )
+    try:
+        _rows = top100_store.current_pool() + top100_store.current_asx_extension()
+    except Exception as e:
+        st.caption(f"Could not load the current pool: {e}")
+        return
+    if not _rows:
+        st.write("No pool selected yet.")
+        return
+
+    try:
+        _coverage = top100_engine.coverage_for_rows(_rows, model=top100_engine.MODEL_TOP100)
+    except Exception as e:
+        st.caption(f"Coverage computation failed: {e}")
+        return
+
+    _by_market = _coverage["by_market"]
+    _total_rated = sum(b["rated"] for b in _by_market.values())
+    _total_unrated_model = sum(b["unrated_model"] for b in _by_market.values())
+    _total_unrated_failed = sum(b["unrated_failed"] for b in _by_market.values())
+    _total_waiting = sum(b["waiting"] for b in _by_market.values())
+    _c1, _c2, _c3, _c4 = st.columns(4)
+    with _c1:
+        st.metric("Rated", _total_rated)
+    with _c2:
+        st.metric("Unrated (model)", _total_unrated_model)
+    with _c3:
+        st.metric("Unrated (failed)", _total_unrated_failed)
+    with _c4:
+        st.metric("Waiting", _total_waiting)
+
+    st.table([
+        {
+            "Market": market,
+            "Rated": b["rated"],
+            "Unrated (model)": b["unrated_model"],
+            "Unrated (failed)": b["unrated_failed"],
+            "Waiting": b["waiting"],
+        }
+        for market, b in sorted(_by_market.items())
+    ])
+    for market, b in sorted(_by_market.items()):
+        _resolved = b["rated"] + b["unrated_model"] + b["unrated_failed"]
+        if _resolved < top100_engine.UNRATED_SHARE_WARNING_MIN_RESOLVED:
+            continue
+        _unrated_share = 100.0 * (b["unrated_model"] + b["unrated_failed"]) / _resolved
+        if _unrated_share > top100_engine.UNRATED_SHARE_WARNING_PCT:
+            st.warning(
+                f"{market}: unrated share {_unrated_share:.1f}% "
+                f"({b['unrated_model'] + b['unrated_failed']} of {_resolved} resolved)"
+            )
+
+    with st.expander(f"Waiting ({_total_waiting})"):
+        try:
+            _waiting_detail = top100_engine.waiting_detail_for_rows(_rows, model=top100_engine.MODEL_TOP100)
+        except Exception as e:
+            st.caption(f"Could not load waiting detail: {e}")
+            _waiting_detail = []
+        if not _waiting_detail:
+            st.caption("None currently waiting.")
+        else:
+            st.table([
+                {
+                    "Ticker": w["ticker"], "Market": w["market"], "Reason": w["reason"],
+                    "Attempts": w["attempts"], "Next attempt": w["next_attempt_at"] or "-",
+                }
+                for w in sorted(_waiting_detail, key=lambda w: w["ticker"])
+            ])
+
+    with st.expander(f"Unrated - failed ({_total_unrated_failed})"):
+        try:
+            _failed_detail = top100_engine.unrated_failed_detail_for_rows(_rows, model=top100_engine.MODEL_TOP100)
+        except Exception as e:
+            st.caption(f"Could not load unrated-failed detail: {e}")
+            _failed_detail = []
+        if not _failed_detail:
+            st.caption("None currently unrated-failed.")
+        else:
+            st.table([
+                {
+                    "Ticker": f["ticker"], "Market": f["market"],
+                    "Large company - check": "yes" if f["large_company"] else "",
+                }
+                for f in sorted(_failed_detail, key=lambda f: f["ticker"])
+            ])
+
+    with st.expander("Zero-dimension breakdown"):
+        try:
+            _zeros = top100_engine.zeros_breakdown_for_rows(_rows, model=top100_engine.MODEL_TOP100)
+        except Exception as e:
+            st.caption(f"Could not load zeros breakdown: {e}")
+            _zeros = None
+        if not _zeros or not _zeros["by_market"]:
+            st.caption("No data yet.")
+        else:
+            st.table([
+                {
+                    "Market": market,
+                    **{k: b["unrated_model_by_dimension"][k] for k in top100_engine.DIMENSION_KEYS},
+                    "Rated w/ 1 zero": b["rated_with_1_zero"],
+                    "Rated w/ 2 zeros": b["rated_with_2_zeros"],
+                }
+                for market, b in sorted(_zeros["by_market"].items())
+            ])
+
+
+def _render_top200_backfill_preview_panel():
+    """COMMIT 3 of instruction_top200_unrated_and_blank_replies_
+    combined.md (5 Oct 2026, Director-directed, switch TOP200_
+    BACKFILL_LIVE, work with the switch OFF) - owner-only "Top 200
+    backfill preview". The button computes top100_engine.backfill_
+    preview() (pure, read-only - no env var write, no score-store
+    write, no batch triggered - see that function's own docstring)
+    and renders both the same numbers/tickers the nightly dry-run log
+    line already shows, AND a live render of the public page as it
+    would look with the switch ON, using the SAME top100_render row/
+    section functions the real page calls (_sort_and_gate_rated/
+    _render_row/_render_not_rated_section) - never a second, duplicated
+    rendering path. English only, Full 100 equivalent (today's default
+    sort) - a full EN/ES four-tab preview was judged more than this
+    preview needs to prove the numbers/layout are right. Nothing
+    happens until the button is clicked, and clicking it again just
+    recomputes the same read-only preview. No gate of its own - called
+    only from inside page_admin_dashboard(), after that function's own
+    owner check, same as every panel on this page."""
+    st.markdown("### Top 200 backfill preview")
+    st.caption(
+        "Owner-only. Computes, in-process, what tonight's selection and "
+        "the public page would look like with TOP200_BACKFILL_LIVE=1 - "
+        "from today's already-scanned candidates, without setting the "
+        "environment variable, writing anything to the score store, or "
+        "triggering a batch. Companies that would be pulled in but are "
+        "not scored yet show below as waiting."
+    )
+    if st.button("Compute backfill preview", key="admin_dash_backfill_preview_button"):
+        try:
+            _preview = top100_engine.backfill_preview(log=print)
+        except Exception as e:
+            st.caption(f"Preview failed: {e}")
+            return
+        _summary = _preview["summary"]
+        _pc1, _pc2, _pc3 = st.columns(3)
+        with _pc1:
+            st.metric("Would set aside",
+                      len(_summary["set_aside_model"]) + len(_summary["set_aside_failed"]))
+        with _pc2:
+            st.metric("Would pull in", len(_summary["pulled_in"]))
+        with _pc3:
+            st.metric("New to score", _summary["new_to_score"])
+        st.caption(f"Est. cost to score the new-to-score pulled-in companies: ${_summary['est_cost_usd']:.4f}")
+        st.table(
+            [{"Ticker": t, "Kind": "model"} for t in _summary["set_aside_model"]]
+            + [{"Ticker": t, "Kind": "failed"} for t in _summary["set_aside_failed"]]
+        )
+        st.caption(f"Pulled in: {', '.join(_summary['pulled_in']) or '(none)'}")
+        st.markdown("---")
+        st.markdown("#### Public page preview (default sort, English)")
+        _rated = top100_render._sort_and_gate_rated(_preview["pool"], top100_render.SORT_RESEARCH)
+        if not _rated:
+            st.caption("No rated companies in this preview.")
+        else:
+            for _i, _row in enumerate(_rated, start=1):
+                top100_render._render_row(_i, _row, "en", {}, top100_render.SORT_RESEARCH)
+        top100_render._render_not_rated_section(_preview["set_aside"], "en")
+
+
+def _render_top200_schema_mode_panel():
+    """COMMIT 4 of instruction_top200_unrated_and_blank_replies_
+    combined.md (5 Oct 2026, Director-directed, switch TOP200_SCHEMA_
+    MODE, unset by default = "legacy") - owner-only, read-only, display
+    only. One table from top100_engine.schema_mode_breakdown(): for
+    every schema_mode value seen among CURRENTLY stored scores (a row
+    saved before this commit shipped groups under "legacy"), the
+    count, the mean Research Score among that group's rated rows, and
+    the NOT RATED share. No button, no write, no network call - this
+    never feeds scoring/sorting/selection, purely informational."""
+    st.markdown("### Top 200 schema mode")
+    st.caption(
+        "Owner-only, read-only. Breakdown of currently stored scores by "
+        "schema_mode (\"legacy\" vs \"ticker_first\", the position of "
+        "\"ticker\" in the request schema sent to the model) - a row "
+        "saved before this commit shipped has no schema_mode recorded "
+        "and is grouped under \"legacy\". Display only; never read by "
+        "scoring, sorting, or selection."
+    )
+    try:
+        _breakdown = top100_engine.schema_mode_breakdown(model=top100_engine.MODEL_TOP100)
+    except Exception as e:
+        st.caption(f"Could not load schema_mode breakdown: {e}")
+        return
+    if not _breakdown:
+        st.write("No stored scores yet.")
+        return
+    st.table([
+        {
+            "Schema mode": mode,
+            "Count": b["count"],
+            "Mean Research Score": f"{b['mean_composite']:.1f}" if b["mean_composite"] is not None else "-",
+            "NOT RATED share": f"{100.0 * b['not_rated_share']:.1f}%",
+        }
+        for mode, b in sorted(_breakdown.items())
+    ])
 
 
 def _render_recompute_ticker_panel():
@@ -32518,6 +32790,29 @@ def page_admin_dashboard():
     # of this page" pattern as every panel above.
     st.markdown("---")
     _render_degenerate_accepted_panel()
+
+    # --- TOP 200 COVERAGE (COMMIT 1 of instruction_top200_unrated_and_
+    # blank_replies_combined.md, 5 Oct 2026, Director-directed) - see
+    # _render_top200_coverage_panel()'s own docstring. Same "no gate of
+    # its own, final section of this page" pattern as every panel above.
+    st.markdown("---")
+    _render_top200_coverage_panel()
+
+    # --- TOP 200 BACKFILL PREVIEW (COMMIT 3 of instruction_top200_
+    # unrated_and_blank_replies_combined.md, 5 Oct 2026, Director-
+    # directed) - see _render_top200_backfill_preview_panel()'s own
+    # docstring. Same "no gate of its own, final section of this page"
+    # pattern as every panel above.
+    st.markdown("---")
+    _render_top200_backfill_preview_panel()
+
+    # --- TOP 200 SCHEMA MODE (COMMIT 4 of instruction_top200_unrated_
+    # and_blank_replies_combined.md, 5 Oct 2026, Director-directed) -
+    # see _render_top200_schema_mode_panel()'s own docstring. Same "no
+    # gate of its own, final section of this page" pattern as every
+    # panel above.
+    st.markdown("---")
+    _render_top200_schema_mode_panel()
 
     # --- PRIVATE UNIVERSES (Stage 1b, 3 Oct 2026, Director-directed) -
     # see _render_private_universes_panel()'s own docstring. Same "no

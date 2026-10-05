@@ -75,12 +75,13 @@ wrote):
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import yfinance as yf
 
 import financials_classifier
 import nightly_scan
+import peer_context
 import ranking_engine
 import resolver_engine
 import scan_store
@@ -426,69 +427,22 @@ def _recompute_value_score(row):
     )
 
 
-def select_top100_pool(log=print):
-    """Merges every ELIGIBLE saved universe's scan rows (see
-    _eligible_scan_payloads() above for exactly what's excluded and
-    why), de-duplicates by ticker, excludes any currently-flagged/non-
-    trading row, keeps the top POOL_SIZE by (recomputed) Value Score,
-    and persists the result via top100_store.save_pool(as_of=today's
-    UTC date). Returns the saved GLOBAL pool only (unchanged contract -
-    the ASX extension below is never part of this return value) -
-    [{"ticker","company_name","universe","value_score","mos_pct",
-    "price","intrinsic_value","currency","psychology","sector",
-    "dividend_yield_pct","most_recent_quarter","generated_at",
-    "stale_valuation"}, ...], Value Score descending. Never raises -
-    a single bad universe file is skipped (scan_store.load_scan_raw()
-    itself already returns None on any read error), and an empty
-    result (no saved scans yet) simply persists/returns an empty pool
-    rather than crashing.
-
-    Top 100 selection freshness fix (30 Sep 2026, owner-directed):
-    per ticker, picks the candidate row with the NEWEST generated_at
-    (the last full fundamentals scan) among every eligible file that
-    carries this ticker - NEVER the highest Long Score alone, which is
-    what let a stale valuation win indefinitely (see this module's own
-    POOL_MAX_FULL_SCAN_AGE_DAYS comment for the full root cause). Ties
-    on generated_at (same file, or two files scanned in the same
-    second) break on the row's own stored Long Score. A ticker whose
-    every candidate is older than POOL_MAX_FULL_SCAN_AGE_DAYS still
-    gets its freshest available candidate (there is nothing better to
-    prefer) - flagged stale_valuation=1 so the page can disclose it,
-    the row is never dropped or hidden for this alone. Value Score
-    itself is then RECOMPUTED (see _recompute_value_score() above) -
-    the winning row's own original stored Long Score is kept alongside
-    as value_score_source_row, for audit.
-
-    ASX EXTENSION (Top 20 Australia guaranteed-twenty, 25 Sep 2026,
-    owner-approved mock): the global pool/selection above is otherwise
-    completely untouched - pure global merit, exactly as before. After
-    it's computed, if the pool's own .AX members fall short of
-    TOP20_AU_TARGET, the next-best ASX companies by Value Score (same
-    dedupe/exclusion rules, drawn from the same `best_by_ticker`
-    candidate set, excluding anything already in the pool) are
-    persisted ALONGSIDE it with asx_extension=True - a purely additive
-    top100_pool column (top100_store's own guarded-ALTER-TABLE
-    convention, same as psychology/sector). top100_store.current_pool()/
-    previous_pool() both filter asx_extension out unconditionally, so
-    every existing reader (Full 100, Mixed, USA, the homepage teaser,
-    the changes strip, any exactly-100 assertion) is unaffected by its
-    existence - only top100_store.current_asx_extension() and
-    top100_render.py's own Australia-tab code ever read it."""
-    # Pool expansion one-off persistence seed (1 Oct 2026, owner decision,
-    # Commit 5): captured BEFORE anything below mutates top100_pool - at
-    # this point top100_store.current_pool()/current_asx_extension() are
-    # still LAST NIGHT's saved selection (today's save_pool() call, later
-    # in this function, hasn't run yet) - see _seed_pool_expansion_once()
-    # below for what this baseline is used for and why it's marker-
-    # guarded to fire exactly once (the first run under the 100->200
-    # bump), not every night.
-    _pool_expansion_pending = not os.path.exists(_pool_expansion_v200_marker_path())
-    _pool_expansion_baseline = (
-        {r["ticker"] for r in top100_store.current_pool()} |
-        {r["ticker"] for r in top100_store.current_asx_extension()}
-        if _pool_expansion_pending else set()
-    )
-
+def _build_best_by_ticker(log=print):
+    """The deduped, eligibility-filtered candidate pool select_top100_
+    pool() builds every call - extracted into its own function (COMMIT
+    3 of instruction_top200_unrated_and_blank_replies_combined.md, 5
+    Oct 2026) purely so backfill_preview() can read the SAME merit-
+    ordered candidate universe select_top100_pool() itself would use
+    tonight, without duplicating a single line of this logic. No
+    behaviour change versus the inline version this replaced - same
+    eligible-universe read, same per-row DCF-unreliable/fallback-
+    financials exclusion, same freshest-row-wins/Long-Score-tiebreak
+    best_candidate selection, same recomputed Value Score, same share-
+    class dedupe and same-name-duplicate report. Read-only: reads
+    already-saved scan files (scan_store, via _eligible_scan_payloads())
+    and the financials-mode switch, writes nothing, calls no network -
+    identical safety profile to select_top100_pool() itself before its
+    own first write."""
     eligible = _eligible_scan_payloads(log=log)
     now = datetime.now(timezone.utc)
 
@@ -693,25 +647,157 @@ def select_top100_pool(log=print):
 
     _dedupe_share_classes(best_by_ticker, log=log)
     _report_undocumented_same_name_duplicates(best_by_ticker, log=log)
+    return best_by_ticker, len(eligible)
 
-    pool = sorted(best_by_ticker.values(), key=lambda r: r["value_score"], reverse=True)[:POOL_SIZE]
+
+def select_top100_pool(log=print):
+    """Merges every ELIGIBLE saved universe's scan rows (see
+    _eligible_scan_payloads() above for exactly what's excluded and
+    why), de-duplicates by ticker, excludes any currently-flagged/non-
+    trading row, keeps the top POOL_SIZE by (recomputed) Value Score,
+    and persists the result via top100_store.save_pool(as_of=today's
+    UTC date). Returns the saved GLOBAL pool only (unchanged contract -
+    the ASX extension below is never part of this return value) -
+    [{"ticker","company_name","universe","value_score","mos_pct",
+    "price","intrinsic_value","currency","psychology","sector",
+    "dividend_yield_pct","most_recent_quarter","generated_at",
+    "stale_valuation"}, ...], Value Score descending. Never raises -
+    a single bad universe file is skipped (scan_store.load_scan_raw()
+    itself already returns None on any read error), and an empty
+    result (no saved scans yet) simply persists/returns an empty pool
+    rather than crashing.
+
+    Top 100 selection freshness fix (30 Sep 2026, owner-directed):
+    per ticker, picks the candidate row with the NEWEST generated_at
+    (the last full fundamentals scan) among every eligible file that
+    carries this ticker - NEVER the highest Long Score alone, which is
+    what let a stale valuation win indefinitely (see this module's own
+    POOL_MAX_FULL_SCAN_AGE_DAYS comment for the full root cause). Ties
+    on generated_at (same file, or two files scanned in the same
+    second) break on the row's own stored Long Score. A ticker whose
+    every candidate is older than POOL_MAX_FULL_SCAN_AGE_DAYS still
+    gets its freshest available candidate (there is nothing better to
+    prefer) - flagged stale_valuation=1 so the page can disclose it,
+    the row is never dropped or hidden for this alone. Value Score
+    itself is then RECOMPUTED (see _recompute_value_score() above) -
+    the winning row's own original stored Long Score is kept alongside
+    as value_score_source_row, for audit.
+
+    ASX EXTENSION (Top 20 Australia guaranteed-twenty, 25 Sep 2026,
+    owner-approved mock): the global pool/selection above is otherwise
+    completely untouched - pure global merit, exactly as before. After
+    it's computed, if the pool's own .AX members fall short of
+    TOP20_AU_TARGET, the next-best ASX companies by Value Score (same
+    dedupe/exclusion rules, drawn from the same `best_by_ticker`
+    candidate set, excluding anything already in the pool) are
+    persisted ALONGSIDE it with asx_extension=True - a purely additive
+    top100_pool column (top100_store's own guarded-ALTER-TABLE
+    convention, same as psychology/sector). top100_store.current_pool()/
+    previous_pool() both filter asx_extension out unconditionally, so
+    every existing reader (Full 100, Mixed, USA, the homepage teaser,
+    the changes strip, any exactly-100 assertion) is unaffected by its
+    existence - only top100_store.current_asx_extension() and
+    top100_render.py's own Australia-tab code ever read it."""
+    # Pool expansion one-off persistence seed (1 Oct 2026, owner decision,
+    # Commit 5): captured BEFORE anything below mutates top100_pool - at
+    # this point top100_store.current_pool()/current_asx_extension() are
+    # still LAST NIGHT's saved selection (today's save_pool() call, later
+    # in this function, hasn't run yet) - see _seed_pool_expansion_once()
+    # below for what this baseline is used for and why it's marker-
+    # guarded to fire exactly once (the first run under the 100->200
+    # bump), not every night.
+    _pool_expansion_pending = not os.path.exists(_pool_expansion_v200_marker_path())
+    _pool_expansion_baseline = (
+        {r["ticker"] for r in top100_store.current_pool()} |
+        {r["ticker"] for r in top100_store.current_asx_extension()}
+        if _pool_expansion_pending else set()
+    )
+
+    best_by_ticker, eligible_count = _build_best_by_ticker(log=log)
+
+    # COMMIT 3 of instruction_top200_unrated_and_blank_replies_combined.md
+    # (5 Oct 2026, Director-directed, owner-approved for build+push-on-
+    # go, switch OFF by default): `_merit_ordered` is EXACTLY today's
+    # pre-slice list - with the switch OFF, `pool` below is sliced from
+    # it identically to before this commit (byte-identical to 007d669).
+    # With the switch ON, _apply_backfill() walks the SAME list and
+    # swaps in the next-in-line candidate for any UNRATED_MODEL/
+    # UNRATED_FAILED one, within TOP200_BACKFILL_MAX positions beyond
+    # POOL_SIZE. Either way the dry-run computation below (switch OFF)
+    # uses the identical _apply_backfill()/_backfill_summary() pair the
+    # live switch-ON path would use, so the owner preview and the real
+    # thing can never disagree.
+    _merit_ordered = sorted(best_by_ticker.values(), key=lambda r: r["value_score"], reverse=True)
+    _set_aside_rows = []
+    if is_backfill_live():
+        _backfill = _apply_backfill(_merit_ordered, model=MODEL_TOP100)
+        pool = _backfill["counted"]
+        for _row, _status in _backfill["set_aside"]:
+            _row["backfill_set_aside"] = True
+            _row["backfill_set_aside_status"] = _status
+            _set_aside_rows.append(_row)
+        _summary = _backfill_summary(_merit_ordered, _backfill, model=MODEL_TOP100)
+        if _backfill["short"]:
+            log(f"[top100] backfill WARNING: only {len(pool)} of {POOL_SIZE} places filled "
+                f"within {POOL_SIZE + TOP200_BACKFILL_MAX} candidates")
+        log(f"[top100] backfill: set aside {len(_summary['set_aside_model']) + len(_summary['set_aside_failed'])} "
+            f"(model {len(_summary['set_aside_model'])}, failed {len(_summary['set_aside_failed'])}): "
+            f"{', '.join(sorted(_summary['set_aside_model'] + _summary['set_aside_failed']))}; "
+            f"pulled in {len(_summary['pulled_in'])}: {', '.join(_summary['pulled_in'])}; "
+            f"new to score {_summary['new_to_score']}")
+    else:
+        pool = _merit_ordered[:POOL_SIZE]
+        try:
+            _dry_backfill = _apply_backfill(_merit_ordered, model=MODEL_TOP100)
+            _dry_summary = _backfill_summary(_merit_ordered, _dry_backfill, model=MODEL_TOP100)
+            log(f"[top100] backfill dry run: would set aside "
+                f"{len(_dry_summary['set_aside_model']) + len(_dry_summary['set_aside_failed'])} "
+                f"(model {len(_dry_summary['set_aside_model'])}, failed {len(_dry_summary['set_aside_failed'])}): "
+                f"{', '.join(sorted(_dry_summary['set_aside_model'] + _dry_summary['set_aside_failed']))}; "
+                f"would pull in {len(_dry_summary['pulled_in'])}: {', '.join(_dry_summary['pulled_in'])}; "
+                f"new to score {_dry_summary['new_to_score']}, est. cost ${_dry_summary['est_cost_usd']:.4f}")
+        except Exception as e:
+            log(f"[top100] backfill dry run failed (non-fatal): {e}")
     as_of = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+    # COMMIT 3: backfill_set_aside is deliberately NEVER set explicitly
+    # on `pool`/`extension` rows here (save_pool() already defaults it
+    # to False via r.get("backfill_set_aside") when the key is absent)
+    # - adding the key to these dicts would change select_top100_
+    # pool()'s own JSON return value even with the switch OFF, breaking
+    # the task's own "byte-identical to 007d669" requirement for a key
+    # that every caller already treats as falsy by its absence.
     pool_tickers = {r["ticker"] for r in pool}
     for row in pool:
         row["asx_extension"] = False
 
+    # COMMIT 3: a set-aside (UNRATED_MODEL/UNRATED_FAILED) ticker is
+    # excluded from ASX-extension eligibility too ("same principle: an
+    # unrated company never takes one of the 20 places" - the task's
+    # own wording for the Top 20 tabs) - this is the one unambiguous
+    # part of that principle to apply here; walking further down the
+    # merit order to BACKFILL a replacement for the extension's own 40
+    # target is left unchanged (ambiguous - see the report's own Top 20
+    # tabs section for the two options). Without this exclusion the
+    # same row object could end up claimed by both `extension` and
+    # `_set_aside_rows`, producing two conflicting save_pool() upserts
+    # for the same (as_of, ticker).
+    _set_aside_tickers = {r["ticker"] for r in _set_aside_rows}
     au_in_pool = sum(1 for t in pool_tickers if t.endswith(".AX"))
     extension = []
     if au_in_pool < TOP20_AU_TARGET:
         needed = TOP20_AU_TARGET - au_in_pool
         au_candidates = sorted(
-            (r for t, r in best_by_ticker.items() if t.endswith(".AX") and t not in pool_tickers),
+            (r for t, r in best_by_ticker.items()
+             if t.endswith(".AX") and t not in pool_tickers and t not in _set_aside_tickers),
             key=lambda r: r["value_score"], reverse=True,
         )[:needed]
         for row in au_candidates:
             row["asx_extension"] = True
         extension = au_candidates
+
+    for _row in _set_aside_rows:
+        _row["asx_extension"] = False
 
     # (1 Oct 2026 owner-directed defensive assert removed 2 Oct 2026: it
     # re-derived this same dcf_looks_unreliable() check from the curated
@@ -728,8 +814,8 @@ def select_top100_pool(log=print):
     # never reaches this point - no assert needed, and a hard crash is
     # never an acceptable outcome for a data-staleness condition.)
 
-    _fill_missing_sectors(pool + extension, log=log)
-    top100_store.save_pool(pool + extension, as_of)
+    _fill_missing_sectors(pool + extension + _set_aside_rows, log=log)
+    top100_store.save_pool(pool + extension + _set_aside_rows, as_of)
 
     if _pool_expansion_pending:
         # Pool expansion one-off persistence seed (1 Oct 2026, owner
@@ -784,10 +870,15 @@ def select_top100_pool(log=print):
     stale_count = sum(1 for r in pool if r.get("stale_valuation"))
     log(f"[top100] selected {len(pool)} companies for {as_of} "
         f"(from {len(best_by_ticker)} deduped candidates across "
-        f"{len(eligible)} eligible universes, freshest-row-wins); "
+        f"{eligible_count} eligible universes, freshest-row-wins); "
         f"stale valuations (>{POOL_MAX_FULL_SCAN_AGE_DAYS}d, no fresher candidate): {stale_count}; "
         f"ASX extension: {len(extension)} added ({au_in_pool} pool Australians -> "
         f"{au_in_pool + len(extension)} total for Top 20 Australia)")
+    # COMMIT 1 of instruction_top200_unrated_and_blank_replies_combined.md
+    # (5 Oct 2026, Director-directed): "after every selection" half of
+    # the task's own coverage log line - read-only, no effect on the
+    # pool just saved above.
+    _log_coverage(pool + extension, log=log)
     return pool
 
 
@@ -1345,7 +1436,7 @@ def _dimension_schema():
     }
 
 
-def _company_item_schema():
+def _company_item_schema(schema_mode="legacy"):
     """v2: the ten dimension objects plus the inversion synthesis pair
     (inversion_scenario/inversion_severity) at the top level - no more
     "summary" (v1's "strongest dimension + what to check" note), since
@@ -1353,6 +1444,17 @@ def _company_item_schema():
     "replacing the what to check note" instruction) and all ten
     justifications directly (the tap-expand detail), leaving no reader
     of the response who still needs a separate summary field.
+
+    COMMIT 4 of instruction_top200_unrated_and_blank_replies_combined.md
+    (5 Oct 2026, Director-directed, switch TOP200_SCHEMA_MODE, unset by
+    default = "legacy"): when schema_mode == "ticker_first", "ticker"'s
+    own entry in the `properties` dict below moves to FIRST (inserted
+    before the DIMENSION_KEYS loop instead of after it) - this is the
+    ONLY difference the two modes produce anywhere in this schema.
+    `required`'s own list order is untouched in both modes (it already
+    puts "ticker" first, see the return below) - only the `properties`
+    dict's own key order, and therefore its JSON serialization order,
+    moves. No field's type/description/content changes in either mode.
 
     v3 (25 Sep 2026): see _dimension_schema()'s own comment - every
     property here is a plain type with a sentinel, zero union types
@@ -1400,11 +1502,17 @@ def _company_item_schema():
     this point is otherwise byte-for-byte identical to v5 - diffed by
     hand against the v5 schema as part of this bump, zero wording
     changes."""
-    props = {key: _dimension_schema() for key in DIMENSION_KEYS}
-    props["ticker"] = {
+    _ticker_prop = {
         "type": "string",
         "description": "The exact ticker of the company this item answers for, copied verbatim from the list in the user message - used to match this result back to its entrant regardless of response order.",
     }
+    props = {}
+    if schema_mode == "ticker_first":
+        props["ticker"] = _ticker_prop
+    for key in DIMENSION_KEYS:
+        props[key] = _dimension_schema()
+    if schema_mode != "ticker_first":
+        props["ticker"] = _ticker_prop
     props["inversion_scenario"] = {
         "type": "string",
         "description": "One-sentence inversion scenario, or an empty string \"\" if this company is NOT RATED (see the honesty rule) - never invent a scenario for a company you don't know well enough to score.",
@@ -1463,7 +1571,7 @@ def _company_item_schema():
     }
 
 
-def _response_schema():
+def _response_schema(schema_mode="legacy"):
     """v6 packed requests (1 Oct 2026, owner-directed): the top-level
     wrapper - a single "companies" array holding one _company_item_
     schema() per entrant in this request. An array-of-objects wrapper
@@ -1472,13 +1580,17 @@ def _response_schema():
     maxLength/minItems/maxItems anywhere, same zero-union-type/zero-
     min-max discipline the per-item schema itself has kept since v3
     (see _company_item_schema()'s own docstring, formerly this
-    function's own docstring before the v6 wrap)."""
+    function's own docstring before the v6 wrap).
+
+    `schema_mode` (COMMIT 4, 5 Oct 2026) is passed straight through to
+    _company_item_schema() - see its own docstring for the only thing
+    it changes."""
     return {
         "type": "object",
         "properties": {
             "companies": {
                 "type": "array",
-                "items": _company_item_schema(),
+                "items": _company_item_schema(schema_mode=schema_mode),
             },
         },
         "required": ["companies"],
@@ -1486,7 +1598,7 @@ def _response_schema():
     }
 
 
-def _request_params(entrants):
+def _request_params(entrants, schema_mode="legacy"):
     """The exact MessageCreateParamsNonStreaming-shaped dict for one
     REQUEST - `entrants`: [{"ticker", "company_name", "sector"}, ...],
     up to TOP100_COMPANIES_PER_REQUEST of them (run_single_test_call()
@@ -1494,6 +1606,12 @@ def _request_params(entrants):
     (wrapped in a Batches Request, one per packed group) and run_
     single_test_call() (sent directly, for the task's own one real API
     test call).
+
+    `schema_mode` (COMMIT 4 of instruction_top200_unrated_and_blank_
+    replies_combined.md, 5 Oct 2026) is passed straight through to
+    _response_schema() - "legacy" (the default) reproduces today's
+    exact request byte-for-byte; "ticker_first" changes only where
+    "ticker" sits in the per-company properties object.
 
     v6 packed requests (1 Oct 2026, owner-directed): max_tokens now
     scales with len(entrants) - 4000 tokens per company (the same per-
@@ -1543,7 +1661,7 @@ def _request_params(entrants):
         "max_tokens": 4000 * len(entrants),
         "system": [{"type": "text", "text": _SYSTEM_PROMPT}],
         "messages": [{"role": "user", "content": _user_prompt(entrants)}],
-        "output_config": {"format": {"type": "json_schema", "schema": _response_schema()}},
+        "output_config": {"format": {"type": "json_schema", "schema": _response_schema(schema_mode=schema_mode)}},
     }
 
 
@@ -2248,12 +2366,47 @@ def _unscored_tickers(pool, model):
     presence_map = top100_store.pool_presence_map([row["ticker"] for row in pool])
     now = datetime.now(timezone.utc)
 
-    def _failure_blocks(ticker):
+    def _failure_reentry_reason(ticker, row):
+        """COMMIT 2 of instruction_top200_unrated_and_blank_replies_
+        combined.md (5 Oct 2026, Director-directed, "a failed company
+        is never stuck for good") - for an EXHAUSTED failure only:
+        "new_results" or "age" if this ticker should become eligible
+        again, else None (stays permanently skipped for this rubric,
+        exactly as before this commit). Mirrors the score-row new_
+        results/age triggers in the main loop below bit for bit, using
+        the failure row's own most_recent_quarter/failed_at as the
+        baseline - a failure has no score row to read these from (see
+        top100_store.record_score_failure()'s own most_recent_quarter
+        param). A failure that predates this commit (most_recent_
+        quarter NULL) falls straight through to the age check, same as
+        a score row with an unknown most_recent_quarter already does."""
+        failure = failures.get(ticker)
+        if failure is None or not _failure_exhausted(failure):
+            return None
+        row_mrq = row.get("most_recent_quarter")
+        failure_mrq = failure.get("most_recent_quarter")
+        if row_mrq and failure_mrq and row_mrq != failure_mrq:
+            return "new_results"
+        failed_at = failure.get("failed_at")
+        age_days = None
+        if failed_at:
+            try:
+                failed_dt = datetime.fromisoformat(failed_at)
+                if failed_dt.tzinfo is None:
+                    failed_dt = failed_dt.replace(tzinfo=timezone.utc)
+                age_days = (now - failed_dt).days
+            except Exception:
+                age_days = None
+        if age_days is None or age_days > RESCORE_MAX_AGE_DAYS:
+            return "age"
+        return None
+
+    def _failure_blocks(ticker, row):
         failure = failures.get(ticker)
         if failure is None:
             return False
         if _failure_exhausted(failure):
-            return True
+            return _failure_reentry_reason(ticker, row) is None
         failed_at = failure.get("failed_at")
         if not failed_at:
             return False
@@ -2267,10 +2420,19 @@ def _unscored_tickers(pool, model):
 
     out = []
     for row in pool:
-        if _failure_blocks(row["ticker"]):
+        if _failure_blocks(row["ticker"], row):
             continue
         score = latest.get(row["ticker"])
         if score is None:
+            # COMMIT 2: a previously-exhausted failure that just passed
+            # _failure_blocks() above did so ONLY because _failure_
+            # reentry_reason() fired - report that reason (never
+            # newcomer-gated: this ticker has already been attempted
+            # before, it is by definition not a true newcomer).
+            _reentry_reason = _failure_reentry_reason(row["ticker"], row)
+            if _reentry_reason is not None:
+                out.append((row, _reentry_reason))
+                continue
             if _true_newcomer_gated(row["ticker"], model, presence_map):
                 continue
             out.append((row, "new_or_rubric"))
@@ -2417,7 +2579,7 @@ def _batch_result_error_type(result_error):
 
 
 def _save_degenerate_as_not_rated(ticker, entrant_info, state, prompt_params, raw_text,
-                                   matched_by=None, log=print):
+                                   matched_by=None, schema_mode=None, log=print):
     """Degenerate-response guard (3 Oct 2026, owner-directed): accepts
     `ticker` as NOT RATED after TOP100_DEGENERATE_ACCEPT_ATTEMPTS (2)
     consecutive degenerate-response attempts, rather than retrying it
@@ -2446,6 +2608,7 @@ def _save_degenerate_as_not_rated(ticker, entrant_info, state, prompt_params, ra
         munger_quality=None, munger_comment=None, big_wave=None, big_wave_comment=None,
         degenerate_accepted=True, matched_by=matched_by,
         prompt=json.dumps(prompt_params), raw_response=raw_text,
+        schema_mode=schema_mode,
     )
     top100_store.clear_score_failure(ticker, state["model"], RUBRIC_VERSION)
     log(f"[top100] {ticker}: degenerate response x2 - accepted as NOT RATED (flagged degenerate x2)")
@@ -2581,6 +2744,17 @@ def poll_and_ingest_batch(log=print):
                 entrants_map = {entry: {"score_key": state.get("quarter"), "most_recent_quarter": None}}
             else:
                 continue
+            # COMMIT 4 of instruction_top200_unrated_and_blank_replies_
+            # combined.md (5 Oct 2026, Director-directed): read THIS
+            # pack's schema_mode back from custom_id_map exactly as
+            # submit_nightly_batch() stored it - never re-read fresh
+            # from the env var here, since the switch could have
+            # changed between submission and ingest (see top200_
+            # schema_mode()'s own docstring). Missing entirely (any
+            # batch submitted before this commit shipped) reads as
+            # "legacy", same convention as top100_store.schema_mode_
+            # for_batch().
+            pack_schema_mode = entry.get("schema_mode", "legacy") if isinstance(entry, dict) else "legacy"
             if not entrants_map:
                 continue
             total_requests += 1
@@ -2603,7 +2777,7 @@ def poll_and_ingest_batch(log=print):
                 for ticker in entrants_map:
                     failed += 1
                     errored_count += 1
-                    failure_reasons.append((ticker, err_type))
+                    failure_reasons.append((ticker, err_type, entrants_map[ticker].get("most_recent_quarter"), pack_schema_mode))
                     if errored_count <= _ERRORED_DETAIL_LIMIT:
                         detail = _serialize_batch_result_error(err)
                         log(f"[top100] {ticker}: batch result errored #{errored_count} - {detail}")
@@ -2616,7 +2790,7 @@ def poll_and_ingest_batch(log=print):
             if result.result.type != "succeeded":
                 for ticker in entrants_map:
                     failed += 1
-                    failure_reasons.append((ticker, result.result.type))
+                    failure_reasons.append((ticker, result.result.type, entrants_map[ticker].get("most_recent_quarter"), pack_schema_mode))
                     log(f"[top100] {ticker}: batch result {result.result.type}, skipped")
                 _log_request_diagnostic(log, result.custom_id, list(entrants_map.keys()),
                                          items_returned=0, stop_reason=None,
@@ -2653,7 +2827,7 @@ def poll_and_ingest_batch(log=print):
                 # carried failed, not just one.
                 for ticker in entrants_map:
                     failed += 1
-                    failure_reasons.append((ticker, f"parse_error: {e}"))
+                    failure_reasons.append((ticker, f"parse_error: {e}", entrants_map[ticker].get("most_recent_quarter"), pack_schema_mode))
                 log(f"[top100] batch result for {sorted(entrants_map)}: could not parse, skipped ({e})")
                 continue
             if _request_blank_tickers:
@@ -2674,7 +2848,7 @@ def poll_and_ingest_batch(log=print):
             )
             prompt_params = _request_params([
                 {"ticker": t, "company_name": t, "sector": None} for t in entrants_map
-            ])
+            ], schema_mode=pack_schema_mode)
             for ticker, entrant_info in entrants_map.items():
                 if ticker in _request_blank_tickers:
                     # A1 (5 Oct 2026, owner-directed): a whole-blank
@@ -2691,7 +2865,7 @@ def poll_and_ingest_batch(log=print):
                     # BLANK_MAX_RETRIES - this function only records the
                     # failure, it never stops retrying by itself.
                     failed += 1
-                    failure_reasons.append((ticker, "request_blank"))
+                    failure_reasons.append((ticker, "request_blank", entrant_info.get("most_recent_quarter"), pack_schema_mode))
                     continue
                 if ticker in _degenerate_tickers:
                     # Degenerate-response guard (3 Oct 2026, owner-
@@ -2708,11 +2882,11 @@ def poll_and_ingest_batch(log=print):
                     if _prior and _prior.get("reason") == "degenerate_response":
                         _save_degenerate_as_not_rated(
                             ticker, entrant_info, state, prompt_params, text,
-                            matched_by=_matched_by.get(ticker), log=log)
+                            matched_by=_matched_by.get(ticker), schema_mode=pack_schema_mode, log=log)
                         saved += 1
                     else:
                         failed += 1
-                        failure_reasons.append((ticker, "degenerate_response"))
+                        failure_reasons.append((ticker, "degenerate_response", entrant_info.get("most_recent_quarter"), pack_schema_mode))
                         log(f"[top100] {ticker}: degenerate response (sentinel-filled template) - "
                             "not saved, will retry")
                     continue
@@ -2724,7 +2898,7 @@ def poll_and_ingest_batch(log=print):
                     # already in parsed_by_ticker, are saved below exactly
                     # as if nothing had gone wrong.
                     failed += 1
-                    failure_reasons.append((ticker, "missing_from_response"))
+                    failure_reasons.append((ticker, "missing_from_response", entrant_info.get("most_recent_quarter"), pack_schema_mode))
                     log(f"[top100] {ticker}: missing from packed batch response, skipped")
                     continue
                 (dims, not_rated, inversion_scenario, inversion_severity, current_headwind,
@@ -2743,14 +2917,15 @@ def poll_and_ingest_batch(log=print):
                     big_wave=big_wave, big_wave_comment=big_wave_comment,
                     matched_by=_matched_by.get(ticker),
                     prompt=json.dumps(prompt_params), raw_response=text,
+                    schema_mode=pack_schema_mode,
                 )
                 top100_store.clear_score_failure(ticker, state["model"], RUBRIC_VERSION)
                 saved += 1
     except Exception as e:
         log(f"[top100] batch result retrieval failed partway through: {e}")
 
-    for ticker, reason in failure_reasons:
-        top100_store.record_score_failure(ticker, state["model"], RUBRIC_VERSION, reason)
+    for ticker, reason, mrq, _sm in failure_reasons:
+        top100_store.record_score_failure(ticker, state["model"], RUBRIC_VERSION, reason, most_recent_quarter=mrq, schema_mode=_sm)
 
     if errored_rest_type_counts:
         breakdown = ", ".join(f"{t}: {c}" for t, c in sorted(errored_rest_type_counts.items()))
@@ -2771,6 +2946,26 @@ def poll_and_ingest_batch(log=print):
     log(f"[top100] batch {state['batch_id']}: {total_requests} requests, "
         f"{len(blank_request_ids)} blank (ids {', '.join(blank_request_ids)}), "
         f"{saved} scored, {failed} failed")
+    # COMMIT 4 of instruction_top200_unrated_and_blank_replies_combined.md
+    # (5 Oct 2026, Director-directed): schema_mode + packed/solo split
+    # for THIS batch, derived straight from custom_id_map (not from the
+    # per-result loop above, so it's unaffected by any result that
+    # errored or was skipped before reaching that loop's own counters).
+    _schema_mode_counts = {}
+    _packed_packs, _solo_packs = 0, 0
+    for _entry in custom_id_map.values():
+        if not isinstance(_entry, dict):
+            continue
+        _sm = _entry.get("schema_mode", "legacy")
+        _schema_mode_counts[_sm] = _schema_mode_counts.get(_sm, 0) + 1
+        _pack_entrants = _entry.get("entrants") or {}
+        if len(_pack_entrants) == 1:
+            _solo_packs += 1
+        elif len(_pack_entrants) > 1:
+            _packed_packs += 1
+    log(f"[top100] batch {state['batch_id']}: schema_mode "
+        f"{', '.join(f'{m}: {c}' for m, c in sorted(_schema_mode_counts.items()))} "
+        f"({_packed_packs} packed request(s), {_solo_packs} solo request(s))")
     try:
         top100_store.record_ingest_cost(
             batch_id=state["batch_id"], scored=saved, failed=failed,
@@ -2786,9 +2981,18 @@ def poll_and_ingest_batch(log=print):
         # engine.py) reads "saved"/"scored" == 0 from this function's
         # return value to decide NOT to resubmit; this line explains why,
         # right where the ingest summary above it already is.
-        sample = ", ".join(f"{t}: {r}" for t, r in failure_reasons[:3])
+        sample = ", ".join(f"{t}: {r}" for t, r, _mrq, _sm in failure_reasons[:3])
         log(f"[top100] batch {state['batch_id']}: 0 scored, {failed} failed - "
             f"NOT resubmitting (reason sample: {sample})")
+    # COMMIT 1 of instruction_top200_unrated_and_blank_replies_combined.md
+    # (5 Oct 2026, Director-directed): "after every ingest" half of the
+    # task's own coverage log line, plus the zeros breakdown (ingest-
+    # only, since dimension zero-counts only change when scores change).
+    # Against the CURRENT pool+extension (not just tonight's entrants) -
+    # the task's own "for the current selection" framing.
+    _coverage_rows = top100_store.current_pool() + top100_store.current_asx_extension()
+    _log_coverage(_coverage_rows, log=log)
+    _log_zeros_breakdown(_coverage_rows, log=log)
     return {"saved": saved, "scored": saved, "failed": failed,
             "input_tokens": total_input_tokens, "output_tokens": total_output_tokens,
             "cache_creation_tokens": total_cache_creation_tokens,
@@ -2969,7 +3173,9 @@ def run_degenerate_sweep_once(model=MODEL_TOP100, log=print):
         for ticker, row in rows.items():
             if _is_degenerate_stored_row(row):
                 top100_store.delete_score(ticker, row["quarter"], model, RUBRIC_VERSION)
-                top100_store.record_score_failure(ticker, model, RUBRIC_VERSION, "degenerate_response")
+                top100_store.record_score_failure(
+                    ticker, model, RUBRIC_VERSION, "degenerate_response",
+                    most_recent_quarter=row.get("most_recent_quarter"))
                 cleared.append(ticker)
     except Exception as e:
         log(f"[top100] degenerate sweep failed, will not retry automatically: {e}")
@@ -3194,6 +3400,27 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
                     f"({', '.join(sorted(held_tickers)[:10])}"
                     f"{', ...' if len(held_tickers) > 10 else ''})")
         entrants = entrants[:MAX_NIGHTLY_SCORES]
+        # COMMIT 2 of instruction_top200_unrated_and_blank_replies_
+        # combined.md (5 Oct 2026, Director-directed, "a failed company
+        # is never stuck for good") - attempts reset the moment a
+        # previously-exhausted failure becomes eligible again (an entry
+        # in `entrants` can only exist for an exhausted ticker if
+        # _unscored_tickers()'s own _failure_reentry_reason() just
+        # fired for it - see that function's own docstring). Without
+        # this, the very next failure would push attempts straight back
+        # past the ticker's own exhaustion ceiling, re-exhausting it
+        # immediately and defeating the whole point of re-entry.
+        _failures_for_reset = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+        _reentered_tickers = sorted(
+            row["ticker"] for row, _reason in entrants
+            if _failures_for_reset.get(row["ticker"]) is not None
+            and _failure_exhausted(_failures_for_reset[row["ticker"]])
+        )
+        for _ticker in _reentered_tickers:
+            top100_store.clear_score_failure(_ticker, model, RUBRIC_VERSION)
+        if _reentered_tickers:
+            log(f"[top100] re-entry: {len(_reentered_tickers)} previously exhausted "
+                f"ticker(s) eligible again, attempts reset: {', '.join(_reentered_tickers)}")
     if not entrants:
         log(f"[top100] every pooled company already scored under the current rubric for {model} "
             "- nothing to submit")
@@ -3245,6 +3472,14 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
         normal_entrants[i:i + TOP100_COMPANIES_PER_REQUEST]
         for i in range(0, len(normal_entrants), TOP100_COMPANIES_PER_REQUEST)
     ]
+    n_solo_packs = len(solo_entrants)
+    n_packed_packs = len(packs) - n_solo_packs
+
+    # COMMIT 4 of instruction_top200_unrated_and_blank_replies_combined.md
+    # (5 Oct 2026, Director-directed): read the switch ONCE for this
+    # whole submission (not per-pack) - see top200_schema_mode()'s own
+    # docstring for why it must not be re-read at ingest time.
+    schema_mode = top200_schema_mode(log=log)
 
     est_input_tokens = sum(
         _estimate_request_tokens([
@@ -3283,10 +3518,11 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
             pack_request_entrants.append({
                 "ticker": ticker, "company_name": row.get("company_name"), "sector": row.get("sector"),
             })
-        custom_id_map[custom_id] = {"entrants": pack_entrants_meta}
+        custom_id_map[custom_id] = {"entrants": pack_entrants_meta, "schema_mode": schema_mode}
         requests.append(Request(
             custom_id=custom_id,
-            params=MessageCreateParamsNonStreaming(**_request_params(pack_request_entrants)),
+            params=MessageCreateParamsNonStreaming(
+                **_request_params(pack_request_entrants, schema_mode=schema_mode)),
         ))
 
     try:
@@ -3299,7 +3535,8 @@ def submit_nightly_batch(pool=None, model=MODEL_TOP100, log=print, force=False):
     top100_store.save_batch_state(batch.id, today.isoformat(), model, custom_id_map)
     top100_store.record_daily_submission(today.isoformat(), len(entrants))
     log(f"[top100] submitted batch {batch.id}: {len(entrants)} compan{'y' if len(entrants) == 1 else 'ies'} "
-        f"in {len(packs)} packed request{'s' if len(packs) != 1 else ''} for {model}")
+        f"in {len(packs)} packed request{'s' if len(packs) != 1 else ''} "
+        f"({n_packed_packs} packed, {n_solo_packs} solo) for {model}, schema_mode={schema_mode}")
     return batch.id
 
 
@@ -3380,7 +3617,7 @@ def diagnose_batch_01xa_once(log=print):
 _BATCH_INSPECTOR_EXCERPT_CHARS = 600
 
 
-def inspect_batch_results(results, expected_map=None):
+def inspect_batch_results(results, expected_map=None, schema_mode_map=None):
     """Pure parsing logic for the Admin Dashboard's Batch inspector
     panel - no network, no Anthropic client. `results` is a list of
     plain dicts, one per Batches API result, already pulled off the
@@ -3415,7 +3652,14 @@ def inspect_batch_results(results, expected_map=None):
     reproduced here read-only against the already-fetched text/
     expected tickers, never re-parsing anything differently; always
     False for a non-succeeded result or when expected tickers aren't
-    known for this batch)}.
+    known for this batch), "schema_mode" (COMMIT 4 of instruction_
+    top200_unrated_and_blank_replies_combined.md, 5 Oct 2026 - "legacy"/
+    "ticker_first" from `schema_mode_map`, or None when that map itself
+    is None - i.e. not available for this batch, same convention as
+    "expected_tickers"), "packed_or_solo" ("packed"/"solo"/None - derived
+    from `expected`'s own entrant count when known, else from items_
+    count; None when neither tells us anything, e.g. a fully errored
+    request with no expected map)}.
 
     summary = {"total", "fully_matched", "partially_matched", "empty",
     "errored"} - mutually exclusive, sums to total. A request is
@@ -3442,6 +3686,7 @@ def inspect_batch_results(results, expected_map=None):
             "output_tokens": r.get("output_tokens"),
             "expected_tickers": list(expected) if expected is not None else None,
             "blank": False,
+            "schema_mode": (schema_mode_map.get(custom_id, "legacy") if schema_mode_map is not None else None),
         }
         if rtype != "succeeded":
             row["tickers_echoed"] = []
@@ -3450,6 +3695,9 @@ def inspect_batch_results(results, expected_map=None):
             row["excerpt"] = detail[:_BATCH_INSPECTOR_EXCERPT_CHARS] or None
             row["full_text"] = detail
             errored += 1
+            row["packed_or_solo"] = (
+                ("solo" if len(expected) == 1 else "packed") if expected else None
+            )
             rows.append(row)
             continue
         text = r.get("text") or ""
@@ -3461,6 +3709,12 @@ def inspect_batch_results(results, expected_map=None):
         echoed = sorted(parsed.keys())
         row["tickers_echoed"] = echoed
         row["items_count"] = len(echoed)
+        if expected:
+            row["packed_or_solo"] = "solo" if len(expected) == 1 else "packed"
+        elif echoed:
+            row["packed_or_solo"] = "solo" if len(echoed) == 1 else "packed"
+        else:
+            row["packed_or_solo"] = None
         if expected is not None:
             try:
                 _companies = json.loads(text).get("companies")
@@ -3507,6 +3761,9 @@ def run_batch_inspector(batch_id, log=print):
     inspect_batch_results() against the real data. expected_map comes
     from top100_store.expected_tickers_for_batch(batch_id) - None/
     missing for a batch ingested before that column existed.
+    schema_mode_map (COMMIT 4 of instruction_top200_unrated_and_blank_
+    replies_combined.md, 5 Oct 2026) comes from top100_store.schema_
+    mode_for_batch(batch_id) the same way.
 
     Returns (rows, summary), or (None, None) if the fetch itself
     failed (network/SDK/bad batch id - the caller shows the exception
@@ -3540,7 +3797,8 @@ def run_batch_inspector(batch_id, log=print):
         return None, None
 
     expected_map = top100_store.expected_tickers_for_batch(batch_id)
-    rows, summary = inspect_batch_results(raw_results, expected_map)
+    schema_mode_map = top100_store.schema_mode_for_batch(batch_id)
+    rows, summary = inspect_batch_results(raw_results, expected_map, schema_mode_map)
     log(f"[batch_inspector] batch {batch_id}: {summary['total']} requests - "
         f"fully matched {summary['fully_matched']}, partially matched {summary['partially_matched']}, "
         f"empty {summary['empty']}, errored {summary['errored']}"
@@ -3556,9 +3814,12 @@ def batch_inspector_csv(rows):
     semicolon-joined so a single CSV cell survives the comma-delimited
     format), entrant count, items returned, tickers echoed (same join
     convention), stop reason, input tokens, output tokens, blank yes/
-    no. Pure formatting - no network, no parsing beyond what rows
-    already carries. Returns the CSV text (str); the caller (the Admin
-    Batch inspector panel) hands it to st.download_button."""
+    no, schema_mode, packed_or_solo (COMMIT 4 of instruction_top200_
+    unrated_and_blank_replies_combined.md, 5 Oct 2026 - blank string
+    when not available for this batch/row). Pure formatting - no
+    network, no parsing beyond what rows already carries. Returns the
+    CSV text (str); the caller (the Admin Batch inspector panel) hands
+    it to st.download_button."""
     import csv
     import io
     buf = io.StringIO()
@@ -3566,6 +3827,7 @@ def batch_inspector_csv(rows):
     writer.writerow([
         "custom_id", "entrant_tickers", "entrant_count", "items_returned",
         "tickers_echoed", "stop_reason", "input_tokens", "output_tokens", "blank",
+        "schema_mode", "packed_or_solo",
     ])
     for row in rows:
         expected = row.get("expected_tickers")
@@ -3579,6 +3841,8 @@ def batch_inspector_csv(rows):
             row.get("input_tokens") if row.get("input_tokens") is not None else "",
             row.get("output_tokens") if row.get("output_tokens") is not None else "",
             "yes" if row.get("blank") else "no",
+            row.get("schema_mode") or "",
+            row.get("packed_or_solo") or "",
         ])
     return buf.getvalue()
 
@@ -3848,6 +4112,588 @@ def clear_degenerate_accepted_rows(rows, model=MODEL_TOP100, log=print):
         log(f"[top100] owner cleared {len(cleared)} degenerate-accepted row(s): "
             f"{', '.join(sorted(cleared))}")
     return cleared
+
+
+def exhausted_failure_rows(model=MODEL_TOP100):
+    """COMMIT 2 of instruction_top200_unrated_and_blank_replies_combined.md
+    (5 Oct 2026, Director-directed, "A2's panel extended to list+clear
+    exhausted-attempt companies too") - every stored FAILURE under the
+    current rubric whose attempts have reached its own exhaustion
+    ceiling (_failure_exhausted() - 5 for request_blank, 3 for every
+    other reason), i.e. every UNRATED_FAILED ticker that is NOT also
+    degenerate_accepted (that case already has its own list via
+    degenerate_accepted_rows() - a ticker can only ever be in one of
+    the two: a failure row and a score row are mutually exclusive per
+    (ticker, model, rubric_version)). {"ticker", "company_name",
+    "reason", "attempts", "failed_at"}, sorted by ticker. A NOT RATED-
+    by-model row (score_row.not_rated True, degenerate_accepted False)
+    has no failure row at all and can never appear here - by
+    construction, since this reads top100_store.score_failures_for_
+    model() alone, never top100_scores."""
+    failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+    pool_by_ticker = {
+        row["ticker"]: row
+        for row in (top100_store.current_pool() + top100_store.current_asx_extension())
+    }
+    out = []
+    for ticker, failure in failures.items():
+        if not _failure_exhausted(failure):
+            continue
+        out.append({
+            "ticker": ticker,
+            "company_name": (pool_by_ticker.get(ticker) or {}).get("company_name") or ticker,
+            "reason": failure.get("reason"),
+            "attempts": failure.get("attempts"),
+            "failed_at": failure.get("failed_at"),
+        })
+    out.sort(key=lambda r: r["ticker"])
+    return out
+
+
+def clear_exhausted_failure_rows(rows, model=MODEL_TOP100, log=print):
+    """COMMIT 2's own "Clear and re-send" action for exhausted_failure_
+    rows()' output - deletes each failure row via top100_store.clear_
+    score_failure() (exactly what `rows` was given, never re-queried
+    here, same as clear_degenerate_accepted_rows()' own contract) so
+    the normal nightly _unscored_tickers() treats this ticker as a
+    brand-new entrant again, attempts reset to 0. Triggers no batch
+    itself. Logs the exact owner-specified line. Returns the list of
+    tickers cleared."""
+    cleared = []
+    for row in rows:
+        top100_store.clear_score_failure(row["ticker"], model, RUBRIC_VERSION)
+        cleared.append(row["ticker"])
+    if cleared:
+        log(f"[top100] owner cleared {len(cleared)} exhausted-failure row(s): "
+            f"{', '.join(sorted(cleared))}")
+    return cleared
+
+
+# -----------------------------------------------------------------
+# COMMIT 1 of instruction_top200_unrated_and_blank_replies_combined.md
+# (5 Oct 2026, Director-directed): automatic per-market coverage count
+# - no change to selection, to the public page, or to any request.
+# -----------------------------------------------------------------
+
+# Task's own threshold: a market needs at least this many RESOLVED
+# (rated + unrated_model + unrated_failed - waiting companies excluded,
+# since they haven't resolved to anything yet) companies before the
+# unrated-share warning is meaningful at all, and fires only once the
+# unrated share of those resolved companies exceeds this percent.
+UNRATED_SHARE_WARNING_MIN_RESOLVED = 10
+UNRATED_SHARE_WARNING_PCT = 10
+
+# "Addition" (same commit): a large, well-known company ending up
+# UNRATED_FAILED is itself a signal something's wrong - these are the
+# seven index universes the task names, read from whatever each has
+# saved (no network call - scan_store.load_scan_raw() is a disk read,
+# and a universe with nothing saved/stale contributes no tickers,
+# never raises).
+LARGE_COMPANY_UNIVERSES = (
+    "S&P 500", "Nasdaq 100", "Dow Jones 30",
+    "ASX 200", "FTSE 100", "TSX 60", "Nikkei 225",
+)
+
+
+def _large_company_tickers():
+    """Ticker set across every LARGE_COMPANY_UNIVERSES' own last saved
+    scan (scan_store.load_scan_raw(), same default allow_private=False
+    every other caller in this module uses - none of these seven index
+    universes is ever privacy-gated in practice, but this keeps the
+    convention uniform). Used only to flag an UNRATED_FAILED company
+    worth a second look in Admin - never read by selection/scoring/
+    ranking."""
+    tickers = set()
+    for universe in LARGE_COMPANY_UNIVERSES:
+        try:
+            payload = scan_store.load_scan_raw(universe)
+        except Exception:
+            payload = None
+        if not payload:
+            continue
+        for row in payload.get("rows") or []:
+            t = (row.get("Ticker") or "").strip().upper()
+            if t:
+                tickers.add(t)
+    return tickers
+
+
+def company_status(score_row, failure):
+    """One of "rated"/"unrated_model"/"unrated_failed"/"waiting" - the
+    task's own STEP A0 terms, worked out from stored data alone (no
+    network call):
+      - RATED: score_row exists, not_rated is falsy.
+      - UNRATED_MODEL: score_row exists, not_rated is true,
+        degenerate_accepted is falsy (the model's own judgement).
+      - UNRATED_FAILED: EITHER score_row exists with not_rated AND
+        degenerate_accepted true (the 2-consecutive-degenerate accept
+        path), OR there is no score_row at all but `failure` has
+        reached _failure_exhausted() under the current rubric (a
+        request_blank/parse_error/missing_from_response/errored
+        ticker that will never be retried again for this rubric).
+      - WAITING: everything else - no score_row, and either no
+        failure recorded at all, or one that hasn't exhausted its
+        retries yet (still eligible for a future attempt)."""
+    if score_row is not None:
+        if score_row.get("not_rated"):
+            return "unrated_failed" if score_row.get("degenerate_accepted") else "unrated_model"
+        return "rated"
+    if failure is not None and _failure_exhausted(failure):
+        return "unrated_failed"
+    return "waiting"
+
+
+# -----------------------------------------------------------------
+# COMMIT 3 of instruction_top200_unrated_and_blank_replies_combined.md
+# (5 Oct 2026, Director-directed, owner-approved for build+push-on-go,
+# switch OFF by default): unrated companies never hold one of the 200
+# places - the next candidate in line on merit takes it instead.
+# -----------------------------------------------------------------
+
+# Never walk past this many positions beyond POOL_SIZE in the merit
+# order looking for 200 RATED/WAITING candidates - the task's own cap,
+# so a market flooded with unrated candidates can't make selection
+# walk the entire merit-ordered list.
+TOP200_BACKFILL_MAX = 60
+
+
+def is_backfill_live():
+    """The switch - same unset/""/0/off=OFF, 1/on=ON pattern as
+    financials_classifier.is_financials_store_live()/scan_store.
+    is_private_universe(). Re-read on every call (cheap - one env var
+    lookup), never cached, so a changed Railway variable takes effect
+    on the next request without a redeploy. Claude Code never sets
+    this - the Director does, on Railway, after Andrew has read the
+    dry run (COMMIT 3's own owner preview) and said yes."""
+    raw = (os.environ.get("TOP200_BACKFILL_LIVE") or "").strip().lower()
+    return raw in ("1", "on")
+
+
+def _apply_backfill(merit_ordered, model=MODEL_TOP100):
+    """Pure function, no store write, no log call - the one computation
+    shared by the switch-ON selection path, the switch-OFF dry-run log
+    line, and the owner preview panel, so all three can never disagree
+    with each other. `merit_ordered`: the FULL value_score-descending
+    candidate list exactly as select_top100_pool() builds it today
+    (sorted(best_by_ticker.values(), key=value_score, reverse=True)),
+    not yet sliced to POOL_SIZE.
+
+    Walks `merit_ordered` in order, classifying each candidate via
+    company_status(). A candidate that is "unrated_model" or
+    "unrated_failed" is set aside and does not count; RATED or WAITING
+    counts. Stops counting at POOL_SIZE, and never looks past position
+    POOL_SIZE + TOP200_BACKFILL_MAX regardless.
+
+    Returns {"counted": [row, ...], "set_aside": [(row, status), ...],
+    "short": bool}. "counted" is Value Score descending (merit_
+    ordered's own order, filtered) - a WAITING candidate counts and
+    keeps its place exactly where it already sat in merit order, so no
+    replacement is ever pulled in for it. "short" is True when fewer
+    than POOL_SIZE candidates were counted within the walked window -
+    the caller logs the WARNING line for that case."""
+    latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+    failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+    counted = []
+    set_aside = []
+    limit = POOL_SIZE + TOP200_BACKFILL_MAX
+    for row in merit_ordered[:limit]:
+        status = company_status(latest.get(row["ticker"]), failures.get(row["ticker"]))
+        if status in ("unrated_model", "unrated_failed"):
+            set_aside.append((row, status))
+            continue
+        counted.append(row)
+        if len(counted) >= POOL_SIZE:
+            break
+    return {"counted": counted, "set_aside": set_aside, "short": len(counted) < POOL_SIZE}
+
+
+def _backfill_summary(merit_ordered, backfill, model=MODEL_TOP100):
+    """Shared by the live backfill log line and the switch-OFF dry-run
+    line - {"set_aside_model": [...], "set_aside_failed": [...],
+    "pulled_in": [...], "new_to_score": int, "est_cost_usd": float}.
+    "pulled_in": tickers in backfill["counted"] that were NOT among
+    the first POOL_SIZE positions of `merit_ordered` (i.e. genuinely
+    brought in to fill a gap left by a set-aside candidate).
+    "new_to_score": how many of those pulled-in tickers are WAITING
+    (never scored at all yet under this rubric - the ones a future
+    batch will actually have to pay for); est_cost_usd estimates
+    scoring exactly those at the current per-company batch rate."""
+    baseline_tickers = {r["ticker"] for r in merit_ordered[:POOL_SIZE]}
+    counted_tickers = {r["ticker"] for r in backfill["counted"]}
+    pulled_in = sorted(counted_tickers - baseline_tickers)
+    set_aside_model = sorted(row["ticker"] for row, status in backfill["set_aside"] if status == "unrated_model")
+    set_aside_failed = sorted(row["ticker"] for row, status in backfill["set_aside"] if status == "unrated_failed")
+    latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+    failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+    pulled_in_rows_by_ticker = {r["ticker"]: r for r in backfill["counted"] if r["ticker"] in pulled_in}
+    new_to_score = [
+        t for t in pulled_in
+        if company_status(latest.get(t), failures.get(t)) == "waiting"
+    ]
+    new_to_score_rows = [pulled_in_rows_by_ticker[t] for t in new_to_score]
+    est_cost_usd = estimate_degenerate_resend_cost_usd(new_to_score_rows) if new_to_score_rows else 0.0
+    return {
+        "set_aside_model": set_aside_model, "set_aside_failed": set_aside_failed,
+        "pulled_in": pulled_in, "new_to_score": len(new_to_score), "est_cost_usd": est_cost_usd,
+    }
+
+
+def backfill_preview(log=print, model=MODEL_TOP100):
+    """COMMIT 3's own "Top 200 backfill preview" (owner-only Admin
+    panel, work with the switch OFF) - computes EXACTLY what tonight's
+    selection would look like with TOP200_BACKFILL_LIVE=1, from the
+    SAME merit-ordered candidate list select_top100_pool() itself
+    would build (_build_best_by_ticker(), read-only - reads already-
+    saved scan files, no network call), WITHOUT ever calling top100_
+    store.save_pool()/update_pool_presence()/_fill_missing_sectors() -
+    no write, no live yfinance call, no batch triggered. Ignores the
+    actual env var entirely (this is a preview of the ON state,
+    regardless of which state is really active) - top100_render.py's
+    preview button is the only caller.
+
+    Returns {"pool": [...], "extension": [...], "set_aside": [...],
+    "summary": {...}}. "pool"/"extension"/"set_aside" rows are each
+    pre-enriched with "score_row"/"composite"/"score_failure" (shaped
+    exactly like top100_render._enrich_rows()' own output, minus the
+    previous-rubric fallback that function also applies - a minor,
+    display-only simplification: right after a rubric bump every
+    pooled row already shows the AWAITING/fallback chip via the real
+    page regardless) so the Admin panel can feed them straight into
+    the same row-rendering functions the real public page uses, with
+    no duplicated rendering logic. "extension" mirrors today's ASX-
+    extension rule unchanged (never backfilled itself - see COMMIT 3's
+    own "Top 20 tabs" report section for why), filtered to exclude any
+    ticker this preview set aside."""
+    best_by_ticker, _eligible_count = _build_best_by_ticker(log=log)
+    merit_ordered = sorted(best_by_ticker.values(), key=lambda r: r["value_score"], reverse=True)
+    backfill = _apply_backfill(merit_ordered, model=model)
+    summary = _backfill_summary(merit_ordered, backfill, model=model)
+    pool = backfill["counted"]
+    pool_tickers = {r["ticker"] for r in pool}
+    set_aside_rows = []
+    for row, status in backfill["set_aside"]:
+        row["backfill_set_aside_status"] = status
+        set_aside_rows.append(row)
+    set_aside_tickers = {r["ticker"] for r in set_aside_rows}
+
+    au_in_pool = sum(1 for t in pool_tickers if t.endswith(".AX"))
+    extension = []
+    if au_in_pool < TOP20_AU_TARGET:
+        needed = TOP20_AU_TARGET - au_in_pool
+        extension = sorted(
+            (r for t, r in best_by_ticker.items()
+             if t.endswith(".AX") and t not in pool_tickers and t not in set_aside_tickers),
+            key=lambda r: r["value_score"], reverse=True,
+        )[:needed]
+
+    latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+    failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+
+    def _enrich(row):
+        score_row = latest.get(row["ticker"])
+        return {**row, "score_row": score_row, "composite": composite_score(score_row),
+                "is_fallback_score": False, "score_failure": failures.get(row["ticker"])}
+
+    return {
+        "pool": [_enrich(r) for r in pool],
+        "extension": [_enrich(r) for r in extension],
+        "set_aside": set_aside_rows,
+        "summary": summary,
+    }
+
+
+# -----------------------------------------------------------------
+# COMMIT 4 of instruction_top200_unrated_and_blank_replies_combined.md
+# (5 Oct 2026, Director-directed, switch TOP200_SCHEMA_MODE, unset by
+# default = "legacy"): "ticker"'s own position in the per-company
+# request schema moves to first when the switch is set to
+# "ticker_first" - nothing else about the schema, prompt, model, or
+# request shape changes. See _company_item_schema()'s own docstring
+# for the one-line diff this produces.
+# -----------------------------------------------------------------
+
+_SCHEMA_MODE_WARNED_VALUES = set()
+
+
+def top200_schema_mode(log=print):
+    """"legacy" (the default) or "ticker_first". Same unset/""=legacy
+    convention as every other switch in this module, but unlike is_
+    backfill_live()'s plain on/off this one reads a STRING value with
+    a third case: any value that is neither "" (unset) nor
+    "ticker_first" is treated as "legacy" (the safe fallback) and
+    logged as a WARNING exactly once per distinct unrecognized value
+    for the life of this process - not re-logged on every call, since
+    this is read once per batch submission and re-logging on every one
+    of a night's several submit calls would spam the Railway log for a
+    single typo that only needs reporting once.
+
+    Re-read fresh from the environment on every call (same as every
+    other switch here) - EXCEPT at the two points that must not drift
+    mid-batch: submit_nightly_batch() reads it once per submission and
+    stores the result per-pack in custom_id_map; poll_and_ingest_
+    batch() reads it back from that stored value at ingest time rather
+    than calling this function again, so a batch already in flight
+    always ingests under the mode it was actually submitted with, even
+    if Andrew flips the switch before that batch is polled. Claude Code
+    never sets this env var - the Director does, on Railway."""
+    raw = (os.environ.get("TOP200_SCHEMA_MODE") or "").strip()
+    if raw in ("", "ticker_first"):
+        return raw or "legacy"
+    if raw not in _SCHEMA_MODE_WARNED_VALUES:
+        _SCHEMA_MODE_WARNED_VALUES.add(raw)
+        log(f"WARNING: TOP200_SCHEMA_MODE={raw!r} not recognized (expected unset or "
+            f"\"ticker_first\") - treating as \"legacy\" for this and all further calls "
+            f"with this value.")
+    return "legacy"
+
+
+def schema_mode_breakdown(model=MODEL_TOP100):
+    """Admin Dashboard, display only (COMMIT 4 of instruction_top200_
+    unrated_and_blank_replies_combined.md, 5 Oct 2026): {schema_mode:
+    {"count", "not_rated_share", "mean_composite"}, ...} over every
+    CURRENTLY STORED score row under (model, RUBRIC_VERSION) - a row
+    saved before this commit shipped has schema_mode None, grouped
+    here under "legacy" (same convention as top100_store.schema_mode_
+    for_batch()). "mean_composite" reuses composite_score() (the same
+    0-100 Research Score the public page shows) averaged over the
+    group's RATED rows only (None for a group with zero rated rows);
+    "not_rated_share" is a 0.0-1.0 fraction of the WHOLE group. Pure
+    read, no network, no write - purely informational grouping, never
+    read by scoring/sorting/selection."""
+    latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+    groups = {}
+    for row in latest.values():
+        mode = row.get("schema_mode") or "legacy"
+        groups.setdefault(mode, []).append(row)
+    out = {}
+    for mode, rows in groups.items():
+        composites = [c for c in (composite_score(r) for r in rows) if c is not None]
+        not_rated_count = sum(1 for r in rows if r.get("not_rated"))
+        out[mode] = {
+            "count": len(rows),
+            "not_rated_share": (not_rated_count / len(rows)) if rows else 0.0,
+            "mean_composite": (sum(composites) / len(composites)) if composites else None,
+        }
+    return out
+
+
+def coverage_for_rows(rows, model=MODEL_TOP100):
+    """The status + market of every row in `rows` (pool + ASX
+    extension, or whatever selection the caller wants a coverage
+    picture of) - {"per_ticker": {ticker: {"market", "status"}},
+    "by_market": {market: {"rated", "unrated_model", "unrated_failed",
+    "waiting"}}}. Pure/read-only - one bulk read of latest_scores_for_
+    model()/score_failures_for_model(), no per-ticker query, no
+    network call, same shape of read top100_render._enriched_pool()
+    already does."""
+    latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+    failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+    per_ticker = {}
+    by_market = {}
+    for row in rows:
+        ticker = row["ticker"]
+        market = peer_context.market_for(ticker)
+        status = company_status(latest.get(ticker), failures.get(ticker))
+        per_ticker[ticker] = {"market": market, "status": status}
+        bucket = by_market.setdefault(
+            market, {"rated": 0, "unrated_model": 0, "unrated_failed": 0, "waiting": 0})
+        bucket[status] += 1
+    return {"per_ticker": per_ticker, "by_market": by_market}
+
+
+def _log_coverage(rows, log=print, model=MODEL_TOP100):
+    """The task's own two log lines, called after every selection and
+    after every ingest. Never raises - coverage is a reporting side
+    effect, not a gate on selection/scoring succeeding."""
+    try:
+        coverage = coverage_for_rows(rows, model=model)
+        by_market = coverage["by_market"]
+        total_rated = sum(b["rated"] for b in by_market.values())
+        total_unrated_model = sum(b["unrated_model"] for b in by_market.values())
+        total_unrated_failed = sum(b["unrated_failed"] for b in by_market.values())
+        total_waiting = sum(b["waiting"] for b in by_market.values())
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        per_market_bits = " | ".join(
+            f"{market} {b['rated']}/{b['unrated_model']}/{b['unrated_failed']}/{b['waiting']}"
+            for market, b in sorted(by_market.items())
+        )
+        log(f"[top100] coverage {today}: selected {len(rows)} | rated {total_rated} | "
+            f"unrated_model {total_unrated_model} | unrated_failed {total_unrated_failed} | "
+            f"waiting {total_waiting} || {per_market_bits}")
+        for market, b in sorted(by_market.items()):
+            resolved = b["rated"] + b["unrated_model"] + b["unrated_failed"]
+            if resolved < UNRATED_SHARE_WARNING_MIN_RESOLVED:
+                continue
+            unrated_share = 100.0 * (b["unrated_model"] + b["unrated_failed"]) / resolved
+            if unrated_share > UNRATED_SHARE_WARNING_PCT:
+                log(f"[top100] coverage WARNING: {market} unrated share "
+                    f"{unrated_share:.1f}% ({b['unrated_model'] + b['unrated_failed']} "
+                    f"of {resolved} resolved)")
+        return coverage
+    except Exception as e:
+        log(f"[top100] coverage logging failed (non-fatal): {e}")
+        return None
+
+
+def zeros_breakdown_for_rows(rows, model=MODEL_TOP100):
+    """The "Addition" from the same commit - how many of UNRATED_MODEL's
+    own zero dimensions land on each of the ten DIMENSION_KEYS, per
+    market; and, among RATED companies, how many carry exactly one or
+    exactly two zero dimensions (one and two are counted separately -
+    "one or two further gaps" is the owner's own point, and a RATED
+    company can never have three or more, by the NOT RATED rule
+    itself). {"by_market": {market: {"unrated_model_by_dimension":
+    {dim_key: count}, "rated_with_1_zero": N, "rated_with_2_zeros":
+    N}}}."""
+    latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+    failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+    by_market = {}
+    for row in rows:
+        ticker = row["ticker"]
+        score_row = latest.get(ticker)
+        status = company_status(score_row, failures.get(ticker))
+        if status not in ("unrated_model", "rated"):
+            continue
+        market = peer_context.market_for(ticker)
+        bucket = by_market.setdefault(market, {
+            "unrated_model_by_dimension": {k: 0 for k in DIMENSION_KEYS},
+            "rated_with_1_zero": 0, "rated_with_2_zeros": 0,
+        })
+        zero_keys = [k for k in DIMENSION_KEYS if (score_row["dims"].get(k) or {}).get("score") is None]
+        if status == "unrated_model":
+            for k in zero_keys:
+                bucket["unrated_model_by_dimension"][k] += 1
+        else:  # rated
+            if len(zero_keys) == 1:
+                bucket["rated_with_1_zero"] += 1
+            elif len(zero_keys) == 2:
+                bucket["rated_with_2_zeros"] += 1
+    return {"by_market": by_market}
+
+
+def _log_zeros_breakdown(rows, log=print, model=MODEL_TOP100):
+    """The task's own zeros log line, called after each ingest only.
+    Never raises - same non-fatal reporting status as _log_coverage()."""
+    try:
+        breakdown = zeros_breakdown_for_rows(rows, model=model)
+        totals = {k: 0 for k in DIMENSION_KEYS}
+        for b in breakdown["by_market"].values():
+            for k, c in b["unrated_model_by_dimension"].items():
+                totals[k] += c
+        coverage = coverage_for_rows(rows, model=model)
+        unrated_model_total = sum(
+            b["unrated_model"] for b in coverage["by_market"].values())
+        by_dim_bits = ", ".join(f"{k} {totals[k]}" for k in DIMENSION_KEYS)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        log(f"[top100] zeros {today}: unrated_model {unrated_model_total} | "
+            f"by dimension: {by_dim_bits}")
+        return breakdown
+    except Exception as e:
+        log(f"[top100] zeros logging failed (non-fatal): {e}")
+        return None
+
+
+def _pending_batch_tickers():
+    """Tickers currently packed into the one in-flight Batch API
+    submission (top100_store.get_batch_state()), or an empty set if no
+    batch is pending. custom_id_map is keyed by per-pack custom_id, each
+    holding an "entrants" dict keyed by ticker (see submit_nightly_
+    batch()'s own custom_id_map construction) - this flattens that
+    structure for a single ticker membership check."""
+    state = top100_store.get_batch_state()
+    if not state:
+        return set()
+    tickers = set()
+    for pack in (state.get("custom_id_map") or {}).values():
+        tickers.update((pack.get("entrants") or {}).keys())
+    return tickers
+
+
+def waiting_detail_for_rows(rows, model=MODEL_TOP100):
+    """COMMIT 1 of instruction_top200_unrated_and_blank_replies_combined.md
+    - Admin-only detail for every WAITING ticker among `rows` (per
+    company_status()'s own WAITING case: no score row, and either no
+    failure on record or a failure that isn't yet exhausted per
+    _failure_exhausted()). One dict per waiting ticker:
+      {"ticker", "market", "reason", "attempts", "next_attempt_at"}
+    `reason` is the first of, in this order:
+      - "pending batch": the ticker is packed into the one currently
+        in-flight Batch API submission (get_batch_state()).
+      - "retrying": a failure row exists for this (ticker, model,
+        RUBRIC_VERSION) and isn't exhausted yet - attempts/next_attempt_at
+        come from that row's own attempts/failed_at + TOP100_FAILURE_
+        RETRY_HOURS.
+      - "deferred (newcomer)": _true_newcomer_gated() holds - a true
+        newcomer that hasn't yet held its pool slot for NEWCOMER_
+        PERSISTENCE_NIGHTS consecutive nightly selections.
+      - "awaiting first score": none of the above - a genuinely new or
+        rubric-bumped entrant that the next submission will pick up.
+    attempts/next_attempt_at are 0/None unless the "retrying" reason
+    applies. Read-only - no network call, no write."""
+    latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+    failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+    waiting_rows = [
+        row for row in rows
+        if company_status(latest.get(row["ticker"]), failures.get(row["ticker"])) == "waiting"
+    ]
+    pending_batch_tickers = _pending_batch_tickers()
+    presence_map = top100_store.pool_presence_map([row["ticker"] for row in waiting_rows])
+    out = []
+    for row in waiting_rows:
+        ticker = row["ticker"]
+        market = peer_context.market_for(ticker)
+        failure = failures.get(ticker)
+        attempts = 0
+        next_attempt_at = None
+        if ticker in pending_batch_tickers:
+            reason = "pending batch"
+        elif failure is not None:
+            reason = "retrying"
+            attempts = failure.get("attempts") or 0
+            failed_at = failure.get("failed_at")
+            if failed_at:
+                try:
+                    failed_dt = datetime.fromisoformat(failed_at)
+                    if failed_dt.tzinfo is None:
+                        failed_dt = failed_dt.replace(tzinfo=timezone.utc)
+                    next_attempt_at = (
+                        failed_dt + timedelta(hours=TOP100_FAILURE_RETRY_HOURS)
+                    ).isoformat()
+                except Exception:
+                    next_attempt_at = None
+        elif _true_newcomer_gated(ticker, model, presence_map):
+            reason = "deferred (newcomer)"
+        else:
+            reason = "awaiting first score"
+        out.append({
+            "ticker": ticker, "market": market, "reason": reason,
+            "attempts": attempts, "next_attempt_at": next_attempt_at,
+        })
+    return out
+
+
+def unrated_failed_detail_for_rows(rows, model=MODEL_TOP100):
+    """COMMIT 1 of instruction_top200_unrated_and_blank_replies_combined.md
+    - Admin-only detail for every UNRATED_FAILED ticker among `rows`:
+    {"ticker", "market", "large_company"}, where large_company is True
+    when the ticker is a member of any LARGE_COMPANY_UNIVERSES universe
+    (per the task's own "large well-known company under 'Could not be
+    rated' is flagged to Andrew in Admin" rule). Read-only."""
+    latest = top100_store.latest_scores_for_model(model, RUBRIC_VERSION)
+    failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
+    large_tickers = _large_company_tickers()
+    out = []
+    for row in rows:
+        ticker = row["ticker"]
+        status = company_status(latest.get(ticker), failures.get(ticker))
+        if status != "unrated_failed":
+            continue
+        out.append({
+            "ticker": ticker,
+            "market": peer_context.market_for(ticker),
+            "large_company": ticker in large_tickers,
+        })
+    return out
 
 
 def refresh_all(log=print):

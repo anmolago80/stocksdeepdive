@@ -247,6 +247,28 @@ def _conn():
             conn.execute(f"ALTER TABLE top100_pool ADD COLUMN {_col} {_decl}")
         except sqlite3.OperationalError:
             pass
+    # COMMIT 3 of instruction_top200_unrated_and_blank_replies_combined.md
+    # (5 Oct 2026, Director-directed, switch TOP200_BACKFILL_LIVE, OFF
+    # by default) - True for a candidate top100_engine._apply_backfill()
+    # set aside (UNRATED_MODEL/UNRATED_FAILED, so it never counts toward
+    # the 200 places) but still persisted so the public "Not rated"
+    # section and the Admin preview can read it back without
+    # recomputing selection. Same guarded-ALTER-TABLE, purely-additive-
+    # column, NOT NULL DEFAULT 0 pattern as asx_extension above -
+    # current_pool()/previous_pool() filter this out unconditionally
+    # (see _pool_for_as_of() below), so with the switch OFF (no row is
+    # ever saved with this column True) every existing reader is
+    # completely untouched. backfill_set_aside_status ("unrated_model"/
+    # "unrated_failed") is display-only, read by the public page to
+    # decide which of the two "Not rated" groups a row belongs to.
+    try:
+        conn.execute("ALTER TABLE top100_pool ADD COLUMN backfill_set_aside INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE top100_pool ADD COLUMN backfill_set_aside_status TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
         """CREATE TABLE IF NOT EXISTS top100_scores (
             ticker TEXT NOT NULL,
@@ -348,6 +370,18 @@ def _conn():
         conn.execute("ALTER TABLE top100_scores ADD COLUMN matched_by TEXT")
     except sqlite3.OperationalError:
         pass
+    # COMMIT 4 of instruction_top200_unrated_and_blank_replies_combined.md
+    # (5 Oct 2026, Director-directed, switch TOP200_SCHEMA_MODE, unset
+    # by default) - "legacy" or "ticker_first", the mode top100_engine.
+    # top200_schema_mode() read AT SUBMISSION time for the request this
+    # row's answer came from. NULL for every pre-existing row and for
+    # any caller that doesn't pass it - the display layer (Admin's
+    # schema_mode breakdown table) treats NULL/None the same as
+    # "legacy", the task's own explicit rule.
+    try:
+        conn.execute("ALTER TABLE top100_scores ADD COLUMN schema_mode TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.execute(
         """CREATE TABLE IF NOT EXISTS top100_batch_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -376,6 +410,30 @@ def _conn():
             PRIMARY KEY (ticker, model, rubric_version)
         )"""
     )
+    # COMMIT 2 of instruction_top200_unrated_and_blank_replies_combined.md
+    # (5 Oct 2026, Director-directed, "a failed company is never stuck
+    # for good") - a failure row has no score row to read most_recent_
+    # quarter from, so this records it separately at failure time (the
+    # pooled row's own value, passed in by top100_engine.poll_and_
+    # ingest_batch() at every record_score_failure() call site - see
+    # that function's own failure_reasons list) purely so top100_
+    # engine._failure_reentry_reason() can apply the SAME new_results
+    # trigger NOT RATED score rows already get. NULL for every pre-
+    # existing failure row and for any caller that doesn't pass it -
+    # _failure_reentry_reason() then falls back to the age trigger
+    # alone, exactly as a score row with a missing most_recent_quarter
+    # would.
+    try:
+        conn.execute("ALTER TABLE top100_score_failures ADD COLUMN most_recent_quarter TEXT")
+    except sqlite3.OperationalError:
+        pass
+    # COMMIT 4 - same column, same "legacy unless recorded" rule, on
+    # the failures table too (a request_blank/degenerate_response/etc.
+    # failure also comes from a request this schema_mode governed).
+    try:
+        conn.execute("ALTER TABLE top100_score_failures ADD COLUMN schema_mode TEXT")
+    except sqlite3.OperationalError:
+        pass
     # Same commit - the hard daily spend cap's own persistence, keyed by
     # UTC date so it resets automatically at day rollover with no extra
     # bookkeeping (no row for a date means 0 batches/0 entrants so far).
@@ -473,8 +531,9 @@ def save_pool(rows, as_of):
                   mos_pct, price, intrinsic_value, currency, psychology, sector,
                   dividend_yield_pct, most_recent_quarter, also_trades_as, asx_extension,
                   generated_at, source_universe_generated_at, stale_valuation,
-                  value_score_source_row, pool_selection_rule)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  value_score_source_row, pool_selection_rule, backfill_set_aside,
+                  backfill_set_aside_status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(as_of, ticker) DO UPDATE SET
                  company_name = excluded.company_name,
                  universe = excluded.universe,
@@ -493,7 +552,9 @@ def save_pool(rows, as_of):
                  source_universe_generated_at = excluded.source_universe_generated_at,
                  stale_valuation = excluded.stale_valuation,
                  value_score_source_row = excluded.value_score_source_row,
-                 pool_selection_rule = excluded.pool_selection_rule""",
+                 pool_selection_rule = excluded.pool_selection_rule,
+                 backfill_set_aside = excluded.backfill_set_aside,
+                 backfill_set_aside_status = excluded.backfill_set_aside_status""",
             [
                 (as_of, r["ticker"], r.get("company_name"), r.get("universe"),
                  r.get("value_score"), r.get("mos_pct"), r.get("price"),
@@ -502,7 +563,8 @@ def save_pool(rows, as_of):
                  r.get("also_trades_as"), int(bool(r.get("asx_extension"))),
                  r.get("generated_at"), r.get("source_universe_generated_at"),
                  int(bool(r.get("stale_valuation"))), r.get("value_score_source_row"),
-                 r.get("pool_selection_rule"))
+                 r.get("pool_selection_rule"), int(bool(r.get("backfill_set_aside"))),
+                 r.get("backfill_set_aside_status"))
                 for r in rows
             ],
         )
@@ -527,14 +589,21 @@ def _distinct_as_of_dates(limit=2):
 
 
 def _pool_for_as_of(as_of):
-    """GLOBAL pool rows only (asx_extension = 0) - current_pool()'s and
-    previous_pool()'s shared read, unchanged in contract since before
-    the ASX extension existed. current_asx_extension() below is the
-    only reader of the OTHER rows."""
+    """GLOBAL pool rows only (asx_extension = 0, backfill_set_aside = 0)
+    - current_pool()'s and previous_pool()'s shared read, unchanged in
+    contract since before the ASX extension existed. current_asx_
+    extension()/current_backfill_set_aside() below are the only
+    readers of the OTHER rows. The backfill_set_aside filter (COMMIT 3
+    of instruction_top200_unrated_and_blank_replies_combined.md, 5 Oct
+    2026) is a no-op with the TOP200_BACKFILL_LIVE switch OFF - no row
+    is ever saved with that column True in that state, so every caller
+    of current_pool()/previous_pool() is byte-identical to before this
+    commit."""
     with _conn() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT * FROM top100_pool WHERE as_of = ? AND asx_extension = 0 ORDER BY value_score DESC",
+            "SELECT * FROM top100_pool WHERE as_of = ? AND asx_extension = 0 "
+            "AND backfill_set_aside = 0 ORDER BY value_score DESC",
             (as_of,),
         ).fetchall()
     return [dict(r) for r in rows]
@@ -589,6 +658,31 @@ def current_asx_extension():
     return [dict(r) for r in rows]
 
 
+def current_backfill_set_aside():
+    """COMMIT 3 of instruction_top200_unrated_and_blank_replies_
+    combined.md (5 Oct 2026, Director-directed, switch TOP200_
+    BACKFILL_LIVE) - the SET-ASIDE rows only (backfill_set_aside = 1)
+    for the latest as_of, Value Score descending. [] with the switch
+    OFF (no row is ever saved with this column True in that state), or
+    once a selection has run with the switch ON but nothing was set
+    aside. NEVER returned by current_pool()/previous_pool()/current_
+    asx_extension() - this is the only reader of these rows. Each row
+    carries its own "backfill_set_aside_status" ("unrated_model" or
+    "unrated_failed") so the public page's "Not rated" section can
+    sort a set-aside company into the right one of its two groups
+    without recomputing company_status()."""
+    as_of = latest_as_of()
+    if not as_of:
+        return []
+    with _conn() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM top100_pool WHERE as_of = ? AND backfill_set_aside = 1 ORDER BY value_score DESC",
+            (as_of,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # -----------------------------------------------------------------
 # Scores (AI qualitative scoring cache).
 # -----------------------------------------------------------------
@@ -598,7 +692,7 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
                 current_headwind=None, market_structure=None, market_structure_comment=None,
                 one_foot_hurdle=None, one_foot_comment=None, most_recent_quarter=None,
                 munger_quality=None, munger_comment=None, big_wave=None, big_wave_comment=None,
-                degenerate_accepted=False, matched_by=None):
+                degenerate_accepted=False, matched_by=None, schema_mode=None):
     """Upserts one ticker's AI score for (quarter, model,
     rubric_version) - rubric_version (top100_engine.RUBRIC_VERSION) is
     part of the cache key/PK (see _migrate_scores_schema_v2()'s own
@@ -667,7 +761,15 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
     was recorded under the same reason (see _whole_response_is_
     degenerate()'s own docstring) - None for a caller that doesn't pass
     it (e.g. a pre-existing row, or a save made outside the batch-
-    ingest path)."""
+    ingest path).
+    `schema_mode` (COMMIT 4 of instruction_top200_unrated_and_blank_
+    replies_combined.md, 5 Oct 2026): "legacy" or "ticker_first" -
+    top100_engine.top200_schema_mode()'s own reading AT THE TIME this
+    request was actually submitted (never re-read at ingest time - see
+    poll_and_ingest_batch()'s own docstring for why). None for a caller
+    that doesn't pass it; every pre-existing row reads NULL here, and
+    the display layer treats NULL/None the same as "legacy" (the task's
+    own "existing rows are not rewritten and count as legacy" rule)."""
     with _conn() as conn:
         conn.execute(
             """INSERT INTO top100_scores
@@ -676,8 +778,8 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
                   market_structure, market_structure_comment,
                   one_foot_hurdle, one_foot_comment, most_recent_quarter,
                   munger_quality, munger_comment, big_wave, big_wave_comment,
-                  degenerate_accepted, matched_by, prompt, raw_response, scored_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  degenerate_accepted, matched_by, schema_mode, prompt, raw_response, scored_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(ticker, quarter, model, rubric_version) DO UPDATE SET
                  dims_json = excluded.dims_json,
                  not_rated = excluded.not_rated,
@@ -695,6 +797,7 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
                  big_wave_comment = excluded.big_wave_comment,
                  degenerate_accepted = excluded.degenerate_accepted,
                  matched_by = excluded.matched_by,
+                 schema_mode = excluded.schema_mode,
                  prompt = excluded.prompt,
                  raw_response = excluded.raw_response,
                  scored_at = excluded.scored_at""",
@@ -702,7 +805,7 @@ def save_score(ticker, quarter, model, rubric_version, dims, not_rated,
              inversion_scenario, inversion_severity, current_headwind,
              market_structure, market_structure_comment, one_foot_hurdle, one_foot_comment,
              most_recent_quarter, munger_quality, munger_comment, big_wave, big_wave_comment,
-             int(bool(degenerate_accepted)), matched_by, prompt, raw_response,
+             int(bool(degenerate_accepted)), matched_by, schema_mode, prompt, raw_response,
              datetime.now(timezone.utc).isoformat()),
         )
 
@@ -931,21 +1034,41 @@ def clear_batch_state():
 # TOP100_FAILURE_* constants docstring for the full root cause.
 # -----------------------------------------------------------------
 
-def record_score_failure(ticker, model, rubric_version, reason):
+def record_score_failure(ticker, model, rubric_version, reason, most_recent_quarter=None,
+                          schema_mode=None):
     """Upserts one failure for (ticker, model, rubric_version) -
     increments `attempts` (starts at 1 on the first failure), refreshes
     `failed_at` to now, and overwrites `reason` with the latest one
     (only the most recent failure reason is kept; the point of this
-    table is retry gating, not a full failure history)."""
+    table is retry gating, not a full failure history).
+
+    `most_recent_quarter` (COMMIT 2 of instruction_top200_unrated_and_
+    blank_replies_combined.md, 5 Oct 2026) - the pooled row's own value
+    AT THE TIME of this failure, stored so top100_engine._failure_
+    reentry_reason() can apply the same new_results trigger a score row
+    gets. A None here NEVER blanks out a previously recorded value
+    (COALESCE against the existing row) - only a real value ever
+    overwrites it, same back-compat stance as every other nullable
+    column added to this table's sibling top100_scores.
+
+    `schema_mode` (COMMIT 4, same instruction) - the mode top100_
+    engine.top200_schema_mode() read at submission time for the request
+    this failure came from. Also COALESCE-preserved rather than blanked
+    by an omitted later call, same reasoning as most_recent_quarter."""
     with _conn() as conn:
         conn.execute(
-            """INSERT INTO top100_score_failures (ticker, model, rubric_version, failed_at, reason, attempts)
-                 VALUES (?, ?, ?, ?, ?, 1)
+            """INSERT INTO top100_score_failures
+                 (ticker, model, rubric_version, failed_at, reason, attempts,
+                  most_recent_quarter, schema_mode)
+                 VALUES (?, ?, ?, ?, ?, 1, ?, ?)
                ON CONFLICT(ticker, model, rubric_version) DO UPDATE SET
                  failed_at = excluded.failed_at,
                  reason = excluded.reason,
-                 attempts = top100_score_failures.attempts + 1""",
-            (ticker, model, rubric_version, datetime.now(timezone.utc).isoformat(), reason),
+                 attempts = top100_score_failures.attempts + 1,
+                 most_recent_quarter = COALESCE(excluded.most_recent_quarter, top100_score_failures.most_recent_quarter),
+                 schema_mode = COALESCE(excluded.schema_mode, top100_score_failures.schema_mode)""",
+            (ticker, model, rubric_version, datetime.now(timezone.utc).isoformat(), reason,
+             most_recent_quarter, schema_mode),
         )
 
 
@@ -962,17 +1085,22 @@ def clear_score_failure(ticker, model, rubric_version):
 
 
 def score_failures_for_model(model, rubric_version):
-    """{ticker: {"failed_at", "reason", "attempts"}, ...} for every
-    ticker with a recorded failure under this exact (model, rubric_
-    version) - one bulk read for top100_engine._unscored_tickers() to
-    filter against, rather than a query per pooled ticker."""
+    """{ticker: {"failed_at", "reason", "attempts", "most_recent_quarter",
+    "schema_mode"}, ...} for every ticker with a recorded failure under
+    this exact (model, rubric_version) - one bulk read for top100_
+    engine._unscored_tickers() to filter against, rather than a query
+    per pooled ticker. most_recent_quarter (COMMIT 2) and schema_mode
+    (COMMIT 4) are each None for any row saved before that column
+    existed or by a caller that didn't pass it."""
     with _conn() as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT * FROM top100_score_failures WHERE model = ? AND rubric_version = ?",
             (model, rubric_version),
         ).fetchall()
-    return {r["ticker"]: {"failed_at": r["failed_at"], "reason": r["reason"], "attempts": r["attempts"]}
+    return {r["ticker"]: {"failed_at": r["failed_at"], "reason": r["reason"], "attempts": r["attempts"],
+                           "most_recent_quarter": r["most_recent_quarter"],
+                           "schema_mode": r["schema_mode"]}
             for r in rows}
 
 
@@ -1117,6 +1245,36 @@ def expected_tickers_for_batch(batch_id):
     for custom_id, entry in raw.items():
         entrants = (entry or {}).get("entrants") if isinstance(entry, dict) else None
         out[custom_id] = sorted(entrants.keys()) if entrants else []
+    return out
+
+
+def schema_mode_for_batch(batch_id):
+    """{custom_id: schema_mode, ...} for the given batch_id, from the
+    same custom_id_map_json that expected_tickers_for_batch() reads -
+    or None if that batch's row has no custom_id_map_json (ingested
+    before this column existed, or batch_id not found at all).
+
+    A custom_id entry written before COMMIT 4 of instruction_top200_
+    unrated_and_blank_replies_combined.md has no "schema_mode" key at
+    all (it was submitted under legacy-only code) - that entry reads
+    as "legacy" here, same as top100_engine.top200_schema_mode()'s own
+    default, so the Batch inspector's schema_mode/packed_or_solo
+    columns are correct for historical batches without a special
+    case."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT custom_id_map_json FROM top100_ingest_log WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+    if not row or not row[0]:
+        return None
+    try:
+        raw = json.loads(row[0])
+    except (TypeError, ValueError):
+        return None
+    out = {}
+    for custom_id, entry in raw.items():
+        out[custom_id] = (entry or {}).get("schema_mode", "legacy") if isinstance(entry, dict) else "legacy"
     return out
 
 
