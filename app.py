@@ -23833,7 +23833,7 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
     _prog_df = pd.DataFrame(_prog_rows)
     st.dataframe(
         _prog_df.style
-        .apply(lambda col: [(f"color: {portfolio_health_engine.score_color(v)}; font-weight:700" if v is not None else "")
+        .apply(lambda col: [(f"color: {portfolio_health_engine.progress_color(v)}; font-weight:700" if v is not None else "")
                              for v in _raw_progress], subset=["Progress"]),
         width='stretch', hide_index=True,
     )
@@ -24292,7 +24292,7 @@ def _render_portfolio_progress_tab(active_portfolio, _holdings, _analyses):
     _df = pd.DataFrame(_rows)
     st.dataframe(
         _df.style
-        .apply(lambda col: [(f"color: {portfolio_health_engine.score_color(v)}; font-weight:700" if v is not None else "")
+        .apply(lambda col: [(f"color: {portfolio_health_engine.progress_color(v)}; font-weight:700" if v is not None else "")
                              for v in _raw_progress_summary], subset=["Progress"]),
         width='stretch', hide_index=True,
     )
@@ -24308,7 +24308,8 @@ def _render_portfolio_progress_tab(active_portfolio, _holdings, _analyses):
 
     _sc1, _sc2 = st.columns([1, 2])
     with _sc1:
-        st.markdown(portfolio_health_engine.big_score_html("Progress Score", _progress["overall"]),
+        st.markdown(portfolio_health_engine.big_score_html(
+            "Progress Score", _progress["overall"], color_fn=portfolio_health_engine.progress_color),
                      unsafe_allow_html=True)
         st.caption(_progress["verdict"])
     with _sc2:

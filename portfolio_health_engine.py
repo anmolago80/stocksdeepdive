@@ -139,6 +139,27 @@ def score_color(score):
     return "#d03b3b"
 
 
+def progress_color(score):
+    """PART C STEP C1 (Director, 6 Oct 2026, instruction_portfolio_
+    scoring_and_currency_table.md): Progress's OWN colour, driven by
+    the SAME two constants as its own verdict (compute_progress()'s
+    PROGRESS_VERDICT_DOWN/PROGRESS_VERDICT_UP) - never score_color()'s
+    generic Health bands (STATUS_WARN=50/STATUS_GOOD=70), which could
+    disagree with the verdict for any score between 45 and 50 (e.g.
+    47: red under score_color() since 47 < STATUS_WARN, but "Roughly
+    flat" under the verdict since 47 >= PROGRESS_VERDICT_DOWN - the
+    live CSL.AX report, reproduced exactly). Health's own colouring
+    (score_color(), used for Health/News Risk/Moat) is a separate
+    function, completely untouched by this step."""
+    if score is None:
+        return "#9aa0a6"
+    if score < PROGRESS_VERDICT_DOWN:
+        return "#d03b3b"
+    if score >= PROGRESS_VERDICT_UP:
+        return "#0ca30c"
+    return "#e0912f"
+
+
 # ---------------------------------------------------------------------
 # Live data fetch
 # ---------------------------------------------------------------------
@@ -1131,8 +1152,14 @@ def compute_progress(snapshot, baseline, kind, buy_price, buy_date=None):
 # the same numbered, colour-banded bar list directly as HTML).
 # ---------------------------------------------------------------------
 
-def big_score_html(label, score, suffix="/100"):
-    color = score_color(score)
+def big_score_html(label, score, suffix="/100", color_fn=score_color):
+    """color_fn (PART C STEP C1, Director, 6 Oct 2026): defaults to
+    score_color() - every pre-existing caller (Health, News Risk)
+    renders byte-identical to before this step. The Progress tab's own
+    big score tile passes color_fn=progress_color so its colour is
+    driven by the SAME bands as its own verdict, never the generic
+    Health bands."""
+    color = color_fn(score)
     value = f"{score:.0f}" if score is not None else "–"
     return (
         "<div style='margin:4px 0 10px;'>"
