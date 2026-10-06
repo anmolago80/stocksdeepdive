@@ -4234,7 +4234,7 @@ EN = {
     # plain line naming why, instead of the section silently vanishing.
     "currency_risk.mos_view_unavailable_no_valuation": "No stored valuation for {ticker} yet.",
     "currency_risk.mos_view_unavailable_no_currency": (
-        "We don't have {ticker}'s trading currency on file yet, so a currency view isn't available."
+        "We couldn't confirm {ticker}'s trading currency right now, so a currency view isn't available."
     ),
     "currency_risk.mos_view_unavailable_same_currency": "{ticker} is priced in your home currency.",
     "currency_risk.mos_view_unavailable_currency_mismatch": (
@@ -7761,7 +7761,7 @@ ES = {
     "currency_risk.mos_view_close_button": "Cerrar",
     "currency_risk.mos_view_unavailable_no_valuation": "Todavía no hay una valoración guardada para {ticker}.",
     "currency_risk.mos_view_unavailable_no_currency": (
-        "Todavía no tenemos registrada la moneda de cotización de {ticker}, por lo que "
+        "No pudimos confirmar la moneda de cotización de {ticker} en este momento, por lo que "
         "la vista en tu moneda no está disponible."
     ),
     "currency_risk.mos_view_unavailable_same_currency": "{ticker} cotiza en tu moneda local.",

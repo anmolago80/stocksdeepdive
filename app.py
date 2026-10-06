@@ -24326,6 +24326,62 @@ def page_top100():
     top100_render.render_top100_page(lang=st.session_state.get("lang", "en"))
 
 
+def _resolve_ticker_currency_live(ticker):
+    """Fix (Director, 6 Oct 2026, PART A STEP A1 of instruction_
+    portfolio_scoring_and_currency_table.md): ONE source of truth for a
+    ticker's own trading currency on the Currency Risk page - the SAME
+    function the Deep Dive currency note reads it from (A0.2 of that
+    instruction's report): deep_dive_engine.analyze(), whose own
+    "currency" field (deep_dive_engine.py's own "currency": info.get(
+    "currency") or "-") already goes through fundamentals_data.
+    normalize_pence_quote() internally, so a London (GBp-quoted)
+    ticker correctly comes back "GBP", never the raw pence code.
+    Deliberately NOT read from snapshot_store - no production snapshot
+    row has ever stored a currency field, under any key (this
+    instruction's own STEP A0 finding); the Director's own instruction
+    for this step is explicit: "do not add a new stored field for
+    this."
+
+    live_data=False, enable_social=False: this page has no use for
+    Discovery's Google Trends/NewsAPI/StockTwits live signals, and
+    those two flags are confirmed (deep_dive_engine.py's own analyze())
+    to gate ONLY Discovery - never mos/currency/intrinsic_value - so
+    this is a strictly cheaper call with an identical currency (and,
+    incidentally, MOS) result to the Deep Dive page's own live_data=
+    True default. get_price_history/get_ticker_info are both this
+    module's @st.cache_data(ttl=1800)-shared caches (the same ones the
+    Deep Dive page itself uses) - when a visitor arrives here having
+    just viewed this exact ticker's Deep Dive, both network fetches are
+    a cache hit; only the CPU-bound DCF/quality pass re-runs. Cached a
+    second time here, in st.session_state per ticker for the life of
+    this session, so neither the jump-time preset below nor render_
+    currency_risk_page()'s own render call ever invokes analyze() twice
+    for the same ticker in the same session.
+
+    Returns "" (never a guess) when the ticker couldn't be analyzed at
+    all (bad symbol, fetch failure) or came back with the explicit
+    "no currency on file" sentinel ("-") deep_dive_engine.py's own
+    field uses."""
+    _cache = st.session_state.setdefault("_cr_ticker_currency_cache", {})
+    if ticker in _cache:
+        return _cache[ticker]
+    currency = ""
+    try:
+        _dd = deep_dive_engine.analyze(
+            ticker, get_price_history, get_ticker_info, get_cashflow_df,
+            get_price_history_failure_kind=get_price_history_failure_kind,
+            live_data=False, enable_social=False,
+        )
+        if not _dd.get("error"):
+            currency = (_dd.get("currency") or "").upper()
+            if currency == "-":
+                currency = ""
+    except Exception:
+        currency = ""
+    _cache[ticker] = currency
+    return currency
+
+
 def page_currency_risk():
     """💱 Currency Risk tab (25 Sep 2026, owner-approved mock, "headwind_
     and_currency_risk_mock.html", section ②): a public, free, described-
@@ -24390,19 +24446,28 @@ def page_currency_risk():
     # (owner, home currency AUD, INTU) showed this jump reaching the
     # page correctly (no session loss) but the table still not showing.
     # Root cause: _jump_ticker used to be set ONLY when the ticker's own
-    # trading currency could be resolved here (_jump_quote truthy) - but
-    # NO production snapshot row stores a currency field at all (see
-    # this commit's own report), so that condition never actually holds
-    # today, for ANY ticker. "a ticker was requested" and "we could
-    # resolve its trading currency enough to preset the picker" are two
-    # different things; this now sets _jump_ticker from the URL alone
-    # (still gated on signed-in/visible/home-currency-set/not-already-
-    # applied, exactly as before), and only the cr_base/cr_quote PRESET
-    # stays conditional on actually resolving a currency. This makes
-    # _render_mos_view_table() always get called for a requested ticker,
-    # so its own new "never show nothing" fix (currency_risk_render.py)
-    # can actually explain the gap instead of this function silently
-    # swallowing the jump before it ever reaches that code.
+    # trading currency could be resolved here - but that used to read
+    # snapshot_store's own stored row, which NEVER carries a currency
+    # field at all (see the 6 Oct 2026 report), so that condition never
+    # actually held, for ANY ticker. "a ticker was requested" and "we
+    # could resolve its trading currency enough to preset the picker"
+    # are two different things; this now sets _jump_ticker from the URL
+    # alone (still gated on signed-in/visible/home-currency-set/not-
+    # already-applied, exactly as before), and only the cr_base/
+    # cr_quote PRESET stays conditional on actually resolving a
+    # currency. This makes _render_mos_view_table() always get called
+    # for a requested ticker, so its own "never show nothing" fix
+    # (currency_risk_render.py) can actually explain the gap instead of
+    # this function silently swallowing the jump before it ever reaches
+    # that code.
+    #
+    # Fix (Director, 6 Oct 2026, instruction_portfolio_scoring_and_
+    # currency_table.md, PART A STEP A1): the ticker's own currency now
+    # comes from _resolve_ticker_currency_live() - the SAME function
+    # the Deep Dive note itself uses (one source of truth, per that
+    # instruction) - never from the stored snapshot row, which never
+    # carried this field in the first place and which the Director's
+    # own instruction says not to add a stored field for.
     _url_ticker = (st.query_params.get("ticker") or "").strip().upper()
     _jump_ticker = None
     if (_email and _home_currency and _url_ticker
@@ -24411,15 +24476,25 @@ def page_currency_risk():
         _jump_ticker = _url_ticker
         if _home_currency in currency_risk_engine.CURRENCIES:
             st.session_state["cr_base"] = _home_currency
-        _jump_snap = (snapshot_store.get_snapshot(_url_ticker) or {}).get("data") or {}
-        _jump_quote = (_jump_snap.get("currency") or "").upper()
+        _jump_quote = _resolve_ticker_currency_live(_url_ticker)
         if _jump_quote and _jump_quote in currency_risk_engine.CURRENCIES:
             st.session_state["cr_quote"] = _jump_quote
+
+    # Resolved once more here (session-cached above, so this is a no-op
+    # re-read rather than a second analyze() call whenever the jump
+    # block above just ran for this same ticker) for whichever ticker
+    # ends up active - including a ticker PERSISTED from an earlier
+    # jump this session, with no fresh _url_ticker on this rerun at
+    # all, which the jump block above never touches.
+    _active_ticker_now = _jump_ticker or st.session_state.get("cr_active_ticker")
+    _active_ticker_currency = (
+        _resolve_ticker_currency_live(_active_ticker_now) if _active_ticker_now else ""
+    )
 
     currency_risk_render.render_currency_risk_page(
         lang=st.session_state.get("lang", "en"),
         default_base=_home_currency, jump_ticker=_jump_ticker,
-        is_owner=_is_owner,
+        is_owner=_is_owner, active_ticker_currency=_active_ticker_currency,
     )
 
 

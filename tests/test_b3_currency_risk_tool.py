@@ -17,26 +17,31 @@ engine.mos_view()'s own (single source of truth, re-confirmed one
 layer up from test_b2_currency_view_calc.py's own proof against
 currency_risk_engine.position_impact() directly).
 
-Fix (Director, 6 Oct 2026, live-bug follow-up): a live report (owner,
-home currency AUD, INTU) showed the table never appearing even though
-the jump reached the page correctly. Root cause, confirmed from
-source: _seed_snapshot() in THIS file used to write {"mos_pct":...,
-"currency":...} directly - the public, lowercase key shape - but NO
-real production snapshot row is ever shaped that way. Both real
-producers (nightly_scan.analyze_ticker_lite(), app.py's own
-_save_live_snapshot() live-Deep-Dive-view hook) write margin of safety
-under "MOS %" (capitalised), and NEITHER ever writes a currency field
-at all, under any key. This file's own fixtures were therefore testing
-an idealised shape that doesn't exist in production, which is exactly
-why this bug shipped undetected. _seed_snapshot() now writes the real
-"MOS %" key; its `currency` parameter defaults to None/omitted
-entirely, matching today's actual gap, and CHECK 10/11 below test
-against exactly that - a stored row with no currency field at all,
-and a ticker with no stored row at all. Checks that still pass an
-explicit `currency` (5, 7, 9c) are clearly marked as exercising the
-table's own rendering logic for the state AFTER the proposed currency-
-storage fix lands (this commit's own report, item 3) - a DIFFERENT,
-narrower claim than "this is what a real snapshot looks like today."
+Fix history (full account in this session's own reports):
+A live report (owner, home currency AUD, INTU) first showed the table
+never appearing even though the jump reached the page correctly. Root
+cause #1, confirmed from source: _seed_snapshot() in THIS file used to
+write {"mos_pct":..., "currency":...} directly - the public, lowercase
+key shape - but NO real production snapshot row is ever shaped that
+way; both real producers (nightly_scan.analyze_ticker_lite(), app.py's
+own _save_live_snapshot() live-Deep-Dive-view hook) write margin of
+safety under "MOS %" (capitalised), never "mos_pct". _seed_snapshot()
+now writes the real "MOS %" key.
+
+A SECOND live report (same owner/ticker, after the first fix) showed
+the table STILL not appearing. Root cause #2: NEITHER real producer
+EVER writes a currency field to the stored row, under any key at all
+- not a naming mismatch like MOS, a genuine storage gap. Per the
+Director's instruction_portfolio_scoring_and_currency_table.md, PART A
+STEP A1, this is fixed WITHOUT adding a stored field: the ticker's own
+trading currency is now resolved LIVE, via the SAME function
+(deep_dive_engine.analyze()) the Deep Dive currency note itself reads
+its own currency from - app.py's _resolve_ticker_currency_live().
+Every check below that needs a resolved currency now mocks deep_dive_
+engine.analyze() (via _mock_live_currency(), see below) rather than
+seeding a currency onto the stored snapshot row - matching exactly how
+production now resolves it. _seed_snapshot()'s own `currency` kwarg
+was removed entirely (it no longer does anything in production).
 
 ALL FIXTURES IN THIS FILE ARE SYNTHETIC - this sandbox has no outbound
 network access, same disclosure as every other fixture-based test in
@@ -58,6 +63,7 @@ os.environ["RAILWAY_VOLUME_MOUNT_PATH"] = TESTVOL
 import account_currency_store as acs
 import currency_risk_engine as cre
 import currency_view_engine as cve
+import deep_dive_engine
 import snapshot_store
 
 if os.path.exists(acs.DB_PATH):
@@ -91,7 +97,7 @@ _FAKE_STATS = {
 }
 
 
-def _seed_snapshot(ticker, mos_pct, currency=None):
+def _seed_snapshot(ticker, mos_pct):
     """Mirrors the REAL shape a stored snapshot row has: "MOS %"
     (capitalised - the same key both nightly_scan.analyze_ticker_lite()
     and app.py's _save_live_snapshot() live hook use), never the
@@ -99,15 +105,41 @@ def _seed_snapshot(ticker, mos_pct, currency=None):
     (that name only exists after going through snapshot_store.
     public_view(), which currency_risk_render.py's _render_mos_view_
     table() now correctly calls - see this file's own module docstring
-    for why the OLD version of this helper hid the live bug).
-    `currency` defaults to None/omitted entirely, matching TODAY's real
-    gap - NEITHER real producer ever writes a currency field, under
-    any key. Passing one explicitly simulates the state AFTER this
-    commit's own proposed (not-yet-built) fix lands."""
-    row = {"Ticker": ticker, "MOS %": mos_pct}
-    if currency is not None:
-        row["currency"] = currency
-    snapshot_store.save_snapshot(ticker, "S&P 500", row)
+    for why the OLD version of this helper hid the live bug). Carries
+    NO currency field, matching today's real production shape exactly
+    - currency is never read from this stored row any more (PART A
+    STEP A1); see _mock_live_currency() below for how a test controls
+    the ticker's resolved currency instead."""
+    snapshot_store.save_snapshot(ticker, "S&P 500", {"Ticker": ticker, "MOS %": mos_pct})
+
+
+# PART A STEP A1 (Director, 6 Oct 2026, instruction_portfolio_scoring_
+# and_currency_table.md): the ticker's own trading currency is now
+# resolved LIVE by app.py's _resolve_ticker_currency_live(), which calls
+# deep_dive_engine.analyze() - the SAME function the Deep Dive currency
+# note itself reads its own currency from (one source of truth). Tests
+# control this by mocking deep_dive_engine.analyze() directly (never a
+# raw reassignment - mock.patch.object only, scoped, so it can never
+# leak across AppTest scripts in this same process) to return a plain
+# dict shaped exactly like that real function's own return value:
+# {"error": ..., "currency": ...}. A ticker absent from
+# _LIVE_CURRENCY_BY_TICKER simulates deep_dive_engine.analyze() being
+# unable to analyze it at all (bad symbol / fetch failure) - the same
+# "error" key every real caller of analyze() already checks.
+_LIVE_CURRENCY_BY_TICKER = {}
+
+
+def _fake_analyze(ticker, *_args, **_kwargs):
+    if ticker in _LIVE_CURRENCY_BY_TICKER:
+        return {"error": None, "ticker": ticker, "currency": _LIVE_CURRENCY_BY_TICKER[ticker]}
+    return {"error": f"No price history found for '{ticker}'.", "error_kind": "not_found",
+            "currency": None}
+
+
+def _mock_live_currency():
+    """One mock.patch.object(...), reused by every helper below
+    alongside the existing cre.get_fx_history/period_stats mocks."""
+    return mock.patch.object(deep_dive_engine, "analyze", side_effect=_fake_analyze)
 
 
 def _run_page(email, extra_env=None, jump=None):
@@ -151,6 +183,7 @@ app.page_currency_risk()
     _patches = [
         mock.patch.object(cre, "get_fx_history", return_value=_FAKE_HISTORY),
         mock.patch.object(cre, "period_stats", return_value=_FAKE_STATS),
+        _mock_live_currency(),
     ]
     for p in _patches:
         p.start()
@@ -247,9 +280,9 @@ check("no jump ticker: the 'Margin of safety, ... view' heading never appears",
 # table (page_currency_risk() only honours the jump for a signed-in,
 # visible visitor in the first place).
 # ======================================================================
-_seed_snapshot("AAPL", 66.1, "USD")
-_at4 = _run_page(None, jump={"ticker": "AAPL", "base": "AUD", "quote": "USD"},
-                 extra_env={"CURRENCY_VIEW_LIVE": "1"})
+_seed_snapshot("AAPL", 66.1)
+_LIVE_CURRENCY_BY_TICKER["AAPL"] = "USD"
+_at4 = _run_page(None, jump={"ticker": "AAPL"}, extra_env={"CURRENCY_VIEW_LIVE": "1"})
 check("signed out, even with a jump present: no extra table",
       "Margin of safety," not in _page_text(_at4))
 print("[b3_no_ticker_no_table] without a ticker, or signed out, no extra table ever "
@@ -258,9 +291,12 @@ print("[b3_no_ticker_no_table] without a ticker, or signed out, no extra table e
 # ======================================================================
 # CHECK 5: WITH a ticker, signed in, home currency set, visible -> the
 # extra table DOES appear, and its own numbers equal cve.mos_view()'s.
+# AAPL's currency ("USD") comes from _fake_analyze() (deep_dive_engine.
+# analyze()'s own real return shape), per _LIVE_CURRENCY_BY_TICKER set
+# just above - the live-resolution path PART A STEP A1 introduced.
 # ======================================================================
 acs.set_home_currency("withticker@example.com", "AUD")
-_at5 = _run_page("withticker@example.com", jump={"ticker": "AAPL", "base": "AUD", "quote": "USD"},
+_at5 = _run_page("withticker@example.com", jump={"ticker": "AAPL"},
                  extra_env={"CURRENCY_VIEW_LIVE": "1"})
 _text5 = _page_text(_at5)
 check("with a ticker, signed in, home currency set: the heading appears",
@@ -278,11 +314,18 @@ print("[b3_table_with_ticker] the extra table appears with a ticker, carries the
       "over, and its own numbers equal currency_view_engine.mos_view()'s own OK")
 
 # ======================================================================
-# CHECK 6: the ticker's own currency doesn't match the current `quote`
-# -> no table, never a guessed margin.
+# CHECK 6: the ticker's own currency equals the home currency (AUD) ->
+# the PAGE's own base==quote collapse fires before the table is ever
+# reached (jump sets both cr_base and cr_quote to AUD) - confirms that
+# pre-existing "same currency -> warning, nothing past that point"
+# path is untouched by this fix. The distinct "ticker currency known,
+# matches base, base != quote" case inside _render_mos_view_table()
+# itself (a correct non-failure outcome) is covered separately by
+# CHECK 13 below, via presetting cr_base/cr_quote directly.
 # ======================================================================
-_seed_snapshot("CSL.AX", 10.0, "AUD")  # an AUD-priced ticker
-_at6 = _run_page("withticker@example.com", jump={"ticker": "CSL.AX", "base": "AUD", "quote": "AUD"},
+_seed_snapshot("CSL.AX", 10.0)  # an AUD-priced ticker
+_LIVE_CURRENCY_BY_TICKER["CSL.AX"] = "AUD"
+_at6 = _run_page("withticker@example.com", jump={"ticker": "CSL.AX"},
                  extra_env={"CURRENCY_VIEW_LIVE": "1"})
 # base == quote here -> the page itself warns and returns before any
 # table could render - confirms the "same currency -> warning, nothing
@@ -306,8 +349,10 @@ print("[b3_mismatched_currency_no_table] a ticker whose own currency doesn't mat
 # ======================================================================
 os.environ["CURRENCY_VIEW_LIVE"] = "1"
 acs.set_home_currency("persist@example.com", "AUD")
-_seed_snapshot("AAPL", 66.1, "USD")
-_seed_snapshot("MSFT", 20.0, "USD")
+_seed_snapshot("AAPL", 66.1)
+_seed_snapshot("MSFT", 20.0)
+_LIVE_CURRENCY_BY_TICKER["AAPL"] = "USD"
+_LIVE_CURRENCY_BY_TICKER["MSFT"] = "USD"
 
 _script7 = f"""
 import os, sys
@@ -324,6 +369,7 @@ app.page_currency_risk()
 _patches7 = [
     mock.patch.object(cre, "get_fx_history", return_value=_FAKE_HISTORY),
     mock.patch.object(cre, "period_stats", return_value=_FAKE_STATS),
+    _mock_live_currency(),
 ]
 for p in _patches7:
     p.start()
@@ -392,7 +438,8 @@ print("[b3_table_persists_across_reruns] a fresh session landing on the URL alon
 os.environ["CURRENCY_VIEW_LIVE"] = "1"
 _at8a_script = _script7.replace('st.session_state["email_user"] = "persist@example.com"', '')
 with mock.patch.object(cre, "get_fx_history", return_value=_FAKE_HISTORY), \
-     mock.patch.object(cre, "period_stats", return_value=_FAKE_STATS):
+     mock.patch.object(cre, "period_stats", return_value=_FAKE_STATS), \
+     _mock_live_currency():
     _at8a = AppTest.from_string(_at8a_script, default_timeout=60)
     _at8a.query_params["ticker"] = "AAPL"
     _at8a.run()
@@ -406,7 +453,8 @@ _at8b_script = _script7.replace('st.session_state["email_user"] = "persist@examp
                                  'st.session_state["email_user"] = "nonowner2@example.com"')
 acs.set_home_currency("nonowner2@example.com", "AUD")
 with mock.patch.object(cre, "get_fx_history", return_value=_FAKE_HISTORY), \
-     mock.patch.object(cre, "period_stats", return_value=_FAKE_STATS):
+     mock.patch.object(cre, "period_stats", return_value=_FAKE_STATS), \
+     _mock_live_currency():
     _at8b = AppTest.from_string(_at8b_script, default_timeout=60)
     _at8b.query_params["ticker"] = "AAPL"
     _at8b.run()
@@ -426,15 +474,16 @@ print("[b3_url_jump_never_leaks] a URL ticker is only ever applied for a visitor
 # directly, no session_state pre-seeded beyond the single query param -
 # matching a real GET /currency-risk?ticker=AAPL exactly.
 #
-# This AAPL fixture is seeded WITH a currency, deliberately - these
-# four cases are about the VISIBILITY gates (signed-out/non-owner/
-# owner/no-home-currency), a question that is orthogonal to whether
-# currency DATA happens to be available for this one ticker today. See
-# CHECK 10/11 right after this block for the real, currently-true
-# shape (no currency field at all) and the "never show nothing"
-# fallback it now produces.
+# AAPL's currency is resolvable (set below), deliberately - these four
+# cases are about the VISIBILITY gates (signed-out/non-owner/owner/no-
+# home-currency), a question that is orthogonal to whether currency
+# data happens to be resolvable for this one ticker today. See CHECK
+# 10/11 right after this block for a ticker with no stored row at all,
+# and for a ticker whose live currency resolution itself fails - the
+# "never show nothing" fallback both now produce.
 # ======================================================================
-_seed_snapshot("AAPL", 66.1, "USD")
+_seed_snapshot("AAPL", 66.1)
+_LIVE_CURRENCY_BY_TICKER["AAPL"] = "USD"
 
 
 def _fresh_url_only(email, switch_on, ticker="AAPL"):
@@ -482,7 +531,8 @@ app.page_currency_risk()
     else:
         os.environ.pop("CURRENCY_VIEW_LIVE", None)
     with mock.patch.object(cre, "get_fx_history", return_value=_FAKE_HISTORY), \
-         mock.patch.object(cre, "period_stats", return_value=_FAKE_STATS):
+         mock.patch.object(cre, "period_stats", return_value=_FAKE_STATS), \
+         _mock_live_currency():
         at = AppTest.from_string(script, default_timeout=60)
         at.query_params["ticker"] = ticker
         at.run()
@@ -550,37 +600,41 @@ print("[b3_no_stored_row_never_silent] a ticker that was never scanned/viewed sh
       "plain explanatory line, never nothing OK")
 
 # ======================================================================
-# CHECK 11 (Director's 6 Oct 2026 live-bug follow-up): a ticker WITH a
-# stored row and a real margin of safety, but NO currency field at
-# all - TODAY's real production shape (this is the actual live INTU
-# bug, reproduced exactly: neither nightly_scan.py nor app.py's
-# _save_live_snapshot() ever writes a currency field). The owner sees
-# the exact failed condition; a non-owner (even though the switch is
-# live, so they too reach this far) sees only the plain line.
+# CHECK 11 (Director's 6 Oct 2026 PART A STEP A1): a ticker WITH a
+# stored row and a real margin of safety, but whose LIVE currency
+# resolution fails - deep_dive_engine.analyze() returns an "error" for
+# it (a delisted symbol, a fetch failure), via _fake_analyze()'s own
+# "ticker absent from _LIVE_CURRENCY_BY_TICKER" branch, never seeding
+# an entry for "NOCCY" here. This is the live-resolution-path's own
+# "can't confirm it right now" condition - the real replacement for
+# the old "no currency field in storage" scenario, now that currency
+# never comes from storage at all. The owner sees the exact failed
+# condition; a non-owner (even though the switch is live, so they too
+# reach this far) sees only the plain line.
 # ======================================================================
-_seed_snapshot("NOCCY", 12.3)  # no currency arg at all - today's real gap
+_seed_snapshot("NOCCY", 12.3)  # a real stored MOS; "NOCCY" is deliberately
+                               # never added to _LIVE_CURRENCY_BY_TICKER
 acs.set_home_currency(_OWNER, "AUD")
 _at11_owner = _fresh_url_only(_OWNER, switch_on=True, ticker="NOCCY")
 _text11_owner = _page_text(_at11_owner)
-check("stored row, real MOS, but no currency field (today's real shape): no table",
+check("stored row, real MOS, but live currency resolution fails: no table",
       "Margin of safety," not in _text11_owner)
-check("the plain line names the real gap - the ticker's trading currency isn't on file",
-      "We don't have NOCCY's trading currency on file yet" in _text11_owner)
+check("the plain line says the currency couldn't be confirmed right now",
+      "We couldn't confirm NOCCY's trading currency right now" in _text11_owner)
 check("the OWNER sees the exact failed condition as an extra diagnostic caption",
       "[Owner-only diagnostic]" in _text11_owner
-      and "no 'currency' field" in _text11_owner)
+      and "_resolve_ticker_currency_live()" in _text11_owner)
 
 acs.set_home_currency("check11b@example.com", "AUD")
 _at11_nonowner = _fresh_url_only("check11b@example.com", switch_on=True, ticker="NOCCY")
 _text11_nonowner = _page_text(_at11_nonowner)
 check("a non-owner sees the same plain line...",
-      "We don't have NOCCY's trading currency on file yet" in _text11_nonowner)
+      "We couldn't confirm NOCCY's trading currency right now" in _text11_nonowner)
 check("...but never the owner-only diagnostic caption",
       "[Owner-only diagnostic]" not in _text11_nonowner)
-print("[b3_no_currency_field_today] a stored row with a real margin of safety but no "
-      "currency field - today's actual production shape, and the exact live INTU bug - "
-      "shows a plain line for everyone and the exact failed condition for the owner "
-      "only OK")
+print("[b3_live_currency_resolution_fails] a stored row with a real margin of safety "
+      "but a failed LIVE currency resolution shows a plain line for everyone and the "
+      "exact failed condition for the owner only OK")
 
 # ======================================================================
 # CHECK 12/13 (Director's 6 Oct 2026 follow-up): the two remaining
@@ -592,8 +646,10 @@ print("[b3_no_currency_field_today] a stored row with a real margin of safety bu
 # jump involved), the only way to decouple the page's own base/quote
 # resolution from these two specific branches inside the table itself.
 # ======================================================================
-_seed_snapshot("HSBA.L", 8.0, "GBP")  # a GBP-priced ticker, matches neither AUD nor USD
-_seed_snapshot("BHP.AX", 15.0, "AUD")  # an AUD-priced (home-market) ticker
+_seed_snapshot("HSBA.L", 8.0)  # a GBP-priced ticker, matches neither AUD nor USD
+_seed_snapshot("BHP.AX", 15.0)  # an AUD-priced (home-market) ticker
+_LIVE_CURRENCY_BY_TICKER["HSBA.L"] = "GBP"
+_LIVE_CURRENCY_BY_TICKER["BHP.AX"] = "AUD"
 
 
 def _run_with_preset_state(email, cr_base, cr_quote, cr_active_ticker, switch_on=True):
@@ -617,7 +673,8 @@ app.page_currency_risk()
     else:
         os.environ.pop("CURRENCY_VIEW_LIVE", None)
     with mock.patch.object(cre, "get_fx_history", return_value=_FAKE_HISTORY), \
-         mock.patch.object(cre, "period_stats", return_value=_FAKE_STATS):
+         mock.patch.object(cre, "period_stats", return_value=_FAKE_STATS), \
+         _mock_live_currency():
         at = AppTest.from_string(script, default_timeout=60)
         at.run()
     os.environ.pop("CURRENCY_VIEW_LIVE", None)
