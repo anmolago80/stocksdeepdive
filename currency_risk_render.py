@@ -284,50 +284,103 @@ def _render_section_c(base, quote, current_rate, average, sigma, lang):
     st.caption(_t("section_c_caption", lang))
 
 
-def _render_mos_view_table(base, quote, ticker, lang):
-    """SECTION B, COMMIT B3 (amended per the Director's 5 Oct 2026
-    follow-up) of instruction_top200_amendments_and_currency_view.md:
-    "one extra small table under section C, 'Margin of safety, {base}
-    view', with the three scenarios, the currency effect and the
-    resulting margin" - only ever called when render_currency_risk_
-    page() has an active ticker in st.session_state["cr_active_
-    ticker"] (set from a Deep Dive currency-risk note's jump, carried
-    in the URL's own ?ticker= query param rather than a one-shot
-    session key - a WebSocket reconnect between the click and this
-    page running drops session state but not the URL, per the
-    Director's own 6 Oct 2026 fix request - and PERSISTED in session
-    state from there across every later rerun of this page, e.g.
-    changing the range chips or the position-size input in section C
-    above, until the visitor closes it with the real Close button
-    below, which also drops the URL's own ?ticker=, or a different
-    jump overwrites it). Reads the ticker's own cached
-    margin of safety from snapshot_store.get_snapshot() - the same
-    scan-row read app.py's own Deep Dive page already uses for this
-    exact ticker (snapshot_store.get_snapshot(ticker)["data"]) - no
-    network call, no DCF recompute. Renders nothing (silently) if the
-    ticker has never been scanned, has no margin of safety, or its own
-    trading currency doesn't match the page's current `quote` (the
-    visitor changed the To picker away from the ticker's own currency)
-    - there is no sensible "AUD view of this ticker's margin" to show
-    in that case, and this must never guess one; the active ticker
-    itself is left alone in that case (changing `quote` back brings the
-    table straight back, rather than having silently closed it).
+def _render_mos_view_table(base, quote, ticker, lang, is_owner=False):
+    """SECTION B, COMMIT B3 (amended per the Director's 5 Oct 2026 and
+    6 Oct 2026 follow-ups) of instruction_top200_amendments_and_
+    currency_view.md: "one extra small table under section C, 'Margin
+    of safety, {base} view', with the three scenarios, the currency
+    effect and the resulting margin" - only ever called when render_
+    currency_risk_page() has an active ticker in st.session_state["cr_
+    active_ticker"] (set from a Deep Dive currency-risk note's jump,
+    carried in the URL's own ?ticker= query param rather than a one-
+    shot session key, and PERSISTED in session state from there across
+    every later rerun of this page until the visitor closes it with
+    the real Close button below, or a different jump overwrites it).
+
+    Fix (Director, 6 Oct 2026, live-bug follow-up): a live report
+    (owner, home currency AUD, INTU) showed this section rendering
+    NOTHING at all even though the jump reached this page correctly
+    (in-session, no exception). Root cause, confirmed from source: this
+    function used to read snap.get("mos_pct")/snap.get("currency")
+    directly off snapshot_store.get_snapshot()'s raw "data" dict - but
+    NEITHER key is ever written there. Both producers that ever save a
+    snapshot row (nightly_scan.analyze_ticker_lite(), and app.py's own
+    _save_live_snapshot() live-Deep-Dive-view hook) store margin of
+    safety under "MOS %" (capitalised, matching the Scanner's own
+    column), not "mos_pct" - the public, lowercase name only exists
+    after going through snapshot_store.public_view(), which this
+    function now calls instead of reading the raw dict directly, per
+    this repo's own "reuse the public-view function" convention.
+    "currency" is a different, DEEPER problem: NEITHER producer ever
+    writes a currency field to the stored row, under any key - this is
+    a genuine data-storage gap, not a naming mismatch, and is NOT fixed
+    by this commit (see this commit's own report for the proposed, not-
+    yet-built fix: carrying deep_dive_engine.analyze()'s own dd
+    ["currency"] into the stored row).
+
+    Because of that gap, this function will typically still have no
+    ticker_currency to work with today for most tickers - the fix in
+    THIS commit is that it now ALWAYS renders something when called
+    (a plain, visitor-safe line naming why the table can't show, never
+    a bare silent gap), plus an owner-only caption with the exact
+    failed condition, instead of silently returning nothing. The
+    close/dismiss behaviour is unchanged and available in every case,
+    not just when the table itself renders.
 
     cve.mos_view()'s own single-source-of-truth call into currency_
     risk_engine.position_impact() is the SAME function section C's own
     tiles above just used - never a second, independently-computed
     effect."""
     snap = (snapshot_store.get_snapshot(ticker) or {}).get("data") or {}
-    mos = snap.get("mos_pct")
+    pub = snapshot_store.public_view(snap)
+    mos = pub.get("mos_pct")
     ticker_currency = (snap.get("currency") or "").upper()
-    if mos is None or not ticker_currency or ticker_currency != quote:
-        return
-    view = cve.mos_view(mos, base, quote)
-    if not view:
-        return
+
+    view = None
+    _plain_key = None
+    _plain_kwargs = {"ticker": ticker}
+    _owner_detail = None
+    if not snap:
+        _plain_key = "mos_view_unavailable_no_valuation"
+        _owner_detail = f"snapshot_store.get_snapshot({ticker!r}) found no stored row at all"
+    elif mos is None:
+        _plain_key = "mos_view_unavailable_no_valuation"
+        _owner_detail = "stored row has no margin of safety (public_view()['mos_pct'] is None)"
+    elif not ticker_currency:
+        _plain_key = "mos_view_unavailable_no_currency"
+        _owner_detail = (
+            "stored snapshot has no 'currency' field at all - today, NO production "
+            "snapshot stores this (see this commit's report for the proposed fix)"
+        )
+    elif ticker_currency == base:
+        _plain_key = "mos_view_unavailable_same_currency"
+        _owner_detail = (
+            f"ticker currency ({ticker_currency}) equals the selected home/From "
+            f"currency ({base}) - nothing to convert, not a failure"
+        )
+    elif ticker_currency != quote:
+        _plain_key = "mos_view_unavailable_currency_mismatch"
+        _plain_kwargs["currency"] = ticker_currency
+        _owner_detail = f"ticker currency ({ticker_currency}) != selected To currency ({quote})"
+    else:
+        view = cve.mos_view(mos, base, quote)
+        if not view:
+            _plain_key = "mos_view_unavailable_no_pair"
+            _plain_kwargs["base"] = base
+            _plain_kwargs["quote"] = quote
+            _owner_detail = (
+                "currency_view_engine.mos_view() returned no view for this "
+                "base/quote pair (e.g. no FX history)"
+            )
+
     _head_col, _close_col = st.columns([5, 1])
     with _head_col:
-        st.markdown(f"#### {_t('mos_view_heading', lang, base=base, ticker=ticker)}")
+        if view is not None:
+            st.markdown(f"#### {_t('mos_view_heading', lang, base=base, ticker=ticker)}")
+        else:
+            st.caption(_t(_plain_key, lang, **_plain_kwargs))
+            if is_owner:
+                st.caption(f"[Owner-only diagnostic] {_owner_detail}")
     with _close_col:
         if st.button(_t("mos_view_close_button", lang), key=f"cr_mos_view_close_{ticker}"):
             st.session_state["cr_active_ticker"] = None
@@ -339,6 +392,8 @@ def _render_mos_view_table(base, quote, ticker, lang):
             # Close.
             st.query_params.pop("ticker", None)
             st.rerun()
+    if view is None:
+        return
     rows = []
     for key, label_key, view_val in (
         ("average", "scenario_average_label", view["view_at_average"]),
@@ -364,7 +419,7 @@ def _render_mos_view_table(base, quote, ticker, lang):
     st.caption(_t("mos_view_caption", lang, ticker=ticker, stock=quote))
 
 
-def render_currency_risk_page(lang="en", default_base=None, jump_ticker=None):
+def render_currency_risk_page(lang="en", default_base=None, jump_ticker=None, is_owner=False):
     """The Currency Risk page's full content - app.py's page_currency_
     risk() calls this after its own _content_page_shell()/_bump_page_
     view() (same split as top100_render.render_top100_page()).
@@ -381,10 +436,15 @@ def render_currency_risk_page(lang="en", default_base=None, jump_ticker=None):
     active ticker instead, which survives every rerun until the
     visitor closes it with _render_mos_view_table()'s own Close button
     or a fresh jump_ticker overwrites it with a different ticker).
-    Neither parameter changes anything else about this page - a call
-    with both left at their defaults (every pre-existing caller before
-    COMMIT B3, and every signed-out/non-owner-while-the-switch-is-off
-    visitor after it) renders byte-identical to before that commit."""
+    is_owner (Director, 6 Oct 2026 follow-up): whether THIS visitor is
+    the real owner (ai_gate.is_owner(), never just "the feature is
+    visible to them") - passed straight through to _render_mos_view_
+    table() so only the owner ever sees its diagnostic caption.
+    Neither default_base nor jump_ticker changes anything else about
+    this page - a call with both left at their defaults (every pre-
+    existing caller before COMMIT B3, and every signed-out/non-owner-
+    while-the-switch-is-off visitor after it) renders byte-identical to
+    before that commit."""
     if jump_ticker:
         st.session_state["cr_active_ticker"] = jump_ticker
     st.markdown(
@@ -431,4 +491,4 @@ def render_currency_risk_page(lang="en", default_base=None, jump_ticker=None):
 
     _active_ticker = st.session_state.get("cr_active_ticker")
     if _active_ticker:
-        _render_mos_view_table(base, quote, _active_ticker, lang)
+        _render_mos_view_table(base, quote, _active_ticker, lang, is_owner=is_owner)

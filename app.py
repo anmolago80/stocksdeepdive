@@ -24356,6 +24356,7 @@ def page_currency_risk():
     # must see the page exactly as it always has been, full stop).
     _email = paywall_engine.current_user_email()
     _home_currency = None
+    _is_owner = bool(_email) and bool(ai_gate.is_owner(_email))
     if _email and currency_view_engine.visible_to(_email, ai_gate.is_owner):
         _home_currency = account_currency_store.get_home_currency(_email)
 
@@ -24384,23 +24385,41 @@ def page_currency_risk():
     # pair and fighting the visitor's own later picker changes. A fresh
     # jump to a DIFFERENT ticker (a new URL) is still picked up, same as
     # cr_active_ticker's own "until closed or a different stock" rule.
+    #
+    # Fix (Director, 6 Oct 2026, live-bug follow-up): a live report
+    # (owner, home currency AUD, INTU) showed this jump reaching the
+    # page correctly (no session loss) but the table still not showing.
+    # Root cause: _jump_ticker used to be set ONLY when the ticker's own
+    # trading currency could be resolved here (_jump_quote truthy) - but
+    # NO production snapshot row stores a currency field at all (see
+    # this commit's own report), so that condition never actually holds
+    # today, for ANY ticker. "a ticker was requested" and "we could
+    # resolve its trading currency enough to preset the picker" are two
+    # different things; this now sets _jump_ticker from the URL alone
+    # (still gated on signed-in/visible/home-currency-set/not-already-
+    # applied, exactly as before), and only the cr_base/cr_quote PRESET
+    # stays conditional on actually resolving a currency. This makes
+    # _render_mos_view_table() always get called for a requested ticker,
+    # so its own new "never show nothing" fix (currency_risk_render.py)
+    # can actually explain the gap instead of this function silently
+    # swallowing the jump before it ever reaches that code.
     _url_ticker = (st.query_params.get("ticker") or "").strip().upper()
     _jump_ticker = None
     if (_email and _home_currency and _url_ticker
             and _url_ticker != st.session_state.get("_cr_applied_url_ticker")):
         st.session_state["_cr_applied_url_ticker"] = _url_ticker
+        _jump_ticker = _url_ticker
+        if _home_currency in currency_risk_engine.CURRENCIES:
+            st.session_state["cr_base"] = _home_currency
         _jump_snap = (snapshot_store.get_snapshot(_url_ticker) or {}).get("data") or {}
         _jump_quote = (_jump_snap.get("currency") or "").upper()
-        if _jump_quote:
-            _jump_ticker = _url_ticker
-            if _home_currency in currency_risk_engine.CURRENCIES:
-                st.session_state["cr_base"] = _home_currency
-            if _jump_quote in currency_risk_engine.CURRENCIES:
-                st.session_state["cr_quote"] = _jump_quote
+        if _jump_quote and _jump_quote in currency_risk_engine.CURRENCIES:
+            st.session_state["cr_quote"] = _jump_quote
 
     currency_risk_render.render_currency_risk_page(
         lang=st.session_state.get("lang", "en"),
         default_base=_home_currency, jump_ticker=_jump_ticker,
+        is_owner=_is_owner,
     )
 
 

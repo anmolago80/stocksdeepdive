@@ -12,12 +12,31 @@ Covers exactly the task's own listed tests:
   - the table with and without a ticker
   - the page unchanged for a signed-out visitor
 
-Plus: the table silently renders nothing when the ticker's own
-currency doesn't match the current quote picker (never a guessed
-margin), and the table's own currency-effect numbers equal
-currency_view_engine.mos_view()'s own (single source of truth,
-re-confirmed one layer up from test_b2_currency_view_calc.py's own
-proof against currency_risk_engine.position_impact() directly).
+Plus: the table's own currency-effect numbers equal currency_view_
+engine.mos_view()'s own (single source of truth, re-confirmed one
+layer up from test_b2_currency_view_calc.py's own proof against
+currency_risk_engine.position_impact() directly).
+
+Fix (Director, 6 Oct 2026, live-bug follow-up): a live report (owner,
+home currency AUD, INTU) showed the table never appearing even though
+the jump reached the page correctly. Root cause, confirmed from
+source: _seed_snapshot() in THIS file used to write {"mos_pct":...,
+"currency":...} directly - the public, lowercase key shape - but NO
+real production snapshot row is ever shaped that way. Both real
+producers (nightly_scan.analyze_ticker_lite(), app.py's own
+_save_live_snapshot() live-Deep-Dive-view hook) write margin of safety
+under "MOS %" (capitalised), and NEITHER ever writes a currency field
+at all, under any key. This file's own fixtures were therefore testing
+an idealised shape that doesn't exist in production, which is exactly
+why this bug shipped undetected. _seed_snapshot() now writes the real
+"MOS %" key; its `currency` parameter defaults to None/omitted
+entirely, matching today's actual gap, and CHECK 10/11 below test
+against exactly that - a stored row with no currency field at all,
+and a ticker with no stored row at all. Checks that still pass an
+explicit `currency` (5, 7, 9c) are clearly marked as exercising the
+table's own rendering logic for the state AFTER the proposed currency-
+storage fix lands (this commit's own report, item 3) - a DIFFERENT,
+narrower claim than "this is what a real snapshot looks like today."
 
 ALL FIXTURES IN THIS FILE ARE SYNTHETIC - this sandbox has no outbound
 network access, same disclosure as every other fixture-based test in
@@ -72,8 +91,23 @@ _FAKE_STATS = {
 }
 
 
-def _seed_snapshot(ticker, mos_pct, currency):
-    snapshot_store.save_snapshot(ticker, "S&P 500", {"ticker": ticker, "mos_pct": mos_pct, "currency": currency})
+def _seed_snapshot(ticker, mos_pct, currency=None):
+    """Mirrors the REAL shape a stored snapshot row has: "MOS %"
+    (capitalised - the same key both nightly_scan.analyze_ticker_lite()
+    and app.py's _save_live_snapshot() live hook use), never the
+    public, lowercase "mos_pct" a stored row never actually carries
+    (that name only exists after going through snapshot_store.
+    public_view(), which currency_risk_render.py's _render_mos_view_
+    table() now correctly calls - see this file's own module docstring
+    for why the OLD version of this helper hid the live bug).
+    `currency` defaults to None/omitted entirely, matching TODAY's real
+    gap - NEITHER real producer ever writes a currency field, under
+    any key. Passing one explicitly simulates the state AFTER this
+    commit's own proposed (not-yet-built) fix lands."""
+    row = {"Ticker": ticker, "MOS %": mos_pct}
+    if currency is not None:
+        row["currency"] = currency
+    snapshot_store.save_snapshot(ticker, "S&P 500", row)
 
 
 def _run_page(email, extra_env=None, jump=None):
@@ -391,6 +425,14 @@ print("[b3_url_jump_never_leaks] a URL ticker is only ever applied for a visitor
 # app.page_currency_risk() entry point - no internal function called
 # directly, no session_state pre-seeded beyond the single query param -
 # matching a real GET /currency-risk?ticker=AAPL exactly.
+#
+# This AAPL fixture is seeded WITH a currency, deliberately - these
+# four cases are about the VISIBILITY gates (signed-out/non-owner/
+# owner/no-home-currency), a question that is orthogonal to whether
+# currency DATA happens to be available for this one ticker today. See
+# CHECK 10/11 right after this block for the real, currently-true
+# shape (no currency field at all) and the "never show nothing"
+# fallback it now produces.
 # ======================================================================
 _seed_snapshot("AAPL", 66.1, "USD")
 
@@ -488,6 +530,120 @@ check("(d) the 'choose currency' prompt (COMMIT B1's own account-bar control) is
 print("[b3_gates_hold_via_url_alone] all four cases (signed out / non-owner switch-"
       "off / owner switch-off-with-home-currency / no-home-currency) behave exactly "
       "right when the page is reached by URL alone, with nothing else seeded OK")
+
+# ======================================================================
+# CHECK 10 (Director's 6 Oct 2026 live-bug follow-up, "never show
+# nothing"): a ticker with NO stored row at all - the table can't
+# show, and must never silently show nothing either. A plain line
+# explains why; a non-owner never sees the owner-only diagnostic.
+# ======================================================================
+acs.set_home_currency("check10@example.com", "AUD")
+_at10 = _fresh_url_only("check10@example.com", switch_on=True, ticker="ZZZZ_NEVER_SCANNED")
+_text10 = _page_text(_at10)
+check("ticker with NO stored row at all: no 'Margin of safety' table",
+      "Margin of safety," not in _text10)
+check("a plain line explains why (no stored valuation), not a silent gap",
+      "No stored valuation for ZZZZ_NEVER_SCANNED yet." in _text10)
+check("a non-owner never sees the owner-only diagnostic caption",
+      "[Owner-only diagnostic]" not in _text10)
+print("[b3_no_stored_row_never_silent] a ticker that was never scanned/viewed shows a "
+      "plain explanatory line, never nothing OK")
+
+# ======================================================================
+# CHECK 11 (Director's 6 Oct 2026 live-bug follow-up): a ticker WITH a
+# stored row and a real margin of safety, but NO currency field at
+# all - TODAY's real production shape (this is the actual live INTU
+# bug, reproduced exactly: neither nightly_scan.py nor app.py's
+# _save_live_snapshot() ever writes a currency field). The owner sees
+# the exact failed condition; a non-owner (even though the switch is
+# live, so they too reach this far) sees only the plain line.
+# ======================================================================
+_seed_snapshot("NOCCY", 12.3)  # no currency arg at all - today's real gap
+acs.set_home_currency(_OWNER, "AUD")
+_at11_owner = _fresh_url_only(_OWNER, switch_on=True, ticker="NOCCY")
+_text11_owner = _page_text(_at11_owner)
+check("stored row, real MOS, but no currency field (today's real shape): no table",
+      "Margin of safety," not in _text11_owner)
+check("the plain line names the real gap - the ticker's trading currency isn't on file",
+      "We don't have NOCCY's trading currency on file yet" in _text11_owner)
+check("the OWNER sees the exact failed condition as an extra diagnostic caption",
+      "[Owner-only diagnostic]" in _text11_owner
+      and "no 'currency' field" in _text11_owner)
+
+acs.set_home_currency("check11b@example.com", "AUD")
+_at11_nonowner = _fresh_url_only("check11b@example.com", switch_on=True, ticker="NOCCY")
+_text11_nonowner = _page_text(_at11_nonowner)
+check("a non-owner sees the same plain line...",
+      "We don't have NOCCY's trading currency on file yet" in _text11_nonowner)
+check("...but never the owner-only diagnostic caption",
+      "[Owner-only diagnostic]" not in _text11_nonowner)
+print("[b3_no_currency_field_today] a stored row with a real margin of safety but no "
+      "currency field - today's actual production shape, and the exact live INTU bug - "
+      "shows a plain line for everyone and the exact failed condition for the owner "
+      "only OK")
+
+# ======================================================================
+# CHECK 12/13 (Director's 6 Oct 2026 follow-up): the two remaining
+# silent-miss branches inside _render_mos_view_table() itself - ticker
+# currency known but doesn't match the current quote picker, and
+# ticker currency known and equals the home/From currency (nothing to
+# convert - a correct outcome, not a failure). Driven by presetting
+# cr_base/cr_quote/cr_active_ticker directly in session_state (no URL
+# jump involved), the only way to decouple the page's own base/quote
+# resolution from these two specific branches inside the table itself.
+# ======================================================================
+_seed_snapshot("HSBA.L", 8.0, "GBP")  # a GBP-priced ticker, matches neither AUD nor USD
+_seed_snapshot("BHP.AX", 15.0, "AUD")  # an AUD-priced (home-market) ticker
+
+
+def _run_with_preset_state(email, cr_base, cr_quote, cr_active_ticker, switch_on=True):
+    script = f"""
+import os, sys
+sys.path.insert(0, {REPO_ROOT!r})
+os.environ["RAILWAY_VOLUME_MOUNT_PATH"] = {TESTVOL!r}
+import streamlit as st
+import paywall_engine as pw
+pw._email_auth_available = lambda: True
+pw.PAYWALL_ENABLED = False
+import app
+st.session_state["email_user"] = {email!r}
+st.session_state["cr_base"] = {cr_base!r}
+st.session_state["cr_quote"] = {cr_quote!r}
+st.session_state["cr_active_ticker"] = {cr_active_ticker!r}
+app.page_currency_risk()
+"""
+    if switch_on:
+        os.environ["CURRENCY_VIEW_LIVE"] = "1"
+    else:
+        os.environ.pop("CURRENCY_VIEW_LIVE", None)
+    with mock.patch.object(cre, "get_fx_history", return_value=_FAKE_HISTORY), \
+         mock.patch.object(cre, "period_stats", return_value=_FAKE_STATS):
+        at = AppTest.from_string(script, default_timeout=60)
+        at.run()
+    os.environ.pop("CURRENCY_VIEW_LIVE", None)
+    assert not at.exception, f"_run_with_preset_state({email!r}) raised: {at.exception}"
+    return at
+
+
+acs.set_home_currency("check12@example.com", "AUD")
+_at12 = _run_with_preset_state("check12@example.com", "AUD", "USD", "HSBA.L")
+_text12 = _page_text(_at12)
+check("ticker currency (GBP) known but matches neither base (AUD) nor quote (USD): no table",
+      "Margin of safety," not in _text12)
+check("the plain line names the ticker's own currency and says which To value shows it",
+      "HSBA.L is priced in GBP - switch \"To\" to GBP to see its currency view." in _text12)
+
+acs.set_home_currency("check13@example.com", "AUD")
+_at13 = _run_with_preset_state("check13@example.com", "AUD", "USD", "BHP.AX")
+_text13 = _page_text(_at13)
+check("ticker currency (AUD) equals the home/From currency: no table (nothing to convert)",
+      "Margin of safety," not in _text13)
+check("the plain line says it's priced in the visitor's own home currency - a correct "
+      "outcome, not an error",
+      "BHP.AX is priced in your home currency." in _text13)
+print("[b3_mismatch_and_same_currency_explained] a ticker whose currency doesn't match "
+      "the current To picker, and one that matches the home currency exactly, both "
+      "explain themselves in plain language instead of vanishing OK")
 
 print()
 print(f"PASS={passed} FAIL={failed}")

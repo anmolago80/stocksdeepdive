@@ -4229,6 +4229,20 @@ EN = {
         "each scenario above - a described calculation, not a forecast."
     ),
     "currency_risk.mos_view_close_button": "Close",
+    # Fix (Director, 6 Oct 2026 live-bug follow-up): "never show nothing"
+    # when a ticker was requested but the table can't be shown - one
+    # plain line naming why, instead of the section silently vanishing.
+    "currency_risk.mos_view_unavailable_no_valuation": "No stored valuation for {ticker} yet.",
+    "currency_risk.mos_view_unavailable_no_currency": (
+        "We don't have {ticker}'s trading currency on file yet, so a currency view isn't available."
+    ),
+    "currency_risk.mos_view_unavailable_same_currency": "{ticker} is priced in your home currency.",
+    "currency_risk.mos_view_unavailable_currency_mismatch": (
+        "{ticker} is priced in {currency} - switch \"To\" to {currency} to see its currency view."
+    ),
+    "currency_risk.mos_view_unavailable_no_pair": (
+        "A currency view for {ticker} isn't available for {base}/{quote} right now."
+    ),
     "currency_risk.position_label": "Position size ({base})",
     "currency_risk.scenario_average_label": "If {base} reverts to the period average ({rate})",
     "currency_risk.scenario_plus_1sigma_label": "If {base} reaches +1σ ({rate})",
@@ -7745,6 +7759,18 @@ ES = {
         "mediante cada escenario anterior - un cálculo descrito, no una predicción."
     ),
     "currency_risk.mos_view_close_button": "Cerrar",
+    "currency_risk.mos_view_unavailable_no_valuation": "Todavía no hay una valoración guardada para {ticker}.",
+    "currency_risk.mos_view_unavailable_no_currency": (
+        "Todavía no tenemos registrada la moneda de cotización de {ticker}, por lo que "
+        "la vista en tu moneda no está disponible."
+    ),
+    "currency_risk.mos_view_unavailable_same_currency": "{ticker} cotiza en tu moneda local.",
+    "currency_risk.mos_view_unavailable_currency_mismatch": (
+        "{ticker} cotiza en {currency} - cambia \"A\" a {currency} para ver su vista en esa moneda."
+    ),
+    "currency_risk.mos_view_unavailable_no_pair": (
+        "La vista en moneda de {ticker} no está disponible para {base}/{quote} en este momento."
+    ),
     "currency_risk.position_label": "Tamaño de la posición ({base})",
     "currency_risk.scenario_average_label": "Si {base} revierte al promedio del período ({rate})",
     "currency_risk.scenario_plus_1sigma_label": "Si {base} alcanza +1σ ({rate})",
