@@ -1131,17 +1131,25 @@ def _render_currency_note(_dd):
     with _col2:
         if st.button(i18n.t("dd.currency_note.see_tool_button", lang),
                      key=f"dd_see_currency_tool_{ticker}"):
-            # One-shot session key, same "switch_page clears query
-            # params" pattern research_jump_ticker already established
-            # (see page_research()'s own comment) - COMMIT B3 reads and
-            # pops this to pre-select the From/To pickers and show the
-            # ticker-specific table under section C; until B3 lands,
-            # this just lands on the ordinary Currency Risk page with
-            # its own defaults (harmless no-op).
-            st.session_state["currency_risk_jump"] = {
-                "ticker": ticker, "base": home, "quote": stock_currency,
-            }
-            st.switch_page(PG_CURRENCY_RISK)
+            # Fix (Director, 6 Oct 2026): a one-shot st.session_state key
+            # does not survive this click in production - a live report
+            # showed Railway logging a full GET /currency-risk right
+            # after the click, meaning the browser's WebSocket session
+            # was lost between the click and the target page running
+            # (st.switch_page() is documented as an in-session rerun -
+            # PG_DEEP_DIVE and PG_CURRENCY_RISK share one st.navigation()
+            # list - but that guarantee only holds while the session
+            # itself survives; any reconnect lands as a genuinely fresh
+            # request for whatever URL the browser is already showing,
+            # with brand-new, empty session_state). A real URL query
+            # param is the only thing that survives that: pass it
+            # straight to st.switch_page()'s own query_params kwarg
+            # (ticker ONLY - never base/quote/home currency, nothing
+            # personal, in the URL) and page_currency_risk() reads it
+            # back with st.query_params, which is part of the URL itself
+            # and therefore present even on a brand-new session's first
+            # run of that page.
+            st.switch_page(PG_CURRENCY_RISK, query_params={"ticker": ticker})
 
 
 def _admin_ever_seen() -> bool:
@@ -24351,22 +24359,44 @@ def page_currency_risk():
     if _email and currency_view_engine.visible_to(_email, ai_gate.is_owner):
         _home_currency = account_currency_store.get_home_currency(_email)
 
-    # One-shot jump from a Deep Dive currency-risk note's "See the
-    # currency view" button (app.py's _render_currency_note(), COMMIT
-    # B2) - same "switch_page clears query params" one-shot-session-key
-    # pattern page_research()'s own research_jump_ticker already uses.
-    # "the pair and the ticker carried over" (COMMIT B2's own wording) -
-    # "without a ticker, or signed out: no extra table" (COMMIT B3's own
-    # wording) is why this is only even looked at for a signed-in
-    # visitor who passed the same gate above.
-    _jump = st.session_state.pop("currency_risk_jump", None) if _email and _home_currency else None
+    # Jump from a Deep Dive currency-risk note's "See the currency view"
+    # button (app.py's _render_currency_note(), COMMIT B2) - carried in
+    # the URL's own ?ticker= query param, not a one-shot session key.
+    # Fix (Director, 6 Oct 2026): a one-shot st.session_state key does
+    # not survive a dropped/reconnected WebSocket session - a live
+    # report showed the button's click landing on a brand-new session
+    # (Railway logging a full GET /currency-risk), which already has no
+    # memory of any session key the Deep Dive page set. st.query_params
+    # is part of the URL itself, so it survives that; _render_currency_
+    # note() now calls st.switch_page(PG_CURRENCY_RISK, query_params=
+    # {"ticker": ticker}) - a TICKER ONLY, never base/quote/home
+    # currency, nothing personal, ever appears in the URL. The ticker's
+    # own trading currency (`quote`) and the visitor's home currency
+    # (`base`, already resolved above) are both derived server-side
+    # here instead.
+    #
+    # Applied at most once per distinct URL ticker (tracked in
+    # _cr_applied_url_ticker) - st.query_params persists across every
+    # rerun of this page for as long as the URL still shows it (unlike
+    # the old one-shot session key), so without this guard, changing
+    # any OTHER widget on the page (the range chips, the position-size
+    # input) would keep re-forcing cr_base/cr_quote back to the jumped
+    # pair and fighting the visitor's own later picker changes. A fresh
+    # jump to a DIFFERENT ticker (a new URL) is still picked up, same as
+    # cr_active_ticker's own "until closed or a different stock" rule.
+    _url_ticker = (st.query_params.get("ticker") or "").strip().upper()
     _jump_ticker = None
-    if isinstance(_jump, dict) and _jump.get("ticker"):
-        _jump_ticker = _jump["ticker"]
-        if _jump.get("base") in currency_risk_engine.CURRENCIES:
-            st.session_state["cr_base"] = _jump["base"]
-        if _jump.get("quote") in currency_risk_engine.CURRENCIES:
-            st.session_state["cr_quote"] = _jump["quote"]
+    if (_email and _home_currency and _url_ticker
+            and _url_ticker != st.session_state.get("_cr_applied_url_ticker")):
+        st.session_state["_cr_applied_url_ticker"] = _url_ticker
+        _jump_snap = (snapshot_store.get_snapshot(_url_ticker) or {}).get("data") or {}
+        _jump_quote = (_jump_snap.get("currency") or "").upper()
+        if _jump_quote:
+            _jump_ticker = _url_ticker
+            if _home_currency in currency_risk_engine.CURRENCIES:
+                st.session_state["cr_base"] = _home_currency
+            if _jump_quote in currency_risk_engine.CURRENCIES:
+                st.session_state["cr_quote"] = _jump_quote
 
     currency_risk_render.render_currency_risk_page(
         lang=st.session_state.get("lang", "en"),

@@ -291,12 +291,16 @@ def _render_mos_view_table(base, quote, ticker, lang):
     view', with the three scenarios, the currency effect and the
     resulting margin" - only ever called when render_currency_risk_
     page() has an active ticker in st.session_state["cr_active_
-    ticker"] (set from a Deep Dive currency-risk note's jump, and
-    PERSISTED - unlike the one-shot currency_risk_jump session key
-    itself - across every later rerun of this page, e.g. changing the
-    range chips or the position-size input in section C above, until
-    the visitor closes it with the real Close button below or a
-    different jump overwrites it). Reads the ticker's own cached
+    ticker"] (set from a Deep Dive currency-risk note's jump, carried
+    in the URL's own ?ticker= query param rather than a one-shot
+    session key - a WebSocket reconnect between the click and this
+    page running drops session state but not the URL, per the
+    Director's own 6 Oct 2026 fix request - and PERSISTED in session
+    state from there across every later rerun of this page, e.g.
+    changing the range chips or the position-size input in section C
+    above, until the visitor closes it with the real Close button
+    below, which also drops the URL's own ?ticker=, or a different
+    jump overwrites it). Reads the ticker's own cached
     margin of safety from snapshot_store.get_snapshot() - the same
     scan-row read app.py's own Deep Dive page already uses for this
     exact ticker (snapshot_store.get_snapshot(ticker)["data"]) - no
@@ -327,6 +331,13 @@ def _render_mos_view_table(base, quote, ticker, lang):
     with _close_col:
         if st.button(_t("mos_view_close_button", lang), key=f"cr_mos_view_close_{ticker}"):
             st.session_state["cr_active_ticker"] = None
+            # Fix (Director, 6 Oct 2026): also drop the URL's own
+            # ?ticker= - otherwise reloading this exact URL (or a
+            # WebSocket reconnect, the same event that made the ticker
+            # need to travel via the URL in the first place) would
+            # re-apply it and silently reopen the table right after
+            # Close.
+            st.query_params.pop("ticker", None)
             st.rerun()
     rows = []
     for key, label_key, view_val in (

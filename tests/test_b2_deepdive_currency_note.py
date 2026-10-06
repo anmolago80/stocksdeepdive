@@ -253,6 +253,46 @@ check("the _dd dict is byte-identical after _render_currency_note() - mos/curren
 print("[b2_dd_never_mutated] margin of safety, currency and every other _dd key are "
       "identical before and after the note renders OK")
 
+# ======================================================================
+# CHECK 10 (Director's 6 Oct 2026 live-bug follow-up): "See the currency
+# view" must call st.switch_page with query_params={"ticker": <ticker>}
+# ONLY - never base/quote/home currency, nothing personal, in the URL.
+# A live click showed the OLD one-shot-session-key handoff being lost
+# across a dropped/reconnected WebSocket session (Railway logging a
+# full GET /currency-risk with no session state) - the fix moved the
+# ticker into the URL itself via switch_page's own query_params kwarg,
+# which this checks directly by recording the exact call made.
+# ======================================================================
+acs.set_home_currency("fullnote2@example.com", "AUD")
+_script10 = f"""
+import os, sys
+sys.path.insert(0, {REPO_ROOT!r})
+os.environ["RAILWAY_VOLUME_MOUNT_PATH"] = {TESTVOL!r}
+import streamlit as st
+import paywall_engine as pw
+pw.current_user_email = lambda: "fullnote2@example.com"
+import app
+_calls = []
+app.st.switch_page = lambda *a, **k: _calls.append((a, k))
+_dd = {_DD_USD!r}
+app._render_currency_note(_dd)
+st.session_state["_switch_page_calls"] = _calls
+"""
+with mock.patch.object(cre, "get_fx_history", return_value=_FAKE_HISTORY), \
+     mock.patch.object(cre, "period_stats", return_value=_FAKE_STATS):
+    _at10 = AppTest.from_string(_script10, default_timeout=60)
+    _at10.run()
+    assert not _at10.exception, f"_render_currency_note() raised: {_at10.exception}"
+    _at10.button(key="dd_see_currency_tool_AAPL").click().run()
+_calls10 = _at10.session_state["_switch_page_calls"]
+check("'See the currency view' calls st.switch_page() exactly once", len(_calls10) == 1)
+_call_kwargs10 = _calls10[0][1] if _calls10 else {}
+check("its query_params is EXACTLY {'ticker': 'AAPL'} - nothing else, nothing personal",
+      _call_kwargs10.get("query_params") == {"ticker": "AAPL"})
+print("[b2_see_tool_button_url_only] 'See the currency view' hands the ticker to "
+      "st.switch_page()'s own query_params - a ticker only, never base/quote/home "
+      "currency - OK")
+
 print()
 print(f"PASS={passed} FAIL={failed}")
 if os.path.exists(acs.DB_PATH):
