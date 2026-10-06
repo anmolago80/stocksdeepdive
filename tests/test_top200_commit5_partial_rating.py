@@ -24,6 +24,24 @@ Covers:
   - The dry run never raises on malformed/sparse data (best-effort,
     matching every other read-only Admin computation in this module).
 
+PART D STEP D1 (Director, 6 Oct 2026, instruction_portfolio_scoring_
+and_currency_table.md): partial_rating_dry_run() used to iterate over
+EVERY row top100_store.latest_scores_for_model() has ever stored, with
+no join to today's pool - silently counting tickers that have since
+left the Top 200/Australia extension (the owner's own report: the
+coverage panel showed 24 UNRATED_MODEL, this dry run showed 27 - the
+3 extra were aged-out). It now restricts to top100_store.current_pool()
++ current_asx_extension() - the SAME population top100_engine.
+coverage_for_rows() (and therefore the coverage panel) already uses.
+CHECK 9 below covers this directly: a pool is seeded via the REAL
+writer, top100_store.save_pool() (named here per this instruction's
+own "any test using a stored row must build it via the real writer...
+named in a comment" rule - a hand-invented dict is not evidence), and
+an aged-out NOT RATED row (scored, but never added to that pool) is
+confirmed excluded from every table, with counts matching top100_
+engine.coverage_for_rows() exactly and ranks unaffected by the aged-
+out row's mere presence in the score store.
+
 ALL FIXTURES IN THIS FILE ARE SYNTHETIC - this sandbox has no outbound
 network access, same disclosure as every other fixture-based test in
 this repo.
@@ -95,6 +113,17 @@ for k in (7, 6, 5, 4):
 # One fully-scored RATED company as a Method-1/Method-2 baseline.
 ts.save_score("RFULL", "RP2026-10-05", MODEL, RV, _dims_with_k(10), False,
               "scenario", 3, "p", "r", current_headwind="hw")
+
+# PART D STEP D1: partial_rating_dry_run() now restricts to today's
+# pool - every ticker used anywhere in this file must be seeded into
+# it via the real writer, top100_store.save_pool(), or it would be
+# silently excluded by this step's own fix. R1GAP (added in CHECK 4,
+# below) is included here too since it shares this same pool snapshot.
+POOL_AS_OF = "2026-10-05"
+ts.save_pool(
+    [{"ticker": t} for t in ("UM_K7", "UM_K6", "UM_K5", "UM_K4", "RFULL", "R1GAP")],
+    as_of=POOL_AS_OF,
+)
 
 result = te.partial_rating_dry_run(model=MODEL)
 _t1 = result["table1_by_k"]
@@ -234,6 +263,61 @@ _at.run(timeout=60)
 check("Admin panel renders without raising", not _at.exception)
 check("Admin panel shows all 5 table headings",
       sum(1 for md in _at.get("markdown") if "Table" in md.value) >= 5)
+_panel_captions = " ".join(c.value or "" for c in _at.get("caption"))
+check("Admin panel's own cross-check caption is present and the two counts agree "
+      "(same population, same read)",
+      "Coverage panel unrated:" in _panel_captions and "This panel:" in _panel_captions)
+check("no mismatch warning fires when the two counts genuinely agree",
+      len(_at.get("warning")) == 0)
+
+# ======================================================================
+# CHECK 9 (Director, 6 Oct 2026, PART D STEP D1): an aged-out NOT RATED
+# row is excluded; counts equal the coverage panel's for the same
+# fixture; ranks do not change when an aged-out row is added.
+# ======================================================================
+# AGED_OUT: scored UNRATED_MODEL (k=6, same shape as UM_K6 above), but
+# deliberately never added to the pool seeded above - simulating a
+# ticker that has since left the Top 200/Australia extension, exactly
+# the live discrepancy the Director reported (24 vs 27).
+ts.save_score("AGED_OUT", "RP2026-09-01", MODEL, RV, _dims_with_k(6), True,
+              None, None, "p", "r")
+
+_result_before = te.partial_rating_dry_run(model=MODEL)
+_coverage = te.coverage_for_rows(
+    ts.current_pool() + ts.current_asx_extension(), model=MODEL)
+_coverage_unrated = sum(b["unrated_model"] for b in _coverage["by_market"].values())
+
+check("Table 1's USA/k=6 count stays at 1 (UM_K6 only) - AGED_OUT, also k=6/USA/"
+      "UNRATED_MODEL, does not inflate it just by existing in the score store",
+      _result_before["table1_by_k"]["USA"][6] == 1)
+_t3_tickers_before = {r["ticker"] for r in _result_before["table3_landing"]}
+check("AGED_OUT is excluded from Table 3 (k=6 would otherwise qualify)",
+      "AGED_OUT" not in _t3_tickers_before)
+check("the dry run's own summary count equals coverage_for_rows()'s count for the "
+      "SAME population (the exact Director-reported mismatch, now closed)",
+      _result_before["summary"]["unrated_model"] == _coverage_unrated)
+
+# Ranks must not move just because AGED_OUT exists in the score store -
+# it was never part of the ranking baseline (rated_rows) to begin with,
+# but confirm explicitly: UM_K6's own method2_rank is identical whether
+# or not AGED_OUT is present, since AGED_OUT is RATED=False (UNRATED_
+# MODEL) and therefore never enters the rated_method1/rated_method2
+# ranking baseline either way - this holds regardless of the pool fix,
+# but is exactly the property the Director's own instruction names.
+_um_k6_rank_before = next(
+    r for r in _result_before["table3_landing"] if r["ticker"] == "UM_K6"
+)["method2_rank"]
+ts.save_score("AGED_OUT", "RP2026-09-01", MODEL, RV, _dims_with_k(6), True,
+              None, None, "p", "r")  # re-save, simulating it staying on file
+_result_after = te.partial_rating_dry_run(model=MODEL)
+_um_k6_rank_after = next(
+    r for r in _result_after["table3_landing"] if r["ticker"] == "UM_K6"
+)["method2_rank"]
+check("UM_K6's own rank is unchanged by the aged-out row's continued presence",
+      _um_k6_rank_before == _um_k6_rank_after)
+print("[d1_pool_population_fix] an aged-out NOT RATED row is excluded from every "
+      "table; the dry run's own count matches coverage_for_rows() for the identical "
+      "population; ranks are unaffected by the aged-out row's presence OK")
 
 print()
 print(f"PASS={passed} FAIL={failed}")

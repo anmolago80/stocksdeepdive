@@ -30762,13 +30762,40 @@ def _render_top200_partial_rating_dry_run_panel():
         "Owner-only, read-only. This does NOT change the NOT RATED rule, "
         "the ranking score, selection, the public page, or the prompt - "
         "it only shows what a lower minimum-scored-dimensions bar would "
-        "do, under two methods, from stored data already on file."
+        "do, under two methods, from stored data already on file. "
+        "Population: today's Top 200 pool plus the Australia extension - "
+        "the exact same set the coverage panel above uses, never every "
+        "ticker this model has ever scored."
     )
     try:
         _result = top100_engine.partial_rating_dry_run(model=top100_engine.MODEL_TOP100)
     except Exception as e:
         st.caption(f"Could not compute the dry run: {e}")
         return
+
+    # Fix (Director, 6 Oct 2026, PART D STEP D1): a visible cross-check
+    # against the coverage panel's own count, computed the SAME way
+    # (top100_engine.coverage_for_rows() against today's pool + ASX
+    # extension) - if the two panels ever disagree again (e.g. the pool
+    # changed between one render and the next), this shows it rather
+    # than hiding it.
+    try:
+        _d1_rows = top100_store.current_pool() + top100_store.current_asx_extension()
+        _d1_coverage = top100_engine.coverage_for_rows(_d1_rows, model=top100_engine.MODEL_TOP100)
+        _d1_coverage_unrated = sum(b["unrated_model"] for b in _d1_coverage["by_market"].values())
+    except Exception:
+        _d1_coverage_unrated = None
+    _d1_panel_unrated = _result["summary"]["unrated_model"]
+    if _d1_coverage_unrated is None:
+        st.caption(f"This panel's own UNRATED_MODEL count: {_d1_panel_unrated}.")
+    elif _d1_coverage_unrated == _d1_panel_unrated:
+        st.caption(f"Coverage panel unrated: {_d1_coverage_unrated}. This panel: {_d1_panel_unrated}.")
+    else:
+        st.warning(
+            f"Coverage panel unrated: {_d1_coverage_unrated}. This panel: {_d1_panel_unrated}. "
+            "These should always match (same population) - if they don't, the pool likely "
+            "changed between the two reads; refresh and recheck before trusting either number."
+        )
 
     st.markdown("**Table 1 - how thin are the unrated** (UNRATED_MODEL companies by k, per market)")
     _table1 = _result["table1_by_k"]

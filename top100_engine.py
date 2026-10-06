@@ -4775,11 +4775,34 @@ def partial_rating_dry_run(model=MODEL_TOP100):
     failures = top100_store.score_failures_for_model(model, RUBRIC_VERSION)
     name_map = _partial_rating_company_name_map(model)
 
+    # Fix (Director, 6 Oct 2026, instruction_portfolio_scoring_and_
+    # currency_table.md, PART D STEP D1): this used to iterate over
+    # EVERY row latest_scores_for_model() has ever stored, with no join
+    # to today's pool - silently including tickers that have since left
+    # the Top 200 (and its Australia extension). The owner's own report:
+    # the coverage panel (app.py's _render_top200_coverage_panel(),
+    # which joins top100_engine.coverage_for_rows() against exactly
+    # top100_store.current_pool() + current_asx_extension()) showed 24
+    # UNRATED_MODEL (Australia 9, USA 15); this dry run showed 27
+    # (10/17) - the 3 extra were aged-out tickers. _pool_tickers below
+    # is the SAME join coverage_for_rows() already does, reused here
+    # rather than re-derived, so the two panels can never disagree about
+    # POPULATION again (they can still legitimately disagree about
+    # TIMING if the pool changes between one render and the next, since
+    # each is read fresh - see the "Coverage panel unrated: N. This
+    # panel: N." line this step adds at the top of the panel itself).
+    _pool_tickers = ({row["ticker"] for row in top100_store.current_pool()}
+                      | {row["ticker"] for row in top100_store.current_asx_extension()})
+
     unrated_model_rows = [
         row for row in latest.values()
-        if company_status(row, failures.get(row["ticker"])) == "unrated_model"
+        if row["ticker"] in _pool_tickers
+        and company_status(row, failures.get(row["ticker"])) == "unrated_model"
     ]
-    rated_rows = [row for row in latest.values() if not row.get("not_rated")]
+    rated_rows = [
+        row for row in latest.values()
+        if row["ticker"] in _pool_tickers and not row.get("not_rated")
+    ]
 
     # Table 1 - how thin are the unrated.
     table1 = {}
