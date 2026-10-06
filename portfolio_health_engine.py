@@ -855,6 +855,179 @@ def compute_health(components, news=None, is_etf=False, progress_overall=None):
 
 
 # ---------------------------------------------------------------------
+# PART B STEP B1 (Director, 6 Oct 2026, instruction_portfolio_scoring_
+# and_currency_table.md): compute_health_components_v2()/compute_
+# health_v2() - BESIDE compute_health_components()/compute_health()
+# above, which this step does not edit by a single character. Takes
+# `news` from portfolio_news_engine.analyze_holding_news_v2() (its
+# "thesis_breaking_live" key is the decay-aware signal v1 never had -
+# a thesis-breaking event that happened 11 months ago no longer counts
+# as "live" once its own v2 weight has decayed to 0, see that
+# function's own docstring). Fix #4 from this instruction's own STEP
+# B0 diagnosis (news counted twice, no ceiling - the direct cause of
+# CSL.AX's Health-0 report): Thesis v2 is fundamentals-only (no 65/35
+# news blend at all - the ONLY thing that still touches it is the
+# existing thesis-breaking cap, now gated on a LIVE event); the
+# overall-score news cut is capped at NEWS_V2_CUT_CAP_DEFAULT points
+# unless a live thesis-breaking event exists, in which case the cap
+# widens to NEWS_V2_CUT_CAP_THESIS_BREAKING - so a pile of ordinary bad-
+# quarter headlines can no longer walk the Health score to zero on its
+# own, while a genuine thesis-breaking event still reaches the same
+# ceiling v1 could.
+# ---------------------------------------------------------------------
+
+def compute_health_components_v2(snapshot, kind, baseline=None, buy_date=None, news=None,
+                                  iv_override=None):
+    """Identical to compute_health_components() for every component
+    EXCEPT Thesis - see that function's own body for Growth/Margins/
+    ROIC/FCF/Debt/Valuation/Price Action/Income, reproduced verbatim
+    here (not factored into a shared helper, so v1's own function stays
+    completely untouched and this one reads standalone, top to bottom,
+    for Andrew's own side-by-side review)."""
+    is_etf = (kind or "STOCK").upper() == "ETF"
+    baseline = _normalize_baseline(baseline)
+    comps = {}
+
+    def _set(name, score, current=None, note=""):
+        comps[name] = {"score": (round(score, 1) if score is not None else None),
+                        "current": current, "note": note}
+
+    if is_etf:
+        for name in _STOCK_ONLY:
+            _set(name, None, note="N/A for ETFs/funds")
+    else:
+        _set("Growth", _interp(GROWTH_BAND, _mean(snapshot.get("revenue_growth"), snapshot.get("earnings_growth"))),
+             current=_mean(snapshot.get("revenue_growth"), snapshot.get("earnings_growth")))
+        _set("Margins", _interp(MARGIN_BAND, snapshot.get("profit_margin")), current=snapshot.get("profit_margin"))
+        _set("ROIC", _interp(ROE_BAND, snapshot.get("roe")), current=snapshot.get("roe"))
+        _set("FCF", _interp(GROWTH_BAND, snapshot.get("fcf_growth")), current=snapshot.get("fcf_growth"))
+        _set("Debt", _interp(DEBT_BAND, snapshot.get("debt_to_equity")), current=snapshot.get("debt_to_equity"))
+
+    if is_etf:
+        _set("Valuation", None, note="No DCF model for ETFs/funds")
+    elif iv_override is not None and iv_override > 0 and snapshot.get("price") is not None:
+        model_iv = snapshot.get("intrinsic_value")
+        _mos_override = ((iv_override - snapshot["price"]) / iv_override) * 100
+        _note = "Using your manual override IV (A${:,.2f})".format(iv_override)
+        if model_iv:
+            _note += " - model says A${:,.2f}".format(model_iv)
+        _set("Valuation", _interp(VAL_BAND, _mos_override), current=_mos_override, note=_note)
+    else:
+        _set("Valuation", _interp(VAL_BAND, snapshot.get("mos_pct")), current=snapshot.get("mos_pct"))
+
+    drawdown = _post_purchase_drawdown(snapshot.get("history"), buy_date, snapshot.get("price"))
+    range52 = snapshot.get("range52")
+    trend = snapshot.get("trend_vs_ma200")
+    parts = [p for p in (
+        _interp(DRAWDOWN_BAND, drawdown * 100 if drawdown is not None else None),
+        _interp(RANGE52_BAND, range52),
+        (50.0 + max(-50.0, min(50.0, trend * 200))) if trend is not None else None,
+    ) if p is not None]
+    _set("Price Action", (sum(parts) / len(parts)) if parts else None, current=drawdown)
+
+    div_yield = snapshot.get("dividend_yield")
+    base_div_rate, cur_div_rate = baseline.get("dividend_rate"), snapshot.get("dividend_rate")
+    if base_div_rate not in (None, 0) and cur_div_rate is not None:
+        yield_change = (cur_div_rate - base_div_rate) / abs(base_div_rate)
+        _set("Income", _interp(INCOME_BAND, yield_change), current=div_yield)
+    elif div_yield is not None:
+        _set("Income", _interp(INCOME_BAND, div_yield - 0.0), current=div_yield,
+             note="No baseline dividend rate on file - showing current yield only")
+    else:
+        _set("Income", None, note="No dividend data")
+
+    if is_etf:
+        _set("Thesis", None, note="Not applicable for ETFs/funds - no company thesis to score")
+        return comps
+
+    fund_scores = [comps[k]["score"] for k in _FUND_KEYS if comps.get(k, {}).get("score") is not None]
+    fund_avg = round(sum(fund_scores) / len(fund_scores), 1) if fund_scores else None
+
+    # Fix #4 (v2): Thesis is fundamentals ONLY - news no longer blends
+    # into it at 35% (that blend is what let a pile of ordinary bad-
+    # quarter news drag Thesis down on its own, on top of ALSO cutting
+    # overall separately below). The thesis-breaking cap survives, but
+    # now gated on news.get("thesis_breaking_live") - a decayed-away
+    # thesis-breaking event (past NEWS_V2_DECAY_ZERO_DAYS["thesis-
+    # breaking"] = 180 days old) no longer caps a healthy thesis score
+    # forever.
+    thesis_breaking_live = bool(news and news.get("thesis_breaking_live"))
+    if is_etf:
+        _set("Thesis", None, note="Not applicable for ETFs/funds - no company thesis to score")
+    elif thesis_breaking_live and fund_avg is not None:
+        _set("Thesis", min(fund_avg, 30.0), note="Capped at 30 - thesis-breaking news detected (v2 method)")
+    else:
+        _set("Thesis", fund_avg, note="Fundamentals only (v2 method - news no longer blends into Thesis)")
+
+    return comps
+
+
+def compute_health_v2(components, news=None, is_etf=False, progress_overall=None):
+    """v2 of compute_health() - identical ETF branch (reproduced
+    verbatim; news plays no role in the ETF blend either way). The
+    standard-company branch differs only in the news cut: capped at
+    NEWS_V2_CUT_CAP_DEFAULT points unless a live thesis-breaking event
+    exists (news.get("thesis_breaking_live")), in which case the cap
+    widens to NEWS_V2_CUT_CAP_THESIS_BREAKING - and thesis_breaking/
+    thesis_intact are driven by that same decay-aware flag, never v1's
+    own "any thesis-breaking headline ever counted" check."""
+    if is_etf:
+        parts = [p for p in (
+            (components.get("Price Action") or {}).get("score"),
+            progress_overall,
+        ) if p is not None]
+        overall = round(sum(parts) / len(parts), 1) if parts else None
+        action, action_tone = _recommend(overall, None)
+        return {
+            "components": components,
+            "overall": overall,
+            "action": action,
+            "action_tone": action_tone,
+            "red_flags": _red_flags(components),
+            "thesis_breaking": False,
+            "thesis_intact": True,
+            "news_adjustment": None,
+            "news": None,
+            "is_etf": True,
+            "score_label": "Price-based health (ETF) (v2 method)",
+        }
+
+    weighted = [(BASE_WEIGHTS[k], components[k]["score"]) for k in COMPONENT_ORDER
+                if components.get(k, {}).get("score") is not None]
+    overall = round(sum(w * s for w, s in weighted) / sum(w for w, _ in weighted), 1) if weighted else None
+
+    thesis_breaking = False
+    news_adjustment = None
+    if news is not None:
+        thesis_breaking = bool(news.get("thesis_breaking_live"))
+        news_risk = news.get("news_risk_score")
+        if news.get("material") and news_risk is not None and overall is not None:
+            cap = pne.NEWS_V2_CUT_CAP_THESIS_BREAKING if thesis_breaking else pne.NEWS_V2_CUT_CAP_DEFAULT
+            uncapped_cut = (100.0 - news_risk) * pne.NEWS_IMPACT
+            news_adjustment = -min(uncapped_cut, cap)
+            overall = round(max(0.0, min(100.0, overall + news_adjustment)), 1)
+
+    action, action_tone = _recommend(overall, (components.get("Valuation") or {}).get("score"))
+    red_flags = _red_flags(components)
+    if thesis_breaking:
+        red_flags = ["Thesis-breaking news detected - immediate review warranted"] + red_flags
+
+    return {
+        "components": components,
+        "overall": overall,
+        "action": action,
+        "action_tone": action_tone,
+        "red_flags": red_flags,
+        "thesis_breaking": thesis_breaking,
+        "thesis_intact": not thesis_breaking,
+        "news_adjustment": news_adjustment,
+        "news": news,
+        "is_etf": False,
+        "score_label": "Investment Health Score (v2 method)",
+    }
+
+
+# ---------------------------------------------------------------------
 # Progress Score
 # ---------------------------------------------------------------------
 

@@ -43,6 +43,7 @@ run - same philosophy as the source app):
 
 import datetime as _dt
 import os
+import re
 import sqlite3
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
@@ -817,6 +818,320 @@ def analyze_holding_news(ticker, name=None, thesis_drivers=None, buy_date=None, 
     return {
         "news_risk_score": score, "material": material, "timeline": significant,
         "today": today[:5], "counts": counts,
+        "all_relevant": sum(1 for e in events if e["relevant"]), "scanned": len(events),
+        "source_counts": source_counts, "explain": explain,
+    }
+
+
+# =========================================================================== #
+# PART B STEP B1 (Director, 6 Oct 2026, instruction_portfolio_scoring_and_
+# currency_table.md): the v2 news-scoring method, built BESIDE the v1
+# functions above - none of which are edited by a single character in this
+# section. The owner's own report (CSL.AX: Health 0, Thesis "Intact", action
+# REVIEW/REDUCE) traced to four structural problems in v1, all fixed here:
+#   1. Substring keyword matching ("soft" in "software", "miss" in
+#      "commission", "cut" in "exeCUTive", "lower" in "folLOWER", "warn" in
+#      "Warner") -> whole-word/whole-phrase regex matching everywhere,
+#      v2's own explicit inflected verb lists (no stemming library).
+#   2. Nothing expires (weight never below 0.5) -> a straight-line decay to
+#      ZERO, not a floor.
+#   3. No de-duplication beyond "same day" -> grouping by (severity, date
+#      within NEWS_V2_GROUP_WINDOW_DAYS of the group's own first item), one
+#      hit per GROUP (its heaviest item), not one hit per item.
+#   4. News counted twice (35% of Thesis, then another cut to overall) with
+#      no ceiling -> Thesis v2 is fundamentals-only (news no longer blends
+#      into it at all, only the existing thesis-breaking cap carries over,
+#      now gated on a LIVE - i.e. not yet decayed to zero weight - event);
+#      the overall-score cut is capped at NEWS_V2_CUT_CAP_DEFAULT points
+#      unless a live thesis-breaking event exists, in which case the cap
+#      widens to NEWS_V2_CUT_CAP_THESIS_BREAKING (the same ceiling v1's own
+#      NEWS_IMPACT*100 could reach) - a single bad quarter can no longer
+#      walk a healthy company's Health score down to zero on its own.
+#
+# These four numbers (7/30/90/180 days, 15-point default cap) are the
+# Director's own PROPOSALS, named as constants here specifically so Andrew
+# can see and adjust them from the owner-only comparison panel (STEP B2)
+# before ever setting HEALTH_NEWS_V2_LIVE.
+# =========================================================================== #
+
+NEWS_V2_GROUP_WINDOW_DAYS = 7
+NEWS_V2_DECAY_FULL_DAYS = 30  # weight stays 1.0 through this many days old
+NEWS_V2_DECAY_ZERO_DAYS = {  # weight reaches exactly 0.0 at this many days old
+    "positive": 90, "temporary": 90, "material": 90, "thesis-breaking": 180,
+}
+NEWS_V2_UNDATED_WEIGHT = 0.75
+NEWS_V2_UNDATED_FRESH_DAYS = 30  # an undated item keeps weight 0.75 only if
+                                 # first STORED (fetched_at) within this many
+                                 # days; otherwise its weight is 0.0, never a
+                                 # flat "forever-0.75" the way v1 treated it
+NEWS_V2_CUT_CAP_DEFAULT = 15.0
+NEWS_V2_CUT_CAP_THESIS_BREAKING = 55.0
+
+# Whole-word/whole-phrase versions of _classify_severity()'s own two local
+# verb tuples (THESIS_BREAKING/MATERIAL_RISK/TEMPORARY_ISSUE/POSITIVE above
+# are reused as-is for v2 too - matched via _contains_any_v2()'s word-
+# boundary regex instead of v1's own substring "in" check, which is the
+# only change those four lists need; no new phrases added to them).
+_GUIDANCE_WORDS_V2 = (
+    "guidance", "outlook", "forecast", "full-year", "fy26", "fy25",
+    "profit", "earnings",
+)
+_NEG_VERBS_V2 = (
+    "cut", "cuts", "cutting",
+    "lower", "lowers", "lowered", "lowering",
+    "trim", "trims", "trimmed", "trimming",
+    "reduce", "reduces", "reduced", "reducing",
+    "weak", "weaker", "weakest", "weakening",
+    "miss", "misses", "missed", "missing",
+    "warn", "warns", "warned", "warning",
+    "downgrade", "downgrades", "downgraded", "downgrading",
+    "disappoint", "disappoints", "disappointed", "disappointing",
+    "soft", "softer", "softest", "softening",
+)
+_SEVERE_VERBS_V2 = (
+    "withdraw", "withdraws", "withdrew", "withdrawn", "withdrawing",
+    "suspend", "suspends", "suspended", "suspending",
+    "slash", "slashes", "slashed", "slashing",
+    "scrap", "scraps", "scrapped", "scrapping",
+)
+
+_WORD_PATTERN_CACHE_V2 = {}
+
+
+def _word_pattern_v2(phrase):
+    pat = _WORD_PATTERN_CACHE_V2.get(phrase)
+    if pat is None:
+        # \b on both ends - exact for a single word; for a multi-word
+        # phrase (e.g. "cut to sell") this still correctly requires a
+        # non-word boundary immediately before/after the WHOLE phrase,
+        # while the spaces inside match literally - never a stem/
+        # substring hit on any word inside the phrase either.
+        pat = re.compile(r"\b" + re.escape(phrase) + r"\b")
+        _WORD_PATTERN_CACHE_V2[phrase] = pat
+    return pat
+
+
+def _contains_any_v2(text, phrases):
+    return any(_word_pattern_v2(p).search(text) for p in phrases)
+
+
+def _classify_severity_v2(text):
+    """Whole-word/whole-phrase replacement for _classify_severity() -
+    same five-way decision tree, same four keyword lists (THESIS_
+    BREAKING/MATERIAL_RISK/TEMPORARY_ISSUE/POSITIVE), same "guidance
+    word + severe/negative verb" combination rule, but every match is
+    now a regex word boundary (_contains_any_v2()) instead of a plain
+    Python "in" substring test - never a stemming library, per the
+    Director's own instruction; every inflection that matters is
+    listed explicitly in _NEG_VERBS_V2/_SEVERE_VERBS_V2 above."""
+    t = (text or "").lower()
+    if _contains_any_v2(t, THESIS_BREAKING):
+        return "thesis-breaking"
+    if _contains_any_v2(t, _GUIDANCE_WORDS_V2) and _contains_any_v2(t, _SEVERE_VERBS_V2):
+        return "thesis-breaking"
+    if _contains_any_v2(t, _GUIDANCE_WORDS_V2) and _contains_any_v2(t, _NEG_VERBS_V2):
+        return "material"
+    if _contains_any_v2(t, POSITIVE):
+        return "positive"
+    if _contains_any_v2(t, MATERIAL_RISK):
+        return "material"
+    if _contains_any_v2(t, TEMPORARY_ISSUE):
+        return "temporary"
+    return "noise"
+
+
+def _load_events_with_fetched_at(ticker):
+    """A SEPARATE reader of the SAME news_events table _load_events()
+    already reads - never edits that function - adding the one extra
+    column (fetched_at) v2's own decay formula needs for an undated
+    item ("first stored within the last 30 days"), which v1 has no use
+    for and which _load_events()'s own return shape has therefore
+    never carried."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT event_date, title, description, publisher, link, source, "
+            "domain, fetched_at FROM news_events WHERE ticker = ?", (ticker,),
+        ).fetchall()
+    out = []
+    for d, title, desc, pub, link, source, domain, fetched_at in rows:
+        date = None
+        if d:
+            try:
+                date = _dt.datetime.fromisoformat(d)
+            except Exception:
+                date = None
+        fetched = None
+        if fetched_at:
+            try:
+                fetched = _dt.datetime.fromisoformat(fetched_at)
+            except Exception:
+                fetched = None
+        out.append({"date": date, "title": title, "description": desc,
+                     "publisher": pub, "link": link, "source": source,
+                     "domain": domain, "fetched_at": fetched})
+    return out
+
+
+def _news_v2_weight(event_date, fetched_at, severity, now):
+    """1.0 for the first NEWS_V2_DECAY_FULL_DAYS days old, then a
+    straight-line fall to exactly 0.0 at NEWS_V2_DECAY_ZERO_DAYS[severity]
+    days old (90 for material/temporary/positive, 180 for thesis-
+    breaking) - unlike v1's _recency_weight(), which never fell below
+    0.5 no matter how old an item was. An undated item keeps
+    NEWS_V2_UNDATED_WEIGHT (0.75) only if it was first STORED within
+    NEWS_V2_UNDATED_FRESH_DAYS days - otherwise 0.0, never v1's flat,
+    permanent 0.75 for every undated item regardless of age."""
+    if event_date is None:
+        if fetched_at is not None and (now - fetched_at).days <= NEWS_V2_UNDATED_FRESH_DAYS:
+            return NEWS_V2_UNDATED_WEIGHT
+        return 0.0
+    zero_at = NEWS_V2_DECAY_ZERO_DAYS.get(severity, 90)
+    age = (now - event_date).days
+    if age <= NEWS_V2_DECAY_FULL_DAYS:
+        return 1.0
+    if age >= zero_at:
+        return 0.0
+    span = zero_at - NEWS_V2_DECAY_FULL_DAYS
+    return max(0.0, 1.0 - (age - NEWS_V2_DECAY_FULL_DAYS) / span)
+
+
+def _group_events_v2(events):
+    """Groups RELEVANT, scoring-eligible events (severity has a
+    non-zero SEVERITY_HIT) by severity, then within each severity by
+    date proximity: sorted ascending, a new item joins the current
+    group if it falls within NEWS_V2_GROUP_WINDOW_DAYS of that GROUP's
+    own first item (never a re-based sliding window - a long run of
+    headlines spaced just under 7 days apart still eventually starts a
+    new group once the gap from the group's FIRST item exceeds 7, so
+    one continuously-covered event cannot stay one group forever).
+    Undated items sort last (datetime.max) and group together with
+    each other, never with a dated item. Returns [[event, ...], ...] -
+    one list per group, never flattened - callers take each group's own
+    heaviest item for the one hit it contributes."""
+    by_severity = {}
+    for e in events:
+        if not e["relevant"] or SEVERITY_HIT.get(e["severity"], 0.0) == 0.0:
+            continue
+        by_severity.setdefault(e["severity"], []).append(e)
+    groups = []
+    for items in by_severity.values():
+        items_sorted = sorted(items, key=lambda e: e["date"] or _dt.datetime.max)
+        current, group_start = [], None
+        for e in items_sorted:
+            e_date = e["date"] or _dt.datetime.max
+            if current and (e_date - group_start).days <= NEWS_V2_GROUP_WINDOW_DAYS:
+                current.append(e)
+            else:
+                if current:
+                    groups.append(current)
+                current, group_start = [e], e_date
+        if current:
+            groups.append(current)
+    return groups
+
+
+def analyze_holding_news_v2(ticker, name=None, thesis_drivers=None, buy_date=None,
+                             now=None, is_etf=False):
+    """v2 of analyze_holding_news() - SAME return shape (news_risk_score,
+    material, timeline, today, counts, all_relevant, scanned,
+    source_counts, explain), plus one new key, "thesis_breaking_live"
+    (True only while a thesis-breaking event with weight > 0 currently
+    exists - i.e. NOT yet decayed past 180 days - the decay-aware
+    replacement for v1's own "counts.get('thesis-threatening')" check,
+    which never distinguished a live thesis-breaking event from one
+    that happened 11 months ago and has long since stopped mattering).
+
+    Reuses analyze_holding_news()'s own fetch/storage/relevance
+    machinery UNCHANGED (_claim_fetch, _fetch_all_feeds, _merge_and_save,
+    _is_relevant) - fetching and relevance are not part of this step's
+    scope; only severity classification, grouping/de-duplication, decay
+    and the thesis/overall caps change. Reads via _load_events_with_
+    fetched_at() (a separate reader, never _load_events() itself) so
+    v1's own function and return shape stay completely untouched."""
+    if is_etf:
+        return _excluded_result()
+
+    now = now or _now()
+    buy_dt = _parse_date(buy_date) or (now - _dt.timedelta(days=365))
+    ticker = ticker.upper()
+
+    if _claim_fetch(ticker):
+        raw = _fetch_all_feeds(ticker, name, buy_dt, now)
+        fresh = []
+        for it in raw:
+            title = (it.get("title") or "").strip()
+            if not title:
+                continue
+            fresh.append({
+                "date": it.get("published"), "title": title,
+                "description": it.get("description", "") or "",
+                "publisher": it.get("publisher", ""), "link": it.get("link", ""),
+                "source": it.get("source", ""), "domain": it.get("domain", ""),
+            })
+        _merge_and_save(ticker, fresh)
+    merged = _load_events_with_fetched_at(ticker)
+
+    events, source_counts = [], {}
+    for it in merged:
+        pub = it.get("date")
+        if pub is not None and pub < buy_dt - _dt.timedelta(days=3):
+            continue
+        text = f"{it.get('title', '')} . {it.get('description', '')}"
+        severity = _classify_severity_v2(text)
+        relevant = _is_relevant(text, name, ticker, thesis_drivers, it.get("source"))
+        ttype = _TYPE_BY_SEVERITY[severity]
+        if not relevant and severity in ("material", "temporary", "thesis-breaking"):
+            ttype = "neutral"
+        source_counts[it.get("source", "?")] = source_counts.get(it.get("source", "?"), 0) + 1
+        events.append({
+            "date": pub, "title": it.get("title", ""), "publisher": it.get("publisher", ""),
+            "link": it.get("link", ""), "source": it.get("source", ""), "severity": severity,
+            "type": ttype, "relevant": relevant,
+            "weight": _news_v2_weight(pub, it.get("fetched_at"), severity, now),
+        })
+
+    groups = _group_events_v2(events)
+    score = 100.0
+    material = False
+    thesis_breaking_live = False
+    for group in groups:
+        heaviest = max(group, key=lambda e: abs(SEVERITY_HIT[e["severity"]]) * e["weight"])
+        hit = SEVERITY_HIT[heaviest["severity"]] * heaviest["weight"]
+        score -= hit
+        if heaviest["severity"] in ("material", "thesis-breaking"):
+            material = True
+        if heaviest["severity"] == "thesis-breaking" and heaviest["weight"] > 0:
+            thesis_breaking_live = True
+    score = round(max(0.0, min(score, 100.0)), 1)
+
+    significant = [e for e in events if e["type"] != "neutral" or e["severity"] == "positive"]
+    significant.sort(key=lambda e: e["date"] or _dt.datetime.min, reverse=True)
+
+    recent_cut = now - _dt.timedelta(days=3)
+    today = [
+        e for e in events
+        if e["relevant"] and e["severity"] in ("material", "thesis-breaking", "temporary")
+        and (e["date"] is None or e["date"] >= recent_cut)
+    ]
+    today.sort(key=lambda e: (_sev_rank(e["severity"]), e["date"] or _dt.datetime.min), reverse=True)
+
+    counts = {"positive": 0, "neutral": 0, "warning": 0, "thesis-threatening": 0}
+    for e in significant:
+        counts[e["type"]] = counts.get(e["type"], 0) + 1
+
+    if not material:
+        explain = ("No thesis-relevant material news found - news is not dragging "
+                   "the health score. (v2 method)")
+    elif thesis_breaking_live:
+        explain = ("Thesis-threatening news detected - this is materially reducing "
+                   "the health score and warrants immediate review. (v2 method)")
+    else:
+        explain = ("Relevant material news is weighing on the score; monitor whether "
+                   "it proves temporary or structural. (v2 method)")
+
+    return {
+        "news_risk_score": score, "material": material, "thesis_breaking_live": thesis_breaking_live,
+        "timeline": significant, "today": today[:5], "counts": counts,
         "all_relevant": sum(1 for e in events if e["relevant"]), "scanned": len(events),
         "source_counts": source_counts, "explain": explain,
     }
