@@ -20317,7 +20317,7 @@ def _render_currency_exposure_table(_holdings, _analyses, lang):
         rows.append(_total_row)
 
     st.dataframe(rows, hide_index=True, width='stretch')
-    st.caption(i18n.t("portfolio.currency_exposure.caption", lang, home=home))
+    st.caption(i18n.t("portfolio.currency_exposure.caption", lang))
 
 
 def _render_portfolio_stress_tab(_active_portfolio, _holdings, _analyses):

@@ -3116,9 +3116,10 @@ EN = {
     "portfolio.currency_exposure.not_available": "not available",
     "portfolio.currency_exposure.total_foreign_label": "Total foreign holdings",
     "portfolio.currency_exposure.caption": (
-        "Described calculations, not a forecast - every value is in your home currency "
-        "({home}), using the same method as the Currency Risk tool and the Deep Dive "
-        "currency note."
+        "Counted by the currency each holding is priced in. Funds listed in one "
+        "country that hold assets in another (for example an Australian-listed fund "
+        "of US shares) are counted in their listing currency here, although their "
+        "value also moves with the exchange rate."
     ),
 
     # Mega-batch Part 17: "Switch Analyzer" tab - opportunity-cost of
@@ -6806,9 +6807,10 @@ ES = {
     "portfolio.currency_exposure.not_available": "no disponible",
     "portfolio.currency_exposure.total_foreign_label": "Total en monedas extranjeras",
     "portfolio.currency_exposure.caption": (
-        "Cálculos descritos, no una predicción - cada valor está en tu moneda local "
-        "({home}), con el mismo método que la herramienta de riesgo cambiario y la nota "
-        "de moneda del Deep Dive."
+        "Se cuenta según la moneda en que cotiza cada posición. Los fondos listados "
+        "en un país que mantienen activos en otro (por ejemplo, un fondo listado en "
+        "Australia que posee acciones de EE. UU.) se cuentan aquí según su moneda de "
+        "cotización, aunque su valor también se mueve con el tipo de cambio."
     ),
 
     # Owner's picks (7 Sep): "El Peaje" is the OWNER'S OWN suggested ES

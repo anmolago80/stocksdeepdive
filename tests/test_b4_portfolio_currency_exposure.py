@@ -196,6 +196,27 @@ print("[b4_three_currency_fixture] USD row reproduces the task's own worked figu
       "both its own row and every total/share figure OK")
 
 # ======================================================================
+# CHECK 3b (Director's 6 Oct 2026 follow-up): the caption's exact
+# wording - explains counting is by LISTING currency, not underlying-
+# asset currency, for a fund listed in one country holding assets in
+# another. No dollar sign anywhere in it.
+# ======================================================================
+_caption_texts3 = [c.value for c in _at3.caption]
+_exposure_caption3 = [c for c in _caption_texts3 if "listed in one country" in c]
+check("exactly one caption carries the new 'counted by listing currency' wording",
+      len(_exposure_caption3) == 1)
+check("that caption's exact text matches the Director's own wording",
+      _exposure_caption3 and _exposure_caption3[0] == (
+          "Counted by the currency each holding is priced in. Funds listed in one "
+          "country that hold assets in another (for example an Australian-listed "
+          "fund of US shares) are counted in their listing currency here, although "
+          "their value also moves with the exchange rate."
+      ))
+check("no dollar sign anywhere in the caption", "$" not in _exposure_caption3[0])
+print("[b4_caption_wording] the currency-exposure table's caption explains listing-"
+      "currency counting in the Director's exact wording, with no dollar sign OK")
+
+# ======================================================================
 # CHECK 4: a home-currency-only portfolio - no foreign holdings at
 # all -> no "Total foreign holdings" row (nothing to total).
 # ======================================================================
