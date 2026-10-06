@@ -31382,6 +31382,146 @@ def _render_private_universes_panel():
     st.caption(f"{len(_table_rows)} row(s) across {len(_private_universes)} private universe(s).")
 
 
+def _render_portfolio_health_news_v2_comparison_panel():
+    """PART B STEP B2 (Director, 6 Oct 2026, instruction_portfolio_
+    scoring_and_currency_table.md): "Health score: news method
+    comparison (dry run)" - owner-only, read-only. Lets Andrew see the
+    v1 (current, live) and v2 (proposed, PART B STEP B1) news-scoring
+    methods side by side on his own real holdings, from already-stored
+    data, before ever setting HEALTH_NEWS_V2_LIVE.
+
+    Calls portfolio_news_engine.analyze_holding_news()/analyze_
+    holding_news_v2() and portfolio_health_engine.compute_health_
+    components()/compute_health()/compute_health_components_v2()/
+    compute_health_v2() - the exact same functions app.py's own
+    _analyze_holding() calls for the live Portfolio page - never a
+    fifth, independently-written scoring path. Nothing here calls
+    portfolio_health_engine.record_health_run() (the "Δ run" history
+    writer) or anything email/push-related - this panel computes and
+    displays, it does not persist (see tests/test_part_b_step2_
+    comparison_panel.py's own explicit proof of that).
+
+    No gate of its own - called only from inside page_admin_
+    dashboard(), after that function's own owner check."""
+    st.markdown("### Health score: news method comparison (dry run)")
+    st.caption(
+        "Owner-only, read-only. Compares the current (v1) news-scoring "
+        "method against the proposed v2 method on real, stored data - "
+        "nothing from v2 is written to any run history, email, or "
+        "watchdog brief while HEALTH_NEWS_V2_LIVE stays unset."
+    )
+    _owner_email = ai_gate.owner_email()
+    _owner_holdings = portfolio_store.get_holdings_all(_owner_email) if _owner_email else []
+    if not _owner_holdings:
+        st.write("No holdings on file for the owner account yet.")
+    else:
+        _rows = []
+        _per_ticker_detail = []
+        for h in _owner_holdings:
+            ticker = h["ticker"]
+            is_etf = (h.get("kind") or "STOCK").upper() == "ETF"
+            _discount, _perpetual, _growth, _manual_fcf = _dcf_overrides_for(ticker)
+            try:
+                snap = portfolio_health_engine.fetch_snapshot(
+                    ticker, discount_rate=_discount, perpetual_rate=_perpetual,
+                    growth_rate=_growth, manual_fcf=_manual_fcf,
+                )
+            except Exception:
+                snap = {}
+            try:
+                news_old = portfolio_news_engine.analyze_holding_news(
+                    ticker, name=h.get("name"), thesis_drivers=h.get("thesis_drivers"),
+                    buy_date=h.get("buy_date"), is_etf=is_etf,
+                )
+            except Exception:
+                news_old = None
+            try:
+                news_new = portfolio_news_engine.analyze_holding_news_v2(
+                    ticker, name=h.get("name"), thesis_drivers=h.get("thesis_drivers"),
+                    buy_date=h.get("buy_date"), is_etf=is_etf,
+                )
+            except Exception:
+                news_new = None
+            components_old = portfolio_health_engine.compute_health_components(
+                snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"), news=news_old)
+            components_new = portfolio_health_engine.compute_health_components_v2(
+                snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"), news=news_new)
+            try:
+                progress = portfolio_health_engine.compute_progress(
+                    snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), buy_date=h.get("buy_date"))
+            except Exception:
+                progress = {}
+            health_old = portfolio_health_engine.compute_health(
+                components_old, news=news_old, is_etf=is_etf, progress_overall=progress.get("overall"))
+            health_new = portfolio_health_engine.compute_health_v2(
+                components_new, news=news_new, is_etf=is_etf, progress_overall=progress.get("overall"))
+
+            _fund_scores = [components_old[k]["score"] for k in portfolio_health_engine._FUND_KEYS
+                            if components_old.get(k, {}).get("score") is not None]
+            _base_score = round(sum(_fund_scores) / len(_fund_scores), 1) if _fund_scores else None
+
+            _rows.append({
+                "Ticker": ticker,
+                "Base score before news": _base_score,
+                "News Risk old": (news_old or {}).get("news_risk_score"),
+                "News Risk new": (news_new or {}).get("news_risk_score"),
+                "Health old": health_old.get("overall"),
+                "Health new": health_new.get("overall"),
+                "Action old": health_old.get("action"),
+                "Action new": health_new.get("action"),
+                "Items counted old": (news_old or {}).get("all_relevant"),
+                "Events counted new": (news_new or {}).get("event_groups"),
+                "Thesis-breaking live": "yes" if (news_new or {}).get("thesis_breaking_live") else "no",
+            })
+            _per_ticker_detail.append(h)
+
+        st.dataframe(_rows, hide_index=True, width='stretch')
+        st.download_button(
+            "Download comparison as CSV",
+            data=data_export_engine.table_to_csv_bytes(pd.DataFrame(_rows)),
+            file_name="health_news_v2_comparison.csv", mime="text/csv",
+            key="admin_health_news_v2_comparison_csv",
+        )
+
+        for h in _per_ticker_detail:
+            ticker = h["ticker"]
+            with st.expander(f"{ticker} - every stored headline"):
+                _compare_rows = portfolio_news_engine.compare_events_v1_v2(
+                    ticker, name=h.get("name"), thesis_drivers=h.get("thesis_drivers"),
+                    buy_date=h.get("buy_date"),
+                )
+                if not _compare_rows:
+                    st.caption("No stored headlines for this ticker.")
+                else:
+                    st.dataframe([
+                        {
+                            "Date": r["date"].strftime("%Y-%m-%d") if r["date"] else "undated",
+                            "Age (days)": r["age_days"] if r["age_days"] is not None else "-",
+                            "Publisher": r["publisher"],
+                            "Old severity": r["old_severity"],
+                            "New severity": r["new_severity"],
+                            "Relevant": "yes" if r["relevant"] else "no",
+                            "Old weight": r["old_weight"],
+                            "New weight": round(r["new_weight"], 2),
+                            "Event group": r["event_group"],
+                        }
+                        for r in _compare_rows
+                    ], hide_index=True, width='stretch')
+
+    st.markdown("##### Every distinct ticker held on the site")
+    st.caption(
+        "Tickers and counts only - never a user's email or which user holds what."
+    )
+    _counts = portfolio_store.ticker_counts_site_wide()
+    if not _counts:
+        st.caption("No holdings on the site yet.")
+    else:
+        st.dataframe(
+            [{"Ticker": t, "Distinct holders": c} for t, c in sorted(_counts.items())],
+            hide_index=True, width='stretch',
+        )
+
+
 def page_admin_dashboard():
     """Mega-batch Part 35.2: the owner Admin Dashboard - matches the
     owner-approved mock at mocks/admin_dashboard_mock.html. Replaces the
@@ -33398,6 +33538,14 @@ def page_admin_dashboard():
     # panel above.
     st.markdown("---")
     _render_private_universes_panel()
+
+    # --- HEALTH SCORE: NEWS METHOD COMPARISON (PART B STEP B2 of
+    # instruction_portfolio_scoring_and_currency_table.md, 6 Oct 2026,
+    # Director-directed) - see _render_portfolio_health_news_v2_
+    # comparison_panel()'s own docstring. Same "no gate of its own,
+    # final section of this page" pattern as every panel above.
+    st.markdown("---")
+    _render_portfolio_health_news_v2_comparison_panel()
 
 
 # -----------------------------------

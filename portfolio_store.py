@@ -794,6 +794,27 @@ def all_portfolio_tickers():
     return [r[0] for r in rows if r[0]]
 
 
+def ticker_counts_site_wide():
+    """PART B STEP B2 (Director, 6 Oct 2026, instruction_portfolio_
+    scoring_and_currency_table.md): the owner-only news-method
+    comparison panel's own "every distinct ticker held on the site"
+    summary line - tickers and counts only, same site-wide scope as
+    all_portfolio_tickers() above (not scoped to one email), but with
+    a count attached. Deliberately returns NOTHING about which user
+    holds a given ticker, or how many portfolios/holdings one single
+    user has of it - {"ticker": count_of_distinct_(email, portfolio)
+    pairs holding it}, counted DISTINCT so a user who, say, holds the
+    same ticker in two of their own portfolios is still one holder for
+    this count, never two. No email, no portfolio name, in the return
+    value at all."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT ticker, COUNT(DISTINCT email || '|' || portfolio) "
+            "FROM portfolio_holdings GROUP BY ticker ORDER BY ticker"
+        ).fetchall()
+    return {r[0]: r[1] for r in rows if r[0]}
+
+
 def get_holding(email, portfolio, ticker):
     if not email or not portfolio or not ticker:
         return None

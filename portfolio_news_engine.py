@@ -1133,8 +1133,68 @@ def analyze_holding_news_v2(ticker, name=None, thesis_drivers=None, buy_date=Non
         "news_risk_score": score, "material": material, "thesis_breaking_live": thesis_breaking_live,
         "timeline": significant, "today": today[:5], "counts": counts,
         "all_relevant": sum(1 for e in events if e["relevant"]), "scanned": len(events),
+        # "event_groups" (STEP B2, Director-directed): the deduplicated
+        # event count the comparison panel shows as "Events counted
+        # new" - len(groups), never len(events) - so the panel can show
+        # the actual de-duplication effect against v1's own "Items
+        # counted old" (analyze_holding_news()'s plain "all_relevant").
+        "event_groups": len(groups),
         "source_counts": source_counts, "explain": explain,
     }
+
+
+def compare_events_v1_v2(ticker, name=None, thesis_drivers=None, buy_date=None, now=None):
+    """PART B STEP B2 (Director, 6 Oct 2026): the per-headline, side-by-
+    side table the owner-only comparison panel's own per-ticker
+    expander shows - every stored headline's OLD vs NEW severity/
+    weight, and which v2 event-group it fell into. Read-only (no fetch
+    triggered - callers that want a fresh fetch first call analyze_
+    holding_news()/analyze_holding_news_v2() themselves beforehand;
+    this only reads whatever's already stored). Not a third scoring
+    method - it reuses _classify_severity()/_classify_severity_v2()/
+    _recency_weight()/_news_v2_weight()/_is_relevant()/_group_events_
+    v2() exactly, never a fourth, independently-written comparison.
+
+    Returns [{"date", "title", "publisher", "age_days", "old_severity",
+    "new_severity", "relevant", "old_weight", "new_weight",
+    "event_group"}, ...], newest first. event_group is a small,
+    human-readable label ("material-1", "material-2", ...), unique only
+    within this one call - purely so a reader can see which rows v2
+    merged together, never a persisted id."""
+    now = now or _now()
+    ticker = ticker.upper()
+    buy_dt = _parse_date(buy_date) or (now - _dt.timedelta(days=365))
+    merged = _load_events_with_fetched_at(ticker)
+    rows = []
+    v2_shaped = []
+    for it in merged:
+        pub = it.get("date")
+        if pub is not None and pub < buy_dt - _dt.timedelta(days=3):
+            continue
+        text = f"{it.get('title', '')} . {it.get('description', '')}"
+        old_severity = _classify_severity(text)
+        new_severity = _classify_severity_v2(text)
+        relevant = _is_relevant(text, name, ticker, thesis_drivers, it.get("source"))
+        new_weight = _news_v2_weight(pub, it.get("fetched_at"), new_severity, now)
+        row = {
+            "date": pub, "title": it.get("title", ""), "publisher": it.get("publisher", ""),
+            "age_days": (now - pub).days if pub else None,
+            "old_severity": old_severity, "new_severity": new_severity, "relevant": relevant,
+            "old_weight": _recency_weight(pub, buy_dt, now), "new_weight": new_weight,
+            "event_group": "-",
+        }
+        rows.append(row)
+        v2_shaped.append({"date": pub, "severity": new_severity, "weight": new_weight,
+                           "relevant": relevant, "_row": row})
+    _group_counter = {}
+    for group in _group_events_v2(v2_shaped):
+        severity = group[0]["severity"]
+        _group_counter[severity] = _group_counter.get(severity, 0) + 1
+        label = f"{severity}-{_group_counter[severity]}"
+        for e in group:
+            e["_row"]["event_group"] = label
+    rows.sort(key=lambda r: r["date"] or _dt.datetime.min, reverse=True)
+    return rows
 
 
 _SEVERITY_COLOR = {
