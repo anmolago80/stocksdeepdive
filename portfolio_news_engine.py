@@ -58,6 +58,19 @@ _UA = {"User-Agent": "StocksDeepDive/1.0 (+https://stocksdeepdive.com)"}
 _TIMEOUT = 10
 
 
+def is_health_news_v2_live():
+    """PART B STEP B3 (Director, 6 Oct 2026): the switch - same unset/
+    ""/0/off=OFF, 1/on=ON pattern as currency_view_engine.
+    is_currency_view_live()/top100_engine.is_backfill_live()/
+    financials_classifier.is_financials_store_live(). Re-read on every
+    call (cheap - one env var lookup) so Andrew's own go takes effect
+    on the next request without a redeploy. Claude Code never sets
+    this - the Director does, on Railway, after Andrew has checked the
+    STEP B2 owner-only comparison panel."""
+    raw = (os.environ.get("HEALTH_NEWS_V2_LIVE") or "").strip().lower()
+    return raw in ("1", "on")
+
+
 def _data_dir():
     return os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
 

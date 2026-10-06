@@ -4259,6 +4259,30 @@ EN = {
     # swap ships would mislabel a rate beta still genuinely drives.
     "a6_future.beta_label": "Beta",
     "a6_future.beta_not_used_note": "Shown for information only - not used in this valuation.",
+
+    # PART B STEP B3 (Director, 6 Oct 2026, instruction_portfolio_
+    # scoring_and_currency_table.md): the v2 news-scoring method's own
+    # explainer, shown under "How this score works" only while
+    # HEALTH_NEWS_V2_LIVE is on - the v1 explainer just above (a plain
+    # st.code() block, not localized) is untouched.
+    "portfolio.health_explainer.v2_heading": "v2 news method (in effect now)",
+    "portfolio.health_explainer.v2_body": (
+        "Thesis component = fundamentals average only (no news blend) - "
+        "capped at 30 only while a thesis-breaking event is still live "
+        "(not yet decayed away).\n"
+        "\n"
+        "News weight decays in a straight line to exactly 0 - at 90 days "
+        "for material/temporary/positive news, at 180 days for thesis-"
+        "breaking news (the previous method never dropped below 0.5).\n"
+        "\n"
+        "The same event reported by several outlets, even across several "
+        "days, counts once - grouped within 7 days of its own first "
+        "report, never once per day.\n"
+        "\n"
+        "Overall Health Score adjustment: capped at 15 points unless a "
+        "thesis-breaking event is still live, in which case the cap is "
+        "55 (the same ceiling the previous method could reach)."
+    ),
 }
 
 ES = {
@@ -7780,6 +7804,28 @@ ES = {
     # own comment above these same two keys).
     "a6_future.beta_label": "Beta",
     "a6_future.beta_not_used_note": "Se muestra solo a título informativo - no se usa en esta valoración.",
+
+    "portfolio.health_explainer.v2_heading": "Método de noticias v2 (vigente ahora)",
+    "portfolio.health_explainer.v2_body": (
+        "El componente Thesis es solo el promedio de los fundamentos (sin "
+        "mezcla de noticias) - se limita a 30 únicamente mientras exista "
+        "un evento que rompe la tesis todavía vigente (que no haya "
+        "decaído por completo).\n"
+        "\n"
+        "El peso de las noticias decae en línea recta hasta llegar "
+        "exactamente a 0: a los 90 días para noticias materiales, "
+        "temporales o positivas; a los 180 días para noticias que rompen "
+        "la tesis (el método anterior nunca bajaba de 0.5).\n"
+        "\n"
+        "El mismo evento reportado por varios medios, incluso en varios "
+        "días distintos, cuenta una sola vez - se agrupa dentro de los 7 "
+        "días desde su primer reporte, nunca una vez por día.\n"
+        "\n"
+        "Ajuste del puntaje general de salud: limitado a 15 puntos, "
+        "salvo que exista un evento que rompe la tesis todavía vigente, "
+        "en cuyo caso el límite es 55 (el mismo tope que alcanzaba el "
+        "método anterior)."
+    ),
 }
 
 

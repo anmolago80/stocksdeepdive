@@ -17079,26 +17079,54 @@ def _analyze_holding(h, email=None):
             _iv_override = portfolio_store.get_iv_override(email, h["ticker"])
         except Exception:
             _iv_override = None
+    # PART B STEP B3 (Director, 6 Oct 2026, instruction_portfolio_
+    # scoring_and_currency_table.md): HEALTH_NEWS_V2_LIVE picks v1 or
+    # v2 at this ONE dispatch point - every other reader of "news"/
+    # "components"/"health" below (the Holdings table, Health Summary
+    # table, badge UI, Δ run history) just consumes whichever shape
+    # this produced, unchanged, so wiring the switch here alone
+    # propagates everywhere in B0.2's own list with no further edits.
+    # With the switch unset, this is byte-identical to before this
+    # commit - the same two calls, in the same order, with the same
+    # arguments.
+    _v2_live = portfolio_news_engine.is_health_news_v2_live()
     try:
-        _news = portfolio_news_engine.analyze_holding_news(
-            h["ticker"], name=h.get("name"), thesis_drivers=h.get("thesis_drivers"),
-            buy_date=h.get("buy_date"), is_etf=is_etf,
-        )
+        if _v2_live:
+            _news = portfolio_news_engine.analyze_holding_news_v2(
+                h["ticker"], name=h.get("name"), thesis_drivers=h.get("thesis_drivers"),
+                buy_date=h.get("buy_date"), is_etf=is_etf,
+            )
+        else:
+            _news = portfolio_news_engine.analyze_holding_news(
+                h["ticker"], name=h.get("name"), thesis_drivers=h.get("thesis_drivers"),
+                buy_date=h.get("buy_date"), is_etf=is_etf,
+            )
     except Exception:
         _news = None
-    _components = portfolio_health_engine.compute_health_components(
-        _snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"),
-        news=_news, iv_override=_iv_override,
-    )
+    if _v2_live:
+        _components = portfolio_health_engine.compute_health_components_v2(
+            _snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"),
+            news=_news, iv_override=_iv_override,
+        )
+    else:
+        _components = portfolio_health_engine.compute_health_components(
+            _snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"),
+            news=_news, iv_override=_iv_override,
+        )
     _progress = portfolio_health_engine.compute_progress(
         _snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), buy_date=h.get("buy_date"),
     )
-    _health = portfolio_health_engine.compute_health(
-        _components, news=_news, is_etf=is_etf, progress_overall=_progress.get("overall"),
-    )
+    if _v2_live:
+        _health = portfolio_health_engine.compute_health_v2(
+            _components, news=_news, is_etf=is_etf, progress_overall=_progress.get("overall"),
+        )
+    else:
+        _health = portfolio_health_engine.compute_health(
+            _components, news=_news, is_etf=is_etf, progress_overall=_progress.get("overall"),
+        )
     return {"snapshot": _snap, "news": _news, "components": _components,
             "health": _health, "progress": _progress, "is_etf": is_etf,
-            "iv_override": _iv_override}
+            "iv_override": _iv_override, "method": ("v2" if _v2_live else "v1")}
 
 
 def _hkey(h):
@@ -23634,7 +23662,8 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
         _is_etf = bool(_a.get("is_etf"))
 
         _prev = portfolio_health_engine.record_health_run(
-            email, h.get("portfolio"), h["ticker"], _health["overall"], news_risk=(_news or {}).get("news_risk_score"),
+            email, h.get("portfolio"), h["ticker"], _health["overall"],
+            news_risk=(_news or {}).get("news_risk_score"), method=_a.get("method"),
         )
         _delta_run = round(_health["overall"] - _prev, 1) if (_prev is not None and _health["overall"] is not None) else None
         # Includes the run just recorded above (same sqlite file, committed
@@ -23977,6 +24006,14 @@ def _render_portfolio_health_scoring_expander():
             "    overall = clamp(overall + news_adjustment, 0, 100)",
             language="text",
         )
+
+        # PART B STEP B3 (Director, 6 Oct 2026): shown only while the
+        # switch is on - the v1 text above is untouched and still
+        # describes exactly what's running whenever the switch is off.
+        if portfolio_news_engine.is_health_news_v2_live():
+            _lang = st.session_state.get("lang", "en")
+            st.markdown(f"##### {i18n.t('portfolio.health_explainer.v2_heading', _lang)}")
+            st.code(i18n.t("portfolio.health_explainer.v2_body", _lang), language="text")
 
 
 def _render_portfolio_health_news_tab(email, active_portfolio, _holdings, _analyses):

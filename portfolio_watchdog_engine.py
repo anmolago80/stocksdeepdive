@@ -235,23 +235,45 @@ def _email_html(briefs, site, lang="en"):
 def _analyze_holding(h):
     is_etf = (h.get("kind") or "STOCK").upper() == "ETF"
     snap = portfolio_health_engine.fetch_snapshot(h["ticker"])
+    # PART B STEP B3 (Director, 6 Oct 2026, instruction_portfolio_
+    # scoring_and_currency_table.md): same single dispatch point as
+    # app.py's own _analyze_holding() - with the switch unset, this is
+    # byte-identical to before this commit.
+    v2_live = portfolio_news_engine.is_health_news_v2_live()
     try:
-        news = portfolio_news_engine.analyze_holding_news(
-            h["ticker"], name=h.get("name"), thesis_drivers=h.get("thesis_drivers"),
-            buy_date=h.get("buy_date"), is_etf=is_etf,
-        )
+        if v2_live:
+            news = portfolio_news_engine.analyze_holding_news_v2(
+                h["ticker"], name=h.get("name"), thesis_drivers=h.get("thesis_drivers"),
+                buy_date=h.get("buy_date"), is_etf=is_etf,
+            )
+        else:
+            news = portfolio_news_engine.analyze_holding_news(
+                h["ticker"], name=h.get("name"), thesis_drivers=h.get("thesis_drivers"),
+                buy_date=h.get("buy_date"), is_etf=is_etf,
+            )
     except Exception:
         news = None
-    components = portfolio_health_engine.compute_health_components(
-        snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"), news=news,
-    )
+    if v2_live:
+        components = portfolio_health_engine.compute_health_components_v2(
+            snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"), news=news,
+        )
+    else:
+        components = portfolio_health_engine.compute_health_components(
+            snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"), news=news,
+        )
     progress = portfolio_health_engine.compute_progress(
         snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), buy_date=h.get("buy_date"),
     )
-    health = portfolio_health_engine.compute_health(
-        components, news=news, is_etf=is_etf, progress_overall=progress.get("overall"),
-    )
-    return {"snapshot": snap, "news": news, "health": health, "is_etf": is_etf}
+    if v2_live:
+        health = portfolio_health_engine.compute_health_v2(
+            components, news=news, is_etf=is_etf, progress_overall=progress.get("overall"),
+        )
+    else:
+        health = portfolio_health_engine.compute_health(
+            components, news=news, is_etf=is_etf, progress_overall=progress.get("overall"),
+        )
+    return {"snapshot": snap, "news": news, "health": health, "is_etf": is_etf,
+            "method": ("v2" if v2_live else "v1")}
 
 
 def _signature(health, news):
@@ -365,7 +387,7 @@ def run_nightly_watchdog(log=print):
                 health, news = analysis["health"], analysis["news"]
                 prev_overall = portfolio_health_engine.record_health_run(
                     email, portfolio, ticker, health.get("overall"),
-                    news_risk=(news or {}).get("news_risk_score"),
+                    news_risk=(news or {}).get("news_risk_score"), method=analysis.get("method"),
                 )
                 if not _is_material(health, news, prev_overall):
                     summary["skipped_no_change"] += 1

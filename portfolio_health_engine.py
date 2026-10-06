@@ -509,10 +509,25 @@ def _health_runs_conn():
     _cols = [r[1] for r in conn.execute("PRAGMA table_info(portfolio_health_runs)").fetchall()]
     if "portfolio" not in _cols:
         conn.execute("ALTER TABLE portfolio_health_runs ADD COLUMN portfolio TEXT NOT NULL DEFAULT ''")
+    # PART B STEP B3 (Director, 6 Oct 2026, instruction_portfolio_
+    # scoring_and_currency_table.md): "the stored health history will
+    # show a step on the day the switch is set - propose how to mark
+    # it... build the smaller option." A single nullable column is
+    # smaller than a separate method-change audit table: every row
+    # written from here on records which method produced it ("v1"/
+    # "v2"); every row written before this column existed simply has
+    # method=NULL, read as "v1" by convention (every run before this
+    # commit WAS v1 - there was no other method), never backfilled.
+    # The trend view (wherever the Δ run history is charted) can use
+    # this to mark the exact day the step happened, rather than
+    # guessing from the score alone.
+    if "method" not in _cols:
+        conn.execute("ALTER TABLE portfolio_health_runs ADD COLUMN method TEXT")
     return conn
 
 
-def record_health_run(email, portfolio, ticker, overall, news_risk=None, min_gap_hours=4):
+def record_health_run(email, portfolio, ticker, overall, news_risk=None, min_gap_hours=4,
+                       method=None):
     """Log this Health run and return the PREVIOUS run's overall score (or
     None if there isn't one yet) so callers can show 'Δ run'. Scoped by
     (email, portfolio, ticker) - the same ticker held in two different
@@ -522,7 +537,14 @@ def record_health_run(email, portfolio, ticker, overall, news_risk=None, min_gap
     portfolio's last score for the same ticker. A new row is only written
     if the last one is older than min_gap_hours, so Streamlit's
     rerun-on-every-click model doesn't flood the table - but the previous
-    score is always returned regardless of whether a write happened."""
+    score is always returned regardless of whether a write happened.
+
+    `method` (STEP B3): "v1"/"v2"/None - whichever method produced this
+    `overall`/`news_risk`, written straight through with no validation
+    (the caller already knows, from the same switch check that chose
+    which compute_health()/compute_health_v2() call produced these
+    numbers) - see _health_runs_conn()'s own docstring for why this
+    column exists."""
     if not email or not portfolio or not ticker:
         return None
     now = datetime.now(timezone.utc)
@@ -545,9 +567,9 @@ def record_health_run(email, portfolio, ticker, overall, news_risk=None, min_gap
                 pass
         if should_insert and overall is not None:
             conn.execute(
-                "INSERT INTO portfolio_health_runs (email, portfolio, ticker, as_of, overall, news_risk) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (email, portfolio, ticker, now.isoformat(), overall, news_risk),
+                "INSERT INTO portfolio_health_runs (email, portfolio, ticker, as_of, overall, "
+                "news_risk, method) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (email, portfolio, ticker, now.isoformat(), overall, news_risk, method),
             )
     return prev_overall
 
