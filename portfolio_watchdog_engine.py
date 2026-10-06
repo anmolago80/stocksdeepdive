@@ -261,9 +261,16 @@ def _analyze_holding(h):
         components = portfolio_health_engine.compute_health_components(
             snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"), news=news,
         )
-    progress = portfolio_health_engine.compute_progress(
-        snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), buy_date=h.get("buy_date"),
-    )
+    # PART C STEP C2 (Director, 6 Oct 2026): same dispatch point as
+    # app.py's own _analyze_holding(), for PROGRESS_V2_LIVE.
+    if portfolio_health_engine.is_progress_v2_live():
+        progress = portfolio_health_engine.compute_progress_v2(
+            snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), buy_date=h.get("buy_date"),
+        )
+    else:
+        progress = portfolio_health_engine.compute_progress(
+            snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), buy_date=h.get("buy_date"),
+        )
     if v2_live:
         health = portfolio_health_engine.compute_health_v2(
             components, news=news, is_etf=is_etf, progress_overall=progress.get("overall"),

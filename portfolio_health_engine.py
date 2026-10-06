@@ -50,6 +50,7 @@ made where the source line wasn't available is called out in a comment at
 that spot.
 """
 
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -1128,6 +1129,131 @@ def compute_progress(snapshot, baseline, kind, buy_price, buy_date=None):
 
     comps["Income Δ"] = _mk(_prog_score(snapshot.get("dividend_rate"), baseline.get("dividend_rate")),
                                   snapshot.get("dividend_rate"), baseline.get("dividend_rate"))
+
+    weighted = [(PROGRESS_WEIGHTS[k], comps[k]["score"]) for k in PROGRESS_ORDER
+                if comps.get(k, {}).get("score") is not None]
+    overall = round(sum(w * s for w, s in weighted) / sum(w for w, _ in weighted), 1) if weighted else None
+
+    if overall is None:
+        verdict = "Not enough data yet"
+    elif overall >= PROGRESS_VERDICT_UP:
+        verdict = "Improved since purchase"
+    elif overall < PROGRESS_VERDICT_DOWN:
+        verdict = "Deteriorated since purchase"
+    else:
+        verdict = "Roughly flat since purchase"
+
+    return {"components": comps, "overall": overall, "verdict": verdict}
+
+
+# ---------------------------------------------------------------------
+# PART C STEP C2 (Director, 6 Oct 2026, instruction_portfolio_scoring_
+# and_currency_table.md): compute_progress_v2() - BESIDE compute_
+# progress() above, which this step does not edit by a single
+# character. STEP C0's own diagnosis: _prog_score() compares every
+# component by RELATIVE change, even for rate fields (revenue_growth/
+# earnings_growth/profit_margin/roe/fcf_growth, all stored as
+# fractions - 0.10 = 10%, confirmed against GROWTH_BAND/MARGIN_BAND/
+# ROE_BAND's own threshold scales in STEP C0's report) - so growth
+# slowing from 10% to 6% reads as a 40% relative deterioration
+# ((0.06-0.10)/0.10) and scores 30, when the real-world change is a
+# 4-PERCENTAGE-POINT slowdown. Level fields (debt_to_equity, a
+# percentage NUMBER not a fraction; intrinsic_value; price vs buy
+# price; dividend_rate) were never the problem STEP C0 diagnosed, so
+# v2 leaves them on the SAME relative-change formula, unchanged -
+# comparing a level by percentage POINTS wouldn't even be the right
+# unit for most of them (e.g. intrinsic_value is a dollar figure, not
+# a rate).
+# ---------------------------------------------------------------------
+
+def is_progress_v2_live():
+    """The switch - same unset/""/0/off=OFF, 1/on=ON pattern as every
+    other switch in this codebase (currency_view_engine.
+    is_currency_view_live(), portfolio_news_engine.is_health_news_v2_
+    live(), ...). Re-read on every call. Claude Code never sets this -
+    the Director does, on Railway, after Andrew has checked the PART B
+    STEP B2 owner-only comparison panel's own second table (STEP C2)."""
+    raw = (os.environ.get("PROGRESS_V2_LIVE") or "").strip().lower()
+    return raw in ("1", "on")
+
+
+# Director's own proposed scales, in percentage POINTS, for the full
+# +-50 swing around the neutral 50 score - named constants so Andrew
+# can see and adjust them from the STEP B2/C2 comparison panel before
+# ever setting the switch.
+PROGRESS_V2_GROWTH_SCALE_PP = 20.0
+PROGRESS_V2_MARGIN_SCALE_PP = 10.0
+PROGRESS_V2_ROIC_SCALE_PP = 10.0
+PROGRESS_V2_FCF_SCALE_PP = 20.0
+
+
+def _prog_score_v2_rate(current, baseline, scale_points, higher_better=True):
+    """v2's own rate-field formula: score = 50 + clamp(difference in
+    PERCENTAGE POINTS / scale_points, -1, 1) * 50. `current`/`baseline`
+    are fractions (0.10 = 10%), so (current-baseline)*100 is the
+    difference already expressed in percentage points - scale_points
+    is how many points maps to the full +-50 swing (e.g. growth
+    slowing by exactly 20pp scores 0; by exactly 10pp scores 25)."""
+    if current is None or baseline is None:
+        return None
+    diff_pp = (current - baseline) * 100.0
+    if not higher_better:
+        diff_pp = -diff_pp
+    frac = max(-1.0, min(1.0, diff_pp / scale_points))
+    return round(max(0.0, min(100.0, 50 + frac * 50)), 1)
+
+
+def compute_progress_v2(snapshot, baseline, kind, buy_price, buy_date=None):
+    """v2 of compute_progress() - identical structure, identical
+    component set/weights/verdict thresholds; only the four RATE
+    components (Growth Δ/Margins Δ/ROIC Δ/FCF Δ) are scored in
+    percentage points via _prog_score_v2_rate() instead of relative
+    change. Debt Δ/Intrinsic Δ/Return/Income Δ (level fields) reuse
+    _prog_score()/_rel() exactly, unchanged - see this section's own
+    header comment for why."""
+    baseline = _normalize_baseline(baseline)
+    is_etf = (kind or "STOCK").upper() == "ETF"
+    comps = {}
+
+    def _mk(score, current, base, note=""):
+        return {"score": score, "current": current, "baseline": base, "note": note}
+
+    if is_etf:
+        for k in ("Growth Δ", "Margins Δ", "ROIC Δ", "FCF Δ", "Debt Δ", "Intrinsic Δ"):
+            comps[k] = _mk(None, None, None, note="N/A for ETFs/funds")
+    else:
+        growth_vals = [v for v in (
+            _prog_score_v2_rate(snapshot.get("revenue_growth"), baseline.get("revenue_growth"),
+                                 PROGRESS_V2_GROWTH_SCALE_PP),
+            _prog_score_v2_rate(snapshot.get("earnings_growth"), baseline.get("earnings_growth"),
+                                 PROGRESS_V2_GROWTH_SCALE_PP),
+        ) if v is not None]
+        comps["Growth Δ"] = _mk(sum(growth_vals) / len(growth_vals) if growth_vals else None,
+                                 snapshot.get("revenue_growth"), baseline.get("revenue_growth"))
+        comps["Margins Δ"] = _mk(
+            _prog_score_v2_rate(snapshot.get("profit_margin"), baseline.get("profit_margin"),
+                                 PROGRESS_V2_MARGIN_SCALE_PP),
+            snapshot.get("profit_margin"), baseline.get("profit_margin"))
+        comps["ROIC Δ"] = _mk(
+            _prog_score_v2_rate(snapshot.get("roe"), baseline.get("roe"), PROGRESS_V2_ROIC_SCALE_PP),
+            snapshot.get("roe"), baseline.get("roe"))
+        comps["FCF Δ"] = _mk(
+            _prog_score_v2_rate(snapshot.get("fcf_growth"), baseline.get("fcf_growth"),
+                                 PROGRESS_V2_FCF_SCALE_PP),
+            snapshot.get("fcf_growth"), baseline.get("fcf_growth"))
+        # Level fields - UNCHANGED, same relative-change formula v1 uses.
+        comps["Debt Δ"] = _mk(_prog_score(snapshot.get("debt_to_equity"), baseline.get("debt_to_equity"),
+                                           higher_better=False),
+                               snapshot.get("debt_to_equity"), baseline.get("debt_to_equity"))
+        comps["Intrinsic Δ"] = _mk(_prog_score(snapshot.get("intrinsic_value"), baseline.get("intrinsic_value")),
+                                    snapshot.get("intrinsic_value"), baseline.get("intrinsic_value"))
+
+    buy_ref = buy_price or baseline.get("price")
+    price = snapshot.get("price")
+    comps["Return"] = _mk(_prog_score(price, buy_ref) if (price is not None and buy_ref) else None, price, buy_ref)
+
+    comps["Income Δ"] = _mk(_prog_score(snapshot.get("dividend_rate"), baseline.get("dividend_rate")),
+                             snapshot.get("dividend_rate"), baseline.get("dividend_rate"))
 
     weighted = [(PROGRESS_WEIGHTS[k], comps[k]["score"]) for k in PROGRESS_ORDER
                 if comps.get(k, {}).get("score") is not None]

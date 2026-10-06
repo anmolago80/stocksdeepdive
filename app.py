@@ -17113,9 +17113,19 @@ def _analyze_holding(h, email=None):
             _snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"),
             news=_news, iv_override=_iv_override,
         )
-    _progress = portfolio_health_engine.compute_progress(
-        _snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), buy_date=h.get("buy_date"),
-    )
+    # PART C STEP C2 (Director, 6 Oct 2026, instruction_portfolio_
+    # scoring_and_currency_table.md): same single-dispatch-point
+    # pattern as PART B STEP B3's own HEALTH_NEWS_V2_LIVE switch, for
+    # PROGRESS_V2_LIVE. With the switch unset, byte-identical to before
+    # this commit.
+    if portfolio_health_engine.is_progress_v2_live():
+        _progress = portfolio_health_engine.compute_progress_v2(
+            _snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), buy_date=h.get("buy_date"),
+        )
+    else:
+        _progress = portfolio_health_engine.compute_progress(
+            _snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), buy_date=h.get("buy_date"),
+        )
     if _v2_live:
         _health = portfolio_health_engine.compute_health_v2(
             _components, news=_news, is_etf=is_etf, progress_overall=_progress.get("overall"),
@@ -31489,10 +31499,15 @@ def _render_portfolio_health_news_v2_comparison_panel():
                     snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), buy_date=h.get("buy_date"))
             except Exception:
                 progress = {}
+            try:
+                progress_v2 = portfolio_health_engine.compute_progress_v2(
+                    snap, h.get("baseline"), h.get("kind"), h.get("buy_price"), buy_date=h.get("buy_date"))
+            except Exception:
+                progress_v2 = {}
             health_old = portfolio_health_engine.compute_health(
                 components_old, news=news_old, is_etf=is_etf, progress_overall=progress.get("overall"))
             health_new = portfolio_health_engine.compute_health_v2(
-                components_new, news=news_new, is_etf=is_etf, progress_overall=progress.get("overall"))
+                components_new, news=news_new, is_etf=is_etf, progress_overall=progress_v2.get("overall"))
 
             _fund_scores = [components_old[k]["score"] for k in portfolio_health_engine._FUND_KEYS
                             if components_old.get(k, {}).get("score") is not None]
@@ -31511,7 +31526,7 @@ def _render_portfolio_health_news_v2_comparison_panel():
                 "Events counted new": (news_new or {}).get("event_groups"),
                 "Thesis-breaking live": "yes" if (news_new or {}).get("thesis_breaking_live") else "no",
             })
-            _per_ticker_detail.append(h)
+            _per_ticker_detail.append((h, progress, progress_v2))
 
         st.dataframe(_rows, hide_index=True, width='stretch')
         st.download_button(
@@ -31521,7 +31536,7 @@ def _render_portfolio_health_news_v2_comparison_panel():
             key="admin_health_news_v2_comparison_csv",
         )
 
-        for h in _per_ticker_detail:
+        for h, _h_progress, _h_progress_v2 in _per_ticker_detail:
             ticker = h["ticker"]
             with st.expander(f"{ticker} - every stored headline"):
                 _compare_rows = portfolio_news_engine.compare_events_v1_v2(
@@ -31544,6 +31559,48 @@ def _render_portfolio_health_news_v2_comparison_panel():
                             "Event group": r["event_group"],
                         }
                         for r in _compare_rows
+                    ], hide_index=True, width='stretch')
+
+        # PART C STEP C2 (Director, 6 Oct 2026): Progress - a second
+        # table, same owner-only panel, same page. compute_progress()/
+        # compute_progress_v2() were already computed per holding
+        # above (reused here, never a second call).
+        st.markdown("##### Progress since purchase: method comparison (dry run)")
+        st.caption(
+            "Owner-only, read-only. v2 compares rate fields (growth, margin, ROIC, "
+            "FCF growth) in percentage POINTS rather than relative change - level "
+            "fields (debt, intrinsic value, price, dividend) are unchanged. Nothing "
+            "from v2 is written anywhere while PROGRESS_V2_LIVE stays unset."
+        )
+        _progress_rows = []
+        for h, _h_progress, _h_progress_v2 in _per_ticker_detail:
+            _progress_rows.append({
+                "Ticker": h["ticker"],
+                "Progress old": (_h_progress or {}).get("overall"),
+                "Progress new": (_h_progress_v2 or {}).get("overall"),
+                "Verdict old": (_h_progress or {}).get("verdict"),
+                "Verdict new": (_h_progress_v2 or {}).get("verdict"),
+            })
+        st.dataframe(_progress_rows, hide_index=True, width='stretch')
+
+        for h, _h_progress, _h_progress_v2 in _per_ticker_detail:
+            ticker = h["ticker"]
+            _comps_old = (_h_progress or {}).get("components") or {}
+            _comps_new = (_h_progress_v2 or {}).get("components") or {}
+            with st.expander(f"{ticker} - Progress components, old vs new"):
+                _comp_names = sorted(set(_comps_old) | set(_comps_new))
+                if not _comp_names:
+                    st.caption("No Progress components for this holding.")
+                else:
+                    st.dataframe([
+                        {
+                            "Component": name,
+                            "Current": (_comps_new.get(name) or _comps_old.get(name) or {}).get("current"),
+                            "Baseline": (_comps_new.get(name) or _comps_old.get(name) or {}).get("baseline"),
+                            "Old score": (_comps_old.get(name) or {}).get("score"),
+                            "New score": (_comps_new.get(name) or {}).get("score"),
+                        }
+                        for name in _comp_names
                     ], hide_index=True, width='stretch')
 
     st.markdown("##### Every distinct ticker held on the site")
