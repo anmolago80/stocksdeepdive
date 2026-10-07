@@ -43,6 +43,22 @@ seeding a currency onto the stored snapshot row - matching exactly how
 production now resolves it. _seed_snapshot()'s own `currency` kwarg
 was removed entirely (it no longer does anything in production).
 
+A THIRD follow-up (Director, 6 Oct 2026, "one fix to PART A"): mixing
+that live currency with a still-stored-row margin of safety was itself
+a one-source-of-truth bug - the two could disagree for the same
+ticker. Margin of safety now comes from the SAME analyze() call as
+currency (app.py's _resolve_ticker_currency_live() was extended into
+_resolve_ticker_mos_currency_live(), returning both). _seed_snapshot()
+and every snapshot_store usage were removed from this file entirely -
+every check below controls mos AND currency purely through the one
+deep_dive_engine.analyze() mock (_LIVE_RESULT_BY_TICKER/_fake_analyze()
+below). This follow-up also added three gate-order tests (deep_dive_
+engine.analyze() must not be called for a signed-out visitor, a
+signed-in non-owner with CURRENCY_VIEW_LIVE unset, or a signed-in
+visitor with no home currency set) and a one-source-of-truth test (the
+table's margin of safety equals the Deep Dive note's for the same
+analyze() result) - see test_part_a_followup_one_source_of_truth.py.
+
 ALL FIXTURES IN THIS FILE ARE SYNTHETIC - this sandbox has no outbound
 network access, same disclosure as every other fixture-based test in
 this repo.
@@ -64,12 +80,9 @@ import account_currency_store as acs
 import currency_risk_engine as cre
 import currency_view_engine as cve
 import deep_dive_engine
-import snapshot_store
 
 if os.path.exists(acs.DB_PATH):
     os.remove(acs.DB_PATH)
-if os.path.exists(snapshot_store.DB_PATH):
-    os.remove(snapshot_store.DB_PATH)
 
 passed = 0
 failed = 0
@@ -97,43 +110,39 @@ _FAKE_STATS = {
 }
 
 
-def _seed_snapshot(ticker, mos_pct):
-    """Mirrors the REAL shape a stored snapshot row has: "MOS %"
-    (capitalised - the same key both nightly_scan.analyze_ticker_lite()
-    and app.py's _save_live_snapshot() live hook use), never the
-    public, lowercase "mos_pct" a stored row never actually carries
-    (that name only exists after going through snapshot_store.
-    public_view(), which currency_risk_render.py's _render_mos_view_
-    table() now correctly calls - see this file's own module docstring
-    for why the OLD version of this helper hid the live bug). Carries
-    NO currency field, matching today's real production shape exactly
-    - currency is never read from this stored row any more (PART A
-    STEP A1); see _mock_live_currency() below for how a test controls
-    the ticker's resolved currency instead."""
-    snapshot_store.save_snapshot(ticker, "S&P 500", {"Ticker": ticker, "MOS %": mos_pct})
-
-
 # PART A STEP A1 (Director, 6 Oct 2026, instruction_portfolio_scoring_
-# and_currency_table.md): the ticker's own trading currency is now
-# resolved LIVE by app.py's _resolve_ticker_currency_live(), which calls
-# deep_dive_engine.analyze() - the SAME function the Deep Dive currency
-# note itself reads its own currency from (one source of truth). Tests
-# control this by mocking deep_dive_engine.analyze() directly (never a
-# raw reassignment - mock.patch.object only, scoped, so it can never
-# leak across AppTest scripts in this same process) to return a plain
-# dict shaped exactly like that real function's own return value:
-# {"error": ..., "currency": ...}. A ticker absent from
-# _LIVE_CURRENCY_BY_TICKER simulates deep_dive_engine.analyze() being
+# and_currency_table.md), amended by the Director's "one fix to PART A"
+# follow-up (part b): BOTH the ticker's own trading currency AND its
+# margin of safety are now resolved LIVE, from the SAME deep_dive_
+# engine.analyze() call, by app.py's _resolve_ticker_mos_currency_live()
+# - the SAME function the Deep Dive currency note itself reads its own
+# currency from (one source of truth; see that function's own docstring
+# for the full fix history). There is no longer any stored-row read on
+# this path at all - _seed_snapshot()/snapshot_store are gone from this
+# file entirely; every check below controls BOTH values purely through
+# this one mock.
+#
+# Tests control this by mocking deep_dive_engine.analyze() directly
+# (never a raw reassignment - mock.patch.object only, scoped, so it can
+# never leak across AppTest scripts in this same process) to return a
+# plain dict shaped exactly like that real function's own return value:
+# {"error": ..., "mos": ..., "currency": ...}. A ticker absent from
+# _LIVE_RESULT_BY_TICKER simulates deep_dive_engine.analyze() being
 # unable to analyze it at all (bad symbol / fetch failure) - the same
-# "error" key every real caller of analyze() already checks.
-_LIVE_CURRENCY_BY_TICKER = {}
+# "error" key every real caller of analyze() already checks, giving
+# back no mos and no currency. A ticker present with "currency": "-"
+# simulates a ticker that DOES analyze successfully (a real mos comes
+# back) but whose own currency info is unavailable - deep_dive_engine.
+# py's own "no currency on file" sentinel.
+_LIVE_RESULT_BY_TICKER = {}
 
 
 def _fake_analyze(ticker, *_args, **_kwargs):
-    if ticker in _LIVE_CURRENCY_BY_TICKER:
-        return {"error": None, "ticker": ticker, "currency": _LIVE_CURRENCY_BY_TICKER[ticker]}
+    if ticker in _LIVE_RESULT_BY_TICKER:
+        r = _LIVE_RESULT_BY_TICKER[ticker]
+        return {"error": None, "ticker": ticker, "mos": r.get("mos"), "currency": r.get("currency")}
     return {"error": f"No price history found for '{ticker}'.", "error_kind": "not_found",
-            "currency": None}
+            "mos": None, "currency": None}
 
 
 def _mock_live_currency():
@@ -280,8 +289,7 @@ check("no jump ticker: the 'Margin of safety, ... view' heading never appears",
 # table (page_currency_risk() only honours the jump for a signed-in,
 # visible visitor in the first place).
 # ======================================================================
-_seed_snapshot("AAPL", 66.1)
-_LIVE_CURRENCY_BY_TICKER["AAPL"] = "USD"
+_LIVE_RESULT_BY_TICKER["AAPL"] = {"mos": 66.1, "currency": "USD"}
 _at4 = _run_page(None, jump={"ticker": "AAPL"}, extra_env={"CURRENCY_VIEW_LIVE": "1"})
 check("signed out, even with a jump present: no extra table",
       "Margin of safety," not in _page_text(_at4))
@@ -291,9 +299,11 @@ print("[b3_no_ticker_no_table] without a ticker, or signed out, no extra table e
 # ======================================================================
 # CHECK 5: WITH a ticker, signed in, home currency set, visible -> the
 # extra table DOES appear, and its own numbers equal cve.mos_view()'s.
-# AAPL's currency ("USD") comes from _fake_analyze() (deep_dive_engine.
-# analyze()'s own real return shape), per _LIVE_CURRENCY_BY_TICKER set
-# just above - the live-resolution path PART A STEP A1 introduced.
+# AAPL's mos (66.1) and currency ("USD") both come from _fake_analyze()
+# (deep_dive_engine.analyze()'s own real return shape), per _LIVE_
+# RESULT_BY_TICKER set just above - the ONE live-resolution call PART A
+# STEP A1 introduced and the "one fix to PART A" follow-up extended to
+# cover mos too.
 # ======================================================================
 acs.set_home_currency("withticker@example.com", "AUD")
 _at5 = _run_page("withticker@example.com", jump={"ticker": "AAPL"},
@@ -323,8 +333,7 @@ print("[b3_table_with_ticker] the extra table appears with a ticker, carries the
 # itself (a correct non-failure outcome) is covered separately by
 # CHECK 13 below, via presetting cr_base/cr_quote directly.
 # ======================================================================
-_seed_snapshot("CSL.AX", 10.0)  # an AUD-priced ticker
-_LIVE_CURRENCY_BY_TICKER["CSL.AX"] = "AUD"
+_LIVE_RESULT_BY_TICKER["CSL.AX"] = {"mos": 10.0, "currency": "AUD"}  # an AUD-priced ticker
 _at6 = _run_page("withticker@example.com", jump={"ticker": "CSL.AX"},
                  extra_env={"CURRENCY_VIEW_LIVE": "1"})
 # base == quote here -> the page itself warns and returns before any
@@ -349,10 +358,8 @@ print("[b3_mismatched_currency_no_table] a ticker whose own currency doesn't mat
 # ======================================================================
 os.environ["CURRENCY_VIEW_LIVE"] = "1"
 acs.set_home_currency("persist@example.com", "AUD")
-_seed_snapshot("AAPL", 66.1)
-_seed_snapshot("MSFT", 20.0)
-_LIVE_CURRENCY_BY_TICKER["AAPL"] = "USD"
-_LIVE_CURRENCY_BY_TICKER["MSFT"] = "USD"
+_LIVE_RESULT_BY_TICKER["AAPL"] = {"mos": 66.1, "currency": "USD"}
+_LIVE_RESULT_BY_TICKER["MSFT"] = {"mos": 20.0, "currency": "USD"}
 
 _script7 = f"""
 import os, sys
@@ -482,8 +489,7 @@ print("[b3_url_jump_never_leaks] a URL ticker is only ever applied for a visitor
 # and for a ticker whose live currency resolution itself fails - the
 # "never show nothing" fallback both now produce.
 # ======================================================================
-_seed_snapshot("AAPL", 66.1)
-_LIVE_CURRENCY_BY_TICKER["AAPL"] = "USD"
+_LIVE_RESULT_BY_TICKER["AAPL"] = {"mos": 66.1, "currency": "USD"}
 
 
 def _fresh_url_only(email, switch_on, ticker="AAPL"):
@@ -583,47 +589,48 @@ print("[b3_gates_hold_via_url_alone] all four cases (signed out / non-owner swit
 
 # ======================================================================
 # CHECK 10 (Director's 6 Oct 2026 live-bug follow-up, "never show
-# nothing"): a ticker with NO stored row at all - the table can't
-# show, and must never silently show nothing either. A plain line
-# explains why; a non-owner never sees the owner-only diagnostic.
+# nothing"; amended by the "one fix to PART A" follow-up, part b): a
+# ticker deep_dive_engine.analyze() can't analyze at all (bad symbol /
+# fetch failure - absent from _LIVE_RESULT_BY_TICKER, so _fake_analyze()
+# returns its own "error" branch, mos=None) - the table can't show, and
+# must never silently show nothing either. A plain line explains why; a
+# non-owner never sees the owner-only diagnostic.
 # ======================================================================
 acs.set_home_currency("check10@example.com", "AUD")
 _at10 = _fresh_url_only("check10@example.com", switch_on=True, ticker="ZZZZ_NEVER_SCANNED")
 _text10 = _page_text(_at10)
-check("ticker with NO stored row at all: no 'Margin of safety' table",
+check("ticker analyze() can't resolve at all: no 'Margin of safety' table",
       "Margin of safety," not in _text10)
-check("a plain line explains why (no stored valuation), not a silent gap",
-      "No stored valuation for ZZZZ_NEVER_SCANNED yet." in _text10)
+check("a plain line explains why (no confirmed valuation), not a silent gap",
+      "We couldn't confirm a valuation for ZZZZ_NEVER_SCANNED right now" in _text10)
 check("a non-owner never sees the owner-only diagnostic caption",
       "[Owner-only diagnostic]" not in _text10)
-print("[b3_no_stored_row_never_silent] a ticker that was never scanned/viewed shows a "
+print("[b3_no_valuation_never_silent] a ticker analyze() can't resolve at all shows a "
       "plain explanatory line, never nothing OK")
 
 # ======================================================================
-# CHECK 11 (Director's 6 Oct 2026 PART A STEP A1): a ticker WITH a
-# stored row and a real margin of safety, but whose LIVE currency
-# resolution fails - deep_dive_engine.analyze() returns an "error" for
-# it (a delisted symbol, a fetch failure), via _fake_analyze()'s own
-# "ticker absent from _LIVE_CURRENCY_BY_TICKER" branch, never seeding
-# an entry for "NOCCY" here. This is the live-resolution-path's own
-# "can't confirm it right now" condition - the real replacement for
-# the old "no currency field in storage" scenario, now that currency
-# never comes from storage at all. The owner sees the exact failed
-# condition; a non-owner (even though the switch is live, so they too
-# reach this far) sees only the plain line.
+# CHECK 11 (Director's 6 Oct 2026 PART A STEP A1, amended by the "one
+# fix to PART A" follow-up, part b): a ticker whose SAME analyze() call
+# comes back with a real margin of safety but no confirmed currency -
+# deep_dive_engine.py's own "no currency on file" sentinel ("-"), via
+# _LIVE_RESULT_BY_TICKER["NOCCY"]'s own "currency": "-" below. This is
+# the live-resolution path's own "we got a valuation but can't confirm
+# the currency" condition. The owner sees the exact failed condition; a
+# non-owner (even though the switch is live, so they too reach this
+# far) sees only the plain line.
 # ======================================================================
-_seed_snapshot("NOCCY", 12.3)  # a real stored MOS; "NOCCY" is deliberately
-                               # never added to _LIVE_CURRENCY_BY_TICKER
+_LIVE_RESULT_BY_TICKER["NOCCY"] = {"mos": 12.3, "currency": "-"}  # a real mos, no
+                                                                   # confirmed currency
 acs.set_home_currency(_OWNER, "AUD")
 _at11_owner = _fresh_url_only(_OWNER, switch_on=True, ticker="NOCCY")
 _text11_owner = _page_text(_at11_owner)
-check("stored row, real MOS, but live currency resolution fails: no table",
+check("real mos, but no confirmed currency: no table",
       "Margin of safety," not in _text11_owner)
 check("the plain line says the currency couldn't be confirmed right now",
       "We couldn't confirm NOCCY's trading currency right now" in _text11_owner)
 check("the OWNER sees the exact failed condition as an extra diagnostic caption",
       "[Owner-only diagnostic]" in _text11_owner
-      and "_resolve_ticker_currency_live()" in _text11_owner)
+      and "_resolve_ticker_mos_currency_live()" in _text11_owner)
 
 acs.set_home_currency("check11b@example.com", "AUD")
 _at11_nonowner = _fresh_url_only("check11b@example.com", switch_on=True, ticker="NOCCY")
@@ -632,9 +639,9 @@ check("a non-owner sees the same plain line...",
       "We couldn't confirm NOCCY's trading currency right now" in _text11_nonowner)
 check("...but never the owner-only diagnostic caption",
       "[Owner-only diagnostic]" not in _text11_nonowner)
-print("[b3_live_currency_resolution_fails] a stored row with a real margin of safety "
-      "but a failed LIVE currency resolution shows a plain line for everyone and the "
-      "exact failed condition for the owner only OK")
+print("[b3_live_currency_resolution_fails] a real margin of safety with no confirmed "
+      "currency shows a plain line for everyone and the exact failed condition for the "
+      "owner only OK")
 
 # ======================================================================
 # CHECK 12/13 (Director's 6 Oct 2026 follow-up): the two remaining
@@ -646,10 +653,8 @@ print("[b3_live_currency_resolution_fails] a stored row with a real margin of sa
 # jump involved), the only way to decouple the page's own base/quote
 # resolution from these two specific branches inside the table itself.
 # ======================================================================
-_seed_snapshot("HSBA.L", 8.0)  # a GBP-priced ticker, matches neither AUD nor USD
-_seed_snapshot("BHP.AX", 15.0)  # an AUD-priced (home-market) ticker
-_LIVE_CURRENCY_BY_TICKER["HSBA.L"] = "GBP"
-_LIVE_CURRENCY_BY_TICKER["BHP.AX"] = "AUD"
+_LIVE_RESULT_BY_TICKER["HSBA.L"] = {"mos": 8.0, "currency": "GBP"}  # matches neither AUD nor USD
+_LIVE_RESULT_BY_TICKER["BHP.AX"] = {"mos": 15.0, "currency": "AUD"}  # the home-market currency
 
 
 def _run_with_preset_state(email, cr_base, cr_quote, cr_active_ticker, switch_on=True):
@@ -706,6 +711,4 @@ print()
 print(f"PASS={passed} FAIL={failed}")
 if os.path.exists(acs.DB_PATH):
     os.remove(acs.DB_PATH)
-if os.path.exists(snapshot_store.DB_PATH):
-    os.remove(snapshot_store.DB_PATH)
 sys.exit(1 if failed else 0)

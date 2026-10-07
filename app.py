@@ -24374,13 +24374,28 @@ def page_top100():
     top100_render.render_top100_page(lang=st.session_state.get("lang", "en"))
 
 
-def _resolve_ticker_currency_live(ticker):
-    """Fix (Director, 6 Oct 2026, PART A STEP A1 of instruction_
-    portfolio_scoring_and_currency_table.md): ONE source of truth for a
-    ticker's own trading currency on the Currency Risk page - the SAME
-    function the Deep Dive currency note reads it from (A0.2 of that
-    instruction's report): deep_dive_engine.analyze(), whose own
-    "currency" field (deep_dive_engine.py's own "currency": info.get(
+def _resolve_ticker_mos_currency_live(ticker):
+    """Fix (Director, 6 Oct 2026, PART A of instruction_portfolio_
+    scoring_and_currency_table.md - STEP A1, then amended by the
+    Director's own "one fix to PART A" follow-up, part (b)): ONE
+    source of truth for BOTH a ticker's margin of safety AND its own
+    trading currency on the Currency Risk page - the SAME deep_dive_
+    engine.analyze() call, the SAME two fields (_dd["mos"]/_dd[
+    "currency"]) the Deep Dive currency note itself reads (app.py's
+    own _render_currency_note(), A0.2 of that instruction's report).
+
+    Originally this function returned only the currency, and the
+    table's margin of safety came from a SEPARATE read of snapshot_
+    store's stored row - two different sources of truth that could
+    (and in production did) disagree, since the stored row's own MOS
+    can be stale relative to this live analyze() call. The Director's
+    follow-up is explicit: "do not mix a stored-row margin of safety
+    with a live currency. Remove the stored-row read from the table
+    path." This function now returns both, from the one call, and
+    _render_mos_view_table() (currency_risk_render.py) has no
+    snapshot_store dependency left at all.
+
+    deep_dive_engine.py's own "currency" field ("currency": info.get(
     "currency") or "-") already goes through fundamentals_data.
     normalize_pence_quote() internally, so a London (GBp-quoted)
     ticker correctly comes back "GBP", never the raw pence code.
@@ -24394,40 +24409,52 @@ def _resolve_ticker_currency_live(ticker):
     Discovery's Google Trends/NewsAPI/StockTwits live signals, and
     those two flags are confirmed (deep_dive_engine.py's own analyze())
     to gate ONLY Discovery - never mos/currency/intrinsic_value - so
-    this is a strictly cheaper call with an identical currency (and,
-    incidentally, MOS) result to the Deep Dive page's own live_data=
-    True default. get_price_history/get_ticker_info are both this
-    module's @st.cache_data(ttl=1800)-shared caches (the same ones the
-    Deep Dive page itself uses) - when a visitor arrives here having
-    just viewed this exact ticker's Deep Dive, both network fetches are
-    a cache hit; only the CPU-bound DCF/quality pass re-runs. Cached a
-    second time here, in st.session_state per ticker for the life of
-    this session, so neither the jump-time preset below nor render_
-    currency_risk_page()'s own render call ever invokes analyze() twice
-    for the same ticker in the same session.
+    this is a strictly cheaper call with an identical currency (and
+    MOS) result to the Deep Dive page's own live_data=True default.
+    get_price_history/get_ticker_info are both this module's
+    @st.cache_data(ttl=1800)-shared caches (the same ones the Deep Dive
+    page itself uses) - when a visitor arrives here having just viewed
+    this exact ticker's Deep Dive, both network fetches are a cache
+    hit; only the CPU-bound DCF/quality pass re-runs. Cached a second
+    time here, in st.session_state per ticker for the life of this
+    session (one analyze() call per ticker per session, however many
+    times this function is called for it), so neither the jump-time
+    preset below nor render_currency_risk_page()'s own render call
+    ever invokes analyze() twice for the same ticker in the same
+    session.
 
-    Returns "" (never a guess) when the ticker couldn't be analyzed at
-    all (bad symbol, fetch failure) or came back with the explicit
-    "no currency on file" sentinel ("-") deep_dive_engine.py's own
-    field uses."""
-    _cache = st.session_state.setdefault("_cr_ticker_currency_cache", {})
+    Returns {"mos": None, "currency": ""} (never a guess) when the
+    ticker couldn't be analyzed at all (bad symbol, fetch failure);
+    "currency" also comes back "" (never the raw sentinel) when
+    deep_dive_engine.py's own "no currency on file" sentinel ("-") is
+    what analyze() returned."""
+    _cache = st.session_state.setdefault("_cr_ticker_mos_currency_cache", {})
     if ticker in _cache:
         return _cache[ticker]
-    currency = ""
-    try:
-        _dd = deep_dive_engine.analyze(
-            ticker, get_price_history, get_ticker_info, get_cashflow_df,
-            get_price_history_failure_kind=get_price_history_failure_kind,
-            live_data=False, enable_social=False,
-        )
-        if not _dd.get("error"):
-            currency = (_dd.get("currency") or "").upper()
-            if currency == "-":
-                currency = ""
-    except Exception:
-        currency = ""
-    _cache[ticker] = currency
-    return currency
+    result = {"mos": None, "currency": ""}
+    # Fix (Director, 6 Oct 2026, "one fix to PART A" follow-up, part c):
+    # a plain-text spinner naming the ticker while analyze() runs - this
+    # branch only runs on a cache miss, so a ticker already resolved
+    # this session (e.g. the jump-time preset below, then the render
+    # call right after it) never flashes a second spinner for a call
+    # that isn't actually happening.
+    with st.spinner(f"Analyzing {ticker}..."):
+        try:
+            _dd = deep_dive_engine.analyze(
+                ticker, get_price_history, get_ticker_info, get_cashflow_df,
+                get_price_history_failure_kind=get_price_history_failure_kind,
+                live_data=False, enable_social=False,
+            )
+            if not _dd.get("error"):
+                result["mos"] = _dd.get("mos")
+                currency = (_dd.get("currency") or "").upper()
+                if currency == "-":
+                    currency = ""
+                result["currency"] = currency
+        except Exception:
+            pass
+    _cache[ticker] = result
+    return result
 
 
 def page_currency_risk():
@@ -24524,7 +24551,7 @@ def page_currency_risk():
         _jump_ticker = _url_ticker
         if _home_currency in currency_risk_engine.CURRENCIES:
             st.session_state["cr_base"] = _home_currency
-        _jump_quote = _resolve_ticker_currency_live(_url_ticker)
+        _jump_quote = _resolve_ticker_mos_currency_live(_url_ticker)["currency"]
         if _jump_quote and _jump_quote in currency_risk_engine.CURRENCIES:
             st.session_state["cr_quote"] = _jump_quote
 
@@ -24534,15 +24561,21 @@ def page_currency_risk():
     # ends up active - including a ticker PERSISTED from an earlier
     # jump this session, with no fresh _url_ticker on this rerun at
     # all, which the jump block above never touches.
+    #
+    # Fix (Director, 6 Oct 2026, "one fix to PART A" follow-up, part b):
+    # BOTH the margin of safety and the currency the table renders now
+    # come from this SAME call - never a separate stored-row MOS read.
     _active_ticker_now = _jump_ticker or st.session_state.get("cr_active_ticker")
-    _active_ticker_currency = (
-        _resolve_ticker_currency_live(_active_ticker_now) if _active_ticker_now else ""
+    _active_ticker_mos_currency = (
+        _resolve_ticker_mos_currency_live(_active_ticker_now) if _active_ticker_now
+        else {"mos": None, "currency": ""}
     )
 
     currency_risk_render.render_currency_risk_page(
         lang=st.session_state.get("lang", "en"),
         default_base=_home_currency, jump_ticker=_jump_ticker,
-        is_owner=_is_owner, active_ticker_currency=_active_ticker_currency,
+        is_owner=_is_owner, active_ticker_mos=_active_ticker_mos_currency["mos"],
+        active_ticker_currency=_active_ticker_mos_currency["currency"],
     )
 
 

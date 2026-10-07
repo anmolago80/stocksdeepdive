@@ -4232,7 +4232,9 @@ EN = {
     # Fix (Director, 6 Oct 2026 live-bug follow-up): "never show nothing"
     # when a ticker was requested but the table can't be shown - one
     # plain line naming why, instead of the section silently vanishing.
-    "currency_risk.mos_view_unavailable_no_valuation": "No stored valuation for {ticker} yet.",
+    "currency_risk.mos_view_unavailable_no_valuation": (
+        "We couldn't confirm a valuation for {ticker} right now, so a currency view isn't available."
+    ),
     "currency_risk.mos_view_unavailable_no_currency": (
         "We couldn't confirm {ticker}'s trading currency right now, so a currency view isn't available."
     ),
@@ -7783,7 +7785,10 @@ ES = {
         "mediante cada escenario anterior - un cálculo descrito, no una predicción."
     ),
     "currency_risk.mos_view_close_button": "Cerrar",
-    "currency_risk.mos_view_unavailable_no_valuation": "Todavía no hay una valoración guardada para {ticker}.",
+    "currency_risk.mos_view_unavailable_no_valuation": (
+        "No pudimos confirmar una valoración para {ticker} en este momento, por lo que la "
+        "vista de moneda no está disponible."
+    ),
     "currency_risk.mos_view_unavailable_no_currency": (
         "No pudimos confirmar la moneda de cotización de {ticker} en este momento, por lo que "
         "la vista en tu moneda no está disponible."
