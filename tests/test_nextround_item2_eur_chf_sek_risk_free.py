@@ -1,0 +1,163 @@
+"""
+Director's next round, item 2 (8 Oct 2026, instruction_health_fixes_
+chart_and_new_markets.md): "Risk-free rate for EUR, CHF, SEK: report
+first which official source each could use (ECB, SNB, Riksbank),
+whether a live fetch is reliable, and what happens on failure. Build
+it if a reliable official source exists, on the Bank of Canada
+pattern (retry, one rate per scan run). Never a hard-coded number
+without a date and a log line."
+
+The report (sources/reliability/failure-mode for all three) is the
+commit message's own text. This file covers what was built on the
+strength of that report:
+  - EUR: ECB SDW judged confident enough to build - a live fetch with
+    retry/backoff AND an explicit per-scan-run cache, the exact same
+    two mechanisms PART 3 Proposal 5 built for CAD.
+  - CHF/SEK: no live source built this round (SNB/Riksbank almost
+    certainly have one, but this sandbox can't verify either one's
+    exact endpoint shape) - a DATED, LOGGED fallback instead, never a
+    bare untraceable number.
+
+Run: python3 tests/test_nextround_item2_eur_chf_sek_risk_free.py
+"""
+import logging
+import os
+import sys
+from unittest import mock
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import capm_engine as ce
+
+passed = 0
+failed = 0
+
+
+def check(label, condition):
+    global passed, failed
+    if condition:
+        passed += 1
+        print(f"  OK: {label}")
+    else:
+        failed += 1
+        print(f"  FAIL: {label}")
+
+
+def _resp(status=200, body=""):
+    m = mock.Mock()
+    m.status_code = status
+    m.text = body
+    return m
+
+
+_GOOD_CSV = (
+    "KEY,TIME_PERIOD,OBS_VALUE\n"
+    "IRS.M.I8.L.L40.CI.0000.EUR.N.Z,2026-08,2.60\n"
+    "IRS.M.I8.L.L40.CI.0000.EUR.N.Z,2026-09,2.75\n"
+)
+
+# ======================================================================
+# CHECK 1-2: _fetch_ecb_eur_once() - clean success, picks the LATEST
+# date (never a position-based pick).
+# ======================================================================
+with mock.patch.object(ce.requests, "get", return_value=_resp(200, _GOOD_CSV)):
+    rate, date_str, reason, transient = ce._fetch_ecb_eur_once()
+    check("clean success: rate=0.0275 (the LATEST row, 2026-09, not the first)",
+          abs(rate - 0.0275) < 1e-9 and date_str == "2026-09")
+
+with mock.patch.object(ce.requests, "get", side_effect=ConnectionError("boom")):
+    rate, date_str, reason, transient = ce._fetch_ecb_eur_once()
+    check("connection error -> transient=True (worth retrying)", rate is None and transient is True)
+
+# ======================================================================
+# CHECK 3-5: get_eu_risk_free_rate_live() - retry/backoff, same shape
+# as the CAD fetch (PART 3 Proposal 5).
+# ======================================================================
+with mock.patch.object(ce, "time") as _time_mod, \
+     mock.patch.object(ce.requests, "get",
+                        side_effect=[_resp(503), _resp(200, _GOOD_CSV)]) as _get:
+    ce.get_eu_risk_free_rate_live.clear()
+    rate, source = ce.get_eu_risk_free_rate_live()
+    check("fails once (transient), succeeds on attempt 2 -> live, exactly 2 HTTP calls",
+          source == "live" and abs(rate - 0.0275) < 1e-9 and _get.call_count == 2)
+    check("backoff slept once, 2s", _time_mod.sleep.call_args_list == [mock.call(2)])
+
+with mock.patch.object(ce, "time"), \
+     mock.patch.object(ce.requests, "get", side_effect=ConnectionError("x")) as _get:
+    ce.get_eu_risk_free_rate_live.clear()
+    rate, source = ce.get_eu_risk_free_rate_live()
+    check(f"every attempt fails -> falls back after exactly {ce._ECB_RETRY_ATTEMPTS} "
+          "attempts, dated fallback",
+          source == "default" and rate == ce.EUR_RISK_FREE_FALLBACK["EUR"]
+          and _get.call_count == ce._ECB_RETRY_ATTEMPTS)
+
+# ======================================================================
+# CHECK 6-7: get_eu_risk_free_rate_for_run() - one fetch per run,
+# reset_eu_risk_free_run_cache() clears it for the next run.
+# ======================================================================
+ce.reset_eu_risk_free_run_cache()
+with mock.patch.object(ce, "get_eu_risk_free_rate_live", return_value=(0.027, "live")) as _live:
+    ce.get_eu_risk_free_rate_for_run()
+    ce.get_eu_risk_free_rate_for_run()
+    ce.get_eu_risk_free_rate_for_run()
+check("3 calls to get_eu_risk_free_rate_for_run() in the same run -> exactly 1 real fetch",
+      _live.call_count == 1)
+ce.reset_eu_risk_free_run_cache()
+with mock.patch.object(ce, "get_eu_risk_free_rate_live", return_value=(0.030, "live")) as _live2:
+    ce.get_eu_risk_free_rate_for_run()
+check("after reset, the next run fetches fresh",
+      _live2.call_count == 1)
+
+# ======================================================================
+# CHECK 8-10: resolve_discount_rate_by_market_cap() - EUR routes
+# through the per-run cache; CHF/SEK route through the dated fallback.
+# ======================================================================
+ce.reset_eu_risk_free_run_cache()
+_eur_info = {"currency": "EUR", "marketCap": 50_000_000_000}
+with mock.patch.object(ce, "get_eu_risk_free_rate_live", return_value=(0.027, "live")) as _live3:
+    ce.resolve_discount_rate_by_market_cap(_eur_info, "EUR")
+    ce.resolve_discount_rate_by_market_cap(_eur_info, "EUR")
+check("two EUR tickers in the same run share exactly one real risk-free fetch",
+      _live3.call_count == 1)
+
+_chf_info = {"currency": "CHF", "marketCap": 50_000_000_000}
+_rate_chf, _meta_chf = ce.resolve_discount_rate_by_market_cap(_chf_info, "CHF")
+check("CHF routes through the dated fallback - rf_source='default', "
+      f"risk_free_used={ce.CHF_SEK_RISK_FREE_FALLBACK['CHF']}",
+      _meta_chf["rf_source"] == "default"
+      and _meta_chf["risk_free_used"] == ce.CHF_SEK_RISK_FREE_FALLBACK["CHF"])
+
+_sek_info = {"currency": "SEK", "marketCap": 50_000_000_000}
+_rate_sek, _meta_sek = ce.resolve_discount_rate_by_market_cap(_sek_info, "SEK")
+check("SEK routes through the dated fallback too",
+      _meta_sek["rf_source"] == "default"
+      and _meta_sek["risk_free_used"] == ce.CHF_SEK_RISK_FREE_FALLBACK["SEK"])
+
+# ======================================================================
+# CHECK 11-12: "never a hard-coded number without a date and a log
+# line" - the CHF/SEK fallback's own log line carries the date.
+# ======================================================================
+_logged = []
+_handler = logging.Handler()
+_handler.emit = lambda record: _logged.append(record.getMessage())
+logging.getLogger("sdd.growth").addHandler(_handler)
+ce.get_chf_sek_risk_free_rate("CHF")
+logging.getLogger("sdd.growth").removeHandler(_handler)
+check(f"CHF fallback log line carries the date ({ce.CHF_SEK_RISK_FREE_FALLBACK_AS_OF})",
+      any(ce.CHF_SEK_RISK_FREE_FALLBACK_AS_OF in m and "CHF" in m for m in _logged))
+
+def _raises_keyerror():
+    try:
+        ce.get_chf_sek_risk_free_rate("XYZ")
+        return False
+    except KeyError:
+        return True
+
+
+check("KeyError for a currency this dated-fallback function was never meant to cover",
+      _raises_keyerror())
+
+
+print()
+print(f"PASS={passed} FAIL={failed}")
+sys.exit(1 if failed else 0)

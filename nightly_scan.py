@@ -1172,6 +1172,11 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
     # universe - nothing reads this cache unless resolve_discount_
     # rate_by_market_cap()'s own CAD branch is actually reached.
     capm_engine.reset_ca_risk_free_run_cache()
+    # Director's next round, item 2 (8 Oct 2026): same "one rate per
+    # scan run" contract, extended to EUR - see capm_engine.reset_eu_
+    # risk_free_run_cache()'s own docstring. A no-op for every non-EUR
+    # universe.
+    capm_engine.reset_eu_risk_free_run_cache()
     country = "Australia" if universe in scanner_engine.AUSTRALIA_UNIVERSES else "USA"
     # Index containment regression guard (20 Sep 2026): "All Ordinaries"
     # is the top of the AU nesting chain (ASX 20 subset ... subset ASX 300

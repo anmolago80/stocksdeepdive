@@ -1066,6 +1066,197 @@ def get_jp_risk_free_rate_live():
     return fallback_rate, "default"
 
 
+# =====================================================================
+# Director's next round, item 2 (8 Oct 2026, instruction_health_fixes_
+# chart_and_new_markets.md): risk-free rate for EUR, CHF, SEK. Report
+# (this module's own PR/commit message carries the full text) named
+# ECB/SNB/Riksbank as the three official sources and assessed their
+# reliability; only EUR (the ECB's own Statistical Data Warehouse, a
+# long-standing, extensively-documented public REST API, comparable in
+# maturity to the UK's BoE IADB already live above) was judged
+# confident enough to build a live fetch for THIS round - CHF (SNB)
+# and SEK (Riksbank) almost certainly have an official source too, but
+# this session has no outbound network access to confirm either one's
+# exact endpoint/series shape, and guessing one wrong ships a fetch
+# that always silently falls through to its own fallback - worse than
+# not building it. CHF/SEK get a DATED, LOGGED static fallback instead
+# (see CHF_SEK_RISK_FREE_FALLBACK_AS_OF/get_chf_sek_risk_free_rate()
+# below) - never a bare number with no date and no log line, per this
+# item's own explicit instruction - until the Director supplies a
+# confirmed source for either.
+#
+# ECB SDW ("Long-term interest rate for convergence purposes", the
+# standard Maastricht-criterion euro-area 10-year government bond
+# yield proxy every EU institution already uses) - UNVERIFIED from
+# this sandbox, same disclosure the UK/Canada/Japan fetches above
+# already carry: the exact dataflow/series key below is this session's
+# own best understanding of the ECB SDW REST API's well-documented
+# shape, not a live-confirmed response. Written defensively for
+# exactly that reason - tolerant CSV column-header scan (never a fixed
+# index), date-based pick of the most recent observation (never
+# position-based - the same BoC Stage 1a-fix F5 lesson this module's
+# own Canada section above already learned the hard way).
+# =====================================================================
+_ECB_SDW_URL = (
+    "https://sdw-wsrest.ecb.europa.eu/service/data/IRS/"
+    "M.I8.L.L40.CI.0000.EUR.N.Z?lastNObservations=6&format=csvdata"
+)
+_ECB_TIMEOUT_SECONDS = 6
+_ECB_RETRY_ATTEMPTS = 3
+_ECB_RETRY_BASE_DELAY_SECONDS = 2
+
+# Same band as UK/Canada (0.5%-12%) - euro-area 10-year yields have sat
+# comfortably inside this range for the period this snapshot covers;
+# revisit if a genuine near-zero/negative reading needs its own band,
+# the same way JPY needed one.
+EUR_RISK_FREE_FALLBACK = {"EUR": 0.028}
+
+# Director's PART 3 numbered fix-proposal round "never a hard-coded
+# number without a date" rule, applied retroactively to this round's
+# own new fallbacks: every one below carries the date it was set, and
+# every log line that actually USES a fallback value prints that date
+# alongside it - never a bare, undated number.
+EUR_RISK_FREE_FALLBACK_AS_OF = "2026-10-08"
+
+
+def _fetch_ecb_eur_once():
+    """One single attempt at the ECB SDW fetch - no retry, no caching,
+    no logging (the caller does both). Returns (rate, date, reason,
+    transient) in the exact same shape as capm_engine's own _fetch_
+    boc_valet_once() (Proposal 5 of the PART 3 round) - see that
+    function's own docstring for what each field means and why a
+    network-level failure (worth retrying) is distinguished from a
+    clean-but-unusable response (a data problem a retry can't fix)."""
+    try:
+        resp = requests.get(_ECB_SDW_URL, timeout=_ECB_TIMEOUT_SECONDS)
+    except Exception as e:
+        return None, None, f"{type(e).__name__}: {e}", True
+    if resp.status_code != 200:
+        return None, None, f"HTTP {resp.status_code}", True
+    try:
+        lines = [ln for ln in resp.text.splitlines() if ln.strip()]
+    except Exception as e:
+        return None, None, f"unparseable response ({type(e).__name__}: {e})", True
+    if len(lines) < 2:
+        return None, None, "no usable row found", False
+    header = [h.strip().upper() for h in lines[0].split(",")]
+    try:
+        time_col = header.index("TIME_PERIOD")
+        value_col = header.index("OBS_VALUE")
+    except ValueError:
+        return None, None, f"unexpected CSV header shape: {header}", True
+    best_date, best_rate = None, None
+    for line in lines[1:]:
+        cells = line.split(",")
+        if len(cells) <= max(time_col, value_col):
+            continue
+        date_str = cells[time_col].strip()
+        try:
+            raw = float(cells[value_col])
+        except (TypeError, ValueError):
+            continue
+        if not date_str:
+            continue
+        if best_date is None or date_str > best_date:
+            best_date, best_rate = date_str, raw / 100.0
+    if best_rate is None:
+        return None, None, "no usable observation found", False
+    if not (UK_CA_RISK_FREE_MIN < best_rate < UK_CA_RISK_FREE_MAX):
+        return None, None, "no in-band value", False
+    return best_rate, best_date, None, False
+
+
+_EU_RISK_FREE_RUN_CACHE = {"value": None}
+
+
+def reset_eu_risk_free_run_cache():
+    """Same per-scan-run cache pattern as reset_ca_risk_free_run_
+    cache() (PART 3 Proposal 5) - cleared once, at the very top of
+    nightly_scan.run_universe_scan(), so every EUR ticker in a
+    universe's own scan shares one (rate, source) answer per run."""
+    _EU_RISK_FREE_RUN_CACHE["value"] = None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_eu_risk_free_rate_live():
+    """Best-effort live euro-area 10-year government bond yield proxy
+    from the ECB's own SDW (see this section's own module comment for
+    the exact series/UNVERIFIED-from-sandbox caveat), cached once a
+    day. Returns (rate, source) - "live" or "default" (EUR_RISK_FREE_
+    FALLBACK["EUR"], dated EUR_RISK_FREE_FALLBACK_AS_OF).
+
+    Retries _fetch_ecb_eur_once() up to _ECB_RETRY_ATTEMPTS times with
+    exponential backoff, but ONLY on a transient (network-level)
+    failure - same shape as get_ca_risk_free_rate_live() (PART 3
+    Proposal 5) - a clean response with no usable/in-band data stops
+    immediately, since a retry can't fix a data problem."""
+    reason = None
+    for attempt in range(_ECB_RETRY_ATTEMPTS):
+        rate, date_str, reason, transient = _fetch_ecb_eur_once()
+        if rate is not None:
+            _growth_logger.warning(
+                "[capm] EUR risk-free %.2f%% (ECB SDW, as at %s%s)",
+                rate * 100, date_str,
+                f", attempt {attempt + 1}/{_ECB_RETRY_ATTEMPTS}" if attempt else "",
+            )
+            return rate, "live"
+        if not transient:
+            break
+        if attempt < _ECB_RETRY_ATTEMPTS - 1:
+            delay = _ECB_RETRY_BASE_DELAY_SECONDS * (2 ** attempt)
+            _growth_logger.warning(
+                "[capm] EUR risk-free fetch failed (attempt %d/%d) - %s - retrying in %ds",
+                attempt + 1, _ECB_RETRY_ATTEMPTS, reason, delay,
+            )
+            time.sleep(delay)
+
+    _growth_logger.warning(
+        "[capm] EUR risk-free %.2f%% (fallback as of %s - %s)",
+        EUR_RISK_FREE_FALLBACK["EUR"] * 100, EUR_RISK_FREE_FALLBACK_AS_OF,
+        reason or "unknown error",
+    )
+    return EUR_RISK_FREE_FALLBACK["EUR"], "default"
+
+
+def get_eu_risk_free_rate_for_run():
+    """The one function every EUR ticker's own discount-rate
+    resolution calls - never get_eu_risk_free_rate_live() directly.
+    Same "one rate per scan run" contract as get_ca_risk_free_rate_
+    for_run() (PART 3 Proposal 5) - see that function's own docstring."""
+    if _EU_RISK_FREE_RUN_CACHE["value"] is None:
+        _EU_RISK_FREE_RUN_CACHE["value"] = get_eu_risk_free_rate_live()
+    return _EU_RISK_FREE_RUN_CACHE["value"]
+
+
+# CHF (SNB)/SEK (Riksbank): no live fetch built this round - see this
+# section's own module comment for why. A DATED, LOGGED static
+# fallback - never a bare, untraceable number. Approximate recent 10-
+# year government bond yields: Switzerland's has sat persistently low
+# (long stretches near/below 1%, a genuinely different regime from
+# every other currency here - NOT the UK/Canada/EUR 0.5%-12% band's
+# own territory); Sweden's sits closer to the euro area's own level.
+CHF_SEK_RISK_FREE_FALLBACK = {"CHF": 0.004, "SEK": 0.020}
+CHF_SEK_RISK_FREE_FALLBACK_AS_OF = "2026-10-08"
+
+
+def get_chf_sek_risk_free_rate(ccy):
+    """The dated, logged fallback for CHF/SEK - no live source built
+    this round (see this section's own module comment). Returns
+    (rate, source) in the same (rate, "default") shape as every live-
+    fetch function above, so resolve_discount_rate_by_market_cap()'s
+    CHF/SEK branches can treat this identically to a live fetch that
+    happened to fall back. Raises KeyError for any other currency -
+    this function is never meant to be a generic fallback lookup, only
+    CHF/SEK's own named one."""
+    rate = CHF_SEK_RISK_FREE_FALLBACK[ccy]
+    _growth_logger.warning(
+        "[capm] %s risk-free %.2f%% (fallback as of %s - no live source built "
+        "this round, see get_chf_sek_risk_free_rate()'s own docstring)",
+        ccy, rate * 100, CHF_SEK_RISK_FREE_FALLBACK_AS_OF,
+    )
+    return rate, "default"
+
+
 def resolve_discount_rate_by_market_cap(info, currency):
     """A6, owner-approved LIVE 28 Sep 2026: market-cap-tiered cost of
     equity - no beta anywhere in this formula. This IS the live
@@ -1105,6 +1296,18 @@ def resolve_discount_rate_by_market_cap(info, currency):
         # Stage 1 Japan (3 Oct 2026, Director-directed) - see get_jp_
         # risk_free_rate_live()'s own docstring.
         rf, rf_src = get_jp_risk_free_rate_live()
+    elif ccy == "EUR":
+        # Director's next round, item 2 (8 Oct 2026) - see get_eu_
+        # risk_free_rate_for_run()'s own docstring. Same per-scan-run
+        # cache contract as CAD.
+        rf, rf_src = get_eu_risk_free_rate_for_run()
+    elif ccy in ("CHF", "SEK"):
+        # Director's next round, item 2 (8 Oct 2026): no live source
+        # built this round - see get_chf_sek_risk_free_rate()'s own
+        # docstring for why, and this section's own module comment for
+        # the full report. A dated, logged fallback, never a bare
+        # untraceable number.
+        rf, rf_src = get_chf_sek_risk_free_rate(ccy)
     else:
         rf, rf_src = get_risk_free_rate(ccy)
     meta["rf_source"] = rf_src
