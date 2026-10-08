@@ -387,6 +387,17 @@ _DISCOUNT_TIER_FX_TO_USD_APPROX = {
     # own JPY entry (kept in sync by hand, same precedent GBP/CAD above
     # already set).
     "JPY": 0.0067,
+    # Director's PART 3 numbered fix-proposal round, next batch (8 Oct
+    # 2026, item 1): EUR/CHF/SEK, kept in sync by hand with fcf_
+    # valuation_engine.FX_TO_USD_APPROX's own entries (same comment
+    # there explains each value's own provenance). EUR was previously
+    # absent from THIS table specifically (fcf_valuation_engine's own
+    # copy already had it) - a Eurozone ticker's size premium fell
+    # through to the missing-currency path below, same consequence as
+    # CHF/SEK.
+    "EUR": 1.15,
+    "CHF": 1.15,
+    "SEK": 0.105,
 }
 
 # Premiums are RELATIVE TO THE RISK-FREE RATE (not a flat add-on), so
@@ -1113,6 +1124,27 @@ def resolve_discount_rate_by_market_cap(info, currency):
         # rate itself rested on an assumption. Setting it here is what
         # lets the caller (fcf_valuation_engine.dcf_intrinsic_value())
         # fire the red "estimated inputs" treatment for this case too.
+        meta["defaulted"] = True
+        market_cap = 0
+    elif ccy not in _DISCOUNT_TIER_FX_TO_USD_APPROX:
+        # Director's PART 3 numbered fix-proposal round, next batch
+        # (8 Oct 2026, item 1): "no silent .get(ccy, 1.0) fallback (log
+        # and withhold instead)" - a missing rate used to default to
+        # 1.0, silently treating a non-USD market cap as if it were
+        # already in USD (a SEK 630bn company read as a USD 630bn one -
+        # a mega-cap, not the ~$66B large-cap it actually is). Treated
+        # exactly like the market-cap-missing case just above (same
+        # `market_cap_missing`/`defaulted` flags, same micro-cap-tier
+        # fallback via market_cap=0) - a withheld size premium, never a
+        # silently wrong one; logged once per call so a genuinely new,
+        # unmapped trading currency shows up rather than mis-sizing
+        # every company that uses it.
+        _growth_logger.warning(
+            "[capm] resolve_discount_rate_by_market_cap: no _DISCOUNT_TIER_FX_TO_USD_"
+            "APPROX rate for currency %r - withholding the market-cap-aware size "
+            "premium, falling back to the micro-cap tier", ccy,
+        )
+        meta["market_cap_missing"] = True
         meta["defaulted"] = True
         market_cap = 0
     market_cap_usd = market_cap * _DISCOUNT_TIER_FX_TO_USD_APPROX.get(ccy, 1.0)

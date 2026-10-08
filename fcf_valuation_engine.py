@@ -252,7 +252,43 @@ FX_TO_USD_APPROX = {
     # = JPY150, a plausible yen rate, not pinned to a verified live
     # reading from this sandbox).
     "JPY": 0.0067,
+    # Director's PART 3 numbered fix-proposal round, next batch (8 Oct
+    # 2026, item 1): "every other trading currency the site now holds" -
+    # CHF and SEK were simply absent here, which meant a Swiss/Swedish
+    # ticker's market cap fell through to _market_cap_usd_or_none()'s
+    # own missing-currency path below (treated as "market cap
+    # unavailable" - size-unaware default, logged) rather than silently
+    # being multiplied by 1.0 (a SEK/CHF-denominated market cap read as
+    # if it were already in USD - off by roughly 10x/1x respectively,
+    # bucketing a mid-cap into the mega-cap tier). Same static-snapshot,
+    # approximate, unverified status as every other entry here. CHF
+    # 1.15 (1 CHF roughly 1 USD15, a plausible recent rate); SEK 0.105
+    # (1 USD roughly SEK 9.5-10, a plausible recent rate).
+    "CHF": 1.15,
+    "SEK": 0.105,
 }
+
+
+def _market_cap_usd_or_none(market_cap, ccy, log=_growth_logger.warning, caller=""):
+    """market_cap converted to its USD-equivalent via FX_TO_USD_APPROX,
+    or None when `ccy` isn't a currency this table has an entry for at
+    all. Director's PART 3 numbered fix-proposal round, next batch (8
+    Oct 2026, item 1): "no silent .get(ccy, 1.0) fallback (log and
+    withhold instead)" - a missing rate used to default to 1.0, which
+    silently treats a non-USD market cap as if it were already in USD
+    (a SEK 630bn company read as a USD 630bn one - a roughly 10x size
+    error, enough to jump several growth-ceiling/end-rate tiers).
+    Logged once per call (never raises) so a genuinely new, unmapped
+    trading currency shows up in the log rather than silently mis-
+    sizing every company that uses it; the caller treats None exactly
+    like "market cap unavailable" - this module's own existing fail-
+    safe path, never a reason to block a valuation."""
+    if ccy not in FX_TO_USD_APPROX:
+        log(f"[fcf_valuation] {caller}: no FX_TO_USD_APPROX rate for currency "
+            f"{ccy!r} - withholding the market-cap-aware result, falling back to "
+            f"the flat size-unaware default")
+        return None
+    return market_cap * FX_TO_USD_APPROX[ccy]
 
 # (market cap USD, value) pairs, LARGEST CAP FIRST - same convention as
 # capm_engine.SIZE_PREMIUM_ANCHORS_USD. Anchors sit at the GEOMETRIC
@@ -406,7 +442,9 @@ def growth_ceiling_for(info, currency=None):
         return GROWTH_CEIL
 
     ccy = (currency or info.get("currency") or "USD").upper()
-    market_cap_usd = market_cap * FX_TO_USD_APPROX.get(ccy, 1.0)
+    market_cap_usd = _market_cap_usd_or_none(market_cap, ccy, caller="growth_ceiling_for")
+    if market_cap_usd is None:
+        return GROWTH_CEIL
 
     return round(_log_interpolate(GROWTH_CEILING_ANCHORS_USD, market_cap_usd), 4)
 
@@ -430,7 +468,9 @@ def growth_end_rate_for(info, currency=None):
         return DEFAULT_PERPETUAL_RATE
 
     ccy = (currency or info.get("currency") or "USD").upper()
-    market_cap_usd = market_cap * FX_TO_USD_APPROX.get(ccy, 1.0)
+    market_cap_usd = _market_cap_usd_or_none(market_cap, ccy, caller="growth_end_rate_for")
+    if market_cap_usd is None:
+        return DEFAULT_PERPETUAL_RATE
 
     return round(_log_interpolate(GROWTH_END_RATE_ANCHORS_USD, market_cap_usd), 4)
 
