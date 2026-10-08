@@ -73,24 +73,42 @@ def _median(values):
     return (vals[mid - 1] + vals[mid]) / 2.0
 
 
+def _is_at_growth_cap(r):
+    """True iff this ONE row's growth rate was capped - the real
+    "Growth Governor" field (Proposal 1 of the Director's numbered
+    fix-proposal round, 8 Oct 2026) when the KEY is present on the row
+    at all (checked by key presence, not by its value being non-None -
+    a genuinely uncapped row's own Growth Governor is legitimately
+    None/"Manual"/"Default", and that must still count as "the real
+    field answered no", never fall through to the proxy below). For a
+    row saved by an OLDER nightly_scan.py (before this field existed
+    at all), the KEY itself is simply absent, and this falls back to
+    the ORIGINAL proxy - "Growth Used" == "Growth Ceiling Used" (PART 3
+    STEP 3.0's own Q4 answer, which named this proxy's own false-
+    positive/false-negative risk) - so an old stored scan still gets a
+    best-effort count rather than silently reading as zero."""
+    if "Growth Governor" in r:
+        return r["Growth Governor"] == "Cap"
+    return (
+        r.get("Growth Used") is not None and r.get("Growth Ceiling Used") is not None
+        and abs(r["Growth Used"] - r["Growth Ceiling Used"]) < 1e-6
+    )
+
+
 def valuation_breakdown(rows):
     """{"dcf_unreliable_count", "at_growth_cap_count",
     "analyst_estimate_count", "fallback_path_counts" ({source: count}),
     "median_mos_pct", "above_80_count", "below_neg80_count"}.
 
-    "At growth cap" is read off the row's OWN two stored fields -
-    "Growth Used" == "Growth Ceiling Used" (both already stored by
-    nightly_scan.py; no `governor` field is itself persisted on a row,
-    so this is the closest stored-data proxy for `governor == "Cap"` -
-    PART 3 STEP 3.0's own Q4 answer). "Fallback path" groups by the
+    "At growth cap" - see _is_at_growth_cap()'s own docstring (Proposal
+    1 of the Director's numbered fix-proposal round, 8 Oct 2026): reads
+    the row's real stored "Growth Governor" when present, falling back
+    to the original Growth-Used/Growth-Ceiling-Used proxy for a row
+    saved before that field existed. "Fallback path" groups by the
     row's own "Growth Source" field (None rows excluded - "not stored"
     for an individual row never pollutes this count)."""
     dcf_unreliable = sum(1 for r in rows if r.get("DCF Unreliable"))
-    at_cap = sum(
-        1 for r in rows
-        if r.get("Growth Used") is not None and r.get("Growth Ceiling Used") is not None
-        and abs(r["Growth Used"] - r["Growth Ceiling Used"]) < 1e-6
-    )
+    at_cap = sum(1 for r in rows if _is_at_growth_cap(r))
     analyst = sum(1 for r in rows if (r.get("Growth Source") or "").startswith("analyst"))
     fallback_counts = {}
     for r in rows:

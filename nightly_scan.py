@@ -991,6 +991,22 @@ def analyze_ticker_lite(ticker, attention_lite=True, discount_rate=None,
         "Growth Raw": iv_meta.get("growth_raw"),
         "Growth Used": _g,
         "Growth Ceiling Used": iv_meta.get("growth_ceiling_used"),
+        # Proposal 1 of the Director's numbered fix-proposal round (8 Oct
+        # 2026, instruction_health_fixes_chart_and_new_markets.md PART 3
+        # STEP 3.2): pure passthrough of fcf_valuation_engine's own
+        # growth_governor ("Yahoo"/"History"/"Info"/"Default"/"Manual"/
+        # "Cap"/None) - the real, already-computed answer to "was this
+        # ticker's growth rate capped", so market_readiness_engine.
+        # valuation_breakdown() no longer has to INFER it from a
+        # Growth-Used-equals-Growth-Ceiling-Used proxy (PART 3 STEP 3.0's
+        # own Q4 finding - that proxy can both false-positive, when an
+        # uncapped rate happens to equal the ceiling by coincidence, and
+        # false-negative, when a capped rate is later nudged by a
+        # downstream blend step before storage). Never read by
+        # calculate_long_score()/composite_score()/select_top100_pool()
+        # or any other ranking/selection logic - same "pure provenance"
+        # contract as every other *_source/*_used key in this dict.
+        "Growth Governor": iv_meta.get("growth_governor"),
         "Growth End Rate Used": iv_meta.get("growth_end_rate_used"),
         "FCF Source": iv_meta.get("fcf_source"),
         # B1 (5 Oct 2026, Director-directed, instruction_top200_blank_
