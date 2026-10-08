@@ -36,6 +36,7 @@ import swing_engine
 import social_engine
 import mood_engine
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import deep_dive_engine
 import build_compounder_data
 import paywall_engine
@@ -16981,75 +16982,166 @@ def _render_portfolio_dividends_received(_rows, _cmap):
 def _render_portfolio_cheap_healthy_map(_rows, _analyses, _cmap):
     """Section 2 of the My Portfolio additions: MOS% (x) vs Health score
     (y) scatter, bubble size = current weight, placed under the Overview
-    tab's main table. ETFs have no MOS - no DCF model exists for funds
-    (see compute_health_components' Valuation branch) - so they're never
-    plotted; they get a compact side list instead of a misleading dot."""
+    tab's main table.
+
+    Fix (Director, 8 Oct 2026, PART 2 STEP 2.1 of instruction_health_
+    fixes_chart_and_new_markets.md): a live report showed a 6-holding
+    portfolio (2 companies, 4 funds) rendering only 2 bubbles, with no
+    explanation, and a health=0 bubble clipped by the plot's own bottom
+    edge with the "expensive & weak" label printed over it. Two
+    structural causes, both fixed here:
+      1. Funds used to be dropped from the chart ENTIRELY (no MOS%
+         exists for them - no DCF model for funds, see compute_health_
+         components()'s own Valuation branch) and only ever got a
+         plain text line ("ETFs - valuation N/A: ..."), never a visual
+         position at all. They now get their own narrow strip beside
+         the main plot ("Funds: no valuation"), sharing the SAME
+         y-axis (Health score) and sized by weight exactly like the
+         company bubbles - placed by Health Score only, since that's
+         the only axis that applies to them. No MOS% is ever invented
+         for a fund.
+      2. A COMPANY holding missing either its MOS% or its Health Score
+         used to be silently dropped too, with no record anywhere that
+         it had been. Every holding not shown is now counted in
+         `_left_out`, printed as one line under the chart naming how
+         many and why.
+      3. The y-axis used to run exactly [0, 100] with no padding, so a
+         holding scoring exactly 0 or 100 had its marker visually cut
+         by the plot's own border, and the corner annotations sat
+         inside that same [0, 100] band, close enough to overlap a
+         bubble or its ticker-label text near either edge. The axis
+         now runs _Y_PAD_LOW.._Y_PAD_HIGH (-10..110) - real bubbles
+         only ever plot within [0, 100], so the padding bands above
+         100 and below 0 are never occupied by a bubble or its label;
+         both corner annotations now sit INSIDE those padding bands
+         (not the real [0, 100] score range), which keeps them clear
+         of every possible bubble position by construction."""
     st.markdown("##### Cheap vs healthy")
 
-    _company_pts, _etf_lines = [], []
+    _Y_PAD_LOW, _Y_PAD_HIGH = -10, 110
+
+    _company_pts, _fund_pts, _left_out = [], [], []
     for r in _rows:
         _a = _analyses.get((r["portfolio"], r["ticker"])) or {}
         if not _a:
+            _left_out.append(f"{r['label']} (no analysis available)")
             continue
         _health_val = (_a.get("health") or {}).get("overall")
+        _weight_pct = (r["pct_now"] or 0.0) * 100
         if _a.get("is_etf"):
-            _etf_lines.append(
-                f"{r['label']} · health {_health_val:.0f}" if _health_val is not None else f"{r['label']} · health n/a"
-            )
+            if _health_val is None:
+                _left_out.append(f"{r['label']} (fund, no Health Score yet)")
+                continue
+            _fund_pts.append({
+                "label": r["label"], "health": _health_val,
+                "weight": _weight_pct, "color": _cmap.get(r["label"], "#2dd4bf"),
+            })
             continue
         # Same MOS% the Health tab's Valuation component uses - already
         # override-aware (compute_health_components folds a manual IV
         # override in here before this function ever sees it).
         _mos = ((_a.get("components") or {}).get("Valuation") or {}).get("current")
-        if _mos is None or _health_val is None:
+        if _mos is None and _health_val is None:
+            _left_out.append(f"{r['label']} (no valuation or Health Score yet)")
+            continue
+        if _mos is None:
+            _left_out.append(f"{r['label']} (no valuation yet)")
+            continue
+        if _health_val is None:
+            _left_out.append(f"{r['label']} (no Health Score yet)")
             continue
         _company_pts.append({
             "label": r["label"], "mos": _mos, "health": _health_val,
-            "weight": (r["pct_now"] or 0.0) * 100, "color": _cmap.get(r["label"], "#2dd4bf"),
+            "weight": _weight_pct, "color": _cmap.get(r["label"], "#2dd4bf"),
         })
 
-    if not _company_pts:
+    if not _company_pts and not _fund_pts:
         st.caption(
-            "No company holdings with both a valuation and Health Score yet - "
-            "positions of described calculations, not recommendations."
+            "No holdings with a Health Score yet - positions of described "
+            "calculations, not recommendations."
         )
-        if _etf_lines:
-            st.caption("ETFs - valuation N/A: " + " · ".join(_etf_lines))
+        if _left_out:
+            st.caption(f"{len(_left_out)} holding(s) not shown above: " + "; ".join(_left_out))
         return
 
-    _sizes = [max(14.0, min(60.0, 14 + p["weight"] * 1.6)) for p in _company_pts]
-    _xs = [p["mos"] for p in _company_pts]
-    _x_pad = max(10.0, (max(_xs) - min(_xs)) * 0.15) if len(_xs) > 1 else 10.0
+    _has_funds = bool(_fund_pts)
+    fig = (make_subplots(rows=1, cols=2, column_widths=[0.82, 0.18], shared_yaxes=True,
+                          horizontal_spacing=0.03)
+           if _has_funds else go.Figure())
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=_xs, y=[p["health"] for p in _company_pts],
-        mode="markers+text", text=[p["label"] for p in _company_pts], textposition="top center",
-        textfont=dict(size=11, color="#c7d2e0"),
-        marker=dict(size=_sizes, color=[p["color"] for p in _company_pts], line=dict(width=1, color="#0b1220")),
-        hovertemplate="%{text}<br>MOS %{x:.1f}%<br>Health %{y:.0f}<extra></extra>",
-        showlegend=False,
-    ))
-    fig.add_vline(x=0, line=dict(color="rgba(138,160,184,0.4)", dash="dash", width=1))
-    fig.add_hline(y=50, line=dict(color="rgba(138,160,184,0.4)", dash="dash", width=1))
-    fig.add_annotation(x=max(_xs) + _x_pad * 0.3, y=98, text="cheap & healthy ↗", showarrow=False,
-                        font=dict(size=11, color="#5b6b80"), xanchor="right")
-    fig.add_annotation(x=min(_xs) - _x_pad * 0.3, y=2, text="expensive & weak ↙", showarrow=False,
-                        font=dict(size=11, color="#5b6b80"), xanchor="left")
-    fig.update_layout(
-        margin=dict(t=20, b=10, l=10, r=10), height=420,
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2e0"),
-        xaxis=dict(title="Margin of safety %", showgrid=True, gridcolor="rgba(138,160,184,0.12)", zeroline=False),
-        yaxis=dict(title="Health score", range=[0, 100], showgrid=True, gridcolor="rgba(138,160,184,0.12)"),
-    )
+    if _company_pts:
+        _sizes = [max(14.0, min(60.0, 14 + p["weight"] * 1.6)) for p in _company_pts]
+        _xs = [p["mos"] for p in _company_pts]
+        _x_pad = max(10.0, (max(_xs) - min(_xs)) * 0.15) if len(_xs) > 1 else 10.0
+        _scatter_kwargs = dict(row=1, col=1) if _has_funds else {}
+        fig.add_trace(go.Scatter(
+            x=_xs, y=[p["health"] for p in _company_pts],
+            mode="markers+text", text=[p["label"] for p in _company_pts], textposition="top center",
+            textfont=dict(size=11, color="#c7d2e0"),
+            marker=dict(size=_sizes, color=[p["color"] for p in _company_pts], line=dict(width=1, color="#0b1220")),
+            hovertemplate="%{text}<br>MOS %{x:.1f}%<br>Health %{y:.0f}<extra></extra>",
+            showlegend=False,
+        ), **_scatter_kwargs)
+        fig.add_vline(x=0, line=dict(color="rgba(138,160,184,0.4)", dash="dash", width=1), **_scatter_kwargs)
+        fig.add_hline(y=50, line=dict(color="rgba(138,160,184,0.4)", dash="dash", width=1), **_scatter_kwargs)
+        # Both corner labels sit in the PADDING bands (above 100 / below
+        # 0), never inside the real [0, 100] score range a bubble or its
+        # ticker-label text could ever occupy - see the function's own
+        # docstring, fix #3.
+        fig.add_annotation(x=max(_xs) + _x_pad * 0.3, y=_Y_PAD_HIGH - 2, text="cheap & healthy ↗",
+                            showarrow=False, font=dict(size=11, color="#5b6b80"), xanchor="right",
+                            **_scatter_kwargs)
+        fig.add_annotation(x=min(_xs) - _x_pad * 0.3, y=_Y_PAD_LOW + 4, text="expensive & weak ↙",
+                            showarrow=False, font=dict(size=11, color="#5b6b80"), xanchor="left",
+                            **_scatter_kwargs)
+        if _has_funds:
+            fig.update_xaxes(title="Margin of safety %", showgrid=True, gridcolor="rgba(138,160,184,0.12)",
+                              zeroline=False, row=1, col=1)
+        else:
+            fig.update_layout(xaxis=dict(title="Margin of safety %", showgrid=True,
+                                          gridcolor="rgba(138,160,184,0.12)", zeroline=False))
+    elif _has_funds:
+        # An all-funds portfolio - no scatter trace of its own, but the
+        # main panel still needs its own axis title so the fund strip
+        # beside it isn't mislabelled as the only content.
+        fig.update_xaxes(title="Margin of safety %", row=1, col=1)
+
+    if _has_funds:
+        _fund_sizes = [max(14.0, min(60.0, 14 + p["weight"] * 1.6)) for p in _fund_pts]
+        fig.add_trace(go.Scatter(
+            x=[0] * len(_fund_pts), y=[p["health"] for p in _fund_pts],
+            mode="markers+text", text=[p["label"] for p in _fund_pts], textposition="top center",
+            textfont=dict(size=11, color="#c7d2e0"),
+            marker=dict(size=_fund_sizes, color=[p["color"] for p in _fund_pts], line=dict(width=1, color="#0b1220")),
+            hovertemplate="%{text}<br>Health %{y:.0f}<extra></extra>",
+            showlegend=False,
+        ), row=1, col=2)
+        fig.update_xaxes(title="Funds: no valuation", showticklabels=False, showgrid=False,
+                          zeroline=False, range=[-1, 1], row=1, col=2)
+        fig.update_yaxes(range=[_Y_PAD_LOW, _Y_PAD_HIGH], title="Health score", showgrid=True,
+                          gridcolor="rgba(138,160,184,0.12)", row=1, col=1)
+        fig.update_yaxes(range=[_Y_PAD_LOW, _Y_PAD_HIGH], showticklabels=False, row=1, col=2)
+        fig.update_layout(
+            margin=dict(t=20, b=10, l=10, r=10), height=420,
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2e0"),
+        )
+    else:
+        fig.update_layout(
+            margin=dict(t=20, b=10, l=10, r=10), height=420,
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#c7d2e0"),
+            yaxis=dict(title="Health score", range=[_Y_PAD_LOW, _Y_PAD_HIGH], showgrid=True,
+                       gridcolor="rgba(138,160,184,0.12)"),
+        )
+
     sdd_plotly_chart(fig)
     st.caption(
         "Bubble size = current weight in the portfolio. Positions of described "
         "calculations (MOS% from each holding's valuation, Health Score from the "
-        "Health & News tab) - not recommendations."
+        "Health & News tab) - not recommendations. Funds have no valuation model, so "
+        "they're placed by Health Score only, in the \"Funds: no valuation\" strip."
     )
-    if _etf_lines:
-        st.caption("ETFs - valuation N/A: " + " · ".join(_etf_lines))
+    if _left_out:
+        st.caption(f"{len(_left_out)} holding(s) not shown above: " + "; ".join(_left_out))
 
 
 def _analyze_holding(h, email=None):
