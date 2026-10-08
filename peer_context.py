@@ -63,14 +63,40 @@ _UK_PRIORITY = ["FTSE 100", "FTSE 250"]
 _CA_PRIORITY = ["TSX 60", "TSX Composite"]
 _JP_PRIORITY = ["Nikkei 225", "TOPIX 500"]
 
+# Proposal 4 of the Director's numbered fix-proposal round (8 Oct 2026,
+# instruction_health_fixes_chart_and_new_markets.md PART 3 STEP 3.2):
+# the five European markets PART 6 loaded as private universes
+# (scan_store._DEFAULT_PRIVATE_UNIVERSES) had NO entry here at all, so
+# market_for() fell through to its own "else USA" default for every
+# .DE/.PA/.AS/.SW/.ST ticker - meaning a German/French/Dutch/Swiss/
+# Swedish company would have been peer-ranked against S&P 500/Nasdaq
+# 100/... (all PUBLIC universes), a real bug this fix closes. Each
+# country gets its OWN peer group, one universe each - never lumped
+# into one shared "Europe" bucket (a German company's own closest
+# peers are other DAX members, not a Swedish one) - same one-country,
+# one-priority-list shape as every other market above. Since DAX/
+# CAC 40/AEX/SMI/OMX Stockholm 30 are ALL still private today, compute()'s
+# own existing "every universe for this market is private -> no peer
+# context" check (just below) already covers these five automatically -
+# no new gating code needed; the moment Andrew makes one of these
+# universes public, this same code starts serving real peer context
+# for that one market, exactly like UK/CA/JP before it.
+_DE_PRIORITY = ["DAX"]
+_FR_PRIORITY = ["CAC 40"]
+_NL_PRIORITY = ["AEX"]
+_CH_PRIORITY = ["SMI"]
+_SE_PRIORITY = ["OMX Stockholm 30"]
+
 
 def market_for(ticker):
-    """"United Kingdom"/"Canada"/"Japan"/"Australia"/"USA" by ticker
-    suffix (.L/.TO/.T/.AX, else USA) - the one place this module (and
-    this task's own instruction) decides which country's universes a
-    ticker belongs to. A UK/Canadian/Japanese ticker must never be
-    ranked against US or ASX universes - see compute()'s own dispatch,
-    which uses this instead of the old is_au-only two-way check."""
+    """"United Kingdom"/"Canada"/"Japan"/"Australia"/"Germany"/
+    "France"/"Netherlands"/"Switzerland"/"Sweden"/"USA" by ticker
+    suffix (.L/.TO/.T/.AX/.DE/.PA/.AS/.SW/.ST, else USA) - the one
+    place this module (and this task's own instruction) decides which
+    country's universes a ticker belongs to. A UK/Canadian/Japanese/
+    European ticker must never be ranked against US or ASX universes
+    - see compute()'s own dispatch, which uses this instead of the old
+    is_au-only two-way check."""
     t = (ticker or "").upper()
     if t.endswith(".AX"):
         return "Australia"
@@ -80,6 +106,16 @@ def market_for(ticker):
         return "Canada"
     if t.endswith(".T"):
         return "Japan"
+    if t.endswith(".DE"):
+        return "Germany"
+    if t.endswith(".PA"):
+        return "France"
+    if t.endswith(".AS"):
+        return "Netherlands"
+    if t.endswith(".SW"):
+        return "Switzerland"
+    if t.endswith(".ST"):
+        return "Sweden"
     return "USA"
 
 
@@ -88,6 +124,11 @@ _MARKET_PRIORITY = {
     "United Kingdom": _UK_PRIORITY,
     "Canada": _CA_PRIORITY,
     "Japan": _JP_PRIORITY,
+    "Germany": _DE_PRIORITY,
+    "France": _FR_PRIORITY,
+    "Netherlands": _NL_PRIORITY,
+    "Switzerland": _CH_PRIORITY,
+    "Sweden": _SE_PRIORITY,
     "USA": _US_PRIORITY,
 }
 _MARKET_ALL_UNIVERSES = {
@@ -95,6 +136,11 @@ _MARKET_ALL_UNIVERSES = {
     "United Kingdom": _UK_PRIORITY,
     "Canada": _CA_PRIORITY,
     "Japan": _JP_PRIORITY,
+    "Germany": _DE_PRIORITY,
+    "France": _FR_PRIORITY,
+    "Netherlands": _NL_PRIORITY,
+    "Switzerland": _CH_PRIORITY,
+    "Sweden": _SE_PRIORITY,
     "USA": scanner_engine.USA_UNIVERSES,
 }
 
