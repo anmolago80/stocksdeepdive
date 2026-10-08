@@ -62,6 +62,7 @@ import snapshot_store
 import snapshot_render
 import quote_snapshot_store
 import moat_engine
+import market_readiness_engine
 import portfolio_store
 import portfolio_health_engine
 import portfolio_charts_engine
@@ -31668,6 +31669,154 @@ def _render_private_universes_panel():
     st.caption(f"{len(_table_rows)} row(s) across {len(_private_universes)} private universe(s).")
 
 
+def _render_market_readiness_panel():
+    """PART 3 STEP 3.1 of instruction_health_fixes_chart_and_new_
+    markets.md (8 Oct 2026, Director-directed): "Market readiness" -
+    owner-only, read-only, one section per STORED universe, private
+    ones included. From stored scan rows only - no network call, no
+    scan, nothing written (see market_readiness_engine.py's own module
+    docstring for exactly why neither is possible by construction).
+    Lets Andrew judge UK/Canada/Japan (and, after PART 6, the five
+    European lists) readiness for going public, entirely from this one
+    page - "state plainly that every number Andrew needs is on the
+    live panel, not in the report" (STEP 3.1's own closing line).
+
+    Every count/median below reads market_readiness_engine.
+    universe_readiness(universe) once per universe and renders its
+    fields directly - never a second, independently-computed version
+    of any of them. "not stored" (never an estimate) is what a sub-
+    field shows when the underlying stored rows don't carry what it
+    needs - see that module's own per-function docstrings for which
+    fields this applies to and why.
+
+    No gate of its own - called only from inside page_admin_
+    dashboard(), after that function's own owner check."""
+    st.markdown("### Market readiness")
+    st.caption(
+        "Owner-only, read-only. One section per universe with a saved scan, private ones "
+        "included - computed entirely from stored scan rows, never a live fetch. Use this "
+        "to judge whether a market is ready to go public; the numbered fix proposals in "
+        "the written report follow from what's flagged here."
+    )
+    _universes = market_readiness_engine.list_readiness_universes()
+    if not _universes:
+        st.info("No universe has a saved scan yet.")
+        return
+
+    for _u_idx, _universe in enumerate(_universes):
+        _r = market_readiness_engine.universe_readiness(_universe)
+        if not _r:
+            continue
+        _private_tag = " (private)" if _r["is_private"] else ""
+        with st.expander(f"{_universe}{_private_tag} - {_r['rows_stored']} row(s)",
+                          key=f"admin_market_readiness_expander_{_u_idx}_{_universe}"):
+            _c1, _c2, _c3 = st.columns(3)
+            with _c1:
+                st.metric("Rows stored", _r["rows_stored"])
+                st.caption(f"Last scan (UTC): {_r['generated_at'] or 'never'}")
+            with _c2:
+                st.metric(
+                    "Constituents expected",
+                    _r["constituents_expected"] if _r["constituents_expected"] is not None else "not stored",
+                )
+                _missing = _r["constituents_missing"]
+                st.caption(
+                    f"Missing: {_missing}" if _missing is not None
+                    else "Missing: not stored (index has no published size in its own name)"
+                )
+            with _c3:
+                st.metric("Originally pence-quoted", _r["pence_quoted_count"])
+                st.caption(
+                    "Trading currencies: " + ", ".join(
+                        f"{ccy} ({n})" for ccy, n in sorted(_r["trading_currencies_found"].items())
+                    )
+                )
+
+            st.markdown("##### Valuation")
+            _val = _r["valuation"]
+            _v1, _v2, _v3, _v4 = st.columns(4)
+            with _v1:
+                st.metric("DCF-unreliable", _val["dcf_unreliable_count"])
+            with _v2:
+                st.metric("At growth cap", _val["at_growth_cap_count"])
+            with _v3:
+                st.metric("Valued with analyst estimates", _val["analyst_estimate_count"])
+            with _v4:
+                st.metric(
+                    "Median MOS %",
+                    f"{_val['median_mos_pct']:+.1f}%" if _val["median_mos_pct"] is not None else "not stored",
+                )
+            st.caption(
+                f"MOS above +80%: {_val['above_80_count']}  |  MOS below -80%: "
+                f"{_val['below_neg80_count']}  |  by fallback path: " + (
+                    ", ".join(f"{k} ({v})" for k, v in sorted(_val["fallback_path_counts"].items()))
+                    or "not stored"
+                )
+            )
+
+            st.markdown("##### Dividends")
+            _div = _r["dividends"]
+            _d1, _d2 = st.columns(2)
+            with _d1:
+                st.metric("Pay a dividend", _div["paying_count"])
+            with _d2:
+                st.metric(
+                    "Median yield",
+                    f"{_div['median_yield_pct']:.1f}%" if _div["median_yield_pct"] is not None else "not stored",
+                )
+            st.caption(
+                "Yield above 12%: " + (", ".join(_div["high_yield_tickers"]) or "none")
+            )
+
+            st.markdown("##### Price guard")
+            if _r["price_guard_flags"]:
+                st.dataframe(pd.DataFrame(_r["price_guard_flags"]), hide_index=True, width="stretch")
+            else:
+                st.caption("No ticker flagged by the price-unit guard.")
+
+            st.markdown("##### Run-to-run stability")
+            _rtr = _r["run_to_run"]
+            if _rtr["flagged"]:
+                st.dataframe(pd.DataFrame(_rtr["flagged"]), hide_index=True, width="stretch")
+            else:
+                st.caption("No ticker moved more than 25% between its last two stored scans.")
+            if _rtr["single_scan_tickers"]:
+                st.caption(
+                    f"{len(_rtr['single_scan_tickers'])} ticker(s) have only one scan stored "
+                    "(no run-to-run comparison possible yet): "
+                    + ", ".join(_rtr["single_scan_tickers"][:20])
+                    + (" ..." if len(_rtr["single_scan_tickers"]) > 20 else "")
+                )
+
+            st.markdown("##### Same company under another ticker")
+            if _r["cross_ticker_pairs"]:
+                st.dataframe(pd.DataFrame(_r["cross_ticker_pairs"]), hide_index=True, width="stretch")
+            else:
+                st.caption("No same-company-name pair found in any other stored universe.")
+
+            st.markdown("##### Top 20 by Value Score")
+            if _r["top20"]:
+                st.dataframe(pd.DataFrame(_r["top20"]), hide_index=True, width="stretch")
+            else:
+                st.caption("No rows to rank yet.")
+
+            st.markdown("##### Top 200 effect, dry run")
+            _t200 = _r["top200_dry_run"]
+            st.caption(
+                f"{_t200['candidate_count']} candidate(s) if this universe were public; "
+                f"{_t200['no_stored_score_count']} with no stored score yet "
+                f"(estimated cost at $0.02 each: ${_t200['estimated_cost_usd']:.2f}). "
+                "A count only - nothing selected or scored."
+            )
+
+            st.download_button(
+                f"Download {_universe} readiness rows (CSV)",
+                data=data_export_engine.table_to_csv_bytes(pd.DataFrame(_r["rows"])),
+                file_name=f"market_readiness_{_universe.replace(' ', '_')}.csv", mime="text/csv",
+                key=f"admin_market_readiness_csv_{_u_idx}_{_universe}",
+            )
+
+
 def _render_portfolio_health_news_v2_comparison_panel():
     """PART B STEP B2 (Director, 6 Oct 2026, instruction_portfolio_
     scoring_and_currency_table.md): "Health score: news method
@@ -33985,6 +34134,13 @@ def page_admin_dashboard():
     # panel above.
     st.markdown("---")
     _render_private_universes_panel()
+
+    # --- MARKET READINESS (PART 3 STEP 3.1 of instruction_health_
+    # fixes_chart_and_new_markets.md, 8 Oct 2026, Director-directed) -
+    # see _render_market_readiness_panel()'s own docstring. Same "no
+    # gate of its own" pattern as every panel above.
+    st.markdown("---")
+    _render_market_readiness_panel()
 
     # --- HEALTH SCORE: NEWS METHOD COMPARISON (PART B STEP B2 of
     # instruction_portfolio_scoring_and_currency_table.md, 6 Oct 2026,
