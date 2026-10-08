@@ -1122,7 +1122,20 @@ def analyze_holding_news_v2(ticker, name=None, thesis_drivers=None, buy_date=Non
         heaviest = max(group, key=lambda e: abs(SEVERITY_HIT[e["severity"]]) * e["weight"])
         hit = SEVERITY_HIT[heaviest["severity"]] * heaviest["weight"]
         score -= hit
-        if heaviest["severity"] in ("material", "thesis-breaking"):
+        # PART 1 STEP 1.2 (Director, 8 Oct 2026, instruction_health_
+        # fixes_chart_and_new_markets.md): v2 ONLY - `material` used to
+        # be set on severity alone, so a fully-decayed (weight == 0,
+        # past NEWS_V2_DECAY_ZERO_DAYS) material/thesis-breaking group
+        # still fired compute_health_v2()'s own news cut even though it
+        # no longer moves news_risk_score at all (hit = SEVERITY_HIT *
+        # 0 = 0) - a cut applied for a story that, by this same
+        # function's own decay rule, no longer counts. Now gated on
+        # `heaviest["weight"] > 0`, the SAME "still live" test
+        # thesis_breaking_live already used one line below - a decayed
+        # group can set neither flag any more. v1's analyze_holding_
+        # news() (line ~803) is untouched - its own `material` still
+        # fires on severity alone, exactly as before this step.
+        if heaviest["severity"] in ("material", "thesis-breaking") and heaviest["weight"] > 0:
             material = True
         if heaviest["severity"] == "thesis-breaking" and heaviest["weight"] > 0:
             thesis_breaking_live = True
