@@ -143,3 +143,32 @@ def mos_view(mos_pct, home_currency, stock_currency, range_key=cre.DEFAULT_RANGE
         "view_high": max(sd_values),
         "effects": effects,
     }
+
+
+def adjusted_value(price, margin_pct):
+    """Director, 8 Oct 2026 (delivered with the PUSH 1 go-ahead message):
+    "the currency-adjusted value in the STOCK'S OWN trading currency
+    after each margin of safety" - the value, in the SAME currency as
+    `price` (never converted), that reproduces `margin_pct` exactly via
+    margin = 1 - price / adjusted_value. `margin_pct` is a percentage
+    (e.g. 25.5, not 0.255) - one of mos_view()'s own view_at_average/
+    view_low/view_high, or a single scenario's view value computed the
+    same way (currency_risk_render.py's per-scenario rows) - never an
+    independently-derived figure.
+
+    Algebraically this is also equal to intrinsic_value * value_factor
+    (value_factor = current_rate / scenario_rate, the same ratio mos_
+    view()'s own scenarios already carry) - this form is preferred
+    because it needs only `price` and the margin already shown, not a
+    second intrinsic-value read, so it can never drift from the
+    percentage sitting right next to it.
+
+    None when price is None (no live price to anchor to) or margin_pct
+    is 100 or more (the stock's own price would be zero or negative in
+    that scenario - degenerate, never invented)."""
+    if price is None or margin_pct is None:
+        return None
+    denom = 1.0 - margin_pct / 100.0
+    if denom <= 0:
+        return None
+    return price / denom

@@ -283,7 +283,8 @@ def _render_section_c(base, quote, current_rate, average, sigma, lang):
     st.caption(_t("section_c_caption", lang))
 
 
-def _render_mos_view_table(base, quote, ticker, lang, is_owner=False, ticker_currency="", mos=None):
+def _render_mos_view_table(base, quote, ticker, lang, is_owner=False, ticker_currency="",
+                            mos=None, price=None):
     """SECTION B, COMMIT B3 (amended per the Director's 5 Oct 2026,
     6 Oct 2026, PART A/STEP A1, and "one fix to PART A" follow-ups) of
     instruction_top200_amendments_and_currency_view.md / instruction_
@@ -331,7 +332,14 @@ def _render_mos_view_table(base, quote, ticker, lang, is_owner=False, ticker_cur
     cve.mos_view()'s own single-source-of-truth call into currency_
     risk_engine.position_impact() is the SAME function section C's own
     tiles above just used - never a second, independently-computed
-    effect."""
+    effect.
+
+    price (Director, 8 Oct 2026, currency-adjusted-value addition):
+    the ticker's own live price, in `ticker_currency`, unconverted -
+    the SAME value app.py's _resolve_ticker_mos_currency_live() already
+    resolved alongside `mos`/`ticker_currency` from the one analyze()
+    call. Used only to compute each row's own currency-adjusted value
+    (cve.adjusted_value()) - never shown on its own, never converted."""
     ticker_currency = (ticker_currency or "").upper()
 
     view = None
@@ -420,18 +428,31 @@ def _render_mos_view_table(base, quote, ticker, lang, is_owner=False, ticker_cur
             # mos_view() already computed it from - never a second,
             # independently-derived number.
             view_val = (1.0 - (1.0 - mos / 100.0) / sc["value_factor"]) * 100.0
+        # Director, 8 Oct 2026 (delivered with the PUSH 1 go-ahead
+        # message): "the currency-adjusted value in the STOCK'S OWN
+        # trading currency after each margin of safety" - cve.
+        # adjusted_value() reproduces view_val exactly (same algebra
+        # mos_view() itself used), so this can never disagree with the
+        # margin shown right beside it in the same row.
+        _adj = cve.adjusted_value(price, view_val)
         rows.append({
             _t("mos_view_col_scenario", lang): _t(label_key, lang, base=base,
                                                    rate=f"{sc['scenario_rate']:.4f}"),
             _t("mos_view_col_effect", lang): f"{sc['pct_change']:+.1f}%",
             _t("mos_view_col_margin", lang): f"{view_val:+.1f}%",
+            _t("mos_view_col_adjusted_value", lang): (
+                f"{quote} {_adj:,.2f}" if _adj is not None else "n/a"
+            ),
         })
     st.dataframe(rows, hide_index=True, width='stretch')
     st.caption(_t("mos_view_caption", lang, ticker=ticker, stock=quote))
+    if price is not None:
+        st.caption(_t("mos_view_adjusted_value_explainer", lang, home=base, stock=quote))
 
 
 def render_currency_risk_page(lang="en", default_base=None, jump_ticker=None, is_owner=False,
-                               active_ticker_currency="", active_ticker_mos=None):
+                               active_ticker_currency="", active_ticker_mos=None,
+                               active_ticker_price=None):
     """The Currency Risk page's full content - app.py's page_currency_
     risk() calls this after its own _content_page_shell()/_bump_page_
     view() (same split as top100_render.render_top100_page()).
@@ -467,7 +488,14 @@ def render_currency_risk_page(lang="en", default_base=None, jump_ticker=None, is
     this page - a call with both left at their defaults (every pre-
     existing caller before COMMIT B3, and every signed-out/non-owner-
     while-the-switch-is-off visitor after it) renders byte-identical to
-    before that commit."""
+    before that commit.
+
+    active_ticker_price (Director, 8 Oct 2026, currency-adjusted-value
+    addition): the active ticker's own live price, from the SAME
+    analyze() call as active_ticker_mos/active_ticker_currency - None
+    when there is no active ticker. Passed straight through to
+    _render_mos_view_table() so each scenario row can show its own
+    currency-adjusted value next to its margin of safety."""
     if jump_ticker:
         st.session_state["cr_active_ticker"] = jump_ticker
     st.markdown(
@@ -515,4 +543,5 @@ def render_currency_risk_page(lang="en", default_base=None, jump_ticker=None, is
     _active_ticker = st.session_state.get("cr_active_ticker")
     if _active_ticker:
         _render_mos_view_table(base, quote, _active_ticker, lang, is_owner=is_owner,
-                                ticker_currency=active_ticker_currency, mos=active_ticker_mos)
+                                ticker_currency=active_ticker_currency, mos=active_ticker_mos,
+                                price=active_ticker_price)

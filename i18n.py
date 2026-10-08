@@ -564,12 +564,21 @@ EN = {
     "dd.currency_note.full": (
         "Home currency {home}. This stock is priced in {stock}. If the "
         "exchange rate returns to its 10-year average, the margin of "
-        "safety reads about {avg}%. Within the usual range of the rate "
-        "it reads between {low}% and {high}%. A described calculation, "
-        "not a forecast."
+        "safety reads about {avg}% (currency-adjusted value: {stock} "
+        "{adj_avg}). Within the usual range of the rate it reads between "
+        "{low}% (currency-adjusted value: {stock} {adj_low}) and {high}% "
+        "(currency-adjusted value: {stock} {adj_high}). A described "
+        "calculation, not a forecast."
     ),
     "dd.currency_note.change_button": "change",
     "dd.currency_note.see_tool_button": "See the currency view",
+    # Director, 8 Oct 2026 (delivered with the PUSH 1 go-ahead message):
+    # one short explanatory line for the "currency-adjusted value" label
+    # above - what it means, once, rather than repeated per figure.
+    "dd.currency_note.adjusted_value_explainer": (
+        "What the estimate is worth to a {home} investor at that "
+        "exchange rate, in today's {stock}."
+    ),
 
     # Part 43 (12 Sep 2026): these four headers used to say "(points
     # contributed by each factor)"/"(weighted terms)" - itself a hint at
@@ -4245,6 +4254,14 @@ EN = {
     "currency_risk.mos_view_col_scenario": "Scenario",
     "currency_risk.mos_view_col_effect": "Currency effect",
     "currency_risk.mos_view_col_margin": "Resulting margin of safety",
+    # Director, 8 Oct 2026 (delivered with the PUSH 1 go-ahead message):
+    # "the currency-adjusted value in the stock's own trading currency
+    # after each margin of safety."
+    "currency_risk.mos_view_col_adjusted_value": "Currency-adjusted value",
+    "currency_risk.mos_view_adjusted_value_explainer": (
+        "What the estimate is worth to a {home} investor at that "
+        "exchange rate, in today's {stock}."
+    ),
     "currency_risk.mos_view_caption": (
         "{ticker}'s own margin of safety, described in {stock} terms converted through "
         "each scenario above - a described calculation, not a forecast."
@@ -4653,12 +4670,18 @@ ES = {
     "dd.currency_note.full": (
         "Moneda local {home}. Esta acción cotiza en {stock}. Si el tipo "
         "de cambio vuelve a su promedio de 10 años, el margen de "
-        "seguridad sería de aproximadamente {avg}%. Dentro del rango "
-        "habitual del tipo de cambio, estaría entre {low}% y {high}%. "
-        "Un cálculo descrito, no una predicción."
+        "seguridad sería de aproximadamente {avg}% (valor ajustado por "
+        "moneda: {stock} {adj_avg}). Dentro del rango habitual del tipo "
+        "de cambio, estaría entre {low}% (valor ajustado por moneda: "
+        "{stock} {adj_low}) y {high}% (valor ajustado por moneda: {stock} "
+        "{adj_high}). Un cálculo descrito, no una predicción."
     ),
     "dd.currency_note.change_button": "cambiar",
     "dd.currency_note.see_tool_button": "Ver la vista de moneda",
+    "dd.currency_note.adjusted_value_explainer": (
+        "Lo que vale la estimación para un inversor en {home} a ese tipo "
+        "de cambio, en {stock} de hoy."
+    ),
 
     "dd.chart.driving_score": "Qué impulsa el {score_word}",
     "dd.chart.points_score": "Puntos hacia el {score_word}",
@@ -7809,6 +7832,11 @@ ES = {
     "currency_risk.mos_view_col_scenario": "Escenario",
     "currency_risk.mos_view_col_effect": "Efecto de la moneda",
     "currency_risk.mos_view_col_margin": "Margen de seguridad resultante",
+    "currency_risk.mos_view_col_adjusted_value": "Valor ajustado por moneda",
+    "currency_risk.mos_view_adjusted_value_explainer": (
+        "Lo que vale la estimación para un inversor en {home} a ese tipo "
+        "de cambio, en {stock} de hoy."
+    ),
     "currency_risk.mos_view_caption": (
         "El margen de seguridad de {ticker}, descrito en términos de {stock} convertido "
         "mediante cada escenario anterior - un cálculo descrito, no una predicción."

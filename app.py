@@ -1116,11 +1116,27 @@ def _render_currency_note(_dd):
                            home=home, stock=stock_currency))
         return
 
+    # Director, 8 Oct 2026 (delivered with the PUSH 1 go-ahead message):
+    # "add the currency-adjusted value in the STOCK'S OWN trading
+    # currency after each margin of safety." Price is _dd["price"] -
+    # already in hand, unconverted, in `stock_currency` - and the
+    # adjusted value reproduces each percentage ABOVE exactly, by
+    # construction (currency_view_engine.adjusted_value()'s own algebra).
+    _price = _dd.get("price")
+    _adj_avg = currency_view_engine.adjusted_value(_price, view["view_at_average"])
+    _adj_low = currency_view_engine.adjusted_value(_price, view["view_low"])
+    _adj_high = currency_view_engine.adjusted_value(_price, view["view_high"])
     st.caption(i18n.t(
         "dd.currency_note.full", lang, home=home, stock=stock_currency,
         avg=f"{view['view_at_average']:.1f}",
         low=f"{view['view_low']:.1f}", high=f"{view['view_high']:.1f}",
+        adj_avg=f"{_adj_avg:,.2f}" if _adj_avg is not None else "n/a",
+        adj_low=f"{_adj_low:,.2f}" if _adj_low is not None else "n/a",
+        adj_high=f"{_adj_high:,.2f}" if _adj_high is not None else "n/a",
     ))
+    if _price is not None:
+        st.caption(i18n.t("dd.currency_note.adjusted_value_explainer", lang,
+                           home=home, stock=stock_currency))
     _col1, _col2, _col3 = st.columns([1, 1, 4])
     with _col1:
         _change_key = f"_dd_currency_picker_open_{ticker}"
@@ -24593,15 +24609,21 @@ def _resolve_ticker_mos_currency_live(ticker):
     ever invokes analyze() twice for the same ticker in the same
     session.
 
-    Returns {"mos": None, "currency": ""} (never a guess) when the
-    ticker couldn't be analyzed at all (bad symbol, fetch failure);
-    "currency" also comes back "" (never the raw sentinel) when
-    deep_dive_engine.py's own "no currency on file" sentinel ("-") is
-    what analyze() returned."""
+    Returns {"mos": None, "currency": "", "price": None} (never a guess)
+    when the ticker couldn't be analyzed at all (bad symbol, fetch
+    failure); "currency" also comes back "" (never the raw sentinel)
+    when deep_dive_engine.py's own "no currency on file" sentinel ("-")
+    is what analyze() returned.
+
+    "price" (Director, 8 Oct 2026, currency-adjusted-value addition):
+    the SAME _dd["price"] the Deep Dive page itself shows next to this
+    ticker's own margin of safety - never a second, independently-
+    fetched quote - so the Currency Risk table's own currency-adjusted
+    value can anchor to it without another network call."""
     _cache = st.session_state.setdefault("_cr_ticker_mos_currency_cache", {})
     if ticker in _cache:
         return _cache[ticker]
-    result = {"mos": None, "currency": ""}
+    result = {"mos": None, "currency": "", "price": None}
     # Fix (Director, 6 Oct 2026, "one fix to PART A" follow-up, part c):
     # a plain-text spinner naming the ticker while analyze() runs - this
     # branch only runs on a cache miss, so a ticker already resolved
@@ -24621,6 +24643,7 @@ def _resolve_ticker_mos_currency_live(ticker):
                 if currency == "-":
                     currency = ""
                 result["currency"] = currency
+                result["price"] = _dd.get("price")
         except Exception:
             pass
     _cache[ticker] = result
@@ -24738,7 +24761,7 @@ def page_currency_risk():
     _active_ticker_now = _jump_ticker or st.session_state.get("cr_active_ticker")
     _active_ticker_mos_currency = (
         _resolve_ticker_mos_currency_live(_active_ticker_now) if _active_ticker_now
-        else {"mos": None, "currency": ""}
+        else {"mos": None, "currency": "", "price": None}
     )
 
     currency_risk_render.render_currency_risk_page(
@@ -24746,6 +24769,7 @@ def page_currency_risk():
         default_base=_home_currency, jump_ticker=_jump_ticker,
         is_owner=_is_owner, active_ticker_mos=_active_ticker_mos_currency["mos"],
         active_ticker_currency=_active_ticker_mos_currency["currency"],
+        active_ticker_price=_active_ticker_mos_currency["price"],
     )
 
 

@@ -382,7 +382,7 @@ st.session_state["_test_second_result"] = _second
 """
 with mock.patch.object(deep_dive_engine, "analyze") as _mock_analyze_spinner:
     _mock_analyze_spinner.return_value = {
-        "error": None, "ticker": "SPINCO", "mos": 5.0, "currency": "EUR",
+        "error": None, "ticker": "SPINCO", "mos": 5.0, "currency": "EUR", "price": 42.5,
     }
     _at_spin = AppTest.from_string(_spinner_script, default_timeout=60)
     _at_spin.run()
@@ -402,7 +402,11 @@ check("one analyze() call per ticker per session: deep_dive_engine.analyze() its
       _spinner_analyze_call_count == 1)
 check("both calls this session return the identical resolved result",
       _at_spin.session_state["_test_first_result"] == _at_spin.session_state["_test_second_result"]
-      == {"mos": 5.0, "currency": "EUR"})
+      # Director, 8 Oct 2026, currency-adjusted-value addition:
+      # _resolve_ticker_mos_currency_live() now also carries "price",
+      # the same _dd["price"] app.py's currency-adjusted-value feature
+      # anchors to - from the SAME one analyze() call, never a second.
+      == {"mos": 5.0, "currency": "EUR", "price": 42.5})
 print("[followup_c_spinner] a plain-text spinner naming the ticker shows while analyze() "
       "runs, never a second time for a session-cached ticker, and the session cache means "
       "exactly one real analyze() call per ticker per session OK")
