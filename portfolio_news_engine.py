@@ -1234,6 +1234,67 @@ def compare_events_v1_v2(ticker, name=None, thesis_drivers=None, buy_date=None, 
     return rows
 
 
+def summarize_event_groups_v2(ticker, name=None, thesis_drivers=None, buy_date=None, now=None):
+    """PART 1 STEP 1.3 (Director, 8 Oct 2026, instruction_health_fixes_
+    chart_and_new_markets.md): one row per v2 event GROUP, never one
+    row per stored headline - the per-ticker expander lists one row
+    per headline (712 for CSL.AX), which the Director's own words call
+    unreadable. This is purely an AGGREGATION of compare_events_v1_v2()
+    's own rows - same severity/weight/grouping call chain, nothing
+    re-derived a second way; this function's only new work is grouping
+    those existing rows by their own "event_group" label and summing/
+    picking across each group.
+
+    Returns [{"group", "severity", "first_date", "last_date",
+    "item_count", "publisher_count", "heaviest_title", "heaviest_weight",
+    "points_taken"}, ...], sorted by "points_taken" descending (the
+    single biggest hit first). "points_taken" is the SAME quantity
+    analyze_holding_news_v2()'s own scoring loop computes for this
+    group - SEVERITY_HIT[severity] * heaviest_weight - so it is
+    POSITIVE for a material/thesis-breaking group (points actually
+    subtracted from the News Risk Score) and NEGATIVE for a "positive"
+    group (points added back) - reported as-is, never clamped or
+    relabelled, since a reader comparing this table against analyze_
+    holding_news_v2()'s own score change needs the same signed number.
+    "heaviest" is the SAME item analyze_holding_news_v2() itself picks
+    to represent the group (max by abs(SEVERITY_HIT[severity]) *
+    weight - a constant factor here since every row in one group
+    shares the same severity, so this reduces to "heaviest by weight,"
+    but kept in the same shape for a reader cross-checking the two
+    functions side by side). Rows compare_events_v1_v2() marked
+    event_group == "-" (not relevant, or SEVERITY_HIT == 0 i.e.
+    "noise") never formed a group in the first place and are excluded,
+    exactly like _group_events_v2() itself excludes them."""
+    rows = compare_events_v1_v2(ticker, name=name, thesis_drivers=thesis_drivers,
+                                 buy_date=buy_date, now=now)
+    by_group = {}
+    for r in rows:
+        if r["event_group"] == "-":
+            continue
+        by_group.setdefault(r["event_group"], []).append(r)
+
+    summaries = []
+    for label, group_rows in by_group.items():
+        severity = group_rows[0]["new_severity"]
+        dated = [r["date"] for r in group_rows if r["date"] is not None]
+        heaviest = max(group_rows,
+                        key=lambda r: abs(SEVERITY_HIT[r["new_severity"]]) * r["new_weight"])
+        points_taken = SEVERITY_HIT[severity] * heaviest["new_weight"]
+        summaries.append({
+            "group": label,
+            "severity": severity,
+            "first_date": min(dated) if dated else None,
+            "last_date": max(dated) if dated else None,
+            "item_count": len(group_rows),
+            "publisher_count": len({r["publisher"] for r in group_rows if r["publisher"]}),
+            "heaviest_title": heaviest["title"],
+            "heaviest_weight": round(heaviest["new_weight"], 2),
+            "points_taken": round(points_taken, 1),
+        })
+    summaries.sort(key=lambda s: s["points_taken"], reverse=True)
+    return summaries
+
+
 _SEVERITY_COLOR = {
     "thesis-breaking": "#d03b3b", "material": "#e0912f",
     "temporary": "#c9a227", "positive": "#0ca30c", "noise": "#9aa0a6",

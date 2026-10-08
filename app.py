@@ -31601,14 +31601,48 @@ def _render_portfolio_health_news_v2_comparison_panel():
         for h, _h_progress, _h_progress_v2 in _per_ticker_detail:
             ticker = h["ticker"]
             with st.expander(f"{ticker} - every stored headline"):
+                # PART 1 STEP 1.3 (Director, 8 Oct 2026, instruction_
+                # health_fixes_chart_and_new_markets.md): "the expander
+                # lists one row per stored headline (712 for CSL).
+                # Nobody can read that." One row PER EVENT GROUP, above
+                # the full headline table, so Andrew sees what actually
+                # moved the score before he scrolls through hundreds of
+                # individual headlines. portfolio_news_engine.
+                # summarize_event_groups_v2() aggregates compare_
+                # events_v1_v2()'s own rows - never a second, re-
+                # derived grouping.
+                _group_rows = portfolio_news_engine.summarize_event_groups_v2(
+                    ticker, name=h.get("name"), thesis_drivers=h.get("thesis_drivers"),
+                    buy_date=h.get("buy_date"),
+                )
+                st.caption("One row per event group, sorted by points taken (biggest first).")
+                if not _group_rows:
+                    st.caption("No scoring-eligible event groups for this ticker.")
+                else:
+                    st.dataframe([
+                        {
+                            "Group": g["group"],
+                            "Severity": g["severity"],
+                            "First date": g["first_date"].strftime("%Y-%m-%d") if g["first_date"] else "undated",
+                            "Last date": g["last_date"].strftime("%Y-%m-%d") if g["last_date"] else "undated",
+                            "Items": g["item_count"],
+                            "Publishers": g["publisher_count"],
+                            "Heaviest headline": g["heaviest_title"],
+                            "Heaviest weight": g["heaviest_weight"],
+                            "Points taken": g["points_taken"],
+                        }
+                        for g in _group_rows
+                    ], hide_index=True, width='stretch')
+
                 _compare_rows = portfolio_news_engine.compare_events_v1_v2(
                     ticker, name=h.get("name"), thesis_drivers=h.get("thesis_drivers"),
                     buy_date=h.get("buy_date"),
                 )
+                st.caption("Every stored headline, newest first.")
                 if not _compare_rows:
                     st.caption("No stored headlines for this ticker.")
                 else:
-                    st.dataframe([
+                    _headline_rows = [
                         {
                             "Date": r["date"].strftime("%Y-%m-%d") if r["date"] else "undated",
                             "Age (days)": r["age_days"] if r["age_days"] is not None else "-",
@@ -31621,7 +31655,14 @@ def _render_portfolio_health_news_v2_comparison_panel():
                             "Event group": r["event_group"],
                         }
                         for r in _compare_rows
-                    ], hide_index=True, width='stretch')
+                    ]
+                    st.dataframe(_headline_rows, hide_index=True, width='stretch')
+                    st.download_button(
+                        f"Download {ticker} headlines as CSV",
+                        data=data_export_engine.table_to_csv_bytes(pd.DataFrame(_headline_rows)),
+                        file_name=f"health_news_v2_headlines_{ticker}.csv", mime="text/csv",
+                        key=f"admin_health_news_v2_headlines_csv_{ticker}",
+                    )
 
         # PART C STEP C2 (Director, 6 Oct 2026): Progress - a second
         # table, same owner-only panel, same page. compute_progress()/
