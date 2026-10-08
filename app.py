@@ -31466,6 +31466,17 @@ def _render_financials_dry_run_panel():
         "pool_ineligible_if_switch_on", "in_current_top100",
     ]
     _table_df = pd.DataFrame(_rows, columns=_display_cols)
+    # Live bug fix (Director, 8 Oct 2026, Railway log 08 Oct 10:38:34 UTC):
+    # pyarrow ArrowTypeError, "Conversion failed for column ni_values with
+    # type object" - _ni_diagnostics() (financials_dry_run.py) returns a
+    # list of (period, value) tuples per row, or None; that mixed
+    # list-or-None object column has no single Arrow type pyarrow can
+    # infer across every row, and st.dataframe() converts to Arrow to
+    # render. A pre-existing column (Addendum 2 item 7, 5 Oct 2026),
+    # unrelated to PUSH 1 - stringified here (display-only; nothing else
+    # ever reads this column back) so every value is a plain string or
+    # None, both of which Arrow handles natively.
+    _table_df["ni_values"] = _table_df["ni_values"].map(lambda v: str(v) if v is not None else None)
     st.dataframe(_table_df, hide_index=True, width="stretch")
     st.caption(f"Showing {len(_rows)} ticker(s).")
 
@@ -31757,9 +31768,18 @@ def _render_portfolio_health_news_v2_comparison_panel():
             key="admin_health_news_v2_comparison_csv",
         )
 
-        for h, _h_progress, _h_progress_v2 in _per_ticker_detail:
+        for _row_idx, (h, _h_progress, _h_progress_v2) in enumerate(_per_ticker_detail):
             ticker = h["ticker"]
-            with st.expander(f"{ticker} - every stored headline"):
+            # Live bug fix (Director, 8 Oct 2026, Railway log 08 Oct
+            # 10:39:44 UTC, deployment d8dba7a3): StreamlitDuplicateElementKey
+            # on the CSV download button below, the first time Andrew's own
+            # holdings held the same ticker twice (OCL.AX, in two different
+            # portfolios) - every widget key in this loop is now built from
+            # the ROW (this loop's own index, which is unique by
+            # construction, however many portfolios hold the same ticker),
+            # never from the ticker alone.
+            _row_key = f"{_row_idx}_{ticker}"
+            with st.expander(f"{ticker} - every stored headline", key=f"admin_health_news_v2_expander_{_row_key}"):
                 # PART 1 STEP 1.3 (Director, 8 Oct 2026, instruction_
                 # health_fixes_chart_and_new_markets.md): "the expander
                 # lists one row per stored headline (712 for CSL).
@@ -31820,7 +31840,7 @@ def _render_portfolio_health_news_v2_comparison_panel():
                         f"Download {ticker} headlines as CSV",
                         data=data_export_engine.table_to_csv_bytes(pd.DataFrame(_headline_rows)),
                         file_name=f"health_news_v2_headlines_{ticker}.csv", mime="text/csv",
-                        key=f"admin_health_news_v2_headlines_csv_{ticker}",
+                        key=f"admin_health_news_v2_headlines_csv_{_row_key}",
                     )
 
         # PART C STEP C2 (Director, 6 Oct 2026): Progress - a second
@@ -31845,11 +31865,15 @@ def _render_portfolio_health_news_v2_comparison_panel():
             })
         st.dataframe(_progress_rows, hide_index=True, width='stretch')
 
-        for h, _h_progress, _h_progress_v2 in _per_ticker_detail:
+        for _prog_row_idx, (h, _h_progress, _h_progress_v2) in enumerate(_per_ticker_detail):
             ticker = h["ticker"]
             _comps_old = (_h_progress or {}).get("components") or {}
             _comps_new = (_h_progress_v2 or {}).get("components") or {}
-            with st.expander(f"{ticker} - Progress components, old vs new"):
+            # Same live-bug fix as the headlines expander above: keyed by
+            # this loop's own row index, never by ticker alone, so the
+            # same ticker held in two portfolios never collides.
+            with st.expander(f"{ticker} - Progress components, old vs new",
+                              key=f"admin_health_news_v2_progress_expander_{_prog_row_idx}_{ticker}"):
                 _comp_names = sorted(set(_comps_old) | set(_comps_new))
                 if not _comp_names:
                     st.caption("No Progress components for this holding.")
