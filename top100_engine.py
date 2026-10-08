@@ -79,7 +79,9 @@ from datetime import datetime, timedelta, timezone
 
 import yfinance as yf
 
+import fcf_valuation_engine
 import financials_classifier
+import market_readiness_engine
 import nightly_scan
 import peer_context
 import ranking_engine
@@ -925,6 +927,11 @@ def select_top100_pool(log=print):
     # the task's own coverage log line - read-only, no effect on the
     # pool just saved above.
     _log_coverage(pool + extension, log=log)
+    # PART 5 STEP 5.2 (8 Oct 2026, Director-directed): the preview
+    # cost-estimate log line - advisory only, read-only, unconditional
+    # (fires whether or not TOP200_PREVIEW_UNIVERSES is set) - see
+    # _log_preview_universe_cost_estimate()'s own docstring.
+    _log_preview_universe_cost_estimate(log=log)
     return pool
 
 
@@ -4318,6 +4325,100 @@ def is_backfill_live():
     dry run (COMMIT 3's own owner preview) and said yes."""
     raw = (os.environ.get("TOP200_BACKFILL_LIVE") or "").strip().lower()
     return raw in ("1", "on")
+
+
+def preview_universes():
+    """PART 5 STEP 5.2 of instruction_health_fixes_chart_and_new_
+    markets.md (8 Oct 2026, Director-directed): TOP200_PREVIEW_
+    UNIVERSES - comma-separated universe names (e.g. "FTSE 100, DAX"),
+    re-split and re-read on every call, same unset/empty="nothing
+    reads this list" pattern as every other switch in this module.
+    Unset/empty -> [] - the owner preview panel (app.py) and this
+    module's own cost-estimate log line are the ONLY two readers;
+    _eligible_scan_payloads()/select_top100_pool()/save_pool() never
+    read this at all, so an empty list changes nothing about which
+    universes are eligible for the real, public pool."""
+    raw = os.environ.get("TOP200_PREVIEW_UNIVERSES") or ""
+    return [u.strip() for u in raw.split(",") if u.strip()]
+
+
+def _log_preview_universe_cost_estimate(log=print):
+    """PART 5 STEP 5.2 (8 Oct 2026, Director-directed): one
+    informational log line per PRIVATE universe with a saved scan -
+    reusing market_readiness_engine.top200_dry_run()'s own {candidate_
+    count, no_stored_score_count, estimated_cost_usd} (the exact
+    number the owner-only Market readiness panel already shows per
+    universe - see app._render_market_readiness_panel()'s own "Top 200
+    effect, dry run" section) so Andrew can see the one-time cost of
+    adding any private market to TOP200_PREVIEW_UNIVERSES before ever
+    setting it. Fires every run regardless of TOP200_PREVIEW_
+    UNIVERSES's own value - purely advisory, nothing selected, nothing
+    scored, no network call (scan_store.load_scan_raw() is a disk
+    read), never raises - a reporting side effect, same posture as
+    _log_coverage()."""
+    try:
+        for universe in scan_store.list_saved_universes(include_private=True):
+            if not scan_store.is_private_universe(universe):
+                continue
+            payload = scan_store.load_scan_raw(universe, allow_private=True)
+            rows = (payload or {}).get("rows") or []
+            if not rows:
+                continue
+            dry = market_readiness_engine.top200_dry_run(rows)
+            log(f"[top200-preview] {universe!r}: {dry['candidate_count']} candidate(s), "
+                f"{dry['no_stored_score_count']} with no stored score yet, "
+                f"est. one-time cost ${dry['estimated_cost_usd']:.2f}")
+    except Exception as e:
+        log(f"[top200-preview] cost-estimate logging failed (non-fatal): {e}")
+
+
+def preview_candidates_by_country():
+    """PART 5 STEP 5.2: {country: [row, ...]} across every universe
+    named in preview_universes(), each universe's rows read DIRECTLY
+    via scan_store.load_scan_raw(universe, allow_private=True) - the
+    exact same direct read market_readiness_engine.universe_
+    readiness() already uses (PART 3) - never through _eligible_scan_
+    payloads()/_build_best_by_ticker()/select_top100_pool(). This
+    function is never called by, and never calls, any of those three
+    - it cannot affect, and is never affected by, the real public
+    pool's own selection.
+
+    Row shape matches market_readiness_engine.top20_by_value_score()'s
+    own per-row dict (ticker/name/currency/price/intrinsic_value/
+    mos_pct/growth_used/data_path/dividend_yield_pct/value_score),
+    plus "universe" (which saved file this candidate came from).
+    "market" grouping is peer_context.market_for(ticker) - inherits
+    that function's own known gap for the five European suffixes
+    (flagged, not fixed, in the PART 4 report): a DAX/CAC 40/AEX/SMI/
+    OMX Stockholm 30 ticker is grouped under "USA" here too until that
+    gap is fixed; this function does not work around it.
+
+    Sorted within each country by value_score descending, rows with
+    no stored score at all last (never dropped - same "never show
+    nothing" rule top20_by_value_score() itself already follows).
+    Returns {} if preview_universes() is empty - the one and only
+    condition under which this returns nothing, matching every other
+    switch's "unset = nothing" contract in this module."""
+    by_country = {}
+    for universe in preview_universes():
+        payload = scan_store.load_scan_raw(universe, allow_private=True)
+        rows = (payload or {}).get("rows") or []
+        for r in rows:
+            ticker = r.get("Ticker")
+            if not ticker:
+                continue
+            market = peer_context.market_for(ticker)
+            by_country.setdefault(market, []).append({
+                "ticker": ticker, "name": r.get("Company Name"),
+                "currency": fcf_valuation_engine.trading_currency_for(ticker, info=None),
+                "price": r.get("Price"), "intrinsic_value": r.get("Intrinsic Value"),
+                "mos_pct": r.get("MOS %"), "growth_used": r.get("Growth Used"),
+                "data_path": r.get("FCF Source"), "dividend_yield_pct": r.get("Dividend Yield %"),
+                "value_score": r.get("Long Score"), "universe": universe,
+            })
+    for market, rows in by_country.items():
+        rows.sort(key=lambda r: (r["value_score"] is None, -(r["value_score"] or 0)))
+    return by_country
 
 
 def _apply_backfill(merit_ordered, model=MODEL_TOP100):

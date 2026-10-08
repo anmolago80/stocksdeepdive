@@ -32089,6 +32089,106 @@ def _render_market_readiness_panel():
             )
 
 
+def _render_top200_preview_panel():
+    """PART 5 STEP 5.2 of instruction_health_fixes_chart_and_new_
+    markets.md (8 Oct 2026, Director-directed): owner-only, read-only
+    preview of what a chosen set of PRIVATE universes would look like
+    if folded into the Top 200 - gated entirely by TOP200_PREVIEW_
+    UNIVERSES (top100_engine.preview_universes()) being non-empty.
+    Unset/empty: this function renders nothing but a one-line note -
+    no panel content, no new data read, no change to anything else on
+    this page.
+
+    Reads top100_engine.preview_candidates_by_country() - itself a
+    direct scan_store.load_scan_raw(..., allow_private=True) read per
+    named universe, never through _eligible_scan_payloads()/
+    select_top100_pool(). This panel never calls either of those, and
+    never calls top100_store.save_pool() - it cannot write anything,
+    and the real public pool/Top 200/Top 20 Australia/every other
+    public page is unaffected by this panel's mere existence, exactly
+    like PART 3's Market readiness panel before it.
+
+    Coverage reuses top100_engine.coverage_for_rows()/
+    UNRATED_SHARE_WARNING_MIN_RESOLVED/_PCT on the PREVIEW rows only -
+    the real Top 200 coverage panel (_render_top200_coverage_panel())
+    is untouched.
+
+    One known, disclosed limitation (PART 4's own finding, not fixed
+    here): peer_context.market_for() doesn't yet recognise the five
+    European suffixes (.DE/.PA/.AS/.SW/.ST), so a DAX/CAC 40/AEX/SMI/
+    OMX Stockholm 30 candidate shows under "USA" below, not "Europe" -
+    see the PART 5 report.
+
+    No gate of its own beyond the TOP200_PREVIEW_UNIVERSES check above
+    - called only from inside page_admin_dashboard(), after that
+    function's own owner check, same as every other panel here."""
+    st.markdown("### Top 200 preview (private markets)")
+    _preview_names = top100_engine.preview_universes()
+    if not _preview_names:
+        st.caption(
+            "Owner-only, read-only. TOP200_PREVIEW_UNIVERSES is unset - nothing to preview. "
+            "Set it to a comma-separated list of universe names (e.g. \"FTSE 100, DAX\") to "
+            "see them here; the real Top 200/Top 20 Australia/every public page is unaffected "
+            "either way."
+        )
+        return
+    st.caption(
+        "Owner-only, read-only, from stored scan rows only - never a live fetch, never written "
+        "to the real pool. Previewing: " + ", ".join(_preview_names) + ". A candidate here with "
+        "no stored score shows as WAITING, exactly like a real pool member with no score yet - "
+        "this panel never scores anything itself."
+    )
+    _by_country = top100_engine.preview_candidates_by_country()
+    if not _by_country:
+        st.info("None of the named universes has a saved scan yet.")
+        return
+
+    _all_preview_rows = [r for rows in _by_country.values() for r in rows]
+    try:
+        _coverage = top100_engine.coverage_for_rows(_all_preview_rows, model=top100_engine.MODEL_TOP100)
+    except Exception as e:
+        _coverage = None
+        st.caption(f"Coverage computation failed: {e}")
+
+    if _coverage:
+        _by_market = _coverage["by_market"]
+        _total_rated = sum(b["rated"] for b in _by_market.values())
+        _total_unrated_model = sum(b["unrated_model"] for b in _by_market.values())
+        _total_unrated_failed = sum(b["unrated_failed"] for b in _by_market.values())
+        _total_waiting = sum(b["waiting"] for b in _by_market.values())
+        _pc1, _pc2, _pc3, _pc4 = st.columns(4)
+        with _pc1:
+            st.metric("Rated", _total_rated)
+        with _pc2:
+            st.metric("Unrated (model)", _total_unrated_model)
+        with _pc3:
+            st.metric("Unrated (failed)", _total_unrated_failed)
+        with _pc4:
+            st.metric("Waiting", _total_waiting)
+        for _market, _b in sorted(_by_market.items()):
+            _resolved = _b["rated"] + _b["unrated_model"] + _b["unrated_failed"]
+            if _resolved < top100_engine.UNRATED_SHARE_WARNING_MIN_RESOLVED:
+                continue
+            _unrated_share = 100.0 * (_b["unrated_model"] + _b["unrated_failed"]) / _resolved
+            if _unrated_share > top100_engine.UNRATED_SHARE_WARNING_PCT:
+                st.warning(
+                    f"{_market}: unrated share {_unrated_share:.1f}% "
+                    f"({_b['unrated_model'] + _b['unrated_failed']} of {_resolved} resolved)"
+                )
+
+    for _country, _rows in sorted(_by_country.items()):
+        with st.expander(f"Top 20 {_country} (preview, {len(_rows)} candidate(s))",
+                          key=f"admin_top200_preview_expander_{_country}"):
+            st.caption(
+                "Unsliced - no guaranteed count has been set for this market yet (the Director's "
+                "own call, same as TOP20_AU_TARGET was for Australia); every stored candidate is "
+                "shown, ranked by its own stored Long Score."
+            )
+            st.dataframe(pd.DataFrame(_rows[:20]), hide_index=True, width="stretch")
+            if len(_rows) > 20:
+                st.caption(f"{len(_rows) - 20} more not shown above.")
+
+
 def _render_portfolio_health_news_v2_comparison_panel():
     """PART B STEP B2 (Director, 6 Oct 2026, instruction_portfolio_
     scoring_and_currency_table.md): "Health score: news method
@@ -34413,6 +34513,13 @@ def page_admin_dashboard():
     # gate of its own" pattern as every panel above.
     st.markdown("---")
     _render_market_readiness_panel()
+
+    # --- TOP 200 PREVIEW (PART 5 STEP 5.2 of instruction_health_fixes_
+    # chart_and_new_markets.md, 8 Oct 2026, Director-directed) - see
+    # _render_top200_preview_panel()'s own docstring. Same "no gate of
+    # its own beyond its own switch" pattern as every panel above.
+    st.markdown("---")
+    _render_top200_preview_panel()
 
     # --- HEALTH SCORE: NEWS METHOD COMPARISON (PART B STEP B2 of
     # instruction_portfolio_scoring_and_currency_table.md, 6 Oct 2026,
