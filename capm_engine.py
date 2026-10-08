@@ -897,6 +897,46 @@ def get_ca_risk_free_rate_live():
     return fallback_rate, "default"
 
 
+# Proposal 5 of the Director's PART 3 numbered fix-proposal round (8 Oct
+# 2026, CANADA ONLY): "one Bank of Canada rate per scan run - fetched
+# once at the start of a run, reused for every ticker in it." A SECOND,
+# run-scoped cache layer in front of get_ca_risk_free_rate_live()'s own
+# @st.cache_data(ttl=86400) - that 24h cache already made repeat calls
+# within the same day cheap, but it's an INCIDENTAL guarantee (a side
+# effect of a cache built for a different reason, with a 24h window
+# that outlives any one run); this makes "one fetch per run" an
+# explicit, engineered one, independent of that cache's own TTL/
+# eviction behaviour. A plain module-level dict, not @st.cache_data -
+# this needs to be reset exactly once per run, not time-based.
+_CA_RISK_FREE_RUN_CACHE = {"value": None}
+
+
+def reset_ca_risk_free_run_cache():
+    """Clears the per-scan-run Bank of Canada rate cache - called once,
+    at the very top of nightly_scan.run_universe_scan(), so every CAD
+    ticker in a universe's own scan shares one (rate, source) answer,
+    and the NEXT run (the next universe, or tonight's other CAD
+    universe) fetches fresh rather than silently reusing a run from
+    hours ago. Does NOT touch get_ca_risk_free_rate_live()'s own 24h
+    cache - that cache still exists underneath and still helps across
+    separate runs within the same day."""
+    _CA_RISK_FREE_RUN_CACHE["value"] = None
+
+
+def get_ca_risk_free_rate_for_run():
+    """The one function every CAD ticker's own discount-rate resolution
+    (resolve_discount_rate_by_market_cap()'s CAD branch, below) calls -
+    never get_ca_risk_free_rate_live() directly. The FIRST call within
+    a run actually fetches (via get_ca_risk_free_rate_live(), with its
+    own retry/backoff - Proposal 3); every other ticker in the SAME run
+    gets the exact same (rate, source) tuple back with zero further
+    calls, deliberately - not merely because the underlying 24h cache
+    happens to still be warm."""
+    if _CA_RISK_FREE_RUN_CACHE["value"] is None:
+        _CA_RISK_FREE_RUN_CACHE["value"] = get_ca_risk_free_rate_live()
+    return _CA_RISK_FREE_RUN_CACHE["value"]
+
+
 # =====================================================================
 # Stage 1 Japan (3 Oct 2026, Director-directed): JGB 10-year yield from
 # the Ministry of Finance's own published CSV - the Director's own
@@ -1045,8 +1085,11 @@ def resolve_discount_rate_by_market_cap(info, currency):
         rf, rf_src = get_uk_risk_free_rate_live()
     elif ccy == "CAD":
         # Stage 1a (3 Oct 2026, Director-directed) - see get_ca_risk_
-        # free_rate_live()'s own docstring.
-        rf, rf_src = get_ca_risk_free_rate_live()
+        # free_rate_live()'s own docstring. Proposal 5 (8 Oct 2026):
+        # routed through the per-scan-run cache, never the live fetch
+        # directly, so every CAD ticker in one scan run shares one
+        # answer - see get_ca_risk_free_rate_for_run()'s own docstring.
+        rf, rf_src = get_ca_risk_free_rate_for_run()
     elif ccy == "JPY":
         # Stage 1 Japan (3 Oct 2026, Director-directed) - see get_jp_
         # risk_free_rate_live()'s own docstring.

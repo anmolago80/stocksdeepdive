@@ -1162,6 +1162,16 @@ def run_universe_scan(universe, max_tickers=None, log=print, run_night=None, can
     # real nightly cost is visible in Railway logs instead of guessed -
     # see the final log line below for the "N tickers in Xm Ys" format.
     _scan_start = time.time()
+    # Proposal 5 of the Director's PART 3 numbered fix-proposal round
+    # (8 Oct 2026, CANADA ONLY): "one Bank of Canada rate per scan run" -
+    # resets capm_engine's own per-run cache ONCE here, at the very top
+    # of this function, so every CAD ticker scanned in THIS call gets
+    # the exact same (rate, source) tuple, and the NEXT call (the next
+    # universe, or tonight's other CAD universe) fetches fresh rather
+    # than reusing a run from hours ago. A no-op for every non-CAD
+    # universe - nothing reads this cache unless resolve_discount_
+    # rate_by_market_cap()'s own CAD branch is actually reached.
+    capm_engine.reset_ca_risk_free_run_cache()
     country = "Australia" if universe in scanner_engine.AUSTRALIA_UNIVERSES else "USA"
     # Index containment regression guard (20 Sep 2026): "All Ordinaries"
     # is the top of the AU nesting chain (ASX 20 subset ... subset ASX 300
