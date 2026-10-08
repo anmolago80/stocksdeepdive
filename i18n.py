@@ -2363,6 +2363,16 @@ EN = {
     # does not exist for a market shows 'not available for this
     # market'."
     "scanner.not_available_for_market": "not available for this market",
+    # Proposal 5 of the Director's numbered fix-proposal round (8 Oct
+    # 2026): a visitor sees a PLAIN-WORDS reason, never the technical
+    # one stored for the owner. "price_unit" is the one recognised
+    # technical reason in production today (fundamentals_data._check_
+    # price_unit_guard()'s own stored string); "generic" is the catch-
+    # all for any future reason text this map hasn't learned yet - a
+    # visitor must never see raw internal wording verbatim, even for a
+    # reason type nobody has mapped here.
+    "scanner.na_reason_price_unit": "price units could not be confirmed",
+    "scanner.na_reason_generic": "this figure could not be confirmed",
     # Part 34.6 (11 Sep 2026): sector-word pill labels, translated (index/
     # universe PROPER names like "S&P 500"/"Dow Jones 30"/"Dividend
     # Aristocrats" stay in English everywhere on this site, matching the
@@ -6250,6 +6260,8 @@ ES = {
     "scanner.picker_band_europe": "EUROPA",
     "scanner.picker_private_marker": "privado",
     "scanner.not_available_for_market": "no disponible para este mercado",
+    "scanner.na_reason_price_unit": "no se pudo confirmar la unidad del precio",
+    "scanner.na_reason_generic": "no se pudo confirmar esta cifra",
     "scanner.sector_pill_financials": "Financieras",
     "scanner.sector_pill_materials_mining": "Materiales y Minería",
     "scanner.sector_pill_health_care": "Salud",

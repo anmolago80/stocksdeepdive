@@ -108,14 +108,21 @@ scan_store.save_scan("FTSE 100", [
 ], source_label="test fixture")
 
 
-def _run_table(switch_on):
+def _run_table(switch_on, as_owner=False):
     _env = 'os.environ["SCANNER_PRESENTATION_LIVE"] = "1"' if switch_on else \
            'os.environ.pop("SCANNER_PRESENTATION_LIVE", None)'
+    _owner_setup = (
+        'import ai_gate\nimport paywall_engine as pw\n'
+        'pw.current_user_email = lambda: ai_gate.owner_email()\n'
+    ) if as_owner else (
+        'import paywall_engine as pw\npw.current_user_email = lambda: "someone-else@example.com"\n'
+    )
     script = f"""
 import os, sys
 sys.path.insert(0, {REPO_ROOT!r})
 os.environ["RAILWAY_VOLUME_MOUNT_PATH"] = {TESTVOL!r}
 {_env}
+{_owner_setup}
 import app
 import scan_store
 _overnight = scan_store.load_scan("FTSE 100", allow_private=True)
@@ -131,16 +138,29 @@ _html_off = _run_table(switch_on=False)
 check("switch OFF: no reason text anywhere (byte-identical to before PART 4)",
       "SUSPECT" not in _html_off and "ratio=" not in _html_off)
 
-_html_on = _run_table(switch_on=True)
+# Proposal 5 of the Director's numbered fix-proposal round (8 Oct 2026):
+# "'n/a' reasons in plain words for visitors, keeping the technical
+# reason for the owner only" - a NON-owner now sees the plain/generic
+# translation, never the raw stored string (this fixture's own reason
+# text is deliberately NOT one _NA_REASON_PLAIN_I18N_KEY recognises, so
+# it must fall back to the GENERIC catch-all, never leak verbatim).
+_html_on_visitor = _run_table(switch_on=True, as_owner=False)
+check("switch ON, NON-owner: shows the plain generic catch-all phrase, never the raw "
+      "stored reason text",
+      "this figure could not be confirmed" in _html_on_visitor
+      and "SUSPECT" not in _html_on_visitor and "ratio=" not in _html_on_visitor)
+
+_html_on_owner = _run_table(switch_on=True, as_owner=True)
 # html.escape() correctly turns the reason's own "->" into "-&gt;" for HTML
 # safety - checking the escaped form, not the raw string, is the correct
 # proof that this renders safely AND carries the real reason text.
-check("switch ON: GUARDCO.L's withheld Intrinsic Value shows its own stored "
-      "price-unit-guard reason (HTML-escaped)",
-      "GBp-&gt;GBP ratio=0.01 SUSPECT" in _html_on)
+check("switch ON, OWNER: GUARDCO.L's withheld Intrinsic Value shows its own EXACT stored "
+      "price-unit-guard reason (HTML-escaped), unchanged by Proposal 5",
+      "GBp-&gt;GBP ratio=0.01 SUSPECT" in _html_on_owner)
 
 print("[na_with_reason_end_to_end] a price-unit-guard-flagged ticker's withheld value "
-      "shows its own stored reason, switch ON only; switch OFF is byte-identical OK")
+      "shows the OWNER its own stored reason; every other visitor sees a plain-words "
+      "translation instead; switch OFF is byte-identical for everyone OK")
 
 print()
 print(f"PASS={passed} FAIL={failed}")

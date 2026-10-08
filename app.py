@@ -12928,6 +12928,44 @@ def _scanner_presentation_visible():
     )
 
 
+# Proposal 5 of the Director's numbered fix-proposal round (8 Oct 2026,
+# instruction_health_fixes_chart_and_new_markets.md PART 3 STEP 3.2):
+# the one RECOGNISED technical reason text in production today
+# (fundamentals_data._check_price_unit_guard()'s own stored string,
+# passed through unchanged onto the row as "price_unit_suspect_
+# reason") maps to its own plain-words i18n key; anything else (a
+# future reason type this map hasn't learned yet) falls back to the
+# generic catch-all - a visitor must never see raw internal wording
+# verbatim, even for an unrecognised reason.
+_NA_REASON_PLAIN_I18N_KEY = {
+    "price unit could not be confirmed": "scanner.na_reason_price_unit",
+}
+_NA_REASON_GENERIC_I18N_KEY = "scanner.na_reason_generic"
+
+
+def _na_reason_for_viewer(technical_reason):
+    """PART 3 STEP 3.2's Proposal 5: "'n/a' reasons in plain words for
+    visitors ..., keeping the technical reason for the owner only."
+    None straight through for no reason at all. The real owner (ai_
+    gate.is_owner(), never just "the feature happens to be visible to
+    them") sees the exact stored technical string, unchanged - the
+    same value every caller already stored and logged. Everyone else
+    - including a non-owner visitor once SCANNER_PRESENTATION_LIVE is
+    live for everyone - sees the plain-words translation instead,
+    via _NA_REASON_PLAIN_I18N_KEY (falling back to the generic catch-
+    all for a reason string this map doesn't recognise), read in this
+    visitor's own language the same way _insider_cell()'s "not
+    available for this market" already does (st.session_state's own
+    "lang", not a function parameter - this table has none)."""
+    if not technical_reason:
+        return technical_reason
+    if ai_gate.is_owner(paywall_engine.current_user_email()):
+        return technical_reason
+    _lang = st.session_state.get("lang", "en")
+    _key = _NA_REASON_PLAIN_I18N_KEY.get(technical_reason, _NA_REASON_GENERIC_I18N_KEY)
+    return i18n.t(_key, _lang)
+
+
 def _results_delta_cell(delta, kind="pts", ticker=None):
     """The "Change" column of the results-day before/after card (Services
     batch Part 4) - same green/red-by-sign convention as _signed_cell,
@@ -13204,7 +13242,13 @@ def _render_overnight_scan_table(universe_label, overnight, show_market_pulse=Fa
                             # own text (PART 3 STEP 3.0's own Q7
                             # finding - the only reason text actually
                             # persisted anywhere for this withholding).
-                            na_reason=(_orow.get("price_unit_suspect_reason")
+                            # Proposal 5 (PART 3 STEP 3.2): _na_reason_
+                            # for_viewer() shows the owner the exact
+                            # stored technical string, and every other
+                            # visitor the plain-words translation -
+                            # never the raw text, once the switch is
+                            # live for everyone.
+                            na_reason=(_na_reason_for_viewer(_orow.get("price_unit_suspect_reason"))
                                        if _on_show_ccy and _orow.get("price_unit_suspect") else None))
                 # Outlier-guard fix (28 Sep 2026, owner-directed, TOYO
                 # false positive): DISPLAY-ONLY sanity marker when the DCF
