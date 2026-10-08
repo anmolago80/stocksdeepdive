@@ -16,7 +16,9 @@ Covers exactly the task's own listed tests:
   - a 120-day-old thesis-breaking item still gives a hit (thesis-
     breaking only reaches 0 weight at 180 days)
   - with no thesis-breaking event, the overall-score news cut never
-    exceeds NEWS_V2_CUT_CAP_DEFAULT (15) points
+    exceeds NEWS_V2_CUT_CAP_DEFAULT points (10, since PART 1 STEP 1.1
+    of instruction_health_fixes_chart_and_new_markets.md, 8 Oct 2026 -
+    this check reads the constant fresh rather than hardcoding it)
   - a fixture shaped like the owner's own CSL.AX report (fundamentals
     average ~50, many repeated material items across many days) no
     longer scores 0 under v2, side-by-side with v1 scoring it to
@@ -206,8 +208,12 @@ print("[b1_thesis_breaking_eventually_decays] a 200-day-old thesis-breaking item
 
 # ======================================================================
 # CHECK 6: with NO thesis-breaking event, the overall-score news cut
-# never exceeds NEWS_V2_CUT_CAP_DEFAULT (15) points, however bad the
-# News Risk Score gets.
+# never exceeds NEWS_V2_CUT_CAP_DEFAULT points, however bad the News
+# Risk Score gets. PART 1 STEP 1.1 (Director, 8 Oct 2026, instruction_
+# health_fixes_chart_and_new_markets.md): Andrew's own 8 Oct decision
+# moved this constant from 15 to 10 - read fresh from the module
+# constant below rather than hardcoded, so this check tracks whichever
+# value is actually live without needing its own update next time.
 # ======================================================================
 _TICKER6 = "MANYMATERIAL"
 _events6 = [
@@ -227,11 +233,12 @@ _components6 = phe.compute_health_components_v2(
     "STOCK", baseline={}, buy_date="2025-01-01", news=_news6,
 )
 _health6 = phe.compute_health_v2(_components6, news=_news6, is_etf=False)
-check("the overall-score news cut never exceeds the 15-point default cap "
-      f"(news_adjustment={_health6['news_adjustment']})",
-      _health6["news_adjustment"] >= -15.0 - 1e-9)
-print(f"[b1_cut_capped_at_15_without_thesis_breaking] news_risk={_news6['news_risk_score']}, "
-      f"news_adjustment={_health6['news_adjustment']} (capped at -15, no thesis-breaking event) OK")
+check(f"the overall-score news cut never exceeds the {pne.NEWS_V2_CUT_CAP_DEFAULT:.0f}-point "
+      f"default cap (news_adjustment={_health6['news_adjustment']})",
+      _health6["news_adjustment"] >= -pne.NEWS_V2_CUT_CAP_DEFAULT - 1e-9)
+print(f"[b1_cut_capped_at_default_without_thesis_breaking] news_risk={_news6['news_risk_score']}, "
+      f"news_adjustment={_health6['news_adjustment']} "
+      f"(capped at -{pne.NEWS_V2_CUT_CAP_DEFAULT:.0f}, no thesis-breaking event) OK")
 
 # ======================================================================
 # CHECK 7: a fixture shaped like the owner's own CSL.AX report -

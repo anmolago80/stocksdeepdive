@@ -107,15 +107,31 @@ _OWNER = "anmolago@hotmail.com"
 # value=...) - unconditionally "successful" for every ticker - was
 # tried first and crashed that ambient render (it expects a full real
 # analyze() dict, "long_score" included, for whatever ticker it is
-# given); this mirrors test_b3's own already-proven-safe pattern
-# instead.
+# given).
+#
+# Fix (8 Oct 2026 regression-sweep flake): mirroring test_b3's pattern
+# alone is NOT actually safe against this - it only avoids the crash
+# when the ambient featured-stock pick (date/day_key-based, outside
+# this test's control) happens to differ from every ticker registered
+# below. It is EXACTLY as likely to land on "AAPL" as any other large-
+# cap ticker, and when it does, the registered "success" branch used
+# to return a dict missing fields app.py's own _featured_card_html()
+# reads UNCONDITIONALLY (plain dd["key"], never dd.get("key")):
+# "ticker", "price", "currency", "long_score", "quality_score" - read
+# straight from that function's own source to get the exhaustive set,
+# rather than letting each one surface one crash at a time. Filler
+# values only - no check in this file asserts on any of them - so
+# this is safe no matter which ticker the ambient pick turns out to
+# be, not just safe by the luck of which ticker that happened to be on
+# a given run.
 _LIVE_RESULT_BY_TICKER = {}
 
 
 def _fake_analyze(ticker, *_args, **_kwargs):
     if ticker in _LIVE_RESULT_BY_TICKER:
         r = _LIVE_RESULT_BY_TICKER[ticker]
-        return {"error": None, "ticker": ticker, "mos": r.get("mos"), "currency": r.get("currency")}
+        return {"error": None, "ticker": ticker, "mos": r.get("mos"), "currency": r.get("currency"),
+                "price": 100.0, "long_score": 50.0, "quality_score": 50}
     return {"error": f"No price history found for '{ticker}'.", "error_kind": "not_found",
             "mos": None, "currency": None}
 

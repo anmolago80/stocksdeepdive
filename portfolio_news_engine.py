@@ -861,10 +861,21 @@ def analyze_holding_news(ticker, name=None, thesis_drivers=None, buy_date=None, 
 #      NEWS_IMPACT*100 could reach) - a single bad quarter can no longer
 #      walk a healthy company's Health score down to zero on its own.
 #
-# These four numbers (7/30/90/180 days, 15-point default cap) are the
-# Director's own PROPOSALS, named as constants here specifically so Andrew
-# can see and adjust them from the owner-only comparison panel (STEP B2)
-# before ever setting HEALTH_NEWS_V2_LIVE.
+# These four numbers (7/30/90/180 days, default cap) were the Director's
+# own PROPOSALS, named as constants here specifically so Andrew could see
+# and adjust them from the owner-only comparison panel (STEP B2) before
+# ever setting HEALTH_NEWS_V2_LIVE.
+#
+# PART 1 STEP 1.1 (Director, 8 Oct 2026, instruction_health_fixes_chart_
+# and_new_markets.md): Andrew's own decision, 8 Oct 2026, provisional,
+# confirmed after he reads CSL's event table - NEWS_V2_CUT_CAP_DEFAULT
+# moves from 15 to 10. Reason given: "ordinary bad news should be able to
+# move a holding about one label step, not decide it; only a thesis-
+# breaking story may push a holding into REVIEW / REDUCE on news alone,
+# and that limit stays 55" - NEWS_V2_CUT_CAP_THESIS_BREAKING is untouched.
+# The comparison panel keeps showing limit 15 beside the new default 10
+# (portfolio_health_engine.compute_health_v2()'s own `default_cut_limit`
+# parameter) so the choice can still be checked on real data.
 # =========================================================================== #
 
 NEWS_V2_GROUP_WINDOW_DAYS = 7
@@ -877,7 +888,7 @@ NEWS_V2_UNDATED_FRESH_DAYS = 30  # an undated item keeps weight 0.75 only if
                                  # first STORED (fetched_at) within this many
                                  # days; otherwise its weight is 0.0, never a
                                  # flat "forever-0.75" the way v1 treated it
-NEWS_V2_CUT_CAP_DEFAULT = 15.0
+NEWS_V2_CUT_CAP_DEFAULT = 10.0
 NEWS_V2_CUT_CAP_THESIS_BREAKING = 55.0
 
 # Whole-word/whole-phrase versions of _classify_severity()'s own two local

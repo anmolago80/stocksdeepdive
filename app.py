@@ -31539,22 +31539,51 @@ def _render_portfolio_health_news_v2_comparison_panel():
                 progress_v2 = {}
             health_old = portfolio_health_engine.compute_health(
                 components_old, news=news_old, is_etf=is_etf, progress_overall=progress.get("overall"))
-            health_new = portfolio_health_engine.compute_health_v2(
+            # PART 1 STEP 1.1 (Director, 8 Oct 2026, instruction_health_
+            # fixes_chart_and_new_markets.md): Andrew's 8 Oct decision -
+            # the v2 DEFAULT cut limit is now 10 (pne.NEWS_V2_CUT_CAP_
+            # DEFAULT itself, read fresh by the default_cut_limit=None
+            # call below) - "ordinary bad news should move a holding
+            # about one label step, not decide it." The limit-15 call
+            # beside it is the earlier proposal, kept ONLY so the choice
+            # can still be checked on real data - never a second,
+            # independently-computed Health score; same components_new/
+            # news_new both times, same function, only the one override
+            # argument differs.
+            health_new_10 = portfolio_health_engine.compute_health_v2(
                 components_new, news=news_new, is_etf=is_etf, progress_overall=progress_v2.get("overall"))
+            health_new_15 = portfolio_health_engine.compute_health_v2(
+                components_new, news=news_new, is_etf=is_etf, progress_overall=progress_v2.get("overall"),
+                default_cut_limit=15.0)
 
+            # Fix (Director, 8 Oct 2026 follow-up): this WAS called
+            # "Base score before news" - the Director's own prior
+            # report accepted that the 15-point limit math is correct
+            # but that this column's NAME misled - it is the unweighted
+            # average of the 8 non-Thesis parts, never the Health
+            # score's own pre-cut baseline (that number, the BASE_
+            # WEIGHTS-weighted nine-part blend including Thesis, is the
+            # new "Health before news cut (v2)" column below, read
+            # straight off compute_health_v2()'s own new return key -
+            # never re-derived here a second way).
             _fund_scores = [components_old[k]["score"] for k in portfolio_health_engine._FUND_KEYS
                             if components_old.get(k, {}).get("score") is not None]
-            _base_score = round(sum(_fund_scores) / len(_fund_scores), 1) if _fund_scores else None
+            _fundamentals_avg = round(sum(_fund_scores) / len(_fund_scores), 1) if _fund_scores else None
 
             _rows.append({
                 "Ticker": ticker,
-                "Base score before news": _base_score,
+                "Fundamentals average (8 parts)": _fundamentals_avg,
                 "News Risk old": (news_old or {}).get("news_risk_score"),
                 "News Risk new": (news_new or {}).get("news_risk_score"),
+                "Health before news cut (v2)": health_new_10.get("overall_before_news_cut"),
+                "Cut before limit": health_new_10.get("news_cut_before_limit"),
+                "Cut applied": health_new_10.get("news_cut_applied"),
+                "Health new (limit 10)": health_new_10.get("overall"),
+                "Action new (limit 10)": health_new_10.get("action"),
+                "Health new (limit 15)": health_new_15.get("overall"),
+                "Action new (limit 15)": health_new_15.get("action"),
                 "Health old": health_old.get("overall"),
-                "Health new": health_new.get("overall"),
                 "Action old": health_old.get("action"),
-                "Action new": health_new.get("action"),
                 "Items counted old": (news_old or {}).get("all_relevant"),
                 "Events counted new": (news_new or {}).get("event_groups"),
                 "Thesis-breaking live": "yes" if (news_new or {}).get("thesis_breaking_live") else "no",

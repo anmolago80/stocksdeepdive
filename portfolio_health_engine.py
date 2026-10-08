@@ -1006,7 +1006,8 @@ def compute_health_components_v2(snapshot, kind, baseline=None, buy_date=None, n
     return comps
 
 
-def compute_health_v2(components, news=None, is_etf=False, progress_overall=None):
+def compute_health_v2(components, news=None, is_etf=False, progress_overall=None,
+                       default_cut_limit=None):
     """v2 of compute_health() - identical ETF branch (reproduced
     verbatim; news plays no role in the ETF blend either way). The
     standard-company branch differs only in the news cut: capped at
@@ -1014,7 +1015,32 @@ def compute_health_v2(components, news=None, is_etf=False, progress_overall=None
     exists (news.get("thesis_breaking_live")), in which case the cap
     widens to NEWS_V2_CUT_CAP_THESIS_BREAKING - and thesis_breaking/
     thesis_intact are driven by that same decay-aware flag, never v1's
-    own "any thesis-breaking headline ever counted" check."""
+    own "any thesis-breaking headline ever counted" check.
+
+    default_cut_limit (PART 1 STEP 1.1, 8 Oct 2026, instruction_health_
+    fixes_chart_and_new_markets.md): overrides pne.NEWS_V2_CUT_CAP_
+    DEFAULT for THIS call only - lets the owner-only comparison panel
+    show the v2 default (10, Andrew's own 8 Oct decision) beside the
+    earlier proposal (15) side by side, from one function, rather than
+    a second copy of it. None (every call outside that panel) reads
+    pne.NEWS_V2_CUT_CAP_DEFAULT fresh, exactly as before this parameter
+    existed. The thesis-breaking cap (pne.NEWS_V2_CUT_CAP_THESIS_
+    BREAKING, 55) is NEVER overridden here, by design - Andrew's own
+    words: "only a thesis-breaking story may push a holding into
+    REVIEW / REDUCE on news alone, and that limit stays 55."
+
+    New return keys (STEP 1.1), all for the panel's own "the health
+    score before the cut" confusion the Director caught: "overall_
+    before_news_cut" (the weighted nine-part score, Thesis included,
+    BEFORE any news adjustment - never the same number as compute_
+    health_components_v2()'s own fundamentals-only average, which
+    excludes Thesis entirely); "news_cut_before_limit" (the uncapped
+    point reduction news_risk_score alone implies, (100 - news_risk) *
+    pne.NEWS_IMPACT - None when no cut was even evaluated, e.g. no
+    news or not material); "news_cut_applied" (the actual point
+    reduction subtracted, after the limit - 0.0 when news was
+    evaluated but wasn't material, None when there was no news at
+    all)."""
     if is_etf:
         parts = [p for p in (
             (components.get("Price Action") or {}).get("score"),
@@ -1034,21 +1060,32 @@ def compute_health_v2(components, news=None, is_etf=False, progress_overall=None
             "news": None,
             "is_etf": True,
             "score_label": "Price-based health (ETF) (v2 method)",
+            "overall_before_news_cut": overall,
+            "news_cut_before_limit": None,
+            "news_cut_applied": None,
         }
 
     weighted = [(BASE_WEIGHTS[k], components[k]["score"]) for k in COMPONENT_ORDER
                 if components.get(k, {}).get("score") is not None]
     overall = round(sum(w * s for w, s in weighted) / sum(w for w, _ in weighted), 1) if weighted else None
+    overall_before_news_cut = overall
 
     thesis_breaking = False
     news_adjustment = None
+    news_cut_before_limit = None
+    news_cut_applied = None
     if news is not None:
         thesis_breaking = bool(news.get("thesis_breaking_live"))
         news_risk = news.get("news_risk_score")
+        news_cut_applied = 0.0
         if news.get("material") and news_risk is not None and overall is not None:
-            cap = pne.NEWS_V2_CUT_CAP_THESIS_BREAKING if thesis_breaking else pne.NEWS_V2_CUT_CAP_DEFAULT
+            cap = (pne.NEWS_V2_CUT_CAP_THESIS_BREAKING if thesis_breaking
+                   else (default_cut_limit if default_cut_limit is not None
+                         else pne.NEWS_V2_CUT_CAP_DEFAULT))
             uncapped_cut = (100.0 - news_risk) * pne.NEWS_IMPACT
-            news_adjustment = -min(uncapped_cut, cap)
+            news_cut_before_limit = round(uncapped_cut, 1)
+            news_cut_applied = round(min(uncapped_cut, cap), 1)
+            news_adjustment = -news_cut_applied
             overall = round(max(0.0, min(100.0, overall + news_adjustment)), 1)
 
     action, action_tone = _recommend(overall, (components.get("Valuation") or {}).get("score"))
@@ -1068,6 +1105,9 @@ def compute_health_v2(components, news=None, is_etf=False, progress_overall=None
         "news": news,
         "is_etf": False,
         "score_label": "Investment Health Score (v2 method)",
+        "overall_before_news_cut": overall_before_news_cut,
+        "news_cut_before_limit": news_cut_before_limit,
+        "news_cut_applied": news_cut_applied,
     }
 
 

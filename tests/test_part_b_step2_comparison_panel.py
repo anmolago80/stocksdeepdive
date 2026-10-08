@@ -7,9 +7,12 @@ _render_portfolio_health_news_v2_comparison_panel().
 Covers:
   - the panel renders without raising, via AppTest, with a real owner
     holding and real stored news events on file.
-  - the comparison table's own columns are present (Ticker, Base score
-    before news, News Risk old/new, Health old/new, Action old/new,
-    Items counted old, Events counted new, Thesis-breaking live).
+  - the comparison table's own columns are present (Ticker, Fundamentals
+    average (8 parts), News Risk old/new, Health before news cut (v2),
+    Cut before limit, Cut applied, Health/Action new at limit 10 and at
+    limit 15, Health old, Action old, Items counted old, Events counted
+    new, Thesis-breaking live) - renamed/extended per PART 1 STEP 1.1 of
+    instruction_health_fixes_chart_and_new_markets.md (8 Oct 2026).
   - a per-ticker expander with the per-headline comparison table.
   - a CSV download button is offered.
   - the site-wide "every distinct ticker held" summary never shows an
@@ -143,8 +146,11 @@ app._render_portfolio_health_news_v2_comparison_panel()
             break
     check("the comparison table has every required column",
           _comparison_df is not None and
-          {"Ticker", "Base score before news", "News Risk old", "News Risk new",
-           "Health old", "Health new", "Action old", "Action new",
+          {"Ticker", "Fundamentals average (8 parts)", "News Risk old", "News Risk new",
+           "Health before news cut (v2)", "Cut before limit", "Cut applied",
+           "Health new (limit 10)", "Action new (limit 10)",
+           "Health new (limit 15)", "Action new (limit 15)",
+           "Health old", "Action old",
            "Items counted old", "Events counted new", "Thesis-breaking live"
            }.issubset(set(_comparison_df.columns)))
     check("TESTCO appears as a row in the comparison table",
