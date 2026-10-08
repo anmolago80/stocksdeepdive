@@ -23786,6 +23786,7 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
     _raw_health, _raw_news_risk, _raw_pl, _raw_progress = [], [], [], []
     _raw_moat, _moat_flagged, _raw_drift = [], [], []
     _thesis_intact_count = 0
+    _thesis_company_count = 0
     for h in _holdings:
         _a = _analyses[_hkey(h)]
         _health, _news, _progress = _a["health"], _a["news"], _a["progress"]
@@ -23804,8 +23805,14 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
 
         _return_pct = (_r["return_pct"] * 100) if _r["return_pct"] is not None else None
         _thesis_breaking = bool(_health.get("thesis_breaking"))
-        if not _thesis_breaking:
-            _thesis_intact_count += 1
+        # Thesis intact N/N counts companies only - a fund has no thesis to
+        # break or keep (same reasoning as the Thesis/Moat columns' own
+        # "N/A (ETF)" treatment above), so funds are excluded from both the
+        # numerator and the denominator here.
+        if not _is_etf:
+            _thesis_company_count += 1
+            if not _thesis_breaking:
+                _thesis_intact_count += 1
 
         _health_val = _health["overall"]
         _news_risk_val = (_news or {}).get("news_risk_score")
@@ -23903,7 +23910,7 @@ def _render_portfolio_overview_tab(email, active_portfolio, _holdings, _analyses
 
     _k1, _k2, _k3, _k4 = st.columns(4)
     _k1.metric("Holdings", len(_holdings))
-    _k2.metric("Thesis intact", f"{_thesis_intact_count}/{len(_holdings)}")
+    _k2.metric("Thesis intact", f"{_thesis_intact_count}/{_thesis_company_count}" if _thesis_company_count else "n/a")
     if _totals["profit_aud"] is not None and _totals["cost_aud"]:
         _k3.metric("Unrealised P/L (AUD)", f"A${_totals['profit_aud']:,.0f}",
                    f"{_totals['profit_aud'] / _totals['cost_aud'] * 100:+.1f}%")
