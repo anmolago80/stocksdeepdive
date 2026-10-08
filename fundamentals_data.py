@@ -544,7 +544,7 @@ _FRESH_PRICE_CACHE = {}
 _FRESH_PRICE_TTL_SECONDS = 90
 
 
-def _fetch_fresh_price(tk):
+def _fetch_fresh_price(tk, known_pence_quoted=None):
     """A live-ish current price via yfinance's fast_info, which is backed by
     a lighter/faster-updating Yahoo endpoint than .info's own quoteSummary
     - unlike the rest of this bundle, this is deliberately called on EVERY
@@ -563,36 +563,75 @@ def _fetch_fresh_price(tk):
 
     Cached for _FRESH_PRICE_TTL_SECONDS (see the constants above this
     function - audit fix 2.7) so a burst of concurrent requests for the
-    same ticker collapses to one live fast_info call."""
+    same ticker collapses to one live fast_info call.
+
+    Proposal 3 of the Director's PART 3 numbered fix-proposal round (8 Oct
+    2026): Yahoo's fast_info quote for a GBp/GBX-quoted LSE ticker is
+    returned in PENCE regardless of any normalisation already applied
+    elsewhere - this function used to return that raw pence figure
+    unconditionally, which _overlay_fresh_price() corrected for its own
+    callers (see that function's own docstring) but get_live_price()'s
+    callers never did, comparing a pounds-scale cached price against a
+    pence-scale "fresh" one 100x too large.
+
+    `known_pence_quoted`: True/False when the caller already knows this
+    ticker's pence-quoted status from its own bundle's authoritative
+    info["_price_quote_unit"] marker (from a full .info fetch) -
+    _overlay_fresh_price() passes this explicitly, never None, so its own
+    behaviour is unchanged by this fix. None (the default): this
+    function's own best-effort fallback for a caller with no bundle info
+    at all (get_live_price()) - checks fast_info's OWN "currency" field
+    (the only GBp/GBX signal available without a full .info fetch) via
+    _is_pence_quoted().
+
+    The RAW (un-divided) price and raw currency are what's cached, not
+    the normalised result - the /100 correction is re-applied AFTER
+    every cache lookup, cache hit or miss, using THIS call's own
+    known_pence_quoted/fast_info signal. This matters because two
+    different callers can share one cache entry within the same 90s
+    window: caching a pre-divided value would let whichever caller
+    fetched first (right or wrong about the unit) silently dictate the
+    unit for every other caller reading the same cached entry."""
     symbol = getattr(tk, "ticker", None)
     now = time.time()
-    if symbol:
-        cached = _FRESH_PRICE_CACHE.get(symbol)
-        if cached is not None:
-            price, fetched_at = cached
-            if now - fetched_at < _FRESH_PRICE_TTL_SECONDS:
-                return price
+    raw_price, raw_currency = None, None
+    cached = _FRESH_PRICE_CACHE.get(symbol) if symbol else None
+    if cached is not None and now - cached[2] < _FRESH_PRICE_TTL_SECONDS:
+        raw_price, raw_currency, _ = cached
+    else:
+        try:
+            fi = tk.fast_info
+            for key in ("last_price", "lastPrice", "regularMarketPrice"):
+                val = None
+                try:
+                    val = fi[key]
+                except Exception:
+                    pass
+                if val is None:
+                    val = getattr(fi, key, None)
+                if isinstance(val, (int, float)) and val > 0:
+                    raw_price = float(val)
+                    break
+            for key in ("currency", "Currency"):
+                val = None
+                try:
+                    val = fi[key]
+                except Exception:
+                    pass
+                if val is None:
+                    val = getattr(fi, key, None)
+                if val:
+                    raw_currency = val
+                    break
+        except Exception:
+            raw_price, raw_currency = None, None
+        if symbol:
+            _FRESH_PRICE_CACHE[symbol] = (raw_price, raw_currency, now)
 
-    price = None
-    try:
-        fi = tk.fast_info
-        for key in ("last_price", "lastPrice", "regularMarketPrice"):
-            val = None
-            try:
-                val = fi[key]
-            except Exception:
-                pass
-            if val is None:
-                val = getattr(fi, key, None)
-            if isinstance(val, (int, float)) and val > 0:
-                price = float(val)
-                break
-    except Exception:
-        price = None
-
-    if symbol:
-        _FRESH_PRICE_CACHE[symbol] = (price, now)
-    return price
+    if raw_price is None:
+        return None
+    is_pence = known_pence_quoted if known_pence_quoted is not None else _is_pence_quoted(raw_currency)
+    return raw_price / 100.0 if is_pence else raw_price
 
 
 def get_live_price(ticker):
@@ -611,7 +650,15 @@ def get_live_price(ticker):
     rebuild when they've diverged meaningfully - same intent as
     _fetch_fresh_price, reachable from a warm cache instead of only a cold
     one. Returns None on any failure, same fail-open contract as
-    _fetch_fresh_price itself."""
+    _fetch_fresh_price itself.
+
+    Proposal 3 (8 Oct 2026): has no bundle info of its own, so this
+    caller leaves known_pence_quoted at its default (None) -
+    _fetch_fresh_price()'s own best-effort fast_info-currency check is
+    the only GBp/GBX signal available here; see that function's own
+    docstring for why this is safe to rely on (never a double-division,
+    never a stale wrong-unit cache poisoning a more authoritative
+    caller)."""
     try:
         return _fetch_fresh_price(yf.Ticker(ticker))
     except Exception:
@@ -710,6 +757,16 @@ def _overlay_fresh_price(info, tk, income=None):
     on `info` itself rather than living only in the bundle's separate
     `meta` dict (this function never sees `meta`).
 
+    Proposal 3 (8 Oct 2026): the /100 division itself now happens INSIDE
+    _fetch_fresh_price(), passed this marker explicitly as `known_pence_
+    quoted` - this function no longer divides a second time itself (that
+    would have under-corrected a pence price to 1/100th of its already-
+    normalised value once _fetch_fresh_price() started normalising on
+    its own). Behaviour here is otherwise unchanged: this call always
+    supplies a definite True/False (never None), so it never falls back
+    to _fetch_fresh_price()'s own best-effort fast_info-currency guess -
+    the bundle's own confirmed marker always wins over that guess.
+
     `income` (optional, the bundle's annual income-statement DataFrame):
     passed through to _shares_outstanding_fallback() so a ticker whose
     .info blob is simply missing sharesOutstanding (confirmed live on
@@ -723,10 +780,8 @@ def _overlay_fresh_price(info, tk, income=None):
     marketCap only when no share count can be found anywhere, matching
     the original fail-safe intent. Mutates and returns info; a no-op
     (returns info unchanged) if no fresh price is available."""
-    fresh_price = _fetch_fresh_price(tk)
+    fresh_price = _fetch_fresh_price(tk, known_pence_quoted=(info.get("_price_quote_unit") == "GBp"))
     if fresh_price is not None:
-        if info.get("_price_quote_unit") == "GBp":
-            fresh_price = fresh_price / 100.0
         info["currentPrice"] = fresh_price
         shares = _shares_outstanding_fallback(info, income)
         if isinstance(shares, (int, float)) and shares > 0:
