@@ -377,6 +377,17 @@ def _render_mos_view_table(base, quote, ticker, lang, is_owner=False, ticker_cur
     with _head_col:
         if view is not None:
             st.markdown(f"#### {_t('mos_view_heading', lang, base=base, ticker=ticker)}")
+            # PART 2 STEP 2.2 (Director, 8 Oct 2026, instruction_health_
+            # fixes_chart_and_new_markets.md): "lists three results but
+            # not the figure they start from." `mos`/`ticker_currency`
+            # are already in hand here (the SAME values that put this
+            # branch on the `view is not None` path in the first place -
+            # one source of truth, never re-fetched). No dollar sign -
+            # a margin of safety is a percentage, formatted exactly like
+            # the Deep Dive note's own "+12.3%" style, never a currency
+            # amount.
+            st.caption(_t("mos_view_starting_figure", lang, ticker=ticker,
+                          currency=ticker_currency, mos=f"{mos:+.1f}%"))
         else:
             st.caption(_t(_plain_key, lang, **_plain_kwargs))
             if is_owner:

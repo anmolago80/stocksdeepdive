@@ -4230,6 +4230,18 @@ EN = {
     # your currency" table, shown only when arriving from a Deep Dive
     # currency-risk note with a ticker.
     "currency_risk.mos_view_heading": "Margin of safety, {base} view ({ticker})",
+    # PART 2 STEP 2.2 (Director, 8 Oct 2026, instruction_health_fixes_
+    # chart_and_new_markets.md): "lists three results but not the
+    # figure they start from. Add one line directly under the heading:
+    # the stock's own margin of safety in its trading currency, the
+    # same number the Deep Dive shows." `mos`/`currency` are the SAME
+    # values _render_mos_view_table() already has in hand (both from
+    # app.py's _resolve_ticker_mos_currency_live(), one source of
+    # truth) - never a second, independently-fetched figure.
+    "currency_risk.mos_view_starting_figure": (
+        "Starting point: {ticker}'s own margin of safety in its trading currency "
+        "({currency}) is {mos}."
+    ),
     "currency_risk.mos_view_col_scenario": "Scenario",
     "currency_risk.mos_view_col_effect": "Currency effect",
     "currency_risk.mos_view_col_margin": "Resulting margin of safety",
@@ -7790,6 +7802,10 @@ ES = {
     # currency_view.md (5 Oct 2026): the extra "margin of safety in
     # your currency" table.
     "currency_risk.mos_view_heading": "Margen de seguridad, vista en {base} ({ticker})",
+    "currency_risk.mos_view_starting_figure": (
+        "Punto de partida: el margen de seguridad de {ticker} en su moneda de cotización "
+        "({currency}) es {mos}."
+    ),
     "currency_risk.mos_view_col_scenario": "Escenario",
     "currency_risk.mos_view_col_effect": "Efecto de la moneda",
     "currency_risk.mos_view_col_margin": "Margen de seguridad resultante",
