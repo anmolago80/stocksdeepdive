@@ -2526,6 +2526,15 @@ EN = {
         "Every figure above is one this page already computes from your holdings - "
         "described calculations, not advice. Nothing new is fetched for this band."
     ),
+    # PART 1 STEP 1.5 (Director, 8 Oct 2026, instruction_health_fixes_
+    # chart_and_new_markets.md): "if the stored kind is STOCK and the
+    # data provider's quote type says fund, show one small line under
+    # the table naming those tickers." Never changes a holding's own
+    # stored kind - display only.
+    "portfolio.holdings.stock_as_fund_notice": (
+        "Stored as a stock; the data provider reports a fund. Edit the holding to "
+        "change its type. ({tickers})"
+    ),
     "portfolio.switcher.all": "\U0001F4E6 All portfolios",
     "portfolio.switcher.new_manage": "＋ New / manage",
     "portfolio.switcher.count_only": "{n} holding(s)",
@@ -6344,6 +6353,10 @@ ES = {
     "portfolio.pulse.caption": (
         "Cada cifra de arriba es un cálculo que esta página ya hace a partir de tus "
         "posiciones - cálculos descritos, no un consejo. Esta franja no consulta nada nuevo."
+    ),
+    "portfolio.holdings.stock_as_fund_notice": (
+        "Guardada como acción; el proveedor de datos la reporta como fondo. Edita la "
+        "posición para cambiar su tipo. ({tickers})"
     ),
     "portfolio.switcher.all": "\U0001F4E6 Todas las carteras",
     "portfolio.switcher.new_manage": "＋ Nueva / gestionar",

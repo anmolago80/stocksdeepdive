@@ -22997,6 +22997,35 @@ def _render_portfolio_holdings_tab(email, active_portfolio, _holdings, _analyses
         },
     )
 
+    # PART 1 STEP 1.5 (Director, 8 Oct 2026, instruction_health_fixes_
+    # chart_and_new_markets.md): GOLD.AX (the desktop-import seed, see
+    # portfolio_store.py's own _SEED_HOLDINGS) is stored kind STOCK even
+    # though it is a physical-gold ETF - scored by the stock formula
+    # with only Price Action and Thesis ever populated. Rather than
+    # silently guessing or auto-correcting it (explicitly ruled out -
+    # "Never change a holding's kind automatically"), this names any
+    # holding where the STORED kind says STOCK but the data provider's
+    # own quote type says fund - fetch_snapshot()'s "quote_type" field
+    # (nightly_scan/yfinance's own info.get("quoteType")), the SAME
+    # field the add-holding form's own auto-detect already reads
+    # (app.py's "kind": "ETF" if _snap.get("quote_type") == "ETF" else
+    # "STOCK" - matched here identically, so this notice fires for
+    # exactly the tickers that auto-detect would have called ETF today
+    # had they been added just now instead of years ago). Display
+    # only - never writes to the stored holding.
+    _stock_as_fund_tickers = []
+    for h in _holdings:
+        if (h.get("kind") or "STOCK").upper() != "STOCK":
+            continue
+        _h_snap = (_analyses.get(_hkey(h)) or {}).get("snapshot") or {}
+        if (_h_snap.get("quote_type") or "").upper() == "ETF":
+            _stock_as_fund_tickers.append(h["ticker"])
+    if _stock_as_fund_tickers:
+        st.caption(i18n.t(
+            "portfolio.holdings.stock_as_fund_notice", st.session_state.get("lang", "en"),
+            tickers=", ".join(_stock_as_fund_tickers),
+        ))
+
     _costed = [r for r in _rows if r["cost_aud"] is not None]
     if _costed:
         _by_cost = sorted(_costed, key=lambda r: r["cost_aud"])
