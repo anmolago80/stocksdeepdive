@@ -351,6 +351,36 @@ def _report_undocumented_same_name_duplicates(best_by_ticker, log=print):
                 f"by hand if genuine: {sorted(tickers)} all show company_name={name!r}")
 
 
+def is_top200_excluded(universe):
+    """Director's next round, item 3 (8 Oct 2026, instruction_health_
+    fixes_chart_and_new_markets.md): "a Top 200 exclusion separate
+    from privacy: a list of universes that may be public on the
+    Scanner but are kept out of the Top 200." A universe's PRIVACY
+    (scan_store.is_private_universe() - whether its rows are visible
+    to anyone but the owner at all) and its TOP 200 ELIGIBILITY
+    (this function) are two independent levers: making TSX 60 public
+    on the Scanner must never, by itself, let it start winning Top
+    200 slots - that needs its OWN, separate go-ahead.
+
+    TOP200_EXCLUDED_UNIVERSES env var (comma-separated), re-read on
+    every call (same convention as every other switch in this
+    module), overrides the code default entirely when SET (even to
+    an empty string - "nothing is excluded" is a valid explicit
+    choice). Unset: the code default is DERIVED, not a hand-
+    maintained name list - "every non-US, non-Australian universe"
+    (the Director's own words), i.e. not in scanner_engine.
+    AUSTRALIA_UNIVERSES or scanner_engine.USA_UNIVERSES. Deriving it
+    this way (rather than hand-listing FTSE 100/TSX 60/.../DAX/...)
+    means a BRAND NEW non-US/non-AU universe a future part adds is
+    automatically Top-200-excluded from day one, with no name to
+    remember to add anywhere."""
+    raw = os.environ.get("TOP200_EXCLUDED_UNIVERSES")
+    if raw is not None:
+        excluded = {u.strip() for u in raw.split(",") if u.strip()}
+        return universe in excluded
+    return universe not in scanner_engine.AUSTRALIA_UNIVERSES and universe not in scanner_engine.USA_UNIVERSES
+
+
 def _eligible_scan_payloads(log=print):
     """Top 100 selection freshness fix (30 Sep 2026, owner-directed):
     {universe: payload} for every saved universe file that's actually
@@ -367,6 +397,11 @@ def _eligible_scan_payloads(log=print):
         from whatever the parents' OWN generated_at already is - letting
         it win a ticker slot in its own right would only ever duplicate
         or shadow the parent's own freshness, never add real information.
+      - PRIVATE universes (scan_store.is_private_universe()).
+      - TOP-200-EXCLUDED universes (is_top200_excluded(), above) - a
+        SEPARATE lever from privacy, next round item 3: a universe can
+        be public on the Scanner and still never compete for a Top 200
+        slot.
       - ORPHANED universes - a saved file whose universe name isn't in
         today's live NIGHTLY_UNIVERSES cadence map at all (renamed or
         retired since that file was written) is no longer maintained by
@@ -394,6 +429,10 @@ def _eligible_scan_payloads(log=print):
             continue
         if scan_store.is_private_universe(universe):
             log(f"[top100] skipped private universe {universe!r}")
+            continue
+        if is_top200_excluded(universe):
+            log(f"[top100] skipped universe {universe!r} - excluded from the Top "
+                f"200 (TOP200_EXCLUDED_UNIVERSES; separate from its privacy status)")
             continue
         if universe not in cadence_map:
             log(f"[top100] selection: skipping {universe!r} - orphaned "

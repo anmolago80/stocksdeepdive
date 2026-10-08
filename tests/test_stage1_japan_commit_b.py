@@ -331,11 +331,22 @@ with open(_nikkei_path, "wb") as f:
     f.write(_saved_bytes)
 
 os.environ["PRIVATE_UNIVERSES"] = ""
+still_excluded = _run_pool()
+assert "9999.T" not in still_excluded, still_excluded
+print("[T4_still_excluded_by_top200] with PRIVATE_UNIVERSES='' alone, the Nikkei-only "
+      "ticker STILL does not appear - top100_engine.is_top200_excluded()'s own code "
+      "default (next round item 3, 8 Oct 2026: 'a Top 200 exclusion separate from "
+      "privacy') excludes every non-US/non-Australian universe regardless of its "
+      "privacy status; clearing PRIVATE_UNIVERSES is no longer sufficient on its own OK")
+
+os.environ["TOP200_EXCLUDED_UNIVERSES"] = ""
 revealed = _run_pool()
 assert "9999.T" in revealed, revealed
 os.environ.pop("PRIVATE_UNIVERSES", None)
-print("[T4_revealed] with PRIVATE_UNIVERSES='' the Nikkei-only ticker DOES appear in "
-      "select_top100_pool()'s output OK")
+os.environ.pop("TOP200_EXCLUDED_UNIVERSES", None)
+print("[T4_revealed] with BOTH PRIVATE_UNIVERSES='' AND TOP200_EXCLUDED_UNIVERSES='' "
+      "the Nikkei-only ticker DOES appear in select_top100_pool()'s output - two "
+      "independent levers, both must be cleared OK")
 
 
 # ======================================================================

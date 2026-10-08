@@ -240,12 +240,23 @@ with open(_ftse100_path, "wb") as f:
     f.write(_saved_ftse100_bytes)
 
 os.environ["PRIVATE_UNIVERSES"] = ""
+tickers_still_gated = _run_pool_and_cleanup()
+assert "PRIVONLY.L" not in tickers_still_gated, tickers_still_gated
+assert "SHARED.AX" in tickers_still_gated, tickers_still_gated
+print("[T4_still_excluded_by_top200] with PRIVATE_UNIVERSES='' alone, PRIVONLY.L "
+      "(FTSE 100) STILL does not appear - top100_engine.is_top200_excluded()'s own "
+      "code default (next round item 3, 8 Oct 2026) excludes every non-US/non-"
+      "Australian universe regardless of privacy; SHARED.AX (an ASX ticker, via "
+      "S&P 500) is unaffected and still appears OK")
+
+os.environ["TOP200_EXCLUDED_UNIVERSES"] = ""
 tickers_revealed = _run_pool_and_cleanup()
 assert "PRIVONLY.L" in tickers_revealed, tickers_revealed
 assert "SHARED.AX" in tickers_revealed, tickers_revealed
 os.environ.pop("PRIVATE_UNIVERSES", None)
-print("[T4_revealed] with PRIVATE_UNIVERSES='' PRIVONLY.L/SHARED.AX DO appear in "
-      "select_top100_pool()'s output OK")
+os.environ.pop("TOP200_EXCLUDED_UNIVERSES", None)
+print("[T4_revealed] with BOTH PRIVATE_UNIVERSES='' AND TOP200_EXCLUDED_UNIVERSES='' "
+      "PRIVONLY.L/SHARED.AX DO appear in select_top100_pool()'s output OK")
 
 
 # ======================================================================
