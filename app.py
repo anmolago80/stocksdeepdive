@@ -16979,6 +16979,30 @@ def _render_portfolio_dividends_received(_rows, _cmap):
         st.markdown(" &nbsp;|&nbsp; ".join(_chips))
 
 
+def _alternating_label_textpositions(values):
+    """Live bug fix (Director, 8 Oct 2026, separate small CHART commit):
+    "in 'Cheap vs healthy', each ticker label must sit on its own
+    bubble (today 'QRE.AX' is printed on IVV's bubble and 'VAP.AX' on
+    QRE's)." Every point in the fund strip shares the same x (placed by
+    Health Score alone), so a fixed "top center" text position for
+    every point makes a LOWER point's label land in the gap just above
+    it - exactly where a slightly HIGHER neighbour's own bubble sits,
+    whenever the two are close in Health score.
+
+    Returns one "top center"/"bottom center" string per value, aligned
+    with `values`' own order: sorted by value descending, alternating
+    direction by rank, so any two rank-adjacent points always point
+    their labels AWAY from each other (the higher one up, the lower one
+    down) rather than both defaulting the same way. Ties keep their
+    original relative order (stable sort) and still alternate, which
+    separates two identical-looking points too."""
+    order = sorted(range(len(values)), key=lambda i: values[i], reverse=True)
+    positions = [None] * len(values)
+    for rank, idx in enumerate(order):
+        positions[idx] = "top center" if rank % 2 == 0 else "bottom center"
+    return positions
+
+
 def _render_portfolio_cheap_healthy_map(_rows, _analyses, _cmap):
     """Section 2 of the My Portfolio additions: MOS% (x) vs Health score
     (y) scatter, bubble size = current weight, placed under the Overview
@@ -17072,7 +17096,6 @@ def _render_portfolio_cheap_healthy_map(_rows, _analyses, _cmap):
     if _company_pts:
         _sizes = [max(14.0, min(60.0, 14 + p["weight"] * 1.6)) for p in _company_pts]
         _xs = [p["mos"] for p in _company_pts]
-        _x_pad = max(10.0, (max(_xs) - min(_xs)) * 0.15) if len(_xs) > 1 else 10.0
         _scatter_kwargs = dict(row=1, col=1) if _has_funds else {}
         fig.add_trace(go.Scatter(
             x=_xs, y=[p["health"] for p in _company_pts],
@@ -17084,15 +17107,26 @@ def _render_portfolio_cheap_healthy_map(_rows, _analyses, _cmap):
         ), **_scatter_kwargs)
         fig.add_vline(x=0, line=dict(color="rgba(138,160,184,0.4)", dash="dash", width=1), **_scatter_kwargs)
         fig.add_hline(y=50, line=dict(color="rgba(138,160,184,0.4)", dash="dash", width=1), **_scatter_kwargs)
-        # Both corner labels sit in the PADDING bands (above 100 / below
-        # 0), never inside the real [0, 100] score range a bubble or its
-        # ticker-label text could ever occupy - see the function's own
-        # docstring, fix #3.
-        fig.add_annotation(x=max(_xs) + _x_pad * 0.3, y=_Y_PAD_HIGH - 2, text="cheap & healthy ↗",
-                            showarrow=False, font=dict(size=11, color="#5b6b80"), xanchor="right",
+        # Live bug fix (Director, 8 Oct 2026, separate small CHART
+        # commit): "corner labels must not overlap any bubble." These
+        # used to be anchored to DATA coordinates near the padding
+        # band's edge - safe for an ordinary-sized bubble, but a
+        # maximum-weight Health-0/100 bubble's own radius can still
+        # reach that far into the pad band (the pad band only
+        # guarantees the bubble itself isn't CLIPPED by the axis
+        # border, per fix #3 above - it says nothing about a label
+        # placed inside that same band). Anchored to the subplot's own
+        # DOMAIN corners instead ("x domain"/"y domain", [0, 1]
+        # regardless of data) - a fixed visual corner of the plotting
+        # box that no data point can ever reach, whatever its size or
+        # value.
+        fig.add_annotation(xref="x domain", yref="y domain", x=0.98, y=0.97,
+                            text="cheap & healthy ↗", showarrow=False,
+                            font=dict(size=11, color="#5b6b80"), xanchor="right", yanchor="top",
                             **_scatter_kwargs)
-        fig.add_annotation(x=min(_xs) - _x_pad * 0.3, y=_Y_PAD_LOW + 4, text="expensive & weak ↙",
-                            showarrow=False, font=dict(size=11, color="#5b6b80"), xanchor="left",
+        fig.add_annotation(xref="x domain", yref="y domain", x=0.02, y=0.03,
+                            text="expensive & weak ↙", showarrow=False,
+                            font=dict(size=11, color="#5b6b80"), xanchor="left", yanchor="bottom",
                             **_scatter_kwargs)
         if _has_funds:
             fig.update_xaxes(title="Margin of safety %", showgrid=True, gridcolor="rgba(138,160,184,0.12)",
@@ -17108,9 +17142,17 @@ def _render_portfolio_cheap_healthy_map(_rows, _analyses, _cmap):
 
     if _has_funds:
         _fund_sizes = [max(14.0, min(60.0, 14 + p["weight"] * 1.6)) for p in _fund_pts]
+        # Live bug fix (Director, 8 Oct 2026, separate small CHART
+        # commit): every fund shares the same x (placed by Health Score
+        # alone), so a single fixed "top center" position for every
+        # point let a lower point's label land on the bubble just above
+        # it. Alternating by health-rank (see _alternating_label_
+        # textpositions()'s own docstring) points each label away from
+        # its nearest neighbour instead.
         fig.add_trace(go.Scatter(
             x=[0] * len(_fund_pts), y=[p["health"] for p in _fund_pts],
-            mode="markers+text", text=[p["label"] for p in _fund_pts], textposition="top center",
+            mode="markers+text", text=[p["label"] for p in _fund_pts],
+            textposition=_alternating_label_textpositions([p["health"] for p in _fund_pts]),
             textfont=dict(size=11, color="#c7d2e0"),
             marker=dict(size=_fund_sizes, color=[p["color"] for p in _fund_pts], line=dict(width=1, color="#0b1220")),
             hovertemplate="%{text}<br>Health %{y:.0f}<extra></extra>",

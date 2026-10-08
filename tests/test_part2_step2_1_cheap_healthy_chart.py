@@ -166,9 +166,19 @@ check("the y-axis range also extends ABOVE 100 (symmetric padding, so a Health-1
       "holding is equally protected)",
       _yaxis2.get("range") is not None and _yaxis2["range"][1] > 100)
 _anns2 = _specs2[0]["layout"].get("annotations", [])
-check("both corner annotations sit OUTSIDE the real [0, 100] score band (in the padding "
-      "zone no real bubble can ever occupy), so they can never overlap a bubble",
-      len(_anns2) == 2 and all(a["y"] < 0 or a["y"] > 100 for a in _anns2))
+# CHART fix (Director, 8 Oct 2026, separate small commit): corner
+# annotations are now anchored to the subplot's own DOMAIN corners
+# ("x domain"/"y domain", fixed fractions in [0, 1], independent of
+# data) rather than a data coordinate near the padding band's edge -
+# a position no bubble can ever reach regardless of its size, which a
+# data-coordinate check (the band-edge heuristic this assertion used
+# before this fix) couldn't fully guarantee. See tests/test_chart_
+# label_overlap_fix.py for the fix's own dedicated coverage.
+check("both corner annotations are DOMAIN-anchored (xref/yref end in ' domain') - a fixed "
+      "visual corner of the plotting box no bubble, however large, can ever reach",
+      len(_anns2) == 2
+      and all(str(a.get("xref", "")).endswith("domain") for a in _anns2)
+      and all(str(a.get("yref", "")).endswith("domain") for a in _anns2))
 print(f"[step2_1_health_zero_not_clipped] y-axis range={_yaxis2.get('range')}, "
       "Health-0 holding plotted, annotations clear of the real score band OK")
 
