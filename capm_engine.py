@@ -784,6 +784,64 @@ _BOC_VALET_URL = (
 _BOC_SERIES_KEY = "BD.CDN.10YR.DQ.YLD"
 _BOC_TIMEOUT_SECONDS = 6
 
+# Proposal 3 of the Director's numbered fix-proposal round (8 Oct 2026,
+# CANADA ONLY - the USD/AUD risk-free functions, get_risk_free_rate(),
+# are untouched, and so are the UK/JP live fetches above/below): the
+# single try/except this fetch used to be had no retry at all, so one
+# transient blip (a dropped connection, a slow response past the 6s
+# timeout, a momentary non-200) pinned CAD at the fallback constant for
+# the rest of that day's 86400s cache TTL. 3 attempts, exponential
+# backoff (2s/4s) - same shape as nightly_scan.py's own yfinance retry
+# loop, but this is a plain HTTP GET to a government REST API, not a
+# yfinance call, so it does NOT reuse _yf_call_with_retry() (that
+# helper's own crumb-reset/rate-limit detection is yfinance-specific
+# and doesn't apply here).
+_BOC_RETRY_ATTEMPTS = 3
+_BOC_RETRY_BASE_DELAY_SECONDS = 2
+
+
+def _fetch_boc_valet_once():
+    """One single attempt at the Bank of Canada Valet fetch - no retry,
+    no caching, no logging (the caller does both). Returns (rate,
+    date, reason, transient):
+      - success: (rate, date_str, None, False).
+      - a network-level problem (non-200, connection error, timeout,
+        unparseable JSON) worth RETRYING: (None, None, reason, True).
+      - a clean 200 response with no usable/in-band data - a DATA
+        problem a retry can't fix (NOT transient): (None, None,
+        reason, False)."""
+    try:
+        resp = requests.get(_BOC_VALET_URL, timeout=_BOC_TIMEOUT_SECONDS)
+    except Exception as e:
+        return None, None, f"{type(e).__name__}: {e}", True
+    if resp.status_code != 200:
+        return None, None, f"HTTP {resp.status_code}", True
+    try:
+        data = resp.json()
+    except Exception as e:
+        return None, None, f"unparseable JSON ({type(e).__name__}: {e})", True
+    observations = data.get("observations") or []
+    # Find the observation with the LATEST "d" date that also carries a
+    # usable numeric value - date-based, never position-based (see this
+    # section's own module comment for why).
+    best_date, best_rate = None, None
+    for obs in observations:
+        date_str = obs.get("d")
+        cell = (obs.get(_BOC_SERIES_KEY) or {}).get("v")
+        try:
+            raw = float(cell)
+        except (TypeError, ValueError):
+            continue
+        if not date_str:
+            continue
+        if best_date is None or date_str > best_date:
+            best_date, best_rate = date_str, raw / 100.0
+    if best_rate is None:
+        return None, None, "no usable observation found", False
+    if not (UK_CA_RISK_FREE_MIN < best_rate < UK_CA_RISK_FREE_MAX):
+        return None, None, "no in-band value", False
+    return best_rate, best_date, None, False
+
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_ca_risk_free_rate_live():
@@ -791,52 +849,46 @@ def get_ca_risk_free_rate_live():
     Bank of Canada's own Valet API (series BD.CDN.10YR.DQ.YLD), cached
     once a day. Returns (rate, source) in the same shape as the UK/AU
     live-fetch functions above - "live" or "default" (the flagged
-    GBP_CAD_RISK_FREE_FALLBACK["CAD"] constant). Same UK_CA_RISK_FREE_
-    MIN/MAX sanity band and logging format as get_uk_risk_free_rate_
-    live() - see that function's own docstring.
+    GBP_CAD_RISK_FREE_FALLBACK["CAD"] constant).
 
     Stage 1a-fix (3 Oct 2026, Director-directed, F5): picks the
     chronologically MOST RECENT observation by its own "d" date field,
-    never by array position - see this section's own module comment for
-    why the old position-based pick (reversed()[0], i.e. observations[
-    -1]) was wrong."""
+    never by array position - see _fetch_boc_valet_once()'s own
+    docstring/this section's module comment for why the old position-
+    based pick (reversed()[0], i.e. observations[-1]) was wrong.
+
+    Proposal 3 (8 Oct 2026, Director-directed, CANADA ONLY): retries
+    _fetch_boc_valet_once() up to _BOC_RETRY_ATTEMPTS times with
+    exponential backoff, but ONLY on a transient (network-level)
+    failure - a clean response with no usable/in-band data stops
+    immediately, since a retry can't fix a data problem. "One rate per
+    scan run": this function's own @st.cache_data(ttl=86400) already
+    guarantees at most one real fetch (retries included) per day,
+    however many times a nightly scan calls it for however many CAD
+    tickers - this proposal doesn't need to add anything new for that
+    half, it was already true before this change; see tests/
+    test_fixproposal3_boc_retry_backoff.py's own cache-hit check for
+    the proof."""
     fallback_rate = GBP_CAD_RISK_FREE_FALLBACK.get("CAD", DEFAULT_RISK_FREE_FALLBACK)
     reason = None
-    try:
-        resp = requests.get(_BOC_VALET_URL, timeout=_BOC_TIMEOUT_SECONDS)
-        if resp.status_code != 200:
-            reason = f"HTTP {resp.status_code}"
-        else:
-            data = resp.json()
-            observations = data.get("observations") or []
-            # Find the observation with the LATEST "d" date that also
-            # carries a usable numeric value - date-based, never
-            # position-based (see this function's own docstring/this
-            # section's module comment for why).
-            best_date, best_rate = None, None
-            for obs in observations:
-                date_str = obs.get("d")
-                cell = (obs.get(_BOC_SERIES_KEY) or {}).get("v")
-                try:
-                    raw = float(cell)
-                except (TypeError, ValueError):
-                    continue
-                if not date_str:
-                    continue
-                if best_date is None or date_str > best_date:
-                    best_date, best_rate = date_str, raw / 100.0
-            if best_rate is None:
-                reason = "no usable observation found"
-            elif UK_CA_RISK_FREE_MIN < best_rate < UK_CA_RISK_FREE_MAX:
-                _growth_logger.warning(
-                    "[capm] CAD risk-free %.2f%% (BoC Valet %s, as at %s)",
-                    best_rate * 100, _BOC_SERIES_KEY, best_date,
-                )
-                return best_rate, "live"
-            else:
-                reason = "no in-band value"
-    except Exception as e:
-        reason = f"{type(e).__name__}: {e}"
+    for attempt in range(_BOC_RETRY_ATTEMPTS):
+        rate, date_str, reason, transient = _fetch_boc_valet_once()
+        if rate is not None:
+            _growth_logger.warning(
+                "[capm] CAD risk-free %.2f%% (BoC Valet %s, as at %s%s)",
+                rate * 100, _BOC_SERIES_KEY, date_str,
+                f", attempt {attempt + 1}/{_BOC_RETRY_ATTEMPTS}" if attempt else "",
+            )
+            return rate, "live"
+        if not transient:
+            break
+        if attempt < _BOC_RETRY_ATTEMPTS - 1:
+            delay = _BOC_RETRY_BASE_DELAY_SECONDS * (2 ** attempt)
+            _growth_logger.warning(
+                "[capm] CAD risk-free fetch failed (attempt %d/%d) - %s - retrying in %ds",
+                attempt + 1, _BOC_RETRY_ATTEMPTS, reason, delay,
+            )
+            time.sleep(delay)
 
     _growth_logger.warning(
         "[capm] CAD risk-free %.2f%% (fallback - %s)",
