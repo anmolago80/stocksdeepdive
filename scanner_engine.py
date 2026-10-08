@@ -3301,6 +3301,136 @@ DERIVED_UNIVERSES = frozenset([
 ])
 
 
+# -----------------------------------------------------------------
+# PART 6 STEP 6.1 (8 Oct 2026, Director-directed, instruction_health_
+# fixes_chart_and_new_markets.md): five European markets, added as
+# PRIVATE universes (see scan_store._DEFAULT_PRIVATE_UNIVERSES) - DAX
+# (Germany), CAC 40 (France), AEX (Netherlands), SMI (Switzerland),
+# OMX Stockholm 30 (Sweden). Every ticker through symbol_mapping.
+# to_yahoo_symbol(raw, <exchange>) (PART 6 STEP 6.1's own new exchange
+# branches there).
+#
+# "Never build a constituent list from memory": same stricter rule as
+# Nikkei 225/TOPIX 500 above - NO static fallback list for any of the
+# five. A failed live fetch/parse simply means that universe doesn't
+# scan tonight; the "last known-good list on disk" persistence
+# (_save_last_good_universe_list()/_load_last_good_universe_list(),
+# above) is still used, same as FTSE/TSX/Nikkei/TOPIX.
+#
+# No fund-holdings-CSV cross-check source is wired for any of these
+# five (unlike FTSE 100/TSX 60's own iShares ISF/XIU cross-check) -
+# this session has no live network access to confirm a specific UCITS
+# ETF's own holdings-file URL for DAX/CAC 40/AEX/SMI/OMXS30, and a
+# guessed URL is worse than none (same reasoning Nikkei 225/TOPIX 500
+# already apply: no cross-check source rather than an invented one).
+# Wikipedia is each one's sole live source for now - PART 3 STEP 3.2's
+# own numbered-proposal pattern is how a genuine, named ETF cross-check
+# source gets added later, once one is confirmed rather than guessed.
+#
+# ALL FIVE PAGE-SHAPE ASSUMPTIONS BELOW ARE UNVERIFIED - this sandbox
+# has no outbound network access to any of these five Wikipedia pages,
+# so none of this has been exercised against a real response, same
+# disclosure as every other live feed Stage 1b/PART 6 adds. The first
+# real Railway log line after deploy is what actually confirms it;
+# STEP 6.1's own "stop and report rather than add a partial list" rule
+# is enforced by _parse_table()'s own min_rows/max_rows bounds below,
+# sized to each index's own published constituent count.
+# -----------------------------------------------------------------
+
+DAX_WIKI_URL = "https://en.wikipedia.org/wiki/DAX"
+CAC40_WIKI_URL = "https://en.wikipedia.org/wiki/CAC_40"
+AEX_WIKI_URL = "https://en.wikipedia.org/wiki/AEX_index"
+SMI_WIKI_URL = "https://en.wikipedia.org/wiki/Swiss_Market_Index"
+OMXS30_WIKI_URL = "https://en.wikipedia.org/wiki/OMX_Stockholm_30"
+
+
+def _normalize_xetra_ticker(ticker):
+    """symbol_mapping.to_yahoo_symbol() - PART 6 STEP 6.1's own new
+    "XETRA" branch - never a second, duplicated transform here."""
+    return symbol_mapping.to_yahoo_symbol(str(ticker).strip(), "XETRA")
+
+
+def _normalize_euronext_paris_ticker(ticker):
+    return symbol_mapping.to_yahoo_symbol(str(ticker).strip(), "EURONEXT_PARIS")
+
+
+def _normalize_euronext_amsterdam_ticker(ticker):
+    return symbol_mapping.to_yahoo_symbol(str(ticker).strip(), "EURONEXT_AMSTERDAM")
+
+
+def _normalize_six_ticker(ticker):
+    return symbol_mapping.to_yahoo_symbol(str(ticker).strip(), "SIX")
+
+
+def _normalize_nasdaq_stockholm_ticker(ticker):
+    return symbol_mapping.to_yahoo_symbol(str(ticker).strip(), "NASDAQ_STOCKHOLM")
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_dax():
+    """DAX (Germany, 40 constituents since the 2021 expansion) -
+    Wikipedia's own constituents table. UNVERIFIED against a real
+    response - see this section's own module comment."""
+    try:
+        html = _get(DAX_WIKI_URL)
+    except Exception:
+        return None
+    return _parse_table(html, ["ticker", "symbol"], ["sector", "industry", "prime standard sector"],
+                        _normalize_xetra_ticker, min_rows=35, max_rows=45)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_cac40():
+    """CAC 40 (France, 40 constituents) - Wikipedia's own constituents
+    table. UNVERIFIED against a real response - see this section's own
+    module comment."""
+    try:
+        html = _get(CAC40_WIKI_URL)
+    except Exception:
+        return None
+    return _parse_table(html, ["ticker", "symbol"], ["sector", "industry", "icb sector"],
+                        _normalize_euronext_paris_ticker, min_rows=35, max_rows=45)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_aex():
+    """AEX (Netherlands, 25 constituents) - Wikipedia's own
+    constituents table. UNVERIFIED against a real response - see this
+    section's own module comment."""
+    try:
+        html = _get(AEX_WIKI_URL)
+    except Exception:
+        return None
+    return _parse_table(html, ["ticker", "symbol"], ["sector", "industry"],
+                        _normalize_euronext_amsterdam_ticker, min_rows=20, max_rows=30)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_smi():
+    """SMI (Switzerland, 20 constituents) - Wikipedia's own
+    constituents table. UNVERIFIED against a real response - see this
+    section's own module comment."""
+    try:
+        html = _get(SMI_WIKI_URL)
+    except Exception:
+        return None
+    return _parse_table(html, ["ticker", "symbol"], ["sector", "industry"],
+                        _normalize_six_ticker, min_rows=18, max_rows=22)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_omxs30():
+    """OMX Stockholm 30 (Sweden, 30 constituents) - Wikipedia's own
+    constituents table. UNVERIFIED against a real response - see this
+    section's own module comment."""
+    try:
+        html = _get(OMXS30_WIKI_URL)
+    except Exception:
+        return None
+    return _parse_table(html, ["ticker", "symbol"], ["sector", "industry"],
+                        _normalize_nasdaq_stockholm_ticker, min_rows=28, max_rows=32)
+
+
 def get_universes(country):
     if country == "Australia":
         return AUSTRALIA_UNIVERSES
@@ -3610,6 +3740,29 @@ def get_universe_pool(country, universe):
         # "[universe] TOPIX 500: constituent list unavailable (...) -
         # not scanning" line - never built from memory, no fallback list.
         return None, "JPX TOPIX constituents file unavailable - not scanning"
+
+    # PART 6 STEP 6.1: the five European markets, same "live fetch ->
+    # last-known-good disk fallback -> not scanning" pattern as Nikkei
+    # 225/TOPIX 500 above - no fund-file cross-check source, no static
+    # in-code fallback list, for the same reasons given in this
+    # section's own module comment just above fetch_dax().
+    _EUROPEAN_UNIVERSE_FETCHERS = {
+        "DAX": (fetch_dax, "dax", "Wikipedia DAX (live)"),
+        "CAC 40": (fetch_cac40, "cac_40", "Wikipedia CAC 40 (live)"),
+        "AEX": (fetch_aex, "aex", "Wikipedia AEX (live)"),
+        "SMI": (fetch_smi, "smi", "Wikipedia Swiss Market Index (live)"),
+        "OMX Stockholm 30": (fetch_omxs30, "omx_stockholm_30", "Wikipedia OMX Stockholm 30 (live)"),
+    }
+    if universe in _EUROPEAN_UNIVERSE_FETCHERS:
+        fetch_fn, slug, label = _EUROPEAN_UNIVERSE_FETCHERS[universe]
+        df = fetch_fn()
+        if df is not None:
+            _save_last_good_universe_list(slug, list(df["Ticker"]), label)
+            return df, label
+        last_good = _load_last_good_universe_list(slug)
+        if last_good is not None:
+            return _last_good_universe_df_and_label(universe, last_good)
+        return None, f"Wikipedia {universe} scrape unavailable - not scanning"
 
     return None, "Unknown universe"
 

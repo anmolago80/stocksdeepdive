@@ -51,11 +51,30 @@ def _tsx_stem(raw):
     return raw.replace(".", "-")
 
 
+# PART 6 STEP 6.1 (8 Oct 2026, Director-directed, instruction_health_
+# fixes_chart_and_new_markets.md): the five European markets' own
+# Yahoo suffixes - standard, well-known Yahoo Finance exchange codes,
+# never a memorised ticker LIST (that still only ever comes from a
+# live fetch - see scanner_engine.py's own fetch_dax()/fetch_cac40()/
+# fetch_aex()/fetch_smi()/fetch_omxs30()). Reuses the SAME generic
+# "strip a trailing dot, hyphenate any remaining inner dot" stem rule
+# _lse_stem() already applies for LSE - a safe, idempotent default for
+# any exchange's own share-class dot notation, unverified against real
+# constituent data for these five specifically until the first live
+# scan (same disclosure as every other unverified live feed Stage 1b/
+# PART 6 adds).
+_EUROPEAN_EXCHANGE_SUFFIX = {
+    "XETRA": ".DE", "EURONEXT_PARIS": ".PA", "EURONEXT_AMSTERDAM": ".AS",
+    "SIX": ".SW", "NASDAQ_STOCKHOLM": ".ST",
+}
+
+
 def to_yahoo_symbol(raw, exchange, overrides=None):
     """Pure function, no network: `raw` (a symbol as scraped off a
     Wikipedia constituent table) -> the Yahoo Finance symbol for it,
-    given `exchange` ("LSE", "TSX" or "TSE" - any other value raises
-    ValueError, since there's no rule to apply).
+    given `exchange` ("LSE", "TSX", "TSE", "XETRA", "EURONEXT_PARIS",
+    "EURONEXT_AMSTERDAM", "SIX" or "NASDAQ_STOCKHOLM" - any other value
+    raises ValueError, since there's no rule to apply).
 
     Order of checks:
       1. `overrides` (defaults to SYMBOL_OVERRIDES) - checked first,
@@ -63,8 +82,9 @@ def to_yahoo_symbol(raw, exchange, overrides=None):
          whitespace strip). A hit here is returned verbatim, before
          any transform or idempotency check runs.
       2. Idempotent: if `raw` already ends with the exchange's own
-         Yahoo suffix (".L" for LSE, ".TO" for TSX, ".T" for TSE -
-         case-insensitive check, original casing returned), it's
+         Yahoo suffix (".L" for LSE, ".TO" for TSX, ".T" for TSE, ".DE"/
+         ".PA"/".AS"/".SW"/".ST" for the five PART 6 European exchanges
+         - case-insensitive check, original casing returned), it's
          returned UNCHANGED - calling this on an already-Yahoo-shaped
          symbol is always a safe no-op, never a double suffix.
       3. LSE: strip a trailing dot, hyphenate any remaining inner dot,
@@ -75,6 +95,11 @@ def to_yahoo_symbol(raw, exchange, overrides=None):
          suffix append, no stem transform - a Tokyo Stock Exchange code
          (numeric, "7203", or alphanumeric, "130A") has no dot to strip
          or hyphenate, unlike an LSE/TSX symbol.
+      6. XETRA/EURONEXT_PARIS/EURONEXT_AMSTERDAM/SIX/NASDAQ_STOCKHOLM
+         (PART 6 STEP 6.1): same stem transform as LSE (strip a
+         trailing dot, hyphenate any remaining inner dot - covers a
+         Swedish A/B share class like "VOLV A" -> "VOLV-A.ST"), then
+         the exchange's own suffix from _EUROPEAN_EXCHANGE_SUFFIX.
 
     Examples: to_yahoo_symbol("RR.", "LSE") == "RR.L";
     to_yahoo_symbol("BT.A", "LSE") == "BT-A.L";
@@ -84,7 +109,12 @@ def to_yahoo_symbol(raw, exchange, overrides=None):
     to_yahoo_symbol("RR.L", "LSE") == "RR.L" (idempotent - unchanged);
     to_yahoo_symbol("7203", "TSE") == "7203.T";
     to_yahoo_symbol("130A", "TSE") == "130A.T";
-    to_yahoo_symbol("7203.T", "TSE") == "7203.T" (idempotent - unchanged)."""
+    to_yahoo_symbol("7203.T", "TSE") == "7203.T" (idempotent - unchanged);
+    to_yahoo_symbol("SAP", "XETRA") == "SAP.DE";
+    to_yahoo_symbol("MC", "EURONEXT_PARIS") == "MC.PA";
+    to_yahoo_symbol("ASML", "EURONEXT_AMSTERDAM") == "ASML.AS";
+    to_yahoo_symbol("NESN", "SIX") == "NESN.SW";
+    to_yahoo_symbol("VOLV.B", "NASDAQ_STOCKHOLM") == "VOLV-B.ST"."""
     overrides = overrides if overrides is not None else SYMBOL_OVERRIDES
     raw = (raw or "").strip()
     if raw in overrides:
@@ -102,9 +132,15 @@ def to_yahoo_symbol(raw, exchange, overrides=None):
         if raw.upper().endswith(".T"):
             return raw
         return f"{raw}.T"
+    if exchange in _EUROPEAN_EXCHANGE_SUFFIX:
+        suffix = _EUROPEAN_EXCHANGE_SUFFIX[exchange]
+        if raw.upper().endswith(suffix):
+            return raw
+        return f"{_lse_stem(raw)}{suffix}"
 
     raise ValueError(
-        f"to_yahoo_symbol: unknown exchange {exchange!r} - expected 'LSE', 'TSX' or 'TSE'"
+        f"to_yahoo_symbol: unknown exchange {exchange!r} - expected 'LSE', 'TSX', 'TSE', "
+        "'XETRA', 'EURONEXT_PARIS', 'EURONEXT_AMSTERDAM', 'SIX' or 'NASDAQ_STOCKHOLM'"
     )
 
 

@@ -31,7 +31,13 @@ from datetime import datetime, timezone
 # Stage 1 Japan, Commit B (3 Oct 2026, Director-directed): Nikkei 225/
 # TOPIX 500 added to the code default - every Stage 1b privacy rule
 # applies to them unchanged (see is_private_universe()'s own docstring).
-_DEFAULT_PRIVATE_UNIVERSES = "FTSE 100, FTSE 250, TSX 60, TSX Composite, Nikkei 225, TOPIX 500"
+# PART 6 STEP 6.1 (8 Oct 2026, Director-directed, instruction_health_
+# fixes_chart_and_new_markets.md): DAX/CAC 40/AEX/SMI/OMX Stockholm 30
+# added, private from the start, same rule.
+_DEFAULT_PRIVATE_UNIVERSES = (
+    "FTSE 100, FTSE 250, TSX 60, TSX Composite, Nikkei 225, TOPIX 500, "
+    "DAX, CAC 40, AEX, SMI, OMX Stockholm 30"
+)
 
 
 def _private_universe_set():

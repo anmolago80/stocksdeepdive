@@ -337,7 +337,14 @@ def _log_interpolate(anchors, market_cap_usd):
 # Yahoo .info blob; this is only the fallback for when that's missing).
 # Still no overlap risk: no ticker on this site ends in more than one
 # of ".AX"/".L"/".TO"/".T".
-_TICKER_SUFFIX_CURRENCY = {".AX": "AUD", ".L": "GBP", ".TO": "CAD", ".T": "JPY"}
+# PART 6 STEP 6.1 (8 Oct 2026, Director-directed, instruction_health_
+# fixes_chart_and_new_markets.md): ".DE"/".PA"/".AS" (EUR), ".SW"
+# (CHF), ".ST" (SEK) added for the five European markets - same last-
+# resort-only status; no overlap with any existing suffix.
+_TICKER_SUFFIX_CURRENCY = {
+    ".AX": "AUD", ".L": "GBP", ".TO": "CAD", ".T": "JPY",
+    ".DE": "EUR", ".PA": "EUR", ".AS": "EUR", ".SW": "CHF", ".ST": "SEK",
+}
 
 
 def trading_currency_for(ticker, info=None):
