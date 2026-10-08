@@ -1019,15 +1019,25 @@ def _news_v2_weight(event_date, fetched_at, severity, now):
     return max(0.0, 1.0 - (age - NEWS_V2_DECAY_FULL_DAYS) / span)
 
 
-def _group_events_v2(events):
-    """Groups RELEVANT, scoring-eligible events (severity has a
-    non-zero SEVERITY_HIT) by severity, then within each severity by
-    date proximity: sorted ascending, a new item joins the current
-    group if it falls within NEWS_V2_GROUP_WINDOW_DAYS of that GROUP's
-    own first item (never a re-based sliding window - a long run of
-    headlines spaced just under 7 days apart still eventually starts a
-    new group once the gap from the group's FIRST item exceeds 7, so
-    one continuously-covered event cannot stay one group forever).
+def _group_events_v2_blocks(events):
+    """FIXED 7-day BLOCKS grouping - groups RELEVANT, scoring-eligible
+    events (severity has a non-zero SEVERITY_HIT) by severity, then
+    within each severity by date proximity: sorted ascending, a new
+    item joins the current group if it falls within NEWS_V2_GROUP_
+    WINDOW_DAYS of that GROUP's own FIRST item (never a re-based
+    sliding window - a long run of headlines spaced just under 7 days
+    apart still eventually starts a new group once the gap from the
+    group's FIRST item exceeds 7, so one continuously-covered event
+    does NOT stay one group forever under this method).
+
+    PART 1 STEP 1.4 (Director, 8 Oct 2026, instruction_health_fixes_
+    chart_and_new_markets.md): this was v2's ONLY grouping method
+    (PART B STEP B1) until this step, when _group_events_v2_rolling()
+    below became the real default. Kept here, unchanged, as a pure
+    function the owner-only comparison panel calls PURELY for side-
+    by-side comparison ("Events (7-day blocks)") - analyze_holding_
+    news_v2()/compare_events_v1_v2() no longer call this by default.
+
     Undated items sort last (datetime.max) and group together with
     each other, never with a dated item. Returns [[event, ...], ...] -
     one list per group, never flattened - callers take each group's own
@@ -1054,8 +1064,65 @@ def _group_events_v2(events):
     return groups
 
 
+def _group_events_v2_rolling(events):
+    """ROLLING grouping - PART 1 STEP 1.4 (Director, 8 Oct 2026,
+    instruction_health_fixes_chart_and_new_markets.md): the v2
+    DEFAULT, replacing _group_events_v2_blocks() above. Reason given:
+    "eleven events in ninety days for CSL is about one a week. With
+    fixed 7-day blocks, a company that is in the news every week gets
+    a new 'event' every week." Same per-severity partition and same
+    NEWS_V2_GROUP_WINDOW_DAYS constant as the blocks method - the only
+    difference is which date in the open group an item is measured
+    against: here, an item joins the open group of its severity if it
+    falls within NEWS_V2_GROUP_WINDOW_DAYS of that group's own LATEST
+    item (not its first), so the group's own "clock" resets every time
+    a new item extends it. A story that keeps running - fresh coverage
+    at least once a week - is therefore ONE event indefinitely, never
+    forced into a new group just because enough wall-clock time has
+    passed since the story FIRST broke.
+
+    Thesis-breaking items keep their own groups, so a new serious
+    story is never merged into an older lesser one: this holds exactly
+    as it does under blocks grouping, and for the same reason - the
+    per-severity partition below (`by_severity`) is unchanged between
+    the two methods, so a thesis-breaking item only ever joins another
+    thesis-breaking item's group, rolling or not. Rolling adds no
+    separate special case for this - it falls out of the same
+    partition every grouping method here has always used.
+
+    Undated items sort last (datetime.max) and group together with
+    each other, never with a dated item - identical to blocks (every
+    undated item is exactly NEWS_V2_GROUP_WINDOW_DAYS*0 = 0 days from
+    the group's own latest undated item, so they still all merge into
+    one group together)."""
+    by_severity = {}
+    for e in events:
+        if not e["relevant"] or SEVERITY_HIT.get(e["severity"], 0.0) == 0.0:
+            continue
+        by_severity.setdefault(e["severity"], []).append(e)
+    groups = []
+    for items in by_severity.values():
+        items_sorted = sorted(items, key=lambda e: e["date"] or _dt.datetime.max)
+        current, group_latest = [], None
+        for e in items_sorted:
+            e_date = e["date"] or _dt.datetime.max
+            if current and (e_date - group_latest).days <= NEWS_V2_GROUP_WINDOW_DAYS:
+                current.append(e)
+                group_latest = e_date
+            else:
+                if current:
+                    groups.append(current)
+                current, group_latest = [e], e_date
+        if current:
+            groups.append(current)
+    return groups
+
+
+_GROUPING_FUNCS_V2 = {"rolling": _group_events_v2_rolling, "blocks": _group_events_v2_blocks}
+
+
 def analyze_holding_news_v2(ticker, name=None, thesis_drivers=None, buy_date=None,
-                             now=None, is_etf=False):
+                             now=None, is_etf=False, grouping="rolling"):
     """v2 of analyze_holding_news() - SAME return shape (news_risk_score,
     material, timeline, today, counts, all_relevant, scanned,
     source_counts, explain), plus one new key, "thesis_breaking_live"
@@ -1064,6 +1131,16 @@ def analyze_holding_news_v2(ticker, name=None, thesis_drivers=None, buy_date=Non
     replacement for v1's own "counts.get('thesis-threatening')" check,
     which never distinguished a live thesis-breaking event from one
     that happened 11 months ago and has long since stopped mattering).
+
+    grouping (PART 1 STEP 1.4, 8 Oct 2026, instruction_health_fixes_
+    chart_and_new_markets.md): "rolling" (the v2 DEFAULT, Andrew's own
+    8 Oct decision) or "blocks" - selects _group_events_v2_rolling()
+    or _group_events_v2_blocks() (see either's own docstring for the
+    difference). Every real caller leaves this at its default; the
+    owner-only comparison panel is the ONLY caller that ever passes
+    "blocks" explicitly, to compute its own side-by-side "Events
+    (7-day blocks)" column from this SAME function rather than a
+    second, independently-written scoring path.
 
     Reuses analyze_holding_news()'s own fetch/storage/relevance
     machinery UNCHANGED (_claim_fetch, _fetch_all_feeds, _merge_and_save,
@@ -1114,7 +1191,7 @@ def analyze_holding_news_v2(ticker, name=None, thesis_drivers=None, buy_date=Non
             "weight": _news_v2_weight(pub, it.get("fetched_at"), severity, now),
         })
 
-    groups = _group_events_v2(events)
+    groups = _GROUPING_FUNCS_V2[grouping](events)
     score = 100.0
     material = False
     thesis_breaking_live = False
@@ -1180,7 +1257,8 @@ def analyze_holding_news_v2(ticker, name=None, thesis_drivers=None, buy_date=Non
     }
 
 
-def compare_events_v1_v2(ticker, name=None, thesis_drivers=None, buy_date=None, now=None):
+def compare_events_v1_v2(ticker, name=None, thesis_drivers=None, buy_date=None, now=None,
+                          grouping="rolling"):
     """PART B STEP B2 (Director, 6 Oct 2026): the per-headline, side-by-
     side table the owner-only comparison panel's own per-ticker
     expander shows - every stored headline's OLD vs NEW severity/
@@ -1190,7 +1268,13 @@ def compare_events_v1_v2(ticker, name=None, thesis_drivers=None, buy_date=None, 
     this only reads whatever's already stored). Not a third scoring
     method - it reuses _classify_severity()/_classify_severity_v2()/
     _recency_weight()/_news_v2_weight()/_is_relevant()/_group_events_
-    v2() exactly, never a fourth, independently-written comparison.
+    v2_rolling()/_group_events_v2_blocks() exactly, never a fourth,
+    independently-written comparison.
+
+    grouping (PART 1 STEP 1.4, 8 Oct 2026, instruction_health_fixes_
+    chart_and_new_markets.md): "rolling" (the default, matching
+    analyze_holding_news_v2()'s own v2 default) or "blocks" - see
+    _GROUPING_FUNCS_V2.
 
     Returns [{"date", "title", "publisher", "age_days", "old_severity",
     "new_severity", "relevant", "old_weight", "new_weight",
@@ -1224,7 +1308,7 @@ def compare_events_v1_v2(ticker, name=None, thesis_drivers=None, buy_date=None, 
         v2_shaped.append({"date": pub, "severity": new_severity, "weight": new_weight,
                            "relevant": relevant, "_row": row})
     _group_counter = {}
-    for group in _group_events_v2(v2_shaped):
+    for group in _GROUPING_FUNCS_V2[grouping](v2_shaped):
         severity = group[0]["severity"]
         _group_counter[severity] = _group_counter.get(severity, 0) + 1
         label = f"{severity}-{_group_counter[severity]}"

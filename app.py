@@ -31523,6 +31523,24 @@ def _render_portfolio_health_news_v2_comparison_panel():
                 )
             except Exception:
                 news_new = None
+            # PART 1 STEP 1.4 (Director, 8 Oct 2026, instruction_health_
+            # fixes_chart_and_new_markets.md): Andrew's own 8 Oct
+            # decision - v2's DEFAULT grouping is now "rolling"
+            # (analyze_holding_news_v2()'s own default, so `news_new`
+            # above already reflects it). This second call, passing
+            # grouping="blocks" explicitly, is ONLY for the panel's own
+            # side-by-side "Events (7-day blocks)" column - the SAME
+            # function, never a second scoring path.
+            try:
+                news_new_blocks = portfolio_news_engine.analyze_holding_news_v2(
+                    ticker, name=h.get("name"), thesis_drivers=h.get("thesis_drivers"),
+                    buy_date=h.get("buy_date"), is_etf=is_etf, grouping="blocks",
+                )
+            except Exception:
+                news_new_blocks = None
+            components_new_blocks = portfolio_health_engine.compute_health_components_v2(
+                snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"),
+                news=news_new_blocks)
             components_old = portfolio_health_engine.compute_health_components(
                 snap, h.get("kind"), baseline=h.get("baseline"), buy_date=h.get("buy_date"), news=news_old)
             components_new = portfolio_health_engine.compute_health_components_v2(
@@ -31555,6 +31573,9 @@ def _render_portfolio_health_news_v2_comparison_panel():
             health_new_15 = portfolio_health_engine.compute_health_v2(
                 components_new, news=news_new, is_etf=is_etf, progress_overall=progress_v2.get("overall"),
                 default_cut_limit=15.0)
+            health_new_blocks = portfolio_health_engine.compute_health_v2(
+                components_new_blocks, news=news_new_blocks, is_etf=is_etf,
+                progress_overall=progress_v2.get("overall"))
 
             # Fix (Director, 8 Oct 2026 follow-up): this WAS called
             # "Base score before news" - the Director's own prior
@@ -31574,7 +31595,18 @@ def _render_portfolio_health_news_v2_comparison_panel():
                 "Ticker": ticker,
                 "Fundamentals average (8 parts)": _fundamentals_avg,
                 "News Risk old": (news_old or {}).get("news_risk_score"),
-                "News Risk new": (news_new or {}).get("news_risk_score"),
+                # PART 1 STEP 1.4: renamed from "News Risk new"/"Events
+                # counted new" to make explicit which grouping method
+                # each figure uses, now that two methods exist side by
+                # side - "(rolling)" is the real v2 default; "(7-day
+                # blocks)" is the earlier method, kept for comparison
+                # only (STEP 1.4's own instruction: "Keep 7-day blocks
+                # as a pure function for the panel only").
+                "News Risk (rolling)": (news_new or {}).get("news_risk_score"),
+                "News Risk (7-day blocks)": (news_new_blocks or {}).get("news_risk_score"),
+                "Events (rolling)": (news_new or {}).get("event_groups"),
+                "Events (7-day blocks)": (news_new_blocks or {}).get("event_groups"),
+                "Health new (7-day blocks)": health_new_blocks.get("overall"),
                 "Health before news cut (v2)": health_new_10.get("overall_before_news_cut"),
                 "Cut before limit": health_new_10.get("news_cut_before_limit"),
                 "Cut applied": health_new_10.get("news_cut_applied"),
@@ -31585,7 +31617,6 @@ def _render_portfolio_health_news_v2_comparison_panel():
                 "Health old": health_old.get("overall"),
                 "Action old": health_old.get("action"),
                 "Items counted old": (news_old or {}).get("all_relevant"),
-                "Events counted new": (news_new or {}).get("event_groups"),
                 "Thesis-breaking live": "yes" if (news_new or {}).get("thesis_breaking_live") else "no",
             })
             _per_ticker_detail.append((h, progress, progress_v2))

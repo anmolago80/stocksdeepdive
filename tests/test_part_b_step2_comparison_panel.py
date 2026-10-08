@@ -8,11 +8,13 @@ Covers:
   - the panel renders without raising, via AppTest, with a real owner
     holding and real stored news events on file.
   - the comparison table's own columns are present (Ticker, Fundamentals
-    average (8 parts), News Risk old/new, Health before news cut (v2),
-    Cut before limit, Cut applied, Health/Action new at limit 10 and at
-    limit 15, Health old, Action old, Items counted old, Events counted
-    new, Thesis-breaking live) - renamed/extended per PART 1 STEP 1.1 of
-    instruction_health_fixes_chart_and_new_markets.md (8 Oct 2026).
+    average (8 parts), News Risk old, News Risk/Events (rolling) and
+    (7-day blocks), Health new (7-day blocks), Health before news cut
+    (v2), Cut before limit, Cut applied, Health/Action new at limit 10
+    and at limit 15, Health old, Action old, Items counted old,
+    Thesis-breaking live) - renamed/extended per PART 1 STEP 1.1 and
+    STEP 1.4 of instruction_health_fixes_chart_and_new_markets.md
+    (8 Oct 2026).
   - a per-ticker expander with the per-headline comparison table.
   - a CSV download button is offered.
   - the site-wide "every distinct ticker held" summary never shows an
@@ -146,21 +148,23 @@ app._render_portfolio_health_news_v2_comparison_panel()
             break
     check("the comparison table has every required column",
           _comparison_df is not None and
-          {"Ticker", "Fundamentals average (8 parts)", "News Risk old", "News Risk new",
+          {"Ticker", "Fundamentals average (8 parts)", "News Risk old",
+           "News Risk (rolling)", "News Risk (7-day blocks)",
+           "Events (rolling)", "Events (7-day blocks)", "Health new (7-day blocks)",
            "Health before news cut (v2)", "Cut before limit", "Cut applied",
            "Health new (limit 10)", "Action new (limit 10)",
            "Health new (limit 15)", "Action new (limit 15)",
            "Health old", "Action old",
-           "Items counted old", "Events counted new", "Thesis-breaking live"
+           "Items counted old", "Thesis-breaking live"
            }.issubset(set(_comparison_df.columns)))
     check("TESTCO appears as a row in the comparison table",
           _comparison_df is not None and "TESTCO" in _comparison_df["Ticker"].tolist())
     _testco_row = _comparison_df[_comparison_df["Ticker"] == "TESTCO"].iloc[0] \
         if _comparison_df is not None else None
-    check("TESTCO's Items counted old (v1, raw relevant items) is >= Events counted new "
+    check("TESTCO's Items counted old (v1, raw relevant items) is >= Events (rolling) "
           "(v2, deduplicated groups) - the grouping fix visibly reduces the count",
           _testco_row is not None
-          and _testco_row["Items counted old"] >= _testco_row["Events counted new"])
+          and _testco_row["Items counted old"] >= _testco_row["Events (rolling)"])
 
     # ==================================================================
     # CHECK 3: a per-ticker expander with the per-headline comparison.
